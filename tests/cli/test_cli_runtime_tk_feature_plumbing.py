@@ -9,6 +9,7 @@ from pathlib import Path
 import molt.cli as cli
 
 COMPILER_METADATA = importlib.import_module("molt.cli.compiler_metadata")
+RUNTIME_FINGERPRINTS = importlib.import_module("molt.cli.runtime_fingerprints")
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -82,9 +83,9 @@ def test_builtin_features_from_import_graph_uses_native_micro_surface() -> None:
 
 
 def test_runtime_source_paths_include_runtime_leaf_crates() -> None:
-    cli._runtime_source_paths_cached.cache_clear()
+    RUNTIME_FINGERPRINTS._runtime_source_paths_cached.cache_clear()
 
-    paths = set(cli._runtime_source_paths(ROOT))
+    paths = set(RUNTIME_FINGERPRINTS._runtime_source_paths(ROOT))
 
     assert ROOT / "runtime/molt-runtime-stringprep/src" in paths
     assert ROOT / "runtime/molt-runtime-stringprep/Cargo.toml" in paths
@@ -203,9 +204,14 @@ def test_runtime_fingerprint_changes_with_runtime_features(
     source = tmp_path / "runtime_source.rs"
     source.write_text("pub fn marker() {}\n")
     monkeypatch.setattr(
-        cli, "_runtime_source_paths", lambda _project_root: [source], raising=True
+        RUNTIME_FINGERPRINTS,
+        "_runtime_source_paths",
+        lambda _project_root: [source],
+        raising=True,
     )
-    monkeypatch.setattr(cli, "_rustc_version", lambda: "rustc-test", raising=True)
+    monkeypatch.setattr(
+        RUNTIME_FINGERPRINTS, "_rustc_version", lambda: "rustc-test", raising=True
+    )
     baseline = cli._runtime_fingerprint(
         tmp_path,
         cargo_profile="dev-fast",
@@ -231,9 +237,14 @@ def test_runtime_fingerprint_reuses_stored_hash_when_inputs_unchanged(
     source = tmp_path / "runtime_source.rs"
     source.write_text("pub fn marker() {}\n")
     monkeypatch.setattr(
-        cli, "_runtime_source_paths", lambda _project_root: [source], raising=True
+        RUNTIME_FINGERPRINTS,
+        "_runtime_source_paths",
+        lambda _project_root: [source],
+        raising=True,
     )
-    monkeypatch.setattr(cli, "_rustc_version", lambda: "rustc-test", raising=True)
+    monkeypatch.setattr(
+        RUNTIME_FINGERPRINTS, "_rustc_version", lambda: "rustc-test", raising=True
+    )
 
     baseline = cli._runtime_fingerprint(
         tmp_path,
@@ -245,14 +256,16 @@ def test_runtime_fingerprint_reuses_stored_hash_when_inputs_unchanged(
     assert baseline is not None
 
     calls = 0
-    original = cli._hash_runtime_file
+    original = RUNTIME_FINGERPRINTS._hash_runtime_file
 
     def wrapped(path: Path, root: Path, hasher: object) -> None:
         nonlocal calls
         calls += 1
         original(path, root, hasher)
 
-    monkeypatch.setattr(cli, "_hash_runtime_file", wrapped, raising=True)
+    monkeypatch.setattr(
+        RUNTIME_FINGERPRINTS, "_hash_runtime_file", wrapped, raising=True
+    )
     reused = cli._runtime_fingerprint(
         tmp_path,
         cargo_profile="dev-fast",
@@ -271,9 +284,14 @@ def test_runtime_fingerprint_rehashes_when_source_metadata_changes(
     source = tmp_path / "runtime_source.rs"
     source.write_text("pub fn marker() {}\n")
     monkeypatch.setattr(
-        cli, "_runtime_source_paths", lambda _project_root: [source], raising=True
+        RUNTIME_FINGERPRINTS,
+        "_runtime_source_paths",
+        lambda _project_root: [source],
+        raising=True,
     )
-    monkeypatch.setattr(cli, "_rustc_version", lambda: "rustc-test", raising=True)
+    monkeypatch.setattr(
+        RUNTIME_FINGERPRINTS, "_rustc_version", lambda: "rustc-test", raising=True
+    )
 
     baseline = cli._runtime_fingerprint(
         tmp_path,
@@ -289,14 +307,16 @@ def test_runtime_fingerprint_rehashes_when_source_metadata_changes(
     os.utime(source, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000))
 
     calls = 0
-    original = cli._hash_runtime_file
+    original = RUNTIME_FINGERPRINTS._hash_runtime_file
 
     def wrapped(path: Path, root: Path, hasher: object) -> None:
         nonlocal calls
         calls += 1
         original(path, root, hasher)
 
-    monkeypatch.setattr(cli, "_hash_runtime_file", wrapped, raising=True)
+    monkeypatch.setattr(
+        RUNTIME_FINGERPRINTS, "_hash_runtime_file", wrapped, raising=True
+    )
     changed = cli._runtime_fingerprint(
         tmp_path,
         cargo_profile="dev-fast",
@@ -629,8 +649,12 @@ def test_ensure_runtime_lib_materializes_stdlib_profile_aliases_without_rebuildi
     )
     cargo_profiles: list[str] = []
 
-    monkeypatch.setattr(cli, "_runtime_source_paths", lambda _root: [], raising=True)
-    monkeypatch.setattr(cli, "_rustc_version", lambda: "rustc-test", raising=True)
+    monkeypatch.setattr(
+        RUNTIME_FINGERPRINTS, "_runtime_source_paths", lambda _root: [], raising=True
+    )
+    monkeypatch.setattr(
+        RUNTIME_FINGERPRINTS, "_rustc_version", lambda: "rustc-test", raising=True
+    )
     monkeypatch.setattr(
         cli,
         "_build_lock",
@@ -885,7 +909,9 @@ def test_ensure_runtime_lib_rebuilds_unfingerprinted_prebuilt_archive(
     project_root.mkdir()
     seen_cmds: list[list[str]] = []
 
-    monkeypatch.setattr(cli, "_runtime_source_paths", lambda _root: [source])
+    monkeypatch.setattr(
+        RUNTIME_FINGERPRINTS, "_runtime_source_paths", lambda _root: [source]
+    )
     monkeypatch.setattr(
         cli,
         "_runtime_fingerprint",
@@ -1251,7 +1277,10 @@ def test_ensure_runtime_lib_rebuilds_when_stored_fingerprint_conflicts_with_requ
 
     monkeypatch.setenv("MOLT_RUNTIME_GPU_METAL", "1")
     monkeypatch.setattr(
-        cli, "_runtime_source_paths", lambda _project_root: [source], raising=True
+        RUNTIME_FINGERPRINTS,
+        "_runtime_source_paths",
+        lambda _project_root: [source],
+        raising=True,
     )
     monkeypatch.setattr(
         cli,
