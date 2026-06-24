@@ -12899,7 +12899,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(src));
                         func.instruction(&Instruction::LocalSet(dst));
                     }
-                    "load_var" | "copy_var" | "copy" | "identity_alias" => {
+                    "load_var" | "copy_var" | "copy" | "identity_alias" | "binding_alias" => {
                         let src_name = op
                             .var
                             .as_ref()

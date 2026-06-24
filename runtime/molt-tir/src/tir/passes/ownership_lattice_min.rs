@@ -287,9 +287,12 @@ fn non_owning_copy_result_roots(func: &TirFunction, aliases: &AliasUnionFind) ->
                 continue;
             }
             let kind = original_kind(op);
-            let mints_fresh = matches!(classify_copy_kind(kind), CopyLowering::FreshValue);
+            let mints_owned = matches!(
+                classify_copy_kind(kind),
+                CopyLowering::FreshValue | CopyLowering::OwnedAlias
+            );
             let explicit_alias = copy_kind_is_explicit_no_heap_move(kind);
-            if mints_fresh || explicit_alias {
+            if mints_owned || explicit_alias {
                 continue;
             }
             for &result in &op.results {
@@ -952,6 +955,7 @@ mod tests {
         let unknown_passthrough = f.fresh_value();
         let bare_passthrough = f.fresh_value();
         let fresh = f.fresh_value();
+        let owned_alias = f.fresh_value();
         let entry = f.blocks.get_mut(&f.entry_block).unwrap();
         entry
             .ops
@@ -972,6 +976,11 @@ mod tests {
         entry
             .ops
             .push(original_kind_copy("list_new", vec![source], vec![fresh]));
+        entry.ops.push(original_kind_copy(
+            "binding_alias",
+            vec![source],
+            vec![owned_alias],
+        ));
         entry.terminator = Terminator::Return { values: vec![] };
 
         let aliases = build_alias_union_find(&f);
@@ -990,6 +999,11 @@ mod tests {
             aliases.root(source),
             "bare Copy passthroughs are already folded aliases"
         );
+        assert_eq!(
+            aliases.root(owned_alias),
+            owned_alias,
+            "owned aliases keep a distinct ownership root"
+        );
         let root_facts = OwnershipRootFacts::compute(&f, &aliases);
         assert!(
             root_facts.is_non_owning_copy_result_root(unknown_passthrough),
@@ -1006,6 +1020,10 @@ mod tests {
         assert!(
             !root_facts.is_non_owning_copy_result_root(fresh),
             "fresh-owned Copy results keep their independent drop obligation"
+        );
+        assert!(
+            !root_facts.is_non_owning_copy_result_root(owned_alias),
+            "owned alias Copy results keep their independent drop obligation"
         );
         let lat = OwnershipLattice::compute_with_root_facts(&f, &aliases, root_facts);
         assert!(

@@ -2618,7 +2618,7 @@ impl ScalarRepresentationPlan {
                     .is_some_and(|src| lane_outputs.contains(src));
                 let is_lane_alias = matches!(
                     op.kind.as_str(),
-                    "copy_var" | "copy" | "load_var" | "identity_alias"
+                    "copy_var" | "copy" | "load_var" | "identity_alias" | "binding_alias"
                 ) && first_arg_is_lane
                     || matches!(op.kind.as_str(), "copy_var" | "load_var") && var_source_is_lane;
 
@@ -2706,6 +2706,7 @@ impl ScalarRepresentationPlan {
                         | "copy_var"
                         | "load_var"
                         | "identity_alias"
+                        | "binding_alias"
                         | "store_var"
                 );
                 let range_safe_arithmetic = bounded_i64_names.contains_key(out)
@@ -2921,7 +2922,7 @@ impl ScalarRepresentationPlan {
                 .args
                 .as_ref()
                 .is_some_and(|args| args.len() >= 2 && args.iter().all(|a| candidates.contains(a))),
-            "copy" | "copy_var" | "load_var" | "identity_alias" => {
+            "copy" | "copy_var" | "load_var" | "identity_alias" | "binding_alias" => {
                 first_source().is_some_and(|s| candidates.contains(s))
             }
             "index" => {
@@ -2964,6 +2965,7 @@ impl ScalarRepresentationPlan {
                         | "copy_var"
                         | "load_var"
                         | "identity_alias"
+                        | "binding_alias"
                         | "store_var"
                         | "float_from_obj"
                 );
@@ -3143,19 +3145,20 @@ impl ScalarRepresentationPlan {
             "const_float" => Some(ScalarKind::Float),
             "const_str" => Some(ScalarKind::Str),
             "float_from_obj" => Some(ScalarKind::Float),
-            "copy" | "copy_var" | "load_var" | "identity_alias" => first_source().and_then(|src| {
-                if has_kind(src, ScalarKind::Int) {
-                    Some(ScalarKind::Int)
-                } else if has_kind(src, ScalarKind::Bool) {
-                    Some(ScalarKind::Bool)
-                } else if has_kind(src, ScalarKind::Float) {
-                    Some(ScalarKind::Float)
-                } else if has_kind(src, ScalarKind::Str) {
-                    Some(ScalarKind::Str)
-                } else {
-                    None
-                }
-            }),
+            "copy" | "copy_var" | "load_var" | "identity_alias" | "binding_alias" => first_source()
+                .and_then(|src| {
+                    if has_kind(src, ScalarKind::Int) {
+                        Some(ScalarKind::Int)
+                    } else if has_kind(src, ScalarKind::Bool) {
+                        Some(ScalarKind::Bool)
+                    } else if has_kind(src, ScalarKind::Float) {
+                        Some(ScalarKind::Float)
+                    } else if has_kind(src, ScalarKind::Str) {
+                        Some(ScalarKind::Str)
+                    } else {
+                        None
+                    }
+                }),
             "lt" | "le" | "gt" | "ge" | "eq" | "ne" | "is" => Some(ScalarKind::Bool),
             "bool" | "cast_bool" | "builtin_bool" | "is_truthy" | "not" => {
                 first_source().and_then(|src| {
@@ -3361,9 +3364,8 @@ fn op_produces_raw_i64_for_int_primary(
     match op.kind.as_str() {
         "const" | "loop_index_start" | "loop_index_next" | "len" | "gpu_thread_id"
         | "gpu_block_id" | "gpu_block_dim" | "gpu_grid_dim" => true,
-        "copy" | "copy_var" | "load_var" | "identity_alias" | "pos" | "invert" => {
-            first_source().is_some_and(|s| candidates.contains(s))
-        }
+        "copy" | "copy_var" | "load_var" | "identity_alias" | "binding_alias" | "pos"
+        | "invert" => first_source().is_some_and(|s| candidates.contains(s)),
         "bit_and" | "bit_or" | "bit_xor" | "inplace_bit_and" | "inplace_bit_or"
         | "inplace_bit_xor" => op
             .args
@@ -3460,8 +3462,8 @@ fn interval_for_simple_op(
     }
     match op.kind.as_str() {
         "const" => op.value.map(I64Interval::singleton),
-        "copy" | "copy_var" | "load_var" | "identity_alias" | "pos" | "loop_index_start"
-        | "loop_index_next" => interval_for_first_source(op, intervals),
+        "copy" | "copy_var" | "load_var" | "identity_alias" | "binding_alias" | "pos"
+        | "loop_index_start" | "loop_index_next" => interval_for_first_source(op, intervals),
         "add" | "inplace_add" => interval_for_binary_args(op, intervals, I64Interval::checked_add),
         "sub" | "inplace_sub" => interval_for_binary_args(op, intervals, I64Interval::checked_sub),
         _ => None,
@@ -3890,7 +3892,7 @@ fn resolve_interval_before(
             return Some(interval);
         }
         match op.kind.as_str() {
-            "copy" | "copy_var" | "load_var" | "identity_alias" | "pos" => {
+            "copy" | "copy_var" | "load_var" | "identity_alias" | "binding_alias" | "pos" => {
                 let source = op.var.as_deref().or_else(|| {
                     op.args
                         .as_ref()
@@ -4158,7 +4160,7 @@ fn name_is_structural_raw_i64_before(
         return match op.kind.as_str() {
             "const" | "loop_index_start" | "loop_index_next" | "len" | "gpu_thread_id"
             | "gpu_block_id" | "gpu_block_dim" | "gpu_grid_dim" => true,
-            "copy" | "copy_var" | "load_var" | "identity_alias" | "pos" => {
+            "copy" | "copy_var" | "load_var" | "identity_alias" | "binding_alias" | "pos" => {
                 let source = op.var.as_deref().or_else(|| {
                     op.args
                         .as_ref()
@@ -4294,11 +4296,13 @@ fn simple_op_produces_non_scalar_value(kind: &str) -> bool {
 
 fn alias_source_name(op: &OpIR) -> Option<&str> {
     match op.kind.as_str() {
-        "copy" | "copy_var" | "load_var" | "identity_alias" => op.var.as_deref().or_else(|| {
-            op.args
-                .as_ref()
-                .and_then(|args| args.first().map(String::as_str))
-        }),
+        "copy" | "copy_var" | "load_var" | "identity_alias" | "binding_alias" => {
+            op.var.as_deref().or_else(|| {
+                op.args
+                    .as_ref()
+                    .and_then(|args| args.first().map(String::as_str))
+            })
+        }
         _ => None,
     }
 }

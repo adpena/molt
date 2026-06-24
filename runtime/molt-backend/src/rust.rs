@@ -3497,7 +3497,7 @@ fn molt_sys_hexversion(_args: &mut Vec<MoltValue>) -> MoltValue {
                     ));
                 }
             }
-            "inc_ref" | "borrow" => {
+            "inc_ref" | "borrow" | "binding_alias" => {
                 let o = out();
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if o != "_"

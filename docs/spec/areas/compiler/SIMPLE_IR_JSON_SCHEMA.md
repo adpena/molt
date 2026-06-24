@@ -568,6 +568,7 @@ All use the standard `args` + `out` pattern.
 | `frame_locals_set`  | `args`                | Set frame locals dict            |
 | `copy`              | --                    | SSA copy / variable alias        |
 | `identity_alias`    | `args`, `out`         | Identity alias (no-op copy)      |
+| `binding_alias`     | `args`, `out`         | Alias bits plus owned local retain |
 | `cast`              | `args`, `out`         | Type cast                        |
 | `widen`             | `args`, `out`         | Widen representation             |
 | `json_parse`        | `args`, `out`         | Parse JSON string                |

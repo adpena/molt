@@ -214,6 +214,15 @@ pub fn copy_kind_mints_fresh_owned_ref_table(kind: &str) -> bool {
     )
 }
 
+/// EXACT-match arm of `copy_kind_mints_owned_alias_ref`: kinds whose
+/// result aliases operand 0's object bits but whose lowering mints a new
+/// +1 owned reference, so ownership treats the result as an independent
+/// droppable root.
+#[inline]
+pub fn copy_kind_mints_owned_alias_ref_table(kind: &str) -> bool {
+    matches!(kind, "binding_alias")
+}
+
 /// EXACT-match arm for exception CreationRef producers. These Copy-lifted
 /// kinds return the fresh exception object reference whose source ownership
 /// is released at the `raise` boundary after runtime exception state records
