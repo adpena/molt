@@ -216,3 +216,43 @@ Step 2 (extract `molt-backend-native`) — measured boundary from `simple_backen
   (unavoidable — native depends on tir). The incremental win is the reverse: editing native
   codegen no longer recompiles tir/passes/the non-native backends. Pick this boundary (one
   cut, low back-edge) over splitting `tir` further until measurement shows tir churn dominates.
+
+## Addendum (2026-06-24): dx Phase-3 Baton Folded Into Current Routing
+
+The deleted `docs/design/foundation/dx_phase3_extraction_baton.md` was a
+pre-`molt-tir` handoff anchored to base `9e93503bb`. Its durable content is the
+backend-native extraction boundary, but its mechanics are stale now that
+`molt-tir` exists and `molt-backend` depends on it directly.
+
+Current extraction state:
+- Already extracted: `runtime/molt-tir` owns the backend-neutral lower layer and
+  has no native/wasm/luau/llvm/rust backend dependency.
+- Not yet extracted: there is no `runtime/molt-backend-native` workspace member.
+  `runtime/molt-backend/Cargo.toml` still owns Cranelift and Inkwell
+  dependencies, default `native-backend`, `llvm`, `wasm-backend`, `luau-backend`,
+  and `rust-backend` feature composition.
+- CLI/daemon orchestration is in `src/molt/cli/__init__.py`, with the backend
+  binary still built from package `molt-backend` and named `molt-backend`.
+
+Next structural cut:
+- Create `molt-backend-native` only when `native_backend/*` and
+  `llvm_backend/*` can move together as one native codegen authority.
+- Keep `molt-tir` as the typed-IR/pass/representation authority; do not
+  duplicate TIR facts or re-export compatibility shims from the native crate.
+- Keep `molt-backend` as the composition crate until the daemon/bin move is
+  atomic; when the bin moves, preserve the binary name `molt-backend` so CLI
+  artifact discovery does not fork.
+- Any new cross-crate `pub` surface must be a durable API needed by the native
+  crate, not a temporary alias. Prefer the existing `molt-tir` exports first.
+
+Landing gates for the native extraction:
+- `cargo build -p molt-tir` and `cargo test -p molt-tir` prove the core lower
+  layer remains backend-free.
+- `cargo build -p molt-backend --no-default-features` proves core composition
+  no longer pulls Cranelift/Inkwell after the cut.
+- `cargo build -p molt-backend-native --features native-backend` and
+  `--features native-backend,llvm` prove the moved native/LLVM authority.
+- `src/molt/cli/__init__.py` must still find a binary named `molt-backend`.
+- BX-4 evidence must measure both directions: touch a TIR pass and confirm the
+  native crate only relinks as required; touch native codegen and confirm
+  `molt-tir` does not rebuild.
