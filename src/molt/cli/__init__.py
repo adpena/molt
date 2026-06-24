@@ -359,8 +359,11 @@ from molt.cli.runtime_paths import (
     _molt_session_id,
     _normalize_runtime_stdlib_profile,
     _runtime_lib_archive_name,
+    _runtime_lib_archive_names,
     _runtime_lib_path,
     _runtime_lib_path_cached,
+    _runtime_cargo_scratch_lib_name,
+    _runtime_cargo_scratch_lib_path,
     _runtime_staticlib_target_is_windows,
     _session_artifact_component,
 )
@@ -7853,15 +7856,6 @@ _MODULE_ANALYSIS_CACHE_SCHEMA_VERSION = 8
 _MODULE_LOWERING_CACHE_SCHEMA_VERSION = 2
 _MODULE_ANALYSIS_FUNC_KINDS = frozenset({"sync", "async", "gen", "asyncgen"})
 
-def _runtime_lib_archive_names(target_triple: str | None = None) -> tuple[str, ...]:
-    names = [
-        _runtime_lib_archive_name("micro", target_triple),
-        _runtime_lib_archive_name("full", target_triple),
-        _runtime_cargo_scratch_lib_name(target_triple),
-    ]
-    return tuple(dict.fromkeys(names))
-
-
 def _module_graph_policy_digest(
     stdlib_allowlist: Collection[str],
     import_admission_policy: _ImportAdmissionPolicy | None = None,
@@ -7879,19 +7873,6 @@ def _module_graph_policy_digest(
         separators=(",", ":"),
     )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:24]
-
-
-def _runtime_cargo_scratch_lib_name(target_triple: str | None = None) -> str:
-    if _runtime_staticlib_target_is_windows(target_triple):
-        return "molt_runtime.lib"
-    return "libmolt_runtime.a"
-
-
-def _runtime_cargo_scratch_lib_path(
-    runtime_lib: Path,
-    target_triple: str | None = None,
-) -> Path:
-    return runtime_lib.with_name(_runtime_cargo_scratch_lib_name(target_triple))
 
 
 @functools.lru_cache(maxsize=1024)
