@@ -28,6 +28,7 @@ from tests.cli.process_guard import (
 
 
 ROOT = Path(__file__).resolve().parents[2]
+LOCKFILES = importlib.import_module("molt.cli.lockfiles")
 PROJECT_ROOTS = importlib.import_module("molt.cli.project_roots")
 
 
@@ -5199,14 +5200,14 @@ def test_build_state_root_uses_override_relative_to_project_root(
 def test_lock_check_cache_path_is_cached(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    cli._lock_check_cache_path_cached.cache_clear()
+    LOCKFILES._lock_check_cache_path_cached.cache_clear()
     monkeypatch.setenv("CARGO_TARGET_DIR", "external-target")
     monkeypatch.chdir(tmp_path)
 
-    first = cli._lock_check_cache_path(tmp_path, "cargo")
-    second = cli._lock_check_cache_path(tmp_path, "cargo")
+    first = LOCKFILES._lock_check_cache_path(tmp_path, "cargo")
+    second = LOCKFILES._lock_check_cache_path(tmp_path, "cargo")
 
-    info = cli._lock_check_cache_path_cached.cache_info()
+    info = LOCKFILES._lock_check_cache_path_cached.cache_info()
     expected = Path.cwd() / "external-target" / "lock_checks" / "cargo.json"
     assert first == second == expected
     assert info.hits >= 1
@@ -5216,7 +5217,7 @@ def test_lock_check_cache_path_is_cached(
 def test_write_lock_check_cache_uses_unique_atomic_temp_sibling(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    path = cli._lock_check_cache_path(tmp_path, "uv")
+    path = LOCKFILES._lock_check_cache_path(tmp_path, "uv")
     original_replace = os.replace
     replaced_sources: list[Path] = []
 
@@ -5228,8 +5229,8 @@ def test_write_lock_check_cache_uses_unique_atomic_temp_sibling(
     monkeypatch.setattr(os, "replace", record_replace)
 
     inputs = {"uv.lock": {"size": 1, "mtime_ns": 2}}
-    cli._write_lock_check_cache(tmp_path, "uv", inputs)
-    cli._write_lock_check_cache(tmp_path, "uv", inputs)
+    LOCKFILES._write_lock_check_cache(tmp_path, "uv", inputs)
+    LOCKFILES._write_lock_check_cache(tmp_path, "uv", inputs)
 
     assert len(replaced_sources) == 2
     assert replaced_sources[0] != replaced_sources[1]
@@ -5237,7 +5238,7 @@ def test_write_lock_check_cache_uses_unique_atomic_temp_sibling(
         source.name.startswith(".uv.json.") and source.name.endswith(".tmp")
         for source in replaced_sources
     )
-    assert cli._is_lock_check_cache_valid(tmp_path, "uv", inputs)
+    assert LOCKFILES._is_lock_check_cache_valid(tmp_path, "uv", inputs)
     assert not path.with_suffix(path.suffix + ".tmp").exists()
     assert list(path.parent.glob(".*.tmp")) == []
 
@@ -5406,18 +5407,20 @@ def test_verify_cargo_lock_uses_workspace_member_manifests_only(
     captured: dict[str, list[Path]] = {}
 
     monkeypatch.setattr(
-        cli.shutil,
+        LOCKFILES.shutil,
         "which",
         lambda name: "/usr/bin/cargo" if name == "cargo" else None,
     )
     monkeypatch.setattr(
-        cli,
+        LOCKFILES,
         "_lock_check_inputs",
         lambda project_root, paths: captured.setdefault("paths", list(paths)) or {},
     )
-    monkeypatch.setattr(cli, "_is_lock_check_cache_valid", lambda *args, **kwargs: True)
+    monkeypatch.setattr(
+        LOCKFILES, "_is_lock_check_cache_valid", lambda *args, **kwargs: True
+    )
 
-    assert cli._verify_cargo_lock(tmp_path) is None
+    assert LOCKFILES._verify_cargo_lock(tmp_path) is None
     assert "paths" in captured
     assert root_manifest in captured["paths"]
     assert runtime_manifest in captured["paths"]

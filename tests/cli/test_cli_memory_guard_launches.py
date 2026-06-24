@@ -7,6 +7,8 @@ from typing import Any
 
 import molt.cli as cli
 
+LOCKFILES = importlib.import_module("molt.cli.lockfiles")
+
 
 def test_uv_lock_check_uses_build_memory_guard(
     monkeypatch,
@@ -21,8 +23,8 @@ def test_uv_lock_check_uses_build_memory_guard(
         captured["kwargs"] = kwargs
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
-    monkeypatch.setattr(cli.shutil, "which", lambda name: f"/usr/bin/{name}")
-    monkeypatch.setattr(cli, "_run_completed_command", fake_run)
+    monkeypatch.setattr(LOCKFILES.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(LOCKFILES, "_run_completed_command", fake_run)
 
     assert cli._verify_uv_lock(tmp_path) is None
     assert captured["cmd"] == ["uv", "lock", "--check"]
@@ -43,8 +45,8 @@ def test_cargo_lock_check_uses_build_memory_guard(
         captured["kwargs"] = kwargs
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
-    monkeypatch.setattr(cli.shutil, "which", lambda name: f"/usr/bin/{name}")
-    monkeypatch.setattr(cli, "_run_completed_command", fake_run)
+    monkeypatch.setattr(LOCKFILES.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(LOCKFILES, "_run_completed_command", fake_run)
 
     assert cli._verify_cargo_lock(tmp_path) is None
     assert captured["cmd"] == [
