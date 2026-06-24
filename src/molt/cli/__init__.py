@@ -370,6 +370,11 @@ from molt.cli.json_contract import (
     _extract_payload_text_list,
     _wrapper_build_payload_data,
 )
+from molt.cli.json_cache import (
+    _PERSISTED_JSON_OBJECT_CACHE,
+    _read_cached_json_object,
+    _write_cached_json_object,
+)
 from molt.cli.extension_manifest import (
     ExtensionManifestValidation,
     _MOLT_C_API_VERSION_RE,
@@ -547,7 +552,6 @@ _RUNTIME_IMPORT_PROTOCOL_IMPLEMENTATION_MODULES = frozenset(
     }
 )
 _ARTIFACT_SYNC_STATE_CACHE: dict[Path, tuple[int, int, dict[str, Any] | None]] = {}
-_PERSISTED_JSON_OBJECT_CACHE: dict[Path, tuple[int, int, dict[str, Any] | None]] = {}
 # Session-level cache: once we have verified (and possibly built) the release
 # runtime for a given path/profile/target key and exact source/config
 # fingerprint, skip the artifact check for that same proof identity.
@@ -12534,31 +12538,6 @@ def _read_artifact_sync_state(path: Path) -> dict[str, Any] | None:
     return payload
 
 
-def _read_cached_json_object(path: Path) -> dict[str, Any] | None:
-    try:
-        stat = path.stat()
-    except OSError:
-        _PERSISTED_JSON_OBJECT_CACHE.pop(path, None)
-        return None
-    cached = _PERSISTED_JSON_OBJECT_CACHE.get(path)
-    if cached is not None:
-        cached_size, cached_mtime_ns, cached_payload = cached
-        if cached_size == stat.st_size and cached_mtime_ns == stat.st_mtime_ns:
-            return cached_payload
-    try:
-        data = json.loads(path.read_text())
-    except (OSError, json.JSONDecodeError):
-        _PERSISTED_JSON_OBJECT_CACHE[path] = (stat.st_size, stat.st_mtime_ns, None)
-        return None
-    payload = data if isinstance(data, dict) else None
-    _PERSISTED_JSON_OBJECT_CACHE[path] = (
-        stat.st_size,
-        stat.st_mtime_ns,
-        payload,
-    )
-    return payload
-
-
 def _write_artifact_sync_state(
     path: Path,
     *,
@@ -12584,25 +12563,6 @@ def _write_artifact_sync_state(
             written_stat.st_size,
             written_stat.st_mtime_ns,
             dict(payload),
-        )
-
-
-def _write_cached_json_object(
-    path: Path,
-    payload: dict[str, Any],
-    *,
-    default: Any | None = None,
-) -> None:
-    _atomic_write_json(path, payload, indent=2, default=default)
-    try:
-        written_stat = path.stat()
-    except OSError:
-        _PERSISTED_JSON_OBJECT_CACHE.pop(path, None)
-    else:
-        _PERSISTED_JSON_OBJECT_CACHE[path] = (
-            written_stat.st_size,
-            written_stat.st_mtime_ns,
-            copy.deepcopy(payload),
         )
 
 
