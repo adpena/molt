@@ -185,7 +185,17 @@ pub(in crate::native_backend::function_compiler) fn handle_value_transfer_op(
                 def_var_named(&mut *builder, vars, out_name.clone(), src);
             }
         }
-        "identity_alias" | "binding_alias" => {
+        // `copy` is the frontend's args-based pure SSA value move
+        // (`{kind:"copy", args:[src], out:result}`). It survives
+        // `rewrite_copy_aliases` whenever its result/source is a mutable-storage
+        // (reassigned-local) name, so it reaches codegen and must be lowered
+        // here rather than silently dropped. It shares the alias lowering:
+        // result = inc_ref'd alias of args[0]. The TIR ownership model classifies
+        // `copy`/`identity_alias`/`binding_alias` identically as
+        // `CopyLowering::TransparentAlias` (alias_analysis.rs), and WASM/Luau
+        // group it with the alias ops the same way — the inc_ref + alias here is
+        // the RC-correct, cross-backend-symmetric lowering.
+        "copy" | "identity_alias" | "binding_alias" => {
             let args_names = op.args.as_ref().expect("alias args missing");
             let src_name = args_names
                 .first()
