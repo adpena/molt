@@ -461,8 +461,7 @@ mod tests {
 
         // Body: a[index]; next = Add(iv, step) [nsw]; br header(next).
         let index_operand = if use_negative_index {
-            let neg = func.fresh_value();
-            neg
+            func.fresh_value()
         } else {
             iv
         };

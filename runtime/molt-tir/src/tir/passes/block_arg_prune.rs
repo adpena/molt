@@ -672,9 +672,7 @@ mod tests {
         let middle = func.fresh_block();
         let exit = func.fresh_block();
         let forwarded = func.fresh_value();
-        for value in [forwarded] {
-            add_type(&mut func, value, TirType::DynBox);
-        }
+        add_type(&mut func, forwarded, TirType::DynBox);
         func.blocks.get_mut(&entry).unwrap().terminator = Terminator::Branch {
             target: middle,
             args: vec![forwarded],

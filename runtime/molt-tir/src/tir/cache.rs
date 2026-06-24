@@ -337,6 +337,12 @@ impl CompilationCache {
         self.index.len()
     }
 
+    /// Return whether the cache currently contains no entries.
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn is_empty(&self) -> bool {
+        self.index.is_empty()
+    }
+
     #[cfg(any(test, feature = "test-util"))]
     pub fn memory_bytes(&self) -> usize {
         self.memory_bytes
