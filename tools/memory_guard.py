@@ -5,13 +5,10 @@ import argparse
 from collections.abc import Callable, Mapping, Sequence
 import contextlib
 from dataclasses import dataclass
-import datetime as dt
 import json
 import os
 import platform
 from pathlib import Path
-import shutil
-import shlex
 import signal
 import subprocess
 import sys
@@ -26,11 +23,14 @@ DEFAULT_FAST_START_POLL_INTERVAL_SEC = 0.02
 DEFAULT_FAST_START_DURATION_SEC = 2.0
 DEFAULT_SAMPLES_MAX_MB = 2.0
 DEFAULT_TERMINATION_WAIT_SEC = 2.0
-DEFAULT_CARGO_INCREMENTAL_QUARANTINE_KEEP = 5
 DEFAULT_INCIDENT_SUMMARY_KEEP = 32
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+from tools.memory_guard_core.common import (  # noqa: E402
+    utc_compact_timestamp as _utc_compact_timestamp,
+    utc_timestamp as _utc_timestamp,
+)
 from tools.memory_guard_core.memory_limits import (  # noqa: E402
     DEFAULT_GLOBAL_FRACTION_OF_USABLE as DEFAULT_GLOBAL_FRACTION_OF_USABLE,
     DEFAULT_HARD_MAX_CHILD_RLIMIT_GB as DEFAULT_HARD_MAX_CHILD_RLIMIT_GB,
@@ -70,6 +70,26 @@ from tools.memory_guard_core.payloads import (  # noqa: E402
     termination_action_payload as termination_action_payload,
     termination_report_payload as termination_report_payload,
     termination_reports_payload as termination_reports_payload,
+)
+from tools.memory_guard_core.cargo_quarantine import (  # noqa: E402
+    DEFAULT_CARGO_INCREMENTAL_QUARANTINE_KEEP as DEFAULT_CARGO_INCREMENTAL_QUARANTINE_KEEP,
+    CargoIncrementalQuarantine as CargoIncrementalQuarantine,
+    CargoIncrementalQuarantineMove as CargoIncrementalQuarantineMove,
+    _cargo_incremental_dirs as _cargo_incremental_dirs,
+    _cargo_incremental_quarantine_message as _cargo_incremental_quarantine_message,
+    _cargo_incremental_quarantine_payload as _cargo_incremental_quarantine_payload,
+    _cargo_quarantine_id as _cargo_quarantine_id,
+    _cargo_quarantine_parent as _cargo_quarantine_parent,
+    _cargo_quarantine_payload_required as _cargo_quarantine_payload_required,
+    _cargo_target_dir as _cargo_target_dir,
+    _command_invokes_cargo_build_state as _command_invokes_cargo_build_state,
+    _command_tokens as _command_tokens,
+    _effective_guard_cwd as _effective_guard_cwd,
+    _prune_cargo_incremental_quarantine as _prune_cargo_incremental_quarantine,
+    _quarantine_cargo_incremental_state as _quarantine_cargo_incremental_state,
+    _samples_include_cargo_build_state as _samples_include_cargo_build_state,
+    _token_executable_name as _token_executable_name,
+    _write_cargo_quarantine_receipt as _write_cargo_quarantine_receipt,
 )
 from tools.memory_guard_core.windows_snapshot import (  # noqa: E402
     WINDOWS_FULL_COMMAND_LINE_EXECUTABLE_NAMES as WINDOWS_FULL_COMMAND_LINE_EXECUTABLE_NAMES,
@@ -136,14 +156,6 @@ HOST_CONTROL_PLANE_EXECUTABLE_NAMES = frozenset(
         "node_repl.exe",
     }
 )
-
-
-def _utc_timestamp() -> str:
-    return (
-        dt.datetime.now(dt.timezone.utc)
-        .isoformat(timespec="seconds")
-        .replace("+00:00", "Z")
-    )
 
 
 def termination_wait_seconds(env: Mapping[str, str] | None = None) -> float:
@@ -310,26 +322,6 @@ class RssViolation:
     @property
     def rss_gb(self) -> float:
         return self.rss_kb / (1024 * 1024)
-
-
-@dataclass(frozen=True, slots=True)
-class CargoIncrementalQuarantineMove:
-    original_path: str
-    quarantined_path: str
-
-
-@dataclass(frozen=True, slots=True)
-class CargoIncrementalQuarantine:
-    reason: str
-    recorded_at: str
-    target_dir: str
-    quarantine_dir: str | None
-    command: tuple[str, ...]
-    cwd: str
-    moved_paths: tuple[CargoIncrementalQuarantineMove, ...] = ()
-    pruned_quarantine_dirs: tuple[str, ...] = ()
-    errors: tuple[str, ...] = ()
-    receipt_path: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -2101,293 +2093,6 @@ def _read_child_started_at(fd: int | None) -> float | None:
         return None
 
 
-_CARGO_BUILD_STATE_EXECUTABLES = frozenset({"cargo", "rustc", "rustdoc"})
-
-
-def _command_tokens(fragment: str) -> list[str]:
-    try:
-        return shlex.split(fragment)
-    except ValueError:
-        return fragment.split()
-
-
-def _token_executable_name(token: str) -> str:
-    text = token.strip().strip("\"'")
-    name = text.replace("\\", "/").rsplit("/", 1)[-1]
-    suffix = Path(name).suffix.casefold()
-    if suffix in {".exe", ".cmd", ".bat"}:
-        name = name[: -len(suffix)]
-    return name.casefold()
-
-
-def _command_invokes_cargo_build_state(command: Sequence[str]) -> bool:
-    for item in command:
-        for token in (item, *_command_tokens(item)):
-            if _token_executable_name(token) in _CARGO_BUILD_STATE_EXECUTABLES:
-                return True
-    return False
-
-
-def _samples_include_cargo_build_state(
-    samples: Mapping[int, ProcessSample],
-    watched: set[int],
-) -> bool:
-    for pid in watched:
-        sample = samples.get(pid)
-        if sample is None:
-            continue
-        if _command_invokes_cargo_build_state(_command_tokens(sample.command)):
-            return True
-    return False
-
-
-def _effective_guard_cwd(
-    cwd: str | Path | None,
-    environ: Mapping[str, str],
-) -> Path:
-    if cwd is not None:
-        cwd_path = Path(cwd).expanduser()
-        if cwd_path.is_absolute():
-            return cwd_path.resolve(strict=False)
-        return (Path.cwd() / cwd_path).resolve(strict=False)
-    pwd = environ.get("PWD", "")
-    if pwd:
-        pwd_path = Path(pwd).expanduser()
-        if pwd_path.is_absolute():
-            return pwd_path.resolve(strict=False)
-    return Path.cwd().resolve(strict=False)
-
-
-def _cargo_target_dir(
-    environ: Mapping[str, str],
-    cwd: str | Path | None,
-) -> Path:
-    base = _effective_guard_cwd(cwd, environ)
-    raw_target = environ.get("CARGO_TARGET_DIR", "").strip()
-    if raw_target:
-        target = Path(raw_target).expanduser()
-        if target.is_absolute():
-            return target.resolve(strict=False)
-        return (base / target).resolve(strict=False)
-    return (base / "target").resolve(strict=False)
-
-
-def _cargo_incremental_dirs(target_dir: Path) -> tuple[Path, ...]:
-    if not target_dir.exists():
-        return ()
-    state_root = target_dir / ".molt_state"
-    found: list[Path] = []
-    try:
-        candidates = tuple(target_dir.rglob("incremental"))
-    except OSError:
-        raise
-    for candidate in candidates:
-        if not candidate.is_dir():
-            continue
-        with contextlib.suppress(ValueError):
-            if candidate.is_relative_to(state_root):
-                continue
-        found.append(candidate)
-    return tuple(sorted(found, key=lambda p: p.relative_to(target_dir).parts))
-
-
-def _cargo_quarantine_parent(target_dir: Path) -> Path:
-    return target_dir / ".molt_state" / "quarantine" / "cargo_incremental"
-
-
-def _cargo_quarantine_id(recorded_at: str, pid: int, reason: str) -> str:
-    safe_time = (
-        recorded_at.replace(":", "").replace("-", "").replace("T", "-").replace("Z", "")
-    )
-    safe_reason = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in reason)
-    return f"{safe_time}-pid{pid}-{safe_reason}"
-
-
-def _prune_cargo_incremental_quarantine(
-    parent: Path,
-    *,
-    keep: int = DEFAULT_CARGO_INCREMENTAL_QUARANTINE_KEEP,
-) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    if keep <= 0 or not parent.exists():
-        return (), ()
-
-    def mtime_ns(path: Path) -> int:
-        try:
-            return path.stat().st_mtime_ns
-        except OSError:
-            return 0
-
-    try:
-        roots = sorted(
-            (path for path in parent.iterdir() if path.is_dir()),
-            key=mtime_ns,
-            reverse=True,
-        )
-    except OSError as exc:
-        return (), (f"{parent}: {exc}",)
-    pruned: list[str] = []
-    errors: list[str] = []
-    for stale in roots[keep:]:
-        try:
-            shutil.rmtree(stale)
-        except OSError as exc:
-            errors.append(f"{stale}: {exc}")
-            continue
-        pruned.append(str(stale))
-    return tuple(pruned), tuple(errors)
-
-
-def _cargo_incremental_quarantine_payload(
-    receipt: CargoIncrementalQuarantine | None,
-) -> dict[str, object] | None:
-    if receipt is None:
-        return None
-    return {
-        "reason": receipt.reason,
-        "recorded_at": receipt.recorded_at,
-        "target_dir": receipt.target_dir,
-        "quarantine_dir": receipt.quarantine_dir,
-        "command": list(receipt.command),
-        "cwd": receipt.cwd,
-        "moved_paths": [
-            {
-                "original_path": move.original_path,
-                "quarantined_path": move.quarantined_path,
-            }
-            for move in receipt.moved_paths
-        ],
-        "pruned_quarantine_dirs": list(receipt.pruned_quarantine_dirs),
-        "errors": list(receipt.errors),
-        "receipt_path": receipt.receipt_path,
-    }
-
-
-def _write_cargo_quarantine_receipt(
-    *,
-    receipt_path: Path,
-    payload: Mapping[str, object],
-) -> None:
-    receipt_path.write_text(
-        json.dumps(payload, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
-
-
-def _quarantine_cargo_incremental_state(
-    *,
-    reason: str,
-    target_dir: Path,
-    command: Sequence[str],
-    cwd: str | Path,
-    retention_keep: int = DEFAULT_CARGO_INCREMENTAL_QUARANTINE_KEEP,
-) -> CargoIncrementalQuarantine:
-    recorded_at = _utc_timestamp()
-    errors: list[str] = []
-    try:
-        incremental_dirs = _cargo_incremental_dirs(target_dir)
-    except OSError as exc:
-        incremental_dirs = ()
-        errors.append(f"{target_dir}: failed to scan Cargo incremental dirs: {exc}")
-    quarantine_dir: Path | None = None
-    moved: list[CargoIncrementalQuarantineMove] = []
-    receipt_path: Path | None = None
-
-    if incremental_dirs:
-        parent = _cargo_quarantine_parent(target_dir)
-        quarantine_dir = parent / _cargo_quarantine_id(
-            recorded_at,
-            os.getpid(),
-            reason,
-        )
-        for source in incremental_dirs:
-            try:
-                destination = quarantine_dir / source.relative_to(target_dir)
-                destination.parent.mkdir(parents=True, exist_ok=True)
-                source.rename(destination)
-            except OSError as exc:
-                errors.append(f"{source}: {exc}")
-                continue
-            moved.append(
-                CargoIncrementalQuarantineMove(
-                    original_path=str(source),
-                    quarantined_path=str(destination),
-                )
-            )
-        if quarantine_dir.exists():
-            receipt_path = quarantine_dir / "receipt.json"
-
-    pruned, prune_errors = _prune_cargo_incremental_quarantine(
-        _cargo_quarantine_parent(target_dir),
-        keep=retention_keep,
-    )
-    errors.extend(prune_errors)
-    receipt = CargoIncrementalQuarantine(
-        reason=reason,
-        recorded_at=recorded_at,
-        target_dir=str(target_dir),
-        quarantine_dir=None if quarantine_dir is None else str(quarantine_dir),
-        command=tuple(command),
-        cwd=str(cwd),
-        moved_paths=tuple(moved),
-        pruned_quarantine_dirs=pruned,
-        errors=tuple(errors),
-        receipt_path=None if receipt_path is None else str(receipt_path),
-    )
-    if receipt_path is not None:
-        try:
-            _write_cargo_quarantine_receipt(
-                receipt_path=receipt_path,
-                payload=_cargo_quarantine_payload_required(receipt),
-            )
-        except OSError as exc:
-            receipt = CargoIncrementalQuarantine(
-                reason=receipt.reason,
-                recorded_at=receipt.recorded_at,
-                target_dir=receipt.target_dir,
-                quarantine_dir=receipt.quarantine_dir,
-                command=receipt.command,
-                cwd=receipt.cwd,
-                moved_paths=receipt.moved_paths,
-                pruned_quarantine_dirs=receipt.pruned_quarantine_dirs,
-                errors=(*receipt.errors, f"{receipt_path}: {exc}"),
-                receipt_path=receipt.receipt_path,
-            )
-    return receipt
-
-
-def _cargo_quarantine_payload_required(
-    receipt: CargoIncrementalQuarantine,
-) -> dict[str, object]:
-    payload = _cargo_incremental_quarantine_payload(receipt)
-    assert payload is not None
-    return payload
-
-
-def _cargo_incremental_quarantine_message(
-    receipt: CargoIncrementalQuarantine,
-) -> str:
-    moved_count = len(receipt.moved_paths)
-    error_count = len(receipt.errors)
-    if moved_count:
-        base = (
-            "memory_guard: quarantined Cargo incremental state after "
-            f"{receipt.reason}: moved={moved_count} target_dir={receipt.target_dir} "
-            f"quarantine_dir={receipt.quarantine_dir}"
-        )
-    else:
-        base = (
-            "memory_guard: checked Cargo incremental state after "
-            f"{receipt.reason}: moved=0 target_dir={receipt.target_dir}"
-        )
-    if receipt.pruned_quarantine_dirs:
-        base = f"{base} pruned={len(receipt.pruned_quarantine_dirs)}"
-    if receipt.receipt_path:
-        base = f"{base} receipt={receipt.receipt_path}"
-    if error_count:
-        base = f"{base} errors={error_count}"
-    return base
-
-
 def _cargo_interruption_reason(
     *,
     violation: RssViolation | None,
@@ -3552,17 +3257,6 @@ def exit_signal_payload(returncode: int) -> dict[str, object] | None:
 _exit_signal_payload = exit_signal_payload
 
 
-def _utc_timestamp() -> str:
-    return (
-        dt.datetime.now(dt.timezone.utc)
-        .isoformat(timespec="seconds")
-        .replace(
-            "+00:00",
-            "Z",
-        )
-    )
-
-
 def _elapsed_text(elapsed_s: float | None) -> str:
     return "unknown" if elapsed_s is None else f"{elapsed_s:.2f}s"
 
@@ -3780,7 +3474,7 @@ def _write_summary_json(
 
 
 def _default_incident_summary_path() -> Path:
-    stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    stamp = _utc_compact_timestamp()
     return (
         ROOT / "tmp" / "memory_guard" / "incidents" / (f"{stamp}-pid{os.getpid()}.json")
     )
