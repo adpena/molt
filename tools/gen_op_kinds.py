@@ -208,6 +208,8 @@ _OPCODE_FACT_SETS = (
     "i64_checked_overflow_triple_opcodes",
     "i64_zero_divisor_guard_opcodes",
     "i64_shift_count_guard_opcodes",
+    "gvn_always_numberable_opcodes",
+    "gvn_type_gated_numberable_opcodes",
     "gvn_value_keyed_constant_opcodes",
     "proven_result_type_seed_opcodes",
     "exception_label_attr_opcodes",
@@ -244,6 +246,11 @@ _REFCOUNT_BALANCE_ROLE_SETS = (
 _GENERATOR_FUSION_POLL_ROLE_SETS = (
     "generator_fusion_poll_required_yield_opcodes",
     "generator_fusion_poll_reject_opcodes",
+)
+_GVN_NUMBERING_ROLE_SETS = (
+    "gvn_always_numberable_opcodes",
+    "gvn_type_gated_numberable_opcodes",
+    "gvn_value_keyed_constant_opcodes",
 )
 
 
@@ -376,17 +383,20 @@ def load_table() -> dict:
     for key in _OPCODE_FACT_SETS:
         _validate_opcode_fact_set(data, key, seen_opcodes)
     _validate_pass_delta_opcode_facts(data)
-    _validate_alias_opcode_role_sets(
+    _validate_disjoint_opcode_role_sets(
         data, _ALIAS_TYPED_SLOT_ROLE_SETS, "alias typed-slot role"
     )
-    _validate_alias_opcode_role_sets(
+    _validate_disjoint_opcode_role_sets(
         data, _ALIAS_TRANSPARENT_ALIAS_ROLE_SETS, "alias transparent-alias role"
     )
-    _validate_alias_opcode_role_sets(
+    _validate_disjoint_opcode_role_sets(
         data, _REFCOUNT_BALANCE_ROLE_SETS, "refcount balance role"
     )
-    _validate_alias_opcode_role_sets(
+    _validate_disjoint_opcode_role_sets(
         data, _GENERATOR_FUSION_POLL_ROLE_SETS, "generator-fusion poll role"
+    )
+    _validate_disjoint_opcode_role_sets(
+        data, _GVN_NUMBERING_ROLE_SETS, "GVN numbering role"
     )
     _validate_alias_memory_region_sets(data)
     _validate_alias_slot_observation_sets(data)
@@ -710,7 +720,7 @@ def _validate_opcode_fact_set(data: dict, key: str, opcodes: set[str]) -> None:
         raise OpKindTableError(f"{key} contains unknown OpCode names: {unknown}")
 
 
-def _validate_alias_opcode_role_sets(
+def _validate_disjoint_opcode_role_sets(
     data: dict, role_sets: tuple[str, ...], label: str
 ) -> None:
     owners: dict[str, str] = {}
@@ -1404,17 +1414,8 @@ def _render_rs_unformatted(data: dict) -> str:
     out.append(_render_operand_independent_result_type(opcodes))
     out.append("\n")
 
-    gvn_value_keyed_constants = list(data.get("gvn_value_keyed_constant_opcodes", []))
-    out.append(
-        "/// Whether a constant opcode is safe for GVN's current exact ValueKey\n"
-        "/// payload extraction. ConstBigInt stays false until it has a non-colliding\n"
-        "/// key lane. EXHAUSTIVE over OpCode.\n"
-        "#[inline]\n"
-        "pub fn opcode_is_gvn_value_keyed_constant_table(opcode: OpCode) -> bool {\n"
-        "    match opcode {\n"
-    )
-    out.append(_render_opcode_bool_arms(opcodes, gvn_value_keyed_constants))
-    out.append("    }\n}\n\n")
+    out.append(_render_gvn_numbering_role(opcodes, data))
+    out.append("\n")
 
     proven_result_type_seeds = list(data.get("proven_result_type_seed_opcodes", []))
     out.append(
@@ -2027,6 +2028,12 @@ _GENERATOR_FUSION_POLL_ROLE_VARIANTS = {
     "generator_fusion_poll_reject_opcodes": "GeneratorFusionPollRole::Reject",
 }
 
+_GVN_NUMBERING_ROLE_VARIANTS = {
+    "gvn_always_numberable_opcodes": "GvnNumberingRole::Always",
+    "gvn_type_gated_numberable_opcodes": "GvnNumberingRole::TypeGated",
+    "gvn_value_keyed_constant_opcodes": "GvnNumberingRole::ValueKeyedConstant",
+}
+
 
 def _render_refcount_balance_role(opcodes: list[dict], data: dict) -> str:
     role_by_opcode: dict[str, str] = {}
@@ -2118,6 +2125,45 @@ def _render_generator_fusion_poll_role(opcodes: list[dict], data: dict) -> str:
     for row in opcodes:
         name = row["name"]
         variant = role_by_opcode.get(name, "GeneratorFusionPollRole::Neutral")
+        lines.append(f"        OpCode::{name} => {variant},\n")
+    lines.append("    }\n}\n")
+    return "".join(lines)
+
+
+def _render_gvn_numbering_role(opcodes: list[dict], data: dict) -> str:
+    role_by_opcode: dict[str, str] = {}
+    for key, variant in _GVN_NUMBERING_ROLE_VARIANTS.items():
+        for opcode in data.get(key, []):
+            role_by_opcode[opcode] = variant
+
+    lines = [
+        "/// GVN numbering role by opcode. `Always` joins the scoped dominator\n",
+        "/// value table directly; `TypeGated` requires primitive operand proof at\n",
+        "/// the use site; `ValueKeyedConstant` receives same-block local value\n",
+        "/// numbers only; `Never` is not numbered. EXHAUSTIVE over OpCode.\n",
+        "#[derive(Clone, Copy, Debug, PartialEq, Eq)]\n",
+        "pub enum GvnNumberingRole {\n",
+        "    Never,\n",
+        "    Always,\n",
+        "    TypeGated,\n",
+        "    ValueKeyedConstant,\n",
+        "}\n\n",
+        "impl GvnNumberingRole {\n",
+        "    #[inline]\n",
+        "    pub fn is_value_keyed_constant(self) -> bool {\n",
+        "        matches!(self, GvnNumberingRole::ValueKeyedConstant)\n",
+        "    }\n",
+        "}\n\n",
+        "/// GVN numbering role by opcode. EXHAUSTIVE over OpCode so a new opcode\n",
+        "/// cannot silently enter or skip value numbering through a pass-local\n",
+        "/// wildcard/default.\n",
+        "#[inline]\n",
+        "pub fn opcode_gvn_numbering_role_table(opcode: OpCode) -> GvnNumberingRole {\n",
+        "    match opcode {\n",
+    ]
+    for row in opcodes:
+        name = row["name"]
+        variant = role_by_opcode.get(name, "GvnNumberingRole::Never")
         lines.append(f"        OpCode::{name} => {variant},\n")
     lines.append("    }\n}\n")
     return "".join(lines)

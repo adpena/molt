@@ -645,7 +645,7 @@ def test_operand_independent_result_types_delegate_to_generated_table() -> None:
     assert "OpCode::ConstFloat =>" not in branchless_production
 
     gvn_production = gvn.split("#[cfg(test)]", maxsplit=1)[0]
-    assert "opcode_is_gvn_value_keyed_constant_table(op.opcode)" in gvn_production
+    assert "opcode_gvn_numbering_role_table(op.opcode)" in gvn_production
     assert "OpCode::ConstInt\n            | OpCode::ConstBool" not in gvn_production
 
 
@@ -738,17 +738,57 @@ def test_result_arity_rejects_unreviewed_variable_opcode(tmp_path, monkeypatch) 
         raise AssertionError("unreviewed variable result_arity opcode was accepted")
 
 
-def test_gvn_and_proven_type_seed_constants_delegate_to_generated_tables() -> None:
-    """Constant-keyability and proven-type seeds are generated distinct facts."""
+def test_gvn_numbering_roles_delegate_to_generated_table() -> None:
+    """GVN numbering policy and proven-type seeds are generated distinct facts."""
     gen = _gen()
     data = gen.load_table()
     rendered = gen.render_rs(data)
+    effects = (ROOT / "runtime/molt-tir/src/tir/passes/effects.rs").read_text(
+        encoding="utf-8"
+    )
     type_refine = (ROOT / "runtime/molt-tir/src/tir/type_refine.rs").read_text(
         encoding="utf-8"
     )
     gvn = (ROOT / "runtime/molt-tir/src/tir/passes/gvn.rs").read_text(encoding="utf-8")
 
-    expected = {
+    expected_always = {
+        "BoxVal",
+        "UnboxVal",
+    }
+    expected_type_gated = {
+        "Add",
+        "Sub",
+        "Mul",
+        "InplaceAdd",
+        "InplaceSub",
+        "InplaceMul",
+        "Div",
+        "FloorDiv",
+        "Mod",
+        "Pow",
+        "Neg",
+        "Pos",
+        "Eq",
+        "Ne",
+        "Lt",
+        "Le",
+        "Gt",
+        "Ge",
+        "Is",
+        "IsNot",
+        "BitAnd",
+        "BitOr",
+        "BitXor",
+        "BitNot",
+        "Shl",
+        "Shr",
+        "And",
+        "Or",
+        "Not",
+        "Bool",
+        "TypeGuard",
+    }
+    expected_value_keyed = {
         "ConstInt",
         "ConstBool",
         "ConstNone",
@@ -756,21 +796,32 @@ def test_gvn_and_proven_type_seed_constants_delegate_to_generated_tables() -> No
         "ConstStr",
         "ConstBytes",
     }
-    assert set(data["gvn_value_keyed_constant_opcodes"]) == expected
-    assert set(data["proven_result_type_seed_opcodes"]) == expected
-    assert "ConstBigInt" not in expected
+    assert set(data["gvn_always_numberable_opcodes"]) == expected_always
+    assert set(data["gvn_type_gated_numberable_opcodes"]) == expected_type_gated
+    assert set(data["gvn_value_keyed_constant_opcodes"]) == expected_value_keyed
+    assert set(data["proven_result_type_seed_opcodes"]) == expected_value_keyed
+    assert "ConstBigInt" not in expected_value_keyed
 
-    gvn_block = rendered.split("fn opcode_is_gvn_value_keyed_constant_table")[1].split(
+    gvn_block = rendered.split("fn opcode_gvn_numbering_role_table")[1].split(
         "fn opcode_is_proven_result_type_seed_table"
     )[0]
     proven_block = rendered.split("fn opcode_is_proven_result_type_seed_table")[
         1
     ].split("fn opcode_is_alias_rc_barrier_table")[0]
     for row in data["opcode"]:
-        expected_bool = "true" if row["name"] in expected else "false"
-        assert f"OpCode::{row['name']} => {expected_bool}," in gvn_block
-        assert f"OpCode::{row['name']} => {expected_bool}," in proven_block
-    assert "OpCode::ConstBigInt => false," in gvn_block
+        name = row["name"]
+        if name in expected_always:
+            expected_role = "GvnNumberingRole::Always"
+        elif name in expected_type_gated:
+            expected_role = "GvnNumberingRole::TypeGated"
+        elif name in expected_value_keyed:
+            expected_role = "GvnNumberingRole::ValueKeyedConstant"
+        else:
+            expected_role = "GvnNumberingRole::Never"
+        expected_bool = "true" if name in expected_value_keyed else "false"
+        assert f"OpCode::{name} => {expected_role}," in gvn_block
+        assert f"OpCode::{name} => {expected_bool}," in proven_block
+    assert "OpCode::ConstBigInt => GvnNumberingRole::Never," in gvn_block
     assert "OpCode::ConstBigInt => false," in proven_block
 
     type_refine_production = type_refine.split("#[cfg(test)]", maxsplit=1)[0]
@@ -782,8 +833,17 @@ def test_gvn_and_proven_type_seed_constants_delegate_to_generated_tables() -> No
     )[1].split("fn parse_return_type_str", maxsplit=1)[0]
     assert "match op.opcode" not in extract_proven_map
     gvn_production = gvn.split("#[cfg(test)]", maxsplit=1)[0]
-    assert "opcode_is_gvn_value_keyed_constant_table(op.opcode)" in gvn_production
+    assert "opcode_gvn_numbering_role_table(op.opcode)" in gvn_production
+    assert "GvnNumberingRole::Always" in gvn_production
+    assert "GvnNumberingRole::TypeGated" in gvn_production
+    assert "GvnNumberingRole::ValueKeyedConstant" in gvn_production
+    assert "opcode_is_gvn_value_keyed_constant_table" not in gvn_production
+    assert "fn is_always_numberable" not in gvn_production
+    assert "fn is_typed_numberable" not in gvn_production
     assert "fn is_const_opcode" not in gvn_production
+
+    effects_production = effects.split("#[cfg(test)]", maxsplit=1)[0]
+    assert "opcode_is_type_gated_numberable" not in effects_production
 
 
 def test_alias_barrier_predicates_delegate_to_generated_tables() -> None:
@@ -1641,7 +1701,7 @@ def test_opcode_fact_set_validation_rejects_unknown_opcode() -> None:
     typed_role_overlap = json.loads(json.dumps(data))
     typed_role_overlap["alias_typed_slot_store_opcodes"].append("LoadAttr")
     try:
-        gen._validate_alias_opcode_role_sets(
+        gen._validate_disjoint_opcode_role_sets(
             typed_role_overlap,
             gen._ALIAS_TYPED_SLOT_ROLE_SETS,
             "alias typed-slot role",
@@ -1654,7 +1714,7 @@ def test_opcode_fact_set_validation_rejects_unknown_opcode() -> None:
     transparent_role_overlap = json.loads(json.dumps(data))
     transparent_role_overlap["alias_transparent_copy_opcodes"].append("TypeGuard")
     try:
-        gen._validate_alias_opcode_role_sets(
+        gen._validate_disjoint_opcode_role_sets(
             transparent_role_overlap,
             gen._ALIAS_TRANSPARENT_ALIAS_ROLE_SETS,
             "alias transparent-alias role",
@@ -1663,6 +1723,19 @@ def test_opcode_fact_set_validation_rejects_unknown_opcode() -> None:
         assert "TypeGuard" in str(e)
     else:
         raise AssertionError("overlapping alias transparent-alias role was accepted")
+
+    gvn_role_overlap = json.loads(json.dumps(data))
+    gvn_role_overlap["gvn_type_gated_numberable_opcodes"].append("BoxVal")
+    try:
+        gen._validate_disjoint_opcode_role_sets(
+            gvn_role_overlap,
+            gen._GVN_NUMBERING_ROLE_SETS,
+            "GVN numbering role",
+        )
+    except gen.OpKindTableError as e:
+        assert "BoxVal" in str(e)
+    else:
+        raise AssertionError("overlapping GVN numbering role was accepted")
 
     region_overlap = json.loads(json.dumps(data))
     region_overlap["alias_region_module_dict_opcodes"].append("LoadAttr")

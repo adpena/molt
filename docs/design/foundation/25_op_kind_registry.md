@@ -132,11 +132,14 @@ The same table owns opcode-intrinsic result types through
 builders) deliberately stay absent so `type_refine.rs` proves them only from
 operand/attr facts, while `block_versioning.rs`, `branchless_count.rs`, and
 `gvn.rs` consume the generated intrinsic table instead of private opcode
-matches. GVN constant-key eligibility is also a generated fact:
-`gvn_value_keyed_constant_opcodes` feeds
-`opcode_is_gvn_value_keyed_constant_table`, keeping `ConstBigInt` out until it
-has an exact non-colliding value-key lane. Type-refine's proven-map literal
-seeds are separate generated facts (`proven_result_type_seed_opcodes` feeds
+matches. GVN numbering eligibility is also table-owned as a role lattice:
+`gvn_always_numberable_opcodes`, `gvn_type_gated_numberable_opcodes`, and
+`gvn_value_keyed_constant_opcodes` generate
+`opcode_gvn_numbering_role_table`, keeping unconditional CSE, primitive-gated
+CSE, and same-block constant value keys separate while leaving `ConstBigInt`
+unnumbered until it has an exact non-colliding value-key lane. Type-refine's
+proven-map literal seeds are separate generated facts
+(`proven_result_type_seed_opcodes` feeds
 `opcode_is_proven_result_type_seed_table`) so payload identity and guard-proof
 seeding cannot accidentally share a private pass-local opcode list.
 Generator poll-body eligibility is table-owned as a role lattice too:

@@ -345,7 +345,7 @@ This is the procedure every future fact family follows. It is the antidote to
 1. **Add the set/row** to the table (a `classifier_*` array or a `[[kind]]`/
    `[[consuming_kind]]`/… row). Validation enforces global spelling uniqueness
    (`gen_op_kinds.py:300-325`) and cross-set disjointness
-   (`_validate_alias_opcode_role_sets`, `:607`).
+   (`_validate_disjoint_opcode_role_sets`).
 2. **Render** the `matches!` exact-set + any prefix rule (the `FRESH_VALUE_PREFIXES`
    pattern, `gen_op_kinds.py:1155`). Open domains keep a fail-CLOSED `_ =>` backstop
    (leak-not-UAF — doc 20), but the table makes the *known* set total and the
