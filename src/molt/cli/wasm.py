@@ -7,6 +7,8 @@ import re
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from molt.cli.compiler_metadata import _compiler_root
+
 
 def _cli_module() -> Any:
     return importlib.import_module("molt.cli")
@@ -18,10 +20,6 @@ def _run_completed_command(*args: Any, **kwargs: Any) -> Any:
 
 def _which(executable: str) -> str | None:
     return _cli_module().shutil.which(executable)
-
-
-def _compiler_root() -> Path:
-    return _cli_module()._compiler_root()
 
 
 def _atomic_write_bytes(path: Path, data: bytes) -> None:

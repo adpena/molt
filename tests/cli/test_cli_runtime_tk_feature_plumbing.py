@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import contextlib
+import importlib
 import os
 import subprocess
 from pathlib import Path
 
 import molt.cli as cli
+
+COMPILER_METADATA = importlib.import_module("molt.cli.compiler_metadata")
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -1020,7 +1023,7 @@ def test_backend_fingerprint_reuses_stored_hash_when_inputs_unchanged(
 
 
 def test_rustc_version_is_cached(monkeypatch) -> None:
-    cli._rustc_version.cache_clear()
+    COMPILER_METADATA._rustc_version.cache_clear()
     calls = 0
 
     def fake_run(*args, **kwargs) -> subprocess.CompletedProcess[str]:
@@ -1034,13 +1037,15 @@ def test_rustc_version_is_cached(monkeypatch) -> None:
             "",
         )
 
-    monkeypatch.setattr(cli, "_run_completed_command", fake_run, raising=True)
-    first = cli._rustc_version()
-    second = cli._rustc_version()
+    monkeypatch.setattr(
+        COMPILER_METADATA, "_run_completed_command", fake_run, raising=True
+    )
+    first = COMPILER_METADATA._rustc_version()
+    second = COMPILER_METADATA._rustc_version()
     assert first == "release: 1.0.0"
     assert second == first
     assert calls == 1
-    cli._rustc_version.cache_clear()
+    COMPILER_METADATA._rustc_version.cache_clear()
 
 
 def test_runtime_fingerprint_read_reuses_process_cache(

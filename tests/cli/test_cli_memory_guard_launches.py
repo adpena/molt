@@ -7,6 +7,8 @@ from typing import Any
 
 import molt.cli as cli
 
+COMMAND_RUNTIME = importlib.import_module("molt.cli.command_runtime")
+COMPILER_METADATA = importlib.import_module("molt.cli.compiler_metadata")
 LOCKFILES = importlib.import_module("molt.cli.lockfiles")
 
 
@@ -176,7 +178,7 @@ def test_backend_daemon_spawn_uses_guard_context_and_sentinel(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    cli._rustc_version.cache_clear()
+    COMPILER_METADATA._rustc_version.cache_clear()
     backend = tmp_path / "molt-backend"
     backend.write_text("backend")
     socket_path = tmp_path / "daemon.sock"
@@ -235,6 +237,9 @@ def test_backend_daemon_spawn_uses_guard_context_and_sentinel(
     monkeypatch.setattr(
         cli, "_load_cli_harness_memory_guard", lambda cwd: FakeHarness()
     )
+    monkeypatch.setattr(
+        COMMAND_RUNTIME, "_load_cli_harness_memory_guard", lambda cwd: FakeHarness()
+    )
     monkeypatch.setattr(cli.subprocess, "Popen", fake_popen)
     monkeypatch.setattr(
         cli, "_backend_daemon_wait_until_ready", lambda *a, **k: (True, None)
@@ -274,7 +279,7 @@ def test_backend_daemon_spawn_uses_guard_context_and_sentinel(
     assert captured["popen_kwargs"]["start_new_session"] is True
     assert callable(captured["popen_kwargs"]["preexec_fn"])
     assert sentinel_events == ["start", "exit"]
-    cli._rustc_version.cache_clear()
+    COMPILER_METADATA._rustc_version.cache_clear()
 
 
 def test_backend_daemon_request_uses_request_scoped_sentinel(

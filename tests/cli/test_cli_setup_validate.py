@@ -14,6 +14,7 @@ from tests.cli.process_guard import run_cli_test_process
 
 
 ROOT = Path(__file__).resolve().parents[2]
+COMPILER_METADATA = importlib.import_module("molt.cli.compiler_metadata")
 COMMAND_RUNTIME = importlib.import_module("molt.cli.command_runtime")
 TOOLCHAIN_VALIDATION = importlib.import_module("molt.cli.toolchain_validation")
 
@@ -585,6 +586,12 @@ def test_cli_build_toolchain_probes_use_memory_guard(
         cli, "_run_completed_command", fake_run_completed_command, raising=True
     )
     monkeypatch.setattr(
+        COMPILER_METADATA,
+        "_run_completed_command",
+        fake_run_completed_command,
+        raising=True,
+    )
+    monkeypatch.setattr(
         cli.shutil,
         "which",
         lambda name: (
@@ -604,11 +611,11 @@ def test_cli_build_toolchain_probes_use_memory_guard(
     archive_path = tmp_path / "libmolt_runtime.a"
     archive_path.write_bytes(b"")
 
-    cli._rustc_version.cache_clear()
+    COMPILER_METADATA._rustc_version.cache_clear()
     cli._rust_target_libdir.cache_clear()
 
     assert cli._git_rev(ROOT) == "abc123"
-    assert cli._rustc_version() == "rustc 1.91.0"
+    assert COMPILER_METADATA._rustc_version() == "rustc 1.91.0"
     assert cli._validate_wasm_structural(wasm_path) is None
     assert cli._rust_target_libdir("wasm32-wasip1") == Path("/rust/target/lib")
     assert cli._is_valid_cached_backend_artifact(obj_path, is_wasm=False) is False
