@@ -148,7 +148,7 @@ def _surface_classes(generator: type) -> list[type]:
 
 def _builtin_names() -> set[str]:
     """Base names not part of the generator's own protocol surface."""
-    return (set(dir(ast.NodeVisitor)) - _NODE_VISITOR_DISPATCH_METHODS) | set(dir(object))
+    return set(dir(object))
 
 
 def _unwrap(value: object) -> object:
@@ -212,7 +212,11 @@ def _render_method_stub(name: str, value: object) -> str | None:
     # Re-render the signature deterministically with ast.unparse, then strip the
     # body to ``...``. ast.unparse normalizes whitespace, giving stable diffs
     # regardless of how the source wrapped its parameters.
-    stripped = ast.AsyncFunctionDef if isinstance(func_node, ast.AsyncFunctionDef) else ast.FunctionDef
+    stripped = (
+        ast.AsyncFunctionDef
+        if isinstance(func_node, ast.AsyncFunctionDef)
+        else ast.FunctionDef
+    )
     rebuilt = stripped(
         name=func_node.name,
         args=func_node.args,
@@ -247,6 +251,11 @@ def _collect_methods(
     for klass in surface_classes:  # MRO order == most-derived first
         for attr_name, value in vars(klass).items():
             if attr_name.startswith("__") and attr_name != "__init__":
+                continue
+            if (
+                klass is ast.NodeVisitor
+                and attr_name not in _NODE_VISITOR_DISPATCH_METHODS
+            ):
                 continue
             if attr_name in builtins and attr_name != "__init__":
                 continue
@@ -305,7 +314,11 @@ def _class_annotation_table(surface_classes: list[type]) -> dict[str, str]:
     table: dict[str, str] = {}
     for klass in surface_classes:
         for name, annotation in getattr(klass, "__annotations__", {}).items():
-            text = annotation if isinstance(annotation, str) else _annotation_to_text(annotation)
+            text = (
+                annotation
+                if isinstance(annotation, str)
+                else _annotation_to_text(annotation)
+            )
             table.setdefault(name, text)
     return table
 
@@ -544,9 +557,8 @@ def render_attrs_file(
         '"""\n\n'
     )
     imports = _render_import_block(typing_names, types_names, tc_lines, needs_ast)
-    body = (
-        "\nclass _GeneratorProtocolAttrs(Protocol):\n"
-        + _render_attrs_block(attrs_first_half)
+    body = "\nclass _GeneratorProtocolAttrs(Protocol):\n" + _render_attrs_block(
+        attrs_first_half
     )
     return _DO_NOT_EDIT + "\n" + header + imports + body
 
