@@ -1,7 +1,6 @@
 use super::*;
-use crate::representation_plan::{
-    ContainerKind, ContainerStorageKind, ScalarKind, ScalarRepresentationPlan,
-};
+use crate::repr::{ContainerKind, ContainerStorageKind, ScalarKind};
+use crate::representation_plan::ScalarRepresentationPlan;
 
 // Per-op-family Cranelift codegen handlers lifted out of `compile_func_inner`
 // (decomposition program M1). `fc` is a child module so its handlers can see

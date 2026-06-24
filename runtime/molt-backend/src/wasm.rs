@@ -1,4 +1,5 @@
-use crate::representation_plan::{ContainerKind, ContainerStorageKind, ScalarRepresentationPlan};
+use crate::repr::{ContainerKind, ContainerStorageKind};
+use crate::representation_plan::ScalarRepresentationPlan;
 use crate::{FunctionIR, OpIR, SimpleIR, TrampolineKind, TrampolineSpec};
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};

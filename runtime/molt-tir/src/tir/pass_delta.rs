@@ -21,7 +21,7 @@ use super::target_info::TargetInfo;
 use super::types::TirType;
 use super::values::ValueId;
 use crate::debug_artifacts;
-use crate::representation_plan::Repr;
+use crate::repr::Repr;
 
 pub(crate) const PASS_DELTA_SCHEMA_VERSION: u32 = 1;
 

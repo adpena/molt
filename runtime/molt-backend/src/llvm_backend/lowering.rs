@@ -5496,7 +5496,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     /// (`ScalarRepresentationFact::container_kind`), so the two never disagree
     /// where both speak.
     fn container_len_fn(&self, operand_id: ValueId) -> &'static str {
-        use crate::representation_plan::ContainerKind;
+        use crate::repr::ContainerKind;
         if let Some(kind) = self.repr_facts.container_kind(operand_id) {
             return match kind {
                 ContainerKind::List => "molt_len_list",
@@ -11643,9 +11643,7 @@ mod tests {
         // (the parameter-ABI carrier rule), so prove all three here — the
         // realistic shape under which the plan admits raw machine arithmetic.
         for v in [ValueId(0), ValueId(1), v_sum] {
-            facts
-                .repr_by_value
-                .insert(v, crate::representation_plan::Repr::RawI64Safe);
+            facts.repr_by_value.insert(v, crate::Repr::RawI64Safe);
         }
         backend.function_repr_facts.insert(func.name.clone(), facts);
 
@@ -13260,9 +13258,7 @@ mod tests {
         // comparison through the runtime. Prove the two parameters here.
         let mut facts = crate::representation_plan::LlvmReprFacts::default();
         for v in [ValueId(0), ValueId(1)] {
-            facts
-                .repr_by_value
-                .insert(v, crate::representation_plan::Repr::RawI64Safe);
+            facts.repr_by_value.insert(v, crate::Repr::RawI64Safe);
         }
         backend.function_repr_facts.insert(func.name.clone(), facts);
 
@@ -13303,7 +13299,7 @@ mod tests {
         let mut facts = crate::representation_plan::LlvmReprFacts::default();
         facts
             .repr_by_value
-            .insert(ValueId(0), crate::representation_plan::Repr::RawI64Safe);
+            .insert(ValueId(0), crate::Repr::RawI64Safe);
         backend.function_repr_facts.insert(func.name.clone(), facts);
 
         let llvm_fn = lower_tir_to_llvm(&func, &backend);
@@ -13436,9 +13432,7 @@ mod tests {
         // their own lowering; the proof here is for the phi + the two op results.
         let mut facts = crate::representation_plan::LlvmReprFacts::default();
         for v in [s_phi, shl, band] {
-            facts
-                .repr_by_value
-                .insert(v, crate::representation_plan::Repr::RawI64Safe);
+            facts.repr_by_value.insert(v, crate::Repr::RawI64Safe);
         }
         backend.function_repr_facts.insert(func.name.clone(), facts);
 

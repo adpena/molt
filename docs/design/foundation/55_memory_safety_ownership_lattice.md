@@ -257,6 +257,20 @@ a placement special-case.
 > "lifetime-significant object released at the wrong place." The repro is a live
 > (un-suppressed) differential gate — it flips green when this lands; do NOT
 > suppress it.
+>
+> **Re-verified GREEN post-decomposition (2026-06-24, `ac391f8e6`).** After the
+> molt-tir crate extraction moved `drop_insertion.rs` + `ownership_lattice_min.rs`
+> into `runtime/molt-tir/src/tir/passes/`, the corruption suite was re-run
+> dual-path — canonical `molt diff` (dev / debug-with-asserts profile) plus direct
+> `safe_run` with `MOLT_ASSERT_NO_LEAK=1` (bypassing the xfail overlay to observe
+> raw process exit) — across the full 15-repro suite (`tests/differential/memory/
+> resurrect_*` + `finalizer_*`, `basic/finalizer_*`; the suite grew from the 6
+> above): **0 SIGSEGV / 0 UAF / 0 double-free / 0 leak-abort / 0 OOM / 0 hang**,
+> including the at-scale N1000 / 2000-iter loop-stress / 500K-iter exception-loop
+> cases that historically exposed the IC SIGSEGV. The crate-boundary move preserved
+> the memory model; `resurrect_during_exception_unwind` remains the sole
+> FAIL_CLOSED (this sub-case), unchanged. (`resurrect_with_weakref` +
+> `resurrect_with_exception_in_del` are known non-corruption xfails — clean exit 0.)
 
 **Class retired:** "a weakref-significant or field-ordered object released early
 (at SSA-last-read) so a weakref deref or a `__del__` field read dangles."
