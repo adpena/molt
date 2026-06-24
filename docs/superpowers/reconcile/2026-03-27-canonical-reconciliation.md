@@ -41,7 +41,7 @@ Accordingly, canonical `main` stays on the current local/GitHub lineage, while n
   - `docs/superpowers/plans/2026-03-27-molt-stabilization-and-roadmap-continuation.md` (removed after the 2026-03-30 audit)
   - `bench/results/primary_pre_sync_20260325T172924-0500.json`
 - Already present on local/GitHub `main`:
-  - root primary handoff file, later retired during the 2026-06-24 handoff-doc cleanup
+  - root primary coordination doc, later retired during the 2026-06-24 cleanup
   - `docs/superpowers/plans/2026-03-27-wrapper-artifact-contract.md` (removed after the 2026-03-30 audit)
 
 ## Dirty Working Tree Interpretation On `Primary`
@@ -51,7 +51,7 @@ Accordingly, canonical `main` stays on the current local/GitHub lineage, while n
 - deleted `DICT_BUG.md`
 - deleted `SESSION_CHANGES.md`
 - modified `bench/results.json`
-- untracked root primary handoff file, later retired during the 2026-06-24 handoff-doc cleanup
+- untracked root primary coordination doc, later retired during the 2026-06-24 cleanup
 - untracked `docs/superpowers/plans/2026-03-27-branch-integration-into-main.md` (removed after the 2026-03-30 audit)
 - untracked `docs/superpowers/plans/2026-03-27-molt-stabilization-and-roadmap-continuation.md` (removed after the 2026-03-30 audit)
 - untracked `docs/superpowers/plans/2026-03-27-wrapper-artifact-contract.md` (removed after the 2026-03-30 audit)
@@ -61,7 +61,7 @@ Reconciliation treatment:
 - The two deleted markdown files were not promoted as deletions because their contents already exist on canonical `main` and `Primary` did not contain replacement content, only local removal.
 - The benchmark JSON payload was preserved as a dated artifact under `bench/results/`.
 - The untracked wrapper contract plan was identical to the tracked copy already on canonical `main`.
-- The untracked root primary handoff file was already tracked on canonical `main`.
+- The untracked root primary coordination doc was already tracked on canonical `main`.
 
 ## Archival Strategy
 
