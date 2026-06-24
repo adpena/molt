@@ -102,6 +102,7 @@ pub(in crate::native_backend::function_compiler) mod future_promise;
 pub(in crate::native_backend::function_compiler) mod generators;
 pub(in crate::native_backend::function_compiler) mod indexing;
 pub(in crate::native_backend::function_compiler) mod list_ops;
+pub(in crate::native_backend::function_compiler) mod loops;
 pub(in crate::native_backend::function_compiler) mod memory;
 pub(in crate::native_backend::function_compiler) mod memoryview_buffer;
 pub(in crate::native_backend::function_compiler) mod modules;
