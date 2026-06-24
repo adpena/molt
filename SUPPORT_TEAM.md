@@ -4,15 +4,12 @@
 **From:** Primary agent (GPU primitive stack, Cloudflare deployment, enjoice integration)
 **To:** Trusted partner for parallel work
 
-> Consolidation note: `PRIMARY_HANDOFF.md` is now the canonical fast resume
-> point for the active Molt implementation lane. Keep this file as detailed
-> parallel-lane context for the WASM/Falcon-OCR work, but update
-> `PRIMARY_HANDOFF.md` first when handoff state changes.
->
-> 2026-04-22 note: `9fe653df` landed the Rust Clippy/Miri cleanup and updated
-> `PRIMARY_HANDOFF.md` with fresh local verification evidence. This file still
-> describes the Falcon-OCR WASM runtime-proof lane; do not treat it as proof
-> that the deployed R2 WASM object currently instantiates or returns OCR tokens.
+> 2026-06-24 routing note: the root `PRIMARY_HANDOFF.md` has been retired as
+> stale April context. Keep this file as historical parallel-lane context for
+> the WASM/Falcon-OCR work only. Current Molt routing lives in `docs/INDEX.md`,
+> `docs/spec/STATUS.md`, `ROADMAP.md`, and the relevant design/spec area docs.
+> Do not treat this file as proof that the deployed R2 WASM object currently
+> instantiates or returns OCR tokens.
 
 ---
 
