@@ -9,6 +9,7 @@ from pathlib import Path
 import molt.cli as cli
 
 COMPILER_METADATA = importlib.import_module("molt.cli.compiler_metadata")
+RUNTIME_FEATURES = importlib.import_module("molt.cli.runtime_features")
 RUNTIME_FINGERPRINTS = importlib.import_module("molt.cli.runtime_fingerprints")
 
 
@@ -16,33 +17,40 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_runtime_cargo_features_native_vs_wasm(monkeypatch) -> None:
-    cli._runtime_cargo_features_cached.cache_clear()
+    RUNTIME_FEATURES._runtime_cargo_features_cached.cache_clear()
     monkeypatch.delenv("MOLT_RUNTIME_TK_NATIVE", raising=False)
     monkeypatch.delenv("MOLT_RUNTIME_GPU_METAL", raising=False)
     monkeypatch.delenv("MOLT_RUNTIME_GPU_WEBGPU", raising=False)
-    assert cli._runtime_cargo_features(None) == ("molt_tk_native",)
+    assert RUNTIME_FEATURES._runtime_cargo_features(None) == ("molt_tk_native",)
     monkeypatch.setenv("MOLT_RUNTIME_TK_NATIVE", "0")
-    cli._runtime_cargo_features_cached.cache_clear()
-    assert cli._runtime_cargo_features(None) == ()
+    RUNTIME_FEATURES._runtime_cargo_features_cached.cache_clear()
+    assert RUNTIME_FEATURES._runtime_cargo_features(None) == ()
     monkeypatch.setenv("MOLT_RUNTIME_TK_NATIVE", "1")
-    cli._runtime_cargo_features_cached.cache_clear()
-    assert cli._runtime_cargo_features(None) == ("molt_tk_native",)
-    assert cli._runtime_cargo_features("aarch64-apple-darwin") == ("molt_tk_native",)
-    assert cli._runtime_cargo_features("wasm32-wasip1") == ("molt_gpu_primitives",)
+    RUNTIME_FEATURES._runtime_cargo_features_cached.cache_clear()
+    assert RUNTIME_FEATURES._runtime_cargo_features(None) == ("molt_tk_native",)
+    assert RUNTIME_FEATURES._runtime_cargo_features("aarch64-apple-darwin") == (
+        "molt_tk_native",
+    )
+    assert RUNTIME_FEATURES._runtime_cargo_features("wasm32-wasip1") == (
+        "molt_gpu_primitives",
+    )
 
 
 def test_runtime_cargo_features_include_gpu_backend_flags(monkeypatch) -> None:
-    cli._runtime_cargo_features_cached.cache_clear()
+    RUNTIME_FEATURES._runtime_cargo_features_cached.cache_clear()
     monkeypatch.delenv("MOLT_RUNTIME_TK_NATIVE", raising=False)
     monkeypatch.setenv("MOLT_RUNTIME_GPU_METAL", "1")
     monkeypatch.delenv("MOLT_RUNTIME_GPU_WEBGPU", raising=False)
     monkeypatch.delenv("MOLT_RUNTIME_GPU_CUDA", raising=False)
     monkeypatch.delenv("MOLT_RUNTIME_GPU_HIP", raising=False)
-    assert cli._runtime_cargo_features(None) == ("molt_tk_native", "molt_gpu_metal")
+    assert RUNTIME_FEATURES._runtime_cargo_features(None) == (
+        "molt_tk_native",
+        "molt_gpu_metal",
+    )
 
     monkeypatch.setenv("MOLT_RUNTIME_GPU_WEBGPU", "1")
-    cli._runtime_cargo_features_cached.cache_clear()
-    assert cli._runtime_cargo_features(None) == (
+    RUNTIME_FEATURES._runtime_cargo_features_cached.cache_clear()
+    assert RUNTIME_FEATURES._runtime_cargo_features(None) == (
         "molt_tk_native",
         "molt_gpu_metal",
         "molt_gpu_webgpu",
@@ -50,31 +58,36 @@ def test_runtime_cargo_features_include_gpu_backend_flags(monkeypatch) -> None:
 
     monkeypatch.setenv("MOLT_RUNTIME_GPU_CUDA", "1")
     monkeypatch.setenv("MOLT_RUNTIME_GPU_HIP", "1")
-    cli._runtime_cargo_features_cached.cache_clear()
-    assert cli._runtime_cargo_features(None) == (
+    RUNTIME_FEATURES._runtime_cargo_features_cached.cache_clear()
+    assert RUNTIME_FEATURES._runtime_cargo_features(None) == (
         "molt_tk_native",
         "molt_gpu_metal",
         "molt_gpu_webgpu",
         "molt_gpu_cuda",
         "molt_gpu_hip",
     )
-    assert cli._runtime_cargo_features("wasm32-wasip1") == ("molt_gpu_primitives",)
+    assert RUNTIME_FEATURES._runtime_cargo_features("wasm32-wasip1") == (
+        "molt_gpu_primitives",
+    )
 
 
 def test_builtin_features_from_import_graph_uses_native_micro_surface() -> None:
-    json_features = cli._builtin_features_from_import_graph({"json"}, "micro")
-    tkinter_features = cli._builtin_features_from_import_graph(
+    json_features = RUNTIME_FEATURES._builtin_features_from_import_graph(
+        {"json"}, "micro"
+    )
+    tkinter_features = RUNTIME_FEATURES._builtin_features_from_import_graph(
         {"tkinter.constants", "tkinter._support"},
         "micro",
     )
-    tinygrad_features = cli._builtin_features_from_import_graph(
+    tinygrad_features = RUNTIME_FEATURES._builtin_features_from_import_graph(
         {"tinygrad.tensor", "molt.stdlib.tinygrad.examples.falcon_ocr"},
         "micro",
     )
 
     assert json_features == tkinter_features == tinygrad_features
     assert set(json_features) == set(
-        cli._ALL_BUILTIN_FEATURES + cli._MICRO_BASE_RUNTIME_FEATURES
+        RUNTIME_FEATURES._ALL_BUILTIN_FEATURES
+        + RUNTIME_FEATURES._MICRO_BASE_RUNTIME_FEATURES
     )
     assert "stdlib_tk" not in json_features
     assert "stdlib_net" not in json_features
@@ -95,7 +108,7 @@ def test_runtime_source_paths_include_runtime_leaf_crates() -> None:
 
 
 def test_runtime_builtin_features_exclude_native_only_wasm_domains() -> None:
-    features = cli._runtime_builtin_features_for_profile(
+    features = RUNTIME_FEATURES._runtime_builtin_features_for_profile(
         "micro",
         target_triple="wasm32-wasip1",
     )
@@ -109,12 +122,12 @@ def test_runtime_builtin_features_exclude_native_only_wasm_domains() -> None:
 
 
 def test_runtime_builtin_features_wasm_full_is_linked_wasm_surface() -> None:
-    features = cli._runtime_builtin_features_for_profile(
+    features = RUNTIME_FEATURES._runtime_builtin_features_for_profile(
         "full",
         target_triple="wasm32-wasip1",
     )
 
-    assert set(features) == set(cli._WASM_RUNTIME_FULL_FEATURES)
+    assert set(features) == set(RUNTIME_FEATURES._WASM_RUNTIME_FULL_FEATURES)
     assert "sqlite" not in features
     assert "stdlib_tk" not in features
     assert "stdlib_net" not in features
@@ -125,13 +138,13 @@ def test_runtime_builtin_features_wasm_full_is_linked_wasm_surface() -> None:
 
 
 def test_runtime_cargo_features_is_cached(monkeypatch) -> None:
-    cli._runtime_cargo_features_cached.cache_clear()
+    RUNTIME_FEATURES._runtime_cargo_features_cached.cache_clear()
     monkeypatch.setenv("MOLT_RUNTIME_TK_NATIVE", "1")
 
-    first = cli._runtime_cargo_features(None)
-    second = cli._runtime_cargo_features(None)
+    first = RUNTIME_FEATURES._runtime_cargo_features(None)
+    second = RUNTIME_FEATURES._runtime_cargo_features(None)
 
-    info = cli._runtime_cargo_features_cached.cache_info()
+    info = RUNTIME_FEATURES._runtime_cargo_features_cached.cache_info()
     assert first == second == ("molt_tk_native",)
     assert info.hits >= 1
     assert info.currsize >= 1
