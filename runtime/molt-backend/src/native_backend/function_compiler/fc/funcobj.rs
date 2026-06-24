@@ -1,4 +1,36 @@
 use super::super::*;
+
+/// Single-source kind authority for [`handle_funcobj_op`], consulted by
+/// `op_family::FAMILY_DISPATCH_TABLE`. Mirror the `match op.kind.as_str()` arms below.
+#[cfg(feature = "native-backend")]
+pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] = &[
+    "builtin_func",
+    "func_new",
+    "func_new_closure",
+    "code_new",
+    "code_slot_set",
+    "fn_ptr_code_set",
+    "asyncgen_locals_register",
+    "gen_locals_register",
+    "code_slots_init",
+    "trace_enter_slot",
+    "trace_exit",
+    "frame_locals_set",
+    "line",
+    "missing",
+    "function_closure_bits",
+];
+
+/// Single-source kind authority for [`handle_gpu_intrinsic_op`], consulted by
+/// `op_family::FAMILY_DISPATCH_TABLE`. Mirror the `match op.kind.as_str()` arms below.
+#[cfg(feature = "native-backend")]
+pub(in crate::native_backend::function_compiler) const GPU_INTRINSIC_HANDLED_KINDS: &[&str] = &[
+    "gpu_thread_id",
+    "gpu_block_id",
+    "gpu_block_dim",
+    "gpu_grid_dim",
+    "gpu_barrier",
+];
 use super::OpFlow;
 use super::var_get_boxed_overflow_safe_fn;
 

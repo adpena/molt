@@ -1,4 +1,19 @@
 use super::super::*;
+
+/// Single-source kind authority for [`handle_loop_op`], consulted by
+/// `op_family::FAMILY_DISPATCH_TABLE`. Mirror the `match op.kind.as_str()` arms below.
+#[cfg(feature = "native-backend")]
+pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] = &[
+    "loop_start",
+    "loop_index_start",
+    "loop_break_if_exception",
+    "loop_break_if_true",
+    "loop_break_if_false",
+    "loop_break",
+    "loop_index_next",
+    "loop_continue",
+    "loop_end",
+];
 use super::OpFlow;
 use super::var_get_boxed_overflow_safe_fn;
 

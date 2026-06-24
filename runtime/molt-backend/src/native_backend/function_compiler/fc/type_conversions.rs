@@ -1,4 +1,22 @@
 use super::super::*;
+
+/// Single-source kind authority for [`handle_type_conversion`], consulted by
+/// `op_family::FAMILY_DISPATCH_TABLE`. Mirror the `match op.kind.as_str()` arms below.
+#[cfg(feature = "native-backend")]
+pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] = &[
+    "bytes_from_obj",
+    "bytes_from_str",
+    "bytearray_from_obj",
+    "bytearray_from_str",
+    "float_from_obj",
+    "int_from_obj",
+    "int_from_str_of_obj",
+    "complex_from_obj",
+    "intarray_from_seq",
+    "str_from_obj",
+    "repr_from_obj",
+    "ascii_from_obj",
+];
 use super::var_get_boxed_overflow_safe_fn;
 
 /// Cranelift codegen handlers for scalar/sequence type-conversion constructors: `bytes`/`bytearray`/`float`/`int`/`complex`/`str`/`repr`/`ascii`/`intarray` from objects or strings.

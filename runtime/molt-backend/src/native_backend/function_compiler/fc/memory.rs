@@ -1,4 +1,29 @@
 use super::super::*;
+
+/// Single-source kind authority for [`handle_memory_op`], consulted by
+/// `op_family::FAMILY_DISPATCH_TABLE`. Mirror the `match op.kind.as_str()` arms below.
+#[cfg(feature = "native-backend")]
+pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] = &[
+    "alloc",
+    "stack_alloc",
+    "alloc_class",
+    "alloc_class_trusted",
+    "alloc_class_static",
+    "alloc_task",
+    "store",
+    "store_init",
+    "load",
+    "closure_load",
+    "closure_store",
+    "guarded_load",
+    "guarded_field_get",
+    "guarded_field_set",
+    "guarded_field_init",
+    "guard_type",
+    "guard_tag",
+    "guard_layout",
+    "guard_dict_shape",
+];
 use super::OpFlow;
 use super::var_get_boxed_overflow_safe_fn;
 

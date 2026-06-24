@@ -1,4 +1,22 @@
 use super::super::*;
+
+/// Single-source kind authority for [`handle_set_op`], consulted by
+/// `op_family::FAMILY_DISPATCH_TABLE`. Mirror the `match op.kind.as_str()` arms below.
+#[cfg(feature = "native-backend")]
+pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] = &[
+    "set_new",
+    "frozenset_new",
+    "set_add",
+    "set_add_probe",
+    "frozenset_add",
+    "set_discard",
+    "set_remove",
+    "set_pop",
+    "set_update",
+    "set_intersection_update",
+    "set_difference_update",
+    "set_symdiff_update",
+];
 use super::OpFlow;
 use super::var_get_boxed_overflow_safe_fn;
 

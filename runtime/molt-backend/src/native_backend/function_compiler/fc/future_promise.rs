@@ -1,4 +1,18 @@
 use super::super::*;
+
+/// Single-source kind authority for [`handle_future_promise_op`], consulted by
+/// `op_family::FAMILY_DISPATCH_TABLE`. Mirror the `match op.kind.as_str()` arms below.
+#[cfg(feature = "native-backend")]
+pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] = &[
+    "future_cancel",
+    "future_cancel_msg",
+    "future_cancel_clear",
+    "promise_new",
+    "promise_set_result",
+    "promise_set_exception",
+    "thread_submit",
+    "task_register_token_owned",
+];
 use super::var_get_boxed_overflow_safe_fn;
 
 /// Cranelift codegen handlers for future/promise/thread runtime ops: `future_cancel`(+`_msg`/`_clear`), `promise_new`/`set_result`/`set_exception`, `thread_submit`, `task_register_token_owned`.

@@ -1,4 +1,15 @@
 use super::super::*;
+
+/// Single-source kind authority for [`handle_dataclass_op`], consulted by
+/// `op_family::FAMILY_DISPATCH_TABLE`. Mirror the `match op.kind.as_str()` arms below.
+#[cfg(feature = "native-backend")]
+pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] = &[
+    "dataclass_new",
+    "dataclass_new_values",
+    "dataclass_get",
+    "dataclass_set",
+    "dataclass_set_class",
+];
 use super::var_get_boxed_overflow_safe_fn;
 
 /// Cranelift codegen handlers for dataclass instance ops: `dataclass_new`/`dataclass_new_values`/`dataclass_get`/`dataclass_set`/`dataclass_set_class`.

@@ -1,4 +1,24 @@
 use super::super::*;
+
+/// Single-source kind authority for [`handle_unary_logic_op`], consulted by
+/// `op_family::FAMILY_DISPATCH_TABLE`. Mirror the `match op.kind.as_str()` arms below.
+#[cfg(feature = "native-backend")]
+pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] = &[
+    "is",
+    "not",
+    "neg",
+    "unary_neg",
+    "pos",
+    "unary_pos",
+    "abs",
+    "invert",
+    "bool",
+    "cast_bool",
+    "builtin_bool",
+    "and",
+    "or",
+    "contains",
+];
 use super::OpFlow;
 use super::var_get_boxed_overflow_safe_fn;
 

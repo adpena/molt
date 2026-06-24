@@ -1,4 +1,28 @@
 use super::super::*;
+
+/// Single-source kind authority for [`handle_coroutine_op`], consulted by
+/// `op_family::FAMILY_DISPATCH_TABLE`. Mirror the `match op.kind.as_str()` arms below.
+#[cfg(feature = "native-backend")]
+pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] = &[
+    "state_switch",
+    "state_transition",
+    "state_yield",
+    "chan_send_yield",
+    "chan_recv_yield",
+    "chan_new",
+    "chan_drop",
+    "spawn",
+    "cancel_token_new",
+    "cancel_token_clone",
+    "cancel_token_drop",
+    "cancel_token_cancel",
+    "cancel_token_is_cancelled",
+    "cancel_token_set_current",
+    "cancel_token_get_current",
+    "cancelled",
+    "cancel_current",
+    "call_async",
+];
 use super::OpFlow;
 use super::var_get_boxed_overflow_safe_fn;
 

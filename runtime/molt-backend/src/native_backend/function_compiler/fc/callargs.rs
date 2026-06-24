@@ -1,4 +1,15 @@
 use super::super::*;
+
+/// Single-source kind authority for [`handle_callargs_op`], consulted by
+/// `op_family::FAMILY_DISPATCH_TABLE`. Mirror the `match op.kind.as_str()` arms below.
+#[cfg(feature = "native-backend")]
+pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] = &[
+    "callargs_new",
+    "callargs_push_pos",
+    "callargs_push_kw",
+    "callargs_expand_star",
+    "callargs_expand_kwstar",
+];
 use super::OpFlow;
 use super::var_get_boxed_overflow_safe_fn;
 

@@ -1,4 +1,10 @@
 use super::super::*;
+
+/// Single-source kind authority for [`handle_parse_op`], consulted by
+/// `op_family::FAMILY_DISPATCH_TABLE`. Mirror the `match op.kind.as_str()` arms below.
+#[cfg(feature = "native-backend")]
+pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] =
+    &["json_parse", "msgpack_parse", "cbor_parse"];
 use super::var_get_boxed_overflow_safe_fn;
 
 /// Cranelift codegen handlers for in-process structured-data parsers: `json_parse`/`msgpack_parse`/`cbor_parse`.

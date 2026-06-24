@@ -1,4 +1,23 @@
 use super::super::*;
+
+/// Single-source kind authority for [`handle_module_op`], consulted by
+/// `op_family::FAMILY_DISPATCH_TABLE`. Mirror the `match op.kind.as_str()` arms below.
+#[cfg(feature = "native-backend")]
+pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] = &[
+    "module_new",
+    "module_cache_get",
+    "module_import",
+    "module_cache_set",
+    "module_cache_del",
+    "module_get_attr",
+    "module_import_from",
+    "module_get_global",
+    "module_del_global",
+    "module_del_global_if_present",
+    "module_get_name",
+    "module_set_attr",
+    "module_import_star",
+];
 use super::var_get_boxed_overflow_safe_fn;
 
 /// Cranelift codegen handlers for module ops: creation/import (`module_new`/`module_import`/`module_import_star`), cache (`cache_get`/`cache_set`/`cache_del`), attribute/global access (`get_attr`/`import_from`/`get_global`/`del_global`/`set_attr`/`get_name`).
