@@ -1,0 +1,1794 @@
+# =============================================================================
+# bench/corpus/registry.toml — molt canonical-benchmark registry (doc 69 §5 task R)
+# =============================================================================
+#
+# THE single source of truth for "which benchmark is which." One [[benchmark]]
+# entry per CANONICAL benchmark, DEDUPED across every external suite per doc
+# 69A §A.10 (the cross-suite dedup map). A kernel that recurs in CLBG +
+# pyperformance + PyPy + Codon (nbody, fannkuch, spectral_norm, mandelbrot,
+# pidigits, binary_trees, …) appears EXACTLY ONCE here, tagged with all of its
+# `source_suites`. A win on such a kernel counts ONCE across the CPython + PyPy
+# + Codon scoreboards — never triple-counted (doc 69A §A.10 dedup rule).
+#
+# Consumed by the S1–S6 suite adapters and the five scoreboards (doc 64):
+#   S1 pyperformance (tools/pyperformance_adapter.py)  — source_suites ∋ "pyperformance"
+#   S2 pypy/benchmarks                                 — source_suites ∋ "pypy"
+#   S3 Codon bench/                                    — source_suites ∋ "codon"
+#   S4 Computer Language Benchmarks Game               — source_suites ∋ "clbg"
+#   S5 real-world apps (Pyston macro, TFB, orjson…)    — source_suites ∋ "pyston"/"tfb"/…
+#   S6 CPython regrtest                                — source_suites ∋ "regrtest"
+# plus the molt-stress corpus (origin = "molt-stress") and the scientific
+# Tier-A/B lanes (numba-benchmark, NPBench) from doc 69A §A.7.
+#
+# -----------------------------------------------------------------------------
+# SCHEMA (doc 69 §1) — every [[benchmark]] entry:
+#   id                  = "nbody"            # canonical, unique across the file
+#   source_suites       = ["clbg","pyperformance","pypy","codon"]
+#   origin              = "CLBG"             # provenance root (doc 69A §A.6 lineage)
+#   category            = "float-kernel"     # the §A.9 discriminating category
+#   semantic_tier = { cpython = "...", pypy = "...", codon = "..." }
+#       per-engine semantic classification. Values reuse the suite_honesty /
+#       manifest.toml vocabulary:
+#         cpython : runs_unmodified | requires_adapter | unsupported_by_molt
+#                   (CPython is the universal oracle; ~always runs_unmodified)
+#         pypy    : equivalent | non_equivalent | unsupported
+#         codon   : equivalent | non_equivalent | unsupported
+#       A cross-engine comparison is a WIN/LOSS only where that engine is
+#       "equivalent". "non_equivalent" cells are reported, NEVER scored
+#       (doc 69A §A.0.2: the three Codon non-equivalent zones — bignum, Unicode,
+#       C-semantics numerics — are correctness divergences, not perf).
+#   non_equivalent_reason = "..."  # REQUIRED whenever any engine != equivalent
+#                                    (except plain "unsupported"); names the zone.
+#   version_gates       = []  # or e.g. ["py>=3.12"], ["py>=3.13"] — the (os,arch,
+#                             # python_version) gating posture of doc 69 §3a.
+#   parametrized_sizes  = ["pyperf","clbg"]  # named size presets a win must hold
+#                             # across (doc 69 §1: "a win must hold across scales").
+#                             # "pyperf" = pyperf autorange ~100ms value;
+#                             # "clbg"   = the CLBG fixed timed-N (heavy);
+#                             # "npbench"= NPBench S/M/L/paper presets;
+#                             # "stress" = molt-stress large-input variant.
+#   c_accelerated       = true   # OPTIONAL. CPython baseline is a C/Rust/Cython
+#                             # extension, not the bytecode interpreter. molt's
+#                             # honest comparison is "molt impl vs native tool"
+#                             # in a SEPARATE column from "molt vs CPython
+#                             # interpreter" (doc 69A §A.0.3). Never conflate.
+#
+# CONSTITUTION (doc 69 §6): faster than CPython on EVERY cell × backend × target
+# × arch × OS × profile × version; non-equivalent models marked, never scored;
+# ONE canonical registry (no duplicate benchmark truth); host-fingerprinted +
+# version-gated. This file is the "no duplicate benchmark truth" invariant.
+#
+# schema_version mirrors bench/friends/manifest.toml's convention.
+# =============================================================================
+
+schema_version = 1
+
+# -----------------------------------------------------------------------------
+# [suites] — pinned source custody for every external suite (doc 69A §A.11,
+# doc 69 §2 acquisition). `repo_ref` MUST be an immutable tag/commit before an
+# adapter is enabled (manifest.toml source-custody rule). License governs
+# vendoring. Two corrections baked in (doc 69A §A.11): the Codon paper is CC
+# 2023 (DOI 10.1145/3578360.3580275), NOT CGO; and Codon is Apache-2.0 as of
+# 2025 (relicensed from BUSL) — vendorable only from a current checkout.
+# -----------------------------------------------------------------------------
+
+[suites.pyperformance]
+adapter      = "S1"
+acquire      = "pip install pyperformance / git clone https://github.com/python/pyperformance"
+repo_url     = "https://github.com/python/pyperformance.git"
+repo_ref     = "1.14.0"                  # 2026-02-07; authoritative list = data-files/benchmarks/MANIFEST
+license      = "MIT"
+vendorable   = true
+methodology  = "pyperf"                  # workers/calibration/autorange/JSON/stats; never 2 concurrently
+notes        = "Official CPython suite — the CPython-reference axis. Descends from Unladen Swallow. NOT tuned for PyPy (use the pypy suite for PyPy)."
+
+[suites.pyperf]
+adapter      = "S1-engine"
+acquire      = "pip install pyperf"
+repo_url     = "https://github.com/psf/pyperf.git"
+repo_ref     = "latest-stable"           # the timing/statistics engine under pyperformance; pin alongside S1
+license      = "MIT"
+vendorable   = true
+notes        = "Calibration/worker/statistics discipline — the doc 69 §3 adaptive-sampling target."
+
+[suites.clbg]
+adapter      = "S4"
+acquire      = "git clone https://salsa.debian.org/benchmarksgame-team/benchmarksgame.git"
+repo_url     = "https://salsa.debian.org/benchmarksgame-team/benchmarksgame.git"
+repo_ref     = "PINNED_COMMIT_REQUIRED"  # pin a commit before enabling S4 (doc 69A §A.2)
+license      = "Revised BSD (3-clause)"  # © 2004-08 Fulgham, 2005-24 Gouy; retain name-endorsement clause
+vendorable   = true
+methodology  = "clbg"                    # BenchExec, fixed-N single-shot, 12x discard-first; peak mem + gzipped source size first-class
+notes        = "Computer Language Benchmarks Game — root of the recurring kernels (CLBG->Unladen->{pyperformance,PyPy}). Cold start + binary/source footprint are first-class metrics here."
+
+[suites.pypy]
+adapter      = "S2"
+acquire      = "hg clone https://foss.heptapod.net/pypy/benchmarks"
+repo_url     = "https://foss.heptapod.net/pypy/benchmarks"
+repo_ref     = "PINNED_COMMIT_REQUIRED"  # Heptapod is bot-walled; a real hg clone is needed for exact own/ filenames (doc 69A §A.11 gap)
+license      = "mixed (per-benchmark only)"  # bundles whole apps (Django/Twisted/SymPy/…), each its own license — vendor per-benchmark, NEVER suite-wide
+vendorable   = "per-benchmark"
+methodology  = "pypy-jit-warmup"         # long JIT warmup to steady state; speed.pypy.org Codespeed; geometric mean
+notes        = "PyPy-reference / dynamic axis. A fork of Unladen Swallow. The ideal 'PyPy dynamic reference' set for molt (every bench exercises dynamic dispatch / attr lookup / alloc)."
+
+[suites.codon]
+adapter      = "S3"
+acquire      = "bash -c \"$(curl -fsSL https://exaloop.io/install.sh)\" / git clone https://github.com/exaloop/codon.git"
+repo_url     = "https://github.com/exaloop/codon.git"
+repo_ref     = "PINNED_CURRENT_APACHE_COMMIT_REQUIRED"  # pin a CURRENT Apache-era commit; pre-2025 BUSL tags are non-commercial (doc 69A §A.5/§A.11)
+license      = "Apache-2.0"              # relicensed from BUSL/BSL 1.1 in 2025; paper text is CC BY-NC-ND
+vendorable   = true
+methodology  = "codon-release"           # bench/run.sh, release (-O3-class) mode, single-thread headline, Boehm GC, forked LLVM
+paper        = "Shajii et al., 'Codon: A Compiler for High-Performance Pythonic Applications and DSLs', CC 2023, DOI 10.1145/3578360.3580275"
+notes        = "AOT/native-reference axis. 64-bit int (NOT bignum), C-semantics numerics by default, ASCII str, dict does NOT preserve insertion order, static monomorphization (no runtime polymorphism/reflection/metaclass/monkeypatch), no full C-API, no exec/eval. Ships a from-scratch compiled NumPy (2025) — makes the scientific Tier-B lane Codon-comparable."
+
+[suites.pyston]
+adapter      = "S5"
+acquire      = "git clone https://github.com/pyston/python-macrobenchmarks"
+repo_url     = "https://github.com/pyston/python-macrobenchmarks.git"
+repo_ref     = "PINNED_COMMIT_REQUIRED"
+license      = "MIT"                     # suite-wide clean; pip deps (torch/Pyramid/gevent/…) carry their own
+vendorable   = true
+methodology  = "pyperf"                  # web benches report mean AND p99 latency; warmup = time to 95% of peak
+notes        = "Real-application macro axis (built because existing benchmarks were 'too small'). Near-zero overlap with PyPy/CLBG — a clean third axis. Group pyston_standard = djangocms+flaskblogging+kinto."
+
+[suites.regrtest]
+adapter      = "S6"
+acquire      = "CPython Lib/test via libregrtest"
+repo_url     = "https://github.com/python/cpython.git"
+repo_ref     = "per-python-version"      # 3.12 / 3.13 / 3.14 — version-gated (doc 69 §3a)
+license      = "PSF"
+vendorable   = true
+notes        = "CPython's own regression suite — simultaneously the ultimate parity oracle (doc 66) AND a stress corpus (long-running, allocation-heavy, adversarial). Must run GREEN per Python version and, where timed, faster than CPython."
+
+# --- Scientific lanes (doc 69A §A.7) ----------------------------------------
+
+[suites.npbench]
+adapter      = "sci-tierB"
+acquire      = "git clone https://github.com/spcl/npbench"
+repo_url     = "https://github.com/spcl/npbench.git"
+repo_ref     = "PINNED_COMMIT_REQUIRED"
+license      = "BSD-3"
+vendorable   = true
+methodology  = "npbench"                 # 4 size presets; run 10x median; speedup vs NumPy median; 95% CI bootstrap; EVERY output validated vs NumPy reference (matches doc 66 oracle)
+notes        = "Codon's 2025 NumPy reference (2.4x geomean, up to 900x). PolyBench ships BOTH *_numpy.py (Tier B) and explicit-loop forms (Tier A — cleanest molt-vs-Codon-vs-PyPy)."
+
+[suites.numba_benchmark]
+adapter      = "sci-tierA"
+acquire      = "git clone https://github.com/numba/numba-benchmark"
+repo_url     = "https://github.com/numba/numba-benchmark.git"
+repo_ref     = "PINNED_COMMIT_REQUIRED"
+license      = "BSD-2"
+vendorable   = true
+methodology  = "asv"                     # per-commit isolation + peakmem (a doc 69 §3 methodology reference)
+notes        = "The Tier-A jackpot: cleanest molt-comparable set across all four engines — explicit scalar Python loops, no C-ext, matched semantics."
+
+# --- Real-world / serialization / async / ML payload sources (doc 69A §A.8/§A.9) ---
+
+[suites.tfb]
+adapter      = "S5"
+acquire      = "git clone https://github.com/TechEmpower/FrameworkBenchmarks"
+repo_url     = "https://github.com/TechEmpower/FrameworkBenchmarks.git"
+repo_ref     = "Round-23"                # archived read-only 2026-03-24; latest round
+license      = "BSD-3"
+vendorable   = true
+notes        = "Web framework axis. The fast frameworks are dominated by C/Rust server cores (uvicorn=uvloop+httptools, blacksheep=Cython, granian/robyn/socketify=Rust/C) — flag those. Pure-Python dispatch (flask/bottle/django/falcon/pyramid/tornado/cherrypy + app layer of starlette/fastapi/sanic/quart) is molt-measurable."
+
+[suites.orjson]
+adapter      = "json-payloads"
+acquire      = "git clone https://github.com/ijl/orjson (bench/data)"
+repo_url     = "https://github.com/ijl/orjson.git"
+repo_ref     = "PINNED_COMMIT_REQUIRED"
+license      = "Apache/MPL/MIT"
+vendorable   = true
+notes        = "Reusable 4-file JSON corpus: twitter.json(631K), github.json(55K), citm_catalog.json(1.7M), canada.json(2.2M float-heavy)."
+
+[suites.uvloop]
+adapter      = "async-harness"
+acquire      = "git clone https://github.com/MagicStack/uvloop (examples/bench)"
+repo_url     = "https://github.com/MagicStack/uvloop.git"
+repo_ref     = "PINNED_COMMIT_REQUIRED"
+license      = "MIT/Apache"
+vendorable   = true
+notes        = "Async harness (echoserver.py/echoclient.py). uvloop itself is Cython+libuv = best-native-tool column, not interpreter speed, not Codon-buildable."
+
+[suites.tinygrad]
+adapter      = "ml-lane"
+acquire      = "git clone https://github.com/tinygrad/tinygrad"
+repo_url     = "https://github.com/tinygrad/tinygrad.git"
+repo_ref     = "a83710396c991272241e40da94489747c2393851"   # matches bench/friends/manifest.toml pin
+license      = "MIT"
+vendorable   = true
+notes        = "The public ML contract — exact-semantics, NO drift (CLAUDE.md). The real compiler test = tinygrad's pure-Python scheduler/kernel-fusion graph build, NOT raw matmul. Separate Python-orchestration time from tensor-kernel (GPU/BLAS) time."
+
+[suites.mlperf_inference]
+adapter      = "ml-lane"
+acquire      = "git clone https://github.com/mlcommons/inference"
+repo_url     = "https://github.com/mlcommons/inference.git"
+repo_ref     = "PINNED_COMMIT_REQUIRED"
+license      = "Apache-2.0"
+vendorable   = true
+notes        = "The LoadGen is the Python-facing component — measure orchestration overhead there (kernel time dominates -> flag)."
+
+
+# =============================================================================
+# CANONICAL BENCHMARKS
+# =============================================================================
+# Ordering: (1) the CLBG-rooted spine (deduped, every source suite tagged) →
+# (2) Unladen/Smalltalk kernels shared by pyperformance + PyPy → (3) the bignum
+# Codon-non-equivalent zone → (4) Unicode/string/regex zone → (5) C-semantics
+# numeric-edge zone → (6) GC/finalizer + dispatch + recursion + generator +
+# exception discriminators → (7) C-accelerated serialize/template/web/async →
+# (8) PyPy-only & Pyston-only axes → (9) Codon-only kernels → (10) scientific
+# Tier-A/Tier-B → (11) the molt-stress corpus. Comments call out the §A.10 row
+# and the §A.0.2 non-equivalent zone for each.
+# =============================================================================
+
+
+# -----------------------------------------------------------------------------
+# (1) CLBG-ROOTED SPINE — doc 69A §A.0.1 / §A.10. The four+ kernels that are the
+# spine of the entire ecosystem; each registered ONCE, tagged with every suite.
+# -----------------------------------------------------------------------------
+
+[[benchmark]]
+id = "nbody"
+source_suites = ["clbg", "pyperformance", "pypy", "codon"]
+origin = "CLBG"
+category = "float-kernel"
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "equivalent" }
+version_gates = []
+parametrized_sizes = ["pyperf", "clbg"]   # pyperf ~100ms; clbg N=50M scalar FP loop
+# Codon FP bake-off kernel. pyperformance 1.12 also added an nbody Barnes-Hut
+# quadtree variant — see `nbody_barnes_hut` below (distinct algorithm).
+
+[[benchmark]]
+id = "spectral_norm"
+source_suites = ["clbg", "pyperformance", "pypy", "codon"]
+origin = "CLBG"
+category = "float-kernel"
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "equivalent" }
+version_gates = []
+parametrized_sizes = ["pyperf", "clbg"]   # clbg N=5500: FP + nested loops + sqrt
+
+[[benchmark]]
+id = "fannkuch"
+source_suites = ["clbg", "pyperformance", "pypy", "codon"]
+origin = "CLBG"                            # CLBG "fannkuch-redux"; Codon @par dynamic variant
+category = "int-array-kernel"
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "equivalent" }
+version_gates = []
+parametrized_sizes = ["pyperf", "clbg"]   # clbg N=12: int + array + in-place reverse
+
+[[benchmark]]
+id = "mandelbrot"
+source_suites = ["clbg", "codon", "npbench"]   # §A.10: pyperf via NPBench/Codon, not core pyperf MANIFEST
+origin = "CLBG"
+category = "float-kernel"
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "equivalent" }
+version_gates = []
+parametrized_sizes = ["clbg", "npbench"]  # clbg N=16000: FP + complex + bit-packed output; Codon mandelbrot uses @par(gpu=True)
+# NPBench ships mandelbrot1/mandelbrot2 array forms; the CLBG scalar form is the canonical loop kernel.
+
+[[benchmark]]
+id = "pidigits"
+source_suites = ["clbg", "pyperformance", "pypy", "codon"]
+origin = "CLBG"
+category = "bignum"
+# ⚠ Codon NON-EQUIVALENT — bignum zone (doc 69A §A.0.2(a)): Codon int is 64-bit
+# and wraps silently; pidigits is arbitrary-precision spigot. A Codon "win" is meaningless.
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "non_equivalent" }
+non_equivalent_reason = "codon: arbitrary-precision integers — Codon int is 64-bit, wraps silently; -numerics=py does not restore bignum"
+version_gates = []
+parametrized_sizes = ["pyperf", "clbg"]   # clbg N=10000 digits
+
+[[benchmark]]
+id = "binary_trees"
+source_suites = ["clbg", "codon"]          # §A.10: pyperf-adjacent via barnes_hut; Codon uses Boehm
+origin = "CLBG"                            # GCBench / Boehm lineage
+category = "gc-alloc"
+# The RC-overhead exposer — the ownership-lattice fixture (CLAUDE.md council doctrine).
+# Pools/arenas prohibited by CLBG rules. Codon equivalent (Boehm GC, no bignum/Unicode).
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "equivalent" }
+version_gates = []
+parametrized_sizes = ["clbg"]             # clbg depth=21: alloc + GC stress
+
+[[benchmark]]
+id = "fasta"
+source_suites = ["clbg"]
+origin = "CLBG"
+category = "string-rng"
+# ASCII output — Codon-equivalent in principle, but not in Codon's bench/ set.
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "equivalent" }
+non_equivalent_reason = "codon: equivalent on ASCII output but not present in Codon bench/ — comparison is via vendored CLBG source only"
+version_gates = []
+parametrized_sizes = ["clbg"]             # clbg N=25M: LCG RNG + cumulative lookup + bulk str
+
+[[benchmark]]
+id = "k_nucleotide"
+source_suites = ["clbg"]
+origin = "CLBG"
+category = "dict-string"
+# dict + str-hash + count-in-place over ASCII. Codon dict does NOT preserve
+# insertion order — equivalent ONLY because k-nucleotide is order-independent.
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "equivalent" }
+non_equivalent_reason = "codon: equivalent only because counting is dict-order-independent; Codon dict does not preserve insertion order (would be non_equivalent for any order-observing variant)"
+version_gates = []
+parametrized_sizes = ["clbg"]             # input = fasta N=25M
+
+[[benchmark]]
+id = "reverse_complement"
+source_suites = ["clbg"]
+origin = "CLBG"
+category = "string-io"
+# byte translate + buffered IO + reverse over ASCII. Codon-equivalent (ASCII).
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "equivalent" }
+non_equivalent_reason = "codon: equivalent on ASCII bytes but not in Codon bench/ — vendored CLBG source comparison only"
+version_gates = []
+parametrized_sizes = ["clbg"]             # clbg ~25MB input
+
+[[benchmark]]
+id = "regex_redux"
+source_suites = ["clbg", "pyperformance"]  # pyperf has regex_dna which is the same CLBG problem family
+origin = "CLBG"
+category = "regex"
+# ⚠ Codon NON-EQUIVALENT — engine-dependent (regex engine is not Codon's model);
+# also Unicode-adjacent. The win/loss bar is CPython's regex engine fidelity.
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "non_equivalent" }
+non_equivalent_reason = "codon: regex-engine-dependent — no equivalent compiled regex model; correctness divergence not perf"
+version_gates = []
+parametrized_sizes = ["clbg"]             # clbg ~5MB fasta input
+# NOTE: pyperformance regex_dna is the SAME CLBG problem — deduped HERE, tagged
+# pyperformance. pyperf's regex_v8 / regex_effbot / regex_compile are DISTINCT
+# (different corpora) and registered separately below.
+
+[[benchmark]]
+id = "meteor_contest"
+source_suites = ["clbg", "pyperformance", "pypy"]   # §A.10: CLBG historical, still in pyperformance + PyPy
+origin = "CLBG"
+category = "puzzle-search"
+# Codon: not in bench/ and search/backtracking over board state — leave unsupported-as-comparison.
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "unsupported" }
+non_equivalent_reason = "codon: not present in Codon bench/; backtracking puzzle not part of Codon's measured set"
+version_gates = []
+parametrized_sizes = ["pyperf", "clbg"]
+
+
+# -----------------------------------------------------------------------------
+# (2) UNLADEN / SMALLTALK / V8 KERNELS — doc 69A §A.10. Shared by pyperformance
+# + PyPy (lineage root = Unladen Swallow, doc 69A §A.6). Codon equivalence noted
+# per kernel (only the monomorphic-numeric ones are Codon-equivalent).
+# -----------------------------------------------------------------------------
+
+[[benchmark]]
+id = "richards"
+source_suites = ["pyperformance", "pypy"]
+origin = "Unladen/Smalltalk"
+category = "megamorphic-dispatch"
+# Megamorphic OO dispatch — PyPy turf. Codon static monomorphization is "adjacent"
+# (§A.10) but the polymorphic dispatch that makes this a benchmark is exactly what
+# Codon cannot model -> non_equivalent as a dispatch benchmark.
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "non_equivalent" }
+non_equivalent_reason = "codon: dynamic/polymorphic dispatch — static monomorphization removes the very property being measured"
+version_gates = []
+parametrized_sizes = ["pyperf"]
+
+[[benchmark]]
+id = "richards_super"
+source_suites = ["pyperformance"]
+origin = "Unladen/Smalltalk"
+category = "megamorphic-dispatch"
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "non_equivalent" }
+non_equivalent_reason = "codon: super()-based polymorphic dispatch — not Codon's static model"
+version_gates = []
+parametrized_sizes = ["pyperf"]
+
+[[benchmark]]
+id = "deltablue"
+source_suites = ["pyperformance", "pypy"]
+origin = "V8/Smalltalk"
+category = "megamorphic-dispatch"
+# One-way/constraint solver; megamorphic. Codon non-equivalent (dynamic dispatch).
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "non_equivalent" }
+non_equivalent_reason = "codon: constraint-solver polymorphic dispatch — not Codon's static model"
+version_gates = []
+parametrized_sizes = ["pyperf"]
+
+[[benchmark]]
+id = "chaos"
+source_suites = ["pyperformance", "pypy", "codon"]
+origin = "Unladen"
+category = "float-kernel"
+# In Codon bench/ AND Fig 5 — equivalent (fractal/Chaosgame FP).
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "equivalent" }
+version_gates = []
+parametrized_sizes = ["pyperf"]
+
+[[benchmark]]
+id = "go"
+source_suites = ["pyperformance", "pypy", "codon"]
+origin = "Unladen"
+category = "dict-churn"
+# Go-board AI; dict churn. In Codon bench/ AND Fig 5. Order-independent dict use
+# -> Codon equivalent (would be non_equivalent if it observed insertion order).
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "equivalent" }
+non_equivalent_reason = "codon: equivalent only insofar as dict use is order-independent; Codon dict does not preserve insertion order"
+version_gates = []
+parametrized_sizes = ["pyperf"]
+
+[[benchmark]]
+id = "raytrace"
+source_suites = ["pyperformance", "pypy"]
+origin = "Unladen"
+category = "float-kernel"
+# Codon not in bench/; FP + objects. Treat as unsupported-as-comparison (no Codon entry).
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "unsupported" }
+non_equivalent_reason = "codon: not in Codon bench/; mixes FP with object graphs not measured by Codon"
+version_gates = []
+parametrized_sizes = ["pyperf"]
+
+[[benchmark]]
+id = "pyflate"
+source_suites = ["pyperformance", "pypy"]
+origin = "Unladen"
+category = "bit-byte"
+# Pure-Python DEFLATE bit/byte twiddling. PyPy-favorable. Codon not in bench/.
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "unsupported" }
+non_equivalent_reason = "codon: not in Codon bench/; pure-Python bit/byte decompressor"
+version_gates = []
+parametrized_sizes = ["pyperf"]
+
+[[benchmark]]
+id = "crypto_pyaes"
+source_suites = ["pyperformance", "pypy"]
+origin = "Unladen"
+category = "int-bit-kernel"
+# Pure-Python AES (int/bit ops over bytes). Codon not in bench/.
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "unsupported" }
+non_equivalent_reason = "codon: not in Codon bench/; pure-Python AES byte/int kernel"
+version_gates = []
+parametrized_sizes = ["pyperf"]
+
+[[benchmark]]
+id = "hexiom"
+source_suites = ["pyperformance", "pypy"]
+origin = "Unladen"
+category = "puzzle-search"
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "unsupported" }
+non_equivalent_reason = "codon: not in Codon bench/; constraint puzzle solver"
+version_gates = []
+parametrized_sizes = ["pyperf"]
+
+[[benchmark]]
+id = "nqueens"
+source_suites = ["pyperformance", "pypy"]
+origin = "Unladen"
+category = "int-array-kernel"
+# Backtracking N-queens over ints/arrays. pyperformance lists Codon-adapter-equivalent
+# (§A.1 numeric/loop set), but it is NOT in Codon's bench/ -> equivalent-in-principle.
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "equivalent" }
+non_equivalent_reason = "codon: equivalent numeric/backtracking semantics (per §A.1) but not in Codon bench/ — comparison via adapter only"
+version_gates = []
+parametrized_sizes = ["pyperf"]
+
+[[benchmark]]
+id = "float"
+source_suites = ["pyperformance", "pypy", "codon"]
+origin = "Unladen/Factor"
+category = "float-kernel"
+# IEEE-double FP. In Codon bench/ AND Fig 5 — equivalent (Codon FP bake-off).
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "equivalent" }
+version_gates = []
+parametrized_sizes = ["pyperf"]
+
+[[benchmark]]
+id = "telco"
+source_suites = ["pyperformance", "pypy"]
+origin = "Unladen/decimal"
+category = "decimal"
+# Decimal fixed-point billing. CPython baseline uses the _decimal C accelerator.
+# Codon has no Python-equivalent Decimal -> unsupported.
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "unsupported" }
+non_equivalent_reason = "codon: no equivalent arbitrary-precision Decimal type"
+version_gates = []
+parametrized_sizes = ["pyperf"]
+c_accelerated = true                       # CPython _decimal C accelerator — also see `decimal` below
+
+[[benchmark]]
+id = "mdp"
+source_suites = ["pyperformance", "pypy"]
+origin = "Unladen"
+category = "numeric-loop"
+# Markov decision process value iteration. §A.1 lists Codon-adapter-equivalent
+# numeric/loop, but not in Codon bench/.
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "equivalent" }
+non_equivalent_reason = "codon: equivalent numeric/loop semantics (per §A.1) but not in Codon bench/"
+version_gates = []
+parametrized_sizes = ["pyperf"]
+
+[[benchmark]]
+id = "scimark"
+source_suites = ["pyperformance", "pypy"]
+origin = "SciMark"
+category = "numeric-loop"
+# Bundles scimark_sor / scimark_sparse_mat_mult / scimark_monte_carlo / scimark_lu /
+# scimark_fft. Numeric/loop — §A.1 Codon-adapter-equivalent, not in Codon bench/.
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "equivalent" }
+non_equivalent_reason = "codon: equivalent numeric/FP-loop semantics (per §A.1) but not in Codon bench/; sub-benchmarks sor/sparse_mat_mult/monte_carlo/lu/fft"
+version_gates = []
+parametrized_sizes = ["pyperf"]
+
+
+# -----------------------------------------------------------------------------
+# (3) BIGNUM ZONE — doc 69A §A.0.2(a) + §A.9 "Bignum — ALL Codon-NON-equivalent".
+# Arbitrary-precision integers. Codon int is 64-bit and wraps. Never a Codon win.
+# (pidigits already registered in the CLBG spine above.)
+# -----------------------------------------------------------------------------
+
+[[benchmark]]
+id = "factorial_bignum"
+source_suites = ["molt-stress"]
+origin = "hard-microbench"               # doc 69A §A.9 bignum category — constructed
+category = "bignum"
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "non_equivalent" }
+non_equivalent_reason = "codon: arbitrary-precision integers — large factorial overflows 64-bit Codon int"
+version_gates = []
+parametrized_sizes = ["pyperf", "stress"]   # stress: factorial(50000)+
+
+[[benchmark]]
+id = "fib_bignum"
+source_suites = ["molt-stress"]
+origin = "hard-microbench"               # doc 69A §A.9: big-fib > F(93) overflows 64-bit
+category = "bignum"
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "non_equivalent" }
+non_equivalent_reason = "codon: arbitrary-precision integers — F(94)+ overflows 64-bit Codon int (note: Codon docs' fib(40) headline stays within 64-bit and IS equivalent; this is the bignum-range variant)"
+version_gates = []
+parametrized_sizes = ["pyperf", "stress"]   # stress: fib(100000) iterative
+
+[[benchmark]]
+id = "modpow_rsa"
+source_suites = ["molt-stress"]
+origin = "hard-microbench"               # doc 69A §A.9: RSA/modpow bignum
+category = "bignum"
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "non_equivalent" }
+non_equivalent_reason = "codon: arbitrary-precision integers — RSA modular exponentiation needs >64-bit moduli"
+version_gates = []
+parametrized_sizes = ["pyperf", "stress"]
+
+[[benchmark]]
+id = "karatsuba_multiply"
+source_suites = ["molt-stress"]
+origin = "hard-microbench"               # doc 69A §A.9: Karatsuba multiply
+category = "bignum"
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "non_equivalent" }
+non_equivalent_reason = "codon: arbitrary-precision integers — Karatsuba operates on multi-word bigints"
+version_gates = []
+parametrized_sizes = ["pyperf", "stress"]
+
+[[benchmark]]
+id = "int_str_huge"
+source_suites = ["molt-stress"]
+origin = "hard-microbench"               # doc 69A §A.9: int<->str of huge ints (CVE-2020-10735)
+category = "bignum"
+# molt MUST replicate CPython's 4300-digit limit + PYTHONINTMAXSTRDIGITS (sys.set_int_max_str_digits).
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "non_equivalent" }
+non_equivalent_reason = "codon: arbitrary-precision integers — int<->str conversion of >64-bit values; Codon has no bignum"
+version_gates = ["py>=3.11"]             # int_max_str_digits limit introduced in CPython 3.11 (backported)
+parametrized_sizes = ["pyperf", "stress"]
+
+[[benchmark]]
+id = "mersenne_lucas_lehmer"
+source_suites = ["molt-stress"]
+origin = "hard-microbench"               # doc 69A §A.9: Mersenne/Lucas-Lehmer
+category = "bignum"
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "non_equivalent" }
+non_equivalent_reason = "codon: arbitrary-precision integers — Lucas-Lehmer operates on Mersenne-scale bigints"
+version_gates = []
+parametrized_sizes = ["pyperf", "stress"]
+
+
+# -----------------------------------------------------------------------------
+# (4) UNICODE / STRING / REGEX ZONE — doc 69A §A.0.2(b) + §A.9 "String/text/regex".
+# Codon str is ASCII-only -> Unicode is Codon-NON-equivalent. The in-place "+="
+# and regex-engine fidelity cases are correctness discriminators.
+# -----------------------------------------------------------------------------
+
+[[benchmark]]
+id = "str_concat_inplace"
+source_suites = ["molt-stress"]
+origin = "hard-microbench"               # doc 69A §A.9: O(n^2) += concat vs ''.join
+category = "string"
+# molt MUST match CPython's in-place += str optimization (the refcount==1 fast path),
+# otherwise this is O(n^2). Compared against the ''.join form.
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "non_equivalent" }
+non_equivalent_reason = "codon: str is ASCII-only and immutable-without-the-CPython-inplace-optimization; the measured behavior is CPython-str-specific"
+version_gates = []
+parametrized_sizes = ["pyperf", "stress"]
+
+[[benchmark]]
+id = "str_format"
+source_suites = ["molt-stress"]
+origin = "hard-microbench"               # doc 69A §A.9: % / .format / f-string
+category = "string"
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "non_equivalent" }
+non_equivalent_reason = "codon: str is ASCII-only; %/.format/f-string formatting of non-ASCII diverges"
+version_gates = []
+parametrized_sizes = ["pyperf"]
+
+[[benchmark]]
+id = "unicode_normalization"
+source_suites = ["molt-stress"]
+origin = "hard-microbench"               # doc 69A §A.9: unicode normalization (Codon ASCII)
+category = "unicode"
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "non_equivalent" }
+non_equivalent_reason = "codon: Unicode — Codon str is ASCII-only; unicodedata NFC/NFD/NFKC/NFKD unsupported"
+version_gates = []
+parametrized_sizes = ["pyperf"]
+
+[[benchmark]]
+id = "codec_encode_decode"
+source_suites = ["molt-stress"]
+origin = "hard-microbench"               # doc 69A §A.9: encode/decode
+category = "unicode"
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "non_equivalent" }
+non_equivalent_reason = "codon: Unicode — codec encode/decode of multibyte encodings; Codon str is ASCII-only"
+version_gates = []
+parametrized_sizes = ["pyperf"]
+
+[[benchmark]]
+id = "regex_v8"
+source_suites = ["pyperformance"]
+origin = "pyperformance"
+category = "regex"
+# Distinct from regex_redux/regex_dna (different corpus). Codon: regex-engine-dependent.
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "non_equivalent" }
+non_equivalent_reason = "codon: regex-engine-dependent + Unicode patterns; no equivalent compiled model"
+version_gates = []
+parametrized_sizes = ["pyperf"]
+
+[[benchmark]]
+id = "regex_effbot"
+source_suites = ["pyperformance"]
+origin = "pyperformance"
+category = "regex"
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "non_equivalent" }
+non_equivalent_reason = "codon: regex-engine-dependent; no equivalent compiled model"
+version_gates = []
+parametrized_sizes = ["pyperf"]
+
+[[benchmark]]
+id = "regex_compile"
+source_suites = ["pyperformance"]
+origin = "pyperformance"
+category = "regex"
+# Measures pattern COMPILATION (sre_compile) — distinct from matching.
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "non_equivalent" }
+non_equivalent_reason = "codon: regex pattern compilation is not part of Codon's model"
+version_gates = []
+parametrized_sizes = ["pyperf"]
+
+[[benchmark]]
+id = "regex_catastrophic_backtracking"
+source_suites = ["molt-stress"]
+origin = "hard-microbench"               # doc 69A §A.9: catastrophic backtracking (a+)+$
+category = "regex"
+# Discriminator: does the engine guard/avoid exponential backtracking?
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "non_equivalent" }
+non_equivalent_reason = "codon: regex-engine-dependent; backtracking behavior is engine-specific, not Codon's model"
+version_gates = []
+parametrized_sizes = ["stress"]
+
+
+# -----------------------------------------------------------------------------
+# (5) C-SEMANTICS NUMERIC-EDGE ZONE — doc 69A §A.0.2(c) + §A.9 "Numeric edge".
+# Codon floor-div/modulo of negatives truncates toward 0 (Python floors toward
+# -inf); int overflow wraps (Python promotes to bignum). NEVER a Codon win.
+# (The pure FP kernels — nbody/spectral_norm/mandelbrot/float — are Codon's
+# strongest EQUIVALENT turf and live in the spine above.)
+# -----------------------------------------------------------------------------
+
+[[benchmark]]
+id = "negative_floordiv_mod"
+source_suites = ["molt-stress"]
+origin = "hard-microbench"               # doc 69A §A.9: negative modulo/floor-div
+category = "numeric-edge"
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "non_equivalent" }
+non_equivalent_reason = "codon: C-semantics numerics — Codon truncates // and % toward zero for negatives; Python floors toward -inf (-numerics=py restores this but it is off by default)"
+version_gates = []
+parametrized_sizes = ["pyperf"]
+
+[[benchmark]]
+id = "int_overflow_promotion"
+source_suites = ["molt-stress"]
+origin = "hard-microbench"               # doc 69A §A.9: overflow (Codon wraps, Python promotes)
+category = "numeric-edge"
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "non_equivalent" }
+non_equivalent_reason = "codon: C-semantics numerics — Codon int wraps on overflow; Python promotes to arbitrary precision"
+version_gates = []
+parametrized_sizes = ["pyperf", "stress"]
+
+[[benchmark]]
+id = "divide_by_zero_semantics"
+source_suites = ["molt-stress"]
+origin = "hard-microbench"               # doc 69A §A.9: divide-by-zero
+category = "numeric-edge"
+# Discriminator: ZeroDivisionError raised with CPython parity (not C UB / silent inf).
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "non_equivalent" }
+non_equivalent_reason = "codon: C-semantics numerics — division-by-zero handling differs from CPython's ZeroDivisionError"
+version_gates = []
+parametrized_sizes = ["pyperf"]
+
+
+# -----------------------------------------------------------------------------
+# (6) DISCRIMINATING MICROBENCHMARKS — doc 69A §A.9. The "hardest case per
+# category": GC/finalizer, megamorphic dispatch, deep recursion, generators,
+# exceptions, memory/data-structure, startup. These expose the missing IR FACT
+# (CLAUDE.md Performance Constitution).
+# -----------------------------------------------------------------------------
+
+# --- GC / alloc / finalizer (binary_trees is the CLBG spine entry) ---
+
+[[benchmark]]
+id = "gc_collect"
+source_suites = ["pyperformance"]
+origin = "pyperformance"
+category = "gc-cycle"
+# Cycle collector stress. Codon uses Boehm GC and has no Python gc module -> N/A.
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "unsupported" }
+non_equivalent_reason = "codon: no Python cycle collector (Boehm GC); gc.collect() semantics N/A"
+version_gates = []
+parametrized_sizes = ["pyperf"]
+
+[[benchmark]]
+id = "gc_traversal"
+source_suites = ["pyperformance"]
+origin = "pyperformance"
+category = "gc-cycle"
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "unsupported" }
+non_equivalent_reason = "codon: no Python cycle-collector traversal (Boehm GC)"
+version_gates = []
+parametrized_sizes = ["pyperf"]
+
+[[benchmark]]
+id = "cyclic_garbage_finalizer_ordering"
+source_suites = ["molt-stress"]
+origin = "molt-stress"                   # doc 69A §A.9 + CLAUDE.md P0: resurrection/finalizer/weakref
+category = "finalizer-correctness"
+# THE resurrection/finalizer/weakref P0 corruption surface (CLAUDE.md council
+# doctrine: a resurrection SIGSEGV outranks the native RC flip and all perf work).
+# Correctness discriminator FIRST, perf second. MOLT_ASSERT_NO_LEAK = actual destruction.
+semantic_tier = { cpython = "runs_unmodified", pypy = "non_equivalent", codon = "non_equivalent" }
+non_equivalent_reason = "pypy: __del__ ordering/timing differs under a moving/generational GC. codon: Boehm GC will not match CPython finalizer/weakref/resurrection ordering. CPython is the only equivalent oracle."
+version_gates = []
+parametrized_sizes = ["stress"]
+
+[[benchmark]]
+id = "barnes_hut"
+source_suites = ["pyperformance"]        # the pyperf nbody Barnes-Hut quadtree variant context (§A.9 GC/alloc)
+origin = "hard-microbench"
+category = "gc-alloc"
+# Quadtree alloc/traversal — alloc-heavy tree structure (distinct from binary_trees).
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "equivalent" }
+non_equivalent_reason = "codon: numeric/tree semantics equivalent in principle; comparison via adapter (not in Codon bench/)"
+version_gates = []
+parametrized_sizes = ["pyperf", "stress"]
+
+[[benchmark]]
+id = "nbody_barnes_hut"
+source_suites = ["pyperformance"]
+origin = "pyperformance"                 # NEW in pyperformance 1.12 — distinct algorithm from `nbody`
+category = "float-kernel"
+# Barnes-Hut quadtree n-body — registered separately from the all-pairs `nbody`.
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "equivalent" }
+non_equivalent_reason = "codon: FP+tree semantics equivalent in principle; not in Codon bench/, adapter comparison only"
+version_gates = ["py>=3.12"]             # added with pyperformance 1.12 era
+parametrized_sizes = ["pyperf"]
+
+# --- Megamorphic dispatch (richards/deltablue are in section 2) ---
+
+[[benchmark]]
+id = "megamorphic_call_site"
+source_suites = ["molt-stress"]
+origin = "molt-stress"                   # doc 69A §A.9: purpose-built >=4-receiver-shape call site
+category = "megamorphic-dispatch"
+# Exposes class identity/version/shape facts vs dict-lookup degrade (CLAUDE.md:
+# "dynamic dispatch -> class identity/version/target/shape"). PyPy turf.
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "non_equivalent" }
+non_equivalent_reason = "codon: >=4-receiver-shape polymorphism is exactly what static monomorphization eliminates"
+version_gates = []
+parametrized_sizes = ["pyperf", "stress"]
+
+[[benchmark]]
+id = "getattr_getattribute_hooks"
+source_suites = ["molt-stress"]
+origin = "molt-stress"                   # doc 69A §A.9: __getattr__/__getattribute__
+category = "megamorphic-dispatch"
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "non_equivalent" }
+non_equivalent_reason = "codon: dynamic attribute hooks (__getattr__/__getattribute__) unsupported in static model"
+version_gates = []
+parametrized_sizes = ["pyperf"]
+
+[[benchmark]]
+id = "typing_runtime_protocols"
+source_suites = ["pyperformance"]
+origin = "pyperformance"                 # NEW pyperformance era; runtime-checkable Protocol dispatch
+category = "megamorphic-dispatch"
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "non_equivalent" }
+non_equivalent_reason = "codon: runtime-checkable typing.Protocol isinstance dispatch — dynamic reflection, not Codon's model"
+version_gates = ["py>=3.12"]
+parametrized_sizes = ["pyperf"]
+
+# --- Deep recursion (doc 69A §A.9) ---
+
+[[benchmark]]
+id = "ackermann"
+source_suites = ["molt-stress"]
+origin = "hard-microbench"               # doc 69A §A.9: ackermann
+category = "deep-recursion"
+# molt MUST replicate sys.setrecursionlimit (default 1000) + RecursionError +
+# C-stack guard. Resumable-frame ownership; PyPy-favorable when limit raised.
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "equivalent" }
+non_equivalent_reason = "codon: equivalent for int-range recursion but does NOT enforce sys.setrecursionlimit/RecursionError — the recursion-limit variant is CPython/PyPy-only"
+version_gates = []
+parametrized_sizes = ["pyperf", "stress"]   # stress: raised recursion limit
+
+[[benchmark]]
+id = "tak"
+source_suites = ["molt-stress"]
+origin = "hard-microbench"               # doc 69A §A.9: tak/takfp
+category = "deep-recursion"
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "equivalent" }
+non_equivalent_reason = "codon: tak (int) equivalent within 64-bit; takfp (float) equivalent — both within Codon's numeric model, but not in Codon bench/"
+version_gates = []
+parametrized_sizes = ["pyperf"]
+
+[[benchmark]]
+id = "recursive_fib"
+source_suites = ["molt-stress", "codon"] # Codon docs headline fib(40) 17.98s->0.28s (~65x); within 64-bit
+origin = "hard-microbench"               # doc 69A §A.9: recursive fib/tree-walk
+category = "deep-recursion"
+# Tree-recursive fib(N) WITHIN 64-bit (fib(40) ~ 1.0e8, fits) — Codon-EQUIVALENT
+# (the docs headline). Distinct from `fib_bignum` above which overflows 64-bit.
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "equivalent" }
+version_gates = []
+parametrized_sizes = ["pyperf"]          # pyperf ~ fib(34..40), stays in 64-bit
+
+# --- Generators / coroutines (doc 69A §A.9 + §A.8.3) ---
+
+[[benchmark]]
+id = "generators"
+source_suites = ["pyperformance", "pypy"]
+origin = "pyperformance"
+category = "generator"
+# Generator resume cost. Codon: generators exist but semantics/exception model differ;
+# the async family is Codon-N/A overall -> mark non_equivalent for generator-fusion comparison.
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "non_equivalent" }
+non_equivalent_reason = "codon: generator/coroutine semantics (StopIteration, send/throw) not equivalent to CPython's"
+version_gates = []
+parametrized_sizes = ["pyperf"]
+
+[[benchmark]]
+id = "coroutines"
+source_suites = ["pyperformance"]
+origin = "pyperformance"
+category = "generator"
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "non_equivalent" }
+non_equivalent_reason = "codon: native coroutine semantics differ; not Codon's model"
+version_gates = []
+parametrized_sizes = ["pyperf"]
+
+[[benchmark]]
+id = "async_generators"
+source_suites = ["pyperformance"]
+origin = "pyperformance"
+category = "generator"
+# Codon: no asyncio -> the entire async family is molt-vs-CPython(/PyPy) only.
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "unsupported" }
+non_equivalent_reason = "codon: no asyncio / async generators"
+version_gates = []
+parametrized_sizes = ["pyperf"]
+
+[[benchmark]]
+id = "yield_from_delegation"
+source_suites = ["molt-stress"]
+origin = "hard-microbench"               # doc 69A §A.9: yield from delegation chains
+category = "generator"
+# Generator-fusion eligibility vs full resume cost (CLAUDE.md: "slow generators ->
+# resumable-frame ownership + fusion eligibility").
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "non_equivalent" }
+non_equivalent_reason = "codon: 'yield from' delegation semantics not equivalent"
+version_gates = []
+parametrized_sizes = ["pyperf", "stress"]
+
+[[benchmark]]
+id = "itertools_chains"
+source_suites = ["molt-stress"]
+origin = "hard-microbench"               # doc 69A §A.9: itertools chains
+category = "generator"
+# CPython itertools are C-accelerated; the clean comparison is molt's intrinsic
+# itertools vs CPython's C implementation.
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "non_equivalent" }
+non_equivalent_reason = "codon: itertools chain/islice/cycle semantics not part of Codon's model"
+version_gates = []
+parametrized_sizes = ["pyperf"]
+c_accelerated = true                       # CPython itertools is a C module
+
+# --- Exceptions (doc 69A §A.9) ---
+
+[[benchmark]]
+id = "exception_hot_loop"
+source_suites = ["molt-stress"]
+origin = "molt-stress"                   # doc 69A §A.9 + doc 69 §1 "exception-heavy" molt-stress case
+category = "exception"
+# try/except in hot loops — MUST match CPython 3.11+ zero-cost-on-no-throw.
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "non_equivalent" }
+non_equivalent_reason = "codon: exception model differs; CPython 3.11+ zero-cost-on-no-throw is the bar"
+version_gates = ["py>=3.11"]             # zero-cost exceptions landed in CPython 3.11
+parametrized_sizes = ["pyperf", "stress"]
+
+[[benchmark]]
+id = "stopiteration_control_flow"
+source_suites = ["molt-stress"]
+origin = "hard-microbench"               # doc 69A §A.9: StopIteration as control flow (+PEP 479)
+category = "exception"
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "non_equivalent" }
+non_equivalent_reason = "codon: StopIteration-as-control-flow + PEP 479 semantics not equivalent"
+version_gates = []
+parametrized_sizes = ["pyperf"]
+
+[[benchmark]]
+id = "exception_deep_propagation"
+source_suites = ["molt-stress"]
+origin = "hard-microbench"               # doc 69A §A.9: deep propagation, raise/catch churn
+category = "exception"
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "non_equivalent" }
+non_equivalent_reason = "codon: exception propagation/unwind model differs from CPython"
+version_gates = []
+parametrized_sizes = ["pyperf", "stress"]
+
+# --- Memory / data-structure (doc 69A §A.9) ---
+
+[[benchmark]]
+id = "megamorphic_dict"
+source_suites = ["molt-stress"]
+origin = "hard-microbench"               # doc 69A §A.9: megamorphic dict
+category = "data-structure"
+# Codon dict does NOT preserve insertion order -> non_equivalent for any
+# order-observing use; also key polymorphism breaks monomorphization.
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "non_equivalent" }
+non_equivalent_reason = "codon: dict does not preserve insertion order; heterogeneous-key dict breaks static typing"
+version_gates = []
+parametrized_sizes = ["pyperf", "stress"]
+
+[[benchmark]]
+id = "list_comprehension"
+source_suites = ["pyperformance", "molt-stress"]   # pyperf `comprehensions`
+origin = "pyperformance"
+category = "data-structure"
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "equivalent" }
+non_equivalent_reason = "codon: homogeneous-element comprehensions equivalent; heterogeneous element types would be non_equivalent"
+version_gates = []
+parametrized_sizes = ["pyperf"]
+
+[[benchmark]]
+id = "deque_heapq"
+source_suites = ["molt-stress"]
+origin = "hard-microbench"               # doc 69A §A.9: deque/heapq
+category = "data-structure"
+# collections.deque + heapq are C-accelerated in CPython.
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "non_equivalent" }
+non_equivalent_reason = "codon: collections.deque / heapq are not part of Codon's typed model"
+version_gates = []
+parametrized_sizes = ["pyperf"]
+c_accelerated = true                       # CPython _collections / _heapq C modules
+
+[[benchmark]]
+id = "btree"
+source_suites = ["pyperformance"]        # pyperf `btree` / `btree_gc_only`
+origin = "pyperformance"
+category = "data-structure"
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "unsupported" }
+non_equivalent_reason = "codon: pure-Python B-tree with dynamic node objects — not in Codon's measured set"
+version_gates = []
+parametrized_sizes = ["pyperf"]
+
+[[benchmark]]
+id = "hash_collision_attack"
+source_suites = ["molt-stress"]
+origin = "hard-microbench"               # doc 69A §A.9: hash-collision attack (CVE-2012-1150)
+category = "data-structure"
+# molt MUST match PYTHONHASHSEED randomization (SipHash + per-process seed).
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "non_equivalent" }
+non_equivalent_reason = "codon: str/bytes hash randomization (PYTHONHASHSEED / SipHash) not part of Codon's model"
+version_gates = []
+parametrized_sizes = ["stress"]
+
+[[benchmark]]
+id = "deepcopy"
+source_suites = ["pyperformance"]
+origin = "pyperformance"
+category = "data-structure"
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "non_equivalent" }
+non_equivalent_reason = "codon: copy.deepcopy relies on dynamic reflection / __deepcopy__ dispatch"
+version_gates = []
+parametrized_sizes = ["pyperf"]
+
+[[benchmark]]
+id = "unpack_sequence"
+source_suites = ["pyperformance"]
+origin = "pyperformance"
+category = "data-structure"
+# §A.1 lists this Codon-adapter-equivalent (sequence unpacking over fixed shapes).
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "equivalent" }
+non_equivalent_reason = "codon: fixed-shape tuple unpacking equivalent (per §A.1); dynamic/star-unpack over heterogeneous types would be non_equivalent"
+version_gates = []
+parametrized_sizes = ["pyperf"]
+
+# --- Startup / import — molt is AOT (footprint/page-in, NOT runtime-init) ---
+# Council ruling: cold-start is artifact-footprint/codesign (runtime init=0.127ms),
+# WARN under the v0 budget, NOT an execution-engine red. Codon directly comparable
+# (both AOT) — the cleanest cold-start/binary-size bake-off.
+
+[[benchmark]]
+id = "python_startup"
+source_suites = ["pyperformance"]
+origin = "pyperformance"
+category = "startup"
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "equivalent" }
+non_equivalent_reason = "codon: equivalent as an AOT cold-start/binary-size bake-off (both compile to native); the metric is footprint+page-in, not runtime init"
+version_gates = []
+parametrized_sizes = ["pyperf"]
+
+[[benchmark]]
+id = "python_startup_no_site"
+source_suites = ["pyperformance"]
+origin = "pyperformance"
+category = "startup"
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "equivalent" }
+non_equivalent_reason = "codon: AOT cold-start bake-off (footprint/page-in), not runtime init"
+version_gates = []
+parametrized_sizes = ["pyperf"]
+
+[[benchmark]]
+id = "stdlib_startup"
+source_suites = ["pyperformance"]
+origin = "pyperformance"
+category = "startup"
+# Discriminator: does molt's tree-shaking (doc 62) drop unused stdlib?
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "equivalent" }
+non_equivalent_reason = "codon: AOT footprint bake-off; measures whether tree-shaking drops unused stdlib"
+version_gates = []
+parametrized_sizes = ["pyperf"]
+
+
+# -----------------------------------------------------------------------------
+# (7) C-ACCELERATED — SERIALIZE / TEMPLATE / WEB / ASYNC (doc 69A §A.8).
+# CPython baseline is a C/Rust/Cython extension. The HONEST comparison is "molt
+# impl vs the native tool" (a SEPARATE column) AND "molt vs CPython interpreter"
+# (the pure-Python fallback path). c_accelerated = true flags every one. Never
+# conflate the two columns (doc 69A §A.0.3 methodology violation).
+# -----------------------------------------------------------------------------
+
+# --- Serialization (pure-Python paths are the clean interpreter target) ---
+
+[[benchmark]]
+id = "json_dumps"
+source_suites = ["pyperformance", "pypy"]   # PyPy json_bench
+origin = "pyperformance"
+category = "serialize-json"
+# CPython _json C accelerator. molt: race the C accelerator (decide the bar per-benchmark, §A.1).
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "unsupported" }
+non_equivalent_reason = "codon: json module relies on dynamic typing of arbitrary object graphs"
+version_gates = []
+parametrized_sizes = ["pyperf"]
+c_accelerated = true
+
+[[benchmark]]
+id = "json_loads"
+source_suites = ["pyperformance", "pypy"]
+origin = "pyperformance"
+category = "serialize-json"
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "unsupported" }
+non_equivalent_reason = "codon: json parsing produces dynamically-typed object graphs"
+version_gates = []
+parametrized_sizes = ["pyperf"]
+c_accelerated = true
+
+[[benchmark]]
+id = "pickle"
+source_suites = ["pyperformance"]
+origin = "pyperformance"
+category = "serialize-pickle"
+# C accelerator. The *_pure_python variants below are the clean interpreter bar.
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "unsupported" }
+non_equivalent_reason = "codon: pickle relies on dynamic reflection of arbitrary object graphs"
+version_gates = []
+parametrized_sizes = ["pyperf"]
+c_accelerated = true
+
+[[benchmark]]
+id = "pickle_pure_python"
+source_suites = ["pyperformance"]
+origin = "pyperformance"
+category = "serialize-pickle"
+# THE cleanest pickle interpreter comparison (pure-Python path, no C accelerator).
+# Codon: pickle pure path is one of the only Codon serialize candidates (§A.8.2) but
+# still needs dynamic reflection -> non_equivalent.
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "non_equivalent" }
+non_equivalent_reason = "codon: even the pure-Python pickle path needs runtime reflection of object types"
+version_gates = []
+parametrized_sizes = ["pyperf"]
+
+[[benchmark]]
+id = "unpickle_pure_python"
+source_suites = ["pyperformance"]
+origin = "pyperformance"
+category = "serialize-pickle"
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "non_equivalent" }
+non_equivalent_reason = "codon: pure-Python unpickle reconstructs arbitrary dynamic types"
+version_gates = []
+parametrized_sizes = ["pyperf"]
+
+[[benchmark]]
+id = "xml_etree"
+source_suites = ["pyperformance"]
+origin = "pyperformance"
+category = "serialize-xml"
+# Bundles xml_etree_parse/iterparse/generate/process. Races CPython's C accelerator (_elementtree).
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "unsupported" }
+non_equivalent_reason = "codon: ElementTree builds dynamic XML node trees"
+version_gates = []
+parametrized_sizes = ["pyperf"]
+c_accelerated = true
+
+[[benchmark]]
+id = "tomli_loads"
+source_suites = ["pyperformance"]
+origin = "pyperformance"
+category = "serialize-toml"
+# Pure-Python TOML parser (tomllib lineage) — a clean interpreter target.
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "non_equivalent" }
+non_equivalent_reason = "codon: TOML parsing yields dynamically-typed nested dict/list structures (Unicode strings)"
+version_gates = ["py>=3.11"]             # tomllib added in CPython 3.11
+parametrized_sizes = ["pyperf"]
+
+[[benchmark]]
+id = "json_dumps_native_orjson"
+source_suites = ["orjson"]
+origin = "best-native-tool"              # doc 69A §A.8.2 separate "best-native-tool" column
+category = "serialize-json"
+# orjson is Rust. This is the molt-vs-native-tool column ONLY (never molt-vs-CPython-interp).
+semantic_tier = { cpython = "runs_unmodified", pypy = "unsupported", codon = "unsupported" }
+non_equivalent_reason = "best-native-tool column only: orjson is a Rust extension; this measures molt's JSON impl vs the native tool, NOT vs an interpreter"
+version_gates = []
+parametrized_sizes = ["orjson"]          # twitter/github/citm_catalog/canada corpus
+c_accelerated = true
+
+# --- Templating (CPU-bound — the clean web interpreter comparison; §A.8.1) ---
+# Jinja2/Mako/Chameleon do runtime compile/exec -> conflicts with molt's no-exec
+# subset AND Codon's static model. Per §A.8.1: PRE-COMPILE the template to a
+# Python module ahead of time, then compile THAT.
+
+[[benchmark]]
+id = "mako"
+source_suites = ["pyperformance", "pypy"]
+origin = "template"
+category = "template"
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "unsupported" }
+non_equivalent_reason = "codon: template engine emits code via runtime compile/exec — no-exec model; pre-compile-to-module required even for molt"
+version_gates = []
+parametrized_sizes = ["pyperf"]
+
+[[benchmark]]
+id = "chameleon"
+source_suites = ["pyperformance", "pypy"]
+origin = "template"
+category = "template"
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "unsupported" }
+non_equivalent_reason = "codon: runtime compile/exec template engine"
+version_gates = []
+parametrized_sizes = ["pyperf"]
+
+[[benchmark]]
+id = "django_template"
+source_suites = ["pyperformance", "pypy"]
+origin = "template"
+category = "template"
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "unsupported" }
+non_equivalent_reason = "codon: Django template engine uses dynamic dispatch + runtime codegen"
+version_gates = []
+parametrized_sizes = ["pyperf"]
+
+[[benchmark]]
+id = "genshi"
+source_suites = ["pyperformance", "pypy"]
+origin = "template"
+category = "template"
+# Bundles genshi_text + genshi_xml. C-accelerated (Genshi has C speedups).
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "unsupported" }
+non_equivalent_reason = "codon: Genshi streaming template engine — dynamic + runtime codegen"
+version_gates = []
+parametrized_sizes = ["pyperf"]
+c_accelerated = true
+
+# --- Async / concurrency (Codon: NO asyncio -> the whole family is never a Codon win/loss) ---
+
+[[benchmark]]
+id = "async_tree"
+source_suites = ["pyperformance"]
+origin = "pyperformance"
+category = "async"
+# Clean pure-Python async (no-IO + memoization flavors). Includes _eager and _tg
+# (TaskGroup) flavors. The non-IO variants are the clean compute comparison.
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "unsupported" }
+non_equivalent_reason = "codon: no asyncio / event loop"
+version_gates = ["py>=3.12"]             # TaskGroup (_tg) flavors require 3.11+/3.12 asyncio
+parametrized_sizes = ["pyperf"]
+
+[[benchmark]]
+id = "asyncio_tcp"
+source_suites = ["pyperformance"]
+origin = "pyperformance"
+category = "async"
+# I/O-bound (event-loop scheduling). asyncio_tcp_ssl variant uses OpenSSL C.
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "unsupported" }
+non_equivalent_reason = "codon: no asyncio"
+version_gates = []
+parametrized_sizes = ["pyperf"]
+
+[[benchmark]]
+id = "asyncio_websockets"
+source_suites = ["pyperformance"]
+origin = "pyperformance"
+category = "async"
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "unsupported" }
+non_equivalent_reason = "codon: no asyncio"
+version_gates = []
+parametrized_sizes = ["pyperf"]
+
+[[benchmark]]
+id = "gil_contention"
+source_suites = ["molt-stress"]
+origin = "molt-stress"                   # doc 69A §A.8.3: GIL-contention — a molt-architecture differentiator
+category = "concurrency"
+# Author per CLAUDE.md cross-ref concurrency/locks.rs + PEP-703 (free-threading).
+# molt's concurrency model vs CPython GIL is the differentiator measured here.
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "non_equivalent" }
+non_equivalent_reason = "codon: no GIL and a different threading model; PEP-703 free-threading parity is the molt-specific axis"
+version_gates = []
+parametrized_sizes = ["stress"]
+
+# --- Web framework dispatch (pure-Python layer is molt-measurable; §A.8.1) ---
+
+[[benchmark]]
+id = "tornado_http"
+source_suites = ["pyperformance", "pypy"]
+origin = "pyperformance"
+category = "web-dispatch"
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "unsupported" }
+non_equivalent_reason = "codon: web framework dispatch — dynamic routing/middleware, async I/O"
+version_gates = []
+parametrized_sizes = ["pyperf"]
+c_accelerated = true                       # Tornado has C-accelerated speedups
+
+[[benchmark]]
+id = "fastapi"
+source_suites = ["pyperformance"]
+origin = "pyperformance"
+category = "web-dispatch"
+# NEW pyperformance 1.14. pydantic-core = Rust -> the heavy lifting is native.
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "unsupported" }
+non_equivalent_reason = "codon: FastAPI app dispatch; pydantic-core validation is Rust"
+version_gates = ["py>=3.12"]
+parametrized_sizes = ["pyperf"]
+c_accelerated = true                       # pydantic-core is Rust
+
+
+# -----------------------------------------------------------------------------
+# (8a) PyPy-ONLY AXIS — doc 69A §A.10. Clean non-overlapping axis. molt is the
+# ideal "PyPy dynamic reference" target (dynamic dispatch / attr / alloc).
+# `translate` is the compiler-on-compiler scale reference molt CANNOT run (RPython).
+# -----------------------------------------------------------------------------
+
+[[benchmark]]
+id = "spambayes"
+source_suites = ["pypy"]
+origin = "PyPy-only"
+category = "real-world-app"
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "unsupported" }
+non_equivalent_reason = "codon: Bayesian classifier app with dynamic dict/string use; not Codon's model"
+version_gates = []
+parametrized_sizes = ["pypy"]
+
+[[benchmark]]
+id = "spitfire"
+source_suites = ["pypy"]
+origin = "PyPy-only"
+category = "template"
+# Bundles slowspitfire/spitfire/spitfire_cstringio. Template engine.
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "unsupported" }
+non_equivalent_reason = "codon: Spitfire template engine — runtime codegen"
+version_gates = []
+parametrized_sizes = ["pypy"]
+
+[[benchmark]]
+id = "twisted"
+source_suites = ["pypy"]
+origin = "PyPy-only"
+category = "async"
+# Bundles twisted_iteration/twisted_names(DNS)/twisted_pb(RPC)/twisted_tcp.
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "unsupported" }
+non_equivalent_reason = "codon: Twisted reactor/event-loop framework"
+version_gates = []
+parametrized_sizes = ["pypy"]
+
+[[benchmark]]
+id = "pypy_translate"
+source_suites = ["pypy"]
+origin = "PyPy-only"
+category = "compiler-on-compiler"
+# Translating/compiling the PyPy interpreter itself through RPython — multi-minute,
+# multi-GB compile of a production codebase. The reference for compiler-on-compiler
+# scale; molt CANNOT run it (RPython, not Python). Recorded as the scale aspiration.
+semantic_tier = { cpython = "unsupported_by_molt", pypy = "equivalent", codon = "unsupported" }
+non_equivalent_reason = "molt: RPython source, not Python — molt cannot run it. The compiler-on-compiler scale reference, recorded for provenance not as a molt-runnable cell."
+version_gates = []
+parametrized_sizes = ["pypy"]
+
+[[benchmark]]
+id = "rietveld"
+source_suites = ["pypy"]
+origin = "PyPy-only"
+category = "real-world-app"
+# Django-based code-review app.
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "unsupported" }
+non_equivalent_reason = "codon: Django web app — dynamic ORM/dispatch"
+version_gates = []
+parametrized_sizes = ["pypy"]
+
+
+# -----------------------------------------------------------------------------
+# (8b) Pyston-ONLY MACRO AXIS — doc 69A §A.4 / §A.10. Real-application macros
+# (built because micros are "too small"). Near-zero overlap. group pyston_standard
+# = djangocms + flaskblogging + kinto. Many are C-ext-dominated -> flagged.
+# -----------------------------------------------------------------------------
+
+[[benchmark]]
+id = "flaskblogging"
+source_suites = ["pyston"]
+origin = "Pyston-only"
+category = "web-dispatch"
+# Part of pyston_standard web triad. Pure-Python Flask dispatch = molt-measurable.
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "unsupported" }
+non_equivalent_reason = "codon: Flask web app — dynamic routing/templating"
+version_gates = []
+parametrized_sizes = ["pyston"]
+
+[[benchmark]]
+id = "djangocms"
+source_suites = ["pyston"]
+origin = "Pyston-only"
+category = "web-dispatch"
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "unsupported" }
+non_equivalent_reason = "codon: Django CMS — dynamic ORM/dispatch"
+version_gates = []
+parametrized_sizes = ["pyston"]
+
+[[benchmark]]
+id = "kinto"
+source_suites = ["pyston"]
+origin = "Pyston-only"
+category = "web-dispatch"
+# Pyramid-based. cffi/cryptography/uWSGI C deps.
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "unsupported" }
+non_equivalent_reason = "codon: Pyramid web service with cffi/cryptography C deps"
+version_gates = []
+parametrized_sizes = ["pyston"]
+c_accelerated = true
+
+[[benchmark]]
+id = "pylint"
+source_suites = ["pyston"]
+origin = "Pyston-only"
+category = "compiler-tooling"
+# Pure-Python static analyzer (AST walk + dispatch) — molt-measurable.
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "unsupported" }
+non_equivalent_reason = "codon: pylint uses dynamic AST visitor dispatch + reflection"
+version_gates = []
+parametrized_sizes = ["pyston"]
+
+[[benchmark]]
+id = "pycparser"
+source_suites = ["pyston", "pypy"]
+origin = "Pyston-only"
+category = "compiler-tooling"
+# Pure-Python C parser (recursive descent + AST). molt-measurable; PyPy-favorable.
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "non_equivalent" }
+non_equivalent_reason = "codon: recursive-descent parser building dynamic AST node hierarchy"
+version_gates = []
+parametrized_sizes = ["pyston"]
+
+[[benchmark]]
+id = "mypy_self_check"
+source_suites = ["pyston"]
+origin = "Pyston-only"
+category = "compiler-tooling"
+# mypy is partly C-ext (mypyc-compiled); the pure-Python path is clean.
+# §A.9: "sqlglot + mypy = punish dispatch+recursion+allocation simultaneously."
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "non_equivalent" }
+non_equivalent_reason = "codon: mypy uses dynamic dispatch + reflection; mypyc-compiled portions are C-ext"
+version_gates = []
+parametrized_sizes = ["pyston"]
+c_accelerated = true                       # mypyc-compiled core
+
+[[benchmark]]
+id = "thrift"
+source_suites = ["pyston"]
+origin = "Pyston-only"
+category = "serialize"
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "unsupported" }
+non_equivalent_reason = "codon: Thrift uses a C codec; dynamic serialization"
+version_gates = []
+parametrized_sizes = ["pyston"]
+c_accelerated = true
+
+[[benchmark]]
+id = "pytorch_alexnet_inference"
+source_suites = ["pyston"]
+origin = "Pyston-only"
+category = "ml-inference"
+# The orchestration-vs-kernel demonstrator: separate Python orchestration time
+# from torch/numpy/Pillow kernel time (doc 69A §A.4 / §A.9 ML precedent).
+semantic_tier = { cpython = "runs_unmodified", pypy = "non_equivalent", codon = "unsupported" }
+non_equivalent_reason = "C-ext-dominated: torch/numpy/Pillow do the heavy lifting; measure Python orchestration overhead separately from kernel time"
+version_gates = []
+parametrized_sizes = ["pyston"]
+c_accelerated = true
+
+
+# -----------------------------------------------------------------------------
+# (9) Codon-ONLY KERNELS — doc 69A §A.10 (bottom row). In Codon's bench/ with no
+# CLBG/pyperf/PyPy counterpart. All within Codon's equivalent model (64-bit int,
+# FP, ASCII, order-independent dict).
+# -----------------------------------------------------------------------------
+
+[[benchmark]]
+id = "word_count"
+source_suites = ["codon"]
+origin = "Codon"
+category = "dict-string"
+# dict frequency count over ASCII, order-independent -> Codon-equivalent.
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "equivalent" }
+non_equivalent_reason = "codon: equivalent only because counting is order-independent and ASCII; an order-observing or Unicode variant would be non_equivalent"
+version_gates = []
+parametrized_sizes = ["codon"]
+
+[[benchmark]]
+id = "set_partition"
+source_suites = ["codon"]
+origin = "Codon"
+category = "int-array-kernel"
+# In Codon bench/ AND Fig 5. Integer partition enumeration within 64-bit.
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "equivalent" }
+version_gates = []
+parametrized_sizes = ["codon"]
+
+[[benchmark]]
+id = "primes"
+source_suites = ["codon"]
+origin = "Codon"
+category = "int-kernel"
+# In Codon bench/ (@par dynamic) AND Fig 5. Prime sieve/test within 64-bit.
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "equivalent" }
+non_equivalent_reason = "codon: equivalent within 64-bit int range (the measured range stays in 64-bit)"
+version_gates = []
+parametrized_sizes = ["codon"]
+
+[[benchmark]]
+id = "bench_sum"
+source_suites = ["codon", "molt-stress"]   # Codon `sum` (1..50M loop) AND a molt-stress large-int case (doc 69 §1)
+origin = "Codon"
+category = "int-kernel"
+# Codon `sum` is a 1..50M accumulate. As a molt-stress case (doc 69 §1 "bench_sum
+# large-int") the LARGE-INT variant crosses 2**63 -> Codon NON-equivalent there.
+# Two size presets capture both: 64-bit-safe (equivalent) and large-int (non_equiv).
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "non_equivalent" }
+non_equivalent_reason = "codon: the molt-stress large-int variant (sum crossing 2**63) overflows 64-bit Codon int; the 1..50M Codon variant alone IS equivalent — size preset 'codon' is equivalent, 'stress' is non_equivalent"
+version_gates = []
+parametrized_sizes = ["codon", "stress"]   # codon: 1..50M (64-bit safe); stress: large-int sum > 2**63
+# Existing molt micro: bench/bench_sum.py (N=10M while-loop accumulate).
+
+[[benchmark]]
+id = "taq"
+source_suites = ["codon"]
+origin = "Codon"
+category = "real-world-app"
+# NYSE TAQ peak detect — Codon's real-world numeric showcase. Numeric/FP over
+# tabular data; equivalent within Codon's typed model.
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "equivalent" }
+non_equivalent_reason = "codon: equivalent numeric/tabular processing within typed model (timestamps/prices fit 64-bit)"
+version_gates = []
+parametrized_sizes = ["codon"]
+
+
+# -----------------------------------------------------------------------------
+# (10) SCIENTIFIC — doc 69A §A.7. Tier-A = pure-Python numeric loops (clean
+# compiler-vs-compiler, all four engines). Tier-B = idiomatic NumPy (CPython
+# baseline = C-NumPy; Codon uniquely comparable via native compiled NumPy ->
+# three-way "Codon-native-NumPy vs molt-NumPy vs CPython-calls-C-NumPy").
+# Tier-C (library-internal C/Cython/BLAS) is ecosystem-parity ONLY, never an
+# interpreter-speed claim — represented by suite tags, not scored cells here.
+# -----------------------------------------------------------------------------
+
+# --- Tier A: numba-benchmark (the cleanest molt-comparable set; §A.7.2) ---
+
+[[benchmark]]
+id = "blackscholes"
+source_suites = ["numba_benchmark"]
+origin = "numba-benchmark"
+category = "sci-tierA"
+# Explicit scalar Python loop, no C-ext, matched semantics (IEEE double).
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "equivalent" }
+version_gates = []
+parametrized_sizes = ["npbench"]
+
+[[benchmark]]
+id = "laplace_stencil"
+source_suites = ["numba_benchmark"]
+origin = "numba-benchmark"               # bench_laplace
+category = "sci-tierA"
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "equivalent" }
+version_gates = []
+parametrized_sizes = ["npbench"]
+
+[[benchmark]]
+id = "central_difference"
+source_suites = ["numba_benchmark"]
+origin = "numba-benchmark"               # bench_centdiff
+category = "sci-tierA"
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "equivalent" }
+version_gates = []
+parametrized_sizes = ["npbench"]
+
+[[benchmark]]
+id = "game_of_life"
+source_suites = ["numba_benchmark"]
+origin = "numba-benchmark"               # bench_gameoflife
+category = "sci-tierA"
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "equivalent" }
+version_gates = []
+parametrized_sizes = ["npbench"]
+
+[[benchmark]]
+id = "ising_model"
+source_suites = ["numba_benchmark"]
+origin = "numba-benchmark"               # bench_ising
+category = "sci-tierA"
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "equivalent" }
+version_gates = []
+parametrized_sizes = ["npbench"]
+
+[[benchmark]]
+id = "monte_carlo_pi"
+source_suites = ["molt-stress"]
+origin = "hard-microbench"               # doc 69A §A.7.4 guidance: standalone Monte-Carlo-pi (no C-ext, no bignum)
+category = "sci-tierA"
+# scimark_monte_carlo is the suite form; this is the standalone permissive loop.
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "equivalent" }
+version_gates = []
+parametrized_sizes = ["pyperf", "npbench"]
+
+# --- Tier A: NPBench PolyBench explicit-LOOP forms (§A.7.1 — cleanest
+#     molt-vs-Codon-vs-PyPy; PolyBench ships both *_numpy.py and loop forms) ---
+
+[[benchmark]]
+id = "cholesky"
+source_suites = ["npbench"]
+origin = "npbench-polybench"
+category = "sci-tierA"
+# Loop form. Codon-equivalent (FP linear algebra, no bignum/Unicode).
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "equivalent" }
+version_gates = []
+parametrized_sizes = ["npbench"]
+
+[[benchmark]]
+id = "jacobi_2d"
+source_suites = ["npbench"]
+origin = "npbench-polybench"
+category = "sci-tierA"
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "equivalent" }
+version_gates = []
+parametrized_sizes = ["npbench"]
+
+[[benchmark]]
+id = "seidel_2d"
+source_suites = ["npbench"]
+origin = "npbench-polybench"
+category = "sci-tierA"
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "equivalent" }
+version_gates = []
+parametrized_sizes = ["npbench"]
+
+[[benchmark]]
+id = "heat_3d"
+source_suites = ["npbench"]
+origin = "npbench-polybench"
+category = "sci-tierA"
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "equivalent" }
+version_gates = []
+parametrized_sizes = ["npbench"]
+
+[[benchmark]]
+id = "floyd_warshall"
+source_suites = ["npbench"]
+origin = "npbench-polybench"
+category = "sci-tierA"
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "equivalent" }
+version_gates = []
+parametrized_sizes = ["npbench"]
+
+[[benchmark]]
+id = "nussinov"
+source_suites = ["npbench"]
+origin = "npbench-polybench"
+category = "sci-tierA"
+# Dynamic-programming RNA folding (int score matrix within 64-bit).
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "equivalent" }
+version_gates = []
+parametrized_sizes = ["npbench"]
+
+# --- Tier B: NPBench idiomatic NumPy (*_numpy.py). Gated behind molt's NumPy
+#     story. Three-way labeled: Codon-native-NumPy vs molt-NumPy vs CPython+C-NumPy. ---
+
+[[benchmark]]
+id = "gemm_numpy"
+source_suites = ["npbench"]
+origin = "npbench-polybench"
+category = "sci-tierB"
+# CPython baseline = C-NumPy (BLAS). Codon uniquely comparable (native compiled NumPy).
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "equivalent" }
+non_equivalent_reason = "tier-B three-way: CPython calls C-NumPy/BLAS, Codon uses its native compiled NumPy, molt uses molt-NumPy — label the three implementations distinctly, never conflate molt-vs-C-NumPy with molt-vs-interpreter"
+version_gates = []
+parametrized_sizes = ["npbench"]
+c_accelerated = true                       # CPython path is C-NumPy/BLAS
+
+[[benchmark]]
+id = "conv2d_bias_numpy"
+source_suites = ["npbench"]
+origin = "npbench-dl"
+category = "sci-tierB"
+# NPBench DL domain (conv2d_bias/lenet/mlp/resnet/softmax).
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "equivalent" }
+non_equivalent_reason = "tier-B three-way: C-NumPy vs Codon-native-NumPy vs molt-NumPy — label distinctly"
+version_gates = []
+parametrized_sizes = ["npbench"]
+c_accelerated = true
+
+# --- Scientific pipelines — the AOT-vs-AOT bake-off (Codon's home turf; §A.9) ---
+
+[[benchmark]]
+id = "smith_waterman"
+source_suites = ["molt-stress"]
+origin = "hard-microbench"               # doc 69A §A.9: Smith-Waterman — Codon/Seq flagship
+category = "sci-genomics"
+# The AOT-vs-AOT bake-off molt must approach/exceed on matched typed-numeric
+# semantics. ASCII sidesteps Unicode -> Codon-equivalent.
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "equivalent" }
+non_equivalent_reason = "codon: equivalent (ASCII sequences, int score matrix within 64-bit) — Codon/Seq's flagship; the typed-numeric AOT bake-off"
+version_gates = []
+parametrized_sizes = ["stress"]
+
+[[benchmark]]
+id = "kmer_counting"
+source_suites = ["molt-stress"]
+origin = "hard-microbench"               # doc 69A §A.9: k-mer counting (dict-heavy)
+category = "sci-genomics"
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "equivalent" }
+non_equivalent_reason = "codon: equivalent only because k-mer counting is dict-order-independent over ASCII; an order-observing variant would be non_equivalent"
+version_gates = []
+parametrized_sizes = ["stress"]
+
+
+# -----------------------------------------------------------------------------
+# (11) COMPILER / SQL TOOLING — doc 69A §A.9. sqlglot is an excellent molt target
+# (pure-Python recursive descent + megamorphic AST + deep recursion + ASCII SQL).
+# -----------------------------------------------------------------------------
+
+[[benchmark]]
+id = "sqlglot"
+source_suites = ["pyperformance"]
+origin = "pyperformance"                 # pyperf sqlglot_v2 / _parse / _transpile / _optimize
+category = "compiler-tooling"
+# Pure-Python recursive-descent + megamorphic AST. ASCII SQL -> Codon-plausible
+# in principle, but the dynamic AST/visitor dispatch is non_equivalent for Codon.
+# Optional Rust tokenizer -> c_accelerated for the accelerated path.
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "non_equivalent" }
+non_equivalent_reason = "codon: recursive-descent SQL parser + dynamic AST visitor dispatch; the optional tokenizer is Rust"
+version_gates = ["py>=3.12"]
+parametrized_sizes = ["pyperf"]
+c_accelerated = true                       # optional Rust tokenizer
+
+[[benchmark]]
+id = "sympy"
+source_suites = ["pyperformance", "pypy"]
+origin = "pyperformance"                 # pyperf sympy_expand/_integrate/_str/_sum
+category = "symbolic"
+# ⚠ Codon NON-EQUIVALENT — bignum (doc 69A §A.10 + §A.0.2(a)): symbolic math uses
+# arbitrary-precision rationals/integers.
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "non_equivalent" }
+non_equivalent_reason = "codon: arbitrary-precision integers/rationals + dynamic symbolic dispatch — bignum zone"
+version_gates = []
+parametrized_sizes = ["pyperf"]
+
+[[benchmark]]
+id = "sqlalchemy"
+source_suites = ["pyperformance", "pypy"]
+origin = "pyperformance"                 # pyperf sqlalchemy_declarative / _imperative
+category = "orm"
+# Cython-accelerated ORM.
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "unsupported" }
+non_equivalent_reason = "codon: SQLAlchemy ORM — dynamic metaclass/descriptor machinery (Cython-accelerated)"
+version_gates = []
+parametrized_sizes = ["pyperf"]
+c_accelerated = true
+
+[[benchmark]]
+id = "html5lib"
+source_suites = ["pyperformance", "pypy"]
+origin = "parser"
+category = "compiler-tooling"
+# Re-enabled pyperformance 1.14. Pure-Python HTML5 parser (state machine).
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "non_equivalent" }
+non_equivalent_reason = "codon: HTML5 tokenizer/tree-builder over Unicode text + dynamic node tree"
+version_gates = []
+parametrized_sizes = ["pyperf"]
+
+[[benchmark]]
+id = "decimal"
+source_suites = ["pyperformance"]
+origin = "pyperformance"                 # NEW pyperformance 1.12
+category = "decimal"
+# CPython _decimal C accelerator (libmpdec). molt has mpdec-backed + pure variants
+# (runtime/.../decimal_with_mpdec.rs / decimal_without_mpdec.rs).
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "non_equivalent" }
+non_equivalent_reason = "codon: no arbitrary-precision Decimal type (libmpdec semantics)"
+version_gates = ["py>=3.12"]
+parametrized_sizes = ["pyperf"]
+c_accelerated = true                       # CPython _decimal / libmpdec
+
+
+# -----------------------------------------------------------------------------
+# (12) ML INFERENCE — molt's tinygrad + DFlash path (doc 69A §A.9). Separate
+# Python ORCHESTRATION time from tensor-KERNEL (GPU/BLAS) time (the Pyston PyTorch
+# precedent). CLAUDE.md: exact tinygrad semantics (no drift) + exact DFlash
+# fidelity (a real trained drafter, never generic speculative decoding).
+# -----------------------------------------------------------------------------
+
+[[benchmark]]
+id = "tinygrad_scheduler_graph_build"
+source_suites = ["tinygrad"]
+origin = "tinygrad"
+category = "ml-orchestration"
+# The REAL compiler test = tinygrad's pure-Python scheduler/kernel-fusion graph
+# build (CLAUDE.md ML contract), NOT raw matmul. The discriminating molt metric.
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "non_equivalent" }
+non_equivalent_reason = "codon: tinygrad's scheduler uses heavy dynamic dispatch / pattern-matching graph rewriting — not Codon's static model. Measures Python graph-build orchestration, separate from GPU/BLAS kernel time."
+version_gates = []
+parametrized_sizes = ["pyperf"]
+
+[[benchmark]]
+id = "dflash_orchestration_loop"
+source_suites = ["molt-stress"]
+origin = "molt-stress"                   # doc 69A §A.9: DFlash draft/verify orchestration loop
+category = "ml-orchestration"
+# CLAUDE.md: DFlash = "Block Diffusion for Flash Speculative Decoding" (arXiv
+# 2602.06036), NOT generic speculative decoding. The discriminating molt metric =
+# the Python draft/verify ORCHESTRATION-loop cost, distinct from kernel throughput.
+# FLAG: if a model lacks a real trained DFlash drafter, say so — do not fake support.
+semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "non_equivalent" }
+non_equivalent_reason = "codon: dynamic draft/verify orchestration over a trained diffusion drafter — not Codon's model. Measures the Python orchestration loop, NOT tensor-kernel throughput. Requires a real trained DFlash drafter; report honestly if absent."
+version_gates = []
+parametrized_sizes = ["stress"]
+
+# =============================================================================
+# END registry.toml
+# =============================================================================
