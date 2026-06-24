@@ -39,7 +39,7 @@ def test_dev_py_update_dispatches_to_cli(monkeypatch) -> None:
 
     assert calls == [
         (
-            ["python3", "-m", "molt.cli", "update", "--check", "--all"],
+            ["python", "-m", "molt.cli", "update", "--check", "--all"],
             module.TEST_PYTHONS[0],
             False,
         )
@@ -222,6 +222,52 @@ def test_dev_py_bench_forwards_explicit_molt_bench_args(monkeypatch) -> None:
     ]
 
 
+def test_dev_py_clippy_expands_backend_and_tir_ratchets(monkeypatch) -> None:
+    module = _load_dev_py()
+    calls: list[list[str]] = []
+
+    monkeypatch.setattr(
+        module,
+        "_canonical_env",
+        lambda: {"PATH": "", "PYTHONPATH": str(module.ROOT / "src")},
+        raising=True,
+    )
+    monkeypatch.setattr(
+        module,
+        "_run_repo_cmd",
+        lambda cmd, _env, *, tty: calls.append(list(cmd)),
+        raising=True,
+    )
+    monkeypatch.setattr(module.sys, "argv", ["tools/dev.py", "clippy"], raising=True)
+
+    module.main()
+
+    assert calls == [
+        [
+            "cargo",
+            "clippy",
+            "-p",
+            "molt-backend",
+            "--features",
+            "native-backend",
+            "--",
+            "-D",
+            "warnings",
+        ],
+        [
+            "cargo",
+            "clippy",
+            "-p",
+            "molt-tir",
+            "--all-targets",
+            "--all-features",
+            "--",
+            "-D",
+            "warnings",
+        ],
+    ]
+
+
 def test_dev_py_gates_expand_pyproject_command_refs(monkeypatch, tmp_path) -> None:
     module = _load_dev_py()
     calls: list[list[str]] = []
@@ -278,7 +324,7 @@ def test_dev_py_gates_expand_pyproject_command_refs(monkeypatch, tmp_path) -> No
         tty=False,
     )
 
-    assert calls[:2] == [
+    assert calls[:3] == [
         [
             "cargo",
             "clippy",
@@ -290,10 +336,21 @@ def test_dev_py_gates_expand_pyproject_command_refs(monkeypatch, tmp_path) -> No
             "-D",
             "warnings",
         ],
+        [
+            "cargo",
+            "clippy",
+            "-p",
+            "molt-tir",
+            "--all-targets",
+            "--all-features",
+            "--",
+            "-D",
+            "warnings",
+        ],
         ["cargo", "deny", "check"],
     ]
-    assert calls[2][0:4] == ["cargo", "build", "--profile", "release-fast"]
-    assert calls[3][0:6] == [
+    assert calls[3][0:4] == ["cargo", "build", "--profile", "release-fast"]
+    assert calls[4][0:6] == [
         "cargo",
         "test",
         "--profile",
@@ -301,7 +358,7 @@ def test_dev_py_gates_expand_pyproject_command_refs(monkeypatch, tmp_path) -> No
         "-p",
         "molt-backend",
     ]
-    assert calls[4][1:4] == ["-m", "pytest", "tests/compliance/"]
+    assert calls[5][1:4] == ["-m", "pytest", "tests/compliance/"]
     payload = json.loads(summary_path.read_text())
     assert payload["status"] == "ok"
     assert payload["summary_path"] == str(summary_path)
@@ -310,7 +367,7 @@ def test_dev_py_gates_expand_pyproject_command_refs(monkeypatch, tmp_path) -> No
         "enabled": True,
         "marker": True,
     }
-    assert [step["returncode"] for step in payload["steps"]] == [0, 0, 0, 0, 0]
+    assert [step["returncode"] for step in payload["steps"]] == [0, 0, 0, 0, 0, 0]
     assert payload["git_status"]["stdout"] == ""
     assert payload["errors"] == []
 
@@ -414,7 +471,7 @@ def test_dev_py_test_forwards_random_order_flags(monkeypatch) -> None:
     assert calls == [
         (
             [
-                "python3",
+                "python",
                 "tools/dev_test_runner.py",
                 "--verified-subset",
                 "--random-order",
@@ -426,7 +483,7 @@ def test_dev_py_test_forwards_random_order_flags(monkeypatch) -> None:
         ),
         (
             [
-                "python3",
+                "python",
                 "tools/dev_test_runner.py",
                 "--random-order",
                 "--random-seed",
@@ -437,7 +494,7 @@ def test_dev_py_test_forwards_random_order_flags(monkeypatch) -> None:
         ),
         (
             [
-                "python3",
+                "python",
                 "tools/dev_test_runner.py",
                 "--random-order",
                 "--random-seed",

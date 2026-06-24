@@ -8,11 +8,13 @@ use rmpv::encode::write_value;
 use serde::Deserialize;
 use serde_json::Value as JsonValue;
 use sha2::{Digest, Sha256};
-use socket2::{Domain, Protocol, SockAddr, SockAddrStorage, Socket, Type};
+use socket2::{Domain, Protocol, SockAddr, SockAddrStorage, Socket, Type, socklen_t};
 use std::collections::{HashMap, VecDeque};
 use std::env;
+use std::ffi::{CStr, CString};
 use std::fs;
 use std::io::{BufReader, Read, Write};
+use std::mem::MaybeUninit;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
@@ -33,6 +35,12 @@ use wasmtime_wasi::{DirPerms, FilePerms, WasiCtxBuilder, p1};
 use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd, RawFd};
 #[cfg(windows)]
 use std::os::windows::io::{AsRawSocket, FromRawSocket, IntoRawSocket, RawSocket};
+#[cfg(windows)]
+use windows_sys::Win32::{
+    Foundation::{DUPLICATE_SAME_ACCESS, DuplicateHandle, HANDLE},
+    Networking::WinSock as winsock,
+    System::Threading::GetCurrentProcess,
+};
 
 #[derive(Clone, Copy, Debug)]
 struct Limits {
@@ -59,6 +67,59 @@ const PROCESS_STDIO_FD_BASE: i32 = 1 << 30;
 const PROCESS_STDIO_STDOUT: i32 = 1;
 const PROCESS_STDIO_STDERR: i32 = 2;
 type AddrInfoEntry = (i32, i32, i32, Vec<u8>, Vec<u8>);
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_isolate_bootstrap() -> u64 {
+    molt_obj_model::MoltObject::none().bits()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_isolate_import(_name_bits: u64) -> u64 {
+    molt_obj_model::MoltObject::none().bits()
+}
+
+#[cfg(unix)]
+const HOST_AF_INET: i32 = libc::AF_INET;
+#[cfg(windows)]
+const HOST_AF_INET: i32 = winsock::AF_INET as i32;
+#[cfg(unix)]
+const HOST_AF_INET6: i32 = libc::AF_INET6;
+#[cfg(windows)]
+const HOST_AF_INET6: i32 = winsock::AF_INET6 as i32;
+#[cfg(unix)]
+const HOST_AF_UNIX: i32 = libc::AF_UNIX;
+#[cfg(windows)]
+const HOST_AF_UNIX: i32 = winsock::AF_UNIX as i32;
+
+#[cfg(unix)]
+const HOST_SHUT_RD: i32 = libc::SHUT_RD;
+#[cfg(windows)]
+const HOST_SHUT_RD: i32 = winsock::SD_RECEIVE;
+#[cfg(unix)]
+const HOST_SHUT_WR: i32 = libc::SHUT_WR;
+#[cfg(windows)]
+const HOST_SHUT_WR: i32 = winsock::SD_SEND;
+
+#[cfg(unix)]
+const HOST_POLLIN: i16 = libc::POLLIN as i16;
+#[cfg(windows)]
+const HOST_POLLIN: i16 = winsock::POLLIN;
+#[cfg(unix)]
+const HOST_POLLOUT: i16 = libc::POLLOUT as i16;
+#[cfg(windows)]
+const HOST_POLLOUT: i16 = winsock::POLLOUT;
+#[cfg(unix)]
+const HOST_POLLERR: i16 = libc::POLLERR as i16;
+#[cfg(windows)]
+const HOST_POLLERR: i16 = winsock::POLLERR;
+#[cfg(unix)]
+const HOST_POLLHUP: i16 = libc::POLLHUP as i16;
+#[cfg(windows)]
+const HOST_POLLHUP: i16 = winsock::POLLHUP;
+#[cfg(unix)]
+const HOST_POLLNVAL: i16 = libc::POLLNVAL as i16;
+#[cfg(windows)]
+const HOST_POLLNVAL: i16 = winsock::POLLNVAL;
 
 fn debug_log<F: FnOnce() -> String>(message: F) {
     if env::var("MOLT_WASM_HOST_DEBUG").is_ok() {
@@ -1302,19 +1363,28 @@ fn stdio_from_fd(fd: i32) -> Option<Stdio> {
     #[cfg(windows)]
     {
         use std::os::windows::io::FromRawHandle;
-        let duped = unsafe { libc::_dup(fd as libc::c_int) };
-        if duped < 0 {
-            return None;
-        }
-        let handle = unsafe { libc::_get_osfhandle(duped as libc::c_int) };
+        let handle = unsafe { libc::get_osfhandle(fd as libc::c_int) };
         if handle == -1 {
-            unsafe {
-                libc::_close(duped as libc::c_int);
-            }
             return None;
         }
-        let file = unsafe { std::fs::File::from_raw_handle(handle as *mut _) };
-        return Some(Stdio::from(file));
+        let process = unsafe { GetCurrentProcess() };
+        let mut duplicated: HANDLE = std::ptr::null_mut();
+        let ok = unsafe {
+            DuplicateHandle(
+                process,
+                handle as HANDLE,
+                process,
+                &mut duplicated,
+                0,
+                0,
+                DUPLICATE_SAME_ACCESS,
+            )
+        };
+        if ok == 0 {
+            return None;
+        }
+        let file = unsafe { std::fs::File::from_raw_handle(duplicated as *mut _) };
+        Some(Stdio::from(file))
     }
     #[cfg(not(any(unix, windows)))]
     {
@@ -1365,7 +1435,7 @@ fn decode_sockaddr(buf: &[u8]) -> Result<SockAddr> {
     }
     let family = u16::from_le_bytes([buf[0], buf[1]]) as i32;
     let port = u16::from_le_bytes([buf[2], buf[3]]);
-    if family == libc::AF_INET {
+    if family == HOST_AF_INET {
         if buf.len() < 8 {
             bail!("invalid IPv4 sockaddr");
         }
@@ -1374,7 +1444,7 @@ fn decode_sockaddr(buf: &[u8]) -> Result<SockAddr> {
         let addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::from(octets), port));
         return Ok(SockAddr::from(addr));
     }
-    if family == libc::AF_INET6 {
+    if family == HOST_AF_INET6 {
         if buf.len() < 28 {
             bail!("invalid IPv6 sockaddr");
         }
@@ -1400,12 +1470,12 @@ fn encode_sockaddr(addr: &SockAddr) -> Result<Vec<u8>> {
     let mut out = Vec::new();
     match socket_addr {
         SocketAddr::V4(addr) => {
-            out.extend_from_slice(&(libc::AF_INET as u16).to_le_bytes());
+            out.extend_from_slice(&(HOST_AF_INET as u16).to_le_bytes());
             out.extend_from_slice(&addr.port().to_le_bytes());
             out.extend_from_slice(&addr.ip().octets());
         }
         SocketAddr::V6(addr) => {
-            out.extend_from_slice(&(libc::AF_INET6 as u16).to_le_bytes());
+            out.extend_from_slice(&(HOST_AF_INET6 as u16).to_le_bytes());
             out.extend_from_slice(&addr.port().to_le_bytes());
             out.extend_from_slice(&addr.flowinfo().to_le_bytes());
             out.extend_from_slice(&addr.scope_id().to_le_bytes());
@@ -1413,6 +1483,280 @@ fn encode_sockaddr(addr: &SockAddr) -> Result<Vec<u8>> {
         }
     }
     Ok(out)
+}
+
+fn encode_addrinfo_entries(entries: Vec<AddrInfoEntry>) -> Vec<u8> {
+    let mut payload = Vec::new();
+    payload.extend_from_slice(&(entries.len() as u32).to_le_bytes());
+    for (family, sock_type, proto, canon, addr) in entries {
+        payload.extend_from_slice(&family.to_le_bytes());
+        payload.extend_from_slice(&sock_type.to_le_bytes());
+        payload.extend_from_slice(&proto.to_le_bytes());
+        payload.extend_from_slice(&(canon.len() as u32).to_le_bytes());
+        payload.extend_from_slice(&canon);
+        payload.extend_from_slice(&(addr.len() as u32).to_le_bytes());
+        payload.extend_from_slice(&addr);
+    }
+    payload
+}
+
+#[cfg(unix)]
+fn host_getaddrinfo_payload(
+    host_cstr: Option<&CString>,
+    serv_cstr: Option<&CString>,
+    family: i32,
+    sock_type: i32,
+    proto: i32,
+    flags: i32,
+) -> std::result::Result<Vec<u8>, i32> {
+    let mut hints: libc::addrinfo = unsafe { std::mem::zeroed() };
+    hints.ai_family = family;
+    hints.ai_socktype = sock_type;
+    hints.ai_protocol = proto;
+    hints.ai_flags = flags;
+    let mut res: *mut libc::addrinfo = std::ptr::null_mut();
+    let err = unsafe {
+        libc::getaddrinfo(
+            host_cstr.map(|s| s.as_ptr()).unwrap_or(std::ptr::null()),
+            serv_cstr.map(|s| s.as_ptr()).unwrap_or(std::ptr::null()),
+            &hints as *const libc::addrinfo,
+            &mut res as *mut *mut libc::addrinfo,
+        )
+    };
+    if err != 0 {
+        return Err(err);
+    }
+    let mut entries: Vec<AddrInfoEntry> = Vec::new();
+    let mut cur = res;
+    while !cur.is_null() {
+        let ai = unsafe { &*cur };
+        if ai.ai_addr.is_null() {
+            cur = ai.ai_next;
+            continue;
+        }
+        if ai.ai_family != HOST_AF_INET && ai.ai_family != HOST_AF_INET6 {
+            cur = ai.ai_next;
+            continue;
+        }
+        let mut storage = SockAddrStorage::zeroed();
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                ai.ai_addr as *const u8,
+                storage.view_as::<libc::sockaddr_storage>() as *mut _ as *mut u8,
+                ai.ai_addrlen as usize,
+            );
+        }
+        let sockaddr = unsafe { SockAddr::new(storage, ai.ai_addrlen) };
+        let addr_bytes = match encode_sockaddr(&sockaddr) {
+            Ok(val) => val,
+            Err(_) => {
+                cur = ai.ai_next;
+                continue;
+            }
+        };
+        let canon = if !ai.ai_canonname.is_null() {
+            unsafe { CStr::from_ptr(ai.ai_canonname) }
+                .to_string_lossy()
+                .as_bytes()
+                .to_vec()
+        } else {
+            Vec::new()
+        };
+        entries.push((
+            ai.ai_family,
+            ai.ai_socktype,
+            ai.ai_protocol,
+            canon,
+            addr_bytes,
+        ));
+        cur = ai.ai_next;
+    }
+    unsafe { libc::freeaddrinfo(res) };
+    Ok(encode_addrinfo_entries(entries))
+}
+
+#[cfg(windows)]
+fn host_getaddrinfo_payload(
+    host_cstr: Option<&CString>,
+    serv_cstr: Option<&CString>,
+    family: i32,
+    sock_type: i32,
+    proto: i32,
+    flags: i32,
+) -> std::result::Result<Vec<u8>, i32> {
+    let mut hints = winsock::ADDRINFOA {
+        ai_flags: flags,
+        ai_family: family,
+        ai_socktype: sock_type,
+        ai_protocol: proto,
+        ai_addrlen: 0,
+        ai_canonname: std::ptr::null_mut(),
+        ai_addr: std::ptr::null_mut(),
+        ai_next: std::ptr::null_mut(),
+    };
+    let mut res: *mut winsock::ADDRINFOA = std::ptr::null_mut();
+    let err = unsafe {
+        winsock::getaddrinfo(
+            host_cstr
+                .map(|s| s.as_ptr().cast())
+                .unwrap_or(std::ptr::null()),
+            serv_cstr
+                .map(|s| s.as_ptr().cast())
+                .unwrap_or(std::ptr::null()),
+            &mut hints as *mut winsock::ADDRINFOA,
+            &mut res as *mut *mut winsock::ADDRINFOA,
+        )
+    };
+    if err != 0 {
+        return Err(err);
+    }
+    let mut entries: Vec<AddrInfoEntry> = Vec::new();
+    let mut cur = res;
+    while !cur.is_null() {
+        let ai = unsafe { &*cur };
+        if ai.ai_addr.is_null() {
+            cur = ai.ai_next;
+            continue;
+        }
+        if ai.ai_family != HOST_AF_INET && ai.ai_family != HOST_AF_INET6 {
+            cur = ai.ai_next;
+            continue;
+        }
+        let mut storage = SockAddrStorage::zeroed();
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                ai.ai_addr as *const u8,
+                storage.view_as::<winsock::SOCKADDR_STORAGE>() as *mut _ as *mut u8,
+                ai.ai_addrlen,
+            );
+        }
+        let sockaddr = unsafe { SockAddr::new(storage, ai.ai_addrlen as socklen_t) };
+        let addr_bytes = match encode_sockaddr(&sockaddr) {
+            Ok(val) => val,
+            Err(_) => {
+                cur = ai.ai_next;
+                continue;
+            }
+        };
+        let canon = if !ai.ai_canonname.is_null() {
+            unsafe { CStr::from_ptr(ai.ai_canonname.cast()) }
+                .to_string_lossy()
+                .as_bytes()
+                .to_vec()
+        } else {
+            Vec::new()
+        };
+        entries.push((
+            ai.ai_family,
+            ai.ai_socktype,
+            ai.ai_protocol,
+            canon,
+            addr_bytes,
+        ));
+        cur = ai.ai_next;
+    }
+    unsafe { winsock::freeaddrinfo(res) };
+    Ok(encode_addrinfo_entries(entries))
+}
+
+#[cfg(unix)]
+fn host_gethostname_bytes() -> std::result::Result<Vec<u8>, i32> {
+    let mut buf = vec![0u8; 256];
+    let rc = unsafe { libc::gethostname(buf.as_mut_ptr() as *mut libc::c_char, buf.len()) };
+    if rc != 0 {
+        return Err(map_io_error(&std::io::Error::last_os_error()));
+    }
+    let len = buf.iter().position(|b| *b == 0).unwrap_or(buf.len());
+    buf.truncate(len);
+    Ok(buf)
+}
+
+#[cfg(windows)]
+fn host_gethostname_bytes() -> std::result::Result<Vec<u8>, i32> {
+    let mut buf = vec![0u8; 256];
+    let rc = unsafe { winsock::gethostname(buf.as_mut_ptr(), buf.len() as i32) };
+    if rc != 0 {
+        return Err(map_io_error(&std::io::Error::last_os_error()));
+    }
+    let len = buf.iter().position(|b| *b == 0).unwrap_or(buf.len());
+    buf.truncate(len);
+    Ok(buf)
+}
+
+#[cfg(unix)]
+fn host_getservbyname_port(
+    name_cstr: &CString,
+    proto_cstr: Option<&CString>,
+) -> std::result::Result<i32, i32> {
+    let serv = unsafe {
+        libc::getservbyname(
+            name_cstr.as_ptr(),
+            proto_cstr.map(|s| s.as_ptr()).unwrap_or(std::ptr::null()),
+        )
+    };
+    if serv.is_null() {
+        return Err(libc::ENOENT);
+    }
+    Ok(unsafe { libc::ntohs((*serv).s_port as u16) as i32 })
+}
+
+#[cfg(windows)]
+fn host_getservbyname_port(
+    name_cstr: &CString,
+    proto_cstr: Option<&CString>,
+) -> std::result::Result<i32, i32> {
+    let serv = unsafe {
+        winsock::getservbyname(
+            name_cstr.as_ptr().cast(),
+            proto_cstr
+                .map(|s| s.as_ptr().cast())
+                .unwrap_or(std::ptr::null()),
+        )
+    };
+    if serv.is_null() {
+        return Err(libc::ENOENT);
+    }
+    Ok(unsafe { winsock::ntohs((*serv).s_port as u16) as i32 })
+}
+
+#[cfg(unix)]
+fn host_getservbyport_name(
+    port: i32,
+    proto_cstr: Option<&CString>,
+) -> std::result::Result<Vec<u8>, i32> {
+    let serv = unsafe {
+        libc::getservbyport(
+            libc::htons(port as u16) as i32,
+            proto_cstr.map(|s| s.as_ptr()).unwrap_or(std::ptr::null()),
+        )
+    };
+    if serv.is_null() {
+        return Err(libc::ENOENT);
+    }
+    Ok(unsafe { CStr::from_ptr((*serv).s_name) }
+        .to_bytes()
+        .to_vec())
+}
+
+#[cfg(windows)]
+fn host_getservbyport_name(
+    port: i32,
+    proto_cstr: Option<&CString>,
+) -> std::result::Result<Vec<u8>, i32> {
+    let serv = unsafe {
+        winsock::getservbyport(
+            winsock::htons(port as u16) as i32,
+            proto_cstr
+                .map(|s| s.as_ptr().cast())
+                .unwrap_or(std::ptr::null()),
+        )
+    };
+    if serv.is_null() {
+        return Err(libc::ENOENT);
+    }
+    Ok(unsafe { CStr::from_ptr((*serv).s_name.cast()) }
+        .to_bytes()
+        .to_vec())
 }
 
 fn map_io_error(err: &std::io::Error) -> i32 {
@@ -1541,13 +1885,13 @@ fn ws_drain_incoming(entry: &mut WebSocketEntry) -> Result<(), i32> {
 fn poll_ws_stream(stream: &TcpStream, events: u32) -> Result<u32, i32> {
     let mut poll_events: i16 = 0;
     if (events & IO_EVENT_READ) != 0 {
-        poll_events |= libc::POLLIN;
+        poll_events |= HOST_POLLIN;
     }
     if (events & IO_EVENT_WRITE) != 0 {
-        poll_events |= libc::POLLOUT;
+        poll_events |= HOST_POLLOUT;
     }
     if poll_events == 0 {
-        poll_events |= libc::POLLIN;
+        poll_events |= HOST_POLLIN;
     }
     #[cfg(unix)]
     {
@@ -1566,17 +1910,17 @@ fn poll_ws_stream(stream: &TcpStream, events: u32) -> Result<u32, i32> {
         }
         let revents = pfd.revents;
         let mut ready = 0u32;
-        if (revents & libc::POLLERR) != 0
-            || (revents & libc::POLLHUP) != 0
-            || (revents & libc::POLLNVAL) != 0
+        if (revents & HOST_POLLERR) != 0
+            || (revents & HOST_POLLHUP) != 0
+            || (revents & HOST_POLLNVAL) != 0
         {
             ready |= IO_EVENT_ERROR | IO_EVENT_READ | IO_EVENT_WRITE;
             return Ok(ready);
         }
-        if (revents & libc::POLLIN) != 0 {
+        if (revents & HOST_POLLIN) != 0 {
             ready |= IO_EVENT_READ;
         }
-        if (revents & libc::POLLOUT) != 0 {
+        if (revents & HOST_POLLOUT) != 0 {
             ready |= IO_EVENT_WRITE;
         }
         Ok(ready)
@@ -1584,12 +1928,12 @@ fn poll_ws_stream(stream: &TcpStream, events: u32) -> Result<u32, i32> {
     #[cfg(windows)]
     {
         let fd = stream.as_raw_socket() as usize;
-        let mut pfd = libc::WSAPOLLFD {
+        let mut pfd = winsock::WSAPOLLFD {
             fd,
             events: poll_events,
             revents: 0,
         };
-        let rc = unsafe { libc::WSAPoll(&mut pfd, 1, 0) };
+        let rc = unsafe { winsock::WSAPoll(&mut pfd, 1, 0) };
         if rc < 0 {
             return Err(map_io_error(&std::io::Error::last_os_error()));
         }
@@ -1598,17 +1942,17 @@ fn poll_ws_stream(stream: &TcpStream, events: u32) -> Result<u32, i32> {
         }
         let revents = pfd.revents;
         let mut ready = 0u32;
-        if (revents & (libc::POLLERR as i16)) != 0
-            || (revents & (libc::POLLHUP as i16)) != 0
-            || (revents & (libc::POLLNVAL as i16)) != 0
+        if (revents & HOST_POLLERR) != 0
+            || (revents & HOST_POLLHUP) != 0
+            || (revents & HOST_POLLNVAL) != 0
         {
             ready |= IO_EVENT_ERROR | IO_EVENT_READ | IO_EVENT_WRITE;
             return Ok(ready);
         }
-        if (revents & (libc::POLLIN as i16)) != 0 {
+        if (revents & HOST_POLLIN) != 0 {
             ready |= IO_EVENT_READ;
         }
-        if (revents & (libc::POLLOUT as i16)) != 0 {
+        if (revents & HOST_POLLOUT) != 0 {
             ready |= IO_EVENT_WRITE;
         }
         Ok(ready)
@@ -1618,13 +1962,13 @@ fn poll_ws_stream(stream: &TcpStream, events: u32) -> Result<u32, i32> {
 fn poll_socket(socket: &Socket, events: u32, timeout_ms: i32) -> Result<u32, i32> {
     let mut poll_events: i16 = 0;
     if (events & 1) != 0 {
-        poll_events |= libc::POLLIN;
+        poll_events |= HOST_POLLIN;
     }
     if (events & 2) != 0 {
-        poll_events |= libc::POLLOUT;
+        poll_events |= HOST_POLLOUT;
     }
     if poll_events == 0 {
-        poll_events |= libc::POLLIN;
+        poll_events |= HOST_POLLIN;
     }
     #[cfg(unix)]
     {
@@ -1643,17 +1987,17 @@ fn poll_socket(socket: &Socket, events: u32, timeout_ms: i32) -> Result<u32, i32
         }
         let revents = pfd.revents;
         let mut ready = 0u32;
-        if (revents & libc::POLLERR) != 0
-            || (revents & libc::POLLHUP) != 0
-            || (revents & libc::POLLNVAL) != 0
+        if (revents & HOST_POLLERR) != 0
+            || (revents & HOST_POLLHUP) != 0
+            || (revents & HOST_POLLNVAL) != 0
         {
             ready |= 4 | 1 | 2;
             return Ok(ready);
         }
-        if (revents & libc::POLLIN) != 0 {
+        if (revents & HOST_POLLIN) != 0 {
             ready |= 1;
         }
-        if (revents & libc::POLLOUT) != 0 {
+        if (revents & HOST_POLLOUT) != 0 {
             ready |= 2;
         }
         Ok(ready)
@@ -1661,12 +2005,12 @@ fn poll_socket(socket: &Socket, events: u32, timeout_ms: i32) -> Result<u32, i32
     #[cfg(windows)]
     {
         let fd = socket.as_raw_socket() as usize;
-        let mut pfd = libc::WSAPOLLFD {
+        let mut pfd = winsock::WSAPOLLFD {
             fd,
             events: poll_events,
             revents: 0,
         };
-        let rc = unsafe { libc::WSAPoll(&mut pfd, 1, timeout_ms) };
+        let rc = unsafe { winsock::WSAPoll(&mut pfd, 1, timeout_ms) };
         if rc < 0 {
             return Err(map_io_error(&std::io::Error::last_os_error()));
         }
@@ -1675,17 +2019,17 @@ fn poll_socket(socket: &Socket, events: u32, timeout_ms: i32) -> Result<u32, i32
         }
         let revents = pfd.revents;
         let mut ready = 0u32;
-        if (revents & (libc::POLLERR as i16)) != 0
-            || (revents & (libc::POLLHUP as i16)) != 0
-            || (revents & (libc::POLLNVAL as i16)) != 0
+        if (revents & HOST_POLLERR) != 0
+            || (revents & HOST_POLLHUP) != 0
+            || (revents & HOST_POLLNVAL) != 0
         {
             ready |= 4 | 1 | 2;
             return Ok(ready);
         }
-        if (revents & (libc::POLLIN as i16)) != 0 {
+        if (revents & HOST_POLLIN) != 0 {
             ready |= 1;
         }
-        if (revents & (libc::POLLOUT as i16)) != 0 {
+        if (revents & HOST_POLLOUT) != 0 {
             ready |= 2;
         }
         Ok(ready)
@@ -2228,9 +2572,9 @@ fn define_socket_host(linker: &mut Linker<HostState>, store: &mut Store<HostStat
          fileno: i64|
          -> i64 {
             let domain = match family {
-                x if x == libc::AF_INET => Domain::IPV4,
-                x if x == libc::AF_INET6 => Domain::IPV6,
-                x if x == libc::AF_UNIX => {
+                x if x == HOST_AF_INET => Domain::IPV4,
+                x if x == HOST_AF_INET6 => Domain::IPV6,
+                x if x == HOST_AF_UNIX => {
                     #[cfg(unix)]
                     {
                         Domain::UNIX
@@ -2431,36 +2775,17 @@ fn define_socket_host(linker: &mut Linker<HostState>, store: &mut Store<HostStat
                 Ok(sock) => sock,
                 Err(errno) => return -errno,
             };
-            let mut buf = vec![0u8; buf_len.max(0) as usize];
-            let rc = {
-                #[cfg(unix)]
-                {
-                    let fd = socket.as_raw_fd();
-                    unsafe {
-                        libc::recv(fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len(), flags)
+            let mut buf = vec![MaybeUninit::<u8>::uninit(); buf_len.max(0) as usize];
+            match socket.recv_with_flags(&mut buf, flags) {
+                Ok(n) => {
+                    let bytes = unsafe { std::slice::from_raw_parts(buf.as_ptr().cast::<u8>(), n) };
+                    if write_bytes(&mut caller, &memory, buf_ptr, bytes).is_err() {
+                        return -libc::EFAULT;
                     }
+                    n as i32
                 }
-                #[cfg(windows)]
-                {
-                    let fd = socket.as_raw_socket() as usize;
-                    unsafe {
-                        libc::recv(
-                            fd as _,
-                            buf.as_mut_ptr() as *mut libc::c_char,
-                            buf.len() as i32,
-                            flags,
-                        ) as isize
-                    }
-                }
-            };
-            if rc >= 0 {
-                let n = rc as usize;
-                if write_bytes(&mut caller, &memory, buf_ptr, &buf[..n]).is_err() {
-                    return -libc::EFAULT;
-                }
-                return n as i32;
+                Err(err) => -map_io_error(&err),
             }
-            -map_io_error(&std::io::Error::last_os_error())
         },
     );
     let socket_send = Func::wrap(
@@ -2483,31 +2808,10 @@ fn define_socket_host(linker: &mut Linker<HostState>, store: &mut Store<HostStat
                 Ok(sock) => sock,
                 Err(errno) => return -errno,
             };
-            let rc = {
-                #[cfg(unix)]
-                {
-                    let fd = socket.as_raw_fd();
-                    unsafe {
-                        libc::send(fd, data.as_ptr() as *const libc::c_void, data.len(), flags)
-                    }
-                }
-                #[cfg(windows)]
-                {
-                    let fd = socket.as_raw_socket() as usize;
-                    unsafe {
-                        libc::send(
-                            fd as _,
-                            data.as_ptr() as *const libc::c_char,
-                            data.len() as i32,
-                            flags,
-                        ) as isize
-                    }
-                }
-            };
-            if rc >= 0 {
-                return rc as i32;
+            match socket.send_with_flags(&data, flags) {
+                Ok(n) => n as i32,
+                Err(err) => -map_io_error(&err),
             }
-            -map_io_error(&std::io::Error::last_os_error())
         },
     );
     let socket_sendto = Func::wrap(
@@ -2540,40 +2844,10 @@ fn define_socket_host(linker: &mut Linker<HostState>, store: &mut Store<HostStat
                 Ok(sock) => sock,
                 Err(errno) => return -errno,
             };
-            let rc = {
-                #[cfg(unix)]
-                {
-                    let fd = socket.as_raw_fd();
-                    unsafe {
-                        libc::sendto(
-                            fd,
-                            data.as_ptr() as *const libc::c_void,
-                            data.len(),
-                            flags,
-                            addr.as_ptr() as *const libc::sockaddr,
-                            addr.len(),
-                        )
-                    }
-                }
-                #[cfg(windows)]
-                {
-                    let fd = socket.as_raw_socket() as usize;
-                    unsafe {
-                        libc::sendto(
-                            fd as _,
-                            data.as_ptr() as *const libc::c_char,
-                            data.len() as i32,
-                            flags,
-                            addr.as_ptr() as *const _,
-                            addr.len() as i32,
-                        ) as isize
-                    }
-                }
-            };
-            if rc >= 0 {
-                return rc as i32;
+            match socket.send_to_with_flags(&data, &addr, flags) {
+                Ok(n) => n as i32,
+                Err(err) => -map_io_error(&err),
             }
-            -map_io_error(&std::io::Error::last_os_error())
         },
     );
     let socket_sendmsg = Func::wrap(
@@ -2608,7 +2882,7 @@ fn define_socket_host(linker: &mut Linker<HostState>, store: &mut Store<HostStat
             } else {
                 None
             };
-            let mut ancillary = if anc_len > 0 {
+            let ancillary = if anc_len > 0 {
                 match read_bytes(&mut caller, &memory, anc_ptr, anc_len) {
                     Ok(buf) => buf,
                     Err(_) => return -libc::EFAULT,
@@ -2620,9 +2894,14 @@ fn define_socket_host(linker: &mut Linker<HostState>, store: &mut Store<HostStat
                 Ok(sock) => sock,
                 Err(errno) => return -errno,
             };
-            let rc = {
-                #[cfg(unix)]
-                {
+            #[cfg(windows)]
+            {
+                let _ = (socket, data, addr, ancillary, flags);
+                -libc::ENOSYS
+            }
+            #[cfg(unix)]
+            {
+                let rc = {
                     let fd = socket.as_raw_fd();
                     let mut iov = libc::iovec {
                         iov_base: data.as_ptr() as *mut libc::c_void,
@@ -2643,17 +2922,12 @@ fn define_socket_host(linker: &mut Linker<HostState>, store: &mut Store<HostStat
                         };
                     }
                     unsafe { libc::sendmsg(fd, &msg as *const libc::msghdr, flags) }
+                };
+                if rc >= 0 {
+                    return rc as i32;
                 }
-                #[cfg(windows)]
-                {
-                    let _ = (socket, data, addr, ancillary, flags);
-                    return -libc::ENOSYS;
-                }
-            };
-            if rc >= 0 {
-                return rc as i32;
+                -map_io_error(&std::io::Error::last_os_error())
             }
-            -map_io_error(&std::io::Error::last_os_error())
         },
     );
     let socket_recvfrom = Func::wrap(
@@ -2675,61 +2949,26 @@ fn define_socket_host(linker: &mut Linker<HostState>, store: &mut Store<HostStat
                 Ok(sock) => sock,
                 Err(errno) => return -errno,
             };
-            let mut buf = vec![0u8; buf_len.max(0) as usize];
-            let mut storage: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
-            let mut len = std::mem::size_of::<libc::sockaddr_storage>() as libc::socklen_t;
-            let rc = {
-                #[cfg(unix)]
-                {
-                    let fd = socket.as_raw_fd();
-                    unsafe {
-                        libc::recvfrom(
-                            fd,
-                            buf.as_mut_ptr() as *mut libc::c_void,
-                            buf.len(),
-                            flags,
-                            &mut storage as *mut _ as *mut libc::sockaddr,
-                            &mut len,
-                        )
+            let mut buf = vec![MaybeUninit::<u8>::uninit(); buf_len.max(0) as usize];
+            match socket.recv_from_with_flags(&mut buf, flags) {
+                Ok((n, addr)) => {
+                    let bytes = unsafe { std::slice::from_raw_parts(buf.as_ptr().cast::<u8>(), n) };
+                    if write_bytes(&mut caller, &memory, buf_ptr, bytes).is_err() {
+                        return -libc::EFAULT;
                     }
-                }
-                #[cfg(windows)]
-                {
-                    let fd = socket.as_raw_socket() as usize;
-                    unsafe {
-                        libc::recvfrom(
-                            fd as _,
-                            buf.as_mut_ptr() as *mut libc::c_char,
-                            buf.len() as i32,
-                            flags,
-                            &mut storage as *mut _ as *mut libc::sockaddr,
-                            &mut len,
-                        ) as isize
+                    let encoded = encode_sockaddr(&addr).unwrap_or_default();
+                    if encoded.len() > addr_cap as usize {
+                        let _ = write_u32(&mut caller, &memory, out_len_ptr, encoded.len() as u32);
+                        return -libc::ENOMEM;
                     }
-                }
-            };
-            if rc >= 0 {
-                let n = rc as usize;
-                if write_bytes(&mut caller, &memory, buf_ptr, &buf[..n]).is_err() {
-                    return -libc::EFAULT;
-                }
-                let mut addr_storage = SockAddrStorage::zeroed();
-                unsafe {
-                    *addr_storage.view_as::<libc::sockaddr_storage>() = storage;
-                }
-                let addr = unsafe { SockAddr::new(addr_storage, len) };
-                let encoded = encode_sockaddr(&addr).unwrap_or_default();
-                if encoded.len() > addr_cap as usize {
+                    if write_bytes(&mut caller, &memory, addr_ptr, &encoded).is_err() {
+                        return -libc::EFAULT;
+                    }
                     let _ = write_u32(&mut caller, &memory, out_len_ptr, encoded.len() as u32);
-                    return -libc::ENOMEM;
+                    n as i32
                 }
-                if write_bytes(&mut caller, &memory, addr_ptr, &encoded).is_err() {
-                    return -libc::EFAULT;
-                }
-                let _ = write_u32(&mut caller, &memory, out_len_ptr, encoded.len() as u32);
-                return n as i32;
+                Err(err) => -map_io_error(&err),
             }
-            -map_io_error(&std::io::Error::last_os_error())
         },
     );
     let socket_recvmsg = Func::wrap(
@@ -2755,13 +2994,39 @@ fn define_socket_host(linker: &mut Linker<HostState>, store: &mut Store<HostStat
                 Ok(sock) => sock,
                 Err(errno) => return -errno,
             };
-            let mut buf = vec![0u8; buf_len.max(0) as usize];
-            let mut storage: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
-            let mut name_len = std::mem::size_of::<libc::sockaddr_storage>() as libc::socklen_t;
-            let mut ancillary = vec![0u8; anc_cap.max(0) as usize];
-            let rc = {
-                #[cfg(unix)]
-                {
+            #[cfg(windows)]
+            {
+                let _ = (
+                    socket,
+                    buf_ptr,
+                    buf_len,
+                    flags,
+                    addr_ptr,
+                    addr_cap,
+                    out_addr_len_ptr,
+                    anc_ptr,
+                    anc_cap,
+                    out_anc_len_ptr,
+                    out_msg_flags_ptr,
+                );
+                if out_addr_len_ptr != 0 {
+                    let _ = write_u32(&mut caller, &memory, out_addr_len_ptr, 0);
+                }
+                if out_anc_len_ptr != 0 {
+                    let _ = write_u32(&mut caller, &memory, out_anc_len_ptr, 0);
+                }
+                if out_msg_flags_ptr != 0 {
+                    let _ = write_u32(&mut caller, &memory, out_msg_flags_ptr, 0);
+                }
+                -libc::ENOSYS
+            }
+            #[cfg(unix)]
+            {
+                let mut buf = vec![0u8; buf_len.max(0) as usize];
+                let mut storage: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
+                let mut name_len = std::mem::size_of::<libc::sockaddr_storage>() as libc::socklen_t;
+                let mut ancillary = vec![0u8; anc_cap.max(0) as usize];
+                let rc = {
                     let fd = socket.as_raw_fd();
                     let mut iov = libc::iovec {
                         iov_base: buf.as_mut_ptr() as *mut libc::c_void,
@@ -2797,64 +3062,41 @@ fn define_socket_host(linker: &mut Linker<HostState>, store: &mut Store<HostStat
                         let _ = write_u32(&mut caller, &memory, out_anc_len_ptr, guest_anc_len);
                     }
                     rc
-                }
-                #[cfg(windows)]
-                {
-                    let _ = (
-                        socket,
-                        flags,
-                        addr_ptr,
-                        addr_cap,
-                        out_addr_len_ptr,
-                        anc_ptr,
-                        anc_cap,
-                        out_anc_len_ptr,
-                        out_msg_flags_ptr,
-                    );
+                };
+                if rc >= 0 {
+                    let n = rc as usize;
+                    if write_bytes(&mut caller, &memory, buf_ptr, &buf[..n]).is_err() {
+                        return -libc::EFAULT;
+                    }
+                    let mut addr_storage = SockAddrStorage::zeroed();
+                    unsafe {
+                        *addr_storage.view_as::<libc::sockaddr_storage>() = storage;
+                    }
+                    let addr = unsafe { SockAddr::new(addr_storage, name_len) };
+                    let encoded = encode_sockaddr(&addr).unwrap_or_default();
                     if out_addr_len_ptr != 0 {
-                        let _ = write_u32(&mut caller, &memory, out_addr_len_ptr, 0);
+                        let _ =
+                            write_u32(&mut caller, &memory, out_addr_len_ptr, encoded.len() as u32);
                     }
-                    if out_anc_len_ptr != 0 {
-                        let _ = write_u32(&mut caller, &memory, out_anc_len_ptr, 0);
+                    if encoded.len() > addr_cap.max(0) as usize {
+                        return -libc::ENOMEM;
                     }
-                    if out_msg_flags_ptr != 0 {
-                        let _ = write_u32(&mut caller, &memory, out_msg_flags_ptr, 0);
+                    if !encoded.is_empty()
+                        && write_bytes(&mut caller, &memory, addr_ptr, &encoded).is_err()
+                    {
+                        return -libc::EFAULT;
                     }
-                    return -libc::ENOSYS;
+                    let anc_len_usize = ancillary.len().min(anc_cap.max(0) as usize);
+                    if anc_len_usize > 0
+                        && write_bytes(&mut caller, &memory, anc_ptr, &ancillary[..anc_len_usize])
+                            .is_err()
+                    {
+                        return -libc::EFAULT;
+                    }
+                    return n as i32;
                 }
-            };
-            if rc >= 0 {
-                let n = rc as usize;
-                if write_bytes(&mut caller, &memory, buf_ptr, &buf[..n]).is_err() {
-                    return -libc::EFAULT;
-                }
-                let mut addr_storage = SockAddrStorage::zeroed();
-                unsafe {
-                    *addr_storage.view_as::<libc::sockaddr_storage>() = storage;
-                }
-                let addr = unsafe { SockAddr::new(addr_storage, name_len) };
-                let encoded = encode_sockaddr(&addr).unwrap_or_default();
-                if out_addr_len_ptr != 0 {
-                    let _ = write_u32(&mut caller, &memory, out_addr_len_ptr, encoded.len() as u32);
-                }
-                if encoded.len() > addr_cap.max(0) as usize {
-                    return -libc::ENOMEM;
-                }
-                if !encoded.is_empty()
-                    && write_bytes(&mut caller, &memory, addr_ptr, &encoded).is_err()
-                {
-                    return -libc::EFAULT;
-                }
-                let anc_len_usize = ancillary.len().min(anc_cap.max(0) as usize);
-                if anc_len_usize > 0
-                    && write_bytes(&mut caller, &memory, anc_ptr, &ancillary[..anc_len_usize])
-                        .is_err()
-                {
-                    return -libc::EFAULT;
-                }
-                return n as i32;
+                -map_io_error(&std::io::Error::last_os_error())
             }
-            -map_io_error(&std::io::Error::last_os_error())
         },
     );
     let socket_shutdown = Func::wrap(
@@ -2865,8 +3107,8 @@ fn define_socket_host(linker: &mut Linker<HostState>, store: &mut Store<HostStat
                 Err(errno) => return -errno,
             };
             let how = match how {
-                x if x == libc::SHUT_RD => std::net::Shutdown::Read,
-                x if x == libc::SHUT_WR => std::net::Shutdown::Write,
+                x if x == HOST_SHUT_RD => std::net::Shutdown::Read,
+                x if x == HOST_SHUT_WR => std::net::Shutdown::Write,
                 _ => std::net::Shutdown::Both,
             };
             match socket.shutdown(how) {
@@ -3014,7 +3256,7 @@ fn define_socket_host(linker: &mut Linker<HostState>, store: &mut Store<HostStat
                 Err(errno) => return -errno,
             };
             let mut buf = vec![0u8; val_len.max(0) as usize];
-            let mut len = buf.len() as libc::socklen_t;
+            let mut len = buf.len() as socklen_t;
             let rc = {
                 #[cfg(unix)]
                 {
@@ -3088,25 +3330,25 @@ fn define_socket_host(linker: &mut Linker<HostState>, store: &mut Store<HostStat
             }
             #[cfg(windows)]
             {
-                let sock_rc = unsafe { libc::closesocket(fd as libc::SOCKET) };
+                let sock_rc = unsafe { winsock::closesocket(fd as winsock::SOCKET) };
                 if sock_rc == 0 {
                     return 0;
                 }
-                let sock_err = unsafe { libc::WSAGetLastError() };
-                if sock_err == libc::WSAENOTSOCK {
-                    let rc = unsafe { libc::_close(fd as libc::c_int) };
+                let sock_err = unsafe { winsock::WSAGetLastError() };
+                if sock_err == winsock::WSAENOTSOCK {
+                    let rc = unsafe { libc::close(fd as libc::c_int) };
                     if rc == 0 {
                         return 0;
                     }
                     return -map_io_error(&std::io::Error::last_os_error());
                 }
-                return -(sock_err as i32);
+                -(sock_err as i32)
             }
         },
     );
     let socketpair = Func::wrap(
         &mut *store,
-        |mut caller: Caller<'_, HostState>,
+        |_caller: Caller<'_, HostState>,
          family: i32,
          sock_type: i32,
          proto: i32,
@@ -3116,18 +3358,19 @@ fn define_socket_host(linker: &mut Linker<HostState>, store: &mut Store<HostStat
             #[cfg(not(unix))]
             {
                 let _ = (family, sock_type, proto, out_left_ptr, out_right_ptr);
-                return -libc::ENOSYS;
+                -libc::ENOSYS
             }
             #[cfg(unix)]
             {
+                let mut caller = _caller;
                 let memory = match ensure_memory(&mut caller) {
                     Ok(mem) => mem,
                     Err(_) => return -libc::EFAULT,
                 };
                 let domain = match family {
-                    x if x == libc::AF_UNIX => Domain::UNIX,
-                    x if x == libc::AF_INET => Domain::IPV4,
-                    x if x == libc::AF_INET6 => Domain::IPV6,
+                    x if x == HOST_AF_UNIX => Domain::UNIX,
+                    x if x == HOST_AF_INET => Domain::IPV4,
+                    x if x == HOST_AF_INET6 => Domain::IPV6,
                     _ => return -libc::EAFNOSUPPORT,
                 };
                 let ty = Type::from(sock_type);
@@ -3187,12 +3430,12 @@ fn define_socket_host(linker: &mut Linker<HostState>, store: &mut Store<HostStat
             };
             let host_cstr = host
                 .as_ref()
-                .map(|val| std::ffi::CString::new(val.as_slice()))
+                .map(|val| CString::new(val.as_slice()))
                 .transpose()
                 .map_err(|_| -libc::EINVAL);
             let serv_cstr = service
                 .as_ref()
-                .map(|val| std::ffi::CString::new(val.as_slice()))
+                .map(|val| CString::new(val.as_slice()))
                 .transpose()
                 .map_err(|_| -libc::EINVAL);
             let host_cstr = match host_cstr {
@@ -3203,86 +3446,17 @@ fn define_socket_host(linker: &mut Linker<HostState>, store: &mut Store<HostStat
                 Ok(val) => val,
                 Err(err) => return err,
             };
-            let mut hints: libc::addrinfo = unsafe { std::mem::zeroed() };
-            hints.ai_family = family;
-            hints.ai_socktype = sock_type;
-            hints.ai_protocol = proto;
-            hints.ai_flags = flags;
-            let mut res: *mut libc::addrinfo = std::ptr::null_mut();
-            let err = unsafe {
-                libc::getaddrinfo(
-                    host_cstr
-                        .as_ref()
-                        .map(|s| s.as_ptr())
-                        .unwrap_or(std::ptr::null()),
-                    serv_cstr
-                        .as_ref()
-                        .map(|s| s.as_ptr())
-                        .unwrap_or(std::ptr::null()),
-                    &hints as *const libc::addrinfo,
-                    &mut res as *mut *mut libc::addrinfo,
-                )
+            let payload = match host_getaddrinfo_payload(
+                host_cstr.as_ref(),
+                serv_cstr.as_ref(),
+                family,
+                sock_type,
+                proto,
+                flags,
+            ) {
+                Ok(payload) => payload,
+                Err(err) => return -err,
             };
-            if err != 0 {
-                return -err;
-            }
-            let mut entries: Vec<AddrInfoEntry> = Vec::new();
-            let mut cur = res;
-            while !cur.is_null() {
-                let ai = unsafe { &*cur };
-                if ai.ai_addr.is_null() {
-                    cur = ai.ai_next;
-                    continue;
-                }
-                if ai.ai_family != libc::AF_INET && ai.ai_family != libc::AF_INET6 {
-                    cur = ai.ai_next;
-                    continue;
-                }
-                let mut storage = SockAddrStorage::zeroed();
-                unsafe {
-                    std::ptr::copy_nonoverlapping(
-                        ai.ai_addr as *const u8,
-                        storage.view_as::<libc::sockaddr_storage>() as *mut _ as *mut u8,
-                        ai.ai_addrlen as usize,
-                    );
-                }
-                let sockaddr = unsafe { SockAddr::new(storage, ai.ai_addrlen) };
-                let addr_bytes = match encode_sockaddr(&sockaddr) {
-                    Ok(val) => val,
-                    Err(_) => {
-                        cur = ai.ai_next;
-                        continue;
-                    }
-                };
-                let canon = if !ai.ai_canonname.is_null() {
-                    unsafe { std::ffi::CStr::from_ptr(ai.ai_canonname) }
-                        .to_string_lossy()
-                        .as_bytes()
-                        .to_vec()
-                } else {
-                    Vec::new()
-                };
-                entries.push((
-                    ai.ai_family,
-                    ai.ai_socktype,
-                    ai.ai_protocol,
-                    canon,
-                    addr_bytes,
-                ));
-                cur = ai.ai_next;
-            }
-            unsafe { libc::freeaddrinfo(res) };
-            let mut payload = Vec::new();
-            payload.extend_from_slice(&(entries.len() as u32).to_le_bytes());
-            for (family, sock_type, proto, canon, addr) in entries {
-                payload.extend_from_slice(&family.to_le_bytes());
-                payload.extend_from_slice(&sock_type.to_le_bytes());
-                payload.extend_from_slice(&proto.to_le_bytes());
-                payload.extend_from_slice(&(canon.len() as u32).to_le_bytes());
-                payload.extend_from_slice(&canon);
-                payload.extend_from_slice(&(addr.len() as u32).to_le_bytes());
-                payload.extend_from_slice(&addr);
-            }
             if payload.len() > out_cap as usize {
                 let _ = write_u32(&mut caller, &memory, out_len_ptr, payload.len() as u32);
                 return -libc::ENOMEM;
@@ -3301,20 +3475,18 @@ fn define_socket_host(linker: &mut Linker<HostState>, store: &mut Store<HostStat
                 Ok(mem) => mem,
                 Err(_) => return -libc::EFAULT,
             };
-            let mut buf = vec![0u8; 256];
-            let rc = unsafe { libc::gethostname(buf.as_mut_ptr() as *mut libc::c_char, buf.len()) };
-            if rc != 0 {
-                return -map_io_error(&std::io::Error::last_os_error());
-            }
-            let len = buf.iter().position(|b| *b == 0).unwrap_or(buf.len());
-            if len > buf_cap as usize {
-                let _ = write_u32(&mut caller, &memory, out_len_ptr, len as u32);
+            let bytes = match host_gethostname_bytes() {
+                Ok(bytes) => bytes,
+                Err(err) => return -err,
+            };
+            if bytes.len() > buf_cap as usize {
+                let _ = write_u32(&mut caller, &memory, out_len_ptr, bytes.len() as u32);
                 return -libc::ENOMEM;
             }
-            if write_bytes(&mut caller, &memory, buf_ptr, &buf[..len]).is_err() {
+            if write_bytes(&mut caller, &memory, buf_ptr, &bytes).is_err() {
                 return -libc::EFAULT;
             }
-            let _ = write_u32(&mut caller, &memory, out_len_ptr, len as u32);
+            let _ = write_u32(&mut caller, &memory, out_len_ptr, bytes.len() as u32);
             0
         },
     );
@@ -3342,30 +3514,21 @@ fn define_socket_host(linker: &mut Linker<HostState>, store: &mut Store<HostStat
             } else {
                 None
             };
-            let name_cstr = match std::ffi::CString::new(name) {
+            let name_cstr = match CString::new(name) {
                 Ok(val) => val,
                 Err(_) => return -libc::EINVAL,
             };
             let proto_cstr = match proto {
-                Some(buf) => match std::ffi::CString::new(buf) {
+                Some(buf) => match CString::new(buf) {
                     Ok(val) => Some(val),
                     Err(_) => return -libc::EINVAL,
                 },
                 None => None,
             };
-            let serv = unsafe {
-                libc::getservbyname(
-                    name_cstr.as_ptr(),
-                    proto_cstr
-                        .as_ref()
-                        .map(|s| s.as_ptr())
-                        .unwrap_or(std::ptr::null()),
-                )
-            };
-            if serv.is_null() {
-                return -libc::ENOENT;
+            match host_getservbyname_port(&name_cstr, proto_cstr.as_ref()) {
+                Ok(port) => port,
+                Err(err) => -err,
             }
-            unsafe { libc::ntohs((*serv).s_port as u16) as i32 }
         },
     );
     let socket_getservbyport = Func::wrap(
@@ -3391,33 +3554,21 @@ fn define_socket_host(linker: &mut Linker<HostState>, store: &mut Store<HostStat
                 None
             };
             let proto_cstr = match proto {
-                Some(buf) => match std::ffi::CString::new(buf) {
+                Some(buf) => match CString::new(buf) {
                     Ok(val) => Some(val),
                     Err(_) => return -libc::EINVAL,
                 },
                 None => None,
             };
-            let serv = unsafe {
-                libc::getservbyport(
-                    libc::htons(port as u16) as i32,
-                    proto_cstr
-                        .as_ref()
-                        .map(|s| s.as_ptr())
-                        .unwrap_or(std::ptr::null()),
-                )
+            let bytes = match host_getservbyport_name(port, proto_cstr.as_ref()) {
+                Ok(bytes) => bytes,
+                Err(err) => return -err,
             };
-            if serv.is_null() {
-                return -libc::ENOENT;
-            }
-            let name = unsafe { std::ffi::CStr::from_ptr((*serv).s_name) }
-                .to_string_lossy()
-                .to_string();
-            let bytes = name.as_bytes();
             if bytes.len() > buf_cap as usize {
                 let _ = write_u32(&mut caller, &memory, out_len_ptr, bytes.len() as u32);
                 return -libc::ENOMEM;
             }
-            if write_bytes(&mut caller, &memory, buf_ptr, bytes).is_err() {
+            if write_bytes(&mut caller, &memory, buf_ptr, &bytes).is_err() {
                 return -libc::EFAULT;
             }
             let _ = write_u32(&mut caller, &memory, out_len_ptr, bytes.len() as u32);

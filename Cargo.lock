@@ -3423,6 +3423,7 @@ dependencies = [
  "anyhow",
  "base64",
  "libc",
+ "molt-lang-obj-model",
  "molt-runtime",
  "num-format",
  "os_pipe",
@@ -3435,6 +3436,8 @@ dependencies = [
  "url",
  "wasmtime",
  "wasmtime-wasi",
+ "winapi",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

@@ -190,16 +190,26 @@ def test_repo_githook_delegates_to_pre_commit_authority() -> None:
 
 def test_ci_clippy_failures_are_not_swallowed() -> None:
     ci_text = _read(".github/workflows/ci.yml")
-    clippy_lines = [
+    backend_clippy_lines = [
         line.strip()
         for line in ci_text.splitlines()
         if "cargo clippy -p molt-backend --features native-backend -- -D warnings"
         in line
     ]
+    tir_clippy_lines = [
+        line.strip()
+        for line in ci_text.splitlines()
+        if "cargo clippy -p molt-tir --all-targets --all-features -- -D warnings"
+        in line
+    ]
 
-    assert clippy_lines == [
+    assert backend_clippy_lines == [
         "run: python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- "
         "cargo clippy -p molt-backend --features native-backend -- -D warnings"
+    ]
+    assert tir_clippy_lines == [
+        "run: python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- "
+        "cargo clippy -p molt-tir --all-targets --all-features -- -D warnings"
     ]
 
 
