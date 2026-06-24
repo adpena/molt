@@ -93,6 +93,36 @@
 # [[array-of-tables]] section, so they appear first.
 
 # ===========================================================================
+# Pass-delta diagnostic categories.
+#
+# These are not optimizer legality facts; they drive MOLT_EMIT_PASS_DELTA's
+# machine-readable dashboard. Keeping them in the op registry prevents TIR
+# diagnostics from growing a second hand-maintained opcode taxonomy.
+# ===========================================================================
+
+pass_delta_box_opcodes = ["BoxVal"]
+pass_delta_unbox_opcodes = ["UnboxVal"]
+pass_delta_generic_call_opcodes = ["Call", "CallMethod", "CallBuiltin"]
+pass_delta_direct_call_opcodes = ["Call"]
+pass_delta_method_call_opcodes = ["CallMethod"]
+pass_delta_runtime_helper_call_opcodes = ["CallBuiltin"]
+pass_delta_rc_event_opcodes = ["IncRef", "DecRef", "DelBoundary"]
+pass_delta_inc_ref_opcodes = ["IncRef"]
+pass_delta_dec_ref_opcodes = ["DecRef"]
+pass_delta_del_boundary_opcodes = ["DelBoundary"]
+pass_delta_exception_event_opcodes = [
+    "Raise",
+    "CheckException",
+    "ExceptionPending",
+    "TryStart",
+    "TryEnd",
+    "StateBlockStart",
+    "StateBlockEnd",
+]
+pass_delta_type_guard_opcodes = ["TypeGuard"]
+pass_delta_heap_alloc_opcodes = ["Alloc", "ObjectNewBound", "ObjectNewBoundStack"]
+
+# ===========================================================================
 # CopyLowering classifier (alias_analysis.rs). FLAT sets of individual kinds +
 # the fresh-value prefix rule. A Copy carrying _original_kind = k is classified
 # by these; an unlisted k falls to the fail-closed _ => TransparentAlias

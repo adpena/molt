@@ -401,12 +401,20 @@ fills `fact_class`, `suspected_missing_fact`, `pypy_advantage_class`,
 `reference_class`, `codon_semantics`, and `attribution_confidence`; the
 scoreboard runner copies those derived fields into red cells instead of keeping
 a private name-pattern hint table.
+`MOLT_EMIT_PASS_DELTA=1` adds the machine-readable TIR pass-delta feed consumed
+by `tools/pass_delta_dashboard.py`: one JSONL row per pass with explicit host
+OS/architecture/pointer-width, target/profile, before/after fact profiles, and
+the deltas for lost representation values, added boxes, generic/runtime-helper
+calls, RC events, exception events, guards, and heap allocations. By default the
+diagnostic feed is written under `tmp/molt-backend/tir/pass_delta.jsonl`; set
+`MOLT_PASS_DELTA_PATH` to direct it to a specific artifact path.
 
 The unified CI driver includes this as the required Tier 1
 `perf-scoreboard-contract` check: it runs `tests/tools/test_perf_causality.py`,
-`tests/tools/test_perf_schema.py`, and `tests/tools/test_perf_scoreboard.py`
-without a Rust rebuild, so schema, attribution, oracle, and emission-contract
-drift cannot bypass the default gate.
+`tests/tools/test_pass_delta_dashboard.py`, `tests/tools/test_perf_schema.py`,
+and `tests/tools/test_perf_scoreboard.py` without a Rust rebuild, so schema,
+attribution, pass-delta dashboard, oracle, and emission-contract drift cannot
+bypass the default gate.
 
 Written to `bench/scoreboard/cpython_<gitrev>.json`. Per-cell logs in
 `bench/scoreboard/logs_<gitrev>/`.

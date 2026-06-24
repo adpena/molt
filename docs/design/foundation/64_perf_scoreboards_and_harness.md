@@ -87,7 +87,7 @@ not raw measurement. Authoritative inventory (verified against the tree, 2026-06
 | Existing boards (data) | `bench/scoreboard/{quiet_native,quiet_llvm,hot_profile_native,cold_start_budget,cold_start_decomposition}.json` + two historical `cpython_*.json` | Real measured data, schema v3; the first authoritative quiet board | The seed for the history index (§Phase 4); the budget files are the cold/size/RSS ceilings |
 | CI workflows | `.github/workflows/perf-validation.yml`, `perf_demo.yml`, `pr_trust_gate.yml`, `nightly.yml`, `ci.yml` | `perf-validation.yml` runs **`bench.py`** (not the gate-capable scoreboard), is **`workflow_dispatch`-only**, uploads an artifact with **no gate step** | **The single biggest gap: there is no CI job that runs the gate and blocks on it.** |
 | Unified CI driver | `tools/ci_gate.py` (1088 ln) | Tiered (Tier 1/2/3) correctness pipeline, memory-guarded, JSON | **Zero references to perf** — perf is not a tier. Add a perf tier (§Phase 3). |
-| Structural audit | `docs/design/foundation/STRUCTURAL_AUDIT_BOARD.md` | Older audit state named `tools/perf_causality.py` and `tools/pass_delta_dashboard.py` as **MISSING**; the current tree now has the cycle/taxonomy `perf_causality.py` rung while `pass_delta_dashboard.py` and the fact-graph dump remain missing | Phase 5 completes the census/pass-delta join and keeps `perf_causality.py` as the attribution authority |
+| Structural audit | `docs/design/foundation/STRUCTURAL_AUDIT_BOARD.md` | Older audit state named `tools/perf_causality.py` and `tools/pass_delta_dashboard.py` as **MISSING**; the current tree now has the cycle/taxonomy `perf_causality.py` rung plus the `MOLT_EMIT_PASS_DELTA=1` emitter / `tools/pass_delta_dashboard.py` dashboard, while the fact-graph dump and final census/pass-delta join remain pending | Phase 5 completes the census/pass-delta join and keeps `perf_causality.py` as the attribution authority |
 
 **North-star alignment.** Doc 51 ("10-year roadmap", NORTH STAR) §3 *names this exact
 deliverable*: "The four+1 scoreboards (kept green, CI-gated): 1 CPython, 2 PyPy, 3
@@ -450,13 +450,16 @@ only* delta (within `perf_regression` thresholds + CI) is NOT flagged (no false 
 
 Complete the derived-attribution stack the STRUCTURAL_AUDIT_BOARD routes:
 
-- `tools/pass_delta_dashboard.py`: consumes a per-pass IR-fact delta (which pass lost a
-  `Repr`, added a box, added a generic call, added an RC event) for a given benchmark.
-  Source of the delta: the backend's existing pass-instrumentation (`MOLT_TIR_DUMP` /
-  analysis-verify hooks). If a *machine-readable* per-pass delta emit does not exist, add
-  an **additive** `MOLT_EMIT_PASS_DELTA=1` JSON dump in the TIR pass manager
-  (`runtime/molt-tir/src/tir/passes/…` pass-manager seam) — diagnostic-only, never alters
-  product output (Bootstrap/zero-workaround safe: it is a pure observer).
+- `tools/pass_delta_dashboard.py`: consumes the per-pass IR-fact delta emitted by
+  `MOLT_EMIT_PASS_DELTA=1` from `runtime/molt-tir/src/tir/pass_delta.rs` at the TIR
+  pass-manager seam. The JSONL schema records explicit host OS/architecture/family/
+  pointer width, target/profile, before/after fact profiles, and deltas for lost `Repr`
+  values, boxes, generic/runtime-helper calls, RC events, exception events, guards, and
+  heap allocations. The opcode-category membership is generated from `op_kinds.toml`
+  (`opcode_pass_delta_facts_table`), not hand-classified in the observer. The default
+  artifact is `tmp/molt-backend/tir/pass_delta.jsonl`; `MOLT_PASS_DELTA_PATH` may point
+  at a specific artifact. It is diagnostic-only and never alters product output
+  (Bootstrap/zero-workaround safe: it is a pure observer).
 - `tools/perf_causality.py`: the existing first rung consumes #76 cycle-profile rows
   (`in_binary_top` / `top_symbols`), owns deterministic `hot-symbol-pattern → fact_class`
   attribution plus a schema-vetted benchmark-taxonomy fallback, then writes the cell's
@@ -474,9 +477,10 @@ assert `perf_causality.py` classifies `bench_exception_heavy` → `ExceptionRegi
 SCOREBOARD.md) and `bench_etl_orders` → `ShapeFacts/string-repr` (matches the documented
 "per-row split + UTF-8 decode + dataclass construction"). This is a **falsifiable** gate:
 the tool must reproduce the human attributions the council already verified. The current
-Tier 1 contract covers this first rung in `tests/tools/test_perf_causality.py`; the
-census/pass-delta extension must add its own falsification fixtures before replacing
-cycle-only confidence with joined confidence.
+Tier 1 contract covers the cycle rung in `tests/tools/test_perf_causality.py` and the
+pass-delta dashboard schema/aggregation in `tests/tools/test_pass_delta_dashboard.py`;
+the remaining census/pass-delta join into `perf_causality.py` must add its own
+falsification fixtures before replacing cycle-only confidence with joined confidence.
 
 ### Phase 6 — PyPy/Codon mechanism taxonomy + reference-class suite tags + canonical bridge
 
@@ -753,9 +757,11 @@ becomes a release-gating correctness property in fact, not just in the constitut
 - Workflow to rewrite (Phase 3): `.github/workflows/perf-validation.yml` (currently
   `workflow_dispatch`, runs `bench.py`, no gate) → `pull_request`+`push:[main]`, runs the
   smoke gate, blocks on nonzero exit.
-- Remaining Phase 5 tool to build: `tools/pass_delta_dashboard.py`. `tools/perf_causality.py`
-  now exists as the cycle/taxonomy attribution authority; it still needs the census and
-  pass-delta join before Phase 5 is complete.
+- Phase 5 pass-delta substrate now exists: `MOLT_EMIT_PASS_DELTA=1` in the TIR pass
+  manager writes JSONL rows and `tools/pass_delta_dashboard.py` summarizes them. The
+  remaining Phase 5 work is the census/pass-delta join into `tools/perf_causality.py`;
+  `perf_causality.py` remains the cycle/taxonomy attribution authority until that joined
+  confidence gate lands.
 - Census join input (Phase 5): `tools/call_fact_coverage.py` (exists).
 - Cycle-profile join input (Phase 5): `bench/scoreboard/hot_profile_native.json` (the
   committed #68/#76 attributions — the Phase-5 falsification fixture).

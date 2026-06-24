@@ -2311,6 +2311,221 @@ pub fn opcode_alias_slot_observation_table(opcode: OpCode) -> AliasSlotObservati
     }
 }
 
+/// Pass-delta dashboard opcode facts. These are diagnostic categories,
+/// not optimizer legality facts, but they still live in op_kinds.toml so
+/// TIR diagnostics do not grow a second hand-classified opcode registry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PassDeltaOpcodeFacts {
+    pub box_op: bool,
+    pub unbox_op: bool,
+    pub generic_call: bool,
+    pub direct_call: bool,
+    pub method_call: bool,
+    pub runtime_helper_call: bool,
+    pub rc_event: bool,
+    pub inc_ref: bool,
+    pub dec_ref: bool,
+    pub del_boundary: bool,
+    pub exception_event: bool,
+    pub type_guard: bool,
+    pub heap_alloc: bool,
+}
+
+const PASS_DELTA_OPCODE_FACTS_NONE: PassDeltaOpcodeFacts = PassDeltaOpcodeFacts {
+    box_op: false,
+    unbox_op: false,
+    generic_call: false,
+    direct_call: false,
+    method_call: false,
+    runtime_helper_call: false,
+    rc_event: false,
+    inc_ref: false,
+    dec_ref: false,
+    del_boundary: false,
+    exception_event: false,
+    type_guard: false,
+    heap_alloc: false,
+};
+
+/// Per-OpCode pass-delta diagnostic facts. EXHAUSTIVE over OpCode so a
+/// new opcode cannot silently disappear from pass-delta attribution.
+#[inline]
+pub fn opcode_pass_delta_facts_table(opcode: OpCode) -> PassDeltaOpcodeFacts {
+    match opcode {
+        OpCode::Add => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::Sub => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::Mul => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::CheckedAdd => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::InplaceAdd => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::InplaceSub => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::InplaceMul => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::Div => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::FloorDiv => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::Mod => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::Pow => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::Neg => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::Pos => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::Eq => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::Ne => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::Lt => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::Le => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::Gt => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::Ge => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::Is => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::IsNot => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::In => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::NotIn => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::BitAnd => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::BitOr => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::BitXor => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::BitNot => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::Shl => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::Shr => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::And => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::Or => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::Not => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::Bool => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::Alloc => PassDeltaOpcodeFacts {
+            heap_alloc: true,
+            ..PASS_DELTA_OPCODE_FACTS_NONE
+        },
+        OpCode::StackAlloc => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::ObjectNewBound => PassDeltaOpcodeFacts {
+            heap_alloc: true,
+            ..PASS_DELTA_OPCODE_FACTS_NONE
+        },
+        OpCode::ObjectNewBoundStack => PassDeltaOpcodeFacts {
+            heap_alloc: true,
+            ..PASS_DELTA_OPCODE_FACTS_NONE
+        },
+        OpCode::Free => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::LoadAttr => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::StoreAttr => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::DelAttr => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::Index => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::StoreIndex => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::DelIndex => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::DeleteVar => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::Call => PassDeltaOpcodeFacts {
+            generic_call: true,
+            direct_call: true,
+            ..PASS_DELTA_OPCODE_FACTS_NONE
+        },
+        OpCode::CallMethod => PassDeltaOpcodeFacts {
+            generic_call: true,
+            method_call: true,
+            ..PASS_DELTA_OPCODE_FACTS_NONE
+        },
+        OpCode::CallBuiltin => PassDeltaOpcodeFacts {
+            generic_call: true,
+            runtime_helper_call: true,
+            ..PASS_DELTA_OPCODE_FACTS_NONE
+        },
+        OpCode::OrdAt => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::BoxVal => PassDeltaOpcodeFacts {
+            box_op: true,
+            ..PASS_DELTA_OPCODE_FACTS_NONE
+        },
+        OpCode::UnboxVal => PassDeltaOpcodeFacts {
+            unbox_op: true,
+            ..PASS_DELTA_OPCODE_FACTS_NONE
+        },
+        OpCode::TypeGuard => PassDeltaOpcodeFacts {
+            type_guard: true,
+            ..PASS_DELTA_OPCODE_FACTS_NONE
+        },
+        OpCode::IncRef => PassDeltaOpcodeFacts {
+            rc_event: true,
+            inc_ref: true,
+            ..PASS_DELTA_OPCODE_FACTS_NONE
+        },
+        OpCode::DecRef => PassDeltaOpcodeFacts {
+            rc_event: true,
+            dec_ref: true,
+            ..PASS_DELTA_OPCODE_FACTS_NONE
+        },
+        OpCode::DelBoundary => PassDeltaOpcodeFacts {
+            rc_event: true,
+            del_boundary: true,
+            ..PASS_DELTA_OPCODE_FACTS_NONE
+        },
+        OpCode::BuildList => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::BuildDict => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::BuildTuple => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::BuildSet => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::BuildSlice => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::GetIter => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::IterNext => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::IterNextUnboxed => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::ForIter => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::AllocTask => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::StateSwitch => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::StateTransition => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::StateYield => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::ChanSendYield => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::ChanRecvYield => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::ClosureLoad => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::ClosureStore => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::Yield => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::YieldFrom => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::Raise => PassDeltaOpcodeFacts {
+            exception_event: true,
+            ..PASS_DELTA_OPCODE_FACTS_NONE
+        },
+        OpCode::CheckException => PassDeltaOpcodeFacts {
+            exception_event: true,
+            ..PASS_DELTA_OPCODE_FACTS_NONE
+        },
+        OpCode::ExceptionPending => PassDeltaOpcodeFacts {
+            exception_event: true,
+            ..PASS_DELTA_OPCODE_FACTS_NONE
+        },
+        OpCode::FunctionDefaultsVersion => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::TryStart => PassDeltaOpcodeFacts {
+            exception_event: true,
+            ..PASS_DELTA_OPCODE_FACTS_NONE
+        },
+        OpCode::TryEnd => PassDeltaOpcodeFacts {
+            exception_event: true,
+            ..PASS_DELTA_OPCODE_FACTS_NONE
+        },
+        OpCode::StateBlockStart => PassDeltaOpcodeFacts {
+            exception_event: true,
+            ..PASS_DELTA_OPCODE_FACTS_NONE
+        },
+        OpCode::StateBlockEnd => PassDeltaOpcodeFacts {
+            exception_event: true,
+            ..PASS_DELTA_OPCODE_FACTS_NONE
+        },
+        OpCode::ConstInt => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::ConstBigInt => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::ConstFloat => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::ConstStr => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::ConstBool => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::ConstNone => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::ConstBytes => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::Copy => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::Import => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::ImportFrom => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::ModuleCacheGet => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::ModuleCacheSet => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::ModuleCacheDel => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::ModuleGetAttr => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::ModuleImportFrom => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::ModuleGetGlobal => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::ModuleGetName => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::ModuleSetAttr => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::ModuleDelGlobal => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::ModuleDelGlobalIfPresent => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::WarnStderr => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::ScfIf => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::ScfFor => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::ScfWhile => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::ScfYield => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::Deopt => PASS_DELTA_OPCODE_FACTS_NONE,
+    }
+}
+
 /// Literal payload kind consumers may record for an opcode.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum LiteralPayloadKind {
