@@ -38,6 +38,51 @@ pub(in crate::native_backend::function_compiler) enum OpFlow {
     Continue,
 }
 
+#[cfg(feature = "native-backend")]
+#[allow(clippy::too_many_arguments)]
+pub(in crate::native_backend::function_compiler) fn op_prefers_int_lane(
+    scalar_fast_paths_enabled: bool,
+    representation_plan: &ScalarRepresentationPlan,
+    op: &OpIR,
+    int_like_vars: &BTreeSet<String>,
+    bool_like_vars: &BTreeSet<String>,
+    int_primary_vars: &BTreeSet<String>,
+    bool_primary_vars: &BTreeSet<String>,
+) -> bool {
+    let name_is_integer_scalar = |name: &str| {
+        int_like_vars.contains(name)
+            || bool_like_vars.contains(name)
+            || int_primary_vars.contains(name)
+            || bool_primary_vars.contains(name)
+    };
+    let op_args_are_integer_scalar = op
+        .args
+        .as_ref()
+        .is_some_and(|args| !args.is_empty() && args.iter().all(|arg| name_is_integer_scalar(arg)));
+    scalar_fast_paths_enabled
+        && (representation_plan.op_scalar_lane(op) == Some(ScalarKind::Int)
+            || (matches!(
+                op.kind.as_str(),
+                "add"
+                    | "inplace_add"
+                    | "sub"
+                    | "inplace_sub"
+                    | "mul"
+                    | "inplace_mul"
+                    | "floordiv"
+                    | "inplace_floordiv"
+                    | "mod"
+                    | "mod_"
+                    | "inplace_mod"
+                    | "lt"
+                    | "le"
+                    | "gt"
+                    | "ge"
+                    | "eq"
+                    | "ne"
+            ) && op_args_are_integer_scalar))
+}
+
 pub(in crate::native_backend::function_compiler) mod arith;
 pub(in crate::native_backend::function_compiler) mod attrs;
 pub(in crate::native_backend::function_compiler) mod callargs;
@@ -45,6 +90,7 @@ pub(in crate::native_backend::function_compiler) mod calls;
 pub(in crate::native_backend::function_compiler) mod class_ops;
 pub(in crate::native_backend::function_compiler) mod compare;
 pub(in crate::native_backend::function_compiler) mod context_mgmt;
+pub(in crate::native_backend::function_compiler) mod control_flow;
 pub(in crate::native_backend::function_compiler) mod coroutine;
 pub(in crate::native_backend::function_compiler) mod dataclass;
 pub(in crate::native_backend::function_compiler) mod dict_ops;
