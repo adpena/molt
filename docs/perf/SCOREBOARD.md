@@ -400,7 +400,10 @@ rewrites, merge outputs, and final run artifacts; a schema violation raises
 fills `fact_class`, `suspected_missing_fact`, `pypy_advantage_class`,
 `reference_class`, `codon_semantics`, and `attribution_confidence`; the
 scoreboard runner copies those derived fields into red cells instead of keeping
-a private name-pattern hint table.
+a private name-pattern hint table. When supplied `--pass-delta-dashboard` and
+`--call-fact-coverage` JSON evidence, it also records the supporting pass-delta
+score/passes/fact classes and call-fact attached/transient counts without letting
+those secondary inputs override the primary attribution class.
 `MOLT_EMIT_PASS_DELTA=1` adds the machine-readable TIR pass-delta feed consumed
 by `tools/pass_delta_dashboard.py`: one JSONL row per pass with explicit host
 OS/architecture/pointer-width, target/profile, before/after fact profiles, and
