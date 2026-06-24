@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -18,9 +19,14 @@ def _cell(**overrides: object) -> dict[str, object]:
         "target": "native",
         "backend": "native",
         "profile": "release-fast",
-        "cpython_ratio": 2.0,
-        "cold_ratio": 2.0,
-        "warm_ratio": 2.0,
+        "build_ok": True,
+        "run_blocked": False,
+        "molt_ok": True,
+        "cpython_ok": True,
+        "cold_molt_s": 0.12,
+        "cold_cpython_s": 0.24,
+        "warm_molt_s": 0.10,
+        "warm_cpython_s": 0.20,
         "warm_speedup": 2.0,
         "cold_speedup": 2.0,
         "startup_tax_ms": 5.0,
@@ -29,11 +35,11 @@ def _cell(**overrides: object) -> dict[str, object]:
         "molt_peak_rss_mib": 18.0,
         "compile_time_s": 0.4,
         "stable": True,
-        "red": False,
-        "status": "green",
         "pypy_ratio": None,
         "codon_ratio": None,
         "codon_equivalent": None,
+        "cpython_peak_rss_mib": 15.0,
+        "output_parity": True,
         "log_artifact": "bench/scoreboard/logs/fib.log",
         "classification": schema.CLASS_GREEN,
     }
@@ -92,19 +98,59 @@ def test_schema_accepts_valid_board_and_materializes_cell() -> None:
     cell = _cell()
     doc = _doc(cell)
 
-    assert schema.validate_scoreboard_doc(doc) == []
+    assert schema.validate_board(doc) == []
     flattened = schema.flatten_cells(doc)
     assert flattened == [cell]
     perf_cell = schema.PerfCell.from_payload(flattened[0])
     assert perf_cell.benchmark == "tests/benchmarks/bench_fib.py"
     assert perf_cell.verdict == schema.VERDICT_GREEN
-    assert perf_cell.red is False
+    assert perf_cell.stable is True
+    assert perf_cell.warm_speedup == 2.0
 
 
 def test_schema_rejects_unknown_verdict_and_classification() -> None:
     cell = _cell(verdict="MAYBE_FAST", classification="SORT_OF_GREEN")
 
-    problems = schema.validate_cell_payload(cell)
+    problems = schema.validate_cell(cell)
 
     assert any("unknown verdict" in problem for problem in problems)
     assert any("unknown classification" in problem for problem in problems)
+
+
+def test_schema_rejects_measured_verdict_without_method_facts() -> None:
+    cell = _cell(warm_molt_s=None)
+
+    problems = schema.validate_cell(cell)
+
+    assert any("missing numeric facts" in problem for problem in problems)
+
+
+def test_schema_rejects_red_stable_without_quiescent_repeat_ci() -> None:
+    cell = _cell(
+        verdict=schema.VERDICT_FAIL_ENGINE,
+        classification=schema.CLASS_RED_STABLE,
+        measured_quiescent=False,
+        repeat_ci_lo=None,
+        repeat_ci_hi=None,
+        warm_speedup=0.8,
+        warm_molt_s=0.20,
+        warm_cpython_s=0.16,
+    )
+
+    problems = schema.validate_cell(cell)
+
+    assert any("measured_quiescent=true" in problem for problem in problems)
+    assert any("numeric repeat CI" in problem for problem in problems)
+
+
+def test_schema_accepts_checked_in_quiet_native_board_cells() -> None:
+    doc = json.loads(
+        (REPO_ROOT / "bench" / "scoreboard" / "quiet_native.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert schema.validate_board(doc) == []
+    cells = schema.flatten_cells(doc)
+    assert cells
+    assert all(schema.PerfCell.from_payload(cell).benchmark for cell in cells)

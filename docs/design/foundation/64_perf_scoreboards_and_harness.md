@@ -335,18 +335,20 @@ the board now *tells you the representation*.
 ### Phase 0 — Pin the contract (this doc + `tools/perf_schema.py`)
 
 **Deliverable:** `tools/perf_schema.py` — the `PerfCell` dataclass + `validate_cell()` +
-`SCHEMA_VERSION` constant + the `fact_class` enum (the doc-51 fact families) + the
-`pypy_advantage_class` enum + the `reference_class`/`codon_semantics` enums. Extract the
-*currently-inline* schema constants from `perf_scoreboard.py` (the `VERDICT_*`,
-`CLASS_*`, `CLASSIFY_STATES`, thresholds at lines ~104–172) into this leaf module and have
-`perf_scoreboard.py` import them (no behavior change — pure extraction, the first slice of
-the Phase-7 decomposition).
+`SCHEMA_VERSION` / `RED_THRESHOLD` / `UNSTABLE_CV` constants + the `fact_class` enum (the
+doc-51 fact families) + the `pypy_advantage_class` enum + the
+`reference_class`/`codon_semantics` enums. Extract the *currently-inline* schema constants
+from `perf_scoreboard.py` (the `VERDICT_*`, `CLASS_*`, `CLASSIFY_STATES`, thresholds at
+lines ~104–172) into this leaf module and have `perf_scoreboard.py` import them. The
+contract is not just vocabulary: `validate_cell()` must reject measured verdicts that lack
+the full cold/warm methodology row, and `RED_STABLE` must prove quiescence plus a repeat CI
+that clears below the CPython floor.
 
-**Gates:** `uv run --python 3.12 python3 tools/perf_scoreboard.py --self-test` passes
+**Gates:** `uv run --python 3.12 python tools/perf_scoreboard.py --self-test` passes
 unchanged (proves the extraction is behavior-preserving); a new
 `tests/tools/test_perf_schema.py` round-trips every cell in the committed
 `bench/scoreboard/quiet_native.json` through `validate_cell()` (proves the contract
-accepts real data and rejects a column-dropped mutant). `python3 tools/structural_audit.py
+accepts real data and rejects a column-dropped mutant). `python tools/structural_audit.py
 --check` does not regress (new file is small/leaf).
 
 **Independently valuable:** yes — a validated schema catches malformed boards immediately.

@@ -8,9 +8,12 @@ tool's ``--self-test`` (one real bench_fib build).
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+
+import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 for _p in (REPO_ROOT / "tools", REPO_ROOT / "src"):
@@ -46,6 +49,12 @@ def _cell(
     c.cold_molt_s = cold_molt_s
     c.cold_cpython_s = cold_cpython_s
     c.run_blocked = run_blocked
+    if build_ok and molt_ok:
+        c.molt_peak_rss_mib = 18.0
+    if cpython_ok:
+        c.cpython_peak_rss_mib = 15.0
+    if build_ok and molt_ok and cpython_ok and not run_blocked:
+        c.output_parity = True
     return c
 
 
@@ -65,7 +74,7 @@ def test_green_warm_and_cold_fast() -> None:
     assert c.warm_speedup == 2.0
     assert c.cold_speedup is not None and c.cold_speedup > 1.0
     assert c.startup_tax_ms == 20.0  # (0.12 - 0.10) * 1000
-    assert c.red is False
+    assert ps.verdict_fails_gate(c.verdict) is False
 
 
 def test_fail_engine_when_warm_at_or_below_floor() -> None:
@@ -79,7 +88,7 @@ def test_fail_engine_when_warm_at_or_below_floor() -> None:
     c.finalize(budget_ms=1000.0, authoritative=True)
     assert c.verdict == ps.VERDICT_FAIL_ENGINE
     assert c.warm_speedup is not None and c.warm_speedup < 1.0
-    assert c.red is True
+    assert ps.verdict_fails_gate(c.verdict) is True
     assert c.suspected_missing_fact  # a triage hint is attached
 
 
@@ -109,7 +118,7 @@ def test_warn_cold_floor_when_warm_fast_but_cold_slow_within_budget() -> None:
     assert c.warm_speedup is not None and c.warm_speedup > 1.0
     assert c.cold_speedup is not None and c.cold_speedup < 1.0
     assert c.startup_tax_ms == 50.0
-    assert c.red is False  # warns, does not hard-fail
+    assert ps.verdict_fails_gate(c.verdict) is False
 
 
 def test_fail_cold_budget_when_tax_exceeds_budget() -> None:
@@ -124,7 +133,7 @@ def test_fail_cold_budget_when_tax_exceeds_budget() -> None:
     assert c.verdict == ps.VERDICT_FAIL_COLD_BUDGET
     assert c.startup_tax_ms == 250.0
     assert c.cold_budget_ms == 100.0
-    assert c.red is True
+    assert ps.verdict_fails_gate(c.verdict) is True
     assert c.suspected_startup_component
 
 
@@ -139,7 +148,7 @@ def test_no_budget_means_cold_budget_cannot_fire() -> None:
     )
     c.finalize(budget_ms=None, authoritative=True)
     assert c.verdict == ps.VERDICT_WARN_COLD_FLOOR  # cold<1 but warm>1
-    assert c.red is False
+    assert ps.verdict_fails_gate(c.verdict) is False
 
 
 def test_fail_stale_overrides_everything() -> None:
@@ -152,7 +161,7 @@ def test_fail_stale_overrides_everything() -> None:
     )
     c.finalize(budget_ms=100.0, authoritative=False)
     assert c.verdict == ps.VERDICT_FAIL_STALE
-    assert c.red is True
+    assert ps.verdict_fails_gate(c.verdict) is True
 
 
 def test_unstable_is_gated() -> None:
@@ -165,25 +174,29 @@ def test_unstable_is_gated() -> None:
     )
     c.finalize(budget_ms=100.0, authoritative=True)
     assert c.verdict == ps.VERDICT_UNSTABLE
-    assert c.red is True
+    assert ps.verdict_fails_gate(c.verdict) is True
 
 
 def test_build_failed_and_run_error_and_blocked_and_incompat() -> None:
     bf = _cell(build_ok=False)
     bf.finalize(authoritative=True)
-    assert bf.verdict == ps.VERDICT_BUILD_FAILED and bf.red is True
+    assert bf.verdict == ps.VERDICT_BUILD_FAILED
+    assert ps.verdict_fails_gate(bf.verdict) is True
 
     re = _cell(molt_ok=False)
     re.finalize(authoritative=True)
-    assert re.verdict == ps.VERDICT_RUN_ERROR and re.red is True
+    assert re.verdict == ps.VERDICT_RUN_ERROR
+    assert ps.verdict_fails_gate(re.verdict) is True
 
     rb = _cell(run_blocked=True)
     rb.finalize(authoritative=True)
-    assert rb.verdict == ps.VERDICT_RUN_BLOCKED and rb.red is False
+    assert rb.verdict == ps.VERDICT_RUN_BLOCKED
+    assert ps.verdict_fails_gate(rb.verdict) is False
 
     ci = _cell(cpython_ok=False)
     ci.finalize(authoritative=True)
-    assert ci.verdict == ps.VERDICT_CPY_INCOMPAT and ci.red is False
+    assert ci.verdict == ps.VERDICT_CPY_INCOMPAT
+    assert ps.verdict_fails_gate(ci.verdict) is False
 
 
 # --- Gate exit code ---------------------------------------------------------
@@ -271,11 +284,139 @@ def test_board_carries_provenance_and_passes_schema() -> None:
         "authoritative": True,
     }
     doc = _board([g], provenance=prov)
-    problems = ps.validate_scoreboard_doc(doc)
+    problems = ps.validate_board(doc)
     assert problems == [], f"schema problems: {problems}"
     assert doc["provenance"]["origin_sha"] == "a" * 40
     assert doc["summary"]["cells_green"] == 1
     assert doc["summary"]["gate_fails"] is False
+
+
+def _oracle_payload(
+    *,
+    implementation: str = "CPython",
+    version: str = "3.14.0",
+    executable: str = "candidate-real-python",
+    sys_platform: str | None = None,
+    machine: str | None = None,
+    pointer_bits: int | None = None,
+) -> str:
+    return json.dumps(
+        {
+            "implementation": implementation,
+            "version": version,
+            "executable": executable,
+            "sys_platform": sys_platform or sys.platform,
+            "machine": machine or ps.platform.machine(),
+            "pointer_bits": pointer_bits or ps._host_pointer_bits(),
+        }
+    )
+
+
+def test_cpython_oracle_resolver_requires_host_native_cpython(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    wrong_machine = "arm64" if ps._host_arch() != "aarch64" else "x86_64"
+    candidates = [
+        ("store-python3",),
+        ("pypy",),
+        ("old-python",),
+        ("wrong-arch-python",),
+        ("good-python",),
+    ]
+    monkeypatch.setattr(ps, "_default_cpython_candidate_cmds", lambda: candidates)
+    monkeypatch.setattr(
+        ps.bench, "_canonical_interpreter", lambda executable: f"resolved:{executable}"
+    )
+
+    def fake_metadata_probe(cmd, **kwargs):
+        name = str(cmd[0]).removeprefix("resolved:")
+        if name == "store-python3":
+            return SimpleNamespace(
+                returncode=9009,
+                stdout="",
+                stderr="Python was not found",
+            )
+        if name == "pypy":
+            return SimpleNamespace(
+                returncode=0,
+                stdout=_oracle_payload(
+                    implementation="PyPy", executable="pypy-real"
+                ),
+                stderr="",
+            )
+        if name == "old-python":
+            return SimpleNamespace(
+                returncode=0,
+                stdout=_oracle_payload(version="3.11.9", executable="old-real"),
+                stderr="",
+            )
+        if name == "wrong-arch-python":
+            return SimpleNamespace(
+                returncode=0,
+                stdout=_oracle_payload(
+                    executable="wrong-arch-real", machine=wrong_machine
+                ),
+                stderr="",
+            )
+        assert name == "good-python"
+        return SimpleNamespace(
+            returncode=0,
+            stdout=_oracle_payload(executable="good-real-python"),
+            stderr="",
+        )
+
+    monkeypatch.setattr(ps, "_metadata_probe", fake_metadata_probe)
+
+    oracle = ps._resolve_system_cpython(None)
+
+    assert oracle.cmd == ("resolved:good-real-python",)
+    assert oracle.implementation == "CPython"
+    assert oracle.version == "3.14.0"
+    assert oracle.sys_platform == sys.platform
+    assert oracle.arch == ps._host_arch()
+    assert oracle.pointer_bits == ps._host_pointer_bits()
+
+
+def test_cpython_oracle_windows_launcher_resolves_to_real_interpreter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(ps, "_default_cpython_candidate_cmds", lambda: [("py", "-3.14")])
+    monkeypatch.setattr(
+        ps.bench, "_canonical_interpreter", lambda executable: f"resolved:{executable}"
+    )
+
+    def fake_metadata_probe(cmd, **kwargs):
+        assert cmd[:2] == ["resolved:py", "-3.14"]
+        return SimpleNamespace(
+            returncode=0,
+            stdout=_oracle_payload(executable="C:/Python314/python.exe"),
+            stderr="",
+        )
+
+    monkeypatch.setattr(ps, "_metadata_probe", fake_metadata_probe)
+
+    oracle = ps._resolve_system_cpython(None)
+
+    assert oracle.cmd == ("resolved:C:/Python314/python.exe",)
+    assert oracle.executable == "resolved:C:/Python314/python.exe"
+
+
+def test_cpython_oracle_explicit_bad_baseline_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(ps.bench, "_canonical_interpreter", lambda executable: executable)
+    monkeypatch.setattr(
+        ps,
+        "_metadata_probe",
+        lambda cmd, **kwargs: SimpleNamespace(
+            returncode=0,
+            stdout=_oracle_payload(implementation="PyPy", executable="pypy-real"),
+            stderr="",
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="explicit --cpython"):
+        ps._resolve_system_cpython("pypy")
 
 
 def test_verdict_breakdown_routes_warm_vs_cold() -> None:
