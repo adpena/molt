@@ -663,14 +663,17 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
         OpCode::FloorDiv => emit_lir_binary_arith(ctx, op, ArithOp::FloorDiv),
         OpCode::Mod => emit_lir_binary_arith(ctx, op, ArithOp::Mod),
         OpCode::Neg => emit_lir_unary_arith(ctx, op, UnaryOp::Neg),
-        OpCode::Pos
-        | OpCode::Copy
-        | OpCode::DeleteVar
-        | OpCode::BoxVal
-        | OpCode::UnboxVal
+        OpCode::Pos | OpCode::Copy | OpCode::DeleteVar | OpCode::BoxVal | OpCode::UnboxVal
         | OpCode::TypeGuard => {
             if let (Some(&src), Some(result)) = (tir_op.operands.first(), op.result_values.first())
             {
+                if matches!(
+                    tir_op.attrs.get("_original_kind"),
+                    Some(AttrValue::Str(kind)) if kind == "binding_alias"
+                ) {
+                    emit_get_boxed_for_repr(ctx, src);
+                    ctx.emit_runtime_call("inc_ref_obj");
+                }
                 ctx.emit_get(src);
                 ctx.emit_set(result.id);
             }
@@ -1671,6 +1674,42 @@ mod tests {
             values: vec![result_id],
         };
         func
+    }
+
+    #[test]
+    fn binding_alias_copy_retains_before_forwarding_bits() {
+        let mut func = TirFunction::new(
+            "binding_alias_copy".into(),
+            vec![TirType::DynBox],
+            TirType::DynBox,
+        );
+        let alias = func.fresh_value();
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::Copy,
+            operands: vec![ValueId(0)],
+            results: vec![alias],
+            attrs: {
+                let mut m = AttrDict::new();
+                m.insert(
+                    "_original_kind".into(),
+                    AttrValue::Str("binding_alias".into()),
+                );
+                m
+            },
+            source_span: None,
+        });
+        entry.terminator = Terminator::Return {
+            values: vec![alias],
+        };
+
+        let output = lower_tir_to_wasm(&func);
+        assert!(
+            output.runtime_calls.contains(&"inc_ref_obj"),
+            "binding_alias Copy must retain its forwarded source: {:?}",
+            output.runtime_calls
+        );
     }
 
     #[test]

@@ -21,7 +21,7 @@ fn alias_source_name<'a>(
     summaries: &BTreeMap<String, ReturnAliasSummary>,
 ) -> Option<&'a str> {
     match op.kind.as_str() {
-        "copy" | "box" | "unbox" | "cast" | "widen" | "identity_alias" => op
+        "copy" | "box" | "unbox" | "cast" | "widen" | "identity_alias" | "binding_alias" => op
             .args
             .as_ref()
             .and_then(|args| args.first())
@@ -2748,7 +2748,15 @@ pub fn simple_ir_op_is_provably_nonthrowing_with_facts(
 
     if matches!(
         kind,
-        "copy" | "copy_var" | "identity_alias" | "box" | "unbox" | "cast" | "widen" | "phi"
+        "copy"
+            | "copy_var"
+            | "identity_alias"
+            | "binding_alias"
+            | "box"
+            | "unbox"
+            | "cast"
+            | "widen"
+            | "phi"
     ) {
         return true;
     }
@@ -2961,6 +2969,7 @@ fn simple_ir_unused_result_is_removable(
             | "cast"
             | "widen"
             | "identity_alias"
+            | "binding_alias"
             | "build_list"
             | "build_tuple"
             | "build_dict"

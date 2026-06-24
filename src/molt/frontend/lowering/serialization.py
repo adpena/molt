@@ -2473,6 +2473,19 @@ class SerializationMixin(_MixinBase):
                             "out": op.result.name,
                         }
                     )
+            elif op.kind == "BINDING_ALIAS":
+                if (
+                    op.args
+                    and isinstance(op.args[0], MoltValue)
+                    and op.result.name != "none"
+                ):
+                    json_ops.append(
+                        {
+                            "kind": "binding_alias",
+                            "args": [op.args[0].name],
+                            "out": op.result.name,
+                        }
+                    )
             elif op.kind == "JSON_PARSE":
                 json_ops.append(
                     {

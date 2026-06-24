@@ -419,21 +419,23 @@ impl AliasUnionFind {
 /// `_original_kind` naming the SimpleIR op they were lifted from (the SSA
 /// converter folds every op WITHOUT a dedicated `OpCode` into `Copy`, stashing
 /// the name in `_original_kind` — see `ssa::kind_to_opcode`'s `_ => Copy` arm).
-/// Each such `Copy` falls into exactly one of three lowering classes, and the RC
+/// Each such `Copy` falls into exactly one lowering class, and the RC
 /// drop-insertion pass's *entire* over-release safety rests on classifying them
 /// conservatively:
 ///
 /// * [`CopyLowering::FreshValue`] — a value-producing op (container constructor,
 ///   `slice`, `str_from_obj`, `int_from_obj`, …) whose result is a NEW owned heap
 ///   reference returned by a dedicated runtime call. The result is an INDEPENDENT
-///   alias root that the drop pass owns and releases on its own. This is the ONLY
-///   class for which the drop pass emits a `DecRef` of the `Copy`'s own result.
+///   alias root that the drop pass owns and releases on its own.
 ///   It is an EXPLICIT allow-list: a kind is `FreshValue` only when it is *proven*
 ///   to mint a fresh owned heap reference AND every drop-enabled backend lowers it
 ///   explicitly (LLVM: `lower_preserved_simpleir_op`; WASM/Luau: their
 ///   `_original_kind` dispatch). The LLVM `Copy` arm fails loud on any `FreshValue`
 ///   kind it did not lower (it would otherwise return operand 0 — a wrong result —
 ///   AND make the result silently alias operand 0, a drop-insertion double-free).
+/// * [`CopyLowering::OwnedAlias`] - the result is operand 0's heap object bits,
+///   but the lowering mints a new `+1` for the result binding. It is an
+///   independent ownership root and MUST be explicitly lowered as retain+alias.
 /// * [`CopyLowering::TransparentAlias`] — the result is operand 0's heap object,
 ///   bit-for-bit, with **no incref** (a pure SSA/var move, or a
 ///   validate-and-pass-through guard like `guard_tag`). The alias union-find unions
@@ -456,13 +458,14 @@ impl AliasUnionFind {
 /// > A kind we forgot to allow-list is treated as an alias of operand 0. If it is
 /// > actually a fresh value, its `+1` is never released → a **leak**. It can NEVER
 /// > be double-freed (a UAF), because the drop pass never emits an independent
-/// > `DecRef` for a non-`FreshValue` `Copy`.
+/// > `DecRef` for a non-owned `Copy`.
 ///
 /// Leak-not-UAF is exactly the rail the RC layer must hold (see the module-level
-/// soundness model). The allow-list and the LLVM backend's explicit-lowering set
-/// are tied by [`copy_kind_mints_fresh_owned_ref`]: the LLVM `Copy` arm fatals on
-/// a `FreshValue` it did not lower (so a `FreshValue` that reaches codegen is
-/// ALWAYS explicitly lowered to a fresh +1, never a silent passthrough), and
+/// soundness model). The allow-lists and the LLVM backend's explicit-lowering set
+/// are tied by [`copy_kind_mints_fresh_owned_ref`] and
+/// [`copy_kind_mints_owned_alias_ref`]: the LLVM `Copy` arm fatals on an owned
+/// result it did not lower (so an owned `Copy` is always explicitly lowered to
+/// a +1, never a silent passthrough), and
 /// `tests::copy_lowering_classes_are_total_and_disjoint` pins the bucket of every
 /// representative kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -470,6 +473,10 @@ pub(crate) enum CopyLowering {
     /// A fresh owned heap value produced by a dedicated runtime call (an
     /// independent alias root; the only class the drop pass releases on its own).
     FreshValue,
+    /// Result is operand 0's heap object bits, but the lowering mints a new +1
+    /// owned reference. This is an independent ownership root, not a transparent
+    /// alias root.
+    OwnedAlias,
     /// Result is operand 0's heap object, no incref (a transparent alias).
     TransparentAlias,
     /// A debug / control-flow marker producing no surviving heap reference.
@@ -525,6 +532,10 @@ pub(crate) fn copy_kind_mints_fresh_owned_ref(kind: &str) -> bool {
     // authority until its streamed-element shape has the same backend contract.
 }
 
+pub(crate) fn copy_kind_mints_owned_alias_ref(kind: &str) -> bool {
+    crate::tir::op_kinds_generated::copy_kind_mints_owned_alias_ref_table(kind)
+}
+
 pub(crate) fn copy_kind_is_exception_creation_ref(kind: &str) -> bool {
     crate::tir::op_kinds_generated::copy_kind_is_exception_creation_ref_table(kind)
 }
@@ -542,6 +553,11 @@ pub(crate) fn classify_copy_kind(kind: Option<&str>) -> CopyLowering {
     // Proven fresh-owned value producers (the explicit allow-list).
     if copy_kind_mints_fresh_owned_ref(k) {
         return CopyLowering::FreshValue;
+    }
+    // Proven owned aliases: same object bits as operand 0, but the lowering
+    // mints an independent +1 for the result binding.
+    if copy_kind_mints_owned_alias_ref(k) {
+        return CopyLowering::OwnedAlias;
     }
     // ── Inert markers: no surviving heap reference to own. ──
     // `line` / `trace_*` / `missing` carry dedicated (RC-inert) backend
@@ -672,14 +688,10 @@ fn copy_original_kind(op: &TirOp) -> Option<&str> {
 
 /// True if a `Copy` with `_original_kind = kind` is SOUND to lower as a plain
 /// no-incref bit-passthrough of operand 0 (or as an inert marker) — i.e. it is
-/// NOT a [`CopyLowering::FreshValue`]. The LLVM backend's `Copy` arm gates its
-/// passthrough on this: a `FreshValue` that was not explicitly lowered would
-/// return operand 0 (a wrong-result miscompile) AND make the result silently
-/// alias operand 0 (a drop-insertion double-free), so it fails loud instead.
-///
-/// Because the drop pass treats exactly `!FreshValue` as aliasing/inert, gating
-/// the backend passthrough on the SAME predicate makes the no-incref-passthrough
-/// set and the drop pass's transparent-alias view identical by construction.
+/// neither [`CopyLowering::FreshValue`] nor [`CopyLowering::OwnedAlias`]. The
+/// LLVM backend's `Copy` arm gates its passthrough on this: an owned result that
+/// was not explicitly lowered would return operand 0 without the required retain,
+/// making ownership silently disagree with runtime refcounts.
 ///
 /// Gated to the `llvm` feature (plus `test`): the only non-test caller is the
 /// LLVM `Copy` arm's fatal gate (`llvm_backend::lowering`), so under a non-LLVM
@@ -689,7 +701,10 @@ fn copy_original_kind(op: &TirOp) -> Option<&str> {
 /// `copy_kind_is_explicit_no_heap_move` directly, not this LLVM-specific view.
 #[cfg(any(feature = "llvm", test))]
 pub fn copy_kind_reaches_no_incref_passthrough(kind: Option<&str>) -> bool {
-    !matches!(classify_copy_kind(kind), CopyLowering::FreshValue)
+    !matches!(
+        classify_copy_kind(kind),
+        CopyLowering::FreshValue | CopyLowering::OwnedAlias
+    )
 }
 
 /// True if a `Copy`-carried `_original_kind` op writes/reads/clobbers NO heap
@@ -1739,16 +1754,39 @@ mod tests {
         );
     }
 
+    #[test]
+    fn owned_binding_alias_copy_is_not_a_transparent_root() {
+        let mut func = TirFunction::new("f".into(), vec![TirType::DynBox], TirType::None);
+        let obj = ValueId(0);
+        let alias = func.fresh_value();
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(op_kind(
+            OpCode::Copy,
+            vec![obj],
+            vec![alias],
+            "binding_alias",
+        ));
+        entry.terminator = Terminator::Return { values: vec![] };
+
+        let res = AliasAnalysisResult::compute(&func);
+        assert_eq!(
+            res.root(alias),
+            alias,
+            "binding_alias carries source bits but owns a distinct droppable root"
+        );
+        assert_ne!(res.root(alias), res.root(obj));
+    }
+
     // ── The lowering-truth Copy-class contract (over-release keystone) ──────
 
     /// Every `_original_kind` classifies into exactly one [`CopyLowering`] bucket,
-    /// and the three derived predicates (alias / inert / passthrough-reachable)
+    /// and the derived predicates (alias / inert / passthrough-reachable)
     /// are a partition consistent with the classifier. This is the single-source-
     /// of-truth guard: the alias view and the no-incref-passthrough set cannot
     /// drift because both read `classify_copy_kind`.
     #[test]
     fn copy_lowering_classes_are_total_and_disjoint() {
-        // A representative sample spanning all three buckets, plus the bare-Copy
+        // A representative sample spanning the buckets, plus the bare-Copy
         // (None) case and the bug-repro fresh-value kinds the review flagged.
         let alias = [
             None,
@@ -1812,6 +1850,7 @@ mod tests {
             Some("staticmethod_new"),
             Some("vec_sum_i64"),
         ];
+        let owned_alias = [Some("binding_alias")];
         // FAIL-CLOSED: an unrecognized future kind classifies as TransparentAlias
         // (leak-safe), NOT FreshValue — so the drop pass never double-frees it.
         let unknown_fail_closed = [Some("some_brand_new_kind_v2"), Some("promise_new")];
@@ -1848,6 +1887,17 @@ mod tests {
                 !copy_kind_reaches_no_incref_passthrough(k),
                 "{k:?} must NOT reach the benign passthrough — a FreshValue that fell \
                  through would alias operand 0 and be double-freed by drop insertion"
+            );
+        }
+        for k in owned_alias {
+            assert_eq!(
+                classify_copy_kind(k),
+                CopyLowering::OwnedAlias,
+                "{k:?} mints an owned alias reference"
+            );
+            assert!(
+                !copy_kind_reaches_no_incref_passthrough(k),
+                "{k:?} must lower as inc_ref + alias, not no-incref passthrough"
             );
         }
         for k in unknown_fail_closed {
@@ -2084,6 +2134,14 @@ mod tests {
             "list_append",
         );
         assert_eq!(res.region_of(&opaque), MemRegion::GenericHeap);
+
+        let owned_alias = op_kind(
+            OpCode::Copy,
+            vec![ValueId(0)],
+            vec![ValueId(1)],
+            "binding_alias",
+        );
+        assert_eq!(res.region_of(&owned_alias), MemRegion::GenericHeap);
     }
 
     #[test]

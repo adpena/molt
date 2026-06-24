@@ -130,6 +130,22 @@ def test_borrow_lowers_to_explicit_borrow_lane() -> None:
     }
 
 
+def test_binding_alias_lowers_to_owned_alias_lane() -> None:
+    op = MoltOp(
+        kind="BINDING_ALIAS", args=[MoltValue("value")], result=MoltValue("owned")
+    )
+    lowered = _map_single(op)
+    assert lowered == {"kind": "binding_alias", "args": ["value"], "out": "owned"}
+
+
+def test_plain_local_alias_assignment_emits_owned_binding_alias() -> None:
+    raw_ops = _raw_ops("def f(x):\n    y = x\n    return y\n")
+    assert any(op.kind == "BINDING_ALIAS" for op in raw_ops)
+
+    lowered_ops = _lowered_ops("def f(x):\n    y = x\n    return y\n")
+    assert any(op["kind"] == "binding_alias" for op in lowered_ops)
+
+
 def test_inc_ref_and_dec_ref_lower_to_explicit_ownership_lanes() -> None:
     inc = _map_single(
         MoltOp(kind="INC_REF", args=[MoltValue("value")], result=MoltValue("owned"))

@@ -22,11 +22,15 @@ the implementation. For forward-looking priorities, use
   granularity: `native_backend/function_compiler/fc/` owns extracted op-family
   handlers for scalar builtin runtime calls (`id`, `ord`, fused `ord_at`,
   `chr`), sequence/iterator lowering (`len`, range/tuple/unpack/iterator
-  operations), dict mutation (`dict_set`, `dict_update_missing`), and exception
-  control (`raise`, `check_exception`). The remaining inline shell is limited
-  to residual constant, runtime-probe, print/warn/newline, bridge-unavailable,
-  block-on, and RC/box/identity-transfer clusters pending fresh structural
-  contracts.
+  operations), dict mutation (`dict_set`, `dict_update_missing`), exception
+  control (`raise`, `check_exception`), and value-custody transfer (`inc_ref`,
+  `borrow`, `dec_ref`, `release`, `box`, `unbox`, `cast`, `widen`,
+  `identity_alias`, `binding_alias`). The remaining inline shell is limited to
+  residual constant, runtime-probe, print/warn/newline, bridge-unavailable, and
+  block-on clusters pending fresh structural contracts.
+- Plain-local alias rebinding now lowers through the `binding_alias` owned-alias
+  lane, with generated op-kind classifier tables and TIR ownership/representation
+  analyses treating it as source bits plus an independent droppable reference.
 - Standalone binary workflows are a first-class product requirement.
 - Differential testing against CPython is a core validation path.
 - Ordinary class construction keeps runtime `type.__call__` as the semantic

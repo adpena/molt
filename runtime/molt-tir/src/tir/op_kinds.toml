@@ -187,6 +187,14 @@ classifier_fresh_value_prefixes = [
     "vec_",
 ]
 
+# copy_kind_mints_owned_alias_ref: result is operand 0's object bits, but the
+# lowering mints a new +1 owned reference for this binding. This is an
+# independent droppable ownership root and must NOT be in the transparent/no-heap
+# alias sets.
+classifier_owned_alias = [
+    "binding_alias",
+]
+
 canonicalize_commutative_reorder = [
     { opcode = "Add", domain = "numeric" },
     { opcode = "BitAnd", domain = "i64" },
@@ -2785,6 +2793,10 @@ opcode = "IncRef"
 [[frontend_check_exception_skip]]
 kind = "DEC_REF"
 opcode = "DecRef"
+
+[[frontend_check_exception_skip]]
+kind = "BINDING_ALIAS"
+reason = "frontend ownership: inc_ref plus same-bits alias, non-throwing"
 
 [[frontend_check_exception_skip]]
 kind = "DELETE_VAR"

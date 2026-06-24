@@ -5542,175 +5542,35 @@ impl SimpleBackend {
                         &nbc,
                     );
                 }
-                "inc_ref" | "borrow" => {
-                    if !rc_skip_inc.contains(&op_idx) {
-                        let args_names = op.args.as_ref().expect("inc_ref/borrow args missing");
-                        let src_name = args_names
-                            .first()
-                            .expect("inc_ref/borrow requires one source arg");
-                        let src = *var_get_boxed_overflow_safe(
-                            &mut self.module,
-                            &mut self.import_ids,
-                            &mut builder,
-                            &mut import_refs,
-                            &mut sealed_blocks,
-                            &vars,
-                            src_name,
-                            &int_primary_vars,
-                            &float_primary_vars,
-                        )
-                        .expect("inc_ref/borrow source not found");
-                        emit_inc_ref_obj(&mut builder, src, local_inc_ref_obj, &nbc);
-                        if let Some(out_name) = op.out.as_ref()
-                            && out_name != "none"
-                        {
-                            def_var_named(&mut builder, &vars, out_name.clone(), src);
-                        }
-                    } else if let Some(out_name) = op.out.as_ref()
-                        && out_name != "none"
-                    {
-                        // RC coalesced: still define the output variable as an
-                        // alias of the input so downstream ops can read it.
-                        let args_names = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                        let src_name = args_names.first().unwrap();
-                        let src = *var_get_boxed_overflow_safe(
-                            &mut self.module,
-                            &mut self.import_ids,
-                            &mut builder,
-                            &mut import_refs,
-                            &mut sealed_blocks,
-                            &vars,
-                            src_name,
-                            &int_primary_vars,
-                            &float_primary_vars,
-                        )
-                        .expect("inc_ref/borrow source not found (coalesced)");
-                        def_var_named(&mut builder, &vars, out_name.clone(), src);
-                    }
-                }
-                "dec_ref" | "release" => {
-                    let args_names = op.args.as_ref().expect("dec_ref/release args missing");
-                    let src_name = args_names
-                        .first()
-                        .expect("dec_ref/release requires one source arg");
-                    if rc_skip_inc.contains(&op_idx) {
-                        // No runtime call needed.  Still define the output
-                        // variable so downstream SSA reads succeed.
-                        if let Some(out_name) = op.out.as_ref()
-                            && out_name != "none"
-                        {
-                            let none_bits = builder.ins().iconst(types::I64, box_none());
-                            def_var_named(&mut builder, &vars, out_name.clone(), none_bits);
-                        }
-                    } else {
-                        let src = *var_get_boxed_overflow_safe(
-                            &mut self.module,
-                            &mut self.import_ids,
-                            &mut builder,
-                            &mut import_refs,
-                            &mut sealed_blocks,
-                            &vars,
-                            src_name,
-                            &int_primary_vars,
-                            &float_primary_vars,
-                        )
-                        .expect("dec_ref/release source not found");
-                        builder.ins().call(local_dec_ref_obj, &[src]);
-                        let consumed_root = alias_root_name(&alias_roots, src_name).to_string();
-                        already_decrefed.insert(consumed_root.clone());
-                        let consumed_roots = BTreeSet::from([consumed_root]);
-                        scrub_tracked_roots(
-                            &consumed_roots,
-                            &alias_roots,
-                            &mut tracked_vars,
-                            &mut tracked_obj_vars,
-                            &mut tracked_vars_set,
-                            &mut tracked_obj_vars_set,
-                            &mut entry_vars,
-                            &mut block_tracked_obj,
-                            &mut block_tracked_ptr,
-                        );
-                        if let Some(out_name) = op.out.as_ref()
-                            && out_name != "none"
-                        {
-                            let none_bits = builder.ins().iconst(types::I64, box_none());
-                            def_var_named(&mut builder, &vars, out_name.clone(), none_bits);
-                        }
-                    }
-                }
-                "box" | "unbox" | "cast" | "widen" => {
-                    let args_names = op.args.as_ref().expect("conversion args missing");
-                    let src_name = args_names
-                        .first()
-                        .expect("conversion op requires one source arg");
-                    let src = *var_get_boxed_overflow_safe(
+                // handle_value_transfer_op family - extracted to fc::value_transfer (M1)
+                "inc_ref" | "borrow" | "dec_ref" | "release" | "box" | "unbox" | "cast"
+                | "widen" | "identity_alias" | "binding_alias" => {
+                    fc::value_transfer::handle_value_transfer_op(
+                        &op,
+                        op_idx,
                         &mut self.module,
                         &mut self.import_ids,
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
                         &vars,
-                        src_name,
                         &int_primary_vars,
                         &float_primary_vars,
-                    )
-                    .expect("conversion source not found");
-                    if let Some(out_name) = op.out.as_ref()
-                        && out_name != "none"
-                    {
-                        // Output aliases input bits — inc_ref to prevent
-                        // use-after-free when the input name is dec_ref'd
-                        // independently by tracking/check_exception cleanup.
-                        emit_inc_ref_obj(&mut builder, src, local_inc_ref_obj, &nbc);
-                        def_var_named(&mut builder, &vars, out_name.clone(), src);
-                    }
-                }
-                "identity_alias" => {
-                    let args_names = op.args.as_ref().expect("identity_alias args missing");
-                    let src_name = args_names
-                        .first()
-                        .expect("identity_alias requires one source arg");
-                    if let Some(out_name) = op.out.as_ref()
-                        && out_name != "none"
-                    {
-                        if float_primary_vars.contains(out_name) {
-                            // Float-primary: transfer raw f64 directly.
-                            let raw_f64 =
-                                float_value_for(&mut builder, &vars, &float_primary_vars, src_name)
-                                    .unwrap_or_else(|| {
-                                        let boxed = var_get_boxed_overflow_safe(
-                                            &mut self.module,
-                                            &mut self.import_ids,
-                                            &mut builder,
-                                            &mut import_refs,
-                                            &mut sealed_blocks,
-                                            &vars,
-                                            src_name,
-                                            &int_primary_vars,
-                                            &float_primary_vars,
-                                        )
-                                        .expect("identity_alias source not found");
-                                        builder.ins().bitcast(types::F64, MemFlags::new(), *boxed)
-                                    });
-                            def_var_named(&mut builder, &vars, out_name.clone(), raw_f64);
-                        } else {
-                            let src = *var_get_boxed_overflow_safe(
-                                &mut self.module,
-                                &mut self.import_ids,
-                                &mut builder,
-                                &mut import_refs,
-                                &mut sealed_blocks,
-                                &vars,
-                                src_name,
-                                &int_primary_vars,
-                                &float_primary_vars,
-                            )
-                            .expect("identity_alias source not found");
-                            // Same aliasing hazard as box/unbox/cast/widen above.
-                            emit_inc_ref_obj(&mut builder, src, local_inc_ref_obj, &nbc);
-                            def_var_named(&mut builder, &vars, out_name.clone(), src);
-                        }
-                    }
+                        &bool_primary_vars,
+                        &mut block_tracked_obj,
+                        &mut block_tracked_ptr,
+                        &mut tracked_obj_vars,
+                        &mut tracked_vars,
+                        &mut tracked_obj_vars_set,
+                        &mut tracked_vars_set,
+                        &alias_roots,
+                        &mut entry_vars,
+                        &mut already_decrefed,
+                        &rc_skip_inc,
+                        local_inc_ref_obj,
+                        local_dec_ref_obj,
+                        &nbc,
+                    );
                 }
                 // handle_module_op family — extracted to fc::modules (M1)
                 "module_new"
@@ -7566,6 +7426,58 @@ mod tests {
         let output = SimpleBackend::new().compile(ir);
 
         assert!(!output.bytes.is_empty());
+    }
+
+    fn compile_retained_alias_after_source_dec_ref(alias_kind: &str) {
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: format!("{alias_kind}_after_dec_ref"),
+                params: vec![],
+                ops: vec![
+                    OpIR {
+                        kind: "const_str".to_string(),
+                        out: Some("src".to_string()),
+                        s_value: Some("owned".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: alias_kind.to_string(),
+                        args: Some(vec!["src".to_string()]),
+                        out: Some("alias".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "dec_ref".to_string(),
+                        args: Some(vec!["src".to_string()]),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret".to_string(),
+                        var: Some("alias".to_string()),
+                        args: Some(vec!["alias".to_string()]),
+                        ..OpIR::default()
+                    },
+                ],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+            }],
+            profile: None,
+        };
+
+        let output = SimpleBackend::new().compile(ir);
+
+        assert!(!output.bytes.is_empty());
+    }
+
+    #[test]
+    fn native_backend_compiles_identity_alias_after_source_dec_ref() {
+        compile_retained_alias_after_source_dec_ref("identity_alias");
+    }
+
+    #[test]
+    fn native_backend_compiles_binding_alias_after_source_dec_ref() {
+        compile_retained_alias_after_source_dec_ref("binding_alias");
     }
 
     #[test]

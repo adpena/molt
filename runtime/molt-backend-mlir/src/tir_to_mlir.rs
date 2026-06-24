@@ -25,7 +25,7 @@
 //! - `CondBranch` -> `cf.cond_br`
 //! - `Switch` -> `cf.switch`
 //! - `Return` -> `func.return`
-//! - `Copy` -> identity (SSA forwarding)
+//! - `Copy` -> identity (SSA forwarding); `binding_alias` copies also emit `molt.inc_ref`
 //! - `Call` -> `func.call`
 //! - `BoxVal/UnboxVal/IncRef/DecRef/TypeGuard` -> lowered as opaque `molt.*` ops
 //!
@@ -496,6 +496,17 @@ fn emit_tir_op<'c, 'a>(
                 let val = *value_map
                     .get(&op.operands[0])
                     .ok_or_else(|| format!("TIR ValueId %{} not found in MLIR value map", op.operands[0].0))?;
+                if matches!(
+                    op.attrs.get("_original_kind"),
+                    Some(AttrValue::Str(kind)) if kind == "binding_alias"
+                ) {
+                    block.append_operation(
+                        OperationBuilder::new("molt.inc_ref", location)
+                            .add_operands(&[val])
+                            .build()
+                            .map_err(|e| format!("Failed to build molt.inc_ref: {e}"))?,
+                    );
+                }
                 value_map.insert(op.results[0], val);
             }
         }

@@ -10257,14 +10257,14 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 }
                 true
             }
-            // RC-alias ops: `borrow`/`identity_alias` == `inc_ref` then ALIAS the
+            // RC-alias ops: `borrow`/retained aliases == `inc_ref` then ALIAS the
             // value through (result == source operand). The native handlers
-            // (`function_compiler.rs` `inc_ref|borrow` / `identity_alias`) emit
+            // (`function_compiler.rs` `inc_ref|borrow` / retained aliases) emit
             // `molt_inc_ref_obj(src)` and `def_var(out, src)` — a plain Copy
             // passthrough would skip the inc_ref (a refcount LEAK). `release` is
             // the dual and is handled in its OWN arm below because its result
             // convention differs (it does NOT alias the source — see there).
-            "borrow" | "identity_alias" => {
+            "borrow" | "identity_alias" | "binding_alias" => {
                 let Some(&src_id) = op.operands.first() else {
                     return false;
                 };
@@ -12433,6 +12433,7 @@ mod tests {
             ),
             ("borrow", 1, true, None, "molt_inc_ref_obj"),
             ("identity_alias", 1, true, None, "molt_inc_ref_obj"),
+            ("binding_alias", 1, true, None, "molt_inc_ref_obj"),
             ("release", 1, true, None, "molt_dec_ref_obj"),
             ("guard_tag", 2, false, None, "molt_guard_type"),
             ("guard_layout", 3, true, None, "molt_guard_layout_ptr"),
