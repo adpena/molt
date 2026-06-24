@@ -3723,6 +3723,51 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     static ENV_TEST_MUTEX: Mutex<()> = Mutex::new(());
+    const SHARED_STDLIB_CACHE_ENV_KEYS: &[&str] = &[
+        "MOLT_STDLIB_OBJ",
+        "MOLT_STDLIB_CACHE_KEY",
+        "MOLT_STDLIB_CACHE_MANIFEST",
+    ];
+
+    struct TestEnvGuard {
+        _lock: std::sync::MutexGuard<'static, ()>,
+        snapshot: Vec<(&'static str, Option<String>)>,
+    }
+
+    impl TestEnvGuard {
+        fn capture(keys: &'static [&'static str]) -> Self {
+            let lock = ENV_TEST_MUTEX
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let snapshot = keys
+                .iter()
+                .map(|key| (*key, std::env::var(key).ok()))
+                .collect();
+            Self {
+                _lock: lock,
+                snapshot,
+            }
+        }
+
+        fn clear(keys: &'static [&'static str]) -> Self {
+            let guard = Self::capture(keys);
+            for (key, _) in &guard.snapshot {
+                unsafe { std::env::remove_var(key) };
+            }
+            guard
+        }
+    }
+
+    impl Drop for TestEnvGuard {
+        fn drop(&mut self) {
+            for (key, value) in &self.snapshot {
+                match value {
+                    Some(value) => unsafe { std::env::set_var(key, value) },
+                    None => unsafe { std::env::remove_var(key) },
+                }
+            }
+        }
+    }
 
     fn write_failing_relocatable_linker(tmp_dir: &std::path::Path) -> std::path::PathBuf {
         #[cfg(windows)]
@@ -4443,6 +4488,7 @@ mod tests {
 
     #[test]
     fn daemon_probe_cache_only_returns_needs_ir_on_miss() {
+        let _env_guard = TestEnvGuard::clear(SHARED_STDLIB_CACHE_ENV_KEYS);
         let mut cache = DaemonCache::new(None);
         let result = compile_single_job(
             DaemonJobRequest {
@@ -4473,6 +4519,7 @@ mod tests {
 
     #[test]
     fn daemon_probe_cache_only_hits_without_ir() {
+        let _env_guard = TestEnvGuard::clear(SHARED_STDLIB_CACHE_ENV_KEYS);
         let mut cache = DaemonCache::new(None);
         cache.insert("module".to_string(), Arc::from(vec![1_u8, 2, 3]));
         let nonce = SystemTime::now()
@@ -4511,12 +4558,7 @@ mod tests {
 
     #[test]
     fn daemon_cache_hit_requires_matching_shared_stdlib_artifact() {
-        let _env_guard = ENV_TEST_MUTEX
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let prior_stdlib_obj = std::env::var("MOLT_STDLIB_OBJ").ok();
-        let prior_stdlib_key = std::env::var("MOLT_STDLIB_CACHE_KEY").ok();
-        let prior_stdlib_manifest = std::env::var("MOLT_STDLIB_CACHE_MANIFEST").ok();
+        let _env_guard = TestEnvGuard::capture(SHARED_STDLIB_CACHE_ENV_KEYS);
 
         let mut cache = DaemonCache::new(None);
         cache.insert("module".to_string(), Arc::from(vec![1_u8, 2, 3]));
@@ -4554,19 +4596,6 @@ mod tests {
             },
             &mut cache,
         );
-
-        match prior_stdlib_obj {
-            Some(value) => unsafe { std::env::set_var("MOLT_STDLIB_OBJ", value) },
-            None => unsafe { std::env::remove_var("MOLT_STDLIB_OBJ") },
-        }
-        match prior_stdlib_key {
-            Some(value) => unsafe { std::env::set_var("MOLT_STDLIB_CACHE_KEY", value) },
-            None => unsafe { std::env::remove_var("MOLT_STDLIB_CACHE_KEY") },
-        }
-        match prior_stdlib_manifest {
-            Some(value) => unsafe { std::env::set_var("MOLT_STDLIB_CACHE_MANIFEST", value) },
-            None => unsafe { std::env::remove_var("MOLT_STDLIB_CACHE_MANIFEST") },
-        }
 
         assert!(result.ok);
         assert!(!result.cached);

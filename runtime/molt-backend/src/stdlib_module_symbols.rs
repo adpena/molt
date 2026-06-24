@@ -40,6 +40,7 @@ pub fn stdlib_module_symbols_from_env() -> Result<Option<BTreeSet<String>>, Stri
     }
 }
 
+#[cfg(feature = "native-backend")]
 pub(crate) fn stdlib_module_symbols_from_env_or_panic() -> Option<BTreeSet<String>> {
     stdlib_module_symbols_from_env().unwrap_or_else(|err| panic!("{err}"))
 }
