@@ -1,0 +1,36 @@
+[package]
+name = "molt-tir"
+version = "0.1.0"
+publish = false
+edition = "2024"
+license = "Apache-2.0"
+
+# molt-tir is the backend-agnostic lower layer extracted from molt-backend
+# (decomposition program doc 21, move T1): the typed IR (tir/), the SimpleIR
+# transport (ir/ir_schema/json_boundary), the SimpleIR passes (passes.rs), the
+# representation lattice (representation_plan + Repr), and the leaf utilities
+# (debug_artifacts/process_diagnostics/intrinsic_symbols). It has ZERO
+# dependencies on any backend (native/wasm/luau/llvm/rust); every backend crate
+# depends on molt-tir, not the reverse. Editing a TIR pass recompiles molt-tir
+# (and relinks dependents) instead of the whole 230k-line backend monolith.
+
+[dependencies]
+libc = "0.2"
+rayon = "1.11"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+rmp-serde = "1"
+wasm-encoder = { version = "0.245.1", optional = true }
+
+[features]
+default = []
+# Semantic gates mirrored from molt-backend so the feature-conditional TIR code
+# compiles identically; molt-backend activates these via molt-tir/<feature>.
+native-backend = []
+llvm = []
+wasm-backend = ["dep:wasm-encoder"]
+# Exposes the crate-private `#[cfg(test)]` accessor seams (representation-plan,
+# tir-cache, and value-range test helpers) across the crate boundary so
+# molt-backend's own test suites can reach them. molt-backend activates this via
+# its [dev-dependencies] entry; it is never part of any shipped build.
+test-util = []

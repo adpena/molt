@@ -10,7 +10,7 @@
 - `/Users/adpena/Projects/molt/runtime/molt-backend/src/llvm_backend/lowering.rs:296-298` — `FunctionLowering.pgo_branch_weights: Option<Vec<u64>>` field and `pgo_weight_index` exist but `try_lower_tir_to_llvm` at line 360 always passes `None` for `pgo_branch_weights`.
 - `/Users/adpena/Projects/molt/runtime/molt-backend/src/ir.rs:14-18` — `PgoProfileIR` carries `hot_functions: Vec<String>` only; it silently drops `branch_counts` / `call_counts` / `loop_counts` from the JSON payload (the deserializer at line 100 reads only three fields).
 - `/Users/adpena/Projects/molt/src/molt/pgo_collect.py` — Python-side `sys.settrace` profiler producing a `molt_profile_version: "0.1"` JSON with `hotspots`, `branch_counts`, `call_counts`, `loop_counts`. Loader and CLI plumbing (`cli.py:27076-27217`) parse and validate this profile but never push `branch_counts`/`loop_counts` into the Rust backend.
-- `/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/target_info.rs:149-153` — `ProfileData { hot_functions: BTreeSet<String> }` as a S2 TargetInfo hook; `with_profile_data` exists; `is_pgo_hot` / `inline_budget` work correctly. But the set is always empty (no path populates it from the real `PgoProfileIR.hot_functions`).
+- `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/target_info.rs:149-153` — `ProfileData { hot_functions: BTreeSet<String> }` as a S2 TargetInfo hook; `with_profile_data` exists; `is_pgo_hot` / `inline_budget` work correctly. But the set is always empty (no path populates it from the real `PgoProfileIR.hot_functions`).
 - `/Users/adpena/Projects/molt/runtime/molt-backend/src/passes.rs:303-320` — SimpleIR inliner reads `ir.profile.hot_functions` for hot budget selection. This is the ONLY working consumer. It relies on the SimpleIR stringly-typed profile, not the TargetInfo hook.
 - `/Users/adpena/Projects/molt/runtime/molt-backend/src/passes.rs:476-503` — `apply_profile_order` reorders functions by hot-function rank; called at `simple_backend.rs:2302` and `wasm.rs:2062`. This is the second working consumer (function layout only).
 
@@ -130,9 +130,9 @@ pub struct PgoProfileIR {
 
 **No other changes to `ir.rs`** — `SimpleIR.profile: Option<PgoProfileIR>` already exists; the new fields extend the existing struct.
 
-### 3.2 `runtime/molt-backend/src/tir/target_info.rs` — Extended `ProfileData`
+### 3.2 `runtime/molt-tir/src/tir/target_info.rs` — Extended `ProfileData`
 
-**File:** `/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/target_info.rs`
+**File:** `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/target_info.rs`
 
 Extend `ProfileData` (currently lines 148-153) to carry call-count data that drives:
 - `inline_budget` (already wired, just needs real counts)
@@ -217,15 +217,15 @@ inline_functions(&mut ir, &tti);  // pass the profile-bearing tti
 
 **Delete the dual hot-function lookup in `passes.rs:303-320`** (the `pgo_hot: BTreeSet<&str>` from `ir.profile.hot_functions`). This is the legacy dual source of truth. After this arc, `inline_functions` reads `tti.is_pgo_hot(name)` exclusively (the S2 cost model path), which is already wired at `passes.rs:316`.
 
-### 3.4 `runtime/molt-backend/src/tir/passes/loop_unroll.rs` — Profile-directed Trip Cap
+### 3.4 `runtime/molt-tir/src/tir/passes/loop_unroll.rs` — Profile-directed Trip Cap
 
-**File:** `/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/passes/loop_unroll.rs`
+**File:** `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/passes/loop_unroll.rs`
 
 The loop_unroll pass already takes `tti: &TargetInfo` (wired by the PassManager at `pass_manager.rs:297`). Add: when a loop header has a loop_id (via `label_id_map` or `loop_roles`), query `tti.loop_avg_trip(loop_id)` and, if the average trip count is a small constant ≤ `tti.unroll_max_trip * 2`, raise the effective trip cap to `min(avg_trip, tti.unroll_max_trip * 4)`. This lets PGO extend unrolling to loops that historically iterate 12-16 times (above the static cap of 8) without touching the static default.
 
 **Soundness:** This is a trip-cap enlargement, not a guaranteed unroll. The unroll still requires the trip count to be proven constant by SCEV. A missing or stale profile lowers back to `tti.unroll_max_trip` (8). No miscompile possible.
 
-### 3.5 `runtime/molt-backend/src/tir/passes/inliner.rs` — Profile-directed Inline Budget
+### 3.5 `runtime/molt-tir/src/tir/passes/inliner.rs` — Profile-directed Inline Budget
 
 `is_inlineable` (line 214) already takes `tti: &TargetInfo` and calls `tti.inline_budget(&callee.name)` which routes through `is_pgo_hot`. After W1-a, this path receives real call-count data and requires no change in the inliner itself — the budget query is already correct. The fix is ensuring `tti.is_pgo_hot` returns `true` for hot callees, which happens via `ProfileData::from_pgo_ir`.
 
@@ -272,7 +272,7 @@ In `try_lower_tir_to_llvm_with_pgo`, the `pgo_branch_weights` vector must be con
 
 **Decision for W1-c:** The LLVM `!prof` attachment is **gated on the W1-d instrumented binary arc** which produces real per-edge counts. W1-c's structural work is: fix the inkwell API gap (the `llvm-sys` unsafe call) so the mechanism is correct and tested; the wiring to real per-edge counter data is W1-d. The `pgo_branch_weights: Option<Vec<u64>>` field in `FunctionLowering` stays as the injection point.
 
-### 3.8 `runtime/molt-backend/src/tir/function.rs` — Block Order Hint (W1-b)
+### 3.8 `runtime/molt-tir/src/tir/function.rs` — Block Order Hint (W1-b)
 
 Add to `TirFunction`:
 ```rust
@@ -288,7 +288,7 @@ For the first-cut W1-a, `block_order_hint` is always `None` (the field is added 
 
 ### 3.9 New TIR Pass: `pgo_annotate` (W1-d prerequisite)
 
-**File to create:** `/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/passes/pgo_annotate.rs`
+**File to create:** `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/passes/pgo_annotate.rs`
 
 This pass runs when `tti.profile_data` is `Some` and annotates TIR `CondBranch` terminators with a `pgo_weight` attribute `AttrValue::I64(taken_pct_millipercent)` derived from `profile_data.branch_counts`. Consumers:
 - LLVM lowering reads this attr when `!prof` is attached.
@@ -296,7 +296,7 @@ This pass runs when `tti.profile_data` is `Some` and annotates TIR `CondBranch` 
 
 For W1-a/b/c, this pass is a **ReadOnly no-op** (no counts → no attrs). For W1-d it becomes the live consumer. Adding it now means the pipeline slot exists and every downstream consumer can be written against a stable attr name rather than retrofitted.
 
-### 3.10 `runtime/molt-backend/src/tir/passes/mod.rs` + `pass_manager.rs` — Pipeline Slot
+### 3.10 `runtime/molt-tir/src/tir/passes/mod.rs` + `pass_manager.rs` — Pipeline Slot
 
 Add `pgo_annotate` as a `ReadOnly` pass immediately before `block_versioning` (phase ordering: annotation should precede type-directed specialization so block_versioning can consider hot/cold splits):
 
@@ -572,7 +572,7 @@ This is the only phase that must ship as one atomic change. It includes:
 - Same TargetInfo construction as simple_backend.rs.
 
 **Step 5: Add `pgo_annotate` pass skeleton**
-- Create `/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/passes/pgo_annotate.rs` as a `ReadOnly` no-op pass.
+- Create `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/passes/pgo_annotate.rs` as a `ReadOnly` no-op pass.
 - Register in `passes/mod.rs` and `pass_manager.rs` before `block_versioning`.
 - Update `default_pipeline_preserves_canonical_pass_order` test.
 
@@ -621,13 +621,13 @@ This is the only phase that must ship as one atomic change. It includes:
 | Component | File | Change Type |
 |---|---|---|
 | `PgoProfileIR` extension | `/Users/adpena/Projects/molt/runtime/molt-backend/src/ir.rs` | Extend struct + deserialization |
-| `ProfileData` extension | `/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/target_info.rs` | Extend struct + new constructor + new queries |
+| `ProfileData` extension | `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/target_info.rs` | Extend struct + new constructor + new queries |
 | SimpleIR inliner de-duplication | `/Users/adpena/Projects/molt/runtime/molt-backend/src/passes.rs:303-320` | Delete dual hot-function read |
 | TargetInfo wiring (native) | `/Users/adpena/Projects/molt/runtime/molt-backend/src/native_backend/simple_backend.rs:2542-2547, 2627` | Bridge profile → TargetInfo |
 | TargetInfo wiring (WASM) | `/Users/adpena/Projects/molt/runtime/molt-backend/src/wasm.rs` | Same pattern as native |
-| `pgo_annotate` pass | `/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/passes/pgo_annotate.rs` | New file (ReadOnly no-op first cut) |
-| Pipeline registration | `/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/passes/mod.rs` + `pass_manager.rs` | Add pass slot |
-| `block_order_hint` field | `/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/function.rs` | Extend struct (W1-b) |
+| `pgo_annotate` pass | `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/passes/pgo_annotate.rs` | New file (ReadOnly no-op first cut) |
+| Pipeline registration | `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/passes/mod.rs` + `pass_manager.rs` | Add pass slot |
+| `block_order_hint` field | `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/function.rs` | Extend struct (W1-b) |
 | LLVM `!prof` metadata | `/Users/adpena/Projects/molt/runtime/molt-backend/src/llvm_backend/lowering.rs:5144` | Replace no-op with llvm-sys call (W1-c) |
 | `Cargo.toml` llvm-sys dep | `/Users/adpena/Projects/molt/runtime/molt-backend/Cargo.toml` | Add dependency (W1-c) |
 | `pgo.rs` cleanup | `/Users/adpena/Projects/molt/runtime/molt-backend/src/llvm_backend/pgo.rs` | Delete `instrument_function` string API (W1-d) |

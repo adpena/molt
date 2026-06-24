@@ -20,19 +20,19 @@ pipeline, differential tests, benchmark harness, docs/spec infrastructure
 
 | Path | Responsibility |
 | --- | --- |
-| `runtime/molt-backend/src/tir/types.rs` | semantic TIR type lattice; may gain explicit mapping hooks to representation |
-| `runtime/molt-backend/src/tir/mod.rs` | TIR module exports; wire new LIR modules in canonical order |
-| `runtime/molt-backend/src/tir/function.rs` | shared function/block/value structures; source of SSA ownership |
-| `runtime/molt-backend/src/tir/verify.rs` | verifier surface; extend for representation-aware invariants |
-| `runtime/molt-backend/src/tir/printer.rs` | debug printing for new LIR/representation state |
-| `runtime/molt-backend/src/tir/lower_from_simple.rs` | current frontend transport import; keep as transport ingress only |
-| `runtime/molt-backend/src/tir/type_refine.rs` | semantic type refinement feeding representation choice |
-| `runtime/molt-backend/src/tir/lower_to_simple.rs` | current transport egress; shrink or remove architectural responsibility over time |
-| `runtime/molt-backend/src/tir/ssa.rs` | SSA and block-param mechanics; join/block-param invariants must stay representation-safe |
-| `runtime/molt-backend/src/tir/ops.rs` | TIR/LIR op surface; add explicit conversion/representation ops only if needed |
-| `runtime/molt-backend/src/tir/lir.rs` | new representation-aware SSA IR types |
-| `runtime/molt-backend/src/tir/lower_to_lir.rs` | new lowering from typed TIR to representation-aware LIR |
-| `runtime/molt-backend/src/tir/verify_lir.rs` | verifier for representation and join invariants |
+| `runtime/molt-tir/src/tir/types.rs` | semantic TIR type lattice; may gain explicit mapping hooks to representation |
+| `runtime/molt-tir/src/tir/mod.rs` | TIR module exports; wire new LIR modules in canonical order |
+| `runtime/molt-tir/src/tir/function.rs` | shared function/block/value structures; source of SSA ownership |
+| `runtime/molt-tir/src/tir/verify.rs` | verifier surface; extend for representation-aware invariants |
+| `runtime/molt-tir/src/tir/printer.rs` | debug printing for new LIR/representation state |
+| `runtime/molt-tir/src/tir/lower_from_simple.rs` | current frontend transport import; keep as transport ingress only |
+| `runtime/molt-tir/src/tir/type_refine.rs` | semantic type refinement feeding representation choice |
+| `runtime/molt-tir/src/tir/lower_to_simple.rs` | current transport egress; shrink or remove architectural responsibility over time |
+| `runtime/molt-tir/src/tir/ssa.rs` | SSA and block-param mechanics; join/block-param invariants must stay representation-safe |
+| `runtime/molt-tir/src/tir/ops.rs` | TIR/LIR op surface; add explicit conversion/representation ops only if needed |
+| `runtime/molt-tir/src/tir/lir.rs` | new representation-aware SSA IR types |
+| `runtime/molt-tir/src/tir/lower_to_lir.rs` | new lowering from typed TIR to representation-aware LIR |
+| `runtime/molt-tir/src/tir/verify_lir.rs` | verifier for representation and join invariants |
 | `runtime/molt-backend/src/native_backend/function_compiler.rs` | consume LIR directly; delete shadow recovery |
 | `runtime/molt-backend/src/wasm.rs` | consume LIR directly for parity on the same contract |
 | `runtime/molt-backend/src/llvm_backend/lowering.rs` | align revived LLVM path to the same contract |
@@ -58,11 +58,11 @@ pipeline, differential tests, benchmark harness, docs/spec infrastructure
 ## Task 1: Introduce Canonical Representation-Aware LIR And Verifier
 
 **Files:**
-- Create: `runtime/molt-backend/src/tir/lir.rs`
-- Create: `runtime/molt-backend/src/tir/lower_to_lir.rs`
-- Create: `runtime/molt-backend/src/tir/verify_lir.rs`
-- Modify: `runtime/molt-backend/src/tir/mod.rs`
-- Modify: `runtime/molt-backend/src/tir/printer.rs`
+- Create: `runtime/molt-tir/src/tir/lir.rs`
+- Create: `runtime/molt-tir/src/tir/lower_to_lir.rs`
+- Create: `runtime/molt-tir/src/tir/verify_lir.rs`
+- Modify: `runtime/molt-tir/src/tir/mod.rs`
+- Modify: `runtime/molt-tir/src/tir/printer.rs`
 - Test: `runtime/molt-backend/tests/lir_representation_invariants.rs`
 
 - [ ] **Step 1: Write failing Rust tests for the core invariants**
@@ -131,16 +131,16 @@ invariants.
 - [ ] **Step 7: Commit**
 
 ```bash
-git add runtime/molt-backend/src/tir/lir.rs runtime/molt-backend/src/tir/lower_to_lir.rs runtime/molt-backend/src/tir/verify_lir.rs runtime/molt-backend/src/tir/mod.rs runtime/molt-backend/src/tir/printer.rs runtime/molt-backend/tests/lir_representation_invariants.rs
+git add runtime/molt-tir/src/tir/lir.rs runtime/molt-tir/src/tir/lower_to_lir.rs runtime/molt-tir/src/tir/verify_lir.rs runtime/molt-tir/src/tir/mod.rs runtime/molt-tir/src/tir/printer.rs runtime/molt-backend/tests/lir_representation_invariants.rs
 git commit -m "backend: add representation-aware LIR contract"
 ```
 
 ## Task 2: Lower Typed TIR To Representation-Aware LIR For Hot Scalar Ops
 
 **Files:**
-- Modify: `runtime/molt-backend/src/tir/type_refine.rs`
-- Modify: `runtime/molt-backend/src/tir/lower_to_lir.rs`
-- Modify: `runtime/molt-backend/src/tir/verify.rs`
+- Modify: `runtime/molt-tir/src/tir/type_refine.rs`
+- Modify: `runtime/molt-tir/src/tir/lower_to_lir.rs`
+- Modify: `runtime/molt-tir/src/tir/verify.rs`
 - Test: `runtime/molt-backend/tests/lir_scalar_lowering.rs`
 
 - [ ] **Step 1: Write failing lowering tests**
@@ -209,7 +209,7 @@ Make the lowering deterministic and green.
 - [ ] **Step 7: Commit**
 
 ```bash
-git add runtime/molt-backend/src/tir/type_refine.rs runtime/molt-backend/src/tir/lower_to_lir.rs runtime/molt-backend/src/tir/verify.rs runtime/molt-backend/tests/lir_scalar_lowering.rs
+git add runtime/molt-tir/src/tir/type_refine.rs runtime/molt-tir/src/tir/lower_to_lir.rs runtime/molt-tir/src/tir/verify.rs runtime/molt-backend/tests/lir_scalar_lowering.rs
 git commit -m "backend: lower hot scalar ops to representation-aware LIR"
 ```
 
@@ -298,7 +298,7 @@ git commit -m "backend: consume LIR joins and loop params in native backend"
 
 **Files:**
 - Modify: `runtime/molt-backend/src/wasm.rs`
-- Modify: `runtime/molt-backend/src/tir/lower_to_wasm.rs`
+- Modify: `runtime/molt-tir/src/tir/lower_to_wasm.rs`
 - Test: `tests/test_wasm_class_smoke.py`
 - Create: `runtime/molt-backend/tests/lir_wasm_repr_regressions.rs`
 
@@ -329,7 +329,7 @@ Focus on arithmetic, comparisons, joins, loops, and truthiness.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add runtime/molt-backend/src/wasm.rs runtime/molt-backend/src/tir/lower_to_wasm.rs runtime/molt-backend/tests/lir_wasm_repr_regressions.rs tests/test_wasm_class_smoke.py
+git add runtime/molt-backend/src/wasm.rs runtime/molt-tir/src/tir/lower_to_wasm.rs runtime/molt-backend/tests/lir_wasm_repr_regressions.rs tests/test_wasm_class_smoke.py
 git commit -m "backend: align wasm lowering to representation-aware LIR"
 ```
 
@@ -337,8 +337,8 @@ git commit -m "backend: align wasm lowering to representation-aware LIR"
 
 **Files:**
 - Modify: `runtime/molt-backend/src/ir.rs`
-- Modify: `runtime/molt-backend/src/tir/lower_to_simple.rs`
-- Modify: `runtime/molt-backend/src/tir/lower_from_simple.rs`
+- Modify: `runtime/molt-tir/src/tir/lower_to_simple.rs`
+- Modify: `runtime/molt-tir/src/tir/lower_from_simple.rs`
 - Modify: `tests/test_codec_lowering.py`
 - Modify: docs in `docs/spec/areas/compiler/` and `docs/spec/STATUS.md` if the current-state wording changes
 
@@ -378,7 +378,7 @@ existence of explicit representation-aware lowering where appropriate.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add runtime/molt-backend/src/ir.rs runtime/molt-backend/src/tir/lower_to_simple.rs runtime/molt-backend/src/tir/lower_from_simple.rs tests/test_codec_lowering.py docs/spec/areas/compiler/0100_MOLT_IR.md docs/spec/areas/compiler/SIMPLE_IR_JSON_SCHEMA.md docs/spec/areas/compiler/NATIVE_BACKEND_OPTIMIZATION.md docs/spec/STATUS.md
+git add runtime/molt-backend/src/ir.rs runtime/molt-tir/src/tir/lower_to_simple.rs runtime/molt-tir/src/tir/lower_from_simple.rs tests/test_codec_lowering.py docs/spec/areas/compiler/0100_MOLT_IR.md docs/spec/areas/compiler/SIMPLE_IR_JSON_SCHEMA.md docs/spec/areas/compiler/NATIVE_BACKEND_OPTIMIZATION.md docs/spec/STATUS.md
 git commit -m "backend: remove legacy hint-centric lowering from core path"
 ```
 

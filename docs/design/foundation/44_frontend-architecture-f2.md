@@ -293,4 +293,4 @@ The *cross-process* contract (the JSON wire kind) is explicit and now registry-g
 - `src/molt/frontend/visitors/pattern_match.py` — match lowering.
 - `src/molt/frontend/lowering/serialization.py` — `map_ops_to_json` (`:396`); becomes a free function (F2d, §1.3).
 - `src/molt/frontend/lowering/op_kinds_generated.py` — generated; gains `RAISING_KIND_NAMES`/`AUGASSIGN_OP_KIND`/… in F2a (`:165` today).
-- `tools/gen_op_kinds.py` (`:50` emits the frontend Python) / `tools/audit_op_kinds.py` / `runtime/molt-backend/src/tir/op_kinds.toml` (`:140` `may_throw`, 38 throwing rows).
+- `tools/gen_op_kinds.py` (`:50` emits the frontend Python) / `tools/audit_op_kinds.py` / `runtime/molt-tir/src/tir/op_kinds.toml` (`:140` `may_throw`, 38 throwing rows).

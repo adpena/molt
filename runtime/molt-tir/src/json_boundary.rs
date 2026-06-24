@@ -2,15 +2,15 @@
 
 use serde_json::Value as JsonValue;
 
-pub(crate) type JsonObject = serde_json::Map<String, JsonValue>;
+pub type JsonObject = serde_json::Map<String, JsonValue>;
 
-pub(crate) fn expect_object<'a>(value: &'a JsonValue, ctx: &str) -> Result<&'a JsonObject, String> {
+pub fn expect_object<'a>(value: &'a JsonValue, ctx: &str) -> Result<&'a JsonObject, String> {
     value
         .as_object()
         .ok_or_else(|| format!("{ctx} must be a JSON object"))
 }
 
-pub(crate) fn required_field<'a>(
+pub fn required_field<'a>(
     obj: &'a JsonObject,
     key: &str,
     ctx: &str,
@@ -19,14 +19,14 @@ pub(crate) fn required_field<'a>(
         .ok_or_else(|| format!("{ctx}.{key} is required"))
 }
 
-pub(crate) fn required_string(obj: &JsonObject, key: &str, ctx: &str) -> Result<String, String> {
+pub fn required_string(obj: &JsonObject, key: &str, ctx: &str) -> Result<String, String> {
     required_field(obj, key, ctx)?
         .as_str()
         .map(str::to_owned)
         .ok_or_else(|| format!("{ctx}.{key} must be a string"))
 }
 
-pub(crate) fn optional_string(
+pub fn optional_string(
     obj: &JsonObject,
     key: &str,
     ctx: &str,
@@ -40,7 +40,7 @@ pub(crate) fn optional_string(
     }
 }
 
-pub(crate) fn optional_bool(
+pub fn optional_bool(
     obj: &JsonObject,
     key: &str,
     ctx: &str,
@@ -54,7 +54,7 @@ pub(crate) fn optional_bool(
     }
 }
 
-pub(crate) fn optional_i64(obj: &JsonObject, key: &str, ctx: &str) -> Result<Option<i64>, String> {
+pub fn optional_i64(obj: &JsonObject, key: &str, ctx: &str) -> Result<Option<i64>, String> {
     match obj.get(key) {
         None | Some(JsonValue::Null) => Ok(None),
         Some(value) => value
@@ -64,7 +64,7 @@ pub(crate) fn optional_i64(obj: &JsonObject, key: &str, ctx: &str) -> Result<Opt
     }
 }
 
-pub(crate) fn optional_f64(obj: &JsonObject, key: &str, ctx: &str) -> Result<Option<f64>, String> {
+pub fn optional_f64(obj: &JsonObject, key: &str, ctx: &str) -> Result<Option<f64>, String> {
     match obj.get(key) {
         None | Some(JsonValue::Null) => Ok(None),
         Some(value) => {
@@ -87,7 +87,7 @@ pub(crate) fn optional_f64(obj: &JsonObject, key: &str, ctx: &str) -> Result<Opt
     }
 }
 
-pub(crate) fn optional_u32(obj: &JsonObject, key: &str, ctx: &str) -> Result<Option<u32>, String> {
+pub fn optional_u32(obj: &JsonObject, key: &str, ctx: &str) -> Result<Option<u32>, String> {
     match obj.get(key) {
         None | Some(JsonValue::Null) => Ok(None),
         Some(value) => {
@@ -101,7 +101,7 @@ pub(crate) fn optional_u32(obj: &JsonObject, key: &str, ctx: &str) -> Result<Opt
     }
 }
 
-pub(crate) fn required_string_list(
+pub fn required_string_list(
     obj: &JsonObject,
     key: &str,
     ctx: &str,
@@ -109,7 +109,7 @@ pub(crate) fn required_string_list(
     parse_string_list(required_field(obj, key, ctx)?, &format!("{ctx}.{key}"))
 }
 
-pub(crate) fn optional_string_list(
+pub fn optional_string_list(
     obj: &JsonObject,
     key: &str,
     ctx: &str,
@@ -120,7 +120,7 @@ pub(crate) fn optional_string_list(
     }
 }
 
-pub(crate) fn optional_bytes(
+pub fn optional_bytes(
     obj: &JsonObject,
     key: &str,
     ctx: &str,

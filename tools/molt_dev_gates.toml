@@ -180,7 +180,7 @@ globs = [
   "tools/llvm_runtime_abi_audit.py",
   "tests/test_llvm_runtime_abi_audit.py",
   "src/molt/frontend/lowering/serialization.py",
-  "runtime/molt-backend/src/tir/op_kinds_generated.rs",
+  "runtime/molt-tir/src/tir/op_kinds_generated.rs",
   "runtime/molt-backend/src/llvm_backend/lowering.rs",
   "runtime/molt-backend/src/llvm_backend/runtime_imports.rs",
   "runtime/molt-runtime/src/**/*.rs",

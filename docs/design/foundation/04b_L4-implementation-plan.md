@@ -9,7 +9,7 @@ Saved verbatim from the architect's final report per the full-text-artifact poli
 
 ### 1.1 Complete Loop-Pass Inventory
 
-The pipeline runs 30 passes in this order (verified against `runtime/molt-backend/src/tir/passes/mod.rs`:133-170 and `pass_manager.rs`:316-475):
+The pipeline runs 30 passes in this order (verified against `runtime/molt-tir/src/tir/passes/mod.rs`:133-170 and `pass_manager.rs`:316-475):
 
 | Position | Pass | File | Loop relevance | Fires today? |
 |----------|------|------|----------------|--------------|
@@ -30,7 +30,7 @@ The pipeline runs 30 passes in this order (verified against `runtime/molt-backen
 
 ### 1.2 loop_unroll: Current Gate, Shape Recognition, Fire Status
 
-Gate at `runtime/molt-backend/src/tir/passes/loop_unroll.rs`:170:
+Gate at `runtime/molt-tir/src/tir/passes/loop_unroll.rs`:170:
 ```rust
 if func.has_exception_handlers() {
     return Vec::new();
@@ -197,14 +197,14 @@ Today: the `isinstance` check executes N times per loop invocation. Once TypeGua
 This is a 30-line change. It is ONLY worth landing because it is a prerequisite for Phase 2 testing (without it, even if TypeGuard ops exist post-Phase-2, the passes still bail). It is NOT a standalone perf win.
 
 Files to change:
-- `runtime/molt-backend/src/tir/passes/block_versioning.rs`:378 — change `func.has_exception_handling` to `func.has_exception_handlers()`
-- `runtime/molt-backend/src/tir/passes/type_guard_hoist.rs`:90 — change `func.has_exception_handling` to `func.has_exception_handlers()`
+- `runtime/molt-tir/src/tir/passes/block_versioning.rs`:378 — change `func.has_exception_handling` to `func.has_exception_handlers()`
+- `runtime/molt-tir/src/tir/passes/type_guard_hoist.rs`:90 — change `func.has_exception_handling` to `func.has_exception_handlers()`
 
 The stale comments at `block_versioning.rs`:373-377 (the "full-CFG PredMap == terminator-only when no exception handling" justification) and `type_guard_hoist.rs`:94-98 must also be deleted or updated — they are now false.
 
 The `TerminatorOnlyPredMap` analysis described in the original design doc is a structural improvement (prevents phantom back-edges from `CheckException → handler` arcs from misidentifying non-loop blocks as loop headers) and should accompany this fix. However, as the original design doc verified, WITHOUT TypeGuard ops these passes fire on zero candidates regardless, so the pred-map fix's miscompile risk only materializes with TypeGuard ops present. The correct sequencing:
 
-- [ ] `runtime/molt-backend/src/tir/analysis/mod.rs`: Add `TerminatorOnlyPredMap` variant to `AnalysisId` enum after `Liveness` (line 87). Current `ALL` array is 12 entries — add as entry 13.
+- [ ] `runtime/molt-tir/src/tir/analysis/mod.rs`: Add `TerminatorOnlyPredMap` variant to `AnalysisId` enum after `Liveness` (line 87). Current `ALL` array is 12 entries — add as entry 13.
 - [ ] Implement `Analysis` for `TerminatorOnlyPredMap` with `CFG_SENSITIVE: true`, `OPS_SENSITIVE: false`, calls `dominators::build_pred_map_with(func, CfgEdgePolicy::TerminatorOnly)` (the `TerminatorOnly` variant exists per `counted_loop.rs`:440 and `analysis/mod.rs`:214)
 - [ ] Add `TerminatorOnlyPredMap` to the `cfg_sensitive`/`ops_sensitive` match arms in `analysis/mod.rs`:371-408
 - [ ] Add `TerminatorOnlyPredMap` to the `check!` macro dispatch in `pass_manager.rs`:510-524
@@ -239,7 +239,7 @@ When CHA (`dispatch_ic.rs`, commit `798f9b136`) proves that a method call `obj.c
 
 Architecture decision: TypeGuard generation belongs as a mid-pipeline TIR pass placed AFTER `type_refine` (which propagates type facts) but BEFORE `block_versioning` and `type_guard_hoist` (which consume them). Current pipeline order has `block_versioning` at position 9 and `type_guard_hoist` at position 18. A TypeGuard generation pass should run at position 8.5 — after `canonicalize_post` (position 8, so type-narrowed values are visible) and before `block_versioning` (position 9).
 
-New file: `runtime/molt-backend/src/tir/passes/type_guard_gen.rs`
+New file: `runtime/molt-tir/src/tir/passes/type_guard_gen.rs`
 
 ```
 pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats
@@ -260,7 +260,7 @@ Test specification:
 - Unit test: `test_typeguard_gen_then_block_versioning` — end-to-end: isinstance → TypeGuard → block_versioning fires → `values_changed > 0`
 - Differential test (Shape A): `isinstance(x, int)` in a loop, verify correct results on CPython and molt, verify `TIR_OPT_STATS=1` shows `type_guard_gen: N ops_added > 0`, `block_versioning: M values_changed > 0`
 
-Add `pub mod type_guard_gen;` to `runtime/molt-backend/src/tir/passes/mod.rs`.
+Add `pub mod type_guard_gen;` to `runtime/molt-tir/src/tir/passes/mod.rs`.
 
 Register in `build_default_pipeline` (`pass_manager.rs`):
 ```rust
@@ -274,7 +274,7 @@ The pipeline order table in `mod.rs`:139-170 MUST be updated to match; otherwise
 
 ### 3.3 Phase 3: IV Strength Reduction (independent of TypeGuard arc)
 
-New file: `runtime/molt-backend/src/tir/passes/iv_strength_reduction.rs`
+New file: `runtime/molt-tir/src/tir/passes/iv_strength_reduction.rs`
 
 ```rust
 pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats
@@ -344,7 +344,7 @@ The deferral comment cites "requires inserting a new ConstInt op — a block mut
 The only pattern needed: find or create the ConstInt for the shift amount k, insert it BEFORE the FloorDiv op, replace FloorDiv with Shr(lhs, k). Two-pass approach: collect candidates (op index + shift amount), then apply insertions in reverse order to preserve indices.
 
 Files to change:
-- `runtime/molt-backend/src/tir/passes/strength_reduction.rs`:62-115
+- `runtime/molt-tir/src/tir/passes/strength_reduction.rs`:62-115
 
 Differential tests:
 ```python

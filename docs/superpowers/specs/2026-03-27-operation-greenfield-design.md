@@ -145,8 +145,8 @@ Strategy:
 3. Run full differential suite with TIR enabled
 
 Files:
-- `runtime/molt-backend/src/tir/lower_to_simple.rs`
-- `runtime/molt-backend/src/tir/mod.rs`
+- `runtime/molt-tir/src/tir/lower_to_simple.rs`
+- `runtime/molt-tir/src/tir/mod.rs`
 - `src/molt/frontend/__init__.py` (TIR toggle removal)
 
 Verification:

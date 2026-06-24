@@ -2192,11 +2192,9 @@ fn preanalyze_function_ir(
         }
 
         let logical_out = op.out.as_ref().or_else(|| {
-            if matches!(op.kind.as_str(), "store_var" | "delete_var") {
-                op.var.as_ref()
-            } else {
-                None
-            }
+            op.var
+                .as_ref()
+                .filter(|_| matches!(op.kind.as_str(), "store_var" | "delete_var"))
         });
         if let Some(out) = logical_out
             && out != "none"

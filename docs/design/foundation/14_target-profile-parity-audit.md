@@ -216,6 +216,6 @@ MOLT_INLINE_STATS=1 python3 -m molt build --target luau --output /tmp/bench_sum.
 - `/Users/adpena/Projects/molt/runtime/molt-backend/src/native_backend/simple_backend.rs` — lines 2597–2667 (module phase + LLVM dispatch)
 - `/Users/adpena/Projects/molt/runtime/molt-backend/src/wasm.rs` — lines 2060–2212 (WASM per-fn pipeline + module phase)
 - `/Users/adpena/Projects/molt/runtime/molt-backend/src/main.rs` — lines 2171–2265 (Luau path, bypasses SimpleBackend entirely)
-- `/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/module_phase.rs` — lines 115–179 (`run_module_pipeline`: call graph → inliner → slot-promotion → rebuild)
-- `/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/target_info.rs` — lines 246–311 (TargetInfo constructors; `BuildProfile` field exists but dev-fast vs release-fast never changes a pass decision)
+- `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/module_phase.rs` — lines 115–179 (`run_module_pipeline`: call graph → inliner → slot-promotion → rebuild)
+- `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/target_info.rs` — lines 246–311 (TargetInfo constructors; `BuildProfile` field exists but dev-fast vs release-fast never changes a pass decision)
 - `/Users/adpena/Projects/molt/Cargo.toml` — lines 167–175 (dev-fast profile: molt-backend at opt-level=1 only, no pass gating)

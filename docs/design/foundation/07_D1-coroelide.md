@@ -74,7 +74,7 @@ All `STATE_YIELD` points become yield_sites where: (a) the yielded value binds t
 ```
 
 **New pass file:**
-`/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/passes/generator_fusion.rs`
+`/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/passes/generator_fusion.rs`
 
 ### Recognition predicate
 
@@ -141,7 +141,7 @@ After splicing, run `run_pipeline(merged_caller, tti)`. SCCP fold-propagates the
 
 ### Files to CREATE
 
-**`/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/passes/generator_fusion.rs`**
+**`/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/passes/generator_fusion.rs`**
 
 This is the main pass. Structure:
 
@@ -239,7 +239,7 @@ Key implementation details:
 
 8. Call `run_pipeline(caller, tti)` for joint optimization.
 
-**`/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/passes/generator_fusion.rs` — conservative bail conditions (never miscompile)**
+**`/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/passes/generator_fusion.rs` — conservative bail conditions (never miscompile)**
 
 Return `false` (no change) if:
 - The `ClosureStore` initial-value analysis cannot statically determine any slot's entry value (slot has no write in P's entry path before the first `StateSwitch`) — bail
@@ -250,12 +250,12 @@ Return `false` (no change) if:
 
 ### Files to MODIFY
 
-**`/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/passes/mod.rs`**
+**`/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/passes/mod.rs`**
 
 Add: `pub mod generator_fusion;`
 After line 20 (`pub mod inliner;`).
 
-**`/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/module_phase.rs`**
+**`/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/module_phase.rs`**
 
 In `run_module_pipeline` (currently at line 110), add the generator_fusion call after the E1 inliner:
 
@@ -275,13 +275,13 @@ let summaries = ModuleSummaries::compute(module, &call_graph);
 
 Note: rebuild the call graph once after BOTH transforms (the fused functions no longer contain `AllocTask` edges; the call graph must reflect this for the leaf-set the backends read).
 
-**`/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/passes/escape_analysis.rs`**
+**`/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/passes/escape_analysis.rs`**
 
 Phase A prerequisite: `AllocTask` is already listed in `is_alloc_site` (line 196 in the file). The conservative escape path already marks `AllocTask` as `GlobalEscape` through the `ScfFor`/`AllocTask`/... arm at line 600. This is correct — an `AllocTask` that escapes must stay heap-allocated.
 
 For phase B precision, the escape analysis needs to classify a non-escaping `AllocTask` (one consumed only by a local `GetIter` + loop) as `NoEscape`. This enables the fusion pass to fire without a separate single-use scan. However, for phase A correctness, the single-use check in the fusion pass itself (the recognition predicate) is sufficient. The escape_analysis change is a separate phase-B cleanup.
 
-**`/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/pass_manager.rs`**
+**`/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/pass_manager.rs`**
 
 No change needed for phase A. The generator_fusion pass is a MODULE-level pass in `module_phase.rs`, not a per-function pass in the pipeline. This is correct architecture: it requires seeing multiple functions simultaneously.
 

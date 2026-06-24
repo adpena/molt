@@ -76,7 +76,7 @@ The following table specifies the ownership state of the **result** of each majo
 
 - Live-across-yield values must be inc-ref'd before the yield and dec-ref'd on frame teardown (gen.close()/forced drop), not at the next use.
 - Values used only *before* the yield are still dropped at their last use before the yield.
-- The suspension opcodes themselves are `is_rc_barrier` (alias_analysis.rs already classifies them as such) and `is_heap_exposing` in `refcount_elim.rs:79`.
+- The suspension opcodes themselves are `is_rc_barrier` (alias_analysis.rs already classifies them as such) and `refcount_heap_exposure_opcodes` in `op_kinds.toml`, consumed by `is_heap_exposing` in `refcount_elim.rs`.
 
 Frame teardown (`AllocTask` frame with gen.close()) must dec-ref all live frame slots. This is handled by the existing coroutine finalizer path in `async_rt/generators.rs`; the compiler must ensure the frame *has* those refs at suspension — which the IncRef-before-yield rule above guarantees.
 
@@ -547,15 +547,15 @@ Files to create/modify:
 
 Files to create/modify:
 
-- `runtime/molt-backend/src/tir/analysis/mod.rs` — add `AnalysisId::Liveness` to the enum and `ALL` array. Implement `Analysis for TirLiveness`.
-- `runtime/molt-backend/src/tir/passes/liveness.rs` (new file) — implement `TirLiveness`:
+- `runtime/molt-tir/src/tir/analysis/mod.rs` — add `AnalysisId::Liveness` to the enum and `ALL` array. Implement `Analysis for TirLiveness`.
+- `runtime/molt-tir/src/tir/passes/liveness.rs` (new file) — implement `TirLiveness`:
   - Struct fields: `pub live_in: HashMap<BlockId, HashSet<ValueId>>`, `pub live_out: HashMap<BlockId, HashSet<ValueId>>`.
   - Compute using backward dataflow: iterate until fixpoint; seed with `LiveOut[exits] = {}`.
   - Exclude `Repr::RawI64Safe`/`Bool`/`FloatUnboxed` values from the live sets.
   - `CFG_SENSITIVE`: `true`.
   - Public query: `fn is_live_in(&self, block: BlockId, val: ValueId) -> bool`.
   - Public query: `fn last_use_in_block(&self, block: &TirBlock, val: ValueId) -> Option<usize>` — returns the index of the last op that uses `val` in this block (or `None` if not used in this block at all).
-- `runtime/molt-backend/src/tir/passes/mod.rs` — add `pub mod liveness;`.
+- `runtime/molt-tir/src/tir/passes/mod.rs` — add `pub mod liveness;`.
 
 **Test specification (Phase 2 gates)**:
 - Unit tests in `liveness.rs`:
@@ -572,7 +572,7 @@ Files to create/modify:
 
 Files to create/modify:
 
-- `runtime/molt-backend/src/tir/passes/drop_insertion.rs` (new file):
+- `runtime/molt-tir/src/tir/passes/drop_insertion.rs` (new file):
   - `pub fn run(func: &mut TirFunction, am: &mut AnalysisManager, repr_map: Option<&HashMap<ValueId, Repr>>) -> PassStats`
   - Consumes: `TirLiveness`, `ImmediateDoms`, `PredMap`, `LoopForest`, `AliasAnalysis` (from am), repr_map parameter.
   - Straight-line placement: for each block, walk ops, identify last-use positions, insert `DecRef` after last use.
@@ -583,8 +583,8 @@ Files to create/modify:
   - Borrow inference: if V's only remaining use after the drop candidate is as an operand to a `Call`/`CallMethod`/`CallBuiltin` where V is dead after the call, and no IncRef is needed (no heap-exposing barrier between definition and call), skip the IncRef+DecRef pair entirely.
   - Set `func.attrs.insert("drop_inserted", AttrValue::Bool(true))` for every non-bailed full-function analysis, even when no physical `DecRef`/`IncRef` is inserted; report this as `PassStats.attrs_changed` so pass-manager snapshot restore preserves metadata-only RC authority changes.
   - Mutation class: `Cfg`, because mixed-ownership phi retains may split critical edges.
-- `runtime/molt-backend/src/tir/passes/mod.rs` — add `pub mod drop_insertion;`.
-- `runtime/molt-backend/src/tir/pass_manager.rs` — add two new pass slots at the end of `build_default_pipeline`:
+- `runtime/molt-tir/src/tir/passes/mod.rs` — add `pub mod drop_insertion;`.
+- `runtime/molt-tir/src/tir/pass_manager.rs` — add two new pass slots at the end of `build_default_pipeline`:
   1. `pass("drop_insertion", OpsOnly, ...)` — inserts DecRef/IncRef.
   2. `pass("refcount_elim_post", OpsOnly, ...)` — runs refcount_elim again after insertion.
 - `runtime/molt-backend/src/native_backend/function_compiler.rs:3577` — inside the `loop_reassign_old_val` computation, add the guard:
@@ -616,7 +616,7 @@ Files to create/modify:
 
 Files to create/modify:
 
-- `runtime/molt-backend/src/tir/lower_to_wasm.rs` — add handling for `OpCode::DecRef`: emit a call to `molt_dec_ref_obj` (the WASM import already exists for it). Add `OpCode::IncRef`: emit `molt_inc_ref_obj`. The LIR path already carries TIR ops in `LirOp::tir_op`; the WASM lowering function must pattern-match them.
+- `runtime/molt-tir/src/tir/lower_to_wasm.rs` — add handling for `OpCode::DecRef`: emit a call to `molt_dec_ref_obj` (the WASM import already exists for it). Add `OpCode::IncRef`: emit `molt_inc_ref_obj`. The LIR path already carries TIR ops in `LirOp::tir_op`; the WASM lowering function must pattern-match them.
 - Luau lowering (wherever OpCode→Luau emission happens): recognize `OpCode::DecRef`/`IncRef` and emit nothing (comment "GC-managed target").
 - Remove/disable the SimpleIR native-backend loop-reassign dec-ref path for `drop_inserted` functions (if not already done in Phase 3 — move here if Phase 3 scoping deferred it).
 
@@ -651,12 +651,12 @@ Files to modify:
 |---|---|---|
 | `runtime/molt-runtime/src/constants.rs` | Modify | Add `DEALLOC_COUNT`, `DEALLOC_BYTES_TOTAL`, per-type dealloc counters after line 95 |
 | `runtime/molt-runtime/src/object/mod.rs` | Modify | Increment dealloc counters at line 1821 (the `prev==1` branch in `dec_ref_ptr`) |
-| `runtime/molt-backend/src/tir/passes/liveness.rs` | Create | `TirLiveness` analysis — backward dataflow liveness |
-| `runtime/molt-backend/src/tir/analysis/mod.rs` | Modify | Add `AnalysisId::Liveness`, register `TirLiveness` |
-| `runtime/molt-backend/src/tir/passes/drop_insertion.rs` | Create | `DropInsertion` pass — core of this substrate |
-| `runtime/molt-backend/src/tir/passes/mod.rs` | Modify | Add `pub mod liveness; pub mod drop_insertion;` |
-| `runtime/molt-backend/src/tir/pass_manager.rs` | Modify | Append `drop_insertion` + `refcount_elim_post` to `build_default_pipeline` |
-| `runtime/molt-backend/src/tir/lower_to_wasm.rs` | Modify | Wire `OpCode::DecRef`/`IncRef` |
+| `runtime/molt-tir/src/tir/passes/liveness.rs` | Create | `TirLiveness` analysis — backward dataflow liveness |
+| `runtime/molt-tir/src/tir/analysis/mod.rs` | Modify | Add `AnalysisId::Liveness`, register `TirLiveness` |
+| `runtime/molt-tir/src/tir/passes/drop_insertion.rs` | Create | `DropInsertion` pass — core of this substrate |
+| `runtime/molt-tir/src/tir/passes/mod.rs` | Modify | Add `pub mod liveness; pub mod drop_insertion;` |
+| `runtime/molt-tir/src/tir/pass_manager.rs` | Modify | Append `drop_insertion` + `refcount_elim_post` to `build_default_pipeline` |
+| `runtime/molt-tir/src/tir/lower_to_wasm.rs` | Modify | Wire `OpCode::DecRef`/`IncRef` |
 | `runtime/molt-backend/src/native_backend/function_compiler.rs` | Modify | Guard `loop_reassign_old_val` with `!drop_inserted`; Phase 5: delete the block |
 | `runtime/molt-backend/src/passes.rs` | Modify (Phase 5) | Delete `compute_rc_coalesce_skips`, `rc_coalescing` |
 | `tests/differential/memory/*.py` | Create | Four regression tests |
@@ -783,15 +783,15 @@ The TIR inliner (E1) activates via `run_module_pipeline`, which is currently tes
 - Runtime alloc birth: `runtime/molt-runtime/src/object/mod.rs:1155,1228`
 - Runtime dealloc zero-transition (dealloc counter insertion point): `runtime/molt-runtime/src/object/mod.rs:1812-1821`
 - Dealloc counter statics (add alongside): `runtime/molt-runtime/src/constants.rs:88-95`
-- IncRef/DecRef opcodes: `runtime/molt-backend/src/tir/ops.rs:123-125`
-- refcount_elim pass (existing, to run post-insertion): `runtime/molt-backend/src/tir/passes/refcount_elim.rs`
-- effects.rs side-effect oracle (DecRef already listed): `runtime/molt-backend/src/tir/passes/effects.rs:171-172`
-- alias_analysis is_rc_barrier: `runtime/molt-backend/src/tir/passes/alias_analysis.rs`
-- TIR AnalysisManager (add Liveness): `runtime/molt-backend/src/tir/analysis/mod.rs:66-100`
-- Pass pipeline build (add drop_insertion + refcount_elim_post): `runtime/molt-backend/src/tir/pass_manager.rs:282`
+- IncRef/DecRef opcodes: `runtime/molt-tir/src/tir/ops.rs:123-125`
+- refcount_elim pass (existing, to run post-insertion): `runtime/molt-tir/src/tir/passes/refcount_elim.rs`
+- effects.rs side-effect oracle (DecRef already listed): `runtime/molt-tir/src/tir/passes/effects.rs:171-172`
+- alias_analysis is_rc_barrier: `runtime/molt-tir/src/tir/passes/alias_analysis.rs`
+- TIR AnalysisManager (add Liveness): `runtime/molt-tir/src/tir/analysis/mod.rs:66-100`
+- Pass pipeline build (add drop_insertion + refcount_elim_post): `runtime/molt-tir/src/tir/pass_manager.rs:282`
 - LLVM DecRef lowering (already wired): `runtime/molt-backend/src/llvm_backend/lowering.rs:1275-1287`
-- SimpleIR DecRef round-trip (already wired): `runtime/molt-backend/src/tir/lower_to_simple.rs:1903`
+- SimpleIR DecRef round-trip (already wired): `runtime/molt-tir/src/tir/lower_to_simple.rs:1903`
 - loop_reassign_old_val guard (Phase 3 modification): `runtime/molt-backend/src/native_backend/function_compiler.rs:3577-3628`
 - emit_dec_ref_obj (Cranelift inline tag-check, already correct): `runtime/molt-backend/src/native_backend/simple_backend.rs:1076-1103`
 - Repr lattice (filter raw scalars): `runtime/molt-backend/src/representation_plan.rs:78-133`
-- reuse_analysis (Perceus, follow-up optimization): `runtime/molt-backend/src/tir/passes/reuse_analysis.rs`
+- reuse_analysis (Perceus, follow-up optimization): `runtime/molt-tir/src/tir/passes/reuse_analysis.rs`

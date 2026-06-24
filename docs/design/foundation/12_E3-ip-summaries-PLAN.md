@@ -170,7 +170,7 @@ The unconditional `OpCode::Call → GlobalEscape` arm in `escape_analysis::analy
 ### Phase E3a: Extend `FunctionSummary` + bottom-up computation (pure data; no consumers yet)
 
 Files changed:
-- `/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/passes/ip_summary.rs` — add `does_not_capture_param: Vec<bool>` and `is_pure: bool` to `FunctionSummary`; populate in `ModuleSummaries::compute` bottom-up using `escape_analysis::analyze` on each function (summaries for callees are already computed when we reach a caller, because the walk is bottom-up over the SCC condensation)
+- `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/passes/ip_summary.rs` — add `does_not_capture_param: Vec<bool>` and `is_pure: bool` to `FunctionSummary`; populate in `ModuleSummaries::compute` bottom-up using `escape_analysis::analyze` on each function (summaries for callees are already computed when we reach a caller, because the walk is bottom-up over the SCC condensation)
 - All existing `FunctionSummary { is_leaf, op_count, return_type }` struct literals in tests need the two new fields (or derive `Default` and use `..Default::default()`)
 
 Unit tests:
@@ -186,9 +186,9 @@ This phase is **additive** — zero behavior change, all new fields are conserva
 ### Phase E3b: Thread summaries into escape analysis; delete unconditional-Call-GlobalEscape arm
 
 Files changed:
-- `/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/passes/escape_analysis.rs` — change `analyze(func)` to `analyze(func, summaries: Option<&ModuleSummaries>)`; replace `OpCode::Call → GlobalEscape` (line 367-369) with the precise `does_not_capture_param` conditional
-- `/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/passes/alias_analysis.rs` — update `AliasAnalysisResult::compute(func)` (line 424) to pass `summaries` through; signature becomes `compute(func, summaries: Option<&ModuleSummaries>)`; `AliasAnalysis::compute` in the `Analysis` impl (line 724) needs the summaries source — this is where the `TargetInfo` field enters
-- `/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/target_info.rs` — add `pub ip_summaries: Option<Arc<ModuleSummaries>>` field; populate in `module_phase::run_module_pipeline` before the per-function pipeline runs (the rebuild at line 172-173 produces the final summaries; set them on `tti` before `compile_module_parallel` is called)
+- `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/passes/escape_analysis.rs` — change `analyze(func)` to `analyze(func, summaries: Option<&ModuleSummaries>)`; replace `OpCode::Call → GlobalEscape` (line 367-369) with the precise `does_not_capture_param` conditional
+- `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/passes/alias_analysis.rs` — update `AliasAnalysisResult::compute(func)` (line 424) to pass `summaries` through; signature becomes `compute(func, summaries: Option<&ModuleSummaries>)`; `AliasAnalysis::compute` in the `Analysis` impl (line 724) needs the summaries source — this is where the `TargetInfo` field enters
+- `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/target_info.rs` — add `pub ip_summaries: Option<Arc<ModuleSummaries>>` field; populate in `module_phase::run_module_pipeline` before the per-function pipeline runs (the rebuild at line 172-173 produces the final summaries; set them on `tti` before `compile_module_parallel` is called)
 - All call sites of `escape_analysis::analyze` (there are 3: in `alias_analysis.rs`, in `escape_analysis::run`, and in any test that calls `analyze` directly) need the new argument
 
 **Soundness argument**: The escape analysis is monotone — it only ever moves values UP the lattice (NoEscape → ArgEscape → GlobalEscape). Adding `does_not_capture_param` summaries can only prevent a value from escalating from ArgEscape to GlobalEscape at a Call site. If the summary is wrong (falsely claims does-not-capture), a value that should be GlobalEscape is left ArgEscape. ArgEscape values are stack-promoted and RC-stripped. A false-positive `does_not_capture` therefore causes a use-after-free. The computation is conservative-correct because:
@@ -199,8 +199,8 @@ Files changed:
 ### Phase E3c: Thread summaries into LICM + DCE for pure user calls
 
 Files changed:
-- `/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/passes/licm.rs` — extend `is_hoistable` to consult `tti.ip_summaries` for `OpCode::Call`; LICM pass receives `tti` already via `TirPass::run`
-- `/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/passes/dce.rs` — extend dead-call elimination to drop `OpCode::Call` to `is_pure=true` callee when result is unused
+- `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/passes/licm.rs` — extend `is_hoistable` to consult `tti.ip_summaries` for `OpCode::Call`; LICM pass receives `tti` already via `TirPass::run`
+- `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/passes/dce.rs` — extend dead-call elimination to drop `OpCode::Call` to `is_pure=true` callee when result is unused
 
 Unit tests for LICM:
 - `pure_user_call_in_loop_is_hoisted`: a loop containing `result = pure_fn(arg)` where `arg` is loop-invariant and `pure_fn` has `is_pure=true` in summaries → `result` hoisted to preheader
@@ -312,13 +312,13 @@ except ZeroDivisionError:
 
 ## 8. Essential Files (absolute paths)
 
-- `/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/passes/ip_summary.rs` — `FunctionSummary`/`ModuleSummaries`; add `does_not_capture_param` + `is_pure`; E3a target
-- `/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/passes/escape_analysis.rs` — `analyze()` line 220; `OpCode::Call` arm lines 367-369 (the deleted legacy); E3b target
-- `/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/passes/alias_analysis.rs` — `AliasAnalysisResult::compute` line 424; threads summaries to escape; E3b target
-- `/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/module_phase.rs` — `run_module_pipeline` line 115; pipeline integration + `tti.ip_summaries` population; E3a/b target
-- `/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/passes/licm.rs` — `is_hoistable` line 61; E3c target
-- `/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/passes/dce.rs` — dead `Call` elimination; E3c target
-- `/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/passes/effects.rs` — `builtin_effects`/`method_effects`; the existing oracle E3 extends to user-defined callees via summaries
-- `/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/call_graph.rs` — `CallGraph::bottom_up_order` line 386; the traversal order E3a requires
-- `/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/passes/mod.rs` — module declaration; E3b pass registration if needed
-- `/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/analysis/mod.rs` — `AnalysisId` enum lines 66-101; E3b may add `IpSummaries` slot if summaries are cached as an analysis rather than threaded via `TargetInfo`
+- `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/passes/ip_summary.rs` — `FunctionSummary`/`ModuleSummaries`; add `does_not_capture_param` + `is_pure`; E3a target
+- `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/passes/escape_analysis.rs` — `analyze()` line 220; `OpCode::Call` arm lines 367-369 (the deleted legacy); E3b target
+- `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/passes/alias_analysis.rs` — `AliasAnalysisResult::compute` line 424; threads summaries to escape; E3b target
+- `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/module_phase.rs` — `run_module_pipeline` line 115; pipeline integration + `tti.ip_summaries` population; E3a/b target
+- `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/passes/licm.rs` — `is_hoistable` line 61; E3c target
+- `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/passes/dce.rs` — dead `Call` elimination; E3c target
+- `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/passes/effects.rs` — `builtin_effects`/`method_effects`; the existing oracle E3 extends to user-defined callees via summaries
+- `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/call_graph.rs` — `CallGraph::bottom_up_order` line 386; the traversal order E3a requires
+- `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/passes/mod.rs` — module declaration; E3b pass registration if needed
+- `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/analysis/mod.rs` — `AnalysisId` enum lines 66-101; E3b may add `IpSummaries` slot if summaries are cached as an analysis rather than threaded via `TargetInfo`

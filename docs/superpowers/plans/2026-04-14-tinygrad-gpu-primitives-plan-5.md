@@ -17,8 +17,8 @@
 
 | Path | LOC (approx) | Responsibility |
 | --- | --- | --- |
-| `runtime/molt-backend/src/tir/gpu_pipeline.rs` | ~1500 | Legacy GPU kernel pipeline |
-| `runtime/molt-backend/src/tir/gpu_types.rs` | ~400 | Legacy GpuKernel, GpuOp types |
+| `runtime/molt-tir/src/tir/gpu_pipeline.rs` | ~1500 | Legacy GPU kernel pipeline |
+| `runtime/molt-tir/src/tir/gpu_types.rs` | ~400 | Legacy GpuKernel, GpuOp types |
 | `runtime/molt-backend/src/gpu/` | ~3000 | Legacy GPU device, shader gen |
 | `runtime/molt-backend/src/gpu/metal_device.rs` | ~800 | Legacy Metal device |
 | `runtime/molt-backend/src/gpu/webgpu_device.rs` | ~600 | Legacy WebGPU device |
