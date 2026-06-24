@@ -268,7 +268,10 @@ from molt.cli.package_registry import (
     _upload_registry_file,
     _validate_registry_url,
 )
-from molt.cli.package_distribution import _resolve_sidecar_path
+from molt.cli.package_distribution import (
+    _resolve_extension_manifest_for_verify,
+    _resolve_sidecar_path,
+)
 from molt.cli.lockfiles import (
     _LOCK_CHECK_CACHE_VERSION,
     _cargo_lock_manifest_paths,
@@ -29445,35 +29448,6 @@ def extension_audit(
             for warning in warnings:
                 print(f"WARN: {warning}")
     return 0 if not errors else 1
-
-
-def _resolve_extension_manifest_for_verify(
-    wheel_path: Path,
-) -> tuple[Path | None, tempfile.TemporaryDirectory[str] | None, str | None]:
-    sibling_manifest = wheel_path.parent / "extension_manifest.json"
-    if sibling_manifest.exists():
-        return sibling_manifest, None, None
-    try:
-        with zipfile.ZipFile(wheel_path) as zf:
-            manifest_bytes = zf.read("extension_manifest.json")
-    except KeyError:
-        return (
-            None,
-            None,
-            "extension_manifest.json not found next to wheel or inside wheel.",
-        )
-    except (OSError, zipfile.BadZipFile) as exc:
-        return None, None, f"Failed to inspect wheel {wheel_path}: {exc}"
-    try:
-        decoded = json.loads(manifest_bytes.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        return None, None, f"Invalid embedded extension_manifest.json: {exc}"
-    if not isinstance(decoded, dict):
-        return None, None, "Embedded extension_manifest.json must be a JSON object."
-    tmpdir = tempfile.TemporaryDirectory(prefix="molt_ext_manifest_")
-    manifest_path = Path(tmpdir.name) / "extension_manifest.json"
-    _atomic_write_json(manifest_path, decoded, sort_keys=True, indent=2)
-    return manifest_path, tmpdir, None
 
 
 def package(
