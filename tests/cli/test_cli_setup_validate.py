@@ -14,6 +14,7 @@ from tests.cli.process_guard import run_cli_test_process
 
 
 ROOT = Path(__file__).resolve().parents[2]
+COMMAND_RUNTIME = importlib.import_module("molt.cli.command_runtime")
 
 
 def _base_env() -> dict[str, str]:
@@ -31,6 +32,25 @@ def _python_executable() -> str:
     if fallback:
         return fallback
     return exe
+
+
+def _patch_memory_guard_loader(
+    monkeypatch: pytest.MonkeyPatch,
+    cli_module: object,
+    loader: object,
+) -> None:
+    monkeypatch.setattr(
+        cli_module,
+        "_load_cli_harness_memory_guard",
+        loader,
+        raising=True,
+    )
+    monkeypatch.setattr(
+        COMMAND_RUNTIME,
+        "_load_cli_harness_memory_guard",
+        loader,
+        raising=True,
+    )
 
 
 def _run_cli(args: list[str]) -> subprocess.CompletedProcess[str]:
@@ -328,11 +348,10 @@ def test_cli_run_command_uses_memory_guard_prefix(
     def fail_raw_run(*_args: object, **_kwargs: object) -> None:
         raise AssertionError("guarded CLI command used raw subprocess.run")
 
-    monkeypatch.setattr(
+    _patch_memory_guard_loader(
+        monkeypatch,
         cli,
-        "_load_cli_harness_memory_guard",
         lambda cwd: _fake_cli_harness(calls),
-        raising=True,
     )
     monkeypatch.setattr(cli.subprocess, "run", fail_raw_run, raising=True)
 
@@ -371,11 +390,10 @@ def test_cli_timed_command_uses_memory_guard_elapsed(
     def fail_raw_run(*_args: object, **_kwargs: object) -> None:
         raise AssertionError("guarded timed CLI command used raw subprocess.run")
 
-    monkeypatch.setattr(
+    _patch_memory_guard_loader(
+        monkeypatch,
         cli,
-        "_load_cli_harness_memory_guard",
         lambda cwd: _fake_cli_harness(calls, result_factory=result_factory),
-        raising=True,
     )
     monkeypatch.setattr(cli.subprocess, "run", fail_raw_run, raising=True)
 
@@ -404,14 +422,13 @@ def test_cli_guard_preserves_operator_limits_for_sanitized_env(
     calls: list[dict[str, object]] = []
 
     monkeypatch.setenv("MOLT_CLI_MAX_PROCESS_RSS_GB", "0.05")
-    monkeypatch.setattr(
+    _patch_memory_guard_loader(
+        monkeypatch,
         cli,
-        "_load_cli_harness_memory_guard",
         lambda cwd: _fake_cli_harness(
             calls,
             result_factory=lambda cmd: subprocess.CompletedProcess(cmd, 0, "", ""),
         ),
-        raising=True,
     )
 
     result = cli._run_completed_command(
@@ -452,11 +469,10 @@ def test_cli_cargo_build_helper_uses_default_memory_guard(
 
     monkeypatch.setenv("MOLT_BUILD_MAX_PROCESS_RSS_GB", "0.25")
     monkeypatch.setattr(cli.subprocess, "run", fail_raw_subprocess_run)
-    monkeypatch.setattr(
+    _patch_memory_guard_loader(
+        monkeypatch,
         cli,
-        "_load_cli_harness_memory_guard",
         lambda cwd: _fake_cli_harness(calls, result_factory=result_factory),
-        raising=True,
     )
 
     result = cli._run_cargo_with_sccache_retry(
@@ -509,11 +525,10 @@ def test_cli_wrapper_build_uses_default_memory_guard(
     def fail_raw_run(*_args: object, **_kwargs: object) -> None:
         raise AssertionError("wrapper build used raw subprocess.run")
 
-    monkeypatch.setattr(
+    _patch_memory_guard_loader(
+        monkeypatch,
         cli,
-        "_load_cli_harness_memory_guard",
         lambda cwd: _fake_cli_harness(calls, result_factory=result_factory),
-        raising=True,
     )
     monkeypatch.setattr(cli.subprocess, "run", fail_raw_run, raising=True)
 
@@ -803,14 +818,13 @@ def test_cli_validate_uses_family_memory_guard_prefixes(
         lambda root, suite, backend, profile: steps,
         raising=True,
     )
-    monkeypatch.setattr(
+    _patch_memory_guard_loader(
+        monkeypatch,
         cli,
-        "_load_cli_harness_memory_guard",
         lambda cwd: _fake_cli_harness(
             calls,
             result_factory=lambda cmd: subprocess.CompletedProcess(cmd, 0, "", ""),
         ),
-        raising=True,
     )
 
     summary_path = tmp_path / "validate-summary.json"
@@ -889,14 +903,13 @@ def test_cli_validate_defaults_execution_summary_to_logs(
         lambda root, suite, backend, profile: steps,
         raising=True,
     )
-    monkeypatch.setattr(
+    _patch_memory_guard_loader(
+        monkeypatch,
         cli,
-        "_load_cli_harness_memory_guard",
         lambda cwd: _fake_cli_harness(
             calls,
             result_factory=lambda cmd: subprocess.CompletedProcess(cmd, 0, "", ""),
         ),
-        raising=True,
     )
 
     assert (
