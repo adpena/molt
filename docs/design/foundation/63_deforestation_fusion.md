@@ -2,7 +2,7 @@
 DEFORESTATION KILLERS. End-state: Python's high-level data-flow (comprehensions,
 generator expressions, itertools chains, map/filter/zip/sum pipelines) compiles to
 ZERO-INTERMEDIATE-ALLOCATION fused loops. The end-state IR fact makes "this chain
-allocated an intermediate" an UNEXPRESSIBLE class. DEEPENS doc 53 (perf compression
+allocated an intermediate" an UNEXPRESSIBLE class. DEEPENS doc 65 (perf compression
 ladder) Rung 6 — this is its deforestation sub-arc made first-class.
 Author: portfolio-architect. Date: 2026-06-24. Status: DESIGN ONLY / EXECUTABLE PLAN.
 No code written by this doc; the lead integrates.
@@ -17,7 +17,7 @@ current files and executable tests before acting. -->
 
 # 63 — Deforestation / Fusion: the zero-intermediate-allocation data-flow plane
 
-> **Status: EXECUTABLE PLAN (design only).** This arc DEEPENS one lever of doc 53
+> **Status: EXECUTABLE PLAN (design only).** This arc DEEPENS one lever of doc 65
 > (the Performance Compression Ladder): **Rung 6** ("Resumable-frame ownership +
 > generator fusion"). Doc 53 §3 Rung 6 *names* "fusion eligibility — a
 > `FusionBarrier`/`no_heap_move` fact … extended to def-yield generators so
@@ -28,10 +28,10 @@ current files and executable tests before acting. -->
 > (native/LLVM/WASM/Luau) and all profiles (dev-fast/release-fast/release-output).
 >
 > **Cross-arc dependency (stated once, not re-derived):** this arc consumes the
-> **ownership lattice** (doc 53 Rung 1 / doc 55 / `ownership_lattice_min.rs`) for the
+> **ownership lattice** (doc 65 Rung 1 / doc 55 / `ownership_lattice_min.rs`) for the
 > escape and borrow facts that decide whether a fused chain's intermediate is
 > droppable-on-the-stack; the **`FactValue` confidence lattice** (`call_facts.rs:117`)
-> as its soundness substrate; the **CallFacts IP summaries** (doc 53 Rung 2 /
+> as its soundness substrate; the **CallFacts IP summaries** (doc 65 Rung 2 /
 > doc 47 / `call_facts.rs`) for the cross-call fusion case; and the **op_kinds.toml
 > generated authority** (doc 25 / doc 59) as the home of every per-op fusion fact.
 > It does NOT re-specify those mechanisms; it adds the fusion-specific facts that ride
@@ -87,7 +87,7 @@ Concretely, at the destination:
   *also* a warm-cycle win, classified per CLAUDE.md, never an alloc-count-only claim).
 - **PyPy/Codon gap closed on the comprehension/generator class** — generator fusion +
   frame elision is exactly what PyPy gets from trace inlining and Codon from eager
-  loop compilation (doc 53 Rung 6); molt gets it AOT from the fusion-eligibility fact.
+  loop compilation (doc 65 Rung 6); molt gets it AOT from the fusion-eligibility fact.
 
 The end-state IR fact makes "this chain allocated an intermediate" an **unexpressible
 class**: a fusable chain *has no node* that allocates the intermediate, because the
@@ -99,7 +99,7 @@ producer and consumer share one loop with the element threaded in SSA.
 
 ### 1.1 A rung deepened is a FACT, not a faster pass (binding restatement)
 
-Per CLAUDE.md ("fix the REPRESENTATION, not the pass") and doc 53 §1: this arc is
+Per CLAUDE.md ("fix the REPRESENTATION, not the pass") and doc 65 §1: this arc is
 complete only when (a) a **fusion-eligibility fact family** exists as a typed, cached
 record in `runtime/molt-tir/src/tir/`, `FactValue`-typed (the shared substrate); (b)
 the three lowering strategies *consume* it instead of each re-deriving "is this a
@@ -223,7 +223,7 @@ enum StageKind { Map(FuncOrExpr), Filter(PredOrExpr), Zip(Vec<ProducerKind>), En
   either absent, removable, or hoistable — §2.3) and laziness is satisfiable.
 - `verdict = Guarded(class_version)` when fusion is legal only under a runtime guard
   (e.g. the consumer's `__iter__`/`__next__` are the builtin ones, guarded by a
-  class-version check that deopts to the unfused chain — reuses doc 53 Rung 4
+  class-version check that deopts to the unfused chain — reuses doc 65 Rung 4
   `ClassVersionGuard`).
 - `verdict = Unknown` (fail-closed default — the value never fuses; the chain stays as
   written, allocating its intermediates, which is *correct*, just not optimized).
@@ -237,14 +237,14 @@ the extended `op_kinds.toml` fusion columns (§2.2), `call_graph.rs` (resolving
 
 **The benchmark class healed:** every comprehension/genexpr/pipeline benchmark (§5).
 **The PyPy/Codon gap closed:** trace-inlined producer/consumer fusion (PyPy) / eager
-loop compilation (Codon) — doc 53 Rung 6.
+loop compilation (Codon) — doc 65 Rung 6.
 
 ### 2.2 Fact family B — the per-op fusion semantics columns (extend `op_kinds.toml`)
 
 **The class retired:** *the hand-`match`ed fusion property* — today there is exactly one
 generated fusion column (`fusion_barrier_opcodes`), but the eligibility analysis needs
 two more per-op facts, and adding them as hand-matches in the new pass would re-open the
-default-false drift trap doc 25/doc 59 exist to close. Per doc 53 §4 invariant 3 ("one
+default-false drift trap doc 25/doc 59 exist to close. Per doc 65 §4 invariant 3 ("one
 op-semantics authority"): a rung that needs a per-op fact *adds a column to the
 registry*, never a hand-`match`.
 
@@ -283,7 +283,7 @@ classification with a defined treatment. Each `FusionEligibility.killer` is one 
 |---|---|---|---|
 | **K1** | **Materialization point** | The chain is forced to a concrete container mid-stream (`list(...)` feeding another stage; `sorted(...)`; a `len()` on a lazy stage that must count). | **REMOVE** when the materialization is *itself the terminal consumer* (fuse producer→`Collect` directly, never building then copying — the `fuse_list`/`fuse_set`/`fuse_tuple` *intent* of the dead path, done as real IR). **HOIST** a mid-stream `sorted`/`len` only when a strict barrier is genuinely required (then the chain splits into two fused segments at the materialization, each segment fused internally — never a single allocation per element AND a whole-list copy). |
 | **K2** | **Multiple consumers** | The producer's element stream (or the intermediate container) is consumed by ≥2 sinks (`xs = [f(x) for x in data]; a = sum(xs); b = max(xs)`). A generator can only be drained once. | **HONOR by materializing ONCE** (the intermediate is built exactly once and both consumers read it — already correct, no double-drain) **OR fuse-and-split** when the producer is *cheaply re-runnable and pure* (a `range`/`list`-index producer with a pure body): emit two fused loops over the same source, eliminating the intermediate, when the cost model (`TargetInfo`) proves re-running beats materializing. The use-count is read from the ownership/alias analysis (the same use-count `run_tuple_scalarize` uses, `deforestation.rs:919`), never a private walk. |
-| **K3** | **Escape of the intermediate** | The intermediate container/iterator *escapes* the fusion region (returned, stored to a field/global, passed to an opaque callee, captured by a closure). | **HONOR** (cannot fuse away an escaping value — `verdict = False`) **UNLESS** the escape analysis + ownership lattice (doc 53 Rung 1) prove the escape is itself fusable downstream (the cross-call case, K6). The escape fact is read from `escape_analysis.rs` (`EscapeState`, `:23`) + the ownership lattice — **not re-derived**. This is the producer→consumer edge to Rung 1: a `NoEscape` intermediate is fusion-eligible; a `GlobalEscape` one is `False`. |
+| **K3** | **Escape of the intermediate** | The intermediate container/iterator *escapes* the fusion region (returned, stored to a field/global, passed to an opaque callee, captured by a closure). | **HONOR** (cannot fuse away an escaping value — `verdict = False`) **UNLESS** the escape analysis + ownership lattice (doc 65 Rung 1) prove the escape is itself fusable downstream (the cross-call case, K6). The escape fact is read from `escape_analysis.rs` (`EscapeState`, `:23`) + the ownership lattice — **not re-derived**. This is the producer→consumer edge to Rung 1: a `NoEscape` intermediate is fusion-eligible; a `GlobalEscape` one is `False`. |
 | **K4** | **Per-element side effects (ordering)** | The element body performs an observable side effect (`print`, a mutation, an attribute store) whose *order* relative to other elements/effects is user-visible. | **HONOR ordering, still fuse the loop.** Fusion *preserves* per-element order (soundness law clause 1+4), so a side-effecting-but-order-preserving body is STILL fusable into one loop — the `Call`/`StoreAttr`/`StoreIndex` barrier in `fusion_barrier_opcodes` is conservative for the *cross-iteration* case; the `fusion_order_sensitive_opcodes` column (§2.2) lets the analysis distinguish "reorderable within an element" from "fixed order." The treatment is: fuse the loop, do NOT reorder stages across an order-sensitive effect. |
 | **K5** | **Cross-iteration state** | The body reads/writes state that flows *between* iterations (a closure cell updated each element, a `yield from` delegation, an async suspend, a `raise` that crosses the loop). | **HONOR** — this is the true barrier set (`fusion_barrier_opcodes`: `ClosureStore`/`ClosureLoad`/`YieldFrom`/`StateYield`/`Raise`/the async suspend ops). `verdict = Unknown` (stays unfused, correct). This is the one killer with no removal/hoist — by construction (a real cross-iteration dependency is not deforestable). The mechanism is *exhaustive classification* so a NEW such op cannot silently bypass the barrier. |
 | **K6** | **Cross-call boundary** | The producer is a *named function* returning an iterator/list, consumed by a loop in a *different* function (`def gen(n): return (i*i for i in range(n))` … `sum(gen(N))`), or a stdlib `itertools`-style helper. The fusion region spans a call edge. | **HOIST PAST via the IP summary fact** (§2.4): a `FusionSummary` on the callee (does it return a fusable producer? what is its element body's killer set?) lets the caller fuse across the boundary *after inlining* (the inliner already runs before generator_fusion — `module_phase.rs:234,261`), or *without* inlining when the summary proves the producer is a pure fusable stream. This is the producer→consumer edge to Rung 2 (CallFacts). |
@@ -316,7 +316,7 @@ struct FusionSummary {
 }
 ```
 
-This is a **member of the CallFacts family** (doc 53 Rung 2 / doc 47), not a new
+This is a **member of the CallFacts family** (doc 65 Rung 2 / doc 47), not a new
 top-level table — `CallFacts` already carries `no_alloc`/`no_escape_args`/`typed_return`;
 `FusionSummary` is the iterator-shaped sibling. **Producers:** the per-function fusion
 analysis (§2.1) run bottom-up over the call graph. **Consumers:** the caller's fusion
@@ -352,7 +352,7 @@ identical across all four backends.
    advance; `enumerate` an induction-counter add. No intermediate iterator per stage.
 
 All three consume `FusionEligibility`; all three emit IR `verify_function` accepts; all
-three are **portable TIR** (Rung 7 / doc 53: the fused loop crosses to WASM/LLVM/Luau
+three are **portable TIR** (Rung 7 / doc 65: the fused loop crosses to WASM/LLVM/Luau
 because it is ordinary loop IR, not a native-only rewrite — this arc has NO backend-local
 fusion code, which is the structural guarantee of cross-backend parity).
 
@@ -373,7 +373,7 @@ so it is **on in every profile** (unlike speculative guarded devirt). Per doc 51
 - The fused IR is identical across profiles; only the *aggressiveness* of K2's
   cost-model threshold and the K6 inline-to-fuse budget differ. No profile emits a less
   fused (more allocating) form silently — a profile-specific allocation is a tracked
-  DIMENSIONAL difference, never a hidden regression (doc 53 §0.1).
+  DIMENSIONAL difference, never a hidden regression (doc 65 §0.1).
 
 ---
 
@@ -491,7 +491,7 @@ returned producer is *not* actually fusable at a call site takes the unfused pat
 measure the footprint dimension (Rung 8): fewer allocations → lower peak RSS, and the
 fused loop → smaller code than the unfused chain + helpers.
 
-**Gate:** the Rung 7 backend support matrix (doc 53 Rung 7 / `op_kinds.toml` backend
+**Gate:** the Rung 7 backend support matrix (doc 65 Rung 7 / `op_kinds.toml` backend
 columns) GREEN for the new fusion ops on all four backends; peak-RSS DIMENSIONAL drop on
 the data-flow cluster recorded; binary-size DIMENSIONAL check (fused loops should not
 grow the artifact — if a strategy inlines a large body, the K6 budget gates it); cold AND
@@ -501,7 +501,7 @@ warm reported for every cell. The arc is "done" only when this matrix is green.
 
 ## 4. Measurement and gates (the Performance Constitution discipline)
 
-Per CLAUDE.md and doc 53 §1: every phase reports, via `tools/perf_scoreboard.py`, for
+Per CLAUDE.md and doc 65 §1: every phase reports, via `tools/perf_scoreboard.py`, for
 every touched benchmark: `benchmark → target → backend → profile → CPython ratio →
 PyPy ratio → Codon ratio → binary size → peak RSS → compile time → cold/warm → log
 artifact`, with ≥5 samples, CV stability, classified GREEN / RED_STABLE / RED_NOISY /
@@ -534,13 +534,13 @@ differential harness `tools/fusion_equivalence.py` (or a `cargo test` in `fusion
 that, for every `Proven`/`Guarded` fusion, runs the fused and unfused forms on a battery
 of inputs (empty stream, single element, exception-at-element-k, side-effect-ordering
 probe, early-exit probe) and asserts identical observable trace. A fusion without this
-validator is a half-rung (doc 53 §4 invariant 4).
+validator is a half-rung (doc 65 §4 invariant 4).
 
 ---
 
 ## 5. Composition (21a-e decomposition + the 50-59/53 arcs)
 
-**With doc 53 (the compression ladder) — this arc IS Rung 6's deforestation sub-arc:**
+**With doc 65 (the compression ladder) — this arc IS Rung 6's deforestation sub-arc:**
 - **Consumes Rung 1** (ownership lattice / `ownership_lattice_min.rs`): the escape fact
   (K3) and the borrow fact (the fused loop's per-element value is `Borrowed` in the body
   → no per-element RC traffic) come from Rung 1. This arc does NOT re-derive escape.
@@ -570,7 +570,7 @@ killer class). This arc *exercises* doc 59's machinery; it adds no second author
 - **This arc LOWERS the god-file ratchet, not raises it.** Phase 0 *deletes* ~560 lines
   of dead code from `deforestation.rs` (`:130-860`), shrinking the file toward a single
   cohesive concern (`run_tuple_scalarize` + the eligibility-seed shapes). The
-  `structural_audit` ratchet must go down across this arc, never up (doc 53 §5, binding).
+  `structural_audit` ratchet must go down across this arc, never up (doc 65 §5, binding).
 - The compiler-killer this arc touches: it does NOT grow the per-backend
   `function_compiler.rs` monolith (21a's codegen-unit killer) — by construction it emits
   *portable TIR* with **no backend-local fusion code**, so the four backends gain nothing
@@ -578,8 +578,8 @@ killer class). This arc *exercises* doc 59's machinery; it adds no second author
   structural reason cross-backend parity is free here.
 
 **With the concurrent 50-59 arcs (named, not re-derived):** depends on
-`53_perf_compression_ladder` (Rung 1/2/4/5/7 facts above) and `55_memory_safety_
-ownership_lattice` (the escape/borrow facts). References `53_perf_scoreboards_and_harness`
+`65_perf_compression_ladder` (Rung 1/2/4/5/7 facts above) and `55_memory_safety_
+ownership_lattice` (the escape/borrow facts). References `64_perf_scoreboards_and_harness`
 for the measurement path (every gate is a scoreboard row). No overlap with `52`/`54`/
 `56`/`57` (compat/throughput/DX/UX) or `59` beyond consuming its machinery. This arc's
 file set (`fusion_facts.rs`, `deforestation.rs`, `generator_fusion.rs`, `op_kinds.toml`
