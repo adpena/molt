@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 import os
 from pathlib import Path
 from typing import Any
@@ -7,6 +8,8 @@ from typing import Any
 import pytest
 
 import molt.cli as cli
+
+COMPILER_METADATA = importlib.import_module("molt.cli.compiler_metadata")
 
 
 def _cli_init(root: Path) -> Path:
@@ -82,7 +85,7 @@ def test_cache_tooling_fingerprint_changes_when_tooling_source_changes_in_proces
     cli_source.write_text("CLI_MARKER = 1\n", encoding="utf-8")
     frontend_source.write_text("FRONTEND_MARKER = 1\n", encoding="utf-8")
 
-    monkeypatch.setattr(cli, "_COMPILER_ROOT", root)
+    monkeypatch.setattr(COMPILER_METADATA, "_COMPILER_ROOT", root)
 
     first = cli._cache_tooling_fingerprint()
 
@@ -106,7 +109,7 @@ def test_cache_tooling_fingerprint_tracks_frontend_helper_modules(
         source.parent.mkdir(parents=True, exist_ok=True)
         source.write_text(f"{source.stem.upper()}_MARKER = 1\n", encoding="utf-8")
 
-    monkeypatch.setattr(cli, "_COMPILER_ROOT", root)
+    monkeypatch.setattr(COMPILER_METADATA, "_COMPILER_ROOT", root)
 
     first = cli._cache_tooling_fingerprint()
 
@@ -137,7 +140,7 @@ def test_cache_tooling_fingerprint_ignores_frontend_bytecode_cache(
         source.parent.mkdir(parents=True, exist_ok=True)
         source.write_bytes(b"marker-1\n")
 
-    monkeypatch.setattr(cli, "_COMPILER_ROOT", root)
+    monkeypatch.setattr(COMPILER_METADATA, "_COMPILER_ROOT", root)
 
     first = cli._cache_tooling_fingerprint()
 

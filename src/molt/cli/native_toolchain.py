@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from molt.cli.atomic_io import _atomic_copy_file
+from molt.cli.compiler_metadata import _compiler_root
 
 
 def _cli_module() -> Any:
@@ -29,10 +30,6 @@ def _json_payload(*args: Any, **kwargs: Any) -> Any:
 
 def _coerce_bool(*args: Any, **kwargs: Any) -> bool:
     return _cli_module()._coerce_bool(*args, **kwargs)
-
-
-def _compiler_root() -> Path:
-    return _cli_module()._compiler_root()
 
 
 def _codesign_binary(binary_path: Path) -> None:
