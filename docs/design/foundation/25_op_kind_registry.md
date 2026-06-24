@@ -130,14 +130,16 @@ and module-slot promotion consume that table instead of carrying private
 generator/async opcode sets. `lowered_state_machine_body_opcodes` separately
 feeds `opcode_is_lowered_state_machine_body_table`, the opcode half of
 `TirFunction::has_state_machine` beside the non-opcode `StateDispatch`
-terminator check.
+terminator check. Raw-i64 LIR arithmetic also uses generated opcode facts:
+`i64_overflow_box_dispatch_opcodes` owns boxed-dispatch overflow custody, while
+`i64_checked_overflow_triple_opcodes` owns checked-overflow triple eligibility.
 
 1. **One table** `runtime/molt-tir/src/tir/op_kinds.toml` — rows `(canonical_kind, aliases[], semantics_class, arity, mapper_opcode|"copy", classifier_class ∈ {fresh_value, transparent_alias, inert_marker, structural}, effect ∈ {pure, observe, throw, side_effect}, backends_required[], runtime_symbol?)`.
 2. **One generator** `tools/gen_op_kinds.py` (modeled on `tools/gen_intrinsics.py`) renders `runtime/molt-tir/src/tir/op_kinds_generated.rs` (the `kind_to_opcode` arms, the `classify_copy_kind`/`copy_kind_mints_fresh_owned_ref` arms, the effect-oracle arms) AND `src/molt/frontend/lowering/op_kinds_generated.py` (the canonical-spelling constants the emitter uses).
 3. **One sync test** `tests/test_gen_op_kinds.py` (modeled on `tests/test_gen_intrinsics.py`) re-renders in memory and `assert_eq`s against the checked-in generated files → **drift = build/test error**.
 4. **The effect oracle hooks the same table:** `opcode_may_throw`/`is_side_effecting` (effects.rs) are generated from the `effect` column → a new kind **requires** an explicit effect classification (kills bug-class instance #1 — the `matches!`-default-false trap — because the table has no default; every kind has an explicit `effect`).
 5. **Deforestation fusion eligibility is table-owned too:** `fusion_barrier_opcodes` generates `opcode_is_fusion_barrier_table` for `deforestation.rs`. This is deliberately separate from side effects/may-throw because iterator-chain fusion preserves per-element evaluation order while still rejecting cross-iteration/control-state barriers.
-6. **Raw-i64 zero-divisor guard eligibility is table-owned too:** `i64_zero_divisor_guard_opcodes` generates `opcode_requires_i64_zero_divisor_guard_table` for both LIR lowering and `check_exception_elim`, keeping boxed-dispatch retention and proven-nonzero elimination on one opcode fact.
+6. **Raw-i64 arithmetic lowering is table-owned too:** `i64_overflow_box_dispatch_opcodes` generates `opcode_requires_i64_overflow_box_dispatch_table`, `i64_checked_overflow_triple_opcodes` generates `opcode_supports_i64_checked_overflow_triple_table`, and `i64_zero_divisor_guard_opcodes` generates `opcode_requires_i64_zero_divisor_guard_table`, keeping overflow custody, checked-triple eligibility, boxed-dispatch retention, and proven-nonzero elimination on generated opcode facts.
 7. **The terminal state becomes generated-exhaustive:** the LLVM fail-loud gate and the classifier `_ =>` default survive ONLY as a defense for kinds the table forgot — and the sync test makes "the table forgot" a build failure, so the fail-loud path becomes statically unreachable for any in-table kind (it stays as the runtime backstop, now provably dead for known kinds).
 
 ---
