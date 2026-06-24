@@ -1070,7 +1070,7 @@ pub struct ScalarPrimaryNameSets {
 /// boxed/runtime-backed until a range proof exists).
 #[derive(Clone, Debug, Default)]
 #[cfg(feature = "llvm")]
-pub(crate) struct LlvmReprFacts {
+pub struct LlvmReprFacts {
     /// Container dispatch kind keyed by SimpleIR name (the plan's authority for
     /// `len`/container-kind specialization).
     pub(crate) container_kind_by_name: BTreeMap<String, ContainerKind>,
@@ -1094,7 +1094,7 @@ pub(crate) struct LlvmReprFacts {
     /// keep a non-overflow-safe accumulator phi boxed (`MaybeBigInt`/`DynBox`)
     /// instead of unboxing a runtime BigInt result back into a truncating raw
     /// i64. [`Self::is_overflow_safe_int`] is the `{RawI64Safe}` view.
-    pub(crate) repr_by_value: HashMap<ValueId, Repr>,
+    pub repr_by_value: HashMap<ValueId, Repr>,
 }
 
 #[cfg(feature = "llvm")]
@@ -1102,7 +1102,7 @@ impl LlvmReprFacts {
     /// Build the LLVM representation facts for `func_ir` (the SimpleIR function
     /// about to be lowered) and `tir_func` (the LLVM backend's post-pipeline
     /// TIR for that function).
-    pub(crate) fn build(func_ir: &FunctionIR, tir_func: &TirFunction) -> Self {
+    pub fn build(func_ir: &FunctionIR, tir_func: &TirFunction) -> Self {
         let plan = ScalarRepresentationPlan::for_function_ir(func_ir);
         let container_kind_by_name = plan
             .facts_by_name
@@ -1134,14 +1134,14 @@ impl LlvmReprFacts {
     /// Whether the value `id` is an overflow-safe exact-i64 carrier (may use raw
     /// machine arithmetic and a raw i64 representation) — the `{RawI64Safe}` view
     /// over `repr_by_value`.
-    pub(crate) fn is_overflow_safe_int(&self, id: ValueId) -> bool {
+    pub fn is_overflow_safe_int(&self, id: ValueId) -> bool {
         self.repr_by_value
             .get(&id)
             .is_some_and(|repr| repr.is_raw_i64_safe())
     }
 
     /// Container dispatch kind for the value named by `id`, per the plan.
-    pub(crate) fn container_kind(&self, id: ValueId) -> Option<ContainerKind> {
+    pub fn container_kind(&self, id: ValueId) -> Option<ContainerKind> {
         self.name_for(id)
             .and_then(|name| self.container_kind_by_name.get(name).copied())
     }
@@ -1160,7 +1160,7 @@ impl LlvmReprFacts {
     /// decision for loop-carried phis), and the SAME `repr_by_value` proof feeds
     /// both, so the caller's coercion target and the callee's entry-param carrier
     /// can never disagree. Non-`I64` declared types pass through unchanged.
-    pub(crate) fn effective_param_types(&self, tir_func: &TirFunction) -> Vec<TirType> {
+    pub fn effective_param_types(&self, tir_func: &TirFunction) -> Vec<TirType> {
         let entry_args = &tir_func.blocks[&tir_func.entry_block].args;
         tir_func
             .param_types
@@ -2532,7 +2532,7 @@ impl ScalarRepresentationPlan {
         changed
     }
 
-    pub(crate) fn name_scalar_kind(&self, name: &str) -> Option<ScalarKind> {
+    pub fn name_scalar_kind(&self, name: &str) -> Option<ScalarKind> {
         if self.non_scalar_names.contains(name) {
             return None;
         }

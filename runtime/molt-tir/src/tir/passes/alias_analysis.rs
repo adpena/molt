@@ -688,7 +688,7 @@ fn copy_original_kind(op: &TirOp) -> Option<&str> {
 /// always-compiled alias/memory-region axes consume `classify_copy_kind` /
 /// `copy_kind_is_explicit_no_heap_move` directly, not this LLVM-specific view.
 #[cfg(any(feature = "llvm", test))]
-pub(crate) fn copy_kind_reaches_no_incref_passthrough(kind: Option<&str>) -> bool {
+pub fn copy_kind_reaches_no_incref_passthrough(kind: Option<&str>) -> bool {
     !matches!(classify_copy_kind(kind), CopyLowering::FreshValue)
 }
 
