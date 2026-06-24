@@ -31,12 +31,12 @@ deployment claims:
 
 ### Documentation truth
 
-- The root `PRIMARY_HANDOFF.md` was retired on 2026-06-24 as stale April
-  context. Use `docs/INDEX.md`, `docs/spec/STATUS.md`, `ROADMAP.md`, and the
-  relevant design/spec area docs for current Molt routing.
-- `SUPPORT_TEAM.md` remains historical parallel-lane context for Falcon-OCR
-  WASM, not proof that the deployed R2 object currently instantiates or returns
-  OCR tokens.
+- The root April handoff docs were retired on 2026-06-24 as stale context. Use
+  `docs/INDEX.md`, `docs/spec/STATUS.md`, `ROADMAP.md`, and the relevant
+  design/spec area docs for current Molt routing.
+- Falcon-OCR WASM runtime status must be proven from the current build/test
+  lanes, not from retired handoff context; deployed R2 objects are not evidence
+  that the module currently instantiates or returns OCR tokens.
 - Older 2026-04-14 entries below are retained as historical deployment logs,
   including earlier "WASM binary not found / not yet built" observations. They
   should not be read as current build claims without fresh verification.
@@ -52,7 +52,7 @@ deployment claims:
 - Deployed Worker version: `1713fc1a-7ff5-4c15-874a-472ef55ef834`
 
 ### enjoice OCR Integration
-- Canonical Molt handoff files live in this repository under `deploy/enjoice/`.
+- Canonical Molt integration adapters live in this repository under `deploy/enjoice/`.
   They are copied into the downstream enjoice app under `site/src/lib/ocr/`:
   - `deploy/enjoice/falcon-ocr-molt.ts` -> `site/src/lib/ocr/falcon-ocr-molt.ts`
     -- WASM session management and image preprocessing
