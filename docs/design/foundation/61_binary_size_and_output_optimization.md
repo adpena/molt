@@ -85,7 +85,7 @@ the tree at HEAD (2026-06-24):
 | **7 tuned Cargo profiles** | `Cargo.toml` lines 378-437 | `release-output` (opt-z, fat-LTO, cgu=1, panic=abort, strip), `release-size`, `wasm-release`, `wasm-release-fallback`; the *measured* hot-crate opt-level policy (lines 462-564: speed profiles opt-3 hot crates, size profiles re-assert opt-"s", with the 25.5% wasm measurement) | **No `-Z share-generics`/polymorphize**; profiles tuned but their *output is never gated* — no scoreboard consumes them |
 | Native size analyser | `tools/binary_size_analysis.py` (831 ln) | nm symbol census, Mach-O segment/section breakdown, 5 symbol categories, `--compare` deltas, `--budget`, JSON | Budgets are **per-invocation magic constants** (35MB native / 20MB wasm, lines 107-108); **no history, no gate wiring, no per-tier budget, no compressed size, no cause attribution** |
 | WASM size auditor | `tools/wasm_size_audit.py` | per-section LEB128 parse, code/data split, `--budget 16MB`/`--budget-code 10MB` gate (V8 OOM headroom) | Standalone; **not a board projection**; budgets are V8-OOM-driven not the 3MB Workers contract; no compressed size; no history |
-| Output+startup+size matrix | `tools/output_startup_size_audit.py` (1239 ln) | builds hello-world across `native/wasm/luau/mlir × dev/release × auto/llvm × stdlib-{micro,full}`; records artifact bytes, cold-first-sighting + page-cache-cold + same-path startup, CPython + C baselines, `--max-artifact-mb`/`--max-fresh-start-ms` budget checks | The right *matrix shape* but **budgets are opt-in CLI flags (default None → never gates)**; writes a timestamped JSON, **no history index, no regression gate, not a doc-53 projection, no cause attribution, stripped-only (no gzip/brotli)** |
+| Output+startup+size matrix | `tools/output_startup_size_audit.py` (1239 ln) | builds hello-world across `native/wasm/luau/mlir × dev/release × auto/llvm × stdlib-{micro,full}`; records artifact bytes, cold-first-sighting + page-cache-cold + same-path startup, CPython + C baselines, `--max-artifact-mb`/`--max-fresh-start-ms` budget checks | The right *matrix shape* but **budgets are opt-in CLI flags (default None → never gates)**; writes a timestamped JSON, **no history index, no regression gate, not a doc-64 projection, no cause attribution, stripped-only (no gzip/brotli)** |
 | WASM opt pipeline | `tools/wasm_optimize.py`, `tools/wasm_link.py`, `tools/wasm_pipeline.py` | `wasm-opt` invocation with the *load-bearing* feature flag set (`--disable-gc`, `--disable-custom-descriptors`, the rec-group flatten); export-contract preservation | `wasm-opt -Oz --converge` lane named as "high-value work" in doc 0931 but **not measured/gated**; the optimize step is not size-board-attributed |
 | Runtime tiers | `runtime/molt-runtime/Cargo.toml` lines 16-120 | strict-superset feature chain `stdlib_micro ⊂ edge ⊂ standard ⊂ server ⊂ full`; `default=["stdlib_full"]`; per-domain `dep:`-backed features that drop crates when off | The tier *mechanism* exists; **no per-tier size budget, no measured per-tier footprint, no "which tier should this deployment use" evidence** (21e dedups satellites; THIS arc measures their size effect) |
 | Symbol feature-gate map | `src/molt/_runtime_feature_gates.py` | the single source of truth for symbol-prefix→`stdlib_*` feature; `LINK_AFFECTING_FEATURES`; frontend compile-time refusal so excluded domains are dropped from the archive | This is the **tree-shaking substrate arc 60 builds on**; this arc *measures* what each gate saves and feeds it to the Size board |
@@ -166,7 +166,7 @@ Work backward from §0 to the mechanisms that make it inevitable.
 The dependency spine:
 
 ```
-Phase 0  Pin the SizeBudget contract + fold size fields into the doc-53 cell schema
+Phase 0  Pin the SizeBudget contract + fold size fields into the doc-64 cell schema
    │       (perf_schema.py: SizeCell view + SizeBudget table; one source of truth for budgets)
    │
 Phase 1  Size board PROJECTION over the existing PerfCell stream (perf_board.py)
@@ -193,7 +193,7 @@ Phase 1  Size board PROJECTION over the existing PerfCell stream (perf_board.py)
    └── Phase 6  Size cause-attribution (which fact drove the bytes) — the Size analogue of
                  doc 64 Phase 5 perf_causality. DEPENDS on 3b + doc 64 Phase 5.
 
-Phase 7  CI wiring: Size board into the doc-53 perf tier (one gate, two projections),
+Phase 7  CI wiring: Size board into the doc-64 perf tier (one gate, two projections),
          per-PR smoke size gate + nightly full size sweep. DEPENDS on Phases 1-2.
 ```
 
@@ -363,7 +363,7 @@ shared crossover). **Class retired:** "linkage chosen by default, never measured
 > `tools/safe_run.py`. Phases 0,1,2,5(measurement),6,7 are **host tooling** (Python, no
 > Rust rebuild on the critical path); Phase 3c and Phase 4 (if product-wired) touch Rust.
 
-### Phase 0 — Pin the `SizeBudget` contract + fold size fields into the doc-53 schema
+### Phase 0 — Pin the `SizeBudget` contract + fold size fields into the doc-64 schema
 
 **Deliverable:** in `tools/perf_schema.py` (doc 64 Phase 0's home): the `SizeBudget`
 dataclass + `SIZE_BUDGETS` table (§3.1), the `stdlib_tier` + `linkage` cell coordinates,
@@ -465,9 +465,9 @@ feed a known regression fixture (e.g. flip a `stdlib_*` feature on in a tier) an
 `size_causality` attributes it to `stdlib_domain/<that feature>`; the
 monomorphization-family attribution reproduces the `mono_census` top family.
 
-### Phase 7 — CI wiring (Size board into the doc-53 perf tier)
+### Phase 7 — CI wiring (Size board into the doc-64 perf tier)
 
-Add the Size board to the doc-53 perf gate (`tools/ci_gate.py` perf tier +
+Add the Size board to the doc-64 perf gate (`tools/ci_gate.py` perf tier +
 `.github/workflows/perf-validation.yml`): a **per-PR smoke size gate** (build hello-world
 at `release-output`+`micro` and `wasm-release`+`micro`, hard-gate absolute budget +
 regression-vs-merge-base — size is deterministic so this hard-gates safely per §3.2's
@@ -485,7 +485,7 @@ a deliberate +20% fixture fails the gate locally; YAML lints.
 - **Compressed-not-just-stripped gate (Phase 1+):** a cell missing gzip is malformed; the
   3MB/2MB contracts are checked on the *compressed/stripped* unit the contract names.
 - **Cold-proof gate (Phase 3c — the load-bearing one):** every polymorphization commit
-  must show **zero warm-perf regression** on the doc-53 CPython+Backend boards. If the
+  must show **zero warm-perf regression** on the doc-64 CPython+Backend boards. If the
   perf board moves, the "cold" classification was wrong → revert, never special-case (the
   per-test-special-case rule). Size and speed are *jointly* gated, never traded silently.
 - **Lever-honesty gate (Phase 3a):** `-Zshare-generics` is recorded as
@@ -521,7 +521,7 @@ native+wasm differential + the cold-proof perf board.
   doc 64 Phase 0 (schema home) + Phase 1 (measurement core) + Phase 4 (history) + Phase 5
   (causality), and it *extends* each. It must land its schema/board additions *into* doc
   53's files (`perf_schema.py`, `perf_board.py`, `perf_measure.py`) — coordinate ownership
-  with the doc-53 implementing agents (additive fields/projections, no behavior change to
+  with the doc-64 implementing agents (additive fields/projections, no behavior change to
   the existing five boards).
 - **DEEPENS arc 60 (tree-shaking / whole-program DCE).** Arc 60 builds the symbol/domain
   tree-shaker on the `_runtime_feature_gates.py` substrate; THIS arc **measures what it
@@ -570,15 +570,15 @@ cold-erasure).
 
 | Phase | Owner files (new unless noted) | Touches Rust? | Blocks / blocked-by |
 |---|---|---|---|
-| 0 | `tools/perf_schema.py` (+SizeBudget/fields, shared w/ doc 64 — additive); migrate consts in `binary_size_analysis.py`/`wasm_size_audit.py`; `tests/tools/test_perf_schema.py` | no | blocked-by doc53 P0; blocks all |
-| 1 | `tools/perf_board.py` (+size projection), `tools/perf_measure.py` (+tier/linkage/compressed) — shared w/ doc 64 (additive) | no | blocked-by doc53 P1 + this P0; blocks 2-6 |
+| 0 | `tools/perf_schema.py` (+SizeBudget/fields, shared w/ doc 64 — additive); migrate consts in `binary_size_analysis.py`/`wasm_size_audit.py`; `tests/tools/test_perf_schema.py` | no | blocked-by doc64 P0; blocks all |
+| 1 | `tools/perf_board.py` (+size projection), `tools/perf_measure.py` (+tier/linkage/compressed) — shared w/ doc 64 (additive) | no | blocked-by doc64 P1 + this P0; blocks 2-6 |
 | 2 | `tools/perf_history.py`/`perf_regression.py` (reuse), `SIZE_BUDGETS` fill | no | blocked-by 1 |
 | 3a | `tools/size_levers.py` | yes (size-profile rebuild, measure) | blocked-by 1 |
 | 3b | `tools/mono_census.py` | yes (cargo bloat/llvm-lines run) | blocked-by 1 |
-| 3c | `runtime/molt-runtime/src/**` (cold-family erasure) | **yes (representation fix)** | blocked-by 3b + doc53 ladder/P5; serialize build |
+| 3c | `runtime/molt-runtime/src/**` (cold-family erasure) | **yes (representation fix)** | blocked-by 3b + doc65 ladder + doc64 P5; serialize build |
 | 4 | `runtime/molt-tir/src/tir/wasm_split.rs`+`wasm_streaming.rs`+`wasm_component.rs` (wire or demote); `tools/wasm_optimize.py` (+converge lane measured) | **yes (if product-wire)** | blocked-by 1; serialize build |
 | 5 | `tools/perf_measure.py` (tier/linkage sweep specs); per-tier board rows | no (measurement) | blocked-by 1 |
-| 6 | `tools/size_causality.py` (or extend `perf_causality.py`) | no | blocked-by 3b + doc53 P5 |
+| 6 | `tools/size_causality.py` (or extend `perf_causality.py`) | no | blocked-by 3b + doc64 P5 |
 | 7 | `tools/ci_gate.py`, `.github/workflows/perf-validation.yml`, `pr_trust_gate.yml` | no | blocked-by 1-2 |
 
 Most phases are pure-Python (no build-cap contention); only 3c + 4(product) trigger Rust
@@ -608,7 +608,7 @@ the compressed unit; GREEN is malformed without compressed bytes.
 ### Risk 4: A polymorphization (3c) silently slows a path that was actually hot
 **Band-aid (rejected):** trust the cold classification; or special-case the failing bench.
 **Structural fix:** the **cold-proof gate** — every 3c commit must show zero warm
-regression on the doc-53 perf boards; the classification is *derived* from the ladder
+regression on the doc-64 perf boards; the classification is *derived* from the ladder
 hot-lane set + cycle profile #76, and if the perf board moves, the change is reverted (the
 family was hot). Size is traded for speed *only* where the proof holds. Two lenses, jointly
 gated.
