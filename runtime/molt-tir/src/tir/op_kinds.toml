@@ -91,6 +91,12 @@
 #                  that belong to generator/async/coroutine state machines and
 #                  therefore cannot be linearly spliced by the TIR function
 #                  inliner or module-slot promotion.
+#   - i64_overflow_box_dispatch_opcodes - opcode-only raw-i64 overflow-risk fact.
+#                  These ops must use boxed dispatch unless value-range proof
+#                  keeps operands and results inside the inline integer window.
+#   - i64_checked_overflow_triple_opcodes - opcode-only LIR checked-triple fact.
+#                  These ops can lower to raw result + overflow box + overflow
+#                  flag when type/repr/range proof makes that triple sound.
 #   - i64_zero_divisor_guard_opcodes - opcode-only raw-i64 division-family fact.
 #                  These ops require a nonzero divisor proof before raw i64 LIR
 #                  can be used or before CheckException can be proven redundant.
@@ -425,6 +431,37 @@ state_machine_opcodes = [
     "StateYield",
     "Yield",
     "YieldFrom",
+]
+
+# i64_overflow_box_dispatch_opcodes: arithmetic opcodes whose raw-i64 operands
+# cannot be lowered as unchecked machine arithmetic unless every operand and
+# result is proven inside the inline-int window. RawI64Safe is a full-width i64
+# carrier contract, not a Python-int no-overflow proof; without the stronger
+# value-range proof these ops must route to boxed runtime dispatch to preserve
+# BigInt and overflow semantics. Distinct from zero-divisor and shift-count
+# guards: those prove machine exceptional operands, while this proves overflow
+# custody for whole arithmetic families.
+i64_overflow_box_dispatch_opcodes = [
+    "Add",
+    "Div",
+    "FloorDiv",
+    "InplaceAdd",
+    "InplaceMul",
+    "InplaceSub",
+    "Mod",
+    "Mul",
+    "Sub",
+]
+
+# i64_checked_overflow_triple_opcodes: binary arithmetic ops that can lower to
+# the LIR checked-overflow triple (raw result, boxed overflow value, overflow
+# flag) once type/repr/value-range proof is complete. Division-family opcodes are
+# intentionally excluded: their semantic guard is divisor-zero, not overflow-box
+# side-channel generation.
+i64_checked_overflow_triple_opcodes = [
+    "Add",
+    "Mul",
+    "Sub",
 ]
 
 # i64_zero_divisor_guard_opcodes: raw i64 lowering for these binary opcodes can

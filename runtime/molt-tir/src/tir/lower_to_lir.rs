@@ -11,7 +11,10 @@ use super::type_refine::{extract_type_map, refine_types};
 use super::types::TirType;
 use super::values::{TirValue, ValueId};
 use crate::repr::Repr;
-use crate::tir::op_kinds_generated::opcode_requires_i64_zero_divisor_guard_table;
+use crate::tir::op_kinds_generated::{
+    opcode_requires_i64_overflow_box_dispatch_table, opcode_requires_i64_zero_divisor_guard_table,
+    opcode_supports_i64_checked_overflow_triple_table,
+};
 
 /// The proven per-`ValueId` representation override (the value-keyed source of
 /// truth produced by `representation_plan::repr_by_value_for`). The WASM/LIR
@@ -247,18 +250,8 @@ fn lower_op(
     // proven-result raw ops may use a bare machine instruction. The decision
     // is made HERE (where the value-range proof lives), not in the wasm
     // emitter (which only sees reprs).
-    if matches!(
-        op.opcode,
-        OpCode::Add
-            | OpCode::InplaceAdd
-            | OpCode::Sub
-            | OpCode::InplaceSub
-            | OpCode::Mul
-            | OpCode::InplaceMul
-            | OpCode::Div
-            | OpCode::FloorDiv
-            | OpCode::Mod
-    ) && let Some(map) = repr
+    if opcode_requires_i64_overflow_box_dispatch_table(op.opcode)
+        && let Some(map) = repr
         && op
             .operands
             .iter()
@@ -311,7 +304,7 @@ fn lowers_to_checked_i64_arithmetic(
     repr: ReprOverride<'_>,
     inline_proof: Option<&crate::tir::passes::value_range::ValueRangeResult>,
 ) -> bool {
-    let type_eligible = matches!(op.opcode, OpCode::Add | OpCode::Sub | OpCode::Mul)
+    let type_eligible = opcode_supports_i64_checked_overflow_triple_table(op.opcode)
         && op.results.len() == 1
         && op.operands.len() == 2
         && op

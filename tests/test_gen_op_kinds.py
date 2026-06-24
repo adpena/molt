@@ -780,7 +780,7 @@ def test_state_machine_opcodes_delegate_to_generated_table() -> None:
     assert set(data["state_machine_opcodes"]) == expected
 
     table_block = rendered.split("fn opcode_is_state_machine_table")[1].split(
-        "fn opcode_requires_i64_zero_divisor_guard_table"
+        "fn opcode_requires_i64_overflow_box_dispatch_table"
     )[0]
     for row in data["opcode"]:
         expected_bool = "true" if row["name"] in expected else "false"
@@ -869,6 +869,82 @@ def test_refcount_heap_exposure_delegates_to_generated_table() -> None:
     assert table_name in body
     assert "matches!" not in body
     assert "OpCode::" not in body
+
+
+def test_i64_arithmetic_lowering_facts_delegate_to_generated_tables() -> None:
+    """Raw-i64 arithmetic lowering policy belongs to the op-kind registry."""
+    gen = _gen()
+    data = gen.load_table()
+    rendered = gen.render_rs(data)
+    lower_to_lir = (ROOT / "runtime/molt-tir/src/tir/lower_to_lir.rs").read_text(
+        encoding="utf-8"
+    )
+
+    overflow_box_dispatch = {
+        "Add",
+        "Div",
+        "FloorDiv",
+        "InplaceAdd",
+        "InplaceMul",
+        "InplaceSub",
+        "Mod",
+        "Mul",
+        "Sub",
+    }
+    checked_triples = {"Add", "Mul", "Sub"}
+    assert set(data["i64_overflow_box_dispatch_opcodes"]) == overflow_box_dispatch
+    assert set(data["i64_checked_overflow_triple_opcodes"]) == checked_triples
+    assert checked_triples < overflow_box_dispatch
+
+    overflow_table_block = rendered.split(
+        "fn opcode_requires_i64_overflow_box_dispatch_table"
+    )[1].split("fn opcode_supports_i64_checked_overflow_triple_table")[0]
+    checked_table_block = rendered.split(
+        "fn opcode_supports_i64_checked_overflow_triple_table"
+    )[1].split("fn opcode_requires_i64_zero_divisor_guard_table")[0]
+    for row in data["opcode"]:
+        overflow_bool = "true" if row["name"] in overflow_box_dispatch else "false"
+        checked_bool = "true" if row["name"] in checked_triples else "false"
+        assert f"OpCode::{row['name']} => {overflow_bool}," in overflow_table_block
+        assert f"OpCode::{row['name']} => {checked_bool}," in checked_table_block
+
+    overflow_table_name = "opcode_requires_i64_overflow_box_dispatch_table"
+    checked_table_name = "opcode_supports_i64_checked_overflow_triple_table"
+    assert overflow_table_name in lower_to_lir
+    assert checked_table_name in lower_to_lir
+
+    start = lower_to_lir.index("fn lower_op(")
+    brace = lower_to_lir.index("{", start)
+    depth = 0
+    end = brace
+    for i in range(brace, len(lower_to_lir)):
+        if lower_to_lir[i] == "{":
+            depth += 1
+        elif lower_to_lir[i] == "}":
+            depth -= 1
+            if depth == 0:
+                end = i + 1
+                break
+    lower_body = lower_to_lir[start:end]
+    assert overflow_table_name in lower_body
+    assert "OpCode::InplaceAdd" not in lower_body
+    assert "OpCode::FloorDiv" not in lower_body
+
+    start = lower_to_lir.index("fn lowers_to_checked_i64_arithmetic(")
+    brace = lower_to_lir.index("{", start)
+    depth = 0
+    end = brace
+    for i in range(brace, len(lower_to_lir)):
+        if lower_to_lir[i] == "{":
+            depth += 1
+        elif lower_to_lir[i] == "}":
+            depth -= 1
+            if depth == 0:
+                end = i + 1
+                break
+    helper_body = lower_to_lir[start:end]
+    assert checked_table_name in helper_body
+    assert "OpCode::Add | OpCode::Sub | OpCode::Mul" not in helper_body
 
 
 def test_i64_zero_divisor_guards_delegate_to_generated_table() -> None:
