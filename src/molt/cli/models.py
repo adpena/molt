@@ -56,16 +56,6 @@ class RuntimeFeedbackSummary:
     hot_functions: list[str]
 
 
-@dataclass(frozen=True)
-class ExtensionManifestValidation:
-    errors: list[str]
-    warnings: list[str]
-    wheel_path: Path | None
-    abi_version: str
-    abi_tag: str | None
-    capabilities: list[str]
-    wheel_tags: tuple[str, str, str] | None
-
 class _TimedResult(NamedTuple):
     returncode: int
     stdout: str
