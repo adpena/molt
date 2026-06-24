@@ -10,7 +10,9 @@ import molt.cli as cli
 
 COMPILER_METADATA = importlib.import_module("molt.cli.compiler_metadata")
 RUNTIME_FEATURES = importlib.import_module("molt.cli.runtime_features")
+RUNTIME_BUILD = importlib.import_module("molt.cli.runtime_build")
 RUNTIME_FINGERPRINTS = importlib.import_module("molt.cli.runtime_fingerprints")
+RUNTIME_PATHS = importlib.import_module("molt.cli.runtime_paths")
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -393,7 +395,7 @@ def test_ensure_runtime_lib_full_profile_fingerprint_declares_default_stdlib(
     captured_features: list[tuple[str, ...]] = []
 
     monkeypatch.setattr(
-        cli,
+        RUNTIME_BUILD,
         "_runtime_fingerprint",
         lambda project_root, **kwargs: (
             captured_features.append(tuple(kwargs["runtime_features"]))
@@ -402,29 +404,29 @@ def test_ensure_runtime_lib_full_profile_fingerprint_declares_default_stdlib(
         raising=True,
     )
     monkeypatch.setattr(
-        cli,
+        RUNTIME_BUILD,
         "_runtime_fingerprint_path",
         lambda *args, **kwargs: tmp_path / "runtime.fingerprint.json",
         raising=True,
     )
     monkeypatch.setattr(
-        cli, "_read_runtime_fingerprint", lambda path: {"hash": "ok"}, raising=True
+        RUNTIME_BUILD, "_read_runtime_fingerprint", lambda path: {"hash": "ok"}, raising=True
     )
     monkeypatch.setattr(
-        cli,
+        RUNTIME_BUILD,
         "_runtime_artifact_fingerprint_matches",
         lambda *args, **kwargs: kwargs["require_artifact_digest"] is True,
         raising=True,
     )
     monkeypatch.setattr(
-        cli,
+        RUNTIME_BUILD,
         "_build_lock",
         lambda *args, **kwargs: contextlib.nullcontext(),
         raising=True,
     )
 
     try:
-        assert cli._ensure_runtime_lib(
+        assert RUNTIME_BUILD._ensure_runtime_lib(
             runtime_lib,
             target_triple=None,
             json_output=True,
@@ -434,7 +436,7 @@ def test_ensure_runtime_lib_full_profile_fingerprint_declares_default_stdlib(
             stdlib_profile="full",
         )
     finally:
-        cli._RUNTIME_LIB_VERIFIED.clear()
+        RUNTIME_BUILD._RUNTIME_LIB_VERIFIED.clear()
 
     assert captured_features
     assert "stdlib_full" in captured_features[0]
@@ -488,16 +490,16 @@ def test_ensure_runtime_lib_session_cache_is_source_fingerprint_qualified(
         return True
 
     monkeypatch.setattr(
-        cli, "_runtime_fingerprint", fake_runtime_fingerprint, raising=True
+        RUNTIME_BUILD, "_runtime_fingerprint", fake_runtime_fingerprint, raising=True
     )
     monkeypatch.setattr(
-        cli,
+        RUNTIME_BUILD,
         "_runtime_fingerprint_path",
         lambda *args, **kwargs: fingerprint_path,
         raising=True,
     )
     monkeypatch.setattr(
-        cli,
+        RUNTIME_BUILD,
         "_read_runtime_fingerprint",
         lambda path: {
             "hash": "runtime-hash-a",
@@ -508,20 +510,20 @@ def test_ensure_runtime_lib_session_cache_is_source_fingerprint_qualified(
         raising=True,
     )
     monkeypatch.setattr(
-        cli,
+        RUNTIME_BUILD,
         "_runtime_artifact_fingerprint_matches",
         fake_runtime_artifact_fingerprint_matches,
         raising=True,
     )
     monkeypatch.setattr(
-        cli,
+        RUNTIME_BUILD,
         "_build_lock",
         lambda *args, **kwargs: contextlib.nullcontext(),
         raising=True,
     )
 
     try:
-        assert cli._ensure_runtime_lib(
+        assert RUNTIME_BUILD._ensure_runtime_lib(
             runtime_lib,
             target_triple=None,
             json_output=True,
@@ -530,7 +532,7 @@ def test_ensure_runtime_lib_session_cache_is_source_fingerprint_qualified(
             cargo_timeout=1.0,
             stdlib_profile="full",
         )
-        assert cli._ensure_runtime_lib(
+        assert RUNTIME_BUILD._ensure_runtime_lib(
             runtime_lib,
             target_triple=None,
             json_output=True,
@@ -540,7 +542,7 @@ def test_ensure_runtime_lib_session_cache_is_source_fingerprint_qualified(
             stdlib_profile="full",
         )
     finally:
-        cli._RUNTIME_LIB_VERIFIED.clear()
+        RUNTIME_BUILD._RUNTIME_LIB_VERIFIED.clear()
 
     assert fingerprint_calls == ["runtime-hash-a", "runtime-hash-b"]
     assert artifact_checks == ["runtime-hash-a", "runtime-hash-b"]
@@ -557,19 +559,19 @@ def test_ensure_runtime_lib_full_profile_passes_stdlib_full_to_cargo(
 
     monkeypatch.setenv("MOLT_RUNTIME_TK_NATIVE", "1")
     monkeypatch.setattr(
-        cli,
+        RUNTIME_BUILD,
         "_runtime_fingerprint",
         lambda *args, **kwargs: {"hash": "new", "rustc": "rustc-test"},
         raising=True,
     )
     monkeypatch.setattr(
-        cli,
+        RUNTIME_BUILD,
         "_runtime_fingerprint_path",
         lambda *args, **kwargs: fingerprint_path,
         raising=True,
     )
     monkeypatch.setattr(
-        cli,
+        RUNTIME_BUILD,
         "_read_runtime_fingerprint",
         lambda path: {"hash": "stale", "rustc": "rustc-test"},
         raising=True,
@@ -581,20 +583,20 @@ def test_ensure_runtime_lib_full_profile_passes_stdlib_full_to_cargo(
         raising=True,
     )
     monkeypatch.setattr(
-        cli,
+        RUNTIME_BUILD,
         "_maybe_hydrate_artifact_from_canonical_target",
         lambda *args, **kwargs: False,
         raising=True,
     )
     monkeypatch.setattr(
-        cli,
+        RUNTIME_BUILD,
         "_build_lock",
         lambda *args, **kwargs: contextlib.nullcontext(),
         raising=True,
     )
-    monkeypatch.setattr(cli, "_maybe_enable_sccache", lambda _env: None, raising=True)
+    monkeypatch.setattr(RUNTIME_BUILD, "_maybe_enable_sccache", lambda _env: None, raising=True)
     monkeypatch.setattr(
-        cli, "_write_runtime_fingerprint", lambda *args, **kwargs: None, raising=True
+        RUNTIME_BUILD, "_write_runtime_fingerprint", lambda *args, **kwargs: None, raising=True
     )
 
     def fake_run_cargo(
@@ -608,16 +610,17 @@ def test_ensure_runtime_lib_full_profile_passes_stdlib_full_to_cargo(
     ) -> subprocess.CompletedProcess[str]:
         del cwd, env, timeout, json_output, label
         seen_cmds.append(list(cmd))
-        runtime_lib.parent.mkdir(parents=True, exist_ok=True)
-        runtime_lib.write_bytes(b"!<arch>\nfull")
+        scratch_lib = RUNTIME_PATHS._runtime_cargo_scratch_lib_path(runtime_lib, None)
+        scratch_lib.parent.mkdir(parents=True, exist_ok=True)
+        scratch_lib.write_bytes(b"!<arch>\nfull")
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     monkeypatch.setattr(
-        cli, "_run_cargo_with_sccache_retry", fake_run_cargo, raising=True
+        RUNTIME_BUILD, "_run_cargo_with_sccache_retry", fake_run_cargo, raising=True
     )
 
     try:
-        assert cli._ensure_runtime_lib(
+        assert RUNTIME_BUILD._ensure_runtime_lib(
             runtime_lib,
             target_triple=None,
             json_output=True,
@@ -627,7 +630,7 @@ def test_ensure_runtime_lib_full_profile_passes_stdlib_full_to_cargo(
             stdlib_profile="full",
         )
     finally:
-        cli._RUNTIME_LIB_VERIFIED.clear()
+        RUNTIME_BUILD._RUNTIME_LIB_VERIFIED.clear()
 
     assert seen_cmds
     assert "--no-default-features" not in seen_cmds[0]
@@ -669,12 +672,12 @@ def test_ensure_runtime_lib_materializes_stdlib_profile_aliases_without_rebuildi
         RUNTIME_FINGERPRINTS, "_rustc_version", lambda: "rustc-test", raising=True
     )
     monkeypatch.setattr(
-        cli,
+        RUNTIME_BUILD,
         "_build_lock",
         lambda *args, **kwargs: contextlib.nullcontext(),
         raising=True,
     )
-    monkeypatch.setattr(cli, "_maybe_enable_sccache", lambda _env: None, raising=True)
+    monkeypatch.setattr(RUNTIME_BUILD, "_maybe_enable_sccache", lambda _env: None, raising=True)
 
     def fake_run_cargo(
         cmd: list[str],
@@ -689,17 +692,21 @@ def test_ensure_runtime_lib_materializes_stdlib_profile_aliases_without_rebuildi
         joined = " ".join(cmd)
         profile = "micro" if "stdlib_micro" in joined else "full"
         cargo_profiles.append(profile)
-        scratch = Path(env["CARGO_TARGET_DIR"]) / "dev-fast" / "libmolt_runtime.a"
+        scratch = (
+            Path(env["CARGO_TARGET_DIR"])
+            / "dev-fast"
+            / RUNTIME_PATHS._runtime_cargo_scratch_lib_name(None)
+        )
         scratch.parent.mkdir(parents=True, exist_ok=True)
         scratch.write_bytes(f"!<arch>\n{profile}".encode("utf-8"))
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     monkeypatch.setattr(
-        cli, "_run_cargo_with_sccache_retry", fake_run_cargo, raising=True
+        RUNTIME_BUILD, "_run_cargo_with_sccache_retry", fake_run_cargo, raising=True
     )
 
     try:
-        assert cli._ensure_runtime_lib(
+        assert RUNTIME_BUILD._ensure_runtime_lib(
             micro_lib,
             target_triple=None,
             json_output=True,
@@ -708,7 +715,7 @@ def test_ensure_runtime_lib_materializes_stdlib_profile_aliases_without_rebuildi
             cargo_timeout=1.0,
             stdlib_profile="micro",
         )
-        assert cli._ensure_runtime_lib(
+        assert RUNTIME_BUILD._ensure_runtime_lib(
             full_lib,
             target_triple=None,
             json_output=True,
@@ -717,7 +724,7 @@ def test_ensure_runtime_lib_materializes_stdlib_profile_aliases_without_rebuildi
             cargo_timeout=1.0,
             stdlib_profile="full",
         )
-        assert cli._ensure_runtime_lib(
+        assert RUNTIME_BUILD._ensure_runtime_lib(
             micro_lib,
             target_triple=None,
             json_output=True,
@@ -726,8 +733,8 @@ def test_ensure_runtime_lib_materializes_stdlib_profile_aliases_without_rebuildi
             cargo_timeout=1.0,
             stdlib_profile="micro",
         )
-        cli._RUNTIME_LIB_VERIFIED.clear()
-        assert cli._ensure_runtime_lib(
+        RUNTIME_BUILD._RUNTIME_LIB_VERIFIED.clear()
+        assert RUNTIME_BUILD._ensure_runtime_lib(
             micro_lib,
             target_triple=None,
             json_output=True,
@@ -737,7 +744,7 @@ def test_ensure_runtime_lib_materializes_stdlib_profile_aliases_without_rebuildi
             stdlib_profile="micro",
         )
     finally:
-        cli._RUNTIME_LIB_VERIFIED.clear()
+        RUNTIME_BUILD._RUNTIME_LIB_VERIFIED.clear()
 
     assert cargo_profiles == ["micro", "full"]
     assert micro_lib.read_bytes() == b"!<arch>\nmicro"
@@ -793,7 +800,7 @@ def test_prepare_native_link_resolves_runtime_alias_for_stdlib_profile(
         },
         raising=True,
     )
-    monkeypatch.setattr(cli, "_read_runtime_fingerprint", lambda path: None)
+    monkeypatch.setattr(RUNTIME_BUILD, "_read_runtime_fingerprint", lambda path: None)
     monkeypatch.setattr(cli, "_artifact_needs_rebuild", lambda *args, **kwargs: True)
     monkeypatch.setattr(
         cli,
@@ -926,18 +933,18 @@ def test_ensure_runtime_lib_rebuilds_unfingerprinted_prebuilt_archive(
         RUNTIME_FINGERPRINTS, "_runtime_source_paths", lambda _root: [source]
     )
     monkeypatch.setattr(
-        cli,
+        RUNTIME_BUILD,
         "_runtime_fingerprint",
         lambda *args, **kwargs: {"hash": "new", "rustc": "rustc-test"},
         raising=True,
     )
     monkeypatch.setattr(
-        cli,
+        RUNTIME_BUILD,
         "_runtime_fingerprint_path",
         lambda *args, **kwargs: tmp_path / "runtime.fingerprint.json",
         raising=True,
     )
-    monkeypatch.setattr(cli, "_read_runtime_fingerprint", lambda path: None)
+    monkeypatch.setattr(RUNTIME_BUILD, "_read_runtime_fingerprint", lambda path: None)
     monkeypatch.setattr(
         cli, "_artifact_needs_rebuild", lambda *args, **kwargs: True, raising=True
     )
@@ -950,20 +957,20 @@ def test_ensure_runtime_lib_rebuilds_unfingerprinted_prebuilt_archive(
         raising=True,
     )
     monkeypatch.setattr(
-        cli,
+        RUNTIME_BUILD,
         "_maybe_hydrate_artifact_from_canonical_target",
         lambda *args, **kwargs: False,
         raising=True,
     )
     monkeypatch.setattr(
-        cli,
+        RUNTIME_BUILD,
         "_build_lock",
         lambda *args, **kwargs: contextlib.nullcontext(),
         raising=True,
     )
-    monkeypatch.setattr(cli, "_maybe_enable_sccache", lambda _env: None, raising=True)
+    monkeypatch.setattr(RUNTIME_BUILD, "_maybe_enable_sccache", lambda _env: None, raising=True)
     monkeypatch.setattr(
-        cli, "_write_runtime_fingerprint", lambda *args, **kwargs: None, raising=True
+        RUNTIME_BUILD, "_write_runtime_fingerprint", lambda *args, **kwargs: None, raising=True
     )
 
     def fake_run_cargo(
@@ -977,15 +984,17 @@ def test_ensure_runtime_lib_rebuilds_unfingerprinted_prebuilt_archive(
     ) -> subprocess.CompletedProcess[str]:
         del cwd, env, timeout, json_output, label
         seen_cmds.append(list(cmd))
-        runtime_lib.write_bytes(b"!<arch>\nrebuilt")
+        scratch_lib = RUNTIME_PATHS._runtime_cargo_scratch_lib_path(runtime_lib, None)
+        scratch_lib.parent.mkdir(parents=True, exist_ok=True)
+        scratch_lib.write_bytes(b"!<arch>\nrebuilt")
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     monkeypatch.setattr(
-        cli, "_run_cargo_with_sccache_retry", fake_run_cargo, raising=True
+        RUNTIME_BUILD, "_run_cargo_with_sccache_retry", fake_run_cargo, raising=True
     )
 
     try:
-        assert cli._ensure_runtime_lib(
+        assert RUNTIME_BUILD._ensure_runtime_lib(
             runtime_lib,
             target_triple=None,
             json_output=True,
@@ -995,7 +1004,7 @@ def test_ensure_runtime_lib_rebuilds_unfingerprinted_prebuilt_archive(
             stdlib_profile="full",
         )
     finally:
-        cli._RUNTIME_LIB_VERIFIED.clear()
+        RUNTIME_BUILD._RUNTIME_LIB_VERIFIED.clear()
 
     assert seen_cmds
 
@@ -1130,19 +1139,19 @@ def test_ensure_runtime_lib_passes_tk_feature_to_native_build(
 
     monkeypatch.setenv("MOLT_RUNTIME_TK_NATIVE", "1")
     monkeypatch.setattr(
-        cli,
+        RUNTIME_BUILD,
         "_runtime_fingerprint",
         lambda *args, **kwargs: {"hash": "new", "rustc": "rustc-test"},
         raising=True,
     )
     monkeypatch.setattr(
-        cli,
+        RUNTIME_BUILD,
         "_runtime_fingerprint_path",
         lambda *args, **kwargs: fingerprint_path,
         raising=True,
     )
     monkeypatch.setattr(
-        cli,
+        RUNTIME_BUILD,
         "_build_lock",
         lambda *args, **kwargs: contextlib.nullcontext(),
         raising=True,
@@ -1150,9 +1159,9 @@ def test_ensure_runtime_lib_passes_tk_feature_to_native_build(
     monkeypatch.setattr(
         cli, "_artifact_needs_rebuild", lambda *args, **kwargs: True, raising=True
     )
-    monkeypatch.setattr(cli, "_maybe_enable_sccache", lambda _env: None, raising=True)
+    monkeypatch.setattr(RUNTIME_BUILD, "_maybe_enable_sccache", lambda _env: None, raising=True)
     monkeypatch.setattr(
-        cli, "_write_runtime_fingerprint", lambda *args, **kwargs: None, raising=True
+        RUNTIME_BUILD, "_write_runtime_fingerprint", lambda *args, **kwargs: None, raising=True
     )
 
     def fake_run_cargo(
@@ -1166,15 +1175,16 @@ def test_ensure_runtime_lib_passes_tk_feature_to_native_build(
     ) -> subprocess.CompletedProcess[str]:
         del cwd, env, timeout, json_output, label
         seen_cmds.append(list(cmd))
-        runtime_lib.parent.mkdir(parents=True, exist_ok=True)
-        runtime_lib.write_bytes(b"runtime")
+        scratch_lib = RUNTIME_PATHS._runtime_cargo_scratch_lib_path(runtime_lib, None)
+        scratch_lib.parent.mkdir(parents=True, exist_ok=True)
+        scratch_lib.write_bytes(b"runtime")
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     monkeypatch.setattr(
-        cli, "_run_cargo_with_sccache_retry", fake_run_cargo, raising=True
+        RUNTIME_BUILD, "_run_cargo_with_sccache_retry", fake_run_cargo, raising=True
     )
 
-    assert cli._ensure_runtime_lib(
+    assert RUNTIME_BUILD._ensure_runtime_lib(
         runtime_lib,
         target_triple=None,
         json_output=True,
@@ -1200,25 +1210,25 @@ def test_ensure_runtime_lib_does_not_probe_fingerprint_exists(
     original_exists = Path.exists
 
     monkeypatch.setattr(
-        cli,
+        RUNTIME_BUILD,
         "_runtime_fingerprint",
         lambda *args, **kwargs: {"hash": "new", "rustc": "rustc-test"},
         raising=True,
     )
     monkeypatch.setattr(
-        cli,
+        RUNTIME_BUILD,
         "_runtime_fingerprint_path",
         lambda *args, **kwargs: fingerprint_path,
         raising=True,
     )
     monkeypatch.setattr(
-        cli,
+        RUNTIME_BUILD,
         "_read_runtime_fingerprint",
         lambda path: None if path == fingerprint_path else None,
         raising=True,
     )
     monkeypatch.setattr(
-        cli,
+        RUNTIME_BUILD,
         "_build_lock",
         lambda *args, **kwargs: contextlib.nullcontext(),
         raising=True,
@@ -1226,9 +1236,9 @@ def test_ensure_runtime_lib_does_not_probe_fingerprint_exists(
     monkeypatch.setattr(
         cli, "_artifact_needs_rebuild", lambda *args, **kwargs: True, raising=True
     )
-    monkeypatch.setattr(cli, "_maybe_enable_sccache", lambda _env: None, raising=True)
+    monkeypatch.setattr(RUNTIME_BUILD, "_maybe_enable_sccache", lambda _env: None, raising=True)
     monkeypatch.setattr(
-        cli, "_write_runtime_fingerprint", lambda *args, **kwargs: None, raising=True
+        RUNTIME_BUILD, "_write_runtime_fingerprint", lambda *args, **kwargs: None, raising=True
     )
 
     def guarded_exists(self: Path) -> bool:
@@ -1249,15 +1259,16 @@ def test_ensure_runtime_lib_does_not_probe_fingerprint_exists(
     ) -> subprocess.CompletedProcess[str]:
         del cwd, env, timeout, json_output, label
         seen_cmds.append(list(cmd))
-        runtime_lib.parent.mkdir(parents=True, exist_ok=True)
-        runtime_lib.write_bytes(b"runtime")
+        scratch_lib = RUNTIME_PATHS._runtime_cargo_scratch_lib_path(runtime_lib, None)
+        scratch_lib.parent.mkdir(parents=True, exist_ok=True)
+        scratch_lib.write_bytes(b"runtime")
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     monkeypatch.setattr(
-        cli, "_run_cargo_with_sccache_retry", fake_run_cargo, raising=True
+        RUNTIME_BUILD, "_run_cargo_with_sccache_retry", fake_run_cargo, raising=True
     )
 
-    assert cli._ensure_runtime_lib(
+    assert RUNTIME_BUILD._ensure_runtime_lib(
         runtime_lib,
         target_triple=None,
         json_output=True,
@@ -1296,7 +1307,7 @@ def test_ensure_runtime_lib_rebuilds_when_stored_fingerprint_conflicts_with_requ
         raising=True,
     )
     monkeypatch.setattr(
-        cli,
+        RUNTIME_BUILD,
         "_runtime_fingerprint",
         lambda *args, **kwargs: {
             "hash": "new",
@@ -1307,26 +1318,26 @@ def test_ensure_runtime_lib_rebuilds_when_stored_fingerprint_conflicts_with_requ
         raising=True,
     )
     monkeypatch.setattr(
-        cli,
+        RUNTIME_BUILD,
         "_runtime_fingerprint_path",
         lambda *args, **kwargs: fingerprint_path,
         raising=True,
     )
     monkeypatch.setattr(
-        cli,
+        RUNTIME_BUILD,
         "_read_runtime_fingerprint",
         lambda path: dict(stale_fingerprint) if path == fingerprint_path else None,
         raising=True,
     )
     monkeypatch.setattr(
-        cli,
+        RUNTIME_BUILD,
         "_build_lock",
         lambda *args, **kwargs: contextlib.nullcontext(),
         raising=True,
     )
-    monkeypatch.setattr(cli, "_maybe_enable_sccache", lambda _env: None, raising=True)
+    monkeypatch.setattr(RUNTIME_BUILD, "_maybe_enable_sccache", lambda _env: None, raising=True)
     monkeypatch.setattr(
-        cli, "_write_runtime_fingerprint", lambda *args, **kwargs: None, raising=True
+        RUNTIME_BUILD, "_write_runtime_fingerprint", lambda *args, **kwargs: None, raising=True
     )
 
     def fake_run_cargo(
@@ -1340,13 +1351,16 @@ def test_ensure_runtime_lib_rebuilds_when_stored_fingerprint_conflicts_with_requ
     ) -> subprocess.CompletedProcess[str]:
         del cwd, env, timeout, json_output, label
         seen_cmds.append(list(cmd))
+        scratch_lib = RUNTIME_PATHS._runtime_cargo_scratch_lib_path(runtime_lib, None)
+        scratch_lib.parent.mkdir(parents=True, exist_ok=True)
+        scratch_lib.write_bytes(b"!<arch>\nfake-staticlib")
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     monkeypatch.setattr(
-        cli, "_run_cargo_with_sccache_retry", fake_run_cargo, raising=True
+        RUNTIME_BUILD, "_run_cargo_with_sccache_retry", fake_run_cargo, raising=True
     )
 
-    assert cli._ensure_runtime_lib(
+    assert RUNTIME_BUILD._ensure_runtime_lib(
         runtime_lib,
         target_triple=None,
         json_output=True,

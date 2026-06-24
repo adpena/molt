@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import cast
 
 from molt import cli
+from molt.cli import runtime_build as RUNTIME_BUILD
+from molt.cli import runtime_paths as RUNTIME_PATHS
 import pytest
 
 _FAKE_STATICLIB = b"!<arch>\nfake-staticlib"
@@ -355,19 +357,19 @@ def test_ensure_runtime_lib_hydrates_from_canonical_target(
 
     monkeypatch.setenv("CARGO_TARGET_DIR", str(isolated_target))
     monkeypatch.setattr(
-        cli,
+        RUNTIME_BUILD,
         "_runtime_fingerprint",
         lambda *args, **kwargs: dict(fingerprint),
     )
     monkeypatch.setattr(
-        cli,
+        RUNTIME_BUILD,
         "_run_cargo_with_sccache_retry",
         lambda *args, **kwargs: (_ for _ in ()).throw(
             AssertionError("cargo should not run")
         ),
     )
 
-    assert cli._ensure_runtime_lib(
+    assert RUNTIME_BUILD._ensure_runtime_lib(
         isolated_runtime,
         None,
         True,
@@ -407,7 +409,7 @@ def test_ensure_runtime_lib_hydration_requires_artifact_digest_match(
 
     monkeypatch.setenv("CARGO_TARGET_DIR", str(isolated_target))
     monkeypatch.setattr(
-        cli,
+        RUNTIME_BUILD,
         "_runtime_fingerprint",
         lambda *args, **kwargs: dict(fingerprint),
     )
@@ -423,13 +425,16 @@ def test_ensure_runtime_lib_hydration_requires_artifact_digest_match(
     ) -> subprocess.CompletedProcess[str]:
         del cwd, env, timeout, json_output, label
         cargo_runs.append(list(cmd))
-        isolated_runtime.parent.mkdir(parents=True, exist_ok=True)
-        isolated_runtime.write_bytes(_FAKE_STATICLIB)
+        scratch_lib = RUNTIME_PATHS._runtime_cargo_scratch_lib_path(
+            isolated_runtime, None
+        )
+        scratch_lib.parent.mkdir(parents=True, exist_ok=True)
+        scratch_lib.write_bytes(_FAKE_STATICLIB)
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
-    monkeypatch.setattr(cli, "_run_cargo_with_sccache_retry", fake_run_cargo)
+    monkeypatch.setattr(RUNTIME_BUILD, "_run_cargo_with_sccache_retry", fake_run_cargo)
 
-    assert cli._ensure_runtime_lib(
+    assert RUNTIME_BUILD._ensure_runtime_lib(
         isolated_runtime,
         None,
         True,
