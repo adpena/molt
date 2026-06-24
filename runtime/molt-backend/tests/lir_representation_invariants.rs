@@ -2,8 +2,8 @@ use std::collections::HashMap;
 
 use molt_backend::tir::blocks::BlockId;
 use molt_backend::tir::lir::{LirBlock, LirFunction, LirOp, LirRepr, LirTerminator, LirValue};
-use molt_backend::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
 use molt_backend::tir::lir_printer::print_lir_function;
+use molt_backend::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
 use molt_backend::tir::types::TirType;
 use molt_backend::tir::values::ValueId;
 use molt_backend::tir::verify_lir::verify_lir_function;

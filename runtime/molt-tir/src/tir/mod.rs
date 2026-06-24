@@ -10,6 +10,7 @@ pub mod dominators;
 pub mod drop_phase;
 pub mod effect_proof;
 pub mod exception_regions;
+pub mod fact_graph;
 pub mod function;
 pub mod lir;
 pub mod lir_printer;
@@ -92,6 +93,10 @@ pub use self::exception_regions::{
     ExceptionMatchRefFact, ExceptionOpPosition, ExceptionRegionDiagnostic,
     ExceptionRegionDiagnosticKind, ExceptionRegionFacts, ExceptionRegions,
     verify_exception_regions,
+};
+pub use self::fact_graph::{
+    FACT_GRAPH_KIND, FACT_GRAPH_SCHEMA_VERSION, FactConsumer, FactEdge, FactEntry, FactGraph,
+    FactGraphSummary, FactProducer, ValueFactNode,
 };
 pub use self::function::{TirFunction, TirModule};
 pub use self::lir::{LirBlock, LirFunction, LirOp, LirRepr, LirTerminator, LirValue};

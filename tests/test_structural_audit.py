@@ -100,6 +100,31 @@ def test_tooling_gaps_credit_pass_delta_when_present(tmp_path: Path):
     assert "MISSING: pass-delta ledger" not in gaps
 
 
+def test_tooling_gaps_credit_fact_graph_when_both_halves_exist(tmp_path: Path):
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    (tools / "fact_graph_dump.py").write_text("", encoding="utf-8")
+    fact_graph = tmp_path / "runtime" / "molt-tir" / "src" / "tir"
+    fact_graph.mkdir(parents=True)
+    (fact_graph / "fact_graph.rs").write_text("", encoding="utf-8")
+
+    gaps = dict(SA._tooling_gaps(tmp_path))
+
+    assert "BUILT: fact graph substrate" in gaps
+    assert "MISSING: fact graph" not in gaps
+
+
+def test_tooling_gaps_keep_fact_graph_missing_when_only_one_half_exists(tmp_path: Path):
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    (tools / "fact_graph_dump.py").write_text("", encoding="utf-8")
+
+    gaps = dict(SA._tooling_gaps(tmp_path))
+
+    assert "MISSING: fact graph" in gaps
+    assert "BUILT: fact graph substrate" not in gaps
+
+
 def test_format_board_uses_root_specific_tooling_gaps(tmp_path: Path):
     tools = tmp_path / "tools"
     tools.mkdir()
@@ -180,6 +205,28 @@ def test_exhaustive_match_is_not_flagged():
     )
     findings = _scan_rust_string(rust, "tir/passes/effects.rs")
     assert findings == [], f"exhaustive match wrongly flagged: {findings}"
+
+
+def test_nested_data_default_inside_exhaustive_opcode_match_is_not_flagged():
+    """Nested `_ => fallback` data decoders inside an exhaustive opcode dispatch
+    are not opcode-classifier defaults."""
+    rust = (
+        "fn emit(op: &TirOp) {\n"
+        "    match op.opcode {\n"
+        "        OpCode::ConstInt => {\n"
+        '            let value = match op.attrs.get("value") {\n'
+        "                Some(AttrValue::Int(v)) => *v,\n"
+        "                _ => 0,\n"
+        "            };\n"
+        "            emit_const(value);\n"
+        "        }\n"
+        "        OpCode::Add => emit_add(),\n"
+        "        OpCode::Sub => emit_sub(),\n"
+        "    }\n"
+        "}\n"
+    )
+    findings = _scan_rust_string(rust, "tir/lower_to_wasm.rs")
+    assert findings == [], f"nested data fallback wrongly flagged: {findings}"
 
 
 def test_enum_variant_extraction_handles_payloads():
