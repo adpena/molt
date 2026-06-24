@@ -2,6 +2,48 @@ use super::super::*;
 use super::OpFlow;
 use super::var_get_boxed_overflow_safe_fn;
 
+/// Scalar arithmetic kind authority for [`handle_arith_op`]. The delegated
+/// `vec_*` reductions live in [`super::vec_reductions::HANDLED_KINDS`], not
+/// here; `op_family::FAMILY_DISPATCH_TABLE` routes both slices to
+/// `NativeOpFamily::Arith`. Mirror the `match op.kind.as_str()` arms below.
+#[cfg(feature = "native-backend")]
+pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] = &[
+    "add",
+    "checked_add",
+    "inplace_add",
+    "sub",
+    "inplace_sub",
+    "mul",
+    "inplace_mul",
+    "bit_or",
+    "inplace_bit_or",
+    "bit_and",
+    "inplace_bit_and",
+    "bit_xor",
+    "inplace_bit_xor",
+    "lshift",
+    "shl",
+    "inplace_lshift",
+    "rshift",
+    "shr",
+    "inplace_rshift",
+    "matmul",
+    "inplace_matmul",
+    "div",
+    "inplace_div",
+    "floordiv",
+    "inplace_floordiv",
+    "mod",
+    "inplace_mod",
+    "floor_div",
+    "binop_floor_div",
+    "pow",
+    "inplace_pow",
+    "pow_mod",
+    "round",
+    "trunc",
+];
+
 /// Cranelift codegen handlers for arithmetic ops: numeric add/sub/mul,
 /// bitwise and shifts, division/modulo, power, rounding, and truncation.
 /// Extracted from `compile_func_inner` as a move-only function split; the arm

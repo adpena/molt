@@ -1,4 +1,10 @@
 use super::super::*;
+
+/// Single-source kind authority for [`handle_statistics_op`], consulted by
+/// `op_family::FAMILY_DISPATCH_TABLE`. Mirror the `match op.kind.as_str()` arms below.
+#[cfg(feature = "native-backend")]
+pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] =
+    &["statistics_mean_slice", "statistics_stdev_slice"];
 use super::var_get_boxed_overflow_safe_fn;
 
 /// Cranelift codegen handlers for slice-based statistics reductions: `statistics_mean_slice`/`statistics_stdev_slice`.

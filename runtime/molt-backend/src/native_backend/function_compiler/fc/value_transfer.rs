@@ -1,4 +1,20 @@
 use super::super::*;
+
+/// Single-source kind authority for [`handle_value_transfer_op`], consulted by
+/// `op_family::FAMILY_DISPATCH_TABLE`. Mirror the `match op.kind.as_str()` arms below.
+#[cfg(feature = "native-backend")]
+pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] = &[
+    "inc_ref",
+    "borrow",
+    "dec_ref",
+    "release",
+    "box",
+    "unbox",
+    "cast",
+    "widen",
+    "identity_alias",
+    "binding_alias",
+];
 use super::var_get_boxed_overflow_safe_fn;
 
 /// Cranelift codegen handlers for value-custody transfer ops: `inc_ref`,

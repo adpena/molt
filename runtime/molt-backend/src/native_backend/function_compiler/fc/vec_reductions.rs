@@ -1,6 +1,39 @@
 use super::super::*;
 use super::var_get_boxed_overflow_safe_fn;
 
+/// The 24 `vec_*` reduction kinds — the SINGLE authority for this family, routed
+/// to `NativeOpFamily::Arith` (whose [`super::arith::handle_arith_op`] delegates
+/// here). Dropping the dispatch's separate copy of this list was the
+/// `8b5773878` regression fixed in `0323ad28c`; with one authority that drift is
+/// unexpressible. Mirror the `match op.kind.as_str()` arms below.
+#[cfg(feature = "native-backend")]
+pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] = &[
+    "vec_sum_int",
+    "vec_sum_int_trusted",
+    "vec_sum_int_range",
+    "vec_sum_int_range_trusted",
+    "vec_sum_int_range_iter",
+    "vec_sum_int_range_iter_trusted",
+    "vec_sum_float",
+    "vec_sum_float_trusted",
+    "vec_sum_float_range",
+    "vec_sum_float_range_trusted",
+    "vec_sum_float_range_iter",
+    "vec_sum_float_range_iter_trusted",
+    "vec_prod_int",
+    "vec_prod_int_trusted",
+    "vec_prod_int_range",
+    "vec_prod_int_range_trusted",
+    "vec_min_int",
+    "vec_min_int_trusted",
+    "vec_min_int_range",
+    "vec_min_int_range_trusted",
+    "vec_max_int",
+    "vec_max_int_trusted",
+    "vec_max_int_range",
+    "vec_max_int_range_trusted",
+];
+
 /// Cranelift codegen handlers for the `vec_*` reduction op family (sum/prod/min/max over int and float sequences, plus their `_trusted`/`_range`/`_range_iter` variants).
 ///
 /// Extracted verbatim from `compile_func_inner`'s per-op dispatch (M1 phase 1).

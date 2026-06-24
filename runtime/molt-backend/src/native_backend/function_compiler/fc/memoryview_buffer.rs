@@ -1,4 +1,17 @@
 use super::super::*;
+
+/// Single-source kind authority for [`handle_memoryview_buffer_op`], consulted by
+/// `op_family::FAMILY_DISPATCH_TABLE`. Mirror the `match op.kind.as_str()` arms below.
+#[cfg(feature = "native-backend")]
+pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] = &[
+    "memoryview_new",
+    "memoryview_tobytes",
+    "memoryview_cast",
+    "buffer2d_new",
+    "buffer2d_get",
+    "buffer2d_set",
+    "buffer2d_matmul",
+];
 use super::var_get_boxed_overflow_safe_fn;
 
 /// Cranelift codegen handlers for memoryview and 2-D buffer ops: `memoryview_new`/`tobytes`/`cast` and `buffer2d_new`/`get`/`set`/`matmul`.

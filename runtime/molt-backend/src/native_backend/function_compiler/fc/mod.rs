@@ -108,6 +108,7 @@ pub(in crate::native_backend::function_compiler) mod memory;
 pub(in crate::native_backend::function_compiler) mod memoryview_buffer;
 pub(in crate::native_backend::function_compiler) mod modules;
 pub(in crate::native_backend::function_compiler) mod object_construct;
+pub(in crate::native_backend::function_compiler) mod op_family;
 pub(in crate::native_backend::function_compiler) mod parse_ops;
 pub(in crate::native_backend::function_compiler) mod ret_jump;
 pub(in crate::native_backend::function_compiler) mod runtime_ops;
@@ -122,6 +123,14 @@ pub(in crate::native_backend::function_compiler) mod type_conversions;
 pub(in crate::native_backend::function_compiler) mod unary_logic;
 pub(in crate::native_backend::function_compiler) mod value_transfer;
 pub(in crate::native_backend::function_compiler) mod vec_reductions;
+
+// Single-source-of-truth op-kind routing (see `op_family`): the dispatch in
+// `compile_func_inner` consults `native_op_family` instead of hand-mirroring
+// each handler's kind list, so the dispatch can no longer drift from a handler.
+#[cfg(feature = "native-backend")]
+pub(in crate::native_backend::function_compiler) use op_family::{
+    NATIVE_NO_CODEGEN_RESULT_KINDS, NativeOpFamily, native_op_family,
+};
 
 /// Free-function form of `compile_func_inner`'s op-local
 /// `var_get_boxed_overflow_safe` closure: box a variable's value

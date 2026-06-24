@@ -1,4 +1,18 @@
 use super::super::*;
+
+/// Single-source kind authority for [`handle_object_construct_op`], consulted by
+/// `op_family::FAMILY_DISPATCH_TABLE`. Mirror the `match op.kind.as_str()` arms below.
+#[cfg(feature = "native-backend")]
+pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] = &[
+    "bound_method_new",
+    "object_new",
+    "object_new_bound",
+    "object_new_bound_stack",
+    "super_new",
+    "classmethod_new",
+    "staticmethod_new",
+    "property_new",
+];
 use super::var_get_boxed_overflow_safe_fn;
 
 /// Cranelift codegen handlers for object/descriptor construction: `object_new`/`object_new_bound`/`object_new_bound_stack`/`super_new`/`classmethod_new`/`staticmethod_new`/`property_new`/`bound_method_new`.

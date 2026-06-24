@@ -1,4 +1,17 @@
 use super::super::*;
+
+/// Single-source kind authority for [`handle_context_op`], consulted by
+/// `op_family::FAMILY_DISPATCH_TABLE`. Mirror the `match op.kind.as_str()` arms below.
+#[cfg(feature = "native-backend")]
+pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] = &[
+    "context_null",
+    "context_enter",
+    "context_exit",
+    "context_closing",
+    "context_unwind",
+    "context_depth",
+    "context_unwind_to",
+];
 use super::var_get_boxed_overflow_safe_fn;
 
 /// Cranelift codegen handlers for context-manager runtime ops: `context_null`/`enter`/`exit`/`closing`/`unwind`/`unwind_to`/`depth`.

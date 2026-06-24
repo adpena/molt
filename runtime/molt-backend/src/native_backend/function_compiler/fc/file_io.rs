@@ -1,4 +1,15 @@
 use super::super::*;
+
+/// Single-source kind authority for [`handle_file_io_op`], consulted by
+/// `op_family::FAMILY_DISPATCH_TABLE`. Mirror the `match op.kind.as_str()` arms below.
+#[cfg(feature = "native-backend")]
+pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] = &[
+    "file_open",
+    "file_read",
+    "file_write",
+    "file_close",
+    "file_flush",
+];
 use super::var_get_boxed_overflow_safe_fn;
 
 /// Cranelift codegen handlers for low-level file ops: `file_open`/`read`/`write`/`close`/`flush`.

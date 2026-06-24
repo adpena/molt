@@ -1,4 +1,31 @@
 use super::super::*;
+
+/// Single-source kind authority for [`handle_dict_op`], consulted by
+/// `op_family::FAMILY_DISPATCH_TABLE`. Mirror the `match op.kind.as_str()` arms below.
+#[cfg(feature = "native-backend")]
+pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] = &[
+    "dict_new",
+    "dict_from_obj",
+    "dict_get",
+    "dict_set",
+    "dict_update_missing",
+    "dict_inc",
+    "dict_str_int_inc",
+    "string_split_ws_dict_inc",
+    "taq_ingest_line",
+    "string_split_sep_dict_inc",
+    "dict_pop",
+    "dict_setdefault",
+    "dict_setdefault_empty_list",
+    "dict_update",
+    "dict_clear",
+    "dict_copy",
+    "dict_popitem",
+    "dict_update_kwstar",
+    "dict_keys",
+    "dict_values",
+    "dict_items",
+];
 use super::OpFlow;
 use super::var_get_boxed_overflow_safe_fn;
 
