@@ -43,6 +43,7 @@ pub(in crate::native_backend::function_compiler) mod callargs;
 pub(in crate::native_backend::function_compiler) mod class_ops;
 pub(in crate::native_backend::function_compiler) mod compare;
 pub(in crate::native_backend::function_compiler) mod context_mgmt;
+pub(in crate::native_backend::function_compiler) mod coroutine;
 pub(in crate::native_backend::function_compiler) mod dataclass;
 pub(in crate::native_backend::function_compiler) mod dict_ops;
 pub(in crate::native_backend::function_compiler) mod exception_stack;
