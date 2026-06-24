@@ -30,6 +30,7 @@ from tests.cli.process_guard import (
 ROOT = Path(__file__).resolve().parents[2]
 ARTIFACT_STATE = importlib.import_module("molt.cli.artifact_state")
 CACHE_FINGERPRINTS = importlib.import_module("molt.cli.cache_fingerprints")
+CACHE_KEYS = importlib.import_module("molt.cli.cache_keys")
 LOCKFILES = importlib.import_module("molt.cli.lockfiles")
 PROJECT_ROOTS = importlib.import_module("molt.cli.project_roots")
 RUNTIME_FINGERPRINTS = importlib.import_module("molt.cli.runtime_fingerprints")
@@ -2616,7 +2617,7 @@ def test_cached_json_round_trips_molt_value_and_set() -> None:
         "names": {"alpha", "beta"},
     }
 
-    encoded = json.dumps(payload, default=cli._json_ir_default)
+    encoded = json.dumps(payload, default=CACHE_KEYS._json_ir_default)
     decoded = cli._decode_cached_json_value(json.loads(encoded))
 
     assert decoded["value"] == MoltValue(name="v1", type_hint="int")
@@ -2668,7 +2669,7 @@ def test_collect_imports_avoids_module_tree_walk_for_nested_scans(
 
 
 def test_backend_ir_text_is_compact() -> None:
-    text = cli._backend_ir_text(
+    text = CACHE_KEYS._backend_ir_text(
         {
             "functions": [{"name": "main", "ops": [{"kind": "ret", "args": []}]}],
             "profile": {"hash": "abc"},
@@ -2683,7 +2684,7 @@ def test_backend_ir_lease_streams_json_without_bytes_helper(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(
-        cli,
+        CACHE_KEYS,
         "_backend_ir_bytes",
         lambda *args, **kwargs: (_ for _ in ()).throw(
             AssertionError("backend IR lease must not materialize bytes")
@@ -3512,7 +3513,7 @@ def _legacy_streamed_cache_digest(
         payload_ir,
         sort_keys=True,
         separators=(",", ":"),
-        default=cli._json_ir_default,
+        default=CACHE_KEYS._json_ir_default,
     ).encode("utf-8")
     suffix = target_triple or target
     if variant:
@@ -3522,9 +3523,9 @@ def _legacy_streamed_cache_digest(
         + b"|"
         + suffix.encode("utf-8")
         + b"|"
-        + cli._cache_fingerprint().encode("utf-8")
+        + CACHE_KEYS._cache_fingerprint().encode("utf-8")
         + b"|"
-        + cli._cache_tooling_fingerprint().encode("utf-8")
+        + CACHE_KEYS._cache_tooling_fingerprint().encode("utf-8")
         + b"|"
         + schema_version.encode("utf-8")
     ).hexdigest()
@@ -3539,40 +3540,40 @@ def test_streamed_cache_keys_preserve_legacy_payload_semantics() -> None:
         "profile": {"hash": "abc"},
         "runtime_feedback": {"hot_functions": ["alpha"]},
     }
-    module_payload_ir = cli._cache_ir_payload_ir(ir)
-    backend_payload_ir = cli._cache_backend_payload_ir(ir)
+    module_payload_ir = CACHE_KEYS._cache_ir_payload_ir(ir)
+    backend_payload_ir = CACHE_KEYS._cache_backend_payload_ir(ir)
     module_text = json.dumps(
         module_payload_ir,
         sort_keys=True,
         separators=(",", ":"),
-        default=cli._json_ir_default,
+        default=CACHE_KEYS._json_ir_default,
     )
     backend_text = json.dumps(
         backend_payload_ir,
         sort_keys=True,
         separators=(",", ":"),
-        default=cli._json_ir_default,
+        default=CACHE_KEYS._json_ir_default,
     )
     assert module_text.index('"name":"alpha"') < module_text.index('"name":"zeta"')
     assert backend_text.index('"name":"alpha"') < backend_text.index('"name":"zeta"')
     assert '"top_level_extras_digest"' in backend_text
-    assert cli._cache_key(
+    assert CACHE_KEYS._cache_key(
         ir, "native", None, "variant"
     ) == _legacy_streamed_cache_digest(
         module_payload_ir,
         target="native",
         target_triple=None,
         variant="variant",
-        schema_version=cli._CACHE_KEY_SCHEMA_VERSION,
+        schema_version=CACHE_KEYS._CACHE_KEY_SCHEMA_VERSION,
     )
-    assert cli._function_cache_key(
+    assert CACHE_KEYS._function_cache_key(
         ir, "native", None, "variant"
     ) == _legacy_streamed_cache_digest(
         backend_payload_ir,
         target="native",
         target_triple=None,
         variant="variant",
-        schema_version=cli._FUNCTION_CACHE_KEY_SCHEMA_VERSION,
+        schema_version=CACHE_KEYS._FUNCTION_CACHE_KEY_SCHEMA_VERSION,
     )
 
 
@@ -6045,7 +6046,7 @@ def test_load_module_analysis_rejects_persisted_defaults_without_function_kind(
             "func_defaults": {"g": {"params": 0, "defaults": []}},
             "imports": [],
         },
-        default=cli._json_ir_default,
+        default=CACHE_KEYS._json_ir_default,
     )
 
     (
@@ -15785,9 +15786,13 @@ def test_function_cache_key_tracks_top_level_ir_extras() -> None:
         "meta": {"x": 1},
         "profile": None,
     }
-    key_base = cli._function_cache_key(ir_base, "native", None, "variant")
-    key_extra_a = cli._function_cache_key(ir_extra_a, "native", None, "variant")
-    key_extra_b = cli._function_cache_key(ir_extra_b, "native", None, "variant")
+    key_base = CACHE_KEYS._function_cache_key(ir_base, "native", None, "variant")
+    key_extra_a = CACHE_KEYS._function_cache_key(
+        ir_extra_a, "native", None, "variant"
+    )
+    key_extra_b = CACHE_KEYS._function_cache_key(
+        ir_extra_b, "native", None, "variant"
+    )
     assert key_extra_a != key_base
     assert key_extra_a == key_extra_b
 
