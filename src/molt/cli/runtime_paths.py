@@ -80,6 +80,41 @@ def _cargo_target_root(project_root: Path) -> Path:
 
 
 @functools.lru_cache(maxsize=256)
+def _build_state_root_cached(
+    project_root_str: str,
+    build_state_override: str | None,
+    cargo_target_override: str | None,
+    cwd_str: str,
+    session_id: str | None = None,
+) -> Path:
+    project_root = Path(project_root_str)
+    if build_state_override:
+        path = Path(build_state_override).expanduser()
+        if not path.is_absolute():
+            path = (project_root / path).absolute()
+        return path
+    return (
+        _cargo_target_root_cached(
+            project_root_str,
+            cargo_target_override,
+            cwd_str,
+            session_id,
+        )
+        / ".molt_state"
+    )
+
+
+def _build_state_root(project_root: Path) -> Path:
+    return _build_state_root_cached(
+        os.fspath(project_root),
+        os.environ.get("MOLT_BUILD_STATE_DIR"),
+        os.environ.get("CARGO_TARGET_DIR"),
+        os.fspath(Path.cwd()),
+        _molt_session_id(),
+    )
+
+
+@functools.lru_cache(maxsize=256)
 def _runtime_lib_path_cached(
     project_root_str: str,
     cargo_profile: str,
