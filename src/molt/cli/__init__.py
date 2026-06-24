@@ -335,25 +335,7 @@ from molt.cli.extension_manifest import (
     _wheel_version_token,
     _write_zip_member,
 )
-from molt.cli.extension_scan_surface import (
-    _C_BLOCK_COMMENT_RE,
-    _C_LINE_COMMENT_RE,
-    _C_STRING_LITERAL_RE,
-    _ExtensionScanSurface,
-    _NUMPY_FAIL_FAST_SYMBOL_RE,
-    _PY_C_API_TOKEN_RE,
-    _extract_numpy_fail_fast_symbols,
-    _extract_py_c_api_tokens,
-    _load_py_c_api_scan_surface,
-    _strip_c_like_comments_and_literals,
-)
-from molt.cli.extension_scan import (
-    _EXTENSION_SCAN_EXCLUDED_DIRS,
-    _EXTENSION_SCAN_SOURCE_SUFFIXES,
-    _iter_extension_scan_dir_sources,
-    _resolve_extension_scan_sources,
-    extension_scan,
-)
+from molt.cli.extension_scan import extension_scan
 from molt.cli.models import (
     BuildProfile,
     EmitMode,
