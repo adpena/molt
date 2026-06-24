@@ -100,6 +100,10 @@
 #                  fact: ops that make a comprehension/generator body ineligible
 #                  for iterator-chain fusion. A DISTINCT fact from side_effecting
 #                  (see its own comment below). Rendered exhaustively over OpCode.
+#   - generator_fusion_poll_required_yield_opcodes /
+#                  generator_fusion_poll_reject_opcodes - opcode-role facts for
+#                  generator_fusion.rs poll-body eligibility. Required-yield,
+#                  reject, and neutral roles are rendered as one exhaustive table.
 #   - state_machine_opcodes - opcode-only linear-transform legality fact: ops
 #                  that belong to generator/async/coroutine state machines and
 #                  therefore cannot be linearly spliced by the TIR function
@@ -430,6 +434,24 @@ fusion_barrier_opcodes = [
     "StoreIndex",
     "Yield",
     "YieldFrom",
+]
+
+# generator_fusion_poll_*_opcodes: Phase-1 generator poll eligibility roles.
+# A fusable poll must contain at least one RequiredYield and no Reject opcode.
+# StateSwitch is neutral here: clone_and_rewrite_poll drops the bookkeeping
+# switch, while StateYield is the splice point and the reject set covers
+# delegation, async/channel/state-transition, and nested task shapes that Phase 1
+# cannot linearize.
+generator_fusion_poll_required_yield_opcodes = ["StateYield"]
+generator_fusion_poll_reject_opcodes = [
+    "YieldFrom",
+    "Yield",
+    "StateBlockStart",
+    "StateBlockEnd",
+    "ChanSendYield",
+    "ChanRecvYield",
+    "StateTransition",
+    "AllocTask",
 ]
 
 # state_machine_opcodes: generator/async/coroutine suspension machinery that
