@@ -2883,10 +2883,11 @@ def test_main_reexec_preserves_stream_and_sample_rotation_options(
         captured["env"] = dict(env)
         raise SystemExit(74)
 
-    def fake_subprocess_run(argv, *, env, check):
+    def fake_subprocess_run(argv, *, env, check, creationflags=0):
         assert check is False
         captured["argv"] = list(argv)
         captured["env"] = dict(env)
+        captured["creationflags"] = creationflags
         return subprocess.CompletedProcess(argv, 74)
 
     main_argv = [
@@ -2932,6 +2933,12 @@ def test_main_reexec_preserves_stream_and_sample_rotation_options(
     assert "json-stderr" in worker_argv
     assert "--child-rlimit-gb" in worker_argv
     assert "0.75" in worker_argv
+    if os.name == "nt":
+        assert captured["creationflags"] == getattr(
+            memory_guard.subprocess,
+            "CREATE_NEW_PROCESS_GROUP",
+            0,
+        )
 
 
 def test_internal_worker_loads_command_and_strips_internal_env(monkeypatch) -> None:
