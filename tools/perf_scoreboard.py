@@ -200,6 +200,17 @@ _VERDICT_DERIVED_NOTES = frozenset(
     }
 )
 
+
+class ScoreboardSchemaError(RuntimeError):
+    """Raised when a CPython scoreboard document violates schema authority."""
+
+    def __init__(self, context: str, problems: list[str]) -> None:
+        self.context = context
+        self.problems = problems
+        detail = "; ".join(problems)
+        super().__init__(f"{context}: {detail}")
+
+
 def _load_cold_start_budgets() -> dict:
     """Load the per (backend, profile) cold-start tax budgets in milliseconds.
 
@@ -3313,6 +3324,30 @@ def build_scoreboard_doc(
     }
 
 
+def _validate_board_for_emit(doc: dict, *, context: str) -> None:
+    problems = validate_board(doc)
+    if problems:
+        raise ScoreboardSchemaError(context, problems)
+
+
+def _write_scoreboard_doc(path: Path, doc: dict, *, context: str) -> None:
+    _write_scoreboard_doc_atomic(path, doc, context=context)
+
+
+def _write_scoreboard_doc_atomic(path: Path, doc: dict, *, context: str) -> None:
+    _validate_board_for_emit(doc, context=context)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+    tmp.replace(path)
+
+
+def _print_schema_error(exc: ScoreboardSchemaError) -> None:
+    print(f"[schema] {exc.context} FAILED:", file=sys.stderr)
+    for problem in exc.problems:
+        print(f"    - {problem}", file=sys.stderr)
+
+
 # ---------------------------------------------------------------------------
 # Human-readable summary (gate-failing rows first)
 # ---------------------------------------------------------------------------
@@ -3881,7 +3916,11 @@ def _rebuild_summary(
     doc["git_rev"] = prior.get("git_rev", doc["git_rev"])
     if "host" in prior:
         doc["host"] = prior["host"]
-    path.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+    try:
+        _write_scoreboard_doc(path, doc, context=f"rebuild-summary {path}")
+    except ScoreboardSchemaError as exc:
+        _print_schema_error(exc)
+        return 3
     print(f"[rebuild-summary] rewrote {path}", file=sys.stderr)
     print_summary(doc)
     return _gate_exit_code(
@@ -3966,8 +4005,11 @@ def _merge_boards(
         doc["host"] = host
     if generated_at:
         doc["generated_at"] = generated_at
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+    try:
+        _write_scoreboard_doc(out, doc, context=f"merge {out}")
+    except ScoreboardSchemaError as exc:
+        _print_schema_error(exc)
+        return 3
     print(
         f"[merge] {len(sources)} boards -> {out} ({len(cells)} cells)", file=sys.stderr
     )
@@ -4416,19 +4458,23 @@ def main(argv: list[str]) -> int:
                                 }
                             )
                     # Checkpoint partial JSON after every cell (death-recoverable).
-                    _checkpoint(
-                        partial_path,
-                        cells,
-                        benchmarks_run,
-                        benchmarks_deferred,
-                        cpython_version,
-                        ns.samples,
-                        ns.warmup,
-                        provenance=provenance,
-                        cpython_identity=cpython_identity,
-                        pypy_version=pypy_version,
-                        codon_version=codon_version,
-                    )
+                    try:
+                        _checkpoint(
+                            partial_path,
+                            cells,
+                            benchmarks_run,
+                            benchmarks_deferred,
+                            cpython_version,
+                            ns.samples,
+                            ns.warmup,
+                            provenance=provenance,
+                            cpython_identity=cpython_identity,
+                            pypy_version=pypy_version,
+                            codon_version=codon_version,
+                        )
+                    except ScoreboardSchemaError as exc:
+                        _print_schema_error(exc)
+                        return 3
                     print(
                         f"    -> {cell.verdict}  warm={_fmt(cell.warm_speedup)} "
                         f"cold={_fmt(cell.cold_speedup)} tax={_fmt(cell.startup_tax_ms, 0)}ms",
@@ -4483,7 +4529,11 @@ def main(argv: list[str]) -> int:
     doc["_out_path"] = str(out_path)
     _attach_regressions(doc)
     doc.pop("_out_path", None)
-    out_path.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+    try:
+        _write_scoreboard_doc(out_path, doc, context=f"scoreboard {out_path}")
+    except ScoreboardSchemaError as exc:
+        _print_schema_error(exc)
+        return 3
     if partial_path.exists():
         partial_path.unlink()
     print(f"\nscoreboard JSON -> {out_path}", file=sys.stderr)
@@ -4655,9 +4705,7 @@ def _checkpoint(
         pypy_version=pypy_version,
         codon_version=codon_version,
     )
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
-    tmp.replace(path)
+    _write_scoreboard_doc_atomic(path, doc, context=f"checkpoint {path}")
 
 
 def _resolve_pypy(arg: str) -> str | None:
