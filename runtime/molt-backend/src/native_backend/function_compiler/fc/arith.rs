@@ -30,40 +30,16 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
     representation_plan: &ScalarRepresentationPlan,
     nbc: &crate::NanBoxConsts,
 ) -> OpFlow {
-    let name_is_integer_scalar = |name: &str| {
-        int_like_vars.contains(name)
-            || bool_like_vars.contains(name)
-            || int_primary_vars.contains(name)
-            || bool_primary_vars.contains(name)
-    };
-    let op_args_are_integer_scalar = |op: &OpIR| {
-        op.args.as_ref().is_some_and(|args| {
-            !args.is_empty() && args.iter().all(|arg| name_is_integer_scalar(arg))
-        })
-    };
     let op_prefers_int_lane = |op: &OpIR| {
-        scalar_fast_paths_enabled
-            && (representation_plan.op_scalar_lane(op) == Some(ScalarKind::Int)
-                || (matches!(
-                    op.kind.as_str(),
-                    "add"
-                        | "inplace_add"
-                        | "sub"
-                        | "inplace_sub"
-                        | "mul"
-                        | "inplace_mul"
-                        | "floordiv"
-                        | "inplace_floordiv"
-                        | "mod"
-                        | "mod_"
-                        | "inplace_mod"
-                        | "lt"
-                        | "le"
-                        | "gt"
-                        | "ge"
-                        | "eq"
-                        | "ne"
-                ) && op_args_are_integer_scalar(op)))
+        super::op_prefers_int_lane(
+            scalar_fast_paths_enabled,
+            representation_plan,
+            op,
+            int_like_vars,
+            bool_like_vars,
+            int_primary_vars,
+            bool_primary_vars,
+        )
     };
     let op_prefers_integer_runtime_lane = |op: &OpIR| {
         scalar_fast_paths_enabled && representation_plan.op_prefers_integer_runtime_lane(op)
