@@ -4,10 +4,32 @@ from __future__ import annotations
 
 import math
 
-from ..tensor import Tensor
 from .codebooks import build_codebook
 from .contracts import TurboQuantConfig, TurboQuantMSEVector, TurboQuantProdVector
 from .rotation import HadamardRotationPlan
+
+
+def _current_tensor_type():
+    from ..tensor import Tensor
+
+    return Tensor
+
+
+def _is_tensor_protocol(value) -> bool:
+    return callable(getattr(value, "to_list", None)) and isinstance(
+        getattr(value, "shape", None), tuple
+    )
+
+
+def _tensor_data_or_self(values):
+    tensor_type = _current_tensor_type()
+    if isinstance(values, tensor_type) or _is_tensor_protocol(values):
+        return values.to_list()
+    return values
+
+
+def _new_tensor(data, *, shape):
+    return _current_tensor_type()(data, shape=shape)
 
 
 class TurboQuantPreparedQuery:
@@ -20,10 +42,7 @@ class TurboQuantPreparedQuery:
 
 
 def _coerce_vector(values, *, dim: int) -> list[float]:
-    if isinstance(values, Tensor):
-        data = values.to_list()
-    else:
-        data = values
+    data = _tensor_data_or_self(values)
     if not isinstance(data, list):
         data = list(data)
     if len(data) != dim:
@@ -37,10 +56,7 @@ def _coerce_vector(values, *, dim: int) -> list[float]:
 
 
 def _coerce_matrix(values, *, dim: int) -> list[list[float]]:
-    if isinstance(values, Tensor):
-        data = values.to_list()
-    else:
-        data = values
+    data = _tensor_data_or_self(values)
     rows = []
     for row in data:
         rows.append(_coerce_vector(row, dim=dim))
@@ -145,7 +161,7 @@ class TurboQuantCodec:
             residual_scale=residual_scale,
         )
 
-    def dequantize(self, encoded) -> Tensor:
+    def dequantize(self, encoded):
         unit = self._decode_unit_direction(encoded.indices)
         if isinstance(encoded, TurboQuantProdVector):
             scale = math.sqrt(math.pi / 2.0) * (encoded.residual_norm / float(self.dim))
@@ -153,7 +169,7 @@ class TurboQuantCodec:
                 [scale * float(sign) for sign in encoded.residual_signs]
             )
             unit = [unit[index] + residual[index] for index in range(self.dim)]
-        return Tensor([encoded.norm * value for value in unit], shape=(self.dim,))
+        return _new_tensor([encoded.norm * value for value in unit], shape=(self.dim,))
 
     def prepare_query(self, query) -> TurboQuantPreparedQuery:
         query_values = _coerce_vector(query, dim=self.dim)
@@ -223,13 +239,13 @@ class TurboQuantKVCache:
         value_vectors = [codec.quantize_prod(row) for row in value_rows]
         return cls(codec, key_vectors, value_vectors)
 
-    def attention_logits(self, query) -> Tensor:
+    def attention_logits(self, query):
         prepared = self.codec.prepare_query(query)
         logits = [
             self.codec.estimate_inner_product_prepared(prepared, encoded)
             for encoded in self.key_vectors
         ]
-        return Tensor(logits, shape=(len(logits),))
+        return _new_tensor(logits, shape=(len(logits),))
 
     def _decoded_values(self) -> list[list[float]]:
         if self._decoded_value_rows is None:
@@ -239,7 +255,7 @@ class TurboQuantKVCache:
             ]
         return self._decoded_value_rows
 
-    def attention_output(self, query) -> Tensor:
+    def attention_output(self, query):
         logits = self.attention_logits(query)
         weights = logits.softmax().to_list()
         decoded_values = self._decoded_values()
@@ -249,4 +265,4 @@ class TurboQuantKVCache:
             for row_index, row in enumerate(decoded_values):
                 acc += weights[row_index] * row[dim_index]
             out.append(acc)
-        return Tensor(out, shape=(self.codec.dim,))
+        return _new_tensor(out, shape=(self.codec.dim,))
