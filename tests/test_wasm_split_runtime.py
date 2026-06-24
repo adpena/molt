@@ -27,6 +27,7 @@ import pytest
 import urllib.error
 import urllib.request
 import molt.cli as cli
+from molt.cli import wasm as WASM
 from tools import harness_memory_guard
 import tools.bench_wasm as bench_wasm
 from tests.wasm_linked_runner import _read_timeout_seconds, _run_wasm_test_process
@@ -779,7 +780,7 @@ def test_split_runtime_app_exports_host_init(
     )
 
     app_wasm = out_dir / "app.wasm"
-    exports = cli._collect_wasm_export_names(app_wasm)
+    exports = WASM._collect_wasm_export_names(app_wasm)
     assert "molt_host_init" in exports
     assert "molt_main" in exports
 

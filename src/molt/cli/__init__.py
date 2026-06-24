@@ -549,6 +549,7 @@ from molt.cli.target_python import (
 from molt.cli.wasm import (
     _build_wasm_sections,
     _collect_wasm_active_table_function_slots,
+    _collect_wasm_export_names,
     _effective_split_worker_table_base,
     _export_wasm_table_refs,
     _infer_wasm_table_base_from_export_names,
@@ -24183,44 +24184,6 @@ def _collect_wasm_module_import_names(path: Path, module_name: str) -> set[str]:
                 else:
                     raise ValueError(f"Unknown import kind {kind}")
                 if module == module_name:
-                    result.add(name)
-            break
-    except ValueError:
-        return set()
-    return result
-
-
-def _collect_wasm_export_names(path: Path) -> set[str]:
-    try:
-        data = path.read_bytes()
-    except OSError:
-        return set()
-    if len(data) < 8 or data[:4] != b"\0asm" or data[4:8] != b"\x01\x00\x00\x00":
-        return set()
-    offset = 8
-    result: set[str] = set()
-    try:
-        while offset < len(data):
-            section_id = data[offset]
-            offset += 1
-            size, offset = _read_wasm_varuint(data, offset)
-            end = offset + size
-            if end > len(data):
-                raise ValueError("Unexpected EOF while reading section")
-            payload = data[offset:end]
-            offset = end
-            if section_id != 7:
-                continue
-            cursor = 0
-            count, cursor = _read_wasm_varuint(payload, cursor)
-            for _ in range(count):
-                name, cursor = _read_wasm_string(payload, cursor)
-                if cursor >= len(payload):
-                    raise ValueError("Unexpected EOF while reading export")
-                kind = payload[cursor]
-                cursor += 1
-                _, cursor = _read_wasm_varuint(payload, cursor)
-                if kind == 0:
                     result.add(name)
             break
     except ValueError:
