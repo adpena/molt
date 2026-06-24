@@ -371,9 +371,9 @@ pub fn run(func: &mut TirFunction) -> PassStats {
 
 #[cfg(test)]
 mod tests {
-    use super::super::effects::EffectProof;
     use super::*;
     use crate::tir::blocks::{BlockId, Terminator, TirBlock};
+    use crate::tir::effect_proof::EffectProof;
     use crate::tir::function::TirFunction;
     use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
     use crate::tir::types::TirType;

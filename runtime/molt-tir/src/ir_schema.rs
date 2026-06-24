@@ -1,5 +1,5 @@
 use crate::OpIR;
-use crate::tir::passes::effects::{EffectProof, simple_ir_effect_proof};
+use crate::tir::effect_proof::{EffectProof, simple_ir_effect_proof};
 
 const SCALAR_FAST_INT_KINDS: &[&str] = &[
     "abs",
