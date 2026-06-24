@@ -244,7 +244,8 @@ def test_main_apply_accepts_sentinel_kill_report(monkeypatch) -> None:
     rc = module.main(["--apply", "--kill-processes"])
 
     assert rc == 0
-    assert calls[0][1].endswith("tools/process_sentinel.py")
+    sentinel_path = Path(calls[0][1])
+    assert sentinel_path.parts[-2:] == ("tools", "process_sentinel.py")
     assert calls[1] == module.build_git_clean_command(
         apply=True,
         pathspecs=module.default_pathspecs(),
@@ -268,7 +269,8 @@ def test_run_process_sentinel_uses_json_when_capturing(monkeypatch, tmp_path) ->
     module.run_process_sentinel(tmp_path, capture_output=True)
 
     assert calls
-    assert calls[0][1].endswith("tools/process_sentinel.py")
+    sentinel_path = Path(calls[0][1])
+    assert sentinel_path.parts[-2:] == ("tools", "process_sentinel.py")
     assert "--json" in calls[0]
 
 
