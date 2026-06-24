@@ -34,7 +34,11 @@ Deforestation fusion eligibility has also moved from a private pass-local
 purity table into the generated op-kind registry through
 `fusion_barrier_opcodes`; raw-i64 zero-divisor guard eligibility now uses the
 same registry pattern through `i64_zero_divisor_guard_opcodes`, shared by LIR
-lowering and exception-check elimination.
+lowering and exception-check elimination. GVN numbering policy now follows the
+same generated route through `gvn_always_numberable_opcodes`,
+`gvn_type_gated_numberable_opcodes`, and `gvn_value_keyed_constant_opcodes`,
+which emit `opcode_gvn_numbering_role_table` instead of pass-local
+always/type-gated/constant opcode lists.
 
 1. Close the ownership-correctness front before claiming broader compatibility:
    native DropInsertion activation, finalizer ordering, standalone `__del__`
