@@ -12,79 +12,8 @@
 //! The concrete evaluation logic lives in `sccp.rs`, which uses the effects
 //! classification from this module to gate constant folding of calls.
 
-use crate::tir::ops::{AttrValue, OpCode, TirOp};
-
-pub(crate) const EFFECT_PROOF_ATTR: &str = "effect_proof";
-pub(crate) const STATIC_MODULE_CLASS_BINDING_EFFECT_PROOF: &str = "static_module_class_binding";
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum EffectProof {
-    StaticModuleClassBinding,
-}
-
-impl EffectProof {
-    #[inline]
-    pub(crate) fn from_name(name: &str) -> Option<Self> {
-        match name {
-            STATIC_MODULE_CLASS_BINDING_EFFECT_PROOF => Some(Self::StaticModuleClassBinding),
-            _ => None,
-        }
-    }
-
-    #[inline]
-    pub(crate) fn name(self) -> &'static str {
-        match self {
-            Self::StaticModuleClassBinding => STATIC_MODULE_CLASS_BINDING_EFFECT_PROOF,
-        }
-    }
-
-    #[inline]
-    pub(crate) fn is_valid_for_simple_ir_kind(self, kind: &str) -> bool {
-        match self {
-            Self::StaticModuleClassBinding => {
-                matches!(kind, "module_cache_get" | "module_get_attr")
-            }
-        }
-    }
-
-    #[inline]
-    fn is_valid_for_tir_opcode(self, opcode: OpCode) -> bool {
-        match self {
-            Self::StaticModuleClassBinding => {
-                matches!(opcode, OpCode::ModuleCacheGet | OpCode::ModuleGetAttr)
-            }
-        }
-    }
-}
-
-#[inline]
-pub(crate) fn simple_ir_effect_proof(kind: &str, proof: Option<&str>) -> Option<EffectProof> {
-    let proof = EffectProof::from_name(proof?)?;
-    proof.is_valid_for_simple_ir_kind(kind).then_some(proof)
-}
-
-#[inline]
-pub(crate) fn simple_ir_has_static_module_class_binding_effect_proof(
-    kind: &str,
-    proof: Option<&str>,
-) -> bool {
-    simple_ir_effect_proof(kind, proof) == Some(EffectProof::StaticModuleClassBinding)
-}
-
-#[inline]
-pub(crate) fn tir_effect_proof(op: &TirOp) -> Option<EffectProof> {
-    let proof_name = match op.attrs.get(EFFECT_PROOF_ATTR) {
-        Some(AttrValue::Str(proof_name)) => proof_name,
-        _ => return None,
-    };
-    let proof = EffectProof::from_name(proof_name)?;
-    proof.is_valid_for_tir_opcode(op.opcode).then_some(proof)
-}
-
-#[inline]
-pub(crate) fn tir_has_static_module_class_binding_effect_proof(op: &TirOp) -> bool {
-    tir_effect_proof(op) == Some(EffectProof::StaticModuleClassBinding)
-}
+use crate::tir::effect_proof::tir_has_static_module_class_binding_effect_proof;
+use crate::tir::ops::{OpCode, TirOp};
 
 /// Whether `opcode` may raise — DCE must preserve it even when its result is
 /// dead. EXHAUSTIVE over the `OpCode` enum: the classification lives in the
