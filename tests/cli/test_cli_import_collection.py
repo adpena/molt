@@ -31,6 +31,7 @@ ROOT = Path(__file__).resolve().parents[2]
 ARTIFACT_STATE = importlib.import_module("molt.cli.artifact_state")
 LOCKFILES = importlib.import_module("molt.cli.lockfiles")
 PROJECT_ROOTS = importlib.import_module("molt.cli.project_roots")
+RUNTIME_FINGERPRINTS = importlib.import_module("molt.cli.runtime_fingerprints")
 
 
 def _rewrite_preserving_mtime(
@@ -5529,12 +5530,12 @@ def test_build_lock_directory_is_session_isolated_when_target_root_is_default(
 
 
 def test_runtime_source_paths_are_cached(tmp_path: Path) -> None:
-    cli._runtime_source_paths_cached.cache_clear()
+    RUNTIME_FINGERPRINTS._runtime_source_paths_cached.cache_clear()
 
-    first = cli._runtime_source_paths(tmp_path)
-    second = cli._runtime_source_paths(tmp_path)
+    first = RUNTIME_FINGERPRINTS._runtime_source_paths(tmp_path)
+    second = RUNTIME_FINGERPRINTS._runtime_source_paths(tmp_path)
 
-    info = cli._runtime_source_paths_cached.cache_info()
+    info = RUNTIME_FINGERPRINTS._runtime_source_paths_cached.cache_info()
     assert first == second
     assert info.hits >= 1
     assert info.currsize >= 1
@@ -11985,7 +11986,9 @@ def test_ensure_runtime_wasm_materializes_prebuilt_cargo_artifact_without_rebuil
     cargo_builds: list[list[str]] = []
 
     monkeypatch.setenv("CARGO_TARGET_DIR", str(target_root))
-    monkeypatch.setattr(cli, "_runtime_source_paths", lambda _root: [runtime_source])
+    monkeypatch.setattr(
+        RUNTIME_FINGERPRINTS, "_runtime_source_paths", lambda _root: [runtime_source]
+    )
     monkeypatch.setattr(
         cli, "_runtime_fingerprint", lambda *args, **kwargs: fingerprint
     )
@@ -12067,7 +12070,9 @@ def test_ensure_runtime_wasm_links_prebuilt_staticlib_without_rebuild(
     linked_from: list[Path] = []
 
     monkeypatch.setenv("CARGO_TARGET_DIR", str(target_root))
-    monkeypatch.setattr(cli, "_runtime_source_paths", lambda _root: [runtime_source])
+    monkeypatch.setattr(
+        RUNTIME_FINGERPRINTS, "_runtime_source_paths", lambda _root: [runtime_source]
+    )
     monkeypatch.setattr(
         cli, "_runtime_fingerprint", lambda *args, **kwargs: fingerprint
     )
