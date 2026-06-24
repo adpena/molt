@@ -44,10 +44,8 @@ use windows_sys::Win32::Storage::FileSystem::{LOCKFILE_EXCLUSIVE_LOCK, LockFileE
 #[cfg(all(feature = "native-backend", windows))]
 use windows_sys::Win32::System::IO::OVERLAPPED;
 
-mod json_boundary;
-
 #[cfg(any(unix, test))]
-use crate::json_boundary::{
+use molt_backend::json_boundary::{
     expect_object, optional_bool, optional_string, optional_u32, required_field, required_string,
 };
 
@@ -3162,17 +3160,18 @@ fn main() -> io::Result<()> {
 
     let args: Vec<String> = env::args().collect();
     if args.iter().any(|arg| arg == "--features") {
-        let mut features = Vec::new();
-        #[cfg(feature = "native-backend")]
-        features.push("native-backend");
-        #[cfg(feature = "luau-backend")]
-        features.push("luau-backend");
-        #[cfg(feature = "wasm-backend")]
-        features.push("wasm-backend");
-        #[cfg(feature = "rust-backend")]
-        features.push("rust-backend");
-        #[cfg(feature = "cbor")]
-        features.push("cbor");
+        let features: &[&str] = &[
+            #[cfg(feature = "native-backend")]
+            "native-backend",
+            #[cfg(feature = "luau-backend")]
+            "luau-backend",
+            #[cfg(feature = "wasm-backend")]
+            "wasm-backend",
+            #[cfg(feature = "rust-backend")]
+            "rust-backend",
+            #[cfg(feature = "cbor")]
+            "cbor",
+        ];
         if features.is_empty() {
             println!("molt-backend: no features enabled");
         } else {

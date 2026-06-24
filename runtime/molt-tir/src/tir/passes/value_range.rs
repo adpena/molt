@@ -534,8 +534,8 @@ impl ValueRangeResult {
     /// standing up a full TIR function + the analysis pipeline. The
     /// `global_range` field is private, so this is the sanctioned cross-module
     /// test seam.
-    #[cfg(test)]
-    pub(crate) fn set_global_range_for_test(&mut self, v: ValueId, lo: i64, hi: i64) {
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn set_global_range_for_test(&mut self, v: ValueId, lo: i64, hi: i64) {
         self.global_range.insert(v, IntRange::new(lo, hi));
     }
 }

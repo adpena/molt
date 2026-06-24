@@ -86,7 +86,7 @@ This requires block-mutation API support: inserting an op at the end of a block 
 
 ### 3.1 New Analysis: `TerminatorOnlyPredMap`
 
-**File:** `/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/analysis/mod.rs`
+**File:** `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/analysis/mod.rs`
 
 Add to `AnalysisId` enum:
 ```rust
@@ -118,7 +118,7 @@ Update `assert_analyses_fresh` in `pass_manager.rs` macro invocation to include 
 
 ### 3.2 Gate Fix: `loop_unroll.rs`
 
-**File:** `/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/passes/loop_unroll.rs`
+**File:** `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/passes/loop_unroll.rs`
 
 Line 250: Replace `if func.has_exception_handling {` with `if func.has_exception_handlers() {`
 
@@ -128,7 +128,7 @@ Add `CheckException` safety note to the soundness documentation at lines 1-52, e
 
 ### 3.3 Gate + PredMap Fix: `block_versioning.rs`
 
-**File:** `/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/passes/block_versioning.rs`
+**File:** `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/passes/block_versioning.rs`
 
 Add import: `use crate::tir::analysis::TerminatorOnlyPredMap;`
 
@@ -142,7 +142,7 @@ This one substitution fixes both uses of `pred_map` in the pass (`find_loop_head
 
 ### 3.4 Gate + PredMap Fix: `type_guard_hoist.rs`
 
-**File:** `/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/passes/type_guard_hoist.rs`
+**File:** `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/passes/type_guard_hoist.rs`
 
 Add import: `use crate::tir::analysis::TerminatorOnlyPredMap;`
 
@@ -154,7 +154,7 @@ Line 100: Replace `let pred_map = am.get::<PredMap>(func).clone();` with `let pr
 
 ### 3.5 range_devirt ForIter Gap
 
-**File:** `/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/passes/range_devirt.rs`
+**File:** `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/passes/range_devirt.rs`
 
 In `find_candidates`, the match at lines 153-158:
 
@@ -173,7 +173,7 @@ Current pipeline order (`pass_manager.rs:290-293`): `range_devirt` runs before `
 
 ### 3.6 IV Strength Reduction Pass
 
-**File:** `/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/passes/iv_strength_reduction.rs` (new)
+**File:** `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/passes/iv_strength_reduction.rs` (new)
 
 ```rust
 pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats
@@ -478,11 +478,11 @@ Each phase is an independent change. Rollback by reverting the specific pass fil
 
 Tasks (in order, all in one commit):
 
-- [ ] `/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/analysis/mod.rs`: Add `TerminatorOnlyPredMap` variant to `AnalysisId`, add to `AnalysisId::ALL`, implement `Analysis` for `TerminatorOnlyPredMap`, update `cfg_sensitive`/`ops_sensitive` match arms
-- [ ] `/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/pass_manager.rs`: Add `TerminatorOnlyPredMap` to the `check!` macro in `assert_analyses_fresh` import list + macro body
-- [ ] `/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/passes/loop_unroll.rs` line 250: `has_exception_handling` → `has_exception_handlers()`; update doc comment at line 14
-- [ ] `/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/passes/block_versioning.rs` line 378: gate change; line 382: switch to `TerminatorOnlyPredMap`; delete stale comment lines 373-377; add import
-- [ ] `/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/passes/type_guard_hoist.rs` line 90: gate change; line 100: switch to `TerminatorOnlyPredMap`; delete stale comment lines 94-98; add import
+- [ ] `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/analysis/mod.rs`: Add `TerminatorOnlyPredMap` variant to `AnalysisId`, add to `AnalysisId::ALL`, implement `Analysis` for `TerminatorOnlyPredMap`, update `cfg_sensitive`/`ops_sensitive` match arms
+- [ ] `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/pass_manager.rs`: Add `TerminatorOnlyPredMap` to the `check!` macro in `assert_analyses_fresh` import list + macro body
+- [ ] `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/passes/loop_unroll.rs` line 250: `has_exception_handling` → `has_exception_handlers()`; update doc comment at line 14
+- [ ] `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/passes/block_versioning.rs` line 378: gate change; line 382: switch to `TerminatorOnlyPredMap`; delete stale comment lines 373-377; add import
+- [ ] `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/passes/type_guard_hoist.rs` line 90: gate change; line 100: switch to `TerminatorOnlyPredMap`; delete stale comment lines 94-98; add import
 - [ ] Add unit tests for all three passes as described in Section 6
 - [ ] `cargo test -p molt-backend` — all tests green, zero new warnings
 - [ ] Run differential shapes 1, 2, 3, 4, 7 on native backend
@@ -495,7 +495,7 @@ Tasks (in order, all in one commit):
 Tasks:
 
 - [ ] Investigate via `TIR_OPT_STATS=1` + `MOLT_DUMP_IR=1` on `for i in range(4): pass` whether `iter_devirt` fires first and produces `IterNextUnboxed`, or whether the frontend already emits `IterNextUnboxed` directly
-- [ ] If iter_devirt produces the shape needed by range_devirt: swap pipeline order in `/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/pass_manager.rs:290-293` to `iter_devirt` before `range_devirt`
+- [ ] If iter_devirt produces the shape needed by range_devirt: swap pipeline order in `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/pass_manager.rs:290-293` to `iter_devirt` before `range_devirt`
 - [ ] If frontend already emits `IterNextUnboxed`: diagnose why `range_devirt` does not find the pattern; the issue may be that `GetIter` is not emitted (frontend uses a different shape) — add the missing match arm or alternative detection path
 - [ ] Run differential shape 8 to confirm `range_devirt: 1 values_changed`
 - [ ] Run shape 1 to confirm loop_unroll fires end-to-end
@@ -507,8 +507,8 @@ Tasks:
 
 Tasks:
 
-- [ ] Create `/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/passes/iv_strength_reduction.rs` with `pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats`
-- [ ] Add `pub mod iv_strength_reduction;` to `/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/passes/mod.rs`
+- [ ] Create `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/passes/iv_strength_reduction.rs` with `pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats`
+- [ ] Add `pub mod iv_strength_reduction;` to `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/passes/mod.rs`
 - [ ] Register in `build_default_pipeline` after `loop_unroll`, before `canonicalize`, as `Mutates::Cfg`
 - [ ] Implement the transform as described in Section 3.6
 - [ ] Unit tests: `test_iv_sr_constant_stride`, `test_iv_sr_loop_invariant_stride`, `test_iv_sr_bigint_skip` (MaybeBigInt IV → no transform)

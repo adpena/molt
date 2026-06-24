@@ -48,7 +48,7 @@ use crate::tir::function::TirFunction;
 use crate::tir::op_kinds_generated::{
     opcode_requires_i64_shift_count_guard_table, opcode_requires_i64_zero_divisor_guard_table,
 };
-use crate::tir::ops::{OpCode, TirOp};
+use crate::tir::ops::TirOp;
 use crate::tir::values::ValueId;
 
 /// Returns `true` if the op is pure and safe to hoist out of a loop.

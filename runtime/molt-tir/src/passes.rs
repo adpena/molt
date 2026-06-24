@@ -2657,16 +2657,13 @@ fn is_protected_runtime_entrypoint(name: &str) -> bool {
 /// exception. This is intentionally stricter than "has no writes": expression
 /// statements still have to execute user dispatch and raise the same exceptions
 /// as CPython even when their produced value is unused.
-pub(crate) struct SimpleIrScalarPurityFacts<'a> {
+pub struct SimpleIrScalarPurityFacts<'a> {
     plan: Option<&'a ScalarRepresentationPlan>,
     literal_kinds: BTreeMap<String, ScalarKind>,
 }
 
 impl<'a> SimpleIrScalarPurityFacts<'a> {
-    pub(crate) fn for_function(
-        func: &FunctionIR,
-        plan: Option<&'a ScalarRepresentationPlan>,
-    ) -> Self {
+    pub fn for_function(func: &FunctionIR, plan: Option<&'a ScalarRepresentationPlan>) -> Self {
         let literal_kinds = func
             .ops
             .iter()
@@ -2709,7 +2706,7 @@ fn simple_ir_literal_scalar_kind(op: &OpIR) -> Option<ScalarKind> {
     }
 }
 
-pub(crate) fn simple_ir_op_is_provably_nonthrowing_with_facts(
+pub fn simple_ir_op_is_provably_nonthrowing_with_facts(
     facts: Option<&SimpleIrScalarPurityFacts<'_>>,
     op: &OpIR,
 ) -> bool {

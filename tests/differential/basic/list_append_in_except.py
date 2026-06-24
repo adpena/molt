@@ -12,7 +12,7 @@ exception edge) as unreachable and prunes it. Adding any statement before the
 raise (so an auto-CHECK_EXCEPTION creates a live edge) makes it pass. Same root
 cause as `super_no_args_errors` (a bare `super()` raising inside a try). Fix:
 the backend must keep TRY_START exception-target blocks reachable
-(runtime/molt-backend/src/tir/lower_to_simple.rs / lower_from_simple.rs CFG
+(runtime/molt-tir/src/tir/lower_to_simple.rs / lower_from_simple.rs CFG
 construction), outside this change's frontend lane. See the session baton.
 
 Output must be byte-identical to CPython 3.14.

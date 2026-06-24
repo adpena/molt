@@ -37,7 +37,7 @@ pub(crate) fn process_peak_rss_bytes() -> Option<u64> {
     None
 }
 
-pub(crate) fn process_peak_rss_mib_label() -> String {
+pub fn process_peak_rss_mib_label() -> String {
     process_peak_rss_bytes()
         .map(|bytes| format!("{:.1}", bytes as f64 / 1_048_576.0))
         .unwrap_or_else(|| "unknown".to_string())

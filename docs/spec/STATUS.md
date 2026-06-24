@@ -159,11 +159,17 @@ the implementation. For forward-looking priorities, use
   now routes through the shared exception matcher used by C-API error matching
   and attribute-error clearing.
 - Deforestation fusion eligibility is generated from
-  `runtime/molt-backend/src/tir/op_kinds.toml` as the exhaustive
+  `runtime/molt-tir/src/tir/op_kinds.toml` as the exhaustive
   `fusion_barrier_opcodes` classifier. The classifier is intentionally distinct
   from side-effecting/may-throw facts: fusion preserves per-element evaluation
   order, so allocation, attribute reads, indexing, and arithmetic that may throw
   are not barriers unless they alter cross-iteration/control state or suspend.
+- Deferred refcount heap exposure is generated from
+  `refcount_heap_exposure_opcodes` as the exhaustive
+  `opcode_is_refcount_heap_exposure_table` classifier. The classifier is
+  intentionally distinct from alias heap barriers: it answers whether operands
+  become heap/external roots for deferred RC, not whether an op creates a generic
+  heap memory definition.
 - Raw-i64 division-family exception custody is also registry-owned:
   `i64_zero_divisor_guard_opcodes` generates the exhaustive
   `opcode_requires_i64_zero_divisor_guard_table` classifier consumed by LIR
@@ -314,7 +320,7 @@ the implementation. For forward-looking priorities, use
   `MOLT_WASM_EXTRA_REQUIRED_IMPORTS`; that knob no longer forces unused imports
   to survive non-reloc Auto stripping.
 - The TIR RC drop-insertion substrate is implemented as a terminal drop phase
-  (`runtime/molt-backend/src/tir/drop_phase.rs`) backed by
+  (`runtime/molt-tir/src/tir/drop_phase.rs`) backed by
   representation-filtered liveness (`tir/passes/liveness.rs`) and
   `tir/passes/drop_insertion.rs`. It is active for LLVM, WASM, Luau, and native
   Cranelift for the proven shared-drop and ExceptionRegion slices through the

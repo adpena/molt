@@ -1,6 +1,6 @@
 """Sync + coverage guards for the op-kind single-source-of-truth registry.
 
-The registry (``runtime/molt-backend/src/tir/op_kinds.toml``) is the ONE table
+The registry (``runtime/molt-tir/src/tir/op_kinds.toml``) is the ONE table
 the cross-component op-"kind"-string vocabulary lives in; ``tools/gen_op_kinds.py``
 renders it into the backend Rust tables and the frontend Python constants. These
 tests turn any drift into a test failure (the ``tests/test_gen_intrinsics.py``
@@ -23,6 +23,7 @@ from __future__ import annotations
 import ast
 import importlib.util
 import json
+import re
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -31,8 +32,19 @@ from types import SimpleNamespace
 ROOT = Path(__file__).resolve().parents[1]
 GEN = ROOT / "tools" / "gen_op_kinds.py"
 AUDIT = ROOT / "tools" / "audit_op_kinds.py"
-OUT_RS = ROOT / "runtime/molt-backend/src/tir/op_kinds_generated.rs"
+OUT_RS = ROOT / "runtime/molt-tir/src/tir/op_kinds_generated.rs"
 OUT_PY = ROOT / "src/molt/frontend/lowering/op_kinds_generated.py"
+
+
+def _rust_pub_decl(src: str, kind: str, name: str) -> bool:
+    return (
+        re.search(rf"\bpub(?:\(crate\))?\s+{kind}\s+{re.escape(name)}\b", src)
+        is not None
+    )
+
+
+def _rust_pub_fn(src: str, name: str) -> bool:
+    return re.search(rf"\bpub(?:\(crate\))?\s+fn\s+{re.escape(name)}\s*\(", src) is not None
 
 
 def _load(path: Path, name: str):
@@ -368,7 +380,7 @@ def test_effects_rs_delegates_to_generated_tables() -> None:
     data = gen.load_table()
     rendered = gen.render_rs(data)
     effects = (
-        ROOT / "runtime/molt-backend/src/tir/passes/effects.rs"
+        ROOT / "runtime/molt-tir/src/tir/passes/effects.rs"
     ).read_text(encoding="utf-8")
 
     # effects.rs delegates rather than hand-lists.
@@ -420,7 +432,7 @@ def test_alias_barrier_predicates_delegate_to_generated_tables() -> None:
     data = gen.load_table()
     rendered = gen.render_rs(data)
     alias = (
-        ROOT / "runtime/molt-backend/src/tir/passes/alias_analysis.rs"
+        ROOT / "runtime/molt-tir/src/tir/passes/alias_analysis.rs"
     ).read_text(encoding="utf-8")
 
     expected_rc = {
@@ -512,7 +524,7 @@ def test_deforestation_fusion_barriers_delegate_to_generated_table() -> None:
     data = gen.load_table()
     rendered = gen.render_rs(data)
     deforestation = (
-        ROOT / "runtime/molt-backend/src/tir/passes/deforestation.rs"
+        ROOT / "runtime/molt-tir/src/tir/passes/deforestation.rs"
     ).read_text(encoding="utf-8")
 
     expected = {
@@ -568,19 +580,80 @@ def test_deforestation_fusion_barriers_delegate_to_generated_table() -> None:
     assert "OpCode::" not in body
 
 
+def test_refcount_heap_exposure_delegates_to_generated_table() -> None:
+    """Deferred-RC heap exposure has one opcode authority."""
+    gen = _gen()
+    data = gen.load_table()
+    rendered = gen.render_rs(data)
+    refcount = (ROOT / "runtime/molt-tir/src/tir/passes/refcount_elim.rs").read_text(
+        encoding="utf-8"
+    )
+
+    expected = {
+        "AllocTask",
+        "BuildDict",
+        "BuildList",
+        "BuildSet",
+        "BuildSlice",
+        "BuildTuple",
+        "Call",
+        "CallBuiltin",
+        "CallMethod",
+        "ChanRecvYield",
+        "ChanSendYield",
+        "ClosureStore",
+        "Import",
+        "ImportFrom",
+        "Raise",
+        "StateYield",
+        "StoreAttr",
+        "StoreIndex",
+        "Yield",
+        "YieldFrom",
+    }
+    assert set(data["refcount_heap_exposure_opcodes"]) == expected
+
+    table_block = rendered.split("fn opcode_is_refcount_heap_exposure_table")[1].split(
+        "fn opcode_is_fusion_barrier_table"
+    )[0]
+    for opcode in expected:
+        assert f"OpCode::{opcode} => true," in table_block
+    for opcode in {"Free", "DelAttr", "ModuleCacheSet", "Add"}:
+        assert f"OpCode::{opcode} => false," in table_block
+
+    table_name = "opcode_is_refcount_heap_exposure_table"
+    assert table_name in refcount
+    start = refcount.index("fn is_heap_exposing(")
+    brace = refcount.index("{", start)
+    depth = 0
+    end = brace
+    for i in range(brace, len(refcount)):
+        if refcount[i] == "{":
+            depth += 1
+        elif refcount[i] == "}":
+            depth -= 1
+            if depth == 0:
+                end = i + 1
+                break
+    body = refcount[start:end]
+    assert table_name in body
+    assert "matches!" not in body
+    assert "OpCode::" not in body
+
+
 def test_i64_zero_divisor_guards_delegate_to_generated_table() -> None:
     """Raw-i64 zero-divisor proof requirements have one opcode authority."""
     gen = _gen()
     data = gen.load_table()
     rendered = gen.render_rs(data)
-    lower_to_lir = (ROOT / "runtime/molt-backend/src/tir/lower_to_lir.rs").read_text(
+    lower_to_lir = (ROOT / "runtime/molt-tir/src/tir/lower_to_lir.rs").read_text(
         encoding="utf-8"
     )
-    licm = (ROOT / "runtime/molt-backend/src/tir/passes/licm.rs").read_text(
+    licm = (ROOT / "runtime/molt-tir/src/tir/passes/licm.rs").read_text(
         encoding="utf-8"
     )
     check_exception = (
-        ROOT / "runtime/molt-backend/src/tir/passes/check_exception_elim.rs"
+        ROOT / "runtime/molt-tir/src/tir/passes/check_exception_elim.rs"
     ).read_text(encoding="utf-8")
 
     zero_divisor_guards = {"Div", "FloorDiv", "Mod"}
@@ -642,16 +715,16 @@ def test_exception_label_opcode_facts_delegate_to_generated_tables() -> None:
     data = gen.load_table()
     rendered = gen.render_rs(data)
     sources = {
-        "inliner": (ROOT / "runtime/molt-backend/src/tir/passes/inliner.rs").read_text(
+        "inliner": (ROOT / "runtime/molt-tir/src/tir/passes/inliner.rs").read_text(
             encoding="utf-8"
         ),
         "generator_fusion": (
-            ROOT / "runtime/molt-backend/src/tir/passes/generator_fusion.rs"
+            ROOT / "runtime/molt-tir/src/tir/passes/generator_fusion.rs"
         ).read_text(encoding="utf-8"),
         "lower_to_simple": (
-            ROOT / "runtime/molt-backend/src/tir/lower_to_simple.rs"
+            ROOT / "runtime/molt-tir/src/tir/lower_to_simple.rs"
         ).read_text(encoding="utf-8"),
-        "dominators": (ROOT / "runtime/molt-backend/src/tir/dominators.rs").read_text(
+        "dominators": (ROOT / "runtime/molt-tir/src/tir/dominators.rs").read_text(
             encoding="utf-8"
         ),
     }
@@ -692,7 +765,7 @@ def test_alias_slot_observation_delegates_to_generated_table() -> None:
     data = gen.load_table()
     rendered = gen.render_rs(data)
     alias = (
-        ROOT / "runtime/molt-backend/src/tir/passes/alias_analysis.rs"
+        ROOT / "runtime/molt-tir/src/tir/passes/alias_analysis.rs"
     ).read_text(encoding="utf-8")
 
     expected_direct = {
@@ -763,7 +836,7 @@ def test_alias_memory_region_delegates_to_generated_table() -> None:
     data = gen.load_table()
     rendered = gen.render_rs(data)
     alias = (
-        ROOT / "runtime/molt-backend/src/tir/passes/alias_analysis.rs"
+        ROOT / "runtime/molt-tir/src/tir/passes/alias_analysis.rs"
     ).read_text(encoding="utf-8")
 
     expected_scalar = {
@@ -972,10 +1045,10 @@ def test_canonicalize_delegates_opcode_facts_to_generated_tables() -> None:
     data = gen.load_table()
     rendered = gen.render_rs(data)
     canonicalize = (
-        ROOT / "runtime/molt-backend/src/tir/passes/canonicalize.rs"
+        ROOT / "runtime/molt-tir/src/tir/passes/canonicalize.rs"
     ).read_text(encoding="utf-8")
     check_exception = (
-        ROOT / "runtime/molt-backend/src/tir/passes/check_exception_elim.rs"
+        ROOT / "runtime/molt-tir/src/tir/passes/check_exception_elim.rs"
     ).read_text(encoding="utf-8")
 
     assert "fn is_commutative" not in canonicalize
@@ -1146,7 +1219,7 @@ def test_opcode_effects_exhaustive_over_enum() -> None:
     table_names = [row["name"] for row in data["opcode"]]
     assert len(table_names) == len(set(table_names)), "duplicate opcode rows"
 
-    src = (ROOT / "runtime/molt-backend/src/tir/ops.rs").read_text(
+    src = (ROOT / "runtime/molt-tir/src/tir/ops.rs").read_text(
         encoding="utf-8"
     )
     m = re.search(r"pub enum OpCode \{(.*?)\n\}", src, re.S)
@@ -1482,7 +1555,7 @@ def test_operand_ownership_table_renders_exhaustive_and_borrowed() -> None:
     # #58 ownership-boundary lattice — adding a fact is a table edit, not enum
     # surgery). Pin every variant so the schema can't silently regress.
     assert (
-        "pub(crate) enum OperandOwnership {\n"
+        "pub enum OperandOwnership {\n"
         "    Borrowed,\n"
         "    Consumed,\n"
         "    Transferred,\n"
@@ -1629,7 +1702,7 @@ def test_result_validity_table_renders_iter_next_unboxed_value_out() -> None:
     }
 
     assert (
-        "pub(crate) enum ResultValidity {\n"
+        "pub enum ResultValidity {\n"
         "    AlwaysValid,\n"
         "    ConditionalValidOnlyOnEdge,\n"
         "}"
@@ -1711,7 +1784,7 @@ def test_ownership_lattice_uses_generated_result_absorption_tables() -> None:
     """The production lattice must delegate container absorption to generated
     tables, not a hand-maintained `BuildList | BuildTuple | ...` match."""
     source = (
-        ROOT / "runtime/molt-backend/src/tir/passes/ownership_lattice_min.rs"
+        ROOT / "runtime/molt-tir/src/tir/passes/ownership_lattice_min.rs"
     ).read_text(encoding="utf-8")
     marker = "fn op_result_absorbs_operand_ownership("
     assert marker in source
@@ -1742,7 +1815,7 @@ def test_ownership_lattice_uses_generated_result_absorption_tables() -> None:
 def test_ownership_lattice_delegates_conditional_result_validity_to_generated_table() -> None:
     """Conditional result validity must stay sourced from generated op-kind facts."""
     ownership = (
-        ROOT / "runtime/molt-backend/src/tir/passes/ownership_lattice_min.rs"
+        ROOT / "runtime/molt-tir/src/tir/passes/ownership_lattice_min.rs"
     ).read_text(encoding="utf-8")
     assert "op_kinds_generated::" in ownership, (
         "ownership_lattice_min.rs must reference generated op-kind tables"
@@ -1776,10 +1849,10 @@ def test_drop_insertion_delegates_consume_to_generated_table() -> None:
     DropInsertion may ask for the consumed root, but it must not own generated
     table reads or a hand-maintained CallArgs-builder spelling list."""
     drop = (
-        ROOT / "runtime/molt-backend/src/tir/passes/drop_insertion.rs"
+        ROOT / "runtime/molt-tir/src/tir/passes/drop_insertion.rs"
     ).read_text(encoding="utf-8")
     ownership = (
-        ROOT / "runtime/molt-backend/src/tir/passes/ownership_lattice_min.rs"
+        ROOT / "runtime/molt-tir/src/tir/passes/ownership_lattice_min.rs"
     ).read_text(encoding="utf-8")
 
     assert "op_consumed_operand_root" in drop, (
@@ -1838,7 +1911,7 @@ def test_drop_insertion_delegates_conditional_result_validity_to_ownership_latti
     """drop_insertion.rs must consume conditional result-validity through
     OwnershipLattice root facts, not own a second generated-table/root scan."""
     drop = (
-        ROOT / "runtime/molt-backend/src/tir/passes/drop_insertion.rs"
+        ROOT / "runtime/molt-tir/src/tir/passes/drop_insertion.rs"
     ).read_text(encoding="utf-8")
     drop_prod = drop.split("mod tests", 1)[0]
     assert "fn op_result_is_conditionally_valid_only_on_edge(" not in drop
@@ -1862,7 +1935,7 @@ def test_drop_insertion_consumes_finalizer_sensitive_roots_from_ownership_lattic
     separately through `StatementReleasePlan`.
     """
     drop = (
-        ROOT / "runtime/molt-backend/src/tir/passes/drop_insertion.rs"
+        ROOT / "runtime/molt-tir/src/tir/passes/drop_insertion.rs"
     ).read_text(encoding="utf-8")
     assert ".finalizer_sensitive_values()" not in drop
     assert ".finalizer_sensitive_roots()" in drop
@@ -1883,10 +1956,10 @@ def test_drop_insertion_consumes_non_owning_copy_roots_from_ownership_lattice() 
     CFG remapping; droppability must read the OwnershipRootFacts root set.
     """
     drop = (
-        ROOT / "runtime/molt-backend/src/tir/passes/drop_insertion.rs"
+        ROOT / "runtime/molt-tir/src/tir/passes/drop_insertion.rs"
     ).read_text(encoding="utf-8")
     lattice = (
-        ROOT / "runtime/molt-backend/src/tir/passes/ownership_lattice_min.rs"
+        ROOT / "runtime/molt-tir/src/tir/passes/ownership_lattice_min.rs"
     ).read_text(encoding="utf-8")
     assert "non_owning_copy_results" not in drop
     assert "copy_kind_mints_fresh_owned_ref" not in drop
@@ -1896,9 +1969,9 @@ def test_drop_insertion_consumes_non_owning_copy_roots_from_ownership_lattice() 
     assert "drop_eligibility.is_droppable(" in drop
     assert "ownership_root_facts.is_drop_owned_root_candidate(" not in drop
     assert "fn non_owning_copy_result_roots(" in lattice
-    assert "pub(crate) fn is_non_owning_copy_result_root(" in lattice
-    assert "pub(crate) struct DropEligibility" in lattice
-    assert "pub(crate) fn is_droppable(" in lattice
+    assert _rust_pub_fn(lattice, "is_non_owning_copy_result_root")
+    assert _rust_pub_decl(lattice, "struct", "DropEligibility")
+    assert _rust_pub_fn(lattice, "is_droppable")
     assert "classify_copy_kind(kind)" in lattice
     assert "copy_kind_is_explicit_no_heap_move(kind)" in lattice
 
@@ -1911,19 +1984,19 @@ def test_drop_insertion_consumes_no_heap_copy_aliases_from_ownership_lattice() -
     copy-spelling authority.
     """
     drop = (
-        ROOT / "runtime/molt-backend/src/tir/passes/drop_insertion.rs"
+        ROOT / "runtime/molt-tir/src/tir/passes/drop_insertion.rs"
     ).read_text(encoding="utf-8")
     drop_prod = drop.split("mod tests", 1)[0]
     lattice = (
-        ROOT / "runtime/molt-backend/src/tir/passes/ownership_lattice_min.rs"
+        ROOT / "runtime/molt-tir/src/tir/passes/ownership_lattice_min.rs"
     ).read_text(encoding="utf-8")
 
     assert "copy_transparent_alias" in drop_prod
     assert "copy_kind_is_explicit_no_heap_move" not in drop_prod
     assert "fn original_kind(" not in drop_prod
 
-    assert "pub(crate) struct NoHeapCopyAlias" in lattice
-    assert "pub(crate) fn copy_transparent_alias(" in lattice
+    assert _rust_pub_decl(lattice, "struct", "NoHeapCopyAlias")
+    assert _rust_pub_fn(lattice, "copy_transparent_alias")
     assert "copy_kind_is_explicit_no_heap_move(original_kind(op))" in lattice
     assert "source: op.operands[0]" in lattice
     assert "result: op.results[0]" in lattice
@@ -1932,10 +2005,10 @@ def test_drop_insertion_consumes_no_heap_copy_aliases_from_ownership_lattice() -
 def test_drop_insertion_consumes_parameter_and_stack_roots_from_ownership_lattice() -> None:
     """Parameter/stack no-drop facts belong to OwnershipRootFacts, not the pass."""
     drop = (
-        ROOT / "runtime/molt-backend/src/tir/passes/drop_insertion.rs"
+        ROOT / "runtime/molt-tir/src/tir/passes/drop_insertion.rs"
     ).read_text(encoding="utf-8")
     lattice = (
-        ROOT / "runtime/molt-backend/src/tir/passes/ownership_lattice_min.rs"
+        ROOT / "runtime/molt-tir/src/tir/passes/ownership_lattice_min.rs"
     ).read_text(encoding="utf-8")
     assert "let param_ids" not in drop
     assert "let param_roots" not in drop
@@ -1946,16 +2019,16 @@ def test_drop_insertion_consumes_parameter_and_stack_roots_from_ownership_lattic
     assert "ownership_root_facts.is_drop_owned_root_candidate(" not in drop
     assert "fn parameter_roots(" in lattice
     assert "fn stack_value_roots(" in lattice
-    assert "pub(crate) fn is_drop_owned_root_candidate(" in lattice
+    assert _rust_pub_fn(lattice, "is_drop_owned_root_candidate")
 
 
 def test_drop_insertion_delegates_droppable_predicate_to_drop_eligibility() -> None:
     """DropInsertion owns placement, not the composed root/raw droppability test."""
     drop = (
-        ROOT / "runtime/molt-backend/src/tir/passes/drop_insertion.rs"
+        ROOT / "runtime/molt-tir/src/tir/passes/drop_insertion.rs"
     ).read_text(encoding="utf-8")
     lattice = (
-        ROOT / "runtime/molt-backend/src/tir/passes/ownership_lattice_min.rs"
+        ROOT / "runtime/molt-tir/src/tir/passes/ownership_lattice_min.rs"
     ).read_text(encoding="utf-8")
     assert "let droppable =" not in drop
     assert "raw_scalars.contains" not in drop
@@ -1964,18 +2037,18 @@ def test_drop_insertion_delegates_droppable_predicate_to_drop_eligibility() -> N
     assert "&live.raw_scalars" in drop
     assert "drop_eligibility.is_raw_scalar_root(canon(v))" in drop
     assert "drop_eligibility.is_droppable(" in drop
-    assert "pub(crate) struct DropEligibility" in lattice
-    assert "pub(crate) fn is_raw_scalar_root(" in lattice
-    assert "pub(crate) fn is_droppable(" in lattice
+    assert _rust_pub_decl(lattice, "struct", "DropEligibility")
+    assert _rust_pub_fn(lattice, "is_raw_scalar_root")
+    assert _rust_pub_fn(lattice, "is_droppable")
 
 
 def test_drop_insertion_consumes_python_lifetime_facts_from_ownership_lattice() -> None:
     """DropInsertion consumes Python lifetime roots instead of re-scanning them."""
     drop = (
-        ROOT / "runtime/molt-backend/src/tir/passes/drop_insertion.rs"
+        ROOT / "runtime/molt-tir/src/tir/passes/drop_insertion.rs"
     ).read_text(encoding="utf-8")
     lattice = (
-        ROOT / "runtime/molt-backend/src/tir/passes/ownership_lattice_min.rs"
+        ROOT / "runtime/molt-tir/src/tir/passes/ownership_lattice_min.rs"
     ).read_text(encoding="utf-8")
     assert "PythonLifetimeFacts::compute(" in drop
     assert "let python_boundary_roots" not in drop
@@ -1998,25 +2071,25 @@ def test_drop_insertion_consumes_python_lifetime_facts_from_ownership_lattice() 
         in drop
     )
     assert "python_lifetime_facts.has_explicit_release_boundary(v)" in drop
-    assert "pub(crate) struct PythonLifetimeFacts" in lattice
-    assert "pub(crate) fn compute(func: &TirFunction, aliases: &AliasUnionFind)" in lattice
-    assert "pub(crate) fn local_store_roots(" not in lattice
-    assert "pub(crate) fn is_local_store_root(" not in lattice
-    assert "pub(crate) fn is_bound_local_root(" not in lattice
-    assert "pub(crate) fn is_named_slot_root(" not in lattice
-    assert "pub(crate) fn is_explicit_release_root(" not in lattice
-    assert "pub(crate) fn boundary_release_roots(" in lattice
+    assert _rust_pub_decl(lattice, "struct", "PythonLifetimeFacts")
+    assert "fn compute(func: &TirFunction, aliases: &AliasUnionFind)" in lattice
+    assert "fn local_store_roots(" not in lattice
+    assert "fn is_local_store_root(" not in lattice
+    assert "fn is_bound_local_root(" not in lattice
+    assert "fn is_named_slot_root(" not in lattice
+    assert "fn is_explicit_release_root(" not in lattice
+    assert _rust_pub_fn(lattice, "boundary_release_roots")
     assert "drop_eligibility.is_droppable(*root)" in lattice
     assert "ownership_lattice.is_finalizer_sensitive_root(*root)" in lattice
     assert "!self.has_explicit_release_boundary(*root)" in lattice
-    assert "pub(crate) fn is_statement_release_boundary_root(" in lattice
+    assert _rust_pub_fn(lattice, "is_statement_release_boundary_root")
     assert "drop_eligibility.is_droppable(root)" in lattice
     assert "!self.local_store_roots.contains(&root)" in lattice
     assert "!self.has_explicit_release_boundary(root)" in lattice
-    assert "pub(crate) fn is_return_boundary_deferred_root(" in lattice
+    assert _rust_pub_fn(lattice, "is_return_boundary_deferred_root")
     return_boundary_region = lattice[
-        lattice.index("pub(crate) fn is_return_boundary_deferred_root(") :
-        lattice.index("pub(crate) fn has_explicit_release_boundary(")
+        lattice.index("fn is_return_boundary_deferred_root(") :
+        lattice.index("fn has_explicit_release_boundary(")
     ]
     assert "self.bound_local_roots.contains(&root)" in return_boundary_region
     assert "!self.named_slot_roots.contains(&root)" in return_boundary_region
@@ -2024,7 +2097,7 @@ def test_drop_insertion_consumes_python_lifetime_facts_from_ownership_lattice() 
         "!drop_eligibility.is_conditionally_valid_result_root(root)"
         in return_boundary_region
     )
-    assert "pub(crate) fn has_explicit_release_boundary(" in lattice
+    assert _rust_pub_fn(lattice, "has_explicit_release_boundary")
 
 
 def test_drop_insertion_consumes_statement_release_plan_from_ownership_lattice() -> None:
@@ -2035,10 +2108,10 @@ def test_drop_insertion_consumes_statement_release_plan_from_ownership_lattice()
     exclusions, drop eligibility, sorting, and deduplication.
     """
     drop = (
-        ROOT / "runtime/molt-backend/src/tir/passes/drop_insertion.rs"
+        ROOT / "runtime/molt-tir/src/tir/passes/drop_insertion.rs"
     ).read_text(encoding="utf-8")
     lattice = (
-        ROOT / "runtime/molt-backend/src/tir/passes/ownership_lattice_min.rs"
+        ROOT / "runtime/molt-tir/src/tir/passes/ownership_lattice_min.rs"
     ).read_text(encoding="utf-8")
 
     assert "StatementReleasePlan::compute(" in drop
@@ -2055,8 +2128,8 @@ def test_drop_insertion_consumes_statement_release_plan_from_ownership_lattice()
             f"{forbidden}"
         )
 
-    assert "pub(crate) struct StatementReleasePlan" in lattice
-    assert "pub(crate) fn compute(" in lattice
+    assert _rust_pub_decl(lattice, "struct", "StatementReleasePlan")
+    assert _rust_pub_fn(lattice, "compute")
     assert "lattice.statement_release_finalizer_boundaries()" in lattice
     assert (
         "python_lifetime_facts.is_statement_release_boundary_root(root, drop_eligibility)"
@@ -2071,15 +2144,15 @@ def test_drop_insertion_consumes_statement_release_plan_from_ownership_lattice()
 def test_drop_insertion_consumes_exception_creation_facts_from_ownership_lattice() -> None:
     """CreationRef classification belongs to the ownership module, not placement."""
     drop = (
-        ROOT / "runtime/molt-backend/src/tir/passes/drop_insertion.rs"
+        ROOT / "runtime/molt-tir/src/tir/passes/drop_insertion.rs"
     ).read_text(encoding="utf-8")
     lattice = (
-        ROOT / "runtime/molt-backend/src/tir/passes/ownership_lattice_min.rs"
+        ROOT / "runtime/molt-tir/src/tir/passes/ownership_lattice_min.rs"
     ).read_text(encoding="utf-8")
     assert "exception_creation_ref_values" in drop
     assert "fn exception_creation_ref_values(" not in drop
     assert "copy_kind_is_exception_creation_ref" not in drop
-    assert "pub(crate) fn exception_creation_ref_values(" in lattice
+    assert _rust_pub_fn(lattice, "exception_creation_ref_values")
     assert "copy_kind_is_exception_creation_ref" in lattice
     assert "op.opcode != OpCode::Copy" in lattice
 
@@ -2237,7 +2310,7 @@ def test_op_borrow_source_delegates_to_generated_table() -> None:
     Index references elsewhere in alias_analysis.rs (load-purity classification,
     the borrow-provenance unit-test fixtures) are not mistaken for the deleted
     hand-coded match."""
-    alias = (ROOT / "runtime/molt-backend/src/tir/passes/alias_analysis.rs").read_text(encoding="utf-8")
+    alias = (ROOT / "runtime/molt-tir/src/tir/passes/alias_analysis.rs").read_text(encoding="utf-8")
     marker = "fn op_borrow_source("
     assert marker in alias, "op_borrow_source not found"
     start = alias.index(marker)
@@ -2419,7 +2492,7 @@ def test_terminator_section_exhaustive_over_enum() -> None:
     table_names = [row["name"] for row in data["terminator"]]
     assert len(table_names) == len(set(table_names)), "duplicate terminator rows"
 
-    src = (ROOT / "runtime/molt-backend/src/tir/blocks.rs").read_text(
+    src = (ROOT / "runtime/molt-tir/src/tir/blocks.rs").read_text(
         encoding="utf-8"
     )
     m = re.search(r"pub enum Terminator \{(.*?)\n\}", src, re.S)
@@ -2506,9 +2579,9 @@ def test_drop_insertion_delegates_transfer_to_generated_authority() -> None:
     Scoped to the two transfer-helper FUNCTION BODIES so the structural shape
     match (which fields carry args — legitimately in the pass) is not mistaken for
     a hand-coded transfer fact."""
-    drop = (ROOT / "runtime/molt-backend/src/tir/passes/drop_insertion.rs").read_text(encoding="utf-8")
+    drop = (ROOT / "runtime/molt-tir/src/tir/passes/drop_insertion.rs").read_text(encoding="utf-8")
     ownership = (
-        ROOT / "runtime/molt-backend/src/tir/passes/ownership_lattice_min.rs"
+        ROOT / "runtime/molt-tir/src/tir/passes/ownership_lattice_min.rs"
     ).read_text(encoding="utf-8")
 
     def _fn_body(src: str, marker: str, label: str) -> str:

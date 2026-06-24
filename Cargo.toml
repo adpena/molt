@@ -19,6 +19,7 @@ members = [
     "runtime/molt-ffi",
     "runtime/molt-tier",
     "runtime/molt-gpu",
+    "runtime/molt-tir",
 ]
 exclude = [
     "deploy/browser/simd-ops-rs",

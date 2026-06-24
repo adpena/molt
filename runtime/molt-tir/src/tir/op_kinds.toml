@@ -4,7 +4,7 @@
 #
 # This table is the ONE place the cross-component op-"kind"-string vocabulary
 # lives. tools/gen_op_kinds.py renders it into:
-#   - runtime/molt-backend/src/tir/op_kinds_generated.rs  (mapper + classifier
+#   - runtime/molt-tir/src/tir/op_kinds_generated.rs  (mapper + classifier
 #     + per-OpCode effect-oracle arms), and
 #   - src/molt/frontend/lowering/op_kinds_generated.py    (canonical spellings).
 # tests/test_gen_op_kinds.py re-renders in memory and asserts equality with the
@@ -75,6 +75,9 @@
 #                  propagation. These also feed slot-observation classification.
 #   - alias_slot_*_opcodes - opcode classes for alias_analysis.rs slot
 #                  observation. Omitted opcodes are conservative observers.
+#   - refcount_heap_exposure_opcodes - opcode-only deferred-RC fact for ops
+#                  whose operands become heap/external roots and therefore cannot
+#                  be treated as non-escaping by refcount_elim.rs.
 #   - fusion_barrier_opcodes - opcode-only deforestation.rs fusion-eligibility
 #                  fact: ops that make a comprehension/generator body ineligible
 #                  for iterator-chain fusion. A DISTINCT fact from side_effecting
@@ -268,6 +271,34 @@ alias_heap_barrier_opcodes = [
     "Raise",
     "StateSwitch",
     "StateTransition",
+    "StateYield",
+    "StoreAttr",
+    "StoreIndex",
+    "Yield",
+    "YieldFrom",
+]
+
+# refcount_heap_exposure_opcodes: operands of these ops flow into a heap-owned
+# or externally visible root for deferred reference-count elimination. This is
+# NOT the alias heap barrier set: constructors (`Build*`, `AllocTask`) retain
+# operands without necessarily being alias barriers, while frees/deletes/module
+# metadata writes are barriers without exposing every operand as a retained root.
+refcount_heap_exposure_opcodes = [
+    "AllocTask",
+    "BuildDict",
+    "BuildList",
+    "BuildSet",
+    "BuildSlice",
+    "BuildTuple",
+    "Call",
+    "CallBuiltin",
+    "CallMethod",
+    "ChanRecvYield",
+    "ChanSendYield",
+    "ClosureStore",
+    "Import",
+    "ImportFrom",
+    "Raise",
     "StateYield",
     "StoreAttr",
     "StoreIndex",

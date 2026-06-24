@@ -65,9 +65,9 @@ orphaning the latch. A non-nested body has no such cleanup join, so its
 body→latch edge is wired correctly.
 
 ## Exact location (to fix)
-- SIR→TIR CFG/SSA construction: `runtime/molt-backend/src/tir/lower_from_simple.rs`
+- SIR→TIR CFG/SSA construction: `runtime/molt-tir/src/tir/lower_from_simple.rs`
   (CFG build at :115 `CFG::build`, SSA at :120, assembly at :123) and/or the
-  CFG builder `runtime/molt-backend/src/tir/cfg.rs`.
+  CFG builder `runtime/molt-tir/src/tir/cfg.rs`.
 - Candidate upstream cause: the frontend SIR block/label stream for
   `with`-wrapping-`for` mis-targets the loop back-edge label when the loop body
   ends inside a `with` cleanup join (the `loop_continue`/latch label vs the

@@ -286,7 +286,7 @@ PROOF_LANE_RULES = (
         proof_role="implementer",
         shared_target_root="target",
         priority="P1",
-        path_prefixes=("runtime/molt-backend/src/tir/type_refine.rs",),
+        path_prefixes=("runtime/molt-tir/src/tir/type_refine.rs",),
         commands=("cargo test -p molt-backend type_refine -- --nocapture",),
         reason="TIR type facts require direct solver regressions before broader differential proof",
     ),

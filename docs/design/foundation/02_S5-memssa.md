@@ -65,7 +65,7 @@ Each memory node's "defining memory access" is the single dominating MemoryDef (
 ### Data structure design
 
 ```rust
-// runtime/molt-backend/src/tir/passes/memory_ssa.rs
+// runtime/molt-tir/src/tir/passes/memory_ssa.rs
 
 /// A memory access ordinal — unique per-function, allocated sequentially.
 /// Version 0 is the "LiveOnEntry" def (all externally-visible memory before
@@ -183,7 +183,7 @@ The soundness guarantee is: every transformation that observes a MemorySSA resul
 
 ### Files to create
 
-**`/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/passes/memory_ssa.rs`**
+**`/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/passes/memory_ssa.rs`**
 
 Responsibilities:
 - `MemVersion`, `MemAccess`, `MemorySsaResult` types
@@ -196,7 +196,7 @@ Responsibilities:
 
 Dependencies: `AliasAnalysis` (must be computed first), `ImmediateDoms`, `DomChildren`, `PredMap` (all available in `AnalysisManager`).
 
-**`/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/passes/mem_gvn.rs`**
+**`/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/passes/mem_gvn.rs`**
 
 Responsibilities:
 - Store-to-load forwarding: for each `LoadAttr` with `load_purity == ProvenPure`, consult MemorySSA for the single reaching def. If the reaching def is a `StoreAttr` at a statically-known offset that matches the load's region, and the stored `ValueId` is in scope (dominates the load), replace the load with a `Copy` of the stored value. This turns typed-slot loads into pure SSA register reads.
@@ -204,7 +204,7 @@ Responsibilities:
 - Post-replacement: call `MemorySsaResult::invalidate_op` for removed loads (they are now Uses of nothing), then invalidate `AnalysisId::AliasAnalysis` and `AnalysisId::MemorySSA` (the copy prop and DCE passes that follow will clean up the `Copy` chains).
 - Mutation class: `Mutates::OpsOnly` (no new blocks or edges).
 
-**`/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/passes/sroa.rs`**
+**`/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/passes/sroa.rs`**
 
 Responsibilities:
 - Input: a `NoEscape ObjectNewBoundStack` result (from escape_analysis, already rewrites to `ObjectNewBoundStack` when escape state is `NoEscape | ArgEscape`).
@@ -223,11 +223,11 @@ Responsibilities:
 
 ### Files to modify
 
-**`/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/passes/mod.rs`**
+**`/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/passes/mod.rs`**
 
 Add: `pub mod memory_ssa;`, `pub mod mem_gvn;`, `pub mod sroa;`
 
-**`/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/analysis/mod.rs`**
+**`/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/analysis/mod.rs`**
 
 Add `MemorySSA` to `AnalysisId`:
 ```rust
@@ -259,7 +259,7 @@ impl Analysis for MemorySSA {
 
 NOTE: `compute_standalone` is a variant of the full computation that builds `AliasAnalysisResult` inline (since `Analysis::compute` takes `&TirFunction`, not `&mut AnalysisManager`). The fast path in passes uses `am.get::<AliasAnalysis>(func)` and `am.get::<MemorySSA>(func)` via `AnalysisManager::get`, which ensures AliasAnalysis is computed first (since it has a lower `AnalysisId` ordinal and `MemorySSA::compute` calls it).
 
-**`/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/pass_manager.rs`**
+**`/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/pass_manager.rs`**
 
 Add `mem_gvn` and `sroa` passes to `build_default_pipeline`. The updated pipeline (inserting into the Memory optimization phase, between `dead_store_elim` and `type_guard_hoist`):
 
@@ -278,7 +278,7 @@ Add `mem_gvn` and `sroa` passes to `build_default_pipeline`. The updated pipelin
 
 Update the `default_pipeline_preserves_canonical_pass_order` test in `pass_manager.rs` to include the two new passes (the count goes from 25 to 27).
 
-**`/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/passes/licm.rs`**
+**`/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/passes/licm.rs`**
 
 Extend `is_hoistable` to accept `ProvenPure` typed-slot loads when MemorySSA confirms the load's reaching def is loop-invariant (defined outside the loop body):
 
@@ -305,7 +305,7 @@ fn is_hoistable_with_mem(op: &TirOp, alias: &AliasAnalysisResult, mem: &MemorySs
 
 The `run` function signature changes from `(func, am)` to `(func, am)` unchanged externally — but internally it calls `am.get::<MemorySSA>(func)` after `am.get::<LoopForest>`. This is `Mutates::Cfg` (already correct).
 
-**`/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/passes/dead_store_elim.rs`**
+**`/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/passes/dead_store_elim.rs`**
 
 Add cross-block DSE as a second pass within `run`, after the existing single-block pass:
 
@@ -602,9 +602,9 @@ Each phase is a COMPLETE structural piece, verifiable in isolation.
 ### Phase 2a: MemorySSA analysis (standalone, no consumers)
 
 **Checklist:**
-- [ ] Create `/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/passes/memory_ssa.rs` with `MemVersion`, `MemAccess`, `MemorySsaResult`, `compute_standalone`
-- [ ] Add `MemorySSA` to `AnalysisId::ALL` in `/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/analysis/mod.rs` (add variant, add to `cfg_sensitive`/`ops_sensitive` match arms, add `MemorySSA` impl struct, add to `assert_analyses_fresh` macro in pass_manager.rs)
-- [ ] Add `pub mod memory_ssa;` to `/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/passes/mod.rs`
+- [ ] Create `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/passes/memory_ssa.rs` with `MemVersion`, `MemAccess`, `MemorySsaResult`, `compute_standalone`
+- [ ] Add `MemorySSA` to `AnalysisId::ALL` in `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/analysis/mod.rs` (add variant, add to `cfg_sensitive`/`ops_sensitive` match arms, add `MemorySSA` impl struct, add to `assert_analyses_fresh` macro in pass_manager.rs)
+- [ ] Add `pub mod memory_ssa;` to `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/passes/mod.rs`
 - [ ] Write all 7 Rust unit tests in `memory_ssa.rs`
 - [ ] `cargo test -p molt-backend --features native-backend` — all tests pass, 0 new warnings
 - [ ] `MOLT_VERIFY_ANALYSIS=1` — no divergence panics on the existing differential suite
@@ -614,7 +614,7 @@ Each phase is a COMPLETE structural piece, verifiable in isolation.
 ### Phase 2b: MemGVN pass (store-to-load forwarding + redundant-load elimination)
 
 **Checklist:**
-- [ ] Create `/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/passes/mem_gvn.rs` with `run(func, am) -> PassStats`
+- [ ] Create `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/passes/mem_gvn.rs` with `run(func, am) -> PassStats`
 - [ ] Add `pub mod mem_gvn;` to `passes/mod.rs`
 - [ ] Insert `"mem_gvn" (OpsOnly)` into `build_default_pipeline` after `dead_store_elim`
 - [ ] Update `default_pipeline_preserves_canonical_pass_order` test (count 25 → 26)
@@ -640,7 +640,7 @@ Each phase is a COMPLETE structural piece, verifiable in isolation.
 ### Phase 2d: SROA (object-field promotion — the bench_struct proving ground)
 
 **Checklist:**
-- [ ] Create `/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/passes/sroa.rs`
+- [ ] Create `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/passes/sroa.rs`
 - [ ] Add `pub mod sroa;` to `passes/mod.rs`
 - [ ] Insert `"sroa" (OpsOnly)` into `build_default_pipeline` after `mem_gvn`
 - [ ] Update pipeline order test (count 26 → 27)

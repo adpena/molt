@@ -4,19 +4,23 @@
 
 use std::fmt::Write as _;
 
-pub mod debug_artifacts;
-mod intrinsic_symbols;
-pub use crate::intrinsic_symbols::{
+// The TIR lower layer now lives in the molt-tir crate (decomposition doc 21, move
+// T1). Re-export its modules at this crate root so molt-backend's existing
+// `crate::tir::*` / `crate::passes::*` / `crate::ir::*` /
+// `crate::representation_plan::*` / leaf-util paths resolve unchanged.
+pub use molt_tir::{
+    debug_artifacts, intrinsic_symbols, ir, ir_schema, json_boundary, passes, process_diagnostics,
+    representation_plan, tir,
+};
+
+pub use molt_tir::intrinsic_symbols::{
     runtime_intrinsic_symbols_from_env, runtime_intrinsic_symbols_required,
 };
-mod ir;
 mod ir_rewrites;
 pub use crate::ir_rewrites::{
     elide_useless_try_blocks, elide_useless_try_blocks_for_function, rewrite_annotate_stubs,
     rewrite_copy_aliases, rewrite_phi_to_store_load,
 };
-mod ir_schema;
-mod json_boundary;
 #[cfg(feature = "llvm")]
 pub mod llvm_backend;
 pub mod luau_ir;
@@ -34,20 +38,7 @@ pub(crate) use crate::native_backend::{
 mod native_backend_consts;
 #[cfg(any(feature = "native-backend", feature = "llvm"))]
 use native_backend_consts::*;
-mod passes;
-mod process_diagnostics;
-mod representation_plan;
 mod stdlib_module_symbols;
-/// The representation lattice element (the orthogonal carrier axis to
-/// `TirType`). Re-exported publicly because it appears in the signature of the
-/// `pub` `tir::lower_to_lir::lower_function_to_lir` (Phase 1 of the typed-IR
-/// convergence), which the WASM/LIR codegen path drives with the proven
-/// `repr_by_value`.
-pub use crate::representation_plan::Repr;
-pub use crate::stdlib_module_symbols::{
-    STDLIB_MODULE_SYMBOLS_ENV, parse_stdlib_module_symbols, stdlib_module_symbols_from_env,
-};
-pub mod tir;
 pub use crate::ir::{FunctionIR, OpIR, PgoProfileIR, SimpleIR, validate_simple_ir};
 pub use crate::passes::{
     apply_profile_order, build_const_int_map, canonicalize_direct_raise_edges,
@@ -58,6 +49,16 @@ pub use crate::passes::{
     hoist_loop_invariants, inject_runtime_exit, rc_coalescing, rewrite_stateful_loops,
     split_megafunctions,
 };
+pub use crate::stdlib_module_symbols::{
+    STDLIB_MODULE_SYMBOLS_ENV, parse_stdlib_module_symbols, stdlib_module_symbols_from_env,
+};
+pub use molt_tir::MOLT_CLOSURE_PARAM_NAME;
+/// The representation lattice element (the orthogonal carrier axis to
+/// `TirType`). Re-exported publicly because it appears in the signature of the
+/// `pub` `tir::lower_to_lir::lower_function_to_lir` (Phase 1 of the typed-IR
+/// convergence), which the WASM/LIR codegen path drives with the proven
+/// `repr_by_value`.
+pub use molt_tir::representation_plan::Repr;
 
 #[cfg(feature = "luau-backend")]
 pub mod luau;
@@ -70,20 +71,6 @@ mod wasm_imports;
 
 #[cfg(feature = "egraphs")]
 pub mod egraph_simplify;
-
-/// The implicit FIRST parameter name the frontend prepends to every closure's
-/// parameter list to carry its captured environment (the tuple of capture
-/// cells). A function whose `param_names[0]` equals this marker IS a closure;
-/// `param_names[1..]` are its declared Python parameters.
-///
-/// This is the single backend-side source of truth for the marker. It MIRRORS
-/// the frontend constant `_MOLT_CLOSURE_PARAM` (`src/molt/frontend/_types.py`),
-/// which is the Python-side authority that actually emits the name; the two must
-/// stay byte-identical. Every backend that needs to recognize a closure by its
-/// env-param (`wasm.rs` arity adjustment, the TIR `inliner.rs` exclusion gate)
-/// references THIS const rather than re-spelling the literal, so a future rename
-/// is a one-line change on each side.
-pub const MOLT_CLOSURE_PARAM_NAME: &str = "__molt_closure__";
 
 #[cfg(any(feature = "native-backend", feature = "llvm"))]
 fn pending_bits() -> i64 {

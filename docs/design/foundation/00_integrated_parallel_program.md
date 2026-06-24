@@ -84,11 +84,11 @@ The active correctness front has moved from "build DropInsertion" to "converge
 ownership boundaries and delete the remaining legacy RC authority." The current
 code state is:
 
-- `runtime/molt-backend/src/tir/passes/drop_insertion.rs` exists and carries the
+- `runtime/molt-tir/src/tir/passes/drop_insertion.rs` exists and carries the
   RC drop-insertion implementation.
-- `runtime/molt-backend/src/tir/passes/liveness.rs` is registered as
+- `runtime/molt-tir/src/tir/passes/liveness.rs` is registered as
   `AnalysisId::Liveness` and provides representation-filtered live sets.
-- `runtime/molt-backend/src/tir/drop_phase.rs` runs drop insertion as a terminal
+- `runtime/molt-tir/src/tir/drop_phase.rs` runs drop insertion as a terminal
   phase after per-function and module transforms, preserving module-slot
   promotion and final representation facts.
 - `target_uses_tir_drop_insertion` currently enables LLVM, WASM, Luau, and
@@ -142,7 +142,7 @@ being stamped with a bare `unreachable`.
 
 Guarded evidence:
 
-- `runtime/molt-backend/src/tir/dominators.rs` owns the single
+- `runtime/molt-tir/src/tir/dominators.rs` owns the single
   label-to-handler and exception-successor extraction path.
 - `runtime/molt-backend/src/llvm_backend/lowering.rs::compute_function_rpo`
   appends terminator successors and exception successors in one traversal.

@@ -10,7 +10,7 @@
 - The Cranelift `function_compiler.rs` 4x-unroll at line 30815 is a manually written scalar unroll of 4 elements, not SIMD — it emits `iadd_imm / load / iadd` four times sequentially, with no `I64X2`/`F64X2` types
 - `lower_to_wasm.rs` imports only `BlockType, Ieee64, Instruction, ValType` from `wasm_encoder` — no `V128` instructions
 
-`Dialect::Simd` at `/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/ops.rs:17` has zero ops defined. The existing 4x unroll in `function_compiler.rs:30815-30980` is the only "vectorization" in the entire system, and it is a scalar loop with width 4 on the SimpleIR path, entirely disjoint from TIR.
+`Dialect::Simd` at `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/ops.rs:17` has zero ops defined. The existing 4x unroll in `function_compiler.rs:30815-30980` is the only "vectorization" in the entire system, and it is a scalar loop with width 4 on the SimpleIR path, entirely disjoint from TIR.
 
 This matters because:
 - molt's perf contract is "faster than CPython on every benchmark on every target." The numeric benchmarks (`bench_sum`, `bench_sum_list`, `bench_prod_list`, `bench_matrix_math`) are the primary regression canaries. Without SIMD these loop bodies bottleneck at ~1 ADD/cycle throughput; AVX2 delivers 4 64-bit adds/cycle or 8 32-bit; the theoretical win is 4–8x on register-resident arithmetic.
@@ -96,7 +96,7 @@ The pipeline becomes (additions in bold):
 
 ## 3. Exact Files to Create/Modify
 
-### Create: `/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/passes/vectorize_lower.rs`
+### Create: `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/passes/vectorize_lower.rs`
 
 **Responsibilities:**
 - Consume `vectorize=true` annotations from ForIter/ScfFor ops
@@ -133,7 +133,7 @@ struct LoopAnnotation {
 
 **Mutation class:** `Mutates::Cfg` (adds and restructures blocks).
 
-### Modify: `/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/ops.rs`
+### Modify: `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/ops.rs`
 
 Add to `OpCode` (under the comment marking the `Simd` dialect):
 ```rust
@@ -151,11 +151,11 @@ VecHFSum,   // horizontal sum (f64 lanes → f64 scalar)
 
 The `Dialect::Simd` variant already exists at line 17 — no change needed there.
 
-### Modify: `/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/passes/mod.rs`
+### Modify: `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/passes/mod.rs`
 
 Add `pub mod vectorize_lower;` (line after `pub mod vectorize;`).
 
-### Modify: `/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/pass_manager.rs`
+### Modify: `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/pass_manager.rs`
 
 In `build_default_pipeline`, after the `vectorize` pass entry (currently line 345-348), insert:
 ```rust
@@ -166,11 +166,11 @@ pass("vectorize_lower", Cfg, |f, am, tti| {
 
 Update the canonical pass order test in `pass_manager.rs` (line 529 area) and the `mod.rs` pipeline test at line 156 area to include `"vectorize_lower"` after `"vectorize"`.
 
-### Modify: `/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/passes/vectorize.rs`
+### Modify: `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/passes/vectorize.rs`
 
 No semantic changes. The `is_disqualifying` function (line 144) and `is_scalar_arithmetic` (line 177) must NOT include any new `VecLoad`/`VecStore`/etc. ops — because these are in `Dialect::Simd` and the vectorize pass only examines `Dialect::Molt` ops. This is automatic since the match arms are exhaustive over `OpCode` — the new variants will need to be handled or unreachable. Add `OpCode::VecLoad | OpCode::VecStore | ... => {}` to `is_disqualifying` (they are iteration infrastructure, not disqualifying).
 
-### Modify: `/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/passes/effects.rs`
+### Modify: `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/passes/effects.rs`
 
 The effects oracle must classify the new SIMD ops. `VecLoad` is a memory read (same class as `Index`), `VecStore` is a memory write. `VecSplat`, `VecIAdd`, `VecFAdd`, `VecIMul`, `VecFMul`, `VecHSum`, `VecHFSum` are pure arithmetic. Add these to the appropriate arms in `effects.rs`. This is mandatory — the S3 effects oracle drives LICM/GVN/DSE decisions.
 
@@ -207,7 +207,7 @@ The vector load uses `builder.ins().load(vec_type, MemFlags::trusted(), base_ptr
 
 **Delete the existing 4x unroll** at `function_compiler.rs:30815-31000` entirely. The `vectorize_lower` TIR pass replaces it with a structurally correct SIMD loop that handles all element types (not just int) and all widths (not just 4). This is the legacy deletion mandated by CLAUDE.md's "no dual path" rule.
 
-### Modify: `/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/lower_to_wasm.rs`
+### Modify: `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/lower_to_wasm.rs`
 
 Add WASM simd128 emission. `wasm-encoder 0.245.1` exposes `Instruction::I64x2Add`, `Instruction::F64x2Add`, `Instruction::V128Load { memarg }`, `Instruction::V128Store { memarg }`, `Instruction::I64x2Splat`, `Instruction::F64x2Splat`, `Instruction::I64x2ExtractLane { lane }`, `Instruction::F64x2ExtractLane { lane }`.
 
@@ -243,11 +243,11 @@ Add handling of `Dialect::Simd` ops in the LLVM lowering dispatch. For LLVM the 
 
 For the initial cut: emit a call to a new pair of runtime helpers `molt_vec_hsum_i64(ptr, count)` / `molt_vec_hfsum_f64(ptr, count)` that perform the horizontal reduction in Rust (not SIMD-optimal but correct and measurable). The LLVM backend already emits `march=native` so LLVM will auto-vectorize the helper's loop. Real explicit vector IR follows as a Phase 2 LLVM hardening.
 
-### Modify: `/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/passes/alias_analysis.rs`
+### Modify: `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/passes/alias_analysis.rs`
 
 Add `VecLoad` to the `MemRegion::Heap` / `LoadPurity::MayDispatch` classification (it reads from a container's data pointer — same memory region as a `FlatListInt` element read). `VecStore` → `MemRegion::Heap` write. This is required for S5 alias oracle soundness.
 
-### Modify: `/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/verify.rs`
+### Modify: `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/verify.rs`
 
 The TIR verifier must accept `Dialect::Simd` ops. Add a verify arm that checks:
 - `VecLoad`: 2 operands (base_ptr: I64 or Ptr, idx: I64), 1 result (must be typed with an `attrs["elem_ty"]` consistent with the result's type), `attrs["width"]` present
@@ -439,30 +439,30 @@ Gate condition: bench_sum_list and bench_prod_list show ≥ CPython speed on nat
 ### Phase 1a — IR Extension (atomic, no behavior change)
 
 **Files changed:**
-- `/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/ops.rs`: add 9 new `OpCode` variants under `Dialect::Simd`
-- `/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/passes/effects.rs`: classify the 9 new opcodes
-- `/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/passes/vectorize.rs`: add the new opcodes to the `is_disqualifying` / `is_scalar_arithmetic` arms as non-disqualifying iteration infrastructure
-- `/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/passes/alias_analysis.rs`: classify `VecLoad` → `MemRegion::Heap` read, `VecStore` → write
+- `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/ops.rs`: add 9 new `OpCode` variants under `Dialect::Simd`
+- `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/passes/effects.rs`: classify the 9 new opcodes
+- `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/passes/vectorize.rs`: add the new opcodes to the `is_disqualifying` / `is_scalar_arithmetic` arms as non-disqualifying iteration infrastructure
+- `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/passes/alias_analysis.rs`: classify `VecLoad` → `MemRegion::Heap` read, `VecStore` → write
 
 **Acceptance**: `cargo test -p molt-backend` stays green with no new warnings. The new opcodes are unreachable in production (no pass emits them yet).
 
 ### Phase 1b — Vectorize-Lower Pass: Cranelift Native
 
 **Files changed:**
-- `/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/passes/vectorize_lower.rs`: new file, full implementation for the conservative first-cut (FlatListInt + RawI64Safe + no EH + sum/product/elementwise)
-- `/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/passes/mod.rs`: add `pub mod vectorize_lower`
-- `/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/pass_manager.rs`: insert `vectorize_lower` after `vectorize`, update pipeline order tests
+- `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/passes/vectorize_lower.rs`: new file, full implementation for the conservative first-cut (FlatListInt + RawI64Safe + no EH + sum/product/elementwise)
+- `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/passes/mod.rs`: add `pub mod vectorize_lower`
+- `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/pass_manager.rs`: insert `vectorize_lower` after `vectorize`, update pipeline order tests
 - `/Users/adpena/Projects/molt/runtime/molt-backend/src/native_backend/function_compiler.rs`:
   - Add `Dialect::Simd` op dispatch arm with Cranelift vector instruction emission
   - **Delete** the 4x scalar unroll (lines ~30815-31000) and its helper `scan_loop_int_sum_reduction` / `SumReductionCandidate` (lines ~178-342 and tests ~37691-38125)
-- `/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/verify.rs`: accept Simd ops
+- `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/verify.rs`: accept Simd ops
 
 **Acceptance**: all 882+ existing backend lib tests pass. `tests/differential/basic/simd_sum_correctness.py` and `simd_no_vectorize_boxed.py` differential-test green. `bench_sum_list` ≥ CPython on native/release-fast.
 
 ### Phase 1c — WASM simd128 Lowering
 
 **Files changed:**
-- `/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/lower_to_wasm.rs`: add `Dialect::Simd` op emission using `wasm_encoder` V128 instructions; add `V128` local allocation
+- `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/lower_to_wasm.rs`: add `Dialect::Simd` op emission using `wasm_encoder` V128 instructions; add `V128` local allocation
 
 **Acceptance**: WASM differential tests for `simd_sum_correctness.py` green under Wasmtime/Node.
 
