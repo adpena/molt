@@ -3101,6 +3101,26 @@ fn default_backend_max_rss_gb() -> u64 {
     default_backend_max_rss_gb_from_physical_mem_bytes(detect_physical_memory_bytes())
 }
 
+fn validate_fact_graph_cli_contract(
+    output_path: Option<&str>,
+    function_name: Option<&str>,
+    is_rust: bool,
+) -> io::Result<()> {
+    if output_path.is_some() != function_name.is_some() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--fact-graph-output and --fact-graph-function must be supplied together",
+        ));
+    }
+    if output_path.is_some() && is_rust {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "fact graph emission does not support the rust target",
+        ));
+    }
+    Ok(())
+}
+
 #[allow(clippy::vec_init_then_push)] // pushes are behind #[cfg] feature gates
 fn main() -> io::Result<()> {
     // TIR optimization is mandatory. Invalid roundtrips are fatal compiler
@@ -3240,12 +3260,7 @@ fn main() -> io::Result<()> {
         .position(|arg| arg == "--fact-graph-function")
         .and_then(|idx| args.get(idx + 1))
         .map(String::as_str);
-    if fact_graph_output_path.is_some() != fact_graph_function.is_some() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "--fact-graph-output and --fact-graph-function must be supplied together",
-        ));
-    }
+    validate_fact_graph_cli_contract(fact_graph_output_path, fact_graph_function, is_rust)?;
 
     #[cfg_attr(not(feature = "wasm-backend"), allow(unused_variables))]
     let wasm_link_flag = args.iter().any(|arg| arg == "--wasm-link");
@@ -3753,8 +3768,9 @@ mod tests {
         resolved_batch_size_limit, run_luau_tir_module_pipeline, shared_stdlib_cache_matches,
         shared_stdlib_partition_closure_issue, shared_stdlib_partition_manifest,
         stdlib_cache_count_sidecar_path, stdlib_cache_partition_manifest_sidecar_path,
-        validate_shared_stdlib_partition, with_shared_stdlib_cache_publish_lock,
-        write_cached_output, write_json_artifact, write_shared_stdlib_cache_sidecars,
+        validate_fact_graph_cli_contract, validate_shared_stdlib_partition,
+        with_shared_stdlib_cache_publish_lock, write_cached_output, write_json_artifact,
+        write_shared_stdlib_cache_sidecars,
     };
     #[cfg(unix)]
     use super::{DaemonResponse, daemon_response_payload, read_daemon_request_bytes};
@@ -3770,6 +3786,25 @@ mod tests {
         "MOLT_STDLIB_CACHE_KEY",
         "MOLT_STDLIB_CACHE_MANIFEST",
     ];
+
+    #[test]
+    fn fact_graph_cli_contract_requires_output_and_function_pair() {
+        let err = validate_fact_graph_cli_contract(Some("graph.json"), None, false)
+            .expect_err("unpaired fact graph flags must fail closed");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        assert!(
+            err.to_string()
+                .contains("--fact-graph-output and --fact-graph-function")
+        );
+    }
+
+    #[test]
+    fn fact_graph_cli_contract_rejects_rust_target() {
+        let err = validate_fact_graph_cli_contract(Some("graph.json"), Some("molt_main"), true)
+            .expect_err("rust target fact graph request must fail closed");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        assert!(err.to_string().contains("rust target"));
+    }
 
     struct TestEnvGuard {
         _lock: std::sync::MutexGuard<'static, ()>,

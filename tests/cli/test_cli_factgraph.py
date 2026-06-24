@@ -4,6 +4,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, cast
 
 import molt.cli as cli
@@ -61,6 +62,8 @@ def test_factgraph_cli_dispatches_typed_backend_request(
     assert isinstance(request, factgraph_module.FactGraphRequest)
     assert request.output_path == output
     assert request.function_name == "main"
+    assert request.requested_target == "llvm"
+    assert request.effective_backend == "llvm"
 
 
 def test_factgraph_cli_dispatches_module_entry(tmp_path: Path, monkeypatch) -> None:
@@ -99,6 +102,8 @@ def test_factgraph_cli_dispatches_module_entry(tmp_path: Path, monkeypatch) -> N
     assert isinstance(request, factgraph_module.FactGraphRequest)
     assert request.output_path == output
     assert request.function_name == "entry"
+    assert request.requested_target == "native"
+    assert request.effective_backend == "cranelift"
 
 
 def test_execute_backend_fact_graph_uses_target_prefix_and_ir_lease(
@@ -128,6 +133,8 @@ def test_execute_backend_fact_graph_uses_target_prefix_and_ir_lease(
         request=factgraph_module.FactGraphRequest(
             output_path=output,
             function_name="molt_main",
+            requested_target="wasm",
+            effective_backend="cranelift",
         ),
         is_luau_transpile=False,
         is_rust_transpile=False,
@@ -163,3 +170,98 @@ def test_execute_backend_fact_graph_uses_target_prefix_and_ir_lease(
     assert env[cli.ENTRY_OVERRIDE_ENV] == "pkg.app"
     assert seen["timeout"] == 7.0
     assert output.is_file()
+
+
+def test_emit_pipeline_fact_graph_reports_requested_target_and_backend(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "facts" / "main.json"
+    ir_file = tmp_path / "backend-ir.json"
+    ir_file.write_text('{"functions":[]}\n', encoding="utf-8")
+    emitted: list[dict[str, Any]] = []
+    cleaned: list[bool] = []
+
+    def fake_prepare_backend_dispatch(**kwargs: object) -> tuple[Any, None]:
+        assert kwargs["start_daemon"] is False
+        return (
+            SimpleNamespace(
+                backend_bin=tmp_path / "molt-backend",
+                backend_env={},
+            ),
+            None,
+        )
+
+    def fake_run(
+        cmd: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[bytes]:
+        del kwargs
+        graph_output = Path(cmd[cmd.index("--fact-graph-output") + 1])
+        graph_output.parent.mkdir(parents=True, exist_ok=True)
+        graph_output.write_text(
+            '{"schema_version":1,"kind":"molt_tir_fact_graph"}\n',
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(cmd, 0, b"", b"")
+
+    def fake_emit_json(payload: dict[str, Any], json_output: bool) -> None:
+        assert json_output is True
+        emitted.append(payload)
+
+    rc = factgraph_module.emit_pipeline_fact_graph(
+        request=factgraph_module.FactGraphRequest(
+            output_path=output,
+            function_name="main",
+            requested_target="llvm",
+            effective_backend="llvm",
+        ),
+        output_layout=SimpleNamespace(
+            is_rust_transpile=False,
+            is_luau_transpile=False,
+            is_wasm=False,
+            split_runtime=False,
+            linked=False,
+            target_triple=None,
+        ),
+        deterministic=True,
+        profile="release",
+        runtime_context=SimpleNamespace(
+            runtime_state=object(),
+            ensure_runtime_wasm_shared=lambda _modules: True,
+            ensure_runtime_wasm_reloc=lambda _modules: True,
+        ),
+        build_config=SimpleNamespace(
+            runtime_cargo_profile="release",
+            cargo_timeout=None,
+            backend_cargo_profile="release",
+            backend_timeout=3.0,
+        ),
+        build_roots=SimpleNamespace(project_root=tmp_path, molt_root=tmp_path),
+        build_preamble=SimpleNamespace(
+            diagnostics_enabled=False,
+            phase_starts={},
+            backend_daemon_config_digest=None,
+            warnings=[],
+        ),
+        resolved_modules=frozenset(),
+        json_output=True,
+        verbose=False,
+        target="native",
+        entry_module="app",
+        prepare_backend_dispatch=fake_prepare_backend_dispatch,
+        ensure_backend_ir_file_path=lambda: ir_file,
+        cleanup_backend_ir_file_path=lambda: cleaned.append(True),
+        run_subprocess_captured_to_tempfiles=fake_run,
+        subprocess_output_text=cli._subprocess_output_text,
+        fail=cli._fail,
+        emit_json=fake_emit_json,
+        json_payload=cli._json_payload,
+        entry_override_env=cli.ENTRY_OVERRIDE_ENV,
+    )
+
+    assert rc == 0
+    assert cleaned == [True]
+    assert len(emitted) == 1
+    data = emitted[0]["data"]
+    assert data["target"] == "llvm"
+    assert data["backend"] == "llvm"
+    assert data["pipeline_target"] == "native"

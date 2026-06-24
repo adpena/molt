@@ -115,6 +115,10 @@ molt factgraph app.py hot_loop --output tmp/facts/hot_loop.json --target llvm
 | `--json` | Emit JSON command status for tooling. |
 | `--verbose` | Emit verbose backend diagnostics. |
 
+With `--json`, command status reports `target` as the requested factgraph
+target, `backend` as the effective native backend fact lane, and
+`pipeline_target` as the canonical build target used internally.
+
 #### `molt run`
 
 Build and execute a Python program. Supports native, WASM (via the canonical Node host shim), Luau (via lune), and MLIR targets.
