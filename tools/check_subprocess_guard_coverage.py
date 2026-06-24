@@ -17,7 +17,7 @@ DEFAULT_TARGETS = (
     REPO_ROOT / "tools",
     REPO_ROOT / "tests",
     REPO_ROOT / "src" / "molt" / "backend_daemon_custody.py",
-    REPO_ROOT / "src" / "molt" / "cli.py",
+    REPO_ROOT / "src" / "molt" / "cli",
     REPO_ROOT / "src" / "molt" / "process_guard.py",
     REPO_ROOT / "src" / "molt" / "repl.py",
 )
@@ -449,10 +449,17 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
         "static checker fixture that proves unclassified shell process-kill strings fail",
     ),
     AllowedRawSubprocessUse(
-        "src/molt/cli.py",
+        "src/molt/cli/__init__.py",
         "_run_completed_command",
         "run",
         "CLI subprocess helper's explicit unguarded branch for opt-out call sites",
+    ),
+    AllowedRawSubprocessUse(
+        "src/molt/cli/arg_helpers.py",
+        "_reexec_cli_with_hash_seed",
+        "run",
+        "Windows deterministic-PYTHONHASHSEED self-reexec path; POSIX uses "
+        "execvpe and the restarted process preserves the same CLI custody path",
     ),
     AllowedRawSubprocessUse(
         "src/molt/backend_daemon_custody.py",
@@ -480,14 +487,14 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
         "shared subprocess guard helper's explicit unguarded branch for opt-out call sites",
     ),
     AllowedRawSubprocessUse(
-        "src/molt/cli.py",
+        "src/molt/cli/__init__.py",
         "_reexec_cli_with_hash_seed",
         "run",
         "Windows deterministic-PYTHONHASHSEED self-reexec path; POSIX uses "
         "execvpe and the restarted process preserves the same CLI custody path",
     ),
     AllowedRawSubprocessUse(
-        "src/molt/cli.py",
+        "src/molt/cli/__init__.py",
         "_start_backend_daemon",
         "Popen",
         "backend daemon start uses HarnessExecutionContext, process-group kwargs, "

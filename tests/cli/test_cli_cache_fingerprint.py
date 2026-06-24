@@ -9,6 +9,10 @@ import pytest
 import molt.cli as cli
 
 
+def _cli_init(root: Path) -> Path:
+    return root / "src" / "molt" / "cli" / "__init__.py"
+
+
 def _tiny_ir() -> dict[str, Any]:
     return {
         "module": "__main__",
@@ -71,14 +75,14 @@ def test_cache_tooling_fingerprint_changes_when_tooling_source_changes_in_proces
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     root = tmp_path / "repo"
-    cli_source = root / "src" / "molt" / "cli.py"
+    cli_source = _cli_init(root)
     frontend_source = root / "src" / "molt" / "frontend" / "__init__.py"
     cli_source.parent.mkdir(parents=True)
     frontend_source.parent.mkdir(parents=True)
     cli_source.write_text("CLI_MARKER = 1\n", encoding="utf-8")
     frontend_source.write_text("FRONTEND_MARKER = 1\n", encoding="utf-8")
 
-    monkeypatch.setattr(cli, "Path", lambda _value: cli_source)
+    monkeypatch.setattr(cli, "_COMPILER_ROOT", root)
 
     first = cli._cache_tooling_fingerprint()
 
@@ -93,7 +97,7 @@ def test_cache_tooling_fingerprint_tracks_frontend_helper_modules(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     root = tmp_path / "repo"
-    cli_source = root / "src" / "molt" / "cli.py"
+    cli_source = _cli_init(root)
     frontend_init = root / "src" / "molt" / "frontend" / "__init__.py"
     cfg_analysis = root / "src" / "molt" / "frontend" / "cfg_analysis.py"
     tv_hooks = root / "src" / "molt" / "frontend" / "tv_hooks.py"
@@ -102,7 +106,7 @@ def test_cache_tooling_fingerprint_tracks_frontend_helper_modules(
         source.parent.mkdir(parents=True, exist_ok=True)
         source.write_text(f"{source.stem.upper()}_MARKER = 1\n", encoding="utf-8")
 
-    monkeypatch.setattr(cli, "Path", lambda _value: cli_source)
+    monkeypatch.setattr(cli, "_COMPILER_ROOT", root)
 
     first = cli._cache_tooling_fingerprint()
 
@@ -119,7 +123,7 @@ def test_cache_tooling_fingerprint_ignores_frontend_bytecode_cache(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     root = tmp_path / "repo"
-    cli_source = root / "src" / "molt" / "cli.py"
+    cli_source = _cli_init(root)
     frontend_init = root / "src" / "molt" / "frontend" / "__init__.py"
     pycache = (
         root
@@ -133,7 +137,7 @@ def test_cache_tooling_fingerprint_ignores_frontend_bytecode_cache(
         source.parent.mkdir(parents=True, exist_ok=True)
         source.write_bytes(b"marker-1\n")
 
-    monkeypatch.setattr(cli, "Path", lambda _value: cli_source)
+    monkeypatch.setattr(cli, "_COMPILER_ROOT", root)
 
     first = cli._cache_tooling_fingerprint()
 

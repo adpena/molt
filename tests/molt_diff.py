@@ -1058,7 +1058,7 @@ def _list_process_rows() -> list[tuple[int, int, int, str]]:
 
 def _is_diff_build_helper_command(cmd: str) -> bool:
     if "internal-batch-build-server" in cmd and (
-        "-m molt.cli" in cmd or "src/molt/cli.py" in cmd
+        "-m molt.cli" in cmd or "src/molt/cli/__init__.py" in cmd
     ):
         return True
     # Restrict to helper processes tied to diff temp dirs so we don't interfere
@@ -1067,7 +1067,7 @@ def _is_diff_build_helper_command(cmd: str) -> bool:
         return False
     if "molt-backend" in cmd and "--output" in cmd and "--daemon" not in cmd:
         return True
-    if ("-m molt.cli build " in cmd) or ("src/molt/cli.py build " in cmd):
+    if ("-m molt.cli build " in cmd) or ("src/molt/cli/__init__.py build " in cmd):
         return True
     if cmd.rstrip().endswith("_molt"):
         return True

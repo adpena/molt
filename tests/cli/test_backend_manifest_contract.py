@@ -217,7 +217,7 @@ def test_runtime_micro_profile_includes_core_non_network_intrinsics() -> None:
 
 
 def test_cli_micro_base_mirror_does_not_drift_from_cargo_stdlib_micro() -> None:
-    """cli.py's profile-availability mirror must equal Cargo.toml ``stdlib_micro``.
+    """The CLI profile-availability mirror must equal Cargo.toml ``stdlib_micro``.
 
     ``_MICRO_BASE_RUNTIME_FEATURES`` is a hand-maintained Python mirror of the
     Cargo ``stdlib_micro`` feature list, which is the always-linked base of every
@@ -237,7 +237,7 @@ def test_cli_micro_base_mirror_does_not_drift_from_cargo_stdlib_micro() -> None:
     micro_features = runtime_manifest["features"]["stdlib_micro"]
 
     assert set(_MICRO_BASE_RUNTIME_FEATURES) == set(micro_features), (
-        "cli.py _MICRO_BASE_RUNTIME_FEATURES drifted from Cargo.toml stdlib_micro: "
+        "CLI _MICRO_BASE_RUNTIME_FEATURES drifted from Cargo.toml stdlib_micro: "
         f"cli={sorted(_MICRO_BASE_RUNTIME_FEATURES)} cargo={sorted(micro_features)}"
     )
 

@@ -33,6 +33,10 @@ def _coerce_bool(*args: Any, **kwargs: Any) -> bool:
     return _cli_module()._coerce_bool(*args, **kwargs)
 
 
+def _compiler_root() -> Path:
+    return _cli_module()._compiler_root()
+
+
 def _codesign_binary(binary_path: Path) -> None:
     """Ad-hoc codesign a binary on macOS."""
     if sys.platform != "darwin":
@@ -86,7 +90,7 @@ def _run_bolt_post_link(
         return 0
 
     # Locate the BOLT wrapper script.
-    bolt_script = Path(__file__).resolve().parents[2] / "tools" / "bolt_optimize.sh"
+    bolt_script = _compiler_root() / "tools" / "bolt_optimize.sh"
     if not bolt_script.exists():
         msg = f"BOLT script not found: {bolt_script}"
         if json_output:

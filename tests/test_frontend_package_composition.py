@@ -23,7 +23,6 @@ import ast
 import importlib
 import inspect
 import json
-import subprocess
 import sys
 from pathlib import Path
 
@@ -35,11 +34,12 @@ from molt.frontend import (
     compile_to_tir,
 )
 from molt.frontend._protocol import _GeneratorProtocol
+from tests.process_guard_common import run_guarded_test_process
 
 ROOT = Path(__file__).resolve().parents[1]
 FRONTEND_DIR = ROOT / "src" / "molt" / "frontend"
 
-# The public names that external consumers (cli.py, debug/ir.py, tests, tools)
+# The public names that external consumers (the CLI package, debug/ir.py, tests, tools)
 # import from molt.frontend. This is the backward-compatibility contract.
 PUBLIC_SURFACE = [
     "MoltValue",
@@ -248,12 +248,10 @@ def test_protocol_covers_full_class_attr_surface() -> None:
 
 def test_protocol_generator_is_idempotent() -> None:
     """The tracked protocol generator must reproduce the checked-in files."""
-    proc = subprocess.run(
+    proc = run_guarded_test_process(
         [sys.executable, str(ROOT / "tools" / "gen_protocol.py"), "--check"],
+        prefix="MOLT_TEST_SUITE",
         cwd=ROOT,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
         check=False,
     )
     assert proc.returncode == 0, proc.stdout + proc.stderr

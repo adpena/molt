@@ -410,7 +410,7 @@ def test_wasm_import_function_result_kinds_parses_objdump_output(
             stderr="",
         )
 
-    monkeypatch.setattr("molt.cli.subprocess.run", fake_run)
+    monkeypatch.setattr("molt.cli.wasm._run_completed_command", fake_run)
 
     assert _wasm_import_function_result_kinds(
         wasm_path, module_name="molt_runtime"
@@ -452,7 +452,7 @@ def test_wasm_import_function_signatures_parses_objdump_output(
             stderr="",
         )
 
-    monkeypatch.setattr("molt.cli.subprocess.run", fake_run)
+    monkeypatch.setattr("molt.cli.wasm._run_completed_command", fake_run)
 
     assert _wasm_import_function_signatures(wasm_path, module_name="molt_runtime") == {
         "molt_function_set_builtin": {"params": ["i64"], "result": "i64"},
@@ -493,7 +493,7 @@ def test_wasm_export_function_signatures_parses_objdump_output(
             stderr="",
         )
 
-    monkeypatch.setattr("molt.cli.subprocess.run", fake_run)
+    monkeypatch.setattr("molt.cli.wasm._run_completed_command", fake_run)
 
     assert _wasm_export_function_signatures(
         wasm_path, export_name_prefix="__molt_table_ref_"
