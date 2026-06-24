@@ -48,3 +48,296 @@ def test_benchmark_taxonomy_fallback_is_schema_vetted() -> None:
     assert attr.suspected_missing_fact == "Repr/TirType numeric lane"
     assert attr.fact_class in schema.FACT_CLASSES
     assert 0.0 <= attr.attribution_confidence <= 1.0
+
+
+def test_pass_delta_dashboard_joins_cycle_confidence() -> None:
+    attr = causality.derive_attribution(
+        "tests/benchmarks/bench_exception_heavy.py",
+        [
+            {
+                "symbol": "molt_runtime::builtins::exceptions::record_exception",
+                "self_samples": 30,
+            },
+            {"symbol": "molt_runtime::loop_body", "self_samples": 70},
+        ],
+        pass_delta_dashboard={
+            "risk_records": [
+                {
+                    "function": "bench_exception_heavy__molt_user_main",
+                    "pass": "drop_insertion",
+                    "signals": {
+                        "added_exception_events": 2,
+                        "added_rc_events": 3,
+                    },
+                    "lost_repr_values": {},
+                    "score": 5,
+                }
+            ],
+            "by_pass": [],
+        },
+    )
+
+    assert attr.source == "cycle_profile"
+    assert attr.evidence_sources == ("pass_delta_dashboard",)
+    assert attr.pass_delta_score == 5
+    assert attr.pass_delta_passes == ("drop_insertion",)
+    assert attr.pass_delta_fact_classes == ("exception_region", "ownership_lattice")
+    assert attr.attribution_confidence == 0.65
+
+
+def test_call_fact_census_joins_only_fresh_call_fact_attribution() -> None:
+    attr = causality.derive_attribution(
+        "tests/benchmarks/bench_attr_dispatch.py",
+        [
+            {"symbol": "molt_generic_call", "self_samples": 3},
+            {"symbol": "molt_runtime::loop_body", "self_samples": 7},
+        ],
+        pass_delta_dashboard={
+            "risk_records": [
+                {
+                    "function": "bench_attr_dispatch__molt_user_main",
+                    "pass": "call_facts",
+                    "signals": {"added_generic_calls": 2},
+                    "lost_repr_values": {},
+                    "score": 2,
+                }
+            ],
+            "by_pass": [],
+        },
+        call_fact_coverage={
+            "census": {
+                "attached": 5,
+                "transient": 2,
+                "stale_evidence": [],
+            }
+        },
+    )
+
+    assert attr.fact_class == "call_facts"
+    assert attr.source == "cycle_profile"
+    assert attr.evidence_sources == (
+        "pass_delta_dashboard",
+        "call_fact_coverage",
+    )
+    assert attr.call_fact_attached == 5
+    assert attr.call_fact_transient == 2
+    assert attr.attribution_confidence == 0.75
+
+
+def test_cli_accepts_pass_delta_and_call_fact_artifacts(tmp_path: Path, capsys) -> None:
+    profile = tmp_path / "hot_profile.json"
+    pass_delta = tmp_path / "pass_delta.json"
+    call_facts = tmp_path / "call_facts.json"
+    profile.write_text(
+        json.dumps(
+            {
+                "cells": [
+                    {
+                        "benchmark": "tests/benchmarks/bench_attr_dispatch.py",
+                        "cycle_profile": {
+                            "in_binary_top": [
+                                {"symbol": "molt_generic_call", "self_samples": 3},
+                                {
+                                    "symbol": "molt_runtime::loop_body",
+                                    "self_samples": 7,
+                                },
+                            ]
+                        },
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    pass_delta.write_text(
+        json.dumps(
+            {
+                "risk_records": [
+                    {
+                        "function": "bench_attr_dispatch__molt_user_main",
+                        "pass": "call_facts",
+                        "signals": {"added_generic_calls": 2},
+                        "lost_repr_values": {},
+                        "score": 2,
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    call_facts.write_text(
+        json.dumps(
+            {
+                "census": {
+                    "attached": 5,
+                    "transient": 2,
+                    "stale_evidence": [],
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    rc = causality.main(
+        [
+            str(profile),
+            "--pass-delta-dashboard",
+            str(pass_delta),
+            "--call-fact-coverage",
+            str(call_facts),
+            "--json",
+        ]
+    )
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+
+    assert rc == 0
+    assert payload[0]["source"] == "cycle_profile"
+    assert payload[0]["evidence_sources"] == [
+        "pass_delta_dashboard",
+        "call_fact_coverage",
+    ]
+    assert payload[0]["call_fact_attached"] == 5
+
+
+def test_by_pass_support_joins_without_replacing_primary_class() -> None:
+    attr = causality.derive_attribution(
+        "tests/benchmarks/bench_exception_heavy.py",
+        [
+            {
+                "symbol": "molt_runtime::builtins::exceptions::record_exception",
+                "self_samples": 9,
+            }
+        ],
+        pass_delta_dashboard={
+            "by_pass": [
+                {
+                    "pass": "drop_insertion",
+                    "functions": ["bench_exception_heavy_main"],
+                    "score": 4,
+                    "added_rc_events": 4,
+                }
+            ]
+        },
+    )
+
+    assert attr.source == "cycle_profile"
+    assert attr.evidence_sources == ("pass_delta_dashboard",)
+    assert attr.pass_delta_score == 4
+    assert attr.pass_delta_passes == ("drop_insertion",)
+    assert attr.pass_delta_fact_classes == ("ownership_lattice",)
+
+
+def test_pass_delta_dashboard_support_joins_taxonomy_fallback() -> None:
+    attr = causality.derive_attribution(
+        "tests/benchmarks/bench_etl_orders.py",
+        pass_delta_dashboard={
+            "by_pass": [
+                {
+                    "pass": "unboxing",
+                    "functions": ["bench_etl_orders_main"],
+                    "score": 3,
+                    "added_box_ops": 2,
+                    "call_results_dynbox_delta": 1,
+                }
+            ]
+        },
+    )
+
+    assert attr.source == "benchmark_taxonomy"
+    assert attr.fact_class == "shape_facts"
+    assert attr.evidence_sources == ("pass_delta_dashboard",)
+    assert attr.pass_delta_score == 3
+    assert attr.pass_delta_fact_classes == ("repr_tir_type_lattice",)
+
+
+def test_pass_delta_evidence_join_when_compatible() -> None:
+    dashboard = {
+        "by_pass": [
+            {
+                "pass": "unboxing",
+                "functions": ["bench_fib_main"],
+                "score": 5,
+                "added_box_ops": 2,
+                "call_results_dynbox_delta": 1,
+            },
+            {
+                "pass": "drop_insertion",
+                "functions": ["bench_exception_heavy_main"],
+                "score": 9,
+                "added_exception_events": 9,
+            },
+        ]
+    }
+    attr = causality.derive_attribution(
+        "tests/benchmarks/bench_fib.py",
+        pass_delta_dashboard=dashboard,
+    )
+
+    assert attr.pass_delta_score == 5
+    assert attr.pass_delta_passes == ("unboxing",)
+    assert attr.pass_delta_fact_classes == ("repr_tir_type_lattice",)
+    assert attr.evidence_sources == ("pass_delta_dashboard",)
+
+
+def test_call_fact_coverage_joins_call_fact_attribution() -> None:
+    attr = causality.derive_attribution(
+        "tests/benchmarks/bench_attr_access.py",
+        call_fact_coverage={"attached": 5, "transient": 2},
+    )
+
+    assert attr.fact_class == "call_facts"
+    assert attr.source == "benchmark_taxonomy"
+    assert attr.call_fact_attached == 5
+    assert attr.call_fact_transient == 2
+    assert attr.evidence_sources == ("call_fact_coverage",)
+
+
+def test_pass_delta_incompatible_signal_does_not_override_primary_class() -> None:
+    dashboard = {
+        "by_pass": [
+            {
+                "pass": "drop_insertion",
+                "functions": ["bench_fib_main"],
+                "score": 9,
+                "added_exception_events": 9,
+            }
+        ]
+    }
+
+    attr = causality.derive_attribution(
+        "tests/benchmarks/bench_fib.py",
+        pass_delta_dashboard=dashboard,
+    )
+
+    assert attr.fact_class == "repr_tir_type_lattice"
+    assert attr.source == "benchmark_taxonomy"
+    assert attr.pass_delta_score == 0
+    assert attr.pass_delta_passes == ()
+    assert attr.pass_delta_fact_classes == ()
+    assert attr.evidence_sources == ()
+    assert attr.attribution_confidence == 0.35
+
+
+def test_pass_delta_adjacent_repr_signal_supports_shape_fact_attribution() -> None:
+    dashboard = {
+        "by_pass": [
+            {
+                "pass": "string_shape_lowering",
+                "functions": ["bench_etl_orders_main"],
+                "score": 3,
+                "added_box_ops": 1,
+            }
+        ]
+    }
+
+    attr = causality.derive_attribution(
+        "tests/benchmarks/bench_etl_orders.py",
+        pass_delta_dashboard=dashboard,
+    )
+
+    assert attr.fact_class == "shape_facts"
+    assert attr.source == "benchmark_taxonomy"
+    assert attr.pass_delta_score == 3
+    assert attr.pass_delta_fact_classes == ("repr_tir_type_lattice",)
+    assert attr.attribution_confidence == 0.5

@@ -12,7 +12,7 @@ from __future__ import annotations
 import argparse
 import json
 from collections.abc import Iterable, Mapping
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -43,6 +43,12 @@ class PerfAttribution:
     pypy_advantage_class: str | None = None
     reference_class: str | None = None
     codon_semantics: str | None = None
+    evidence_sources: tuple[str, ...] = ()
+    pass_delta_score: int = 0
+    pass_delta_passes: tuple[str, ...] = ()
+    pass_delta_fact_classes: tuple[str, ...] = ()
+    call_fact_attached: int | None = None
+    call_fact_transient: int | None = None
 
     def to_json(self) -> dict[str, Any]:
         return asdict(self)
@@ -158,9 +164,43 @@ CAUSALITY_RULES: tuple[CausalityRule, ...] = (
     ),
 )
 
+_PASS_DELTA_SIGNAL_FACT_CLASSES: dict[str, str] = {
+    "added_box_ops": "repr_tir_type_lattice",
+    "call_results_dynbox_delta": "repr_tir_type_lattice",
+    "lost_call_results_typed_repr": "repr_tir_type_lattice",
+    "added_generic_calls": "call_facts",
+    "added_runtime_helper_calls": "call_facts",
+    "added_type_guard_ops": "call_facts",
+    "added_rc_events": "ownership_lattice",
+    "added_heap_alloc_ops": "ownership_lattice",
+    "added_exception_events": "exception_region",
+}
+
+_COMPATIBLE_PASS_DELTA_CLASSES: dict[str, frozenset[str]] = {
+    "shape_facts": frozenset({"repr_tir_type_lattice", "ownership_lattice"}),
+    "exception_region": frozenset({"ownership_lattice"}),
+}
+
+
+@dataclass(frozen=True)
+class _PassDeltaSupport:
+    score: int
+    passes: tuple[str, ...]
+    fact_classes: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class _CallFactSupport:
+    attached: int
+    transient: int
+
 
 def derive_attribution(
-    benchmark: str, symbols: Iterable[Mapping[str, Any]] | None = None
+    benchmark: str,
+    symbols: Iterable[Mapping[str, Any]] | None = None,
+    *,
+    pass_delta_dashboard: Mapping[str, Any] | None = None,
+    call_fact_coverage: Mapping[str, Any] | None = None,
 ) -> PerfAttribution:
     """Return a deterministic missing-fact attribution for one benchmark."""
 
@@ -174,21 +214,56 @@ def derive_attribution(
             key=lambda item: item[0],
         )
         if score.evidence_samples > 0:
-            return _attribution_from_score(benchmark, rule, score)
+            attr = _attribution_from_score(benchmark, rule, score)
+            return _join_evidence(
+                attr,
+                rule,
+                pass_delta_dashboard=pass_delta_dashboard,
+                call_fact_coverage=call_fact_coverage,
+            )
 
-    return _fallback_attribution(benchmark)
+    attr, rule = _fallback_attribution(benchmark)
+    return _join_evidence(
+        attr,
+        rule,
+        pass_delta_dashboard=pass_delta_dashboard,
+        call_fact_coverage=call_fact_coverage,
+    )
 
 
-def derive_cell_attribution(cell: Mapping[str, Any]) -> PerfAttribution:
+def derive_cell_attribution(
+    cell: Mapping[str, Any],
+    *,
+    pass_delta_dashboard: Mapping[str, Any] | None = None,
+    call_fact_coverage: Mapping[str, Any] | None = None,
+) -> PerfAttribution:
     benchmark = str(cell.get("benchmark") or "unknown")
-    return derive_attribution(benchmark, _profile_symbols_from_cell(cell))
+    return derive_attribution(
+        benchmark,
+        _profile_symbols_from_cell(cell),
+        pass_delta_dashboard=pass_delta_dashboard,
+        call_fact_coverage=call_fact_coverage,
+    )
 
 
-def derive_hot_profile_attributions(doc: Mapping[str, Any]) -> list[PerfAttribution]:
+def derive_hot_profile_attributions(
+    doc: Mapping[str, Any],
+    *,
+    pass_delta_dashboard: Mapping[str, Any] | None = None,
+    call_fact_coverage: Mapping[str, Any] | None = None,
+) -> list[PerfAttribution]:
     cells = doc.get("cells")
     if not isinstance(cells, list):
         return []
-    return [derive_cell_attribution(c) for c in cells if isinstance(c, Mapping)]
+    return [
+        derive_cell_attribution(
+            c,
+            pass_delta_dashboard=pass_delta_dashboard,
+            call_fact_coverage=call_fact_coverage,
+        )
+        for c in cells
+        if isinstance(c, Mapping)
+    ]
 
 
 def _normalize_symbols(
@@ -276,17 +351,20 @@ def _attribution_from_score(
     )
 
 
-def _fallback_attribution(benchmark: str) -> PerfAttribution:
+def _fallback_attribution(benchmark: str) -> tuple[PerfAttribution, CausalityRule]:
     for rule in CAUSALITY_RULES:
         if _benchmark_matches(rule, benchmark):
-            return _make_attribution(
-                benchmark=benchmark,
-                rule=rule,
-                confidence=0.35,
-                evidence_symbols=(),
-                evidence_samples=0,
-                total_samples=0,
-                source="benchmark_taxonomy",
+            return (
+                _make_attribution(
+                    benchmark=benchmark,
+                    rule=rule,
+                    confidence=0.35,
+                    evidence_symbols=(),
+                    evidence_samples=0,
+                    total_samples=0,
+                    source="benchmark_taxonomy",
+                ),
+                rule,
             )
     default = CausalityRule(
         fact_class="ownership_lattice",
@@ -294,14 +372,17 @@ def _fallback_attribution(benchmark: str) -> PerfAttribution:
         symbol_needles=(),
         benchmark_needles=(),
     )
-    return _make_attribution(
-        benchmark=benchmark,
-        rule=default,
-        confidence=0.1,
-        evidence_symbols=(),
-        evidence_samples=0,
-        total_samples=0,
-        source="unknown",
+    return (
+        _make_attribution(
+            benchmark=benchmark,
+            rule=default,
+            confidence=0.1,
+            evidence_symbols=(),
+            evidence_samples=0,
+            total_samples=0,
+            source="unknown",
+        ),
+        default,
     )
 
 
@@ -329,6 +410,257 @@ def _make_attribution(
         reference_class=rule.reference_class,
         codon_semantics=rule.codon_semantics,
     )
+
+
+def _join_evidence(
+    attr: PerfAttribution,
+    rule: CausalityRule,
+    *,
+    pass_delta_dashboard: Mapping[str, Any] | None,
+    call_fact_coverage: Mapping[str, Any] | None,
+) -> PerfAttribution:
+    evidence_sources = list(attr.evidence_sources)
+    confidence = attr.attribution_confidence
+    pass_delta = _pass_delta_support(attr.benchmark, pass_delta_dashboard)
+    if pass_delta is not None and not _pass_delta_supports_rule(rule, pass_delta):
+        pass_delta = None
+    call_facts = _call_fact_support(rule, call_fact_coverage)
+
+    updates: dict[str, Any] = {}
+    if pass_delta is not None:
+        evidence_sources.append("pass_delta_dashboard")
+        confidence += 0.15
+        updates.update(
+            pass_delta_score=pass_delta.score,
+            pass_delta_passes=pass_delta.passes,
+            pass_delta_fact_classes=pass_delta.fact_classes,
+        )
+    if call_facts is not None:
+        evidence_sources.append("call_fact_coverage")
+        if call_facts.transient > 0:
+            confidence += 0.1
+        updates.update(
+            call_fact_attached=call_facts.attached,
+            call_fact_transient=call_facts.transient,
+        )
+    if evidence_sources:
+        updates["evidence_sources"] = tuple(dict.fromkeys(evidence_sources))
+    if confidence != attr.attribution_confidence:
+        updates["attribution_confidence"] = round(min(0.99, confidence), 4)
+    return replace(attr, **updates)
+
+
+def _pass_delta_support(
+    benchmark: str,
+    dashboard: Mapping[str, Any] | None,
+) -> _PassDeltaSupport | None:
+    if not isinstance(dashboard, Mapping):
+        return None
+    selected = _risk_record_support(benchmark, dashboard)
+    if not selected:
+        selected = _by_pass_support(benchmark, dashboard)
+    if not selected:
+        return None
+    selected.sort(key=lambda item: (-item[0], item[1], item[2]))
+    fact_classes_seen = {
+        fact_class for _score, _pass_name, classes in selected for fact_class in classes
+    }
+    return _PassDeltaSupport(
+        score=sum(score for score, _pass_name, _classes in selected),
+        passes=tuple(pass_name for _score, pass_name, _classes in selected[:8]),
+        fact_classes=tuple(sorted(fact_classes_seen)),
+    )
+
+
+def _risk_record_support(
+    benchmark: str, dashboard: Mapping[str, Any]
+) -> list[tuple[int, str, tuple[str, ...]]]:
+    rows = dashboard.get("risk_records")
+    if not isinstance(rows, list):
+        return []
+    benchmark_stem = Path(benchmark).stem.lower()
+    scoped = _dashboard_is_scoped_to_benchmark(dashboard, benchmark_stem)
+    selected: list[tuple[int, str, tuple[str, ...]]] = []
+
+    for row in rows:
+        if not isinstance(row, Mapping):
+            continue
+        if not scoped and not _risk_record_matches(row, benchmark_stem):
+            continue
+        row_classes = _risk_record_fact_classes(row)
+        if not row_classes:
+            continue
+        score = _risk_record_score(row)
+        if score <= 0:
+            continue
+        selected.append((score, str(row.get("pass") or "<unknown>"), row_classes))
+    return selected
+
+
+def _by_pass_support(
+    benchmark: str, dashboard: Mapping[str, Any]
+) -> list[tuple[int, str, tuple[str, ...]]]:
+    rows = dashboard.get("by_pass")
+    if not isinstance(rows, list):
+        return []
+    benchmark_stem = Path(benchmark).stem.lower()
+    scoped = _dashboard_is_scoped_to_benchmark(dashboard, benchmark_stem)
+    selected: list[tuple[int, str, tuple[str, ...]]] = []
+
+    for row in rows:
+        if not isinstance(row, Mapping):
+            continue
+        if not scoped and not _pass_row_matches(row, benchmark_stem):
+            continue
+        row_classes = _by_pass_fact_classes(row)
+        if not row_classes:
+            continue
+        score = _pass_row_score(row)
+        if score <= 0:
+            continue
+        selected.append((score, str(row.get("pass") or "<unknown>"), row_classes))
+    return selected
+
+
+def _dashboard_is_scoped_to_benchmark(
+    dashboard: Mapping[str, Any], benchmark_stem: str
+) -> bool:
+    if not benchmark_stem:
+        return False
+    filters = dashboard.get("filters")
+    if not isinstance(filters, Mapping):
+        return False
+    for key in ("benchmark", "function"):
+        value = filters.get(key)
+        if isinstance(value, str) and (
+            benchmark_stem in Path(value).stem.lower()
+            or benchmark_stem in value.lower()
+        ):
+            return True
+    return False
+
+
+def _risk_record_matches(row: Mapping[str, Any], benchmark_stem: str) -> bool:
+    if not benchmark_stem:
+        return True
+    for key in ("benchmark", "function"):
+        value = row.get(key)
+        if isinstance(value, str) and benchmark_stem in value.lower():
+            return True
+    return False
+
+
+def _risk_record_fact_classes(row: Mapping[str, Any]) -> tuple[str, ...]:
+    fact_classes: set[str] = set()
+    signals = row.get("signals")
+    if isinstance(signals, Mapping):
+        for field, value in signals.items():
+            if _int(value) > 0 and field in _PASS_DELTA_SIGNAL_FACT_CLASSES:
+                fact_classes.add(_PASS_DELTA_SIGNAL_FACT_CLASSES[field])
+    lost_repr = row.get("lost_repr_values")
+    if isinstance(lost_repr, Mapping) and any(
+        _int(value) > 0 for value in lost_repr.values()
+    ):
+        fact_classes.add("repr_tir_type_lattice")
+    return tuple(sorted(fact_classes))
+
+
+def _risk_record_score(row: Mapping[str, Any]) -> int:
+    score = _nonnegative_int(row.get("score"))
+    if score > 0:
+        return score
+    total = 0
+    signals = row.get("signals")
+    if isinstance(signals, Mapping):
+        total += sum(_nonnegative_int(value) for value in signals.values())
+    lost_repr = row.get("lost_repr_values")
+    if isinstance(lost_repr, Mapping):
+        total += sum(_nonnegative_int(value) for value in lost_repr.values())
+    return total
+
+
+def _by_pass_fact_classes(row: Mapping[str, Any]) -> tuple[str, ...]:
+    fact_classes = {
+        _PASS_DELTA_SIGNAL_FACT_CLASSES[field]
+        for field in _PASS_DELTA_SIGNAL_FACT_CLASSES
+        if _positive_signal(row, field)
+    }
+    lost_repr = row.get("lost_repr_values")
+    if isinstance(lost_repr, Mapping) and any(
+        _int(value) > 0 for value in lost_repr.values()
+    ):
+        fact_classes.add("repr_tir_type_lattice")
+    return tuple(sorted(fact_classes))
+
+
+def _pass_row_score(row: Mapping[str, Any]) -> int:
+    score = _nonnegative_int(row.get("score"))
+    if score > 0:
+        return score
+    total = 0
+    for field in _PASS_DELTA_SIGNAL_FACT_CLASSES:
+        if field == "lost_call_results_typed_repr":
+            total += max(0, -_int(row.get("call_results_typed_repr_delta")))
+        else:
+            total += _nonnegative_int(row.get(field))
+    lost_repr = row.get("lost_repr_values")
+    if isinstance(lost_repr, Mapping):
+        total += sum(_nonnegative_int(value) for value in lost_repr.values())
+    return total
+
+
+def _pass_delta_supports_rule(rule: CausalityRule, support: _PassDeltaSupport) -> bool:
+    compatible = {rule.fact_class}
+    compatible.update(_COMPATIBLE_PASS_DELTA_CLASSES.get(rule.fact_class, frozenset()))
+    return any(fact_class in compatible for fact_class in support.fact_classes)
+
+
+def _pass_row_matches(row: Mapping[str, Any], benchmark_stem: str) -> bool:
+    functions = row.get("functions")
+    if not isinstance(functions, list) or not benchmark_stem:
+        return True
+    return any(benchmark_stem in str(function).lower() for function in functions)
+
+
+def _positive_signal(row: Mapping[str, Any], field: str) -> bool:
+    if field == "lost_call_results_typed_repr":
+        return _int(row.get("call_results_typed_repr_delta")) < 0
+    return _int(row.get(field)) > 0
+
+
+def _call_fact_support(
+    rule: CausalityRule, coverage: Mapping[str, Any] | None
+) -> _CallFactSupport | None:
+    if rule.fact_class != "call_facts":
+        return None
+    if not isinstance(coverage, Mapping):
+        return None
+    census = coverage.get("census")
+    if isinstance(census, Mapping):
+        coverage = census
+    stale = coverage.get("stale_evidence")
+    if isinstance(stale, list) and stale:
+        return None
+    attached = coverage.get("attached")
+    transient = coverage.get("transient")
+    if not isinstance(attached, int) or isinstance(attached, bool):
+        return None
+    if not isinstance(transient, int) or isinstance(transient, bool):
+        return None
+    return _CallFactSupport(attached=attached, transient=transient)
+
+
+def _nonnegative_int(value: Any) -> int:
+    parsed = _int(value)
+    return parsed if parsed > 0 else 0
+
+
+def _int(value: Any) -> int:
+    if isinstance(value, bool):
+        return 0
+    if isinstance(value, int):
+        return value
+    return 0
 
 
 def _assert_schema_vocab(rule: CausalityRule) -> None:
@@ -361,15 +693,31 @@ def main(argv: list[str] | None = None) -> int:
         description="derive missing-IR-fact attribution from a hot-profile board"
     )
     parser.add_argument("profile", type=Path, help="hot_profile_*.json")
+    parser.add_argument(
+        "--pass-delta-dashboard",
+        type=Path,
+        help="optional JSON output from tools/pass_delta_dashboard.py --json",
+    )
+    parser.add_argument(
+        "--call-fact-coverage",
+        type=Path,
+        help="optional JSON output from tools/call_fact_coverage.py --json",
+    )
     parser.add_argument("--json", action="store_true", help="emit JSON")
     ns = parser.parse_args(argv)
 
     try:
-        doc = json.loads(ns.profile.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        print(f"cannot read {ns.profile}: {exc}")
+        doc = _read_json_mapping(ns.profile)
+        pass_delta_dashboard = _read_optional_json(ns.pass_delta_dashboard)
+        call_fact_coverage = _read_optional_json(ns.call_fact_coverage)
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
+        print(f"cannot read input: {exc}")
         return 2
-    attributions = derive_hot_profile_attributions(doc)
+    attributions = derive_hot_profile_attributions(
+        doc,
+        pass_delta_dashboard=pass_delta_dashboard,
+        call_fact_coverage=call_fact_coverage,
+    )
     if ns.json:
         print(json.dumps([a.to_json() for a in attributions], indent=2))
     else:
@@ -381,6 +729,19 @@ def main(argv: list[str] | None = None) -> int:
                 f"source={attr.source})"
             )
     return 0 if attributions else 1
+
+
+def _read_optional_json(path: Path | None) -> Mapping[str, Any] | None:
+    if path is None:
+        return None
+    return _read_json_mapping(path)
+
+
+def _read_json_mapping(path: Path) -> Mapping[str, Any]:
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(doc, Mapping):
+        raise ValueError(f"{path}: expected a JSON object")
+    return doc
 
 
 if __name__ == "__main__":
