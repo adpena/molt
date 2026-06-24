@@ -7,9 +7,8 @@ from typing import Any
 
 import pytest
 
-import molt.cli as cli
-
 CACHE_FINGERPRINTS = importlib.import_module("molt.cli.cache_fingerprints")
+CACHE_KEYS = importlib.import_module("molt.cli.cache_keys")
 COMPILER_METADATA = importlib.import_module("molt.cli.compiler_metadata")
 
 
@@ -42,21 +41,23 @@ def isolated_compiler_source(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) ->
     )
     monkeypatch.setattr(CACHE_FINGERPRINTS, "_runtime_source_paths", lambda root: [])
     monkeypatch.setattr(CACHE_FINGERPRINTS, "_rustc_version", lambda: "rustc-test")
-    monkeypatch.setattr(cli, "_cache_tooling_fingerprint", lambda: "tooling-test")
+    monkeypatch.setattr(
+        CACHE_KEYS, "_cache_tooling_fingerprint", lambda: "tooling-test"
+    )
     return source
 
 
 def test_cache_key_changes_when_compiler_source_content_changes_in_process(
     isolated_compiler_source: Path,
 ) -> None:
-    first = cli._cache_key(_tiny_ir(), "native", None, "variant")
+    first = CACHE_KEYS._cache_key(_tiny_ir(), "native", None, "variant")
 
     isolated_compiler_source.write_text(
         "pub fn marker() -> u8 { 2 }\n",
         encoding="utf-8",
     )
 
-    second = cli._cache_key(_tiny_ir(), "native", None, "variant")
+    second = CACHE_KEYS._cache_key(_tiny_ir(), "native", None, "variant")
 
     assert second != first
 
@@ -64,13 +65,13 @@ def test_cache_key_changes_when_compiler_source_content_changes_in_process(
 def test_cache_key_changes_when_compiler_source_mtime_changes_in_process(
     isolated_compiler_source: Path,
 ) -> None:
-    first = cli._cache_key(_tiny_ir(), "native", None, "variant")
+    first = CACHE_KEYS._cache_key(_tiny_ir(), "native", None, "variant")
 
     stat = isolated_compiler_source.stat()
     next_mtime_ns = stat.st_mtime_ns + 5_000_000
     os.utime(isolated_compiler_source, ns=(next_mtime_ns, next_mtime_ns))
 
-    second = cli._cache_key(_tiny_ir(), "native", None, "variant")
+    second = CACHE_KEYS._cache_key(_tiny_ir(), "native", None, "variant")
 
     assert second != first
 
