@@ -77,8 +77,8 @@ def test_pass_delta_dashboard_joins_cycle_confidence() -> None:
         },
     )
 
-    assert attr.source == "cycle_profile"
-    assert attr.evidence_sources == ("pass_delta_dashboard",)
+    assert attr.source == "cycle_profile+pass_delta"
+    assert attr.evidence_sources == ("cycle_profile", "pass_delta")
     assert attr.pass_delta_score == 5
     assert attr.pass_delta_passes == ("drop_insertion",)
     assert attr.pass_delta_fact_classes == ("exception_region", "ownership_lattice")
@@ -114,10 +114,11 @@ def test_call_fact_census_joins_only_fresh_call_fact_attribution() -> None:
     )
 
     assert attr.fact_class == "call_facts"
-    assert attr.source == "cycle_profile"
+    assert attr.source == "cycle_profile+pass_delta+call_fact_census"
     assert attr.evidence_sources == (
-        "pass_delta_dashboard",
-        "call_fact_coverage",
+        "cycle_profile",
+        "pass_delta",
+        "call_fact_census",
     )
     assert attr.call_fact_attached == 5
     assert attr.call_fact_transient == 2
@@ -192,10 +193,11 @@ def test_cli_accepts_pass_delta_and_call_fact_artifacts(tmp_path: Path, capsys) 
     payload = json.loads(captured.out)
 
     assert rc == 0
-    assert payload[0]["source"] == "cycle_profile"
+    assert payload[0]["source"] == "cycle_profile+pass_delta+call_fact_census"
     assert payload[0]["evidence_sources"] == [
-        "pass_delta_dashboard",
-        "call_fact_coverage",
+        "cycle_profile",
+        "pass_delta",
+        "call_fact_census",
     ]
     assert payload[0]["call_fact_attached"] == 5
 
@@ -221,8 +223,8 @@ def test_by_pass_support_joins_without_replacing_primary_class() -> None:
         },
     )
 
-    assert attr.source == "cycle_profile"
-    assert attr.evidence_sources == ("pass_delta_dashboard",)
+    assert attr.source == "cycle_profile+pass_delta"
+    assert attr.evidence_sources == ("cycle_profile", "pass_delta")
     assert attr.pass_delta_score == 4
     assert attr.pass_delta_passes == ("drop_insertion",)
     assert attr.pass_delta_fact_classes == ("ownership_lattice",)
@@ -244,9 +246,9 @@ def test_pass_delta_dashboard_support_joins_taxonomy_fallback() -> None:
         },
     )
 
-    assert attr.source == "benchmark_taxonomy"
+    assert attr.source == "benchmark_taxonomy+pass_delta"
     assert attr.fact_class == "shape_facts"
-    assert attr.evidence_sources == ("pass_delta_dashboard",)
+    assert attr.evidence_sources == ("benchmark_taxonomy", "pass_delta")
     assert attr.pass_delta_score == 3
     assert attr.pass_delta_fact_classes == ("repr_tir_type_lattice",)
 
@@ -277,7 +279,7 @@ def test_pass_delta_evidence_join_when_compatible() -> None:
     assert attr.pass_delta_score == 5
     assert attr.pass_delta_passes == ("unboxing",)
     assert attr.pass_delta_fact_classes == ("repr_tir_type_lattice",)
-    assert attr.evidence_sources == ("pass_delta_dashboard",)
+    assert attr.evidence_sources == ("benchmark_taxonomy", "pass_delta")
 
 
 def test_call_fact_coverage_joins_call_fact_attribution() -> None:
@@ -287,10 +289,10 @@ def test_call_fact_coverage_joins_call_fact_attribution() -> None:
     )
 
     assert attr.fact_class == "call_facts"
-    assert attr.source == "benchmark_taxonomy"
+    assert attr.source == "benchmark_taxonomy+call_fact_census"
     assert attr.call_fact_attached == 5
     assert attr.call_fact_transient == 2
-    assert attr.evidence_sources == ("call_fact_coverage",)
+    assert attr.evidence_sources == ("benchmark_taxonomy", "call_fact_census")
 
 
 def test_pass_delta_incompatible_signal_does_not_override_primary_class() -> None:
@@ -311,12 +313,12 @@ def test_pass_delta_incompatible_signal_does_not_override_primary_class() -> Non
     )
 
     assert attr.fact_class == "repr_tir_type_lattice"
-    assert attr.source == "benchmark_taxonomy"
-    assert attr.pass_delta_score == 0
-    assert attr.pass_delta_passes == ()
-    assert attr.pass_delta_fact_classes == ()
-    assert attr.evidence_sources == ()
-    assert attr.attribution_confidence == 0.35
+    assert attr.source == "benchmark_taxonomy+pass_delta"
+    assert attr.pass_delta_score == 9
+    assert attr.pass_delta_passes == ("drop_insertion",)
+    assert attr.pass_delta_fact_classes == ("exception_region",)
+    assert attr.evidence_sources == ("benchmark_taxonomy", "pass_delta")
+    assert attr.attribution_confidence == 0.4
 
 
 def test_pass_delta_adjacent_repr_signal_supports_shape_fact_attribution() -> None:
@@ -337,7 +339,7 @@ def test_pass_delta_adjacent_repr_signal_supports_shape_fact_attribution() -> No
     )
 
     assert attr.fact_class == "shape_facts"
-    assert attr.source == "benchmark_taxonomy"
+    assert attr.source == "benchmark_taxonomy+pass_delta"
     assert attr.pass_delta_score == 3
     assert attr.pass_delta_fact_classes == ("repr_tir_type_lattice",)
     assert attr.attribution_confidence == 0.5
