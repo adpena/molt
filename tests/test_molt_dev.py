@@ -821,7 +821,7 @@ def test_probe_file_and_pid(drv, tmp_path):
     f.write_text("data\n", encoding="utf-8")
     info = drv.probe_path(f)
     assert info["exists"] is True
-    assert info["size"] == 5
+    assert info["size"] == f.stat().st_size
     assert "mtime" in info
     live = drv.probe_pid(os.getpid())
     assert live["alive"] is True
