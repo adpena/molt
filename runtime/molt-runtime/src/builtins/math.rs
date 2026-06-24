@@ -683,12 +683,12 @@ unsafe fn sum_f64_simd_x86_avx(values: &[f64]) -> f64 {
     let mut i = 0usize;
     let mut acc = _mm256_setzero_pd();
     while i + 4 <= values.len() {
-        let v = _mm256_loadu_pd(values.as_ptr().add(i));
+        let v = unsafe { _mm256_loadu_pd(values.as_ptr().add(i)) };
         acc = _mm256_add_pd(acc, v);
         i += 4;
     }
     let mut lanes = [0.0_f64; 4];
-    _mm256_storeu_pd(lanes.as_mut_ptr(), acc);
+    unsafe { _mm256_storeu_pd(lanes.as_mut_ptr(), acc) };
     let mut sum = lanes.iter().sum::<f64>();
     for &v in &values[i..] {
         sum += v;
@@ -703,12 +703,12 @@ unsafe fn sum_f64_simd_x86_sse2(values: &[f64]) -> f64 {
     let mut i = 0usize;
     let mut acc = _mm_setzero_pd();
     while i + 2 <= values.len() {
-        let v = _mm_loadu_pd(values.as_ptr().add(i));
+        let v = unsafe { _mm_loadu_pd(values.as_ptr().add(i)) };
         acc = _mm_add_pd(acc, v);
         i += 2;
     }
     let mut lanes = [0.0_f64; 2];
-    _mm_storeu_pd(lanes.as_mut_ptr(), acc);
+    unsafe { _mm_storeu_pd(lanes.as_mut_ptr(), acc) };
     let mut sum = lanes[0] + lanes[1];
     for &v in &values[i..] {
         sum += v;
@@ -790,13 +790,13 @@ unsafe fn sum_sq_diff_f64_simd_x86_avx(values: &[f64], mean: f64) -> f64 {
     let mut i = 0usize;
     let mut acc = _mm256_setzero_pd();
     while i + 4 <= values.len() {
-        let v = _mm256_loadu_pd(values.as_ptr().add(i));
+        let v = unsafe { _mm256_loadu_pd(values.as_ptr().add(i)) };
         let d = _mm256_sub_pd(v, mean_v);
         acc = _mm256_add_pd(acc, _mm256_mul_pd(d, d));
         i += 4;
     }
     let mut lanes = [0.0_f64; 4];
-    _mm256_storeu_pd(lanes.as_mut_ptr(), acc);
+    unsafe { _mm256_storeu_pd(lanes.as_mut_ptr(), acc) };
     let mut sum = lanes.iter().sum::<f64>();
     for &v in &values[i..] {
         let d = v - mean;
@@ -813,13 +813,13 @@ unsafe fn sum_sq_diff_f64_simd_x86_sse2(values: &[f64], mean: f64) -> f64 {
     let mut i = 0usize;
     let mut acc = _mm_setzero_pd();
     while i + 2 <= values.len() {
-        let v = _mm_loadu_pd(values.as_ptr().add(i));
+        let v = unsafe { _mm_loadu_pd(values.as_ptr().add(i)) };
         let d = _mm_sub_pd(v, mean_v);
         acc = _mm_add_pd(acc, _mm_mul_pd(d, d));
         i += 2;
     }
     let mut lanes = [0.0_f64; 2];
-    _mm_storeu_pd(lanes.as_mut_ptr(), acc);
+    unsafe { _mm_storeu_pd(lanes.as_mut_ptr(), acc) };
     let mut sum = lanes[0] + lanes[1];
     for &v in &values[i..] {
         let d = v - mean;
@@ -2324,103 +2324,100 @@ pub extern "C" fn molt_math_hypot(args_bits: u64) -> u64 {
         let Some(args_ptr) = args_obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "hypot() expected arguments");
         };
-        unsafe {
-            if object_type_id(args_ptr) != TYPE_ID_TUPLE {
-                return raise_exception::<_>(_py, "TypeError", "hypot() expected arguments");
+        if unsafe { object_type_id(args_ptr) } != TYPE_ID_TUPLE {
+            return raise_exception::<_>(_py, "TypeError", "hypot() expected arguments");
+        }
+        let elems = unsafe { seq_vec_ref(args_ptr) };
+        if elems.is_empty() {
+            return float_result_bits(_py, 0.0);
+        }
+        // Pre-extract all f64 values for SIMD processing
+        let mut vals: Vec<f64> = Vec::with_capacity(elems.len());
+        for &val_bits in elems {
+            let Some(value) = coerce_real_named(_py, val_bits, "hypot") else {
+                return MoltObject::none().bits();
+            };
+            let Some(f) = coerce_to_f64(_py, value) else {
+                return MoltObject::none().bits();
+            };
+            vals.push(f);
+        }
+        // SIMD-accelerated sum-of-squares with sqrt
+        let n = vals.len();
+        let mut sum_sq = 0.0_f64;
+        let mut i = 0usize;
+        #[cfg(target_arch = "aarch64")]
+        {
+            if n >= 2 && std::arch::is_aarch64_feature_detected!("neon") {
+                use std::arch::aarch64::*;
+                let mut vec_sum = vdupq_n_f64(0.0);
+                while i + 2 <= n {
+                    let v = vld1q_f64(vals.as_ptr().add(i));
+                    vec_sum = vfmaq_f64(vec_sum, v, v);
+                    i += 2;
+                }
+                let mut lanes = [0.0f64; 2];
+                vst1q_f64(lanes.as_mut_ptr(), vec_sum);
+                sum_sq = lanes[0] + lanes[1];
             }
-            let elems = seq_vec_ref(args_ptr);
-            if elems.is_empty() {
-                return float_result_bits(_py, 0.0);
-            }
-            // Pre-extract all f64 values for SIMD processing
-            let mut vals: Vec<f64> = Vec::with_capacity(elems.len());
-            for &val_bits in elems {
-                let Some(value) = coerce_real_named(_py, val_bits, "hypot") else {
-                    return MoltObject::none().bits();
-                };
-                let Some(f) = coerce_to_f64(_py, value) else {
-                    return MoltObject::none().bits();
-                };
-                vals.push(f);
-            }
-            // SIMD-accelerated sum-of-squares with sqrt
-            let n = vals.len();
-            let mut sum_sq = 0.0_f64;
-            let mut i = 0usize;
-            #[cfg(target_arch = "aarch64")]
-            {
-                if n >= 2 && std::arch::is_aarch64_feature_detected!("neon") {
-                    use std::arch::aarch64::*;
-                    let mut vec_sum = vdupq_n_f64(0.0);
+        }
+        #[cfg(target_arch = "x86_64")]
+        {
+            if n >= 4 && std::arch::is_x86_feature_detected!("avx2") {
+                unsafe {
+                    use std::arch::x86_64::*;
+                    let mut vec_sum = _mm256_setzero_pd();
+                    while i + 4 <= n {
+                        let v = _mm256_loadu_pd(vals.as_ptr().add(i));
+                        vec_sum = _mm256_add_pd(vec_sum, _mm256_mul_pd(v, v));
+                        i += 4;
+                    }
+                    let mut lanes = [0.0f64; 4];
+                    _mm256_storeu_pd(lanes.as_mut_ptr(), vec_sum);
+                    sum_sq = lanes[0] + lanes[1] + lanes[2] + lanes[3];
+                }
+            } else if n >= 2 && std::arch::is_x86_feature_detected!("sse2") {
+                unsafe {
+                    use std::arch::x86_64::*;
+                    let mut vec_sum = _mm_setzero_pd();
                     while i + 2 <= n {
-                        let v = vld1q_f64(vals.as_ptr().add(i));
-                        vec_sum = vfmaq_f64(vec_sum, v, v);
+                        let v = _mm_loadu_pd(vals.as_ptr().add(i));
+                        vec_sum = _mm_add_pd(vec_sum, _mm_mul_pd(v, v));
                         i += 2;
                     }
                     let mut lanes = [0.0f64; 2];
-                    vst1q_f64(lanes.as_mut_ptr(), vec_sum);
+                    _mm_storeu_pd(lanes.as_mut_ptr(), vec_sum);
                     sum_sq = lanes[0] + lanes[1];
                 }
             }
-            #[cfg(target_arch = "x86_64")]
-            {
-                if n >= 4 && std::arch::is_x86_feature_detected!("avx2") {
-                    unsafe {
-                        use std::arch::x86_64::*;
-                        let mut vec_sum = _mm256_setzero_pd();
-                        while i + 4 <= n {
-                            let v = _mm256_loadu_pd(vals.as_ptr().add(i));
-                            vec_sum = _mm256_add_pd(vec_sum, _mm256_mul_pd(v, v));
-                            i += 4;
-                        }
-                        let mut lanes = [0.0f64; 4];
-                        _mm256_storeu_pd(lanes.as_mut_ptr(), vec_sum);
-                        sum_sq = lanes[0] + lanes[1] + lanes[2] + lanes[3];
-                    }
-                } else if n >= 2 && std::arch::is_x86_feature_detected!("sse2") {
-                    unsafe {
-                        use std::arch::x86_64::*;
-                        let mut vec_sum = _mm_setzero_pd();
-                        while i + 2 <= n {
-                            let v = _mm_loadu_pd(vals.as_ptr().add(i));
-                            vec_sum = _mm_add_pd(vec_sum, _mm_mul_pd(v, v));
-                            i += 2;
-                        }
-                        let mut lanes = [0.0f64; 2];
-                        _mm_storeu_pd(lanes.as_mut_ptr(), vec_sum);
-                        sum_sq = lanes[0] + lanes[1];
-                    }
-                }
-            }
-            #[cfg(target_arch = "wasm32")]
-            {
-                if n >= 2 {
-                    unsafe {
-                        use std::arch::wasm32::*;
-                        let mut vec_sum = f64x2_splat(0.0);
-                        while i + 2 <= n {
-                            let v = v128_load(vals.as_ptr().add(i) as *const v128);
-                            vec_sum = f64x2_add(vec_sum, f64x2_mul(v, v));
-                            i += 2;
-                        }
-                        sum_sq =
-                            f64x2_extract_lane::<0>(vec_sum) + f64x2_extract_lane::<1>(vec_sum);
-                    }
-                }
-            }
-            for &val in vals.iter().take(n).skip(i) {
-                sum_sq += val * val;
-            }
-            if !sum_sq.is_finite() {
-                // Fallback to iterative hypot for numerical stability
-                let mut total = 0.0_f64;
-                for &f in &vals {
-                    total = math_hypot(total, f);
-                }
-                return float_result_bits(_py, total);
-            }
-            float_result_bits(_py, sum_sq.sqrt())
         }
+        #[cfg(target_arch = "wasm32")]
+        {
+            if n >= 2 {
+                unsafe {
+                    use std::arch::wasm32::*;
+                    let mut vec_sum = f64x2_splat(0.0);
+                    while i + 2 <= n {
+                        let v = v128_load(vals.as_ptr().add(i) as *const v128);
+                        vec_sum = f64x2_add(vec_sum, f64x2_mul(v, v));
+                        i += 2;
+                    }
+                    sum_sq = f64x2_extract_lane::<0>(vec_sum) + f64x2_extract_lane::<1>(vec_sum);
+                }
+            }
+        }
+        for &val in vals.iter().take(n).skip(i) {
+            sum_sq += val * val;
+        }
+        if !sum_sq.is_finite() {
+            // Fallback to iterative hypot for numerical stability
+            let mut total = 0.0_f64;
+            for &f in &vals {
+                total = math_hypot(total, f);
+            }
+            return float_result_bits(_py, total);
+        }
+        float_result_bits(_py, sum_sq.sqrt())
     })
 }
 
