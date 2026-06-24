@@ -160,14 +160,14 @@ def test_runtime_lib_path_is_stdlib_profile_qualified(
     )
 
     assert micro != full
-    assert micro.name == "libmolt_runtime.stdlib_micro.a"
-    assert full.name == "libmolt_runtime.stdlib_full.a"
+    assert micro.name == cli._runtime_lib_archive_name("micro", None)
+    assert full.name == cli._runtime_lib_archive_name("full", None)
     assert target_micro == (
         tmp_path
         / "target"
         / "aarch64-apple-darwin"
         / "dev-fast"
-        / "libmolt_runtime.stdlib_micro.a"
+        / cli._runtime_lib_archive_name("micro", "aarch64-apple-darwin")
     )
 
 

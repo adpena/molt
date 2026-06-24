@@ -140,6 +140,10 @@ from molt.cli.atomic_io import (
     _atomic_write_text,
     _write_json_sidecar,
 )
+from molt.cli.backend_daemon_config import (
+    _backend_daemon_enabled,
+    _backend_daemon_enabled_cached,
+)
 from molt.cli.backend_diagnostics import (
     _BACKEND_DIAGNOSTIC_ENV_KNOBS as _BACKEND_DIAGNOSTIC_ENV_KNOBS,
     _FALSY_ENV_VALUES,
@@ -252,6 +256,19 @@ from molt.cli.project_roots import (
     _has_project_markers,
     _require_molt_root,
     _resolve_root_override,
+)
+from molt.cli.runtime_paths import (
+    _RUNTIME_STDLIB_PROFILE_ALIASES,
+    _cargo_profile_dir,
+    _cargo_target_root,
+    _cargo_target_root_cached,
+    _molt_session_id,
+    _normalize_runtime_stdlib_profile,
+    _runtime_lib_archive_name,
+    _runtime_lib_path,
+    _runtime_lib_path_cached,
+    _runtime_staticlib_target_is_windows,
+    _session_artifact_component,
 )
 from molt.cli.json_contract import (
     _coerce_json_path,
@@ -8497,36 +8514,6 @@ _MODULE_ANALYSIS_CACHE_SCHEMA_VERSION = 8
 _MODULE_LOWERING_CACHE_SCHEMA_VERSION = 2
 _MODULE_ANALYSIS_FUNC_KINDS = frozenset({"sync", "async", "gen", "asyncgen"})
 
-_RUNTIME_STDLIB_PROFILE_ALIASES = {
-    "micro": "stdlib_micro",
-    "full": "stdlib_full",
-}
-
-
-def _normalize_runtime_stdlib_profile(stdlib_profile: str | None) -> str:
-    profile = stdlib_profile or "micro"
-    if profile not in _RUNTIME_STDLIB_PROFILE_ALIASES:
-        raise ValueError("stdlib_profile must be 'micro' or 'full'")
-    return profile
-
-
-def _runtime_staticlib_target_is_windows(target_triple: str | None) -> bool:
-    if target_triple:
-        return "windows" in target_triple.lower()
-    return os.name == "nt"
-
-
-def _runtime_lib_archive_name(
-    stdlib_profile: str | None,
-    target_triple: str | None = None,
-) -> str:
-    profile = _normalize_runtime_stdlib_profile(stdlib_profile)
-    alias = _RUNTIME_STDLIB_PROFILE_ALIASES[profile]
-    if _runtime_staticlib_target_is_windows(target_triple):
-        return f"molt_runtime.{alias}.lib"
-    return f"libmolt_runtime.{alias}.a"
-
-
 def _runtime_lib_archive_names(target_triple: str | None = None) -> tuple[str, ...]:
     names = [
         _runtime_lib_archive_name("micro", target_triple),
@@ -10633,44 +10620,6 @@ def _backend_binary_identity(backend_bin: Path) -> str:
 
 
 @functools.lru_cache(maxsize=256)
-def _runtime_lib_path_cached(
-    project_root_str: str,
-    cargo_profile: str,
-    target_triple: str | None,
-    stdlib_profile: str | None,
-    cargo_target_override: str | None,
-    cwd_str: str,
-) -> Path:
-    profile_dir = _cargo_profile_dir(cargo_profile)
-    target_root = _cargo_target_root_cached(
-        project_root_str,
-        cargo_target_override,
-        cwd_str,
-        _molt_session_id(),
-    )
-    archive_name = _runtime_lib_archive_name(stdlib_profile, target_triple)
-    if target_triple:
-        return target_root / target_triple / profile_dir / archive_name
-    return target_root / profile_dir / archive_name
-
-
-def _runtime_lib_path(
-    project_root: Path,
-    cargo_profile: str,
-    target_triple: str | None,
-    stdlib_profile: str | None = "micro",
-) -> Path:
-    return _runtime_lib_path_cached(
-        os.fspath(project_root),
-        cargo_profile,
-        target_triple,
-        stdlib_profile,
-        os.environ.get("CARGO_TARGET_DIR"),
-        os.fspath(Path.cwd()),
-    )
-
-
-@functools.lru_cache(maxsize=256)
 def _runtime_wasm_artifact_path_cached(
     project_root_str: str,
     artifact_name: str,
@@ -11135,20 +11084,6 @@ def _backend_daemon_freshness_inputs(
 
 
 @functools.lru_cache(maxsize=32)
-def _backend_daemon_enabled_cached(os_name: str, raw: str) -> bool:
-    if os_name != "posix":
-        return False
-    return raw.strip().lower() not in {"0", "false", "no", "off"}
-
-
-def _backend_daemon_enabled() -> bool:
-    return _backend_daemon_enabled_cached(
-        os.name,
-        os.environ.get("MOLT_BACKEND_DAEMON", "1"),
-    )
-
-
-@functools.lru_cache(maxsize=32)
 def _backend_daemon_start_timeout_cached(raw: str) -> float | None:
     value = raw.strip()
     if not value:
@@ -11331,24 +11266,6 @@ def _build_slot():
                 _release_file_lock(handle)
             return
         time.sleep(0.05)
-
-
-def _molt_session_id() -> str | None:
-    """Return the session ID for concurrent build isolation.
-
-    When MOLT_SESSION_ID is set, each session gets:
-    - Its own daemon socket (no kill/restart conflicts)
-    - Its own CARGO_TARGET_DIR suffix (no cargo lock contention)
-    - Its own build cache directory
-
-    Set MOLT_SESSION_ID to any unique string (e.g., agent name, PID, UUID).
-    When unset, all sessions share the default paths (solo dev mode).
-    """
-    return os.environ.get("MOLT_SESSION_ID")
-
-
-def _session_artifact_component(session_id: str) -> str:
-    return "".join(c if c.isalnum() or c in "-_" else "_" for c in session_id)[:32]
 
 
 def _session_target_dir(project_root: Path) -> Path | None:
@@ -27255,11 +27172,6 @@ _DEPLOY_PROFILE_CHOICES = tuple(_DEPLOY_PROFILE_DEFAULTS)
 _BUILD_OR_DEPLOY_PROFILE_CHOICES = (*_BUILD_PROFILE_CHOICES, *_DEPLOY_PROFILE_CHOICES)
 
 
-@functools.lru_cache(maxsize=64)
-def _cargo_profile_dir(cargo_profile: str) -> str:
-    return "debug" if cargo_profile == "dev" else cargo_profile
-
-
 @functools.lru_cache(maxsize=256)
 def _resolve_env_path_cached(
     value: str | None,
@@ -27286,42 +27198,6 @@ def _resolve_env_path(var: str, default: Path) -> Path:
 def _safe_output_base(name: str) -> str:
     cleaned = _OUTPUT_BASE_SAFE_RE.sub("_", name)
     return cleaned or "molt"
-
-
-@functools.lru_cache(maxsize=256)
-def _cargo_target_root_cached(
-    project_root_str: str,
-    cargo_target_override: str | None,
-    cwd_str: str,
-    session_id: str | None = None,
-) -> Path:
-    project_root = Path(project_root_str)
-    if not cargo_target_override:
-        # When MOLT_SESSION_ID is active and no explicit CARGO_TARGET_DIR is
-        # set, each session builds into target/sessions/<id>/.  This preserves
-        # canonical target-root layout while preventing concurrent agents from
-        # clobbering each other's cargo artifacts.
-        if session_id is not None:
-            return (
-                project_root
-                / "target"
-                / "sessions"
-                / _session_artifact_component(session_id)
-            )
-        return project_root / "target"
-    path = Path(cargo_target_override).expanduser()
-    if not path.is_absolute():
-        path = (Path(cwd_str) / path).absolute()
-    return path
-
-
-def _cargo_target_root(project_root: Path) -> Path:
-    return _cargo_target_root_cached(
-        os.fspath(project_root),
-        os.environ.get("CARGO_TARGET_DIR"),
-        os.fspath(Path.cwd()),
-        _molt_session_id(),
-    )
 
 
 @functools.lru_cache(maxsize=256)
