@@ -195,6 +195,12 @@ the implementation. For forward-looking priorities, use
   `opcode_requires_i64_shift_count_guard_table` classifier consumed by LICM's
   throw-condition proof, so shift hoisting reuses one authority for the `[0, 63]`
   count proof requirement.
+- GVN numbering policy is registry-owned:
+  `gvn_always_numberable_opcodes`, `gvn_type_gated_numberable_opcodes`, and
+  `gvn_value_keyed_constant_opcodes` generate the exhaustive
+  `opcode_gvn_numbering_role_table`, so unconditional value transforms,
+  primitive-gated computations, and same-block literal keys cannot drift as
+  private pass-local opcode lists.
 - Literal payload facts are registry-owned through `literal_payload_opcodes` and
   shared by canonicalization and exception-check elimination. Commutative
   reordering, comparison swaps, and ordered binary algebraic folds use adjacent

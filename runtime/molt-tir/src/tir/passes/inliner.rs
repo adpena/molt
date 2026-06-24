@@ -1596,32 +1596,32 @@ mod tests {
         callee_name: &str,
         caller_label: i64,
     ) -> TirFunction {
-        let mut c = TirFunction::new(name.into(), vec![], TirType::I64);
+        caller_calling_obs_with_label_and_type(name, callee_name, caller_label, TirType::I64)
+    }
+
+    fn caller_calling_obs_with_label_and_type(
+        name: &str,
+        callee_name: &str,
+        caller_label: i64,
+        ty: TirType,
+    ) -> TirFunction {
+        let mut c = TirFunction::new(name.into(), vec![], ty.clone());
         c.has_exception_handling = true;
-        let five = c.fresh_value();
+        let arg = c.fresh_value();
         let call_res = c.fresh_value();
         let caller_exit = c.fresh_block();
         let entry = c.entry_block;
         {
-            let mut five_attrs = AttrDict::new();
-            five_attrs.insert("value".into(), AttrValue::Int(5));
             let mut call_attrs = AttrDict::new();
             call_attrs.insert("s_value".into(), AttrValue::Str(callee_name.to_string()));
             let mut ce_attrs = AttrDict::new();
             ce_attrs.insert("value".into(), AttrValue::Int(caller_label));
             let block = c.blocks.get_mut(&entry).unwrap();
-            block.ops.push(TirOp {
-                dialect: Dialect::Molt,
-                opcode: OpCode::ConstInt,
-                operands: vec![],
-                results: vec![five],
-                attrs: five_attrs,
-                source_span: None,
-            });
+            block.ops.push(dead_placeholder_const_for_type(&ty, arg));
             block.ops.push(TirOp {
                 dialect: Dialect::Molt,
                 opcode: OpCode::Call,
-                operands: vec![five],
+                operands: vec![arg],
                 results: vec![call_res],
                 attrs: call_attrs,
                 source_span: None,
@@ -1649,8 +1649,8 @@ mod tests {
             },
         );
         c.label_id_map.insert(caller_exit.0, caller_label);
-        c.value_types.insert(five, TirType::I64);
-        c.value_types.insert(call_res, TirType::I64);
+        c.value_types.insert(arg, ty.clone());
+        c.value_types.insert(call_res, ty);
         c
     }
 
@@ -2486,55 +2486,57 @@ mod tests {
     }
 
     #[test]
-    fn splice_void_exception_exit_pads_placeholder() {
+    fn splice_void_exception_exit_pads_placeholder_for_continuation_type() {
         // The observation callee's exception-exit returns NO value, but the call
         // wants one. The splice must NOT refuse (that would re-dormant the inliner
         // on every value-returning observation callee) — it pads the continuation
         // arg with a representation-matched dead placeholder. The exit branch ends
         // up supplying exactly one continuation arg, and the merged fn verifies.
-        let callee = observation_callee("obs", 3);
-        let mut caller = caller_calling_obs("c", "obs");
+        for (idx, ty) in [TirType::I64, TirType::Bool, TirType::F64, TirType::DynBox]
+            .into_iter()
+            .enumerate()
+        {
+            let callee_name = format!("obs_{idx}");
+            let caller_name = format!("c_{idx}");
+            let callee = observation_callee_with_type(&callee_name, 30 + idx as i64, ty.clone());
+            let mut caller =
+                caller_calling_obs_with_label_and_type(&caller_name, &callee_name, 90, ty.clone());
 
-        let sites = collect_call_sites(&caller, &["obs".to_string()]);
-        assert_eq!(sites.len(), 1);
-        assert!(
-            splice_call_site(&mut caller, &callee, &sites[0]),
-            "value-returning observation callee inlines (not refused)"
-        );
-        crate::tir::verify::verify_function(&caller)
-            .unwrap_or_else(|e| panic!("merged fn invalid SSA after placeholder pad: {e:?}"));
+            let sites = collect_call_sites(&caller, std::slice::from_ref(&callee_name));
+            assert_eq!(sites.len(), 1);
+            assert!(
+                splice_call_site(&mut caller, &callee, &sites[0]),
+                "value-returning observation callee inlines (not refused) for {ty:?}"
+            );
+            crate::tir::verify::verify_function(&caller).unwrap_or_else(|e| {
+                panic!("merged fn invalid SSA after placeholder pad for {ty:?}: {e:?}")
+            });
 
-        // Find the continuation block: the one whose single arg is the original
-        // call result. Every block that branches to it must supply exactly 1 arg
-        // (the normal-return value OR the placeholder). At least two predecessors
-        // exist (normal return + exception exit), and the exception-exit
-        // predecessor ends in a placeholder const op feeding its branch arg.
-        let mut placeholder_const_seen = false;
-        for block in caller.blocks.values() {
-            if let Terminator::Branch { args, .. } = &block.terminator {
-                // A 1-op cloned exit block ending in a Branch with 1 arg whose
-                // value is produced by a trailing Const op is the padded exit.
-                if args.len() == 1
-                    && block
-                        .ops
-                        .last()
-                        .map(|op| {
-                            let expected = dead_placeholder_const_for_type(&TirType::I64, args[0]);
-                            op.opcode == expected.opcode
-                                && op.operands == expected.operands
-                                && op.results == expected.results
-                                && op.attrs == expected.attrs
-                        })
-                        .unwrap_or(false)
-                {
-                    placeholder_const_seen = true;
+            let mut placeholder_const_seen = false;
+            for block in caller.blocks.values() {
+                if let Terminator::Branch { args, .. } = &block.terminator {
+                    if args.len() == 1
+                        && block
+                            .ops
+                            .last()
+                            .map(|op| {
+                                let expected = dead_placeholder_const_for_type(&ty, args[0]);
+                                op.opcode == expected.opcode
+                                    && op.operands == expected.operands
+                                    && op.results == expected.results
+                                    && op.attrs == expected.attrs
+                            })
+                            .unwrap_or(false)
+                    {
+                        placeholder_const_seen = true;
+                    }
                 }
             }
+            assert!(
+                placeholder_const_seen,
+                "the void exception-exit branch is padded with a {ty:?} placeholder const"
+            );
         }
-        assert!(
-            placeholder_const_seen,
-            "the void exception-exit branch is padded with a placeholder const"
-        );
     }
 
     #[test]
