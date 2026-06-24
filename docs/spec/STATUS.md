@@ -20,10 +20,13 @@ the implementation. For forward-looking priorities, use
 - Native AOT compilation is real and active.
 - Native Cranelift codegen decomposition is active at function-boundary
   granularity: `native_backend/function_compiler/fc/` owns extracted op-family
-  handlers, and scalar builtin runtime calls for `id`, `ord`, fused `ord_at`,
-  and `chr` now dispatch through `fc::scalar_builtins` rather than inline
-  `compile_func_inner` arms. The old `len` arm remains inline intentionally
-  because it owns tuple scalarization and representation-plan specialization.
+  handlers for scalar builtin runtime calls (`id`, `ord`, fused `ord_at`,
+  `chr`), sequence/iterator lowering (`len`, range/tuple/unpack/iterator
+  operations), dict mutation (`dict_set`, `dict_update_missing`), and exception
+  control (`raise`, `check_exception`). The remaining inline shell is limited
+  to residual constant, runtime-probe, print/warn/newline, bridge-unavailable,
+  block-on, and RC/box/identity-transfer clusters pending fresh structural
+  contracts.
 - Standalone binary workflows are a first-class product requirement.
 - Differential testing against CPython is a core validation path.
 - Ordinary class construction keeps runtime `type.__call__` as the semantic
