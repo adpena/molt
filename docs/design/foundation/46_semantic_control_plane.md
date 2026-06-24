@@ -40,7 +40,7 @@ hand-maintained drift to zero.
 | structural drift / deletion board | `tools/structural_audit.py` | `--check` ratchet (debt only goes down) + `tests/test_structural_audit.py` | **BUILT** |
 | call-site fact coverage census | `tools/call_fact_coverage.py` | `--check` ratchet (attached facts only go up) + evidence self-validation | **BUILT** |
 | Repr coverage | `tools/representation_report.py` (existing) + `--corpus` join | typed_repr_report backend binary | EXISTS — wire into census |
-| FactGraph (per-value provenance) | `tools/fact_graph_dump.py` + `runtime/.../fact_graph.rs` | `cargo test -p molt-tir fact_graph` + `tests/tools/test_fact_graph_dump.py` | BUILT substrate (§4.1); `molt factgraph` remains a route to the same artifact |
+| FactGraph (per-value provenance) | `molt factgraph` + `tools/fact_graph_dump.py` + `runtime/.../fact_graph.rs` | `cargo test -p molt-backend fact_graph` + `cargo test -p molt-tir fact_graph` + `tests/tools/test_fact_graph_dump.py` | BUILT compiler-emitted artifact route (§4.1); CLI/backend/tooling share one JSON contract |
 | perf causality (slow→missing fact) | `tools/perf_causality.py` | joins #76 profiles + census | NAMED (§4.2) |
 | Region calculus | `runtime/.../lifetime_regions.rs` + `tools/region_coverage.py` | validator obligations | NAMED (§4.3); ExceptionRegion (doc 45) is member 1 |
 | Typed runtime interface | `runtime/.../runtime_contracts.rs` | `tools/runtime_contract_audit.py` | NAMED (§4.4); #71 CallableTarget is member 1 |
@@ -125,10 +125,11 @@ call op** (direct target, leaf, no-throw, no-alloc, inline-eligibility + why-not
 arg-noescape mask). That single primitive moves call_fact_coverage from 28.6% to
 measurable, lets backends specialize calls, and is the substrate for #67/#68/#71.
 `runtime/molt-tir/src/tir/fact_graph.rs` now emits deterministic JSON from live
-`TirFunction` / `CallFactsTable` state, and `tools/fact_graph_dump.py` validates
-and renders that compiler-emitted graph (including `--why-boxed`). A future
-`molt factgraph <function>` command is a thin route to the same artifact, not a
-new authority. **Full implementation spec:
+`TirFunction` / `CallFactsTable` state, `molt factgraph <entry> <function>
+--output <path>` routes the normal frontend/backend pipeline into that
+compiler-emitted artifact, and `tools/fact_graph_dump.py` validates and renders
+the graph (including `--why-boxed`). The CLI, backend flag, and dump tool share
+the same JSON contract; none is a second fact authority. **Full implementation spec:
 `docs/design/foundation/47_call_facts_leaf_coverage.md`** (the `CallFacts` struct,
 `FactValue` confidence lattice, per-field producers, the "pop many reds into
 place" benchmark map, and the 4-phase plan).

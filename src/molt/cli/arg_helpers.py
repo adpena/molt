@@ -263,6 +263,7 @@ class _MoltHelpFormatter(argparse.RawDescriptionHelpFormatter):
                 "profile",
                 "lint",
                 "extension",
+                "factgraph",
                 "verify",
             ]
 

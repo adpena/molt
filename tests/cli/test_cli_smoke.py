@@ -552,7 +552,9 @@ def test_cli_hash_seed_sentinel_requires_applied_seed(
 
     assert exc_info.value.code == 127
     assert exits == [127]
-    assert "deterministic PYTHONHASHSEED restart did not apply" in capsys.readouterr().err
+    assert (
+        "deterministic PYTHONHASHSEED restart did not apply" in capsys.readouterr().err
+    )
 
 
 def test_cli_doctor_json() -> None:
@@ -1649,11 +1651,14 @@ def test_cli_completion_includes_build_flags() -> None:
     script = payload["data"]["script"]
     assert "extension" in script
     assert "build audit" in script
+    assert "factgraph" in script
     assert "parity-run" in script
     assert "--emit" in script
     assert "--rebuild" in script
     assert "--trusted" in script
     assert "--no-trusted" in script
+    assert "--backend" in script
+    assert "--python-version" in script
     assert "--molt-abi" in script
     assert "--target" in script
     assert "--require-abi" in script
