@@ -70,6 +70,7 @@ EXPECTED_MIXINS = [
     "CallVisitorMixin",
     "ClassDefVisitorMixin",
     "ComprehensionMixin",
+    "FunctionVisitorMixin",
 ]
 
 
@@ -114,6 +115,13 @@ def test_moved_methods_resolve_on_class() -> None:
     assert hasattr(SimpleTIRGenerator, "visit_ClassDef")
     assert hasattr(SimpleTIRGenerator, "_compute_method_closure")
     assert hasattr(SimpleTIRGenerator, "_extract_inline_init_assigns")
+    # comprehensions
+    assert hasattr(SimpleTIRGenerator, "visit_ListComp")
+    assert hasattr(SimpleTIRGenerator, "visit_GeneratorExp")
+    # functions
+    assert hasattr(SimpleTIRGenerator, "visit_FunctionDef")
+    assert hasattr(SimpleTIRGenerator, "visit_Lambda")
+    assert hasattr(SimpleTIRGenerator, "visit_Return")
 
 
 def test_mixin_modules_import_standalone() -> None:
@@ -124,6 +132,8 @@ def test_mixin_modules_import_standalone() -> None:
         "molt.frontend.visitors.pattern_match",
         "molt.frontend.visitors.calls",
         "molt.frontend.visitors.classes",
+        "molt.frontend.visitors.comprehensions",
+        "molt.frontend.visitors.functions",
     ):
         assert importlib.import_module(mod) is not None
 
