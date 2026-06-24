@@ -27,7 +27,7 @@
 > "cold-start surprises that scale with artifact growth" by (a) **paying the
 > one-time costs at build/install time, never at first launch**, (b) **ordering the
 > artifact so the cold path touches a contiguous hot prefix**, and (c) making both
-> a **gated, measured fact** in the 53 cold-start board — so a cold regression is
+> a **gated, measured fact** in the 64 cold-start board — so a cold regression is
 > *unmergeable*, not discovered by a user.
 
 ---
@@ -112,7 +112,7 @@ ordering the artifact, and gating the result** — not re-measuring.
 | **Runtime-init trace** | `runtime/molt-runtime/src/state/runtime_state.rs` `molt_runtime_init` + `trace_runtime_init` (lines 668–818) | The 12-phase `MOLT_TRACE_RUNTIME_INIT` ladder (0.127 ms total); eager capability load (security-required, not deferrable) | No micro-budget guard so a future phase can't silently regress init (§3.4); confirms NO snapshot is warranted |
 | **WASM launch (host/JS)** | `wasm/run_wasm.js` (`new WebAssembly.Module(buffer)` ~4552, `WebAssembly.instantiate(runtimeBuffer/wasmBuffer)` ~5584/5612); `deploy/cloudflare/worker.js` (serves 13.4 MB `falcon-ocr.wasm`) | Eager compile + instantiate from a fully-downloaded buffer | No `compileStreaming`/`instantiateStreaming`; no compiled-`Module` cache across cold invokes (§3.3) |
 | **Cargo ship profiles** | `Cargo.toml` `[profile.release-output]` (opt-`z`, `lto="fat"`, `codegen-units=1`, `panic="abort"`, `strip=true`) | Already size-optimal for the shipped runtime | The page-in lever is *post-compile layout*, not a profile change — release-output is already correct (§3.2) |
-| **Cold-start measurement core (53)** | `tools/perf_scoreboard.py` `startup_tax_ms` / `cold_*` fields, `FAIL_COLD_BUDGET`/`WARN_COLD_FLOOR` verdicts | The board that *records* cold + warm per cell (schema v3) | Arc 53 gates it in CI; **this arc supplies the new `first-launch` dimension + the codesign-isolated cell + the order-file before/after** that 53's board projects |
+| **Cold-start measurement core (53)** | `tools/perf_scoreboard.py` `startup_tax_ms` / `cold_*` fields, `FAIL_COLD_BUDGET`/`WARN_COLD_FLOOR` verdicts | The board that *records* cold + warm per cell (schema v3) | Arc 64 gates it in CI; **this arc supplies the new `first-launch` dimension + the codesign-isolated cell + the order-file before/after** that 53's board projects |
 
 **North-star alignment.** Doc 51 §2 names the matrix dimension ("4 profiles × 5
 dimensions: warm, **cold #62**, RSS, size <2 MB, compile") and §3 the Y3 deliverable
@@ -171,7 +171,7 @@ Work backward from the §0 end-state to the mechanisms that make it inevitable.
      `cold_start_budget.json` has only the first-run number, conflating them.
      **FACT NEEDED:** a **two-axis cold budget** `{first_launch_ms, same_path_ms}`
      per (backend, profile), with `release-output` seeded, and a *ratchet rule* (the
-     budget may only decrease) wired into the 53 gate.
+     budget may only decrease) wired into the 64 gate.
 
 - **END:** "WASM/edge cold start is streaming + cached."
   → **requires** the JS/host launch path to **overlap download with compile**
@@ -199,9 +199,9 @@ Phase 1  BUILD-TIME CODESIGN of the user artifact (the single highest-leverage,
    ├── Phase 2  STATIC StartupOrder + linker order-file wiring (page-in locality,
    │             always-on, zero-profiling tier). DEPENDS on nothing in 1.
    │
-   ├── Phase 3  TWO-AXIS cold budget board + 53 gate wiring (first-launch vs
+   ├── Phase 3  TWO-AXIS cold budget board + 64 gate wiring (first-launch vs
    │             same-path; release-output seeded; ratchet). DEPENDS on 1 (so the
-   │             codesign win is measured) — composes with arc 53.
+   │             codesign win is measured) — composes with arc 64.
    │
    ├── Phase 4  WASM/edge streaming + module cache (compileStreaming + cache).
    │             Independent of 1/2 (different artifact + host).
@@ -396,7 +396,7 @@ that the regression, undetected, *motivates* someone to add a startup snapshot
 **The mechanism.** A `init_budget_us` cell (e.g. **500 µs**, ~4× the 0.127 ms
 measured baseline) measured from the existing `MOLT_TRACE_RUNTIME_INIT` ladder
 (parsed by `cold_start_decompose.py`'s `_measure_runtime_init_phases`) and gated in
-the cold-start board (§3.5 / arc 53). A breach is a `WARN` (init is not the cold
+the cold-start board (§3.5 / arc 64). A breach is a `WARN` (init is not the cold
 bottleneck) routed to the runtime lane — *not* a license to snapshot.
 
 **Why this is structural.** It encodes the COLD_START.md adjudication as an
@@ -428,13 +428,13 @@ cold_start_budget.json (schema_version 2):
   — so it *excludes* codesign by construction (codesign moved to build). The win is
   the drop from the old first-run number (~207–341 ms p50–max) toward the dyld+page-in
   floor.
-- **Ratchet:** the gate (arc 53) rejects any increase; the budget only ratchets down
+- **Ratchet:** the gate (arc 64) rejects any increase; the budget only ratchets down
   as the binary-size arc shrinks page-in.
 
 **Why this is structural.** It makes the two distinct cold taxes *separately
 measurable and separately gated*, so each lever's win is real and protected. This is
 the §0(3) "budget that ratchets down" made concrete, and the hand-off surface to
-arc 53.
+arc 64.
 
 ---
 
@@ -518,23 +518,23 @@ the existing `-x -S` strip (layout persists; names stripped after).
 **Independently valuable:** yes — bounds page-in as the binary grows, even before
 profiling refines it.
 
-### Phase 3 — Two-axis cold budget board + 53 gate wiring (compose with arc 53)
+### Phase 3 — Two-axis cold budget board + 64 gate wiring (compose with arc 64)
 
 **Deliverable:** seed `first_launch_ms` (post-Phase-1, signed) and `same_path_ms`
 for **every** (backend, profile) including `release-output`; add the `init_budget_us`
-cell (§3.4); wire the two-axis budget + ratchet rule into the **53 cold-start
+cell (§3.4); wire the two-axis budget + ratchet rule into the **64 cold-start
 projection** (`perf_scoreboard.py`'s `FAIL_COLD_BUDGET`/`WARN_COLD_FLOOR` already
 consume `startup_tax_ms` — extend to consume `first_launch_ms` vs `same_path_ms`
-distinctly, and the ratchet). This is the **hand-off to arc 53**: arc 62 supplies
-the dimension + seeded budgets; arc 53 gates them in CI.
+distinctly, and the ratchet). This is the **hand-off to arc 64**: arc 62 supplies
+the dimension + seeded budgets; arc 64 gates them in CI.
 
-**Gates:** the 53 self-test accepts the v2 budget; a synthetic cell exceeding
+**Gates:** the 64 self-test accepts the v2 budget; a synthetic cell exceeding
 `first_launch_ms` is `FAIL_COLD_BUDGET` while a same-path-only regression is routed
 to `same_path_ms`; the ratchet rejects a budget *increase* in a test fixture; the
-`init_budget_us` breach is `WARN` (not `FAIL`). **Coordinate with arc 53** (it owns
+`init_budget_us` breach is `WARN` (not `FAIL`). **Coordinate with arc 64** (it owns
 the gate wiring; this phase supplies the budget semantics) — file overlap is the
 `cold_start_budget.json` data + the budget-consumption logic in `perf_scoreboard.py`
-(serialize through arc 53's owner).
+(serialize through arc 64's owner).
 
 **Independently valuable:** yes — makes the Phase-1/2 wins gated and ratcheting.
 
@@ -649,18 +649,18 @@ tail; the size arc consumes 62's first-launch budget to know its page-in win is 
 Neither blocks the other (Phase 1 codesign is independent of size; Phase 2 ordering
 benefits from but doesn't require the size arc).
 
-### Composition with arc 53 (perf scoreboards + harness — cold+warm measurement)
+### Composition with arc 64 (perf scoreboards + harness — cold+warm measurement)
 
-Arc 53 (`53_perf_scoreboards_and_harness.md`) **already owns** the `startup_tax_ms` /
+Arc 53 (`64_perf_scoreboards_and_harness.md`) **already owns** the `startup_tax_ms` /
 `cold_*` schema-v3 fields, `FAIL_COLD_BUDGET`/`WARN_COLD_FLOOR` verdicts, and
 explicitly carves out cold as a distinct gated dimension (its §8 Risk 8: "cold-start
 / size / RSS conflated with warm speed — #62 lesson… each dimension is a distinct
-gated field"). **This arc supplies the *content* 53 gates:** the two-axis budget
+gated field"). **This arc supplies the *content* 64 gates:** the two-axis budget
 (§3.5), the build-time-signed first-launch number, and the order-file before/after.
 The division: **53 owns the gate machinery + CI wiring; 62 owns the cold-start
 *levers* + the budget *semantics*.** Phase 3 is the explicit hand-off (it edits the
 budget data + the budget-consumption logic 53 projects — serialize through 53's
-owner). **Cross-arc dependency (the primary one):** 62 Phase 3 depends on arc 53's
+owner). **Cross-arc dependency (the primary one):** 62 Phase 3 depends on arc 64's
 cold-start projection existing (or co-lands the two-axis consumption with it).
 
 ### Composition with the 21x decomposition program
@@ -688,7 +688,7 @@ Squarely **Lane C** (infra that makes A&B faster) with a Lane-B (perf frontier)
 deliverable (cold-start dominance). Parallel-friendly: Phase 1 (CLI/toolchain),
 Phase 2 (backend emit + CLI link), Phase 4 (JS host glue), Phase 6 (board) touch
 disjoint files and can run as four agents; only Phase 2 + Phase 5 trigger a Rust
-build (serialize). Phase 3 coordinates with arc 53's owner.
+build (serialize). Phase 3 coordinates with arc 64's owner.
 
 ---
 
@@ -699,7 +699,7 @@ build (serialize). Phase 3 coordinates with arc 53's owner.
 | 0 | `bench/scoreboard/cold_start_budget.json` (v2); `docs/perf/COLD_START.md`; `tests/tools/test_cold_start_budget_schema.py` | no | blocks 3 |
 | 1 | `src/molt/cli/native_toolchain.py` (`sign_native_artifact`); `src/molt/cli/__init__.py` (call site at `_finalize_native_link`, route daemon/BOLT signing) | no | independent; feeds 3 |
 | 2 | `runtime/molt-backend/src/native_backend/simple_backend.rs` (additive `startup_order` emit); `src/molt/cli/__init__.py` (`_build_native_link_driver_command` order-file flags) | **yes (additive emit)** | independent; feeds 5; serialize Rust build |
-| 3 | `bench/scoreboard/cold_start_budget.json` (seed); `tools/perf_scoreboard.py` (two-axis budget consumption) | no | blocked-by 0,1; **coordinate arc 53** |
+| 3 | `bench/scoreboard/cold_start_budget.json` (seed); `tools/perf_scoreboard.py` (two-axis budget consumption) | no | blocked-by 0,1; **coordinate arc 64** |
 | 4 | `wasm/run_wasm.js`; `deploy/cloudflare/*.js`; `deploy/browser/*.js` | no | independent |
 | 5 | `runtime/molt-tir/src/tir/bolt.rs` (complete `generate_order_file`); `src/molt/cli/native_toolchain.py` (`_run_bolt_post_link` order-file hook) | **yes** | blocked-by 2; serialize Rust build |
 | 6 | `tools/perf_scoreboard.py` (`init_budget_us` cell) or `bench/scoreboard/cold_start_budget.json`; a guard test | no | independent |
@@ -762,7 +762,7 @@ not runtime-layer" — the snapshot lever is named dead and guarded dead.
 
 ### Risk 8: cold-start regresses silently as the stdlib/artifact grows
 **Band-aid (rejected):** one cold number, eyeballed.
-**Structural fix:** the two-axis ratcheting budget (§3.5) gated by arc 53 — first-launch
+**Structural fix:** the two-axis ratcheting budget (§3.5) gated by arc 64 — first-launch
 and same-path are *separately* gated and may only *decrease*. A growth-driven page-in
 regression trips `FAIL_COLD_BUDGET` and is unmergeable. This is the §0 end-state made
 enforceable.
@@ -780,7 +780,7 @@ gated fact*:
 > streaming + module-cached; runtime-init guarded ≤ 500 µs (no snapshot warranted);
 > same-path cold ≤ budget; both budgets ratcheting down with the binary-size arc.
 > Artifacts: `bench/scoreboard/cold_start_budget.json` (v2),
-> `cold_start_decomposition.json`, the 53 cold-start projection.
+> `cold_start_decomposition.json`, the 64 cold-start projection.
 
 That is the §0 outcome: molt's *first* launch of a fresh artifact beats CPython's
 startup on every target, the one-time taxes are pre-paid at build, the page-in is a
@@ -818,9 +818,9 @@ made a release-gating correctness property, not an aspiration.**
 - **Budget board to bump to v2 (Phase 0/3):** `bench/scoreboard/cold_start_budget.json`
   (current v1, single-axis; `native/release-output` budget `null`); decomposition
   data: `bench/scoreboard/cold_start_decomposition.json` (the seed numbers).
-- **53 cold-start projection to wire (Phase 3):** `tools/perf_scoreboard.py`
+- **64 cold-start projection to wire (Phase 3):** `tools/perf_scoreboard.py`
   `startup_tax_ms` / `cold_*` fields + `FAIL_COLD_BUDGET`/`WARN_COLD_FLOOR` verdicts
-  (coordinate with `53_perf_scoreboards_and_harness.md`).
+  (coordinate with `64_perf_scoreboards_and_harness.md`).
 - **WASM launch path (Phase 4):** `wasm/run_wasm.js` `new WebAssembly.Module(buffer)`
   (~4552), `WebAssembly.instantiate(runtimeBuffer)` (~5584), `instantiate(wasmBuffer)`
   (~5612); deploy templates `deploy/cloudflare/worker.js` (serves 13.4 MB
@@ -839,7 +839,7 @@ unexpressible: after it lands, "a freshly produced artifact's first launch silen
 got slower (unsigned ⇒ codesign tax, scattered ⇒ page-in scaling with size, eager ⇒
 block-on-compile) and shipped anyway" cannot happen — the one-time taxes are pre-paid
 at build, the page-in is a bounded ordered prefix, the WASM load streams+caches, and
-the residual is a two-axis ratcheting budget the 53 gate refuses to let increase. The
+the residual is a two-axis ratcheting budget the 64 gate refuses to let increase. The
 missing *fact* here is **"the cold path is a statically-known, ordered, pre-paid,
 budgeted property of the artifact"** — `StartupOrder` (the symbols), build-time
 signing (the one-time tax), and the two-axis budget (the gate). Once those exist,

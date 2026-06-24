@@ -20,7 +20,7 @@
 > split/component/streaming code is estimate-only stubs disconnected from product
 > codegen, and the size budgets are scattered magic constants (35MB native / 20MB / 16MB
 > WASM) rather than a per-`(backend × profile × tier)` scoreboard with history.** This arc
-> retires the class **"silent size drift"** the way doc 53 retires "silent perf drift":
+> retires the class **"silent size drift"** the way doc 64 retires "silent perf drift":
 > by making artifact footprint a *projection of the same measurement plane*, gated per
 > backend/profile/tier, attributed to the IR/codegen fact that caused the bloat, with the
 > `release-output`/`release-size`/`wasm-release` profiles as the size/opt north star.
@@ -33,7 +33,7 @@
 the size of every shipped artifact is a derived fact attributed to a representation
 cause — not a number a human eyeballs in a one-off `nm` dump.** Concretely:
 
-1. **A SIXTH scoreboard projection exists — the Size board** — a sibling of doc 53's five
+1. **A SIXTH scoreboard projection exists — the Size board** — a sibling of doc 64's five
    (CPython/PyPy/Codon/Backend/Profile). It is keyed `artifact × backend × profile ×
    stdlib_tier`, with the **five Performance-Constitution dimensions per cell**: stripped
    bytes, **compressed bytes** (gzip + brotli — the real edge-deploy unit), section/segment
@@ -54,7 +54,7 @@ cause — not a number a human eyeballs in a one-off `nm` dump.** Concretely:
    Size board as a gated input, not a doc suggestion*), and — for the runtime's own hot
    generic surfaces — **structural polymorphization** (replace monomorphized-per-T glue
    with `dyn`/erased-repr dispatch where the *type fact proves it is cold*, keeping opt-3
-   monomorphic bodies only on the hot lanes doc 53_perf_compression_ladder Rung 4 names).
+   monomorphic bodies only on the hot lanes doc 65_perf_compression_ladder Rung 4 names).
    The class retired: **"the generic-instantiation explosion nobody attributed."**
 4. **WASM size has a real split/tree-shake pipeline, not an 8-bytes-per-op estimate.**
    `wasm_split.rs`/`wasm_component.rs`/`wasm_streaming.rs` either become product-wired
@@ -92,14 +92,14 @@ the tree at HEAD (2026-06-24):
 | Linker contract | `docs/spec/areas/compiler/0931_LINKER_OPTIMIZATION_CONTRACT.md` | `--gc-sections`/`--export-if-defined`/no-ICF-while-fn-addrs-are-identities rules; "add size dashboards… raw/gzip/function-count/data-segment/export-count" as high-value work | Names the dashboard as TODO; **this arc IS that dashboard, as a board projection** |
 | Size/cold-start spec | `docs/spec/areas/perf/0604_BINARY_SIZE_AND_COLD_START.md` | the metric definitions (stripped+unstripped, raw+gzip+brotli, `llvm-size`/`cargo bloat`/`cargo llvm-lines`/`twiggy`), 10% regression rule | **All of it is prose** — no tool implements `cargo bloat`/`llvm-lines`/`twiggy`/`brotli`; this arc operationalizes the spec |
 | WASM split/component/streaming | `runtime/molt-tir/src/tir/wasm_split.rs`, `wasm_component.rs`, `wasm_streaming.rs` | **estimate-only stubs** (`ops*8` byte heuristic; WIT generation; hot/cold manifest) — name-prefix categorization, NOT wired to real emitted modules or product output | **Decision point (§3.5):** product-wire to the real module + linker, OR demote to research-stub so they stop implying a shipped split capability |
-| The measurement plane | `docs/design/foundation/53_perf_scoreboards_and_harness.md` + `tools/perf_scoreboard.py` | `PerfCell` already carries `binary_size_kib`, `compile_time_s`, `molt_peak_rss_mib`, cold/warm split; `BoardProjection` abstraction; `bench/scoreboard/{...}.json` budget files incl. `cold_start_budget.json` | **The Size board is the missing sixth projection.** This arc adds it over the *same* cell stream — does not build a parallel loop |
+| The measurement plane | `docs/design/foundation/64_perf_scoreboards_and_harness.md` + `tools/perf_scoreboard.py` | `PerfCell` already carries `binary_size_kib`, `compile_time_s`, `molt_peak_rss_mib`, cold/warm split; `BoardProjection` abstraction; `bench/scoreboard/{...}.json` budget files incl. `cold_start_budget.json` | **The Size board is the missing sixth projection.** This arc adds it over the *same* cell stream — does not build a parallel loop |
 
 > **Refusal recorded (deletes a bad plan).** The naive plan — "write a new size CI script
 > with its own build loop and its own budget file" — is **REJECTED**. It would create a
 > *second* build path, a *second* budget source of truth, and a *second* history index
-> alongside doc 53's plane → the exact compound-interest-of-bugs trap CLAUDE.md forbids.
+> alongside doc 64's plane → the exact compound-interest-of-bugs trap CLAUDE.md forbids.
 > The structurally correct design is: **the Size board is a `BoardProjection` over the
-> SAME `list[PerfCell]` doc 53 already produces** (the cells already carry size; the build
+> SAME `list[PerfCell]` doc 64 already produces** (the cells already carry size; the build
 > already happens once). Size is a *view*, not a new loop. This is the load-bearing
 > architectural decision and the reason this arc is `DEEPENS 53`, not a sibling of it.
 
@@ -111,11 +111,11 @@ Work backward from §0 to the mechanisms that make it inevitable.
 
 - **END:** "no commit grows an artifact without the system saying so."
   → **requires** the Size board to be a *gated projection* on every PR + main, sharing
-     doc 53's tiered authority (per-PR smoke gate + nightly full sweep).
+     doc 64's tiered authority (per-PR smoke gate + nightly full sweep).
   → **requires** size to be a **regression-vs-history** axis (CLAUDE.md triage #5), so a
      +3% creep gates even when still under absolute budget. **FACT NEEDED:** `SizeCell`
      fields on the existing `PerfCell` (most already present) + a `bench/scoreboard/size/`
-     history keyed by the same `board_identity` doc 53 §3.4 defines.
+     history keyed by the same `board_identity` doc 64 §3.4 defines.
 
 - **END:** "size is per `(backend × profile × tier)`; a micro regression can't hide in a
   full win."
@@ -137,11 +137,11 @@ Work backward from §0 to the mechanisms that make it inevitable.
          **Size-board attribution input** (the spec 0604 §4.1 tools, finally executed).
      (c) **structural polymorphization of the runtime's own cold generic surfaces** — the
          Rustacean fix: where a generic helper is monomorphized per-`T` but the *type
-         fact* (doc 53_perf_compression_ladder Rung 4 `Repr`/lane facts; doc 59 fact
+         fact* (doc 65_perf_compression_ladder Rung 4 `Repr`/lane facts; doc 59 fact
          plane) proves the call site is **cold**, replace it with one erased-`Repr` body
          (`&dyn`/`ValueRef`) so N instantiations collapse to 1 — *keeping* opt-3
          monomorphic bodies only on the hot lanes. **FACT NEEDED:** a `hot/cold` partition
-         of the runtime's generic surface (consumes the doc 53_perf_compression_ladder
+         of the runtime's generic surface (consumes the doc 65_perf_compression_ladder
          hot-symbol set + the cycle profile #76), so "monomorphize" vs "erase" is a
          *derived* decision, not a guess.
 
@@ -161,7 +161,7 @@ Work backward from §0 to the mechanisms that make it inevitable.
   → already correct in `output_startup_size_audit.py` (`cold_first_sighting` =
      true-cold cdhash, `page_cache_cold` = copy-based). **FACT NEEDED:** fold its
      cold/page-cache fields into the Size board so size and cold-start co-report (the
-     footprint *is* the cold-start driver — they are one dimension family, doc 53 Risk 8).
+     footprint *is* the cold-start driver — they are one dimension family, doc 64 Risk 8).
 
 The dependency spine:
 
@@ -171,17 +171,17 @@ Phase 0  Pin the SizeBudget contract + fold size fields into the doc-53 cell sch
    │
 Phase 1  Size board PROJECTION over the existing PerfCell stream (perf_board.py)
    │       + the tier/linkage coordinates on the measurement core (perf_measure.py)
-   │       + compressed-size (gzip/brotli) capture. DEPENDS on doc 53 Phase 1 (the core).
+   │       + compressed-size (gzip/brotli) capture. DEPENDS on doc 64 Phase 1 (the core).
    │
-   ├── Phase 2  Size HISTORY + regression gate (reuse doc 53 Phase 4 history machinery)
+   ├── Phase 2  Size HISTORY + regression gate (reuse doc 64 Phase 4 history machinery)
    │             + per-(backend,profile,tier) absolute budgets. DEPENDS on Phase 1.
    │
    ├── Phase 3  Monomorphization control:
    │             3a share-generics measured lever (size profiles, gated-when-available)
    │             3b generic-instantiation census input (cargo llvm-lines/bloat) → Size board
    │             3c structural polymorphization of cold runtime generic surfaces
-   │             DEPENDS on Phase 1 (to measure the delta) + doc 53_perf_compression_ladder
-   │             (hot/cold partition) + doc 53 Phase 5 (cycle profile for cold-proof).
+   │             DEPENDS on Phase 1 (to measure the delta) + doc 65_perf_compression_ladder
+   │             (hot/cold partition) + doc 64 Phase 5 (cycle profile for cold-proof).
    │
    ├── Phase 4  WASM split/tree-shake decision + (if product-wire) real-reachability plan;
    │             wasm-opt -Oz --converge measured lane; compressed-WASM 3MB-tier gate.
@@ -191,13 +191,13 @@ Phase 1  Size board PROJECTION over the existing PerfCell stream (perf_board.py)
    │             DEPENDS on Phase 1; composes with doc 21e + arc 60.
    │
    └── Phase 6  Size cause-attribution (which fact drove the bytes) — the Size analogue of
-                 doc 53 Phase 5 perf_causality. DEPENDS on 3b + doc 53 Phase 5.
+                 doc 64 Phase 5 perf_causality. DEPENDS on 3b + doc 64 Phase 5.
 
 Phase 7  CI wiring: Size board into the doc-53 perf tier (one gate, two projections),
          per-PR smoke size gate + nightly full size sweep. DEPENDS on Phases 1-2.
 ```
 
-Phases 2–6 parallelize once Phase 1 lands (non-overlapping files); Phase 1 + doc 53
+Phases 2–6 parallelize once Phase 1 lands (non-overlapping files); Phase 1 + doc 64
 Phase 1 are the serialization points. Only Phase 3c + Phase 4 (if product-wired) touch
 Rust; the rest are host tooling.
 
@@ -210,7 +210,7 @@ Rust; the rest are host tooling.
 The four budget sources today (`binary_size_analysis.py` 35MB/20MB; `wasm_size_audit.py`
 16MB/10MB/4MB; `output_startup_size_audit.py` opt-in `--max-artifact-mb`; the prose
 `<2MB`/`<3MB` in doc 51) are **four sources of truth that already disagree**. Collapse to
-ONE typed table in `tools/perf_schema.py` (doc 53's schema home), keyed by the matrix:
+ONE typed table in `tools/perf_schema.py` (doc 64's schema home), keyed by the matrix:
 
 ```
 SizeBudget(backend, profile, stdlib_tier, linkage) -> {
@@ -233,7 +233,7 @@ retired:** "a size pass/profile that improved stripped but regressed compressed"
 
 ### 3.2 FACT: the Size board projection — retires "asymmetric size coverage"
 
-A `BoardProjection` (doc 53 §3.2) over the SAME `list[PerfCell]`:
+A `BoardProjection` (doc 64 §3.2) over the SAME `list[PerfCell]`:
 
 ```
 BoardProjection(
@@ -260,7 +260,7 @@ size coverage" across the full footprint matrix.
 > gates on a *built artifact's bytes* — no quiescence needed, no contamination, fully
 > deterministic. This makes it the **cheapest, most trustable per-PR gate in the entire
 > plane**: a size regression is a hard, reproducible fact on any runner (Risk-free under
-> doc 53 §3.3's contamination concern). It can hard-gate per-PR where warm-perf can only
+> doc 64 §3.3's contamination concern). It can hard-gate per-PR where warm-perf can only
 > regression-gate.
 
 ### 3.3 FACT: monomorphization control — retires "the generic-instantiation explosion"
@@ -288,12 +288,12 @@ top generic families by emitted-line/byte count, and emit them as the
 `PerfCell.size_attribution` field. This *names the explosion* — e.g. "`HashMap<K,V>` ×27
 key types = X KB", "`Vec<T>::extend` ×N = Y KB" — so 3c targets the real driver, not a
 guess. **Class retired:** "we know the binary is big but not which generic family." The
-census is the size analogue of doc 53's representation census (`call_fact_coverage.py`).
+census is the size analogue of doc 64's representation census (`call_fact_coverage.py`).
 
 **3.3c structural polymorphization of cold generic surfaces (the Rustacean fix).** The
 representation-correct lever, not a flag: where a runtime generic helper is monomorphized
 per-`T` but the *type fact proves the call site is cold* (it is NOT on the
-doc 53_perf_compression_ladder hot-lane set and NOT in the cycle-profile #76 hot symbols),
+doc 65_perf_compression_ladder hot-lane set and NOT in the cycle-profile #76 hot symbols),
 collapse the N monomorphizations to **one erased-`Repr`/`&dyn` body**. The hot lanes keep
 their opt-3 monomorphic bodies (the perf contract is untouched — size is traded *only*
 where it costs no measured warm cycles). The decision is **derived**: `mono_census.py`
@@ -305,7 +305,7 @@ by the cold-proof. **Class retired:** "monomorphization bloat on code that is ne
 made *structurally unexpressible* once the cold-erasure pattern is applied to the census's
 top cold families.
 
-> **The compression-ladder rung this adds.** doc 53_perf_compression_ladder Rung 8
+> **The compression-ladder rung this adds.** doc 65_perf_compression_ladder Rung 8
 > ("artifact-footprint facts") names binary size as a rung but does not give the
 > *monomorphization* mechanism. 3c is that mechanism: the missing IR/build fact is
 > **"a generic instantiation's hot/cold status decides monomorphize-vs-erase,"** which
@@ -365,7 +365,7 @@ shared crossover). **Class retired:** "linkage chosen by default, never measured
 
 ### Phase 0 — Pin the `SizeBudget` contract + fold size fields into the doc-53 schema
 
-**Deliverable:** in `tools/perf_schema.py` (doc 53 Phase 0's home): the `SizeBudget`
+**Deliverable:** in `tools/perf_schema.py` (doc 64 Phase 0's home): the `SizeBudget`
 dataclass + `SIZE_BUDGETS` table (§3.1), the `stdlib_tier` + `linkage` cell coordinates,
 the `gzip_bytes`/`brotli_bytes`/`wasm_code_bytes`/`size_attribution` fields on `PerfCell`,
 and `validate_size_cell()` (fail-closed: GREEN requires stripped + gzip). Migrate the four
@@ -378,7 +378,7 @@ preserved). **Independently valuable:** one budget source of truth immediately.
 
 ### Phase 1 — The Size board projection + tier/linkage/compressed capture (keystone)
 
-**Deliverable:** in `tools/perf_board.py` (doc 53 Phase 1's home): the `size`
+**Deliverable:** in `tools/perf_board.py` (doc 64 Phase 1's home): the `size`
 `BoardProjection` (§3.2). In `tools/perf_measure.py`: capture `gzip_bytes`/`brotli_bytes`
 (stdlib `gzip` + `brotli` if available, else record "brotli unavailable" — fail-closed,
 never fake), the section breakdown (call the existing `binary_size_analysis.py`/
@@ -393,7 +393,7 @@ does not regress. **Independently valuable:** the first gated, historied size me
 
 ### Phase 2 — Size history + regression gate + per-tier absolute budgets
 
-**Deliverable:** reuse doc 53 Phase 4's `bench/scoreboard/history/` + `perf_history.py` +
+**Deliverable:** reuse doc 64 Phase 4's `bench/scoreboard/history/` + `perf_history.py` +
 `perf_regression.py` for the size board (size deltas are *deterministic* → simpler than
 warm-perf: no statistical CI needed, a raw >10% delta is a hard fact per doc 0604 §3).
 Seed the size history from the first authoritative nightly sweep. Fill `SIZE_BUDGETS` with
@@ -415,7 +415,7 @@ deliberate over-3MB-gzip WASM-micro fixture FAILs the absolute-budget gate.
   committed runtime artifact, the census names the top-5 generic families with non-zero
   byte attribution; a test asserts the parse is stable.
 - **3c structural polymorphization:** for the top *cold* families named by 3b
-  (cross-referenced against the doc 53_perf_compression_ladder hot-lane set + cycle
+  (cross-referenced against the doc 65_perf_compression_ladder hot-lane set + cycle
   profile), replace per-`T` monomorphization with one erased-`Repr` body in the runtime.
   Each such change is its own commit. **Gate (the hard one):** the Size board shows the
   measured byte reduction; the **warm perf board shows ZERO regression** (the cold-proof
@@ -454,7 +454,7 @@ the gate flags); the linkage lane records both footprints + the crossover.
 
 ### Phase 6 — Size cause-attribution (the Size analogue of perf_causality)
 
-Extend doc 53 Phase 5's `perf_causality.py` (or a sibling `size_causality.py`) to, for a
+Extend doc 64 Phase 5's `perf_causality.py` (or a sibling `size_causality.py`) to, for a
 Size RED/regression, join: (a) the `mono_census.py` generic-family delta, (b) the section
 breakdown delta, (c) the `_runtime_feature_gates.py` domain map (which stdlib domain's
 symbols grew) → emit `size_cause ∈ {monomorphization/<family>, stdlib_domain/<feature>,
@@ -501,7 +501,7 @@ a deliberate +20% fixture fails the gate locally; YAML lints.
   must not regress `god_files`/`duplicate_authorities` (the budget table is the ONE size
   authority — `duplicate_authorities` stays 0).
 - **No-fake-number gate:** brotli/`cargo llvm-lines`/`-Zshare-generics` unavailable →
-  recorded as unavailable, never invented (mirrors doc 53's PyPy/Codon host-absent rule).
+  recorded as unavailable, never invented (mirrors doc 64's PyPy/Codon host-absent rule).
 
 Every Size-plane PR runs (fast, mostly cargo-free): `--all-boards`, the schema tests, the
 asymmetry test, `structural_audit --check`. Phase 3c/4 PRs additionally run the full
@@ -513,12 +513,12 @@ native+wasm differential + the cold-proof perf board.
 
 ### Composition with the 50-59 portfolio (this arc DEEPENS three levers)
 
-- **DEEPENS doc 53 (`53_perf_scoreboards_and_harness.md`) — the measurement plane.** The
-  Size board is the **sixth `BoardProjection`** over doc 53's *existing* `PerfCell` stream.
+- **DEEPENS doc 64 (`64_perf_scoreboards_and_harness.md`) — the measurement plane.** The
+  Size board is the **sixth `BoardProjection`** over doc 64's *existing* `PerfCell` stream.
   This arc adds **no new build loop** — it adds the size *view*, the size *budgets*, the
-  size *history* (reusing doc 53's history machinery), and the size coordinates
+  size *history* (reusing doc 64's history machinery), and the size coordinates
   (`stdlib_tier`, `linkage`) to the cell. **Cross-arc dependency:** this arc is blocked-by
-  doc 53 Phase 0 (schema home) + Phase 1 (measurement core) + Phase 4 (history) + Phase 5
+  doc 64 Phase 0 (schema home) + Phase 1 (measurement core) + Phase 4 (history) + Phase 5
   (causality), and it *extends* each. It must land its schema/board additions *into* doc
   53's files (`perf_schema.py`, `perf_board.py`, `perf_measure.py`) — coordinate ownership
   with the doc-53 implementing agents (additive fields/projections, no behavior change to
@@ -529,7 +529,7 @@ native+wasm differential + the cold-proof perf board.
   regress** (the Size board). Arc 60 *adds* the dead-code-elimination fact; arc 61
   *confirms the class is retired* by measuring the byte drop. **Seam:** arc 60 owns the
   tree-shaking mechanism (which symbols/domains to drop); arc 61 owns the size scoreboard
-  that proves it worked. They co-evolve like doc 53 ↔ the fact plane.
+  that proves it worked. They co-evolve like doc 64 ↔ the fact plane.
 - **DEEPENS doc 21e (runtime satellite dedup) + the runtime tiers.** 21e dedups the 24
   in-tree/satellite pairs and forces satellites on in reduced tiers; THIS arc measures the
   **per-tier footprint delta** of those dedups (a satellite dragging `rustls`/`mio`/
@@ -549,13 +549,13 @@ native+wasm differential + the cold-proof perf board.
   the attribution *sharper*, not harder.
 - **Dependency direction:** the Size plane is strictly downstream of build (it weighs
   artifacts) + analysis (`mono_census`, the feature-gate map) — no cycle, same posture as
-  doc 53's plane.
+  doc 64's plane.
 
 ### Composition with the multi-agent / three-lane model
 
 Squarely **Lane C** (CLAUDE.md: "infra/scoreboards/decomposition that makes A&B faster… C
 is never decorative") — *except* Phase 3c, which is **Lane B** (a real representation fix
-that retires a size-waste class). The plan is parallel-friendly: Phase 1 (into doc 53's
+that retires a size-waste class). The plan is parallel-friendly: Phase 1 (into doc 64's
 files) is the serialization point; after it, Phase 2 (history), Phase 3a/3b (levers/census,
 pure tooling), Phase 5 (tier board), Phase 6 (attribution) fan out as pure-Python agents
 (no cargo, no build-cap contention); Phase 3c + Phase 4-product-wire are the only
@@ -570,8 +570,8 @@ cold-erasure).
 
 | Phase | Owner files (new unless noted) | Touches Rust? | Blocks / blocked-by |
 |---|---|---|---|
-| 0 | `tools/perf_schema.py` (+SizeBudget/fields, shared w/ doc 53 — additive); migrate consts in `binary_size_analysis.py`/`wasm_size_audit.py`; `tests/tools/test_perf_schema.py` | no | blocked-by doc53 P0; blocks all |
-| 1 | `tools/perf_board.py` (+size projection), `tools/perf_measure.py` (+tier/linkage/compressed) — shared w/ doc 53 (additive) | no | blocked-by doc53 P1 + this P0; blocks 2-6 |
+| 0 | `tools/perf_schema.py` (+SizeBudget/fields, shared w/ doc 64 — additive); migrate consts in `binary_size_analysis.py`/`wasm_size_audit.py`; `tests/tools/test_perf_schema.py` | no | blocked-by doc53 P0; blocks all |
+| 1 | `tools/perf_board.py` (+size projection), `tools/perf_measure.py` (+tier/linkage/compressed) — shared w/ doc 64 (additive) | no | blocked-by doc53 P1 + this P0; blocks 2-6 |
 | 2 | `tools/perf_history.py`/`perf_regression.py` (reuse), `SIZE_BUDGETS` fill | no | blocked-by 1 |
 | 3a | `tools/size_levers.py` | yes (size-profile rebuild, measure) | blocked-by 1 |
 | 3b | `tools/mono_census.py` | yes (cargo bloat/llvm-lines run) | blocked-by 1 |
@@ -590,7 +590,7 @@ builds → serialize those two through the daemon.
 
 ### Risk 1: A second size measurement loop / second budget source of truth (the trap)
 **Band-aid (rejected):** a standalone size-CI script with its own build + budgets.
-**Structural fix:** the Size board is a `BoardProjection` over doc 53's *one* `PerfCell`
+**Structural fix:** the Size board is a `BoardProjection` over doc 64's *one* `PerfCell`
 stream; the `SizeBudget` table is the *one* budget authority (the four scattered constants
 collapse into it). `duplicate_authorities` stays 0.
 
@@ -602,7 +602,7 @@ the compressed unit; GREEN is malformed without compressed bytes.
 ### Risk 3: `-Zshare-generics` / `cargo llvm-lines` / brotli unavailable on the toolchain/host
 **Band-aid (rejected):** assume the flag works / invent a number / silently skip.
 **Structural fix:** §3.3a + the no-fake-number gate — availability is *probed* and recorded
-(measured-applied / measured-unavailable), mirroring doc 53's PyPy/Codon host-absent
+(measured-applied / measured-unavailable), mirroring doc 64's PyPy/Codon host-absent
 `ADVISORY` pattern. The lever lights up with zero code change when the toolchain supports it.
 
 ### Risk 4: A polymorphization (3c) silently slows a path that was actually hot
@@ -626,7 +626,7 @@ change. A size optimization that breaks a symbol is not a win, it is a regressio
 
 ### Risk 7: Size profiles are slow (fat-LTO, cgu=1) → the size gate is too slow per-PR
 **Band-aid (rejected):** run the full size sweep per-PR and time out / flake.
-**Structural fix:** the **tiered suite** (mirroring doc 53 §3.3) — per-PR gates only the
+**Structural fix:** the **tiered suite** (mirroring doc 64 §3.3) — per-PR gates only the
 two contract cells (`release-output`+`micro`, `wasm-release`+`micro`) on a cached
 incremental build; the full tier×profile×backend sweep is nightly and seeds the baseline.
 Size is deterministic so the per-PR cells hard-gate safely (no quiescence cost).
@@ -637,7 +637,7 @@ Size is deterministic so the per-PR cells hard-gate safely (no quiescence cost).
 `cold_first_sighting` (cdhash/codesign) + `page_cache_cold` (page-in) into the Size board
 as the footprint→cold-start dimension family; cold-start improvements are pursued as
 *artifact footprint + codesign* facts (smaller artifact = fewer pages = faster cold), never
-as a runtime-init red. This is the doc 53 Risk-8 discipline applied to the size lever.
+as a runtime-init red. This is the doc 64 Risk-8 discipline applied to the size lever.
 
 ---
 
@@ -692,7 +692,7 @@ Performance-Constitution dimension in fact, not just in the constitution.**
 - wasm-opt converge lane (Phase 4): `tools/wasm_optimize.py` `_DEFAULT_FEATURE_FLAGS`
   (45-56, the load-bearing `--disable-gc`/`--disable-custom-descriptors` set);
   `tools/wasm_link.py` (`--gc-sections`, rec-group flatten); doc 0931 "high-value work #1".
-- Measurement-plane integration points (Phase 0/1/2/6): doc 53 §Appendix A — `perf_schema.py`,
+- Measurement-plane integration points (Phase 0/1/2/6): doc 64 §Appendix A — `perf_schema.py`,
   `perf_measure.py`, `perf_board.py`, `perf_history.py`, `perf_causality.py`; the
   `PerfCell` already carries `binary_size_kib`/`compile_time_s`/`molt_peak_rss_mib`.
 - Budget files (Phase 2): `bench/scoreboard/cold_start_budget.json` (the existing budget
