@@ -60,6 +60,26 @@ RUSTFMT_TMP = ROOT / "tmp" / "gen_op_kinds"
 # sets is a hard error (a typo in the table must not silently degrade to a
 # fallback classification).
 _PURITY_VALUES = {"pure", "pure_may_throw", "impure"}
+_RESULT_ARITY_VALUES = {"zero", "one", "two", "variable"}
+_VARIABLE_RESULT_ARITY_OPCODES = {
+    # Calls may be emitted for value-producing expressions or result-discarding
+    # statements. The return-value fact is present only when TIR carries a result.
+    "Call",
+    "CallMethod",
+    "CallBuiltin",
+    # Exception checks can be pure control-transfer polls or produce an explicit
+    # flag in older/diagnostic lanes.
+    "CheckException",
+    # Copy is also the legacy SimpleIR fallback carrier and may model zero,
+    # one, or multi-result transport shapes until each spelling is promoted.
+    "Copy",
+    # SCF ops model region-shaped dialect constructs whose result count is
+    # determined by the region signature, not the opcode name alone.
+    "ScfIf",
+    "ScfFor",
+    "ScfWhile",
+    "ScfYield",
+}
 
 # Operand-ownership: the per-operand borrowed|consumed|refinement
 # axis (design 27 §2.1). A uniform shorthand ("all_borrowed" / "all_consumed") or
@@ -241,6 +261,18 @@ def load_table() -> dict:
             raise OpKindTableError(
                 f"opcode {name}: 'purity' must be one of {sorted(_PURITY_VALUES)}, "
                 f"got {purity!r}"
+            )
+        result_arity = row.get("result_arity")
+        if result_arity not in _RESULT_ARITY_VALUES:
+            raise OpKindTableError(
+                f"opcode {name}: 'result_arity' must be one of "
+                f"{sorted(_RESULT_ARITY_VALUES)}, got {result_arity!r}"
+            )
+        if result_arity == "variable" and name not in _VARIABLE_RESULT_ARITY_OPCODES:
+            raise OpKindTableError(
+                f"opcode {name}: result_arity = 'variable' is reserved for "
+                "audited context-dependent opcodes; use a fixed arity or add "
+                "the opcode to _VARIABLE_RESULT_ARITY_OPCODES with a rationale"
             )
         # Cross-axis invariant: the `purity` class and `may_throw` bit are two
         # views of the same throw property and MUST agree. `OpEffects::PURE` has
@@ -1307,6 +1339,18 @@ def _render_rs_unformatted(data: dict) -> str:
     out.append(_render_opcode_purity_arms(opcodes))
     out.append("    }\n}\n\n")
 
+    out.append(
+        "/// Fixed result count for opcodes whose arity is statically known.\n"
+        "/// `None` means the opcode has a variable/context-dependent result count.\n"
+        "/// EXHAUSTIVE over OpCode so verifier result-count policy cannot drift\n"
+        "/// behind newly added opcodes.\n"
+        "#[inline]\n"
+        "pub fn opcode_fixed_result_count_table(opcode: OpCode) -> Option<usize> {\n"
+        "    match opcode {\n"
+    )
+    out.append(_render_opcode_result_arity_arms(opcodes))
+    out.append("    }\n}\n\n")
+
     alias_rc_barriers = list(data.get("alias_rc_barrier_opcodes", []))
     alias_heap_barriers = list(data.get("alias_heap_barrier_opcodes", []))
     out.append(
@@ -1592,6 +1636,21 @@ def _render_opcode_bool_arms(opcodes: list[dict], truthy: list[str]) -> str:
     for row in opcodes:
         name = row["name"]
         lines.append(f"        OpCode::{name} => {_rs_bool(name in truthy_set)},\n")
+    return "".join(lines)
+
+
+def _render_opcode_result_arity_arms(opcodes: list[dict]) -> str:
+    """Render exhaustive `OpCode::X => Option<usize>` result-count arms."""
+    rendered = {
+        "zero": "Some(0)",
+        "one": "Some(1)",
+        "two": "Some(2)",
+        "variable": "None",
+    }
+    lines = []
+    for row in opcodes:
+        name = row["name"]
+        lines.append(f"        OpCode::{name} => {rendered[row['result_arity']]},\n")
     return "".join(lines)
 
 

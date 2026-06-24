@@ -118,6 +118,13 @@ Closed in the current audit: the repr-identity ops (`cast`, `widen`, `copy_var`)
 
 ## 5. Phase-2 mechanism (the recommendation, 5 lines)
 
+Current schema note: `op_kinds.toml` now also owns `result_arity`
+(`zero`, `one`, `two`, or `variable`) and generates
+`opcode_fixed_result_count_table`, so TIR verification consumes the registry
+instead of maintaining a parallel opcode-to-result-count match. The generator
+rejects `variable` unless the opcode is on the audited context-dependent
+whitelist, so fixed-result opcodes cannot quietly escape verifier coverage.
+
 1. **One table** `runtime/molt-tir/src/tir/op_kinds.toml` — rows `(canonical_kind, aliases[], semantics_class, arity, mapper_opcode|"copy", classifier_class ∈ {fresh_value, transparent_alias, inert_marker, structural}, effect ∈ {pure, observe, throw, side_effect}, backends_required[], runtime_symbol?)`.
 2. **One generator** `tools/gen_op_kinds.py` (modeled on `tools/gen_intrinsics.py`) renders `runtime/molt-tir/src/tir/op_kinds_generated.rs` (the `kind_to_opcode` arms, the `classify_copy_kind`/`copy_kind_mints_fresh_owned_ref` arms, the effect-oracle arms) AND `src/molt/frontend/lowering/op_kinds_generated.py` (the canonical-spelling constants the emitter uses).
 3. **One sync test** `tests/test_gen_op_kinds.py` (modeled on `tests/test_gen_intrinsics.py`) re-renders in memory and `assert_eq`s against the checked-in generated files → **drift = build/test error**.

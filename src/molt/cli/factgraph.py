@@ -14,6 +14,8 @@ from typing import Any
 class FactGraphRequest:
     output_path: Path
     function_name: str
+    requested_target: str
+    effective_backend: str
 
 
 def add_factgraph_parser(
@@ -241,6 +243,8 @@ def resolve_request_output_path(
     return FactGraphRequest(
         output_path=project_root / request.output_path,
         function_name=request.function_name,
+        requested_target=request.requested_target,
+        effective_backend=request.effective_backend,
     )
 
 
@@ -328,7 +332,9 @@ def emit_pipeline_fact_graph(
                     data={
                         "output": str(request.output_path),
                         "function": request.function_name,
-                        "target": target,
+                        "target": request.requested_target,
+                        "backend": request.effective_backend,
+                        "pipeline_target": target,
                         "profile": profile,
                     },
                     warnings=build_preamble.warnings,
@@ -398,6 +404,8 @@ def run_factgraph_command(
         fact_graph_request=FactGraphRequest(
             output_path=Path(args.output),
             function_name=args.function,
+            requested_target=args.target,
+            effective_backend=effective_backend,
         ),
         build_config=build_config,
     )
