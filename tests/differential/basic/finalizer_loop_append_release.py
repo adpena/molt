@@ -1,15 +1,22 @@
-# MOLT_META: expect_fail=molt expect_fail_reason=native_value_tracking_never_releases_loop_body_call_result_temp_task63
 """Purpose: #63 — a per-iteration constructor result appended to a container
 inside a loop must still be RELEASED by the temp's owner (the append increfs;
 the call-result +1 must be balanced), so the container's later ``clear()``
 drops each element to rc->0 and fires ``__del__``.
 
-CPython prints ``entries 100``; the dormant-native value-tracking lane never
-releases the loop-body ``B()`` call-result temporary, so the elements stay
-above zero after ``clear()`` and the log stays empty (``entries 0``). This is
-the c_loopapp module-free isolation repro (doc 50) promoted to a durable
-known-bad anchor — a DEBT WITH AN OWNER (task #63), not an accepted state.
-Distinct from #58 (ordering) and from the round-13 drop-lane fix.
+CPython prints ``entries 100``; molt now matches it with a clean exit under
+``MOLT_ASSERT_NO_LEAK``.
+
+STATUS (2026-06-24): PASSES — a regression guard, no longer a known-bad anchor.
+The historical gap: on the dormant native value-tracking lane the loop-body
+``B()`` call-result temporary had its last use extended to function return
+(Swift-ARC "release at func_end") and so was never released per iteration; the
+elements stayed above zero after ``clear()`` and the log stayed empty
+(``entries 0``). Fixed by flipping native onto the TIR drop-insertion lane —
+the round-10/11/12 native-drop arc (Blocker B loop body/exit polarity derived
+from the CFG in ``13ecbdb16``) merged via ``df8f080d0`` — which retires the
+value-tracking lane and DecRefs the temp at its true last use (right after the
+``append`` consumes it), inside the loop body. Distinct from #58 (ordering) and
+from the round-13 drop-lane fix.
 """
 
 log = []
