@@ -1109,6 +1109,24 @@ def init_task(args: argparse.Namespace) -> dict[str, Any]:
     return record
 
 
+def _decode_record_bytes(data: bytes) -> str:
+    """Decode a coordination record tolerant of BOM / encoding variance.
+
+    Records are canonically UTF-8 (see ``write_json``), but an agent that writes
+    a record through a Windows shell redirect (PowerShell defaults to UTF-16-LE
+    with a BOM) emits UTF-16 or UTF-8-BOM bytes. The read boundary must tolerate
+    all of these: a single stray-encoded record previously raised
+    ``UnicodeDecodeError`` out of ``load_records`` (the UTF-16 case) or was
+    silently dropped as invalid (the UTF-8-BOM case), which made ``scan`` /
+    ``check`` unusable and silently defeated cross-agent coordination on Windows.
+    """
+    if data[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        return data.decode("utf-16")
+    if data[:3] == b"\xef\xbb\xbf":
+        return data.decode("utf-8-sig")
+    return data.decode("utf-8")
+
+
 def load_records(repo_root: Path) -> list[CoordinationRecord]:
     root = repo_root / LOG_ROOT
     if not root.is_dir():
@@ -1116,8 +1134,8 @@ def load_records(repo_root: Path) -> list[CoordinationRecord]:
     records: list[CoordinationRecord] = []
     for path in sorted(root.glob("**/coordination.json")):
         try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
+            payload = json.loads(_decode_record_bytes(path.read_bytes()))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
             payload = {
                 "schema_version": SCHEMA_VERSION,
                 "task": path.parent.name,

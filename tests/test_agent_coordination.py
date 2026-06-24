@@ -50,6 +50,60 @@ def test_agent_coordination_init_writes_report_and_json(
     assert "## Environment" in report_text
 
 
+def test_load_records_tolerates_utf16_and_bom_records(tmp_path: Path) -> None:
+    """A record written through a Windows shell redirect (PowerShell `>` emits
+    UTF-16-LE+BOM) must not crash load_records or be silently dropped as invalid.
+    Regression: a single stray-encoded record previously raised UnicodeDecodeError
+    out of scan/check (UTF-16) or parsed as invalid (UTF-8-BOM), which silently
+    defeated cross-agent coordination on Windows."""
+    agents = tmp_path / "logs" / "agents"
+
+    def _record(task: str, status: str, role: str, lane: str) -> dict:
+        return {
+            "schema_version": 1,
+            "task": task,
+            "status": status,
+            "proof_role": role,
+            "planned_proof_lane": lane,
+        }
+
+    utf8_dir = agents / "utf8-lane"
+    utf8_dir.mkdir(parents=True)
+    (utf8_dir / "coordination.json").write_text(
+        json.dumps(_record("utf8-lane", "running", "implementer", "lane/utf8")),
+        encoding="utf-8",
+    )
+
+    utf16_dir = agents / "utf16-lane"
+    utf16_dir.mkdir(parents=True)
+    (utf16_dir / "coordination.json").write_bytes(
+        json.dumps(_record("utf16-lane", "running", "integrator", "lane/utf16")).encode(
+            "utf-16"
+        )
+    )
+
+    bom_dir = agents / "bom-lane"
+    bom_dir.mkdir(parents=True)
+    (bom_dir / "coordination.json").write_bytes(
+        b"\xef\xbb\xbf"
+        + json.dumps(_record("bom-lane", "blocked", "reviewer", "lane/bom")).encode(
+            "utf-8"
+        )
+    )
+
+    records = agent_coordination.load_records(tmp_path)  # must not raise
+    by_task = {record.task: record.payload for record in records}
+
+    assert by_task["utf8-lane"]["status"] == "running"
+    assert by_task["utf16-lane"]["status"] == "running"
+    assert by_task["utf16-lane"]["planned_proof_lane"] == "lane/utf16"
+    assert by_task["bom-lane"]["status"] == "blocked"
+    # None of the three were dropped as invalid.
+    assert all(
+        payload.get("status") != "invalid" for payload in by_task.values()
+    ), by_task
+
+
 def test_agent_coordination_environment_snapshot_prefers_explicit_python(
     monkeypatch,
     tmp_path: Path,
