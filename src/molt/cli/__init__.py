@@ -175,6 +175,11 @@ from molt.cli.backend_daemon_paths import (
     _short_backend_daemon_socket_dir as _short_backend_daemon_socket_dir_impl,
     _unix_socket_path_exceeds_limit as _unix_socket_path_exceeds_limit,
 )
+from molt.cli.backend_daemon_startup import (
+    _backend_daemon_spawn_probe_timeout,
+    _backend_daemon_start_timeout,
+    _backend_daemon_start_timeout_cached,
+)
 from molt.cli.backend_diagnostics import (
     _BACKEND_DIAGNOSTIC_ENV_KNOBS as _BACKEND_DIAGNOSTIC_ENV_KNOBS,
     _FALSY_ENV_VALUES,
@@ -8779,36 +8784,6 @@ def _backend_daemon_freshness_inputs(
             "*.rs",
         ),
     }
-
-
-@functools.lru_cache(maxsize=32)
-def _backend_daemon_start_timeout_cached(raw: str) -> float | None:
-    value = raw.strip()
-    if not value:
-        # 120s default: daemon startup includes stdlib compilation on first
-        # run after a clean cache. Cold stdlib takes 25-60s (300+ functions
-        # compiled in batches of 64, merged with ld -r).  Previous values
-        # of 2s and 10s were too aggressive — caused false "not ready"
-        # restarts that killed in-progress compilations, creating an
-        # infinite loop of start → compile 10s → kill → restart → ...
-        return 120.0
-    try:
-        parsed = float(value)
-    except ValueError:
-        return 120.0
-    return parsed if parsed > 0 else None
-
-
-def _backend_daemon_start_timeout() -> float | None:
-    return _backend_daemon_start_timeout_cached(
-        os.environ.get("MOLT_BACKEND_DAEMON_START_TIMEOUT", "")
-    )
-
-
-def _backend_daemon_spawn_probe_timeout(startup_timeout: float | None) -> float:
-    if startup_timeout is None:
-        return 0.25
-    return min(startup_timeout, 0.25)
 
 
 def _session_target_dir(project_root: Path) -> Path | None:
