@@ -14,6 +14,14 @@ def _config_value(config: dict[str, Any], path: list[str]) -> Any | None:
     return current
 
 
+def _coerce_bool(value: Any, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return default
+
+
 def _resolve_command_config(config: dict[str, Any], command: str) -> dict[str, Any]:
     cmd_cfg: dict[str, Any] = {}
     direct = _config_value(config, [command])
