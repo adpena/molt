@@ -72,6 +72,11 @@ the implementation. For forward-looking priorities, use
   uses explicit platform shells (`cmd.exe /c` on `nt`, `/bin/sh -c` otherwise),
   and is tracked in the stdlib surface matrix with focused CPython differential
   coverage.
+- `os.utime(ns=...)` routes through the same runtime `utime_at` intrinsic used
+  for dir-fd-aware updates. Unix keeps `utimensat`; Windows now handles the
+  `dir_fd=None, follow_symlinks=True` subset through `SetFileTime` using the
+  pre-split `(sec, nsec)` payload while unsupported dir-fd/no-follow variants
+  still fail closed.
 - Runtime opaque handles are pointer-registry ids encoded as immediate ints
   through `opaque_handle_bits`; only Molt heap objects use pointer-tagged bits.
   Rust-backed stdlib/runtime handles for locks, async streams, process/socket
