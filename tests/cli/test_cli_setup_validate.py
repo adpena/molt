@@ -16,6 +16,7 @@ from tests.cli.process_guard import run_cli_test_process
 ROOT = Path(__file__).resolve().parents[2]
 COMPILER_METADATA = importlib.import_module("molt.cli.compiler_metadata")
 COMMAND_RUNTIME = importlib.import_module("molt.cli.command_runtime")
+NATIVE_LINK_DEPS = importlib.import_module("molt.cli.native_link_deps")
 TOOLCHAIN_VALIDATION = importlib.import_module("molt.cli.toolchain_validation")
 
 
@@ -593,6 +594,16 @@ def test_cli_build_toolchain_probes_use_memory_guard(
     )
     monkeypatch.setattr(
         cli.shutil,
+        "which",
+        lambda name: (
+            f"/usr/bin/{name}"
+            if name in {"rustc", "wasm-tools", "nm", "llvm-ar", "lipo"}
+            else None
+        ),
+        raising=True,
+    )
+    monkeypatch.setattr(
+        NATIVE_LINK_DEPS.shutil,
         "which",
         lambda name: (
             f"/usr/bin/{name}"
