@@ -30,7 +30,7 @@ use crate::tir::blocks::BlockId;
 use crate::tir::dominators::dominates;
 use crate::tir::function::TirFunction;
 use crate::tir::op_kinds_generated::{
-    opcode_is_gvn_value_keyed_constant_table, opcode_operand_independent_result_tir_type,
+    GvnNumberingRole, opcode_gvn_numbering_role_table, opcode_operand_independent_result_tir_type,
 };
 use crate::tir::ops::{AttrValue, Dialect, OpCode, TirOp};
 use crate::tir::values::ValueId;
@@ -47,35 +47,6 @@ struct ValueKey {
     const_int_key: Option<i64>,
     const_str_key: Option<String>,
     const_bytes_key: Option<Vec<u8>>,
-}
-
-/// Always-safe ops: box/unbox are pure value transformations that
-/// preserve type through TIR→SimpleIR→native lowering correctly.
-///
-/// Constants are NOT included here despite being pure — replacing
-/// a ConstFloat with Copy(earlier_const_float) changes how the
-/// native backend handles the op (ConstFloat → raw f64 vs
-/// Copy → NaN-boxed path), causing type mismatches.
-fn is_always_numberable(opcode: OpCode) -> bool {
-    matches!(opcode, OpCode::BoxVal | OpCode::UnboxVal)
-}
-
-/// Returns `true` if the opcode is numberable when operands are proven typed.
-///
-/// The opcode-level purity decision is delegated to the single source of truth
-/// in `effects::opcode_is_type_gated_numberable`: a deterministic,
-/// side-effect-free computation whose purity is conditional on its operands
-/// being primitive types. The *type* precondition itself (operands proven
-/// primitive) is enforced separately at the call site via `is_primitive_type`,
-/// because it depends on the per-value type map rather than the opcode.
-///
-/// Note this family includes `Div`/`FloorDiv`/`Mod`/`Pow`, which may raise
-/// `ZeroDivisionError`. CSE is still sound for them: GVN only replaces a
-/// duplicate that is *dominated* by its leader, so if the leader raises, the
-/// replaced op is never reached — the throw is preserved. (This is why GVN can
-/// number a may-throw op that LICM must not hoist.)
-fn is_typed_numberable(opcode: OpCode) -> bool {
-    super::effects::opcode_is_type_gated_numberable(opcode)
 }
 
 /// A type is "primitive" when arithmetic on it is provably side-effect-free.
@@ -315,23 +286,23 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
 
                     let result = op.results[0];
 
-                    // Determine if this op is safe to number.
-                    let numberable = if is_always_numberable(op.opcode) {
-                        true
-                    } else if is_typed_numberable(op.opcode) {
-                        // Arithmetic/comparison/boolean ops are only numberable
-                        // when ALL operands are proven primitive types. On DynBox
-                        // operands, these ops may trigger dunder methods with side
-                        // effects (__add__, __eq__, etc.).
-                        op.operands
-                            .iter()
-                            .all(|v| value_type.get(v).is_some_and(is_primitive_type))
-                    } else {
-                        false
+                    let numbering_role = opcode_gvn_numbering_role_table(op.opcode);
+                    let numberable = match numbering_role {
+                        GvnNumberingRole::Always => true,
+                        GvnNumberingRole::TypeGated => {
+                            // Arithmetic/comparison/boolean ops are only numberable
+                            // when ALL operands are proven primitive types. On DynBox
+                            // operands, these ops may trigger dunder methods with side
+                            // effects (__add__, __eq__, etc.).
+                            op.operands
+                                .iter()
+                                .all(|v| value_type.get(v).is_some_and(is_primitive_type))
+                        }
+                        GvnNumberingRole::ValueKeyedConstant | GvnNumberingRole::Never => false,
                     };
 
                     if !numberable {
-                        if opcode_is_gvn_value_keyed_constant_table(op.opcode) {
+                        if numbering_role.is_value_keyed_constant() {
                             let (const_int_key, const_str_key, const_bytes_key) = const_keys(op);
                             let key = ValueKey {
                                 opcode: op.opcode,

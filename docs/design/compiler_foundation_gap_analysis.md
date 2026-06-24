@@ -34,11 +34,12 @@ These six are absent and are prerequisites cited repeatedly across lanes.
   (inline 30 ops, unroll trip≤8, vector width=2, tile=32, LICM register-pressure-blind). Build a
   shared `TargetInfo` (latencies, vector widths, cache hierarchy, branch-mispredict, call overhead)
   consulted by all passes. Unblocks: consistent, tunable, target-aware decisions.
-- **S3. Unified effects/alias oracle**. THREE divergent "safe pure op" lists exist —
-  effects.rs `opcode_is_side_effecting`, licm.rs `is_hoistable`, gvn.rs `is_typed_numberable` — a
-  standing soundness/missed-opt hazard. Build per-op effect tags (reads/writes-memory[region],
-  raises, allocates, reads/writes-exception-flag) as the single oracle deriving all three. Unblocks:
-  correctness + CSE/LICM/DCE of pure ops; the substrate for S5.
+- **S3. Unified effects/alias oracle**. The legacy three-list hazard has been structurally reduced:
+  DCE/LICM consume generated opcode effect/purity facts, and GVN consumes a generated numbering-role
+  table for always-numberable, type-gated, and value-keyed-constant families. Remaining S3 work is the
+  richer per-op memory/effect tag model (`reads/writes-memory[region]`, allocates, exception-flag
+  reads/writes) that can derive load/store and MemorySSA legality without ad-hoc pass predicates.
+  Unblocks: correctness + CSE/LICM/DCE of pure ops; the substrate for S5.
 - **S4. Call graph + whole-program (module) pass phase**. `run_pipeline` is strictly per-function;
   `TirModule` (function.rs:135) exists but is unused; the driver holds the full set only in SimpleIR
   (main.rs:~449, wasm.rs:~2155). Build `run_module_pipeline(&mut TirModule)` + a call graph (the DFE
