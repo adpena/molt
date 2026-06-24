@@ -233,7 +233,10 @@ stdlib_module_symbols;`.
 old upward dependency from `ir_schema.rs` into the pass module; S1 must move `effect_proof.rs`
 with the vocabulary and make only the downstream-consumed proof API public across the new crate
 boundary. `printer.rs` is now TIR-only; LIR formatting lives in `lir_printer.rs` and must stay
-with the residual lower/LIR layer until S2 moves it.
+with the residual lower/LIR layer until S2 moves it. `repr.rs` now owns the representation
+vocabulary (`ScalarKind`, `ContainerKind`, `ContainerStorageKind`, `ContainerStorageFact`, and
+`Repr`); `representation_plan.rs` is planner logic only and consumes that vocabulary from the
+leaf module until S2 moves the residual planner into `molt-lower`.
 
 ### 3.2 Cargo.toml + feature wiring
 - New `runtime/molt-ir/Cargo.toml`: `[dependencies]` = `serde`, `serde_json`, `rmp-serde`, `libc`,
@@ -340,7 +343,7 @@ expose it via molt-passes `test-util` and import it from molt-lower's dev-dep on
   `molt-lower/<feature>`. `[dev-dependencies]`: `molt-lower = { features = ["test-util"] }`.
   Remove `mod ir_rewrites;` (migrated).
 - `molt-backend/src/lib.rs`: the big re-export block (`pub use molt_tir::{...}` :11-14, `pub use
-  molt_tir::passes::{...}` :43-51, `pub use molt_tir::representation_plan::Repr` :61, `pub use
+  molt_tir::passes::{...}` :43-51, `pub use molt_tir::repr::Repr` :61, `pub use
   molt_tir::MOLT_CLOSURE_PARAM_NAME` :55) re-points to `molt_lower::` / `molt_passes::` /
   `molt_ir::` as appropriate. To MINIMIZE churn in main.rs/wasm.rs (which reach the layer via
   `crate::tir::*`/`crate::passes::*` re-exports), have `molt-lower/src/lib.rs` re-export

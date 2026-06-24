@@ -179,7 +179,7 @@ pub struct ClassVersion(pub u64);
 pub struct FieldSlot {
     pub name: String,              // attribute name (the `s_value` on the op)
     pub offset: u32,               // byte offset from the object payload base
-    pub repr: Repr,                // representation_plan::Repr of the slot value
+    pub repr: Repr,                // repr::Repr of the slot value
     pub ownership: FieldOwnership, // Owned reference | Raw scalar (doc 49)
     pub source: SlotSource,        // Annotation | Slots | DataclassField (provenance)
 }
@@ -583,7 +583,7 @@ ratchet (doc 65 §5 binding).
   (`types.rs:46`); the landed `FactValue`/`GuardId` (`call_facts.rs:117`/`:102`); the
   `AnalysisManager` (`analysis/mod.rs`).
 - **Feeds:** Rung 3 (the loaded `FieldSlot.repr` keeps fields unboxed —
-  `representation_plan::Repr`); Rung 2 2d (the `ClassVersionGuard`-fed method devirt);
+  `repr::Repr`); Rung 2 2d (the `ClassVersionGuard`-fed method devirt);
   doc 02 (a `Proven` `FieldOffset` load is the `ProvenPure` typed-slot load LICM/MemGVN
   need); doc 49/50 (consumes `FieldSlot.ownership`, no second authority).
 - **Uses:** doc 59 (the fact-authority discipline + `gen_op_kinds --check`); doc 64 (the

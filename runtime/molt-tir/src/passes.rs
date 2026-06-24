@@ -1,4 +1,5 @@
-use crate::representation_plan::{ScalarKind, ScalarRepresentationPlan};
+use crate::repr::ScalarKind;
+use crate::representation_plan::ScalarRepresentationPlan;
 use crate::tir::effect_proof::simple_ir_has_static_module_class_binding_effect_proof;
 use crate::{FunctionIR, OpIR, SimpleIR};
 use std::collections::{BTreeMap, BTreeSet, HashSet};

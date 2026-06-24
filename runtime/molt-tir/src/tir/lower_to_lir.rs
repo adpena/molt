@@ -10,7 +10,7 @@ use super::ops::{AttrDict, AttrValue, OpCode, TirOp};
 use super::type_refine::{extract_type_map, refine_types};
 use super::types::TirType;
 use super::values::{TirValue, ValueId};
-use crate::representation_plan::Repr;
+use crate::repr::Repr;
 use crate::tir::op_kinds_generated::opcode_requires_i64_zero_divisor_guard_table;
 
 /// The proven per-`ValueId` representation override (the value-keyed source of

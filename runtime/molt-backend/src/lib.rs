@@ -7,10 +7,10 @@ use std::fmt::Write as _;
 // The TIR lower layer now lives in the molt-tir crate (decomposition doc 21, move
 // T1). Re-export its modules at this crate root so molt-backend's existing
 // `crate::tir::*` / `crate::passes::*` / `crate::ir::*` /
-// `crate::representation_plan::*` / leaf-util paths resolve unchanged.
+// `crate::repr::*` / `crate::representation_plan::*` / leaf-util paths resolve unchanged.
 pub use molt_tir::{
     debug_artifacts, intrinsic_symbols, ir, ir_schema, json_boundary, passes, process_diagnostics,
-    representation_plan, tir,
+    repr, representation_plan, tir,
 };
 
 pub use molt_tir::intrinsic_symbols::{
@@ -58,7 +58,7 @@ pub use molt_tir::MOLT_CLOSURE_PARAM_NAME;
 /// `pub` `tir::lower_to_lir::lower_function_to_lir` (Phase 1 of the typed-IR
 /// convergence), which the WASM/LIR codegen path drives with the proven
 /// `repr_by_value`.
-pub use molt_tir::representation_plan::Repr;
+pub use molt_tir::repr::Repr;
 
 #[cfg(feature = "luau-backend")]
 pub mod luau;

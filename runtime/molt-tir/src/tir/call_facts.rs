@@ -88,7 +88,7 @@ use super::passes::ip_summary::ModuleSummaries;
 use super::target_info::TargetInfo;
 use super::types::TirType;
 use super::values::ValueId;
-use crate::representation_plan::Repr;
+use crate::repr::Repr;
 
 // ───────────────────────────────────────────────────────────────────────────
 // The confidence lattice (doc 47 §1)

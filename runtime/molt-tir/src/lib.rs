@@ -2,8 +2,8 @@
 //!
 //! Extracted from molt-backend (decomposition program doc 21, move T1). Contains
 //! the typed IR (`tir`), the SimpleIR transport (`ir`/`ir_schema`/`json_boundary`),
-//! the backend-agnostic SimpleIR passes (`passes`), the representation lattice
-//! (`representation_plan` + the `Repr` carrier axis), and three leaf utilities
+//! the backend-agnostic SimpleIR passes (`passes`), the representation vocabulary
+//! (`repr`) plus planner logic (`representation_plan`), and three leaf utilities
 //! (`debug_artifacts`/`process_diagnostics`/`intrinsic_symbols`). No dependency on
 //! any backend; every backend crate depends on this one.
 
@@ -19,6 +19,7 @@ pub mod ir_schema;
 pub mod json_boundary;
 pub mod passes;
 pub mod process_diagnostics;
+pub mod repr;
 pub mod representation_plan;
 pub mod tir;
 
@@ -27,7 +28,7 @@ pub use crate::ir::{FunctionIR, OpIR, PgoProfileIR, SimpleIR, validate_simple_ir
 /// The representation lattice element (the orthogonal carrier axis to `TirType`),
 /// re-exported at the crate root to mirror molt-backend's historical
 /// `crate::Repr` path.
-pub use crate::representation_plan::Repr;
+pub use crate::repr::Repr;
 
 /// The implicit FIRST parameter name the frontend prepends to every closure's
 /// parameter list to carry its captured environment (the tuple of capture

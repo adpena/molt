@@ -6,7 +6,8 @@
 
 use crate::ir::{FunctionIR, OpIR, SimpleIR};
 use crate::luau_ir::*;
-use crate::representation_plan::{ScalarKind, ScalarRepresentationPlan};
+use crate::repr::ScalarKind;
+use crate::representation_plan::ScalarRepresentationPlan;
 use std::collections::BTreeSet;
 
 /// Lower a complete SimpleIR program to a LuauModule.
