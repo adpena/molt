@@ -16,24 +16,28 @@ timeout_sec = 1800
 
 [[suite]]
 id = "codon_benchmarks"
-enabled = false
+enabled = true
 friend = "codon"
 display_name = "Codon Benchmarks"
 source = "git"
 repo_url = "https://github.com/exaloop/codon.git"
-repo_ref = "PINNED_COMMIT_REQUIRED"
+repo_ref = "9b72395ee453f21162b33b68fbf760763ec93ea0"   # Apache-2.0 (confirmed, not BUSL); 2026-06-22
 semantic_mode = "requires_adapter"
-adapter_notes = "Wire Codon's benchmark harness and classify unsupported Molt semantics per case."
-tags = ["native", "compiler", "microbench"]
+adapter_notes = "Run unmodified Codon bench/codon kernels across cpython/codon (and, once verified, molt) lanes via tools/codon_adapter.py. The codon lane self-skips ('unavailable') when the codon compiler is absent (e.g. Windows), so the suite stays green on CPython-only hosts. Non-equivalent kernels (bignum/Unicode/C-semantics-numerics per 69A A.0.2) carry scored_against_codon=false and are reported, never scored. taq/word_count are data_gated until a pinned corpus is wired."
+tags = ["native", "compiler", "microbench", "benchmark-suite"]
+repeat = 5
+timeout_sec = 1800
 
 [suite.runners.cpython]
-skip_reason = "Configure cpython run_cmd for this suite before enabling."
-
-[suite.runners.molt]
-skip_reason = "Configure molt run_cmd (and optional build_cmd) for this suite before enabling."
+json_stdout = true
+run_cmd = ["{python}", "{repo_root}/tools/codon_adapter.py", "--suite-root", "{suite_root}", "--lane", "cpython", "--kernel", "all", "--iterations", "5", "--json"]
 
 [suite.runners.codon]
-skip_reason = "Configure codon run_cmd (and optional build_cmd) before enabling."
+json_stdout = true
+run_cmd = ["{python}", "{repo_root}/tools/codon_adapter.py", "--suite-root", "{suite_root}", "--lane", "codon", "--codon", "codon", "--kernel", "all", "--iterations", "5", "--json"]
+
+[suite.runners.molt]
+skip_reason = "molt lane deferred: needs a build slot + per-kernel verification that molt runs Codon's bench/codon kernels. Activate via tools/codon_adapter.py --lane molt --molt '{project_python} -m molt.cli' once verified (see bench/corpus/README.md)."
 
 [[suite]]
 id = "pypy_benchmarks"
@@ -167,14 +171,14 @@ run_cmd = ["{python}", "{repo_root}/tools/numpy_off_shelf_adapter.py", "--suite-
 
 [[suite]]
 id = "pyperformance_benchmarks"
-enabled = false
+enabled = true
 friend = "pyperformance"
-display_name = "PyPerformance Smoke Subset"
+display_name = "PyPerformance Full Corpus (v1.14.0)"
 source = "git"
 repo_url = "https://github.com/python/pyperformance.git"
 repo_ref = "1.14.0"
 semantic_mode = "requires_adapter"
-adapter_notes = "Runs an intrinsic-friendly smoke subset (nbody,fannkuch) through tools/pyperformance_adapter.py; Molt lane uses `molt run --profile dev`."
+adapter_notes = "Runs the FULL pyperformance v1.14.0 corpus (97 IDs) in-process via tools/pyperformance_adapter.py run-all; per-benchmark c_accelerated flagging per 69A A.1; async/bench_command/multiprocessing + missing-dep benchmarks report skipped so the suite stays green. Fast curated lane: swap run-all -> run-group --group math (or regex)."
 tags = ["native", "benchmark-suite", "pyperformance"]
 repeat = 3
 timeout_sec = 1800
@@ -182,8 +186,7 @@ env = {}
 
 [suite.runners.cpython]
 json_stdout = true
-run_cmd = ["{python}", "{repo_root}/tools/pyperformance_adapter.py", "run-subset", "--suite-root", "{suite_root}", "--benchmarks", "nbody,fannkuch", "--rounds", "2", "--json"]
+run_cmd = ["uv", "run", "--isolated", "--no-project", "--python", "{python}", "--with", "pyperformance==1.14.0", "python", "{repo_root}/tools/pyperformance_adapter.py", "run-all", "--suite-root", "{suite_root}", "--rounds", "2", "--json"]
 
 [suite.runners.molt]
-json_stdout = true
-run_cmd = ["molt", "run", "--profile", "dev", "{repo_root}/tools/pyperformance_adapter.py", "--", "run-subset", "--suite-root", "{suite_root}", "--benchmarks", "nbody,fannkuch", "--rounds", "2", "--json"]
+skip_reason = "molt lane deferred: pyperformance._manifest must be importable under molt (open integration question, see the S1 adapter notes) + needs a build slot. The cpython lane (uv --with pyperformance==1.14.0) is the active reference; activate the molt lane once the import path is resolved (see bench/corpus/README.md)."

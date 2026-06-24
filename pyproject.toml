@@ -153,6 +153,12 @@ gates = [
 [dependency-groups]
 bench = [
     "setuptools>=80.9.0",
+    # pyperformance v1.14.0 corpus (pinned to bench/friends/manifest.toml repo_ref);
+    # pulls pyperf. `uv sync --group bench` to run the pyperformance lane directly.
+    # codon (exaloop.io/install.sh, Linux/macOS) and pypy (`uv --python pypy`) are
+    # optional reference engines installed out-of-band; their lanes self-skip when
+    # absent. See bench/corpus/README.md.
+    "pyperformance==1.14.0",
 ]
 dev = [
     "cbor2>=5.8.0",
