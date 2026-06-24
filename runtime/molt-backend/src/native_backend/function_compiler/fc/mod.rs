@@ -1,10 +1,11 @@
 //! `fc` — per-op-family Cranelift codegen handlers extracted from the
 //! `compile_func_inner` monolith (decomposition program M1).
 //!
-//! `compile_func_inner` is one ~34K-line method whose per-op `match op.kind`
+//! `compile_func_inner` was once a ~34K-line method and remains the largest
+//! native-codegen function; its per-op `match op.kind`
 //! dispatch shares ~100 `let mut` locals. Splitting the *file* alone buys no
 //! incremental-build win — rustc's `codegen-units` partition at *function*
-//! boundaries, so a 34K-line function is one indivisible codegen unit
+//! boundaries, so a monolithic function is one indivisible codegen unit
 //! regardless of how many files surround it (see
 //! `docs/design/foundation/dx_baseline.md` §4). The build-throughput lever is
 //! decomposing the *function*: each handler here is a standalone `fn` and thus
@@ -40,6 +41,7 @@ pub(in crate::native_backend::function_compiler) enum OpFlow {
 pub(in crate::native_backend::function_compiler) mod arith;
 pub(in crate::native_backend::function_compiler) mod attrs;
 pub(in crate::native_backend::function_compiler) mod callargs;
+pub(in crate::native_backend::function_compiler) mod calls;
 pub(in crate::native_backend::function_compiler) mod class_ops;
 pub(in crate::native_backend::function_compiler) mod compare;
 pub(in crate::native_backend::function_compiler) mod context_mgmt;

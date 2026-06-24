@@ -864,7 +864,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
         | "vec_max_int_range"
         | "vec_max_int_range_trusted" => {
             fc::vec_reductions::handle_vec_reduction(
-                &op,
+                op,
                 &mut *module,
                 &mut *import_ids,
                 &mut *builder,

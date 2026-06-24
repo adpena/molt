@@ -788,8 +788,8 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
                     let cleanup = drain_cleanup_tracked_dedup_with_authority(
                         native_rc_tracking_enabled,
                         names,
-                        &last_use,
-                        &alias_roots,
+                        last_use,
+                        alias_roots,
                         op_idx,
                         None,
                         Some(&mut *already_decrefed),
@@ -826,8 +826,8 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
                     let cleanup = drain_cleanup_tracked_dedup_with_authority(
                         native_rc_tracking_enabled,
                         names,
-                        &last_use,
-                        &alias_roots,
+                        last_use,
+                        alias_roots,
                         op_idx,
                         None,
                         Some(&mut *already_decrefed),
