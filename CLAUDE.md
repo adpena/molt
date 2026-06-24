@@ -15,6 +15,15 @@ When you identify a structurally correct fix and feel pulled toward an "immediat
 
 If you cannot complete the structural fix in this session, **do not commit the localized hack as a placeholder**. Leave a clean baton-pass note describing the structural fix needed; the next session picks it up. Half-measures committed to main are worse than nothing committed.
 
+### Force a tiny slice, then rip it open
+
+Collapse the problem to the smallest slice that still cuts through the REAL structure end-to-end — one concrete case, one path, one invariant — then rip THAT slice fully open. **Tiny in scope, total in depth.**
+
+- **Force the slice tiny** so you can afford to rip it fully open. Do not scope broadly or plan exhaustively before any real structure is exposed — a plan is not a slice. Investigation that *finds* the slice is allowed; the deliverable is the ripped-open slice, never the plan.
+- **Rip it open** = implement the actual structure behind the slice — the missing IR fact, the one authority, the ownership boundary — and the whole bug CLASS it exposes inside that boundary, with zero workarounds, until correct + measured + gated. A slice is "ripped open" only when nothing of its real structure is left patched-around.
+- **This is the legitimate small unit, NOT the forbidden "convenient chip."** A chip is sized for process (a checkpoint, a commit, a status) and leaves the structure and its sibling authorities untouched — that is avoidance. A ripped-open slice leaves no sibling of its bug class un-migrated; **width follows the structure, not convenience.**
+- **It kills both failure modes:** (1) boiling the ocean — endless breadth or planning with nothing ripped open; (2) dancing around the edge — a shortcut that patches the surface and leaves the real structure intact. When uncertain, shrink the SCOPE and deepen the RIP — never the reverse.
+
 ### Concrete examples of partial implementations to reject
 
 These are real shortcuts caught and reversed in past sessions. Do not repeat them:
