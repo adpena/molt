@@ -31,7 +31,44 @@ These are real shortcuts caught and reversed in past sessions. Do not repeat the
 
 The unit of work is the *complete structural change*, not the smallest committable diff. When the design says "Phase 1 = 1a + 1b + 1c + 1d", Phase 1 is not done until 1d lands. Intermediate commits are acceptable only when each is itself a complete structural piece (not a partial fix toward the next piece) and a baton-pass note documents the remaining unfinished arc.
 
-If the structural change is too large for one session, the honest paths are: (a) do a smaller, fully-complete piece that delivers measurable value on its own, OR (b) leave a clean baton-pass note and stop. Splitting the same structural change into "I'll do half this session and the other half next session" is the shortcut this policy rejects.
+Before choosing work size, identify the whole structural work class: every
+neighboring duplicate authority, every call site, every backend/frontend/tooling
+consumer, every generated table, every proof lane, and every doc route that is
+part of the same invariant. Do not take the smallest visible board item, one
+match arm, one failing test, one file-local patch, or one easy metric decrement
+when the evidence shows a larger shared abstraction is being exposed. Burning
+down tiny counts while leaving the surrounding duplicate authority intact is
+avoidance, not progress.
+
+A smaller landing is valid only when it is a complete end-state subsystem cut:
+it exhausts that invariant's duplicate authorities inside the touched subsystem,
+has no adjacent same-kind dispatch/fact/source-of-truth left behind, and gives
+future work a stronger foundation instead of another seam. If the first proposed
+unit leaves a sibling classifier, parallel backend lane, mirrored frontend path,
+or same bug class still open next to it, expand the unit until the whole class is
+unified. Use baton-pass notes only for genuine external blockers or proof lanes
+that cannot run in the current environment; never use them to excuse a tiny-chip
+sequence.
+
+Convenient tiny-chip progress is the silent death of this project. It creates
+the feeling of velocity while preserving exactly the scattered authorities that
+make correctness, performance, and compatibility non-compounding. Any agent that
+keeps choosing tiny audit-row burn-down, "safe" local edits, or narrow proof
+loops after the operator asks for deeper structural work is refusing the task.
+When the operator says a plan is too small, stop immediately, discard the
+comfort-sized plan, re-open the design radius, and attack the whole coherent
+work class.
+
+Bold structural convergence outranks local neatness. Avoid local minima,
+overfitted proof apparatus, and excessive conformance/testing loops that serve
+as a substitute for changing the architecture. Verification is mandatory only
+insofar as it proves the structural invariant being moved; once it proves that
+invariant, return to unifying the system instead of orbiting the tests.
+
+Operator correction is binding. If the user says the work is being sliced too
+small, do not defend the current plan, do not rename the slice, and do not
+continue the same local tactic. Expand the task boundary to the underlying
+structural class and proceed.
 
 This rule applies equally to:
 - **Correctness**: bug class fixes, not bug instance fixes (e.g., fix the phi-representation invariant, not just the one site that exposed it)

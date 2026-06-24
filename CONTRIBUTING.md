@@ -19,15 +19,28 @@ Molt expects production-grade changes, not opportunistic patches.
 - Prefer canonical homes over ad hoc files or directories.
 - No silent fallback paths for missing features or missing infrastructure.
 - No test-only hacks, compatibility shims, or narrow fixes that leave structural debt behind.
+- Do not optimize for tiny visible progress. Identify the whole bug class or
+  duplicated-authority cluster first, then land an end-state subsystem cut that
+  removes every sibling source of truth in that boundary.
+- Convenient tiny-chip progress is a project failure mode: it preserves scattered
+  authority while pretending to create velocity. When a maintainer says a change
+  is too narrow, widen the work to the coherent structural class instead of
+  defending or renaming the narrow cut.
 - Keep repo-facing docs and examples accurate after every move or rename.
-- Verify claims with fresh command output before committing.
+- Verify only the claims you make. Fresh command output is required for
+  correctness/performance/support claims, but broad proof lanes are not a
+  substitute for finishing the structural change.
 
 ## Required Verification
 
-- Run the smallest command set that proves the touched paths still work.
+- Use a bounded evidence budget: run one static or targeted check that can catch
+  integration mistakes for the complete structural work class you touched. Do
+  not shrink the implementation to match an easier proof lane.
 - Keep pre-commit hooks read-only. Formatting and automatic fixes must be run
   explicitly before staging so commit hooks cannot rewrite files mid-commit.
-- Prefer the canonical CLI DX surface for repo-wide proof:
+- Use the canonical CLI DX surface for repo-wide proof only when making a
+  repo-wide claim, preparing release/merge evidence, or responding to an
+  explicit maintainer request:
   - `molt setup`
 	  - `molt doctor`
 	  - `molt validate --suite smoke`

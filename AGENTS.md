@@ -35,10 +35,11 @@ touching code, docs, tests, benchmarks, or roadmap state.
 - All OS, architecture, backend, and Python-version behavior must be explicit.
   Gate semantics by Python 3.12/3.13/3.14, target, host OS, architecture, and
   capability surface. Accidental ambient behavior is a bug.
-- Quality gates are non-negotiable: differential tests, conformance suites,
-  CPython regrtest lanes, native/WASM/LLVM/Luau target parity, memory custody,
-  sanitizer/runtime checks, and benchmarks must all become mandatory evidence
-  for claimed support. Do not claim completion until the relevant gates pass.
+- Quality gates are non-negotiable for claimed support, but they are not a
+  license to stall implementation with excessive proof loops. Differential
+  tests, conformance suites, CPython regrtest lanes, native/WASM/LLVM/Luau
+  target parity, memory custody, sanitizer/runtime checks, and benchmarks must
+  back the claims they prove; do not run broad lanes as progress theater.
 - Verification must stay high-signal. Use focused tests, repro shards,
   differential checks, conformance lanes, and benchmarks when they prove a
   changed contract, retire a concrete risk, or support a compatibility/perf
@@ -51,6 +52,30 @@ touching code, docs, tests, benchmarks, or roadmap state.
   authorities, generating evidence, and making the correct path mechanical.
   Documentation, AGENTS guidance, indexes, specs, matrices, tests, and tooling
   are part of the compiler architecture and must move with the code.
+
+## Execution Velocity Doctrine: Broad Structural Arcs, Bounded Proof
+
+- Default to broad, coherent structural arcs. Do not split work into tiny
+  "safe" slices merely to create checkpoints, commits, or status updates. When
+  a subsystem has one wrong authority, rip open the full authority boundary and
+  move the callers, tests, docs, and generated facts needed to make the old path
+  disappear.
+- Commit complete authority moves or genuinely independent structural pieces.
+  A small commit is acceptable only when it deletes a complete source of drift;
+  it is not acceptable when it leaves a hybrid path because the agent stopped
+  early.
+- Verification is an evidence budget, not a ritual. During development, run the
+  smallest high-signal static or targeted command that can catch integration
+  mistakes for the owned arc, then return to code. Broad differential,
+  conformance, benchmark, regrtest, or validation lanes are for explicit
+  compatibility/performance claims, release/merge gates, or user request.
+- Do not get trapped in repeated lint/test loops. If a proof fails, fix the
+  structural cause once, rerun the specific failing proof once, and keep
+  implementing. Avoid expanding proof scope unless the failure exposes a real
+  cross-layer contract risk.
+- Prefer subagents for disjoint broad work: one agent can map call sites or
+  migrate non-overlapping files while the main agent lands the authority move.
+  Do not use subagents to multiply proof lanes or produce status theater.
 
 ## ABSOLUTE TOP PRIORITY: No Shortcuts, No Partial Implementations (Turn Blocker)
 
@@ -91,11 +116,39 @@ These are real shortcuts caught and reversed in past sessions. Do not repeat the
 
 The unit of work is the *complete structural change*, not the smallest committable diff. When the design says "Phase 1 = 1a + 1b + 1c + 1d", Phase 1 is not done until 1d lands. Intermediate commits are acceptable only when each is itself a complete structural piece (not a partial fix toward the next piece) and a baton-pass note documents the remaining unfinished arc.
 
-If a structural change is too large for one session, carve out a smaller
-complete structural primitive that moves the end-state forward and keep going.
-Leave a baton-pass note only for a genuine external blocker or a proof lane that
-cannot run in the current environment. Splitting the same structural change into
-"half now, half later" is the shortcut this policy rejects.
+Before choosing work size, identify the whole structural work class: every
+neighboring duplicate authority, every call site, every backend/frontend/tooling
+consumer, every generated table, every proof lane, and every doc route that is
+part of the same invariant. Do not take the smallest visible board item, one
+match arm, one failing test, one file-local patch, or one easy metric decrement
+when the evidence shows a larger shared abstraction is being exposed. Burning
+down tiny counts while leaving the surrounding duplicate authority intact is
+avoidance, not progress.
+
+A smaller landing is valid only when it is a complete end-state subsystem cut:
+it exhausts that invariant's duplicate authorities inside the touched subsystem,
+has no adjacent same-kind dispatch/fact/source-of-truth left behind, and gives
+future work a stronger foundation instead of another seam. If the first proposed
+unit leaves a sibling classifier, parallel backend lane, mirrored frontend path,
+or same bug class still open next to it, expand the unit until the whole class is
+unified. Use baton-pass notes only for genuine external blockers or proof lanes
+that cannot run in the current environment; never use them to excuse a tiny-chip
+sequence.
+
+Convenient tiny-chip progress is the silent death of this project. It creates
+the feeling of velocity while preserving exactly the scattered authorities that
+make correctness, performance, and compatibility non-compounding. Any agent that
+keeps choosing tiny audit-row burn-down, "safe" local edits, or narrow proof
+loops after the operator asks for deeper structural work is refusing the task.
+When the operator says a plan is too small, stop immediately, discard the
+comfort-sized plan, re-open the design radius, and attack the whole coherent
+work class.
+
+Bold structural convergence outranks local neatness. Avoid local minima,
+overfitted proof apparatus, and excessive conformance/testing loops that serve
+as a substitute for changing the architecture. Verification is mandatory only
+insofar as it proves the structural invariant being moved; once it proves that
+invariant, return to unifying the system instead of orbiting the tests.
 
 ### Year-5 end-state architecture first
 
@@ -122,10 +175,12 @@ Intermediate commits are acceptable only when each one is itself a complete, end
   touched path has a legacy lane, delete or structurally reconcile it in the
   same arc.
 - Streamline and refactor as you go. A structural fix is incomplete if it leaves
-  the old source of truth beside the new one. When migration is too large for
-  the current session, land a smaller complete structural primitive or fail
-  closed; baton-pass notes are for genuine external blockers, not for preserving
-  hybrid implementations.
+  the old source of truth beside the new one. When migration appears too large,
+  first widen the audit to the whole authority cluster, then carve only along a
+  real subsystem boundary that removes every sibling duplicate in that boundary.
+  Do not convert a cluster into a queue of tiny isolated fixes; fail closed or
+  leave a blocker note only when a real external constraint prevents the whole
+  authority class from moving.
 - Generated docs and matrices remain generated-only. Update their source data
   and run the generator; never hand-edit generated semantic status.
 - When docs conflict, code/tests win. Resolve the docs before claiming the work
@@ -312,13 +367,19 @@ Read these first instead of rediscovering project structure:
   compatibility lanes.
 
 ## Default Execution Mode (Non-Negotiable)
-- Default to multi-hour autonomous execution behavior: work in long uninterrupted bursts, batch multiple related product slices per turn, and use minimal worker orchestration.
+- Default to multi-hour autonomous execution behavior: work in long uninterrupted bursts, batch multiple related structural arcs per turn, and use minimal but high-leverage worker orchestration.
 - Proactively clean stale Molt-owned worker groups when needed to keep execution
   stable and deterministic, but never terminate Claude, the Codex app,
   app-server, renderer, node-repl, or any ancestor/host control-plane process
   group as cleanup collateral.
-- Do not stop at neat local checkpoints. Only stop for a real blocker, a safety constraint, or when remote proof on tertiary is the next required step.
-- Do not emit tranche summaries after every small fix. Keep going until a substantial bundled burndown is complete.
+- Do not stop at neat local checkpoints or tiny slices. Only stop for a real blocker, a safety constraint, or when remote proof on tertiary is the next required step.
+- Do not emit tranche summaries after every small fix. Keep going until a
+  substantial bundled burndown is complete, and prefer whole bug-class or
+  authority-cluster closure over isolated issue-count reduction.
+- Operator correction is binding. If the user says the work is being sliced too
+  small, do not defend the current plan, do not rename the slice, and do not
+  continue the same local tactic. Expand the task boundary to the underlying
+  structural class and proceed.
 
 ## Windows Codex App Stability Guardrails (Non-Negotiable)
 
@@ -347,11 +408,11 @@ working in this repo:
   WSL `/home/...`, WSL `/mnt/c/...`, or macOS-native, and the resolved paths
   for `python`, `python3`, `py`, `bash`, `node`, and `npm` if those tools may
   be used. Prefer `tools/agent_coordination.py env` for the repo-local snapshot.
-- Before starting broad differential, conformance, backend, or perf proof work,
-  run `uv run --python 3.12 python tools/agent_coordination.py proof-plan`
-  or pass the intended touched paths explicitly. Use its focused lane
-  recommendations to pick high-signal checks before broad sweeps, then record
-  the chosen lane in `logs/agents/<task>/coordination.json`.
+- Before intentionally broad differential, conformance, backend, or perf proof
+  work, run `uv run --python 3.12 python tools/agent_coordination.py proof-plan`
+  or pass the intended touched paths explicitly. Ordinary structural
+  implementation does not need this ceremony; choose one bounded proof for the
+  owned arc and keep moving.
 - Never paste huge terminal logs, stack traces, generated diffs, benchmark
   JSON, or repeated error streams into the Codex prompt. Write large evidence
   under canonical roots (`logs/`, `tmp/`, `bench/results/`) and summarize the
@@ -778,8 +839,8 @@ cargo build --profile release-fast -p molt-backend --features native-backend --t
 
 **Rule:** If you are an agent and another agent may be running, ALWAYS set `MOLT_SESSION_ID` before ANY build command.
 
-**Coordination discovery:** Before starting long differential, conformance,
-regrtest, benchmark, or validation work, read
+**Coordination discovery:** Before intentionally starting long differential,
+conformance, regrtest, benchmark, or validation work, read
 [docs/ops/MULTI_AGENT_COORDINATION.md](docs/ops/MULTI_AGENT_COORDINATION.md),
 create/update `logs/agents/<task>/` with `tools/new-agent-task.sh <task>`, and
 record whether you own a targeted proof lane or the single broad-sweep
@@ -787,7 +848,9 @@ coordinator role for the shared target root. Use
 `uv run --python 3.12 python tools/agent_coordination.py env`, then
 `uv run --python 3.12 python tools/agent_coordination.py scan` or
 `uv run --python 3.12 python tools/agent_coordination.py check` to inspect
-machine-readable task claims before launching broad proof work.
+machine-readable task claims before launching broad proof work. Do not invoke
+this protocol for ordinary implementation slices; one bounded proof for the
+owned structural arc is enough unless a failure exposes a wider contract risk.
 
 **Git discipline (non-negotiable):**
 - NEVER revert unstaged changes — they are partner work
@@ -1048,7 +1111,7 @@ PermissionError: missing 'net.connect' capability. Use --trusted, MOLT_TRUSTED=1
 - Use `--rust-coverage` with `cargo-llvm-cov` installed to collect Rust runtime coverage under `logs/cpython_regrtest/<ts>/py*/rust_coverage/`.
 - Keep semantic tests deterministic; update or add differential cases when changing runtime or lowering behavior.
 - For Rust changes that affect runtime semantics, add or update `cargo test` coverage.
-- Avoid excessive lint/test loops while implementing; validate once after a cohesive set of changes is complete unless debugging a failure.
+- Avoid excessive lint/test loops while implementing; validate once after a cohesive structural arc is complete unless debugging a specific failure. Do not expand from a targeted proof into broad conformance/regrtest/benchmark lanes without a concrete claim or user request.
 - If tests fail due to missing functionality, implement the correct behavior or
   preserve a clear fail-closed verified-subset gap; never change tests to hide
   the missing feature.
@@ -1057,7 +1120,7 @@ PermissionError: missing 'net.connect' capability. Use --trusted, MOLT_TRUSTED=1
 - Treat benchmark regressions as failures; run `uv run --python 3.14 python tools/bench.py --json-out bench/results/bench.json`, `tools/dev.py lint`, and `tools/dev.py test` after the fix is in, then iterate on optimization until the regression is removed without introducing new regressions.
 - After native + WASM benches, run `uv run --python 3.14 python tools/bench_report.py --update-status-doc` and commit the updated [docs/benchmarks/bench_summary.md](docs/benchmarks/bench_summary.md) plus the refreshed [docs/spec/STATUS.md](docs/spec/STATUS.md) benchmark block.
 - Super bench runs (`tools/bench.py --super`, `tools/bench_wasm.py --super`) execute 10 samples and emit mean/median/variance/range stats; run only on explicit request or release tagging, and summarize the stats in [docs/spec/STATUS.md](docs/spec/STATUS.md) and [docs/benchmarks/bench_summary.md](docs/benchmarks/bench_summary.md).
-- Sound the alarm immediately on performance regressions and trigger an optimization-first feedback loop (bench → lint → test → optimize) until green, but avoid repeated cycles before the implementation is complete.
+- Sound the alarm immediately on performance regressions and trigger an optimization-first feedback loop after the structural implementation is complete; do not spin bench/lint/test cycles while the authority move is still mid-flight.
 - Prefer performance wins even if they increase compile time or binary size; document tradeoffs explicitly.
 - Always run tests via `uv run --python 3.12/3.13/3.14`; never use the raw `.venv` interpreter directly.
   - For CPython regrtest runs, prefer `--uv --uv-prepare --uv-python 3.12/3.13/3.14` so results are reproducible across versions.
@@ -1194,7 +1257,7 @@ stubs, compatibility shims, or debt.
 - This project is fundamentally low-level systems work blended with powerful higher-level abstractions; bring aspirational, genius-level rigor with gritty follow-through, seek the hardest problems first, own complexity end-to-end, and lean into building the future.
 - Do not implement frontend-only workarounds or cheap hacks for runtime/compiler/backend semantics; fix the core layers so compiled binaries match CPython behavior.
 - Agents may use `gh` (GitHub CLI) and git over SSH to open/merge PRs; commit frequently with clear messages.
-- Run linting/testing once after a cohesive change set is complete (`tools/dev.py lint`, `tools/dev.py test`, plus relevant `cargo` checks); avoid repetitive cycles mid-implementation.
+- Run linting/testing once after a cohesive structural change set is complete (`tools/dev.py lint`, `tools/dev.py test`, plus relevant `cargo` checks when the claim requires them); avoid repetitive cycles mid-implementation.
 - Prioritize clear, explicit communication: scope, files touched, and tests run.
 - Prefer one broad-sweep coordinator per shared target root; other agents should
   run targeted proofs, reduce failure queues, or move non-colliding structural
