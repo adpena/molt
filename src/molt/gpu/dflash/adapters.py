@@ -1,7 +1,9 @@
 """Typed registry and resolver for DFlash-compatible draft adapters.
 
 Adapters are intentionally model-specific and may come from external sources
-over time. Molt core only keeps a lightweight registry boundary here.
+over time. Molt core only keeps a lightweight registry boundary here, but every
+registered adapter must identify its target model, draft model, and provenance
+so an anonymous generic speculative decoder cannot enter the DFlash namespace.
 """
 
 from __future__ import annotations
@@ -12,24 +14,40 @@ from .contracts import DFlashRuntime, DFlashSelectionContext
 _DFLASH_ADAPTERS = {}
 
 
+def _require_non_empty_string(value, field_name: str) -> str:
+    if not isinstance(value, str):
+        raise TypeError(f"dflash adapter {field_name} must be a string")
+    if not value.strip():
+        raise ValueError(f"dflash adapter {field_name} must be non-empty")
+    return value
+
+
 class DFlashAdapterSpec:
-    """Typed adapter record for model/target-specific DFlash integrations."""
+    """Typed adapter record for target/draft-model-specific DFlash integrations."""
 
     def __init__(
         self,
         *,
         name: str,
+        target_model_id: str,
+        draft_model_id: str,
+        provenance: str,
         supports,
         create_runtime,
         priority: int = 0,
     ) -> None:
-        if not name:
-            raise ValueError("adapter name must be non-empty")
+        self.name = _require_non_empty_string(name, "name")
+        self.target_model_id = _require_non_empty_string(
+            target_model_id, "target_model_id"
+        )
+        self.draft_model_id = _require_non_empty_string(
+            draft_model_id, "draft_model_id"
+        )
+        self.provenance = _require_non_empty_string(provenance, "provenance")
         if not callable(supports):
             raise TypeError("dflash adapter supports must be callable")
         if not callable(create_runtime):
             raise TypeError("dflash adapter create_runtime must be callable")
-        self.name = name
         self.supports = supports
         self.create_runtime = create_runtime
         self.priority = priority

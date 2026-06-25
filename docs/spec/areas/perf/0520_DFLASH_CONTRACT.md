@@ -47,6 +47,7 @@ generic speculative-decoding loop.
 
 A DFlash adapter must provide:
 
+- explicit target model id, draft model id, and adapter provenance/source;
 - a target/verifier step that owns correctness and refreshed target
   conditioning;
 - a separate drafter step;
@@ -70,6 +71,12 @@ A DFlash adapter must provide:
   token becoming the next round's bonus/root token and with refreshed
   conditioning produced by the verifier;
 - explicit failure when no trained adapter/drafter matches the requested target.
+
+The drafter and verifier callables must be distinct at the Molt contract layer;
+collapsing both roles into one callable is generic speculative plumbing, not a
+DFlash adapter. Test-only adapters must use explicit synthetic `test://...`
+model ids and test-only provenance so they cannot be mistaken for production
+model support.
 
 The runtime must fail closed when a DFlash-capable backend is requested and no
 adapter resolves. Plain greedy fallback is only allowed when DFlash is disabled
