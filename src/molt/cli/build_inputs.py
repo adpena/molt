@@ -39,14 +39,15 @@ from molt.cli.models import (
     _ResolvedBuildEntry,
 )
 from molt.cli.module_graph import (
-    _entry_module_root_for_path,
     _infer_module_overrides,
+    _record_module_reason,
+    _spec_parent,
+)
+from molt.cli.module_resolution import (
+    _entry_module_root_for_path,
     _is_stdlib_resolved_path,
     _module_name_from_path,
-    _parse_source_for_target,
-    _record_module_reason,
     _resolve_module_path,
-    _spec_parent,
     _stdlib_root_path,
 )
 from molt.cli.module_source import _read_module_source
@@ -61,6 +62,7 @@ from molt.cli.project_roots import (
 from molt.cli.target_python import (
     TargetPythonVersion,
     _DEFAULT_TARGET_PYTHON_VERSION,
+    _parse_source_for_target,
     _resolve_target_python_version,
 )
 

@@ -25,10 +25,8 @@ from molt.cli.target_python import TargetPythonVersion
 from molt.type_facts import TypeFacts
 
 if TYPE_CHECKING:
-    from molt.cli.module_graph import (
-        ModuleSyntaxErrorInfo,
-        _ModuleResolutionCache,
-    )
+    from molt.cli.module_graph import ModuleSyntaxErrorInfo
+    from molt.cli.module_resolution import _ModuleResolutionCache
     from molt.cli.module_source import _ModuleSourceCatalog
 
 ParseCodec = Literal["msgpack", "cbor", "json"]

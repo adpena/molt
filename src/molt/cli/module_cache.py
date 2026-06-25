@@ -35,12 +35,12 @@ from molt.cli.models import (
     _ScopedLoweringInputs,
 )
 from molt.cli.module_graph import (
-    _ModuleResolutionCache,
     _load_module_imports,
     _module_dependency_closure,
     _read_persisted_import_scan,
     _resolved_module_cache_key,
 )
+from molt.cli.module_resolution import _ModuleResolutionCache
 from molt.cli.module_source import (
     _ModuleSourceLease,
     _payload_source_matches,
