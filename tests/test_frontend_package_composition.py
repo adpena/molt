@@ -71,6 +71,7 @@ EXPECTED_MIXINS = [
     "CompileWarningMixin",
     "EmissionCoreMixin",
     "FunctionLifecycleMixin",
+    "FunctionMetadataMixin",
     "ModuleLifecycleMixin",
     "SymbolNamingMixin",
     "ClassResolutionMixin",
@@ -144,6 +145,12 @@ def test_moved_methods_resolve_on_class() -> None:
     assert hasattr(SimpleTIRGenerator, "_emit_return_value")
     assert hasattr(SimpleTIRGenerator, "_emit_function_exception_handler")
     assert hasattr(SimpleTIRGenerator, "resume_function")
+    # function metadata
+    assert hasattr(SimpleTIRGenerator, "_emit_function_metadata")
+    assert hasattr(SimpleTIRGenerator, "_emit_function_default_values")
+    assert hasattr(SimpleTIRGenerator, "_function_param_names")
+    assert hasattr(SimpleTIRGenerator, "_known_module_function_type_hint")
+    assert hasattr(SimpleTIRGenerator, "_emit_builtin_function")
     # module lifecycle
     assert hasattr(SimpleTIRGenerator, "_emit_module_metadata")
     assert hasattr(SimpleTIRGenerator, "_emit_module_frame_enter")
@@ -222,6 +229,7 @@ def test_mixin_modules_import_standalone() -> None:
         "molt.frontend.lowering.compile_warnings",
         "molt.frontend.lowering.emission_core",
         "molt.frontend.lowering.function_lifecycle",
+        "molt.frontend.lowering.function_metadata",
         "molt.frontend.lowering.local_bindings",
         "molt.frontend.lowering.midend_optimization",
         "molt.frontend.lowering.module_lifecycle",
