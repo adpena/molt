@@ -264,21 +264,17 @@ stays `RawI64Safe`; the GPU-intrinsic pre-seed
 `wasm_and_llvm_derive_identical_repr_from_one_value_range` with full-deopt-tier
 assertions.
 
-### STEP 3 — fold the name-keyed proof into `repr_by_name` (1 file)
-`seed_repr_by_name` (`representation_plan.rs:1586`) raises BOTH tiers into
-`repr_by_name`: `RawI64Safe` from the inline-47 proof and `RawI64FullDeopt` from
-the native overflow-peel proof (the CheckedAdd/CheckedMul carriers). The
-name-keyed accessors are `is_full_deopt_int_name(name)`,
+### STEP 3 — project value-keyed int proof into `repr_by_name` (1 file)
+`seed_repr_by_name` raises BOTH int tiers into `repr_by_name` by projecting the
+TIR value-keyed `repr_by_value_for` authority through `SimpleValueNames`.
+`RawI64Safe` comes from the inline-47 value-range proof and
+`RawI64FullDeopt` comes from exact-i64 overflow/deopt carriers. The name-keyed
+accessors are `is_full_deopt_int_name(name)`,
 `is_inline_safe_int_name(name)`, and `is_raw_int_carrier_name(name)`;
-`int_carrier_names()` now
-returns the `RawI64Safe`-only view and a new combined accessor (or the existing
-one widened — decide by usage) covers "any raw int carrier" where the native
-backend currently means "either." Add a TEMPORARY `debug_assert!` that the union
-`int_carrier_names() ∪ int_full_deopt_carrier_names()` equals the legacy
-`int_carrier_names()` population (the legacy set was already the union of
-inline-47 + checked-op carriers, so this must hold) — this catches any drift
-before any consumer migrates, exactly as the float cut's `debug_assert` caught
-the `pow` divergence.
+`int_carrier_names()` returns the `RawI64Safe` view while
+`int_raw_carrier_names()` covers "any raw int carrier" for native storage. There
+is no legacy name-keyed interval proof to compare against; projection coherence
+is proven by the representation-plan shard.
 
 ### STEP 4 — migrated ALL native consumers (atomic; see migration map)
 Every native consumer of the deleted `int_primary_vars: &BTreeSet<String>` clone
@@ -292,8 +288,10 @@ and binding gate.
 
 ### STEP 5 — deleted the legacy seeding path (no hybrid)
 The `let int_primary_vars = primary_names.int` derivation and native handler
-threading path are gone. `compute`-style int proofs remain the single proof
-feeding both the name-keyed raise (STEP 3) and the value-keyed seed (STEP 2).
+threading path are gone. Raw-int proof now flows once through
+`value_range_for`/`repr_by_value_for`, then projects into native names for
+lowering. Name-keyed native code may consume the projection, but it must not
+recompute carrier proof.
 BINDING ZERO-OCCURRENCE GATE: `git grep int_primary_vars -- runtime/molt-backend`
 == 0 (no second source of truth). Historical mentions in this design doc and
 the migration map are provenance only.
@@ -354,10 +352,10 @@ RawI64FullDeopt, mirroring the existing bce.rs negative tests
    keystone CheckedMul doc (`docs/design/keystone_checkedmul_loop_unbox.md`)
    already records GAP-3 dynamic-IV as BLOCKED precisely because widening it
    wrong is a silent-OOB BCE hazard — Gate 2 is the regression that guards it.
-2. *Cross-backend Repr divergence* — native (name-keyed) vs value-keyed proofs
-   could disagree. The STEP-3 `debug_assert` (union equals legacy) catches it
-   before any consumer migrates; the STEP-2 cross-backend parity test ensures
-   WASM/LLVM agree.
+2. *Cross-backend Repr divergence* — native projection vs value-keyed proofs
+   could disagree if `SimpleValueNames` loses provenance. The representation
+   shard checks projection coherence, and the STEP-2 cross-backend parity test
+   ensures WASM/LLVM agree.
 3. *Slow-path re-execution correctness under complex control flow* — early-exit,
    conditional accumulation, nested loops on the slow path. The interleaved
    fast/slow case in Gate 1 exercises shared-saved-value re-execution; extend

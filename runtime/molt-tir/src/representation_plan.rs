@@ -15,6 +15,7 @@ use crate::tir::values::ValueId;
 
 mod value_repr;
 
+use value_repr::projected_scalar_carrier_name_reprs_for;
 pub(crate) use value_repr::raw_i64_carrier_values_for;
 #[cfg(test)]
 pub(crate) use value_repr::raw_i64_safe_values_for;
@@ -2189,58 +2190,17 @@ impl ScalarRepresentationPlan {
         tir_func: &TirFunction,
         names: &SimpleValueNames,
     ) -> (BTreeSet<String>, BTreeSet<String>) {
-        let vr = value_range_for(tir_func);
-        let repr_by_value = repr_by_value_for(tir_func, Some(&vr));
         let mut inline_safe = BTreeSet::new();
         let mut full_deopt = BTreeSet::new();
 
-        for block in tir_func.blocks.values() {
-            for (index, arg) in block.args.iter().enumerate() {
-                if let Some(&repr) = repr_by_value.get(&arg.id) {
-                    self.insert_projected_raw_i64_name(
-                        fact_index,
-                        names.value_name(arg.id),
-                        repr,
-                        &mut inline_safe,
-                        &mut full_deopt,
-                    );
-                    self.insert_projected_raw_i64_name(
-                        fact_index,
-                        names.block_arg_slot(block.id, index),
-                        repr,
-                        &mut inline_safe,
-                        &mut full_deopt,
-                    );
-                }
-            }
-            for op in &block.ops {
-                let simple_out = match op.attrs.get("_simple_out") {
-                    Some(AttrValue::Str(name)) => Some(name.as_str()),
-                    _ => None,
-                };
-                for (result_index, result) in op.results.iter().enumerate() {
-                    if let Some(&repr) = repr_by_value.get(result) {
-                        self.insert_projected_raw_i64_name(
-                            fact_index,
-                            names.value_name(*result),
-                            repr,
-                            &mut inline_safe,
-                            &mut full_deopt,
-                        );
-                        if result_index == 0
-                            && let Some(simple_out) = simple_out
-                        {
-                            self.insert_projected_raw_i64_name(
-                                fact_index,
-                                simple_out.to_string(),
-                                repr,
-                                &mut inline_safe,
-                                &mut full_deopt,
-                            );
-                        }
-                    }
-                }
-            }
+        for (name, repr) in projected_scalar_carrier_name_reprs_for(tir_func, names) {
+            self.insert_projected_raw_i64_name(
+                fact_index,
+                name,
+                repr,
+                &mut inline_safe,
+                &mut full_deopt,
+            );
         }
 
         self.propagate_projected_raw_i64_name_tiers(fact_index, &mut inline_safe, &mut full_deopt);

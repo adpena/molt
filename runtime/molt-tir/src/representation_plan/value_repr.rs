@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use crate::repr::Repr;
 use crate::tir::blocks::{BlockId, Terminator};
 use crate::tir::function::TirFunction;
+use crate::tir::lower_to_simple::SimpleValueNames;
 use crate::tir::ops::{AttrValue, OpCode};
 use crate::tir::types::TirType;
 use crate::tir::values::ValueId;
@@ -105,6 +106,66 @@ pub fn repr_by_value_for(
 /// Compute the value-range analysis for `tir_func` — the proof source for the
 /// value-keyed (WASM/LLVM) `RawI64Safe` promotion. Computed on the SAME TIR the
 /// backend lowers so its `ValueId`s line up with [`repr_by_value_for`].
+pub(crate) fn projected_scalar_carrier_name_reprs_for(
+    tir_func: &TirFunction,
+    names: &SimpleValueNames,
+) -> Vec<(String, Repr)> {
+    let vr = value_range_for(tir_func);
+    let repr_by_value = repr_by_value_for(tir_func, Some(&vr));
+    let carrier_by_value = native_projectable_scalar_reprs_for(tir_func, &repr_by_value);
+    let mut out = Vec::new();
+
+    let mut push_value = |name: String, value: ValueId| {
+        if let Some(&repr) = carrier_by_value.get(&value) {
+            out.push((name, repr));
+        }
+    };
+
+    let mut block_ids: Vec<BlockId> = tir_func.blocks.keys().copied().collect();
+    block_ids.sort_by_key(|block_id| block_id.0);
+    for block_id in block_ids {
+        let block = &tir_func.blocks[&block_id];
+        for (index, arg) in block.args.iter().enumerate() {
+            push_value(names.value_name(arg.id), arg.id);
+            push_value(names.block_arg_slot(block.id, index), arg.id);
+        }
+        for op in &block.ops {
+            let simple_out = op.attrs.get("_simple_out").and_then(|attr| match attr {
+                AttrValue::Str(name) => Some(name.as_str()),
+                _ => None,
+            });
+            for (result_index, &result) in op.results.iter().enumerate() {
+                push_value(names.value_name(result), result);
+                if result_index == 0
+                    && let Some(simple_out) = simple_out
+                {
+                    push_value(simple_out.to_string(), result);
+                }
+            }
+        }
+    }
+
+    out
+}
+
+fn native_projectable_scalar_reprs_for(
+    tir_func: &TirFunction,
+    repr_by_value: &HashMap<ValueId, Repr>,
+) -> HashMap<ValueId, Repr> {
+    let value_types = value_type_by_id_for(tir_func);
+    repr_by_value
+        .iter()
+        .filter_map(|(&value, &repr)| match repr {
+            Repr::RawI64Safe | Repr::RawI64FullDeopt
+                if is_raw_i64_semantic_candidate(&value_types, value) =>
+            {
+                Some((value, repr))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
 pub fn value_range_for(
     tir_func: &TirFunction,
 ) -> crate::tir::passes::value_range::ValueRangeResult {

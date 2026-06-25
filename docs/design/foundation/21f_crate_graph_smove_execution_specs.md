@@ -62,8 +62,8 @@ change the mechanics. Absorb all eight.
    the file never split). Vocab-level enums are interleaved with plan logic: `ScalarKind` (:780),
    `ContainerKind` (:790), `ContainerStorageKind` (:800), `ContainerStorageFact` (:806), **`Repr`
    (:838)** are vocab; the heavy logic (`ScalarRepresentationPlan` :1018, `ScalarPrimaryNameSets`
-   :1051, `LlvmReprFacts` :1073, `repr_by_value_for` :1237, `value_range_for` :1276 -- which calls
-   `passes::value_range` + `passes::scev`, `compute_i64_interval_facts` :3394, ...) consumes
+   :1051, `LlvmReprFacts` :1073, `repr_by_value_for`, `value_range_for`,
+   and value-keyed raw-int projection into native `repr_by_name`) consumes
    passes. Resolution (refines 21b flag #5): the 5 vocab enums -> `molt-ir/src/repr.rs`; the
    residual `representation_plan.rs` (plan logic) -> **molt-lower** in S2.
 
@@ -305,8 +305,9 @@ deps molt-ir) and `molt-lower` (TIR->{LIR,SimpleIR,WASM-IR} lowering + repr-plan
   `tir/wasm_component.rs` (104), `tir/wasm_split.rs` (146), `tir/wasm_streaming.rs` (112).
 - **`representation_plan.rs` (residual ~6,000 lines after S1's vocab extract) -> `molt-lower/src/
   representation_plan.rs`** -- the plan LOGIC (`ScalarRepresentationPlan`, `LlvmReprFacts`,
-  `repr_by_value_for`, `value_range_for` which calls `passes::{value_range,scev}` :1276-1280,
-  `compute_i64_interval_facts`, ...). This is WHY it sits above passes (hard production dep).
+  `repr_by_value_for`, `value_range_for` which calls `passes::{value_range,scev}`,
+  and native `repr_by_name` projection from those value-keyed facts). This is WHY
+  it sits above passes (hard production dep).
 - **`ir_rewrites.rs` (597) MIGRATES IN from `molt-backend/src/`** (21b flag #4: it deps only
   `ir`+`representation_plan`+`passes::SimpleIrScalarPurityFacts`). molt-backend's `mod ir_rewrites;`
   + `pub use crate::ir_rewrites::{...}` (lib.rs:19-23) become `pub use
