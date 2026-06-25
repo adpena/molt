@@ -15,11 +15,17 @@ name: Perf Gate (canonical CPython-floor scoreboard)
 # through tools/perf_authority.py; the freshness gate in ci.yml keeps stale
 # markdown snapshots from masquerading as current.
 #
-# Trigger is workflow_dispatch + a weekly schedule; wire both matrix jobs into
-# branch protection as the canonical performance gate for protected branches.
+# Triggers: push to main (the release-blocking gate, debounced by the
+# concurrency group below so only the latest main tip is gated) +
+# workflow_dispatch + a weekly schedule. Set branch protection to REQUIRE both
+# matrix jobs. tools/check_perf_gate_wiring.py (ci_gate tier-1) fails closed if
+# this gate is ever un-wired from main again — a gate that never fires certifies
+# nothing (meta-bug audit: proxy-measurement substitution, TIER-0).
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
   schedule:
     # Weekly canonical re-measure (Mondays 06:00 UTC) so the citable board stays
     # fresh even between perf-touching PRs.
