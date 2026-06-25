@@ -44,5 +44,15 @@
       "cpython_failure_detail": null,
       "error": null
     }
+  },
+  "perf_authority": {
+    "kind": "stale-perf-snapshot",
+    "mark": "<!-- PERF-AUTHORITY:stale -->",
+    "stale": true,
+    "authoritative": false,
+    "authoritative_reason": "historical perf snapshot; the only citable perf source is `tools/perf_scoreboard.py --set core --backend native --backend llvm --profile release-fast --samples 5 --warmup 2 --repeat 5 --classify --require-quiescent`",
+    "canonical_gate": "tools/perf_scoreboard.py --set core --backend native --backend llvm --profile release-fast --samples 5 --warmup 2 --repeat 5 --classify --require-quiescent",
+    "generated_at": "2026-05-19T22:07:33.915711+00:00",
+    "git_rev": "1306ac0236131fa48f149b8936234ab41e0a3a81"
   }
 }

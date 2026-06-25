@@ -55403,5 +55403,15 @@
         "program": "bench_struct"
       }
     ]
+  },
+  "perf_authority": {
+    "kind": "stale-perf-snapshot",
+    "mark": "<!-- PERF-AUTHORITY:stale -->",
+    "stale": true,
+    "authoritative": false,
+    "authoritative_reason": "historical perf snapshot; the only citable perf source is `tools/perf_scoreboard.py --set core --backend native --backend llvm --profile release-fast --samples 5 --warmup 2 --repeat 5 --classify --require-quiescent`",
+    "canonical_gate": "tools/perf_scoreboard.py --set core --backend native --backend llvm --profile release-fast --samples 5 --warmup 2 --repeat 5 --classify --require-quiescent",
+    "generated_at": "2026-03-17T13:10:53+00:00",
+    "git_rev": "f3cbae1e45fe529f2753752b719147921cd65530"
   }
 }

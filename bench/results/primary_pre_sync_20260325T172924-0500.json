@@ -173,5 +173,15 @@
       "output_match": null,
       "status": "timeout"
     }
+  },
+  "perf_authority": {
+    "kind": "stale-perf-snapshot",
+    "mark": "<!-- PERF-AUTHORITY:stale -->",
+    "stale": true,
+    "authoritative": false,
+    "authoritative_reason": "historical perf snapshot; the only citable perf source is `tools/perf_scoreboard.py --set core --backend native --backend llvm --profile release-fast --samples 5 --warmup 2 --repeat 5 --classify --require-quiescent`",
+    "canonical_gate": "tools/perf_scoreboard.py --set core --backend native --backend llvm --profile release-fast --samples 5 --warmup 2 --repeat 5 --classify --require-quiescent",
+    "generated_at": "2026-03-25T17:29:24-0500",
+    "git_rev": "unknown"
   }
 }

@@ -195,6 +195,19 @@ def test_stale_banner_self_identifies() -> None:
     assert "abc123" in banner
 
 
+def test_stale_json_metadata_shares_mark_and_gate() -> None:
+    meta = pa.stale_snapshot_metadata(generated_at="2026-03-20", git_rev="abc123")
+    banner = pa.STALE_BANNER(generated_at="2026-03-20", git_rev="abc123")
+
+    assert meta["mark"] == pa.STALE_BANNER_MARK
+    assert meta["mark"] in banner
+    assert meta["canonical_gate"] == pa.CANONICAL_GATE
+    assert meta["generated_at"] == "2026-03-20"
+    assert meta["git_rev"] == "abc123"
+    assert pa.is_stale_snapshot_metadata(meta) is True
+    assert pa.is_stale_snapshot_metadata({**meta, "canonical_gate": "other"}) is False
+
+
 def test_git_ancestor_unknown_rev_is_undeterminable() -> None:
     # An unknown/empty rev cannot be proven an ancestor - returns None, not a
     # false "fresh".
@@ -215,6 +228,14 @@ def _eval(tmp_path: Path, name: str, body: str) -> dict:
     p = tmp_path / name
     p.write_text(body, encoding="utf-8")
     return freshness.evaluate_doc(p, max_age_days=30.0, now=_NOW)
+
+
+def _eval_json(tmp_path: Path, name: str, payload: dict) -> dict:
+    import json
+
+    p = tmp_path / name
+    p.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return freshness.evaluate_json(p, max_age_days=30.0, now=_NOW)
 
 
 def test_freshness_no_perf_numbers_is_not_a_hazard(tmp_path: Path) -> None:
@@ -250,6 +271,72 @@ def test_freshness_stamped_doc_clears_hazard(tmp_path: Path) -> None:
     assert rec["has_perf_numbers"] is True
     assert rec["hazard"] is False
     assert rec["verdict"] == "stale-stamped"
+
+
+def test_freshness_unstamped_json_store_is_hazard(tmp_path: Path) -> None:
+    rec = _eval_json(
+        tmp_path,
+        "bench.json",
+        {
+            "generated_at": "2026-01-01",
+            "git_rev": "unknown",
+            "benchmarks": {
+                "bench_fib.py": {
+                    "molt_cpython_ratio": 0.01,
+                    "molt_speedup": 0.01,
+                }
+            },
+        },
+    )
+    assert rec["artifact_kind"] == "json"
+    assert rec["has_perf_numbers"] is True
+    assert rec["hazard"] is True
+    assert rec["verdict"] == "stale-hazard"
+
+
+def test_freshness_stale_json_metadata_clears_json_hazard(tmp_path: Path) -> None:
+    rec = _eval_json(
+        tmp_path,
+        "bench.json",
+        {
+            pa.STALE_METADATA_KEY: pa.stale_snapshot_metadata(
+                generated_at="2026-01-01", git_rev="unknown"
+            ),
+            "generated_at": "2026-01-01",
+            "git_rev": "unknown",
+            "benchmarks": {
+                "bench_fib.py": {
+                    "molt_cpython_ratio": 0.01,
+                    "molt_speedup": 0.01,
+                }
+            },
+        },
+    )
+    assert rec["artifact_kind"] == "json"
+    assert rec["hazard"] is False
+    assert rec["stamped"] is True
+    assert rec["verdict"] == "stale-stamped"
+
+
+def test_freshness_markdown_stamp_does_not_clear_json_hazard(tmp_path: Path) -> None:
+    markdown = (
+        pa.STALE_BANNER(generated_at="2026-01-01", git_rev="unknown")
+        + "\n# Old bench\n\n| bench_fib.py | 0.01x |\n"
+    )
+    md = tmp_path / "summary.md"
+    js = tmp_path / "results.json"
+    md.write_text(markdown, encoding="utf-8")
+    js.write_text(
+        '{"generated_at":"2026-01-01","benchmarks":{"bench_fib.py":{"molt_speedup":0.01}}}',
+        encoding="utf-8",
+    )
+
+    md_rec = freshness.evaluate_doc(md, max_age_days=30.0, now=_NOW)
+    json_rec = freshness.evaluate_json(js, max_age_days=30.0, now=_NOW)
+
+    assert md_rec["hazard"] is False
+    assert json_rec["hazard"] is True
+    assert json_rec["stamped"] is False
 
 
 def test_freshness_old_dated_doc_is_hazard(tmp_path: Path) -> None:

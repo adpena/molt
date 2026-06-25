@@ -1586,5 +1586,15 @@
     "platform": "macOS-26.3.1-arm64-arm-64bit",
     "python": "3.12.13"
   },
-  "warmup": 1
+  "warmup": 1,
+  "perf_authority": {
+    "kind": "stale-perf-snapshot",
+    "mark": "<!-- PERF-AUTHORITY:stale -->",
+    "stale": true,
+    "authoritative": false,
+    "authoritative_reason": "historical perf snapshot; the only citable perf source is `tools/perf_scoreboard.py --set core --backend native --backend llvm --profile release-fast --samples 5 --warmup 2 --repeat 5 --classify --require-quiescent`",
+    "canonical_gate": "tools/perf_scoreboard.py --set core --backend native --backend llvm --profile release-fast --samples 5 --warmup 2 --repeat 5 --classify --require-quiescent",
+    "generated_at": "2026-03-21T02:52:46.950072+00:00",
+    "git_rev": "72e5368164a59fd7cedb6073af82fa2796a6430a"
+  }
 }

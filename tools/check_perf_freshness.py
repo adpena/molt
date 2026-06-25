@@ -12,9 +12,10 @@ exists (the exact forensic mislead this gate exists to kill).
 This checker flags any perf doc/store that is BOTH (a) presents perf numbers and
 (b) is stale - older than the staleness horizon OR measured on a tree whose
 ``git_rev`` is not an ancestor of ``origin/main`` - UNLESS it has been explicitly
-stamped with the stale banner (``perf_authority.STALE_BANNER_MARK``). A stamped
-doc is an acknowledged historical record and passes; an UNSTAMPED stale doc is a
-hazard and fails the gate.
+stamped with the stale banner (``perf_authority.STALE_BANNER_MARK``) for text or
+the matching structured ``perf_authority`` stale record for JSON. A stamped
+artifact is an acknowledged historical record and passes; an UNSTAMPED stale
+artifact is a hazard and fails the gate.
 
 The canonical board itself is exempt: it carries its own ``authoritative`` /
 ``FAIL_STALE`` provenance machinery (``perf_scoreboard.gather_provenance``) and is
@@ -33,6 +34,7 @@ import argparse
 import datetime as dt
 import json
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -43,11 +45,15 @@ if str(TOOLS_ROOT) not in sys.path:
 
 import perf_authority as pa  # noqa: E402
 
-# Directories scanned for perf artifacts.
-SCAN_DIRS = [
+# Top-level bench result snapshots plus recursive bench/results stores are perf
+# artifacts. Benchmark corpus docs, runner source, and baseline schema docs are
+# intentionally outside this freshness boundary.
+TOP_LEVEL_ARTIFACT_DIRS = {
     REPO_ROOT / "bench",
+}
+RECURSIVE_ARTIFACT_DIRS = {
     REPO_ROOT / "bench" / "results",
-]
+}
 
 # The canonical board's own directory is governed by perf_scoreboard's
 # provenance gate, not this freshness checker.
@@ -65,6 +71,14 @@ _RATIO_TOKEN_RE = re.compile(
     r"\d+\.\d+\s*x\b"  # measured ratio, e.g. 1.12x / 0.01x
     r"|molt_cpython_ratio|molt_speedup|warm_speedup|cold_speedup"  # result fields
     r"|\bspeedup\b\s*[:|=]",  # a "Speedup:" / "Speedup |" column header/value
+    re.IGNORECASE,
+)
+
+_JSON_PERF_KEY_RE = re.compile(
+    r"(?:^|_)(?:ratio|speedup)(?:_|$)"
+    r"|(?:time|compile|elapsed|median|mean|stdev|samples)_s$"
+    r"|^samples_sec$"
+    r"|(?:^|_)(?:size_bytes|size_kb)$",
     re.IGNORECASE,
 )
 
@@ -89,25 +103,85 @@ def _read_text(path: Path) -> str:
         return path.read_bytes().decode("utf-8", errors="replace")
 
 
-def _iter_perf_docs() -> list[Path]:
+def _is_under(path: Path, base: Path) -> bool:
+    try:
+        path.resolve().relative_to(base.resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def _is_exempt(path: Path) -> bool:
+    return any(_is_under(path, base) for base in EXEMPT_DIRS)
+
+
+def _rel_path(path: Path) -> str:
+    try:
+        return str(path.resolve().relative_to(REPO_ROOT)).replace("\\", "/")
+    except ValueError:
+        # Path outside the repo (e.g. a unit-test tmp dir): fall back to the
+        # file name. The classification logic is path-independent.
+        return path.name
+
+
+def _tracked_perf_artifacts() -> list[Path] | None:
+    try:
+        res = subprocess.run(
+            ["git", "ls-files", "--", "bench"],
+            cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if res.returncode != 0:
+        return None
+    return [REPO_ROOT / line for line in res.stdout.splitlines() if line.strip()]
+
+
+def _iter_perf_artifacts() -> list[Path]:
     out: list[Path] = []
     seen: set[Path] = set()
-    for base in SCAN_DIRS:
-        if not base.exists():
+    tracked = _tracked_perf_artifacts()
+    if tracked is None:
+        candidates: list[Path] = []
+        for artifact_dir in TOP_LEVEL_ARTIFACT_DIRS:
+            if artifact_dir.exists():
+                candidates.extend(artifact_dir.glob("*"))
+        for artifact_dir in RECURSIVE_ARTIFACT_DIRS:
+            if artifact_dir.exists():
+                candidates.extend(artifact_dir.rglob("*"))
+    else:
+        candidates = tracked
+
+    for path in sorted(candidates):
+        if path.is_dir():
             continue
-        for path in sorted(base.glob("*")):
-            if path.is_dir():
-                continue
-            if path.suffix.lower() not in (".md", ".txt"):
-                continue
-            if path.parent in EXEMPT_DIRS:
-                continue
-            rp = path.resolve()
-            if rp in seen:
-                continue
-            seen.add(rp)
-            out.append(path)
+        if path.suffix.lower() not in (".md", ".txt", ".json"):
+            continue
+        in_top_level_dir = any(
+            path.parent.resolve() == artifact_dir.resolve()
+            for artifact_dir in TOP_LEVEL_ARTIFACT_DIRS
+        )
+        in_recursive_dir = any(
+            _is_under(path, artifact_dir) for artifact_dir in RECURSIVE_ARTIFACT_DIRS
+        )
+        if not (in_top_level_dir or in_recursive_dir):
+            continue
+        if _is_exempt(path):
+            continue
+        rp = path.resolve()
+        if rp in seen:
+            continue
+        seen.add(rp)
+        out.append(path)
     return out
+
+
+def _iter_perf_docs() -> list[Path]:
+    return [p for p in _iter_perf_artifacts() if p.suffix.lower() in (".md", ".txt")]
 
 
 def _doc_git_rev(text: str) -> str | None:
@@ -128,19 +202,46 @@ def _doc_generated_at(text: str, path: Path) -> str | None:
     return None
 
 
-def evaluate_doc(path: Path, *, max_age_days: float, now: dt.datetime) -> dict:
-    """Classify one perf doc. Returns a record with verdict + reasons."""
-    text = _read_text(path)
-    try:
-        rel = str(path.resolve().relative_to(REPO_ROOT)).replace("\\", "/")
-    except ValueError:
-        # Path outside the repo (e.g. a unit-test tmp dir): fall back to the
-        # file name. The classification logic is path-independent.
-        rel = path.name
-    has_numbers = bool(_RATIO_TOKEN_RE.search(text))
-    stamped = pa.STALE_BANNER_MARK in text
-    git_rev = _doc_git_rev(text)
-    generated_at = _doc_generated_at(text, path)
+def _json_find_first_str(value: object, keys: set[str]) -> str | None:
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key.lower() in keys and isinstance(item, str):
+                return item
+        for item in value.values():
+            found = _json_find_first_str(item, keys)
+            if found:
+                return found
+    elif isinstance(value, list):
+        for item in value:
+            found = _json_find_first_str(item, keys)
+            if found:
+                return found
+    return None
+
+
+def _json_has_perf_numbers(value: object) -> bool:
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if _JSON_PERF_KEY_RE.search(str(key)):
+                return True
+            if _json_has_perf_numbers(item):
+                return True
+    elif isinstance(value, list):
+        return any(_json_has_perf_numbers(item) for item in value)
+    return False
+
+
+def _classify_artifact(
+    *,
+    path: Path,
+    artifact_kind: str,
+    has_numbers: bool,
+    stamped: bool,
+    git_rev: str | None,
+    generated_at: str | None,
+    max_age_days: float,
+    now: dt.datetime,
+) -> dict:
     age = pa.doc_age_days(generated_at, now=now)
     ancestor = pa.git_rev_is_ancestor_of_origin(git_rev)
 
@@ -178,7 +279,8 @@ def evaluate_doc(path: Path, *, max_age_days: float, now: dt.datetime) -> dict:
         verdict = "stale-hazard"
 
     return {
-        "path": rel,
+        "path": _rel_path(path),
+        "artifact_kind": artifact_kind,
         "verdict": verdict,
         "hazard": hazard,
         "has_perf_numbers": has_numbers,
@@ -191,17 +293,76 @@ def evaluate_doc(path: Path, *, max_age_days: float, now: dt.datetime) -> dict:
     }
 
 
+def evaluate_doc(path: Path, *, max_age_days: float, now: dt.datetime) -> dict:
+    """Classify one perf markdown/text doc. Returns a verdict record."""
+    text = _read_text(path)
+    return _classify_artifact(
+        path=path,
+        artifact_kind="text",
+        has_numbers=bool(_RATIO_TOKEN_RE.search(text)),
+        stamped=pa.STALE_BANNER_MARK in text,
+        git_rev=_doc_git_rev(text),
+        generated_at=_doc_generated_at(text, path),
+        max_age_days=max_age_days,
+        now=now,
+    )
+
+
+def evaluate_json(path: Path, *, max_age_days: float, now: dt.datetime) -> dict:
+    """Classify one perf JSON store. Returns a verdict record."""
+    try:
+        payload = json.loads(_read_text(path))
+    except json.JSONDecodeError as exc:
+        return _classify_artifact(
+            path=path,
+            artifact_kind="json",
+            has_numbers=True,
+            stamped=False,
+            git_rev=None,
+            generated_at=None,
+            max_age_days=max_age_days,
+            now=now,
+        ) | {"reasons": [f"invalid JSON: {exc.msg}"]}
+
+    meta = payload.get(pa.STALE_METADATA_KEY) if isinstance(payload, dict) else None
+    generated_at = _json_find_first_str(
+        payload, {"generated_at", "created_at", "timestamp", "run_started_at"}
+    )
+    git_rev = _json_find_first_str(payload, {"git_rev"})
+    return _classify_artifact(
+        path=path,
+        artifact_kind="json",
+        has_numbers=_json_has_perf_numbers(payload),
+        stamped=pa.is_stale_snapshot_metadata(meta),
+        git_rev=git_rev,
+        generated_at=generated_at,
+        max_age_days=max_age_days,
+        now=now,
+    )
+
+
+def evaluate_artifact(path: Path, *, max_age_days: float, now: dt.datetime) -> dict:
+    if path.suffix.lower() == ".json":
+        return evaluate_json(path, max_age_days=max_age_days, now=now)
+    return evaluate_doc(path, max_age_days=max_age_days, now=now)
+
+
 def run(max_age_days: float) -> dict:
     now = dt.datetime.now(dt.timezone.utc)
     records = [
-        evaluate_doc(p, max_age_days=max_age_days, now=now) for p in _iter_perf_docs()
+        evaluate_artifact(p, max_age_days=max_age_days, now=now)
+        for p in _iter_perf_artifacts()
     ]
     hazards = [r for r in records if r["hazard"]]
+    docs_scanned = sum(1 for r in records if r["artifact_kind"] == "text")
+    json_scanned = sum(1 for r in records if r["artifact_kind"] == "json")
     return {
         "kind": "perf_freshness",
         "max_age_days": max_age_days,
         "canonical_gate": pa.CANONICAL_GATE,
-        "docs_scanned": len(records),
+        "artifacts_scanned": len(records),
+        "docs_scanned": docs_scanned,
+        "json_scanned": json_scanned,
         "hazards": len(hazards),
         "records": records,
     }
@@ -223,7 +384,9 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(report, indent=2, sort_keys=True))
     else:
         print(
-            f"perf-freshness: scanned {report['docs_scanned']} perf doc(s); "
+            f"perf-freshness: scanned {report['artifacts_scanned']} perf "
+            f"artifact(s) ({report['docs_scanned']} text, "
+            f"{report['json_scanned']} JSON); "
             f"{report['hazards']} unstamped-stale hazard(s)."
         )
         for rec in report["records"]:
@@ -231,12 +394,16 @@ def main(argv: list[str] | None = None) -> int:
                 why = "; ".join(rec["reasons"])
                 print(f"  HAZARD  {rec['path']}: {why}")
                 print(
-                    f"          -> stamp it with the stale banner "
-                    f"(perf_authority.STALE_BANNER) or delete it. "
+                    "          -> stamp it with the stale perf authority "
+                    "acknowledgement (perf_authority.STALE_BANNER or "
+                    f"{pa.STALE_METADATA_KEY}) or delete it. "
                     f"Cite only `{report['canonical_gate']}`."
                 )
         if report["hazards"] == 0:
-            print("  OK: every perf doc presenting numbers is fresh or stamped stale.")
+            print(
+                "  OK: every perf artifact presenting numbers is fresh or "
+                "stamped stale."
+            )
 
     return 1 if report["hazards"] else 0
 
