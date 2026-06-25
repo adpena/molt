@@ -158,6 +158,20 @@ molt update --all
 
 Treat `--all` as a coordinated change: rebuild the touched crates and rerun the backend/runtime verification matrix in the same session.
 
+Node package surfaces are package-manager pinned. Use Corepack so the
+`packageManager` field in each `package.json` selects the lockfile writer and
+audit engine, rather than whatever stale global `npm` happens to be on PATH:
+
+```bash
+corepack npm install --package-lock-only
+corepack npm audit
+```
+
+The current Cloudflare package authorities are
+`deploy/cloudflare/package.json` and
+`examples/edgebox/packages/edgebox-cloudflare/package.json`; keep their v3
+lockfiles committed with the manifest change.
+
 ## Differential Suite Controls
 - **Memory profiling**: set `MOLT_DIFF_MEASURE_RSS=1` to collect per-test RSS metrics.
 - **Summary sidecar**: `MOLT_DIFF_ROOT/summary.json` (or `MOLT_DIFF_SUMMARY=<path>`) records jobs, limits, and RSS aggregates.
@@ -573,6 +587,8 @@ uv run --python 3.12 python3 tools/runtime_safety.py fuzz --target string_ops --
 cargo audit
 cargo deny check
 uv run pip-audit
+corepack npm audit --prefix deploy/cloudflare
+corepack npm audit --prefix examples/edgebox/packages/edgebox-cloudflare
 ```
 
 ### Faster Rust test runs
