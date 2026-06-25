@@ -6,7 +6,6 @@ import codecs
 import contextlib
 from concurrent.futures import Future, ProcessPoolExecutor
 import errno
-import datetime as dt
 import functools
 import importlib.util
 import io
@@ -15,7 +14,6 @@ import json
 import os
 import pathlib
 import shlex
-import shutil
 import signal
 import socket
 import subprocess
@@ -26,14 +24,12 @@ import threading
 import tracemalloc
 import tokenize
 from types import MappingProxyType
-import uuid
 import zipfile
 from contextlib import contextmanager, nullcontext, redirect_stderr, redirect_stdout
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import (
     Any,
-    Callable,
     Collection,
     ContextManager,
     Iterable,
@@ -67,6 +63,7 @@ from molt.cli import build_inputs as _build_inputs
 from molt.cli import debug_helpers as _debug_helpers
 from molt.cli import frontend_pipeline as _frontend_pipeline
 from molt.cli import link_pipeline as _link_pipeline
+from molt.cli import non_native_output as _non_native_output
 from molt.cli import typecheck as _typecheck
 from molt.cli import factgraph as _factgraph
 from molt.cli.maintenance import _load_artifact_cleanup_module, clean, show_config
@@ -313,7 +310,6 @@ from molt.cli.command_runtime import (
     _CROSS_MEMORY_GUARD_PREFIX,
     _DIFF_MEMORY_GUARD_PREFIX,
     _resolve_timeout_env,
-    _run_completed_command,
     _run_subprocess_captured_to_tempfiles,
     _with_memory_guard_env,
 )
@@ -409,7 +405,6 @@ from molt.cli.build_results import (
     _emit_native_link_result,
     _emit_non_native_build_result,
     _post_link_strip,
-    _write_link_fingerprint_if_needed,
 )
 from molt.cli.frontend_execution import (
     _fresh_frontend_parallel_layer_state,
@@ -655,13 +650,11 @@ from molt.cli.runtime_paths import (
     _session_artifact_component,
 )
 from molt.cli.runtime_fingerprints import (
-    _artifact_needs_rebuild,
     _hash_runtime_file,
     _hash_source_tree_metadata,
     _inspect_wasm_binary,
     _is_valid_static_library_artifact,
     _is_valid_wasm_binary,
-    _read_runtime_fingerprint,
     _runtime_artifact_fingerprint_matches,
     _runtime_fingerprint,
     _stored_fingerprint_matches_source_metadata,
@@ -688,7 +681,6 @@ from molt.cli.runtime_intrinsic_symbols import (
     _stage_runtime_intrinsic_symbols_for_native_codegen,
 )
 from molt.cli.runtime_wasm_validation import (
-    _is_reusable_wasm_artifact,
     _is_valid_runtime_wasm_artifact,
     _is_valid_shared_runtime_wasm_artifact,
     _runtime_wasm_exports_satisfy,
@@ -696,7 +688,6 @@ from molt.cli.runtime_wasm_validation import (
     _runtime_wasm_integrity_sidecar_path,
     _runtime_wasm_missing_exports,
     _try_read_wasm_varuint,
-    _validate_wasm_structural,
     _wasm_has_nonempty_code_section,
     _write_runtime_wasm_integrity_sidecar,
 )
@@ -820,7 +811,6 @@ from molt.cli.models import (
     _PreparedFrontendLoweringConfig,
     _PreparedFrontendRunTicket,
     _PreparedNativeLink,
-    _PreparedNonNativeResult,
     _ResolvedBuildEntry,
     _RuntimeArtifactState,
     _RuntimeImportSupportPolicy,
@@ -1014,8 +1004,6 @@ from molt.cli.wasm import (
     _build_wasm_sections,
     _collect_wasm_active_table_function_slots,
     _collect_wasm_export_names,
-    _collect_wasm_module_import_names,
-    _effective_split_worker_table_base,
     _export_wasm_table_refs,
     _infer_wasm_table_base_from_export_names,
     _parse_wasm_sections,
@@ -1025,12 +1013,6 @@ from molt.cli.wasm import (
     _read_wasm_table_min,
     _reserved_wasm_runtime_callable_count,
     _skip_wasm_init_expr,
-    _generate_split_worker_js,
-    _generate_split_wrangler_jsonc,
-    _wasm_export_function_signatures,
-    _wasm_import_function_result_kinds,
-    _wasm_import_function_signatures,
-    _wasm_import_minima,
     _write_wasm_string,
     _write_wasm_varuint,
 )
@@ -1048,106 +1030,7 @@ def _session_target_dir(project_root: Path) -> Path | None:
         return None
     return project_root / "target" / "sessions" / _session_artifact_component(sid)
 
-def _replace_directory_tree_from_source(
-    src: Path,
-    dst: Path,
-    *,
-    ignore: Any = None,
-) -> None:
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = dst.with_name(f".{dst.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
-    backup_path = dst.with_name(f".{dst.name}.{os.getpid()}.{uuid.uuid4().hex}.old")
-    try:
-        shutil.copytree(src, tmp_path, ignore=ignore)
-        had_existing = dst.exists() or dst.is_symlink()
-        if had_existing:
-            os.replace(dst, backup_path)
-        try:
-            os.replace(tmp_path, dst)
-        except BaseException:
-            if had_existing and backup_path.exists() and not dst.exists():
-                os.replace(backup_path, dst)
-            raise
-        if backup_path.exists():
-            _remove_file_or_tree(backup_path)
-        if os.name == "posix":
-            with contextlib.suppress(OSError):
-                dir_fd = os.open(dst.parent, os.O_RDONLY)
-                try:
-                    os.fsync(dir_fd)
-                finally:
-                    os.close(dir_fd)
-    finally:
-        with contextlib.suppress(OSError):
-            if tmp_path.exists():
-                _remove_file_or_tree(tmp_path)
-        with contextlib.suppress(OSError):
-            if backup_path.exists():
-                _remove_file_or_tree(backup_path)
 
-def _generate_snapshot_header(
-    *,
-    output_wasm: Path,
-    target_profile: str,
-    capabilities_list: list[str] | None,
-    verbose: bool,
-) -> None:
-    """Generate a molt.snapshot.json header alongside the WASM output.
-
-    The header captures mount plan, capability manifest, and module hash
-    metadata needed by edge hosts to restore a post-init snapshot (Plan D).
-    The binary memory blob capture is deferred to the wasmtime host
-    integration.
-    """
-    import hashlib
-    import datetime
-
-    snapshot_dir = output_wasm.parent
-    snapshot_path = snapshot_dir / "molt.snapshot.json"
-
-    # Compute module hash from the WASM binary.
-    module_hash = "sha256:unknown"
-    if output_wasm.exists():
-        h = hashlib.sha256()
-        with open(output_wasm, "rb") as f:
-            for chunk in iter(lambda: f.read(65536), b""):
-                h.update(chunk)
-        module_hash = f"sha256:{h.hexdigest()}"
-
-    # Default mount plan matching the spec Layer 4 snapshot format.
-    mount_plan = [
-        {"path": "/bundle", "mount_type": "bundle", "hash": module_hash},
-        {"path": "/tmp", "mount_type": "tmp", "quota_mb": 32},
-        {"path": "/dev", "mount_type": "dev"},
-    ]
-
-    caps = (
-        list(capabilities_list)
-        if capabilities_list
-        else [
-            "fs.bundle.read",
-            "fs.tmp.read",
-            "fs.tmp.write",
-        ]
-    )
-
-    header = {
-        "snapshot_version": 1,
-        "abi_version": "0.1.0",
-        "target_profile": target_profile,
-        "module_hash": module_hash,
-        "mount_plan": mount_plan,
-        "capability_manifest": caps,
-        "determinism_stamp": datetime.datetime.now(datetime.timezone.utc)
-        .replace(microsecond=0)
-        .isoformat()
-        .replace("+00:00", "Z"),
-        "init_state_size": 0,
-    }
-
-    _atomic_write_json(snapshot_path, header, indent=2)
-    if verbose:
-        print(f"Wrote snapshot header: {snapshot_path}", file=sys.stderr)
 
 def _run_backend_pipeline(
     *,
@@ -1414,7 +1297,7 @@ def _run_backend_pipeline(
         or output_layout.is_wasm
     ):
         prepared_non_native_result, prepared_non_native_result_error = (
-            _prepare_non_native_build_result(
+            _non_native_output._prepare_non_native_build_result(
                 is_rust_transpile=output_layout.is_rust_transpile,
                 is_luau_transpile=output_layout.is_luau_transpile,
                 is_wasm=output_layout.is_wasm,
@@ -1444,7 +1327,7 @@ def _run_backend_pipeline(
 
         # -- Snapshot header generation (Plan D) ----------------------------
         if snapshot and output_layout.is_wasm:
-            _generate_snapshot_header(
+            _non_native_output._generate_snapshot_header(
                 output_wasm=prepared_non_native_result.primary_output,
                 target_profile=target,
                 capabilities_list=prepared_build_config.capabilities_list,
@@ -1638,487 +1521,6 @@ def _run_backend_pipeline(
         resolved_diagnostics_verbosity=prepared_build_preamble.resolved_diagnostics_verbosity,
     )
 
-def _prepare_non_native_build_result(
-    *,
-    is_rust_transpile: bool,
-    is_luau_transpile: bool,
-    is_wasm: bool,
-    is_wasm_freestanding: bool = False,
-    wasm_opt_enabled: bool = True,
-    wasm_opt_level: str = "Oz",
-    wasm_table_base: int | None = None,
-    linked: bool,
-    require_linked: bool,
-    linked_output_path: Path | None,
-    output_artifact: Path,
-    json_output: bool,
-    runtime_wasm: Path | None,
-    runtime_reloc_wasm: Path | None,
-    ensure_runtime_wasm_shared: Callable[[set[str] | frozenset[str] | None], bool],
-    ensure_runtime_wasm_reloc: Callable[[set[str] | frozenset[str] | None], bool],
-    runtime_cargo_profile: str,
-    molt_root: Path,
-    split_runtime: bool = False,
-    precompile: bool = False,
-    project_root: Path | None = None,
-    profile: BuildProfile = "dev",
-    warnings: list[str] | None = None,
-) -> tuple[_PreparedNonNativeResult | None, _CliFailure | None]:
-    if is_rust_transpile:
-        return _PreparedNonNativeResult(
-            primary_output=output_artifact,
-            consumer_output=output_artifact,
-            bundle_root=None,
-            linked_output_path=linked_output_path,
-            success_messages=[f"Successfully transpiled {output_artifact}"],
-            extra_fields={},
-            artifacts={"rust": str(output_artifact)},
-        ), None
-    if is_luau_transpile:
-        return _PreparedNonNativeResult(
-            primary_output=output_artifact,
-            consumer_output=output_artifact,
-            bundle_root=None,
-            linked_output_path=linked_output_path,
-            success_messages=[f"Successfully built {output_artifact}"],
-            extra_fields={},
-            artifacts={"luau": str(output_artifact)},
-        ), None
-    if is_wasm:
-        output_wasm = output_artifact
-        resolved_linked_output = linked_output_path
-        bundle_root: Path | None = None
-        artifacts: dict[str, str] = {"wasm": str(output_wasm)}
-        _split_runtime = split_runtime or os.environ.get("MOLT_SPLIT_RUNTIME") == "1"
-        staged_runtime_wasm: Path | None = None
-        if linked:
-            required_runtime_exports = _collect_wasm_module_import_names(
-                output_wasm, "molt_runtime"
-            )
-            structural_error = _validate_wasm_structural(output_wasm)
-            if structural_error is not None:
-                return None, _fail(
-                    "Generated wasm module failed structural validation before linking: "
-                    + structural_error,
-                    json_output,
-                    command="build",
-                )
-            if not ensure_runtime_wasm_reloc(required_runtime_exports):
-                return None, _fail(
-                    "Runtime wasm build failed",
-                    json_output,
-                    command="build",
-                )
-            if runtime_reloc_wasm is None:
-                return None, _fail(
-                    "Runtime wasm build failed",
-                    json_output,
-                    command="build",
-                )
-            if resolved_linked_output is None:
-                resolved_linked_output = output_wasm.with_name("output_linked.wasm")
-            if resolved_linked_output.parent != Path("."):
-                resolved_linked_output.parent.mkdir(parents=True, exist_ok=True)
-            if not is_wasm_freestanding:
-                if runtime_wasm is None:
-                    return None, _fail(
-                        "Runtime wasm build failed",
-                        json_output,
-                        command="build",
-                    )
-                if not ensure_runtime_wasm_shared(required_runtime_exports):
-                    return None, _fail(
-                        "Runtime wasm build failed",
-                        json_output,
-                        command="build",
-                    )
-                if not runtime_wasm.exists():
-                    return None, _fail(
-                        "Runtime wasm build failed",
-                        json_output,
-                        command="build",
-                    )
-            tool = molt_root / "tools" / "wasm_link.py"
-            link_cmd = [
-                sys.executable,
-                str(tool),
-                "--runtime",
-                str(runtime_reloc_wasm),
-                "--input",
-                str(output_wasm),
-                "--output",
-                str(resolved_linked_output),
-            ]
-            if _split_runtime:
-                split_dir = output_wasm.parent
-                link_cmd.extend(
-                    [
-                        "--split-runtime",
-                        "--split-output-dir",
-                        str(split_dir),
-                    ]
-                )
-            if is_wasm_freestanding:
-                link_cmd.append("--freestanding")
-            if wasm_opt_enabled:
-                link_cmd.extend(["--optimize", "--optimize-level", wasm_opt_level])
-            link_project_root = project_root or molt_root
-            link_fingerprint_path = _link_pipeline._link_fingerprint_path(
-                link_project_root,
-                resolved_linked_output,
-                profile,
-                "wasm32-wasip1",
-            )
-            stored_link_fingerprint = _read_runtime_fingerprint(link_fingerprint_path)
-            link_fingerprint = _link_pipeline._link_fingerprint(
-                project_root=link_project_root,
-                inputs=[output_wasm, runtime_reloc_wasm, tool],
-                link_cmd=link_cmd,
-                stored_fingerprint=stored_link_fingerprint,
-            )
-            link_skipped = not _artifact_needs_rebuild(
-                resolved_linked_output,
-                link_fingerprint,
-                stored_link_fingerprint,
-            )
-            if link_skipped and _split_runtime:
-                split_dir = output_wasm.parent
-                app_wasm = split_dir / "app.wasm"
-                rt_wasm = split_dir / "molt_runtime.wasm"
-                link_skipped = _is_reusable_wasm_artifact(
-                    app_wasm
-                ) and _is_reusable_wasm_artifact(rt_wasm)
-            if link_skipped:
-                link_process = subprocess.CompletedProcess(link_cmd, 0, "", "")
-            else:
-                linked_tmp_output: Path | None = None
-                link_run_cmd = list(link_cmd)
-                if not _split_runtime:
-                    linked_tmp_output = resolved_linked_output.with_name(
-                        f".{resolved_linked_output.name}."
-                        f"{os.getpid()}.{uuid.uuid4().hex}.tmp"
-                    )
-                    output_arg_index = link_run_cmd.index("--output") + 1
-                    link_run_cmd[output_arg_index] = str(linked_tmp_output)
-                try:
-                    link_process = _run_completed_command(
-                        link_run_cmd,
-                        cwd=molt_root,
-                        env=None,
-                        capture_output=True,
-                        memory_guard_prefix="MOLT_WASM_LINK",
-                    )
-                    if link_process.returncode != 0:
-                        err = link_process.stderr.strip() or link_process.stdout.strip()
-                        msg = "Wasm link failed"
-                        if err:
-                            msg = f"{msg}: {err}"
-                        return None, _fail(msg, json_output, command="build")
-                    if linked_tmp_output is not None:
-                        if not _is_reusable_wasm_artifact(linked_tmp_output):
-                            return None, _fail(
-                                f"Wasm link produced invalid artifact: {linked_tmp_output}",
-                                json_output,
-                                command="build",
-                            )
-                        os.replace(linked_tmp_output, resolved_linked_output)
-                        if os.name == "posix":
-                            with contextlib.suppress(OSError):
-                                dir_fd = os.open(
-                                    resolved_linked_output.parent,
-                                    os.O_RDONLY,
-                                )
-                                try:
-                                    os.fsync(dir_fd)
-                                finally:
-                                    os.close(dir_fd)
-                finally:
-                    if linked_tmp_output is not None:
-                        with contextlib.suppress(OSError):
-                            if linked_tmp_output.exists():
-                                linked_tmp_output.unlink()
-                link_fingerprint_warning = _write_link_fingerprint_if_needed(
-                    link_skipped=False,
-                    link_fingerprint=link_fingerprint,
-                    link_fingerprint_path=link_fingerprint_path,
-                    json_output=json_output,
-                )
-                if link_fingerprint_warning is not None:
-                    if warnings is not None:
-                        warnings.append(link_fingerprint_warning)
-                    if not json_output:
-                        print(f"Warning: {link_fingerprint_warning}", file=sys.stderr)
-            if require_linked and resolved_linked_output is not None:
-                if output_wasm != resolved_linked_output and output_wasm.exists():
-                    try:
-                        output_wasm.unlink()
-                    except OSError as exc:
-                        return None, _fail(
-                            f"Failed to remove unlinked wasm: {exc}",
-                            json_output,
-                            command="build",
-                        )
-        if not is_wasm_freestanding and not _split_runtime and not linked:
-            if runtime_wasm is None:
-                return None, _fail(
-                    "Runtime wasm build failed",
-                    json_output,
-                    command="build",
-                )
-            required_runtime_exports = _collect_wasm_module_import_names(
-                output_wasm, "molt_runtime"
-            )
-            if not ensure_runtime_wasm_shared(required_runtime_exports):
-                return None, _fail(
-                    "Runtime wasm build failed",
-                    json_output,
-                    command="build",
-                )
-            if not runtime_wasm.exists():
-                return None, _fail(
-                    "Runtime wasm build failed",
-                    json_output,
-                    command="build",
-                )
-            staged_runtime_wasm = output_wasm.with_name("molt_runtime.wasm")
-            if staged_runtime_wasm != runtime_wasm:
-                try:
-                    _atomic_copy_file(runtime_wasm, staged_runtime_wasm)
-                except OSError as exc:
-                    return None, _fail(
-                        f"Failed to stage runtime wasm: {exc}",
-                        json_output,
-                        command="build",
-                    )
-            artifacts["runtime_wasm"] = str(staged_runtime_wasm)
-        if resolved_linked_output is not None:
-            artifacts["linked_wasm"] = str(resolved_linked_output)
-        # -- Precompile step: produce .cwasm for faster startup -----------
-        cwasm_path: Path | None = None
-        if precompile:
-            precompile_target = (
-                resolved_linked_output
-                if resolved_linked_output is not None
-                else output_wasm
-            )
-            cwasm_path = precompile_target.with_suffix(".cwasm")
-            wasmtime_bin = shutil.which("wasmtime")
-            if wasmtime_bin:
-                precompile_proc = _run_completed_command(
-                    [
-                        wasmtime_bin,
-                        "compile",
-                        str(precompile_target),
-                        "-o",
-                        str(cwasm_path),
-                    ],
-                    cwd=molt_root,
-                    env=None,
-                    capture_output=True,
-                    memory_guard_prefix="MOLT_WASM_LINK",
-                    timeout=60,
-                )
-                if precompile_proc.returncode == 0:
-                    print(f"Precompiled to {cwasm_path}", file=sys.stderr)
-                else:
-                    print(
-                        f"Precompilation failed (non-fatal): {precompile_proc.stderr.strip()}",
-                        file=sys.stderr,
-                    )
-                    cwasm_path = None
-            else:
-                print("wasmtime not found; skipping precompilation", file=sys.stderr)
-                cwasm_path = None
-        # -- End precompile step -------------------------------------------
-        if cwasm_path is not None:
-            artifacts["cwasm"] = str(cwasm_path)
-
-        primary_output = output_wasm
-        if require_linked and resolved_linked_output is not None:
-            primary_output = resolved_linked_output
-        consumer_output = resolved_linked_output or primary_output
-        success_messages = (
-            [f"Successfully built {primary_output}"]
-            if require_linked
-            else [f"Successfully built {output_wasm}"]
-        )
-        if resolved_linked_output is not None and not require_linked:
-            success_messages.append(f"Successfully linked {resolved_linked_output}")
-        if cwasm_path is not None:
-            success_messages.append(f"Precompiled {cwasm_path}")
-
-        # --split-runtime: wasm_link.py produces app.wasm + molt_runtime.wasm;
-        # generate manifest.json and worker.js shim here.
-        if _split_runtime and runtime_reloc_wasm is not None:
-            split_dir = output_wasm.parent
-
-            app_wasm = split_dir / "app.wasm"
-            rt_wasm = split_dir / "molt_runtime.wasm"
-            manifest = split_dir / "manifest.json"
-
-            if not app_wasm.exists() or not rt_wasm.exists():
-                return None, _fail(
-                    "Split-runtime link did not produce expected artifacts "
-                    f"(app.wasm={app_wasm.exists()}, molt_runtime.wasm={rt_wasm.exists()})",
-                    json_output,
-                    command="build",
-                )
-
-            app_size = app_wasm.stat().st_size
-            rt_size = rt_wasm.stat().st_size
-            app_memory_min, app_table_min = _wasm_import_minima(app_wasm)
-            rt_memory_min, rt_table_min = _wasm_import_minima(rt_wasm)
-            app_runtime_import_result_kinds = _wasm_import_function_result_kinds(
-                app_wasm, module_name="molt_runtime"
-            )
-            app_runtime_import_signatures = _wasm_import_function_signatures(
-                app_wasm, module_name="molt_runtime"
-            )
-            shared_memory_initial_pages = max(
-                app_memory_min or 0,
-                rt_memory_min or 0,
-            )
-            shared_table_initial = max(
-                app_table_min or 0,
-                rt_table_min or 0,
-                8192,
-            )
-            app_table_ref_signatures = _wasm_export_function_signatures(
-                app_wasm, export_name_prefix="__molt_table_ref_"
-            )
-            runtime_table_ref_signatures = _wasm_export_function_signatures(
-                rt_wasm, export_name_prefix="__molt_table_ref_"
-            )
-            effective_wasm_table_base = _effective_split_worker_table_base(
-                wasm_table_base=wasm_table_base,
-                runtime_table_min=rt_table_min,
-                app_table_ref_signatures=app_table_ref_signatures,
-            )
-
-            manifest_data = {
-                "version": 2,
-                "mode": "split-runtime",
-                "tree_shaken": True,
-                "shared_memory_initial_pages": shared_memory_initial_pages,
-                "shared_table_initial": shared_table_initial,
-                "wasm_table_base": effective_wasm_table_base,
-                "abi": {
-                    "runtime_imports": {
-                        "module": "molt_runtime",
-                        "names": sorted(app_runtime_import_signatures),
-                        "signatures": app_runtime_import_signatures,
-                        "result_kinds": app_runtime_import_result_kinds,
-                    },
-                    "table_refs": {
-                        "app": app_table_ref_signatures,
-                        "runtime": runtime_table_ref_signatures,
-                    },
-                },
-                "modules": {
-                    "runtime": {
-                        "path": "molt_runtime.wasm",
-                        "size": rt_size,
-                    },
-                    "app": {
-                        "path": "app.wasm",
-                        "size": app_size,
-                    },
-                },
-                "total_size": app_size + rt_size,
-                "instantiation_order": ["runtime", "app"],
-                "entry": {"module": "app", "function": "molt_main"},
-            }
-            _atomic_write_json(manifest, manifest_data, indent=2)
-
-            # Generate split-runtime Cloudflare Workers shim with full
-            # WASI support and multi-module instantiation.
-            worker_js = split_dir / "worker.js"
-            _atomic_write_text(
-                worker_js,
-                _generate_split_worker_js(
-                    shared_memory_initial_pages=shared_memory_initial_pages,
-                    shared_table_initial=shared_table_initial,
-                    shared_table_base=effective_wasm_table_base,
-                    runtime_import_result_kinds=app_runtime_import_result_kinds,
-                    runtime_import_signatures=app_runtime_import_signatures,
-                    app_table_ref_signatures=app_table_ref_signatures,
-                    runtime_table_ref_signatures=runtime_table_ref_signatures,
-                ),
-            )
-            vfs_support_src = molt_root / "wasm" / "molt_vfs_browser.js"
-            vfs_support_dst = split_dir / "molt_vfs_browser.js"
-            try:
-                _atomic_copy_file(vfs_support_src, vfs_support_dst)
-            except OSError as exc:
-                return None, _fail(
-                    f"Failed to stage split-runtime VFS support: {exc}",
-                    json_output,
-                    command="build",
-                )
-
-            # Generate wrangler.jsonc for Cloudflare Workers deployment.
-            # JSONC is the modern Wrangler config shape and matches the
-            # live-verification tooling contract.
-            wrangler_jsonc = split_dir / "wrangler.jsonc"
-            _atomic_write_text(
-                wrangler_jsonc,
-                _generate_split_wrangler_jsonc(dt.date.today().isoformat()),
-            )
-            legacy_wrangler_toml = split_dir / "wrangler.toml"
-            if legacy_wrangler_toml.exists():
-                legacy_wrangler_toml.unlink()
-            bundle_root = split_dir
-            artifacts.update(
-                {
-                    "app_wasm": str(app_wasm),
-                    "runtime_wasm": str(rt_wasm),
-                    "manifest": str(manifest),
-                    "worker_js": str(worker_js),
-                    "wrangler_config": str(wrangler_jsonc),
-                }
-            )
-
-            # Cloudflare Workers isolate memory limit: 128MB.
-            # Warn if the combined WASM size exceeds a safe threshold.
-            combined_mb = (app_size + rt_size) / (1024 * 1024)
-            if combined_mb > 100:
-                success_messages.append(
-                    f"WARNING: Combined WASM size ({combined_mb:.1f}MB) approaches "
-                    f"Cloudflare Workers 128MB isolate memory limit. "
-                    f"Consider enabling --stdlib-profile micro for smaller builds."
-                )
-            success_messages.append(
-                f"Split runtime: {app_wasm.name} ({app_size // 1024}KB) "
-                f"+ {rt_wasm.name} ({rt_size // 1024}KB)"
-            )
-
-        return _PreparedNonNativeResult(
-            primary_output=primary_output,
-            consumer_output=consumer_output,
-            bundle_root=bundle_root,
-            linked_output_path=resolved_linked_output,
-            success_messages=success_messages,
-            extra_fields={
-                "linked": linked,
-                "require_linked": require_linked,
-                **(
-                    {"linked_output": str(resolved_linked_output)}
-                    if resolved_linked_output is not None
-                    else {}
-                ),
-                **({"cwasm_output": str(cwasm_path)} if cwasm_path is not None else {}),
-            },
-            artifacts=artifacts,
-        ), None
-    return _PreparedNonNativeResult(
-        primary_output=output_artifact,
-        consumer_output=output_artifact,
-        bundle_root=None,
-        linked_output_path=linked_output_path,
-        success_messages=[f"Successfully built {output_artifact}"],
-        extra_fields={},
-        artifacts={"object": str(output_artifact)},
-    ), None
 
 def _run_build_pipeline(
     *,
