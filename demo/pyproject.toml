@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=69.0"]
+requires = ["setuptools>=80.9.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -9,14 +9,17 @@ description = "Django offload demo for Molt"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-  "Django>=5.0",
-  "molt==0.1.0",
-  "msgpack>=1.0.0",
+  "django>=6.0.6",
+  "molt",
+  "msgpack>=1.2.1",
 ]
+
+[tool.uv.sources]
+molt = { path = "..", editable = true }
 
 [tool.setuptools.packages.find]
 where = ["."]
 exclude = ["tests*"]
 
 [project.optional-dependencies]
-dev = ["pytest>=9.0.0"]
+dev = ["pytest>=9.1.1"]
