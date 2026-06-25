@@ -13,6 +13,10 @@ from molt.cli.config_resolution import (
     _resolve_build_config,
 )
 from molt.cli.file_hashing import _sha256_file
+from molt.cli.external_native import (
+    _parse_external_static_packages,
+    _resolve_external_package_native_artifact_plan,
+)
 from molt.cli.json_cache import _read_cached_json_object, _write_cached_json_object
 from molt.cli.module_graph import (
     _ModuleResolutionCache,
@@ -114,12 +118,12 @@ def _wrapper_build_dependency_fingerprints(
     stdlib_root = _stdlib_root_path()
     module_roots = list(resolved_build_entry.module_roots)
     roots = list(dict.fromkeys([*module_roots, stdlib_root]))
-    admitted_packages, admission_error = cli._parse_external_static_packages(
+    admitted_packages, admission_error = _parse_external_static_packages(
         os.environ.get("MOLT_EXTERNAL_STATIC_PACKAGES", "")
     )
     if admission_error is not None:
         return None
-    native_plan, native_plan_errors = cli._resolve_external_package_native_artifact_plan(
+    native_plan, native_plan_errors = _resolve_external_package_native_artifact_plan(
         external_module_roots=resolved_build_entry.external_module_roots,
         admitted_packages=admitted_packages,
     )
