@@ -23,6 +23,7 @@ from molt.cli import backend_binary as cli_backend_binary
 from molt.cli import backend_cache_setup as cli_backend_cache_setup
 from molt.cli import backend_compile as cli_backend_compile
 from molt.cli import backend_output_pipeline as cli_backend_output_pipeline
+from molt.cli import backend_pipeline as cli_backend_pipeline
 from molt.cli import build_pipeline as cli_build_pipeline
 from molt.cli import link_pipeline as cli_link_pipeline
 from molt.cli import non_native_output as cli_non_native_output
@@ -12617,7 +12618,7 @@ def test_run_backend_pipeline_defers_native_runtime_readiness_until_after_codege
 
     monkeypatch.setattr(cli_link_pipeline, "_prepare_native_link", fake_prepare_native_link)
 
-    result = cli_build_pipeline._run_backend_pipeline(
+    result = cli_backend_pipeline._run_backend_pipeline(
         prepared_build_preamble=build_preamble,
         prepared_build_roots=build_roots,
         prepared_build_config=build_config,
