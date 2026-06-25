@@ -36,6 +36,7 @@ ROOT = Path(__file__).resolve().parents[2]
 ARTIFACT_STATE = importlib.import_module("molt.cli.artifact_state")
 BACKEND_CACHE = importlib.import_module("molt.cli.backend_cache")
 BACKEND_EXECUTION = importlib.import_module("molt.cli.backend_execution")
+BACKEND_IR = importlib.import_module("molt.cli.backend_ir")
 CACHE_FINGERPRINTS = importlib.import_module("molt.cli.cache_fingerprints")
 CACHE_KEYS = importlib.import_module("molt.cli.cache_keys")
 COMMAND_RUNTIME = importlib.import_module("molt.cli.command_runtime")
@@ -1287,7 +1288,7 @@ def test_backend_ir_isolate_import_is_bounded_by_runtime_dispatch_roots(
         pass_stats_by_function={},
     )
 
-    prepared, error = cli._prepare_backend_ir(
+    prepared, error = BACKEND_IR._prepare_backend_ir(
         entry_module="demo",
         module_graph=module_graph,
         parse_codec="json",
@@ -1373,7 +1374,7 @@ def test_backend_ir_isolate_import_roots_runtime_support_closure(
         pass_stats_by_function={},
     )
 
-    prepared, error = cli._prepare_backend_ir(
+    prepared, error = BACKEND_IR._prepare_backend_ir(
         entry_module="demo",
         module_graph=module_graph,
         parse_codec="json",
@@ -1674,14 +1675,14 @@ def test_static_backend_ir_module_call_closure_accepts_graph_modules() -> None:
     }
 
     assert (
-        cli._static_backend_ir_module_call_closure_issue(
+        BACKEND_IR._static_backend_ir_module_call_closure_issue(
             ir,
             {"demo": Path("demo.py"), "copy": Path("copy.py")},
             {"copy", "demo"},
         )
         is None
     )
-    assert cli._static_backend_ir_module_call_targets(ir, {"copy", "demo"}) == (
+    assert BACKEND_IR._static_backend_ir_module_call_targets(ir, {"copy", "demo"}) == (
         ("copy", "copy__copy", "molt_init_demo", 0),
     )
 
@@ -1703,7 +1704,7 @@ def test_static_backend_ir_module_call_closure_reports_missing_module() -> None:
         ]
     }
 
-    issue = cli._static_backend_ir_module_call_closure_issue(
+    issue = BACKEND_IR._static_backend_ir_module_call_closure_issue(
         ir, {"collections": Path("collections.py")}, {"collections", "copy"}
     )
 
@@ -1726,7 +1727,7 @@ def test_static_backend_ir_module_call_closure_allows_lazy_missing_import() -> N
     }
 
     assert (
-        cli._static_backend_ir_module_call_closure_issue(
+        BACKEND_IR._static_backend_ir_module_call_closure_issue(
             ir, {"zipfile": Path("zipfile.py")}, {"zipfile", "bz2"}
         )
         is None
@@ -6607,7 +6608,7 @@ def test_persisted_module_lowering_returns_isolated_mutable_results(
 
 
 def test_finalize_backend_ir_pads_truncated_param_types() -> None:
-    ir = cli._finalize_backend_ir(
+    ir = BACKEND_IR._finalize_backend_ir(
         functions=[
             {
                 "name": "pkg__f",
@@ -12488,7 +12489,7 @@ def test_run_backend_pipeline_defers_native_runtime_readiness_until_after_codege
     )
 
     monkeypatch.setattr(
-        cli,
+        BACKEND_IR,
         "_prepare_backend_ir",
         lambda **kwargs: (
             call_order.append("backend_ir") or cli._PreparedBackendIR(ir={}),
@@ -17569,7 +17570,7 @@ def test_publication_sidecar_writers_use_atomic_temp_siblings(
 
     emitted_ir_path = tmp_path / "logs" / "ir.json"
     assert (
-        cli._write_emitted_ir(
+        BACKEND_IR._write_emitted_ir(
             emitted_ir_path,
             {"functions": [{"name": "main", "ops": []}]},
         )
