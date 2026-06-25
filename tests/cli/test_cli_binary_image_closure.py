@@ -15,6 +15,7 @@ from molt.cli import module_dependencies as cli_module_dependencies
 from molt.cli import wrapper_build as cli_wrapper_build
 from molt.cli.config_resolution import STATIC_IMPORT_MODULES_ENV
 from molt.cli.target_python import _DEFAULT_TARGET_PYTHON_VERSION
+from molt.compiler_analysis import backend_ir_binary_image_analysis_payload
 
 
 def _resolve_entry(
@@ -440,7 +441,7 @@ def test_frontend_binary_image_analysis_bridges_ast_schedule_and_lowering(
 def test_backend_ir_and_artifact_analysis_attach_to_same_contract(
     tmp_path: Path,
 ) -> None:
-    ir_payload = cli_binary_image_analysis._backend_ir_binary_image_analysis_payload(
+    ir_payload = backend_ir_binary_image_analysis_payload(
         {
             "functions": [
                 {
