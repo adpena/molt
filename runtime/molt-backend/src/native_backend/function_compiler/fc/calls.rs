@@ -1135,9 +1135,10 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
                 let shift16 = builder.ins().iconst(types::I64, 16);
                 let shifted = builder.ins().ishl(raw_ptr, shift16);
                 let ptr_val = builder.ins().sshr(shifted, shift16);
-                let type_id = builder
-                    .ins()
-                    .load(types::I32, MemFlagsData::trusted(), ptr_val, -16i32);
+                let type_id =
+                    builder
+                        .ins()
+                        .load(types::I32, MemFlagsData::trusted(), ptr_val, -16i32);
                 let expected_type = builder.ins().iconst(types::I32, 221);
                 let type_ok = builder.ins().icmp(IntCC::Equal, type_id, expected_type);
                 let closure_check_block = builder.create_block();
@@ -1239,9 +1240,10 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
                 // Step 7: Load fn_ptr (at ptr+0), recursion guard, call_indirect
                 switch_to_block_materialized(&mut *builder, direct_call_block);
                 seal_block_once(&mut *builder, &mut *sealed_blocks, direct_call_block);
-                let fn_ptr_v = builder
-                    .ins()
-                    .load(types::I64, MemFlagsData::trusted(), ptr_val, 0i32);
+                let fn_ptr_v =
+                    builder
+                        .ins()
+                        .load(types::I64, MemFlagsData::trusted(), ptr_val, 0i32);
                 let guard_enter = import_func_ref(
                     &mut *module,
                     &mut *import_ids,

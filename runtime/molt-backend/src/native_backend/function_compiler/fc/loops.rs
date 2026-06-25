@@ -275,14 +275,18 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                                 .load(types::I64, MemFlagsData::trusted(), obj_ptr, 0);
                         let vec_layout = vec_u64_layout();
                         // ListBoolStorage (repr(C)): data@0, len@8
-                        let dp_bool =
-                            builder
-                                .ins()
-                                .load(types::I64, MemFlagsData::trusted(), storage_ptr, 0i32);
-                        let len_bool =
-                            builder
-                                .ins()
-                                .load(types::I64, MemFlagsData::trusted(), storage_ptr, 8i32);
+                        let dp_bool = builder.ins().load(
+                            types::I64,
+                            MemFlagsData::trusted(),
+                            storage_ptr,
+                            0i32,
+                        );
+                        let len_bool = builder.ins().load(
+                            types::I64,
+                            MemFlagsData::trusted(),
+                            storage_ptr,
+                            8i32,
+                        );
                         // Vec<u64> (repr(Rust), probed offsets)
                         let dp_vec = builder.ins().load(
                             types::I64,
@@ -629,14 +633,18 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                                 .ins()
                                 .load(types::I64, MemFlagsData::trusted(), obj_ptr, 0);
                         let vec_layout = vec_u64_layout();
-                        let dp_bool =
-                            builder
-                                .ins()
-                                .load(types::I64, MemFlagsData::trusted(), storage_ptr, 0i32);
-                        let len_bool =
-                            builder
-                                .ins()
-                                .load(types::I64, MemFlagsData::trusted(), storage_ptr, 8i32);
+                        let dp_bool = builder.ins().load(
+                            types::I64,
+                            MemFlagsData::trusted(),
+                            storage_ptr,
+                            0i32,
+                        );
+                        let len_bool = builder.ins().load(
+                            types::I64,
+                            MemFlagsData::trusted(),
+                            storage_ptr,
+                            8i32,
+                        );
                         let dp_vec = builder.ins().load(
                             types::I64,
                             MemFlagsData::trusted(),
@@ -808,9 +816,10 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                         let acc_eb = builder.use_var(acc_loop_var);
                         let off_e = builder.ins().ishl_imm(idx_eb, 3);
                         let addr_e = builder.ins().iadd(data_ptr, off_e);
-                        let elem_e = builder
-                            .ins()
-                            .load(types::I64, MemFlagsData::trusted(), addr_e, 0);
+                        let elem_e =
+                            builder
+                                .ins()
+                                .load(types::I64, MemFlagsData::trusted(), addr_e, 0);
                         let acc_e_next = builder.ins().iadd(acc_eb, elem_e);
                         let next_idx_e = builder.ins().iadd_imm(idx_eb, 1);
                         builder.def_var(idx_loop_var, next_idx_e);
