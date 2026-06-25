@@ -23,6 +23,12 @@ def _fresh_frontend_parallel_layer_state() -> _FrontendParallelLayerState:
     return _FrontendParallelLayerState()
 
 
+def _known_classes_snapshot_copy(known_classes: Mapping[str, Any]) -> dict[str, Any]:
+    if not known_classes:
+        return {}
+    return dict(known_classes)
+
+
 def _resolve_frontend_parallel_module_workers() -> int:
     raw = os.environ.get("MOLT_FRONTEND_PARALLEL_MODULES", "").strip().lower()
     if not raw:

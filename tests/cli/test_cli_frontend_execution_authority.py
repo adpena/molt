@@ -13,7 +13,6 @@ _FRONTEND_EXECUTION_NAMES = (
     "_format_syntax_error_message",
     "_frontend_lower_module_worker",
     "_integrate_module_frontend_result_with_state",
-    "_known_classes_snapshot_copy",
     "_lower_entry_module_as_main",
     "_lower_module_serial_with_context",
     "_module_frontend_generator",

@@ -426,7 +426,6 @@ from molt.cli.frontend_execution import (
     _frontend_lower_module_worker,
     _module_frontend_payload,
     _module_frontend_generator,
-    _known_classes_snapshot_copy,
     _resolve_tree_for_serial_frontend_module,
     _lower_module_serial_with_context,
     _run_serial_frontend_lower_with_context,
