@@ -60,6 +60,11 @@ touching code, docs, tests, benchmarks, or roadmap state.
   a subsystem has one wrong authority, rip open the full authority boundary and
   move the callers, tests, docs, and generated facts needed to make the old path
   disappear.
+- Start from a tiny entry slice when the codebase, crash history, or operator
+  signal says the control plane is unstable. The slice is the aperture, not the
+  deliverable: choose one concrete invariant, command family, file cluster, or
+  authority surface small enough to hold in working memory, then rip it open
+  through every sibling consumer needed to eliminate the duplicate path.
 - Commit complete authority moves or genuinely independent structural pieces.
   A small commit is acceptable only when it deletes a complete source of drift;
   it is not acceptable when it leaves a hybrid path because the agent stopped
@@ -77,7 +82,7 @@ touching code, docs, tests, benchmarks, or roadmap state.
   migrate non-overlapping files while the main agent lands the authority move.
   Do not use subagents to multiply proof lanes or produce status theater.
 
-### Narrow entry, full structural rip
+### Tiny entry slice, full structural rip
 
 The broad-arc rule above governs depth and width, not bulk. The bounded unit is
 not a tiny chip; it is a complete structural rip through one concrete invariant,
@@ -85,6 +90,9 @@ authority cluster, or execution path, followed through every consumer needed to
 delete the old lane. Narrow the entry point only to expose the real structure;
 once exposed, widen to the whole bug class inside that boundary.
 
+- "Tiny slice and rip it open" is binding operator shorthand. Tiny slice means
+  one named aperture into the real structure; rip it open means delete or unify
+  the duplicate authority behind that aperture before moving on.
 - The entry point may be narrow; the work may not be a chip. Do not scope
   broadly into endless planning before real structure is exposed, but once it is
   exposed, migrate the sibling authorities and consumers that define the
@@ -399,6 +407,10 @@ Read these first instead of rediscovering project structure:
   do not shrink the engineering unit into tiny chips. The landing still has to
   be a complete structural primitive: no hack, no duplicate authority, no
   dangling legacy lane, and no half-migrated invariant.
+- Recovery mode forces the tiny-entry/full-rip discipline: one active slice, one
+  bounded proof lane, no retry storms, and no parallel proof fanout. If
+  subagents are used, they may map or migrate disjoint consumers inside that
+  slice; they must not multiply status chatter or broaden cleanup scope.
 - Before every risky command in recovery mode, leave a death capsule under the
   canonical evidence roots: command, cwd, guard pid, expected child pid when
   known, status, timestamp, and the evidence path. Prefer
