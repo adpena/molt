@@ -226,6 +226,55 @@ def test_watched_pids_excludes_claude_code_executable_group() -> None:
     assert memory_guard.watched_pids(samples, 100) == set()
 
 
+def test_codex_app_and_cli_are_host_control_plane_on_all_platform_shapes() -> None:
+    samples = [
+        memory_guard.ProcessSample(
+            100,
+            1,
+            500_000,
+            "/Applications/Codex.app/Contents/MacOS/Codex",
+            pgid=100,
+        ),
+        memory_guard.ProcessSample(
+            101,
+            1,
+            500_000,
+            "/opt/homebrew/bin/codex exec --sandbox danger-full-access",
+            pgid=101,
+        ),
+        memory_guard.ProcessSample(
+            102,
+            1,
+            500_000,
+            "/home/adpen/.local/bin/codex --continue",
+            pgid=102,
+        ),
+        memory_guard.ProcessSample(
+            103,
+            1,
+            500_000,
+            "node /usr/local/lib/node_modules/@openai/codex/bin/codex.js",
+            pgid=103,
+        ),
+        memory_guard.ProcessSample(
+            104,
+            1,
+            500_000,
+            r"C:\Users\adpen\AppData\Roaming\npm\codex.cmd exec",
+            pgid=None,
+        ),
+        memory_guard.ProcessSample(
+            105,
+            1,
+            500_000,
+            r"powershell.exe -File C:\Users\adpen\AppData\Roaming\npm\codex.ps1",
+            pgid=None,
+        ),
+    ]
+
+    assert all(memory_guard.is_host_control_plane_process(sample) for sample in samples)
+
+
 def test_watched_pids_excludes_node_launched_claude_code_group() -> None:
     samples = {
         100: memory_guard.ProcessSample(

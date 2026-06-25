@@ -13,9 +13,10 @@ Molt expects production-grade changes, not opportunistic patches.
    - `tmp/` for scratch and quarantine material
 4. Update docs in the same change when structure, workflow, or semantics move.
 5. Remove dead files, duplicate paths, and stale references instead of preserving legacy layout.
-6. Start every nontrivial change by naming one tiny aperture: the invariant,
+6. Start every nontrivial change by naming one narrow aperture: the invariant,
    command family, file cluster, authority surface, or failing execution path
-   that exposes the real structure.
+   that exposes the real structure. The aperture is the entry point, not the
+   deliverable, commit size, or smallest-next-chip plan.
 7. If a maintainer says "tiny slice", "rip it open", or says the work is being
    sliced too small, treat that as a binding scope correction: finish the live
    structural rip exposed by the aperture instead of converting it into
@@ -30,6 +31,10 @@ Molt expects production-grade changes, not opportunistic patches.
   opening aperture, then identify the whole bug class or duplicated-authority
   cluster behind it and land an end-state subsystem cut that removes every
   sibling source of truth in that boundary.
+- Once structure is exposed, choose the bold coherent unit over the comfortable
+  checkpoint: no local minima, no smallest-next-chip progress, and no excessive
+  test/conformance/proof apparatus as a substitute for changing the
+  architecture.
 - Convenient tiny-chip progress is a project failure mode: it preserves scattered
   authority while pretending to create velocity. When a maintainer says a change
   is too narrow, widen the work to the coherent structural class instead of
@@ -61,6 +66,10 @@ Molt expects production-grade changes, not opportunistic patches.
   current identity proves they belong to this repo's Molt work. Codex, Claude,
   app-server, renderer, node-repl, MCP/plugin helpers, shell hosts, Git pollers,
   and ancestor/control-plane processes are never cleanup targets.
+- Only Molt processes should ever be cleaned for Molt work. Do not clean, kill,
+  restart, rewrite, or repair Codex/Claude/app control-plane state as a side
+  effect of recovering a Molt command unless the operator explicitly asks for
+  Codex or Claude app repair.
 - Keep repo-facing docs and examples accurate after every move or rename.
 - Verify only the claims you make. Fresh command output is required for
   correctness/performance/support claims, but broad proof lanes are not a

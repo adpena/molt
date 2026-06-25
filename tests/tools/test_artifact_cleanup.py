@@ -178,6 +178,8 @@ def test_main_dry_run_invokes_git_clean_without_process_kill(monkeypatch) -> Non
     assert calls[0]["cwd"] == module.REPO_ROOT
     assert calls[0]["capture_output"] is False
     assert calls[0]["env"]["MOLT_EXT_ROOT"] == str(module.REPO_ROOT)
+    assert calls[0]["env"]["MOLT_DEV_CLEANUP_STALE_ORPHAN_CLEANUP"] == "0"
+    assert calls[0]["env"]["MOLT_STALE_ORPHAN_CLEANUP"] == "0"
 
 
 def test_main_json_reports_git_clean_entries(monkeypatch, capsys) -> None:

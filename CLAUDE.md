@@ -15,13 +15,14 @@ When you identify a structurally correct fix and feel pulled toward an "immediat
 
 If you cannot complete the structural fix in this session, **do not commit the localized hack as a placeholder**. Leave a clean baton-pass note describing the structural fix needed; the next session picks it up. Half-measures committed to main are worse than nothing committed.
 
-### Tiny Aperture, Full Rip
+### Narrow Aperture, Full Structural Rip
 
-Default to one tiny, named aperture into the real structure: one invariant,
+Default to one narrow, named aperture into the real structure: one invariant,
 command family, file cluster, authority surface, or failing execution path. The
-aperture keeps discovery bounded; it is not the deliverable. The deliverable is
-a complete structural rip through the authority exposed by that aperture,
-followed through every consumer needed to delete or unify the old lane.
+aperture keeps discovery bounded; it is not the deliverable, not the commit
+size, and not a smallest-next-chip plan. The deliverable is a complete
+structural rip through the authority exposed by that aperture, followed through
+every consumer needed to delete or unify the old lane.
 
 - "Tiny slice and rip it open" is binding operator policy. Tiny slice means the
   smallest concrete opening that exposes the duplicate authority; it never means
@@ -49,6 +50,13 @@ followed through every consumer needed to delete or unify the old lane.
 - Crash recovery constrains process fanout, not work integrity. In unstable
   sessions, keep one active aperture and one bounded proof lane; never convert
   the structural rip into a queue of isolated tiny chips.
+- Boldness is required once the aperture exposes structure. Expand to the whole
+  coherent authority class, even when that is larger than the comfortable
+  checkpoint, and delete or unify the old lane instead of preserving a hybrid
+  path.
+- No local minima, no smallest-next-chip progress, and no excessive
+  test/conformance/proof apparatus as a substitute for changing the
+  architecture.
 
 ### Concrete examples of partial implementations to reject
 
@@ -312,6 +320,10 @@ process name, stale PID, or missing sampler identity is not enough authority to
 signal a process. If live identity cannot prove a non-host Molt-owned target,
 do not kill it; preserve evidence and fix custody first. Codex itself is never
 a cleanup target.
+Only Molt processes should ever be cleaned for Molt work. Do not clean, kill,
+restart, rewrite, or repair Codex/Claude/app control-plane state as a side
+effect of recovering a Molt command unless the operator explicitly asks for
+Codex or Claude app repair.
 Molt-owned means live command, sidecar, session, backend-daemon, guard, or
 runtime-child identity for this repo's Molt build/test/bench/runtime work.
 Codex, Claude, app-server, renderer, node-repl, MCP/plugin helpers, shell hosts,

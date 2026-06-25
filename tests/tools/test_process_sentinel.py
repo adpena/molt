@@ -711,6 +711,68 @@ def test_process_groups_exclude_external_codex_descendant_but_keep_owned_child()
     assert skipped[0].pids == [777]
 
 
+def test_process_groups_exclude_external_codex_cli_descendant_but_keep_owned_child() -> (
+    None
+):
+    module = _load_process_sentinel()
+    root = Path("/repo/molt")
+    samples = {
+        100: module.memory_guard.ProcessSample(
+            pid=100,
+            ppid=1,
+            pgid=100,
+            rss_kb=500_000,
+            command="codex --yolo",
+        ),
+        101: module.memory_guard.ProcessSample(
+            pid=101,
+            ppid=100,
+            pgid=101,
+            rss_kb=10_000,
+            command="/bin/bash -lc pytest",
+        ),
+        777: module.memory_guard.ProcessSample(
+            pid=777,
+            ppid=101,
+            pgid=777,
+            rss_kb=250_000,
+            command="/repo/molt/target/dev-fast/molt-backend --daemon",
+        ),
+        999: module.memory_guard.ProcessSample(
+            pid=999,
+            ppid=100,
+            pgid=999,
+            rss_kb=30_000,
+            command="/repo/molt/tools/process_sentinel.py --once --kill-all",
+        ),
+        200: module.memory_guard.ProcessSample(
+            pid=200,
+            ppid=999,
+            pgid=200,
+            rss_kb=250_000,
+            command="/repo/molt/target/dev-fast/molt-backend --owned",
+        ),
+    }
+
+    groups = module.process_groups(
+        samples,
+        root=root,
+        self_pid=999,
+        self_pgid=999,
+    )
+    skipped = module.skipped_protected_process_groups(
+        samples,
+        root=root,
+        self_pid=999,
+        self_pgid=999,
+    )
+
+    assert [group.pgid for group in groups] == [200]
+    assert groups[0].pids == [200]
+    assert [group.pgid for group in skipped] == [777]
+    assert skipped[0].pids == [777]
+
+
 def test_process_groups_exclude_windows_external_codex_descendant_but_keep_owned_child(
     monkeypatch,
 ) -> None:
@@ -786,6 +848,63 @@ def test_process_groups_exclude_windows_external_codex_descendant_but_keep_owned
     assert groups[0].pids == [200]
     assert [group.pgid for group in skipped] == [777]
     assert skipped[0].pids == [777]
+
+
+def test_process_groups_exclude_windows_codex_claude_control_plane_paths(
+    monkeypatch,
+) -> None:
+    module = _load_process_sentinel()
+    root = Path("C:/Users/adpen/OneDrive/Documents/molt")
+    samples = {
+        100: module.memory_guard.ProcessSample(
+            pid=100,
+            ppid=1,
+            pgid=None,
+            rss_kb=100,
+            command=(
+                r"C:\Program Files\Git\usr\bin\tail.exe -f "
+                r"C:\Users\adpen\AppData\Local\Temp\claude"
+                r"\C--Users-adpen-OneDrive-Documents-molt\tasks\b1.output"
+            ),
+        ),
+        101: module.memory_guard.ProcessSample(
+            pid=101,
+            ppid=1,
+            pgid=None,
+            rss_kb=100,
+            command=(
+                r"C:\Users\adpen\.codex\tmp\python.exe "
+                r"C:\Users\adpen\OneDrive\Documents\molt\tests\molt_diff.py"
+            ),
+        ),
+        102: module.memory_guard.ProcessSample(
+            pid=102,
+            ppid=1,
+            pgid=None,
+            rss_kb=100,
+            command=(
+                r"C:\Users\adpen\.claude\worktrees\e2e-stable"
+                r"\tests\molt_diff.py --jobs 2"
+            ),
+        ),
+        200: module.memory_guard.ProcessSample(
+            pid=200,
+            ppid=1,
+            pgid=None,
+            rss_kb=200,
+            command=(
+                r"C:\Users\adpen\OneDrive\Documents\molt"
+                r"\target\dev-fast\molt-backend.exe --owned"
+            ),
+        ),
+    }
+
+    monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
+    monkeypatch.setattr(module.memory_guard, "_is_windows_process_model", lambda: True)
+
+    groups = module.process_groups(samples, root=root, self_pid=999)
+
+    assert [group.pgid for group in groups] == [200]
 
 
 def test_process_groups_exclude_external_claude_descendant_but_keep_owned_child() -> (
@@ -927,6 +1046,37 @@ def test_terminate_group_refuses_protected_codex_group(monkeypatch) -> None:
         module.os,
         "kill",
         lambda pid, sig: sent_groups.append((pid, sig)),
+        raising=False,
+    )
+
+    module.terminate_group(100, grace=0.001, root=Path("/repo/molt"))
+
+    assert sent_groups == []
+
+
+def test_terminate_group_refuses_posix_group_without_expected_identities(
+    monkeypatch,
+) -> None:
+    module = _load_process_sentinel()
+    samples = {
+        100: module.memory_guard.ProcessSample(
+            pid=100,
+            ppid=1,
+            pgid=100,
+            rss_kb=500_000,
+            command="/repo/molt/target/release-fast/molt-backend",
+        ),
+    }
+    sent_groups: list[tuple[int, int]] = []
+
+    monkeypatch.setattr(module, "_is_windows_process_model", lambda: False)
+    monkeypatch.setattr(module, "sample_processes_for_sentinel", lambda: samples)
+    monkeypatch.setattr(module.os, "getpid", lambda: 9999)
+    monkeypatch.setattr(module, "_safe_getpgrp", lambda: 999)
+    monkeypatch.setattr(
+        module.os,
+        "killpg",
+        lambda pgid, sig: sent_groups.append((pgid, sig)),
         raising=False,
     )
 
@@ -1154,7 +1304,7 @@ def test_terminate_group_windows_keeps_current_sentinel_child_killable(
     assert [pid for pid, _sig in killed] == [200, 200]
 
 
-def test_terminate_group_rechecks_protection_before_sigkill(monkeypatch) -> None:
+def test_terminate_group_rechecks_protection_before_sigterm(monkeypatch) -> None:
     module = _load_process_sentinel()
     first = {
         100: module.memory_guard.ProcessSample(
@@ -1195,7 +1345,7 @@ def test_terminate_group_rechecks_protection_before_sigkill(monkeypatch) -> None
 
     module.terminate_group(100, grace=0.0)
 
-    assert sent_groups == [(100, module.signal.SIGTERM)]
+    assert sent_groups == []
 
 
 def test_find_violations_can_kill_all_or_threshold() -> None:
