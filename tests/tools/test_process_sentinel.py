@@ -189,6 +189,41 @@ def test_guarded_entrypoints_are_repo_sentinel_tokens() -> None:
     }.issubset(module.GUARDED_ENTRYPOINT_TOKENS)
 
 
+def test_guarded_entrypoint_scan_prefilters_non_candidates(
+    tmp_path: Path, monkeypatch
+) -> None:
+    path = tmp_path / "large_generated.py"
+    path.write_text("VALUE = " + repr("x" * 10_000), encoding="utf-8")
+
+    def fail_parse(*_args, **_kwargs):
+        raise AssertionError("non-candidate file reached ast.parse")
+
+    monkeypatch.setattr(guarded_entrypoints.ast, "parse", fail_parse)
+
+    assert not guarded_entrypoints._imports_harness_memory_guard(path)
+
+
+def test_guarded_entrypoint_scan_skips_vendor_and_result_roots(
+    tmp_path: Path,
+) -> None:
+    guarded_entrypoints._guarded_entrypoint_tokens.cache_clear()
+    vendor = tmp_path / "bench" / "friends" / "repos" / "pkg" / "tool.py"
+    result = tmp_path / "bench" / "results" / "run" / "generated.py"
+    bench = tmp_path / "bench" / "harness.py"
+    for path in (vendor, result, bench):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("from tools import harness_memory_guard\n", encoding="utf-8")
+
+    try:
+        tokens = guarded_entrypoints.guarded_entrypoint_tokens(tmp_path)
+    finally:
+        guarded_entrypoints._guarded_entrypoint_tokens.cache_clear()
+
+    assert "/bench/harness.py" in tokens
+    assert "/bench/friends/repos/pkg/tool.py" not in tokens
+    assert "/bench/results/run/generated.py" not in tokens
+
+
 def test_process_groups_match_guarded_entrypoints() -> None:
     module = _load_process_sentinel()
     root = Path("/repo/molt")
