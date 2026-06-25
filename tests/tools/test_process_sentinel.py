@@ -259,6 +259,59 @@ def test_process_groups_match_canonical_artifact_roots() -> None:
     assert [group.pgid for group in groups] == [10, 20, 30]
 
 
+def test_process_groups_do_not_treat_generic_repo_artifact_paths_as_ownership() -> None:
+    module = _load_process_sentinel()
+    root = Path("/repo/molt")
+    samples = {
+        10: module.memory_guard.ProcessSample(
+            pid=10,
+            ppid=1,
+            pgid=10,
+            rss_kb=100,
+            command="/repo/molt/tmp/user-script",
+        ),
+        20: module.memory_guard.ProcessSample(
+            pid=20,
+            ppid=1,
+            pgid=20,
+            rss_kb=100,
+            command="/repo/molt/dist/user_tool",
+        ),
+        30: module.memory_guard.ProcessSample(
+            pid=30,
+            ppid=1,
+            pgid=30,
+            rss_kb=100,
+            command="/repo/molt/build/unrelated",
+        ),
+        40: module.memory_guard.ProcessSample(
+            pid=40,
+            ppid=1,
+            pgid=40,
+            rss_kb=100,
+            command="/repo/molt/wasm/unrelated.wasm",
+        ),
+        50: module.memory_guard.ProcessSample(
+            pid=50,
+            ppid=1,
+            pgid=50,
+            rss_kb=100,
+            command="/repo/molt/.venv/bin/python /repo/molt/scripts/user_job.py",
+        ),
+        60: module.memory_guard.ProcessSample(
+            pid=60,
+            ppid=1,
+            pgid=60,
+            rss_kb=100,
+            command="/usr/bin/python /repo/molt/tests/tools/test_process_sentinel.py",
+        ),
+    }
+
+    groups = module.process_groups(samples, root=root, self_pid=9999)
+
+    assert groups == []
+
+
 def test_process_groups_match_windows_canonical_artifact_roots() -> None:
     module = _load_process_sentinel()
     root = Path("C:/Users/adpen/OneDrive/Documents/molt")
