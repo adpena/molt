@@ -61,7 +61,10 @@ use super::super::dominators::{
     reachable_blocks_with,
 };
 use super::super::function::{TirFunction, TirModule};
-use super::super::op_kinds_generated::opcode_is_state_machine_table;
+use super::super::op_kinds_generated::{
+    ModuleConcurrencyMarkerSourceRole, ModuleSlotAccessRole, opcode_is_state_machine_table,
+    opcode_module_concurrency_marker_source_facts_table, opcode_module_slot_access_role_table,
+};
 use super::super::ops::{AttrValue, OpCode, TirOp};
 use super::super::values::{TirValue, ValueId};
 use super::alias_analysis::{AliasAnalysisResult, MemRegion};
@@ -96,9 +99,10 @@ fn module_has_concurrency_markers(module: &TirModule) -> bool {
     for func in &module.functions {
         for block in func.blocks.values() {
             for op in &block.ops {
-                match op.opcode {
-                    OpCode::Import | OpCode::ImportFrom => {
-                        for key in ["s_value", "name"] {
+                let facts = opcode_module_concurrency_marker_source_facts_table(op.opcode);
+                match facts.role {
+                    ModuleConcurrencyMarkerSourceRole::ModuleName => {
+                        for &key in facts.attrs {
                             if let Some(AttrValue::Str(s)) = op.attrs.get(key)
                                 && (s == "threading" || s == "_thread")
                             {
@@ -109,8 +113,8 @@ fn module_has_concurrency_markers(module: &TirModule) -> bool {
                     // A direct intrinsic CALL to the thread machinery (no
                     // module import needed) — the callee symbol, not an
                     // argument string.
-                    OpCode::Call | OpCode::CallBuiltin => {
-                        for key in ["s_value", "name"] {
+                    ModuleConcurrencyMarkerSourceRole::ThreadIntrinsicCallee => {
+                        for &key in facts.attrs {
                             if let Some(AttrValue::Str(s)) = op.attrs.get(key)
                                 && s.starts_with("molt_thread")
                             {
@@ -118,7 +122,7 @@ fn module_has_concurrency_markers(module: &TirModule) -> bool {
                             }
                         }
                     }
-                    _ => {}
+                    ModuleConcurrencyMarkerSourceRole::None => {}
                 }
             }
         }
@@ -162,7 +166,7 @@ fn single_module_root(func: &TirFunction, alias: &AliasAnalysisResult) -> Option
     let mut root: Option<ValueId> = None;
     for block in func.blocks.values() {
         for op in &block.ops {
-            if matches!(op.opcode, OpCode::ModuleGetAttr | OpCode::ModuleSetAttr) {
+            if opcode_module_slot_access_role_table(op.opcode) == ModuleSlotAccessRole::KeyedAttr {
                 let m = alias.root(*op.operands.first()?);
                 match root {
                     None => root = Some(m),
@@ -207,15 +211,13 @@ fn const_str_defs(func: &TirFunction) -> HashMap<ValueId, String> {
 /// must not disqualify the whole function: that inertness is exactly what the
 /// refusal-reason instrument caught on `bench_sum__molt_module_chunk_1`.)
 fn is_wildcard_module_op(op: &TirOp, names: &HashMap<ValueId, String>) -> bool {
-    match op.opcode {
-        OpCode::ModuleGetAttr | OpCode::ModuleSetAttr => {
+    match opcode_module_slot_access_role_table(op.opcode) {
+        ModuleSlotAccessRole::KeyedAttr => {
             // Const-named accesses are precise; a non-const name is wildcard.
             op.operands.get(1).is_none_or(|n| !names.contains_key(n))
         }
-        OpCode::ModuleGetGlobal | OpCode::ModuleDelGlobal | OpCode::ModuleDelGlobalIfPresent => {
-            true
-        }
-        _ => false,
+        ModuleSlotAccessRole::WildcardModuleDict => true,
+        ModuleSlotAccessRole::None => false,
     }
 }
 
@@ -424,9 +426,9 @@ fn promote_function(
 ) -> bool {
     // Cheap pre-filter: nothing to do without module ops.
     if !func.blocks.values().any(|b| {
-        b.ops
-            .iter()
-            .any(|op| matches!(op.opcode, OpCode::ModuleGetAttr | OpCode::ModuleSetAttr))
+        b.ops.iter().any(|op| {
+            opcode_module_slot_access_role_table(op.opcode) == ModuleSlotAccessRole::KeyedAttr
+        })
     }) {
         return false;
     }
@@ -505,8 +507,8 @@ fn promote_loop(
     for &bid in &lp.linear_order {
         let block = &func.blocks[&bid];
         for (op_index, op) in block.ops.iter().enumerate() {
-            match op.opcode {
-                OpCode::ModuleGetAttr | OpCode::ModuleSetAttr => {
+            match opcode_module_slot_access_role_table(op.opcode) {
+                ModuleSlotAccessRole::KeyedAttr => {
                     // Const-named (wildcards were rejected function-wide); must
                     // be on THE module root.
                     let m = alias.root(op.operands[0]);
@@ -531,7 +533,7 @@ fn promote_loop(
                         value,
                     });
                 }
-                OpCode::CheckException => {} // compensated, not a barrier
+                _ if op.opcode == OpCode::CheckException => {} // compensated, not a barrier
                 _ => {
                     // Pure, movable ops (the licm-canonical S3 predicate) and
                     // plain value copies cannot observe or mutate any memory —
@@ -626,8 +628,8 @@ fn promote_loop(
         // with no ModuleDict-aliasing barrier after it.
         let mut found: Option<ValueId> = None;
         for op in preheader_ops.iter().rev() {
-            match op.opcode {
-                OpCode::ModuleGetAttr | OpCode::ModuleSetAttr => {
+            match opcode_module_slot_access_role_table(op.opcode) {
+                ModuleSlotAccessRole::KeyedAttr => {
                     if alias.root(op.operands[0]) == module_root
                         && names.get(&op.operands[1]).map(String::as_str) == Some(slot.as_str())
                     {
@@ -641,7 +643,7 @@ fn promote_loop(
                     // A different slot's const-named access: key-disjoint, keep
                     // walking.
                 }
-                OpCode::CheckException => {}
+                _ if op.opcode == OpCode::CheckException => {}
                 _ if super::effects::opcode_is_pure_movable(op.opcode)
                     || op.is_plain_value_copy()
                     || is_marker_passthrough(op) => {}
