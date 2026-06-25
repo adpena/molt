@@ -1544,43 +1544,6 @@ pub(crate) fn var_get(
     vars.get(name).map(|var| VarValue(builder.use_var(*var)))
 }
 
-/// Get raw value directly (for proven-type consumers that don't need NaN-box).
-#[cfg(feature = "native-backend")]
-#[allow(dead_code)]
-fn var_get_raw(
-    builder: &mut FunctionBuilder,
-    vars: &BTreeMap<String, Variable>,
-    name: &str,
-    int_primary_vars: &std::collections::BTreeSet<String>,
-    raw_primary_float: &std::collections::BTreeSet<String>,
-) -> Option<(VarValue, bool)> {
-    let var = *vars.get(name)?;
-    let val = builder.use_var(var);
-    let is_raw = int_primary_vars.contains(name) || raw_primary_float.contains(name);
-    Some((VarValue(val), is_raw))
-}
-
-/// Store a raw value as the primary representation for a proven-type variable.
-#[cfg(feature = "native-backend")]
-#[allow(dead_code)]
-fn def_var_raw(
-    builder: &mut FunctionBuilder,
-    vars: &BTreeMap<String, Variable>,
-    name: impl AsRef<str>,
-    raw_val: Value,
-    int_primary_vars: &mut std::collections::BTreeSet<String>,
-) {
-    let name_ref = name.as_ref();
-    if name_ref == "none" {
-        return;
-    }
-    let var = *vars
-        .get(name_ref)
-        .unwrap_or_else(|| panic!("Var not found: {name_ref}"));
-    builder.def_var(var, raw_val);
-    int_primary_vars.insert(name_ref.to_string());
-}
-
 #[cfg(feature = "native-backend")]
 pub(crate) fn def_var_named(
     builder: &mut FunctionBuilder,

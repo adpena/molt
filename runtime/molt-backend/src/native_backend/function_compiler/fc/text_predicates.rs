@@ -49,7 +49,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
-    int_primary_vars: &BTreeSet<String>,
+    int_carriers_plan: &ScalarRepresentationPlan,
     float_primary_vars: &BTreeSet<String>,
     bool_primary_vars: &BTreeSet<String>,
     nbc: &crate::NanBoxConsts,
@@ -67,7 +67,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                                        sealed_blocks: &mut BTreeSet<Block>,
                                        vars: &BTreeMap<String, Variable>,
                                        name: &str,
-                                       int_primary_vars: &BTreeSet<String>,
+                                       int_carriers_plan: &ScalarRepresentationPlan,
                                        float_primary_vars: &BTreeSet<String>|
      -> Option<crate::VarValue> {
         var_get_boxed_overflow_safe_fn(
@@ -78,7 +78,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
             sealed_blocks,
             vars,
             name,
-            int_primary_vars,
+            int_carriers_plan,
             float_primary_vars,
             bool_primary_vars,
             nbc,
@@ -95,7 +95,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Find haystack not found");
@@ -107,7 +107,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Find needle not found");
@@ -135,7 +135,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Find haystack not found");
@@ -147,7 +147,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Find needle not found");
@@ -159,7 +159,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[2],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Find start not found");
@@ -171,7 +171,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[3],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Find end not found");
@@ -183,7 +183,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[4],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Find has_start not found");
@@ -195,7 +195,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[5],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Find has_end not found");
@@ -233,7 +233,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Find haystack not found");
@@ -245,7 +245,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Find needle not found");
@@ -273,7 +273,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Find haystack not found");
@@ -285,7 +285,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Find needle not found");
@@ -297,7 +297,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[2],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Find start not found");
@@ -309,7 +309,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[3],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Find end not found");
@@ -321,7 +321,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[4],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Find has_start not found");
@@ -333,7 +333,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[5],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Find has_end not found");
@@ -371,7 +371,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Find haystack not found");
@@ -383,7 +383,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Find needle not found");
@@ -411,7 +411,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Find haystack not found");
@@ -423,7 +423,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Find needle not found");
@@ -435,7 +435,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[2],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Find start not found");
@@ -447,7 +447,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[3],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Find end not found");
@@ -459,7 +459,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[4],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Find has_start not found");
@@ -471,7 +471,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[5],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Find has_end not found");
@@ -509,7 +509,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Startswith haystack not found");
@@ -521,7 +521,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Startswith needle not found");
@@ -549,7 +549,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Startswith haystack not found");
@@ -561,7 +561,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Startswith needle not found");
@@ -573,7 +573,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[2],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Startswith start not found");
@@ -585,7 +585,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[3],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Startswith end not found");
@@ -597,7 +597,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[4],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Startswith has_start not found");
@@ -609,7 +609,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[5],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Startswith has_end not found");
@@ -647,7 +647,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Startswith haystack not found");
@@ -659,7 +659,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Startswith needle not found");
@@ -687,7 +687,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Startswith haystack not found");
@@ -699,7 +699,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Startswith needle not found");
@@ -711,7 +711,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[2],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Startswith start not found");
@@ -723,7 +723,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[3],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Startswith end not found");
@@ -735,7 +735,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[4],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Startswith has_start not found");
@@ -747,7 +747,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[5],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Startswith has_end not found");
@@ -785,7 +785,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Startswith haystack not found");
@@ -797,7 +797,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Startswith needle not found");
@@ -825,7 +825,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Startswith haystack not found");
@@ -837,7 +837,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Startswith needle not found");
@@ -849,7 +849,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[2],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Startswith start not found");
@@ -861,7 +861,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[3],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Startswith end not found");
@@ -873,7 +873,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[4],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Startswith has_start not found");
@@ -885,7 +885,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[5],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Startswith has_end not found");
@@ -923,7 +923,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Endswith haystack not found");
@@ -935,7 +935,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Endswith needle not found");
@@ -963,7 +963,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Endswith haystack not found");
@@ -975,7 +975,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Endswith needle not found");
@@ -987,7 +987,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[2],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Endswith start not found");
@@ -999,7 +999,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[3],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Endswith end not found");
@@ -1011,7 +1011,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[4],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Endswith has_start not found");
@@ -1023,7 +1023,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[5],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Endswith has_end not found");
@@ -1061,7 +1061,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Endswith haystack not found");
@@ -1073,7 +1073,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Endswith needle not found");
@@ -1101,7 +1101,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Endswith haystack not found");
@@ -1113,7 +1113,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Endswith needle not found");
@@ -1125,7 +1125,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[2],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Endswith start not found");
@@ -1137,7 +1137,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[3],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Endswith end not found");
@@ -1149,7 +1149,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[4],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Endswith has_start not found");
@@ -1161,7 +1161,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[5],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Endswith has_end not found");
@@ -1199,7 +1199,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Endswith haystack not found");
@@ -1211,7 +1211,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Endswith needle not found");
@@ -1239,7 +1239,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Endswith haystack not found");
@@ -1251,7 +1251,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Endswith needle not found");
@@ -1263,7 +1263,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[2],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Endswith start not found");
@@ -1275,7 +1275,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[3],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Endswith end not found");
@@ -1287,7 +1287,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[4],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Endswith has_start not found");
@@ -1299,7 +1299,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[5],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Endswith has_end not found");
@@ -1337,7 +1337,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Count haystack not found");
@@ -1349,7 +1349,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Count needle not found");
@@ -1377,7 +1377,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Count haystack not found");
@@ -1389,7 +1389,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Count needle not found");
@@ -1417,7 +1417,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Count haystack not found");
@@ -1429,7 +1429,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Count needle not found");
@@ -1457,7 +1457,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Count haystack not found");
@@ -1469,7 +1469,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Count needle not found");
@@ -1481,7 +1481,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[2],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Count start not found");
@@ -1493,7 +1493,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[3],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Count end not found");
@@ -1505,7 +1505,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[4],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Count has_start not found");
@@ -1517,7 +1517,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[5],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Count has_end not found");
@@ -1555,7 +1555,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Count haystack not found");
@@ -1567,7 +1567,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Count needle not found");
@@ -1579,7 +1579,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[2],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Count start not found");
@@ -1591,7 +1591,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[3],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Count end not found");
@@ -1603,7 +1603,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[4],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Count has_start not found");
@@ -1615,7 +1615,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[5],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Count has_end not found");
@@ -1653,7 +1653,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Count haystack not found");
@@ -1665,7 +1665,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Count needle not found");
@@ -1677,7 +1677,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[2],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Count start not found");
@@ -1689,7 +1689,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[3],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Count end not found");
@@ -1701,7 +1701,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[4],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Count has_start not found");
@@ -1713,7 +1713,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[5],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Count has_end not found");

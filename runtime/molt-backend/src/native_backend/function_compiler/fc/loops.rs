@@ -40,7 +40,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
-    int_primary_vars: &BTreeSet<String>,
+    int_carriers_plan: &ScalarRepresentationPlan,
     bool_primary_vars: &BTreeSet<String>,
     float_primary_vars: &BTreeSet<String>,
     int_like_vars: &BTreeSet<String>,
@@ -73,7 +73,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
     let ops = &func_ir.ops;
     let var_is_int = |name: &str| {
         scalar_fast_paths_enabled
-            && (int_like_vars.contains(name) || int_primary_vars.contains(name))
+            && (int_like_vars.contains(name) || int_carriers_plan.is_raw_int_carrier_name(name))
     };
     let var_is_bool = |name: &str| scalar_fast_paths_enabled && bool_like_vars.contains(name);
     let var_get_boxed_overflow_safe = |module: &mut ObjectModule,
@@ -86,7 +86,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                                        sealed_blocks: &mut BTreeSet<Block>,
                                        vars: &BTreeMap<String, Variable>,
                                        name: &str,
-                                       int_primary_vars: &BTreeSet<String>,
+                                       int_carriers_plan: &ScalarRepresentationPlan,
                                        float_primary_vars: &BTreeSet<String>|
      -> Option<crate::VarValue> {
         var_get_boxed_overflow_safe_fn(
@@ -97,7 +97,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
             sealed_blocks,
             vars,
             name,
-            int_primary_vars,
+            int_carriers_plan,
             float_primary_vars,
             bool_primary_vars,
             nbc,
@@ -106,47 +106,6 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
 
     match op.kind.as_str() {
         "loop_start" => {
-            // Demote phi join slots from int_primary_vars/float at
-            // loop entry.  A phi variable initialized as raw before
-            // the loop may be reassigned with a NaN-boxed value on
-            // the back-edge (e.g. `total = total + data[i]` where
-            // `data[i]` returns NaN-boxed).  Without this, the
-            // load_var fast path inside the loop generates code that
-            // reads the Variable as raw i64 even though the store_var
-            // on the back-edge stored a NaN-boxed value -- causing
-            // wrong results or SIGILL (Cranelift type confusion).
-            //
-            // Re-box the raw value in the Variable so subsequent
-            // generic load_var reads produce a valid NaN-boxed value.
-            // The store_var handler re-promotes if the source is raw.
-            {
-                // Phase 1c: int_primary_vars join slots are exempt from
-                // demote — they hold raw i64 consistently across both
-                // edges of the loop-header phi, so re-boxing here
-                // would re-introduce the very mismatch this demote
-                // was added to prevent.
-                let demote_int: Vec<String> = int_primary_vars
-                    .iter()
-                    .filter(|name| {
-                        is_join_slot_name(name) && !int_primary_vars.contains(name.as_str())
-                    })
-                    .cloned()
-                    .collect();
-                for name in &demote_int {
-                    if let Some(&var) = vars.get(name) {
-                        let raw_val = builder.use_var(var);
-                        let boxed = box_int_value(&mut *builder, raw_val, nbc);
-                        builder.def_var(var, boxed);
-                    }
-                }
-                // Float-primary variables are NOT demoted here.
-                // Their main Variable holds raw f64 (types::F64) which
-                // cannot be replaced with a NaN-boxed I64 value without
-                // causing a Cranelift type mismatch.  The float
-                // load_var/store_var paths handle boxing correctly
-                // through the float shadow system.
-            }
-
             let indexed_loop_follows = loop_start_has_index_prelude(&func_ir.ops, op_idx);
             if indexed_loop_follows {
                 // Indexed loops may carry a constant-materialization
@@ -209,7 +168,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                             sealed_blocks,
                             vars,
                             list_name,
-                            int_primary_vars,
+                            int_carriers_plan,
                             float_primary_vars,
                         ) else {
                             continue;
@@ -259,7 +218,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                             sealed_blocks,
                             vars,
                             list_name,
-                            int_primary_vars,
+                            int_carriers_plan,
                             float_primary_vars,
                         ) else {
                             continue;
@@ -435,7 +394,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                                     sealed_blocks,
                                     vars,
                                     out,
-                                    int_primary_vars,
+                                    int_carriers_plan,
                                     float_primary_vars,
                                 )
                             {
@@ -524,20 +483,22 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                         sealed_blocks,
                         vars,
                         &args[0],
-                        int_primary_vars,
+                        int_carriers_plan,
                         float_primary_vars,
                     )
                     .expect("Loop index start not found")
                 });
-                let start = if int_primary_vars.contains(out_name.as_str()) {
+                let start = if int_carriers_plan.is_raw_int_carrier_name(out_name.as_str()) {
                     args.first()
-                        .and_then(|name| int_raw_value(&mut *builder, vars, int_primary_vars, name))
+                        .and_then(|name| {
+                            int_raw_value(&mut *builder, vars, int_carriers_plan, name)
+                        })
                         .unwrap_or_else(|| unbox_int_or_bool(&mut *builder, start, nbc))
                 } else {
                     start
                 };
                 // Step 1: define counter Variable with initial value.
-                // For int_primary_vars the main Variable is the raw i64
+                // For int_carriers_plan the main Variable is the raw i64
                 // carrier; Cranelift SSA provides the loop phi.
                 def_var_named(&mut *builder, vars, out_name.clone(), start);
                 // Initialize loop-body output variables to None (0)
@@ -585,7 +546,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                             sealed_blocks,
                             vars,
                             list_name,
-                            int_primary_vars,
+                            int_carriers_plan,
                             float_primary_vars,
                         ) else {
                             continue;
@@ -635,7 +596,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                             sealed_blocks,
                             vars,
                             list_name,
-                            int_primary_vars,
+                            int_carriers_plan,
                             float_primary_vars,
                         ) else {
                             continue;
@@ -728,7 +689,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                             int_raw_value(
                                 &mut *builder,
                                 vars,
-                                int_primary_vars,
+                                int_carriers_plan,
                                 &reduction.acc_operand_name,
                             )
                             .unwrap_or_else(|| {
@@ -740,7 +701,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                                     sealed_blocks,
                                     vars,
                                     &reduction.acc_operand_name,
-                                    int_primary_vars,
+                                    int_carriers_plan,
                                     float_primary_vars,
                                 )
                                 .expect("Sum reduction accumulator not found");
@@ -756,10 +717,10 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                         let raw_start_idx = args
                             .first()
                             .and_then(|name| {
-                                int_raw_value(&mut *builder, vars, int_primary_vars, name)
+                                int_raw_value(&mut *builder, vars, int_carriers_plan, name)
                             })
                             .unwrap_or_else(|| {
-                                if int_primary_vars.contains(out_name.as_str()) {
+                                if int_carriers_plan.is_raw_int_carrier_name(out_name.as_str()) {
                                     start
                                 } else {
                                     unbox_int(&mut *builder, start, nbc)
@@ -873,10 +834,17 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                         // loop shapes; if the static fixpoint misses one
                         // of these names, the typed-IR invariant is too
                         // narrow and should fail during verification.
-                        debug_assert!(int_primary_vars.contains(reduction.add_out_name.as_str()));
-                        debug_assert!(int_primary_vars.contains(reduction.acc_store_slot.as_str()));
                         debug_assert!(
-                            int_primary_vars.contains(reduction.acc_operand_name.as_str())
+                            int_carriers_plan
+                                .is_raw_int_carrier_name(reduction.add_out_name.as_str())
+                        );
+                        debug_assert!(
+                            int_carriers_plan
+                                .is_raw_int_carrier_name(reduction.acc_store_slot.as_str())
+                        );
+                        debug_assert!(
+                            int_carriers_plan
+                                .is_raw_int_carrier_name(reduction.acc_operand_name.as_str())
                         );
                         def_var_named(&mut *builder, vars, &reduction.add_out_name, final_acc);
                         def_var_named(&mut *builder, vars, &reduction.acc_store_slot, final_acc);
@@ -1117,7 +1085,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                         sealed_blocks,
                         vars,
                         &args[0],
-                        int_primary_vars,
+                        int_carriers_plan,
                         float_primary_vars,
                     )
                     .expect("Loop break cond not found");
@@ -1125,7 +1093,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                     let payload = builder.ins().band(*cond, one);
                     builder.ins().icmp_imm(IntCC::NotEqual, payload, 0)
                 } else if let Some(raw_shadow) =
-                    int_raw_value(&mut *builder, vars, int_primary_vars, &args[0])
+                    int_raw_value(&mut *builder, vars, int_carriers_plan, &args[0])
                 {
                     // Proven raw i64 carrier: truthiness is `value != 0`.
                     builder.ins().icmp_imm(IntCC::NotEqual, raw_shadow, 0)
@@ -1145,7 +1113,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                         sealed_blocks,
                         vars,
                         &args[0],
-                        int_primary_vars,
+                        int_carriers_plan,
                         float_primary_vars,
                     )
                     .expect("Loop break cond not found");
@@ -1163,7 +1131,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                         sealed_blocks,
                         vars,
                         &args[0],
-                        int_primary_vars,
+                        int_carriers_plan,
                         float_primary_vars,
                     )
                     .expect("Loop break cond not found");
@@ -1306,7 +1274,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                         sealed_blocks,
                         vars,
                         &args[0],
-                        int_primary_vars,
+                        int_carriers_plan,
                         float_primary_vars,
                     )
                     .expect("Loop break cond not found");
@@ -1314,7 +1282,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                     let payload = builder.ins().band(*cond, one);
                     builder.ins().icmp_imm(IntCC::NotEqual, payload, 0)
                 } else if let Some(raw_shadow) =
-                    int_raw_value(&mut *builder, vars, int_primary_vars, &args[0])
+                    int_raw_value(&mut *builder, vars, int_carriers_plan, &args[0])
                 {
                     // Proven raw i64 carrier: truthiness is `value != 0`.
                     builder.ins().icmp_imm(IntCC::NotEqual, raw_shadow, 0)
@@ -1334,7 +1302,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                         sealed_blocks,
                         vars,
                         &args[0],
-                        int_primary_vars,
+                        int_carriers_plan,
                         float_primary_vars,
                     )
                     .expect("Loop break cond not found");
@@ -1352,7 +1320,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                         sealed_blocks,
                         vars,
                         &args[0],
-                        int_primary_vars,
+                        int_carriers_plan,
                         float_primary_vars,
                     )
                     .expect("Loop break cond not found");
@@ -1469,7 +1437,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                                 sealed_blocks,
                                 vars,
                                 &name,
-                                int_primary_vars,
+                                int_carriers_plan,
                                 float_primary_vars,
                             )
                             .map(|v| *v)
@@ -1500,7 +1468,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                                 sealed_blocks,
                                 vars,
                                 &name,
-                                int_primary_vars,
+                                int_carriers_plan,
                                 float_primary_vars,
                             )
                             .map(|v| *v)
@@ -1527,7 +1495,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                 sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Loop index next not found");
@@ -1540,11 +1508,11 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                 let frame = loop_stack.last_mut().unwrap();
                 let next_raw = args
                     .first()
-                    .and_then(|name| int_raw_value(&mut *builder, vars, int_primary_vars, name));
+                    .and_then(|name| int_raw_value(&mut *builder, vars, int_carriers_plan, name));
                 let next_value = if frame
                     .index_name
                     .as_deref()
-                    .is_some_and(|name| int_primary_vars.contains(name))
+                    .is_some_and(|name| int_carriers_plan.is_raw_int_carrier_name(name))
                 {
                     next_raw.unwrap_or_else(|| unbox_int_or_bool(&mut *builder, *next_idx, nbc))
                 } else {
@@ -1554,7 +1522,8 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                 if let Some(out_name) = op.out.as_ref()
                     && frame.index_name.as_ref() != Some(out_name)
                 {
-                    let out_value = if int_primary_vars.contains(out_name.as_str()) {
+                    let out_value = if int_carriers_plan.is_raw_int_carrier_name(out_name.as_str())
+                    {
                         next_raw.unwrap_or(next_value)
                     } else {
                         *next_idx
@@ -1600,7 +1569,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                                         sealed_blocks,
                                         vars,
                                         src_name,
-                                        int_primary_vars,
+                                        int_carriers_plan,
                                         float_primary_vars,
                                     )
                                 {
@@ -1638,7 +1607,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                                 sealed_blocks,
                                 vars,
                                 &name,
-                                int_primary_vars,
+                                int_carriers_plan,
                                 float_primary_vars,
                             )
                             .map(|v| *v)
@@ -1669,7 +1638,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                                 sealed_blocks,
                                 vars,
                                 &name,
-                                int_primary_vars,
+                                int_carriers_plan,
                                 float_primary_vars,
                             )
                             .map(|v| *v)
@@ -1696,12 +1665,12 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                         sealed_blocks,
                         vars,
                         name,
-                        int_primary_vars,
+                        int_carriers_plan,
                         float_primary_vars,
                     )
                 {
-                    let current = if int_primary_vars.contains(name.as_str()) {
-                        int_raw_value(&mut *builder, vars, int_primary_vars, name)
+                    let current = if int_carriers_plan.is_raw_int_carrier_name(name.as_str()) {
+                        int_raw_value(&mut *builder, vars, int_carriers_plan, name)
                             .unwrap_or_else(|| unbox_int_or_bool(&mut *builder, *current, nbc))
                     } else {
                         *current

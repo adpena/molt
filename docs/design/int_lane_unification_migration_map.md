@@ -1,9 +1,18 @@
-# INT-lane unification — STEP 4 migration map
+# INT-lane unification — native carrier migration record
 
 Companion to `docs/design/int_lane_unification.md`. This is the complete survey
-of the STEP-4 atomic migration: replacing the loosely-threaded name-keyed
-`int_primary_vars: &BTreeSet<String>` carrier set with reads from the single
-`&ScalarRepresentationPlan` authority across the native backend.
+and implementation record for the STEP-4 atomic migration: the native backend no
+longer threads a cloned `int_primary_vars: &BTreeSet<String>` carrier set.
+Native int-carrier decisions now read the single `&ScalarRepresentationPlan`
+authority directly through:
+
+- `is_raw_int_carrier_name(name)` for "any raw i64 carrier" storage decisions.
+- `is_inline_safe_int_name(name)` for inline-int47-safe box sites.
+- `is_full_deopt_int_name(name)` for checked-overflow full-i64 box sites.
+
+Current binding gate: `git grep int_primary_vars -- runtime/molt-backend` is
+empty. The counts below are the pre-migration audit that made the atomic move
+reviewable; they are retained as provenance, not as live instructions.
 
 **Framing (binding):** this is ONE atomic threading change, NOT 41 chips. Every
 file below is part of the same structural arc — the same arc the FLOAT-lane cut
@@ -14,31 +23,31 @@ asymmetry rule forbids. The map exists so no `fc/` site is missed and so the
 change can be reviewed as one coherent diff.
 
 
-## The authority being unified
+## The authority that was unified
 
-- **Source today:** `function_compiler.rs:1700`
+- **Previous source:** `function_compiler.rs:1700`
   `let int_primary_vars = primary_names.int;` where
   `primary_names = representation_plan.primary_name_sets()`
   (`function_compiler.rs:1699`) and `.int = self.int_carrier_names()`
   (`representation_plan.rs:1658,1669`). `int_carrier_names()` is the
   `{name | repr_by_name[name].is_raw_i64_safe()}` view.
-- **The clone:** that `BTreeSet<String>` is then threaded by `&` into every
+- **The deleted clone:** that `BTreeSet<String>` was threaded by `&` into every
   handler and helper signature as `int_primary_vars: &BTreeSet<String>` and read
   via `int_primary_vars.contains(name)` (e.g. `fc/arith.rs:234,503,613`;
   `scalar_carriers.rs:37,60,258`).
-- **Target:** every `int_primary_vars.contains(name)` becomes a read off the
-  already-threaded `representation_plan` via a name-keyed predicate. The int cut
-  adds these accessors next to the float cut's `is_float_unboxed(name)`:
+- **Current target:** every old `int_primary_vars.contains(name)` read is now a
+  read off the already-threaded `representation_plan` via a name-keyed
+  predicate. The int cut adds these accessors next to the float cut's
+  `is_float_unboxed(name)`:
   - `is_inline_safe_int_name(name) -> bool` — the `RawI64Safe` name view
     (`{name | repr_by_name[name] == RawI64Safe}`), the inline-47 carriers.
-  - `is_full_deopt_int(name) -> bool` — the NEW `RawI64FullDeopt` name view
+  - `is_full_deopt_int_name(name) -> bool` — the `RawI64FullDeopt` name view
     (`{name | repr_by_name[name] == RawI64FullDeopt}`), the checked-op carriers.
-  - The native "is this name a raw i64 carrier at all" sites that today mean
-    "either tier" read `is_inline_safe_int_name(name) || is_full_deopt_int(name)`
-    (a combined accessor `is_raw_int_carrier(name)` SHOULD be added to keep the
-    call sites readable and single-sourced).
-- **Deletion (STEP 5):** drop the `let int_primary_vars = primary_names.int`
-  binding. BINDING GATE: `git grep int_primary_vars -- runtime/molt-backend` == 0.
+  - `is_raw_int_carrier_name(name) -> bool` — the combined raw-carrier view for
+    native storage and raw-read decisions that do not need to distinguish box
+    tiers.
+- **Deletion (STEP 5):** complete. The `let int_primary_vars =
+  primary_names.int` binding is gone from native backend code.
 
 > **Why a name predicate, not the value-keyed `is_inline_safe_int(id)`.** The
 > existing `is_inline_safe_int(&self, id: ValueId)`
@@ -64,8 +73,8 @@ files**. Two STEP-4 actions:
 
 | file | occ | action | notes |
 | --- | ---: | --- | --- |
-| `native_backend/function_compiler.rs` | 67 | SOURCE + DROP | owns the `let int_primary_vars = primary_names.int` binding (`:1700`), the var-type declaration loop (`:1863,1904,2238`), and forwards `&int_primary_vars` into ~50 handler call sites (`:2589`…`:3858`). Deletes the binding in STEP 5; rewrites the var-type/scalar-slot decisions to `representation_plan.is_raw_int_carrier(name)`. |
-| `native_backend/function_compiler/scalar_carriers.rs` | 45 | ADD+DROP | the carrier helper hub: `int_raw_value` (`:31`), `def_var_from_*` / boxed-carrier helpers (`:55,158,254,376,400`). All take `int_primary_vars: &BTreeSet<String>` today and `.contains(name)` (`:37,60,258`). These become `&ScalarRepresentationPlan` + predicate reads. This is the int analog of the float cut's `float_value_for`/`def_var_from_*` migration. |
+| `native_backend/function_compiler.rs` | 67 | SOURCE + DROP | owned the `let int_primary_vars = primary_names.int` binding (`:1700`), the var-type declaration loop (`:1863,1904,2238`), and forwarded `&int_primary_vars` into ~50 handler call sites (`:2589`…`:3858`). STEP 5 deleted the binding and rewrote var-type/scalar-slot decisions to `representation_plan.is_raw_int_carrier_name(name)`. |
+| `native_backend/function_compiler/scalar_carriers.rs` | 45 | ADD+DROP | the carrier helper hub: `int_raw_value` (`:31`), `def_var_from_*` / boxed-carrier helpers (`:55,158,254,376,400`). Pre-migration, these all took `int_primary_vars: &BTreeSet<String>` and used `.contains(name)` (`:37,60,258`); they now take `&ScalarRepresentationPlan` and read plan predicates. This is the int analog of the float cut's `float_value_for`/`def_var_from_*` migration. |
 | `native_backend/simple_backend.rs` | 4 | ADD+DROP | `ensure_boxed_overflow_safe` reads full-deopt from the plan, not a passed-in set (design STEP 4). |
 
 ### `fc/` handlers — already thread `representation_plan` (DROP param only)
@@ -146,8 +155,8 @@ fn handle_x(
     representation_plan: &ScalarRepresentationPlan,  // threaded everywhere
     …,
 ) {
-    if representation_plan.is_raw_int_carrier(name) { /* raw i64 carrier path */ }
-    // …or is_full_deopt_int(name) / is_inline_safe_int_name(name) where the
+    if representation_plan.is_raw_int_carrier_name(name) { /* raw i64 carrier path */ }
+    // …or is_full_deopt_int_name(name) / is_inline_safe_int_name(name) where the
     // call site must distinguish the inline-47 tier from the full-range tier
     // (box-site discipline: full-deopt boxes overflow-safe, inline-47 boxes inline).
 }
@@ -158,14 +167,15 @@ carrier") are the **box sites** and the **var-type / scalar-slot decisions** in
 `function_compiler.rs` and `scalar_carriers.rs`: a `RawI64FullDeopt` value boxes
 via the overflow-safe path, a `RawI64Safe` value inline-boxes (design STEP 6 /
 box-site discipline). Every other read is the carrier-or-not predicate
-`is_raw_int_carrier(name)`.
+`is_raw_int_carrier_name(name)`.
 
 
-## Verification (post-migration, at build #3)
+## Verification (post-migration)
 
 - `cargo test -p molt-backend --features native-backend --lib` — full native
-  suite green (the float cut's analog landed 155 tests green after its 41-file
-  churn).
+  suite green after the 44-file carrier migration.
+- `cargo test -p molt-tir representation_plan --lib` — name-keyed and
+  value-keyed raw-i64 tiers stay coherent after the `raw_i64` extraction.
 - E2E `molt build` on an int-heavy program (the 44-file signature churn must
   build end-to-end, not just unit-compile) — mirrors the float cut using its 4
   float differentials as the E2E gate.

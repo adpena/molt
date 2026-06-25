@@ -56,7 +56,7 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
-    int_primary_vars: &BTreeSet<String>,
+    int_carriers_plan: &ScalarRepresentationPlan,
     float_primary_vars: &BTreeSet<String>,
     bool_primary_vars: &BTreeSet<String>,
     nbc: &crate::NanBoxConsts,
@@ -75,7 +75,7 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                                        sealed_blocks: &mut BTreeSet<Block>,
                                        vars: &BTreeMap<String, Variable>,
                                        name: &str,
-                                       int_primary_vars: &BTreeSet<String>,
+                                       int_carriers_plan: &ScalarRepresentationPlan,
                                        float_primary_vars: &BTreeSet<String>|
      -> Option<crate::VarValue> {
         var_get_boxed_overflow_safe_fn(
@@ -86,7 +86,7 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
             sealed_blocks,
             vars,
             name,
-            int_primary_vars,
+            int_carriers_plan,
             float_primary_vars,
             bool_primary_vars,
             nbc,
@@ -103,7 +103,7 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .unwrap_or_else(|| panic!("Attr object not found in {} op {}", func_name, op_idx));
@@ -225,7 +225,7 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .unwrap_or_else(|| panic!("Attr object not found in {} op {}", func_name, op_idx));
@@ -280,7 +280,7 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .unwrap_or_else(|| panic!("Attr object not found in {} op {}", func_name, op_idx));
@@ -330,7 +330,7 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .unwrap_or_else(|| panic!("Attr object not found in {} op {}", func_name, op_idx));
@@ -342,7 +342,7 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Attr name not found");
@@ -374,7 +374,7 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .unwrap_or_else(|| panic!("Attr object not found in {} op {}", func_name, op_idx));
@@ -386,7 +386,7 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Attr name not found");
@@ -398,7 +398,7 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[2],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Attr default not found");
@@ -428,7 +428,7 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .unwrap_or_else(|| panic!("Attr object not found in {} op {}", func_name, op_idx));
@@ -440,7 +440,7 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Attr name not found");
@@ -468,7 +468,7 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .unwrap_or_else(|| panic!("Attr object not found in {} op {}", func_name, op_idx));
@@ -480,7 +480,7 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Attr name not found");
@@ -492,7 +492,7 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[2],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Attr value not found");
@@ -520,7 +520,7 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .unwrap_or_else(|| panic!("Attr object not found in {} op {}", func_name, op_idx));
@@ -532,7 +532,7 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Attr value not found");
@@ -594,7 +594,7 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .unwrap_or_else(|| panic!("Attr object not found in {} op {}", func_name, op_idx));
@@ -606,7 +606,7 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Attr value not found");
@@ -654,7 +654,7 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .unwrap_or_else(|| panic!("Attr object not found in {} op {}", func_name, op_idx));
@@ -710,7 +710,7 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .unwrap_or_else(|| panic!("Attr object not found in {} op {}", func_name, op_idx));
@@ -758,7 +758,7 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .unwrap_or_else(|| panic!("Attr object not found in {} op {}", func_name, op_idx));
@@ -770,7 +770,7 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Attr name not found");

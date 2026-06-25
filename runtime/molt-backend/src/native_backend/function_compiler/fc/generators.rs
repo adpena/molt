@@ -35,7 +35,7 @@ pub(in crate::native_backend::function_compiler) fn handle_generator_op(
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
-    int_primary_vars: &BTreeSet<String>,
+    int_carriers_plan: &ScalarRepresentationPlan,
     float_primary_vars: &BTreeSet<String>,
     bool_primary_vars: &BTreeSet<String>,
     nbc: &crate::NanBoxConsts,
@@ -53,7 +53,7 @@ pub(in crate::native_backend::function_compiler) fn handle_generator_op(
                                        sealed_blocks: &mut BTreeSet<Block>,
                                        vars: &BTreeMap<String, Variable>,
                                        name: &str,
-                                       int_primary_vars: &BTreeSet<String>,
+                                       int_carriers_plan: &ScalarRepresentationPlan,
                                        float_primary_vars: &BTreeSet<String>|
      -> Option<crate::VarValue> {
         var_get_boxed_overflow_safe_fn(
@@ -64,7 +64,7 @@ pub(in crate::native_backend::function_compiler) fn handle_generator_op(
             sealed_blocks,
             vars,
             name,
-            int_primary_vars,
+            int_carriers_plan,
             float_primary_vars,
             bool_primary_vars,
             nbc,
@@ -81,7 +81,7 @@ pub(in crate::native_backend::function_compiler) fn handle_generator_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Async iter source not found");
@@ -109,7 +109,7 @@ pub(in crate::native_backend::function_compiler) fn handle_generator_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Async iter not found");
@@ -137,7 +137,7 @@ pub(in crate::native_backend::function_compiler) fn handle_generator_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Generator not found");
@@ -180,7 +180,7 @@ pub(in crate::native_backend::function_compiler) fn handle_generator_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Generator not found");
@@ -192,7 +192,7 @@ pub(in crate::native_backend::function_compiler) fn handle_generator_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Send value not found");
@@ -220,7 +220,7 @@ pub(in crate::native_backend::function_compiler) fn handle_generator_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Generator not found");
@@ -232,7 +232,7 @@ pub(in crate::native_backend::function_compiler) fn handle_generator_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Throw value not found");
@@ -260,7 +260,7 @@ pub(in crate::native_backend::function_compiler) fn handle_generator_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Generator not found");
@@ -288,7 +288,7 @@ pub(in crate::native_backend::function_compiler) fn handle_generator_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Obj not found");
@@ -316,7 +316,7 @@ pub(in crate::native_backend::function_compiler) fn handle_generator_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Obj not found");
@@ -344,7 +344,7 @@ pub(in crate::native_backend::function_compiler) fn handle_generator_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Obj not found");

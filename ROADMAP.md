@@ -756,8 +756,8 @@ from `op_kinds.toml`, and frontend `borrow`/`release` aliases canonicalize to
   TIR-to-SimpleIR lowering no longer accepts an external type map for scalar
   hint reseeding; remaining performance work must flow through shared
   representation-aware TIR/LIR contracts. Native int codegen has retired the
-  raw-int shadow transport in favor of `int_primary_vars`, and native
-  float-primary codegen now treats
+  raw-int shadow transport in favor of plan-backed raw-int carrier predicates,
+  and native float-primary codegen now treats
   `float_primary_vars` as the single static authority for F64-primary variables.
   TIR functions now own a persistent `value_types` map, and type refinement
   writes op-result facts back into that map instead of leaving them as a
