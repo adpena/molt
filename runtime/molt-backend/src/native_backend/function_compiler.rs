@@ -238,11 +238,6 @@ struct FunctionPreanalysis {
     /// These need an explicit None sentinel before the first iteration so
     /// the native backend has a valid old-value slot for loop-carried cleanup.
     loop_body_init_vars: BTreeMap<usize, Vec<String>>,
-    int_like_vars: BTreeSet<String>,
-    bool_like_vars: BTreeSet<String>,
-    float_like_vars: BTreeSet<String>,
-    str_like_vars: BTreeSet<String>,
-    none_like_vars: BTreeSet<String>,
     /// True when any op in this function is marked `arena_eligible`.
     /// Triggers scope-arena lifecycle (molt_arena_new at entry,
     /// molt_arena_alloc for eligible allocs, molt_arena_free at exit).
@@ -425,15 +420,9 @@ fn simple_ir_op_absorbs_finalizer_elements(op: &OpIR) -> bool {
 #[cfg(feature = "native-backend")]
 fn preanalysis_value_is_known_non_heap(
     name: &str,
-    int_like_vars: &BTreeSet<String>,
-    bool_like_vars: &BTreeSet<String>,
-    float_like_vars: &BTreeSet<String>,
-    none_like_vars: &BTreeSet<String>,
+    representation_plan: &ScalarRepresentationPlan,
 ) -> bool {
-    int_like_vars.contains(name)
-        || bool_like_vars.contains(name)
-        || float_like_vars.contains(name)
-        || none_like_vars.contains(name)
+    representation_plan.name_is_non_heap_scalar(name)
 }
 
 #[cfg(feature = "native-backend")]
@@ -506,10 +495,7 @@ fn op_allocates_fresh_fixed_layout_object(op: &OpIR) -> bool {
 fn analyze_field_store_modes(
     func_ir: &FunctionIR,
     alias_roots: &BTreeMap<String, String>,
-    int_like_vars: &BTreeSet<String>,
-    bool_like_vars: &BTreeSet<String>,
-    float_like_vars: &BTreeSet<String>,
-    none_like_vars: &BTreeSet<String>,
+    representation_plan: &ScalarRepresentationPlan,
 ) -> BTreeMap<usize, FieldStoreMode> {
     let mut modes = BTreeMap::new();
     let mut direct_object_roots: BTreeSet<String> = BTreeSet::new();
@@ -545,13 +531,8 @@ fn analyze_field_store_modes(
                 continue;
             }
             let offset = op.value.unwrap_or(0);
-            let value_known_non_heap = preanalysis_value_is_known_non_heap(
-                value_name,
-                int_like_vars,
-                bool_like_vars,
-                float_like_vars,
-                none_like_vars,
-            );
+            let value_known_non_heap =
+                preanalysis_value_is_known_non_heap(value_name, representation_plan);
             let slot = (root.clone(), offset);
             let slot_initialized = initialized_slots.contains(&slot);
             let slot_known_non_heap = known_non_heap_slots.contains(&slot);
@@ -638,9 +619,6 @@ fn preanalyze_function_ir(
     let mut exception_label_ids = BTreeSet::new();
     let mut label_positions = Vec::new();
     let const_int_map = crate::build_const_int_map(&func_ir.ops);
-    let (int_like_vars, bool_like_vars, float_like_vars, str_like_vars, none_like_vars) =
-        representation_plan.scalar_name_sets();
-
     for name in &func_ir.params {
         if name != "none" {
             var_names.insert(name.clone());
@@ -1238,14 +1216,7 @@ fn preanalyze_function_ir(
         }
     }
 
-    let field_store_modes = analyze_field_store_modes(
-        func_ir,
-        &alias_roots,
-        &int_like_vars,
-        &bool_like_vars,
-        &float_like_vars,
-        &none_like_vars,
-    );
+    let field_store_modes = analyze_field_store_modes(func_ir, &alias_roots, representation_plan);
     let has_store = func_ir.ops.iter().enumerate().any(|(idx, op)| {
         op.kind == "store" && field_store_modes.get(&idx) != Some(&FieldStoreMode::DirectNonHeap)
     });
@@ -1326,11 +1297,6 @@ fn preanalyze_function_ir(
         const_int_map,
         loop_body_out_vars,
         loop_body_init_vars,
-        int_like_vars,
-        bool_like_vars,
-        float_like_vars,
-        str_like_vars,
-        none_like_vars,
         has_arena_eligible,
         arena_eligible_outs,
         scalar_slot_exclusion_unsafe,
@@ -1640,11 +1606,6 @@ impl SimpleBackend {
             const_int_map: _const_int_map,
             loop_body_out_vars,
             loop_body_init_vars,
-            int_like_vars,
-            bool_like_vars,
-            float_like_vars,
-            str_like_vars,
-            none_like_vars,
             has_arena_eligible,
             arena_eligible_outs: _arena_eligible_outs,
             scalar_slot_exclusion_unsafe,
@@ -1838,7 +1799,7 @@ impl SimpleBackend {
         };
         // Only explicit store-backed join carriers and exception-fragile names
         // use stack slots. Structured phi joins must stay on the SSA path.
-        // Proven-int join slots that have raw_int_shadow Variables are excluded:
+        // Plan-proven raw-int join slots are excluded:
         // their unboxed i64 values are carried correctly via SSA phi, and stack
         // slot load/store + inc_ref/dec_ref is pure overhead for inline values.
         //
@@ -1856,10 +1817,7 @@ impl SimpleBackend {
         // creating massive block parameter lists.
         if scalar_fast_paths_enabled && exception_label_ids.is_empty() && !stateful {
             slot_backed_join_names.retain(|name| {
-                let is_scalar = representation_plan.is_raw_int_carrier_name(name)
-                    || int_like_vars.contains(name)
-                    || float_like_vars.contains(name)
-                    || bool_like_vars.contains(name);
+                let is_scalar = representation_plan.name_is_numeric_scalar(name);
                 let is_safe_to_exclude = is_scalar && !scalar_slot_exclusion_unsafe.contains(name);
                 !is_safe_to_exclude
             });
@@ -2608,8 +2566,6 @@ impl SimpleBackend {
                         &mut sealed_blocks,
                         &vars,
                         representation_plan,
-                        &int_like_vars,
-                        &bool_like_vars,
                         &loop_stack,
                         scalar_fast_paths_enabled,
                         &nbc,
@@ -2700,7 +2656,6 @@ impl SimpleBackend {
                         &vars,
                         representation_plan,
                         &nbc,
-                        &bool_like_vars,
                         local_inc_ref_obj,
                         &mut list_index_fast_paths,
                     );
@@ -2765,11 +2720,6 @@ impl SimpleBackend {
                         &vars,
                         &scalarized_tuples,
                         representation_plan,
-                        &int_like_vars,
-                        &bool_like_vars,
-                        &float_like_vars,
-                        &str_like_vars,
-                        &none_like_vars,
                         &mut list_index_fast_paths,
                         scalar_fast_paths_enabled,
                         local_inc_ref_obj,
@@ -2890,9 +2840,6 @@ impl SimpleBackend {
                         &mut sealed_blocks,
                         &vars,
                         representation_plan,
-                        &int_like_vars,
-                        &float_like_vars,
-                        &bool_like_vars,
                         &loop_stack,
                         scalar_fast_paths_enabled,
                         &nbc,
@@ -2909,8 +2856,6 @@ impl SimpleBackend {
                         &mut sealed_blocks,
                         &vars,
                         representation_plan,
-                        &int_like_vars,
-                        &bool_like_vars,
                         local_inc_ref_obj,
                         scalar_fast_paths_enabled,
                         &nbc,
@@ -3070,7 +3015,6 @@ impl SimpleBackend {
                         &mut sealed_blocks,
                         &vars,
                         representation_plan,
-                        &bool_like_vars,
                         &param_name_set,
                         &first_defined_at,
                         &last_use,
@@ -3297,8 +3241,6 @@ impl SimpleBackend {
                         &mut sealed_blocks,
                         &vars,
                         representation_plan,
-                        &int_like_vars,
-                        &bool_like_vars,
                         &first_defined_at,
                         &last_use,
                         &alias_roots,
@@ -3344,8 +3286,6 @@ impl SimpleBackend {
                         &mut sealed_blocks,
                         &vars,
                         representation_plan,
-                        &int_like_vars,
-                        &bool_like_vars,
                         &last_use,
                         &alias_roots,
                         &exception_label_ids,
@@ -3388,10 +3328,6 @@ impl SimpleBackend {
                         &mut sealed_blocks,
                         &vars,
                         representation_plan,
-                        &int_like_vars,
-                        &float_like_vars,
-                        &bool_like_vars,
-                        &str_like_vars,
                         &param_name_set,
                         &last_use,
                         &alias_roots,
@@ -3453,8 +3389,6 @@ impl SimpleBackend {
                         &mut sealed_blocks,
                         &vars,
                         representation_plan,
-                        &int_like_vars,
-                        &bool_like_vars,
                         &param_name_set,
                         &alias_roots,
                         &last_use,
@@ -4142,6 +4076,7 @@ mod tests {
         preanalyze_function_ir, protect_cleanup_names, switch_to_block_materialized,
         switch_to_block_with_rebind,
     };
+    use crate::repr::ScalarKind;
     use crate::{FunctionIR, OpIR, SimpleBackend, SimpleIR};
     use cranelift_codegen::isa::CallConv;
     use cranelift_codegen::{
@@ -4640,11 +4575,11 @@ mod tests {
             is_extern: false,
         };
 
-        let analysis = preanalyze_for_test(&func, &BTreeMap::new());
+        let plan = ScalarRepresentationPlan::for_function_ir(&func);
 
         assert!(
-            !analysis.int_like_vars.contains("result"),
-            "preanalysis must keep generic runtime results boxed even when type_hint=int",
+            !plan.name_has_scalar_kind("result", ScalarKind::Int),
+            "representation plan must keep generic runtime results boxed even when type_hint=int",
         );
     }
 
@@ -4690,15 +4625,11 @@ mod tests {
             is_extern: false,
         };
 
-        let analysis = preanalyze_for_test(&func, &BTreeMap::new());
+        let plan = ScalarRepresentationPlan::for_function_ir(&func);
 
         for name in ["_bb_arg0", "joined"] {
             assert!(
-                !analysis.bool_like_vars.contains(name)
-                    && !analysis.int_like_vars.contains(name)
-                    && !analysis.float_like_vars.contains(name)
-                    && !analysis.str_like_vars.contains(name)
-                    && !analysis.none_like_vars.contains(name),
+                plan.name_scalar_kind(name).is_none(),
                 "mixed dynamic/scalar join target {name} must stay boxed",
             );
         }
@@ -4765,11 +4696,10 @@ mod tests {
         };
 
         let plan = ScalarRepresentationPlan::for_function_ir(&func);
-        let analysis = preanalyze_for_test(&func, &BTreeMap::new());
 
         assert!(plan.integer_family_names().contains("_v7"));
-        assert!(!analysis.int_like_vars.contains("_v7"));
-        assert!(!analysis.float_like_vars.contains("_v7"));
+        assert!(!plan.name_has_scalar_kind("_v7", ScalarKind::Int));
+        assert!(!plan.name_has_scalar_kind("_v7", ScalarKind::Float));
     }
 
     #[test]
@@ -5805,10 +5735,6 @@ mod tests {
                     kind: "store_var".to_string(),
                     var: Some("_v7".to_string()),
                     args: Some(vec!["v116".to_string()]),
-                    ..OpIR::default()
-                },
-                OpIR {
-                    kind: "loop_continue".to_string(),
                     ..OpIR::default()
                 },
                 OpIR {

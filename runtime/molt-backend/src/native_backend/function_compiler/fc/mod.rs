@@ -44,19 +44,13 @@ pub(in crate::native_backend::function_compiler) fn op_prefers_int_lane(
     scalar_fast_paths_enabled: bool,
     representation_plan: &ScalarRepresentationPlan,
     op: &OpIR,
-    int_like_vars: &BTreeSet<String>,
-    bool_like_vars: &BTreeSet<String>,
 ) -> bool {
-    let name_is_integer_scalar = |name: &str| {
-        int_like_vars.contains(name)
-            || bool_like_vars.contains(name)
-            || representation_plan.is_raw_int_carrier_name(name)
-            || representation_plan.is_bool_unboxed(name)
-    };
-    let op_args_are_integer_scalar = op
-        .args
-        .as_ref()
-        .is_some_and(|args| !args.is_empty() && args.iter().all(|arg| name_is_integer_scalar(arg)));
+    let op_args_are_integer_scalar = op.args.as_ref().is_some_and(|args| {
+        !args.is_empty()
+            && args
+                .iter()
+                .all(|arg| representation_plan.name_is_integer_scalar(arg))
+    });
     scalar_fast_paths_enabled
         && (representation_plan.op_scalar_lane(op) == Some(ScalarKind::Int)
             || (matches!(

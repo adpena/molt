@@ -22,20 +22,10 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
-    int_like_vars: &BTreeSet<String>,
-    float_like_vars: &BTreeSet<String>,
-    bool_like_vars: &BTreeSet<String>,
     loop_stack: &[LoopFrame],
     scalar_fast_paths_enabled: bool,
     nbc: &crate::NanBoxConsts,
 ) {
-    let name_is_numeric_scalar = |name: &str| {
-        int_like_vars.contains(name)
-            || bool_like_vars.contains(name)
-            || float_like_vars.contains(name)
-            || representation_plan.is_raw_int_carrier_name(name)
-            || representation_plan.is_float_unboxed(name)
-    };
     let op_prefers_integer_runtime_lane = |op: &OpIR| {
         scalar_fast_paths_enabled && representation_plan.op_prefers_integer_runtime_lane(op)
     };
@@ -49,11 +39,11 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
         let (Some(lhs), Some(rhs)) = (args.first(), args.get(1)) else {
             return false;
         };
-        let has_float_operand = float_like_vars.contains(lhs)
-            || float_like_vars.contains(rhs)
-            || representation_plan.is_float_unboxed(lhs)
-            || representation_plan.is_float_unboxed(rhs);
-        has_float_operand && name_is_numeric_scalar(lhs) && name_is_numeric_scalar(rhs)
+        let has_float_operand = representation_plan.name_is_float_scalar(lhs)
+            || representation_plan.name_is_float_scalar(rhs);
+        has_float_operand
+            && representation_plan.name_is_numeric_scalar(lhs)
+            && representation_plan.name_is_numeric_scalar(rhs)
     };
     let var_get_boxed_overflow_safe = |module: &mut ObjectModule,
                                        import_ids: &mut BTreeMap<
@@ -106,8 +96,6 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     &mut *sealed_blocks,
                     vars,
                     representation_plan,
-                    int_like_vars,
-                    bool_like_vars,
                     nbc,
                     op.out.as_ref(),
                     &args[0],
@@ -128,8 +116,8 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                 lt_raw_bool = Some(raw_bool);
                 result
             } else if scalar_fast_paths_enabled
-                && float_like_vars.contains(&args[0])
-                && float_like_vars.contains(&args[1])
+                && representation_plan.name_is_float_scalar(&args[0])
+                && representation_plan.name_is_float_scalar(&args[1])
             {
                 // Float-primary operands are raw f64; boxed floats are extracted explicitly.
                 let lf = float_value_for_mixed(
@@ -140,8 +128,6 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     &mut *sealed_blocks,
                     vars,
                     representation_plan,
-                    int_like_vars,
-                    bool_like_vars,
                     nbc,
                     &args[0],
                 );
@@ -153,8 +139,6 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     &mut *sealed_blocks,
                     vars,
                     representation_plan,
-                    int_like_vars,
-                    bool_like_vars,
                     nbc,
                     &args[1],
                 );
@@ -270,8 +254,6 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     &mut *sealed_blocks,
                     vars,
                     representation_plan,
-                    int_like_vars,
-                    bool_like_vars,
                     nbc,
                     op.out.as_ref(),
                     &args[0],
@@ -292,8 +274,8 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                 le_raw_bool = Some(raw_bool);
                 result
             } else if scalar_fast_paths_enabled
-                && float_like_vars.contains(&args[0])
-                && float_like_vars.contains(&args[1])
+                && representation_plan.name_is_float_scalar(&args[0])
+                && representation_plan.name_is_float_scalar(&args[1])
             {
                 // Float-primary operands are raw f64; boxed floats are extracted explicitly.
                 let lf = float_value_for_mixed(
@@ -304,8 +286,6 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     &mut *sealed_blocks,
                     vars,
                     representation_plan,
-                    int_like_vars,
-                    bool_like_vars,
                     nbc,
                     &args[0],
                 );
@@ -317,8 +297,6 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     &mut *sealed_blocks,
                     vars,
                     representation_plan,
-                    int_like_vars,
-                    bool_like_vars,
                     nbc,
                     &args[1],
                 );
@@ -436,8 +414,6 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     &mut *sealed_blocks,
                     vars,
                     representation_plan,
-                    int_like_vars,
-                    bool_like_vars,
                     nbc,
                     op.out.as_ref(),
                     &args[0],
@@ -458,8 +434,8 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                 gt_raw_bool = Some(raw_bool);
                 result
             } else if scalar_fast_paths_enabled
-                && float_like_vars.contains(&args[0])
-                && float_like_vars.contains(&args[1])
+                && representation_plan.name_is_float_scalar(&args[0])
+                && representation_plan.name_is_float_scalar(&args[1])
             {
                 // Float-primary operands are raw f64; boxed floats are extracted explicitly.
                 let lf = float_value_for_mixed(
@@ -470,8 +446,6 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     &mut *sealed_blocks,
                     vars,
                     representation_plan,
-                    int_like_vars,
-                    bool_like_vars,
                     nbc,
                     &args[0],
                 );
@@ -483,8 +457,6 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     &mut *sealed_blocks,
                     vars,
                     representation_plan,
-                    int_like_vars,
-                    bool_like_vars,
                     nbc,
                     &args[1],
                 );
@@ -602,8 +574,6 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     &mut *sealed_blocks,
                     vars,
                     representation_plan,
-                    int_like_vars,
-                    bool_like_vars,
                     nbc,
                     op.out.as_ref(),
                     &args[0],
@@ -624,8 +594,8 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                 ge_raw_bool = Some(raw_bool);
                 result
             } else if scalar_fast_paths_enabled
-                && float_like_vars.contains(&args[0])
-                && float_like_vars.contains(&args[1])
+                && representation_plan.name_is_float_scalar(&args[0])
+                && representation_plan.name_is_float_scalar(&args[1])
             {
                 // Float-primary operands are raw f64; boxed floats are extracted explicitly.
                 let lf = float_value_for_mixed(
@@ -636,8 +606,6 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     &mut *sealed_blocks,
                     vars,
                     representation_plan,
-                    int_like_vars,
-                    bool_like_vars,
                     nbc,
                     &args[0],
                 );
@@ -649,8 +617,6 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     &mut *sealed_blocks,
                     vars,
                     representation_plan,
-                    int_like_vars,
-                    bool_like_vars,
                     nbc,
                     &args[1],
                 );
@@ -770,8 +736,6 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     &mut *sealed_blocks,
                     vars,
                     representation_plan,
-                    int_like_vars,
-                    bool_like_vars,
                     nbc,
                     op.out.as_ref(),
                     &args[0],
@@ -794,8 +758,8 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                 eq_raw_bool = Some(raw_bool);
                 result
             } else if scalar_fast_paths_enabled
-                && float_like_vars.contains(&args[0])
-                && float_like_vars.contains(&args[1])
+                && representation_plan.name_is_float_scalar(&args[0])
+                && representation_plan.name_is_float_scalar(&args[1])
             {
                 // Float-primary operands are raw f64; boxed floats are extracted explicitly.
                 let lf = float_value_for_mixed(
@@ -806,8 +770,6 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     &mut *sealed_blocks,
                     vars,
                     representation_plan,
-                    int_like_vars,
-                    bool_like_vars,
                     nbc,
                     &args[0],
                 );
@@ -819,8 +781,6 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     &mut *sealed_blocks,
                     vars,
                     representation_plan,
-                    int_like_vars,
-                    bool_like_vars,
                     nbc,
                     &args[1],
                 );
@@ -918,8 +878,6 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     &mut *sealed_blocks,
                     vars,
                     representation_plan,
-                    int_like_vars,
-                    bool_like_vars,
                     nbc,
                     op.out.as_ref(),
                     &args[0],
@@ -941,8 +899,8 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                 ne_raw_bool = Some(raw_bool);
                 result
             } else if scalar_fast_paths_enabled
-                && float_like_vars.contains(&args[0])
-                && float_like_vars.contains(&args[1])
+                && representation_plan.name_is_float_scalar(&args[0])
+                && representation_plan.name_is_float_scalar(&args[1])
             {
                 // Float-primary operands are raw f64; boxed floats are extracted explicitly.
                 let lf = float_value_for_mixed(
@@ -953,8 +911,6 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     &mut *sealed_blocks,
                     vars,
                     representation_plan,
-                    int_like_vars,
-                    bool_like_vars,
                     nbc,
                     &args[0],
                 );
@@ -966,8 +922,6 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     &mut *sealed_blocks,
                     vars,
                     representation_plan,
-                    int_like_vars,
-                    bool_like_vars,
                     nbc,
                     &args[1],
                 );

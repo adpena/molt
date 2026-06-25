@@ -2064,8 +2064,45 @@ impl ScalarRepresentationPlan {
         })
     }
 
-    fn name_has_scalar_kind(&self, name: &str, kind: ScalarKind) -> bool {
+    pub fn name_has_scalar_kind(&self, name: &str, kind: ScalarKind) -> bool {
         self.name_scalar_kind(name) == Some(kind)
+    }
+
+    pub fn name_is_integer_scalar(&self, name: &str) -> bool {
+        matches!(
+            self.name_scalar_kind(name),
+            Some(ScalarKind::Int | ScalarKind::Bool)
+        ) || self.is_raw_int_carrier_name(name)
+            || self.is_bool_unboxed(name)
+    }
+
+    pub fn name_is_float_scalar(&self, name: &str) -> bool {
+        self.name_has_scalar_kind(name, ScalarKind::Float) || self.is_float_unboxed(name)
+    }
+
+    pub fn name_is_numeric_scalar(&self, name: &str) -> bool {
+        self.name_is_integer_scalar(name) || self.name_is_float_scalar(name)
+    }
+
+    pub fn name_is_bool_scalar(&self, name: &str) -> bool {
+        self.name_has_scalar_kind(name, ScalarKind::Bool) || self.is_bool_unboxed(name)
+    }
+
+    pub fn name_is_str_scalar(&self, name: &str) -> bool {
+        self.name_has_scalar_kind(name, ScalarKind::Str)
+    }
+
+    pub fn name_is_none_scalar(&self, name: &str) -> bool {
+        self.name_has_scalar_kind(name, ScalarKind::NoneValue)
+    }
+
+    pub fn name_is_non_heap_scalar(&self, name: &str) -> bool {
+        matches!(
+            self.name_scalar_kind(name),
+            Some(ScalarKind::Int | ScalarKind::Bool | ScalarKind::Float | ScalarKind::NoneValue)
+        ) || self.is_raw_int_carrier_name(name)
+            || self.is_bool_unboxed(name)
+            || self.is_float_unboxed(name)
     }
 
     fn compute_scalar_store_targets(

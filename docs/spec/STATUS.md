@@ -1011,7 +1011,13 @@ the implementation. For forward-looking priorities, use
   reference throughout `function_compiler.rs`, `scalar_carriers.rs`, and the
   extracted `fc/*` handler family. The old cloned
   `bool_primary_vars`/`float_primary_vars` side sets and `int_carriers_plan`
-  alias are gone from native backend code. Inside the plan, int carrier
+  alias are gone from native backend code. The broader semantic scalar clones
+  (`int_like_vars`, `bool_like_vars`, `float_like_vars`, `str_like_vars`, and
+  `none_like_vars`) are also gone from native function-codegen production
+  paths; cleanup, guard satisfaction, branch truthiness, heap-store boxing,
+  merge rebinding, direct-field non-heap proofs, and float/int mixed lowering
+  query semantic scalar kind through the same plan reference. Inside the plan,
+  int carrier
   eligibility is projected from the value-keyed TIR representation proof, while
   bool/F64 names still floor to boxed storage and are raised to `Repr::Bool` /
   `Repr::FloatUnboxed` only by the raw-bool/raw-F64 eligibility filters, with

@@ -908,7 +908,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                 op,
                 ContainerStorageKind::FlatListInt,
             ) {
-                // raw_int_shadow fast path for list_int dict_set.
+                // raw-int carrier fast path for list_int dict_set.
                 // Inside loops, use Variable-only shadows (phi-correct).
                 let raw_key_opt = int_raw_value(&mut *builder, vars, representation_plan, &args[1]);
                 let raw_val_opt = int_raw_value(&mut *builder, vars, representation_plan, &args[2]);

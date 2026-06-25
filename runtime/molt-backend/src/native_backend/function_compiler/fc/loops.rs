@@ -41,8 +41,6 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
-    int_like_vars: &BTreeSet<String>,
-    bool_like_vars: &BTreeSet<String>,
     last_use: &BTreeMap<String, usize>,
     alias_roots: &BTreeMap<String, String>,
     exception_label_ids: &BTreeSet<i64>,
@@ -68,11 +66,10 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
     nbc: &crate::NanBoxConsts,
 ) -> OpFlow {
     let ops = &func_ir.ops;
-    let var_is_int = |name: &str| {
-        scalar_fast_paths_enabled
-            && (int_like_vars.contains(name) || representation_plan.is_raw_int_carrier_name(name))
-    };
-    let var_is_bool = |name: &str| scalar_fast_paths_enabled && bool_like_vars.contains(name);
+    let var_is_int =
+        |name: &str| scalar_fast_paths_enabled && representation_plan.name_is_integer_scalar(name);
+    let var_is_bool =
+        |name: &str| scalar_fast_paths_enabled && representation_plan.name_is_bool_scalar(name);
     let var_get_boxed_overflow_safe = |module: &mut ObjectModule,
                                        import_ids: &mut BTreeMap<
         &'static str,
@@ -324,7 +321,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                                 depth -= 1;
                             }
                             "loop_end" => {
-                                // raw_int_shadow preserved across loop iterations (LuaJIT-style)
+                                // raw carrier preserved across loop iterations (LuaJIT-style)
                                 found_backedge = true;
                                 break;
                             }
