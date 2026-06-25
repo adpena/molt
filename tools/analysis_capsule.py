@@ -36,6 +36,7 @@ if str(SRC_ROOT) not in sys.path:
 from molt.compiler_analysis import (  # noqa: E402
     check_compiler_analysis_against_closure,
     summarize_compiler_binary_image_analysis,
+    summarize_tir_fact_graph,
 )
 from tools import binary_size_analysis, fact_graph_dump  # noqa: E402
 
@@ -247,21 +248,12 @@ def _summarize_ir_tir(
         except fact_graph_dump.FactGraphError as exc:
             errors.append(str(exc))
             continue
-        summary = _mapping_or_empty(graph.get("summary"))
         fact_summaries.append(
-            {
-                "path": path,
-                "function": graph.get("function"),
-                "value_count": summary.get("value_count"),
-                "fact_count": summary.get("fact_count"),
-                "edge_count": summary.get("edge_count"),
-                "call_fact_count": summary.get("call_fact_count"),
-                "source_site_value_count": summary.get("source_site_value_count"),
-                "allocation_ownership_fact_count": summary.get(
-                    "allocation_ownership_fact_count"
-                ),
-                "boxed_value_count": len(fact_graph_dump.boxed_rows(graph)),
-            }
+            summarize_tir_fact_graph(
+                path,
+                graph,
+                boxed_value_count=len(fact_graph_dump.boxed_rows(graph)),
+            )
         )
 
     midend_function_count = midend.get("function_count")
