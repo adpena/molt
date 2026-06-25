@@ -569,7 +569,9 @@ pub(in crate::native_backend::function_compiler) fn merge_rebind_storage_for_nam
 
 #[cfg(feature = "native-backend")]
 #[inline]
-pub(in crate::native_backend::function_compiler) fn merge_rebind_storage_clif_type(storage: MergeRebindStorageKind) -> types::Type {
+pub(in crate::native_backend::function_compiler) fn merge_rebind_storage_clif_type(
+    storage: MergeRebindStorageKind,
+) -> types::Type {
     match storage {
         MergeRebindStorageKind::RawF64 => types::F64,
         MergeRebindStorageKind::BoxedI64
@@ -785,7 +787,10 @@ pub(in crate::native_backend::function_compiler) fn append_live_through_params(
 }
 
 #[cfg(feature = "native-backend")]
-pub(in crate::native_backend::function_compiler) fn merge_args_with_live_through(head: Value, live_through: &[LiveThroughValue]) -> Vec<Value> {
+pub(in crate::native_backend::function_compiler) fn merge_args_with_live_through(
+    head: Value,
+    live_through: &[LiveThroughValue],
+) -> Vec<Value> {
     let mut args = Vec::with_capacity(1 + live_through.len());
     args.push(head);
     args.extend(live_through.iter().map(|live| live.value));
