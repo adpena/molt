@@ -4,15 +4,30 @@ use super::super::*;
 /// `op_family::FAMILY_DISPATCH_TABLE`. Mirror the `match op.kind.as_str()` arms below.
 #[cfg(feature = "native-backend")]
 pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] = &[
+    // Canonical attribute-op kinds: the spelling `tir::lower_to_simple::lower_op`
+    // emits for a LoadAttr/StoreAttr/DelAttr that carries no specialized
+    // `_original_kind` — its documented default, the same no-`_original_kind`
+    // fallback every other op family already claims (`index`/`store_index`/
+    // `del_index`/`call`/`call_builtin`). A TIR pass that yields a generic
+    // by-name attribute op produces exactly these (e.g. the cold fallback the
+    // release-fast guard-splitting passes leave when they specialize the
+    // `guarded_field_get`s in `__future__._Feature.__repr__`). rust/luau/llvm
+    // all handle the canonical forms; the native backend must too, or the op
+    // hits the dispatch's loud no-codegen catch-all at user `molt build` time.
+    // Each routes to its `*_generic_obj` arm below (the bits-validating,
+    // tagged-safe, generic-by-name path).
+    "get_attr",
     "get_attr_generic_ptr",
     "get_attr_generic_obj",
     "get_attr_special_obj",
     "get_attr_name",
     "get_attr_name_default",
     "has_attr_name",
+    "set_attr",
     "set_attr_name",
     "set_attr_generic_ptr",
     "set_attr_generic_obj",
+    "del_attr",
     "del_attr_generic_ptr",
     "del_attr_generic_obj",
     "del_attr_name",
@@ -20,7 +35,7 @@ pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] = 
 use super::OpFlow;
 use super::var_get_boxed_overflow_safe_fn;
 
-/// Cranelift codegen handlers for object attribute ops: get (`get_attr_generic_ptr`/`_obj`/`_special_obj`/`_name`/`_name_default`), has (`has_attr_name`), set (`set_attr_name`/`_generic_ptr`/`_generic_obj`), and del (`del_attr_generic_ptr`/`_obj`/`_name`).
+/// Cranelift codegen handlers for object attribute ops: get (`get_attr` (canonical)/`get_attr_generic_ptr`/`_obj`/`_special_obj`/`_name`/`_name_default`), has (`has_attr_name`), set (`set_attr` (canonical)/`set_attr_name`/`_generic_ptr`/`_generic_obj`), and del (`del_attr` (canonical)/`del_attr_generic_ptr`/`_obj`/`_name`). The canonical `get_attr`/`set_attr`/`del_attr` — `tir::lower_to_simple`'s no-`_original_kind` default — route to the matching `*_generic_obj` arm.
 ///
 /// Extracted verbatim from `compile_func_inner`'s per-op dispatch (M1).
 /// Each arm body is byte-for-byte identical to the original; only the access
@@ -200,7 +215,7 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "get_attr_generic_obj" => {
+        "get_attr" | "get_attr_generic_obj" => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let obj = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -569,7 +584,7 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "set_attr_generic_obj" => {
+        "set_attr" | "set_attr_generic_obj" => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let obj = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -685,7 +700,7 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "del_attr_generic_obj" => {
+        "del_attr" | "del_attr_generic_obj" => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let obj = var_get_boxed_overflow_safe(
                 &mut *module,
