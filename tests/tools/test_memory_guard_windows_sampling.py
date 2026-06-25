@@ -373,6 +373,24 @@ def test_windows_codex_and_claude_processes_are_host_control_plane() -> None:
                 r"\app\resources\codex-app-server.exe --project C:\repo\molt"
             ),
         ),
+        module.ProcessSample(
+            pid=26,
+            ppid=1,
+            rss_kb=1,
+            command="/usr/bin/node /opt/homebrew/bin/codex",
+        ),
+        module.ProcessSample(
+            pid=27,
+            ppid=1,
+            rss_kb=1,
+            command="npx @openai/codex",
+        ),
+        module.ProcessSample(
+            pid=28,
+            ppid=1,
+            rss_kb=1,
+            command="powershell.exe -Command codex",
+        ),
     ]
 
     assert all(module.is_host_control_plane_process(sample) for sample in samples)

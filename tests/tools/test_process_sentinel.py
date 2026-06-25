@@ -757,7 +757,7 @@ def test_process_groups_exclude_external_codex_cli_descendant_but_keep_owned_chi
             ppid=1,
             pgid=100,
             rss_kb=500_000,
-            command="codex --yolo",
+            command="/usr/local/bin/node /opt/homebrew/bin/codex",
         ),
         101: module.memory_guard.ProcessSample(
             pid=101,
