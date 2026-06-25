@@ -96,6 +96,9 @@ mod tests {
                         s_value: Some("opaque_helper".to_string()),
                         args: Some(Vec::new()),
                         out: Some("result".to_string()),
+                        source_line: Some(3),
+                        col_offset: Some(4),
+                        end_col_offset: Some(18),
                         ..OpIR::default()
                     },
                     OpIR {
@@ -104,7 +107,7 @@ mod tests {
                         ..OpIR::default()
                     },
                 ],
-                source_file: None,
+                source_file: Some("app.py".to_string()),
                 is_extern: false,
             }],
             profile: None,
@@ -134,7 +137,7 @@ mod tests {
         let graph: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&output).expect("read graph"))
                 .expect("valid graph json");
-        assert_eq!(graph["schema_version"], 2);
+        assert_eq!(graph["schema_version"], 3);
         assert_eq!(graph["kind"], "molt_tir_fact_graph");
         assert_eq!(graph["function"], "molt_main");
         assert_eq!(graph["summary"]["call_fact_count"], 6);
@@ -151,6 +154,18 @@ mod tests {
         assert!(
             call_target_from_module_analysis,
             "fact graph must serialize the module-analysis call target, not a local fallback: {graph}"
+        );
+        let sourced_call_fact = graph["values"]
+            .as_array()
+            .expect("values array")
+            .iter()
+            .flat_map(|value| value["facts"].as_array().expect("facts array"))
+            .any(|fact| {
+                fact["kind"] == "call.target" && fact["source_site"]["source_file"] == "app.py"
+            });
+        assert!(
+            sourced_call_fact,
+            "fact graph source sites must carry FunctionIR.source_file: {graph}"
         );
 
         let _ = std::fs::remove_dir_all(root);
