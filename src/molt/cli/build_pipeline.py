@@ -9,7 +9,7 @@ from molt.cli import factgraph as _factgraph
 from molt.cli.backend_daemon_paths import (
     _unix_socket_path_exceeds_limit as _unix_socket_path_exceeds_limit,
 )
-from molt.cli.binary_image_analysis import _backend_ir_binary_image_analysis_payload
+from molt.compiler_analysis import backend_ir_binary_image_analysis_payload
 from molt.cli.backend_diagnostics import (
     _BACKEND_DIAGNOSTIC_ENV_KNOBS as _BACKEND_DIAGNOSTIC_ENV_KNOBS,
     _PYTHON_WARNING_RE as _PYTHON_WARNING_RE,
@@ -66,6 +66,7 @@ from molt.cli.mlir_backend import (
     _run_mlir_backend_pipeline,
 )
 
+
 def _session_target_dir(project_root: Path) -> Path | None:
     """Return a per-session CARGO_TARGET_DIR, or None for default.
 
@@ -78,8 +79,6 @@ def _session_target_dir(project_root: Path) -> Path | None:
     if sid is None:
         return None
     return project_root / "target" / "sessions" / _session_artifact_component(sid)
-
-
 
 
 def _run_build_pipeline(
@@ -159,38 +158,40 @@ def _run_build_pipeline(
             artifacts_root,
             _native_artifact_plan,
         ) = prepared_frontend_pipeline_bundle
-        prepared_backend_ir, prepared_backend_ir_error = _backend_ir._prepare_backend_ir(
-            entry_module=resolved_build_entry.entry_module,
-            module_graph=module_graph,
-            parse_codec=parse_codec,
-            type_hint_policy=type_hint_policy,
-            fallback_policy=fallback_policy,
-            type_facts=type_facts,
-            enable_phi=enable_phi,
-            known_modules=known_modules,
-            known_classes=known_classes,
-            stdlib_allowlist=stdlib_allowlist,
-            known_func_defaults=known_func_defaults,
-            known_func_kinds=known_func_kinds,
-            module_chunking=module_chunking,
-            module_chunk_max_ops=module_chunk_max_ops,
-            optimization_profile=profile,
-            pgo_hot_function_names=prepared_build_config.pgo_hot_function_names,
-            frontend_phase_timeout=prepared_build_config.frontend_phase_timeout,
-            integration_state=integration_state,
-            diagnostics_state=diagnostics_state,
-            record_frontend_timing=record_frontend_timing,
-            fail=_fail,
-            json_output=json_output,
-            module_order=module_order,
-            runtime_import_dispatch_roots=runtime_import_dispatch_roots,
-            generated_module_source_paths=generated_module_source_paths,
-            spawn_enabled=spawn_enabled,
-            pgo_profile_summary=prepared_build_config.pgo_profile_summary,
-            runtime_feedback_summary=prepared_build_config.runtime_feedback_summary,
-            emit_ir_path=output_layout.emit_ir_path,
-            target_python=prepared_build_config.target_python,
-            stdlib_profile=stdlib_profile,
+        prepared_backend_ir, prepared_backend_ir_error = (
+            _backend_ir._prepare_backend_ir(
+                entry_module=resolved_build_entry.entry_module,
+                module_graph=module_graph,
+                parse_codec=parse_codec,
+                type_hint_policy=type_hint_policy,
+                fallback_policy=fallback_policy,
+                type_facts=type_facts,
+                enable_phi=enable_phi,
+                known_modules=known_modules,
+                known_classes=known_classes,
+                stdlib_allowlist=stdlib_allowlist,
+                known_func_defaults=known_func_defaults,
+                known_func_kinds=known_func_kinds,
+                module_chunking=module_chunking,
+                module_chunk_max_ops=module_chunk_max_ops,
+                optimization_profile=profile,
+                pgo_hot_function_names=prepared_build_config.pgo_hot_function_names,
+                frontend_phase_timeout=prepared_build_config.frontend_phase_timeout,
+                integration_state=integration_state,
+                diagnostics_state=diagnostics_state,
+                record_frontend_timing=record_frontend_timing,
+                fail=_fail,
+                json_output=json_output,
+                module_order=module_order,
+                runtime_import_dispatch_roots=runtime_import_dispatch_roots,
+                generated_module_source_paths=generated_module_source_paths,
+                spawn_enabled=spawn_enabled,
+                pgo_profile_summary=prepared_build_config.pgo_profile_summary,
+                runtime_feedback_summary=prepared_build_config.runtime_feedback_summary,
+                emit_ir_path=output_layout.emit_ir_path,
+                target_python=prepared_build_config.target_python,
+                stdlib_profile=stdlib_profile,
+            )
         )
         if prepared_backend_ir_error is not None:
             return prepared_backend_ir_error
@@ -198,7 +199,7 @@ def _run_build_pipeline(
         if prepared_build_preamble.diagnostics_enabled:
             record_binary_image_analysis(
                 "backend_ir",
-                _backend_ir_binary_image_analysis_payload(prepared_backend_ir.ir),
+                backend_ir_binary_image_analysis_payload(prepared_backend_ir.ir),
             )
         return _run_mlir_backend_pipeline(
             ir=prepared_backend_ir.ir,

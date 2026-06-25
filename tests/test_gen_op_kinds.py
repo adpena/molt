@@ -4240,7 +4240,7 @@ def test_generated_python_canonicalizes_rc_aliases_for_analysis() -> None:
 
 
 def test_binary_image_analysis_consumes_generated_allocation_sets() -> None:
-    analyzer = (ROOT / "src/molt/cli/binary_image_analysis.py").read_text(
+    analyzer = (ROOT / "src/molt/compiler_analysis/backend_ir.py").read_text(
         encoding="utf-8"
     )
 

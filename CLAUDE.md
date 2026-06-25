@@ -244,6 +244,13 @@ portable IR, not native codegen; release-output wins but dev unusable → profil
 CPython-red benchmarks; PyPy/Codon deltas known; regressions zero or explicitly tracked with
 owner and structural fix."
 
+**Automated god-file ratchet:** `tools/structural_audit.py --check` is the
+default detector for god files, duplicate authorities, and structural-debt
+growth, and `tools/ci_gate.py --tier 1` runs it by default. Do not create or
+grow monoliths as an implementation shortcut. Split authority into coherent
+modules/packages, and never repin `tools/structural_audit_baseline.json` without
+explicit maintainer acceptance plus a retirement plan.
+
 ## Council Operating Doctrine (2026-06-08, binding)
 
 **Ratified fork resolutions** (full record: memory project_council_decisions_20260608):

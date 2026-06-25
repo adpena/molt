@@ -257,6 +257,21 @@ def test_ci_gate_tier1_includes_perf_scoreboard_contract() -> None:
     assert str(module.TESTS / "tools" / "test_perf_scoreboard.py") in check.cmd
 
 
+def test_ci_gate_tier1_includes_structural_audit_ratchet() -> None:
+    module = _load_ci_gate()
+
+    checks = {check.name: check for check in module._build_checks()}
+    check = checks["structural-audit-ratchet"]
+
+    assert check.tier == 1
+    assert check.required is True
+    assert check.needs_pytest is False
+    assert check.needs_rust is False
+    assert check.timeout == 60
+    assert str(module.TOOLS / "structural_audit.py") in check.cmd
+    assert "--check" in check.cmd
+
+
 def test_run_check_acquires_compile_slot_for_rust_checks(monkeypatch) -> None:
     module = _load_ci_gate()
     slot_calls: list[dict[str, object]] = []

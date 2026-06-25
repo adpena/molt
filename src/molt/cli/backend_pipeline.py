@@ -9,7 +9,7 @@ from molt.cli import backend_output_pipeline as _backend_output_pipeline
 from molt.cli import factgraph as _factgraph
 from molt.cli import frontend_pipeline as _frontend_pipeline
 from molt.cli.backend_execution import _write_backend_ir_lease
-from molt.cli.binary_image_analysis import _backend_ir_binary_image_analysis_payload
+from molt.compiler_analysis import backend_ir_binary_image_analysis_payload
 from molt.cli.command_runtime import _run_subprocess_captured_to_tempfiles
 from molt.cli.config_resolution import ENTRY_OVERRIDE_ENV
 from molt.cli.external_native import _external_native_artifact_output_custody_error
@@ -129,7 +129,7 @@ def _run_backend_pipeline(
     if prepared_build_preamble.diagnostics_enabled:
         record_binary_image_analysis(
             "backend_ir",
-            _backend_ir_binary_image_analysis_payload(ir),
+            backend_ir_binary_image_analysis_payload(ir),
         )
     resolved_modules = frozenset(module_graph)
     backend_ir_file_path: Path | None = None
@@ -147,36 +147,38 @@ def _run_backend_pipeline(
             with contextlib.suppress(OSError):
                 backend_ir_file_path.unlink()
 
-    prepared_backend_setup, prepared_backend_setup_error = _backend_compile._prepare_backend_setup(
-        is_rust_transpile=output_layout.is_rust_transpile,
-        is_luau_transpile=output_layout.is_luau_transpile,
-        is_wasm=output_layout.is_wasm,
-        emit_mode=output_layout.emit_mode,
-        molt_root=prepared_build_roots.molt_root,
-        runtime_cargo_profile=prepared_build_config.runtime_cargo_profile,
-        target_triple=output_layout.target_triple,
-        json_output=json_output,
-        cargo_timeout=prepared_build_config.cargo_timeout,
-        target=target,
-        profile=profile,
-        backend_cargo_profile=prepared_build_config.backend_cargo_profile,
-        linked=output_layout.linked,
-        project_root=prepared_build_roots.project_root,
-        cache_dir=cache_dir,
-        output_artifact=output_layout.output_artifact,
-        warnings=prepared_build_preamble.warnings,
-        cache=cache,
-        ir=ir,
-        entry_module=resolved_build_entry.entry_module,
-        module_graph_metadata=prepared_frontend_run_ticket.frontend_layer_execution_context.module_graph_metadata,
-        target_python=prepared_build_config.target_python,
-        stdlib_profile=stdlib_profile,
-        native_artifact_plan=native_artifact_plan,
-        resolved_modules=resolved_modules,
-        capabilities_list=prepared_build_config.capabilities_list,
-        capability_profiles=prepared_build_config.capability_profiles,
-        manifest_env_vars=prepared_build_config.manifest_env_vars,
-        capability_config_digest=prepared_build_config.capability_config_cache_digest,
+    prepared_backend_setup, prepared_backend_setup_error = (
+        _backend_compile._prepare_backend_setup(
+            is_rust_transpile=output_layout.is_rust_transpile,
+            is_luau_transpile=output_layout.is_luau_transpile,
+            is_wasm=output_layout.is_wasm,
+            emit_mode=output_layout.emit_mode,
+            molt_root=prepared_build_roots.molt_root,
+            runtime_cargo_profile=prepared_build_config.runtime_cargo_profile,
+            target_triple=output_layout.target_triple,
+            json_output=json_output,
+            cargo_timeout=prepared_build_config.cargo_timeout,
+            target=target,
+            profile=profile,
+            backend_cargo_profile=prepared_build_config.backend_cargo_profile,
+            linked=output_layout.linked,
+            project_root=prepared_build_roots.project_root,
+            cache_dir=cache_dir,
+            output_artifact=output_layout.output_artifact,
+            warnings=prepared_build_preamble.warnings,
+            cache=cache,
+            ir=ir,
+            entry_module=resolved_build_entry.entry_module,
+            module_graph_metadata=prepared_frontend_run_ticket.frontend_layer_execution_context.module_graph_metadata,
+            target_python=prepared_build_config.target_python,
+            stdlib_profile=stdlib_profile,
+            native_artifact_plan=native_artifact_plan,
+            resolved_modules=resolved_modules,
+            capabilities_list=prepared_build_config.capabilities_list,
+            capability_profiles=prepared_build_config.capability_profiles,
+            manifest_env_vars=prepared_build_config.manifest_env_vars,
+            capability_config_digest=prepared_build_config.capability_config_cache_digest,
+        )
     )
     if prepared_backend_setup_error is not None:
         return prepared_backend_setup_error
