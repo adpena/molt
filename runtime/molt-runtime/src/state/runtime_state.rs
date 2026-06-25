@@ -702,14 +702,24 @@ pub extern "C" fn molt_runtime_exit(code_bits: u64) -> u64 {
                 let state = unsafe { &*ptr };
                 let py = gil.token();
                 crate::object::ops::profile_dump_with_gil(&py);
-                // RC drop-insertion substrate (design 20): the MOLT_ASSERT_NO_LEAK
-                // gate. Runs BEFORE teardown (teardown frees the immortal roots,
-                // which would zero `live` and hide a real leak). When more than
-                // EXPECTED_LIVE_OBJECTS objects survive, print the per-type
-                // breakdown and abort with a non-zero code so the differential
-                // harness catches the regression.
+                // RC drop-insertion substrate (design 20). Two distinct gates for
+                // two distinct properties:
+                //
+                // 1. Pre-teardown RUNAWAY guard. Runs here, while the full working
+                //    set is resident — a coarse peak-live/OOM canary at
+                //    EXPECTED_LIVE_OBJECTS (a reachable high-water-mark, not a leak;
+                //    teardown below reclaims every reachable acyclic graph).
                 crate::object::ops::assert_no_leak_at_exit(&py);
                 runtime_teardown_for_process_exit(&py, state);
+                // 2. Post-teardown TRUE-LEAK gauge (ownership_lattice_phase0.md
+                //    §2.4). Teardown above has reclaimed every reachable acyclic
+                //    graph (incl. user __main__ globals via modules_clear_runtime_state),
+                //    so the only survivors now are the immortal floor + genuine
+                //    leaks — unreachable reference cycles, molt's actual leak class
+                //    (RC-only, no cycle collector). In exact mode this catches a
+                //    cycle leak the pre-teardown ceiling launders. GIL still held;
+                //    reads crate-static counters only, never touches `state`.
+                crate::object::ops::assert_no_true_leak_post_teardown(&py);
             }
         }
         drop(gil);
@@ -813,6 +823,11 @@ pub extern "C" fn molt_runtime_init() -> u64 {
     }
     trace_runtime_init("capabilities");
 
+    // Phase-0 exact-survivor leak gauge: snapshot the immortal-survivor floor |S|
+    // NOW, at the bootstrap->user-code boundary, before user main allocates.
+    // assert_no_leak_at_exit subtracts this so a BOUNDED leak (not just a runaway)
+    // is caught under MOLT_LEAK_TOLERANCE exact mode (ownership_lattice_phase0.md).
+    super::metrics::snapshot_live_floor();
     trace_runtime_init("ok");
     1
 }
