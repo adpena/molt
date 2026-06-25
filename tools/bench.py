@@ -75,6 +75,7 @@ from bench_metadata import benchmark_reference_contract  # noqa: E402
 import harness_memory_guard  # noqa: E402
 import memory_guard  # noqa: E402
 import bench_suites  # noqa: E402
+import perf_authority  # noqa: E402
 from molt import backend_daemon_custody as daemon_custody  # noqa: E402
 from molt.dx import (  # noqa: E402
     CANONICAL_RUN_ENV_KEYS,
@@ -1764,10 +1765,12 @@ def _bench_one(
             )
     molt_failure_fields = _molt_failure_json_fields(molt_failure)
     pypy_time = results.get("pypy") if runtime_ok.get("pypy", False) else None
+    # Route through the single authority guard: a missing/None/non-positive
+    # molt_time (build failure, daemon crash, runaway) yields None - NEVER a
+    # finite ratio. A non-ok molt run must not produce a speedup even if a
+    # stale molt_time lingered.
     speedup = (
-        (cpython_time / molt_time)
-        if (cpython_time is not None and molt_ok and molt_time > 0)
-        else None
+        perf_authority.safe_speedup(cpython_time, molt_time) if molt_ok else None
     )
     ratio = (
         molt_time / cpython_time
@@ -2290,10 +2293,21 @@ def main():
         load_avg = None
 
     failure_details = _molt_failure_detail_records(results)
+    # bench.py is a NON-CANONICAL lane (daemon batch builder). Stamp every
+    # emitted board so its numbers self-identify and are never cited as the
+    # contract - the only citable perf source is perf_scoreboard.py
+    # --profile release-fast. The actual cargo profile is recorded honestly:
+    # the CLI "release" value maps to the release-fast cargo profile.
+    _measured_profile = "release-fast" if args.molt_profile == "release" else args.molt_profile
     payload = {
         "schema_version": 1,
         "created_at": dt.datetime.now(dt.timezone.utc).isoformat(),
         "git_rev": _git_rev(),
+        "provenance": perf_authority.non_canonical_provenance(
+            profile=_measured_profile,
+            source="tools/bench.py",
+            git_rev=_git_rev(),
+        ),
         "super_run": args.super,
         "samples": samples,
         "warmup": warmup,

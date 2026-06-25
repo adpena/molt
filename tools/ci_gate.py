@@ -262,10 +262,19 @@ def _build_checks() -> list[Check]:
                 str(TESTS / "tools" / "test_pass_delta_dashboard.py"),
                 str(TESTS / "tools" / "test_perf_schema.py"),
                 str(TESTS / "tools" / "test_perf_scoreboard.py"),
+                str(TESTS / "tools" / "test_perf_authority.py"),
                 "-q",
             ),
             timeout=120,
             needs_pytest=True,
+        )
+    )
+    checks.append(
+        Check(
+            name="perf-doc-freshness",
+            tier=1,
+            cmd=_uv_run(str(TOOLS / "check_perf_freshness.py")),
+            timeout=60,
         )
     )
     checks.append(

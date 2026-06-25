@@ -1,3 +1,19 @@
+<!-- PERF-AUTHORITY:stale -->
+> **STALE PERF SNAPSHOT - NOT AUTHORITATIVE.**
+>
+> The ONLY citable perf source of truth is
+> `tools/perf_scoreboard.py --profile release-fast --classify` (release-fast,
+> cold+warm, quiescent, with a git-ancestry provenance check). This file is a
+> 2026-03-20 triage snapshot kept for historical context only. Its `0.01x` /
+> sub-1.0x cells reflect that day's tree and harness, NOT the current engine -
+> several were measurement artifacts or have since been fixed (e.g. the
+> fib/locals-dict regression is fixed at
+> `src/molt/frontend/__init__.py`). Do NOT rank or cite these numbers.
+> See `tools/PERF_AUTHORITY.md`.
+>
+> - generated_at: `2026-03-20`
+> - git_rev: `72e5368164a59fd7cedb6073af82fa2796a6430a`
+
 # Benchmark Triage - 2026-03-20
 
 ## Summary
