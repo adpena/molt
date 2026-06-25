@@ -383,6 +383,32 @@ def _ancestor_pids(
     return _process_model.ancestor_pids(samples, pid)
 
 
+def host_control_plane_ancestor_pids(
+    samples: Mapping[int, ProcessSample],
+    pid: int | None,
+    *,
+    include_self: bool = False,
+) -> set[int]:
+    return _process_model.host_control_plane_ancestor_pids(
+        samples,
+        pid,
+        include_self=include_self,
+    )
+
+
+def has_host_control_plane_ancestor(
+    samples: Mapping[int, ProcessSample],
+    pid: int | None,
+    *,
+    include_self: bool = False,
+) -> bool:
+    return _process_model.has_host_control_plane_ancestor(
+        samples,
+        pid,
+        include_self=include_self,
+    )
+
+
 def protected_process_group_ids(
     samples: Mapping[int, ProcessSample],
     *,
@@ -593,11 +619,12 @@ def _terminate_single_pid(pid: int, *, grace: float) -> bool:
         return True
     samples = sample_processes()
     sample = samples.get(pid)
-    if sample is not None:
-        if is_host_control_plane_process(sample):
-            return True
-        if _sample_pgid(sample) in _current_protected_process_group_ids(samples):
-            return True
+    if sample is None:
+        return True
+    if is_host_control_plane_process(sample):
+        return True
+    if _sample_pgid(sample) in _current_protected_process_group_ids(samples):
+        return True
     try:
         os.kill(pid, signal.SIGTERM)
     except KeyboardInterrupt:
@@ -934,6 +961,8 @@ def terminate_watched_processes(
         else:
             if root_pid == os.getpid():
                 result = "skipped_guard_process"
+            elif root_sample is None:
+                result = "skipped_missing_identity"
             elif root_sample is not None and is_host_control_plane_process(root_sample):
                 result = "skipped_host_control_plane"
             elif root_sample is not None and _sample_pgid(root_sample) in protected_pgids:
@@ -986,11 +1015,6 @@ def terminate_watched_processes(
                 continue
             identity = observed_identities.get(pid)
             if identity is None:
-                if pid == root_pid and root_owned:
-                    actions.append(_send_pid_signal_action(pid, signal.SIGTERM))
-                    time.sleep(max(0.0, grace))
-                    actions.append(_send_pid_signal_action(pid, fallback_kill_signal()))
-                    continue
                 actions.append(
                     _termination_action(
                         target_kind="process",
@@ -1011,9 +1035,6 @@ def terminate_watched_processes(
                 remaining_pids.add(pid)
         for pid in sorted(remaining_pids, reverse=True):
             identity = observed_identities.get(pid)
-            if identity is None and pid == root_pid and root_owned:
-                actions.append(_send_pid_signal_action(pid, fallback_kill_signal()))
-                continue
             actions.append(
                 _send_pid_signal_if_identity_action(
                     pid,

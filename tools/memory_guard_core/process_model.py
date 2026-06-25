@@ -347,6 +347,40 @@ def is_host_control_plane_process(sample: ProcessSample) -> bool:
     )
 
 
+def host_control_plane_ancestor_pids(
+    samples: Mapping[int, ProcessSample],
+    pid: int | None,
+    *,
+    include_self: bool = False,
+) -> set[int]:
+    ancestors = ancestor_pids(samples, pid)
+    if not include_self and pid is not None:
+        ancestors.discard(pid)
+    return {
+        ancestor
+        for ancestor in ancestors
+        if (
+            sample := samples.get(ancestor)
+        ) is not None
+        and is_host_control_plane_process(sample)
+    }
+
+
+def has_host_control_plane_ancestor(
+    samples: Mapping[int, ProcessSample],
+    pid: int | None,
+    *,
+    include_self: bool = False,
+) -> bool:
+    return bool(
+        host_control_plane_ancestor_pids(
+            samples,
+            pid,
+            include_self=include_self,
+        )
+    )
+
+
 def ancestor_pids(
     samples: Mapping[int, ProcessSample],
     pid: int | None,
@@ -419,7 +453,7 @@ def root_pid_is_kill_eligible(
         return False
     sample = samples.get(root_pid)
     if sample is None:
-        return root_owned
+        return False
     return (
         sample_pgid_or_pid(sample) not in protected_pgids
         and not is_host_control_plane_process(sample)
@@ -432,12 +466,14 @@ def filter_protected_watched_pids(
     *,
     protected_pgids: set[int],
 ) -> set[int]:
-    if not protected_pgids:
-        return watched
     filtered: set[int] = set()
     for pid in watched:
         sample = samples.get(pid)
-        if sample is not None and sample_pgid_or_pid(sample) in protected_pgids:
+        if sample is None:
+            continue
+        if is_host_control_plane_process(sample):
+            continue
+        if sample_pgid_or_pid(sample) in protected_pgids:
             continue
         filtered.add(pid)
     return filtered
