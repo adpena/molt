@@ -11,6 +11,7 @@ import pytest
 
 import molt.cli as cli
 from molt.cli import backend_binary as cli_backend_binary
+from molt.cli import backend_cache_setup as cli_backend_cache_setup
 from molt.cli import build_pipeline as cli_build_pipeline
 from molt.cli import build_inputs as cli_build_inputs
 from tests.cli.process_guard import run_cli_test_process
@@ -27,7 +28,7 @@ def _cache_variant(
     *,
     codegen_env: str = "codegen=v1",
 ) -> str:
-    return cli_build_pipeline._build_cache_variant(
+    return cli_backend_cache_setup._build_cache_variant(
         profile="dev",
         runtime_cargo="dev-fast",
         backend_cargo="dev-fast",
@@ -253,7 +254,7 @@ def test_shared_stdlib_cache_key_changes_with_capability_config() -> None:
         capability_profiles=["fs"],
         manifest_env_vars={"MOLT_CAPABILITIES": "fs.read"},
     )
-    variant_with_caps = cli_build_pipeline._build_cache_variant(
+    variant_with_caps = cli_backend_cache_setup._build_cache_variant(
         profile="dev",
         runtime_cargo="dev-fast",
         backend_cargo="dev-fast",
@@ -338,11 +339,11 @@ def test_prepare_backend_cache_setup_threads_capability_config_to_stdlib_key(
         stdlib_profile="micro",
     )
 
-    setup_base = cli_build_pipeline._prepare_backend_cache_setup(
+    setup_base = cli_backend_cache_setup._prepare_backend_cache_setup(
         output_artifact=tmp_path / "base.o",
         **common,
     )
-    setup_caps = cli_build_pipeline._prepare_backend_cache_setup(
+    setup_caps = cli_backend_cache_setup._prepare_backend_cache_setup(
         output_artifact=tmp_path / "caps.o",
         capabilities_list=["fs.read"],
         capability_profiles=["fs"],
@@ -392,12 +393,12 @@ def test_prepare_backend_cache_setup_threads_ambient_capability_env_to_stdlib_ke
     )
 
     monkeypatch.delenv("MOLT_CAPABILITIES", raising=False)
-    setup_without_env = cli_build_pipeline._prepare_backend_cache_setup(
+    setup_without_env = cli_backend_cache_setup._prepare_backend_cache_setup(
         output_artifact=tmp_path / "without-env.o",
         **common,
     )
     monkeypatch.setenv("MOLT_CAPABILITIES", "fs.read,fs.write,env.read")
-    setup_with_env = cli_build_pipeline._prepare_backend_cache_setup(
+    setup_with_env = cli_backend_cache_setup._prepare_backend_cache_setup(
         output_artifact=tmp_path / "with-env.o",
         **common,
     )
