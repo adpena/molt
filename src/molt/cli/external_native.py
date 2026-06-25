@@ -18,7 +18,7 @@ from molt.cli.models import (
     _ImportAdmissionPolicy,
     _StagedExternalPackageNativeArtifact,
 )
-from molt.cli.module_graph import _case_exact_file
+from molt.cli.module_resolution import _case_exact_file
 from molt.cli.output import CliFailure as _CliFailure
 from molt.cli.output import fail as _fail
 

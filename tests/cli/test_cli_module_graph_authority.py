@@ -7,12 +7,9 @@ from molt.cli import module_graph
 from molt.cli import wrapper_build
 
 _MODULE_GRAPH_CORE_NAMES = (
-    "_ModuleResolutionCache",
     "ModuleSyntaxErrorInfo",
     "_build_module_graph_metadata",
     "_collect_package_parents",
-    "_resolve_module_path",
-    "_resolve_module_path_parts",
     "_collect_imports",
     "_module_dependencies",
     "_module_dependencies_from_imports",
@@ -38,18 +35,14 @@ _MODULE_GRAPH_CORE_NAMES = (
     "_read_persisted_import_scan",
     "_read_persisted_module_graph",
     "_tree_uses_runtime_import_protocol",
-    "_stdlib_root_path",
     "_write_persisted_import_scan",
     "_write_persisted_module_graph",
 )
 
 _MODULE_GRAPH_CORE_DEFINITIONS = (
-    "class _ModuleResolutionCache",
     "class ModuleSyntaxErrorInfo",
     "def _build_module_graph_metadata(",
     "def _collect_package_parents(",
-    "def _resolve_module_path(",
-    "def _resolve_module_path_parts(",
     "def _collect_imports(",
     "def _module_dependencies(",
     "def _module_dependencies_from_imports(",
@@ -76,7 +69,6 @@ _MODULE_GRAPH_CORE_DEFINITIONS = (
     "def _read_persisted_import_scan(",
     "def _read_persisted_module_graph(",
     "def _tree_uses_runtime_import_protocol(",
-    "def _stdlib_root_path(",
     "def _write_persisted_import_scan(",
     "def _write_persisted_module_graph(",
 )

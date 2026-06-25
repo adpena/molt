@@ -28,7 +28,6 @@ from molt.cli.module_cache import (
 )
 from molt.cli.module_graph import (
     ModuleSyntaxErrorInfo,
-    _ModuleResolutionCache,
     _analyze_module_schedule,
     _apply_dead_module_elimination,
     _build_module_graph_metadata,
@@ -37,6 +36,7 @@ from molt.cli.module_graph import (
     _module_dependencies_from_imports,
     _prepare_entry_module_graph,
 )
+from molt.cli.module_resolution import _ModuleResolutionCache
 from molt.cli.module_source import _ModuleSourceCatalog, _ModuleSourceLease
 from molt.cli.models import (
     BuildProfile,
