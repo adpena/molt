@@ -74,6 +74,10 @@ use std::collections::{HashMap, HashSet};
 use crate::tir::blocks::{BlockId, LoopBreakKind, LoopRole, Terminator};
 use crate::tir::dominators::{self, CfgEdgePolicy};
 use crate::tir::function::TirFunction;
+use crate::tir::op_kinds_generated::{
+    CountedLoopComparisonRole, opcode_counted_loop_comparison_role_table,
+    opcode_counted_loop_inverted_comparison_table,
+};
 use crate::tir::ops::{AttrValue, OpCode};
 use crate::tir::values::ValueId;
 
@@ -271,17 +275,16 @@ pub fn recognize_counted_loop(func: &TirFunction, header: BlockId) -> Option<Cou
         trace!("no op defines the cond {:?}", cmp_cond);
         return None;
     };
-    let cmp_kind = match cmp_op.opcode {
-        OpCode::Lt | OpCode::Le | OpCode::Gt | OpCode::Ge => cmp_op.opcode,
-        _ => {
-            trace!("cond op is {:?}, not a comparison", cmp_op.opcode);
-            return None;
-        }
-    };
+    let cmp_role = opcode_counted_loop_comparison_role_table(cmp_op.opcode);
+    if !cmp_role.is_ordered() {
+        trace!("cond op is {:?}, not a comparison", cmp_op.opcode);
+        return None;
+    }
     let cmp_kind = match cmp_polarity {
-        CmpPolarity::AsWritten => cmp_kind,
-        CmpPolarity::Inverted => invert_comparison(cmp_kind)?,
+        CmpPolarity::AsWritten => cmp_op.opcode,
+        CmpPolarity::Inverted => opcode_counted_loop_inverted_comparison_table(cmp_op.opcode)?,
     };
+    let cmp_role = opcode_counted_loop_comparison_role_table(cmp_kind);
     if cmp_op.operands.len() != 2 {
         return None;
     }
@@ -344,10 +347,10 @@ pub fn recognize_counted_loop(func: &TirFunction, header: BlockId) -> Option<Cou
 
     // Comparison polarity must match the step sign (a non-terminating or
     // backward-counting mismatch is refused rather than assigned a bogus trip).
-    let polarity_ok = match cmp_kind {
-        OpCode::Lt | OpCode::Le => step > 0,
-        OpCode::Gt | OpCode::Ge => step < 0,
-        _ => false,
+    let polarity_ok = if cmp_role.requires_positive_step() {
+        step > 0
+    } else {
+        step < 0
     };
     if !polarity_ok {
         trace!("polarity mismatch: cmp {:?} step {}", cmp_kind, step);
@@ -396,7 +399,7 @@ pub fn recognize_counted_loop(func: &TirFunction, header: BlockId) -> Option<Cou
         return None;
     };
 
-    let trip_count = compute_trip_count(cmp_kind, start, stop, step)?;
+    let trip_count = compute_trip_count(cmp_role, start, stop, step)?;
     trace!(
         "RECOGNIZED: iv_idx={} start={} stop={} step={} trip={}",
         iv_arg_index, start, stop, step, trip_count
@@ -512,7 +515,7 @@ fn structured_terminal_loop_gate(
 fn unique_loop_guard_cmp_cond(cond_block: &crate::tir::blocks::TirBlock) -> Option<ValueId> {
     let mut guard: Option<ValueId> = None;
     for op in &cond_block.ops {
-        if matches!(op.opcode, OpCode::Lt | OpCode::Le | OpCode::Gt | OpCode::Ge)
+        if opcode_counted_loop_comparison_role_table(op.opcode).is_ordered()
             && op.results.len() == 1
         {
             if guard.replace(op.results[0]).is_some() {
@@ -521,16 +524,6 @@ fn unique_loop_guard_cmp_cond(cond_block: &crate::tir::blocks::TirBlock) -> Opti
         }
     }
     guard
-}
-
-fn invert_comparison(opcode: OpCode) -> Option<OpCode> {
-    match opcode {
-        OpCode::Lt => Some(OpCode::Ge),
-        OpCode::Le => Some(OpCode::Gt),
-        OpCode::Gt => Some(OpCode::Le),
-        OpCode::Ge => Some(OpCode::Lt),
-        _ => None,
-    }
 }
 
 /// True if `block` unconditionally branches back to `header` (the back-edge).
@@ -586,43 +579,29 @@ fn branch_args_to(term: &Terminator, target: BlockId) -> Option<&[ValueId]> {
 /// Compute the static trip count for `start (cmp) stop` stepping by `step`.
 /// Returns `None` only on the unreachable `step == 0` / non-comparison case
 /// (already filtered by the caller); a zero-iteration loop returns `Some(0)`.
-fn compute_trip_count(cmp_kind: OpCode, start: i64, stop: i64, step: i64) -> Option<i64> {
-    let trip = match cmp_kind {
-        OpCode::Lt => {
-            if start >= stop {
-                0
-            } else {
-                let diff = stop - start;
-                (diff + step - 1) / step
-            }
+fn compute_trip_count(
+    cmp_role: CountedLoopComparisonRole,
+    start: i64,
+    stop: i64,
+    step: i64,
+) -> Option<i64> {
+    if !cmp_role.is_ordered() || step == 0 {
+        return None;
+    }
+    let inclusive_adjustment = if cmp_role.is_inclusive() { 1 } else { 0 };
+    let trip = if cmp_role.requires_positive_step() {
+        if start > stop || (start == stop && !cmp_role.is_inclusive()) {
+            0
+        } else {
+            let diff = stop - start + inclusive_adjustment;
+            (diff + step - 1) / step
         }
-        OpCode::Le => {
-            if start > stop {
-                0
-            } else {
-                let diff = stop - start + 1;
-                (diff + step - 1) / step
-            }
-        }
-        OpCode::Gt => {
-            if start <= stop {
-                0
-            } else {
-                let diff = start - stop;
-                let neg = -step;
-                (diff + neg - 1) / neg
-            }
-        }
-        OpCode::Ge => {
-            if start < stop {
-                0
-            } else {
-                let diff = start - stop + 1;
-                let neg = -step;
-                (diff + neg - 1) / neg
-            }
-        }
-        _ => return None,
+    } else if start < stop || (start == stop && !cmp_role.is_inclusive()) {
+        0
+    } else {
+        let neg_step = -step;
+        let diff = start - stop + inclusive_adjustment;
+        (diff + neg_step - 1) / neg_step
     };
     Some(trip)
 }
