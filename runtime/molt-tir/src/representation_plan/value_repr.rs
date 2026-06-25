@@ -1,45 +1,35 @@
 use std::collections::HashMap;
 
-#[cfg(any(feature = "llvm", feature = "wasm-backend", test))]
-use crate::ir::FunctionIR;
-#[cfg(any(feature = "llvm", feature = "wasm-backend", test))]
 use crate::repr::Repr;
 use crate::tir::blocks::{BlockId, Terminator};
 use crate::tir::function::TirFunction;
-#[cfg(any(feature = "llvm", feature = "wasm-backend", test))]
-use crate::tir::lower_to_simple::SimpleValueNames;
 use crate::tir::ops::{AttrValue, OpCode};
+use crate::tir::types::TirType;
 use crate::tir::values::ValueId;
 
-/// Build the `ValueId -> SimpleIR name` bridge for `tir_func` (every op result
-/// and every block argument). This is the name↔ValueId bridge consumed by both
-/// the LLVM facts and the overflow-safe propagation seed.
-#[cfg(any(feature = "llvm", feature = "wasm-backend", test))]
-pub(crate) fn name_by_value_for(tir_func: &TirFunction) -> HashMap<ValueId, String> {
-    let names = SimpleValueNames::for_function(tir_func);
-    let mut name_by_value = HashMap::new();
+/// Enumerate every TIR `ValueId` with a carrier representation slot: every op
+/// result and every block argument in the function being lowered.
+fn value_ids_for(tir_func: &TirFunction) -> Vec<ValueId> {
+    let mut ids = Vec::new();
     for block in tir_func.blocks.values() {
+        ids.extend(block.args.iter().map(|arg| arg.id));
         for op in &block.ops {
-            for &result in &op.results {
-                name_by_value.insert(result, names.value_name(result));
-            }
-        }
-        for arg in &block.args {
-            name_by_value.insert(arg.id, names.value_name(arg.id));
+            ids.extend(op.results.iter().copied());
         }
     }
-    name_by_value
+    ids
 }
 
 /// The backend-neutral construction of the value-keyed representation lattice
-/// map — the **single source of truth** for the integer raw-carrier
-/// classification, consumed identically by the LLVM backend
-/// ([`LlvmReprFacts::build`]) and the WASM/LIR backend (Phase 1,
-/// `lower_function_to_lir`).
+/// map: the **single source of truth** for TIR `ValueId` carrier
+/// classification, consumed identically by the LLVM backend and the WASM/LIR
+/// backend.
 ///
 /// Every value we know a `ValueId` for floors to [`Repr::default_for`] of its
-/// refined `TirType`; proven integer raw carriers are then raised into one of
-/// two explicit tiers. The floor makes this a complete value->Repr map.
+/// refined `TirType`; bool and f64 therefore enter the value map as
+/// [`Repr::Bool`] / [`Repr::FloatUnboxed`], while proven integer raw carriers
+/// are raised into one of two explicit tiers. The floor makes this a complete
+/// value->Repr map.
 ///
 /// The `RawI64Safe` raise is sourced from the **value-range analysis** (S6)
 /// when a [`ValueRangeResult`] is supplied (`vr` = `Some`): a `ValueId` is
@@ -60,20 +50,17 @@ pub(crate) fn name_by_value_for(tir_func: &TirFunction) -> HashMap<ValueId, Stri
 /// path — NO value is raised: every int floors to `MaybeBigInt` (conservative,
 /// boxed, BigInt-correct; never a miscompile, at worst a perf bail).
 ///
-/// `func_ir` is the SimpleIR function the plan is keyed on (used only for the
-/// container-dispatch facts carried by [`LlvmReprFacts`]); `tir_func` is the
-/// post-pipeline TIR the backend is lowering, and `vr` (when present) MUST have
-/// been computed on that same `tir_func` so its `ValueId`s line up.
-#[cfg(any(feature = "llvm", feature = "wasm-backend", test))]
+/// `tir_func` is the post-pipeline TIR the backend is lowering, and `vr` (when
+/// present) MUST have been computed on that same `tir_func` so its `ValueId`s
+/// line up. This function is deliberately pure TIR and does not consult
+/// SimpleIR names.
 pub fn repr_by_value_for(
-    _func_ir: &FunctionIR,
     tir_func: &TirFunction,
     vr: Option<&crate::tir::passes::value_range::ValueRangeResult>,
 ) -> HashMap<ValueId, Repr> {
-    let name_by_value = name_by_value_for(tir_func);
-    let mut repr_by_value: HashMap<ValueId, Repr> = name_by_value
-        .keys()
-        .map(|&id| {
+    let mut repr_by_value: HashMap<ValueId, Repr> = value_ids_for(tir_func)
+        .into_iter()
+        .map(|id| {
             let repr = tir_func
                 .value_types
                 .get(&id)
@@ -107,7 +94,6 @@ pub fn repr_by_value_for(
 /// Compute the value-range analysis for `tir_func` — the proof source for the
 /// value-keyed (WASM/LLVM) `RawI64Safe` promotion. Computed on the SAME TIR the
 /// backend lowers so its `ValueId`s line up with [`repr_by_value_for`].
-#[cfg(any(feature = "llvm", feature = "wasm-backend", test))]
 pub fn value_range_for(
     tir_func: &TirFunction,
 ) -> crate::tir::passes::value_range::ValueRangeResult {
@@ -154,6 +140,7 @@ pub(crate) fn raw_i64_full_deopt_values_for(
         for op in &block.ops {
             if matches!(op.opcode, OpCode::CheckedAdd | OpCode::CheckedMul)
                 && let Some(&result) = op.results.first()
+                && is_raw_i64_semantic_candidate(tir_func, result)
             {
                 seed.insert(result);
             }
@@ -230,7 +217,9 @@ fn raw_i64_safe_value_seed(
                     .unwrap_or(false);
                 if count_in_range {
                     for &result in &op.results {
-                        if vr.fits_inline_int47(result) {
+                        if is_raw_i64_semantic_candidate(tir_func, result)
+                            && vr.fits_inline_int47(result)
+                        {
                             seed.insert(result);
                         }
                     }
@@ -238,13 +227,20 @@ fn raw_i64_safe_value_seed(
                 continue;
             }
             for &result in &op.results {
-                if vr.fits_inline_int47(result) {
+                if is_raw_i64_semantic_candidate(tir_func, result) && vr.fits_inline_int47(result) {
                     seed.insert(result);
                 }
             }
         }
     }
     seed
+}
+
+fn is_raw_i64_semantic_candidate(tir_func: &TirFunction, id: ValueId) -> bool {
+    matches!(
+        tir_func.value_types.get(&id),
+        Some(TirType::I64 | TirType::BigInt)
+    )
 }
 
 /// The result `ValueId`s of GPU thread/block-id intrinsic calls — hardware lane,
@@ -274,7 +270,9 @@ fn gpu_intrinsic_raw_i64_values(tir_func: &TirFunction) -> std::collections::Has
             );
             if is_gpu_index_intrinsic {
                 for &result in &op.results {
-                    values.insert(result);
+                    if is_raw_i64_semantic_candidate(tir_func, result) {
+                        values.insert(result);
+                    }
                 }
             }
         }
@@ -426,6 +424,9 @@ fn propagate_raw_i64_identity_values_with_phi_support(
         changed = false;
         for &id in &all_value_ids {
             if safe.contains(&id) {
+                continue;
+            }
+            if !is_raw_i64_semantic_candidate(tir_func, id) {
                 continue;
             }
             let becomes_safe = if let Some(&src) = copy_source.get(&id) {
