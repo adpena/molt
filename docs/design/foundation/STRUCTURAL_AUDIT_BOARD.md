@@ -11,24 +11,24 @@ Product board for the molt structural sweep — the first instrument of the Molt
 | --- | --- |
 | hand_classified_matches | 13 |
 | critical_hand_classifications | 0 |
-| handset_classifications | 11 |
+| handset_classifications | 5 |
 | debt_markers_total | 525 |
 | god_files | 47 |
-| max_god_file_lines | 29967 |
+| max_god_file_lines | 29917 |
 | duplicate_authorities | 0 |
 
 ## TOP STRUCTURAL RISKS (ranked)
 
 | sev | risk class | where | what |
 | --- | --- | --- | --- |
-| high | god_file | `src/molt/cli/__init__.py` | 29967 lines (ceiling 2500) |
+| high | god_file | `src/molt/cli/__init__.py` | 29917 lines (ceiling 2500) |
 | high | god_file | `runtime/molt-runtime-tk/src/tk.rs` | 18484 lines (ceiling 4000) |
 | high | god_file | `runtime/molt-backend/src/wasm.rs` | 18079 lines (ceiling 4000) |
 | high | god_file | `src/molt/frontend/__init__.py` | 17200 lines (ceiling 2500) |
 | high | god_file | `runtime/molt-backend/src/luau.rs` | 15455 lines (ceiling 4000) |
 | high | god_file | `runtime/molt-backend/src/llvm_backend/lowering.rs` | 13832 lines (ceiling 4000) |
 | high | god_file | `runtime/molt-runtime/src/object/ops.rs` | 12282 lines (ceiling 4000) |
-| high | god_file | `src/molt/frontend/visitors/calls.py` | 8733 lines (ceiling 2500) |
+| high | god_file | `src/molt/frontend/visitors/calls.py` | 8742 lines (ceiling 2500) |
 | medium | god_file | `runtime/molt-runtime/src/builtins/gpu.rs` | 11816 lines (ceiling 4000) |
 | medium | god_file | `runtime/molt-backend/src/native_backend/function_compiler…` | 9264 lines (ceiling 4000) |
 | medium | god_file | `runtime/molt-runtime/src/builtins/platform_importlib_ffi.rs` | 8737 lines (ceiling 4000) |
@@ -57,14 +57,14 @@ Product board for the molt structural sweep — the first instrument of the Molt
 
 | sev | what | where | action |
 | --- | --- | --- | --- |
-| high | 29967 lines (ceiling 2500) | `src/molt/cli/__init__.py` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
+| high | 29917 lines (ceiling 2500) | `src/molt/cli/__init__.py` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | high | 18484 lines (ceiling 4000) | `runtime/molt-runtime-tk/src/tk.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | high | 18079 lines (ceiling 4000) | `runtime/molt-backend/src/wasm.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | high | 17200 lines (ceiling 2500) | `src/molt/frontend/__init__.py` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | high | 15455 lines (ceiling 4000) | `runtime/molt-backend/src/luau.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | high | 13832 lines (ceiling 4000) | `runtime/molt-backend/src/llvm_backend/lowering.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | high | 12282 lines (ceiling 4000) | `runtime/molt-runtime/src/object/ops.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
-| high | 8733 lines (ceiling 2500) | `src/molt/frontend/visitors/calls.py` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
+| high | 8742 lines (ceiling 2500) | `src/molt/frontend/visitors/calls.py` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | medium | 11816 lines (ceiling 4000) | `runtime/molt-runtime/src/builtins/gpu.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | medium | 9264 lines (ceiling 4000) | `runtime/molt-backend/src/native_backend/function_compiler.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | medium | 8737 lines (ceiling 4000) | `runtime/molt-runtime/src/builtins/platform_importlib_ffi.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
@@ -85,7 +85,7 @@ Product board for the molt structural sweep — the first instrument of the Molt
 | medium | 6274 lines (ceiling 4000) | `runtime/molt-tir/src/representation_plan.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | medium | 6249 lines (ceiling 4000) | `runtime/molt-runtime/src/builtins/functions.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | medium | 6017 lines (ceiling 4000) | `runtime/molt-runtime/src/builtins/modules.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
-| medium | 4943 lines (ceiling 2500) | `tools/gen_op_kinds.py` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
+| medium | 5042 lines (ceiling 2500) | `tools/gen_op_kinds.py` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | medium | 4426 lines (ceiling 2500) | `src/molt/frontend/lowering/serialization.py` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | medium | 3977 lines (ceiling 2500) | `src/molt/frontend/visitors/classes.py` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | low | 5982 lines (ceiling 4000) | `runtime/molt-worker/src/main.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
@@ -145,19 +145,15 @@ Product board for the molt structural sweep — the first instrument of the Molt
 | low | 1 debt/workaround markers | `runtime/molt-backend/src/rust.rs` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | … | _357 more_ | | run `--json` for full list |
 
-### semantic_fallthrough (24)
+### semantic_fallthrough (18)
 
 | sev | what | where | action |
 | --- | --- | --- | --- |
 | medium | hand-classified `match` over 7 opcodes (silent default) | `runtime/molt-tir/src/tir/ssa.rs:1326` | if this encodes op semantics, migrate into op_kinds.toml ([[opcode]] row / class |
-| low | `matches!` hand-set of 26 opcodes (implicit-false default) | `runtime/molt-tir/src/tir/passes/vectorize.rs:192` | if this encodes a semantic property, add a classifier set to op_kinds.toml and q |
-| low | `matches!` hand-set of 22 opcodes (implicit-false default) | `runtime/molt-tir/src/tir/passes/vectorize.rs:161` | if this encodes a semantic property, add a classifier set to op_kinds.toml and q |
 | low | `matches!` hand-set of 8 opcodes (implicit-false default) | `runtime/molt-tir/src/tir/passes/overflow_peel.rs:147` | if this encodes a semantic property, add a classifier set to op_kinds.toml and q |
-| low | `matches!` hand-set of 8 opcodes (implicit-false default) | `runtime/molt-tir/src/tir/passes/vectorize.rs:143` | if this encodes a semantic property, add a classifier set to op_kinds.toml and q |
 | low | `matches!` hand-set of 6 opcodes (implicit-false default) | `runtime/molt-tir/src/tir/ssa.rs:1382` | if this encodes a semantic property, add a classifier set to op_kinds.toml and q |
 | low | `matches!` hand-set of 5 opcodes (implicit-false default) | `runtime/molt-tir/src/tir/lower_from_simple.rs:390` | if this encodes a semantic property, add a classifier set to op_kinds.toml and q |
 | low | hand-classified `match` over 5 opcodes (silent default) | `runtime/molt-tir/src/tir/passes/module_slot_promotion.rs:210` | if this encodes op semantics, migrate into op_kinds.toml ([[opcode]] row / class |
-| low | `matches!` hand-set of 5 opcodes (implicit-false default) | `runtime/molt-tir/src/tir/passes/vectorize.rs:525` | if this encodes a semantic property, add a classifier set to op_kinds.toml and q |
 | low | `matches!` hand-set of 4 opcodes (implicit-false default) | `runtime/molt-tir/src/tir/function.rs:158` | if this encodes a semantic property, add a classifier set to op_kinds.toml and q |
 | low | `matches!` hand-set of 4 opcodes (implicit-false default) | `runtime/molt-tir/src/tir/lower_to_simple.rs:870` | if this encodes a semantic property, add a classifier set to op_kinds.toml and q |
 | low | hand-classified `match` over 4 opcodes (silent default) | `runtime/molt-tir/src/tir/ops.rs:358` | if this encodes op semantics, migrate into op_kinds.toml ([[opcode]] row / class |
@@ -171,8 +167,6 @@ Product board for the molt structural sweep — the first instrument of the Molt
 | low | hand-classified `match` over 3 opcodes (silent default) | `runtime/molt-tir/src/tir/passes/module_slot_promotion.rs:508` | if this encodes op semantics, migrate into op_kinds.toml ([[opcode]] row / class |
 | low | hand-classified `match` over 3 opcodes (silent default) | `runtime/molt-tir/src/tir/passes/module_slot_promotion.rs:629` | if this encodes op semantics, migrate into op_kinds.toml ([[opcode]] row / class |
 | low | hand-classified `match` over 3 opcodes (silent default) | `runtime/molt-tir/src/tir/passes/scev.rs:604` | if this encodes op semantics, migrate into op_kinds.toml ([[opcode]] row / class |
-| low | `matches!` hand-set of 3 opcodes (implicit-false default) | `runtime/molt-tir/src/tir/passes/vectorize.rs:134` | if this encodes a semantic property, add a classifier set to op_kinds.toml and q |
-| low | `matches!` hand-set of 3 opcodes (implicit-false default) | `runtime/molt-tir/src/tir/passes/vectorize.rs:658` | if this encodes a semantic property, add a classifier set to op_kinds.toml and q |
 
 ### registry_reconciliation (1)
 

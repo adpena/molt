@@ -159,6 +159,7 @@ CANONICAL_KIND: dict[str, str] = {
     "copy": "copy",
     "store_var": "copy",
     "load_var": "copy",
+    "copy_var": "copy",
     "import": "import",
     "import_name": "import",
     "module_import": "import",

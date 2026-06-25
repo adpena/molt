@@ -200,6 +200,12 @@ Vectorization opcode classification is generated too:
 pattern validation, lane typing, and hint emission while body eligibility,
 loop-header markers, annotation targets, and reduction-family membership live
 in the registry.
+SSA attr transport is generated too:
+`ssa_s_value_attr_keys` feeds `opcode_ssa_s_value_attr_key_table`, and
+`ssa_original_kind_preserving_kinds` feeds
+`simpleir_kind_preserves_original_kind_for_ssa`. `ssa.rs` owns live value
+resolution and attr insertion while the registry owns string payload key routing
+and mapped `_original_kind` preservation spellings.
 Representation-aware LIR verifier dispatch is generated as a rule lattice:
 `lir_verify_rules` feeds `opcode_lir_verify_rule_table`, so `verify_lir.rs`
 owns BoxVal/UnboxVal/arithmetic/truthy-materialization invariant checks and

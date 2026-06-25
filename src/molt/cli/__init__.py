@@ -311,6 +311,7 @@ from molt.cli.deps import (
     vendor,
 )
 from molt.cli.env_paths import _base_env, _molt_venv_site_packages, _vendor_roots
+from molt.cli.env_overrides import temporary_env_overrides as _temporary_env_overrides
 from molt.cli.file_hashing import _sha256_file
 from molt.cli.native_toolchain import (
     _append_darwin_runtime_frameworks,
@@ -24785,24 +24786,6 @@ def diff(
     )
 
 
-@contextmanager
-def _temporary_env_overrides(overrides: dict[str, str]):
-    previous: dict[str, str] = {}
-    missing: list[str] = []
-    for key, value in overrides.items():
-        if key in os.environ:
-            previous[key] = os.environ[key]
-        else:
-            missing.append(key)
-        os.environ[key] = value
-    try:
-        yield
-    finally:
-        for key in missing:
-            os.environ.pop(key, None)
-        for key, value in previous.items():
-            os.environ[key] = value
-
 
 def _normalize_internal_batch_stdlib_profile(
     params: Mapping[str, Any],
@@ -25626,20 +25609,6 @@ def _capture_json_cli_result(
         return returncode, None
     return returncode, payload
 
-
-@contextmanager
-def _temporary_env_overrides(overrides: Mapping[str, str]) -> Iterator[None]:
-    previous = {name: os.environ.get(name) for name in overrides}
-    try:
-        for name, value in overrides.items():
-            os.environ[name] = value
-        yield
-    finally:
-        for name, old_value in previous.items():
-            if old_value is None:
-                os.environ.pop(name, None)
-            else:
-                os.environ[name] = old_value
 
 
 def _handle_debug_ir(

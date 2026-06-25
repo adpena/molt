@@ -81,6 +81,11 @@
 #                  Call/CallMethod/CallBuiltin/Copy behavior; the kind predicate
 #                  owns the exact `_original_kind` spellings that make a Copy
 #                  fallback count as a user-level call edge.
+#   - ssa_s_value_attr_keys / ssa_original_kind_preserving_kinds - generated
+#                  SSA attr-transport facts. The registry owns which opcode gets
+#                  which string-payload attr key and which SimpleIR spellings
+#                  must be carried as `_original_kind`; ssa.rs owns live value
+#                  resolution and attr insertion.
 #   - polyhedral_loop_header_opcodes / polyhedral_affine_body_opcodes -
 #                  generated opcode-only facts for polyhedral.rs loop-header
 #                  annotation and affine-body eligibility. The pass owns body
@@ -251,6 +256,64 @@ call_graph_user_call_kinds = [
     "call_guarded",
     "call_method",
     "invoke_ffi",
+]
+
+# ===========================================================================
+# SSA attr transport.
+#
+# These facts replace ssa.rs's private opcode/kind matches. `s_value` starts as
+# SimpleIR's generic string payload; first-class TIR opcodes read that payload
+# under stable opcode-specific attr names. `_original_kind` is retained only
+# when a non-canonical SimpleIR spelling affects round-trip or backend dispatch.
+# Unknown unmapped kinds still preserve their spelling as Copy fallbacks in
+# ssa.rs; this table owns the mapped spellings that must preserve.
+# ===========================================================================
+
+ssa_s_value_attr_keys = [
+    { opcode = "Import", attr = "module" },
+    { opcode = "ImportFrom", attr = "name" },
+    { opcode = "LoadAttr", attr = "name" },
+    { opcode = "StoreAttr", attr = "name" },
+    { opcode = "DelAttr", attr = "name" },
+    { opcode = "CallBuiltin", attr = "name" },
+    { opcode = "CallMethod", attr = "method" },
+]
+
+ssa_original_kind_preserving_kinds = [
+    "store_var",
+    "call_func",
+    "call_internal",
+    "call_indirect",
+    "call_bind",
+    "call_function",
+    "call_guarded",
+    "invoke_ffi",
+    "gpu_thread_id",
+    "gpu_block_id",
+    "gpu_block_dim",
+    "gpu_grid_dim",
+    "gpu_barrier",
+    "builtin_print",
+    "print",
+    "range_new",
+    "get_attr_generic_ptr",
+    "get_attr_generic_obj",
+    "get_attr_name",
+    "guarded_field_get",
+    "load",
+    "load_attr",
+    "store_attr",
+    "set_attr_name",
+    "set_attr_generic_ptr",
+    "set_attr_generic_obj",
+    "guarded_field_set",
+    "guarded_field_init",
+    "store",
+    "store_init",
+    "del_attr_name",
+    "del_attr_generic_ptr",
+    "del_attr_generic_obj",
+    "index_set",
 ]
 
 # ===========================================================================
@@ -3302,7 +3365,7 @@ mapper_opcode = "ConstBytes"
 
 [[kind]]
 canonical = "copy"
-aliases = ["store_var", "load_var"]
+aliases = ["store_var", "load_var", "copy_var"]
 mapper_opcode = "Copy"
 
 [[kind]]

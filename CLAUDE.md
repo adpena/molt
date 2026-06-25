@@ -15,14 +15,29 @@ When you identify a structurally correct fix and feel pulled toward an "immediat
 
 If you cannot complete the structural fix in this session, **do not commit the localized hack as a placeholder**. Leave a clean baton-pass note describing the structural fix needed; the next session picks it up. Half-measures committed to main are worse than nothing committed.
 
-### Force a tiny slice, then rip it open
+### Narrow entry, full structural rip
 
-Collapse the problem to the smallest slice that still cuts through the REAL structure end-to-end — one concrete case, one path, one invariant — then rip THAT slice fully open. **Tiny in scope, total in depth.**
+The bounded unit is not a tiny chip; it is a complete structural rip through one
+concrete invariant, authority cluster, or execution path, followed through every
+consumer needed to delete the old lane. Narrow the entry point only to expose
+the real structure; once exposed, widen to the whole bug class inside that
+boundary.
 
-- **Force the slice tiny** so you can afford to rip it fully open. Do not scope broadly or plan exhaustively before any real structure is exposed — a plan is not a slice. Investigation that *finds* the slice is allowed; the deliverable is the ripped-open slice, never the plan.
-- **Rip it open** = implement the actual structure behind the slice — the missing IR fact, the one authority, the ownership boundary — and the whole bug CLASS it exposes inside that boundary, with zero workarounds, until correct + measured + gated. A slice is "ripped open" only when nothing of its real structure is left patched-around.
-- **This is the legitimate small unit, NOT the forbidden "convenient chip."** A chip is sized for process (a checkpoint, a commit, a status) and leaves the structure and its sibling authorities untouched — that is avoidance. A ripped-open slice leaves no sibling of its bug class un-migrated; **width follows the structure, not convenience.**
-- **It kills both failure modes:** (1) boiling the ocean — endless breadth or planning with nothing ripped open; (2) dancing around the edge — a shortcut that patches the surface and leaves the real structure intact. When uncertain, shrink the SCOPE and deepen the RIP — never the reverse.
+- The entry point may be narrow; the work may not be a chip. Do not scope
+  broadly into endless planning before real structure is exposed, but once it is
+  exposed, migrate the sibling authorities and consumers that define the
+  invariant.
+- Full structural rip means implementing the actual structure behind the entry
+  point: the missing IR fact, one generated authority, the ownership boundary, or
+  the shared primitive, plus the bug class it exposes inside that boundary, with
+  zero workarounds.
+- A forbidden chip is sized for process comfort: a checkpoint, a commit, a
+  status line, or one local test. It leaves sibling authorities untouched. Reject
+  it. Width follows the structure, not convenience.
+- This kills both failure modes: endless breadth/planning with nothing changed,
+  and surface patching that leaves the real structure intact. When uncertain,
+  narrow the entry point and deepen the structural rip; never narrow the
+  ambition.
 
 ### Concrete examples of partial implementations to reject
 
@@ -252,18 +267,20 @@ deleted-plan) or it didn't count.
 - **Always `git add` immediately** after writing any file. Linter hooks can silently revert unstaged changes.
 - **Atomic operations**: write file + git add in the same step using `&&` chaining.
 
-## Crash Recovery Tiny-Slice Mode
+## Crash Recovery Structural Stability Mode
 
 When Codex, Claude, Desktop, WSL bridging, MCP/tool discovery, subagents,
 process custody, or a guarded command has crashed, stalled, disappeared, or
-been manually killed in the current session, override the broad-work default.
-Land the smallest complete structural primitive that can be written, staged,
-focused-tested, and committed before the next risky lane.
+been manually killed in the current session, stabilize the control plane without
+shrinking the engineering ambition into tiny chips. Reduce concurrency, isolate
+project-owned process scope, record evidence paths, and keep the unit of work a
+complete structural primitive that deletes or unifies a real authority.
 
-Tiny does not mean hacky. The slice must still remove a real source of drift,
-avoid duplicate authority, and leave no dangling legacy lane. Before risky
-commands, leave a death capsule: command, cwd, guard pid, child pid when known,
-status, timestamp, and evidence path. Prefer `tmp/memory_guard/active/`,
+Recovery discipline is process containment, not permission to chip away at the
+project. A valid recovery landing removes a real source of drift, avoids
+duplicate authority, and leaves no dangling legacy lane. Before risky commands,
+leave a death capsule: command, cwd, guard pid, child pid when known, status,
+timestamp, and evidence path. Prefer `tmp/memory_guard/active/`,
 `tmp/memory_guard/incidents/`, pytest outer-guard summaries, and
 `logs/agents/codex_stall/*.json`.
 

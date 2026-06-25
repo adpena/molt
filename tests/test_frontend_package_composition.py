@@ -70,6 +70,7 @@ EXPECTED_MIXINS = [
     "AnalysisPatternMixin",
     "AsyncGenVisitorMixin",
     "PatternMatchMixin",
+    "CallReductionMixin",
     "CallVisitorMixin",
     "ClassDefVisitorMixin",
     "ComprehensionMixin",
@@ -118,6 +119,10 @@ def test_moved_methods_resolve_on_class() -> None:
     assert hasattr(SimpleTIRGenerator, "visit_Call")
     assert hasattr(SimpleTIRGenerator, "_emit_call_args_builder")
     assert hasattr(SimpleTIRGenerator, "_fold_bare_super_static")
+    # reducer calls (phase 2 semantic subfamily)
+    assert hasattr(SimpleTIRGenerator, "_emit_sum_call")
+    assert hasattr(SimpleTIRGenerator, "_try_emit_inline_sum_genexpr")
+    assert hasattr(SimpleTIRGenerator, "_emit_any_all_call")
     # classes (phase 2)
     assert hasattr(SimpleTIRGenerator, "visit_ClassDef")
     assert hasattr(SimpleTIRGenerator, "_compute_method_closure")
@@ -164,6 +169,7 @@ def test_mixin_modules_import_standalone() -> None:
         "molt.frontend.lowering.serialization",
         "molt.frontend.visitors.async_gen",
         "molt.frontend.visitors.pattern_match",
+        "molt.frontend.visitors.call_reductions",
         "molt.frontend.visitors.calls",
         "molt.frontend.visitors.classes",
         "molt.frontend.visitors.comprehensions",
@@ -174,6 +180,26 @@ def test_mixin_modules_import_standalone() -> None:
         "molt.frontend.visitors.statement_scope",
     ):
         assert importlib.import_module(mod) is not None
+
+
+def test_reducer_call_lowering_stays_out_of_call_dispatcher() -> None:
+    """Reducer-specific fusion belongs to call_reductions, not calls.py."""
+    calls_src = (
+        ROOT / "src" / "molt" / "frontend" / "visitors" / "calls.py"
+    ).read_text(encoding="utf-8")
+    reductions_src = (
+        ROOT / "src" / "molt" / "frontend" / "visitors" / "call_reductions.py"
+    ).read_text(encoding="utf-8")
+
+    assert "class CallReductionMixin" in reductions_src
+    assert "def _emit_sum_call" in reductions_src
+    assert "def _emit_any_all_call" in reductions_src
+    assert "def _try_emit_inline_sum_genexpr" in reductions_src
+    assert "def _emit_sum_call" not in calls_src
+    assert "def _emit_any_all_call" not in calls_src
+    assert "def _try_emit_inline_sum_genexpr" not in calls_src
+    assert 'return self._emit_sum_call(func_id, node, needs_bind)' in calls_src
+    assert 'return self._emit_any_all_call(func_id, node, needs_bind)' in calls_src
 
 
 # ---------------------------------------------------------------------------
