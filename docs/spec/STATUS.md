@@ -27,9 +27,13 @@ the implementation. For forward-looking priorities, use
   `borrow`, `dec_ref`, `release`, `box`, `unbox`, `cast`, `widen`,
   `identity_alias`, `binding_alias`), plus runtime probes and side-effecting
   helper shims (`env_get`, `exception_pending`, `function_defaults_version`,
-  `print`, `warn_stderr`, `print_newline`, `block_on`, `bridge_unavailable`).
-  The remaining inline opcode shell is limited to residual constant/literal
-  materialization and hoisting pending a fresh structural contract.
+  `print`, `warn_stderr`, `print_newline`, `block_on`, `bridge_unavailable`),
+  and constant/literal materialization (`const`, `const_bigint`, `const_bool`,
+  `const_none`, `const_not_implemented`, `const_ellipsis`, `const_float`,
+  `const_str`, `const_bytes`) including loop-entry constant
+  pre-materialization, heap-literal prologue hoisting, data-segment interning,
+  per-kind stack-slot maps, module string-slot exports, and heap-literal
+  `rc_skip_dec` custody.
 - Plain-local alias rebinding now lowers through the `binding_alias` owned-alias
   lane, with generated op-kind classifier tables and TIR ownership/representation
   analyses treating it as source bits plus an independent droppable reference.
@@ -194,6 +198,14 @@ the implementation. For forward-looking priorities, use
   `opcode_is_escape_alloc_site_table` classifier. The classifier is intentionally
   distinct from refcount heap exposure: it answers whether an opcode result is a
   fresh allocation root whose escape state should be tracked.
+- Fact graph schema v2 carries `source_site` on producers, consumers, and facts,
+  `event_id` on event facts, and allocation/ownership facts derived from the
+  generated op-kind ownership tables. The fact graph and analysis capsule now
+  report source-site and allocation/ownership counts from that same carrier.
+  Binary image allocation/refcount analysis also consumes generated
+  `op_kinds.toml` categories, with frontend `borrow`/`release` aliases
+  canonicalized to `inc_ref`/`dec_ref` before diagnostics observe them, so CLI
+  analysis no longer owns private allocation/refcount kind sets.
 - Raw-i64 division-family exception custody is also registry-owned:
   `i64_zero_divisor_guard_opcodes` generates the exhaustive
   `opcode_requires_i64_zero_divisor_guard_table` classifier consumed by LIR
@@ -1215,7 +1227,11 @@ the implementation. For forward-looking priorities, use
 		  Backend diagnostics also project allocation/ownership pressure from the
 		  same carrier: heap/stack allocation roots, retain/release events,
 		  heap-exposure ops, arena eligibility, and finalizer-sensitive results
-		  are counted by source line with a stable event digest.
+		  are counted by source line with a stable event digest. The companion
+		  schema-v2 fact graph carries matching `source_site`/`event_id` fields
+		  and generated allocation/ownership facts; the analysis capsule exposes
+		  the source-site and allocation/ownership counts instead of requiring a
+		  second parser or CLI-local classifier.
 		  Core stdlib closure honors the same nested-scan exception
 		  set as regular stdlib discovery, so `collections` keeps its required
 		  function-body `copy` import in the graph and native hello-world no longer

@@ -89,6 +89,7 @@ pub(in crate::native_backend::function_compiler) mod callargs;
 pub(in crate::native_backend::function_compiler) mod calls;
 pub(in crate::native_backend::function_compiler) mod class_ops;
 pub(in crate::native_backend::function_compiler) mod compare;
+pub(in crate::native_backend::function_compiler) mod const_literals;
 pub(in crate::native_backend::function_compiler) mod context_mgmt;
 pub(in crate::native_backend::function_compiler) mod control_flow;
 pub(in crate::native_backend::function_compiler) mod coroutine;

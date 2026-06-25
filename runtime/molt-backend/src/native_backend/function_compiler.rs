@@ -12,17 +12,6 @@ mod fc;
 static EMPTY_VEC_STRING: Vec<String> = Vec::new();
 
 #[cfg(feature = "native-backend")]
-const NATIVE_INLINE_INT_MIN: i64 = -(1_i64 << 46);
-#[cfg(feature = "native-backend")]
-const NATIVE_INLINE_INT_MAX: i64 = (1_i64 << 46) - 1;
-
-#[cfg(feature = "native-backend")]
-#[inline]
-fn native_int_literal_fits_inline(val: i64) -> bool {
-    (NATIVE_INLINE_INT_MIN..=NATIVE_INLINE_INT_MAX).contains(&val)
-}
-
-#[cfg(feature = "native-backend")]
 #[inline]
 fn is_cold_module_chunk_function(name: &str) -> bool {
     name.contains("__molt_module_chunk_")
@@ -1842,21 +1831,6 @@ fn require_static_target_symbol(op: &OpIR) -> &str {
 }
 
 #[cfg(feature = "native-backend")]
-fn require_const_str_payload(op: &OpIR) -> &[u8] {
-    op.bytes.as_deref().unwrap_or_else(|| {
-        op.s_value
-            .as_deref()
-            .unwrap_or_else(|| {
-                panic!(
-                    "const_str missing bytes or string payload for output `{}`",
-                    op.out.as_deref().unwrap_or("<missing>")
-                )
-            })
-            .as_bytes()
-    })
-}
-
-#[cfg(feature = "native-backend")]
 fn emit_guarded_object_field_get(
     module: &mut ObjectModule,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
@@ -2213,13 +2187,8 @@ fn preanalyze_function_ir(
                     .entry(out.clone())
                     .or_insert_with(|| out.clone());
             }
-            let heap_literal_uses_data_segment = match op.kind.as_str() {
-                "const_str" | "const_bytes" | "const_bigint" => true,
-                "const" => op
-                    .value
-                    .is_some_and(|val| !native_int_literal_fits_inline(val)),
-                _ => false,
-            };
+            let heap_literal_uses_data_segment =
+                fc::const_literals::op_uses_heap_literal_data_segment(op);
             if heap_literal_uses_data_segment {
                 var_names.insert(format!("{}_ptr", out));
                 var_names.insert(format!("{}_len", out));
@@ -3232,8 +3201,6 @@ impl SimpleBackend {
         let mut builder = FunctionBuilder::new(&mut self.ctx.func, &mut builder_ctx);
 
         let mut vars: BTreeMap<String, Variable> = BTreeMap::new();
-        let mut hoisted_str_slot: BTreeMap<String, cranelift_codegen::ir::StackSlot> =
-            BTreeMap::new();
         let param_name_set: BTreeSet<&str> = func_ir.params.iter().map(String::as_str).collect();
         let primary_names = representation_plan.primary_name_sets();
         let int_primary_vars = primary_names.int;
@@ -3798,35 +3765,7 @@ impl SimpleBackend {
             // The phi at loop headers then picks the correct constant on
             // the first iteration instead of a bogus default.
             let const_int_defs: BTreeMap<String, i64> = if has_loop_or_backedge {
-                func_ir
-                    .ops
-                    .iter()
-                    .filter(|op| {
-                        op.kind == "const" || op.kind == "const_bool" || op.kind == "const_none"
-                    })
-                    .filter_map(|op| {
-                        let out = op.out.as_ref()?;
-                        match op.kind.as_str() {
-                            "const" => {
-                                let val = op.value.unwrap_or(0);
-                                if int_primary_vars.contains(out) {
-                                    return Some((out.clone(), val));
-                                }
-                                if native_int_literal_fits_inline(val) {
-                                    Some((out.clone(), box_int(val)))
-                                } else {
-                                    None // bigints handled separately
-                                }
-                            }
-                            "const_bool" => {
-                                let val = op.value.unwrap_or(0);
-                                Some((out.clone(), box_bool(val)))
-                            }
-                            "const_none" => Some((out.clone(), box_none())),
-                            _ => None,
-                        }
-                    })
-                    .collect()
+                fc::const_literals::collect_loop_entry_const_defs(&func_ir, &int_primary_vars)
             } else {
                 BTreeMap::new()
             };
@@ -3877,211 +3816,16 @@ impl SimpleBackend {
         // they are physical memory, not SSA values. By allocating all
         // immutable heap literals before the entry block is sealed, their
         // object pointers are valid for the entire function lifetime.
-        let mut const_str_hoisted_slots: BTreeMap<Vec<u8>, cranelift_codegen::ir::StackSlot> =
-            BTreeMap::new();
-        let mut const_bytes_hoisted_slots: BTreeMap<Vec<u8>, cranelift_codegen::ir::StackSlot> =
-            BTreeMap::new();
-        let mut const_bigint_hoisted_slots: BTreeMap<Vec<u8>, cranelift_codegen::ir::StackSlot> =
-            BTreeMap::new();
-        {
-            // Collect unique (bytes, first_out_name) pairs for each heap-literal
-            // constructor. Literal kinds intentionally use separate maps even
-            // when their payload bytes match because they lower to different
-            // runtime object types.
-            let mut unique_strs: Vec<(Vec<u8>, String)> = Vec::new();
-            let mut unique_bytes: Vec<(Vec<u8>, String)> = Vec::new();
-            let mut unique_bigints: Vec<(Vec<u8>, String)> = Vec::new();
-            let mut seen_str_bytes: std::collections::HashSet<Vec<u8>> =
-                std::collections::HashSet::new();
-            let mut seen_bytes_bytes: std::collections::HashSet<Vec<u8>> =
-                std::collections::HashSet::new();
-            let mut seen_bigint_bytes: std::collections::HashSet<Vec<u8>> =
-                std::collections::HashSet::new();
-            for op in &func_ir.ops {
-                match op.kind.as_str() {
-                    "const_str" => {
-                        let bytes = require_const_str_payload(op).to_vec();
-                        let out_name = match &op.out {
-                            Some(n) => n.clone(),
-                            None => continue,
-                        };
-                        if seen_str_bytes.insert(bytes.clone()) {
-                            unique_strs.push((bytes, out_name));
-                        }
-                    }
-                    "const_bytes" => {
-                        let bytes = op.bytes.as_ref().expect("Bytes not found").clone();
-                        let out_name = match &op.out {
-                            Some(n) => n.clone(),
-                            None => continue,
-                        };
-                        if seen_bytes_bytes.insert(bytes.clone()) {
-                            unique_bytes.push((bytes, out_name));
-                        }
-                    }
-                    "const_bigint" => {
-                        let bytes = op
-                            .s_value
-                            .as_ref()
-                            .expect("BigInt string not found")
-                            .as_bytes()
-                            .to_vec();
-                        let out_name = match &op.out {
-                            Some(n) => n.clone(),
-                            None => continue,
-                        };
-                        if seen_bigint_bytes.insert(bytes.clone()) {
-                            unique_bigints.push((bytes, out_name));
-                        }
-                    }
-                    "const" => {
-                        let val = op.value.unwrap_or(0);
-                        let out_name = match &op.out {
-                            Some(n) if !int_primary_vars.contains(n) => n.clone(),
-                            _ => continue,
-                        };
-                        if native_int_literal_fits_inline(val) {
-                            continue;
-                        }
-                        let bytes = val.to_string().into_bytes();
-                        if seen_bigint_bytes.insert(bytes.clone()) {
-                            unique_bigints.push((bytes, out_name));
-                        }
-                    }
-                    _ => {}
-                }
-            }
-
-            for (bytes, ref_name) in &unique_strs {
-                let data_id = Self::intern_data_segment(
-                    &mut self.module,
-                    &mut self.data_pool,
-                    &mut self.next_data_id,
-                    bytes,
-                );
-                let global_ptr = self.module.declare_data_in_func(data_id, builder.func);
-                let ptr = builder.ins().symbol_value(types::I64, global_ptr);
-                let len = builder.ins().iconst(types::I64, bytes.len() as i64);
-
-                // Auxiliary ptr/len variables for debugging.
-                def_var_named(&mut builder, &vars, format!("{}_ptr", ref_name), ptr);
-                def_var_named(&mut builder, &vars, format!("{}_len", ref_name), len);
-
-                let callee = Self::import_func_id_split(
-                    &mut self.module,
-                    &mut self.import_ids,
-                    "molt_string_from_bytes",
-                    &[types::I64, types::I64, types::I64],
-                    &[types::I32],
-                );
-                let tmp_slot = builder.create_sized_stack_slot(StackSlotData::new(
-                    StackSlotKind::ExplicitSlot,
-                    8,
-                    3,
-                ));
-                let tmp_ptr = builder.ins().stack_addr(types::I64, tmp_slot, 0);
-                let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                builder.ins().call(local_callee, &[ptr, len, tmp_ptr]);
-                // Load from tmp slot and explicitly store to the hoisted slot.
-                let hoisted_slot = builder.create_sized_stack_slot(StackSlotData::new(
-                    StackSlotKind::ExplicitSlot,
-                    8,
-                    3,
-                ));
-                let val = builder.ins().stack_load(types::I64, tmp_slot, 0);
-                builder.ins().stack_store(val, hoisted_slot, 0);
-
-                const_str_hoisted_slots.insert(bytes.clone(), hoisted_slot);
-            }
-
-            for (bytes, ref_name) in &unique_bytes {
-                let data_id = Self::intern_data_segment(
-                    &mut self.module,
-                    &mut self.data_pool,
-                    &mut self.next_data_id,
-                    bytes,
-                );
-                let global_ptr = self.module.declare_data_in_func(data_id, builder.func);
-                let ptr = builder.ins().symbol_value(types::I64, global_ptr);
-                let len = builder.ins().iconst(types::I64, bytes.len() as i64);
-
-                def_var_named(&mut builder, &vars, format!("{}_ptr", ref_name), ptr);
-                def_var_named(&mut builder, &vars, format!("{}_len", ref_name), len);
-
-                let callee = Self::import_func_id_split(
-                    &mut self.module,
-                    &mut self.import_ids,
-                    "molt_bytes_from_bytes",
-                    &[types::I64, types::I64, types::I64],
-                    &[types::I32],
-                );
-                let tmp_slot = builder.create_sized_stack_slot(StackSlotData::new(
-                    StackSlotKind::ExplicitSlot,
-                    8,
-                    3,
-                ));
-                let tmp_ptr = builder.ins().stack_addr(types::I64, tmp_slot, 0);
-                let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                builder.ins().call(local_callee, &[ptr, len, tmp_ptr]);
-
-                let hoisted_slot = builder.create_sized_stack_slot(StackSlotData::new(
-                    StackSlotKind::ExplicitSlot,
-                    8,
-                    3,
-                ));
-                let val = builder.ins().stack_load(types::I64, tmp_slot, 0);
-                builder.ins().stack_store(val, hoisted_slot, 0);
-
-                const_bytes_hoisted_slots.insert(bytes.clone(), hoisted_slot);
-            }
-
-            for (bytes, ref_name) in &unique_bigints {
-                let data_id = Self::intern_data_segment(
-                    &mut self.module,
-                    &mut self.data_pool,
-                    &mut self.next_data_id,
-                    bytes,
-                );
-                let global_ptr = self.module.declare_data_in_func(data_id, builder.func);
-                let ptr = builder.ins().symbol_value(types::I64, global_ptr);
-                let len = builder.ins().iconst(types::I64, bytes.len() as i64);
-
-                def_var_named(&mut builder, &vars, format!("{}_ptr", ref_name), ptr);
-                def_var_named(&mut builder, &vars, format!("{}_len", ref_name), len);
-
-                let callee = Self::import_func_id_split(
-                    &mut self.module,
-                    &mut self.import_ids,
-                    "molt_bigint_from_str",
-                    &[types::I64, types::I64],
-                    &[types::I64],
-                );
-                let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                let call = builder.ins().call(local_callee, &[ptr, len]);
-                let val = builder.inst_results(call)[0];
-
-                let hoisted_slot = builder.create_sized_stack_slot(StackSlotData::new(
-                    StackSlotKind::ExplicitSlot,
-                    8,
-                    3,
-                ));
-                builder.ins().stack_store(val, hoisted_slot, 0);
-
-                const_bigint_hoisted_slots.insert(bytes.clone(), hoisted_slot);
-            }
-        }
-
-        // Map every const_str output name to its hoisted stack slot.
-        for op in &func_ir.ops {
-            if op.kind == "const_str" {
-                let bytes = require_const_str_payload(op);
-                if let Some(ref out) = op.out
-                    && let Some(&slot) = const_str_hoisted_slots.get(bytes)
-                {
-                    hoisted_str_slot.insert(out.clone(), slot);
-                }
-            }
-        }
+        let literal_hoists = fc::const_literals::hoist_heap_literals(
+            &func_ir,
+            &mut self.module,
+            &mut self.import_ids,
+            &mut self.data_pool,
+            &mut self.next_data_id,
+            &mut builder,
+            &vars,
+            &int_primary_vars,
+        );
 
         // Traceback frame tracking is separate from full call tracing. The
         // frontend emits code-slot-backed trace_enter_slot/trace_exit markers
@@ -4376,254 +4120,25 @@ impl SimpleBackend {
             // codegen (handled by the loud catch-all).
             let op_family = fc::native_op_family(op.kind.as_str());
             match op.kind.as_str() {
-                "const" => {
-                    let val = op.value.unwrap_or(0);
-                    let Some(out_name) = op.out else {
-                        continue;
-                    };
-                    if int_primary_vars.contains(out_name.as_str()) {
-                        let raw_val = builder.ins().iconst(types::I64, val);
-                        def_var_named(&mut builder, &vars, out_name, raw_val);
-                    } else if native_int_literal_fits_inline(val) {
-                        let raw_val = builder.ins().iconst(types::I64, val);
-                        def_inline_int_value(
-                            &mut builder,
-                            &vars,
-                            &int_primary_vars,
-                            &out_name,
-                            raw_val,
-                            box_int(val),
-                        );
-                    } else {
-                        // Value exceeds 47-bit signed inline range — use bigint path.
-                        let s = val.to_string();
-                        let bytes = s.as_bytes();
-                        let boxed = if let Some(slot) = const_bigint_hoisted_slots.get(bytes) {
-                            builder.ins().stack_load(types::I64, *slot, 0)
-                        } else {
-                            let data_id = Self::intern_data_segment(
-                                &mut self.module,
-                                &mut self.data_pool,
-                                &mut self.next_data_id,
-                                bytes,
-                            );
-                            let global_ptr =
-                                self.module.declare_data_in_func(data_id, builder.func);
-                            let ptr = builder.ins().symbol_value(types::I64, global_ptr);
-                            let len = builder.ins().iconst(types::I64, bytes.len() as i64);
-                            def_var_named(&mut builder, &vars, format!("{}_ptr", out_name), ptr);
-                            def_var_named(&mut builder, &vars, format!("{}_len", out_name), len);
-                            let callee = Self::import_func_id_split(
-                                &mut self.module,
-                                &mut self.import_ids,
-                                "molt_bigint_from_str",
-                                &[types::I64, types::I64],
-                                &[types::I64],
-                            );
-                            let local_callee =
-                                self.module.declare_func_in_func(callee, builder.func);
-                            let call = builder.ins().call(local_callee, &[ptr, len]);
-                            builder.inst_results(call)[0]
-                        };
-                        let out_name_clone = out_name.clone();
-                        def_var_named(&mut builder, &vars, out_name, boxed);
-                        rc_skip_dec.insert(out_name_clone);
-                    }
-                }
-                "const_bigint" => {
-                    let s = op.s_value.as_ref().expect("BigInt string not found");
-                    let Some(out_name) = op.out else {
-                        continue;
-                    };
-                    let bytes = s.as_bytes();
-                    let boxed = if let Some(slot) = const_bigint_hoisted_slots.get(bytes) {
-                        builder.ins().stack_load(types::I64, *slot, 0)
-                    } else {
-                        let data_id = Self::intern_data_segment(
-                            &mut self.module,
-                            &mut self.data_pool,
-                            &mut self.next_data_id,
-                            bytes,
-                        );
-                        let global_ptr = self.module.declare_data_in_func(data_id, builder.func);
-                        let ptr = builder.ins().symbol_value(types::I64, global_ptr);
-                        let len = builder.ins().iconst(types::I64, bytes.len() as i64);
-                        def_var_named(&mut builder, &vars, format!("{}_ptr", out_name), ptr);
-                        def_var_named(&mut builder, &vars, format!("{}_len", out_name), len);
-
-                        let callee = Self::import_func_id_split(
-                            &mut self.module,
-                            &mut self.import_ids,
-                            "molt_bigint_from_str",
-                            &[types::I64, types::I64],
-                            &[types::I64],
-                        );
-                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                        let call = builder.ins().call(local_callee, &[ptr, len]);
-                        builder.inst_results(call)[0]
-                    };
-                    let out_name_clone = out_name.clone();
-                    def_var_named(&mut builder, &vars, out_name, boxed);
-                    rc_skip_dec.insert(out_name_clone);
-                }
-                "const_bool" => {
-                    let val = op.value.unwrap_or(0);
-                    let boxed = box_bool(val);
-                    let iconst = builder.ins().iconst(types::I64, boxed);
-                    if let Some(ref out__) = op.out {
-                        let raw = builder.ins().iconst(types::I64, val);
-                        def_bool_result(
-                            &mut builder,
-                            &vars,
-                            &bool_primary_vars,
-                            out__,
-                            iconst,
-                            Some(raw),
-                        );
-                    }
-                }
-                "const_none" => {
-                    let iconst = builder.ins().iconst(types::I64, box_none());
-                    if let Some(out__) = op.out {
-                        def_var_named(&mut builder, &vars, out__, iconst);
-                    }
-                }
-                "const_not_implemented" => {
-                    let callee = Self::import_func_id_split(
+                _ if op_family == Some(fc::NativeOpFamily::ConstLiterals) => {
+                    let __flow = fc::const_literals::handle_const_literal_op(
+                        &op,
                         &mut self.module,
                         &mut self.import_ids,
-                        "molt_not_implemented",
-                        &[],
-                        &[types::I64],
+                        &mut self.data_pool,
+                        &mut self.next_data_id,
+                        &mut builder,
+                        &vars,
+                        &int_primary_vars,
+                        &bool_primary_vars,
+                        &float_primary_vars,
+                        &literal_hoists,
+                        &mut rc_skip_dec,
                     );
-                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                    let call = builder.ins().call(local_callee, &[]);
-                    let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out {
-                        def_var_named(&mut builder, &vars, out__, res);
+                    match __flow {
+                        fc::OpFlow::Continue => continue,
+                        fc::OpFlow::Proceed => {}
                     }
-                }
-                "const_ellipsis" => {
-                    let callee = Self::import_func_id_split(
-                        &mut self.module,
-                        &mut self.import_ids,
-                        "molt_ellipsis",
-                        &[],
-                        &[types::I64],
-                    );
-                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                    let call = builder.ins().call(local_callee, &[]);
-                    let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out {
-                        def_var_named(&mut builder, &vars, out__, res);
-                    }
-                }
-                "const_float" => {
-                    let val = op.f_value.expect("Float value not found");
-                    let raw_f64 = builder.ins().f64const(val);
-                    if let Some(ref out__) = op.out {
-                        if float_primary_vars.contains(out__.as_str()) {
-                            // Float-primary: store raw f64 directly in the F64
-                            // Variable.  Boxing deferred to escape points via
-                            // var_get_boxed.
-                            def_var_named(&mut builder, &vars, out__, raw_f64);
-                        } else {
-                            let boxed = box_float(val);
-                            let iconst = builder.ins().iconst(types::I64, boxed);
-                            def_var_named(&mut builder, &vars, out__, iconst);
-                        }
-                    }
-                }
-                "const_str" => {
-                    let bytes = require_const_str_payload(&op).to_vec();
-                    let Some(out_name) = op.out else {
-                        continue;
-                    };
-                    // Cache const_str NaN-boxed results in a stack slot keyed by
-                    // payload bytes. Stack slots persist across exception handler
-                    // boundaries, unlike Cranelift variables which can be reset
-                    // by check_exception cleanup. This fixes the while-loop
-                    // module-scope bug where const_str attr names were corrupted.
-                    let boxed = if let Some(slot) = const_str_hoisted_slots.get(&bytes) {
-                        builder.ins().stack_load(types::I64, *slot, 0)
-                    } else {
-                        let data_id = Self::intern_data_segment(
-                            &mut self.module,
-                            &mut self.data_pool,
-                            &mut self.next_data_id,
-                            &bytes,
-                        );
-                        let global_ptr = self.module.declare_data_in_func(data_id, builder.func);
-                        let ptr = builder.ins().symbol_value(types::I64, global_ptr);
-                        let len = builder.ins().iconst(types::I64, bytes.len() as i64);
-
-                        def_var_named(&mut builder, &vars, format!("{}_ptr", out_name), ptr);
-                        def_var_named(&mut builder, &vars, format!("{}_len", out_name), len);
-
-                        let callee = Self::import_func_id_split(
-                            &mut self.module,
-                            &mut self.import_ids,
-                            "molt_string_from_bytes",
-                            &[types::I64, types::I64, types::I64],
-                            &[types::I32],
-                        );
-                        let out_slot = builder.create_sized_stack_slot(StackSlotData::new(
-                            StackSlotKind::ExplicitSlot,
-                            8,
-                            3,
-                        ));
-                        let out_ptr = builder.ins().stack_addr(types::I64, out_slot, 0);
-                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                        builder.ins().call(local_callee, &[ptr, len, out_ptr]);
-                        builder.ins().stack_load(types::I64, out_slot, 0)
-                    };
-
-                    let out_name_clone = out_name.clone();
-                    def_var_named(&mut builder, &vars, out_name, boxed);
-                    rc_skip_dec.insert(out_name_clone);
-                }
-                "const_bytes" => {
-                    let bytes = op.bytes.as_ref().expect("Bytes not found");
-                    let Some(out_name) = op.out else {
-                        continue;
-                    };
-                    let boxed = if let Some(slot) = const_bytes_hoisted_slots.get(bytes) {
-                        builder.ins().stack_load(types::I64, *slot, 0)
-                    } else {
-                        let data_id = Self::intern_data_segment(
-                            &mut self.module,
-                            &mut self.data_pool,
-                            &mut self.next_data_id,
-                            bytes,
-                        );
-                        let global_ptr = self.module.declare_data_in_func(data_id, builder.func);
-                        let ptr = builder.ins().symbol_value(types::I64, global_ptr);
-                        let len = builder.ins().iconst(types::I64, bytes.len() as i64);
-
-                        def_var_named(&mut builder, &vars, format!("{}_ptr", out_name), ptr);
-                        def_var_named(&mut builder, &vars, format!("{}_len", out_name), len);
-
-                        let callee = Self::import_func_id_split(
-                            &mut self.module,
-                            &mut self.import_ids,
-                            "molt_bytes_from_bytes",
-                            &[types::I64, types::I64, types::I64],
-                            &[types::I32],
-                        );
-                        let out_slot = builder.create_sized_stack_slot(StackSlotData::new(
-                            StackSlotKind::ExplicitSlot,
-                            8,
-                            3,
-                        ));
-                        let out_ptr = builder.ins().stack_addr(types::I64, out_slot, 0);
-                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                        builder.ins().call(local_callee, &[ptr, len, out_ptr]);
-                        builder.ins().stack_load(types::I64, out_slot, 0)
-                    };
-
-                    let out_name_clone = out_name.clone();
-                    def_var_named(&mut builder, &vars, out_name, boxed);
-                    rc_skip_dec.insert(out_name_clone);
                 }
                 // Arithmetic family (fc::arith), INCLUDING the 24 `vec_*`
                 // reductions `handle_arith_op` delegates to `fc::vec_reductions`.
@@ -5263,7 +4778,7 @@ impl SimpleBackend {
                         &bool_primary_vars,
                         &nbc,
                         local_inc_ref_obj,
-                        &hoisted_str_slot,
+                        literal_hoists.str_output_slots(),
                     );
                 }
                 // handle_class_op family — extracted to fc::class_ops (M1)

@@ -58,6 +58,7 @@ pub(in crate::native_backend::function_compiler) enum NativeOpFamily {
     Generators,
     ScalarBuiltins,
     Callargs,
+    ConstLiterals,
     ListOps,
     DictOps,
     SetOps,
@@ -123,6 +124,10 @@ pub(in crate::native_backend::function_compiler) const FAMILY_DISPATCH_TABLE: &[
         super::scalar_builtins::HANDLED_KINDS,
     ),
     (NativeOpFamily::Callargs, super::callargs::HANDLED_KINDS),
+    (
+        NativeOpFamily::ConstLiterals,
+        super::const_literals::HANDLED_KINDS,
+    ),
     (NativeOpFamily::ListOps, super::list_ops::HANDLED_KINDS),
     (NativeOpFamily::DictOps, super::dict_ops::HANDLED_KINDS),
     (NativeOpFamily::SetOps, super::set_ops::HANDLED_KINDS),
@@ -204,25 +209,13 @@ pub(in crate::native_backend::function_compiler) const FAMILY_DISPATCH_TABLE: &[
     (NativeOpFamily::RetJump, super::ret_jump::HANDLED_KINDS),
 ];
 
-/// Kinds the dispatch handles with INLINE arms (the literal `"const" => {…}`
-/// arms that precede the family-routed arms), not via an extracted family.
+/// Kinds the dispatch handles with INLINE arms, not via an extracted family.
 ///
-/// These are listed here only so the enforcement tests can prove the inline set
-/// is disjoint from every family's kinds (the dispatch matches the literal arms
-/// first, so any overlap would silently shadow a family). Keep in sync with the
-/// literal arms at the top of the `compile_func_inner` op dispatch.
+/// This should stay empty for native result-producing op families. It remains
+/// as an enforcement hook so any future inline arm must declare itself and stay
+/// disjoint from family-owned kinds.
 #[cfg(feature = "native-backend")]
-pub(in crate::native_backend::function_compiler) const INLINE_DISPATCH_KINDS: &[&str] = &[
-    "const",
-    "const_bigint",
-    "const_bool",
-    "const_none",
-    "const_not_implemented",
-    "const_ellipsis",
-    "const_float",
-    "const_str",
-    "const_bytes",
-];
+pub(in crate::native_backend::function_compiler) const INLINE_DISPATCH_KINDS: &[&str] = &[];
 
 /// Result-producing op kinds that legitimately reach the dispatch's catch-all
 /// with NO native codegen (their `out` value is materialized elsewhere).
@@ -304,11 +297,15 @@ mod tests {
         let _ = family_map();
     }
 
-    /// The inline (`const*`) dispatch arms must not overlap any family's kinds.
-    /// The dispatch matches the literal inline arms before the family guards, so
-    /// an overlap would shadow the family handler for that kind.
+    /// Inline dispatch arms must not overlap any family's kinds. The set should
+    /// remain empty after constant/literal materialization moved into
+    /// `fc::const_literals`; this test keeps any future inline arm explicit.
     #[test]
     fn inline_kinds_are_disjoint_from_families() {
+        assert!(
+            INLINE_DISPATCH_KINDS.is_empty(),
+            "inline dispatch kinds should stay empty; add an extracted family instead"
+        );
         let family_kinds: HashSet<&str> = FAMILY_DISPATCH_TABLE
             .iter()
             .flat_map(|(_, kinds)| kinds.iter().copied())
@@ -317,6 +314,17 @@ mod tests {
             assert!(
                 !family_kinds.contains(inline),
                 "inline dispatch kind `{inline}` also appears in a family's HANDLED_KINDS",
+            );
+        }
+    }
+
+    #[test]
+    fn const_literal_kinds_route_to_const_literal_family() {
+        for &kind in super::super::const_literals::HANDLED_KINDS {
+            assert_eq!(
+                native_op_family(kind),
+                Some(NativeOpFamily::ConstLiterals),
+                "const literal kind `{kind}` must route to the ConstLiterals handler",
             );
         }
     }
