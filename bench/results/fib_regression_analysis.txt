@@ -1,3 +1,22 @@
+<!-- PERF-AUTHORITY:stale -->
+=== STALE -- THIS REGRESSION IS ALREADY FIXED. NOT AUTHORITATIVE. ===
+
+The fib/locals-dict regression analyzed below was FIXED: the unconditional
+`_init_locals_cache()` was removed from `start_function()` and moved to the
+per-visitor conditional paths (gated on `_function_contains_locals_call()`).
+See the NOTE comment at `src/molt/frontend/__init__.py` (search
+"locals-dict allocation moved to per-visitor conditional paths"). The "0.05x"
+/ "0.01x" figures below NO LONGER reflect the engine.
+
+The ONLY citable perf source of truth is
+`tools/perf_scoreboard.py --profile release-fast --classify`. This file is kept
+as a historical root-cause record only. See `tools/PERF_AUTHORITY.md`.
+
+  - generated_at: 2026-03 (pre-dates provenance stamping)
+  - status: FIXED
+
+====================================================================
+
 # fib Regression Analysis: Dict Allocation in Call Frames
 
 ## Root Cause

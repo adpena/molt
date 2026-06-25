@@ -1,3 +1,15 @@
+<!-- PERF-AUTHORITY:stale -->
+> **STALE PERF SNAPSHOT - NOT AUTHORITATIVE.**
+>
+> The ONLY citable perf source of truth is
+> `tools/perf_scoreboard.py --profile release-fast --classify`. This is a
+> 2026-03-20 profiling snapshot kept for historical context only; its
+> correctness/output notes may be stale and its profile findings reflect that
+> day's tree. Do NOT cite it as current perf. See `tools/PERF_AUTHORITY.md`.
+>
+> - generated_at: `2026-03-20`
+> - git_rev: `unknown` (pre-dates provenance stamping)
+
 # Profile Analysis - 2026-03-20
 
 ## Benchmarks Profiled
