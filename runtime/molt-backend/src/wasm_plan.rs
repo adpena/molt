@@ -341,11 +341,13 @@ pub(crate) fn prepare_lir_wasm_fast_output(
     tir_func: &crate::tir::function::TirFunction,
 ) -> Option<crate::tir::lower_to_wasm::WasmFunctionOutput> {
     // Drive the LIR carrier derivation from the PROVEN `repr_by_value` (the
-    // single source of truth shared with LLVM), so `LirRepr::I64` — and the bare
-    // `I64Add`/`I64*` ops gated on it — is assigned ONLY to proven `RawI64Safe`
-    // integers. The proof comes from the value-range analysis computed on this
-    // exact `tir_func` (the same source the LLVM `LlvmReprFacts::build` uses), so
-    // WASM and LLVM agree per `ValueId`. An unproven `int` (`MaybeBigInt`) lowers
+    // single source of truth shared with LLVM), so `LirRepr::I64` is assigned
+    // only to proven raw-i64 carriers (`RawI64Safe` or `RawI64FullDeopt`).
+    // Arithmetic still consults the inline-window proof before taking unchecked
+    // machine ops. The proof comes from the value-range analysis computed on
+    // this exact `tir_func` (the same source the LLVM `LlvmReprFacts::build`
+    // uses), so WASM and LLVM agree per `ValueId`. An unproven `int`
+    // (`MaybeBigInt`) lowers
     // to `DynBox`; its arithmetic emits the boxed runtime `Call(0)`, which is
     // rejected below so the function falls back to the IntFastLane-guarded slow
     // path (correctness preserved; the unsound bare op is un-emittable here).
