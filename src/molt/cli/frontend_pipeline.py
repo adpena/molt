@@ -500,6 +500,14 @@ def _prepare_build_callbacks(
     artifacts_root: Path,
     image_scope: _BinaryImageScope | None,
 ) -> _PreparedBuildCallbacks:
+    binary_image_closure_payload: Mapping[str, Any] | None = None
+
+    def _set_binary_image_closure_payload(
+        payload: Mapping[str, Any] | None,
+    ) -> None:
+        nonlocal binary_image_closure_payload
+        binary_image_closure_payload = payload
+
     timing_config = _FrontendTimingRecorderConfig(
         enabled=frontend_timing_enabled,
         raw=bool(frontend_timing_raw),
@@ -536,6 +544,7 @@ def _prepare_build_callbacks(
                 diagnostics_start=diagnostics_start,
                 phase_starts=phase_starts,
                 image_scope=image_scope,
+                binary_image_closure=binary_image_closure_payload,
                 module_graph=module_graph,
                 module_reasons=module_reasons,
                 frontend_module_timings=frontend_module_timings,
@@ -556,6 +565,7 @@ def _prepare_build_callbacks(
     return _PreparedBuildCallbacks(
         record_frontend_timing=_record_frontend_timing,
         build_diagnostics_payload=_build_diagnostics_payload,
+        set_binary_image_closure_payload=_set_binary_image_closure_payload,
     )
 
 def _prepare_frontend_stage_state(
@@ -587,6 +597,7 @@ def _prepare_frontend_stage_state(
         _PreparedFrontendLoweringConfig,
         Callable[..., None],
         Callable[[], tuple[dict[str, Any] | None, Path | None]],
+        Callable[[Mapping[str, Any] | None], None],
         Path,
     ]
     | None,
@@ -775,6 +786,7 @@ def _prepare_frontend_stage_state(
             prepared_frontend_lowering_config,
             prepared_build_callbacks.record_frontend_timing,
             prepared_build_callbacks.build_diagnostics_payload,
+            prepared_build_callbacks.set_binary_image_closure_payload,
             artifacts_root,
         ),
         None,
@@ -837,6 +849,7 @@ def _prepare_frontend_pipeline(
         prepared_frontend_lowering_config,
         record_frontend_timing,
         build_diagnostics_payload,
+        set_binary_image_closure_payload,
         artifacts_root,
     ) = prepared_frontend_stage_bundle
     midend_policy_outcomes_by_function = (
@@ -916,6 +929,7 @@ def _prepare_frontend_pipeline(
             json_output,
             command="build",
         )
+    set_binary_image_closure_payload(import_plan.closure_payload())
     compile_module_graph = {
         name: path
         for name, path in import_plan.module_graph.items()

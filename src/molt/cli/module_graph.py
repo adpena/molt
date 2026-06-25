@@ -867,12 +867,20 @@ def _prepare_entry_module_graph(
             project_root=project_root or source_path.parent,
             module_roots=module_roots,
         )
+    image_scope = image_scope.with_root_modules(
+        [
+            entry_module,
+            *(
+                name
+                for name in sorted(static_import_modules)
+                if name in module_graph
+            ),
+        ]
+    )
     return _PreparedEntryModuleGraph(
         image_scope=image_scope,
         declared_root_modules=frozenset(
-            name
-            for name in {entry_module, *static_import_modules}
-            if name in module_graph
+            name for name in image_scope.root_modules if name in module_graph
         ),
         stdlib_allowlist=stdlib_allowlist,
         roots=roots,
