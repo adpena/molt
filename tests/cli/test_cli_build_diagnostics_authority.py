@@ -48,7 +48,8 @@ _BUILD_DIAGNOSTICS_DEFINITIONS = (
 
 def test_cli_build_diagnostics_authority_is_single_home() -> None:
     for name in _BUILD_DIAGNOSTICS_NAMES:
-        assert getattr(cli, name) is getattr(build_diagnostics, name)
+        assert hasattr(build_diagnostics, name)
+        assert not hasattr(cli, name)
 
     cli_source = inspect.getsource(cli)
     for marker in _BUILD_DIAGNOSTICS_DEFINITIONS:

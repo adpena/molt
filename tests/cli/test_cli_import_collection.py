@@ -27,7 +27,9 @@ from molt.cli import backend_pipeline as cli_backend_pipeline
 from molt.cli import link_pipeline as cli_link_pipeline
 from molt.cli import non_native_output as cli_non_native_output
 import pytest
+from molt.cli import build_diagnostics as cli_build_diagnostics
 from molt.cli import build_inputs as cli_build_inputs
+from molt.cli import build_output_layout as cli_build_output_layout
 from molt.cli import build_results as cli_build_results
 from molt.cli import frontend_execution as cli_frontend_execution
 from molt.cli import frontend_parallel as cli_frontend_parallel
@@ -43,6 +45,7 @@ from molt.cli import module_stdlib_policy as cli_module_stdlib_policy
 from molt.cli import typecheck as cli_typecheck
 
 cli_deps = importlib.import_module("molt.cli.deps")
+cli_frontend_worker = importlib.import_module("molt.cli.frontend_worker")
 from molt.frontend import MoltValue, SimpleTIRGenerator
 from molt.type_facts import Fact, FunctionFacts, ModuleFacts, TypeFacts
 from tests.cli.process_guard import (
@@ -2835,7 +2838,7 @@ def test_write_link_fingerprint_reports_json_warning_on_metadata_loss(
         raise_metadata_write,
     )
 
-    warning = cli._write_link_fingerprint_if_needed(
+    warning = cli_build_results._write_link_fingerprint_if_needed(
         link_skipped=False,
         link_fingerprint={"hash": "fingerprint"},
         link_fingerprint_path=tmp_path / "state" / "link.json",
@@ -3322,7 +3325,7 @@ def test_build_native_link_success_data_reports_external_native_artifacts(
         platform_tag="x86_64_unknown_linux_gnu",
     )
 
-    data = cli._build_native_link_success_data(
+    data = cli_build_results._build_native_link_success_data(
         target="native",
         target_triple=None,
         source_path=tmp_path / "demo.py",
@@ -5785,25 +5788,25 @@ def test_default_molt_bin_is_cached(
 def test_wasm_runtime_root_is_cached(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    cli._wasm_runtime_root_cached.cache_clear()
+    cli_build_output_layout._wasm_runtime_root_cached.cache_clear()
     monkeypatch.setenv("MOLT_WASM_RUNTIME_DIR", str(tmp_path / "wasm-root"))
 
-    first = cli._wasm_runtime_root(tmp_path)
-    second = cli._wasm_runtime_root(tmp_path)
+    first = cli_build_output_layout._wasm_runtime_root(tmp_path)
+    second = cli_build_output_layout._wasm_runtime_root(tmp_path)
 
-    info = cli._wasm_runtime_root_cached.cache_info()
+    info = cli_build_output_layout._wasm_runtime_root_cached.cache_info()
     assert first == second == (tmp_path / "wasm-root")
     assert info.hits >= 1
     assert info.currsize >= 1
 
 
 def test_safe_output_base_is_cached() -> None:
-    cli._safe_output_base.cache_clear()
+    cli_build_output_layout._safe_output_base.cache_clear()
 
-    first = cli._safe_output_base("hello/world.py")
-    second = cli._safe_output_base("hello/world.py")
+    first = cli_build_output_layout._safe_output_base("hello/world.py")
+    second = cli_build_output_layout._safe_output_base("hello/world.py")
 
-    info = cli._safe_output_base.cache_info()
+    info = cli_build_output_layout._safe_output_base.cache_info()
     assert first == second == "hello_world.py"
     assert info.hits >= 1
     assert info.currsize >= 1
@@ -5812,13 +5815,13 @@ def test_safe_output_base_is_cached() -> None:
 def test_default_build_root_is_cached(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    cli._default_build_root_cached.cache_clear()
+    cli_build_output_layout._default_build_root_cached.cache_clear()
     monkeypatch.setenv("MOLT_HOME", str(tmp_path / "home-root"))
 
-    first = cli._default_build_root("hello/world.py")
-    second = cli._default_build_root("hello/world.py")
+    first = cli_build_output_layout._default_build_root("hello/world.py")
+    second = cli_build_output_layout._default_build_root("hello/world.py")
 
-    info = cli._default_build_root_cached.cache_info()
+    info = cli_build_output_layout._default_build_root_cached.cache_info()
     assert first == second == (tmp_path / "home-root" / "build" / "hello_world.py")
     assert info.hits >= 1
     assert info.currsize >= 1
@@ -5827,24 +5830,24 @@ def test_default_build_root_is_cached(
 def test_resolve_cache_root_is_cached(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    cli._resolve_cache_root_cached.cache_clear()
+    cli_build_output_layout._resolve_cache_root_cached.cache_clear()
 
-    first = cli._resolve_cache_root(tmp_path, "cache-dir")
-    second = cli._resolve_cache_root(tmp_path, "cache-dir")
+    first = cli_build_output_layout._resolve_cache_root(tmp_path, "cache-dir")
+    second = cli_build_output_layout._resolve_cache_root(tmp_path, "cache-dir")
 
-    info = cli._resolve_cache_root_cached.cache_info()
+    info = cli_build_output_layout._resolve_cache_root_cached.cache_info()
     assert first == second == (tmp_path / "cache-dir")
     assert info.hits >= 1
     assert info.currsize >= 1
 
 
 def test_resolve_out_dir_is_cached(tmp_path: Path) -> None:
-    cli._resolve_out_dir_cached.cache_clear()
+    cli_build_output_layout._resolve_out_dir_cached.cache_clear()
 
-    first = cli._resolve_out_dir(tmp_path, "dist")
-    second = cli._resolve_out_dir(tmp_path, "dist")
+    first = cli_build_output_layout._resolve_out_dir(tmp_path, "dist")
+    second = cli_build_output_layout._resolve_out_dir(tmp_path, "dist")
 
-    info = cli._resolve_out_dir_cached.cache_info()
+    info = cli_build_output_layout._resolve_out_dir_cached.cache_info()
     assert first == second == (tmp_path / "dist")
     assert info.hits >= 1
     assert info.currsize >= 1
@@ -5853,13 +5856,13 @@ def test_resolve_out_dir_is_cached(tmp_path: Path) -> None:
 def test_resolve_sysroot_is_cached(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    cli._resolve_sysroot_cached.cache_clear()
+    cli_build_output_layout._resolve_sysroot_cached.cache_clear()
     monkeypatch.setenv("MOLT_SYSROOT", "sdk-root")
 
-    first = cli._resolve_sysroot(tmp_path, None)
-    second = cli._resolve_sysroot(tmp_path, None)
+    first = cli_build_output_layout._resolve_sysroot(tmp_path, None)
+    second = cli_build_output_layout._resolve_sysroot(tmp_path, None)
 
-    info = cli._resolve_sysroot_cached.cache_info()
+    info = cli_build_output_layout._resolve_sysroot_cached.cache_info()
     assert first == second == (tmp_path / "sdk-root")
     assert info.hits >= 1
     assert info.currsize >= 1
@@ -6783,7 +6786,7 @@ def test_prepare_frontend_parallel_batch_reuses_precomputed_context_digest(
     )
 
     cached_results, worker_payloads, context_digest_by_module, batch_error = (
-        cli._prepare_frontend_parallel_batch(
+        cli_frontend_worker._prepare_frontend_parallel_batch(
             ["alpha"],
             module_graph={"alpha": module_path},
             module_sources={},
@@ -7335,7 +7338,7 @@ def test_prepare_frontend_parallel_batch_precomputes_scoped_known_classes_once(
         cli_module_cache, "_scoped_known_classes", wrapped_scoped_known_classes
     )
     monkeypatch.setattr(
-        cli_frontend_execution,
+        cli_frontend_worker,
         "_load_cached_module_lowering_result",
         lambda *args, **kwargs: None,
     )
@@ -7347,7 +7350,7 @@ def test_prepare_frontend_parallel_batch_precomputes_scoped_known_classes_once(
     )
 
     cached_results, worker_payloads, context_digest_by_module, batch_error = (
-        cli._prepare_frontend_parallel_batch(
+        cli_frontend_worker._prepare_frontend_parallel_batch(
             ["main", "alpha"],
             module_graph=module_graph,
             module_sources=module_sources,
@@ -7412,7 +7415,7 @@ def test_prepare_frontend_parallel_batch_uses_path_backed_source_leases(
     )
 
     cached_results, worker_payloads, context_digest_by_module, batch_error = (
-        cli._prepare_frontend_parallel_batch(
+        cli_frontend_worker._prepare_frontend_parallel_batch(
             ["main"],
             module_graph=module_graph,
             module_source_catalog=module_source_catalog,
@@ -7457,7 +7460,7 @@ def test_prepare_frontend_parallel_batch_uses_path_backed_source_leases(
     assert "source" not in payload
     assert payload["source_lease"]["kind"] == "path"
     assert payload["source_lease"]["path"] == str(module_graph["main"])
-    result = cli._frontend_lower_module_worker(payload)
+    result = cli_frontend_worker._frontend_lower_module_worker(payload)
     assert result["ok"] is True
 
 
@@ -7467,7 +7470,7 @@ def test_worker_source_lease_rejects_path_drift(tmp_path: Path) -> None:
     lease = cli_module_source._ModuleSourceLease.path_backed(module_path)
     module_path.write_text("VALUE = 100\n")
 
-    result = cli._frontend_lower_module_worker(
+    result = cli_frontend_worker._frontend_lower_module_worker(
         cli._module_worker_payload(
             "main",
             module_path=module_path,
@@ -7895,7 +7898,7 @@ def test_load_cached_module_lowering_result_reuses_precomputed_views(
 
 
 def test_module_frontend_generator_uses_scoped_inputs() -> None:
-    gen = cli._module_frontend_generator(
+    gen = cli_frontend_worker._module_frontend_generator(
         module_name="main",
         logical_source_path="/tmp/main.py",
         entry_override=None,
@@ -8176,7 +8179,7 @@ def test_parallel_build_reuses_cached_lowering_across_parallel_builds(
             self._payload = payload
 
         def result(self) -> dict[str, object]:
-            return cli._frontend_lower_module_worker(self._payload)
+            return cli_frontend_worker._frontend_lower_module_worker(self._payload)
 
     class _FakeExecutor:
         def __init__(self, *, max_workers: int) -> None:
@@ -8196,7 +8199,7 @@ def test_parallel_build_reuses_cached_lowering_across_parallel_builds(
         def submit(self, fn: object, payload: dict[str, object]) -> _FakeFuture:
             nonlocal submit_calls
             submit_calls += 1
-            assert fn is cli._frontend_lower_module_worker
+            assert fn is cli_frontend_worker._frontend_lower_module_worker
             return _FakeFuture(payload)
 
     monkeypatch.setattr(cli_frontend_execution, "ProcessPoolExecutor", _FakeExecutor)
@@ -8306,7 +8309,7 @@ def test_parallel_build_reuses_dependent_cache_after_stable_interface_change(
             self._payload = payload
 
         def result(self) -> dict[str, object]:
-            return cli._frontend_lower_module_worker(self._payload)
+            return cli_frontend_worker._frontend_lower_module_worker(self._payload)
 
     class _FakeExecutor:
         def __init__(self, *, max_workers: int) -> None:
@@ -8324,7 +8327,7 @@ def test_parallel_build_reuses_dependent_cache_after_stable_interface_change(
             return False
 
         def submit(self, fn: object, payload: dict[str, object]) -> _FakeFuture:
-            assert fn is cli._frontend_lower_module_worker
+            assert fn is cli_frontend_worker._frontend_lower_module_worker
             return _FakeFuture(payload)
 
     monkeypatch.setattr(cli_frontend_execution, "ProcessPoolExecutor", _FakeExecutor)
@@ -8436,7 +8439,7 @@ def test_parallel_build_allows_scoped_type_facts(
             self._payload = payload
 
         def result(self) -> dict[str, object]:
-            return cli._frontend_lower_module_worker(self._payload)
+            return cli_frontend_worker._frontend_lower_module_worker(self._payload)
 
     class _FakeExecutor:
         def __init__(self, *, max_workers: int) -> None:
@@ -8449,7 +8452,7 @@ def test_parallel_build_allows_scoped_type_facts(
             return False
 
         def submit(self, fn: object, payload: dict[str, object]) -> _FakeFuture:
-            assert fn is cli._frontend_lower_module_worker
+            assert fn is cli_frontend_worker._frontend_lower_module_worker
             captured_payloads.append(payload)
             return _FakeFuture(payload)
 
@@ -8992,7 +8995,7 @@ def test_build_reason_summary_is_stable() -> None:
         "b": {"entry_closure", "core_closure"},
         "c": {"core_closure"},
     }
-    summary = cli._build_reason_summary(reasons)
+    summary = cli_build_diagnostics._build_reason_summary(reasons)
     assert summary == {"core_closure": 2, "entry_closure": 2}
 
 
@@ -9000,44 +9003,57 @@ def test_build_diagnostics_enabled_from_env(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("MOLT_BUILD_DIAGNOSTICS", "1")
-    assert cli._build_diagnostics_enabled()
+    assert cli_build_diagnostics._build_diagnostics_enabled()
     monkeypatch.setenv("MOLT_BUILD_DIAGNOSTICS", "0")
-    assert not cli._build_diagnostics_enabled()
+    assert not cli_build_diagnostics._build_diagnostics_enabled()
 
 
 def test_build_allocation_diagnostics_enabled_from_env(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("MOLT_BUILD_ALLOCATIONS", "1")
-    assert cli._build_allocation_diagnostics_enabled()
+    assert cli_build_diagnostics._build_allocation_diagnostics_enabled()
     monkeypatch.setenv("MOLT_BUILD_ALLOCATIONS", "0")
-    assert not cli._build_allocation_diagnostics_enabled()
+    assert not cli_build_diagnostics._build_allocation_diagnostics_enabled()
 
 
 def test_resolve_build_diagnostics_verbosity_aliases() -> None:
-    assert cli._resolve_build_diagnostics_verbosity(None) == "default"
-    assert cli._resolve_build_diagnostics_verbosity("brief") == "summary"
-    assert cli._resolve_build_diagnostics_verbosity("verbose") == "full"
-    assert cli._resolve_build_diagnostics_verbosity("unknown") == "default"
+    assert cli_build_diagnostics._resolve_build_diagnostics_verbosity(None) == "default"
+    assert (
+        cli_build_diagnostics._resolve_build_diagnostics_verbosity("brief")
+        == "summary"
+    )
+    assert (
+        cli_build_diagnostics._resolve_build_diagnostics_verbosity("verbose")
+        == "full"
+    )
+    assert (
+        cli_build_diagnostics._resolve_build_diagnostics_verbosity("unknown")
+        == "default"
+    )
 
 
 def test_phase_duration_map_orders_by_start(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cli.time, "perf_counter", lambda: 10.0)
-    durations = cli._phase_duration_map({"module_graph": 2.0, "resolve_entry": 1.0})
+    durations = cli_build_diagnostics._phase_duration_map(
+        {"module_graph": 2.0, "resolve_entry": 1.0}
+    )
     assert durations["resolve_entry"] == 1.0
     assert durations["module_graph"] == 8.0
 
 
 def test_resolve_build_diagnostics_path_relative_and_absolute(tmp_path: Path) -> None:
-    rel = cli._resolve_build_diagnostics_path("diag.json", tmp_path)
+    rel = cli_build_diagnostics._resolve_build_diagnostics_path("diag.json", tmp_path)
     assert rel == tmp_path / "diag.json"
     abs_path = tmp_path / "absolute_diag.json"
-    resolved_abs = cli._resolve_build_diagnostics_path(str(abs_path), tmp_path)
+    resolved_abs = cli_build_diagnostics._resolve_build_diagnostics_path(
+        str(abs_path), tmp_path
+    )
     assert resolved_abs == abs_path
 
 
 def test_build_midend_diagnostics_payload_summarizes_policy_and_passes() -> None:
-    payload = cli._build_midend_diagnostics_payload(
+    payload = cli_build_diagnostics._build_midend_diagnostics_payload(
         requested_profile="release",
         policy_outcomes_by_function={
             "pkg.mod::fn_a": {
@@ -9492,7 +9508,7 @@ def test_frontend_lower_module_worker_smoke(tmp_path: Path) -> None:
         "optimization_profile": "dev",
         "pgo_hot_functions": ["worker_module::molt_main"],
     }
-    result = cli._frontend_lower_module_worker(payload)
+    result = cli_frontend_worker._frontend_lower_module_worker(payload)
     assert result["ok"] is True
     assert isinstance(result["functions"], list)
     assert isinstance(result["func_code_ids"], dict)
@@ -9545,15 +9561,15 @@ def test_prepare_frontend_lowering_config_uses_tighter_native_chunk_default(
 
 
 def test_duration_ms_from_ns_clamps_and_converts() -> None:
-    assert cli._duration_ms_from_ns(1_000_000, 2_500_000) == 1.5
-    assert cli._duration_ms_from_ns(5, 4) == 0.0
-    assert cli._duration_ms_from_ns("bad", 10) == 0.0
+    assert cli_build_diagnostics._duration_ms_from_ns(1_000_000, 2_500_000) == 1.5
+    assert cli_build_diagnostics._duration_ms_from_ns(5, 4) == 0.0
+    assert cli_build_diagnostics._duration_ms_from_ns("bad", 10) == 0.0
 
 
 def test_emit_build_diagnostics_includes_frontend_parallel_layer_counters(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    cli._emit_build_diagnostics(
+    cli_build_diagnostics._emit_build_diagnostics(
         diagnostics={
             "total_sec": 1.25,
             "frontend_parallel": {
@@ -9675,7 +9691,7 @@ def test_emit_build_diagnostics_includes_frontend_parallel_layer_counters(
 def test_capture_build_allocation_diagnostics_returns_top_sites() -> None:
     cli.tracemalloc.start(5)
     try:
-        payload = cli._capture_build_allocation_diagnostics(top_n=3)
+        payload = cli_build_diagnostics._capture_build_allocation_diagnostics(top_n=3)
     finally:
         cli.tracemalloc.stop()
     assert payload is not None
@@ -9687,7 +9703,7 @@ def test_capture_build_allocation_diagnostics_returns_top_sites() -> None:
 def test_emit_build_diagnostics_prints_allocation_summary(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    cli._emit_build_diagnostics(
+    cli_build_diagnostics._emit_build_diagnostics(
         diagnostics={
             "total_sec": 1.0,
             "allocations": {
@@ -9724,7 +9740,7 @@ def test_midend_policy_config_snapshot_honors_env(
     monkeypatch.setenv("MOLT_MIDEND_BUDGET_BETA", "2.0")
     monkeypatch.setenv("MOLT_MIDEND_BUDGET_SCALE", "1.5")
 
-    assert cli._midend_policy_config_snapshot() == {
+    assert cli_build_diagnostics._midend_policy_config_snapshot() == {
         "profile_override": "release",
         "hot_tier_promotion_enabled": False,
         "work_budget_override": 2048.0,
@@ -9737,7 +9753,7 @@ def test_midend_policy_config_snapshot_honors_env(
 def test_emit_build_diagnostics_summary_omits_hotspot_details(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    cli._emit_build_diagnostics(
+    cli_build_diagnostics._emit_build_diagnostics(
         diagnostics={
             "total_sec": 1.25,
             "frontend_parallel": {
@@ -9804,7 +9820,7 @@ def test_emit_build_diagnostics_summary_omits_hotspot_details(
 def test_emit_build_diagnostics_full_prints_extended_hotspots(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    cli._emit_build_diagnostics(
+    cli_build_diagnostics._emit_build_diagnostics(
         diagnostics={
             "frontend_module_timings_top": [
                 {
@@ -13237,7 +13253,10 @@ def test_build_release_rust_target_uses_release_fast_backend_profile_by_default(
 
 
 def test_browser_deploy_profile_defaults_to_full_wasm_profile() -> None:
-    assert cli._DEPLOY_PROFILE_DEFAULTS["browser"]["wasm_profile"] == "full"
+    assert (
+        cli_build_output_layout._DEPLOY_PROFILE_DEFAULTS["browser"]["wasm_profile"]
+        == "full"
+    )
 
 
 def test_build_cli_defaults_to_micro_stdlib_profile(
@@ -17641,7 +17660,7 @@ def test_publication_sidecar_writers_use_atomic_temp_siblings(
     cli._write_text_if_changed(generated_text_path, "value = 1\n")
 
     diagnostics_path = tmp_path / "logs" / "diagnostics.json"
-    cli._emit_build_diagnostics(
+    cli_build_diagnostics._emit_build_diagnostics(
         diagnostics={"total_sec": 1.0},
         diagnostics_path=diagnostics_path,
         json_output=True,
