@@ -426,16 +426,8 @@ def test_extension_build_emits_wheel_and_manifest(tmp_path: Path, monkeypatch) -
         runtime_lib.write_bytes(b"runtime")
         return True
 
-    def fake_run(
-        cmd: list[str],
-        *,
-        cwd: Path,
-        env: dict[str, str],
-        capture_output: bool,
-        text: bool,
-        check: bool,
-    ) -> subprocess.CompletedProcess[str]:
-        del cwd, env, capture_output, text, check
+    def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        del kwargs
         out_index = cmd.index("-o")
         out_path = Path(cmd[out_index + 1])
         out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -446,7 +438,7 @@ def test_extension_build_emits_wheel_and_manifest(tmp_path: Path, monkeypatch) -
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     monkeypatch.setattr(cli_commands, "_ensure_runtime_lib", fake_ensure_runtime_lib)
-    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+    monkeypatch.setattr(cli_commands, "_run_completed_command", fake_run)
 
     out_dir = project_root / "dist"
     rc = cli_commands.extension_build(
@@ -532,16 +524,8 @@ def test_extension_build_cross_target_uses_target_runtime(
         runtime_lib.write_bytes(b"runtime")
         return True
 
-    def fake_run(
-        cmd: list[str],
-        *,
-        cwd: Path,
-        env: dict[str, str],
-        capture_output: bool,
-        text: bool,
-        check: bool,
-    ) -> subprocess.CompletedProcess[str]:
-        del cwd, env, capture_output, text, check
+    def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        del kwargs
         commands.append(cmd)
         out_index = cmd.index("-o")
         out_path = Path(cmd[out_index + 1])
@@ -555,9 +539,11 @@ def test_extension_build_cross_target_uses_target_runtime(
     monkeypatch.setattr(cli_commands, "_ensure_runtime_lib", fake_ensure_runtime_lib)
     monkeypatch.setattr(cli_commands, "_ensure_rustup_target", lambda _target, _warnings: True)
     monkeypatch.setattr(
-        cli.shutil, "which", lambda tool: "/usr/bin/zig" if tool == "zig" else None
+        cli_commands.shutil,
+        "which",
+        lambda tool: "/usr/bin/zig" if tool == "zig" else None,
     )
-    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+    monkeypatch.setattr(cli_commands, "_run_completed_command", fake_run)
 
     out_dir = project_root / "dist"
     target = "aarch64-unknown-linux-gnu"
@@ -625,16 +611,8 @@ def test_extension_numpy_build_audit_publish_dry_run_matrix(
         runtime_lib.write_bytes(b"runtime")
         return True
 
-    def fake_run(
-        cmd: list[str],
-        *,
-        cwd: Path,
-        env: dict[str, str],
-        capture_output: bool,
-        text: bool,
-        check: bool,
-    ) -> subprocess.CompletedProcess[str]:
-        del cwd, env, capture_output, text, check
+    def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        del kwargs
         out_index = cmd.index("-o")
         out_path = Path(cmd[out_index + 1])
         out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -645,14 +623,16 @@ def test_extension_numpy_build_audit_publish_dry_run_matrix(
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     monkeypatch.setattr(cli_commands, "_ensure_runtime_lib", fake_ensure_runtime_lib)
-    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+    monkeypatch.setattr(cli_commands, "_run_completed_command", fake_run)
 
     if target is not None:
         monkeypatch.setattr(
-            cli, "_ensure_rustup_target", lambda _target, _warnings: True
+            cli_commands, "_ensure_rustup_target", lambda _target, _warnings: True
         )
         monkeypatch.setattr(
-            cli.shutil, "which", lambda tool: "/usr/bin/zig" if tool == "zig" else None
+            cli_commands.shutil,
+            "which",
+            lambda tool: "/usr/bin/zig" if tool == "zig" else None,
         )
 
     out_dir = project_root / ("dist-" + (target or "native"))
