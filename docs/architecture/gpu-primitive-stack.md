@@ -209,10 +209,24 @@ Full VLM inference pipeline using the primitive stack:
 
 ### DFlash
 
-Flash-attention-style fused attention using DDTree scoring:
-- Block-diagonal attention with H2O importance scoring
-- Tiered KV cache with eviction policies
-- All expressed as compositions of the 26 primitives
+Paper-faithful DFlash is target-conditioned block-diffusion speculative
+decoding, not generic flash attention and not an H2O/DDTree cache policy. The
+contract lives in `src/molt/gpu/dflash/` and
+`docs/spec/areas/perf/0520_DFLASH_CONTRACT.md`.
+
+Required identity:
+- target verifier and drafter are distinct;
+- the drafter consumes target hidden features and target-derived KV/context;
+- a block of mask positions is drafted in one parallel diffusion pass;
+- the target verifies the draft block by longest accepted prefix and owns the
+  next anchor/bonus token;
+- a named target/draft checkpoint pair is required, and missing trained
+  drafters fail closed.
+
+DDTree, DFlare, SGLang/vLLM/TensorRT-LLM integrations, and future serving
+adapters are DFlash-family variants only when they preserve those invariants and
+declare their model-pair, layer-selection, KV-injection, attention, and serving
+stack provenance explicitly.
 
 ## Performance Characteristics
 
