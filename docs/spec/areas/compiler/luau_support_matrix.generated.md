@@ -7,11 +7,11 @@
 ## Summary
 
 - `compile-error`: `0`
-- `implemented-exact`: `296`
+- `implemented-exact`: `298`
 - `implemented-target-limited`: `54`
 - `not-admitted`: `47`
 - `runtime-capability-error`: `6`
-- `total`: `403`
+- `total`: `405`
 
 ## Matrix
 
@@ -30,6 +30,7 @@
 | `ascii_from_obj` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `asyncgen_locals_register` | `not-admitted` | Checked Luau emission rejects semantic stub markers. |
 | `band` | `implemented-exact` | Lowered without checked-output stub markers. |
+| `binding_alias` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `binop` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `bit_and` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `bit_or` | `implemented-exact` | Lowered without checked-output stub markers. |
@@ -82,6 +83,7 @@
 | `chan_send_yield` | `not-admitted` | Checked Luau emission rejects semantic stub markers. |
 | `check_exception` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `checked_add` | `implemented-exact` | Lowered without checked-output stub markers. |
+| `checked_mul` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `chr` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `class_apply_set_name` | `implemented-target-limited` | __set_name__ hooks dispatch over Luau class-table snapshots for the admitted subset. |
 | `class_layout_version` | `implemented-target-limited` | Modeled as Luau class-table layout metadata for the admitted subset. |

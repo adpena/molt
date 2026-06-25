@@ -1065,9 +1065,9 @@ impl<'a> SsaContext<'a> {
                 .unwrap_or_default();
         }
         // Two-result ops: `var` = results[0], `out` = results[1] (the
-        // IterNextUnboxed transport convention; CheckedAdd carries
-        // var = wrapping sum, out = overflow flag).
-        if op.kind == "iter_next_unboxed" || op.kind == "checked_add" {
+        // IterNextUnboxed transport convention; CheckedAdd/CheckedMul carry
+        // var = wrapping sum/product, out = overflow flag).
+        if op.kind == "iter_next_unboxed" || op.kind == "checked_add" || op.kind == "checked_mul" {
             let mut out = Vec::new();
             if let Some(var) = &op.var
                 && is_variable(var)
@@ -1260,7 +1260,7 @@ impl<'a> SsaContext<'a> {
         if let Some(ref out) = op.out {
             attrs.insert("_simple_out".into(), AttrValue::Str(out.clone()));
         }
-        if op.kind == "iter_next_unboxed" || op.kind == "checked_add" {
+        if op.kind == "iter_next_unboxed" || op.kind == "checked_add" || op.kind == "checked_mul" {
             if let Some(ref value_out) = op.var {
                 attrs.insert("_simple_result_0".into(), AttrValue::Str(value_out.clone()));
             }
@@ -1741,13 +1741,13 @@ fn is_variable(name: &str) -> bool {
 }
 
 fn simple_var_field_is_transport_fact(kind: &str) -> bool {
-    !matches!(kind, "checked_add" | "iter_next_unboxed")
+    !matches!(kind, "checked_add" | "checked_mul" | "iter_next_unboxed")
 }
 
 fn simple_var_field_is_value_operand(op: &OpIR) -> bool {
     if matches!(
         op.kind.as_str(),
-        "store_var" | "delete_var" | "checked_add" | "iter_next_unboxed"
+        "store_var" | "delete_var" | "checked_add" | "checked_mul" | "iter_next_unboxed"
     ) {
         return false;
     }

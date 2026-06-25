@@ -1134,6 +1134,63 @@ pub(crate) fn int_value_fits_inline(builder: &mut FunctionBuilder, val: Value) -
     builder.ins().icmp(IntCC::UnsignedLessThan, biased, limit)
 }
 
+/// Raw pieces of a signed 64-bit multiply with the `smulhi` overflow witness
+/// (Cranelift 0.131 has NO `smul_overflow`, unlike `sadd_overflow`).
+///
+/// Returns `(product, hi, sign)`:
+///   * `product` — the low 64 bits of `lhs * rhs` (the wrapping result),
+///   * `hi`      — the upper 64 bits of the signed 128-bit product (`smulhi`),
+///   * `sign`    — the arithmetic sign-extension of `product` (`product >> 63`).
+///
+/// The signed 64-bit multiply overflows iff `hi != sign`. Both
+/// [`imul_overflow64`] and [`imul_checked_inline`] derive their boolean flag
+/// from this single source of truth (no duplicated `smulhi` pattern), each
+/// forming its own polarity with a direct `icmp` so the result stays a clean
+/// `I8` 0/1 (Cranelift folded booleans into `I8`, so a `bnot` would yield
+/// `0xFE` and silently corrupt a downstream `band`).
+#[cfg(feature = "native-backend")]
+fn imul_smulhi_pieces(
+    builder: &mut FunctionBuilder,
+    lhs: Value,
+    rhs: Value,
+) -> (Value, Value, Value) {
+    let prod = builder.ins().imul(lhs, rhs);
+    // smulhi gives the upper 64 bits of the signed 128-bit product.
+    let hi = builder.ins().smulhi(lhs, rhs);
+    // If there was no 64-bit overflow, hi must be the sign-extension of prod,
+    // i.e. hi == prod >> 63 (arithmetic).
+    let sixty_three = builder.ins().iconst(types::I64, 63);
+    let sign = builder.ins().sshr(prod, sixty_three);
+    (prod, hi, sign)
+}
+
+/// Perform `imul` with hardware-exact 64-bit signed-overflow detection via the
+/// `smulhi` pattern.
+///
+/// Returns `(product, overflow64)` where `product` is the low 64 bits of the
+/// signed multiplication and `overflow64` is an `I8` boolean Value that is
+/// **true iff the signed product overflowed i64** — i.e. the full 128-bit
+/// product does not fit in 64 bits. The flag polarity matches Cranelift's
+/// `sadd_overflow` second result (true = overflowed), so the `checked_mul`
+/// lowering mirrors the `checked_add` `(sum, of)` shape exactly.
+///
+/// This is a FULL 64-bit-exact overflow flag, NOT a 47-bit-inline-window test:
+/// the overflow-peel accumulator is a genuine full-width i64 carrier, so it
+/// must deopt to the boxed BigInt slow loop only at the true 2^63 boundary.
+/// (Reusing the `fits_47`-ANDing `imul_checked_inline` here would deopt the
+/// accumulator 2^16× too early — a perf bug, not a correctness bug.)
+#[cfg(feature = "native-backend")]
+pub(crate) fn imul_overflow64(
+    builder: &mut FunctionBuilder,
+    lhs: Value,
+    rhs: Value,
+) -> (Value, Value) {
+    let (prod, hi, sign) = imul_smulhi_pieces(builder, lhs, rhs);
+    // Overflow iff the high half differs from the low half's sign-extension.
+    let overflow64 = builder.ins().icmp(IntCC::NotEqual, hi, sign);
+    (prod, overflow64)
+}
+
 /// Perform `imul` with 64-bit overflow detection via `smulhi`.
 ///
 /// Two 47-bit signed values can produce a product exceeding 64 bits (up to ~93
@@ -1145,19 +1202,20 @@ pub(crate) fn int_value_fits_inline(builder: &mut FunctionBuilder, val: Value) -
 ///   1. The full 128-bit product equals the 64-bit `imul` result (no 64-bit
 ///      overflow), AND
 ///   2. The 64-bit result fits in a 47-bit signed inline integer.
+///
+/// Shares the `smulhi` pattern with [`imul_overflow64`] via
+/// [`imul_smulhi_pieces`] (single source of truth); this variant additionally
+/// ANDs in the 47-bit inline-window test, which the full-range `checked_mul`
+/// carrier must NOT do.
 #[cfg(feature = "native-backend")]
 pub(crate) fn imul_checked_inline(
     builder: &mut FunctionBuilder,
     lhs: Value,
     rhs: Value,
 ) -> (Value, Value) {
-    let prod = builder.ins().imul(lhs, rhs);
-    // smulhi gives the upper 64 bits of the signed 128-bit product.
-    let hi = builder.ins().smulhi(lhs, rhs);
-    // If there was no 64-bit overflow, hi must be the sign-extension of prod,
-    // i.e. hi == prod >> 63 (arithmetic).
-    let sixty_three = builder.ins().iconst(types::I64, 63);
-    let sign = builder.ins().sshr(prod, sixty_three);
+    let (prod, hi, sign) = imul_smulhi_pieces(builder, lhs, rhs);
+    // No 64-bit overflow iff hi == prod's sign-extension (direct icmp keeps the
+    // result a clean I8 0/1 for the band below).
     let no_overflow_64 = builder.ins().icmp(IntCC::Equal, hi, sign);
     // Also check the result fits in 47-bit signed payload.
     let fits_47 = int_value_fits_inline(builder, prod);

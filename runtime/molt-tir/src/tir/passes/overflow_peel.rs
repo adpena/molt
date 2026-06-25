@@ -41,7 +41,7 @@
 //!   overflows, the wrapped sums are carried to the header but the loop
 //!   breaks on the very next guard evaluation, and the slow loop is seeded
 //!   from the `prev_*` phis — the PRE-iteration values. The qualified body is
-//!   pure (Copies + Adds only), so re-running the iteration on the boxed path
+//!   pure (Copies + Add/Mul + ConstInt only), so re-running the iteration on the boxed path
 //!   is observationally identical, and no bridge arithmetic exists that could
 //!   itself wrap. Wrapped values are never observed as Python ints: the only
 //!   op that can read them on the overflow pass is the guard compare, whose
@@ -107,8 +107,8 @@ enum Refusal {
     NonConstInit,
     /// A header phi is not I64-typed.
     NonIntPhi,
-    /// A header phi's latch update is not a recognised `Add` accumulator.
-    NonAddUpdate,
+    /// A header phi's latch update is not a recognised arithmetic accumulator.
+    NonArithmeticUpdate,
     /// A value defined inside the loop (other than the phis) is used outside.
     InteriorLiveOut,
     /// The exit block has predecessors other than the loop guard.
@@ -124,8 +124,14 @@ struct PhiPlan {
     phi: ValueId,
     /// The init value passed by the preheader (chases to ConstInt).
     init_arg: ValueId,
-    /// Index in the body ops of the `Add` that updates this phi.
-    add_op_index: usize,
+    /// Index in the body ops of the pure arithmetic op (`Add` or `Mul`) that
+    /// updates this phi.
+    update_op_index: usize,
+    /// The original update opcode (`Add` or `Mul`). The fast-loop swap maps it
+    /// to the matching checked op (`CheckedAdd`/`CheckedMul`); the slow loop —
+    /// cloned from the body BEFORE the swap — keeps this plain opcode, so its
+    /// boxed `molt_add`/`molt_mul` path stays BigInt-exact on re-execution.
+    update_opcode: OpCode,
 }
 
 pub fn run(func: &mut TirFunction, _am: &mut crate::tir::analysis::AnalysisManager) -> PassStats {
@@ -340,15 +346,17 @@ fn try_peel_loop(func: &mut TirFunction, header: BlockId) -> Result<usize, Refus
     if latch_args.len() != phis.len() {
         return Err(Refusal::MultiBlockBody);
     }
-    // Body purity: Copies (incl. markers), `Add`s, and constant
+    // Body purity: Copies (incl. markers), `Add`/`Mul`s, and constant
     // materialisation only (the frontend leaves un-hoisted literal steps —
     // e.g. `total + -20000000` — as in-body ConstInts; they are pure).
     // Anything that can call, store, load, raise, or observe runtime state
     // disqualifies — re-execution of the failed iteration on the slow path
-    // must be observationally identical.
+    // must be observationally identical. `Mul` is pure exactly like `Add`
+    // (no side effect, deterministic), so a multiply accumulator
+    // (`prod = prod * i`) re-executes BigInt-exact on the boxed slow loop.
     for op in &body_block.ops {
         match op.opcode {
-            OpCode::Copy | OpCode::Add | OpCode::ConstInt => {}
+            OpCode::Copy | OpCode::Add | OpCode::Mul | OpCode::ConstInt => {}
             _ => return Err(Refusal::ImpureBody),
         }
     }
@@ -423,7 +431,7 @@ fn try_peel_loop(func: &mut TirFunction, header: BlockId) -> Result<usize, Refus
     }
 
     // ── Qualify every phi: I64-typed, ConstInt init, latch update that is
-    //    either a recognised Add accumulator or rejected. ALL phis must
+    //    either a recognised Add/Mul accumulator or rejected. ALL phis must
     //    qualify (all-or-nothing: a single boxed phi would re-box the loop). ──
     let def_by_result: HashMap<ValueId, &TirOp> = func
         .blocks
@@ -454,18 +462,21 @@ fn try_peel_loop(func: &mut TirFunction, header: BlockId) -> Result<usize, Refus
             return Err(Refusal::NonConstInit);
         }
         let update = chase_copies(latch_args[arg_index], &def_by_result);
-        let Some(&add_op_index) = body_defs.get(&update) else {
-            return Err(Refusal::NonAddUpdate);
+        let Some(&update_op_index) = body_defs.get(&update) else {
+            return Err(Refusal::NonArithmeticUpdate);
         };
-        let add_op = &body_block.ops[add_op_index];
-        if add_op.opcode != OpCode::Add
+        let add_op = &body_block.ops[update_op_index];
+        // The update must be a binary I64 `Add` or `Mul`. Both have a total
+        // hardware-overflow-flagged checked form (`CheckedAdd`/`CheckedMul`)
+        // and are pure, so the dual-loop transform is sound for either.
+        if !matches!(add_op.opcode, OpCode::Add | OpCode::Mul)
             || add_op.operands.len() != 2
             || add_op.results.len() != 1
             || !matches!(func.value_types.get(&add_op.results[0]), Some(TirType::I64))
         {
-            return Err(Refusal::NonAddUpdate);
+            return Err(Refusal::NonArithmeticUpdate);
         }
-        // Each Add operand must chase to a header phi, a loop-invariant
+        // Each operand must chase to a header phi, a loop-invariant
         // value (defined outside the loop blocks), or an in-body ConstInt
         // (a literal step the frontend left un-hoisted — constant, so
         // trivially invariant).
@@ -482,25 +493,26 @@ fn try_peel_loop(func: &mut TirFunction, header: BlockId) -> Result<usize, Refus
                         .iter()
                         .any(|op| op.results.contains(&origin)));
             if !phi_ids.contains(&origin) && !invariant {
-                return Err(Refusal::NonAddUpdate);
+                return Err(Refusal::NonArithmeticUpdate);
             }
         }
         plans.push(PhiPlan {
             phi: phi.id,
             init_arg,
-            add_op_index,
+            update_op_index,
+            update_opcode: add_op.opcode,
         });
     }
     if plans.is_empty() {
-        return Err(Refusal::NonAddUpdate);
+        return Err(Refusal::NonArithmeticUpdate);
     }
-    // Two phis updated by the same Add (aliased accumulators) would make the
-    // CheckedAdd swap ambiguous.
+    // Two phis updated by the same arithmetic op (aliased accumulators) would
+    // make the checked-op swap ambiguous.
     {
         let mut seen = HashSet::new();
         for p in &plans {
-            if !seen.insert(p.add_op_index) {
-                return Err(Refusal::NonAddUpdate);
+            if !seen.insert(p.update_op_index) {
+                return Err(Refusal::NonArithmeticUpdate);
             }
         }
     }
@@ -887,9 +899,12 @@ fn try_peel_loop(func: &mut TirFunction, header: BlockId) -> Result<usize, Refus
         }
     }
 
-    // 6. Body: swap each plan's Add → CheckedAdd (keeping the original sum
-    //    ValueId so the latch args stay valid), fan the flags in with Or,
-    //    snapshot the pre-iteration phi values, and extend the latch args.
+    // 6. Body: swap each plan's Add → CheckedAdd / Mul → CheckedMul (keeping
+    //    the original result ValueId so the latch args stay valid), fan the
+    //    flags in with Or, snapshot the pre-iteration phi values, and extend
+    //    the latch args. The matching checked op is chosen from the recorded
+    //    update opcode; the slow loop was cloned BEFORE this swap, so it keeps
+    //    the plain `Add`/`Mul` (BigInt-exact on re-execution).
     let mut flag_values: Vec<ValueId> = Vec::new();
     {
         let body_block = func.blocks.get_mut(&body).expect("body exists");
@@ -897,8 +912,16 @@ fn try_peel_loop(func: &mut TirFunction, header: BlockId) -> Result<usize, Refus
             let flag = ValueId(func.next_value);
             func.next_value += 1;
             func.value_types.insert(flag, TirType::Bool);
-            let add_op = &mut body_block.ops[plan.add_op_index];
-            add_op.opcode = OpCode::CheckedAdd;
+            let add_op = &mut body_block.ops[plan.update_op_index];
+            add_op.opcode = match plan.update_opcode {
+                OpCode::Add => OpCode::CheckedAdd,
+                OpCode::Mul => OpCode::CheckedMul,
+                // Unreachable: phi-qual admits only Add/Mul updates.
+                other => unreachable!(
+                    "overflow_peel: unexpected update opcode {other:?} (phi-qual \
+                     admits only Add/Mul)"
+                ),
+            };
             add_op.results.push(flag);
             flag_values.push(flag);
         }
@@ -1344,6 +1367,38 @@ mod tests {
     }
 
     #[test]
+    fn live_shape_mul_updates_become_checked_mul() {
+        let mut func = live_shape_function();
+        for block in func.blocks.values_mut() {
+            for op in &mut block.ops {
+                if op.opcode == OpCode::Add {
+                    op.opcode = OpCode::Mul;
+                }
+            }
+        }
+
+        let stats = run_peel(&mut func);
+        assert!(stats.ops_added > 0, "the multiply shape must peel");
+        verify_function(&func).expect("peeled multiply function must verify");
+
+        let checked_mul: usize = func
+            .blocks
+            .values()
+            .flat_map(|b| b.ops.iter())
+            .filter(|op| op.opcode == OpCode::CheckedMul)
+            .count();
+        assert_eq!(checked_mul, 2, "both phi updates become CheckedMul");
+
+        let plain_mul: usize = func
+            .blocks
+            .values()
+            .flat_map(|b| b.ops.iter())
+            .filter(|op| op.opcode == OpCode::Mul)
+            .count();
+        assert_eq!(plain_mul, 2, "the slow clone keeps the plain Muls");
+    }
+
+    #[test]
     fn exception_handler_function_refuses() {
         let mut func = live_shape_function();
         // Inject a TryStart anywhere — has_exception_handlers() turns on.
@@ -1401,5 +1456,64 @@ mod tests {
         func.value_types.insert(ValueId(0), TirType::I64);
         let stats = run_peel(&mut func);
         assert_eq!(stats.ops_added, 0, "param-seeded accumulator must refuse");
+    }
+
+    /// A product accumulator (`t = t * i`) peels exactly like an add
+    /// accumulator: the fast body update swaps to `CheckedMul` (the
+    /// hardware-overflow-flagged multiply) and the boxed slow clone keeps the
+    /// plain `Mul` (BigInt-exact on re-execution). The co-resident IV update
+    /// stays `Add`/`CheckedAdd`, proving the swap is keyed per-op on the
+    /// recorded update opcode, not globally.
+    #[test]
+    fn mul_accumulator_peels_to_checked_mul() {
+        let mut func = live_shape_function();
+        // Convert the first accumulator's update `t = t + i` to `t = t * i`.
+        // The fixture's body is a single linear block latching to the header;
+        // its first `Add` (t_in + i_in -> t_sum) is the accumulator update.
+        let header = func
+            .loop_roles
+            .iter()
+            .find(|(_, r)| **r == LoopRole::LoopHeader)
+            .map(|(b, _)| *b)
+            .unwrap();
+        let body = match &func.blocks[&func.loop_cond_blocks[&header]].terminator {
+            Terminator::CondBranch { then_block, .. } => *then_block,
+            _ => panic!("guard must end in a CondBranch"),
+        };
+        {
+            let body_block = func.blocks.get_mut(&body).expect("body exists");
+            let first_add = body_block
+                .ops
+                .iter_mut()
+                .find(|o| o.opcode == OpCode::Add)
+                .expect("the accumulator update is an Add");
+            first_add.opcode = OpCode::Mul;
+        }
+
+        let blocks_before = func.blocks.len();
+        let stats = run_peel(&mut func);
+        assert!(stats.ops_added > 0, "the product accumulator must peel");
+        assert_eq!(func.blocks.len(), blocks_before + 5);
+        verify_function(&func).expect("peeled function must verify");
+
+        let count = |opcode: OpCode| -> usize {
+            func.blocks
+                .values()
+                .flat_map(|b| b.ops.iter())
+                .filter(|op| op.opcode == opcode)
+                .count()
+        };
+        // Fast loop: one CheckedMul (the product update) + one CheckedAdd (the
+        // IV update). Each carries 2 results (wrapping value + overflow flag).
+        assert_eq!(count(OpCode::CheckedMul), 1, "product update -> CheckedMul");
+        assert_eq!(count(OpCode::CheckedAdd), 1, "IV update -> CheckedAdd");
+        for op in func.blocks.values().flat_map(|b| b.ops.iter()) {
+            if matches!(op.opcode, OpCode::CheckedMul | OpCode::CheckedAdd) {
+                assert_eq!(op.results.len(), 2, "checked op must have 2 results");
+            }
+        }
+        // Slow clone: the plain Mul + plain Add survive, BigInt-exact.
+        assert_eq!(count(OpCode::Mul), 1, "slow clone keeps the plain Mul");
+        assert_eq!(count(OpCode::Add), 1, "slow clone keeps the plain Add");
     }
 }

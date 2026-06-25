@@ -1308,6 +1308,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             // ── Arithmetic (type-specialized) ──
             OpCode::Add | OpCode::InplaceAdd => self.emit_binary_arith(op, "add"),
             OpCode::CheckedAdd => self.emit_checked_add(op),
+            OpCode::CheckedMul => self.emit_checked_mul(op),
             OpCode::Sub | OpCode::InplaceSub => self.emit_binary_arith(op, "sub"),
             OpCode::Mul | OpCode::InplaceMul => self.emit_binary_arith(op, "mul"),
             OpCode::Div => self.emit_binary_arith(op, "div"),
@@ -4695,6 +4696,90 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             let sum = self.call_runtime_2("molt_add", lhs_i64.into(), rhs_i64.into());
             self.values.insert(sum_id, sum);
             self.value_types.insert(sum_id, TirType::DynBox);
+            let false_flag = self.backend.context.bool_type().const_zero();
+            self.values.insert(flag_id, false_flag.into());
+            self.value_types.insert(flag_id, TirType::Bool);
+        }
+    }
+
+    // ── CheckedMul: hardware-exact signed-overflow multiply (overflow_peel) ──
+    //
+    // A TOTAL function with two lanes, mirroring `emit_checked_add` exactly.
+    //
+    // RAW lane (both operands proven overflow-safe raw-i64 carriers):
+    // `(prod, flag) = llvm.smul.with.overflow.i64` — LLVM's canonical
+    // checked-multiply intrinsic (the multiply analogue of
+    // `llvm.sadd.with.overflow`). The product is the wrapping i64 result,
+    // observable ONLY on the flag=0 branch (the peel's CFG enforces this;
+    // the slow loop is seeded from the PRE-iteration values). The flag is an
+    // i1, consumed directly by CondBranch's `TirType::Bool` path.
+    //
+    // BOXED lane (any operand unproven — the v1 state on LLVM, whose
+    // value-keyed RawI64Safe is a 47-bit-window contract that cannot carry an
+    // unbounded accumulator): dispatch through `molt_mul` with NaN-boxed
+    // operands — BigInt-exact, so the product can never silently wrap and the
+    // flag is CONSTANT FALSE (the peel's slow path is correctly dead; same
+    // semantics, no speedup until the RawI64Full lattice extension lands).
+    fn emit_checked_mul(&mut self, op: &crate::tir::ops::TirOp) {
+        let prod_id = op.results[0];
+        let flag_id = op.results[1];
+        let lhs_id = op.operands[0];
+        let rhs_id = op.operands[1];
+        let lhs_ty = self
+            .value_types
+            .get(&lhs_id)
+            .cloned()
+            .unwrap_or(TirType::DynBox);
+        let rhs_ty = self
+            .value_types
+            .get(&rhs_id)
+            .cloned()
+            .unwrap_or(TirType::DynBox);
+        let raw_lane = matches!(lhs_ty, TirType::I64)
+            && matches!(rhs_ty, TirType::I64)
+            && self.repr_facts.is_overflow_safe_int(lhs_id)
+            && self.repr_facts.is_overflow_safe_int(rhs_id);
+        if raw_lane {
+            let lhs = self.resolve(lhs_id).into_int_value();
+            let rhs = self.resolve(rhs_id).into_int_value();
+            let i64_ty = self.backend.context.i64_type();
+            let intrinsic = inkwell::intrinsics::Intrinsic::find("llvm.smul.with.overflow")
+                .expect("llvm.smul.with.overflow intrinsic must exist");
+            let decl = intrinsic
+                .get_declaration(&self.backend.module, &[i64_ty.into()])
+                .expect("llvm.smul.with.overflow.i64 declaration must succeed");
+            let pair = self
+                .backend
+                .builder
+                .build_call(decl, &[lhs.into(), rhs.into()], "checked_mul")
+                .unwrap()
+                .try_as_basic_value()
+                .unwrap_basic()
+                .into_struct_value();
+            let prod = self
+                .backend
+                .builder
+                .build_extract_value(pair, 0, "cm_prod")
+                .unwrap();
+            let flag = self
+                .backend
+                .builder
+                .build_extract_value(pair, 1, "cm_of")
+                .unwrap();
+            self.values.insert(prod_id, prod);
+            self.value_types.insert(prod_id, TirType::I64);
+            self.values.insert(flag_id, flag);
+            // i1 — CondBranch's `TirType::Bool` arm uses it directly as the
+            // branch condition (no truthiness call, no NaN-box round-trip).
+            self.value_types.insert(flag_id, TirType::Bool);
+        } else {
+            let lhs = self.resolve(lhs_id);
+            let rhs = self.resolve(rhs_id);
+            let lhs_i64 = self.materialize_dynbox_bits(lhs, &lhs_ty);
+            let rhs_i64 = self.materialize_dynbox_bits(rhs, &rhs_ty);
+            let prod = self.call_runtime_2("molt_mul", lhs_i64.into(), rhs_i64.into());
+            self.values.insert(prod_id, prod);
+            self.value_types.insert(prod_id, TirType::DynBox);
             let false_flag = self.backend.context.bool_type().const_zero();
             self.values.insert(flag_id, false_flag.into());
             self.value_types.insert(flag_id, TirType::Bool);
