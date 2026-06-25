@@ -39,6 +39,10 @@ DEFAULT_DIFF_SCRIPTS = [
 ]
 
 
+def _uv_python_executable() -> str:
+    return "python"
+
+
 @dataclass
 class CommandResult:
     command: list[str]
@@ -195,7 +199,7 @@ def _run_build_matrix(
                 "run",
                 "--python",
                 args.python_version,
-                "python3",
+                _uv_python_executable(),
                 "-m",
                 "molt.cli",
                 "build",
@@ -221,7 +225,7 @@ def _run_build_matrix(
                     "run",
                     "--python",
                     args.python_version,
-                    "python3",
+                    _uv_python_executable(),
                     "-m",
                     "molt.cli",
                     "build",
@@ -312,7 +316,7 @@ def _run_diff_matrix(
                 "run",
                 "--python",
                 args.python_version,
-                "python3",
+                _uv_python_executable(),
                 "-u",
                 "tests/molt_diff.py",
                 "--build-profile",

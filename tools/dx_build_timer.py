@@ -102,6 +102,21 @@ def _build_cmd(args: argparse.Namespace, extra: list[str] | None = None) -> list
     return cmd
 
 
+def _test_build_cmd(args: argparse.Namespace) -> list[str]:
+    return [
+        "cargo",
+        "test",
+        "--profile",
+        args.profile,
+        "-p",
+        args.package,
+        "--features",
+        args.features,
+        "--tests",
+        "--no-run",
+    ]
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--profile", default="release-fast")
@@ -194,7 +209,7 @@ def main() -> int:
             measure(
                 "test-lib",
                 (lambda: _touch(touch_files["value_range"])),
-                _build_cmd(args, ["--tests", "--no-run"]),
+                _test_build_cmd(args),
             )
         else:
             print(f"unknown scenario: {scen}", file=sys.stderr)
