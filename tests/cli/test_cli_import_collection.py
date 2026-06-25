@@ -19,6 +19,7 @@ from typing import Any, Mapping, Sequence, cast
 
 import molt.cli as cli
 import pytest
+from molt.cli import module_graph as cli_module_graph
 from molt.frontend import MoltValue, SimpleTIRGenerator
 from molt.type_facts import Fact, FunctionFacts, ModuleFacts, TypeFacts
 from tests.cli.process_guard import (
@@ -3620,14 +3621,14 @@ def test_shared_module_resolution_cache_reduces_repeated_resolution(
     stdlib_allowlist = cli._stdlib_allowlist()
 
     resolve_calls = 0
-    original = cli._resolve_module_path_parts
+    original = cli_module_graph._resolve_module_path_parts
 
     def wrapped(parts: tuple[str, ...], roots_arg: list[Path]) -> Path | None:
         nonlocal resolve_calls
         resolve_calls += 1
         return original(parts, roots_arg)
 
-    monkeypatch.setattr(cli, "_resolve_module_path_parts", wrapped)
+    monkeypatch.setattr(cli_module_graph, "_resolve_module_path_parts", wrapped)
 
     shared_cache = cli._ModuleResolutionCache()
     cli._discover_module_graph(
@@ -3707,7 +3708,7 @@ def test_shared_module_resolution_cache_reuses_source_and_ast_across_passes(
 
     read_calls = 0
     parse_calls = 0
-    original_read = cli._read_module_source
+    original_read = cli_module_graph._read_module_source
     original_parse = cli.ast.parse
 
     def wrapped_read(path: Path) -> str:
@@ -3733,7 +3734,7 @@ def test_shared_module_resolution_cache_reuses_source_and_ast_across_passes(
             feature_version=feature_version,
         )
 
-    monkeypatch.setattr(cli, "_read_module_source", wrapped_read)
+    monkeypatch.setattr(cli_module_graph, "_read_module_source", wrapped_read)
     monkeypatch.setattr(cli.ast, "parse", wrapped_parse)
 
     shared_cache = cli._ModuleResolutionCache()
@@ -3774,7 +3775,7 @@ def test_shared_module_resolution_cache_reuses_source_and_ast_across_passes(
         stdlib_allowlist,
     )
     for module_path in unshared_graph.values():
-        source = cli._read_module_source(module_path)
+        source = cli_module_graph._read_module_source(module_path)
         cli.ast.parse(source, filename=str(module_path))
     assert read_calls > 0
     assert parse_calls > 0
@@ -3864,14 +3865,14 @@ def test_shared_module_resolution_cache_reuses_import_scans(
     stdlib_allowlist = cli._stdlib_allowlist()
 
     collect_calls = 0
-    original_collect = cli._collect_imports
+    original_collect = cli_module_graph._collect_imports
 
     def wrapped_collect(*args: object, **kwargs: object) -> list[str]:
         nonlocal collect_calls
         collect_calls += 1
         return original_collect(*args, **kwargs)
 
-    monkeypatch.setattr(cli, "_collect_imports", wrapped_collect)
+    monkeypatch.setattr(cli_module_graph, "_collect_imports", wrapped_collect)
     monkeypatch.setattr(
         cli, "_read_persisted_import_scan", lambda *args, **kwargs: None
     )
@@ -3940,7 +3941,7 @@ def test_discover_module_graph_reuses_persisted_import_scan_cache(
     def fail_read(path: Path) -> str:
         raise AssertionError(f"unexpected source read for {path}")
 
-    monkeypatch.setattr(cli, "_read_module_source", fail_read)
+    monkeypatch.setattr(cli_module_graph, "_read_module_source", fail_read)
 
     graph, explicit_imports = cli._discover_module_graph(
         entry,
@@ -3961,8 +3962,8 @@ def test_persisted_import_scan_cache_tracks_tooling_fingerprint(
     module_path.parent.mkdir()
     module_path.write_text("import json\n", encoding="utf-8")
 
-    monkeypatch.setattr(cli, "_cache_tooling_fingerprint", lambda: "tool-a")
-    cli._write_persisted_import_scan(
+    monkeypatch.setattr(cli_module_graph, "_cache_tooling_fingerprint", lambda: "tool-a")
+    cli_module_graph._write_persisted_import_scan(
         tmp_path,
         module_path,
         module_name="pkg.mod",
@@ -3970,7 +3971,7 @@ def test_persisted_import_scan_cache_tracks_tooling_fingerprint(
         import_scan_mode="module_init",
         imports=("json",),
     )
-    assert cli._read_persisted_import_scan(
+    assert cli_module_graph._read_persisted_import_scan(
         tmp_path,
         module_path,
         module_name="pkg.mod",
@@ -3978,9 +3979,9 @@ def test_persisted_import_scan_cache_tracks_tooling_fingerprint(
         import_scan_mode="module_init",
     ) == ("json",)
 
-    monkeypatch.setattr(cli, "_cache_tooling_fingerprint", lambda: "tool-b")
+    monkeypatch.setattr(cli_module_graph, "_cache_tooling_fingerprint", lambda: "tool-b")
     assert (
-        cli._read_persisted_import_scan(
+        cli_module_graph._read_persisted_import_scan(
             tmp_path,
             module_path,
             module_name="pkg.mod",
@@ -3999,8 +4000,8 @@ def test_persisted_import_scan_cache_tracks_source_content(
     module_path.write_text("import json\n", encoding="utf-8")
     original = module_path.stat()
 
-    monkeypatch.setattr(cli, "_cache_tooling_fingerprint", lambda: "tool-a")
-    cli._write_persisted_import_scan(
+    monkeypatch.setattr(cli_module_graph, "_cache_tooling_fingerprint", lambda: "tool-a")
+    cli_module_graph._write_persisted_import_scan(
         tmp_path,
         module_path,
         module_name="pkg.mod",
@@ -4012,7 +4013,7 @@ def test_persisted_import_scan_cache_tracks_source_content(
     _rewrite_preserving_mtime(module_path, "import math\n", original)
 
     assert (
-        cli._read_persisted_import_scan(
+        cli_module_graph._read_persisted_import_scan(
             tmp_path,
             module_path,
             module_name="pkg.mod",
@@ -4031,7 +4032,7 @@ def test_source_content_sha256_reuses_persistent_hash_after_process_cache_clear(
     module_path.write_text("VALUE = 1\n", encoding="utf-8")
     monkeypatch.setenv("MOLT_CACHE", str(tmp_path / "cache"))
     _clear_molt_home_caches()
-    real_sha256_file = cli._sha256_file
+    real_sha256_file = cli_module_graph._sha256_file
     hash_calls = 0
 
     def counting_sha256_file(path: Path) -> str:
@@ -4039,7 +4040,7 @@ def test_source_content_sha256_reuses_persistent_hash_after_process_cache_clear(
         hash_calls += 1
         return real_sha256_file(path)
 
-    monkeypatch.setattr(cli, "_sha256_file", counting_sha256_file)
+    monkeypatch.setattr(cli_module_graph, "_sha256_file", counting_sha256_file)
 
     first_hash = cli._source_content_sha256(module_path)
     assert first_hash is not None
@@ -4050,10 +4051,10 @@ def test_source_content_sha256_reuses_persistent_hash_after_process_cache_clear(
 
     assert second_hash == first_hash
     stat = module_path.stat()
-    stat_identity_is_strong = cli._source_hash_stat_identity_is_strong(
-        ctime_ns=cli._stat_ctime_ns(stat),
+    stat_identity_is_strong = cli_module_graph._source_hash_stat_identity_is_strong(
+        ctime_ns=cli_module_graph._stat_ctime_ns(stat),
         inode=int(getattr(stat, "st_ino", 0) or 0),
-        device=cli._stat_device(stat),
+        device=cli_module_graph._stat_device(stat),
     )
     assert hash_calls == (1 if stat_identity_is_strong else 2)
 
@@ -4067,7 +4068,7 @@ def test_source_content_sha256_rehashes_preserved_mtime_content_change(
     original = module_path.stat()
     monkeypatch.setenv("MOLT_CACHE", str(tmp_path / "cache"))
     _clear_molt_home_caches()
-    real_sha256_file = cli._sha256_file
+    real_sha256_file = cli_module_graph._sha256_file
     hash_calls = 0
 
     def counting_sha256_file(path: Path) -> str:
@@ -4075,7 +4076,7 @@ def test_source_content_sha256_rehashes_preserved_mtime_content_change(
         hash_calls += 1
         return real_sha256_file(path)
 
-    monkeypatch.setattr(cli, "_sha256_file", counting_sha256_file)
+    monkeypatch.setattr(cli_module_graph, "_sha256_file", counting_sha256_file)
 
     first_hash = cli._source_content_sha256(module_path)
     assert first_hash is not None
@@ -4102,8 +4103,8 @@ def test_persisted_module_graph_cache_tracks_tooling_fingerprint(
     module_roots = [tmp_path]
     stdlib_root = tmp_path / "stdlib"
 
-    monkeypatch.setattr(cli, "_cache_tooling_fingerprint", lambda: "tool-a")
-    cli._write_persisted_module_graph(
+    monkeypatch.setattr(cli_module_graph, "_cache_tooling_fingerprint", lambda: "tool-a")
+    cli_module_graph._write_persisted_module_graph(
         tmp_path,
         entry_path,
         roots=roots,
@@ -4117,7 +4118,7 @@ def test_persisted_module_graph_cache_tracks_tooling_fingerprint(
         explicit_imports={"pkg.mod"},
     )
     assert (
-        cli._read_persisted_module_graph(
+        cli_module_graph._read_persisted_module_graph(
             tmp_path,
             entry_path,
             roots=roots,
@@ -4131,9 +4132,9 @@ def test_persisted_module_graph_cache_tracks_tooling_fingerprint(
         is not None
     )
 
-    monkeypatch.setattr(cli, "_cache_tooling_fingerprint", lambda: "tool-b")
+    monkeypatch.setattr(cli_module_graph, "_cache_tooling_fingerprint", lambda: "tool-b")
     assert (
-        cli._read_persisted_module_graph(
+        cli_module_graph._read_persisted_module_graph(
             tmp_path,
             entry_path,
             roots=roots,
@@ -4158,8 +4159,8 @@ def test_persisted_module_graph_cache_tracks_source_content(
     module_roots = [tmp_path]
     stdlib_root = tmp_path / "stdlib"
 
-    monkeypatch.setattr(cli, "_cache_tooling_fingerprint", lambda: "tool-a")
-    cli._write_persisted_module_graph(
+    monkeypatch.setattr(cli_module_graph, "_cache_tooling_fingerprint", lambda: "tool-a")
+    cli_module_graph._write_persisted_module_graph(
         tmp_path,
         entry_path,
         roots=roots,
@@ -4175,7 +4176,7 @@ def test_persisted_module_graph_cache_tracks_source_content(
 
     _rewrite_preserving_mtime(entry_path, "import math\n", original)
 
-    cached = cli._read_persisted_module_graph(
+    cached = cli_module_graph._read_persisted_module_graph(
         tmp_path,
         entry_path,
         roots=roots,
@@ -4410,7 +4411,7 @@ def test_discover_module_graph_from_paths_batches_shared_dependency_scan(
 
     monkeypatch.setattr(cache, "read_module_source", wrapped_read)
 
-    graph, explicit_imports = cli._discover_module_graph_from_paths(
+    graph, explicit_imports = cli_module_graph._discover_module_graph_from_paths(
         [first, second],
         roots,
         module_roots,
@@ -4441,7 +4442,7 @@ def test_discover_module_graph_from_paths_deduplicates_repeated_import_names(
     module_roots = [tmp_path.resolve()]
     roots = module_roots + [stdlib_root]
     expand_calls = 0
-    original_expand = cli._expand_module_chain_cached
+    original_expand = cli_module_graph._expand_module_chain_cached
 
     def wrapped_expand(name: str):
         nonlocal expand_calls
@@ -4449,9 +4450,9 @@ def test_discover_module_graph_from_paths_deduplicates_repeated_import_names(
             expand_calls += 1
         return original_expand(name)
 
-    monkeypatch.setattr(cli, "_expand_module_chain_cached", wrapped_expand)
+    monkeypatch.setattr(cli_module_graph, "_expand_module_chain_cached", wrapped_expand)
 
-    graph, explicit_imports = cli._discover_module_graph_from_paths(
+    graph, explicit_imports = cli_module_graph._discover_module_graph_from_paths(
         [first, second],
         roots,
         module_roots,
@@ -5029,9 +5030,9 @@ def test_module_graph_cache_key_tracks_capability_config_digest(
     roots = (str(tmp_path),)
     module_roots = (str(tmp_path / "src"),)
     stdlib_root = str(tmp_path / "stdlib")
-    cli._module_graph_cache_key.cache_clear()
+    cli_module_graph._module_graph_cache_key.cache_clear()
 
-    base = cli._module_graph_cache_key(
+    base = cli_module_graph._module_graph_cache_key(
         str(entry_path),
         roots,
         module_roots,
@@ -5039,11 +5040,11 @@ def test_module_graph_cache_key_tracks_capability_config_digest(
         (),
         (),
         (),
-        cli._module_graph_policy_digest({"json"}),
+        cli_module_graph._module_graph_policy_digest({"json"}),
         "tooling",
         capability_config_digest="capability-a",
     )
-    changed = cli._module_graph_cache_key(
+    changed = cli_module_graph._module_graph_cache_key(
         str(entry_path),
         roots,
         module_roots,
@@ -5051,7 +5052,7 @@ def test_module_graph_cache_key_tracks_capability_config_digest(
         (),
         (),
         (),
-        cli._module_graph_policy_digest({"json"}),
+        cli_module_graph._module_graph_policy_digest({"json"}),
         "tooling",
         capability_config_digest="capability-b",
     )
@@ -5066,10 +5067,10 @@ def test_module_graph_cache_path_uses_cached_graph_key(
     roots = [tmp_path]
     module_roots = [tmp_path / "src"]
     stdlib_root = tmp_path / "stdlib"
-    cli._module_graph_cache_key.cache_clear()
+    cli_module_graph._module_graph_cache_key.cache_clear()
 
     calls = 0
-    original = cli._module_graph_cache_key
+    original = cli_module_graph._module_graph_cache_key
 
     def wrapped(
         entry_path_str: str,
@@ -5081,7 +5082,7 @@ def test_module_graph_cache_path_uses_cached_graph_key(
         nested_stdlib_scan_modules: tuple[str, ...],
         stdlib_allowlist_digest: str,
         compiler_fingerprint: str,
-        target_python_tag: str = cli._DEFAULT_TARGET_PYTHON_VERSION.tag,
+        target_python_tag: str = cli_module_graph._DEFAULT_TARGET_PYTHON_VERSION.tag,
         capability_config_digest: str = "",
     ) -> str:
         nonlocal calls
@@ -5100,9 +5101,9 @@ def test_module_graph_cache_path_uses_cached_graph_key(
             capability_config_digest=capability_config_digest,
         )
 
-    monkeypatch.setattr(cli, "_module_graph_cache_key", wrapped, raising=True)
+    monkeypatch.setattr(cli_module_graph, "_module_graph_cache_key", wrapped, raising=True)
 
-    first = cli._module_graph_cache_path(
+    first = cli_module_graph._module_graph_cache_path(
         tmp_path,
         entry_path,
         roots=roots,
@@ -5113,7 +5114,7 @@ def test_module_graph_cache_path_uses_cached_graph_key(
         nested_stdlib_scan_modules={"tkinter"},
         stdlib_allowlist={"json"},
     )
-    second = cli._module_graph_cache_path(
+    second = cli_module_graph._module_graph_cache_path(
         tmp_path,
         entry_path,
         roots=roots,

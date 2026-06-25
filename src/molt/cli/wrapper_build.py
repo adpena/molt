@@ -14,6 +14,14 @@ from molt.cli.config_resolution import (
 )
 from molt.cli.file_hashing import _sha256_file
 from molt.cli.json_cache import _read_cached_json_object, _write_cached_json_object
+from molt.cli.module_graph import (
+    _ModuleResolutionCache,
+    _discover_module_graph,
+    _extend_module_graph_with_static_import_modules,
+    _parse_static_import_modules,
+    _source_content_sha256,
+    _stdlib_root_path,
+)
 from molt.cli.models import (
     _ImportAdmissionPolicy,
     _ResolvedBuildEntry,
@@ -103,7 +111,7 @@ def _wrapper_build_dependency_fingerprints(
     capability_config_digest: str = "",
 ) -> list[dict[str, Any]] | None:
     cli = _cli_module()
-    stdlib_root = cli._stdlib_root_path()
+    stdlib_root = _stdlib_root_path()
     module_roots = list(resolved_build_entry.module_roots)
     roots = list(dict.fromkeys([*module_roots, stdlib_root]))
     admitted_packages, admission_error = cli._parse_external_static_packages(
@@ -123,9 +131,9 @@ def _wrapper_build_dependency_fingerprints(
         native_artifact_plan=native_plan,
     )
     stdlib_allowlist = cli._stdlib_allowlist()
-    resolution_cache = cli._ModuleResolutionCache()
+    resolution_cache = _ModuleResolutionCache()
     try:
-        graph, explicit_imports = cli._discover_module_graph(
+        graph, explicit_imports = _discover_module_graph(
             resolved_build_entry.source_path,
             roots,
             module_roots,
@@ -139,12 +147,12 @@ def _wrapper_build_dependency_fingerprints(
         )
     except (OSError, SyntaxError, UnicodeDecodeError):
         return None
-    static_import_modules, static_import_error = cli._parse_static_import_modules(
+    static_import_modules, static_import_error = _parse_static_import_modules(
         os.environ.get(STATIC_IMPORT_MODULES_ENV, "")
     )
     if static_import_error is not None:
         return None
-    static_import_errors = cli._extend_module_graph_with_static_import_modules(
+    static_import_errors = _extend_module_graph_with_static_import_modules(
         module_graph=graph,
         explicit_imports=explicit_imports,
         module_names=static_import_modules,
@@ -167,7 +175,7 @@ def _wrapper_build_dependency_fingerprints(
             stat = path.stat()
         except OSError:
             return None
-        source_hash = cli._source_content_sha256(path, stat)
+        source_hash = _source_content_sha256(path, stat)
         if source_hash is None:
             return None
         dependencies.append(
@@ -220,7 +228,7 @@ def _wrapper_build_cache_input(
         resolved_source_path = source_path.resolve()
     except OSError:
         resolved_source_path = source_path
-    source_hash = cli._source_content_sha256(resolved_source_path)
+    source_hash = _source_content_sha256(resolved_source_path)
     if source_hash is None:
         return None
     capability_config_digest = cli._capability_config_cache_digest_from_env(env)
