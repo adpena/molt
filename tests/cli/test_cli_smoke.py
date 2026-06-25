@@ -18,6 +18,7 @@ from pathlib import Path
 
 import pytest
 import molt.cli as cli
+from molt.cli import build_output_layout as cli_build_output_layout
 
 from tests.cli.process_guard import run_cli_test_process
 
@@ -302,7 +303,7 @@ def test_resolve_output_path_directory(tmp_path: Path) -> None:
     default = tmp_path / "default.bin"
     out_dir = tmp_path / "out"
     out_dir.mkdir()
-    resolved = cli._resolve_output_path(
+    resolved = cli_build_output_layout._resolve_output_path(
         "out",
         default,
         out_dir=None,
@@ -313,7 +314,7 @@ def test_resolve_output_path_directory(tmp_path: Path) -> None:
 
 def test_resolve_output_path_trailing_sep(tmp_path: Path) -> None:
     default = tmp_path / "output.wasm"
-    resolved = cli._resolve_output_path(
+    resolved = cli_build_output_layout._resolve_output_path(
         "dist" + os.sep,
         default,
         out_dir=None,
@@ -326,7 +327,7 @@ def test_resolve_output_path_uses_out_dir(tmp_path: Path) -> None:
     default = tmp_path / "output.o"
     out_dir = tmp_path / "artifacts"
     out_dir.mkdir()
-    resolved = cli._resolve_output_path(
+    resolved = cli_build_output_layout._resolve_output_path(
         "obj",
         default,
         out_dir=out_dir,
@@ -341,8 +342,10 @@ def test_resolve_output_roots_defaults_final_outputs_to_dist(
 ) -> None:
     monkeypatch.setenv("MOLT_CACHE", str(tmp_path / ".molt_cache"))
 
-    _artifacts_root, bin_root, output_root = cli._resolve_output_roots(
-        tmp_path, None, "app"
+    _artifacts_root, bin_root, output_root = (
+        cli_build_output_layout._resolve_output_roots(
+            tmp_path, None, "app"
+        )
     )
 
     assert output_root == tmp_path / "dist"
@@ -352,7 +355,7 @@ def test_resolve_output_roots_defaults_final_outputs_to_dist(
 def test_resolve_build_output_layout_defaults_wasm_outputs_to_dist(
     tmp_path: Path,
 ) -> None:
-    layout = cli._resolve_build_output_layout(
+    layout = cli_build_output_layout._resolve_build_output_layout(
         target="wasm",
         trusted=False,
         require_linked=False,
@@ -376,7 +379,7 @@ def test_resolve_build_output_layout_defaults_wasm_outputs_to_dist(
 def test_resolve_build_output_layout_defaults_object_output_to_dist(
     tmp_path: Path,
 ) -> None:
-    layout = cli._resolve_build_output_layout(
+    layout = cli_build_output_layout._resolve_build_output_layout(
         target="native",
         trusted=False,
         require_linked=False,
@@ -399,7 +402,7 @@ def test_resolve_build_output_layout_defaults_object_output_to_dist(
 def test_resolve_build_output_layout_allows_linked_output_for_default_wasm_linking(
     tmp_path: Path,
 ) -> None:
-    layout = cli._resolve_build_output_layout(
+    layout = cli_build_output_layout._resolve_build_output_layout(
         target="wasm-freestanding",
         trusted=False,
         require_linked=False,
@@ -461,8 +464,8 @@ def test_default_molt_cache_uses_ext_root_when_home_is_unavailable(
     cli._default_molt_cache_cached.cache_clear()
     cli._default_molt_home_cached.cache_clear()
     cli._default_molt_bin_cached.cache_clear()
-    cli._default_build_root_cached.cache_clear()
-    cli._resolve_cache_root_cached.cache_clear()
+    cli_build_output_layout._default_build_root_cached.cache_clear()
+    cli_build_output_layout._resolve_cache_root_cached.cache_clear()
 
     assert cli._default_molt_cache() == ext_root / ".molt_cache"
     assert cli._default_molt_home() == ext_root / ".molt_cache" / "home"
