@@ -59,11 +59,10 @@ MOLT_PROCESS_TOKENS = tuple(
     )
 )
 
-REPO_SCOPED_PROCESS_TOKENS = tuple(
+REPO_SCOPED_MOLT_ARTIFACT_ROOT_TOKENS = tuple(
     dict.fromkeys(
         (
             "/.molt_cache/home/bin/",
-            "/.venv/bin/python",
             "/target/debug/",
             "/target/dev-fast/",
             "/target/release-fast/",
@@ -72,11 +71,31 @@ REPO_SCOPED_PROCESS_TOKENS = tuple(
             "/build/",
             "/wasm/",
             "/bench/results/",
+        )
+    )
+)
+
+REPO_SCOPED_MOLT_ENTRYPOINT_TOKENS = tuple(
+    dict.fromkeys(
+        (
             "/tests/molt_diff.py",
-            "/tests/",
             *GUARDED_ENTRYPOINT_TOKENS,
         )
     )
+)
+
+REPO_SCOPED_MOLT_ARTIFACT_IDENTITY_TOKENS = (
+    "_molt",
+    "-molt",
+    "/molt",
+    "\\molt",
+    "molt_",
+    "molt-",
+    "molt.",
+    "molt-backend",
+    "molt_runtime",
+    "bench_exception_heavy",
+    "exception-repro",
 )
 
 PYTEST_PROCESS_TOKENS = (
@@ -255,17 +274,34 @@ def _command_contains(command: str, token: str) -> bool:
 
 def _repo_scoped_command_match(command: str, root: Path) -> bool:
     normalized_command = _normalized_path_text(command)
-    scoped_tokens = tuple(
-        _normalized_path_text(token) for token in REPO_SCOPED_PROCESS_TOKENS
+    entrypoint_tokens = tuple(
+        _normalized_path_text(token) for token in REPO_SCOPED_MOLT_ENTRYPOINT_TOKENS
+    )
+    artifact_root_tokens = tuple(
+        _normalized_path_text(token)
+        for token in REPO_SCOPED_MOLT_ARTIFACT_ROOT_TOKENS
     )
     for repo_token in _normalized_repo_tokens(root):
         if not _command_contains(normalized_command, repo_token):
             continue
         if any(
             _command_contains(normalized_command, f"{repo_token}{token}")
-            for token in scoped_tokens
+            for token in entrypoint_tokens
         ):
             return True
+        for token in artifact_root_tokens:
+            anchor = f"{repo_token}{token}"
+            if not _command_contains(normalized_command, anchor):
+                continue
+            tail_start = normalized_command.casefold().find(anchor.casefold())
+            if tail_start < 0:
+                continue
+            tail = normalized_command[tail_start + len(anchor) :]
+            if any(
+                _command_contains(tail, identity_token)
+                for identity_token in REPO_SCOPED_MOLT_ARTIFACT_IDENTITY_TOKENS
+            ):
+                return True
     return False
 
 
