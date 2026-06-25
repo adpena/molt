@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 import importlib.util
+import subprocess
 from types import SimpleNamespace
 import sys
 from pathlib import Path
+
+import pytest
+
+from tools.memory_guard_core import windows_snapshot
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -66,7 +71,7 @@ def test_sample_processes_posix_missing_ps_returns_empty(monkeypatch) -> None:
     assert module.sample_processes_posix() == {}
 
 
-def test_sample_processes_windows_uses_in_process_snapshot(monkeypatch) -> None:
+def test_sample_processes_windows_uses_injected_snapshot_authority(monkeypatch) -> None:
     module = _load_memory_guard()
 
     def fail_run(*args, **kwargs):  # noqa: ANN002, ANN003
@@ -85,6 +90,100 @@ def test_sample_processes_windows_uses_in_process_snapshot(monkeypatch) -> None:
     assert samples[7].ppid == 1
     assert samples[7].rss_kb == 9
     assert samples[7].command == "python.exe"
+
+
+def test_sample_processes_windows_timeout_fails_closed(monkeypatch) -> None:
+    module = _load_memory_guard()
+
+    def timed_out():
+        raise TimeoutError("snapshot deadline")
+
+    monkeypatch.setattr(module, "_windows_process_snapshot_rows", timed_out)
+
+    assert module.sample_processes_windows() == {}
+
+
+def test_windows_process_snapshot_timeout_env_contract() -> None:
+    name = windows_snapshot.WINDOWS_PROCESS_SNAPSHOT_TIMEOUT_ENV
+
+    assert (
+        windows_snapshot._windows_process_snapshot_timeout_sec({})
+        == windows_snapshot.DEFAULT_WINDOWS_PROCESS_SNAPSHOT_TIMEOUT_SEC
+    )
+    assert windows_snapshot._windows_process_snapshot_timeout_sec({name: "0.25"}) == 0.25
+    assert windows_snapshot._windows_process_snapshot_timeout_sec({name: "bad"}) == (
+        windows_snapshot.DEFAULT_WINDOWS_PROCESS_SNAPSHOT_TIMEOUT_SEC
+    )
+    assert windows_snapshot._windows_process_snapshot_timeout_sec({name: "0"}) is None
+    assert windows_snapshot._windows_process_snapshot_timeout_sec({name: "off"}) is None
+
+
+def test_windows_process_snapshot_hard_timeout_kills_helper(monkeypatch) -> None:
+    monkeypatch.setattr(windows_snapshot.os, "name", "nt", raising=False)
+    monkeypatch.setattr(
+        windows_snapshot,
+        "_windows_process_snapshot_timeout_sec",
+        lambda: 0.25,
+    )
+
+    def timed_out(*args, **kwargs):  # noqa: ANN002, ANN003
+        raise subprocess.TimeoutExpired(cmd=args[0], timeout=kwargs["timeout"])
+
+    monkeypatch.setattr(windows_snapshot.subprocess, "run", timed_out)
+
+    with pytest.raises(windows_snapshot.WindowsProcessSnapshotTimeout):
+        windows_snapshot._windows_process_snapshot_rows_hard_timeout()
+
+
+def test_windows_process_snapshot_hard_timeout_decodes_complete_rows(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(windows_snapshot.os, "name", "nt", raising=False)
+    monkeypatch.setattr(
+        windows_snapshot,
+        "_windows_process_snapshot_timeout_sec",
+        lambda: 0.25,
+    )
+
+    def fake_run(*args, **kwargs):  # noqa: ANN002, ANN003
+        assert kwargs["timeout"] == 0.25
+        assert kwargs["check"] is False
+        assert kwargs["capture_output"] is True
+        assert kwargs["text"] is True
+        assert args[0][-1] == windows_snapshot.WINDOWS_PROCESS_SNAPSHOT_HELPER_ARG
+        return SimpleNamespace(
+            returncode=0,
+            stdout='[[7,1,9,"python.exe",3,123456789]]',
+            stderr="",
+        )
+
+    monkeypatch.setattr(windows_snapshot.subprocess, "run", fake_run)
+
+    assert windows_snapshot._windows_process_snapshot_rows_hard_timeout() == [
+        (7, 1, 9, "python.exe", 3, 123456789)
+    ]
+
+
+def test_windows_process_snapshot_hard_timeout_rejects_partial_payload(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(windows_snapshot.os, "name", "nt", raising=False)
+    monkeypatch.setattr(
+        windows_snapshot,
+        "_windows_process_snapshot_timeout_sec",
+        lambda: 0.25,
+    )
+    monkeypatch.setattr(
+        windows_snapshot.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(  # noqa: ARG005, ANN002, ANN003
+            returncode=0,
+            stdout='[[7,1,9,"python.exe",3]]',
+            stderr="",
+        ),
+    )
+
+    assert windows_snapshot._windows_process_snapshot_rows_hard_timeout() == []
 
 
 def test_windows_guarded_popen_uses_new_process_group(monkeypatch) -> None:

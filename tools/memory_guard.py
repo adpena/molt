@@ -104,6 +104,7 @@ from tools.memory_guard_core.windows_snapshot import (  # noqa: E402
     WINDOWS_FULL_COMMAND_LINE_EXECUTABLE_NAMES as WINDOWS_FULL_COMMAND_LINE_EXECUTABLE_NAMES,
     _filetime_to_unix_seconds as _filetime_to_unix_seconds,
     _windows_process_needs_full_command_line as _windows_process_needs_full_command_line,
+    _windows_process_snapshot_rows_hard_timeout as _windows_process_snapshot_rows_hard_timeout,
     _windows_process_snapshot_rows as _windows_process_snapshot_rows,
 )
 from tools.memory_guard_core import process_model as _process_model  # noqa: E402
@@ -349,6 +350,12 @@ def sample_processes_posix() -> dict[int, ProcessSample]:
 
 def sample_processes_windows() -> dict[int, ProcessSample]:
     return _process_model.sample_processes_windows(_windows_process_snapshot_rows)
+
+
+def sample_processes_windows_hard_timeout() -> dict[int, ProcessSample]:
+    return _process_model.sample_processes_windows(
+        _windows_process_snapshot_rows_hard_timeout
+    )
 
 
 def sample_processes() -> dict[int, ProcessSample]:

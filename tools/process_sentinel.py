@@ -732,6 +732,12 @@ def _windows_group_expected_identity(
     return None
 
 
+def sample_processes_for_sentinel() -> dict[int, memory_guard.ProcessSample]:
+    if _is_windows_process_model():
+        return memory_guard.sample_processes_windows_hard_timeout()
+    return memory_guard.sample_processes()
+
+
 def terminate_group(
     pgid: int,
     *,
@@ -743,7 +749,7 @@ def terminate_group(
     if pgid <= 0 or (self_pgid is not None and pgid == self_pgid):
         return
     root = repo_root() if root is None else root
-    samples = memory_guard.sample_processes()
+    samples = sample_processes_for_sentinel()
     protected_pgids = protected_process_group_ids(
         samples,
         self_pid=os.getpid(),
@@ -776,11 +782,11 @@ def terminate_group(
         except (ProcessLookupError, PermissionError):
             return
         time.sleep(0.05)
-    samples = memory_guard.sample_processes()
+    samples = sample_processes_for_sentinel()
     protected_pgids = protected_process_group_ids(
         samples,
         self_pid=os.getpid(),
-        self_pgid=os.getpgrp(),
+        self_pgid=_safe_getpgrp(),
     )
     if pgid in protected_pgids:
         return
@@ -991,7 +997,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     def scan_groups() -> list[ProcessGroup]:
         groups = process_groups(
-            memory_guard.sample_processes(),
+            sample_processes_for_sentinel(),
             root=root,
             self_pid=os.getpid(),
             self_pgid=_safe_getpgrp(),
