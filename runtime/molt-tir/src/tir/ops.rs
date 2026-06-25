@@ -48,6 +48,35 @@ pub enum OpCode {
     /// oracle: a 2-result op must not be value-numbered or hoisted until the
     /// multi-result handling of GVN/LICM is separately verified.
     CheckedAdd,
+    /// Signed 64-bit multiply with hardware-exact overflow detection.
+    ///
+    /// Operands: `[lhs: I64, rhs: I64]` — both raw i64 carriers.
+    /// Two results: `results[0]` = the wrapping i64 product, `results[1]` = the
+    /// overflow flag (Bool, true iff the signed multiplication overflowed i64).
+    ///
+    /// CONTRACT (soundness-critical): when `results[1]` is true,
+    /// `results[0]` holds the mathematically WRAPPED value and MUST NOT be
+    /// observed as a Python int — feeding it to `molt_int_from_i64` would
+    /// produce a wrong BigInt. Consumers (the `overflow_peel` dual-loop
+    /// transform) branch on `results[1]` and seed the boxed continuation
+    /// from the PRE-multiply operands, never from the wrapped product.
+    ///
+    /// Lowering: native = `imul` + the `smulhi`/`sshr` sign-extension identity
+    /// (Cranelift 0.131 has NO `smul_overflow`, unlike `sadd_overflow`); the
+    /// product overflows i64 iff the high 64 bits differ from the arithmetic
+    /// shift of the low 64 bits (`hi != lo >> 63`) — a FULL 64-bit-exact flag,
+    /// never a 47-bit `fits_inline` test. LLVM = `llvm.smul.with.overflow.i64`.
+    /// WASM = boxed-lane-only v1 (no raw 64x64->128 overflow helper yet, a
+    /// documented target limitation). Luau = the `molt_checked_i64_mul` prelude
+    /// helper which returns `flag = true` whenever exactness cannot be proven
+    /// (f64 loses mantissa bits in the i64 range, so a structural
+    /// `return a*b, false` would be a silent wrong answer — the conservative
+    /// flag forces the sound boxed slow loop).
+    ///
+    /// Deliberately NOT classified pure-movable/CSE-safe in the effects
+    /// oracle: a 2-result op must not be value-numbered or hoisted until the
+    /// multi-result handling of GVN/LICM is separately verified.
+    CheckedMul,
     // In-place arithmetic (must roundtrip as inplace_* to preserve semantics)
     InplaceAdd,
     InplaceSub,

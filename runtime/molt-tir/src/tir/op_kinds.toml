@@ -1106,6 +1106,7 @@ alias_memory_inert_opcodes = [
     "BuildSlice",
     "CheckException",
     "CheckedAdd",
+    "CheckedMul",
     "ConstBigInt",
     "ConstBool",
     "ConstBytes",
@@ -1875,6 +1876,15 @@ result_absorbs_operands = false
 
 [[opcode]]
 name = "CheckedAdd"
+may_throw = false
+side_effecting = false
+purity = "impure"
+result_arity = "two"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "CheckedMul"
 may_throw = false
 side_effecting = false
 purity = "impure"
@@ -3232,6 +3242,11 @@ mapper_opcode = "IterNextUnboxed"
 canonical = "checked_add"
 aliases = []
 mapper_opcode = "CheckedAdd"
+
+[[kind]]
+canonical = "checked_mul"
+aliases = []
+mapper_opcode = "CheckedMul"
 
 [[kind]]
 canonical = "for_iter"

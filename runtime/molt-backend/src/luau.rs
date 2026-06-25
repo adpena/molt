@@ -580,6 +580,25 @@ impl LuauBackend {
                 "@native\nlocal function molt_checked_i64_add(a: number, b: number): (number, boolean)\n\treturn a + b, false\nend\n",
             ),
             (
+                // CheckedMul's Luau lowering. Luau numbers are f64, so a
+                // structural `return a * b, false` would be a SILENT WRONG
+                // ANSWER: an integer product whose magnitude reaches 2^53
+                // loses mantissa bits, yet the bare `mul` would report it as
+                // exact and the overflow_peel slow (boxed BigInt) loop would
+                // never run. Instead the flag is CONSERVATIVE: it is `true`
+                // whenever exactness cannot be proven, forcing the sound boxed
+                // slow loop. Soundness: if `|a*b| < 2^53` the IEEE product of
+                // two integer-valued operands is computed EXACTLY (the exact
+                // integer is representable and multiply is correctly rounded),
+                // so flag=false is safe; once the (already-rounded) product
+                // reaches 2^53 in magnitude precision may have been lost, so
+                // flag=true conservatively re-routes to BigInt. (Products of
+                // magnitude exactly 2^53 take the boxed path too — sound, just
+                // mildly pessimistic; the boxed path yields the same value.)
+                "molt_checked_i64_mul",
+                "@native\nlocal function molt_checked_i64_mul(a: number, b: number): (number, boolean)\n\tlocal p = a * b\n\tif p >= 9007199254740992 or p <= -9007199254740992 then\n\t\treturn p, true\n\tend\n\treturn p, false\nend\n",
+            ),
+            (
                 "molt_ord_at",
                 "local function molt_ord_at(obj: any, key: any): number\n\tif type(obj) ~= \"string\" then\n\t\tif type(obj) == \"table\" then\n\t\t\tlocal table_key = key\n\t\t\tif type(key) == \"boolean\" then\n\t\t\t\ttable_key = if key then 2 else 1\n\t\t\telseif type(key) == \"number\" then\n\t\t\t\ttable_key = if key >= 0 then key + 1 else #obj + key + 1\n\t\t\tend\n\t\t\treturn molt_ord(obj[table_key])\n\t\tend\n\t\terror({__type=\"TypeError\", __msg=\"'\" .. type(obj) .. \"' object is not subscriptable\"})\n\tend\n\tlocal key_num = key\n\tif type(key) == \"boolean\" then key_num = if key then 1 else 0 end\n\tif type(key_num) ~= \"number\" then error({__type=\"TypeError\", __msg=\"string indices must be integers, not '\" .. type(key_num) .. \"'\"}) end\n\tlocal len = molt_str_codepoint_len(obj)\n\tlocal idx = if key_num >= 0 then key_num + 1 else len + key_num + 1\n\tif idx < 1 or idx > len then error({__type=\"IndexError\", __msg=\"string index out of range\"}) end\n\tlocal byte_idx = molt_str_byte_offset(obj, idx)\n\tlocal code = utf8.codepoint(obj, byte_idx)\n\tif code == nil then error({__type=\"UnicodeDecodeError\", __msg=\"invalid UTF-8 string\"}) end\n\treturn code\nend\n",
             ),
@@ -4862,6 +4881,41 @@ impl LuauBackend {
                 }
             }
 
+            "checked_mul" => {
+                // 2-result op: op.var = wrapping product (results[0]), op.out =
+                // overflow/inexactness flag (results[1]) — the IterNextUnboxed
+                // transport convention. The helper returns (a * b, flag) where
+                // flag is CONSERVATIVE: true whenever the f64 product may have
+                // lost precision (|product| >= 2^53), forcing the boxed BigInt
+                // slow loop. A structural (a * b, false) here would be a SILENT
+                // WRONG ANSWER above 2^53 — see molt_checked_i64_mul.
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if args.len() >= 2 {
+                    let lhs = sanitize_ident(&args[0]);
+                    let rhs = sanitize_ident(&args[1]);
+                    let flag_out = op.out.as_deref().map(sanitize_ident);
+                    let product_out = op.var.as_deref().map(sanitize_ident);
+                    match (product_out, flag_out) {
+                        (Some(product), Some(flag)) => {
+                            self.emit_line(&format!(
+                                "local {product}: number, {flag}: boolean = molt_checked_i64_mul({lhs}, {rhs})"
+                            ));
+                        }
+                        (Some(product), None) => {
+                            self.emit_line(&format!(
+                                "local {product}: number = molt_checked_i64_mul({lhs}, {rhs})"
+                            ));
+                        }
+                        (None, Some(flag)) => {
+                            self.emit_line(&format!(
+                                "local _, {flag}: boolean = molt_checked_i64_mul({lhs}, {rhs})"
+                            ));
+                        }
+                        (None, None) => {}
+                    }
+                }
+            }
+
             // ================================================================
             // Indirect / bound calls
             // ================================================================
@@ -6320,6 +6374,47 @@ mod tests {
             source.contains("local sum: number, overflow: boolean = molt_checked_i64_add(a, b)")
         );
         assert!(!source.contains("[unsupported op: checked_add]"));
+    }
+
+    #[test]
+    fn test_compile_checked_lowers_checked_mul_helper() {
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "checked_mul_test".to_string(),
+                params: vec!["a".to_string(), "b".to_string()],
+                param_types: Some(vec!["int".to_string(), "int".to_string()]),
+                source_file: None,
+                is_extern: false,
+                ops: vec![
+                    OpIR {
+                        kind: "checked_mul".to_string(),
+                        args: Some(vec!["a".to_string(), "b".to_string()]),
+                        var: Some("product".to_string()),
+                        out: Some("overflow".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret".to_string(),
+                        args: Some(vec!["product".to_string()]),
+                        ..OpIR::default()
+                    },
+                ],
+            }],
+            profile: None,
+        };
+        let mut backend = LuauBackend::new();
+        let source = backend
+            .compile_checked(&ir)
+            .expect("checked_mul should lower without stub markers");
+
+        assert!(source.contains("local function molt_checked_i64_mul"));
+        assert!(source.contains("if p >= 9007199254740992 or p <= -9007199254740992"));
+        assert!(
+            source.contains(
+                "local product: number, overflow: boolean = molt_checked_i64_mul(a, b)"
+            )
+        );
+        assert!(!source.contains("[unsupported op: checked_mul]"));
     }
 
     #[test]

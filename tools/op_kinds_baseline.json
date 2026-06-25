@@ -21,6 +21,7 @@
       "call_function",
       "cast_bool",
       "checked_add",
+      "checked_mul",
       "const_int",
       "del_attr",
       "exception_pending",

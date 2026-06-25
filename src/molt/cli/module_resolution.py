@@ -95,6 +95,10 @@ def _stdlib_root_path() -> Path:
         candidate = root / "src/molt/stdlib"
         if candidate.exists():
             return candidate.resolve()
+    package_root = Path(__file__).resolve().parents[1]
+    candidate = package_root / "stdlib"
+    if candidate.exists():
+        return candidate.resolve()
     candidate = Path(__file__).resolve().parent / "stdlib"
     if candidate.exists():
         return candidate.resolve()

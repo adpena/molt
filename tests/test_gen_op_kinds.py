@@ -689,6 +689,7 @@ def test_verify_result_arity_delegates_to_generated_table() -> None:
         "Add": "one",
         "InplaceAdd": "one",
         "CheckedAdd": "two",
+        "CheckedMul": "two",
         "IterNextUnboxed": "two",
         "ForIter": "one",
         "DeleteVar": "one",
@@ -1211,6 +1212,7 @@ def test_operand_independent_result_types_delegate_to_generated_table() -> None:
         "TypeGuard",
         "CallBuiltin",
         "CheckedAdd",
+        "CheckedMul",
         "IterNextUnboxed",
     }
     assert unsafe_opcode_only_facts.isdisjoint(table)
@@ -3673,6 +3675,7 @@ def test_alias_memory_region_delegates_to_generated_table() -> None:
         "BuildSlice",
         "CheckException",
         "CheckedAdd",
+        "CheckedMul",
         "ConstBigInt",
         "ConstBool",
         "ConstBytes",

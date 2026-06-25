@@ -1217,18 +1217,18 @@ fn raw_i64_safe_value_seed(
     let mut seed = std::collections::HashSet::new();
     for block in tir_func.blocks.values() {
         for op in &block.ops {
-            // CheckedAdd's wrapping sum (results[0]) is a structurally valid
-            // FULL-RANGE raw-i64 carrier: the hardware overflow flag — not a
-            // silent wrap — signals exhaustion, and the overflow_peel CFG
-            // gates every consumption of a wrapped value to the flag=0
-            // branch. No interval proof is needed (or possible: the
-            // accumulator is genuinely unbounded — that is the point of the
-            // peel). Every value-keyed boxing site is overflow-safe
-            // (emit_box_i64_overflow_safe / LLVM box_i64_overflow_safe), and
-            // the 47-bit checked triple now requires an explicit value-range
-            // proof, so a full-range carrier can never reach a 47-bit-window
-            // assumption.
-            if op.opcode == OpCode::CheckedAdd {
+            // CheckedAdd's wrapping sum / CheckedMul's wrapping product
+            // (results[0]) is a structurally valid FULL-RANGE raw-i64 carrier:
+            // the hardware overflow flag — not a silent wrap — signals
+            // exhaustion, and the overflow_peel CFG gates every consumption of
+            // a wrapped value to the flag=0 branch. No interval proof is needed
+            // (or possible: the accumulator is genuinely unbounded — that is
+            // the point of the peel). Every value-keyed boxing site is
+            // overflow-safe (emit_box_i64_overflow_safe / LLVM
+            // box_i64_overflow_safe), and the 47-bit checked triple now
+            // requires an explicit value-range proof, so a full-range carrier
+            // can never reach a 47-bit-window assumption.
+            if matches!(op.opcode, OpCode::CheckedAdd | OpCode::CheckedMul) {
                 if let Some(&sum) = op.results.first() {
                     seed.insert(sum);
                 }
@@ -2621,12 +2621,13 @@ impl ScalarRepresentationPlan {
             }
         }
         // OSC admission for `overflow_peel`'d loops: the {slot → load_var →
-        // checked_add → slot} carrier cycle is raw-i64-admissible AS A UNIT —
-        // no interval proof is needed (or possible: the accumulator is
-        // genuinely unbounded; that is the point of the peel). The
-        // `checked_add` contract supplies the wrap-safety the interval chain
-        // cannot: the sum is a true i64 with a hardware overflow flag, and
-        // the peel's CFG gates every consumption of a wrapped value.
+        // checked_add/checked_mul → slot} carrier cycle is raw-i64-admissible
+        // AS A UNIT — no interval proof is needed (or possible: the accumulator
+        // is genuinely unbounded; that is the point of the peel). The
+        // `checked_add`/`checked_mul` contract supplies the wrap-safety the
+        // interval chain cannot: the result is a true i64 with a hardware
+        // overflow flag, and the peel's CFG gates every consumption of a
+        // wrapped value.
         candidates.extend(checked_loop_seed_names(
             func_ir,
             &bounded_i64_names,
@@ -2793,10 +2794,10 @@ impl ScalarRepresentationPlan {
         match op.kind.as_str() {
             "const_bool" | "lt" | "le" | "gt" | "ge" | "eq" | "ne" | "string_eq" | "is" | "not"
             | "bool" | "cast_bool" | "builtin_bool" => true,
-            // checked_add's `out` is the overflow flag — defined raw 0/1 on
-            // both native lanes (hardware `of` widened, or constant false on
-            // the boxed fallback).
-            "checked_add" => true,
+            // checked_add/checked_mul's `out` is the overflow flag — defined
+            // raw 0/1 on both native lanes (hardware `of` widened, or constant
+            // false on the boxed fallback).
+            "checked_add" | "checked_mul" => true,
             // Python `and`/`or` are value-selects, but a value-select over two
             // raw 0/1 bools IS the boolean op — the native arms emit a raw
             // band/bor lane when both operands are bool-primary, so the result
@@ -3907,8 +3908,14 @@ fn checked_loop_seed_names(
     bounded_i64_names: &PlanHashMap<String, I64Interval>,
     passes_filter: &dyn Fn(&str) -> bool,
 ) -> BTreeSet<String> {
-    // No checked_add ops → nothing to admit (the common case, zero cost).
-    if !func_ir.ops.iter().any(|op| op.kind == "checked_add") {
+    // No checked_add/checked_mul ops → nothing to admit (the common case, zero
+    // cost). Both produce a wrapping-i64 result with a hardware overflow flag,
+    // CFG-gated by the peel, so both are raw-i64-admissible as a carrier unit.
+    if !func_ir
+        .ops
+        .iter()
+        .any(|op| op.kind == "checked_add" || op.kind == "checked_mul")
+    {
         return BTreeSet::new();
     }
 
@@ -3918,7 +3925,10 @@ fn checked_loop_seed_names(
     let mut slot_sources: BTreeMap<&str, Vec<&str>> = BTreeMap::new(); // slot → store sources
     for op in &func_ir.ops {
         match op.kind.as_str() {
-            "checked_add" => {
+            // Both checked ops have the same carrier shape: result `var` from
+            // two operand `args` (the wrapping result; the overflow flag is a
+            // separate result not relevant to raw-carrier admission).
+            "checked_add" | "checked_mul" => {
                 if let (Some(var), Some(args)) = (op.var.as_deref(), op.args.as_ref())
                     && args.len() == 2
                 {

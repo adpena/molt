@@ -725,8 +725,9 @@ always/type-gated/constant opcode lists.
   codegen: per-function TIR pipeline, `run_module_pipeline`, and fail-closed
   SimpleIR back-conversion. Keep the generated Luau support matrix current and
   use it to prioritize post-E1 runtime, surface, and CPython-vs-Luau feature-gap
-  closure. `checked_add` is now listed as `implemented-exact` and guarded by
-  checked helper emission.
+  closure. `checked_add` and `checked_mul` are now listed as
+  `implemented-exact` and guarded by checked helper emission; `checked_mul`
+  conservatively routes f64-inexact products to the boxed BigInt continuation.
 - Keep the canonical local validation matrix green across:
   - `molt validate --suite smoke`
   - `molt validate`

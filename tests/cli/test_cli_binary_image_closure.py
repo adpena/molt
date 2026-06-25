@@ -6,10 +6,13 @@ from pathlib import Path
 import pytest
 
 from molt.cli import build_inputs as cli_build_inputs
+from molt.cli import frontend_pipeline as cli_frontend_pipeline
 from molt.cli import module_graph as cli_module_graph
 from molt.cli import module_resolution as cli_module_resolution
+from molt.cli import module_dependencies as cli_module_dependencies
 from molt.cli import wrapper_build as cli_wrapper_build
 from molt.cli.config_resolution import STATIC_IMPORT_MODULES_ENV
+from molt.cli.target_python import _DEFAULT_TARGET_PYTHON_VERSION
 
 
 def _resolve_entry(
@@ -35,6 +38,8 @@ def _materialize_plan(
     project_root: Path,
     entry_path: Path,
     entry_module: str,
+    *,
+    image_scope=None,
 ):
     entry_tree = ast.parse(entry_path.read_text(), filename=str(entry_path))
     module_reasons: dict[str, set[str]] = {}
@@ -49,6 +54,7 @@ def _materialize_plan(
         module_reasons=module_reasons,
         json_output=False,
         target="native",
+        image_scope=image_scope,
     )
     assert error is None
     assert prepared is not None
@@ -60,6 +66,24 @@ def _materialize_plan(
         entry_module=entry_module,
         diagnostics_enabled=False,
     )
+
+
+def _prepare_analysis_for_plan(project_root: Path, import_plan):
+    analysis, error = cli_frontend_pipeline._prepare_frontend_analysis(
+        module_graph=import_plan.module_graph,
+        module_graph_metadata=import_plan.module_graph_metadata,
+        module_resolution_cache=import_plan.module_resolution_cache,
+        roots=list(import_plan.roots),
+        stdlib_root=import_plan.stdlib_root,
+        stdlib_allowlist=set(import_plan.stdlib_allowlist),
+        project_root=project_root,
+        entry_module=import_plan.image_scope.entry_module,
+        json_output=False,
+        target_python=_DEFAULT_TARGET_PYTHON_VERSION,
+    )
+    assert error is None
+    assert analysis is not None
+    return analysis
 
 
 def test_project_config_entry_file_defines_binary_image_scope(tmp_path: Path) -> None:
@@ -166,6 +190,68 @@ def test_import_plan_classifies_binary_image_closure(tmp_path: Path) -> None:
     assert narrowed_plan.module_graph == import_plan.module_graph
     with pytest.raises(ValueError, match="outside the closure plan"):
         import_plan.with_compile_modules({"outside"})
+
+
+def test_project_config_static_import_dme_keeps_compile_scope_in_image_closure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    entry = tmp_path / "app.py"
+    helper = tmp_path / "helper.py"
+    package = tmp_path / "pkg"
+    runtime = package / "runtime"
+    runtime.mkdir(parents=True)
+    entry.write_text("import helper\nprint('APP', helper.VALUE)\n")
+    helper.write_text("VALUE = 42\n")
+    (package / "__init__.py").write_text("value = 'pkg'\n")
+    (runtime / "__init__.py").write_text("value = 'runtime'\n")
+    (runtime / "ops_cpu.py").write_text("import base64\nENCODE = base64.b64encode\n")
+    (tmp_path / "unreferenced.py").write_text("VALUE = 'dead'\n")
+    monkeypatch.setenv(STATIC_IMPORT_MODULES_ENV, "pkg.runtime.ops_cpu")
+
+    resolved, error = _resolve_entry(
+        tmp_path,
+        build_config={"entry-file": "app.py"},
+    )
+    assert error is None
+    assert resolved is not None
+    assert resolved.image_scope is not None
+
+    import_plan = _materialize_plan(
+        tmp_path,
+        entry,
+        resolved.entry_module,
+        image_scope=resolved.image_scope,
+    )
+    analysis = _prepare_analysis_for_plan(tmp_path, import_plan)
+    dme_roots = (
+        import_plan.runtime_import_dispatch_roots
+        | import_plan.declared_root_modules
+        | import_plan.runtime_support_modules
+        | import_plan.stdlib_support_modules
+        | import_plan.package_parent_modules
+        | import_plan.namespace_module_names
+    )
+    compile_order, _compile_layers, _eliminated = (
+        cli_module_dependencies._apply_dead_module_elimination(
+            list(analysis.module_order),
+            [list(layer) for layer in analysis.module_layers],
+            entry_module=resolved.entry_module,
+            module_deps=analysis.module_deps,
+            module_names=set(import_plan.module_graph),
+            extra_roots=dme_roots,
+        )
+    )
+    narrowed_plan = import_plan.with_compile_modules(compile_order)
+
+    assert narrowed_plan.image_scope.kind == "project_entry_script"
+    assert narrowed_plan.image_scope.selector_source == "config:entry-file"
+    assert {"app", "helper", "pkg.runtime.ops_cpu", "base64"}.issubset(
+        narrowed_plan.compile_modules
+    )
+    assert "pkg.runtime.ops_cpu" in narrowed_plan.declared_root_modules
+    assert "unreferenced" not in narrowed_plan.known_modules
+    assert narrowed_plan.compile_modules <= narrowed_plan.known_modules
 
 
 def test_wrapper_build_cache_input_uses_static_import_closure_plan(

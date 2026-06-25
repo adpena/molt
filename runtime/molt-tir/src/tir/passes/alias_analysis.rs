@@ -1156,6 +1156,7 @@ mod tests {
         vec![
             Add,
             CheckedAdd,
+            CheckedMul,
             Sub,
             Mul,
             InplaceAdd,
@@ -1270,6 +1271,7 @@ mod tests {
         match opcode {
             Add
             | CheckedAdd
+            | CheckedMul
             | Sub
             | Mul
             | InplaceAdd
