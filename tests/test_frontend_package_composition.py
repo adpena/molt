@@ -69,6 +69,7 @@ EXPECTED_MIXINS = [
     "MidendOptimizationMixin",
     "SerializationMixin",
     "ModuleLifecycleMixin",
+    "ClassResolutionMixin",
     "AnalysisCollectStaticMixin",
     "AnalysisPatternMixin",
     "AsyncGenVisitorMixin",
@@ -126,6 +127,10 @@ def test_moved_methods_resolve_on_class() -> None:
     assert hasattr(SimpleTIRGenerator, "_emit_module_metadata")
     assert hasattr(SimpleTIRGenerator, "_emit_module_frame_enter")
     assert hasattr(SimpleTIRGenerator, "_reset_module_chunk_state")
+    # class resolution
+    assert hasattr(SimpleTIRGenerator, "_c3_merge")
+    assert hasattr(SimpleTIRGenerator, "_class_mro_names")
+    assert hasattr(SimpleTIRGenerator, "_resolve_method_info")
     # pattern_match
     assert hasattr(SimpleTIRGenerator, "visit_Match")
     assert hasattr(SimpleTIRGenerator, "_emit_match_class")
@@ -181,6 +186,7 @@ def test_mixin_modules_import_standalone() -> None:
         "molt.frontend._types",
         "molt.frontend.lowering.analysis_collect_static",
         "molt.frontend.lowering.analysis_patterns",
+        "molt.frontend.lowering.class_resolution",
         "molt.frontend.lowering.local_bindings",
         "molt.frontend.lowering.midend_optimization",
         "molt.frontend.lowering.module_lifecycle",
