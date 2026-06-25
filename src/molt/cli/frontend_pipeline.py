@@ -11,6 +11,7 @@ from typing import Any, Callable, Collection, Mapping, MutableMapping, Sequence,
 from molt.type_facts import TypeFacts, load_type_facts
 
 from molt.cli import frontend_execution as _frontend_execution
+from molt.cli import frontend_parallel as _frontend_parallel
 from molt.cli import typecheck as _typecheck
 from molt.cli.build_diagnostics import (
     _build_build_diagnostics_payload,
@@ -447,13 +448,13 @@ def _prepare_frontend_lowering_config(
     if target_triple:
         _ensure_rustup_target(target_triple, warnings)
 
-    frontend_parallel_config = _frontend_execution._resolve_frontend_parallel_config(
+    frontend_parallel_config = _frontend_parallel._resolve_frontend_parallel_config(
         module_count=len(module_graph),
         has_back_edges=has_back_edges,
         frontend_phase_timeout=frontend_phase_timeout,
     )
     frontend_parallel_layers, frontend_parallel_worker_timings = (
-        _frontend_execution._initialize_frontend_parallel_details(
+        _frontend_parallel._initialize_frontend_parallel_details(
             frontend_parallel_details,
             frontend_parallel_config=frontend_parallel_config,
         )

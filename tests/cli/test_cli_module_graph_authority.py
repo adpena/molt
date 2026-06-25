@@ -10,12 +10,7 @@ _MODULE_GRAPH_CORE_NAMES = (
     "ModuleSyntaxErrorInfo",
     "_build_module_graph_metadata",
     "_collect_package_parents",
-    "_discover_module_graph",
-    "_discover_module_graph_from_paths",
-    "_extend_module_graph_with_static_import_modules",
-    "_load_module_imports",
     "_materialize_import_plan",
-    "_parse_static_import_modules",
     "_prepare_entry_module_graph",
 )
 
@@ -23,12 +18,7 @@ _MODULE_GRAPH_CORE_DEFINITIONS = (
     "class ModuleSyntaxErrorInfo",
     "def _build_module_graph_metadata(",
     "def _collect_package_parents(",
-    "def _discover_module_graph(",
-    "def _discover_module_graph_from_paths(",
-    "def _extend_module_graph_with_static_import_modules(",
-    "def _load_module_imports(",
     "def _materialize_import_plan(",
-    "def _parse_static_import_modules(",
     "def _prepare_entry_module_graph(",
 )
 
