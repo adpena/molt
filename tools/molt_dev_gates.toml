@@ -156,6 +156,29 @@ gates = [
   "python3 tools/audit_op_kinds.py --check",
 ]
 
+# --- tinygrad GPU op-contract fact (pin + generated op_contract.toml) -----
+[[rule]]
+name = "tinygrad-op-contract"
+description = "tinygrad ML op-contract FACT: pin freshness + generated op_contract.toml sync (doc 67 Phase 0/1)."
+globs = [
+  "tools/check_tinygrad_pin.py",
+  "tools/gen_gpu_op_contract.py",
+  "docs/spec/tinygrad_pin.md",
+  "runtime/molt-gpu/op_contract.toml",
+  "runtime/molt-gpu/src/ops.rs",
+  "tests/test_gen_gpu_op_contract.py",
+  # The pinned upstream oracle: re-vendoring tinygrad must re-prove the pin +
+  # regenerate the contract (the bump protocol in docs/spec/tinygrad_pin.md).
+  "bench/friends/repos/tinygrad_off_the_shelf/pyproject.toml",
+  "bench/friends/repos/tinygrad_off_the_shelf/tinygrad/uop/__init__.py",
+  "bench/friends/repos/tinygrad_off_the_shelf/tinygrad/renderer/cstyle.py",
+]
+gates = [
+  "python3 tools/check_tinygrad_pin.py --check",
+  "python3 tools/gen_gpu_op_contract.py --check",
+  "python3 -m pytest -q tests/test_gen_gpu_op_contract.py",
+]
+
 # --- Intrinsic registry (manifest/category/generated resolver sync) -------
 [[rule]]
 name = "intrinsic-registry"
