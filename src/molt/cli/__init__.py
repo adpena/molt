@@ -271,6 +271,7 @@ from molt.cli.default_paths import (
     _default_molt_home_cached,
 )
 from molt.cli.debug_helpers import (
+    _capture_json_cli_result,
     _debug_eval_base_env,
     _emit_debug_payload,
     _load_debug_oracle,
@@ -25590,24 +25591,6 @@ def extension_build(
     return 0
 
 
-
-
-def _capture_json_cli_result(
-    runner: Callable[..., int],
-    /,
-    *args: Any,
-    **kwargs: Any,
-) -> tuple[int, dict[str, Any] | None]:
-    stdout_buffer = io.StringIO()
-    with redirect_stdout(stdout_buffer):
-        returncode = runner(*args, json_output=True, **kwargs)
-    stdout_text = stdout_buffer.getvalue().strip()
-    if not stdout_text:
-        return returncode, None
-    payload = json.loads(stdout_text)
-    if not isinstance(payload, dict):
-        return returncode, None
-    return returncode, payload
 
 
 
