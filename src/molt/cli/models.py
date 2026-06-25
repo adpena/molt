@@ -73,12 +73,6 @@ class _BackendDaemonCompileResult(NamedTuple):
     full_request_sent: bool = False
 
 
-class _PersistedModuleGraphState(NamedTuple):
-    graph: dict[str, Path]
-    explicit_imports: set[str]
-    dirty_modules: set[str]
-
-
 class _MaintenanceStep(NamedTuple):
     name: str
     cmd: list[str]
