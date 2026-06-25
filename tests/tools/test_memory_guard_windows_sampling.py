@@ -346,6 +346,33 @@ def test_windows_codex_and_claude_processes_are_host_control_plane() -> None:
             rss_kb=1,
             command="/opt/Codex/codex.AppImage --project /repo/molt",
         ),
+        module.ProcessSample(
+            pid=22,
+            ppid=1,
+            rss_kb=1,
+            command="/Users/adpen/.codex/runtimes/cua_node/bin/node_repl --stdio",
+        ),
+        module.ProcessSample(
+            pid=23,
+            ppid=1,
+            rss_kb=1,
+            command="node_repl --stdio",
+        ),
+        module.ProcessSample(
+            pid=24,
+            ppid=1,
+            rss_kb=1,
+            command="/home/adpen/.codex/bin/codex-linux-sandbox --command pytest",
+        ),
+        module.ProcessSample(
+            pid=25,
+            ppid=1,
+            rss_kb=1,
+            command=(
+                r"C:\Program Files\WindowsApps\OpenAI.Codex_26.609.4994.0_x64__2p2nqsd0c76g0"
+                r"\app\resources\codex-app-server.exe --project C:\repo\molt"
+            ),
+        ),
     ]
 
     assert all(module.is_host_control_plane_process(sample) for sample in samples)
