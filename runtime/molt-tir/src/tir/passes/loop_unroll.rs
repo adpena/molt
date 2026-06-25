@@ -74,10 +74,10 @@ use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
 use crate::tir::target_info::TargetInfo;
 use crate::tir::values::ValueId;
 
-// The copy-resolution model (`build_copy_map` / `resolve`) is shared with the
-// `counted_loop` recognizer so both the recognition and the exit-arg
-// substitution resolve frontend `Copy`/`store_var` chains identically.
-use super::counted_loop::{build_copy_map, resolve};
+// The copy-resolution model is shared with the counted-loop recognizer so both
+// recognition and exit-arg substitution resolve frontend Copy/store_var chains
+// identically.
+use super::value_identity::{build_copy_map, resolve_copy};
 
 /// Reject if any value defined inside the loop *region* (cond block or body) is
 /// used anywhere outside the region — except as a back-edge or exit-edge
@@ -194,6 +194,9 @@ fn find_unroll_candidates(func: &TirFunction, tti: &TargetInfo) -> Vec<CountedLo
         let Some(loop_info) = counted_loop::recognize_counted_loop(func, header_id) else {
             continue;
         };
+        if !loop_info.has_material_exit {
+            continue;
+        }
 
         // Cost model: trip count within the full-unroll cap.
         if loop_info.trip_count > tti.unroll_max_trip() {
@@ -395,7 +398,7 @@ fn unroll_counted_loop(func: &mut TirFunction, c: &CountedLoop, stats: &mut Pass
         .exit_args
         .iter()
         .map(|&v| {
-            let root = resolve(&copy_of, v);
+            let root = resolve_copy(&copy_of, v);
             final_by_header.get(&root).copied().unwrap_or(v)
         })
         .collect();

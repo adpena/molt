@@ -71,11 +71,29 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::tir::blocks::{BlockId, LoopRole, Terminator};
+use crate::tir::blocks::{BlockId, LoopBreakKind, LoopRole, Terminator};
 use crate::tir::dominators::{self, CfgEdgePolicy};
 use crate::tir::function::TirFunction;
 use crate::tir::ops::{AttrValue, OpCode};
 use crate::tir::values::ValueId;
+
+use super::scev::find_loop_guard;
+use super::value_identity::{build_copy_map, resolve_copy};
+
+struct LoopGate {
+    cmp_cond: ValueId,
+    cmp_polarity: CmpPolarity,
+    body_id: BlockId,
+    exit_id: BlockId,
+    exit_args: Vec<ValueId>,
+    has_material_exit: bool,
+}
+
+#[derive(Clone, Copy)]
+enum CmpPolarity {
+    AsWritten,
+    Inverted,
+}
 
 /// A recognized counted loop with a compile-time-constant trip count.
 ///
@@ -111,6 +129,11 @@ pub struct CountedLoop {
     /// forwarded to `exit`). May reference header args (loop-carried values) or
     /// the IV — a transform substitutes those with their final-iteration values.
     pub exit_args: Vec<ValueId>,
+    /// True when `exit` is a real CFG successor of the loop guard. Terminal
+    /// structured loops may preserve their break predicate in metadata even when
+    /// there is no material post-loop block; range analysis can consume that
+    /// proof, but transforms that must branch to an exit block must refuse it.
+    pub has_material_exit: bool,
     /// The back-edge argument list on the body's `Branch -> header` (the values
     /// forwarded to the header for the next iteration). `back_args[k]` fills
     /// `header.args[k]`.
@@ -139,86 +162,215 @@ fn build_const_int_map(func: &TirFunction) -> HashMap<ValueId, i64> {
     map
 }
 
-/// Attr keys whose presence on a `Copy` op means it is NOT a transparent value
-/// copy: `_original_kind`/`fused` mark a semantically-special op that merely
-/// shares the `Copy` opcode (the same keys `copy_prop` refuses to propagate),
-/// and `_simple_result_1` marks a multi-result op (e.g. an `iter_next` lowering)
-/// whose single TIR result does not equal `operands[0]`. Every other attr the
-/// frontend attaches to a real value copy (`_simple_out`, `_type_hint`, `var`,
-/// `container_type`, the round-trip transport hints) is benign for value
-/// forwarding.
-const NON_COPY_ATTR_KEYS: [&str; 3] = ["_original_kind", "fused", "_simple_result_1"];
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GuardedLoopIv {
+    pub induction_var: ValueId,
+    pub back_value: ValueId,
+    pub start: i64,
+    pub step: i64,
+    pub trip_count: i64,
+}
 
-/// The source value a single-result `Copy` op forwards, or `None` if the op is
-/// not a transparent value copy. The frontend produces two value-copy shapes
-/// (both `OpCode::Copy`, both single-result):
-///
-/// * **Plain copy** `Copy(src) -> dst` — one operand (a `copy`/`load_var`
-///   lowering, or a stack-machine dup). `dst ≡ src`.
-/// * **Store-var copy** `Copy(src, src) -> dst` — the SSA renamer lowers
-///   `store_var var=V args=[src]` by pushing `src` once for the value iteration
-///   and once for the store-source iteration (`ssa.rs` lines ~1026/1086), so the
-///   two operands are *identical*. `dst ≡ src`.
-///
-/// Both shapes carry frontend transport attrs (`_simple_out`, `_type_hint`,
-/// `var`, …) which do NOT change the value-forwarding semantics, so — unlike the
-/// stricter [`crate::tir::ops::TirOp::is_plain_value_copy`], which runs before
-/// `copy_prop` and demands attr-emptiness — we ignore them. We refuse only when a
-/// genuinely semantic attr ([`NON_COPY_ATTR_KEYS`]) is present, or the operand
-/// pattern is not a copy (two *different* operands carry a slot hint with
-/// non-trivial meaning).
-fn copy_source(op: &crate::tir::ops::TirOp) -> Option<ValueId> {
-    if op.opcode != OpCode::Copy || op.results.len() != 1 {
-        return None;
+pub fn recognize_guarded_loop_ivs(
+    func: &TirFunction,
+    header: BlockId,
+    body: &HashSet<BlockId>,
+) -> Vec<GuardedLoopIv> {
+    let Some(header_block) = func.blocks.get(&header) else {
+        return Vec::new();
+    };
+    let Some((_guard_block, cond)) = find_loop_guard(func, header, body) else {
+        return Vec::new();
+    };
+    let const_map = build_const_int_map(func);
+    let copy_of = build_copy_map(func);
+    let def_ops = guarded_loop_def_ops(func);
+    let reachable = dominators::executable_reachable_blocks(func);
+    let cond = resolve_copy(&copy_of, cond);
+    let Some((cmp_kind, cmp_operands)) = def_ops.get(&cond) else {
+        return Vec::new();
+    };
+    if !matches!(cmp_kind, OpCode::Lt | OpCode::Le | OpCode::Gt | OpCode::Ge)
+        || cmp_operands.len() != 2
+    {
+        return Vec::new();
     }
-    if NON_COPY_ATTR_KEYS.iter().any(|k| op.attrs.contains_key(*k)) {
-        return None;
+    let lhs = resolve_copy(&copy_of, cmp_operands[0]);
+    let rhs = resolve_copy(&copy_of, cmp_operands[1]);
+    let mut guarded_ivs = Vec::new();
+
+    for (arg_index, arg) in header_block.args.iter().enumerate() {
+        let iv = resolve_copy(&copy_of, arg.id);
+        let Some((effective_cmp, stop)) =
+            guarded_loop_bound_for_iv(*cmp_kind, lhs, rhs, iv, &const_map)
+        else {
+            continue;
+        };
+        let Some(start) = guarded_loop_preheader_const(
+            func, &reachable, body, header, arg_index, &copy_of, &const_map,
+        ) else {
+            continue;
+        };
+        let Some(back_value) =
+            guarded_loop_backedge_value(func, &reachable, body, header, arg_index)
+        else {
+            continue;
+        };
+        let Some(step) = guarded_loop_backedge_step(&def_ops, &copy_of, &const_map, iv, back_value)
+        else {
+            continue;
+        };
+        if !guarded_loop_step_matches_compare(effective_cmp, step) {
+            continue;
+        }
+        let Some(trip_count) = compute_trip_count(effective_cmp, start, stop, step) else {
+            continue;
+        };
+        if trip_count <= 0 {
+            continue;
+        }
+        guarded_ivs.push(GuardedLoopIv {
+            induction_var: iv,
+            back_value,
+            start,
+            step,
+            trip_count,
+        });
     }
-    match op.operands.as_slice() {
-        [src] => Some(*src),
-        [a, b] if a == b => Some(*a),
+    guarded_ivs
+}
+
+fn guarded_loop_def_ops(func: &TirFunction) -> HashMap<ValueId, (OpCode, Vec<ValueId>)> {
+    let mut defs = HashMap::new();
+    for block in func.blocks.values() {
+        for op in &block.ops {
+            for &result in &op.results {
+                defs.insert(result, (op.opcode, op.operands.clone()));
+            }
+        }
+    }
+    defs
+}
+
+fn guarded_loop_bound_for_iv(
+    cmp_kind: OpCode,
+    lhs: ValueId,
+    rhs: ValueId,
+    iv: ValueId,
+    const_map: &HashMap<ValueId, i64>,
+) -> Option<(OpCode, i64)> {
+    if lhs == iv {
+        Some((cmp_kind, *const_map.get(&rhs)?))
+    } else if rhs == iv {
+        Some((guarded_loop_flip_compare(cmp_kind)?, *const_map.get(&lhs)?))
+    } else {
+        None
+    }
+}
+
+fn guarded_loop_flip_compare(cmp_kind: OpCode) -> Option<OpCode> {
+    match cmp_kind {
+        OpCode::Lt => Some(OpCode::Gt),
+        OpCode::Le => Some(OpCode::Ge),
+        OpCode::Gt => Some(OpCode::Lt),
+        OpCode::Ge => Some(OpCode::Le),
         _ => None,
     }
 }
 
-/// Transitive copy-resolution map over recognizable value copies (see
-/// [`copy_source`]). The frontend emits long `a = Copy(b)` chains and
-/// `store_var`-lowered `Copy(c, c)` ops; the IV in the cond block, the increment
-/// operands, and the back-edge values are copies of the header args through
-/// these. Resolving them is required to recognize the loop. Shared with the
-/// `loop_unroll` transform's exit-arg substitution so both use one copy model.
-pub fn build_copy_map(func: &TirFunction) -> HashMap<ValueId, ValueId> {
-    let mut copy_of: HashMap<ValueId, ValueId> = HashMap::new();
-    for block in func.blocks.values() {
-        for op in &block.ops {
-            if let Some(src) = copy_source(op) {
-                copy_of.insert(op.results[0], src);
-            }
-        }
+fn guarded_loop_step_matches_compare(cmp_kind: OpCode, step: i64) -> bool {
+    match cmp_kind {
+        OpCode::Lt | OpCode::Le => step > 0,
+        OpCode::Gt | OpCode::Ge => step < 0,
+        _ => false,
     }
-    // Flatten transitive chains to the root source.
-    for _ in 0..64 {
-        let mut changed = false;
-        let keys: Vec<ValueId> = copy_of.keys().copied().collect();
-        for k in keys {
-            let v = copy_of[&k];
-            if let Some(&deeper) = copy_of.get(&v)
-                && deeper != v
-            {
-                copy_of.insert(k, deeper);
-                changed = true;
-            }
-        }
-        if !changed {
-            break;
-        }
-    }
-    copy_of
 }
 
-/// Resolve `v` through the copy map to its root source value.
-pub fn resolve(copy_of: &HashMap<ValueId, ValueId>, v: ValueId) -> ValueId {
-    copy_of.get(&v).copied().unwrap_or(v)
+fn guarded_loop_preheader_const(
+    func: &TirFunction,
+    reachable: &HashSet<BlockId>,
+    body: &HashSet<BlockId>,
+    header: BlockId,
+    arg_index: usize,
+    copy_of: &HashMap<ValueId, ValueId>,
+    const_map: &HashMap<ValueId, i64>,
+) -> Option<i64> {
+    let mut found = None;
+    for (&pred_id, pred_block) in &func.blocks {
+        if !reachable.contains(&pred_id) || body.contains(&pred_id) {
+            continue;
+        }
+        let Some(args) = branch_args_to(&pred_block.terminator, header) else {
+            continue;
+        };
+        let value = resolve_copy(copy_of, *args.get(arg_index)?);
+        let c = *const_map.get(&value)?;
+        match found {
+            None => found = Some(c),
+            Some(prev) if prev == c => {}
+            Some(_) => return None,
+        }
+    }
+    found
+}
+
+fn guarded_loop_backedge_value(
+    func: &TirFunction,
+    reachable: &HashSet<BlockId>,
+    body: &HashSet<BlockId>,
+    header: BlockId,
+    arg_index: usize,
+) -> Option<ValueId> {
+    let mut found = None;
+    for (&pred_id, pred_block) in &func.blocks {
+        if !reachable.contains(&pred_id) || !body.contains(&pred_id) {
+            continue;
+        }
+        let Some(args) = branch_args_to(&pred_block.terminator, header) else {
+            continue;
+        };
+        let value = *args.get(arg_index)?;
+        match found {
+            None => found = Some(value),
+            Some(prev) if prev == value => {}
+            Some(_) => return None,
+        }
+    }
+    found
+}
+
+fn guarded_loop_backedge_step(
+    def_ops: &HashMap<ValueId, (OpCode, Vec<ValueId>)>,
+    copy_of: &HashMap<ValueId, ValueId>,
+    const_map: &HashMap<ValueId, i64>,
+    iv: ValueId,
+    back_value: ValueId,
+) -> Option<i64> {
+    let root = resolve_copy(copy_of, back_value);
+    let (opcode, operands) = def_ops.get(&root)?;
+    match (opcode, operands.as_slice()) {
+        (OpCode::Add, [lhs, rhs]) | (OpCode::InplaceAdd, [lhs, rhs]) => {
+            let lhs = resolve_copy(copy_of, *lhs);
+            let rhs = resolve_copy(copy_of, *rhs);
+            if lhs == iv {
+                const_map.get(&rhs).copied()
+            } else if rhs == iv {
+                const_map.get(&lhs).copied()
+            } else {
+                None
+            }
+        }
+        (OpCode::Sub, [lhs, rhs]) | (OpCode::InplaceSub, [lhs, rhs]) => {
+            let lhs = resolve_copy(copy_of, *lhs);
+            let rhs = resolve_copy(copy_of, *rhs);
+            if lhs == iv {
+                const_map.get(&rhs).and_then(|step| step.checked_neg())
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
 }
 
 /// Locate the op defining `value` anywhere in the function (block, op).
@@ -294,50 +446,24 @@ pub fn recognize_counted_loop(func: &TirFunction, header: BlockId) -> Option<Cou
         return None;
     }
 
-    // The cond block must end in `CondBranch(cond, body, exit)` (no successor
-    // args on the body edge — the IV/carried values flow as header args, not
-    // body-edge args). The exit edge MAY carry args (loop-carried values that
-    // escape the loop).
-    let (cmp_cond, body_id, exit_id, exit_args) = match &cond_block.terminator {
-        Terminator::CondBranch {
-            cond,
-            then_block,
-            then_args,
-            else_block,
-            else_args,
-        } => {
-            // Identify which successor loops back to the header (the body).
-            let then_loops = block_loops_back_to(func, *then_block, header);
-            let else_loops = block_loops_back_to(func, *else_block, header);
-            match (then_loops, else_loops) {
-                (true, false) => {
-                    if !then_args.is_empty() {
-                        trace!("body (then) edge carries args");
-                        return None;
-                    }
-                    (*cond, *then_block, *else_block, else_args.clone())
-                }
-                (false, true) => {
-                    if !else_args.is_empty() {
-                        trace!("body (else) edge carries args");
-                        return None;
-                    }
-                    (*cond, *else_block, *then_block, then_args.clone())
-                }
-                _ => {
-                    trace!(
-                        "ambiguous back-edge: then_loops={} else_loops={}",
-                        then_loops, else_loops
-                    );
-                    return None;
-                }
-            }
-        }
-        _ => {
-            trace!("cond_block terminator not CondBranch");
-            return None;
-        }
+    // The loop gate is usually a material `CondBranch(cond, body, exit)`, but a
+    // terminal structured loop can have no material post-loop block. In that
+    // shape the CFG has only the continue edge, while `loop_cond_blocks` +
+    // `loop_break_kinds` still preserve the SimpleIR loop-break condition. Use
+    // one TIR counted-loop authority for both shapes so value-range, unroll, and
+    // representation planning do not grow parallel loop recognizers.
+    let Some(gate) = loop_gate(func, header, cond_block_id, cond_block) else {
+        trace!("cond block is not a counted-loop gate");
+        return None;
     };
+    let LoopGate {
+        cmp_cond,
+        cmp_polarity,
+        body_id,
+        exit_id,
+        exit_args,
+        has_material_exit,
+    } = gate;
 
     // No nested loop: the body must not itself be a loop header.
     if matches!(func.loop_roles.get(&body_id), Some(&LoopRole::LoopHeader)) {
@@ -364,12 +490,16 @@ pub fn recognize_counted_loop(func: &TirFunction, header: BlockId) -> Option<Cou
             return None;
         }
     };
+    let cmp_kind = match cmp_polarity {
+        CmpPolarity::AsWritten => cmp_kind,
+        CmpPolarity::Inverted => invert_comparison(cmp_kind)?,
+    };
     if cmp_op.operands.len() != 2 {
         return None;
     }
     // LHS resolves (through copies) to a header arg → the IV. RHS resolves to a
     // ConstInt → the stop bound.
-    let cmp_lhs_root = resolve(&copy_of, cmp_op.operands[0]);
+    let cmp_lhs_root = resolve_copy(&copy_of, cmp_op.operands[0]);
     let Some(iv_arg_index) = header_block.args.iter().position(|a| a.id == cmp_lhs_root) else {
         trace!(
             "cmp lhs {:?} (root {:?}) is not a header arg",
@@ -378,7 +508,7 @@ pub fn recognize_counted_loop(func: &TirFunction, header: BlockId) -> Option<Cou
         return None;
     };
     let induction_var = header_block.args[iv_arg_index].id;
-    let Some(&stop) = const_map.get(&resolve(&copy_of, cmp_op.operands[1])) else {
+    let Some(&stop) = const_map.get(&resolve_copy(&copy_of, cmp_op.operands[1])) else {
         trace!(
             "cmp rhs {:?} is not a ConstInt (runtime bound)",
             cmp_op.operands[1]
@@ -403,7 +533,7 @@ pub fn recognize_counted_loop(func: &TirFunction, header: BlockId) -> Option<Cou
 
     // The back-edge value for the IV slot must be `Add(iv_view, step_const)`
     // (resolving copies on the back-edge value and on the Add's IV operand).
-    let iv_next_root = resolve(&copy_of, back_args[iv_arg_index]);
+    let iv_next_root = resolve_copy(&copy_of, back_args[iv_arg_index]);
     let Some((_def_block, inc_op)) = find_def(func, iv_next_root) else {
         trace!("no def for IV-next {:?}", iv_next_root);
         return None;
@@ -412,11 +542,11 @@ pub fn recognize_counted_loop(func: &TirFunction, header: BlockId) -> Option<Cou
         trace!("IV-next def is {:?}, not a binary Add", inc_op.opcode);
         return None;
     }
-    if resolve(&copy_of, inc_op.operands[0]) != induction_var {
+    if resolve_copy(&copy_of, inc_op.operands[0]) != induction_var {
         trace!("IV-next Add lhs does not resolve to the IV");
         return None;
     }
-    let Some(&step) = const_map.get(&resolve(&copy_of, inc_op.operands[1])) else {
+    let Some(&step) = const_map.get(&resolve_copy(&copy_of, inc_op.operands[1])) else {
         trace!("IV step is not a ConstInt");
         return None;
     };
@@ -461,7 +591,7 @@ pub fn recognize_counted_loop(func: &TirFunction, header: BlockId) -> Option<Cou
         // The preheader must supply a constant start for the IV slot.
         if pred_args.len() == header_block.args.len() {
             start = const_map
-                .get(&resolve(&copy_of, pred_args[iv_arg_index]))
+                .get(&resolve_copy(&copy_of, pred_args[iv_arg_index]))
                 .copied();
         }
     }
@@ -499,9 +629,120 @@ pub fn recognize_counted_loop(func: &TirFunction, header: BlockId) -> Option<Cou
         step,
         trip_count,
         exit_args,
+        has_material_exit,
         back_args,
         loop_pairs_end: func.loop_pairs.get(&header).copied(),
     })
+}
+
+fn loop_gate(
+    func: &TirFunction,
+    header: BlockId,
+    cond_block_id: BlockId,
+    cond_block: &crate::tir::blocks::TirBlock,
+) -> Option<LoopGate> {
+    match &cond_block.terminator {
+        Terminator::CondBranch {
+            cond,
+            then_block,
+            then_args,
+            else_block,
+            else_args,
+        } => {
+            let then_loops = block_loops_back_to(func, *then_block, header);
+            let else_loops = block_loops_back_to(func, *else_block, header);
+            match (then_loops, else_loops) {
+                (true, false) => {
+                    if !then_args.is_empty() {
+                        return None;
+                    }
+                    Some(LoopGate {
+                        cmp_cond: *cond,
+                        cmp_polarity: CmpPolarity::AsWritten,
+                        body_id: *then_block,
+                        exit_id: *else_block,
+                        exit_args: else_args.clone(),
+                        has_material_exit: true,
+                    })
+                }
+                (false, true) => {
+                    if !else_args.is_empty() {
+                        return None;
+                    }
+                    Some(LoopGate {
+                        cmp_cond: *cond,
+                        cmp_polarity: CmpPolarity::Inverted,
+                        body_id: *else_block,
+                        exit_id: *then_block,
+                        exit_args: then_args.clone(),
+                        has_material_exit: true,
+                    })
+                }
+                _ => None,
+            }
+        }
+        Terminator::Branch { target, args } if args.is_empty() => {
+            structured_terminal_loop_gate(func, header, cond_block_id, cond_block, *target)
+        }
+        _ => None,
+    }
+}
+
+fn structured_terminal_loop_gate(
+    func: &TirFunction,
+    header: BlockId,
+    cond_block_id: BlockId,
+    cond_block: &crate::tir::blocks::TirBlock,
+    body_id: BlockId,
+) -> Option<LoopGate> {
+    if func.loop_cond_blocks.get(&header).copied() != Some(cond_block_id) {
+        return None;
+    }
+    if !block_loops_back_to(func, body_id, header) {
+        return None;
+    }
+    let break_kind = func.loop_break_kinds.get(&header)?;
+    let cmp_cond = unique_loop_guard_cmp_cond(cond_block)?;
+    let cmp_polarity = match break_kind {
+        LoopBreakKind::BreakIfFalse => CmpPolarity::AsWritten,
+        LoopBreakKind::BreakIfTrue => CmpPolarity::Inverted,
+    };
+    Some(LoopGate {
+        cmp_cond,
+        cmp_polarity,
+        body_id,
+        exit_id: func
+            .loop_pairs
+            .get(&header)
+            .copied()
+            .unwrap_or(cond_block_id),
+        exit_args: Vec::new(),
+        has_material_exit: false,
+    })
+}
+
+fn unique_loop_guard_cmp_cond(cond_block: &crate::tir::blocks::TirBlock) -> Option<ValueId> {
+    let mut guard: Option<ValueId> = None;
+    for op in &cond_block.ops {
+        if matches!(op.opcode, OpCode::Lt | OpCode::Le | OpCode::Gt | OpCode::Ge)
+            && op.results.len() == 1
+        {
+            if guard.replace(op.results[0]).is_some() {
+                return None;
+            }
+        }
+    }
+    guard
+}
+
+fn invert_comparison(opcode: OpCode) -> Option<OpCode> {
+    match opcode {
+        OpCode::Lt => Some(OpCode::Ge),
+        OpCode::Le => Some(OpCode::Gt),
+        OpCode::Gt => Some(OpCode::Le),
+        OpCode::Ge => Some(OpCode::Lt),
+        _ => None,
+    }
 }
 
 /// True if `block` unconditionally branches back to `header` (the back-edge).
@@ -536,6 +777,11 @@ fn branch_args_to(term: &Terminator, target: BlockId) -> Option<&[ValueId]> {
             default,
             default_args,
             ..
+        }
+        | Terminator::StateDispatch {
+            cases,
+            default,
+            default_args,
         } => {
             if *default == target {
                 Some(default_args.as_slice())

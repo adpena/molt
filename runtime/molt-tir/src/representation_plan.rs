@@ -781,86 +781,6 @@ impl IndexedContainerFacts {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct I64Interval {
-    min: i64,
-    max: i64,
-}
-
-impl I64Interval {
-    fn singleton(value: i64) -> Self {
-        Self {
-            min: value,
-            max: value,
-        }
-    }
-
-    fn from_i128_bounds(min: i128, max: i128) -> Option<Self> {
-        if min > max || min < i64::MIN as i128 || max > i64::MAX as i128 {
-            return None;
-        }
-        Some(Self {
-            min: min as i64,
-            max: max as i64,
-        })
-    }
-
-    fn union(self, other: Self) -> Self {
-        Self {
-            min: self.min.min(other.min),
-            max: self.max.max(other.max),
-        }
-    }
-
-    /// Widening join (abstract-interpretation `∇`): like [`union`], but any
-    /// bound that would *grow* (a lower bound moving down, an upper bound moving
-    /// up) is pushed straight to the `i64` extremum instead of inching outward.
-    /// This guarantees the interval fixpoint terminates even when a value is
-    /// updated self-referentially without a loop back-edge — e.g. a fully
-    /// UNROLLED accumulator `total = total + k` repeated in straight-line code,
-    /// where every clone writes the same SimpleIR variable, so each fixpoint
-    /// pass widens the variable's range by another step and a plain monotone
-    /// `union` never converges (an infinite-loop compile hang). Widening to
-    /// ±i64 is conservative-correct: an unbounded interval simply means the
-    /// value is not proven to fit the inline-int representation, so codegen
-    /// falls back to the BigInt-correct boxed path (bug #15 floor) — never a
-    /// miscompile.
-    ///
-    /// [`union`]: I64Interval::union
-    fn widen(self, other: Self) -> Self {
-        Self {
-            min: if other.min < self.min {
-                i64::MIN
-            } else {
-                self.min
-            },
-            max: if other.max > self.max {
-                i64::MAX
-            } else {
-                self.max
-            },
-        }
-    }
-
-    fn checked_add(self, other: Self) -> Option<Self> {
-        Self::from_i128_bounds(
-            self.min as i128 + other.min as i128,
-            self.max as i128 + other.max as i128,
-        )
-    }
-
-    fn checked_sub(self, other: Self) -> Option<Self> {
-        Self::from_i128_bounds(
-            self.min as i128 - other.max as i128,
-            self.max as i128 - other.min as i128,
-        )
-    }
-
-    fn singleton_value(self) -> Option<i64> {
-        (self.min == self.max).then_some(self.min)
-    }
-}
-
 /// A typed representation fact for a name in the legacy SimpleIR namespace.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub(crate) struct ScalarRepresentationFact {
@@ -1067,9 +987,24 @@ impl ScalarRepresentationPlan {
         let mut tir_func = lower_to_tir(func_ir);
         refine_types(&mut tir_func);
         let names = SimpleValueNames::for_function(&tir_func);
-        // Fact extraction uses the semantic type floor because this call builds
-        // the name-keyed scalar plan that later feeds `repr_by_value`; consuming
-        // the proven value map here would make the analysis circular.
+        let mut optimized_tir_func = None;
+        let mut optimized_names = None;
+        if crate::tir::verify::verify_function(&tir_func).is_ok() {
+            let mut projected_tir_func = tir_func.clone();
+            crate::tir::passes::run_pipeline(
+                &mut projected_tir_func,
+                &crate::tir::target_info::TargetInfo::native_release_fast(),
+            );
+            refine_types(&mut projected_tir_func);
+            optimized_names = Some(SimpleValueNames::for_function(&projected_tir_func));
+            optimized_tir_func = Some(projected_tir_func);
+        }
+        // Fact extraction uses the semantic type floor. Raw-int carrier homes
+        // are projected from `repr_by_value_for` after the LIR facts have been
+        // named, so this extraction step never becomes a second carrier proof.
+        // Projection also sees the optimized TIR view because the canonical TIR
+        // pipeline exposes loop phis and promoted store/load slots that the
+        // backend lowers as raw value carriers.
         let lir_func = lower_function_to_lir_for_repr_fact_extraction(&tir_func);
 
         let mut plan = Self::with_capacity(func_ir.ops.len());
@@ -1142,18 +1077,31 @@ impl ScalarRepresentationPlan {
         plan.mark_container_storage_ops(func_ir);
         plan.scalar_slot_exclusion_unsafe = plan.compute_scalar_slot_exclusion_unsafe(func_ir);
         plan.scalar_store_targets_by_kind = plan.compute_scalar_store_targets(&fact_index);
-        plan.seed_repr_by_name(func_ir, &fact_index);
+        let mut tir_value_views = Vec::with_capacity(2);
+        tir_value_views.push((&tir_func, &names));
+        if let (Some(optimized_tir_func), Some(optimized_names)) =
+            (optimized_tir_func.as_ref(), optimized_names.as_ref())
+        {
+            tir_value_views.push((optimized_tir_func, optimized_names));
+        }
+        plan.seed_repr_by_name(func_ir, &fact_index, &tir_value_views);
         plan
     }
 
-    /// Compute the integer/bool/float raw-carrier sets and translate all native
-    /// name-keyed scalar carrier tiers into the `repr_by_name` source of truth.
-    /// Integer names floor to `MaybeBigInt` and are raised by range/overflow-peel
-    /// proofs. Bool/F64 names floor to boxed `DynBox` here and are raised only
-    /// by the raw-bool/raw-f64 eligibility filters, so semantic type facts alone
+    /// Compute the integer/bool/float raw-carrier sets and translate them into
+    /// the native `repr_by_name` view. Integer carriers are projected from the
+    /// value-keyed `repr_by_value_for` authority for the semantic and optimized
+    /// TIR views, then transported through SimpleIR names only as a lowering view.
+    /// Bool/F64 names still floor to boxed `DynBox` here and are raised only by
+    /// their raw-bool/raw-f64 eligibility filters, so semantic type facts alone
     /// cannot authorize unboxed native storage.
-    fn seed_repr_by_name(&mut self, func_ir: &FunctionIR, fact_index: &FunctionFactIndex<'_>) {
-        let primary = self.compute_primary_name_sets(func_ir, fact_index);
+    fn seed_repr_by_name(
+        &mut self,
+        func_ir: &FunctionIR,
+        fact_index: &FunctionFactIndex<'_>,
+        tir_value_views: &[(&TirFunction, &SimpleValueNames)],
+    ) {
+        let primary = self.compute_primary_name_sets(func_ir, fact_index, tir_value_views);
         let mut repr_by_name =
             plan_hash_map(self.facts_by_name.len().saturating_add(primary.int.len()));
         for (name, fact) in &self.facts_by_name {
@@ -1227,11 +1175,12 @@ impl ScalarRepresentationPlan {
     }
 
     /// The raw-primary carrier sets, as a **view** over the representation
-    /// lattice. `int` is the native raw-i64 carrier union; `int_inline_safe` and
-    /// `int_full_deopt` expose the two name-keyed tiers separately so box sites
-    /// cannot confuse the inline-int47 proof with the overflow-peel proof. Bool
-    /// and float are the raw 0/1 and unboxed-f64 views over the same
-    /// `repr_by_name` authority.
+    /// lattice. `int` is the native raw-i64 carrier union projected from the
+    /// value-keyed TIR representation proof; `int_inline_safe` and
+    /// `int_full_deopt` expose the two tiers separately so box sites cannot
+    /// confuse the inline-int47 proof with the overflow-peel proof. Bool and
+    /// float are the raw 0/1 and unboxed-f64 views over the same `repr_by_name`
+    /// lowering view.
     #[cfg(any(feature = "native-backend", feature = "llvm", test))]
     pub fn primary_name_sets(&self) -> ScalarPrimaryNameSets {
         let int_inline_safe = self.int_carrier_names();
@@ -1249,11 +1198,11 @@ impl ScalarRepresentationPlan {
         }
     }
 
-    /// Inline-int47 raw-i64 carrier names — the `{RawI64Safe}` view over
-    /// `repr_by_name`. Use [`Self::int_raw_carrier_names`] or
-    /// [`Self::is_raw_int_carrier_name`] when a native consumer means "any raw
-    /// i64 storage"; box sites must distinguish this tier from
-    /// [`Self::int_full_deopt_names`].
+    /// Inline-int47 raw-i64 carrier names — the `{RawI64Safe}` view over the
+    /// value-backed native `repr_by_name` projection. Use
+    /// [`Self::int_raw_carrier_names`] or [`Self::is_raw_int_carrier_name`] when
+    /// a native consumer means "any raw i64 storage"; box sites must distinguish
+    /// this tier from [`Self::int_full_deopt_names`].
     pub fn int_carrier_names(&self) -> BTreeSet<String> {
         self.repr_by_name
             .iter()
@@ -2181,6 +2130,7 @@ impl ScalarRepresentationPlan {
         &self,
         func_ir: &FunctionIR,
         fact_index: &FunctionFactIndex<'_>,
+        tir_value_views: &[(&TirFunction, &SimpleValueNames)],
     ) -> ScalarPrimaryNameSets {
         if is_cold_module_chunk_function(&func_ir.name) {
             return ScalarPrimaryNameSets::default();
@@ -2188,14 +2138,8 @@ impl ScalarRepresentationPlan {
 
         let (int_like, bool_like, float_like, str_like, _) = self.scalar_name_sets();
         let param_name_set: BTreeSet<&str> = func_ir.params.iter().map(String::as_str).collect();
-        let (int_inline_safe, int_full_deopt) = self.compute_int_primary_name_tiers(
-            func_ir,
-            fact_index,
-            &param_name_set,
-            &int_like,
-            &bool_like,
-            &float_like,
-        );
+        let (int_inline_safe, int_full_deopt) =
+            self.project_int_primary_name_tiers_from_tir_views(fact_index, tir_value_views);
         let mut int_primary = int_inline_safe.clone();
         int_primary.extend(int_full_deopt.iter().cloned());
         let bool_primary = self.compute_bool_primary_names(
@@ -2219,192 +2163,206 @@ impl ScalarRepresentationPlan {
         }
     }
 
-    fn compute_int_primary_name_tiers(
+    fn project_int_primary_name_tiers_from_tir_views(
         &self,
-        func_ir: &FunctionIR,
         fact_index: &FunctionFactIndex<'_>,
-        param_name_set: &BTreeSet<&str>,
-        int_like: &BTreeSet<String>,
-        bool_like: &BTreeSet<String>,
-        float_like: &BTreeSet<String>,
+        tir_value_views: &[(&TirFunction, &SimpleValueNames)],
     ) -> (BTreeSet<String>, BTreeSet<String>) {
-        let bounded_i64_names = compute_i64_interval_facts(func_ir);
-        let int_unsafe_outputs: BTreeSet<String> = fact_index
-            .output_ops
-            .iter()
-            .filter_map(|op| {
-                let out = op.out.as_ref()?;
-                let is_safe_int_op = matches!(
-                    op.kind.as_str(),
-                    "const"
-                        | "loop_index_start"
-                        | "loop_index_next"
-                        | "len"
-                        | "gpu_thread_id"
-                        | "gpu_block_id"
-                        | "gpu_block_dim"
-                        | "gpu_grid_dim"
-                        | "bit_and"
-                        | "bit_or"
-                        | "bit_xor"
-                        | "inplace_bit_and"
-                        | "inplace_bit_or"
-                        | "inplace_bit_xor"
-                        | "invert"
-                        | "copy"
-                        | "copy_var"
-                        | "load_var"
-                        | "identity_alias"
-                        | "binding_alias"
-                        | "store_var"
-                );
-                let range_safe_arithmetic = bounded_i64_names.contains_key(out)
-                    && matches!(
-                        op.kind.as_str(),
-                        "add" | "inplace_add" | "sub" | "inplace_sub"
-                    );
-                (!is_safe_int_op && !range_safe_arithmetic && int_like.contains(out))
-                    .then(|| out.clone())
-            })
-            .collect();
-        let bounded_i64_name_set: BTreeSet<String> = bounded_i64_names.keys().cloned().collect();
-        let vars_with_non_int_defs =
-            self.vars_with_non_int_defs(fact_index, int_like, bool_like, &bounded_i64_name_set);
-        let passes_filter = |name: &str| {
-            (int_like.contains(name) || bounded_i64_names.contains_key(name))
-                && !param_name_set.contains(name)
-                && !int_unsafe_outputs.contains(name)
-                && !vars_with_non_int_defs.contains(name)
-                && !fact_index.sentinel_outputs.contains(name)
-                && !fact_index.delete_targets.contains(name)
-                && !float_like.contains(name)
-        };
-        let mut candidates: PlanHashSet<String> =
-            plan_hash_set(bounded_i64_names.len().saturating_add(16));
-        for name in bounded_store_load_loop_seed_names(func_ir, &bounded_i64_names) {
-            if passes_filter(&name) {
-                candidates.insert(name);
+        let mut inline_safe = BTreeSet::new();
+        let mut full_deopt = BTreeSet::new();
+        for (tir_func, names) in tir_value_views {
+            let (view_inline_safe, view_full_deopt) =
+                self.project_int_primary_name_tiers_from_tir(fact_index, tir_func, names);
+            inline_safe.extend(view_inline_safe);
+            for name in view_full_deopt {
+                inline_safe.remove(&name);
+                full_deopt.insert(name);
             }
         }
-        // OSC admission for `overflow_peel`'d loops: the {slot → load_var →
-        // checked_add/checked_mul → slot} carrier cycle is raw-i64-admissible
-        // AS A UNIT — no interval proof is needed (or possible: the accumulator
-        // is genuinely unbounded; that is the point of the peel). The
-        // `checked_add`/`checked_mul` contract supplies the wrap-safety the
-        // interval chain cannot: the result is a true i64 with a hardware
-        // overflow flag, and the peel's CFG gates every consumption of a
-        // wrapped value.
-        let checked_loop_members =
-            checked_loop_seed_names(func_ir, &bounded_i64_names, &passes_filter);
-        candidates.extend(checked_loop_members.iter().cloned());
-        let mut changed = true;
-        while changed {
-            changed = false;
-            for target in
-                store_var_targets_all_sources_where(fact_index, |src| candidates.contains(src))
-            {
-                if passes_filter(&target) && candidates.insert(target) {
-                    changed = true;
-                }
-            }
-            for op in &fact_index.data_ops {
-                let Some(out) = op.out.as_ref() else {
-                    continue;
-                };
-                if candidates.contains(out) || !passes_filter(out) {
-                    continue;
-                }
-                if op_produces_raw_i64_for_int_primary(op, &candidates, &bounded_i64_names)
-                    && candidates.insert(out.clone())
-                {
-                    changed = true;
-                }
-            }
-        }
-        let full_deopt =
-            self.propagate_full_deopt_name_tier(fact_index, &candidates, checked_loop_members);
-        let inline_safe = candidates
-            .into_iter()
-            .filter(|name| !full_deopt.contains(name))
-            .collect();
+        inline_safe.retain(|name| !full_deopt.contains(name));
         (inline_safe, full_deopt)
     }
 
-    fn vars_with_non_int_defs(
+    fn project_int_primary_name_tiers_from_tir(
         &self,
         fact_index: &FunctionFactIndex<'_>,
-        int_like: &BTreeSet<String>,
-        bool_like: &BTreeSet<String>,
-        extra_int_like: &BTreeSet<String>,
-    ) -> BTreeSet<String> {
-        let mut non_int = BTreeSet::new();
-        for edge in &fact_index.stores {
-            let source_is_int = edge.source.is_some_and(|s| {
-                !fact_index.sentinel_outputs.contains(s)
-                    && (int_like.contains(s) || bool_like.contains(s) || extra_int_like.contains(s))
-            });
-            if !source_is_int {
-                non_int.insert(edge.target.to_string());
+        tir_func: &TirFunction,
+        names: &SimpleValueNames,
+    ) -> (BTreeSet<String>, BTreeSet<String>) {
+        let vr = value_range_for(tir_func);
+        let repr_by_value = repr_by_value_for(tir_func, Some(&vr));
+        let mut inline_safe = BTreeSet::new();
+        let mut full_deopt = BTreeSet::new();
+
+        for block in tir_func.blocks.values() {
+            for (index, arg) in block.args.iter().enumerate() {
+                if let Some(&repr) = repr_by_value.get(&arg.id) {
+                    self.insert_projected_raw_i64_name(
+                        fact_index,
+                        names.value_name(arg.id),
+                        repr,
+                        &mut inline_safe,
+                        &mut full_deopt,
+                    );
+                    self.insert_projected_raw_i64_name(
+                        fact_index,
+                        names.block_arg_slot(block.id, index),
+                        repr,
+                        &mut inline_safe,
+                        &mut full_deopt,
+                    );
+                }
             }
-        }
-        for op in &fact_index.output_ops {
-            if let Some(out) = op.out.as_ref() {
-                let lane = self.infer_scalar_lane(op);
-                let proven_int = matches!(lane, Some(ScalarKind::Int) | Some(ScalarKind::Bool))
-                    || extra_int_like.contains(out);
-                if !proven_int && int_like.contains(out) {
-                    non_int.insert(out.clone());
+            for op in &block.ops {
+                let simple_out = match op.attrs.get("_simple_out") {
+                    Some(AttrValue::Str(name)) => Some(name.as_str()),
+                    _ => None,
+                };
+                for (result_index, result) in op.results.iter().enumerate() {
+                    if let Some(&repr) = repr_by_value.get(result) {
+                        self.insert_projected_raw_i64_name(
+                            fact_index,
+                            names.value_name(*result),
+                            repr,
+                            &mut inline_safe,
+                            &mut full_deopt,
+                        );
+                        if result_index == 0
+                            && let Some(simple_out) = simple_out
+                        {
+                            self.insert_projected_raw_i64_name(
+                                fact_index,
+                                simple_out.to_string(),
+                                repr,
+                                &mut inline_safe,
+                                &mut full_deopt,
+                            );
+                        }
+                    }
                 }
             }
         }
-        non_int
+
+        self.propagate_projected_raw_i64_name_tiers(fact_index, &mut inline_safe, &mut full_deopt);
+        (inline_safe, full_deopt)
     }
 
-    fn propagate_full_deopt_name_tier(
+    fn insert_projected_raw_i64_name(
         &self,
         fact_index: &FunctionFactIndex<'_>,
-        raw_candidates: &PlanHashSet<String>,
-        seed: BTreeSet<String>,
-    ) -> BTreeSet<String> {
-        let mut full_deopt: BTreeSet<String> = seed
+        name: String,
+        repr: Repr,
+        inline_safe: &mut BTreeSet<String>,
+        full_deopt: &mut BTreeSet<String>,
+    ) -> bool {
+        if !self.name_allows_projected_raw_i64(fact_index, &name) {
+            return false;
+        }
+        match repr {
+            Repr::RawI64FullDeopt => {
+                let removed_inline = inline_safe.remove(&name);
+                full_deopt.insert(name) || removed_inline
+            }
+            Repr::RawI64Safe => {
+                if full_deopt.contains(&name) {
+                    false
+                } else {
+                    inline_safe.insert(name)
+                }
+            }
+            _ => false,
+        }
+    }
+
+    fn name_allows_projected_raw_i64(
+        &self,
+        fact_index: &FunctionFactIndex<'_>,
+        name: &str,
+    ) -> bool {
+        if fact_index.sentinel_outputs.contains(name) || fact_index.delete_targets.contains(name) {
+            return false;
+        }
+        matches!(self.name_scalar_kind(name), None | Some(ScalarKind::Int))
+    }
+
+    fn raw_i64_tier_for_name(
+        name: &str,
+        inline_safe: &BTreeSet<String>,
+        full_deopt: &BTreeSet<String>,
+    ) -> Option<Repr> {
+        if full_deopt.contains(name) {
+            Some(Repr::RawI64FullDeopt)
+        } else if inline_safe.contains(name) {
+            Some(Repr::RawI64Safe)
+        } else {
+            None
+        }
+    }
+
+    fn store_var_target_raw_i64_tiers(
+        fact_index: &FunctionFactIndex<'_>,
+        inline_safe: &BTreeSet<String>,
+        full_deopt: &BTreeSet<String>,
+    ) -> Vec<(String, Repr)> {
+        let mut target_tiers: PlanHashMap<&str, Option<Repr>> =
+            plan_hash_map(fact_index.stores.len().saturating_add(1));
+        for edge in &fact_index.stores {
+            let source_tier = edge
+                .source
+                .and_then(|source| Self::raw_i64_tier_for_name(source, inline_safe, full_deopt));
+            target_tiers
+                .entry(edge.target)
+                .and_modify(|existing| {
+                    *existing = match (*existing, source_tier) {
+                        (Some(Repr::RawI64FullDeopt), Some(_))
+                        | (Some(_), Some(Repr::RawI64FullDeopt)) => Some(Repr::RawI64FullDeopt),
+                        (Some(Repr::RawI64Safe), Some(Repr::RawI64Safe)) => Some(Repr::RawI64Safe),
+                        _ => None,
+                    };
+                })
+                .or_insert(source_tier);
+        }
+        target_tiers
             .into_iter()
-            .filter(|name| raw_candidates.contains(name))
-            .collect();
+            .filter_map(|(target, tier)| tier.map(|tier| (target.to_string(), tier)))
+            .collect()
+    }
+
+    fn propagate_projected_raw_i64_name_tiers(
+        &self,
+        fact_index: &FunctionFactIndex<'_>,
+        inline_safe: &mut BTreeSet<String>,
+        full_deopt: &mut BTreeSet<String>,
+    ) {
         let mut changed = true;
         while changed {
             changed = false;
-            for target in
-                store_var_targets_all_sources_where(fact_index, |src| full_deopt.contains(src))
+            for (target, tier) in
+                Self::store_var_target_raw_i64_tiers(fact_index, inline_safe, full_deopt)
             {
-                if raw_candidates.contains(&target) && full_deopt.insert(target) {
-                    changed = true;
-                }
+                changed |= self.insert_projected_raw_i64_name(
+                    fact_index,
+                    target,
+                    tier,
+                    inline_safe,
+                    full_deopt,
+                );
             }
-            for op in &fact_index.data_ops {
-                let Some(out) = op.out.as_ref() else {
-                    continue;
-                };
-                if full_deopt.contains(out) || !raw_candidates.contains(out) {
-                    continue;
-                }
-                let first_source = op.var.as_deref().or_else(|| {
-                    op.args
-                        .as_ref()
-                        .and_then(|args| args.first().map(String::as_str))
-                });
-                let propagates_full_deopt = matches!(
-                    op.kind.as_str(),
-                    "copy" | "copy_var" | "load_var" | "identity_alias" | "binding_alias"
-                ) && first_source
-                    .is_some_and(|source| full_deopt.contains(source));
-                if propagates_full_deopt && full_deopt.insert(out.clone()) {
-                    changed = true;
+            for edge in &fact_index.aliases {
+                if let Some(tier) =
+                    Self::raw_i64_tier_for_name(edge.source, inline_safe, full_deopt)
+                {
+                    changed |= self.insert_projected_raw_i64_name(
+                        fact_index,
+                        edge.out.to_string(),
+                        tier,
+                        inline_safe,
+                        full_deopt,
+                    );
                 }
             }
         }
-        full_deopt
     }
-
     fn compute_bool_primary_names(
         &self,
         fact_index: &FunctionFactIndex<'_>,
@@ -2946,860 +2904,6 @@ fn tir_op_original_kind(op: &TirOp) -> Option<&str> {
         Some(AttrValue::Str(kind)) => Some(kind.as_str()),
         _ => None,
     }
-}
-
-fn op_produces_raw_i64_for_int_primary(
-    op: &OpIR,
-    candidates: &PlanHashSet<String>,
-    bounded_i64_names: &PlanHashMap<String, I64Interval>,
-) -> bool {
-    let first_source = || {
-        op.var.as_deref().or_else(|| {
-            op.args
-                .as_ref()
-                .and_then(|args| args.first().map(String::as_str))
-        })
-    };
-    match op.kind.as_str() {
-        "const" | "loop_index_start" | "loop_index_next" | "len" | "gpu_thread_id"
-        | "gpu_block_id" | "gpu_block_dim" | "gpu_grid_dim" => true,
-        "copy" | "copy_var" | "load_var" | "identity_alias" | "binding_alias" | "pos"
-        | "invert" => first_source().is_some_and(|s| candidates.contains(s)),
-        "bit_and" | "bit_or" | "bit_xor" | "inplace_bit_and" | "inplace_bit_or"
-        | "inplace_bit_xor" => op
-            .args
-            .as_ref()
-            .is_some_and(|args| args.len() >= 2 && args.iter().all(|a| candidates.contains(a))),
-        "add" | "inplace_add" | "sub" | "inplace_sub" => {
-            op.out
-                .as_deref()
-                .is_some_and(|out| bounded_i64_names.contains_key(out))
-                && op.args.as_ref().is_some_and(|args| {
-                    args.len() >= 2 && args.iter().all(|arg| candidates.contains(arg))
-                })
-        }
-        _ => false,
-    }
-}
-
-/// Number of monotone `union` fixpoint passes allowed before the interval
-/// analysis switches to a WIDENING join. A legitimately-converging program
-/// stabilises in a handful of passes; anything still growing past this bound is
-/// a self-referential accumulator (e.g. a fully-unrolled `total += i`) whose
-/// range is unbounded, so we widen it to ±i64 (→ BigInt-correct boxed path)
-/// rather than loop forever. The bound guarantees termination on ANY input.
-const INTERVAL_WIDEN_AFTER_PASSES: u32 = 8;
-
-fn compute_i64_interval_facts(func_ir: &FunctionIR) -> PlanHashMap<String, I64Interval> {
-    let mut intervals = plan_hash_map(func_ir.ops.len());
-    let loop_backedge_updates = loop_backedge_update_names(func_ir);
-    let mut changed = true;
-    let mut pass = 0u32;
-    while changed {
-        // After the union budget is spent, widen every join so any still-growing
-        // interval saturates to ±i64 in one more step and the fixpoint
-        // terminates. Widening is sound (a strict superset of the union result).
-        let widen = pass >= INTERVAL_WIDEN_AFTER_PASSES;
-        changed = false;
-        for op in &func_ir.ops {
-            if let Some(out) = op.out.as_deref()
-                && let Some(interval) =
-                    interval_for_simple_op(op, &intervals, &loop_backedge_updates)
-            {
-                changed |= insert_interval(&mut intervals, out, interval, widen);
-            }
-        }
-        changed |= propagate_store_target_intervals(func_ir, &mut intervals, widen);
-        changed |= propagate_counted_loop_intervals(func_ir, &mut intervals, widen);
-        pass = pass.saturating_add(1);
-    }
-    intervals
-}
-
-fn insert_interval(
-    intervals: &mut PlanHashMap<String, I64Interval>,
-    name: &str,
-    interval: I64Interval,
-    widen: bool,
-) -> bool {
-    match intervals.get(name).copied() {
-        Some(existing) => {
-            let joined = if widen {
-                existing.widen(interval)
-            } else {
-                existing.union(interval)
-            };
-            if joined == existing {
-                false
-            } else {
-                intervals.insert(name.to_string(), joined);
-                true
-            }
-        }
-        None => {
-            intervals.insert(name.to_string(), interval);
-            true
-        }
-    }
-}
-
-fn interval_for_simple_op(
-    op: &OpIR,
-    intervals: &PlanHashMap<String, I64Interval>,
-    loop_backedge_updates: &PlanHashSet<String>,
-) -> Option<I64Interval> {
-    if op
-        .out
-        .as_ref()
-        .is_some_and(|out| loop_backedge_updates.contains(out))
-        && matches!(
-            op.kind.as_str(),
-            "add" | "inplace_add" | "sub" | "inplace_sub"
-        )
-    {
-        return None;
-    }
-    match op.kind.as_str() {
-        "const" => op.value.map(I64Interval::singleton),
-        "copy" | "copy_var" | "load_var" | "identity_alias" | "binding_alias" | "pos"
-        | "loop_index_start" | "loop_index_next" => interval_for_first_source(op, intervals),
-        "add" | "inplace_add" => interval_for_binary_args(op, intervals, I64Interval::checked_add),
-        "sub" | "inplace_sub" => interval_for_binary_args(op, intervals, I64Interval::checked_sub),
-        _ => None,
-    }
-}
-
-fn interval_for_first_source(
-    op: &OpIR,
-    intervals: &PlanHashMap<String, I64Interval>,
-) -> Option<I64Interval> {
-    let source = op.var.as_deref().or_else(|| {
-        op.args
-            .as_ref()
-            .and_then(|args| args.first().map(String::as_str))
-    })?;
-    intervals.get(source).copied()
-}
-
-fn interval_for_binary_args(
-    op: &OpIR,
-    intervals: &PlanHashMap<String, I64Interval>,
-    combine: fn(I64Interval, I64Interval) -> Option<I64Interval>,
-) -> Option<I64Interval> {
-    let args = op.args.as_ref()?;
-    let lhs = intervals.get(args.first()?)?;
-    let rhs = intervals.get(args.get(1)?)?;
-    combine(*lhs, *rhs)
-}
-
-fn propagate_store_target_intervals(
-    func_ir: &FunctionIR,
-    intervals: &mut PlanHashMap<String, I64Interval>,
-    widen: bool,
-) -> bool {
-    let mut targets: PlanHashMap<String, Option<I64Interval>> =
-        plan_hash_map(func_ir.ops.len() / 4 + 1);
-    for op in &func_ir.ops {
-        let Some(target) = store_var_target_name(op) else {
-            continue;
-        };
-        let source_interval =
-            store_var_source_name(op).and_then(|source| intervals.get(source).copied());
-        targets
-            .entry(target.to_string())
-            .and_modify(|existing| {
-                *existing = match (*existing, source_interval) {
-                    (Some(lhs), Some(rhs)) => Some(lhs.union(rhs)),
-                    _ => None,
-                };
-            })
-            .or_insert(source_interval);
-    }
-
-    let mut changed = false;
-    for (target, interval) in targets {
-        if let Some(interval) = interval {
-            changed |= insert_interval(intervals, &target, interval, widen);
-        }
-    }
-    changed
-}
-
-fn propagate_counted_loop_intervals(
-    func_ir: &FunctionIR,
-    intervals: &mut PlanHashMap<String, I64Interval>,
-    widen: bool,
-) -> bool {
-    let mut changed = false;
-    for (start, end) in loop_regions(&func_ir.ops) {
-        if let Some(proof) = loop_index_interval_proof(func_ir, start, end, intervals) {
-            for (name, interval) in proof.names {
-                changed |= insert_interval(intervals, &name, interval, widen);
-            }
-        }
-        if let Some(proof) = store_load_loop_interval_proof(func_ir, start, end, intervals) {
-            for (name, interval) in proof.names {
-                changed |= insert_interval(intervals, &name, interval, widen);
-            }
-        }
-    }
-    changed
-}
-
-struct CountedLoopIntervalProof {
-    names: Vec<(String, I64Interval)>,
-}
-
-fn loop_regions(ops: &[OpIR]) -> Vec<(usize, usize)> {
-    let mut regions = Vec::new();
-    let mut stack = Vec::new();
-    for (idx, op) in ops.iter().enumerate() {
-        match op.kind.as_str() {
-            "loop_start" => stack.push(idx),
-            "loop_end" => {
-                if let Some(start) = stack.pop() {
-                    regions.push((start, idx));
-                }
-            }
-            _ => {}
-        }
-    }
-    regions
-}
-
-fn loop_index_interval_proof(
-    func_ir: &FunctionIR,
-    start: usize,
-    end: usize,
-    intervals: &PlanHashMap<String, I64Interval>,
-) -> Option<CountedLoopIntervalProof> {
-    let ops = &func_ir.ops;
-    let (iv_start_idx, iv_name, init_name) = ((start + 1)..end).find_map(|idx| {
-        let op = &ops[idx];
-        (op.kind == "loop_index_start")
-            .then(|| Some((idx, op.out.clone()?, op.args.as_ref()?.first()?.clone())))?
-    })?;
-    let init = resolve_interval_before(func_ir, iv_start_idx, &init_name, intervals, 0)?
-        .singleton_value()?;
-    let predicate = counted_loop_continue_predicate(func_ir, start, end, &iv_name, intervals)?;
-    let (next_idx, next_name, step) =
-        counted_loop_update(func_ir, start, end, &iv_name, intervals)?;
-    let (iv_interval, next_interval) =
-        bounded_loop_intervals(init, predicate.bound, step, predicate.op)?;
-    if next_idx <= iv_start_idx {
-        return None;
-    }
-    Some(CountedLoopIntervalProof {
-        names: vec![(iv_name, iv_interval), (next_name, next_interval)],
-    })
-}
-
-fn store_load_loop_interval_proof(
-    func_ir: &FunctionIR,
-    start: usize,
-    end: usize,
-    intervals: &PlanHashMap<String, I64Interval>,
-) -> Option<CountedLoopIntervalProof> {
-    let ops = &func_ir.ops;
-    for load_idx in (start + 1)..end {
-        let load = &ops[load_idx];
-        if load.kind != "load_var" {
-            continue;
-        }
-        let slot_name = load.var.as_ref()?;
-        let iv_name = load.out.as_ref()?;
-        let init = resolve_store_slot_interval_before(func_ir, start, slot_name, intervals)?
-            .singleton_value()?;
-        let predicate = counted_loop_continue_predicate(func_ir, start, end, iv_name, intervals)?;
-        let (store_idx, next_name, step) =
-            store_load_loop_update(func_ir, start, end, slot_name, iv_name, intervals)?;
-        if store_idx <= load_idx {
-            continue;
-        }
-        let (iv_interval, next_interval) =
-            bounded_loop_intervals(init, predicate.bound, step, predicate.op)?;
-        let slot_interval = iv_interval.union(next_interval);
-        let mut names = vec![
-            (slot_name.clone(), slot_interval),
-            (iv_name.clone(), iv_interval),
-            (next_name, next_interval),
-        ];
-        for op in &ops[start + 1..end] {
-            if op.kind == "load_var"
-                && op.var.as_deref() == Some(slot_name.as_str())
-                && let Some(out) = op.out.as_ref()
-            {
-                names.push((out.clone(), slot_interval));
-            }
-        }
-        return Some(CountedLoopIntervalProof { names });
-    }
-    None
-}
-
-#[derive(Clone, Copy)]
-enum LoopCompareOp {
-    Lt,
-    Le,
-    Gt,
-    Ge,
-}
-
-struct LoopContinuePredicate {
-    op: LoopCompareOp,
-    bound: i64,
-}
-
-fn counted_loop_continue_predicate(
-    func_ir: &FunctionIR,
-    start: usize,
-    end: usize,
-    iv_name: &str,
-    intervals: &PlanHashMap<String, I64Interval>,
-) -> Option<LoopContinuePredicate> {
-    let ops = &func_ir.ops;
-    for break_idx in (start + 1)..end {
-        let break_op = &ops[break_idx];
-        if !matches!(
-            break_op.kind.as_str(),
-            "loop_break_if_false" | "loop_break_if_true"
-        ) {
-            continue;
-        }
-        let cond_name = break_op.args.as_ref()?.first()?;
-        let compare_idx = (start + 1..break_idx).rev().find(|idx| {
-            ops[*idx].out.as_ref() == Some(cond_name)
-                && matches!(ops[*idx].kind.as_str(), "lt" | "le" | "gt" | "ge")
-        })?;
-        let compare = &ops[compare_idx];
-        let args = compare.args.as_ref()?;
-        let lhs = args.first()?;
-        let rhs = args.get(1)?;
-        let mut op = match compare.kind.as_str() {
-            "lt" => LoopCompareOp::Lt,
-            "le" => LoopCompareOp::Le,
-            "gt" => LoopCompareOp::Gt,
-            "ge" => LoopCompareOp::Ge,
-            _ => return None,
-        };
-        let bound_name = if lhs == iv_name {
-            rhs
-        } else if rhs == iv_name {
-            op = flip_compare_op(op);
-            lhs
-        } else {
-            continue;
-        };
-        if break_op.kind == "loop_break_if_true" {
-            op = invert_compare_op(op);
-        }
-        let bound = resolve_interval_before(func_ir, compare_idx, bound_name, intervals, 0)?
-            .singleton_value()?;
-        return Some(LoopContinuePredicate { op, bound });
-    }
-    None
-}
-
-fn flip_compare_op(op: LoopCompareOp) -> LoopCompareOp {
-    match op {
-        LoopCompareOp::Lt => LoopCompareOp::Gt,
-        LoopCompareOp::Le => LoopCompareOp::Ge,
-        LoopCompareOp::Gt => LoopCompareOp::Lt,
-        LoopCompareOp::Ge => LoopCompareOp::Le,
-    }
-}
-
-fn invert_compare_op(op: LoopCompareOp) -> LoopCompareOp {
-    match op {
-        LoopCompareOp::Lt => LoopCompareOp::Ge,
-        LoopCompareOp::Le => LoopCompareOp::Gt,
-        LoopCompareOp::Gt => LoopCompareOp::Le,
-        LoopCompareOp::Ge => LoopCompareOp::Lt,
-    }
-}
-
-fn counted_loop_update(
-    func_ir: &FunctionIR,
-    start: usize,
-    end: usize,
-    iv_name: &str,
-    intervals: &PlanHashMap<String, I64Interval>,
-) -> Option<(usize, String, i64)> {
-    let ops = &func_ir.ops;
-    for idx in (start + 1..end).rev() {
-        let op = &ops[idx];
-        if op.kind != "loop_index_next" || op.out.as_deref() != Some(iv_name) {
-            continue;
-        }
-        let next_name = op.args.as_ref()?.first()?.clone();
-        let update_idx = (start + 1..idx)
-            .rev()
-            .find(|candidate| ops[*candidate].out.as_deref() == Some(next_name.as_str()))?;
-        let step = induction_update_step(func_ir, update_idx, iv_name, intervals)?;
-        return Some((idx, next_name, step));
-    }
-    None
-}
-
-fn store_load_loop_update(
-    func_ir: &FunctionIR,
-    start: usize,
-    end: usize,
-    slot_name: &str,
-    iv_name: &str,
-    intervals: &PlanHashMap<String, I64Interval>,
-) -> Option<(usize, String, i64)> {
-    let ops = &func_ir.ops;
-    for idx in (start + 1..end).rev() {
-        let op = &ops[idx];
-        if store_var_target_name(op) != Some(slot_name) {
-            continue;
-        }
-        let next_name = store_var_source_name(op)?.to_string();
-        let (_update_idx, update_name, step) = induction_update_for_name_before(
-            func_ir, start, idx, &next_name, iv_name, intervals, 0,
-        )?;
-        return Some((idx, update_name, step));
-    }
-    None
-}
-
-fn induction_update_for_name_before(
-    func_ir: &FunctionIR,
-    start: usize,
-    before_idx: usize,
-    name: &str,
-    iv_name: &str,
-    intervals: &PlanHashMap<String, I64Interval>,
-    depth: usize,
-) -> Option<(usize, String, i64)> {
-    if depth > 8 {
-        return None;
-    }
-    let ops = &func_ir.ops;
-    for update_idx in (start + 1..before_idx).rev() {
-        let op = &ops[update_idx];
-        if op.out.as_deref() != Some(name) {
-            continue;
-        }
-        if let Some(step) = induction_update_step(func_ir, update_idx, iv_name, intervals) {
-            return Some((update_idx, name.to_string(), step));
-        }
-        if let Some(source) = alias_source_name(op) {
-            return induction_update_for_name_before(
-                func_ir,
-                start,
-                update_idx,
-                source,
-                iv_name,
-                intervals,
-                depth + 1,
-            );
-        }
-        return None;
-    }
-    None
-}
-
-fn induction_update_step(
-    func_ir: &FunctionIR,
-    update_idx: usize,
-    iv_name: &str,
-    intervals: &PlanHashMap<String, I64Interval>,
-) -> Option<i64> {
-    let op = &func_ir.ops[update_idx];
-    let args = op.args.as_ref()?;
-    let lhs = args.first()?;
-    let rhs = args.get(1)?;
-    match op.kind.as_str() {
-        "add" | "inplace_add" => {
-            if lhs == iv_name {
-                resolve_interval_before(func_ir, update_idx, rhs, intervals, 0)?.singleton_value()
-            } else if rhs == iv_name {
-                resolve_interval_before(func_ir, update_idx, lhs, intervals, 0)?.singleton_value()
-            } else {
-                None
-            }
-        }
-        "sub" | "inplace_sub" => {
-            if lhs == iv_name {
-                let step = resolve_interval_before(func_ir, update_idx, rhs, intervals, 0)?
-                    .singleton_value()?;
-                step.checked_neg()
-            } else {
-                None
-            }
-        }
-        _ => None,
-    }
-}
-
-fn bounded_loop_intervals(
-    init: i64,
-    bound: i64,
-    step: i64,
-    op: LoopCompareOp,
-) -> Option<(I64Interval, I64Interval)> {
-    if step == 0 {
-        return None;
-    }
-    let init = init as i128;
-    let bound = bound as i128;
-    let step = step as i128;
-    let body_edge = match (step > 0, op) {
-        (true, LoopCompareOp::Lt) => bound.checked_sub(1)?,
-        (true, LoopCompareOp::Le) => bound,
-        (false, LoopCompareOp::Gt) => bound.checked_add(1)?,
-        (false, LoopCompareOp::Ge) => bound,
-        _ => return None,
-    };
-    let next_edge = body_edge.checked_add(step)?;
-    let init_next = init.checked_add(step)?;
-    let iv_min = init.min(body_edge);
-    let iv_max = init.max(body_edge);
-    let next_min = init.min(init_next).min(next_edge);
-    let next_max = init.max(init_next).max(next_edge);
-    Some((
-        I64Interval::from_i128_bounds(iv_min, iv_max)?,
-        I64Interval::from_i128_bounds(next_min, next_max)?,
-    ))
-}
-
-fn resolve_interval_before(
-    func_ir: &FunctionIR,
-    before_idx: usize,
-    name: &str,
-    intervals: &PlanHashMap<String, I64Interval>,
-    depth: usize,
-) -> Option<I64Interval> {
-    if depth > 8 {
-        return None;
-    }
-    if let Some(interval) = intervals.get(name).copied() {
-        return Some(interval);
-    }
-    for idx in (0..before_idx).rev() {
-        let op = &func_ir.ops[idx];
-        if store_var_target_name(op) == Some(name) {
-            let source = store_var_source_name(op)?;
-            return resolve_interval_before(func_ir, idx, source, intervals, depth + 1);
-        }
-        if op.out.as_deref() != Some(name) {
-            continue;
-        }
-        if let Some(interval) = interval_for_simple_op(op, intervals, &plan_hash_set(0)) {
-            return Some(interval);
-        }
-        match op.kind.as_str() {
-            "copy" | "copy_var" | "load_var" | "identity_alias" | "binding_alias" | "pos" => {
-                let source = op.var.as_deref().or_else(|| {
-                    op.args
-                        .as_ref()
-                        .and_then(|args| args.first().map(String::as_str))
-                })?;
-                return resolve_interval_before(func_ir, idx, source, intervals, depth + 1);
-            }
-            _ => return None,
-        }
-    }
-    None
-}
-
-fn resolve_store_slot_interval_before(
-    func_ir: &FunctionIR,
-    before_idx: usize,
-    slot_name: &str,
-    intervals: &PlanHashMap<String, I64Interval>,
-) -> Option<I64Interval> {
-    for idx in (0..before_idx).rev() {
-        let op = &func_ir.ops[idx];
-        if store_var_target_name(op) == Some(slot_name) {
-            let source = store_var_source_name(op)?;
-            return resolve_interval_before(func_ir, idx, source, intervals, 0);
-        }
-    }
-    None
-}
-
-fn loop_backedge_update_names(func_ir: &FunctionIR) -> PlanHashSet<String> {
-    let mut names = plan_hash_set(func_ir.ops.len() / 8 + 1);
-    let ops = &func_ir.ops;
-    for (start, end) in loop_regions(&func_ir.ops) {
-        for idx in start + 1..end {
-            let op = &ops[idx];
-            if op.kind == "loop_index_next"
-                && let Some(source) = op.args.as_ref().and_then(|args| args.first())
-            {
-                names.insert(source.clone());
-            }
-            if op.kind != "store_var" {
-                continue;
-            }
-            let Some(slot_name) = store_var_target_name(op) else {
-                continue;
-            };
-            let Some(source) = store_var_source_name(op) else {
-                continue;
-            };
-            let Some((update_idx, update_name)) =
-                alias_resolved_output_before(func_ir, start, idx, source, 0)
-            else {
-                continue;
-            };
-            let update = &ops[update_idx];
-            if !matches!(
-                update.kind.as_str(),
-                "add" | "inplace_add" | "sub" | "inplace_sub"
-            ) {
-                continue;
-            }
-            let args = update.args.as_deref().unwrap_or(&[]);
-            let updates_slot_load = args.iter().any(|arg| {
-                (start + 1..update_idx).rev().any(|load_idx| {
-                    let load = &ops[load_idx];
-                    load.kind == "load_var"
-                        && load.out.as_deref() == Some(arg.as_str())
-                        && load.var.as_deref() == Some(slot_name)
-                })
-            });
-            if updates_slot_load {
-                names.insert(update_name);
-            }
-        }
-    }
-    names
-}
-
-fn alias_resolved_output_before(
-    func_ir: &FunctionIR,
-    start: usize,
-    before_idx: usize,
-    name: &str,
-    depth: usize,
-) -> Option<(usize, String)> {
-    if depth > 8 {
-        return None;
-    }
-    let ops = &func_ir.ops;
-    for idx in (start + 1..before_idx).rev() {
-        let op = &ops[idx];
-        if op.out.as_deref() != Some(name) {
-            continue;
-        }
-        if let Some(source) = alias_source_name(op) {
-            return alias_resolved_output_before(func_ir, start, idx, source, depth + 1);
-        }
-        return Some((idx, name.to_string()));
-    }
-    None
-}
-
-/// OSC admission for `overflow_peel`'d loops (the name-keyed native chain).
-///
-/// The peeled fast loop's carrier cycle is
-/// `slot --load_var--> arg --checked_add--> sum --store_var--> slot`, plus
-/// the `prev_*` snapshot slots (`slot --load_var--> val --store_var--> slot`).
-/// The cycle is raw-i64-admissible AS A UNIT: `checked_add`'s contract — a
-/// true wrapping-i64 sum with a hardware overflow flag, every wrapped value
-/// CFG-gated by the peel — makes the raw carrier exact for every reachable
-/// value, which the interval chain cannot prove (the accumulator is genuinely
-/// unbounded; that is the point of the peel).
-///
-/// Greatest-fixpoint: optimistically admit every `checked_add` sum, every
-/// `load_var` result, and every `store_var` slot, then iteratively STRIP any
-/// member whose defs don't conform —
-///
-/// * a sum whose arg is neither an in-set member nor interval-bounded,
-/// * a load whose slot was stripped,
-/// * a slot with ANY store from a non-member, non-bounded source,
-/// * anything failing the int-primary `passes_filter` (type/poison gates).
-///
-/// Fail-closed: a questionable member invalidates its dependents, so the
-/// boxed slow-loop clone (whose plain `add` sums are not members) and the
-/// exit-merge slot (fed by both loops) strip out exactly as required, while
-/// the fast loop's accumulator, IV, and `prev_*` snapshot slots survive.
-fn checked_loop_seed_names(
-    func_ir: &FunctionIR,
-    bounded_i64_names: &PlanHashMap<String, I64Interval>,
-    passes_filter: &dyn Fn(&str) -> bool,
-) -> BTreeSet<String> {
-    // No checked_add/checked_mul ops → nothing to admit (the common case, zero
-    // cost). Both produce a wrapping-i64 result with a hardware overflow flag,
-    // CFG-gated by the peel, so both are raw-i64-admissible as a carrier unit.
-    if !func_ir
-        .ops
-        .iter()
-        .any(|op| op.kind == "checked_add" || op.kind == "checked_mul")
-    {
-        return BTreeSet::new();
-    }
-
-    // Structure maps over the SimpleIR.
-    let mut sum_args: BTreeMap<&str, Vec<&str>> = BTreeMap::new(); // sum var → args
-    let mut load_slot: BTreeMap<&str, &str> = BTreeMap::new(); // load out → slot
-    let mut slot_sources: BTreeMap<&str, Vec<&str>> = BTreeMap::new(); // slot → store sources
-    for op in &func_ir.ops {
-        match op.kind.as_str() {
-            // Both checked ops have the same carrier shape: result `var` from
-            // two operand `args` (the wrapping result; the overflow flag is a
-            // separate result not relevant to raw-carrier admission).
-            "checked_add" | "checked_mul" => {
-                if let (Some(var), Some(args)) = (op.var.as_deref(), op.args.as_ref())
-                    && args.len() == 2
-                {
-                    sum_args.insert(var, args.iter().map(String::as_str).collect());
-                }
-            }
-            "load_var" => {
-                if let (Some(out), Some(slot)) = (op.out.as_deref(), op.var.as_deref()) {
-                    load_slot.insert(out, slot);
-                }
-            }
-            "store_var" => {
-                let target = op.var.as_deref().or(op.out.as_deref());
-                let source = op
-                    .args
-                    .as_ref()
-                    .and_then(|args| args.first().map(String::as_str));
-                if let (Some(target), Some(source)) = (target, source) {
-                    slot_sources.entry(target).or_default().push(source);
-                }
-            }
-            _ => {}
-        }
-    }
-
-    // Optimistic membership: every sum, load result, and stored slot.
-    let mut members: BTreeSet<&str> = BTreeSet::new();
-    members.extend(sum_args.keys().copied());
-    members.extend(load_slot.keys().copied());
-    members.extend(slot_sources.keys().copied());
-
-    // Strip to the greatest conforming fixpoint.
-    let mut changed = true;
-    while changed {
-        changed = false;
-        let conforming_source = |s: &str, members: &BTreeSet<&str>| {
-            members.contains(s) || bounded_i64_names.contains_key(s)
-        };
-        let snapshot: Vec<&str> = members.iter().copied().collect();
-        for m in snapshot {
-            let ok = if let Some(args) = sum_args.get(m) {
-                args.iter().all(|a| conforming_source(a, &members))
-            } else if let Some(slot) = load_slot.get(m) {
-                members.contains(slot)
-            } else if let Some(sources) = slot_sources.get(m) {
-                sources.iter().all(|s| conforming_source(s, &members))
-            } else {
-                false
-            };
-            if !(ok && passes_filter(m)) && members.remove(m) {
-                changed = true;
-            }
-        }
-    }
-
-    members.into_iter().map(str::to_string).collect()
-}
-
-fn bounded_store_load_loop_seed_names(
-    func_ir: &FunctionIR,
-    bounded_i64_names: &PlanHashMap<String, I64Interval>,
-) -> BTreeSet<String> {
-    let mut names = BTreeSet::new();
-    for (start, end) in loop_regions(&func_ir.ops) {
-        let Some(proof) = store_load_loop_interval_proof(func_ir, start, end, bounded_i64_names)
-        else {
-            continue;
-        };
-        let Some((slot_name, _)) = proof.names.first() else {
-            continue;
-        };
-        if store_slot_initial_source_is_raw_seed(func_ir, start, slot_name, bounded_i64_names) {
-            names.insert(slot_name.clone());
-        }
-    }
-    names
-}
-
-fn store_slot_initial_source_is_raw_seed(
-    func_ir: &FunctionIR,
-    before_idx: usize,
-    slot_name: &str,
-    bounded_i64_names: &PlanHashMap<String, I64Interval>,
-) -> bool {
-    for idx in (0..before_idx).rev() {
-        let op = &func_ir.ops[idx];
-        if store_var_target_name(op) == Some(slot_name) {
-            return store_var_source_name(op).is_some_and(|source| {
-                name_is_structural_raw_i64_before(func_ir, idx, source, bounded_i64_names, 0)
-            });
-        }
-    }
-    false
-}
-
-fn name_is_structural_raw_i64_before(
-    func_ir: &FunctionIR,
-    before_idx: usize,
-    name: &str,
-    bounded_i64_names: &PlanHashMap<String, I64Interval>,
-    depth: usize,
-) -> bool {
-    if depth > 8 || !bounded_i64_names.contains_key(name) {
-        return false;
-    }
-    for idx in (0..before_idx).rev() {
-        let op = &func_ir.ops[idx];
-        if store_var_target_name(op) == Some(name) {
-            return store_var_source_name(op).is_some_and(|source| {
-                name_is_structural_raw_i64_before(
-                    func_ir,
-                    idx,
-                    source,
-                    bounded_i64_names,
-                    depth + 1,
-                )
-            });
-        }
-        if op.out.as_deref() != Some(name) {
-            continue;
-        }
-        return match op.kind.as_str() {
-            "const" | "loop_index_start" | "loop_index_next" | "len" | "gpu_thread_id"
-            | "gpu_block_id" | "gpu_block_dim" | "gpu_grid_dim" => true,
-            "copy" | "copy_var" | "load_var" | "identity_alias" | "binding_alias" | "pos" => {
-                let source = op.var.as_deref().or_else(|| {
-                    op.args
-                        .as_ref()
-                        .and_then(|args| args.first().map(String::as_str))
-                });
-                source.is_some_and(|source| {
-                    name_is_structural_raw_i64_before(
-                        func_ir,
-                        idx,
-                        source,
-                        bounded_i64_names,
-                        depth + 1,
-                    )
-                })
-            }
-            "add" | "inplace_add" | "sub" | "inplace_sub" => op.args.as_ref().is_some_and(|args| {
-                args.len() >= 2
-                    && args.iter().all(|arg| {
-                        name_is_structural_raw_i64_before(
-                            func_ir,
-                            idx,
-                            arg,
-                            bounded_i64_names,
-                            depth + 1,
-                        )
-                    })
-            }),
-            _ => false,
-        };
-    }
-    false
 }
 
 fn is_cold_module_chunk_function(name: &str) -> bool {
