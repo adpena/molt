@@ -48,14 +48,14 @@ operator or reviewer says the work is being sliced too small, treat that as a
 binding correction: stop defending the local plan, widen the design radius, and
 close the coherent structural class.
 
-### Crash Recovery Tiny-Slice Mode
+### Crash Recovery Structural Stability Mode
 
 If Codex, Claude, Desktop, WSL bridging, MCP/tool discovery, subagents, process
 custody, or a guarded command has crashed, stalled, disappeared, or been
-manually killed in the current session, switch to tiny complete structural
-primitives until stability is proven. Each primitive should be small enough to
-write, stage, focused-test, and commit before the next risky lane, while still
-removing a real source of drift or custody ambiguity.
+manually killed in the current session, stabilize the control plane without
+shrinking the engineering unit into tiny chips. Reduce concurrency, isolate
+project-owned process scope, record evidence paths, and keep the landing a
+complete structural primitive that deletes or unifies a real authority.
 
 Before risky commands in this mode, leave a death capsule: command, cwd, guard
 pid, expected child pid when known, status, timestamp, and evidence path. Use

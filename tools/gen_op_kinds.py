@@ -253,6 +253,7 @@ _CALL_OPCODE_ROLES = {
     "runtime_builtin": "RuntimeBuiltin",
     "copy_original_kind": "CopyOriginalKind",
 }
+_SSA_S_VALUE_ATTR_KEYS = {"module", "name", "method"}
 _EXCEPTION_REGION_NESTING_ROLES = {
     "none": "None",
     "enter": "Enter",
@@ -677,6 +678,7 @@ def load_table() -> dict:
             mapper_opcode_by_spelling[spelling] = mapper
 
     _validate_call_graph_user_call_kinds(data, mapper_opcode_by_spelling)
+    _validate_ssa_attr_transport(data, seen_opcodes, mapper_opcode_by_spelling)
     # -- [[consuming_kind]] operand-ownership overrides per wire-kind spelling --
     # Each row names a wire-kind SPELLING (canonical OR alias of a [[kind]] row)
     # that consumes a specific operand. `owner` is exactly the set of valid
@@ -1327,6 +1329,86 @@ def _validate_call_opcode_roles(data: dict, opcodes: set[str]) -> None:
         if role == "copy_original_kind" and opcode != "Copy":
             raise OpKindTableError(
                 "call_opcode_roles copy_original_kind is reserved for OpCode::Copy"
+            )
+
+
+def _validate_ssa_attr_transport(
+    data: dict,
+    opcodes: set[str],
+    mapper_opcode_by_spelling: dict[str, str],
+) -> None:
+    rows = data.get("ssa_s_value_attr_keys", [])
+    if not isinstance(rows, list) or not rows:
+        raise OpKindTableError("ssa_s_value_attr_keys must be a non-empty array")
+    seen: set[str] = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            raise OpKindTableError("ssa_s_value_attr_keys rows must be inline tables")
+        unknown = set(row) - {"opcode", "attr"}
+        if unknown:
+            raise OpKindTableError(
+                f"ssa_s_value_attr_keys row has unknown fields {sorted(unknown)}: {row}"
+            )
+        opcode = row.get("opcode")
+        if not isinstance(opcode, str) or not opcode:
+            raise OpKindTableError(f"ssa_s_value_attr_keys row missing opcode: {row}")
+        if opcode not in opcodes:
+            raise OpKindTableError(
+                f"ssa_s_value_attr_keys opcode {opcode!r} is not a known OpCode"
+            )
+        if opcode in seen:
+            raise OpKindTableError(f"duplicate ssa_s_value_attr_keys opcode: {opcode}")
+        seen.add(opcode)
+        attr = row.get("attr")
+        if attr not in _SSA_S_VALUE_ATTR_KEYS:
+            raise OpKindTableError(
+                f"ssa_s_value_attr_keys {opcode}: attr must be one of "
+                f"{sorted(_SSA_S_VALUE_ATTR_KEYS)}, got {attr!r}"
+            )
+
+    preserve = data.get("ssa_original_kind_preserving_kinds", [])
+    if not isinstance(preserve, list) or not preserve:
+        raise OpKindTableError(
+            "ssa_original_kind_preserving_kinds must be a non-empty list"
+        )
+    if not all(isinstance(kind, str) and kind for kind in preserve):
+        raise OpKindTableError(
+            "ssa_original_kind_preserving_kinds must contain non-empty strings"
+        )
+    if len(set(preserve)) != len(preserve):
+        raise OpKindTableError("ssa_original_kind_preserving_kinds has duplicates")
+    valid_opcodes = {
+        "Copy",
+        "Call",
+        "CallBuiltin",
+        "LoadAttr",
+        "StoreAttr",
+        "DelAttr",
+        "Index",
+        "StoreIndex",
+        "DelIndex",
+    }
+    for kind in preserve:
+        opcode = mapper_opcode_by_spelling.get(kind)
+        if opcode is None:
+            raise OpKindTableError(
+                f"ssa_original_kind_preserving_kinds kind {kind!r} is not a "
+                "known mapper spelling"
+            )
+        if opcode not in valid_opcodes:
+            raise OpKindTableError(
+                f"ssa_original_kind_preserving_kinds {kind!r} maps to "
+                f"OpCode::{opcode}, which is not an SSA original-kind transport opcode"
+            )
+        if opcode == "Copy" and kind != "store_var":
+            raise OpKindTableError(
+                "ssa_original_kind_preserving_kinds only store_var may preserve "
+                "for OpCode::Copy"
+            )
+    for forbidden in ("copy", "load_var", "copy_var"):
+        if forbidden in preserve:
+            raise OpKindTableError(
+                f"ssa_original_kind_preserving_kinds must not include {forbidden!r}"
             )
 
 
@@ -2069,6 +2151,9 @@ def _render_rs_unformatted(data: dict) -> str:
         out.append(f"        {pat} => Some(OpCode::{opcode}),\n")
     out.append("        _ => None,\n")
     out.append("    }\n}\n\n")
+
+    out.append(_render_ssa_attr_transport(opcodes, data))
+    out.append("\n")
 
     # -- fresh-value classifier exact set ------------------------------------
     fresh = list(data.get("classifier_fresh_value", []))
@@ -2874,6 +2959,41 @@ def _render_call_opcode_roles(opcodes: list[dict], data: dict) -> str:
         ]
     )
     lines.append(_render_matches_arm(data.get("call_graph_user_call_kinds", [])))
+    lines.append("    )\n}\n")
+    return "".join(lines)
+
+
+def _render_ssa_attr_transport(opcodes: list[dict], data: dict) -> str:
+    s_value_attr_by_opcode = {
+        row["opcode"]: row["attr"] for row in data.get("ssa_s_value_attr_keys", [])
+    }
+    original_kind_preserving = data.get("ssa_original_kind_preserving_kinds", [])
+    lines = [
+        "/// Opcode-specific attr key for SimpleIR `s_value` during SSA lift.\n",
+        "/// EXHAUSTIVE over OpCode so ssa.rs cannot grow a private string-payload\n",
+        "/// transport match beside the generated op-kind registry.\n",
+        "#[inline]\n",
+        "pub fn opcode_ssa_s_value_attr_key_table(opcode: OpCode) -> Option<&'static str> {\n",
+        "    match opcode {\n",
+    ]
+    for row in opcodes:
+        name = row["name"]
+        attr = s_value_attr_by_opcode.get(name)
+        rendered = f'Some("{attr}")' if attr is not None else "None"
+        lines.append(f"        OpCode::{name} => {rendered},\n")
+    lines.extend(
+        [
+            "    }\n}\n\n",
+            "/// SimpleIR spellings that must survive SSA lift in `_original_kind` even\n",
+            "/// though their opcode is first-class. Unknown unmapped kinds still preserve\n",
+            "/// through the Copy fallback in ssa.rs; this table owns mapped spellings.\n",
+            "#[inline]\n",
+            "pub fn simpleir_kind_preserves_original_kind_for_ssa(kind: &str) -> bool {\n",
+            "    matches!(\n",
+            "        kind,\n",
+        ]
+    )
+    lines.append(_render_matches_arm(original_kind_preserving))
     lines.append("    )\n}\n")
     return "".join(lines)
 
