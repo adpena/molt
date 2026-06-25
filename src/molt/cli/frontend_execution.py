@@ -48,9 +48,11 @@ from molt.cli.models import (
 from molt.cli.module_graph import (
     ModuleSyntaxErrorInfo,
     _ModuleResolutionCache,
+    _looks_like_stdlib_module_name,
+)
+from molt.cli.module_source import (
     _ModuleSourceCatalog,
     _build_module_source_catalog,
-    _looks_like_stdlib_module_name,
     _read_module_source,
 )
 from molt.cli.module_cache import (
