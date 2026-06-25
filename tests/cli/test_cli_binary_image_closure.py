@@ -456,6 +456,15 @@ def test_backend_ir_and_artifact_analysis_attach_to_same_contract(
                             "s_value": "helper__value",
                             "source_line": 4,
                         },
+                        {
+                            "kind": "object_new_bound",
+                            "source_line": 5,
+                            "arena_eligible": True,
+                            "defines_del": True,
+                        },
+                        {"kind": "stack_alloc", "source_line": 5},
+                        {"kind": "inc_ref", "source_line": 6},
+                        {"kind": "dec_ref", "source_line": 7},
                     ],
                 }
             ]
@@ -489,15 +498,26 @@ def test_backend_ir_and_artifact_analysis_attach_to_same_contract(
 
     analysis_payload = diagnostics["binary_image_analysis"]
     assert analysis_payload["backend_ir"]["backend_ir"]["function_count"] == 1
-    assert analysis_payload["backend_ir"]["backend_ir"]["op_count"] == 2
+    assert analysis_payload["backend_ir"]["backend_ir"]["op_count"] == 6
     assert (
-        analysis_payload["backend_ir"]["source_sites"]["attributed_op_count"] == 2
+        analysis_payload["backend_ir"]["source_sites"]["attributed_op_count"] == 6
     )
     assert analysis_payload["backend_ir"]["source_sites"]["coverage_ratio"] == 1.0
     assert analysis_payload["backend_ir"]["source_sites"]["source_site_digest"]
     assert analysis_payload["backend_ir"]["source_sites"]["top_source_lines_by_ops"][
         0
     ]["source_file"] == "app.py"
+    allocation = analysis_payload["backend_ir"]["allocation_ownership"]
+    assert allocation["source_coverage_ratio"] == 1.0
+    assert allocation["events_by_category"]["heap_alloc_root"] == 1
+    assert allocation["events_by_category"]["stack_alloc_root"] == 1
+    assert allocation["events_by_category"]["ref_retain"] == 1
+    assert allocation["events_by_category"]["ref_release"] == 1
+    assert allocation["events_by_category"]["heap_exposure"] == 1
+    assert allocation["events_by_category"]["arena_eligible"] == 1
+    assert allocation["events_by_category"]["finalizer_sensitive"] == 1
+    assert allocation["allocation_ownership_digest"]
+    assert allocation["top_source_lines_by_events"][0]["source_file"] == "app.py"
     assert analysis_payload["backend_ir"]["tir_boundary"]["carrier"] == (
         "backend_ir_json"
     )
