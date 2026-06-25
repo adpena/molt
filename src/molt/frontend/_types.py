@@ -78,6 +78,7 @@ class MoltOp:
     metadata: dict[str, Any] | None = None
     col_offset: int | None = None
     end_col_offset: int | None = None
+    source_line: int | None = None
 
 
 @dataclass

@@ -62,7 +62,7 @@ pub fn run(func: &mut TirFunction) -> PassStats {
             let lhs = op.operands[0];
             let rhs = op.operands[1];
             let results = op.results.clone();
-            let source_span = op.source_span;
+            let old = op.clone();
 
             // Only reduce I64 operations. Check that operands are I64-typed.
             // We use a heuristic: if the constant operand is from ConstInt, it's I64.
@@ -76,7 +76,7 @@ pub fn run(func: &mut TirFunction) -> PassStats {
                         try_mul_reduce(lhs, rhs, &const_map, &type_map, &mut stats)
                     {
                         rewrite.results = results;
-                        rewrite.source_span = source_span;
+                        rewrite.inherit_source_from(&old);
                         *op = rewrite;
                     }
                 }

@@ -137,6 +137,9 @@ mod tests {
                 kind: "add".to_string(),
                 args: Some(vec!["a".to_string(), "b".to_string()]),
                 out: Some("c".to_string()),
+                source_line: Some(12),
+                col_offset: Some(4),
+                end_col_offset: Some(9),
                 ..OpIR::default()
             },
             OpIR {
@@ -170,6 +173,18 @@ mod tests {
             );
             assert_eq!(orig.args, got.args, "args must survive round-trip");
             assert_eq!(orig.out, got.out, "out must survive round-trip");
+            assert_eq!(
+                orig.source_line, got.source_line,
+                "source line must survive round-trip"
+            );
+            assert_eq!(
+                orig.col_offset, got.col_offset,
+                "source column must survive round-trip"
+            );
+            assert_eq!(
+                orig.end_col_offset, got.end_col_offset,
+                "source end column must survive round-trip"
+            );
         }
     }
 

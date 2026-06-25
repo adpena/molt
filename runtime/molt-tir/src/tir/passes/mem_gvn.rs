@@ -412,30 +412,31 @@ fn run_with(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
             if block.ops[fwd.op_idx].opcode != OpCode::LoadAttr {
                 continue;
             }
-            let result = block.ops[fwd.op_idx].results[0];
-            let source_span = block.ops[fwd.op_idx].source_span;
+            let old = block.ops[fwd.op_idx].clone();
+            let result = old.results[0];
             // Replace the load with the value Copy …
-            block.ops[fwd.op_idx] = TirOp {
+            let mut copy_op = TirOp {
                 dialect: Dialect::Molt,
                 opcode: OpCode::Copy,
                 operands: vec![fwd.source],
                 results: vec![result],
                 attrs: Default::default(),
-                source_span,
+                source_span: None,
             };
+            copy_op.inherit_source_from(&old);
+            block.ops[fwd.op_idx] = copy_op;
             // … and acquire the reference the load used to acquire, immediately
             // before the Copy so `r` is owned at every use the load dominated.
-            block.ops.insert(
-                fwd.op_idx,
-                TirOp {
-                    dialect: Dialect::Molt,
-                    opcode: OpCode::IncRef,
-                    operands: vec![fwd.source],
-                    results: vec![],
-                    attrs: Default::default(),
-                    source_span,
-                },
-            );
+            let mut inc_ref = TirOp {
+                dialect: Dialect::Molt,
+                opcode: OpCode::IncRef,
+                operands: vec![fwd.source],
+                results: vec![],
+                attrs: Default::default(),
+                source_span: None,
+            };
+            inc_ref.inherit_source_from(&old);
+            block.ops.insert(fwd.op_idx, inc_ref);
             stats.values_changed += 1;
             stats.ops_added += 1;
         }

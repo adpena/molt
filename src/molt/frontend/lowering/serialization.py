@@ -295,6 +295,8 @@ class SerializationMixin(_MixinBase):
                         "args": [existing_output],
                         "out": output,
                     }
+                if "source_line" in op:
+                    rewritten_op["source_line"] = op["source_line"]
                 if "col_offset" in op:
                     rewritten_op["col_offset"] = op["col_offset"]
                 if "end_col_offset" in op:
@@ -308,6 +310,8 @@ class SerializationMixin(_MixinBase):
                         "args": op.get("args", []),
                         "out": op.get("out"),
                     }
+                    if "source_line" in op:
+                        validate_op["source_line"] = op["source_line"]
                     if "col_offset" in op:
                         validate_op["col_offset"] = op["col_offset"]
                     if "end_col_offset" in op:
@@ -353,7 +357,9 @@ class SerializationMixin(_MixinBase):
         remove_indexes: set[int] = set()
         replace_ops: dict[int, dict[str, Any]] = {}
 
-        def copy_source_span(src: dict[str, Any], dst: dict[str, Any]) -> None:
+        def copy_source_site(src: dict[str, Any], dst: dict[str, Any]) -> None:
+            if "source_line" in src:
+                dst["source_line"] = src["source_line"]
             if "col_offset" in src:
                 dst["col_offset"] = src["col_offset"]
             if "end_col_offset" in src:
@@ -378,7 +384,7 @@ class SerializationMixin(_MixinBase):
                         "args": field_args,
                         "out": op.get("out"),
                     }
-                    copy_source_span(op, rewritten)
+                    copy_source_site(op, rewritten)
                     replace_ops[op_index] = rewritten
                     remove_indexes.add(field_op_index)
                 continue
@@ -411,7 +417,7 @@ class SerializationMixin(_MixinBase):
                         "args": [*field_args, expected_var],
                         "out": op.get("out"),
                     }
-                    copy_source_span(op, rewritten)
+                    copy_source_site(op, rewritten)
                     replace_ops[op_index] = rewritten
                     remove_indexes.add(field_op_index)
                 continue
@@ -436,7 +442,7 @@ class SerializationMixin(_MixinBase):
                     "args": field_args,
                     "out": op.get("out"),
                 }
-                copy_source_span(op, rewritten)
+                copy_source_site(op, rewritten)
                 replace_ops[op_index] = rewritten
                 remove_indexes.add(field_op_index)
 
@@ -1022,7 +1028,12 @@ class SerializationMixin(_MixinBase):
             elif op.kind == "END_IF":
                 json_ops.append({"kind": "end_if"})
             elif op.kind == "LINE":
-                d: dict[str, Any] = {"kind": "line", "value": int(op.args[0])}
+                line = int(op.args[0])
+                d: dict[str, Any] = {
+                    "kind": "line",
+                    "value": line,
+                    "source_line": op.source_line or line,
+                }
                 if op.col_offset is not None:
                     d["col_offset"] = op.col_offset
                 if op.end_col_offset is not None:
@@ -4419,6 +4430,20 @@ class SerializationMixin(_MixinBase):
                     last_entry["col_offset"] = mop.col_offset
                     if mop.end_col_offset is not None:
                         last_entry["end_col_offset"] = mop.end_col_offset
+
+        active_source_line: int | None = None
+        for entry in json_ops:
+            if not isinstance(entry, dict):
+                continue
+            kind = entry.get("kind")
+            if kind == "line":
+                value = entry.get("value")
+                if isinstance(value, int) and value > 0:
+                    active_source_line = value
+                    entry.setdefault("source_line", value)
+                continue
+            if active_source_line is not None:
+                entry.setdefault("source_line", active_source_line)
 
         json_ops = self._scalarize_string_split_fields_json(json_ops)
         json_ops = self._fuse_string_split_field_consumers_json(json_ops)

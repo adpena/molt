@@ -99,6 +99,36 @@ mod tests {
         );
     }
 
+    #[test]
+    fn roundtrip_preserves_source_site_coordinates() {
+        let ops = vec![
+            OpIR {
+                kind: "line".to_string(),
+                value: Some(12),
+                source_line: Some(12),
+                col_offset: Some(4),
+                end_col_offset: Some(9),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "const".to_string(),
+                value: Some(7),
+                out: Some("x".to_string()),
+                ..OpIR::default()
+            },
+            op_args("ret", &["x"]),
+        ];
+        let result = roundtrip(ops);
+        assert!(
+            result.iter().any(|op| {
+                op.source_line == Some(12)
+                    && op.col_offset == Some(4)
+                    && op.end_col_offset == Some(9)
+            }),
+            "SimpleIR -> TIR -> SimpleIR must preserve source-site coordinates"
+        );
+    }
+
     // ---------------------------------------------------------------------------
     // Test 2: If/else
     // ---------------------------------------------------------------------------

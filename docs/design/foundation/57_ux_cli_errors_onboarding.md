@@ -78,11 +78,13 @@ The verify-first pass (CLAUDE.md, charter §"RECON") found that the substrate is
 
 ### 1.1 Source location is ALREADY plumbed through the frontend (strong base)
 
-- `src/molt/frontend/lowering/serialization.py` propagates `col_offset` /
-  `end_col_offset` on ops at multiple stages (lines 298–314 in op-rewrite, 357–360 in
-  copy, 1026–1029 on emit) and runs a **post-pass that injects expression-level
-  `col_offset`/`end_col_offset` for traceback carets** (lines 4405–4421). The comment at
-  545 confirms this is deliberate caret machinery.
+- `src/molt/frontend/lowering/serialization.py` propagates the full line/column
+  SourceSite transport (`source_line`, `col_offset`, `end_col_offset`) on ops at
+  multiple stages (op-rewrite, copy, `LINE` emit, and the active-line post-pass).
+  The Rust side owns the canonical TIR attr wrapper in
+  `runtime/molt-tir/src/tir/ops.rs` (`SourceSite` over `_source_line`,
+  `_col_offset`, `_end_col_offset`), and SSA/lowering/rewrite passes now inherit
+  that fact as one unit instead of carrying columns as ad hoc keys.
 - `src/molt/frontend/lowering/op_kinds_generated.py` (generated from
   `runtime/molt-tir/src/tir/op_kinds.toml`, doc 25) carries `RAISING_KIND_NAMES`
   (line 292): the set of op.kinds that can raise, for which `emit()` attaches the caret
@@ -228,9 +230,10 @@ layer (charter §loop step 4: "facts silently die at REPRESENTATION BOUNDARIES")
   "raising kinds get caret cols" to "every op carries its `SourceSpan` + owning
   function/qualname," gated by the op_kinds registry (`RAISING_KIND_NAMES` generalized to a
   `carries_span` column in `op_kinds.toml`).
-- **Transport.** The span travels as a TIR op attribute through serialization round-trip
-  (the existing `serialization.py` already moves `col_offset` — extend to the full span +
-  function identity), then is lowered into each backend's native debug-info channel.
+- **Transport.** The current line/column site travels as a typed TIR op attribute
+  through the SimpleIR/TIR round-trip. The remaining target is to extend this
+  carried fact from line/column SourceSite into full span + function identity and
+  lower it into each backend's native debug-info channel.
 - **Consumer.** The runtime traceback walker resolves frames against the emitted source
   map (replacing the "only top frame / only tb-bearing frames" limitation), and the
   renderer (F-DIAG) consumes the resolved `Vec<FrameSummary>`.

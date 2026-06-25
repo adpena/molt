@@ -1206,7 +1206,12 @@ the implementation. For forward-looking priorities, use
 		  a cross-layer source/AST, schedule, lowering, backend IR/TIR-input, and
 		  artifact evidence envelope with a frontend SourceSite digest ledger:
 		  source hashes, span-derived AST site digests, binary-image roles, and a
-		  semantic identity digest for later IR/TIR source-span transport.
+		  semantic identity digest. The active IR/TIR source-site carrier now moves
+		  `source_line`, `col_offset`, and `end_col_offset` from frontend line
+		  markers through SimpleIR, TIR `SourceSite` attrs, selected optimization
+		  rewrites, TIR-to-SimpleIR lowering, and backend IR diagnostics; the
+		  backend `source_sites` projection reports attributed-op coverage,
+		  source-line hot spots, and a stable digest over the lowered op stream.
 		  Core stdlib closure honors the same nested-scan exception
 		  set as regular stdlib discovery, so `collections` keeps its required
 		  function-body `copy` import in the graph and native hello-world no longer

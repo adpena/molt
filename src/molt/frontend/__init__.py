@@ -1273,6 +1273,7 @@ class SimpleTIRGenerator(
             kind="LINE",
             args=[lineno],
             result=MoltValue("none"),
+            source_line=lineno,
         )
         # Attach column offsets for traceback caret annotations.
         if col_offset is not None:

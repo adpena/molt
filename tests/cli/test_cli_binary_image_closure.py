@@ -443,9 +443,19 @@ def test_backend_ir_and_artifact_analysis_attach_to_same_contract(
             "functions": [
                 {
                     "name": "app__run",
+                    "source_file": "app.py",
                     "ops": [
-                        {"kind": "const"},
-                        {"kind": "call", "s_value": "helper__value"},
+                        {
+                            "kind": "const",
+                            "source_line": 3,
+                            "col_offset": 11,
+                            "end_col_offset": 12,
+                        },
+                        {
+                            "kind": "call",
+                            "s_value": "helper__value",
+                            "source_line": 4,
+                        },
                     ],
                 }
             ]
@@ -480,6 +490,14 @@ def test_backend_ir_and_artifact_analysis_attach_to_same_contract(
     analysis_payload = diagnostics["binary_image_analysis"]
     assert analysis_payload["backend_ir"]["backend_ir"]["function_count"] == 1
     assert analysis_payload["backend_ir"]["backend_ir"]["op_count"] == 2
+    assert (
+        analysis_payload["backend_ir"]["source_sites"]["attributed_op_count"] == 2
+    )
+    assert analysis_payload["backend_ir"]["source_sites"]["coverage_ratio"] == 1.0
+    assert analysis_payload["backend_ir"]["source_sites"]["source_site_digest"]
+    assert analysis_payload["backend_ir"]["source_sites"]["top_source_lines_by_ops"][
+        0
+    ]["source_file"] == "app.py"
     assert analysis_payload["backend_ir"]["tir_boundary"]["carrier"] == (
         "backend_ir_json"
     )
