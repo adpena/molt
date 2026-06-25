@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 import os
 from pathlib import Path
 
@@ -53,3 +54,21 @@ def _base_env(
     if molt_root is not None:
         env.setdefault("MOLT_PROJECT_ROOT", str(molt_root))
     return env
+
+
+@functools.lru_cache(maxsize=128)
+def _resolve_env_path_cached(var: str, raw: str, default_str: str) -> Path:
+    if raw:
+        path = Path(raw).expanduser()
+        if path.is_absolute():
+            return path
+        return Path.cwd() / path
+    return Path(default_str)
+
+
+def _resolve_env_path(var: str, default: Path) -> Path:
+    return _resolve_env_path_cached(
+        var,
+        os.environ.get(var, ""),
+        os.fspath(default),
+    )

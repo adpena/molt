@@ -7,6 +7,7 @@ from typing import Any
 
 import molt.cli as cli
 
+BACKEND_EXECUTION = importlib.import_module("molt.cli.backend_execution")
 COMMAND_RUNTIME = importlib.import_module("molt.cli.command_runtime")
 COMPILER_METADATA = importlib.import_module("molt.cli.compiler_metadata")
 LOCKFILES = importlib.import_module("molt.cli.lockfiles")
@@ -240,18 +241,20 @@ def test_backend_daemon_spawn_uses_guard_context_and_sentinel(
         return FakeProc()
 
     monkeypatch.setattr(
-        cli, "_load_cli_harness_memory_guard", lambda cwd: FakeHarness()
+        BACKEND_EXECUTION, "_load_cli_harness_memory_guard", lambda cwd: FakeHarness()
     )
     monkeypatch.setattr(
         COMMAND_RUNTIME, "_load_cli_harness_memory_guard", lambda cwd: FakeHarness()
     )
-    monkeypatch.setattr(cli.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(BACKEND_EXECUTION.subprocess, "Popen", fake_popen)
     monkeypatch.setattr(
-        cli, "_backend_daemon_wait_until_ready", lambda *a, **k: (True, None)
+        BACKEND_EXECUTION,
+        "_backend_daemon_wait_until_ready",
+        lambda *a, **k: (True, None),
     )
-    monkeypatch.setattr(cli, "_unix_socket_path_exceeds_limit", lambda path: False)
+    monkeypatch.setattr(BACKEND_EXECUTION, "_unix_socket_path_exceeds_limit", lambda path: False)
     monkeypatch.setattr(
-        cli,
+        BACKEND_EXECUTION,
         "_backend_daemon_process_command",
         lambda pid: f"{backend} --daemon --socket {socket_path}",
     )
@@ -340,9 +343,10 @@ def test_backend_daemon_request_uses_request_scoped_sentinel(
             return len(payload)
 
     monkeypatch.setattr(
-        cli, "_load_cli_harness_memory_guard", lambda cwd: FakeHarness()
+        BACKEND_EXECUTION, "_load_cli_harness_memory_guard", lambda cwd: FakeHarness()
     )
-    monkeypatch.setattr(cli.socket, "socket", lambda *args, **kwargs: FakeSocket())
+    monkeypatch.setattr(BACKEND_EXECUTION.socket, "AF_UNIX", 1, raising=False)
+    monkeypatch.setattr(BACKEND_EXECUTION.socket, "socket", lambda *args, **kwargs: FakeSocket())
 
     daemon_identity = cli._BackendDaemonIdentity(
         pid=1234,
