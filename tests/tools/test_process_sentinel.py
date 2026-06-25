@@ -993,6 +993,114 @@ def test_terminate_group_refuses_windows_codex_app_server(monkeypatch) -> None:
     assert killed == []
 
 
+def test_terminate_group_windows_refuses_external_codex_descendant_repo_command(
+    monkeypatch,
+) -> None:
+    module = _load_process_sentinel()
+    samples = {
+        100: module.memory_guard.ProcessSample(
+            pid=100,
+            ppid=1,
+            pgid=None,
+            rss_kb=500_000,
+            command=(
+                r"C:\Program Files\WindowsApps\OpenAI.Codex_26.609.4994.0_x64__2p2nqsd0c76g0"
+                r"\app\resources\codex.exe"
+            ),
+        ),
+        101: module.memory_guard.ProcessSample(
+            pid=101,
+            ppid=100,
+            pgid=None,
+            rss_kb=10_000,
+            command="powershell.exe",
+        ),
+        777: module.memory_guard.ProcessSample(
+            pid=777,
+            ppid=101,
+            pgid=None,
+            rss_kb=250_000,
+            command=(
+                r"C:\Users\adpen\OneDrive\Documents\molt"
+                r"\target\dev-fast\molt-backend.exe --daemon"
+            ),
+        ),
+    }
+    killed: list[tuple[int, int]] = []
+
+    monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
+    monkeypatch.setattr(module.memory_guard, "_is_windows_process_model", lambda: True)
+    monkeypatch.setattr(module, "_safe_getpgrp", lambda: None)
+    monkeypatch.setattr(module.os, "getpid", lambda: 9999)
+    monkeypatch.setattr(module.os, "kill", lambda pid, sig: killed.append((pid, sig)))
+    monkeypatch.setattr(module, "sample_processes_for_sentinel", lambda: samples)
+
+    module.terminate_group(
+        777,
+        grace=0.001,
+        root=Path("C:/Users/adpen/OneDrive/Documents/molt"),
+    )
+
+    assert killed == []
+
+
+def test_terminate_group_windows_keeps_current_sentinel_child_killable(
+    monkeypatch,
+) -> None:
+    module = _load_process_sentinel()
+    root = Path("C:/Users/adpen/OneDrive/Documents/molt")
+    samples = {
+        100: module.memory_guard.ProcessSample(
+            pid=100,
+            ppid=1,
+            pgid=None,
+            rss_kb=500_000,
+            command=(
+                r"C:\Program Files\WindowsApps\OpenAI.Codex_26.609.4994.0_x64__2p2nqsd0c76g0"
+                r"\app\resources\codex.exe"
+            ),
+        ),
+        999: module.memory_guard.ProcessSample(
+            pid=999,
+            ppid=100,
+            pgid=None,
+            rss_kb=30_000,
+            command=(
+                r"C:\Users\adpen\OneDrive\Documents\molt"
+                r"\tools\process_sentinel.py --once --kill-all"
+            ),
+        ),
+        200: module.memory_guard.ProcessSample(
+            pid=200,
+            ppid=999,
+            pgid=None,
+            rss_kb=250_000,
+            command=(
+                r"C:\Users\adpen\OneDrive\Documents\molt"
+                r"\target\dev-fast\molt-backend.exe --owned"
+            ),
+        ),
+    }
+    killed: list[tuple[int, int]] = []
+
+    monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
+    monkeypatch.setattr(module.memory_guard, "_is_windows_process_model", lambda: True)
+    monkeypatch.setattr(module, "_safe_getpgrp", lambda: None)
+    monkeypatch.setattr(module.os, "getpid", lambda: 999)
+    monkeypatch.setattr(module.os, "kill", lambda pid, sig: killed.append((pid, sig)))
+    monkeypatch.setattr(module.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(module, "sample_processes_for_sentinel", lambda: samples)
+
+    module.terminate_group(
+        200,
+        grace=0.001,
+        root=root,
+        expected_identities={200: module.memory_guard.process_identity(samples[200])},
+    )
+
+    assert [pid for pid, _sig in killed] == [200, 200]
+
+
 def test_terminate_group_rechecks_protection_before_sigkill(monkeypatch) -> None:
     module = _load_process_sentinel()
     first = {
