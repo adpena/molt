@@ -626,27 +626,20 @@ def _terminate_single_pid(pid: int, *, grace: float) -> bool:
         return True
     if _sample_pgid(sample) in _current_protected_process_group_ids(samples):
         return True
-    try:
-        os.kill(pid, signal.SIGTERM)
-    except KeyboardInterrupt:
-        return False
-    except ProcessLookupError:
-        return True
-    except OSError:
-        return False
-    deadline = time.monotonic() + max(0.0, grace)
-    while time.monotonic() < deadline:
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
-            return True
-        except OSError:
-            return True
-        try:
-            time.sleep(0.02)
-        except KeyboardInterrupt:
-            return False
-    return False
+    action = _terminate_pid_if_identity_action(
+        pid,
+        process_identity(sample),
+        sampler=sample_processes,
+        grace=grace,
+    )
+    return action.result in {
+        "completed_or_missing",
+        "skipped_missing",
+        "skipped_identity_mismatch",
+        "skipped_host_control_lineage",
+        "skipped_host_control_plane",
+        "skipped_protected_group_member",
+    }
 
 
 def _pid_exited_or_unobservable(pid: int, *, grace: float) -> bool:

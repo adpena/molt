@@ -762,6 +762,55 @@ def test_terminate_single_pid_windows_refuses_external_codex_lineage(
     assert sent == []
 
 
+def test_terminate_single_pid_windows_rechecks_identity_before_signal(
+    monkeypatch,
+) -> None:
+    module = _load_memory_guard()
+    owned = {
+        200: module.ProcessSample(
+            pid=200,
+            ppid=999,
+            pgid=None,
+            rss_kb=250_000,
+            command=(
+                r"C:\Users\adpen\OneDrive\Documents\molt"
+                r"\target\dev-fast\molt-backend.exe --owned"
+            ),
+            started_at_ns=111,
+        )
+    }
+    reused_as_codex = {
+        200: module.ProcessSample(
+            pid=200,
+            ppid=1,
+            pgid=None,
+            rss_kb=250_000,
+            command=(
+                r"C:\Program Files\WindowsApps\OpenAI.Codex_26.609.4994.0_x64__2p2nqsd0c76g0"
+                r"\app\resources\codex.exe"
+            ),
+            started_at_ns=222,
+        )
+    }
+    sample_calls = 0
+    sent: list[tuple[int, int]] = []
+
+    def sample_processes():
+        nonlocal sample_calls
+        sample_calls += 1
+        return owned if sample_calls == 1 else reused_as_codex
+
+    monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
+    monkeypatch.setattr(module, "sample_processes", sample_processes)
+    monkeypatch.setattr(module, "_current_protected_process_group_ids", lambda _s: set())
+    monkeypatch.setattr(module.os, "getpid", lambda: 99999)
+    monkeypatch.setattr(module.os, "kill", lambda pid, sig: sent.append((pid, sig)))
+
+    assert module._terminate_single_pid(200, grace=0.0) is True
+    assert sent == []
+    assert sample_calls >= 2
+
+
 def test_pid_signal_windows_keeps_current_guard_child_killable(
     monkeypatch,
 ) -> None:
