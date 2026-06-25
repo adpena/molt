@@ -36,7 +36,8 @@ _BUILD_RESULTS_DEFINITIONS = (
 
 def test_cli_build_results_authority_is_single_home() -> None:
     for name in _BUILD_RESULTS_NAMES:
-        assert getattr(cli, name) is getattr(build_results, name)
+        assert hasattr(build_results, name)
+        assert not hasattr(cli, name)
 
     cli_source = inspect.getsource(cli)
     for marker in _BUILD_RESULTS_DEFINITIONS:

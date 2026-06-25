@@ -51,7 +51,8 @@ _BUILD_OUTPUT_LAYOUT_DEFINITIONS = (
 
 def test_cli_build_output_layout_authority_is_single_home() -> None:
     for name in _BUILD_OUTPUT_LAYOUT_NAMES:
-        assert getattr(cli, name) is getattr(build_output_layout, name)
+        assert hasattr(build_output_layout, name)
+        assert not hasattr(cli, name)
 
     cli_source = inspect.getsource(cli)
     for marker in _BUILD_OUTPUT_LAYOUT_DEFINITIONS:
