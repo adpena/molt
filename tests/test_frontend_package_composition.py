@@ -68,6 +68,7 @@ EXPECTED_MIXINS = [
     "LocalBindingMixin",
     "MidendOptimizationMixin",
     "SerializationMixin",
+    "CompileWarningMixin",
     "ModuleLifecycleMixin",
     "SymbolNamingMixin",
     "ClassResolutionMixin",
@@ -124,6 +125,11 @@ def test_moved_methods_resolve_on_class() -> None:
     # serialization
     assert hasattr(SimpleTIRGenerator, "map_ops_to_json")
     assert hasattr(SimpleTIRGenerator, "_scalarize_string_split_fields_json")
+    # compile warnings
+    assert hasattr(SimpleTIRGenerator, "_prescan_compile_warnings")
+    assert hasattr(SimpleTIRGenerator, "_emit_deferred_warnings")
+    assert hasattr(SimpleTIRGenerator, "_emit_syntax_warning")
+    assert hasattr(SimpleTIRGenerator, "_emit_deprecation_warning")
     # module lifecycle
     assert hasattr(SimpleTIRGenerator, "_emit_module_metadata")
     assert hasattr(SimpleTIRGenerator, "_emit_module_frame_enter")
@@ -192,6 +198,7 @@ def test_mixin_modules_import_standalone() -> None:
         "molt.frontend.lowering.analysis_collect_static",
         "molt.frontend.lowering.analysis_patterns",
         "molt.frontend.lowering.class_resolution",
+        "molt.frontend.lowering.compile_warnings",
         "molt.frontend.lowering.local_bindings",
         "molt.frontend.lowering.midend_optimization",
         "molt.frontend.lowering.module_lifecycle",
