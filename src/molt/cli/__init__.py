@@ -227,8 +227,6 @@ from molt.cli.backend_cache import (
     _native_object_global_symbols_result,
     _native_object_has_unresolved_module_chunks,
     _native_stdlib_object_split_enabled,
-    _nm_candidate_binaries,
-    _normalize_native_symbol_name,
     _publish_immutable_backend_cache_artifact,
     _read_artifact_sync_state,
     _read_shared_stdlib_partition_functions,
@@ -730,6 +728,11 @@ from molt.cli.runtime_build import (
     _ensure_runtime_lib_ready,
     _initialize_runtime_artifact_state,
     _maybe_start_native_runtime_lib_ready_async,
+)
+from molt.cli.runtime_intrinsic_symbols import (
+    _runtime_intrinsic_symbols_digest,
+    _runtime_intrinsic_symbols_file,
+    _stage_runtime_intrinsic_symbols_for_native_codegen,
 )
 from molt.cli.runtime_wasm_validation import (
     _is_reusable_wasm_artifact,
@@ -2043,123 +2046,6 @@ def _latest_mtime(paths: list[Path]) -> float:
     return latest
 
 
-def _runtime_intrinsic_symbols_file(
-    runtime_lib: Path,
-) -> tuple[Path | None, str | None]:
-    """Materialize a newline-separated list of the `molt_*` intrinsic symbols the
-    runtime staticlib *defines*, returning ``(cache file path, failure detail)``.
-
-    The per-app intrinsic resolver (emitted into the user object) takes the
-    address of every intrinsic the app reaches by name. Those addresses are
-    resolved against this staticlib at link time, so the resolver must only
-    reference intrinsics the staticlib actually defines: the available set differs
-    by stdlib profile (the native ``micro`` profile excludes crypto/compression/
-    ast/etc.), and referencing an absent symbol leaves an unresolvable relocation
-    — the precise cause of the link failure / Mach-O header corruption the
-    resolver redesign eliminates. The backend reads this file
-    (``MOLT_RUNTIME_INTRINSIC_SYMBOLS``) and intersects the candidate manifest
-    against it.
-
-    Extraction iterates [`_nm_candidate_binaries`], accepting the FIRST candidate
-    that exits cleanly AND yields a non-empty ``molt_*`` text-symbol set — an nm
-    that cannot parse the staticlib's LTO bitcode (Apple's, on newer Rust) fails
-    one of the two and the loop moves on. On total failure the second element
-    carries the per-candidate reasons so the caller can fail the build with an
-    actionable message instead of letting the backend panic later.
-
-    Cached next to the staticlib and keyed by the staticlib's size+mtime so it is
-    extracted at most once per runtime build.
-    """
-    try:
-        stat = runtime_lib.stat()
-    except OSError as exc:
-        return None, f"runtime staticlib unreadable: {runtime_lib} ({exc})"
-    cache_path = runtime_lib.with_name(
-        f"{runtime_lib.name}.intrinsic_symbols.{stat.st_size}.{int(stat.st_mtime)}.txt"
-    )
-    if cache_path.exists():
-        return cache_path, None
-    # `-g` would hide the staticlib's defined intrinsic symbols when they are
-    # local after LTO; intrinsics are `#[no_mangle] pub extern "C"` (external),
-    # so the default listing captures them. Use a generous timeout: the native
-    # full/micro staticlib can exceed 100MB. Pass an absolute path so the
-    # `cwd=runtime_lib.parent` working directory cannot break path resolution.
-    runtime_lib_abs = runtime_lib.resolve()
-    failures: list[str] = []
-    symbols: set[str] = set()
-    for nm_bin in _nm_candidate_binaries():
-        try:
-            result = _run_completed_command(
-                [nm_bin, "--defined-only", str(runtime_lib_abs)],
-                capture_output=True,
-                timeout=120,
-                env=None,
-                cwd=runtime_lib_abs.parent,
-                memory_guard_prefix="MOLT_BUILD",
-            )
-        except (OSError, subprocess.SubprocessError) as exc:
-            failures.append(f"{nm_bin}: {exc}")
-            continue
-        if result.returncode != 0:
-            stderr_lines = (result.stderr or "").strip().splitlines()
-            detail = stderr_lines[-1] if stderr_lines else "no stderr"
-            failures.append(f"{nm_bin}: exit {result.returncode} ({detail})")
-            continue
-        candidate_symbols: set[str] = set()
-        for raw_line in result.stdout.splitlines():
-            parts = raw_line.split()
-            if len(parts) < 2:
-                continue
-            # Defined symbols list as either "<addr> <kind> <name>" or "<kind> <name>".
-            kind = parts[-2]
-            name = _normalize_native_symbol_name(parts[-1])
-            # Text symbols (T/t) are the intrinsic function definitions the resolver
-            # takes the address of. Restrict to the `molt_` namespace.
-            if kind in ("T", "t") and name.startswith("molt_"):
-                candidate_symbols.add(name)
-        if not candidate_symbols:
-            failures.append(f"{nm_bin}: produced no molt_* text symbols")
-            continue
-        symbols = candidate_symbols
-        break
-    if not symbols:
-        return None, (
-            "no available nm could extract the staticlib's molt_* symbols — "
-            + "; ".join(failures or ["no nm candidates found"])
-        )
-    try:
-        _atomic_write_text(cache_path, "\n".join(sorted(symbols)) + "\n")
-    except OSError as exc:
-        return None, f"failed to write symbol cache {cache_path}: {exc}"
-    return cache_path, None
-
-
-def _runtime_intrinsic_symbols_digest(symbols_file: Path | None) -> str:
-    if symbols_file is None:
-        return ""
-    try:
-        symbols = sorted(
-            {
-                line.strip()
-                for line in symbols_file.read_text(encoding="utf-8").splitlines()
-                if line.strip()
-            }
-        )
-    except OSError:
-        return ""
-    if not symbols:
-        return ""
-    payload = json.dumps(
-        {
-            "schema": "runtime-intrinsic-symbols-v1",
-            "symbols": symbols,
-        },
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    return hashlib.sha256(payload).hexdigest()
-
-
 def _load_molt_config(project_root: Path) -> dict[str, Any]:
     config: dict[str, Any] = {}
     molt_toml = project_root / "molt.toml"
@@ -2922,76 +2808,6 @@ def _prepare_frontend_lowering_config(
         frontend_parallel_layers=frontend_parallel_layers,
         frontend_parallel_worker_timings=frontend_parallel_worker_timings,
     ), None
-
-
-def _stage_runtime_intrinsic_symbols_for_native_codegen(
-    runtime_state: _RuntimeArtifactState,
-    *,
-    target_triple: str | None,
-    json_output: bool,
-    runtime_cargo_profile: str,
-    molt_root: Path,
-    cargo_timeout: float | None,
-    stdlib_profile: str | None = "micro",
-    resolved_modules: set[str] | frozenset[str] | None = None,
-    is_wasm_freestanding: bool = False,
-) -> tuple[str, _CliFailure | None]:
-    # Native codegen builds: expose the set of intrinsic symbols the linked runtime
-    # staticlib defines so the per-app resolver only references resolvable
-    # intrinsics. Setting it in the ambient env propagates to both the backend
-    # subprocess and the daemon request env passthrough.
-    #
-    # The digest returned here participates in the app/backend cache identity.
-    # Cache lookup therefore cannot reuse an object whose embedded resolver was
-    # emitted against a different runtime intrinsic symbol set.
-    runtime_lib = runtime_state.runtime_lib
-    os.environ.pop("MOLT_RUNTIME_INTRINSIC_SYMBOLS", None)
-    if runtime_lib is None or is_wasm_freestanding:
-        return "", None
-    runtime_ready = _ensure_native_runtime_lib_ready_before_link(
-        runtime_state,
-        target_triple=target_triple,
-        json_output=json_output,
-        runtime_cargo_profile=runtime_cargo_profile,
-        molt_root=molt_root,
-        cargo_timeout=cargo_timeout,
-        diagnostics_enabled=False,
-        phase_starts={},
-        stdlib_profile=stdlib_profile,
-        resolved_modules=resolved_modules,
-    )
-    if not runtime_ready or not runtime_lib.exists():
-        return "", _fail(
-            "native runtime staticlib build failed or produced no artifact "
-            f"({runtime_lib}); cannot stage the intrinsic-symbol set native "
-            "codegen requires. See the cargo output above for the build error.",
-            json_output,
-            command="build",
-        )
-    symbols_file, symbols_failure = _runtime_intrinsic_symbols_file(runtime_lib)
-    if symbols_file is None:
-        return "", _fail(
-            "failed to extract the runtime staticlib's molt_* intrinsic "
-            f"symbols from {runtime_lib}: {symbols_failure}. Native codegen "
-            "requires this set (the per-app resolver must not reference "
-            "symbols the linker cannot satisfy). Remediation: install an "
-            "LLVM matching your Rust toolchain (`brew install llvm` or "
-            "`rustup component add llvm-tools`), or point MOLT_NM at a "
-            "bitcode-capable llvm-nm.",
-            json_output,
-            command="build",
-        )
-    digest = _runtime_intrinsic_symbols_digest(symbols_file)
-    if not digest:
-        return "", _fail(
-            "failed to digest the runtime staticlib intrinsic-symbol set "
-            f"from {symbols_file}; native backend cache identity requires "
-            "the exact resolver symbol authority.",
-            json_output,
-            command="build",
-        )
-    os.environ["MOLT_RUNTIME_INTRINSIC_SYMBOLS"] = str(symbols_file)
-    return digest, None
 
 
 def _prepare_backend_setup(
