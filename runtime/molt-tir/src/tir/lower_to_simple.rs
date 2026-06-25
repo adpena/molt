@@ -1740,6 +1740,20 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
                 ..OpIR::default()
             })
         }
+        // CheckedMul mirrors CheckedAdd exactly: `var` = results[0] (wrapping
+        // product), `out` = results[1] (overflow flag). Same round-trip
+        // requirement — ssa.rs maps "checked_mul" back to OpCode::CheckedMul.
+        OpCode::CheckedMul => {
+            let product_var = op.results.first().map(|v| value_var(*v));
+            let flag_var = op.results.get(1).map(|v| value_var(*v));
+            Some(OpIR {
+                kind: "checked_mul".to_string(),
+                args: Some(operand_args(op)),
+                out: flag_var,
+                var: product_var,
+                ..OpIR::default()
+            })
+        }
 
         // Comparison.
         OpCode::Eq => Some(binary_op("eq", op, out_var)),
@@ -4252,6 +4266,87 @@ mod tests {
         let sum_var = ca.var.as_deref().expect("sum must round-trip in var");
         let flag_var = ca.out.as_deref().expect("flag must round-trip in out");
         assert_ne!(sum_var, flag_var, "the two outputs must stay distinct");
+    }
+
+    #[test]
+    fn checked_mul_two_result_round_trip_survives_relift() {
+        use crate::ir::{FunctionIR, OpIR};
+        use crate::tir::lower_from_simple::lower_to_tir;
+        use crate::tir::type_refine;
+
+        let func_ir = FunctionIR {
+            name: "checked_mul_roundtrip".into(),
+            params: vec!["a".into(), "b".into()],
+            ops: vec![
+                OpIR {
+                    kind: "checked_mul".into(),
+                    args: Some(vec!["a".into(), "b".into()]),
+                    var: Some("product0".into()),
+                    out: Some("of0".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "br_if".into(),
+                    args: Some(vec!["of0".into()]),
+                    value: Some(7),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret".into(),
+                    var: Some("product0".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "label".into(),
+                    value: Some(7),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret".into(),
+                    var: Some("a".into()),
+                    ..OpIR::default()
+                },
+            ],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+        };
+
+        let mut tir_func = lower_to_tir(&func_ir);
+        let cm_op = tir_func
+            .blocks
+            .values()
+            .flat_map(|b| b.ops.iter())
+            .find(|op| op.opcode == OpCode::CheckedMul)
+            .expect("checked_mul must lift to OpCode::CheckedMul, not Copy")
+            .clone();
+        assert_eq!(cm_op.operands.len(), 2, "both operands must survive");
+        assert_eq!(cm_op.results.len(), 2, "both results must survive");
+
+        type_refine::refine_types(&mut tir_func);
+        assert_eq!(
+            tir_func.value_types.get(&cm_op.results[0]),
+            Some(&TirType::I64),
+            "product must refine to I64"
+        );
+        assert_eq!(
+            tir_func.value_types.get(&cm_op.results[1]),
+            Some(&TirType::Bool),
+            "overflow flag must refine to Bool"
+        );
+
+        let round_tripped = lower_to_simple_ir(&tir_func);
+        let cm = round_tripped
+            .iter()
+            .find(|op| op.kind == "checked_mul")
+            .expect("re-emit must preserve checked_mul");
+        assert_eq!(cm.args.as_ref().map(Vec::len), Some(2));
+        let product_var = cm
+            .var
+            .as_deref()
+            .expect("product must round-trip in var");
+        let flag_var = cm.out.as_deref().expect("flag must round-trip in out");
+        assert_ne!(product_var, flag_var, "the two outputs must stay distinct");
     }
 
     #[test]

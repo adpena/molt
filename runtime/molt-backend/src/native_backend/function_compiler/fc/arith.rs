@@ -10,6 +10,7 @@ use super::var_get_boxed_overflow_safe_fn;
 pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] = &[
     "add",
     "checked_add",
+    "checked_mul",
     "inplace_add",
     "sub",
     "inplace_sub",
@@ -560,6 +561,116 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                 let sum_boxed = builder.inst_results(call)[0];
                 if let Some(ref sum_name) = op.var {
                     def_var_named(&mut *builder, vars, sum_name, sum_boxed);
+                }
+                if let Some(ref flag_name) = op.out {
+                    let zero = builder.ins().iconst(types::I64, 0);
+                    def_raw_bool_value(
+                        &mut *builder,
+                        vars,
+                        bool_primary_vars,
+                        flag_name,
+                        zero,
+                        nbc,
+                    );
+                }
+            }
+        }
+        "checked_mul" => {
+            // CheckedMul from the overflow_peel transform. op.args =
+            // [lhs, rhs], op.var = wrapping-product output, op.out =
+            // overflow-flag output. A TOTAL function with two lanes,
+            // mirroring `checked_add` exactly.
+            //
+            // RAW lane (both operands int-primary): hardware-exact
+            // signed-overflow detection via the `smulhi` pattern
+            // (`imul_overflow64`). Cranelift 0.131 has NO `smul_overflow`
+            // (unlike `sadd_overflow`), so overflow is witnessed by
+            // `smulhi(lhs,rhs) != (prod >> 63)` — a FULL 64-bit-exact flag,
+            // NOT the 47-bit `imul_checked_inline` inline-window test (which
+            // would deopt the full-range accumulator 2^16x too early). When
+            // the flag is set, the product holds the mathematically WRAPPED
+            // value — consumers may only observe it on the flag=0 branch (the
+            // peel's CFG enforces this; the slow loop is seeded from the
+            // PRE-iteration values).
+            //
+            // BOXED lane (any operand unproven): the carrier chain refused
+            // the raw promotion, so the values are NaN-boxed ints/BigInts.
+            // Dispatch through `molt_mul` — BigInt-exact by construction, so
+            // the product can NEVER silently wrap and the overflow flag is
+            // CONSTANT FALSE (the peel's slow path is correctly dead; the
+            // "fast" loop IS the boxed loop — same semantics, no speedup).
+            let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
+            let lhs_raw = int_raw_value(&mut *builder, vars, int_primary_vars, &args[0]);
+            let rhs_raw = int_raw_value(&mut *builder, vars, int_primary_vars, &args[1]);
+            if let (Some(lhs_raw), Some(rhs_raw)) = (lhs_raw, rhs_raw) {
+                let (prod, of) = imul_overflow64(&mut *builder, lhs_raw, rhs_raw);
+                if let Some(ref prod_name) = op.var {
+                    // The chain can only admit the product if it admitted the
+                    // operands feeding it — a raw product slot with a boxed
+                    // def would truncate. Enforced here because this IS the
+                    // trusted-unbox boundary.
+                    assert!(
+                        int_primary_vars.contains(prod_name),
+                        "checked_mul: raw operands but non-raw product slot '{prod_name}' (carrier chain inconsistency)",
+                    );
+                    def_var_named(&mut *builder, vars, prod_name, prod);
+                }
+                if let Some(ref flag_name) = op.out {
+                    // `of` is an i8 0/1; widen to the I64 raw-bool carrier
+                    // convention.
+                    let of_wide = builder.ins().uextend(types::I64, of);
+                    def_raw_bool_value(
+                        &mut *builder,
+                        vars,
+                        bool_primary_vars,
+                        flag_name,
+                        of_wide,
+                        nbc,
+                    );
+                }
+            } else {
+                assert!(
+                    op.var
+                        .as_ref()
+                        .is_none_or(|prod| !int_primary_vars.contains(prod)),
+                    "checked_mul: boxed operands but raw product slot (carrier chain inconsistency)",
+                );
+                let lhs = var_get_boxed_overflow_safe(
+                    &mut *module,
+                    &mut *import_ids,
+                    &mut *builder,
+                    &mut *import_refs,
+                    &mut *sealed_blocks,
+                    vars,
+                    &args[0],
+                    int_primary_vars,
+                    float_primary_vars,
+                )
+                .expect("checked_mul: LHS not found");
+                let rhs = var_get_boxed_overflow_safe(
+                    &mut *module,
+                    &mut *import_ids,
+                    &mut *builder,
+                    &mut *import_refs,
+                    &mut *sealed_blocks,
+                    vars,
+                    &args[1],
+                    int_primary_vars,
+                    float_primary_vars,
+                )
+                .expect("checked_mul: RHS not found");
+                let callee = SimpleBackend::import_func_id_split(
+                    &mut *module,
+                    &mut *import_ids,
+                    "molt_mul",
+                    &[types::I64, types::I64],
+                    &[types::I64],
+                );
+                let local_callee = module.declare_func_in_func(callee, builder.func);
+                let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
+                let prod_boxed = builder.inst_results(call)[0];
+                if let Some(ref prod_name) = op.var {
+                    def_var_named(&mut *builder, vars, prod_name, prod_boxed);
                 }
                 if let Some(ref flag_name) = op.out {
                     let zero = builder.ins().iconst(types::I64, 0);

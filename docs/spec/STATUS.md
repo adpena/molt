@@ -425,11 +425,15 @@ the implementation. For forward-looking priorities, use
   `run_module_pipeline` (E1 inliner, generator fusion, module-slot promotion,
   terminal DropInsertion) before fail-closed back-conversion. Guarded evidence:
   `luau_tir_module_pipeline_inlines_direct_local_calls`.
-- Luau `checked_add` is implemented through the target's f64 helper contract:
-  `molt_checked_i64_add(a, b)` returns `(a + b, false)`, preserving Luau's
-  existing number model while avoiding target-gating the portable TIR
-  `CheckedAdd` transform. Guarded evidence:
-  `test_compile_checked_lowers_checked_add_helper`; generated matrix status:
+- Luau `checked_add` and `checked_mul` are implemented through explicit f64
+  helper contracts. `molt_checked_i64_add(a, b)` returns `(a + b, false)`,
+  preserving Luau's existing number model while avoiding target-gating the
+  portable TIR `CheckedAdd` transform. `molt_checked_i64_mul(a, b)` returns a
+  conservative overflow/inexactness flag when the product reaches the f64
+  exact-integer boundary, forcing the boxed BigInt slow loop instead of
+  silently accepting a rounded product. Guarded evidence:
+  `test_compile_checked_lowers_checked_add_helper` and
+  `test_compile_checked_lowers_checked_mul_helper`; generated matrix statuses:
   `implemented-exact`.
 - Luau `matmul` and `inplace_matmul` now lower through checked descriptor
   helpers instead of unsupported-output stubs. `molt_matmul` dispatches

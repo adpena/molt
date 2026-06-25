@@ -234,6 +234,7 @@ fn mlir_opcode(op: &OpCode) -> &'static str {
     match op {
         OpCode::Add | OpCode::InplaceAdd => "add",
         OpCode::CheckedAdd => "checked_add",
+        OpCode::CheckedMul => "checked_mul",
         OpCode::Sub | OpCode::InplaceSub => "sub",
         OpCode::Mul | OpCode::InplaceMul => "mul",
         OpCode::Div => "div",

@@ -235,6 +235,7 @@ pub fn print_opcode(op: &OpCode) -> &'static str {
         OpCode::CheckedAdd => "checked_add",
         OpCode::Sub => "sub",
         OpCode::Mul => "mul",
+        OpCode::CheckedMul => "checked_mul",
         OpCode::InplaceAdd => "inplace_add",
         OpCode::InplaceSub => "inplace_sub",
         OpCode::InplaceMul => "inplace_mul",

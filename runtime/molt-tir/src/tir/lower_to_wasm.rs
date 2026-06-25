@@ -657,6 +657,37 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
                 ctx.emit_set(flag);
             }
         }
+        OpCode::CheckedMul => {
+            // (product, flag) = signed-i64 multiply. BOXED-LANE-ONLY v1.
+            //
+            // WASM has no multiply-with-overflow instruction and no raw
+            // 64x64->128 widening primitive, so there is NO sound raw fast
+            // lane today (unlike CheckedAdd's sign-bit identity). Rather than
+            // fabricate a fake helper or a wrong narrow-range check, every
+            // CheckedMul bails this function out of the WASM fast lane via the
+            // `Call(0)` BAIL sentinel — the guarded slow path then runs the
+            // boxed runtime multiply (`molt_mul`), which is BigInt-exact, so
+            // the product can never silently wrap. The overflow flag is set
+            // CONSTANT FALSE (the peel's slow path is correctly dead on this
+            // bailed lane; same semantics, no speedup). This is a DOCUMENTED
+            // target limitation per the Performance Constitution backend
+            // scoreboard, retired when the RawI64Full lattice + a 64x64->128
+            // overflow helper land.
+            assert!(
+                tir_op.operands.len() >= 2 && op.result_values.len() >= 2,
+                "checked_mul requires 2 operands and 2 results"
+            );
+            let lhs = tir_op.operands[0];
+            let rhs = tir_op.operands[1];
+            let product = op.result_values[0].id;
+            let flag = op.result_values[1].id;
+            emit_get_boxed_for_repr(ctx, lhs);
+            emit_get_boxed_for_repr(ctx, rhs);
+            ctx.instructions.push(Instruction::Call(0));
+            ctx.emit_set(product);
+            ctx.instructions.push(Instruction::I32Const(0));
+            ctx.emit_set(flag);
+        }
         OpCode::Sub | OpCode::InplaceSub => emit_lir_binary_arith(ctx, op, ArithOp::Sub),
         OpCode::Mul | OpCode::InplaceMul => emit_lir_binary_arith(ctx, op, ArithOp::Mul),
         OpCode::Div => emit_lir_binary_arith(ctx, op, ArithOp::Div),

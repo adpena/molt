@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+from pathlib import Path
 
 import molt.cli as cli
 from molt.cli import module_graph
@@ -56,3 +57,21 @@ def test_cli_module_resolution_authority_is_single_home() -> None:
     for marker in _MODULE_RESOLUTION_DEFINITIONS:
         assert marker not in module_graph_source
         assert marker not in cli_source
+
+
+def test_stdlib_root_path_is_package_local_not_cwd(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("MOLT_PROJECT_ROOT", raising=False)
+
+    stdlib_root = module_resolution._stdlib_root_path()
+
+    assert stdlib_root.name == "stdlib"
+    assert stdlib_root.parent.name == "molt"
+    assert (stdlib_root / "importlib" / "__init__.py").exists()
+    assert module_resolution._resolve_module_path("importlib", [stdlib_root]) == (
+        stdlib_root / "importlib" / "__init__.py"
+    )
+    assert not stdlib_root.is_relative_to(tmp_path)
