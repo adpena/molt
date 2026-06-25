@@ -640,7 +640,8 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                                     .contains_key(&args[0]);
                             let has_raw_bool_carrier = out_is_bool || has_raw_bool_carrier_unknown;
                             if has_raw_bool_carrier {
-                                builder.append_block_param(merge_block, types::I64); // raw bool result
+                                builder.append_block_param(merge_block, types::I64);
+                                // raw bool result
                             }
                             if out_is_bool {
                                 // Proven bool list — emit u8-load directly, no branch.
@@ -858,6 +859,7 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
         }
         "store_index" => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
+            list_index_fast_paths.invalidate_for_store_index(&args[0]);
             let obj = var_get_boxed_overflow_safe(
                 &mut *module,
                 &mut *import_ids,

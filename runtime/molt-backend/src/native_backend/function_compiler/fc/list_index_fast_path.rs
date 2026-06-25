@@ -21,7 +21,7 @@ pub(in crate::native_backend::function_compiler) struct ListIndexFastPathState {
 
 #[cfg(feature = "native-backend")]
 impl ListIndexFastPathState {
-    pub(in crate::native_backend::function_compiler) fn invalidate_list(
+    pub(in crate::native_backend::function_compiler) fn invalidate_for_list_mutation(
         &mut self,
         list_name: &str,
     ) {
@@ -30,6 +30,15 @@ impl ListIndexFastPathState {
         self.list_data_cache.remove(list_name);
         self.list_len_cache.remove(list_name);
         self.list_is_bool_cache.remove(list_name);
+        self.conditional_list_bool_shadows
+            .retain(|_, shadow| shadow.list_name != list_name);
+    }
+
+    pub(in crate::native_backend::function_compiler) fn invalidate_for_store_index(
+        &mut self,
+        list_name: &str,
+    ) {
+        self.invalidate_for_list_mutation(list_name);
     }
 }
 #[cfg(feature = "native-backend")]
@@ -95,9 +104,9 @@ pub(in crate::native_backend::function_compiler) fn metadata_only_structured_loo
 
 /// Scan a loop body (from `start_idx+1` to the matching `loop_end`) and return
 /// the set of list variable names whose data_ptr/len can be hoisted before the
-/// loop.  A variable is hoistable when it is accessed (via `index` or
-/// `store_index`) and NOT mutated (by `list_append`, `list_pop`, `list_extend`,
-/// `list_insert`, `list_remove`, or `list_clear`) anywhere in the loop body.
+/// loop.  A variable is hoistable when it is read through `index` and NOT
+/// mutated by `store_index`, `list_append`, `list_pop`, `list_extend`,
+/// `list_insert`, `list_remove`, or `list_clear` anywhere in the loop body.
 ///
 /// Returns `(list_int_hoistable, list_generic_hoistable)`.
 ///
@@ -139,7 +148,7 @@ pub(in crate::native_backend::function_compiler) fn scan_loop_hoistable_lists(
             _ => continue,
         };
         match op.kind.as_str() {
-            "index" | "store_index" => {
+            "index" => {
                 if representation_plan.op_has_container_storage(
                     idx,
                     op,
@@ -150,8 +159,8 @@ pub(in crate::native_backend::function_compiler) fn scan_loop_hoistable_lists(
                     list_generic_accessed.insert(args[0].clone());
                 }
             }
-            "list_append" | "list_pop" | "list_extend" | "list_insert" | "list_remove"
-            | "list_clear" => {
+            "store_index" | "list_append" | "list_pop" | "list_extend" | "list_insert"
+            | "list_remove" | "list_clear" => {
                 mutated.insert(args[0].clone());
             }
             _ => {}
