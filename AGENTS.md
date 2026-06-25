@@ -53,22 +53,27 @@ touching code, docs, tests, benchmarks, or roadmap state.
   Documentation, AGENTS guidance, indexes, specs, matrices, tests, and tooling
   are part of the compiler architecture and must move with the code.
 
-## Execution Velocity Doctrine: Broad Structural Arcs, Bounded Proof
+## Execution Velocity Doctrine: Tiny Aperture, Full Rip, Bounded Proof
 
-- Default to broad, coherent structural arcs. Do not split work into tiny
-  "safe" slices merely to create checkpoints, commits, or status updates. When
-  a subsystem has one wrong authority, rip open the full authority boundary and
-  move the callers, tests, docs, and generated facts needed to make the old path
-  disappear.
-- A maintainer saying "stop taking tiny slices", "rip it open", or equivalent
-  is a binding scope override. Cancel the comfort-sized plan, finish the live
-  WIP that exposes the authority boundary, and widen to the whole coherent bug
-  class before emitting another checkpoint-style landing.
-- Start from a structural aperture when the codebase, crash history, or operator
-  signal says the control plane is unstable. The aperture is only the opening
-  handle, not the work unit: choose one concrete invariant, command family, file
-  cluster, or authority surface that exposes the real duplicate path, then rip
-  through every sibling consumer needed to eliminate it.
+- Default to one tiny, named aperture into the real structure: one invariant,
+  command family, file cluster, authority surface, or failing execution path.
+  The aperture keeps discovery bounded; it is not the deliverable.
+- "Tiny slice and rip it open" is binding operator policy. Tiny slice means the
+  smallest concrete opening that exposes the duplicate authority. Rip it open
+  means follow that authority through every sibling consumer needed to delete or
+  unify the old lane before moving on.
+- Do not start with a broad soup of goals, and do not stop at a tiny chip.
+  Begin with the narrow aperture, then widen only along the structure it reveals:
+  callers, tests, docs, generated facts, backend/frontend/tooling consumers, and
+  proof lanes that govern the same invariant.
+- A maintainer saying "tiny slice", "rip it open", "stop taking tiny slices", or
+  equivalent is a binding scope override. Cancel the comfort-sized plan, name the
+  aperture, finish the live WIP that exposes the authority boundary, and rip
+  through the coherent bug class before emitting another checkpoint-style
+  landing.
+- Crash recovery constrains process fanout, not work integrity. In unstable
+  sessions, keep one active aperture and one bounded proof lane; never convert
+  the structural rip into a queue of isolated tiny chips.
 - Commit complete authority moves or genuinely independent structural pieces.
   A small commit is acceptable only when it deletes a complete source of drift;
   it is not acceptable when it leaves a hybrid path because the agent stopped
@@ -88,12 +93,12 @@ touching code, docs, tests, benchmarks, or roadmap state.
 
 ### Structural aperture, full rip
 
-The broad-arc rule above governs depth and width, not bulk. The bounded unit is
-not a tiny chip, checkpoint, or proof-friendly slice; it is a complete
-structural rip through one concrete invariant, authority cluster, or execution
-path, followed through every consumer needed to delete the old lane. Narrow the
-entry point only to expose the real structure; once exposed, widen to the whole
-bug class inside that boundary.
+The aperture rule above governs sequencing: tiny opening first, structural rip
+second. The bounded unit is not a tiny chip, checkpoint, or proof-friendly
+slice; it is a complete structural rip through one concrete invariant,
+authority cluster, or execution path, followed through every consumer needed to
+delete the old lane. Narrow the entry point only to expose the real structure;
+once exposed, widen to the whole bug class inside that boundary.
 
 - "Tiny slice and rip it open" is binding operator shorthand. Tiny slice means
   only one named aperture into the real structure; it never means shrinking the
