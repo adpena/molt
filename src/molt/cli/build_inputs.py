@@ -44,12 +44,12 @@ from molt.cli.module_graph import (
     _is_stdlib_resolved_path,
     _module_name_from_path,
     _parse_source_for_target,
-    _read_module_source,
     _record_module_reason,
     _resolve_module_path,
     _spec_parent,
     _stdlib_root_path,
 )
+from molt.cli.module_source import _read_module_source
 from molt.cli.output import CliFailure as _CliFailure, fail as _fail
 from molt.cli.profile_feedback import _load_pgo_profile, _load_runtime_feedback
 from molt.cli.project_roots import (

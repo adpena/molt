@@ -22,6 +22,7 @@ from molt.cli import commands as cli_commands
 from molt.cli import backend_binary as cli_backend_binary
 from molt.cli import backend_cache_setup as cli_backend_cache_setup
 from molt.cli import backend_compile as cli_backend_compile
+from molt.cli import backend_output_pipeline as cli_backend_output_pipeline
 from molt.cli import build_pipeline as cli_build_pipeline
 from molt.cli import link_pipeline as cli_link_pipeline
 from molt.cli import non_native_output as cli_non_native_output
@@ -32,6 +33,7 @@ from molt.cli import frontend_execution as cli_frontend_execution
 from molt.cli import frontend_pipeline as cli_frontend_pipeline
 from molt.cli import module_cache as cli_module_cache
 from molt.cli import module_graph as cli_module_graph
+from molt.cli import module_source as cli_module_source
 from molt.cli import typecheck as cli_typecheck
 
 cli_deps = importlib.import_module("molt.cli.deps")
@@ -75,7 +77,7 @@ def _clear_molt_home_caches() -> None:
     cli._default_molt_home_cached.cache_clear()
     cli._default_molt_bin_cached.cache_clear()
     cli._PERSISTED_JSON_OBJECT_CACHE.clear()
-    cli._source_content_sha256_cached.cache_clear()
+    cli_module_source._source_content_sha256_cached.cache_clear()
 
 def _enable_fake_backend_daemon_unix_socket(
     monkeypatch: pytest.MonkeyPatch,
@@ -3753,7 +3755,7 @@ def test_shared_module_resolution_cache_reuses_source_and_ast_across_passes(
 
     read_calls = 0
     parse_calls = 0
-    original_read = cli_module_graph._read_module_source
+    original_read = cli_module_source._read_module_source
     original_parse = cli.ast.parse
 
     def wrapped_read(path: Path) -> str:
@@ -3779,7 +3781,7 @@ def test_shared_module_resolution_cache_reuses_source_and_ast_across_passes(
             feature_version=feature_version,
         )
 
-    monkeypatch.setattr(cli_module_graph, "_read_module_source", wrapped_read)
+    monkeypatch.setattr(cli_module_source, "_read_module_source", wrapped_read)
     monkeypatch.setattr(cli.ast, "parse", wrapped_parse)
 
     shared_cache = cli._ModuleResolutionCache()
@@ -3820,7 +3822,7 @@ def test_shared_module_resolution_cache_reuses_source_and_ast_across_passes(
         stdlib_allowlist,
     )
     for module_path in unshared_graph.values():
-        source = cli_module_graph._read_module_source(module_path)
+        source = cli_module_source._read_module_source(module_path)
         cli.ast.parse(source, filename=str(module_path))
     assert read_calls > 0
     assert parse_calls > 0
@@ -3986,7 +3988,7 @@ def test_discover_module_graph_reuses_persisted_import_scan_cache(
     def fail_read(path: Path) -> str:
         raise AssertionError(f"unexpected source read for {path}")
 
-    monkeypatch.setattr(cli_module_graph, "_read_module_source", fail_read)
+    monkeypatch.setattr(cli_module_source, "_read_module_source", fail_read)
 
     graph, explicit_imports = cli._discover_module_graph(
         entry,
@@ -4077,7 +4079,7 @@ def test_source_content_sha256_reuses_persistent_hash_after_process_cache_clear(
     module_path.write_text("VALUE = 1\n", encoding="utf-8")
     monkeypatch.setenv("MOLT_CACHE", str(tmp_path / "cache"))
     _clear_molt_home_caches()
-    real_sha256_file = cli_module_graph._sha256_file
+    real_sha256_file = cli_module_source._sha256_file
     hash_calls = 0
 
     def counting_sha256_file(path: Path) -> str:
@@ -4085,21 +4087,21 @@ def test_source_content_sha256_reuses_persistent_hash_after_process_cache_clear(
         hash_calls += 1
         return real_sha256_file(path)
 
-    monkeypatch.setattr(cli_module_graph, "_sha256_file", counting_sha256_file)
+    monkeypatch.setattr(cli_module_source, "_sha256_file", counting_sha256_file)
 
-    first_hash = cli._source_content_sha256(module_path)
+    first_hash = cli_module_source._source_content_sha256(module_path)
     assert first_hash is not None
     assert hash_calls == 1
 
-    cli._source_content_sha256_cached.cache_clear()
-    second_hash = cli._source_content_sha256(module_path)
+    cli_module_source._source_content_sha256_cached.cache_clear()
+    second_hash = cli_module_source._source_content_sha256(module_path)
 
     assert second_hash == first_hash
     stat = module_path.stat()
-    stat_identity_is_strong = cli_module_graph._source_hash_stat_identity_is_strong(
-        ctime_ns=cli_module_graph._stat_ctime_ns(stat),
+    stat_identity_is_strong = cli_module_source._source_hash_stat_identity_is_strong(
+        ctime_ns=cli_module_source._stat_ctime_ns(stat),
         inode=int(getattr(stat, "st_ino", 0) or 0),
-        device=cli_module_graph._stat_device(stat),
+        device=cli_module_source._stat_device(stat),
     )
     assert hash_calls == (1 if stat_identity_is_strong else 2)
 
@@ -4113,7 +4115,7 @@ def test_source_content_sha256_rehashes_preserved_mtime_content_change(
     original = module_path.stat()
     monkeypatch.setenv("MOLT_CACHE", str(tmp_path / "cache"))
     _clear_molt_home_caches()
-    real_sha256_file = cli_module_graph._sha256_file
+    real_sha256_file = cli_module_source._sha256_file
     hash_calls = 0
 
     def counting_sha256_file(path: Path) -> str:
@@ -4121,15 +4123,15 @@ def test_source_content_sha256_rehashes_preserved_mtime_content_change(
         hash_calls += 1
         return real_sha256_file(path)
 
-    monkeypatch.setattr(cli_module_graph, "_sha256_file", counting_sha256_file)
+    monkeypatch.setattr(cli_module_source, "_sha256_file", counting_sha256_file)
 
-    first_hash = cli._source_content_sha256(module_path)
+    first_hash = cli_module_source._source_content_sha256(module_path)
     assert first_hash is not None
     assert hash_calls == 1
 
     _rewrite_preserving_mtime(module_path, "VALUE = 2\n", original)
-    cli._source_content_sha256_cached.cache_clear()
-    second_hash = cli._source_content_sha256(module_path)
+    cli_module_source._source_content_sha256_cached.cache_clear()
+    second_hash = cli_module_source._source_content_sha256(module_path)
 
     assert second_hash is not None
     assert second_hash != first_hash
@@ -5899,7 +5901,7 @@ def test_load_module_imports_reuses_persisted_cache(
 ) -> None:
     module_path = tmp_path / "pkg.py"
     module_path.write_text("import warnings\n")
-    source = cli._read_module_source(module_path)
+    source = cli_module_source._read_module_source(module_path)
     cache = cli._ModuleResolutionCache()
     tree = cache.parse_module_ast(module_path, source, filename=str(module_path))
 
@@ -5935,7 +5937,7 @@ def test_load_module_analysis_reuses_persisted_cache(
 ) -> None:
     module_path = tmp_path / "pkg.py"
     module_path.write_text("import warnings\n\ndef f(a, *, b=1):\n    return a + b\n")
-    source = cli._read_module_source(module_path)
+    source = cli_module_source._read_module_source(module_path)
     cache = cli._ModuleResolutionCache()
 
     (
@@ -6005,7 +6007,7 @@ def test_load_module_analysis_persists_bytes_defaults(
 ) -> None:
     module_path = tmp_path / "pkg.py"
     module_path.write_text("def f(blob=b'abc'):\n    return blob\n")
-    source = cli._read_module_source(module_path)
+    source = cli_module_source._read_module_source(module_path)
     cache = cli._ModuleResolutionCache()
 
     (
@@ -6087,7 +6089,7 @@ def test_load_module_analysis_rejects_persisted_defaults_without_function_kind(
     module_path.write_text("def g():\n    yield 1\n")
     cache = cli._ModuleResolutionCache()
     stat = module_path.stat()
-    source_sha256 = cli._source_content_sha256(module_path, stat)
+    source_sha256 = cli_module_source._source_content_sha256(module_path, stat)
     assert source_sha256 is not None
     cache_path = cli._module_analysis_cache_path(
         tmp_path,
@@ -6157,7 +6159,7 @@ def test_load_module_analysis_reuses_persisted_module_analysis_imports(
 ) -> None:
     module_path = tmp_path / "pkg.py"
     module_path.write_text("import warnings\n\ndef f(a, *, b=1):\n    return a + b\n")
-    source = cli._read_module_source(module_path)
+    source = cli_module_source._read_module_source(module_path)
     cache = cli._ModuleResolutionCache()
 
     cli._load_module_analysis(
@@ -6218,7 +6220,7 @@ def test_load_module_analysis_keeps_full_and_module_init_caches_disjoint(
 ) -> None:
     module_path = tmp_path / "pkg.py"
     module_path.write_text("import os\n\ndef f():\n    import warnings\n")
-    source = cli._read_module_source(module_path)
+    source = cli_module_source._read_module_source(module_path)
     cache = cli._ModuleResolutionCache()
 
     first = cli._load_module_analysis(
@@ -6289,7 +6291,7 @@ def test_load_module_analysis_keeps_module_init_and_full_caches_disjoint_reverse
 ) -> None:
     module_path = tmp_path / "pkg.py"
     module_path.write_text("import os\n\ndef f():\n    import warnings\n")
-    source = cli._read_module_source(module_path)
+    source = cli_module_source._read_module_source(module_path)
     cache = cli._ModuleResolutionCache()
 
     first = cli._load_module_analysis(
@@ -6327,7 +6329,7 @@ def test_load_module_analysis_reuses_single_module_stat_for_persisted_hits(
 ) -> None:
     module_path = tmp_path / "pkg.py"
     module_path.write_text("import warnings\n\ndef f(a, *, b=1):\n    return a + b\n")
-    source = cli._read_module_source(module_path)
+    source = cli_module_source._read_module_source(module_path)
     cache = cli._ModuleResolutionCache()
 
     cli._load_module_analysis(
@@ -7359,7 +7361,7 @@ def test_prepare_frontend_parallel_batch_uses_path_backed_source_leases(
     }
     module_graph["main"].write_text("import alpha\nVALUE = alpha.VALUE\n")
     module_graph["alpha"].write_text("VALUE = 1\n")
-    module_source_catalog = cli._build_module_source_catalog(module_graph)
+    module_source_catalog = cli_module_source._build_module_source_catalog(module_graph)
     module_graph_metadata = cli._build_module_graph_metadata(
         module_graph,
         generated_module_source_paths={},
@@ -7422,7 +7424,7 @@ def test_prepare_frontend_parallel_batch_uses_path_backed_source_leases(
 def test_worker_source_lease_rejects_path_drift(tmp_path: Path) -> None:
     module_path = tmp_path / "main.py"
     module_path.write_text("VALUE = 1\n")
-    lease = cli._ModuleSourceLease.path_backed(module_path)
+    lease = cli_module_source._ModuleSourceLease.path_backed(module_path)
     module_path.write_text("VALUE = 100\n")
 
     result = cli._frontend_lower_module_worker(
@@ -8672,7 +8674,7 @@ def test_read_module_source_uses_utf8_fast_path(
         raise AssertionError(f"tokenize.open should not run for {path}")
 
     monkeypatch.setattr(cli.tokenize, "open", fail_open)
-    assert cli._read_module_source(source_path) == "value = 'hello'\n"
+    assert cli_module_source._read_module_source(source_path) == "value = 'hello'\n"
 
 
 def test_read_module_source_falls_back_for_encoding_cookie(
@@ -8683,7 +8685,7 @@ def test_read_module_source_falls_back_for_encoding_cookie(
         "# -*- coding: latin-1 -*-\nname = 'caf\xe9'\n".encode("latin-1")
     )
     assert (
-        cli._read_module_source(source_path)
+        cli_module_source._read_module_source(source_path)
         == "# -*- coding: latin-1 -*-\nname = 'café'\n"
     )
 
@@ -9431,7 +9433,7 @@ def test_frontend_lower_module_worker_smoke(tmp_path: Path) -> None:
     payload = {
         "module_name": "worker_module",
         "module_path": str(module_path),
-        "source_lease": cli._ModuleSourceLease.inline(
+        "source_lease": cli_module_source._ModuleSourceLease.inline(
             module_path, source
         ).worker_payload(),
         "parse_codec": "msgpack",
@@ -9486,7 +9488,7 @@ def test_prepare_frontend_lowering_config_uses_tighter_native_chunk_default(
         generated_module_source_paths={},
         entry_module="entry",
         namespace_module_names=set(),
-        module_source_catalog=cli._build_module_source_catalog(
+        module_source_catalog=cli_module_source._build_module_source_catalog(
             {"entry": source_path},
             module_sources={"entry": "print('ok')\n"},
         ),
@@ -12445,7 +12447,7 @@ def test_run_backend_pipeline_defers_native_runtime_readiness_until_after_codege
         frontend_layer_execution_context=cli._FrontendLayerExecutionContext(
             syntax_error_modules={},
             module_graph={},
-            module_source_catalog=cli._ModuleSourceCatalog(leases={}),
+            module_source_catalog=cli_module_source._ModuleSourceCatalog(leases={}),
             project_root=tmp_path,
             module_resolution_cache=cli._ModuleResolutionCache(),
             parse_codec="json",
@@ -12601,7 +12603,7 @@ def test_run_backend_pipeline_defers_native_runtime_readiness_until_after_codege
         ),
     )
     monkeypatch.setattr(
-        cli_build_pipeline,
+        cli_backend_output_pipeline,
         "_ensure_native_runtime_lib_ready_before_link",
         lambda runtime_state, **kwargs: call_order.append("runtime_ready") or False,
     )
@@ -17699,8 +17701,8 @@ def test_source_hash_cache_write_uses_unique_atomic_temp_siblings(
 
     monkeypatch.setattr(os, "replace", record_replace)
 
-    cli._write_source_hash_cache_payload(cache_path, {"hash": "a"})
-    cli._write_source_hash_cache_payload(cache_path, {"hash": "b"})
+    cli_module_source._write_source_hash_cache_payload(cache_path, {"hash": "a"})
+    cli_module_source._write_source_hash_cache_payload(cache_path, {"hash": "b"})
 
     assert json.loads(cache_path.read_text(encoding="utf-8")) == {"hash": "b"}
     assert len(replaced_sources) == 2

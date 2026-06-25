@@ -36,12 +36,14 @@ from molt.cli.models import (
 )
 from molt.cli.module_graph import (
     _ModuleResolutionCache,
-    _ModuleSourceLease,
     _load_module_imports,
     _module_dependency_closure,
-    _payload_source_matches,
     _read_persisted_import_scan,
     _resolved_module_cache_key,
+)
+from molt.cli.module_source import (
+    _ModuleSourceLease,
+    _payload_source_matches,
     _source_content_sha256,
 )
 from molt.cli.runtime_paths import _build_state_root
