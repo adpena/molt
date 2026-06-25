@@ -1069,7 +1069,7 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
                     .expect("Arg not found");
                     builder
                         .ins()
-                        .store(MemFlags::trusted(), *val, obj_ptr, (idx * 8) as i32);
+                        .store(MemFlagsData::trusted(), *val, obj_ptr, (idx * 8) as i32);
                     emit_inc_ref_obj(&mut *builder, *val, local_inc_ref_obj, nbc);
                 }
             }

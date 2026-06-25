@@ -6,13 +6,13 @@ edition = "2021"
 license = "Apache-2.0"
 
 [dependencies]
-half = "2.4"
-wgpu = { version = "24", optional = true }
+half = "2.7"
+wgpu = { version = "29", optional = true }
 pollster = { version = "0.4", optional = true }
-wide = { version = "0.7", optional = true }
+wide = { version = "1.5", optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-metal = "0.30"
+metal = "0.33"
 
 [features]
 default = ["metal-backend", "cpu-backend", "simd-accel"]

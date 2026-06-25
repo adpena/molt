@@ -207,7 +207,7 @@ fn emit_set_contains_refs_if_heap(
     let obj_ptr = builder.ins().sshr_imm(shifted, 16);
     let flags = builder.ins().load(
         types::I32,
-        MemFlags::trusted(),
+        MemFlagsData::trusted(),
         obj_ptr,
         HEADER_FLAGS_OFFSET,
     );
@@ -217,7 +217,7 @@ fn emit_set_contains_refs_if_heap(
     let flags = builder.ins().bor(flags, contains_refs);
     builder
         .ins()
-        .store(MemFlags::trusted(), flags, obj_ptr, HEADER_FLAGS_OFFSET);
+        .store(MemFlagsData::trusted(), flags, obj_ptr, HEADER_FLAGS_OFFSET);
     jump_block(builder, done_block, &[]);
 
     switch_to_block_materialized(builder, done_block);
@@ -240,7 +240,7 @@ fn emit_regular_list_container_absorb_store(
 ) {
     let old_elem = builder
         .ins()
-        .load(types::I64, MemFlags::trusted(), elem_addr, 0);
+        .load(types::I64, MemFlagsData::trusted(), elem_addr, 0);
     let same_elem = builder.ins().icmp(IntCC::Equal, old_elem, val_bits);
     let same_block = builder.create_block();
     let replace_block = builder.create_block();
@@ -260,7 +260,7 @@ fn emit_regular_list_container_absorb_store(
     }
     builder
         .ins()
-        .store(MemFlags::trusted(), val_bits, elem_addr, 0);
+        .store(MemFlagsData::trusted(), val_bits, elem_addr, 0);
     emit_dec_ref_obj(builder, old_elem, local_dec_ref_obj, nbc);
     jump_block(builder, merge_block, &[]);
 }
@@ -557,7 +557,7 @@ fn emit_exception_pending_condition(
         let flag_ptr = builder.ins().stack_load(types::I64, slot, 0);
         let pending_byte = builder
             .ins()
-            .load(types::I8, MemFlags::trusted(), flag_ptr, 0);
+            .load(types::I8, MemFlagsData::trusted(), flag_ptr, 0);
         return builder.ins().icmp_imm(IntCC::NotEqual, pending_byte, 0);
     }
 

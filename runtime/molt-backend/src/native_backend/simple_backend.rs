@@ -1062,7 +1062,7 @@ pub(crate) fn emit_mixed_int_float_op(
     builder.seal_block(lhs_int_block);
     let lhs_int_val = unbox_int(builder, lhs, nbc);
     let lhs_conv = builder.ins().fcvt_from_sint(types::F64, lhs_int_val);
-    let rhs_flt = builder.ins().bitcast(types::F64, MemFlags::new(), rhs);
+    let rhs_flt = builder.ins().bitcast(types::F64, MemFlagsData::new(), rhs);
     let res_a = match f_op {
         0 => builder.ins().fadd(lhs_conv, rhs_flt),
         1 => builder.ins().fsub(lhs_conv, rhs_flt),
@@ -1082,7 +1082,7 @@ pub(crate) fn emit_mixed_int_float_op(
     builder.seal_block(rhs_int_block);
     let rhs_int_val = unbox_int(builder, rhs, nbc);
     let rhs_conv = builder.ins().fcvt_from_sint(types::F64, rhs_int_val);
-    let lhs_flt = builder.ins().bitcast(types::F64, MemFlags::new(), lhs);
+    let lhs_flt = builder.ins().bitcast(types::F64, MemFlagsData::new(), lhs);
     let res_b = match f_op {
         0 => builder.ins().fadd(lhs_flt, rhs_conv),
         1 => builder.ins().fsub(lhs_flt, rhs_conv),
@@ -1116,7 +1116,7 @@ pub(crate) fn box_float_value(
 ) -> Value {
     // Canonicalize NaN: if the f64 value is NaN, replace with CANONICAL_NAN_BITS
     // to avoid collision with the QNAN tag prefix used by NaN-boxing.
-    let raw_bits = builder.ins().bitcast(types::I64, MemFlags::new(), val);
+    let raw_bits = builder.ins().bitcast(types::I64, MemFlagsData::new(), val);
     let is_nan = builder.ins().fcmp(FloatCC::Unordered, val, val);
     let canonical = builder.ins().iconst(types::I64, nbc.canonical_nan);
     builder.ins().select(is_nan, canonical, raw_bits)
@@ -1296,14 +1296,14 @@ fn emit_list_int_bounds_check(
     // Step 2: load *mut Vec<i64> from offset 0 of the object payload
     let vec_ptr = builder
         .ins()
-        .load(types::I64, MemFlags::trusted(), obj_ptr, 0);
+        .load(types::I64, MemFlagsData::trusted(), obj_ptr, 0);
     // Step 3: load data pointer from Vec (offset 0) and length (offset 8)
     let data_ptr = builder
         .ins()
-        .load(types::I64, MemFlags::trusted(), vec_ptr, 0);
+        .load(types::I64, MemFlagsData::trusted(), vec_ptr, 0);
     let len = builder
         .ins()
-        .load(types::I64, MemFlags::trusted(), vec_ptr, 8);
+        .load(types::I64, MemFlagsData::trusted(), vec_ptr, 8);
     // Step 4: unsigned compare index < length
     let in_bounds = builder.ins().icmp(IntCC::UnsignedLessThan, index_raw, len);
     (data_ptr, in_bounds)
@@ -1323,7 +1323,7 @@ fn emit_list_int_load(
     let elem_addr = builder.ins().iadd(data_ptr, offset);
     let raw_val = builder
         .ins()
-        .load(types::I64, MemFlags::trusted(), elem_addr, 0);
+        .load(types::I64, MemFlagsData::trusted(), elem_addr, 0);
     box_int_value(builder, raw_val, nbc)
 }
 
@@ -1341,7 +1341,7 @@ fn emit_list_int_store(
     let elem_addr = builder.ins().iadd(data_ptr, offset);
     builder
         .ins()
-        .store(MemFlags::trusted(), value_raw, elem_addr, 0);
+        .store(MemFlagsData::trusted(), value_raw, elem_addr, 0);
 }
 
 #[allow(dead_code)]
@@ -1420,7 +1420,7 @@ fn emit_inline_inc_ref_obj(builder: &mut FunctionBuilder, val: Value, nbc: &NanB
     // delta = (flags & IMMORTAL) == 0 ? 1 : 0
     let flags = builder.ins().load(
         types::I32,
-        MemFlags::trusted(),
+        MemFlagsData::trusted(),
         raw_ptr,
         HEADER_FLAGS_OFFSET,
     );
@@ -1441,7 +1441,7 @@ fn emit_inline_inc_ref_obj(builder: &mut FunctionBuilder, val: Value, nbc: &NanB
     let rc_addr = builder.ins().iadd(raw_ptr, rc_offset);
     builder.ins().atomic_rmw(
         types::I32,
-        MemFlags::trusted(),
+        MemFlagsData::trusted(),
         AtomicRmwOp::Add,
         rc_addr,
         delta,
@@ -4170,7 +4170,7 @@ impl SimpleBackend {
             let rec_stride = builder.ins().iconst(types::I64, RECORD_BYTES as i64);
             let rec_off = builder.ins().imul(mid, rec_stride);
             let rec_ptr = builder.ins().iadd(table_base, rec_off);
-            let flags = MemFlags::new();
+            let flags = MemFlagsData::new();
             let cand_off32 = builder.ins().load(types::I32, flags, rec_ptr, 0);
             let cand_len32 = builder.ins().load(types::I32, flags, rec_ptr, 4);
             let cand_off = builder.ins().uextend(types::I64, cand_off32);
@@ -4252,7 +4252,7 @@ impl SimpleBackend {
         b_ptr: Value,
         b_len: Value,
     ) -> Value {
-        let flags = MemFlags::new();
+        let flags = MemFlagsData::new();
         let neg_one = builder.ins().iconst(types::I64, -1);
         let zero = builder.ins().iconst(types::I64, 0);
         let one = builder.ins().iconst(types::I64, 1);
@@ -4439,7 +4439,7 @@ impl SimpleBackend {
                 if has_closure {
                     builder
                         .ins()
-                        .store(MemFlags::trusted(), closure_bits, obj_ptr, offset);
+                        .store(MemFlagsData::trusted(), closure_bits, obj_ptr, offset);
                     builder.ins().call(local_inc_ref_obj, &[closure_bits]);
                     offset += 8;
                 }
@@ -4448,10 +4448,10 @@ impl SimpleBackend {
                     let arg_val =
                         builder
                             .ins()
-                            .load(types::I64, MemFlags::trusted(), args_ptr, arg_offset);
+                            .load(types::I64, MemFlagsData::trusted(), args_ptr, arg_offset);
                     builder
                         .ins()
-                        .store(MemFlags::trusted(), arg_val, obj_ptr, offset + arg_offset);
+                        .store(MemFlagsData::trusted(), arg_val, obj_ptr, offset + arg_offset);
                     builder.ins().call(local_inc_ref_obj, &[arg_val]);
                 }
                 builder.ins().return_(&[obj]);
@@ -4504,7 +4504,7 @@ impl SimpleBackend {
                     if has_closure {
                         builder
                             .ins()
-                            .store(MemFlags::trusted(), closure_bits, obj_ptr, offset);
+                            .store(MemFlagsData::trusted(), closure_bits, obj_ptr, offset);
                         builder.ins().call(local_inc_ref_obj, &[closure_bits]);
                         offset += 8;
                     }
@@ -4512,12 +4512,12 @@ impl SimpleBackend {
                         let arg_offset = (idx * std::mem::size_of::<u64>()) as i32;
                         let arg_val = builder.ins().load(
                             types::I64,
-                            MemFlags::trusted(),
+                            MemFlagsData::trusted(),
                             args_ptr,
                             arg_offset,
                         );
                         builder.ins().store(
-                            MemFlags::trusted(),
+                            MemFlagsData::trusted(),
                             arg_val,
                             obj_ptr,
                             offset + arg_offset,
@@ -4595,7 +4595,7 @@ impl SimpleBackend {
                 if has_closure {
                     builder
                         .ins()
-                        .store(MemFlags::trusted(), closure_bits, obj_ptr, offset);
+                        .store(MemFlagsData::trusted(), closure_bits, obj_ptr, offset);
                     builder.ins().call(local_inc_ref_obj, &[closure_bits]);
                     offset += 8;
                 }
@@ -4604,10 +4604,10 @@ impl SimpleBackend {
                     let arg_val =
                         builder
                             .ins()
-                            .load(types::I64, MemFlags::trusted(), args_ptr, arg_offset);
+                            .load(types::I64, MemFlagsData::trusted(), args_ptr, arg_offset);
                     builder
                         .ins()
-                        .store(MemFlags::trusted(), arg_val, obj_ptr, offset + arg_offset);
+                        .store(MemFlagsData::trusted(), arg_val, obj_ptr, offset + arg_offset);
                     builder.ins().call(local_inc_ref_obj, &[arg_val]);
                 }
 
@@ -4632,7 +4632,7 @@ impl SimpleBackend {
                     let arg_val =
                         builder
                             .ins()
-                            .load(types::I64, MemFlags::trusted(), args_ptr, offset);
+                            .load(types::I64, MemFlagsData::trusted(), args_ptr, offset);
                     call_args.push(arg_val);
                 }
 

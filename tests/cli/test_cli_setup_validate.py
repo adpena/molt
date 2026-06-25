@@ -1123,9 +1123,8 @@ def test_update_plan_bootstraps_missing_cargo_tool_helpers(
 
     names = {step.name for step in steps}
     assert "cargo-install-wasm-pack" in names
-    assert "cargo-install-llvmenv" in names
     assert "cargo-install-wasm-tools" not in names
-    assert warnings == []
+    assert any("tools/bootstrap_llvm.py" in warning for warning in warnings)
 
 
 def test_llvm_backend_advice_names_exact_prefix_and_config(
@@ -1138,6 +1137,57 @@ def test_llvm_backend_advice_names_exact_prefix_and_config(
     joined = "\n".join(advice)
     assert "LLVM_SYS_221_PREFIX" in joined
     assert "llvm-config.exe" in joined
+    assert "tools/bootstrap_llvm.py" in joined
+
+
+def test_windows_msvc_env_reports_inactive_dev_shell(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(TOOLCHAIN_VALIDATION.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(
+        TOOLCHAIN_VALIDATION,
+        "_windows_vsdevcmd_path",
+        lambda: Path("C:/VS/Common7/Tools/VsDevCmd.bat"),
+        raising=True,
+    )
+    present = {
+        "python": "python",
+        "uv": "uv",
+        "cargo": "cargo",
+        "rustup": "rustup",
+        "cargo-upgrade": "cargo-upgrade",
+        "clang": "clang",
+        "cmake": "cmake",
+        "ninja": "ninja",
+        "wasm-ld": "wasm-ld",
+        "wasm-tools": "wasm-tools",
+        "wasm-pack": "wasm-pack",
+    }
+    monkeypatch.setattr(
+        TOOLCHAIN_VALIDATION.shutil,
+        "which",
+        lambda name: present.get(name),
+        raising=True,
+    )
+    monkeypatch.setattr(
+        TOOLCHAIN_VALIDATION,
+        "_detect_llvm_backend_toolchain",
+        lambda _root: (22, None),
+        raising=True,
+    )
+    monkeypatch.setattr(
+        TOOLCHAIN_VALIDATION,
+        "_run_completed_command",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, ""),
+        raising=True,
+    )
+
+    report = TOOLCHAIN_VALIDATION._build_toolchain_report(ROOT)
+
+    msvc = next(check for check in report.checks if check["name"] == "msvc-build-env")
+    assert msvc["ok"] is False
+    assert "cl.exe is not active" in msvc["detail"]
+    assert any("VsDevCmd.bat" in advice for advice in msvc["advice"])
 
 
 def test_llvm_detection_rejects_mismatched_config_major(

@@ -257,6 +257,14 @@ fn family_map() -> &'static HashMap<&'static str, NativeOpFamily> {
                 }
             }
         }
+        for &kind in INLINE_DISPATCH_KINDS {
+            if let Some(family) = map.get(kind) {
+                panic!(
+                    "native op-family dispatch table shadows inline kind `{kind}` \
+                     with family {family:?}",
+                );
+            }
+        }
         map
     })
 }

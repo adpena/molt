@@ -218,7 +218,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                             float_primary_vars,
                         )
                         .expect("Value not found");
-                        builder.ins().bitcast(types::F64, MemFlags::new(), *val)
+                        builder.ins().bitcast(types::F64, MemFlagsData::new(), *val)
                     });
                 let neg_f = builder.ins().fneg(src_f);
                 if op
@@ -346,7 +346,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                             float_primary_vars,
                         )
                         .expect("Value not found");
-                        builder.ins().bitcast(types::F64, MemFlags::new(), *val)
+                        builder.ins().bitcast(types::F64, MemFlagsData::new(), *val)
                     });
                 if op
                     .out

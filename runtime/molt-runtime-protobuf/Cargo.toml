@@ -7,4 +7,4 @@ license = "Apache-2.0"
 description = "Protobuf serialization for Molt via buffa"
 
 [dependencies]
-buffa = "0.2"
+buffa = "0.7"
