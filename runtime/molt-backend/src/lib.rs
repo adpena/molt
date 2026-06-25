@@ -69,6 +69,8 @@ pub mod wasm;
 #[cfg(feature = "wasm-backend")]
 mod wasm_binary;
 #[cfg(feature = "wasm-backend")]
+mod wasm_dispatch;
+#[cfg(feature = "wasm-backend")]
 mod wasm_imports;
 
 #[cfg(feature = "egraphs")]
