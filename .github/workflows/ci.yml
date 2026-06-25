@@ -20,13 +20,13 @@ jobs:
     name: Docs Gates
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v6.3.0
         with:
           python-version-file: ".python-version"
 
-      - uses: astral-sh/setup-uv@v8.1.0
+      - uses: astral-sh/setup-uv@v8.2.0
 
       - name: Sync Python environment
         run: uv sync --frozen --group dev
@@ -52,6 +52,11 @@ jobs:
       - name: Check suite-honesty ratchet (tracked-fail manifest, down-only)
         run: uv run python3 tools/check_suite_honesty.py
 
+      - name: Check perf-doc freshness (no unstamped stale perf snapshot)
+        run: |
+          git fetch --no-tags --depth=1 origin main || true
+          uv run python3 tools/check_perf_freshness.py
+
       - name: Check op-kind registry generated files are in sync
         run: uv run python3 tools/gen_op_kinds.py --check
 
@@ -70,7 +75,7 @@ jobs:
       - name: Run docs architecture tests
         run: |
           python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- \
-            uv run python3 -m pytest -q tests/test_update_status_blocks.py tests/test_bench_report.py tests/test_check_docs_architecture.py tests/test_compatibility_contract_docs.py tests/test_ecosystem_compat.py tests/test_check_suite_honesty.py tests/test_gen_op_kinds.py tests/test_gen_intrinsics.py tests/test_molt_dev.py tests/test_structural_audit.py tests/test_call_fact_coverage.py tests/test_llvm_runtime_abi_audit.py
+            uv run python3 -m pytest -q tests/test_update_status_blocks.py tests/test_bench_report.py tests/test_check_docs_architecture.py tests/test_compatibility_contract_docs.py tests/test_ecosystem_compat.py tests/test_check_suite_honesty.py tests/test_gen_op_kinds.py tests/test_gen_intrinsics.py tests/test_molt_dev.py tests/test_structural_audit.py tests/test_call_fact_coverage.py tests/test_llvm_runtime_abi_audit.py tests/tools/test_perf_authority.py
 
       - name: Summarize guarded command hotspots
         if: always()
@@ -80,13 +85,13 @@ jobs:
     name: Python Tooling Smoke
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v6.3.0
         with:
           python-version-file: ".python-version"
 
-      - uses: astral-sh/setup-uv@v8.1.0
+      - uses: astral-sh/setup-uv@v8.2.0
 
       - name: Sync Python environment
         run: uv sync --frozen --group dev
@@ -148,7 +153,7 @@ jobs:
     name: Rust Build And Unit Smoke
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -163,11 +168,11 @@ jobs:
           set -o pipefail
           python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo build 2>&1 | tee logs/ci-cargo-build.log
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v6.3.0
         with:
           python-version-file: ".python-version"
 
-      - uses: astral-sh/setup-uv@v8.1.0
+      - uses: astral-sh/setup-uv@v8.2.0
 
       - name: Run molt-backend unit tests (native backend)
         run: python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo test -p molt-backend --features native-backend --lib
@@ -243,7 +248,7 @@ jobs:
     name: LLVM Backend
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -317,11 +322,11 @@ jobs:
           python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- \
             cargo clippy -p molt-backend --features "native-backend llvm" --lib -- -D warnings
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v6.3.0
         with:
           python-version-file: ".python-version"
 
-      - uses: astral-sh/setup-uv@v8.1.0
+      - uses: astral-sh/setup-uv@v8.2.0
 
       - name: Sync Python environment
         run: uv sync --frozen --group dev

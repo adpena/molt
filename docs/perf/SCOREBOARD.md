@@ -296,7 +296,8 @@ uv run --python 3.12 python3 tools/perf_scoreboard.py --self-test
 
 # Full baseline run (the gate): core suite × native+llvm × release-fast.
 uv run --python 3.12 python3 tools/perf_scoreboard.py \
-    --set core --backend native --backend llvm --profile release-fast
+    --set core --backend native --backend llvm --profile release-fast \
+    --samples 5 --warmup 2 --repeat 5 --classify --require-quiescent
 
 # Diff a fresh run against the last stored scoreboard (newly-red / regressed).
 uv run --python 3.12 python3 tools/perf_scoreboard.py --set core --backend native --baseline

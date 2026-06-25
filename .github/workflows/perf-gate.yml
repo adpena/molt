@@ -1,0 +1,112 @@
+name: Perf Gate (canonical CPython-floor scoreboard)
+
+# The ONE release-blocking performance authority. Runs the canonical scoreboard
+# (tools/perf_scoreboard.py) at the release-fast contract profile, cold+warm,
+# native+LLVM, repeat-CI, with the quiescence guard and the 5-state classifier,
+# and FAILS the gate on:
+#   * any warm cell below the CPython floor (warm_speedup <= 1.00 -> FAIL_ENGINE),
+#   * any non-authoritative tree (local tip != origin/main, dirty -> FAIL_STALE),
+#   * any UNSTABLE / BUILD_FAILED / RUN_ERROR cell.
+# The scoreboard gates by default (nonzero exit on RED/FAIL_STALE). This is the
+# perf-plane sibling of the docs ratchets: a single fresh, quiescent,
+# native+LLVM release-fast source is the only citable authority.
+#
+# Every other local perf lane is non-canonical and stamps authoritative=false
+# through tools/perf_authority.py; the freshness gate in ci.yml keeps stale
+# markdown snapshots from masquerading as current.
+#
+# Trigger is workflow_dispatch + a weekly schedule; wire both matrix jobs into
+# branch protection as the canonical performance gate for protected branches.
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Weekly canonical re-measure (Mondays 06:00 UTC) so the citable board stays
+    # fresh even between perf-touching PRs.
+    - cron: "0 6 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: perf-gate-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  CARGO_TERM_COLOR: always
+
+jobs:
+  cpython-floor:
+    name: CPython-floor scoreboard (${{ matrix.backend }} / release-fast)
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        backend: [native, llvm]
+    env:
+      MOLT_SESSION_ID: perfscore-${{ matrix.backend }}
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target/sessions/perfscore-${{ matrix.backend }}
+      MOLT_EXT_ROOT: ${{ github.workspace }}
+      MOLT_CACHE: ${{ github.workspace }}/.molt_cache
+      MOLT_DIFF_ROOT: ${{ github.workspace }}/tmp/diff
+      MOLT_DIFF_TMPDIR: ${{ github.workspace }}/tmp
+      UV_CACHE_DIR: ${{ github.workspace }}/.uv-cache
+      TMPDIR: ${{ github.workspace }}/tmp
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # Full history so the provenance check can resolve origin/main and
+          # the merge-base (authoritative requires local tip == origin/main).
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v6.3.0
+        with:
+          python-version-file: ".python-version"
+
+      - uses: astral-sh/setup-uv@v8.2.0
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Configure adaptive Rust parallelism
+        run: python3 tools/ci_resource_env.py --github-env "$GITHUB_ENV"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: perfscore-${{ matrix.backend }}
+
+      - name: Sync Python environment
+        run: uv sync --frozen --group bench --group dev
+
+      - name: Make origin/main resolvable for provenance
+        run: git fetch --no-tags origin main || true
+
+      - name: Run canonical CPython-floor scoreboard (release-fast, classified)
+        # release-fast is the daily contract profile. --classify yields the
+        # 5-state taxonomy; --require-quiescent stamps authoritative=false on a
+        # contended runner so a loaded-machine red is never treated as a target.
+        # --repeat 5 supplies the confidence interval that separates stable
+        # compiler targets from noise. Each matrix lane is one parallel slice of
+        # the canonical native+LLVM board; branch protection requires both.
+        # The gate exits nonzero on any RED warm cell OR FAIL_STALE.
+        run: |
+          python3 tools/guarded_exec.py --prefix MOLT_BENCH -- \
+            uv run python3 tools/perf_scoreboard.py \
+              --set core \
+              --backend "${{ matrix.backend }}" \
+              --profile release-fast \
+              --samples 5 \
+              --warmup 2 \
+              --repeat 5 \
+              --classify \
+              --require-quiescent \
+              --print-provenance \
+              --out "bench/scoreboard/cpython_ci_${{ matrix.backend }}.json"
+
+      - name: Upload scoreboard artifact
+        if: always()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: cpython-floor-scoreboard-${{ matrix.backend }}
+          path: bench/scoreboard/cpython_ci_${{ matrix.backend }}.json

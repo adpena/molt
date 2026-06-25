@@ -3,12 +3,15 @@
 Molt has one citable performance authority:
 
 ```text
-tools/perf_scoreboard.py --profile release-fast --classify
+tools/perf_scoreboard.py --set core --backend native --backend llvm \
+  --profile release-fast --samples 5 --warmup 2 --repeat 5 \
+  --classify --require-quiescent
 ```
 
 That gate owns the release-fast performance contract because it records cold
-and warm timings, classification, quiescence, provenance, and stale-tree status.
-It is the only lane allowed to publish `authoritative=true`.
+and warm timings, native+LLVM backend parity, repeat-CI classification,
+quiescence, provenance, and stale-tree status. It is the only lane allowed to
+publish `authoritative=true`.
 
 ## Non-Canonical Lanes
 
@@ -20,7 +23,7 @@ top-level `provenance` object from `tools/perf_authority.py` with:
 - `source: "non-canonical"`
 - `lane`: the emitting tool path
 - `profile`: the actual measured profile
-- `canonical_gate`: `tools/perf_scoreboard.py --profile release-fast --classify`
+- `canonical_gate`: the full `tools/perf_scoreboard.py --set core --backend native --backend llvm --profile release-fast --samples 5 --warmup 2 --repeat 5 --classify --require-quiescent` command
 
 These lanes are for debugging, triage, and local comparison. Do not cite them as
 release performance evidence.

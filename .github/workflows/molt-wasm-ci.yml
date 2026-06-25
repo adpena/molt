@@ -73,7 +73,7 @@ jobs:
       TMPDIR: /tmp/molt-ext/tmp
       UV_CACHE_DIR: /tmp/molt-ext/uv-cache
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Prepare portable artifact root
         run: |
@@ -85,7 +85,7 @@ jobs:
           mkdir -p /tmp/molt-ext/wasm
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v8.1.0
+        uses: astral-sh/setup-uv@v8.2.0
         with:
           version: "latest"
           enable-cache: true
