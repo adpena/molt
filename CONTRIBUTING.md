@@ -13,18 +13,23 @@ Molt expects production-grade changes, not opportunistic patches.
    - `tmp/` for scratch and quarantine material
 4. Update docs in the same change when structure, workflow, or semantics move.
 5. Remove dead files, duplicate paths, and stale references instead of preserving legacy layout.
-6. If a maintainer says the work is being sliced too small, treat that as a
-   binding scope correction: finish the live structural arc that exposed the
-   duplicate authority instead of converting it into checkpoint commits.
+6. Start every nontrivial change by naming one tiny aperture: the invariant,
+   command family, file cluster, authority surface, or failing execution path
+   that exposes the real structure.
+7. If a maintainer says "tiny slice", "rip it open", or says the work is being
+   sliced too small, treat that as a binding scope correction: finish the live
+   structural rip exposed by the aperture instead of converting it into
+   checkpoint commits.
 
 ## Quality Bar
 
 - Prefer canonical homes over ad hoc files or directories.
 - No silent fallback paths for missing features or missing infrastructure.
 - No test-only hacks, compatibility shims, or narrow fixes that leave structural debt behind.
-- Do not optimize for tiny visible progress. Identify the whole bug class or
-  duplicated-authority cluster first, then land an end-state subsystem cut that
-  removes every sibling source of truth in that boundary.
+- Do not optimize for tiny visible progress. Use the tiny slice only as the
+  opening aperture, then identify the whole bug class or duplicated-authority
+  cluster behind it and land an end-state subsystem cut that removes every
+  sibling source of truth in that boundary.
 - Convenient tiny-chip progress is a project failure mode: it preserves scattered
   authority while pretending to create velocity. When a maintainer says a change
   is too narrow, widen the work to the coherent structural class instead of
@@ -37,11 +42,11 @@ Molt expects production-grade changes, not opportunistic patches.
   exposed, widen to every sibling authority and consumer needed to delete the old
   lane. Never patch the surface, never boil the ocean, and never mistake a
   checkpoint chip for engineering progress.
-- **Tiny slice and rip it open.** A tiny slice is the entry aperture, not the
-  deliverable or work-size limit. It means one concrete invariant, command
-  family, file cluster, or authority surface that exposes the real structure;
-  then rip through all sibling consumers needed to delete the duplicate lane
-  before moving on.
+- **Tiny slice and rip it open.** This is binding operator policy. A tiny slice
+  is the entry aperture, not the deliverable or work-size limit. It means one
+  concrete invariant, command family, file cluster, authority surface, or failing
+  execution path that exposes the real structure; then rip through all sibling
+  consumers needed to delete or unify the duplicate lane before moving on.
 - Crash recovery is the exception that proves the rule: after Codex, Claude,
   Desktop, WSL bridging, process custody, subagent orchestration, or a guarded
   command crashes, stalls, disappears, or gets manually killed, stabilize the
