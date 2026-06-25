@@ -40,6 +40,7 @@ from molt.cli.runtime_fingerprints import (
 )
 from molt.cli.runtime_paths import _cargo_profile_dir, _cargo_target_root
 from molt.cli.toolchain_validation import (
+    _llvm_backend_unavailable_message,
     _llvm_sys_prefix_env_var,
     _required_llvm_backend_major,
 )
@@ -316,6 +317,12 @@ def _ensure_backend_binary(
                 return True
         if not json_output:
             print("Backend sources changed; rebuilding backend...", file=sys.stderr)
+        if "llvm" in backend_features:
+            llvm_message = _llvm_backend_unavailable_message(project_root)
+            if llvm_message is not None:
+                if not json_output:
+                    print(llvm_message, file=sys.stderr)
+                return False
         # Cache entries include backend/tooling/runtime identity in their keys.
         # A backend rebuild therefore invalidates by selecting new keys, not by
         # deleting shared immutable cache artifacts that concurrent sessions may

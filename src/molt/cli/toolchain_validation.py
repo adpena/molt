@@ -6,6 +6,7 @@ import platform
 import re
 import shlex
 import shutil
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -67,15 +68,35 @@ def _llvm_sys_prefix_env_var(major: int) -> str:
     return f"LLVM_SYS_{major * 10 + 1}_PREFIX"
 
 
-def _detect_llvm_backend_toolchain(root: Path) -> tuple[int | None, str | None]:
-    major = _required_llvm_backend_major(root)
-    if major is None:
-        return None, None
-    candidates = [
+def _llvm_config_names(major: int) -> list[str]:
+    if platform.system() == "Windows":
+        return [
+            f"llvm-config-{major}.exe",
+            f"llvm-config{major}.exe",
+            "llvm-config.exe",
+            f"llvm-config-{major}",
+            f"llvm-config{major}",
+            "llvm-config",
+        ]
+    return [
         f"llvm-config-{major}",
         f"llvm-config{major}",
         "llvm-config",
     ]
+
+
+def _detect_llvm_backend_toolchain(root: Path) -> tuple[int | None, str | None]:
+    major = _required_llvm_backend_major(root)
+    if major is None:
+        return None, None
+    candidates = _llvm_config_names(major)
+    prefix_env = os.environ.get(_llvm_sys_prefix_env_var(major), "").strip()
+    if prefix_env:
+        prefix = Path(prefix_env).expanduser()
+        candidates = [
+            str(prefix / "bin" / name)
+            for name in _llvm_config_names(major)
+        ] + candidates
     if platform.system() == "Darwin":
         candidates.extend(
             [
@@ -86,31 +107,104 @@ def _detect_llvm_backend_toolchain(root: Path) -> tuple[int | None, str | None]:
     for candidate in candidates:
         path = Path(candidate)
         if path.is_absolute():
-            if path.exists():
+            if path.exists() and _llvm_config_matches_major(path, major):
                 return major, str(path)
             continue
         resolved = shutil.which(candidate)
-        if resolved:
+        if resolved and _llvm_config_matches_major(Path(resolved), major):
             return major, resolved
     return major, None
 
 
+def _llvm_config_matches_major(path: Path, major: int) -> bool:
+    try:
+        result = subprocess.run(
+            [str(path), "--version"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    if result.returncode != 0:
+        return False
+    match = re.match(r"\s*(\d+)(?:\.|$)", result.stdout.strip())
+    return match is not None and int(match.group(1)) == major
+
+
+def _llvm_backend_unavailable_message(root: Path) -> str | None:
+    major, llvm_toolchain = _detect_llvm_backend_toolchain(root)
+    if major is None or llvm_toolchain is not None:
+        return None
+    env_var = _llvm_sys_prefix_env_var(major)
+    advice = "\n".join(f"  - {item}" for item in _llvm_backend_advice(major))
+    return (
+        f"LLVM backend requires LLVM {major}.1 with llvm-config. "
+        f"No matching llvm-config was found.\n"
+        f"Set {env_var} to a complete LLVM prefix or put matching llvm-config on PATH.\n"
+        f"Recommended actions:\n{advice}"
+    )
+
+
 def _llvm_backend_advice(major: int) -> list[str]:
     system = platform.system()
+    env_var = _llvm_sys_prefix_env_var(major)
     if system == "Darwin":
         return [
             f"brew install llvm@{major} lld@{major}",
             f"export PATH=/opt/homebrew/opt/llvm@{major}/bin:$PATH",
+            f"export {env_var}=/opt/homebrew/opt/llvm@{major}",
         ]
     if system == "Windows":
         return [
-            f"Install LLVM {major} and ensure llvm-config is on PATH",
-            "Set LLVM_SYS_<ver>_PREFIX if llvm-sys cannot find the install",
+            f"Install a complete LLVM {major}.1 distribution that includes bin\\llvm-config.exe",
+            f"Set {env_var}=<LLVM prefix containing bin\\llvm-config.exe>",
+            "If winget/Chocolatey LLVM omits llvm-config, use llvmenv or a verified complete MSYS2/Scoop LLVM package instead",
         ]
     return [
-        f"Install llvm-{major} and lld-{major} via your package manager",
-        "Set LLVM_SYS_<ver>_PREFIX if llvm-sys cannot find the install",
+        f"Install llvm-{major}, llvm-{major}-dev, clang-{major}, and lld-{major}",
+        f"export {env_var}=<LLVM prefix containing bin/llvm-config>",
     ]
+
+
+def _cmake_setup_advice(system: str) -> list[str]:
+    if system == "Darwin":
+        return ["brew install cmake"]
+    if system == "Windows":
+        return ["winget install Kitware.CMake", "or: choco install cmake -y"]
+    return ["sudo apt-get install -y cmake"]
+
+
+def _ninja_setup_advice(system: str) -> list[str]:
+    if system == "Darwin":
+        return ["brew install ninja"]
+    if system == "Windows":
+        return ["winget install Ninja-build.Ninja", "or: choco install ninja -y"]
+    return ["sudo apt-get install -y ninja-build"]
+
+
+def _wasm_tools_setup_advice(system: str) -> list[str]:
+    del system
+    return ["cargo install wasm-tools --locked"]
+
+
+def _wasm_pack_setup_advice(system: str) -> list[str]:
+    del system
+    return ["cargo install wasm-pack --locked"]
+
+
+def _wasmtime_setup_advice(system: str) -> list[str]:
+    if system == "Darwin":
+        return ["brew install wasmtime"]
+    if system == "Windows":
+        return ["winget install BytecodeAlliance.Wasmtime", "or: cargo install wasmtime-cli --locked"]
+    return ["curl https://wasmtime.dev/install.sh -sSf | bash"]
+
+
+def _luau_runner_setup_advice(system: str) -> list[str]:
+    del system
+    return ["cargo install lune --locked", "or install a luau runner on PATH"]
 
 
 def _python_setup_advice(system: str) -> list[str]:
@@ -318,6 +412,24 @@ def _build_toolchain_report(root: Path) -> _ToolchainReport:
         advice=_clang_setup_advice(system) if not cc_path else None,
     )
 
+    cmake_path = shutil.which("cmake")
+    record(
+        "cmake",
+        bool(cmake_path),
+        cmake_path or "not found",
+        level="error",
+        advice=_cmake_setup_advice(system) if not cmake_path else None,
+    )
+
+    ninja_path = shutil.which("ninja")
+    record(
+        "ninja",
+        bool(ninja_path),
+        ninja_path or "not found",
+        level="error",
+        advice=_ninja_setup_advice(system) if not ninja_path else None,
+    )
+
     llvm_major, llvm_toolchain = _detect_llvm_backend_toolchain(root)
     if llvm_major is None:
         record(
@@ -337,6 +449,51 @@ def _build_toolchain_report(root: Path) -> _ToolchainReport:
             level="warning",
             advice=_llvm_backend_advice(llvm_major) if llvm_toolchain is None else None,
         )
+
+    wasm_ld_path = shutil.which("wasm-ld")
+    record(
+        "wasm-ld",
+        bool(wasm_ld_path),
+        wasm_ld_path or "not found",
+        level="warning",
+        advice=_clang_setup_advice(system) if not wasm_ld_path else None,
+    )
+
+    wasm_tools_path = shutil.which("wasm-tools")
+    record(
+        "wasm-tools",
+        bool(wasm_tools_path),
+        wasm_tools_path or "not found",
+        level="warning",
+        advice=_wasm_tools_setup_advice(system) if not wasm_tools_path else None,
+    )
+
+    wasm_pack_path = shutil.which("wasm-pack")
+    record(
+        "wasm-pack",
+        bool(wasm_pack_path),
+        wasm_pack_path or "not found",
+        level="warning",
+        advice=_wasm_pack_setup_advice(system) if not wasm_pack_path else None,
+    )
+
+    wasmtime_path = shutil.which("wasmtime")
+    record(
+        "wasmtime",
+        bool(wasmtime_path),
+        wasmtime_path or "not found",
+        level="warning",
+        advice=_wasmtime_setup_advice(system) if not wasmtime_path else None,
+    )
+
+    luau_runner_path = shutil.which("luau") or shutil.which("lune")
+    record(
+        "luau-runner",
+        bool(luau_runner_path),
+        luau_runner_path or "not found",
+        level="warning",
+        advice=_luau_runner_setup_advice(system) if not luau_runner_path else None,
+    )
 
     zig_path = shutil.which("zig")
     record(
@@ -576,10 +733,13 @@ def _build_toolchain_report(root: Path) -> _ToolchainReport:
 
     environment = _canonical_env_defaults(root)
     backends = {
-        "native": bool(cargo_path and cc_path),
+        "native": bool(cargo_path and cc_path and cmake_path and ninja_path),
         "llvm": bool(cargo_path and cc_path and llvm_toolchain),
         "wasm": bool(cargo_path and wasm_target_ok),
-        "linked-wasm": bool(cargo_path and wasm_target_ok and zig_path),
+        "linked-wasm": bool(
+            cargo_path and wasm_target_ok and (zig_path or wasm_ld_path) and wasm_tools_path
+        ),
+        "luau": bool(luau_runner_path),
     }
     profiles = {
         "dev": bool(cargo_path),
@@ -634,6 +794,29 @@ def _planned_update_steps(
         else:
             warnings.append(
                 "rustup is not installed; skipping Rust toolchain refresh steps"
+            )
+        if shutil.which("cargo"):
+            cargo_tool_steps: list[tuple[str, str, str]] = [
+                ("wasm-tools", "wasm-tools", "wasm-tools"),
+                ("wasm-pack", "wasm-pack", "wasm-pack"),
+            ]
+            llvm_major, llvm_toolchain = _detect_llvm_backend_toolchain(root)
+            if llvm_major is not None and llvm_toolchain is None:
+                cargo_tool_steps.append(("llvmenv", "llvmenv", "llvmenv"))
+            for tool_name, crate_name, command_name in cargo_tool_steps:
+                if shutil.which(command_name):
+                    continue
+                steps.append(
+                    _MaintenanceStep(
+                        f"cargo-install-{tool_name}",
+                        ["cargo", "install", crate_name, "--locked"],
+                        root,
+                        "toolchain",
+                    )
+                )
+        else:
+            warnings.append(
+                "cargo is not installed; skipping cargo-installable toolchain helpers"
             )
 
     if include_locks:
