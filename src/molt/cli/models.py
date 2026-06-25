@@ -36,6 +36,15 @@ BuildProfile = Literal["dev", "release"]
 EmitMode = Literal["bin", "obj", "wasm"]
 Target = str
 ImportScanMode = Literal["full", "module_init"]
+BinaryImageKind = Literal[
+    "entry_script",
+    "entry_module",
+    "entry_package",
+    "project_entry_script",
+    "project_entry_module",
+    "project_entry_package",
+]
+BinaryImageClosureMode = Literal["reachable_only"]
 
 
 @dataclass(frozen=True)
@@ -149,6 +158,62 @@ class _ModuleGraphMetadata:
     module_is_package_by_module: Mapping[str, bool]
     frontend_module_costs: Mapping[str, float] | None
     stdlib_like_by_module: Mapping[str, bool] | None
+
+
+@dataclass(frozen=True)
+class _BinaryImageScope:
+    kind: BinaryImageKind
+    selector_source: str
+    entry_module: str
+    source_path: Path
+    project_root: Path
+    module_roots: tuple[Path, ...]
+    root_modules: tuple[str, ...] = ()
+    closure_mode: BinaryImageClosureMode = "reachable_only"
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "source_path", self.source_path.resolve())
+        object.__setattr__(self, "project_root", self.project_root.resolve())
+        object.__setattr__(
+            self,
+            "module_roots",
+            tuple(dict.fromkeys(root.resolve() for root in self.module_roots)),
+        )
+        if not self.root_modules:
+            object.__setattr__(self, "root_modules", (self.entry_module,))
+
+    @classmethod
+    def from_entry(
+        cls,
+        *,
+        kind: BinaryImageKind,
+        selector_source: str,
+        entry_module: str,
+        source_path: Path,
+        project_root: Path,
+        module_roots: Sequence[Path],
+    ) -> "_BinaryImageScope":
+        return cls(
+            kind=kind,
+            selector_source=selector_source,
+            entry_module=entry_module,
+            source_path=source_path,
+            project_root=project_root,
+            module_roots=tuple(module_roots),
+            root_modules=(entry_module,),
+        )
+
+    def diagnostic_payload(self) -> dict[str, Any]:
+        return {
+            "kind": self.kind,
+            "selector_source": self.selector_source,
+            "entry_module": self.entry_module,
+            "source_path": os.fspath(self.source_path),
+            "project_root": os.fspath(self.project_root),
+            "module_roots": [os.fspath(root) for root in self.module_roots],
+            "root_modules": list(self.root_modules),
+            "closure_mode": self.closure_mode,
+        }
 
 
 @dataclass(frozen=True)
@@ -411,6 +476,7 @@ class _BuildDiagnosticsContext:
     diagnostics_enabled: bool
     diagnostics_start: float
     phase_starts: Mapping[str, float]
+    image_scope: _BinaryImageScope | None
     module_graph: Mapping[str, Path]
     module_reasons: Mapping[str, set[str]]
     frontend_module_timings: Sequence[dict[str, Any]]
@@ -630,6 +696,8 @@ class _ImportAdmissionPolicy:
 
 @dataclass(frozen=True)
 class _PreparedEntryModuleGraph:
+    image_scope: _BinaryImageScope
+    declared_root_modules: frozenset[str]
     stdlib_allowlist: set[str]
     roots: list[Path]
     module_resolution_cache: "_ModuleResolutionCache"
@@ -651,6 +719,22 @@ class _ResolvedBuildEntry:
     entry_tree: ast.AST
     target_python: TargetPythonVersion
     external_module_roots: tuple[Path, ...] = ()
+    image_scope: _BinaryImageScope | None = None
+
+    def __post_init__(self) -> None:
+        if self.image_scope is None:
+            object.__setattr__(
+                self,
+                "image_scope",
+                _BinaryImageScope.from_entry(
+                    kind="entry_script",
+                    selector_source="legacy:entry",
+                    entry_module=self.entry_module,
+                    source_path=self.source_path,
+                    project_root=self.source_path.parent,
+                    module_roots=self.module_roots,
+                ),
+            )
 
 
 @dataclass(frozen=True)
@@ -661,6 +745,7 @@ class _PreparedBuildModuleOutputs:
 
 @dataclass(frozen=True)
 class _ImportPlan:
+    image_scope: _BinaryImageScope
     stdlib_allowlist: frozenset[str]
     roots: tuple[Path, ...]
     stdlib_root: Path
@@ -674,10 +759,78 @@ class _ImportPlan:
     namespace_module_names: frozenset[str]
     generated_module_source_paths: Mapping[str, str]
     known_modules: frozenset[str]
+    declared_root_modules: frozenset[str]
+    entry_reachable_modules: frozenset[str]
+    runtime_support_modules: frozenset[str]
+    stdlib_support_modules: frozenset[str]
+    package_parent_modules: frozenset[str]
+    compile_modules: frozenset[str]
     known_modules_sorted: tuple[str, ...]
     stdlib_allowlist_sorted: tuple[str, ...]
     module_graph_metadata: _ModuleGraphMetadata
     native_artifact_plan: _ExternalPackageNativeArtifactPlan
+
+    def with_compile_modules(self, compile_modules: Collection[str]) -> "_ImportPlan":
+        compile_set = frozenset(compile_modules)
+        unknown = sorted(compile_set - self.known_modules)
+        if unknown:
+            raise ValueError(
+                "compile module set contains modules outside the closure plan: "
+                + ", ".join(unknown)
+            )
+        return _ImportPlan(
+            image_scope=self.image_scope,
+            stdlib_allowlist=self.stdlib_allowlist,
+            roots=self.roots,
+            stdlib_root=self.stdlib_root,
+            module_resolution_cache=self.module_resolution_cache,
+            module_graph=self.module_graph,
+            explicit_imports=self.explicit_imports,
+            runtime_import_dispatch_roots=self.runtime_import_dispatch_roots,
+            stub_parents=self.stub_parents,
+            spawn_enabled=self.spawn_enabled,
+            runtime_import_support_policy=self.runtime_import_support_policy,
+            namespace_module_names=self.namespace_module_names,
+            generated_module_source_paths=self.generated_module_source_paths,
+            known_modules=self.known_modules,
+            declared_root_modules=self.declared_root_modules,
+            entry_reachable_modules=self.entry_reachable_modules,
+            runtime_support_modules=self.runtime_support_modules,
+            stdlib_support_modules=self.stdlib_support_modules,
+            package_parent_modules=self.package_parent_modules,
+            compile_modules=compile_set,
+            known_modules_sorted=tuple(sorted(self.known_modules)),
+            stdlib_allowlist_sorted=self.stdlib_allowlist_sorted,
+            module_graph_metadata=self.module_graph_metadata,
+            native_artifact_plan=self.native_artifact_plan,
+        )
+
+    def closure_payload(self) -> dict[str, Any]:
+        return {
+            "image": self.image_scope.diagnostic_payload(),
+            "known_modules": sorted(self.known_modules),
+            "compile_modules": sorted(self.compile_modules),
+            "declared_root_modules": sorted(self.declared_root_modules),
+            "entry_reachable_modules": sorted(self.entry_reachable_modules),
+            "runtime_support_modules": sorted(self.runtime_support_modules),
+            "stdlib_support_modules": sorted(self.stdlib_support_modules),
+            "package_parent_modules": sorted(self.package_parent_modules),
+            "runtime_import_dispatch_roots": sorted(
+                self.runtime_import_dispatch_roots
+            ),
+            "stub_parents": sorted(self.stub_parents),
+            "namespace_module_names": sorted(self.namespace_module_names),
+            "spawn_enabled": self.spawn_enabled,
+            "runtime_import_support": {
+                "needs_generated_importer": (
+                    self.runtime_import_support_policy.needs_generated_importer
+                ),
+                "needs_runtime_import_support": (
+                    self.runtime_import_support_policy.needs_runtime_import_support
+                ),
+            },
+            "external_native_artifacts": self.native_artifact_plan.digest_payload(),
+        }
 
 
 @dataclass(frozen=True)

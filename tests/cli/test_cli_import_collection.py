@@ -618,7 +618,7 @@ def test_materialize_import_plan_does_not_rescan_importlib_support(
         raise AssertionError("import plan materialization must not rescan closures")
 
     monkeypatch.setattr(
-        cli,
+        cli_module_graph_discovery,
         "_extend_module_graph_with_closure",
         fail_extend_module_graph_with_closure,
     )

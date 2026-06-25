@@ -50,6 +50,7 @@ from molt.cli.models import (
     TypeHintPolicy,
     _BuildDiagnosticsContext,
     _BuildOutputLayout,
+    _BinaryImageScope,
     _ExternalPackageNativeArtifactPlan,
     _FrontendIntegrationState,
     _FrontendTimingRecorderConfig,
@@ -497,6 +498,7 @@ def _prepare_build_callbacks(
     backend_daemon_config_digest: str | None,
     diagnostics_path_spec: str,
     artifacts_root: Path,
+    image_scope: _BinaryImageScope | None,
 ) -> _PreparedBuildCallbacks:
     timing_config = _FrontendTimingRecorderConfig(
         enabled=frontend_timing_enabled,
@@ -533,6 +535,7 @@ def _prepare_build_callbacks(
                 diagnostics_enabled=diagnostics_enabled,
                 diagnostics_start=diagnostics_start,
                 phase_starts=phase_starts,
+                image_scope=image_scope,
                 module_graph=module_graph,
                 module_reasons=module_reasons,
                 frontend_module_timings=frontend_module_timings,
@@ -646,6 +649,7 @@ def _prepare_frontend_stage_state(
         import_admission_policy=import_admission_policy,
         target_python=prepared_build_config.target_python,
         capability_config_digest=prepared_build_config.capability_config_cache_digest,
+        image_scope=resolved_build_entry.image_scope,
     )
     if prepared_module_graph_error is not None:
         return None, prepared_module_graph_error
@@ -709,6 +713,7 @@ def _prepare_frontend_stage_state(
         backend_daemon_config_digest=backend_daemon_config_digest,
         diagnostics_path_spec=diagnostics_path_spec,
         artifacts_root=artifacts_root,
+        image_scope=resolved_build_entry.image_scope,
     )
     if diagnostics_enabled:
         phase_starts["module_analysis"] = time.perf_counter()
@@ -871,6 +876,56 @@ def _prepare_frontend_pipeline(
         frontend_parallel_worker_timings.append(item)
         return item
 
+    compile_module_order: list[str] = list(prepared_frontend_analysis.module_order)
+    compile_module_layers: list[list[str]] = [
+        list(layer) for layer in prepared_frontend_analysis.module_layers
+    ]
+    if os.environ.get("MOLT_DEAD_MODULE_ELIMINATION") == "1":
+        dme_roots = (
+            import_plan.runtime_import_dispatch_roots
+            | import_plan.declared_root_modules
+            | import_plan.runtime_support_modules
+            | import_plan.stdlib_support_modules
+            | import_plan.package_parent_modules
+            | import_plan.namespace_module_names
+        )
+        compile_module_order, compile_module_layers, dme_eliminated = (
+            _apply_dead_module_elimination(
+                compile_module_order,
+                compile_module_layers,
+                entry_module=resolved_build_entry.entry_module,
+                module_deps=prepared_frontend_analysis.module_deps,
+                module_names=set(import_plan.module_graph),
+                extra_roots=dme_roots,
+            )
+        )
+        if dme_eliminated > 0:
+            import sys as _dme_sys
+
+            print(
+                f"[molt] dead module elimination: skipping {dme_eliminated} "
+                f"unreachable modules (compiling {len(compile_module_order)} of "
+                f"{len(prepared_frontend_analysis.module_order)})",
+                file=_dme_sys.stderr,
+            )
+    try:
+        import_plan = import_plan.with_compile_modules(compile_module_order)
+    except ValueError as exc:
+        return None, _fail(
+            f"internal error: binary image closure plan is invalid: {exc}",
+            json_output,
+            command="build",
+        )
+    compile_module_graph = {
+        name: path
+        for name, path in import_plan.module_graph.items()
+        if name in import_plan.compile_modules
+    }
+    compile_generated_module_source_paths = {
+        name: path
+        for name, path in import_plan.generated_module_source_paths.items()
+        if name in import_plan.compile_modules
+    }
     (
         frontend_layer_execution_context,
         frontend_layer_runtime_hooks,
@@ -878,7 +933,7 @@ def _prepare_frontend_pipeline(
         midend_diagnostics_state,
     ) = _frontend_execution._prepare_frontend_execution(
         syntax_error_modules=prepared_frontend_analysis.syntax_error_modules,
-        module_graph=dict(import_plan.module_graph),
+        module_graph=compile_module_graph,
         module_source_catalog=prepared_frontend_analysis.module_source_catalog,
         project_root=prepared_build_roots.project_root,
         module_resolution_cache=import_plan.module_resolution_cache,
@@ -887,7 +942,7 @@ def _prepare_frontend_pipeline(
         fallback_policy=fallback_policy,
         type_facts=prepared_frontend_lowering_config.type_facts,
         enable_phi=prepared_frontend_lowering_config.enable_phi,
-        known_modules=set(import_plan.known_modules),
+        known_modules=set(import_plan.compile_modules),
         stdlib_allowlist=set(import_plan.stdlib_allowlist),
         known_func_defaults=prepared_frontend_analysis.known_func_defaults,
         known_func_kinds=prepared_frontend_analysis.known_func_kinds,
@@ -895,7 +950,7 @@ def _prepare_frontend_pipeline(
         module_chunk_max_ops=prepared_frontend_lowering_config.module_chunk_max_ops,
         optimization_profile=profile,
         pgo_hot_function_names=prepared_build_config.pgo_hot_function_names,
-        known_modules_sorted=import_plan.known_modules_sorted,
+        known_modules_sorted=tuple(sorted(import_plan.compile_modules)),
         stdlib_allowlist_sorted=import_plan.stdlib_allowlist_sorted,
         pgo_hot_function_names_sorted=(
             prepared_build_config.pgo_hot_function_names_sorted
@@ -910,7 +965,7 @@ def _prepare_frontend_pipeline(
         stdlib_like_by_module=prepared_frontend_lowering_config.stdlib_like_by_module,
         known_classes=prepared_frontend_lowering_config.known_classes,
         module_trees=prepared_frontend_analysis.module_trees,
-        generated_module_source_paths=dict(import_plan.generated_module_source_paths),
+        generated_module_source_paths=compile_generated_module_source_paths,
         frontend_phase_timeout=prepared_build_config.frontend_phase_timeout,
         record_frontend_timing=record_frontend_timing,
         fail=_fail,
@@ -922,38 +977,14 @@ def _prepare_frontend_pipeline(
         midend_pass_stats_by_function=midend_pass_stats_by_function,
         target_python=prepared_build_config.target_python,
     )
-    _dme_module_order: list[str] = list(prepared_frontend_analysis.module_order)
-    _dme_module_layers: list[list[str]] = list(prepared_frontend_analysis.module_layers)
-    if os.environ.get("MOLT_DEAD_MODULE_ELIMINATION") == "1":
-        _dme_module_order, _dme_module_layers, _dme_eliminated = (
-            _apply_dead_module_elimination(
-                _dme_module_order,
-                _dme_module_layers,
-                entry_module=resolved_build_entry.entry_module,
-                module_deps=prepared_frontend_analysis.module_deps,
-                module_names=set(import_plan.module_graph),
-                extra_roots=import_plan.runtime_import_dispatch_roots,
-            )
-        )
-        if _dme_eliminated > 0:
-            import sys as _dme_sys
-
-            print(
-                f"[molt] dead module elimination: skipping {_dme_eliminated} "
-                f"unreachable modules (compiling {len(_dme_module_order)} of "
-                f"{len(prepared_frontend_analysis.module_order)})",
-                file=_dme_sys.stderr,
-            )
 
     prepared_frontend_run_ticket = _PreparedFrontendRunTicket(
-        module_order=_dme_module_order,
-        module_layers=_dme_module_layers,
+        module_order=compile_module_order,
+        module_layers=compile_module_layers,
         frontend_parallel_config=(
             prepared_frontend_lowering_config.frontend_parallel_config
         ),
-        frontend_parallel_layers=(
-            prepared_frontend_lowering_config.frontend_parallel_layers
-        ),
+        frontend_parallel_layers=compile_module_layers,
         frontend_parallel_worker_timings=frontend_parallel_worker_timings,
         frontend_parallel_details=prepared_build_preamble.frontend_parallel_details,
         frontend_layer_execution_context=frontend_layer_execution_context,
@@ -962,16 +993,16 @@ def _prepare_frontend_pipeline(
     return (
         (
             prepared_frontend_run_ticket,
-            dict(import_plan.module_graph),
+            dict(compile_module_graph),
             set(import_plan.runtime_import_dispatch_roots),
             set(import_plan.stdlib_allowlist),
             import_plan.spawn_enabled,
             prepared_build_outputs.output_layout,
-            set(import_plan.known_modules),
-            dict(import_plan.generated_module_source_paths),
+            set(import_plan.compile_modules),
+            dict(compile_generated_module_source_paths),
             prepared_frontend_analysis.known_func_defaults,
             prepared_frontend_analysis.known_func_kinds,
-            _dme_module_order,
+            compile_module_order,
             prepared_frontend_lowering_config.type_facts,
             prepared_frontend_lowering_config.known_classes,
             prepared_frontend_lowering_config.enable_phi,
