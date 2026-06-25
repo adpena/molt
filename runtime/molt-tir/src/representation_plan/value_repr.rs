@@ -4,6 +4,12 @@ use crate::repr::Repr;
 use crate::tir::blocks::{BlockId, Terminator};
 use crate::tir::function::TirFunction;
 use crate::tir::lower_to_simple::SimpleValueNames;
+use crate::tir::op_kinds_generated::{
+    ReprProjectableBoolResultRule, ReprProjectableFloatResultRule, ReprRawI64FullDeoptSeedRule,
+    opcode_repr_projectable_bool_result_rule_table,
+    opcode_repr_projectable_float_result_rule_table,
+    opcode_repr_raw_i64_full_deopt_seed_rule_table,
+};
 use crate::tir::ops::{AttrValue, OpCode, TirOp};
 use crate::tir::types::TirType;
 use crate::tir::values::ValueId;
@@ -259,14 +265,14 @@ fn raw_i64_full_deopt_values_for_with_types(
     let mut seed = std::collections::HashSet::new();
     for block in tir_func.blocks.values() {
         for op in &block.ops {
-            match op.opcode {
-                OpCode::CheckedAdd | OpCode::CheckedMul
+            match opcode_repr_raw_i64_full_deopt_seed_rule_table(op.opcode) {
+                ReprRawI64FullDeoptSeedRule::CheckedResultZero
                     if let Some(&result) = op.results.first()
                         && is_raw_i64_semantic_candidate(value_types, result) =>
                 {
                     seed.insert(result);
                 }
-                OpCode::ConstInt => {
+                ReprRawI64FullDeoptSeedRule::ConstIntNotInlineSafe => {
                     for &result in &op.results {
                         if is_raw_i64_semantic_candidate(value_types, result)
                             && !inline_safe_values.contains(&result)
@@ -481,23 +487,11 @@ fn native_projectable_bool_result(
                 .iter()
                 .all(|operand| carrier_by_value.get(operand) == Some(&Repr::Bool))
     };
-    match op.opcode {
-        OpCode::ConstBool
-        | OpCode::Eq
-        | OpCode::Ne
-        | OpCode::Lt
-        | OpCode::Le
-        | OpCode::Gt
-        | OpCode::Ge
-        | OpCode::Is
-        | OpCode::IsNot
-        | OpCode::Not
-        | OpCode::Bool
-        | OpCode::ExceptionPending => Some(Repr::Bool),
-        OpCode::CheckedAdd | OpCode::CheckedMul if result_index == 1 => Some(Repr::Bool),
-        OpCode::IterNextUnboxed if result_index == 1 => Some(Repr::Bool),
-        OpCode::And | OpCode::Or if operands_all_bool() => Some(Repr::Bool),
-        OpCode::Index
+    match opcode_repr_projectable_bool_result_rule_table(op.opcode) {
+        ReprProjectableBoolResultRule::Always => Some(Repr::Bool),
+        ReprProjectableBoolResultRule::ResultOne if result_index == 1 => Some(Repr::Bool),
+        ReprProjectableBoolResultRule::AllOperandsBool if operands_all_bool() => Some(Repr::Bool),
+        ReprProjectableBoolResultRule::IndexRawI64Index
             if op.operands.get(1).is_some_and(|index| {
                 carrier_by_value
                     .get(index)
@@ -506,7 +500,7 @@ fn native_projectable_bool_result(
         {
             Some(Repr::Bool)
         }
-        OpCode::Copy
+        ReprProjectableBoolResultRule::CopySourceBool
             if crate::tir::passes::value_identity::copy_value_source(op)
                 .is_some_and(|source| carrier_by_value.get(&source) == Some(&Repr::Bool)) =>
         {
@@ -537,23 +531,17 @@ fn native_projectable_float_result(
     };
     let operands_are_float_inputs =
         || !op.operands.is_empty() && op.operands.iter().all(operand_is_float_input);
-    match op.opcode {
-        OpCode::ConstFloat => Some(Repr::FloatUnboxed),
-        OpCode::Add
-        | OpCode::Sub
-        | OpCode::Mul
-        | OpCode::Div
-        | OpCode::InplaceAdd
-        | OpCode::InplaceSub
-        | OpCode::InplaceMul
-            if operands_are_float_inputs() =>
+    match opcode_repr_projectable_float_result_rule_table(op.opcode) {
+        ReprProjectableFloatResultRule::Always => Some(Repr::FloatUnboxed),
+        ReprProjectableFloatResultRule::AllOperandsProjectable if operands_are_float_inputs() => {
+            Some(Repr::FloatUnboxed)
+        }
+        ReprProjectableFloatResultRule::FirstOperandProjectable
+            if op.operands.first().is_some_and(operand_is_float_input) =>
         {
             Some(Repr::FloatUnboxed)
         }
-        OpCode::Neg if op.operands.first().is_some_and(operand_is_float_input) => {
-            Some(Repr::FloatUnboxed)
-        }
-        OpCode::Copy
+        ReprProjectableFloatResultRule::CopySourceFloat
             if op_original_kind(op) == Some("float_from_obj")
                 || crate::tir::passes::value_identity::copy_value_source(op).is_some_and(
                     |source| {

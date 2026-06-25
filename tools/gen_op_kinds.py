@@ -251,6 +251,29 @@ _LIR_VERIFY_RULES = {
     "checked_i64_arithmetic": "CheckedI64Arithmetic",
     "truthy_materialization": "TruthyMaterialization",
 }
+_REPR_RAW_I64_FULL_DEOPT_SEED_RULES = {
+    "checked_result0": "CheckedResultZero",
+    "const_int_not_inline_safe": "ConstIntNotInlineSafe",
+}
+_REPR_PROJECTABLE_BOOL_RESULT_RULES = {
+    "always": "Always",
+    "result1": "ResultOne",
+    "all_operands_bool": "AllOperandsBool",
+    "index_raw_i64_index": "IndexRawI64Index",
+    "copy_source_bool": "CopySourceBool",
+}
+_REPR_PROJECTABLE_FLOAT_RESULT_RULES = {
+    "always": "Always",
+    "all_operands_projectable": "AllOperandsProjectable",
+    "first_operand_projectable": "FirstOperandProjectable",
+    "copy_source_float": "CopySourceFloat",
+}
+_COUNTED_LOOP_COMPARISON_ROLES = {
+    "increasing_exclusive": "IncreasingExclusive",
+    "increasing_inclusive": "IncreasingInclusive",
+    "decreasing_exclusive": "DecreasingExclusive",
+    "decreasing_inclusive": "DecreasingInclusive",
+}
 _CALL_OPCODE_ROLES = {
     "not_call": "NotCall",
     "user_call": "UserCall",
@@ -628,6 +651,28 @@ def load_table() -> dict:
         _LIR_VERIFY_RULES,
         "LIR verifier rule",
     )
+    _validate_opcode_rule_rows(
+        data,
+        "repr_raw_i64_full_deopt_seed_rules",
+        seen_opcodes,
+        _REPR_RAW_I64_FULL_DEOPT_SEED_RULES,
+        "raw-i64 full-deopt seed rule",
+    )
+    _validate_opcode_rule_rows(
+        data,
+        "repr_projectable_bool_result_rules",
+        seen_opcodes,
+        _REPR_PROJECTABLE_BOOL_RESULT_RULES,
+        "projectable bool result rule",
+    )
+    _validate_opcode_rule_rows(
+        data,
+        "repr_projectable_float_result_rules",
+        seen_opcodes,
+        _REPR_PROJECTABLE_FLOAT_RESULT_RULES,
+        "projectable float result rule",
+    )
+    _validate_counted_loop_comparison_roles(data, seen_opcodes)
     _validate_exception_region_nesting_roles(data, seen_opcodes)
     _validate_call_opcode_roles(data, seen_opcodes)
     _validate_pass_delta_opcode_facts(data)
@@ -1234,6 +1279,63 @@ def _validate_opcode_rule_rows(
         if rule not in allowed_rules:
             raise OpKindTableError(
                 f"{key} {opcode}: {label} must be one of {sorted(allowed_rules)}"
+            )
+
+
+def _validate_counted_loop_comparison_roles(data: dict, opcodes: set[str]) -> None:
+    rows = data.get("counted_loop_comparison_roles", [])
+    if not isinstance(rows, list):
+        raise OpKindTableError(
+            "counted_loop_comparison_roles must be an array of tables"
+        )
+    seen: set[str] = set()
+    inverse_by_opcode: dict[str, str] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            raise OpKindTableError(
+                "counted_loop_comparison_roles rows must be inline tables"
+            )
+        unknown = set(row) - {"opcode", "role", "inverse"}
+        if unknown:
+            raise OpKindTableError(
+                "counted_loop_comparison_roles row has unknown fields "
+                f"{sorted(unknown)}: {row}"
+            )
+        opcode = row.get("opcode")
+        if not isinstance(opcode, str) or not opcode:
+            raise OpKindTableError(
+                f"counted_loop_comparison_roles row missing opcode: {row}"
+            )
+        if opcode not in opcodes:
+            raise OpKindTableError(
+                f"counted_loop_comparison_roles opcode {opcode!r} is not a known OpCode"
+            )
+        if opcode in seen:
+            raise OpKindTableError(
+                f"duplicate counted_loop_comparison_roles opcode: {opcode}"
+            )
+        seen.add(opcode)
+        role = row.get("role")
+        if role not in _COUNTED_LOOP_COMPARISON_ROLES:
+            raise OpKindTableError(
+                f"counted_loop_comparison_roles {opcode}: role must be one of "
+                f"{sorted(_COUNTED_LOOP_COMPARISON_ROLES)}"
+            )
+        inverse = row.get("inverse")
+        if not isinstance(inverse, str) or inverse not in opcodes:
+            raise OpKindTableError(
+                f"counted_loop_comparison_roles {opcode}: inverse must name an OpCode"
+            )
+        if inverse == opcode:
+            raise OpKindTableError(
+                f"counted_loop_comparison_roles {opcode}: inverse must differ"
+            )
+        inverse_by_opcode[opcode] = inverse
+    for opcode, inverse in inverse_by_opcode.items():
+        if inverse_by_opcode.get(inverse) != opcode:
+            raise OpKindTableError(
+                "counted_loop_comparison_roles inverses must be symmetric: "
+                f"{opcode}->{inverse}, but {inverse}->{inverse_by_opcode.get(inverse)}"
             )
 
 
@@ -2367,6 +2469,10 @@ def _render_rs_unformatted(data: dict) -> str:
     out.append(_render_vectorize_opcode_facts(opcodes, data))
     out.append("\n")
     out.append(_render_lir_verify_rule(opcodes, data))
+    out.append("\n")
+    out.append(_render_repr_projectable_result_rules(opcodes, data))
+    out.append("\n")
+    out.append(_render_counted_loop_comparison_roles(opcodes, data))
     out.append("\n")
 
     out.append(_render_gvn_numbering_role(opcodes, data))
@@ -3624,6 +3730,218 @@ def _render_lir_verify_rule(opcodes: list[dict], data: dict) -> str:
             if rule is not None
             else "LirVerifyRule::None"
         )
+        lines.append(f"        OpCode::{name} => {variant},\n")
+    lines.append("    }\n}\n")
+    return "".join(lines)
+
+
+def _render_repr_projectable_result_rules(opcodes: list[dict], data: dict) -> str:
+    raw_rule_by_opcode = {
+        row["opcode"]: row["rule"]
+        for row in data.get("repr_raw_i64_full_deopt_seed_rules", [])
+    }
+    bool_rule_by_opcode = {
+        row["opcode"]: row["rule"]
+        for row in data.get("repr_projectable_bool_result_rules", [])
+    }
+    float_rule_by_opcode = {
+        row["opcode"]: row["rule"]
+        for row in data.get("repr_projectable_float_result_rules", [])
+    }
+    lines = [
+        "/// Representation-plan raw-i64 full-deopt seed role by opcode. The table\n",
+        "/// owns opcode membership; value_repr.rs owns result-index, type, and\n",
+        "/// inline-safe exclusion checks for each role.\n",
+        "#[derive(Clone, Copy, Debug, PartialEq, Eq)]\n",
+        "pub enum ReprRawI64FullDeoptSeedRule {\n",
+        "    None,\n",
+    ]
+    for variant in sorted(_REPR_RAW_I64_FULL_DEOPT_SEED_RULES.values()):
+        lines.append(f"    {variant},\n")
+    lines.extend(
+        [
+            "}\n\n",
+            "/// Raw-i64 full-deopt seed role by opcode. EXHAUSTIVE over OpCode so new\n",
+            "/// checked/full-range producers cannot silently miss carrier projection or\n",
+            "/// inherit it from a pass-local wildcard.\n",
+            "#[inline]\n",
+            "pub fn opcode_repr_raw_i64_full_deopt_seed_rule_table(\n",
+            "    opcode: OpCode,\n",
+            ") -> ReprRawI64FullDeoptSeedRule {\n",
+            "    match opcode {\n",
+        ]
+    )
+    for row in opcodes:
+        name = row["name"]
+        rule = raw_rule_by_opcode.get(name)
+        variant = (
+            f"ReprRawI64FullDeoptSeedRule::{_REPR_RAW_I64_FULL_DEOPT_SEED_RULES[rule]}"
+            if rule is not None
+            else "ReprRawI64FullDeoptSeedRule::None"
+        )
+        lines.append(f"        OpCode::{name} => {variant},\n")
+    lines.extend(
+        [
+            "    }\n",
+            "}\n\n",
+        ]
+    )
+    lines.extend(
+        [
+            "/// Representation-plan bool projection role by opcode. The table owns\n",
+            "/// opcode membership; value_repr.rs owns live result-index, operand-carrier,\n",
+            "/// and Copy-source checks for each role.\n",
+            "#[derive(Clone, Copy, Debug, PartialEq, Eq)]\n",
+            "pub enum ReprProjectableBoolResultRule {\n",
+            "    None,\n",
+        ]
+    )
+    for variant in sorted(_REPR_PROJECTABLE_BOOL_RESULT_RULES.values()):
+        lines.append(f"    {variant},\n")
+    lines.extend(
+        [
+            "}\n\n",
+            "/// Bool projection role by opcode. EXHAUSTIVE over OpCode so new bool\n",
+            "/// producers cannot silently miss scalar-carrier projection or inherit it\n",
+            "/// from a pass-local wildcard.\n",
+            "#[inline]\n",
+            "pub fn opcode_repr_projectable_bool_result_rule_table(\n",
+            "    opcode: OpCode,\n",
+            ") -> ReprProjectableBoolResultRule {\n",
+            "    match opcode {\n",
+        ]
+    )
+    for row in opcodes:
+        name = row["name"]
+        rule = bool_rule_by_opcode.get(name)
+        variant = (
+            "ReprProjectableBoolResultRule::"
+            f"{_REPR_PROJECTABLE_BOOL_RESULT_RULES[rule]}"
+            if rule is not None
+            else "ReprProjectableBoolResultRule::None"
+        )
+        lines.append(f"        OpCode::{name} => {variant},\n")
+    lines.extend(
+        [
+            "    }\n",
+            "}\n\n",
+            "/// Representation-plan float projection role by opcode. The table owns\n",
+            "/// opcode membership; value_repr.rs owns live operand-carrier and Copy-source\n",
+            "/// checks for each role.\n",
+            "#[derive(Clone, Copy, Debug, PartialEq, Eq)]\n",
+            "pub enum ReprProjectableFloatResultRule {\n",
+            "    None,\n",
+        ]
+    )
+    for variant in sorted(_REPR_PROJECTABLE_FLOAT_RESULT_RULES.values()):
+        lines.append(f"    {variant},\n")
+    lines.extend(
+        [
+            "}\n\n",
+            "/// Float projection role by opcode. EXHAUSTIVE over OpCode so new float\n",
+            "/// producers cannot silently miss scalar-carrier projection or inherit it\n",
+            "/// from a pass-local wildcard.\n",
+            "#[inline]\n",
+            "pub fn opcode_repr_projectable_float_result_rule_table(\n",
+            "    opcode: OpCode,\n",
+            ") -> ReprProjectableFloatResultRule {\n",
+            "    match opcode {\n",
+        ]
+    )
+    for row in opcodes:
+        name = row["name"]
+        rule = float_rule_by_opcode.get(name)
+        variant = (
+            "ReprProjectableFloatResultRule::"
+            f"{_REPR_PROJECTABLE_FLOAT_RESULT_RULES[rule]}"
+            if rule is not None
+            else "ReprProjectableFloatResultRule::None"
+        )
+        lines.append(f"        OpCode::{name} => {variant},\n")
+    lines.append("    }\n}\n")
+    return "".join(lines)
+
+
+def _render_counted_loop_comparison_roles(opcodes: list[dict], data: dict) -> str:
+    role_by_opcode = {
+        row["opcode"]: row["role"]
+        for row in data.get("counted_loop_comparison_roles", [])
+    }
+    inverse_by_opcode = {
+        row["opcode"]: row["inverse"]
+        for row in data.get("counted_loop_comparison_roles", [])
+    }
+    lines = [
+        "/// Counted-loop ordered-comparison role by opcode. The registry owns\n",
+        "/// Lt/Le/Gt/Ge membership, loop-direction polarity, and logical inverse;\n",
+        "/// counted_loop.rs owns SSA shape, constants, and trip-count arithmetic.\n",
+        "#[derive(Clone, Copy, Debug, PartialEq, Eq)]\n",
+        "pub enum CountedLoopComparisonRole {\n",
+        "    None,\n",
+    ]
+    for variant in sorted(_COUNTED_LOOP_COMPARISON_ROLES.values()):
+        lines.append(f"    {variant},\n")
+    lines.extend(
+        [
+            "}\n\n",
+            "impl CountedLoopComparisonRole {\n",
+            "    #[inline]\n",
+            "    pub fn is_ordered(self) -> bool {\n",
+            "        !matches!(self, CountedLoopComparisonRole::None)\n",
+            "    }\n\n",
+            "    #[inline]\n",
+            "    pub fn requires_positive_step(self) -> bool {\n",
+            "        matches!(\n",
+            "            self,\n",
+            "            CountedLoopComparisonRole::IncreasingExclusive\n",
+            "                | CountedLoopComparisonRole::IncreasingInclusive\n",
+            "        )\n",
+            "    }\n\n",
+            "    #[inline]\n",
+            "    pub fn is_inclusive(self) -> bool {\n",
+            "        matches!(\n",
+            "            self,\n",
+            "            CountedLoopComparisonRole::IncreasingInclusive\n",
+            "                | CountedLoopComparisonRole::DecreasingInclusive\n",
+            "        )\n",
+            "    }\n",
+            "}\n\n",
+            "/// Counted-loop comparison role by opcode. EXHAUSTIVE over OpCode so new\n",
+            "/// comparisons cannot silently enter or miss counted-loop recognition through\n",
+            "/// pass-local wildcard/default logic.\n",
+            "#[inline]\n",
+            "pub fn opcode_counted_loop_comparison_role_table(\n",
+            "    opcode: OpCode,\n",
+            ") -> CountedLoopComparisonRole {\n",
+            "    match opcode {\n",
+        ]
+    )
+    for row in opcodes:
+        name = row["name"]
+        role = role_by_opcode.get(name)
+        variant = (
+            f"CountedLoopComparisonRole::{_COUNTED_LOOP_COMPARISON_ROLES[role]}"
+            if role is not None
+            else "CountedLoopComparisonRole::None"
+        )
+        lines.append(f"        OpCode::{name} => {variant},\n")
+    lines.extend(
+        [
+            "    }\n",
+            "}\n\n",
+            "/// Logical inverse for counted-loop ordered comparisons under branch-polarity\n",
+            "/// inversion. EXHAUSTIVE over OpCode; non-counted-loop comparisons map None.\n",
+            "#[inline]\n",
+            "pub fn opcode_counted_loop_inverted_comparison_table(\n",
+            "    opcode: OpCode,\n",
+            ") -> Option<OpCode> {\n",
+            "    match opcode {\n",
+        ]
+    )
+    for row in opcodes:
+        name = row["name"]
+        inverse = inverse_by_opcode.get(name)
+        variant = f"Some(OpCode::{inverse})" if inverse is not None else "None"
         lines.append(f"        OpCode::{name} => {variant},\n")
     lines.append("    }\n}\n")
     return "".join(lines)

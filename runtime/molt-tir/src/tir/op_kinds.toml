@@ -118,6 +118,15 @@
 #   - lir_verify_rules - generated opcode-to-rule lattice for verify_lir.rs
 #                  representation-aware verifier hooks. The registry owns
 #                  dispatch membership; verify_lir.rs owns invariant checking.
+#   - repr_raw_i64_full_deopt_seed_rules /
+#                  repr_projectable_bool_result_rules /
+#                  repr_projectable_float_result_rules - generated opcode-to-role
+#                  lattices for representation_plan/value_repr.rs scalar-carrier
+#                  projection. The registry owns opcode membership; value_repr.rs
+#                  owns live value/result/operand checks.
+#   - counted_loop_comparison_roles - generated ordered-comparison role +
+#                  logical-inverse facts consumed by counted_loop.rs. The pass
+#                  owns SSA shape and trip-count arithmetic.
 #   - exception_label_attr_opcodes - opcode facts for ops whose `value` attr is
 #                  a SimpleIR exception label id.
 #   - exception_transfer_edge_opcodes - subset of exception-label ops whose
@@ -1076,6 +1085,59 @@ lir_verify_rules = [
     { opcode = "Sub", rule = "checked_i64_arithmetic" },
     { opcode = "Mul", rule = "checked_i64_arithmetic" },
     { opcode = "CallBuiltin", rule = "truthy_materialization" },
+]
+
+# repr_projectable_*_result_rules: opcode roles consumed by
+# representation_plan/value_repr.rs when projecting boxed TIR values into native
+# scalar carriers for LIR/WASM/LLVM. The registry owns opcode membership; the
+# representation pass owns live operand carriers, result-index checks, and
+# Copy-source dataflow for each role.
+repr_raw_i64_full_deopt_seed_rules = [
+    { opcode = "CheckedAdd", rule = "checked_result0" },
+    { opcode = "CheckedMul", rule = "checked_result0" },
+    { opcode = "ConstInt", rule = "const_int_not_inline_safe" },
+]
+
+repr_projectable_bool_result_rules = [
+    { opcode = "ConstBool", rule = "always" },
+    { opcode = "Eq", rule = "always" },
+    { opcode = "Ne", rule = "always" },
+    { opcode = "Lt", rule = "always" },
+    { opcode = "Le", rule = "always" },
+    { opcode = "Gt", rule = "always" },
+    { opcode = "Ge", rule = "always" },
+    { opcode = "Is", rule = "always" },
+    { opcode = "IsNot", rule = "always" },
+    { opcode = "Not", rule = "always" },
+    { opcode = "Bool", rule = "always" },
+    { opcode = "ExceptionPending", rule = "always" },
+    { opcode = "CheckedAdd", rule = "result1" },
+    { opcode = "CheckedMul", rule = "result1" },
+    { opcode = "IterNextUnboxed", rule = "result1" },
+    { opcode = "And", rule = "all_operands_bool" },
+    { opcode = "Or", rule = "all_operands_bool" },
+    { opcode = "Index", rule = "index_raw_i64_index" },
+    { opcode = "Copy", rule = "copy_source_bool" },
+]
+
+repr_projectable_float_result_rules = [
+    { opcode = "ConstFloat", rule = "always" },
+    { opcode = "Add", rule = "all_operands_projectable" },
+    { opcode = "Sub", rule = "all_operands_projectable" },
+    { opcode = "Mul", rule = "all_operands_projectable" },
+    { opcode = "Div", rule = "all_operands_projectable" },
+    { opcode = "InplaceAdd", rule = "all_operands_projectable" },
+    { opcode = "InplaceSub", rule = "all_operands_projectable" },
+    { opcode = "InplaceMul", rule = "all_operands_projectable" },
+    { opcode = "Neg", rule = "first_operand_projectable" },
+    { opcode = "Copy", rule = "copy_source_float" },
+]
+
+counted_loop_comparison_roles = [
+    { opcode = "Lt", role = "increasing_exclusive", inverse = "Ge" },
+    { opcode = "Le", role = "increasing_inclusive", inverse = "Gt" },
+    { opcode = "Gt", role = "decreasing_exclusive", inverse = "Le" },
+    { opcode = "Ge", role = "decreasing_inclusive", inverse = "Lt" },
 ]
 
 exception_label_attr_opcodes = [
