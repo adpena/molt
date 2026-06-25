@@ -17,6 +17,7 @@ use crate::wasm_dispatch::{
     build_dispatch_control_maps, build_sparse_state_remap_entries, build_state_resume_maps,
     emit_sparse_state_remap_lookup, has_non_linear_control_flow,
 };
+use crate::wasm_import_tracking::{TrackedImportIds, selected_import_id};
 use crate::wasm_plan::{
     DEFAULT_GPU_INTRINSIC_MANIFEST_NAMES, emit_wasm_stage_audit, gpu_runtime_call_symbol,
     is_production_lir_wasm_fast_path_name, is_shared_drop_fact_marker,
@@ -33,9 +34,8 @@ use crate::wasm_values::{
 };
 use crate::{FunctionIR, OpIR, SimpleIR, TrampolineKind, TrampolineSpec};
 use std::borrow::Cow;
-use std::cell::{Cell, RefCell};
+use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::rc::Rc;
 use wasm_encoder::{
     BlockType, Catch, CodeSection, ConstExpr, DataSection, ElementMode, ElementSection,
     ElementSegment, Elements, Encode, EntityType, ExportKind, ExportSection, Function,
@@ -71,63 +71,6 @@ struct DataSegmentRef {
 /// The `used` set is behind `Rc<RefCell<…>>` so that clones (needed to
 /// work around borrow-checker constraints during `compile_func`) share
 /// the same tracking set as the original.
-#[derive(Clone)]
-struct TrackedImportIds {
-    inner: BTreeMap<String, u32>,
-    used: Rc<RefCell<BTreeSet<String>>>,
-}
-
-impl TrackedImportIds {
-    fn new(inner: BTreeMap<String, u32>) -> Self {
-        Self {
-            inner,
-            used: Rc::new(RefCell::new(BTreeSet::new())),
-        }
-    }
-
-    fn insert(&mut self, key: String, value: u32) {
-        self.inner.insert(key, value);
-    }
-
-    fn len(&self) -> usize {
-        self.inner.len()
-    }
-
-    /// Return import names that were registered but never accessed.
-    fn unused_names(&self) -> Vec<String> {
-        let used = self.used.borrow();
-        let mut names: Vec<String> = self
-            .inner
-            .keys()
-            .filter(|k| !used.contains(k.as_str()))
-            .cloned()
-            .collect();
-        names.sort();
-        names
-    }
-
-    fn get(&self, key: &str) -> Option<&u32> {
-        let val = self.inner.get(key);
-        if val.is_some() {
-            self.used.borrow_mut().insert(key.to_string());
-        }
-        val
-    }
-
-    /// Check existence without marking the import as used.
-    fn contains_key(&self, key: &str) -> bool {
-        self.inner.contains_key(key)
-    }
-}
-
-impl std::ops::Index<&str> for TrackedImportIds {
-    type Output = u32;
-    fn index(&self, key: &str) -> &u32 {
-        self.used.borrow_mut().insert(key.to_string());
-        &self.inner[key]
-    }
-}
-
 struct CompileFuncContext<'a> {
     func_map: &'a BTreeMap<String, u32>,
     func_indices: &'a BTreeMap<String, u32>,
@@ -3645,18 +3588,16 @@ impl WasmBackend {
                 "exception_set_last",
                 "raise",
             ];
-            let used_set = self.import_ids.used.borrow();
             let eh_used: Vec<&str> = eh_imports
                 .iter()
                 .copied()
-                .filter(|name| used_set.contains(*name))
+                .filter(|name| self.import_ids.is_used(name))
                 .collect();
             let eh_eliminable: Vec<&str> = ["exception_push", "exception_pop", "exception_pending"]
                 .iter()
                 .copied()
-                .filter(|name| used_set.contains(*name))
+                .filter(|name| self.import_ids.is_used(name))
                 .collect();
-            drop(used_set);
             eprintln!(
                 "[molt-wasm-import-audit] exception host calls: {}/{} used ({} eliminable by native EH: {})",
                 eh_used.len(),
@@ -15009,21 +14950,6 @@ impl WasmBackend {
 
         self.codes.function(&func);
     }
-}
-
-fn selected_import_id(
-    import_ids: &TrackedImportIds,
-    import_key: &str,
-    func_name: &str,
-    op_kind: &str,
-) -> u32 {
-    let import_id = import_ids[import_key];
-    assert_ne!(
-        import_id,
-        u32::MAX,
-        "wasm auto import pruning removed required import '{import_key}' for op '{op_kind}' in {func_name}"
-    );
-    import_id
 }
 
 #[cfg(test)]
