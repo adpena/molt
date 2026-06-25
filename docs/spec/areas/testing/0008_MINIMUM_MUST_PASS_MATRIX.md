@@ -78,7 +78,7 @@ Use these lanes for import-system, package-entry, and bootstrap regressions. The
 
 | Lane | Scope | Required Command(s) | Pass Criteria |
 | --- | --- | --- | --- |
-| SS0 | Tiny output startup/size baseline | `uv run --python 3.14 python tools/output_startup_size_audit.py --targets native --build-profiles release --backends auto --stdlib-profile micro --samples 5 --require-runners --strict --json-out bench/results/output_startup_size_audit.json --out-dir bench/results/output_startup_size_audit_outputs --json` | Baseline artifact records binary bytes plus same-path and cold-first-sighting startup measurements for the native micro profile; this is a ratchet artifact, not a performance win claim. |
+| SS0 | Tiny output startup/size baseline | `uv run --python 3.12 python tools/uv_project_env.py --python 3.14 --purpose output-startup-size -- uv run --python 3.14 python tools/output_startup_size_audit.py --targets native --build-profiles release --backends auto --stdlib-profile micro --samples 5 --require-runners --strict --json-out bench/results/output_startup_size_audit.json --out-dir bench/results/output_startup_size_audit_outputs --json` | Baseline artifact records binary bytes plus same-path and cold-first-sighting startup measurements for the native micro profile; this is a ratchet artifact, not a performance win claim. The wrapper gives Python 3.14 a dedicated `tmp/uv-project-envs/` environment instead of rewriting the interactive `.venv`. |
 
 ## GPU / Browser Host Must-Pass Matrix
 
