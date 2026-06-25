@@ -10,7 +10,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-FACT_GRAPH_SCHEMA_VERSION = 2
+FACT_GRAPH_SCHEMA_VERSION = 3
 FACT_GRAPH_KIND = "molt_tir_fact_graph"
 BOXED_REPRS = frozenset({"DynBox", "MaybeBigInt"})
 
@@ -252,6 +252,11 @@ def _validate_source_site(value: Any, source: str, *, required: bool) -> None:
     end_col = site.get("end_col")
     if end_col is not None:
         _int(end_col, f"{source}.end_col")
+    source_file = site.get("source_file")
+    if source_file is not None and (
+        not isinstance(source_file, str) or not source_file
+    ):
+        raise FactGraphError(f"{source}.source_file must be a non-empty string")
 
 
 def _validate_event_id_field(mapping: Mapping[str, Any], source: str) -> None:

@@ -440,6 +440,14 @@ fn assemble_function(ir: &FunctionIR, cfg: &CFG, ssa: SsaOutput) -> TirFunction 
                     super::ops::AttrValue::Bool(true),
                 );
             }
+            if let Some(source_file) = &ir.source_file
+                && !source_file.is_empty()
+            {
+                a.insert(
+                    super::ops::SOURCE_FILE_ATTR.into(),
+                    super::ops::AttrValue::Str(source_file.clone()),
+                );
+            }
             a
         },
         value_types: types,

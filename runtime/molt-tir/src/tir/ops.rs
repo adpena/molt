@@ -345,6 +345,7 @@ pub type AttrDict = HashMap<String, AttrValue>;
 pub const SOURCE_LINE_ATTR: &str = "_source_line";
 pub const SOURCE_COL_ATTR: &str = "_col_offset";
 pub const SOURCE_END_COL_ATTR: &str = "_end_col_offset";
+pub const SOURCE_FILE_ATTR: &str = "_source_file";
 
 /// Stable source-site coordinates carried through TIR attrs.
 ///

@@ -116,8 +116,9 @@ is evidence over existing IR/TIR facts rather than a private CLI classifier.
 #### `molt factgraph`
 
 Compile an entry module through the frontend and TIR module pipeline, then write
-the selected function's fact graph JSON. Schema v2 records `source_site` on
-producers, consumers, and facts, `event_id` on event facts, and generated
+the selected function's fact graph JSON. Schema v3 records `source_site` on
+producers, consumers, and facts, includes `source_file` when frontend source
+identity is available, records `event_id` on event facts, and emits generated
 allocation/ownership facts for heap/stack roots, refcount balance, heap
 exposure, arena eligibility, finalizer sensitivity, and explicit release
 boundaries.
