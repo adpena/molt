@@ -6,7 +6,6 @@ import molt.cli as cli
 from molt.cli import build_pipeline
 
 _BUILD_PIPELINE_NAMES = (
-    "_run_backend_pipeline",
     "_run_build_pipeline",
     "_session_target_dir",
 )
