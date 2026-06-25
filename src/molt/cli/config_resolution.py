@@ -4,6 +4,7 @@ from typing import Any
 
 from molt.cli.capability_spec import CapabilityInput
 
+ENTRY_OVERRIDE_ENV = "MOLT_ENTRY_MODULE"
 STATIC_IMPORT_MODULES_ENV = "MOLT_STATIC_IMPORT_MODULES"
 
 
