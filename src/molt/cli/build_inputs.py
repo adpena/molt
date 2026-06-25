@@ -38,9 +38,7 @@ from molt.cli.models import (
     _PreparedBuildRoots,
     _ResolvedBuildEntry,
 )
-from molt.cli.module_graph import (
-    _record_module_reason,
-)
+from molt.cli.module_graph_discovery import _record_module_reason
 from molt.cli.module_import_scanner import _infer_module_overrides, _spec_parent
 from molt.cli.module_resolution import (
     _entry_module_root_for_path,
