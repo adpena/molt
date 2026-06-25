@@ -85,8 +85,8 @@ not raw measurement. Authoritative inventory (verified against the tree, 2026-06
 | Luau bench | `tools/benchmark_luau_vs_cpython.py` | Molt-Luau (via Lune) vs CPython, `--all`, `--report` | **Fold into the Backend board** as the `luau` backend lane (one schema, one gate) |
 | pyperformance adapter | `tools/pyperformance_adapter.py` | Parses pyperformance MANIFEST; `nbody`/`fannkuch` smoke | The bridge to the *canonical external* suite (PyPy/Codon publish numbers on it) |
 | Existing boards (data) | `bench/scoreboard/{quiet_native,quiet_llvm,hot_profile_native,cold_start_budget,cold_start_decomposition}.json` + two historical `cpython_*.json` | Real measured data, schema v3; the first authoritative quiet board | The seed for the history index (§Phase 4); the budget files are the cold/size/RSS ceilings |
-| CI workflows | `.github/workflows/perf-validation.yml`, `perf_demo.yml`, `pr_trust_gate.yml`, `nightly.yml`, `ci.yml` | `perf-validation.yml` runs **`bench.py`** (not the gate-capable scoreboard), is **`workflow_dispatch`-only**, uploads an artifact with **no gate step** | **The single biggest gap: there is no CI job that runs the gate and blocks on it.** |
-| Unified CI driver | `tools/ci_gate.py` (1088 ln) | Tiered (Tier 1/2/3) correctness pipeline, memory-guarded, JSON | **Zero references to perf** — perf is not a tier. Add a perf tier (§Phase 3). |
+| CI workflows | `.github/workflows/perf-gate.yml`, `perf_demo.yml`, `nightly.yml`, `ci.yml` | `perf-gate.yml` runs the canonical `perf_scoreboard.py` native+LLVM release-fast matrix with repeat-CI classification, quiescence, provenance, and gate-on-nonzero behavior; `ci.yml` runs perf-doc freshness and authority tests | The absolute CPython-floor gate now exists; remaining design work is PR smoke/regression integration and broader backend/profile expansion. |
+| Unified CI driver | `tools/ci_gate.py` (1088 ln) | Tiered (Tier 1/2/3) correctness pipeline, memory-guarded, JSON, with perf-scoreboard contract and perf-doc freshness checks in Tier 1 | Still needs the future PR smoke/regression perf tier from Phase 3, but perf is no longer absent from the driver. |
 | Structural audit | `docs/design/foundation/STRUCTURAL_AUDIT_BOARD.md` | Older audit state named `tools/perf_causality.py` and `tools/pass_delta_dashboard.py` as **MISSING**; the current tree now has the cycle/taxonomy `perf_causality.py` rung, the `MOLT_EMIT_PASS_DELTA=1` emitter / `tools/pass_delta_dashboard.py` dashboard, and the census/pass-delta evidence join in `perf_causality.py`, while the fact-graph dump remains pending | Phase 5 keeps `perf_causality.py` as the attribution authority and next joins value-level fact-graph provenance |
 
 **North-star alignment.** Doc 51 ("10-year roadmap", NORTH STAR) §3 *names this exact
@@ -413,13 +413,13 @@ with one WASM-only RED and asserts the **Backend** board FAILs while the **CPyth
    gate command), so the unified driver knows about perf. The smoke gate command:
    `python3 tools/perf_scoreboard.py --set smoke --backend native --backend llvm
    --profile release-fast --gate-mode regression --baseline-from-merge-base`.
-2. Rewrite `.github/workflows/perf-validation.yml`: change the trigger from
-   `workflow_dispatch` only to **`pull_request` + `push: [main]`**, replace the
-   `bench.py` step with the **gate** step (the smoke tier), and add a **failing exit =
-   failing check** (remove the "upload artifact and pass" no-op). Add a PR-comment step
-   (post the methodology summary table). The full sweep stays in `perf_demo.yml`/
-   `nightly.yml` (nightly cron) and *writes the authoritative baseline* to
-   `bench/scoreboard/history/`.
+2. Extend `.github/workflows/perf-gate.yml` with a PR smoke/regression tier once
+   `perf_scoreboard.py` owns the merge-base comparison contract. The current
+   hosted authority is already the weekly/manual absolute CPython-floor gate:
+   native+LLVM release-fast, `--samples 5 --warmup 2 --repeat 5 --classify
+   --require-quiescent`, failing on nonzero gate status and writing
+   `bench/scoreboard/cpython_ci_<backend>.json`. The PR tier must reuse that
+   scoreboard authority rather than reviving `bench.py` as a release signal.
 3. Register the perf check in `pr_trust_gate.yml` so it is a required status for merge.
 
 **Quiescence on CI (Rule 2/3 honored):** the per-PR runner is shared/noisy → the workflow
@@ -648,7 +648,7 @@ to*. The Phase plan is explicitly parallel-friendly:
 | 0 | `tools/perf_schema.py`; `tests/tools/test_perf_schema.py`; (extract consts from `perf_scoreboard.py`) | no | blocks all |
 | 1 | `tools/perf_measure.py`, `tools/perf_board.py`; `perf_scoreboard.py` → facade | no | blocked-by 0; blocks 2–6 |
 | 2 | `tools/perf_board.py` (projections); fold `benchmark_luau_vs_cpython.py` | no | blocked-by 1 |
-| 3 | `.github/workflows/perf-validation.yml`, `pr_trust_gate.yml`; `tools/ci_gate.py` | no | blocked-by 2 |
+| 3 | `.github/workflows/perf-gate.yml`, `pr_trust_gate.yml`; `tools/ci_gate.py` | partial | blocked-by 2; weekly/manual CPython-floor gate exists, PR smoke/regression tier remains |
 | 4 | `tools/perf_history.py`; `tools/perf_regression.py` (extend) | no | blocked-by 1 |
 | 5 | `tools/perf_causality.py`, `tools/pass_delta_dashboard.py`; `runtime/molt-tir/src/tir/passes/` (additive emit) | **yes (additive diag only)** | blocked-by 1; serialize Rust build |
 | 6 | `tools/bench_suites.py`, `tools/pyperformance_adapter.py`; taxonomy in `perf_schema.py` | no | blocked-by 2 |
@@ -758,9 +758,11 @@ becomes a release-gating correctness property in fact, not just in the constitut
   `DEFAULT_THRESHOLDS` (lines ~66–71), bootstrap/Mann-Whitney/Cohen's-d machinery.
 - CI driver to add a perf tier to (Phase 3): `tools/ci_gate.py` `Check` dataclass (lines
   ~95–110) + the tier registry.
-- Workflow to rewrite (Phase 3): `.github/workflows/perf-validation.yml` (currently
-  `workflow_dispatch`, runs `bench.py`, no gate) → `pull_request`+`push:[main]`, runs the
-  smoke gate, blocks on nonzero exit.
+- Workflow to extend (Phase 3): `.github/workflows/perf-gate.yml` already runs
+  the weekly/manual canonical native+LLVM CPython-floor gate. Add a PR
+  smoke/regression tier there when the merge-base scoreboard comparison is
+  promoted; do not reintroduce `.github/workflows/perf-validation.yml` or
+  `tools/bench.py` as release authority.
 - Phase 5 pass-delta substrate now exists: `MOLT_EMIT_PASS_DELTA=1` in the TIR pass
   manager writes JSONL rows and `tools/pass_delta_dashboard.py` summarizes them.
   `tools/perf_causality.py` now joins that dashboard with the call-fact census while
