@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 
 import molt.cli as cli
+from molt.cli import backend_ir as cli_backend_ir
 
 
 def test_target_python_defaults_to_lowest_supported_project_floor(
@@ -277,7 +278,7 @@ def test_backend_ir_bootstraps_target_python_without_sys_import(tmp_path: Path) 
         pass_stats_by_function={},
     )
 
-    prepared, error = cli._prepare_backend_ir(
+    prepared, error = cli_backend_ir._prepare_backend_ir(
         entry_module="__main__",
         module_graph={"__main__": source_path},
         parse_codec="json",
