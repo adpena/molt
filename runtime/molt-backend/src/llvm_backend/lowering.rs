@@ -5571,26 +5571,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         }
     }
 
-    /// Resolve the specialized `len` runtime function for a container operand.
-    ///
-    /// The container dispatch kind is taken from the shared
-    /// `ScalarRepresentationPlan` (the same authority the native/WASM/Luau
-    /// backends consult). When the plan has no fact for this value — for example
-    /// a pipeline-introduced temporary with no stable SimpleIR name — we fall
-    /// back to the refined `TirType`, which the plan itself derives from
-    /// (`ScalarRepresentationFact::container_kind`), so the two never disagree
-    /// where both speak.
+    /// Resolve the specialized `len` runtime function from the operand's
+    /// refined TIR type. Container specialization is derived directly from TIR
+    /// types, not from SimpleIR-name lookup.
     fn container_len_fn(&self, operand_id: ValueId) -> &'static str {
-        use crate::repr::ContainerKind;
-        if let Some(kind) = self.repr_facts.container_kind(operand_id) {
-            return match kind {
-                ContainerKind::List => "molt_len_list",
-                ContainerKind::Str => "molt_len_str",
-                ContainerKind::Dict => "molt_len_dict",
-                ContainerKind::Tuple => "molt_len_tuple",
-                ContainerKind::Set => "molt_len_set",
-            };
-        }
         let operand_ty = self
             .value_types
             .get(&operand_id)

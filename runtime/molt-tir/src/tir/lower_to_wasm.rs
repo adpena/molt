@@ -38,7 +38,7 @@ use super::function::TirFunction;
 #[cfg(feature = "wasm-backend")]
 use super::lir::{LirBlock, LirFunction, LirOp, LirRepr, LirTerminator, LirValue};
 #[cfg(feature = "wasm-backend")]
-use super::lower_to_lir::{ReprOverride, lower_function_to_lir};
+use super::lower_to_lir::{lower_function_to_lir, lower_function_to_lir_with_inline_proof};
 #[cfg(feature = "wasm-backend")]
 use super::ops::{AttrValue, OpCode};
 #[cfg(feature = "wasm-backend")]
@@ -101,11 +101,11 @@ pub const NAMED_RUNTIME_CALL_PLACEHOLDER: u32 = u32::MAX - 1;
 /// Type-specialized: `I64` → `wasm i64`, `F64` → `wasm f64`, `DynBox` → runtime call.
 #[cfg(feature = "wasm-backend")]
 pub fn lower_tir_to_wasm(func: &TirFunction) -> WasmFunctionOutput {
-    // The generic (non-boxed-ABI) path uses the type-floor repr. The proven
-    // `Repr` override is threaded only through the production boxed-i64 fast path
-    // (`lower_tir_to_wasm_boxed_i64_abi`), where the SimpleIR `func_ir` needed to
-    // build `repr_by_value` is available (wasm.rs).
-    let lir = lower_function_to_lir(func, None);
+    // The generic path derives carriers from the same pure-TIR `repr_by_value`
+    // authority as the boxed-i64 ABI path and LLVM. Semantic `I64` alone is not
+    // a raw machine carrier; unproven ints lower as DynBox/boxed runtime values,
+    // while Bool/F64 and range-proven ints keep their scalar lanes.
+    let lir = lower_function_to_lir(func);
     lower_lir_to_wasm(&lir)
 }
 
@@ -354,27 +354,22 @@ pub fn lower_lir_to_wasm(func: &LirFunction) -> WasmFunctionOutput {
 }
 
 #[cfg(feature = "wasm-backend")]
-pub fn lower_tir_to_wasm_boxed_i64_abi(
-    func: &TirFunction,
-    repr: ReprOverride<'_>,
-) -> Option<WasmFunctionOutput> {
-    let lir = lower_function_to_lir(func, repr);
-    lower_lir_to_wasm_boxed_i64_abi(&lir)
+pub fn lower_tir_to_wasm_boxed_i64_abi(func: &TirFunction) -> Option<WasmFunctionOutput> {
+    let vr = crate::representation_plan::value_range_for(func);
+    let repr = crate::representation_plan::repr_by_value_for(func, Some(&vr));
+    lower_tir_to_wasm_boxed_i64_abi_with_proof(func, &repr, &vr)
 }
 
-/// [`lower_tir_to_wasm_boxed_i64_abi`] with the value-range proof threaded
-/// to the LIR lowering (gates the checked-i64 triple — see
-/// `lower_function_to_lir_with_inline_proof`). The production WASM fast
-/// lane must use this entry so full-range `RawI64Safe` carriers can never
-/// take the 47-bit-window triple.
+/// Boxed-i64 WASM ABI lowering with the value-range proof explicitly paired to
+/// the value-keyed Repr map. The production WASM fast lane uses this entry so
+/// full-range raw carriers can never take the 47-bit-window checked-i64 triple.
 #[cfg(feature = "wasm-backend")]
 pub fn lower_tir_to_wasm_boxed_i64_abi_with_proof(
     func: &TirFunction,
-    repr: ReprOverride<'_>,
-    inline_proof: Option<&crate::tir::passes::value_range::ValueRangeResult>,
+    repr: &HashMap<ValueId, crate::repr::Repr>,
+    inline_proof: &crate::tir::passes::value_range::ValueRangeResult,
 ) -> Option<WasmFunctionOutput> {
-    let lir =
-        super::lower_to_lir::lower_function_to_lir_with_inline_proof(func, repr, inline_proof);
+    let lir = lower_function_to_lir_with_inline_proof(func, repr, inline_proof);
     lower_lir_to_wasm_boxed_i64_abi(&lir)
 }
 
@@ -2312,29 +2307,85 @@ mod tests {
         func
     }
 
+    fn make_add_two_consts_func(lhs: i64, rhs: i64) -> TirFunction {
+        let mut func = TirFunction::new("add_two_consts".into(), vec![], TirType::I64);
+        let lhs_id = func.fresh_value();
+        let rhs_id = func.fresh_value();
+        let result_id = func.fresh_value();
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        for (id, value) in [(lhs_id, lhs), (rhs_id, rhs)] {
+            let mut attrs = AttrDict::new();
+            attrs.insert("value".into(), AttrValue::Int(value));
+            entry.ops.push(TirOp {
+                dialect: Dialect::Molt,
+                opcode: OpCode::ConstInt,
+                operands: vec![],
+                results: vec![id],
+                attrs,
+                source_span: None,
+            });
+        }
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::Add,
+            operands: vec![lhs_id, rhs_id],
+            results: vec![result_id],
+            attrs: AttrDict::new(),
+            source_span: None,
+        });
+        entry.terminator = Terminator::Return {
+            values: vec![result_id],
+        };
+        func
+    }
+
+    #[test]
+    fn generic_tir_to_wasm_uses_value_repr_not_type_floor_for_int_params() {
+        let func = make_add_two_params_func();
+        let output = lower_tir_to_wasm(&func);
+
+        assert!(
+            output
+                .instructions
+                .iter()
+                .any(|i| matches!(i, Instruction::Call(_))),
+            "unproven int params must lower through boxed runtime dispatch, not a type-floor raw i64 op"
+        );
+        for (idx, inst) in output.instructions.iter().enumerate() {
+            if matches!(inst, Instruction::I64Add) {
+                assert!(
+                    matches!(
+                        output.instructions.get(idx + 1),
+                        Some(Instruction::I64Const(c)) if *c == (1i64 << 47)
+                    ),
+                    "generic lower_tir_to_wasm emitted a bare operand i64.add at {idx}"
+                );
+            }
+        }
+    }
+
     /// Full-range raw carriers must box through the OVERFLOW-SAFE path: a
-    /// `RawI64Safe` value with no inline-window range proof (the CheckedAdd
+    /// full-range raw value without an inline-window range proof (the CheckedAdd
     /// sum / overflow_peel accumulator case) boxed at a runtime-call or
     /// return site must emit the fits-check + named `int_from_i64` cold
     /// call, never the bare 47-bit mask (which truncates mod 2^47).
     #[test]
     fn full_range_raw_carrier_boxes_overflow_safe_with_named_call() {
         let func = make_add_two_params_func();
-        // Both operands raw, result raw — but NO value-range proof is
-        // supplied, so the checked-overflow triple is REFUSED (its raw
-        // i64.add + inline-window arms assume the 47-bit proof) and the add
-        // takes the boxed runtime path, boxing both raw operands.
+        // The values are raw full-deopt carriers, and the value-range proof for
+        // opaque params does not prove the 47-bit inline window. The checked
+        // triple is therefore refused and the add takes the boxed runtime path,
+        // boxing both raw operands through the overflow-safe cold call.
         let repr: HashMap<ValueId, Repr> = HashMap::from([
-            (ValueId(0), Repr::RawI64Safe),
-            (ValueId(1), Repr::RawI64Safe),
-            (ValueId(2), Repr::RawI64Safe),
+            (ValueId(0), Repr::RawI64FullDeopt),
+            (ValueId(1), Repr::RawI64FullDeopt),
+            (ValueId(2), Repr::RawI64FullDeopt),
         ]);
-        let lir = super::super::lower_to_lir::lower_function_to_lir_with_inline_proof(
-            &func,
-            Some(&repr),
-            None,
-        );
-        // Triple refused without the proof: no op carries lir.checked_overflow.
+        let vr = crate::representation_plan::value_range_for(&func);
+        let lir =
+            super::super::lower_to_lir::lower_function_to_lir_with_inline_proof(&func, &repr, &vr);
+        // Triple refused without an inline-window proof: no op carries
+        // lir.checked_overflow.
         let has_triple = lir.blocks.values().flat_map(|b| b.ops.iter()).any(|op| {
             matches!(
                 op.tir_op.attrs.get("lir.checked_overflow"),
@@ -2407,7 +2458,11 @@ mod tests {
             (ValueId(1), Repr::MaybeBigInt),
             (ValueId(2), Repr::MaybeBigInt),
         ]);
-        let lir = lower_function_to_lir(&func, Some(&repr));
+        let lir = lower_function_to_lir_with_inline_proof(
+            &func,
+            &repr,
+            &crate::representation_plan::value_range_for(&func),
+        );
         let output = lower_lir_to_wasm(&lir);
 
         // No bare OPERAND i64.add: a raw machine add on a possibly-heap-BigInt
@@ -2450,14 +2505,8 @@ mod tests {
     /// triple), and no boxed runtime `Call` is needed for the add itself.
     #[test]
     fn proven_raw_i64_add_still_emits_native_i64_add() {
-        let func = make_add_two_params_func();
-        let repr: HashMap<ValueId, Repr> = HashMap::from([
-            (ValueId(0), Repr::RawI64Safe),
-            (ValueId(1), Repr::RawI64Safe),
-            (ValueId(2), Repr::RawI64Safe),
-        ]);
-        let lir = lower_function_to_lir(&func, Some(&repr));
-        let output = lower_lir_to_wasm(&lir);
+        let func = make_add_two_consts_func(20, 22);
+        let output = lower_tir_to_wasm(&func);
 
         assert!(
             output
@@ -2465,6 +2514,13 @@ mod tests {
                 .iter()
                 .any(|i| matches!(i, Instruction::I64Add)),
             "proven raw-i64 add must emit native i64.add"
+        );
+        assert!(
+            !output
+                .instructions
+                .iter()
+                .any(|i| matches!(i, Instruction::Call(0))),
+            "range-proven const add must not dispatch through the boxed helper"
         );
     }
 
@@ -2476,24 +2532,15 @@ mod tests {
     /// the unsound bare op un-emittable for unproven ints.
     #[test]
     fn boxed_i64_abi_bails_when_param_is_maybe_bigint() {
-        let func = make_add_two_params_func();
-        let proven: HashMap<ValueId, Repr> = HashMap::from([
-            (ValueId(0), Repr::RawI64Safe),
-            (ValueId(1), Repr::RawI64Safe),
-            (ValueId(2), Repr::RawI64Safe),
-        ]);
+        let proven = make_add_two_consts_func(20, 22);
         assert!(
-            lower_tir_to_wasm_boxed_i64_abi(&func, Some(&proven)).is_some(),
-            "all-proven raw-i64 params keep the boxed-i64 ABI fast path"
+            lower_tir_to_wasm_boxed_i64_abi(&proven).is_some(),
+            "range-proven raw-i64 values keep the boxed-i64 ABI fast path"
         );
 
-        let unproven: HashMap<ValueId, Repr> = HashMap::from([
-            (ValueId(0), Repr::RawI64Safe),
-            (ValueId(1), Repr::MaybeBigInt),
-            (ValueId(2), Repr::MaybeBigInt),
-        ]);
+        let unproven = make_add_two_params_func();
         assert!(
-            lower_tir_to_wasm_boxed_i64_abi(&func, Some(&unproven)).is_none(),
+            lower_tir_to_wasm_boxed_i64_abi(&unproven).is_none(),
             "a MaybeBigInt param must bail the boxed-i64 ABI (entry arg is DynBox)"
         );
     }

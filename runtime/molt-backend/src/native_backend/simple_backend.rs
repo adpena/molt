@@ -418,7 +418,8 @@ fn optimize_tir_input(input: TirOptimizationInput) -> TirOptimizationOutput {
                 .sum::<usize>()
         );
     }
-    let lir_func = crate::tir::lower_to_lir::lower_function_to_lir(&tir_func, None);
+    let lir_func =
+        crate::tir::lower_to_lir::lower_function_to_lir_for_repr_fact_extraction(&tir_func);
     if trace_tir_function_enabled(&func_name) {
         eprintln!(
             "[TIR-TRACE] {func_name} after_lower_to_lir: blocks={} ops={}",
@@ -3489,37 +3490,22 @@ impl SimpleBackend {
                 .iter()
                 .map(|(_, func)| (func.name.clone(), func.return_type.clone()))
                 .collect();
-            // Build the shared representation facts from the SimpleIR function
-            // and the post-module-phase TIR the LLVM backend is about to lower.
-            // This is the structural convergence point: the LLVM backend's
-            // integer-carrier and container dispatch decisions now come from the
-            // same `ScalarRepresentationPlan` the other three backends use,
-            // instead of treating `TirType::I64` as an exact-i64 carrier. Built
-            // in its own pass (after the module phase has run) so the plan's
-            // internal lowering never interleaves with the pipeline.
+            // Build LLVM representation facts from the exact post-module-phase
+            // TIR the LLVM backend is about to lower. The trusted-unbox gate is
+            // pure TIR/value-range authority, so fresh ValueIds introduced by
+            // inlining are classified from the merged body itself.
             //
-            // Keyed by NAME, not by position: the module phase reorders functions
-            // (externs first) and can grow caller bodies, so the pre-inline
-            // `ir.functions` order no longer aligns positionally with `tir_funcs`.
-            // The SimpleIR function supplies only the name-keyed container-dispatch
-            // plan; the soundness-critical `repr_by_value` (the trusted-unbox gate)
-            // is derived purely from each merged TIR's own value-range
-            // (`repr_by_value_for`'s `FunctionIR` param is unused), so the fresh
-            // ValueIds the splice introduced are classified by a value-range
-            // computed on the merged body — a false `RawI64Safe` (the 2bf51b730
-            // truncation bug-class) cannot be introduced by inlining.
-            let simple_by_name: std::collections::HashMap<&str, &FunctionIR> =
-                ir.functions.iter().map(|f| (f.name.as_str(), f)).collect();
+            // The table remains keyed by NAME because the module phase reorders
+            // functions (externs first) and can grow caller bodies; consumers
+            // look up by the final function name, never by pre-inline position.
             llvm.function_repr_facts = tir_funcs
                 .iter()
                 .filter(|(is_extern, _)| !*is_extern)
-                .filter_map(|(_, tir_func)| {
-                    simple_by_name.get(tir_func.name.as_str()).map(|func| {
-                        (
-                            tir_func.name.clone(),
-                            crate::representation_plan::LlvmReprFacts::build(func, tir_func),
-                        )
-                    })
+                .map(|(_, tir_func)| {
+                    (
+                        tir_func.name.clone(),
+                        crate::representation_plan::LlvmReprFacts::build(tir_func),
+                    )
                 })
                 .collect();
 
@@ -5381,7 +5367,7 @@ mod tests {
             &crate::tir::target_info::TargetInfo::native_release_fast(),
         );
         crate::tir::type_refine::refine_types(&mut tir);
-        let lir = crate::tir::lower_to_lir::lower_function_to_lir(&tir, None);
+        let lir = crate::tir::lower_to_lir::lower_function_to_lir_for_repr_fact_extraction(&tir);
         if let Err(errors) = crate::tir::verify_lir::verify_lir_function(&lir) {
             panic!("LIR verification failed after TIR optimization: {errors:#?}");
         }
