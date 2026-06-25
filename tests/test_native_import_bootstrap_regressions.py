@@ -616,6 +616,33 @@ def test_native_import_math_preserves_stdio_bootstrap(tmp_path: Path) -> None:
     assert run.stdout.strip().splitlines() == ["PRE", "POST"]
 
 
+def test_native_import_math_compiles_future_feature_repr(tmp_path: Path) -> None:
+    # Regression: importing a stdlib module that uses ``from __future__ import
+    # annotations`` (math does — math.py:9) makes the native backend compile
+    # ``__future__._Feature.__repr__``. Its ``self.optional`` / ``.mandatory`` /
+    # ``.compiler_flag`` reads lower to ``guarded_field_get`` ops that a TIR
+    # guard-splitting pass can leave as the CANONICAL bare ``get_attr`` SimpleIR
+    # op — ``tir::lower_to_simple``'s documented no-``_original_kind`` default,
+    # the same fallback every other op family already handles
+    # (``index`` / ``call`` / ...). The native (Cranelift) attribute handler
+    # claimed every specialized ``get_attr_*`` alias but not the canonical
+    # ``get_attr``, so native batch codegen panicked:
+    #   native backend: no codegen for result-producing op kind `get_attr` ...
+    #   in function `__future_____Feature___repr__`
+    # Building the importing program must stay clean. The deterministic
+    # dispatch-level regressions live in molt-backend
+    # (``fc::op_family::canonical_attribute_defaults_route_to_attrs`` and
+    # ``simple_backend::native_compiles_canonical_bare_get_attr``); this is the
+    # end-to-end build+run guard for the originally-reported reproduction.
+    run = _build_and_run(
+        tmp_path,
+        "import math\nprint(math.floor(3.7))\n",
+        "import_math_future_feature_repr",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip() == "3"
+
+
 def test_native_types_bootstrap_payload_is_callable(tmp_path: Path) -> None:
     run = _build_and_run_with_env(
         tmp_path,

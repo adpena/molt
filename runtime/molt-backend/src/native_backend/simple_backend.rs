@@ -5362,6 +5362,54 @@ mod tests {
             .to_string()
     }
 
+    /// Regression — native codegen must compile the CANONICAL bare `get_attr`.
+    ///
+    /// `tir::lower_to_simple` emits the canonical `get_attr` for any `LoadAttr`
+    /// that carries no specialized `_original_kind` (its documented default,
+    /// exactly like `set_attr`/`del_attr`/`index`/`call`). A TIR pass that
+    /// yields a generic by-name attribute load reaches native codegen with that
+    /// bare spelling — observed for `__future__._Feature.__repr__` under
+    /// `--build-profile release`, where the guard-splitting passes leave a
+    /// generic `get_attr` cold-fallback after specializing the
+    /// `self.optional`/`.mandatory`/`.compiler_flag` `guarded_field_get`s. The
+    /// attribute handler (`fc::attrs`) claimed every specialized `get_attr_*`
+    /// alias but NOT the canonical `get_attr`, so the op hit the dispatch's loud
+    /// no-codegen catch-all and panicked ("no codegen for result-producing op
+    /// kind `get_attr`"). This compiles a function whose body is a bare
+    /// `get_attr`; without the fix it panics in `compile_func`, with it the op
+    /// routes to the generic-by-name attribute load.
+    #[test]
+    fn native_compiles_canonical_bare_get_attr() {
+        let func = FunctionIR {
+            name: "bare_get_attr_repr".to_string(),
+            params: vec!["self".to_string()],
+            ops: vec![
+                OpIR {
+                    kind: "get_attr".to_string(),
+                    args: Some(vec!["self".to_string()]),
+                    s_value: Some("optional".to_string()),
+                    out: Some("v0".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret_void".to_string(),
+                    ..OpIR::default()
+                },
+            ],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+        };
+        // Must not panic at the dispatch's no-codegen catch-all; the canonical
+        // `get_attr` lowers to the generic-by-name runtime attribute fetch.
+        let clif = compile_function_to_clif_text(vec![func], "bare_get_attr_repr");
+        assert!(
+            clif.contains("call"),
+            "canonical bare `get_attr` must lower to a runtime attribute-get call; \
+             got CLIF:\n{clif}",
+        );
+    }
+
     fn roundtrip_function_through_tir(func: &FunctionIR) -> FunctionIR {
         let mut tir = crate::tir::lower_from_simple::lower_to_tir(func);
         crate::tir::type_refine::refine_types(&mut tir);
