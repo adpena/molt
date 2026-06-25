@@ -68,6 +68,12 @@ def _llvm_sys_prefix_env_var(major: int) -> str:
     return f"LLVM_SYS_{major * 10 + 1}_PREFIX"
 
 
+def _default_llvm_release_for_major(major: int) -> str:
+    if major == 22:
+        return "22.1.8"
+    return f"{major}.1.0"
+
+
 def _llvm_config_names(major: int) -> list[str]:
     if platform.system() == "Windows":
         return [
@@ -157,10 +163,17 @@ def _llvm_backend_advice(major: int) -> list[str]:
             f"export {env_var}=/opt/homebrew/opt/llvm@{major}",
         ]
     if system == "Windows":
+        release = _default_llvm_release_for_major(major)
         return [
-            f"Install a complete LLVM {major}.1 distribution that includes bin\\llvm-config.exe",
+            (
+                f"python tools/bootstrap_llvm.py --version {release} "
+                f"--prefix target\\toolchains\\llvm-{release}"
+            ),
             f"Set {env_var}=<LLVM prefix containing bin\\llvm-config.exe>",
-            "If winget/Chocolatey LLVM omits llvm-config, use llvmenv or a verified complete MSYS2/Scoop LLVM package instead",
+            (
+                "Do not use winget/Chocolatey LLVM for the LLVM backend unless "
+                "that install includes bin\\llvm-config.exe"
+            ),
         ]
     return [
         f"Install llvm-{major}, llvm-{major}-dev, clang-{major}, and lld-{major}",
@@ -205,6 +218,72 @@ def _wasmtime_setup_advice(system: str) -> list[str]:
 def _luau_runner_setup_advice(system: str) -> list[str]:
     del system
     return ["cargo install lune --locked", "or install a luau runner on PATH"]
+
+
+def _windows_vswhere_path() -> Path | None:
+    if platform.system() != "Windows":
+        return None
+    roots = [
+        os.environ.get("ProgramFiles(x86)", ""),
+        os.environ.get("ProgramFiles", ""),
+    ]
+    for root in roots:
+        if not root:
+            continue
+        candidate = (
+            Path(root)
+            / "Microsoft Visual Studio"
+            / "Installer"
+            / "vswhere.exe"
+        )
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def _windows_vsdevcmd_path() -> Path | None:
+    vswhere = _windows_vswhere_path()
+    if vswhere is None:
+        return None
+    try:
+        proc = subprocess.run(
+            [
+                str(vswhere),
+                "-latest",
+                "-products",
+                "*",
+                "-requires",
+                "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
+                "-property",
+                "installationPath",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode != 0:
+        return None
+    first = next((line.strip() for line in proc.stdout.splitlines() if line.strip()), "")
+    if not first:
+        return None
+    candidate = Path(first) / "Common7" / "Tools" / "VsDevCmd.bat"
+    return candidate if candidate.exists() else None
+
+
+def _windows_msvc_env_advice() -> list[str]:
+    vsdevcmd = _windows_vsdevcmd_path()
+    if vsdevcmd is None:
+        return [
+            "winget install Microsoft.VisualStudio.2022.BuildTools",
+            "Include the x64 C++ build tools workload",
+        ]
+    return [
+        f'Run from an x64 VS developer shell: "{vsdevcmd}" -arch=x64 -host_arch=x64',
+        "or let tools/bootstrap_llvm.py activate VsDevCmd.bat for the LLVM source build",
+    ]
 
 
 def _python_setup_advice(system: str) -> list[str]:
@@ -429,6 +508,28 @@ def _build_toolchain_report(root: Path) -> _ToolchainReport:
         level="error",
         advice=_ninja_setup_advice(system) if not ninja_path else None,
     )
+
+    msvc_build_env_ok = True
+    if system == "Windows":
+        cl_path = shutil.which("cl")
+        vsdevcmd_path = _windows_vsdevcmd_path()
+        msvc_build_env_ok = cl_path is not None
+        detail = (
+            cl_path
+            if cl_path is not None
+            else (
+                f"VS Build Tools found at {vsdevcmd_path}, but cl.exe is not active"
+                if vsdevcmd_path is not None
+                else "Visual Studio C++ build tools not found"
+            )
+        )
+        record(
+            "msvc-build-env",
+            msvc_build_env_ok,
+            detail,
+            level="warning",
+            advice=_windows_msvc_env_advice() if not msvc_build_env_ok else None,
+        )
 
     llvm_major, llvm_toolchain = _detect_llvm_backend_toolchain(root)
     if llvm_major is None:
@@ -800,9 +901,6 @@ def _planned_update_steps(
                 ("wasm-tools", "wasm-tools", "wasm-tools"),
                 ("wasm-pack", "wasm-pack", "wasm-pack"),
             ]
-            llvm_major, llvm_toolchain = _detect_llvm_backend_toolchain(root)
-            if llvm_major is not None and llvm_toolchain is None:
-                cargo_tool_steps.append(("llvmenv", "llvmenv", "llvmenv"))
             for tool_name, crate_name, command_name in cargo_tool_steps:
                 if shutil.which(command_name):
                     continue
@@ -813,6 +911,15 @@ def _planned_update_steps(
                         root,
                         "toolchain",
                     )
+                )
+            llvm_major, llvm_toolchain = _detect_llvm_backend_toolchain(root)
+            if llvm_major is not None and llvm_toolchain is None:
+                release = _default_llvm_release_for_major(llvm_major)
+                warnings.append(
+                    "LLVM backend toolchain is missing; run "
+                    f"python tools/bootstrap_llvm.py --version {release} "
+                    f"--prefix target/toolchains/llvm-{release} and set "
+                    f"{_llvm_sys_prefix_env_var(llvm_major)} to that prefix"
                 )
         else:
             warnings.append(

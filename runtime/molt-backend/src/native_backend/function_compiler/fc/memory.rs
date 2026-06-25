@@ -296,7 +296,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                     let offset = payload_base + (i * 8) as i32;
                     builder
                         .ins()
-                        .store(MemFlags::trusted(), *arg_val, obj_ptr, offset);
+                        .store(MemFlagsData::trusted(), *arg_val, obj_ptr, offset);
                     emit_maybe_ref_adjust_v2(&mut *builder, *arg_val, local_inc_ref_obj, nbc);
                 }
             }
@@ -410,7 +410,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 seal_block_once(&mut *builder, &mut *sealed_blocks, dfs_store_block);
                 builder
                     .ins()
-                    .store(MemFlags::trusted(), *val, obj_ptr, offset);
+                    .store(MemFlagsData::trusted(), *val, obj_ptr, offset);
                 jump_block(&mut *builder, dfs_cont_block, &[]);
                 switch_to_block_materialized(&mut *builder, dfs_cont_block);
                 seal_block_once(&mut *builder, &mut *sealed_blocks, dfs_cont_block);
@@ -596,7 +596,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
 
             let flags_val = builder.ins().load(
                 types::I32,
-                MemFlags::trusted(),
+                MemFlagsData::trusted(),
                 obj_ptr,
                 MOLT_HEADER_FLAGS_OFFSET_FROM_PAYLOAD,
             );
@@ -628,7 +628,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
             seal_block_once(&mut *builder, &mut *sealed_blocks, fast_block);
             builder
                 .ins()
-                .store(MemFlags::trusted(), *val, obj_ptr, offset);
+                .store(MemFlagsData::trusted(), *val, obj_ptr, offset);
             jump_block(&mut *builder, merge_block, &[]);
 
             // Slow path: existing runtime helper handles all
@@ -815,7 +815,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 seal_block_once(&mut *builder, &mut *sealed_blocks, dfs_store_block);
                 builder
                     .ins()
-                    .store(MemFlags::trusted(), *val, obj_ptr, offset);
+                    .store(MemFlagsData::trusted(), *val, obj_ptr, offset);
                 jump_block(&mut *builder, dfs_cont_block, &[]);
                 switch_to_block_materialized(&mut *builder, dfs_cont_block);
                 seal_block_once(&mut *builder, &mut *sealed_blocks, dfs_cont_block);
@@ -943,7 +943,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
             seal_block_once(&mut *builder, &mut *sealed_blocks, fast_block);
             builder
                 .ins()
-                .store(MemFlags::trusted(), *val, obj_ptr, offset);
+                .store(MemFlagsData::trusted(), *val, obj_ptr, offset);
             jump_block(&mut *builder, merge_block, &[]);
             // Slow path: pointer value — call runtime for inc_ref + mark_has_ptrs + store.
             switch_to_block_materialized(&mut *builder, slow_block);

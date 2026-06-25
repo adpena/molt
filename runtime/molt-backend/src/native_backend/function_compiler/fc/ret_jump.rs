@@ -1005,7 +1005,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                                     float_primary_vars,
                                 )
                                 .expect("store_var: float src not found");
-                                builder.ins().bitcast(types::F64, MemFlags::new(), *boxed)
+                                builder.ins().bitcast(types::F64, MemFlagsData::new(), *boxed)
                             });
                     def_var_named(&mut *builder, vars, name, raw_f64);
                     // No refcount ops needed -- raw f64 is not a heap pointer.
@@ -1396,7 +1396,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                                     float_primary_vars,
                                 )
                                 .expect("load_var: float src not found");
-                                builder.ins().bitcast(types::F64, MemFlags::new(), *boxed)
+                                builder.ins().bitcast(types::F64, MemFlagsData::new(), *boxed)
                             });
                     let out_name = op.out.as_ref().unwrap();
                     def_var_named(&mut *builder, vars, out_name, raw_f64);

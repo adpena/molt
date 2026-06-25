@@ -492,7 +492,7 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
             // Peephole: check if the value output feeds directly into
             // an unpack_sequence with count=2 (e.g., `for k, v in d.items()`).
             // When it does, use molt_iter_next_dict_items to write key
-            // and value directly to stack slots â€” zero tuple allocation.
+            // and value directly to stack slots - zero tuple allocation.
             let mut unpack_idx_ub = None;
             if !val_name.is_empty() && val_name != "none" {
                 let ub_limit = (op_idx + 24).min(ops.len());
@@ -543,11 +543,11 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
 
                 let loaded_key = builder
                     .ins()
-                    .load(types::I64, MemFlags::trusted(), key_ptr, 0);
+                    .load(types::I64, MemFlagsData::trusted(), key_ptr, 0);
                 let loaded_value =
                     builder
                         .ins()
-                        .load(types::I64, MemFlags::trusted(), value_ptr, 0);
+                        .load(types::I64, MemFlagsData::trusted(), value_ptr, 0);
 
                 if !done_name.is_empty() && done_name != "none" {
                     def_var_from_boxed_transport(
@@ -633,7 +633,7 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
                 let done_bits = builder.inst_results(call)[0];
                 let loaded_val = builder
                     .ins()
-                    .load(types::I64, MemFlags::trusted(), val_ptr, 0);
+                    .load(types::I64, MemFlagsData::trusted(), val_ptr, 0);
 
                 if !done_name.is_empty() && done_name != "none" {
                     def_var_from_boxed_transport(
@@ -683,7 +683,7 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
             .expect("Iter not found");
             let pair_name = op.out.clone().unwrap();
 
-            // Peephole: detect the iter_next â†’ index(pair,1) â†’ ... â†’ index(pair,0)
+            // Peephole: detect the iter_next -> index(pair,1) -> ... -> index(pair,0)
             // pattern emitted by for-loops and replace with a single
             // molt_iter_next_unboxed call that avoids the tuple allocation and
             // two molt_index dispatches.
@@ -723,7 +723,7 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
                 // Check if the value from iter_next feeds directly into
                 // an unpack_sequence with count=2.  When it does, we can
                 // use molt_iter_next_dict_items to write key and value
-                // directly to stack slots â€” zero tuple allocation.
+                // directly to stack slots - zero tuple allocation.
                 let val_out_name = ops[vi].out.clone().unwrap();
                 let mut unpack_idx = None;
                 let unpack_limit = (vi + 24).min(ops.len());
@@ -774,11 +774,11 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
                     let loaded_key =
                         builder
                             .ins()
-                            .load(types::I64, MemFlags::trusted(), key_ptr, 0);
+                            .load(types::I64, MemFlagsData::trusted(), key_ptr, 0);
                     let loaded_value =
                         builder
                             .ins()
-                            .load(types::I64, MemFlags::trusted(), value_ptr, 0);
+                            .load(types::I64, MemFlagsData::trusted(), value_ptr, 0);
 
                     // Define done flag.
                     let done_out = ops[di].out.clone().unwrap();
@@ -824,7 +824,7 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
                     let loaded_val =
                         builder
                             .ins()
-                            .load(types::I64, MemFlags::trusted(), val_ptr, 0);
+                            .load(types::I64, MemFlagsData::trusted(), val_ptr, 0);
 
                     let done_out = ops[di].out.clone().unwrap();
                     def_var_named(&mut *builder, vars, done_out, done_bits);

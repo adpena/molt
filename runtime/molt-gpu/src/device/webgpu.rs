@@ -11,8 +11,9 @@ use std::sync::Mutex;
 use wgpu::{
     BindGroupDescriptor, BindGroupEntry, BindGroupLayoutDescriptor, BindGroupLayoutEntry,
     BindingType, BufferBindingType, BufferDescriptor, BufferUsages, ComputePassDescriptor,
-    ComputePipelineDescriptor, DeviceDescriptor, Instance, Limits, PipelineLayoutDescriptor,
-    RequestAdapterOptions, ShaderModuleDescriptor, ShaderStages,
+    ComputePipelineDescriptor, DeviceDescriptor, ExperimentalFeatures, Instance, Limits,
+    PipelineLayoutDescriptor, PollType, RequestAdapterOptions, ShaderModuleDescriptor,
+    ShaderStages, Trace,
 };
 
 use crate::device::{
@@ -78,7 +79,7 @@ impl WebGpuDevice {
             power_preference: wgpu::PowerPreference::HighPerformance,
             ..Default::default()
         }))
-        .ok_or_else(|| DeviceError::AllocationFailed("no WebGPU adapter found".into()))?;
+        .map_err(|e| DeviceError::AllocationFailed(format!("no WebGPU adapter found: {e}")))?;
 
         // Detect backend for adaptive optimization decisions.
         let backend_kind = match adapter.get_info().backend {
@@ -89,15 +90,14 @@ impl WebGpuDevice {
             _ => WebGpuBackendKind::Unknown,
         };
 
-        let (device, queue) = pollster::block_on(adapter.request_device(
-            &DeviceDescriptor {
-                label: Some("molt-gpu"),
-                required_features: wgpu::Features::empty(),
-                required_limits: Limits::default(),
-                memory_hints: wgpu::MemoryHints::Performance,
-            },
-            None,
-        ))
+        let (device, queue) = pollster::block_on(adapter.request_device(&DeviceDescriptor {
+            label: Some("molt-gpu"),
+            required_features: wgpu::Features::empty(),
+            required_limits: Limits::default(),
+            experimental_features: ExperimentalFeatures::disabled(),
+            memory_hints: wgpu::MemoryHints::Performance,
+            trace: Trace::Off,
+        }))
         .map_err(|e| {
             DeviceError::AllocationFailed(format!("WebGPU device request failed: {}", e))
         })?;
@@ -206,7 +206,9 @@ impl Allocator for WebGpuDevice {
         slice.map_async(wgpu::MapMode::Read, move |result| {
             let _ = sender.send(result);
         });
-        self.device.poll(wgpu::Maintain::Wait);
+        self.device
+            .poll(PollType::wait_indefinitely())
+            .map_err(|e| DeviceError::ExecutionFailed(format!("device poll failed: {e}")))?;
         receiver
             .recv()
             .map_err(|_| DeviceError::ExecutionFailed("buffer map channel closed".into()))?
@@ -291,8 +293,8 @@ impl Compiler for WebGpuDevice {
             .device
             .create_pipeline_layout(&PipelineLayoutDescriptor {
                 label: Some("molt-gpu-pipeline-layout"),
-                bind_group_layouts: &[&bind_group_layout],
-                push_constant_ranges: &[],
+                bind_group_layouts: &[Some(&bind_group_layout)],
+                immediate_size: 0,
             });
 
         let pipeline = self
@@ -402,7 +404,9 @@ impl Executor for WebGpuDevice {
     }
 
     fn synchronize(&self) -> Result<(), DeviceError> {
-        self.device.poll(wgpu::Maintain::Wait);
+        self.device
+            .poll(PollType::wait_indefinitely())
+            .map_err(|e| DeviceError::ExecutionFailed(format!("device poll failed: {e}")))?;
         Ok(())
     }
 }

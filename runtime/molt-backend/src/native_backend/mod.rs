@@ -11,7 +11,7 @@ use super::*;
 use cranelift_codegen::Context;
 use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
 use cranelift_codegen::ir::{
-    AbiParam, AtomicRmwOp, Block, BlockArg, FuncRef, Function, InstBuilder, MemFlags,
+    AbiParam, AtomicRmwOp, Block, BlockArg, FuncRef, Function, InstBuilder, MemFlagsData,
     StackSlotData, StackSlotKind, Value, types,
 };
 use cranelift_codegen::isa;

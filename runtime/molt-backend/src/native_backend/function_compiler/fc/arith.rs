@@ -431,8 +431,8 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
 
                 switch_to_block_materialized(&mut *builder, float_block);
                 seal_block_once(&mut *builder, &mut *sealed_blocks, float_block);
-                let lhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *lhs);
-                let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
+                let lhs_f = builder.ins().bitcast(types::F64, MemFlagsData::new(), *lhs);
+                let rhs_f = builder.ins().bitcast(types::F64, MemFlagsData::new(), *rhs);
                 let flt_sum = builder.ins().fadd(lhs_f, rhs_f);
                 let flt_res = box_float_value(&mut *builder, flt_sum, nbc);
                 jump_block(&mut *builder, merge_block, &[flt_res]);
@@ -928,8 +928,8 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
 
                 switch_to_block_materialized(&mut *builder, float_block);
                 seal_block_once(&mut *builder, &mut *sealed_blocks, float_block);
-                let lhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *lhs);
-                let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
+                let lhs_f = builder.ins().bitcast(types::F64, MemFlagsData::new(), *lhs);
+                let rhs_f = builder.ins().bitcast(types::F64, MemFlagsData::new(), *rhs);
                 let flt_sum = builder.ins().fadd(lhs_f, rhs_f);
                 let flt_res = box_float_value(&mut *builder, flt_sum, nbc);
                 jump_block(&mut *builder, merge_block, &[flt_res]);
@@ -1230,8 +1230,8 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
 
                 switch_to_block_materialized(&mut *builder, float_block);
                 seal_block_once(&mut *builder, &mut *sealed_blocks, float_block);
-                let lhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *lhs);
-                let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
+                let lhs_f = builder.ins().bitcast(types::F64, MemFlagsData::new(), *lhs);
+                let rhs_f = builder.ins().bitcast(types::F64, MemFlagsData::new(), *rhs);
                 let flt_diff = builder.ins().fsub(lhs_f, rhs_f);
                 let flt_res = box_float_value(&mut *builder, flt_diff, nbc);
                 jump_block(&mut *builder, merge_block, &[flt_res]);
@@ -1471,8 +1471,8 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
 
                 switch_to_block_materialized(&mut *builder, float_block);
                 seal_block_once(&mut *builder, &mut *sealed_blocks, float_block);
-                let lhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *lhs);
-                let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
+                let lhs_f = builder.ins().bitcast(types::F64, MemFlagsData::new(), *lhs);
+                let rhs_f = builder.ins().bitcast(types::F64, MemFlagsData::new(), *rhs);
                 let flt_diff = builder.ins().fsub(lhs_f, rhs_f);
                 let flt_res = box_float_value(&mut *builder, flt_diff, nbc);
                 jump_block(&mut *builder, merge_block, &[flt_res]);
@@ -1728,8 +1728,8 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
 
                 switch_to_block_materialized(&mut *builder, float_block);
                 seal_block_once(&mut *builder, &mut *sealed_blocks, float_block);
-                let lhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *lhs);
-                let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
+                let lhs_f = builder.ins().bitcast(types::F64, MemFlagsData::new(), *lhs);
+                let rhs_f = builder.ins().bitcast(types::F64, MemFlagsData::new(), *rhs);
                 let flt_prod = builder.ins().fmul(lhs_f, rhs_f);
                 let flt_res = box_float_value(&mut *builder, flt_prod, nbc);
                 jump_block(&mut *builder, merge_block, &[flt_res]);
@@ -1966,8 +1966,8 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
 
                 switch_to_block_materialized(&mut *builder, float_block);
                 seal_block_once(&mut *builder, &mut *sealed_blocks, float_block);
-                let lhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *lhs);
-                let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
+                let lhs_f = builder.ins().bitcast(types::F64, MemFlagsData::new(), *lhs);
+                let rhs_f = builder.ins().bitcast(types::F64, MemFlagsData::new(), *rhs);
                 let flt_prod = builder.ins().fmul(lhs_f, rhs_f);
                 let flt_res = box_float_value(&mut *builder, flt_prod, nbc);
                 jump_block(&mut *builder, merge_block, &[flt_res]);
@@ -2902,7 +2902,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                 let local_callee = module.declare_func_in_func(callee, builder.func);
                 let call = builder.ins().call(local_callee, &[*lhs_boxed, *rhs_boxed]);
                 let slow_res = builder.inst_results(call)[0];
-                let slow_f = builder.ins().bitcast(types::F64, MemFlags::new(), slow_res);
+                let slow_f = builder.ins().bitcast(types::F64, MemFlagsData::new(), slow_res);
                 if out_is_float_primary {
                     jump_block(&mut *builder, merge_block, &[slow_f]);
                 } else {
@@ -2999,7 +2999,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                 seal_block_once(&mut *builder, &mut *sealed_blocks, slow_block);
                 let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                 let slow_res = builder.inst_results(call)[0];
-                let slow_f = builder.ins().bitcast(types::F64, MemFlags::new(), slow_res);
+                let slow_f = builder.ins().bitcast(types::F64, MemFlagsData::new(), slow_res);
                 if div_out_is_float_primary {
                     jump_block(&mut *builder, merge_block, &[slow_f]);
                 } else {
@@ -3097,8 +3097,8 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
 
                 switch_to_block_materialized(&mut *builder, float_block);
                 seal_block_once(&mut *builder, &mut *sealed_blocks, float_block);
-                let lhs_ff = builder.ins().bitcast(types::F64, MemFlags::new(), *lhs);
-                let rhs_ff = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
+                let lhs_ff = builder.ins().bitcast(types::F64, MemFlagsData::new(), *lhs);
+                let rhs_ff = builder.ins().bitcast(types::F64, MemFlagsData::new(), *rhs);
                 let flt_quot = builder.ins().fdiv(lhs_ff, rhs_ff);
                 if gen_div_out_fp {
                     jump_block(&mut *builder, merge_block, &[flt_quot]);
@@ -3111,7 +3111,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                 seal_block_once(&mut *builder, &mut *sealed_blocks, call_block);
                 let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                 let slow_res = builder.inst_results(call)[0];
-                let slow_f = builder.ins().bitcast(types::F64, MemFlags::new(), slow_res);
+                let slow_f = builder.ins().bitcast(types::F64, MemFlagsData::new(), slow_res);
                 if gen_div_out_fp {
                     jump_block(&mut *builder, merge_block, &[slow_f]);
                 } else {
