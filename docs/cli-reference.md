@@ -284,11 +284,15 @@ Dry-run or apply the canonical ignored artifact/cache cleanup allowlist. This
 uses the same cleanup engine as `tools/artifact_cleanup.py` and
 `tools/dev.py clean-artifacts`, so tracked files and stateful roots such as
 `.venv/`, `.omx/`, `third_party/`, fuzz corpora, and test corpora are preserved.
+With `--kill-processes`, cleanup may drain only live-proved Molt-owned build,
+test, bench, backend-daemon, runtime-child, or guard-owned workers. It is never
+Codex, Claude, app-server, renderer, node-repl, shell, Git, MCP/plugin, or
+host-control-plane cleanup; ambiguous ownership fails closed.
 
 ```bash
 molt clean                               # Dry-run ignored artifact/cache cleanup
 molt clean --apply                       # Delete ignored artifacts from the canonical allowlist
-molt clean --apply --kill-processes      # Drain repo-scoped workers before deleting artifacts
+molt clean --apply --kill-processes      # Drain live-proved Molt workers before deleting artifacts
 molt clean --list-paths                  # Show default cleanup and excluded stateful roots
 ```
 

@@ -56,6 +56,11 @@ Molt expects production-grade changes, not opportunistic patches.
 - In recovery mode, keep exactly one active structural arc and one bounded proof
   lane. Use subagents only for disjoint mapping or migration inside that arc,
   not for parallel proof storms or status traffic.
+- Process cleanup is allowed only for live-proved Molt-owned workers: build,
+  test, bench, backend-daemon, runtime-child, or guard-owned process groups whose
+  current identity proves they belong to this repo's Molt work. Codex, Claude,
+  app-server, renderer, node-repl, MCP/plugin helpers, shell hosts, Git pollers,
+  and ancestor/control-plane processes are never cleanup targets.
 - Keep repo-facing docs and examples accurate after every move or rename.
 - Verify only the claims you make. Fresh command output is required for
   correctness/performance/support claims, but broad proof lanes are not a
