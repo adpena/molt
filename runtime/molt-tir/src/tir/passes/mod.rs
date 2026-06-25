@@ -41,6 +41,7 @@ pub mod sroa;
 pub mod strength_reduction;
 pub mod type_guard_hoist;
 pub mod unboxing;
+pub mod value_identity;
 pub mod value_range;
 pub mod vectorize;
 
