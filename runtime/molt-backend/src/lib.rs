@@ -73,6 +73,8 @@ mod wasm_dispatch;
 #[cfg(feature = "wasm-backend")]
 mod wasm_imports;
 #[cfg(feature = "wasm-backend")]
+mod wasm_plan;
+#[cfg(feature = "wasm-backend")]
 mod wasm_values;
 
 #[cfg(feature = "egraphs")]
