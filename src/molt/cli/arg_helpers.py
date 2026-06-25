@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from molt._host_exit import process_returncode_for_direct_os_exit
+from molt.cli.build_output_layout import _BUILD_PROFILE_CHOICES
 from molt.cli.completion import _completion_script
 
 
@@ -30,7 +31,7 @@ def _emit_json(*args: Any, **kwargs: Any) -> Any:
 
 
 def _build_profile_choices() -> tuple[str, ...]:
-    return _cli_module()._BUILD_PROFILE_CHOICES
+    return _BUILD_PROFILE_CHOICES
 
 
 def _hash_seed_override_env() -> str:
