@@ -15,6 +15,10 @@ pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] = 
     "loop_end",
 ];
 use super::OpFlow;
+use super::list_index_fast_path::{
+    ListIndexFastPathState, collect_pre_loop_defined_names, loop_start_has_index_prelude,
+    scan_loop_hoistable_lists, scan_loop_int_sum_reduction,
+};
 use super::var_get_boxed_overflow_safe_fn;
 
 /// Cranelift codegen handlers for structured loop lowering.
@@ -45,11 +49,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
     alias_roots: &BTreeMap<String, String>,
     exception_label_ids: &BTreeSet<i64>,
     loop_body_init_vars: &BTreeMap<usize, Vec<String>>,
-    list_int_data_cache: &mut BTreeMap<String, Variable>,
-    list_int_len_cache: &mut BTreeMap<String, Variable>,
-    list_data_cache: &mut BTreeMap<String, Variable>,
-    list_len_cache: &mut BTreeMap<String, Variable>,
-    list_is_bool_cache: &mut BTreeMap<String, Variable>,
+    list_index_fast_paths: &mut ListIndexFastPathState,
     block_tracked_obj: &mut BTreeMap<Block, Vec<String>>,
     block_tracked_ptr: &mut BTreeMap<Block, Vec<String>>,
     entry_vars: &BTreeMap<String, Value>,
@@ -195,7 +195,10 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                         representation_plan,
                     );
                     for list_name in &li_hoist {
-                        if list_int_data_cache.contains_key(list_name) {
+                        if list_index_fast_paths
+                            .list_int_data_cache
+                            .contains_key(list_name)
+                        {
                             continue; // already cached from an outer scope
                         }
                         let Some(obj) = var_get_boxed_overflow_safe(
@@ -232,13 +235,20 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                         );
                         let dvar = builder.declare_var(types::I64);
                         builder.def_var(dvar, dp);
-                        list_int_data_cache.insert(list_name.clone(), dvar);
+                        list_index_fast_paths
+                            .list_int_data_cache
+                            .insert(list_name.clone(), dvar);
                         let lvar = builder.declare_var(types::I64);
                         builder.def_var(lvar, len);
-                        list_int_len_cache.insert(list_name.clone(), lvar);
+                        list_index_fast_paths
+                            .list_int_len_cache
+                            .insert(list_name.clone(), lvar);
                     }
                     for list_name in &lg_hoist {
-                        if list_data_cache.contains_key(list_name) {
+                        if list_index_fast_paths
+                            .list_data_cache
+                            .contains_key(list_name)
+                        {
                             continue;
                         }
                         let Some(obj) = var_get_boxed_overflow_safe(
@@ -268,7 +278,9 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                         let is_bool = builder.ins().icmp(IntCC::Equal, tid, bool_tid);
                         let ibvar = builder.declare_var(types::I8);
                         builder.def_var(ibvar, is_bool);
-                        list_is_bool_cache.insert(list_name.clone(), ibvar);
+                        list_index_fast_paths
+                            .list_is_bool_cache
+                            .insert(list_name.clone(), ibvar);
                         let storage_ptr =
                             builder
                                 .ins()
@@ -304,10 +316,14 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                         let len = builder.ins().select(is_bool, len_bool, len_vec);
                         let dvar = builder.declare_var(types::I64);
                         builder.def_var(dvar, dp);
-                        list_data_cache.insert(list_name.clone(), dvar);
+                        list_index_fast_paths
+                            .list_data_cache
+                            .insert(list_name.clone(), dvar);
                         let lvar = builder.declare_var(types::I64);
                         builder.def_var(lvar, len);
-                        list_len_cache.insert(list_name.clone(), lvar);
+                        list_index_fast_paths
+                            .list_len_cache
+                            .insert(list_name.clone(), lvar);
                     }
                 }
 
@@ -555,7 +571,10 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                         representation_plan,
                     );
                     for list_name in &li_hoist {
-                        if list_int_data_cache.contains_key(list_name) {
+                        if list_index_fast_paths
+                            .list_int_data_cache
+                            .contains_key(list_name)
+                        {
                             continue;
                         }
                         let Some(obj) = var_get_boxed_overflow_safe(
@@ -592,13 +611,20 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                         );
                         let dvar = builder.declare_var(types::I64);
                         builder.def_var(dvar, dp);
-                        list_int_data_cache.insert(list_name.clone(), dvar);
+                        list_index_fast_paths
+                            .list_int_data_cache
+                            .insert(list_name.clone(), dvar);
                         let lvar = builder.declare_var(types::I64);
                         builder.def_var(lvar, len);
-                        list_int_len_cache.insert(list_name.clone(), lvar);
+                        list_index_fast_paths
+                            .list_int_len_cache
+                            .insert(list_name.clone(), lvar);
                     }
                     for list_name in &lg_hoist {
-                        if list_data_cache.contains_key(list_name) {
+                        if list_index_fast_paths
+                            .list_data_cache
+                            .contains_key(list_name)
+                        {
                             continue;
                         }
                         let Some(obj) = var_get_boxed_overflow_safe(
@@ -627,7 +653,9 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                         let is_bool = builder.ins().icmp(IntCC::Equal, tid, bool_tid);
                         let ibvar = builder.declare_var(types::I8);
                         builder.def_var(ibvar, is_bool);
-                        list_is_bool_cache.insert(list_name.clone(), ibvar);
+                        list_index_fast_paths
+                            .list_is_bool_cache
+                            .insert(list_name.clone(), ibvar);
                         let storage_ptr =
                             builder
                                 .ins()
@@ -661,10 +689,14 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                         let len = builder.ins().select(is_bool, len_bool, len_vec);
                         let dvar = builder.declare_var(types::I64);
                         builder.def_var(dvar, dp);
-                        list_data_cache.insert(list_name.clone(), dvar);
+                        list_index_fast_paths
+                            .list_data_cache
+                            .insert(list_name.clone(), dvar);
                         let lvar = builder.declare_var(types::I64);
                         builder.def_var(lvar, len);
-                        list_len_cache.insert(list_name.clone(), lvar);
+                        list_index_fast_paths
+                            .list_len_cache
+                            .insert(list_name.clone(), lvar);
                     }
                 }
 
@@ -677,12 +709,16 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                     scan_loop_int_sum_reduction(&func_ir.ops, op_idx, out_name, representation_plan)
                 {
                     // We need:
-                    //   - data_ptr from list_int_data_cache (hoisted above)
-                    //   - len from list_int_len_cache (hoisted above)
+                    //   - data_ptr from list_index_fast_paths.list_int_data_cache (hoisted above)
+                    //   - len from list_index_fast_paths.list_int_len_cache (hoisted above)
                     //   - initial accumulator value from the acc_operand_name
                     //   - start index (already in out_name / start variable)
-                    let data_ptr_var = list_int_data_cache.get(&reduction.list_name);
-                    let len_var = list_int_len_cache.get(&reduction.list_name);
+                    let data_ptr_var = list_index_fast_paths
+                        .list_int_data_cache
+                        .get(&reduction.list_name);
+                    let len_var = list_index_fast_paths
+                        .list_int_len_cache
+                        .get(&reduction.list_name);
                     if let (Some(&dp_var), Some(&ln_var)) = (data_ptr_var, len_var) {
                         let data_ptr = builder.use_var(dp_var);
                         let len_val = builder.use_var(ln_var);

@@ -6,6 +6,7 @@ use super::super::*;
 pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] =
     &["if", "else", "end_if"];
 use super::OpFlow;
+use super::list_index_fast_path::ListIndexFastPathState;
 use super::var_get_boxed_overflow_safe_fn;
 
 /// Cranelift codegen handlers for structured `if`/`else`/`end_if` control flow.
@@ -40,8 +41,7 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
     else_to_end_if: &BTreeMap<usize, usize>,
     int_store_target_names: &BTreeSet<String>,
     exception_label_ids: &BTreeSet<i64>,
-    conditional_list_bool_shadows: &BTreeMap<String, ConditionalListBoolShadow>,
-    list_is_bool_cache: &BTreeMap<String, Variable>,
+    list_index_fast_paths: &ListIndexFastPathState,
     block_tracked_obj: &mut BTreeMap<Block, Vec<String>>,
     block_tracked_ptr: &mut BTreeMap<Block, Vec<String>>,
     tracked_vars: &mut Vec<String>,
@@ -214,8 +214,10 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                 emit_conditional_list_bool_truthiness(
                     &mut *builder,
                     sealed_blocks,
-                    list_is_bool_cache,
-                    conditional_list_bool_shadows.get(&args[0]),
+                    &list_index_fast_paths.list_is_bool_cache,
+                    list_index_fast_paths
+                        .conditional_list_bool_shadows
+                        .get(&args[0]),
                     truthy_merge,
                     &truthy_live_through,
                 );

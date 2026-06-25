@@ -5,6 +5,10 @@ use super::super::*;
 #[cfg(feature = "native-backend")]
 pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] =
     &["index", "store_index", "del_index", "slice", "slice_new"];
+use super::list_index_fast_path::{
+    ListIndexFastPathState, emit_regular_list_container_absorb_store,
+    generic_list_int_lane_eligible, index_fallback_import_name, store_index_fallback_import_name,
+};
 use super::var_get_boxed_overflow_safe_fn;
 
 /// Cranelift codegen handlers for subscript/index/slice operations.
@@ -35,12 +39,7 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
     float_like_vars: &BTreeSet<String>,
     str_like_vars: &BTreeSet<String>,
     none_like_vars: &BTreeSet<String>,
-    list_int_data_cache: &mut BTreeMap<String, Variable>,
-    list_int_len_cache: &mut BTreeMap<String, Variable>,
-    list_data_cache: &mut BTreeMap<String, Variable>,
-    list_len_cache: &mut BTreeMap<String, Variable>,
-    list_is_bool_cache: &mut BTreeMap<String, Variable>,
-    conditional_list_bool_shadows: &mut BTreeMap<String, ConditionalListBoolShadow>,
+    list_index_fast_paths: &mut ListIndexFastPathState,
     scalar_fast_paths_enabled: bool,
     representation_plan: &ScalarRepresentationPlan,
     local_inc_ref_obj: FuncRef,
@@ -156,7 +155,9 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                     if let Some(raw_idx) = raw_idx_lookup {
                         // Extract storage_ptr, data_ptr, len (cached across loop iterations).
                         let (data_ptr, len_val) = {
-                            let dp = if let Some(&var) = list_int_data_cache.get(&args[0]) {
+                            let dp = if let Some(&var) =
+                                list_index_fast_paths.list_int_data_cache.get(&args[0])
+                            {
                                 builder.use_var(var)
                             } else {
                                 let masked = builder.ins().band_imm(*obj, POINTER_MASK as i64);
@@ -176,7 +177,9 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                                 );
                                 let var = builder.declare_var(types::I64);
                                 builder.def_var(var, dp);
-                                list_int_data_cache.insert(args[0].clone(), var);
+                                list_index_fast_paths
+                                    .list_int_data_cache
+                                    .insert(args[0].clone(), var);
                                 // Also cache len
                                 let len = builder.ins().load(
                                     types::I64,
@@ -186,10 +189,14 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                                 );
                                 let lvar = builder.declare_var(types::I64);
                                 builder.def_var(lvar, len);
-                                list_int_len_cache.insert(args[0].clone(), lvar);
+                                list_index_fast_paths
+                                    .list_int_len_cache
+                                    .insert(args[0].clone(), lvar);
                                 dp
                             };
-                            let lv = if let Some(&var) = list_int_len_cache.get(&args[0]) {
+                            let lv = if let Some(&var) =
+                                list_index_fast_paths.list_int_len_cache.get(&args[0])
+                            {
                                 builder.use_var(var)
                             } else {
                                 // Len not cached yet (data was cached in a prior op).
@@ -210,7 +217,9 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                                 );
                                 let lvar = builder.declare_var(types::I64);
                                 builder.def_var(lvar, len);
-                                list_int_len_cache.insert(args[0].clone(), lvar);
+                                list_index_fast_paths
+                                    .list_int_len_cache
+                                    .insert(args[0].clone(), lvar);
                                 len
                             };
                             (dp, lv)
@@ -350,7 +359,9 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                         });
                         // Extract data_ptr, len, and is_bool flag (cached across loop iterations).
                         let (data_ptr, len_val, is_bool_val) = {
-                            let dp = if let Some(&var) = list_data_cache.get(&args[0]) {
+                            let dp = if let Some(&var) =
+                                list_index_fast_paths.list_data_cache.get(&args[0])
+                            {
                                 builder.use_var(var)
                             } else {
                                 let masked = builder.ins().band_imm(*obj, POINTER_MASK as i64);
@@ -369,7 +380,9 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                                     let ibvar = builder.declare_var(types::I8);
                                     let const_true = builder.ins().iconst(types::I8, 1);
                                     builder.def_var(ibvar, const_true);
-                                    list_is_bool_cache.insert(args[0].clone(), ibvar);
+                                    list_index_fast_paths
+                                        .list_is_bool_cache
+                                        .insert(args[0].clone(), ibvar);
                                     let dp = builder.ins().load(
                                         types::I64,
                                         MemFlagsData::trusted(),
@@ -384,10 +397,14 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                                     );
                                     let var = builder.declare_var(types::I64);
                                     builder.def_var(var, dp);
-                                    list_data_cache.insert(args[0].clone(), var);
+                                    list_index_fast_paths
+                                        .list_data_cache
+                                        .insert(args[0].clone(), var);
                                     let lvar = builder.declare_var(types::I64);
                                     builder.def_var(lvar, len);
-                                    list_len_cache.insert(args[0].clone(), lvar);
+                                    list_index_fast_paths
+                                        .list_len_cache
+                                        .insert(args[0].clone(), lvar);
                                     dp
                                 } else if getitem_out_is_non_bool {
                                     // Proven non-bool list -- skip type_id check, use
@@ -395,7 +412,9 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                                     let ibvar = builder.declare_var(types::I8);
                                     let const_false = builder.ins().iconst(types::I8, 0);
                                     builder.def_var(ibvar, const_false);
-                                    list_is_bool_cache.insert(args[0].clone(), ibvar);
+                                    list_index_fast_paths
+                                        .list_is_bool_cache
+                                        .insert(args[0].clone(), ibvar);
                                     let dp = builder.ins().load(
                                         types::I64,
                                         MemFlagsData::trusted(),
@@ -410,10 +429,14 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                                     );
                                     let var = builder.declare_var(types::I64);
                                     builder.def_var(var, dp);
-                                    list_data_cache.insert(args[0].clone(), var);
+                                    list_index_fast_paths
+                                        .list_data_cache
+                                        .insert(args[0].clone(), var);
                                     let lvar = builder.declare_var(types::I64);
                                     builder.def_var(lvar, len);
-                                    list_len_cache.insert(args[0].clone(), lvar);
+                                    list_index_fast_paths
+                                        .list_len_cache
+                                        .insert(args[0].clone(), lvar);
                                     dp
                                 } else {
                                     // Unknown element type -- load type_id and both layouts.
@@ -428,7 +451,9 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                                     let is_bool = builder.ins().icmp(IntCC::Equal, tid, bool_tid);
                                     let ibvar = builder.declare_var(types::I8);
                                     builder.def_var(ibvar, is_bool);
-                                    list_is_bool_cache.insert(args[0].clone(), ibvar);
+                                    list_index_fast_paths
+                                        .list_is_bool_cache
+                                        .insert(args[0].clone(), ibvar);
                                     let dp_bool = builder.ins().load(
                                         types::I64,
                                         MemFlagsData::trusted(),
@@ -457,14 +482,20 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                                     let len = builder.ins().select(is_bool, len_bool, len_vec);
                                     let var = builder.declare_var(types::I64);
                                     builder.def_var(var, dp);
-                                    list_data_cache.insert(args[0].clone(), var);
+                                    list_index_fast_paths
+                                        .list_data_cache
+                                        .insert(args[0].clone(), var);
                                     let lvar = builder.declare_var(types::I64);
                                     builder.def_var(lvar, len);
-                                    list_len_cache.insert(args[0].clone(), lvar);
+                                    list_index_fast_paths
+                                        .list_len_cache
+                                        .insert(args[0].clone(), lvar);
                                     dp
                                 }
                             };
-                            let lv = if let Some(&var) = list_len_cache.get(&args[0]) {
+                            let lv = if let Some(&var) =
+                                list_index_fast_paths.list_len_cache.get(&args[0])
+                            {
                                 builder.use_var(var)
                             } else {
                                 // Len not cached yet (data was cached in a prior op).
@@ -478,7 +509,9 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                                     0,
                                 );
                                 // Use is_bool_cache if available, otherwise re-probe.
-                                let is_bool = if let Some(&ibv) = list_is_bool_cache.get(&args[0]) {
+                                let is_bool = if let Some(&ibv) =
+                                    list_index_fast_paths.list_is_bool_cache.get(&args[0])
+                                {
                                     builder.use_var(ibv)
                                 } else {
                                     let tid = builder.ins().load(
@@ -492,7 +525,9 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                                     let ib = builder.ins().icmp(IntCC::Equal, tid, bool_tid);
                                     let ibvar = builder.declare_var(types::I8);
                                     builder.def_var(ibvar, ib);
-                                    list_is_bool_cache.insert(args[0].clone(), ibvar);
+                                    list_index_fast_paths
+                                        .list_is_bool_cache
+                                        .insert(args[0].clone(), ibvar);
                                     ib
                                 };
                                 let len_bool = builder.ins().load(
@@ -510,10 +545,14 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                                 let len = builder.ins().select(is_bool, len_bool, len_vec);
                                 let lvar = builder.declare_var(types::I64);
                                 builder.def_var(lvar, len);
-                                list_len_cache.insert(args[0].clone(), lvar);
+                                list_index_fast_paths
+                                    .list_len_cache
+                                    .insert(args[0].clone(), lvar);
                                 len
                             };
-                            let ibv = if let Some(&v) = list_is_bool_cache.get(&args[0]) {
+                            let ibv = if let Some(&v) =
+                                list_index_fast_paths.list_is_bool_cache.get(&args[0])
+                            {
                                 builder.use_var(v)
                             } else {
                                 // Fallback: assume regular list (is_bool = 0).
@@ -596,7 +635,9 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                             // raw byte, enabling ZERO NaN-box overhead at consumers.
                             let has_raw_bool_carrier_unknown = !out_is_bool
                                 && !out_is_non_bool
-                                && list_is_bool_cache.contains_key(&args[0]);
+                                && list_index_fast_paths
+                                    .list_is_bool_cache
+                                    .contains_key(&args[0]);
                             let has_raw_bool_carrier = out_is_bool || has_raw_bool_carrier_unknown;
                             if has_raw_bool_carrier {
                                 builder.append_block_param(merge_block, types::I64); // raw bool result
@@ -735,7 +776,7 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                                         def_var_named(&mut *builder, vars, out__, merged);
                                         // Unknown path: shadow is raw 0/1 when
                                         // list is bool, NaN-boxed otherwise.
-                                        conditional_list_bool_shadows.insert(
+                                        list_index_fast_paths.conditional_list_bool_shadows.insert(
                                             out__.to_string(),
                                             ConditionalListBoolShadow {
                                                 list_name: args[0].clone(),
@@ -866,7 +907,9 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                 if let (Some(raw_idx), Some(raw_val)) = (raw_idx_opt, raw_val_opt) {
                     // Extract storage_ptr, data_ptr, len (cached).
                     let (data_ptr, len_val) = {
-                        let dp = if let Some(&var) = list_int_data_cache.get(&args[0]) {
+                        let dp = if let Some(&var) =
+                            list_index_fast_paths.list_int_data_cache.get(&args[0])
+                        {
                             builder.use_var(var)
                         } else {
                             let masked = builder.ins().band_imm(*obj, POINTER_MASK as i64);
@@ -884,7 +927,9 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                             );
                             let cvar = builder.declare_var(types::I64);
                             builder.def_var(cvar, dp);
-                            list_int_data_cache.insert(args[0].clone(), cvar);
+                            list_index_fast_paths
+                                .list_int_data_cache
+                                .insert(args[0].clone(), cvar);
                             let len = builder.ins().load(
                                 types::I64,
                                 MemFlagsData::trusted(),
@@ -893,10 +938,14 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                             );
                             let lvar = builder.declare_var(types::I64);
                             builder.def_var(lvar, len);
-                            list_int_len_cache.insert(args[0].clone(), lvar);
+                            list_index_fast_paths
+                                .list_int_len_cache
+                                .insert(args[0].clone(), lvar);
                             dp
                         };
-                        let lv = if let Some(&var) = list_int_len_cache.get(&args[0]) {
+                        let lv = if let Some(&var) =
+                            list_index_fast_paths.list_int_len_cache.get(&args[0])
+                        {
                             builder.use_var(var)
                         } else {
                             let masked = builder.ins().band_imm(*obj, POINTER_MASK as i64);
@@ -914,7 +963,9 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                             );
                             let lvar = builder.declare_var(types::I64);
                             builder.def_var(lvar, len);
-                            list_int_len_cache.insert(args[0].clone(), lvar);
+                            list_index_fast_paths
+                                .list_int_len_cache
+                                .insert(args[0].clone(), lvar);
                             len
                         };
                         (dp, lv)
@@ -1002,7 +1053,9 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                 if let Some(raw_idx) = raw_idx_opt {
                     let vec_layout = vec_u64_layout();
                     let (data_ptr, len_val, is_bool_val) = {
-                        let dp = if let Some(&var) = list_data_cache.get(&args[0]) {
+                        let dp = if let Some(&var) =
+                            list_index_fast_paths.list_data_cache.get(&args[0])
+                        {
                             builder.use_var(var)
                         } else {
                             let masked = builder.ins().band_imm(*obj, POINTER_MASK as i64);
@@ -1019,7 +1072,9 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                             let is_bool = builder.ins().icmp(IntCC::Equal, tid, bool_tid);
                             let ibvar = builder.declare_var(types::I8);
                             builder.def_var(ibvar, is_bool);
-                            list_is_bool_cache.insert(args[0].clone(), ibvar);
+                            list_index_fast_paths
+                                .list_is_bool_cache
+                                .insert(args[0].clone(), ibvar);
                             let storage_ptr =
                                 builder
                                     .ins()
@@ -1054,13 +1109,19 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                             let len = builder.ins().select(is_bool, len_bool, len_vec);
                             let var = builder.declare_var(types::I64);
                             builder.def_var(var, dp);
-                            list_data_cache.insert(args[0].clone(), var);
+                            list_index_fast_paths
+                                .list_data_cache
+                                .insert(args[0].clone(), var);
                             let lvar = builder.declare_var(types::I64);
                             builder.def_var(lvar, len);
-                            list_len_cache.insert(args[0].clone(), lvar);
+                            list_index_fast_paths
+                                .list_len_cache
+                                .insert(args[0].clone(), lvar);
                             dp
                         };
-                        let lv = if let Some(&var) = list_len_cache.get(&args[0]) {
+                        let lv = if let Some(&var) =
+                            list_index_fast_paths.list_len_cache.get(&args[0])
+                        {
                             builder.use_var(var)
                         } else {
                             let masked = builder.ins().band_imm(*obj, POINTER_MASK as i64);
@@ -1070,7 +1131,9 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                                 builder
                                     .ins()
                                     .load(types::I64, MemFlagsData::trusted(), obj_ptr, 0);
-                            let is_bool = if let Some(&ibv) = list_is_bool_cache.get(&args[0]) {
+                            let is_bool = if let Some(&ibv) =
+                                list_index_fast_paths.list_is_bool_cache.get(&args[0])
+                            {
                                 builder.use_var(ibv)
                             } else {
                                 let tid = builder.ins().load(
@@ -1084,7 +1147,9 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                                 let ib = builder.ins().icmp(IntCC::Equal, tid, bool_tid);
                                 let ibvar = builder.declare_var(types::I8);
                                 builder.def_var(ibvar, ib);
-                                list_is_bool_cache.insert(args[0].clone(), ibvar);
+                                list_index_fast_paths
+                                    .list_is_bool_cache
+                                    .insert(args[0].clone(), ibvar);
                                 ib
                             };
                             let len_bool = builder.ins().load(
@@ -1102,10 +1167,14 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                             let len = builder.ins().select(is_bool, len_bool, len_vec);
                             let lvar = builder.declare_var(types::I64);
                             builder.def_var(lvar, len);
-                            list_len_cache.insert(args[0].clone(), lvar);
+                            list_index_fast_paths
+                                .list_len_cache
+                                .insert(args[0].clone(), lvar);
                             len
                         };
-                        let ibv = if let Some(&v) = list_is_bool_cache.get(&args[0]) {
+                        let ibv = if let Some(&v) =
+                            list_index_fast_paths.list_is_bool_cache.get(&args[0])
+                        {
                             builder.use_var(v)
                         } else {
                             builder.ins().iconst(types::I8, 0)

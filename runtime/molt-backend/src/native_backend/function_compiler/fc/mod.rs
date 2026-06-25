@@ -103,6 +103,7 @@ pub(in crate::native_backend::function_compiler) mod funcobj;
 pub(in crate::native_backend::function_compiler) mod future_promise;
 pub(in crate::native_backend::function_compiler) mod generators;
 pub(in crate::native_backend::function_compiler) mod indexing;
+pub(in crate::native_backend::function_compiler) mod list_index_fast_path;
 pub(in crate::native_backend::function_compiler) mod list_ops;
 pub(in crate::native_backend::function_compiler) mod loops;
 pub(in crate::native_backend::function_compiler) mod memory;
