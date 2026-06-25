@@ -5652,8 +5652,12 @@ mod tests {
                 args: vec![startc, total0],
             };
         }
-        func.value_types.insert(iv, TirType::I64);
-        func.value_types.insert(total, TirType::I64);
+        // Type every integer value as real post-refine TIR would. The
+        // value-keyed carrier authority is semantically typed; range proof alone
+        // must never mint a raw carrier for an unknown-typed value.
+        for v in [startc, stopc, stepc, total0, iv, total, total_next, next] {
+            func.value_types.insert(v, TirType::I64);
+        }
         func.blocks.insert(
             header,
             TirBlock {

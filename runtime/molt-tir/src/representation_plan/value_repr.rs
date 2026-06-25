@@ -20,6 +20,16 @@ fn value_ids_for(tir_func: &TirFunction) -> Vec<ValueId> {
     ids
 }
 
+fn value_type_by_id_for(tir_func: &TirFunction) -> HashMap<ValueId, TirType> {
+    let mut types = tir_func.value_types.clone();
+    for block in tir_func.blocks.values() {
+        for arg in &block.args {
+            types.entry(arg.id).or_insert_with(|| arg.ty.clone());
+        }
+    }
+    types
+}
+
 /// The backend-neutral construction of the value-keyed representation lattice
 /// map: the **single source of truth** for TIR `ValueId` carrier
 /// classification, consumed identically by the LLVM backend and the WASM/LIR
@@ -58,11 +68,11 @@ pub fn repr_by_value_for(
     tir_func: &TirFunction,
     vr: Option<&crate::tir::passes::value_range::ValueRangeResult>,
 ) -> HashMap<ValueId, Repr> {
+    let value_types = value_type_by_id_for(tir_func);
     let mut repr_by_value: HashMap<ValueId, Repr> = value_ids_for(tir_func)
         .into_iter()
         .map(|id| {
-            let repr = tir_func
-                .value_types
+            let repr = value_types
                 .get(&id)
                 .map(Repr::default_for)
                 .unwrap_or(Repr::DynBox);
@@ -80,11 +90,12 @@ pub fn repr_by_value_for(
     // direct `fits_inline_int47` fact but whose every incoming value is proven —
     // inherit the carrier. Shared with the RC drop-insertion raw-scalar filter
     // (`raw_i64_safe_values_for`) — single source of truth.
-    let overflow_safe_values = raw_i64_safe_values_for(tir_func, vr);
+    let overflow_safe_values = raw_i64_safe_values_for_with_types(tir_func, vr, &value_types);
     for &id in &overflow_safe_values {
         repr_by_value.insert(id, Repr::RawI64Safe);
     }
-    let full_deopt_values = raw_i64_full_deopt_values_for(tir_func, &overflow_safe_values);
+    let full_deopt_values =
+        raw_i64_full_deopt_values_for_with_types(tir_func, &overflow_safe_values, &value_types);
     for &id in &full_deopt_values {
         repr_by_value.insert(id, Repr::RawI64FullDeopt);
     }
@@ -123,30 +134,40 @@ pub(crate) fn raw_i64_safe_values_for(
     tir_func: &TirFunction,
     vr: &crate::tir::passes::value_range::ValueRangeResult,
 ) -> std::collections::HashSet<ValueId> {
-    let mut seed = raw_i64_safe_value_seed(tir_func, vr);
-    seed.extend(gpu_intrinsic_raw_i64_values(tir_func));
-    propagate_raw_i64_identity_values(tir_func, seed)
+    let value_types = value_type_by_id_for(tir_func);
+    raw_i64_safe_values_for_with_types(tir_func, vr, &value_types)
+}
+
+fn raw_i64_safe_values_for_with_types(
+    tir_func: &TirFunction,
+    vr: &crate::tir::passes::value_range::ValueRangeResult,
+    value_types: &HashMap<ValueId, TirType>,
+) -> std::collections::HashSet<ValueId> {
+    let mut seed = raw_i64_safe_value_seed(tir_func, vr, value_types);
+    seed.extend(gpu_intrinsic_raw_i64_values(tir_func, value_types));
+    propagate_raw_i64_identity_values(tir_func, seed, value_types)
 }
 
 /// Full-range checked-overflow raw-i64 carriers. These values are not
 /// inline-box-safe; their soundness comes from the overflow flag and the boxed
 /// slow path.
-pub(crate) fn raw_i64_full_deopt_values_for(
+fn raw_i64_full_deopt_values_for_with_types(
     tir_func: &TirFunction,
     inline_safe_values: &std::collections::HashSet<ValueId>,
+    value_types: &HashMap<ValueId, TirType>,
 ) -> std::collections::HashSet<ValueId> {
     let mut seed = std::collections::HashSet::new();
     for block in tir_func.blocks.values() {
         for op in &block.ops {
             if matches!(op.opcode, OpCode::CheckedAdd | OpCode::CheckedMul)
                 && let Some(&result) = op.results.first()
-                && is_raw_i64_semantic_candidate(tir_func, result)
+                && is_raw_i64_semantic_candidate(value_types, result)
             {
                 seed.insert(result);
             }
         }
     }
-    propagate_raw_i64_full_deopt_identity_values(tir_func, inline_safe_values, seed)
+    propagate_raw_i64_full_deopt_identity_values(tir_func, inline_safe_values, seed, value_types)
 }
 
 /// All bare-i64 carriers, independent of box-site tier.
@@ -154,8 +175,13 @@ pub(crate) fn raw_i64_carrier_values_for(
     tir_func: &TirFunction,
     vr: &crate::tir::passes::value_range::ValueRangeResult,
 ) -> std::collections::HashSet<ValueId> {
-    let mut raw = raw_i64_safe_values_for(tir_func, vr);
-    raw.extend(raw_i64_full_deopt_values_for(tir_func, &raw));
+    let value_types = value_type_by_id_for(tir_func);
+    let mut raw = raw_i64_safe_values_for_with_types(tir_func, vr, &value_types);
+    raw.extend(raw_i64_full_deopt_values_for_with_types(
+        tir_func,
+        &raw,
+        &value_types,
+    ));
     raw
 }
 
@@ -164,6 +190,12 @@ pub(crate) fn raw_i64_carrier_values_for(
 /// inline-int47 window `[-2^46, 2^46 - 1]`. This is a strict subset of the i64
 /// domain, so the raw carrier is sound and overflow into a heap BigInt is
 /// structurally impossible.
+///
+/// The seed is also semantically typed: only integer-family values are eligible.
+/// Bool values have tiny ranges too, but their physical lane is
+/// [`Repr::Bool`], not [`Repr::RawI64Safe`]. Keeping this gate here prevents
+/// value-range proof from collapsing bool and int carriers back into one
+/// accidental i64 lane.
 ///
 /// **Block arguments (phis) are deliberately excluded from the direct seed.** A
 /// phi is raised to `RawI64Safe` only by [`propagate_raw_i64_identity_values`]'s
@@ -182,6 +214,7 @@ pub(crate) fn raw_i64_carrier_values_for(
 fn raw_i64_safe_value_seed(
     tir_func: &TirFunction,
     vr: &crate::tir::passes::value_range::ValueRangeResult,
+    value_types: &HashMap<ValueId, TirType>,
 ) -> std::collections::HashSet<ValueId> {
     let mut seed = std::collections::HashSet::new();
     for block in tir_func.blocks.values() {
@@ -217,7 +250,7 @@ fn raw_i64_safe_value_seed(
                     .unwrap_or(false);
                 if count_in_range {
                     for &result in &op.results {
-                        if is_raw_i64_semantic_candidate(tir_func, result)
+                        if is_raw_i64_semantic_candidate(value_types, result)
                             && vr.fits_inline_int47(result)
                         {
                             seed.insert(result);
@@ -227,7 +260,9 @@ fn raw_i64_safe_value_seed(
                 continue;
             }
             for &result in &op.results {
-                if is_raw_i64_semantic_candidate(tir_func, result) && vr.fits_inline_int47(result) {
+                if is_raw_i64_semantic_candidate(value_types, result)
+                    && vr.fits_inline_int47(result)
+                {
                     seed.insert(result);
                 }
             }
@@ -236,11 +271,8 @@ fn raw_i64_safe_value_seed(
     seed
 }
 
-fn is_raw_i64_semantic_candidate(tir_func: &TirFunction, id: ValueId) -> bool {
-    matches!(
-        tir_func.value_types.get(&id),
-        Some(TirType::I64 | TirType::BigInt)
-    )
+fn is_raw_i64_semantic_candidate(value_types: &HashMap<ValueId, TirType>, id: ValueId) -> bool {
+    matches!(value_types.get(&id), Some(TirType::I64 | TirType::BigInt))
 }
 
 /// The result `ValueId`s of GPU thread/block-id intrinsic calls — hardware lane,
@@ -250,7 +282,10 @@ fn is_raw_i64_semantic_candidate(tir_func: &TirFunction, id: ValueId) -> bool {
 /// (the legacy name-keyed chain marked them unconditionally raw-safe; this
 /// reproduces exactly that population, and only that population — bounded GPU
 /// index intrinsics, never an arbitrary runtime call).
-fn gpu_intrinsic_raw_i64_values(tir_func: &TirFunction) -> std::collections::HashSet<ValueId> {
+fn gpu_intrinsic_raw_i64_values(
+    tir_func: &TirFunction,
+    value_types: &HashMap<ValueId, TirType>,
+) -> std::collections::HashSet<ValueId> {
     let mut values = std::collections::HashSet::new();
     for block in tir_func.blocks.values() {
         for op in &block.ops {
@@ -270,7 +305,7 @@ fn gpu_intrinsic_raw_i64_values(tir_func: &TirFunction) -> std::collections::Has
             );
             if is_gpu_index_intrinsic {
                 for &result in &op.results {
-                    if is_raw_i64_semantic_candidate(tir_func, result) {
+                    if is_raw_i64_semantic_candidate(value_types, result) {
                         values.insert(result);
                     }
                 }
@@ -302,22 +337,30 @@ fn gpu_intrinsic_raw_i64_values(tir_func: &TirFunction) -> std::collections::Has
 fn propagate_raw_i64_identity_values(
     tir_func: &TirFunction,
     seed: std::collections::HashSet<ValueId>,
+    value_types: &HashMap<ValueId, TirType>,
 ) -> std::collections::HashSet<ValueId> {
-    propagate_raw_i64_identity_values_with_phi_support(tir_func, seed, None)
+    propagate_raw_i64_identity_values_with_phi_support(tir_func, seed, None, value_types)
 }
 
 fn propagate_raw_i64_full_deopt_identity_values(
     tir_func: &TirFunction,
     inline_safe_values: &std::collections::HashSet<ValueId>,
     seed: std::collections::HashSet<ValueId>,
+    value_types: &HashMap<ValueId, TirType>,
 ) -> std::collections::HashSet<ValueId> {
-    propagate_raw_i64_identity_values_with_phi_support(tir_func, seed, Some(inline_safe_values))
+    propagate_raw_i64_identity_values_with_phi_support(
+        tir_func,
+        seed,
+        Some(inline_safe_values),
+        value_types,
+    )
 }
 
 fn propagate_raw_i64_identity_values_with_phi_support(
     tir_func: &TirFunction,
     seed: std::collections::HashSet<ValueId>,
     phi_support: Option<&std::collections::HashSet<ValueId>>,
+    value_types: &HashMap<ValueId, TirType>,
 ) -> std::collections::HashSet<ValueId> {
     use std::collections::HashSet;
 
@@ -426,7 +469,7 @@ fn propagate_raw_i64_identity_values_with_phi_support(
             if safe.contains(&id) {
                 continue;
             }
-            if !is_raw_i64_semantic_candidate(tir_func, id) {
+            if !is_raw_i64_semantic_candidate(value_types, id) {
                 continue;
             }
             let becomes_safe = if let Some(&src) = copy_source.get(&id) {

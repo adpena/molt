@@ -244,7 +244,12 @@ attrs: {"loop_overflow_fast_phi_ids": AttrValue::List([ValueId(N), ...])}
 ```
 listing the ValueIds of the accumulator phis that must be treated as `RawI64Safe` in the fast loop. The representation plan's `repr_by_value_for` adds a seeding rule: before the `raw_i64_safe_value_seed` call, check `tir_func`'s entry block (or loop header block) for this attribute and pre-seed those ValueIds as `RawI64Safe`. Then `propagate_raw_i64_safe_values` propagates it to the `CheckedAdd results[0]` through the non-overflow Copy/value-identity edges.
 
-This attribute is consumed by `representation_plan::repr_by_value_for` (`representation_plan.rs:404-439`) and by `LlvmReprFacts::build`. The native backend reads the plan's `int_carrier_names()` view which already exports `RawI64Safe` values to `primary_name_sets().int`.
+This attribute is consumed by `representation_plan::value_repr::repr_by_value_for`
+and therefore by `LlvmReprFacts::build(tir_func)`, because LLVM now delegates to
+the same pure-TIR value-keyed map as WASM. The native backend still reads the
+name-keyed plan's `int_carrier_names()` view, which already exports
+`RawI64Safe` values to `primary_name_sets().int`; any future native migration
+must preserve this as a derived view, not a second carrier authority.
 
 ## 9. Files to Change (with current line anchors)
 
@@ -257,7 +262,7 @@ This attribute is consumed by `representation_plan::repr_by_value_for` (`represe
 | `/Users/adpena/Projects/molt/runtime/molt-backend/src/llvm_backend/lowering.rs:4138` | Add `OpCode::CheckedAdd` arm using `llvm.sadd.with.overflow.i64` |
 | `/Users/adpena/Projects/molt/runtime/molt-backend/src/native_backend/simple_backend.rs` | Add `checked_add` SimpleIR op emission using Cranelift `sadd_overflow` |
 | `/Users/adpena/Projects/molt/runtime/molt-backend/src/native_backend/function_compiler.rs` | Add `"checked_add"` arm in op dispatch |
-| `/Users/adpena/Projects/molt/runtime/molt-backend/src/representation_plan.rs:404` | In `repr_by_value_for`: add pre-seeding for `loop_overflow_fast_phi_ids` attribute |
+| `/Users/adpena/Projects/molt/runtime/molt-tir/src/representation_plan/value_repr.rs` | In `repr_by_value_for`: add pre-seeding for `loop_overflow_fast_phi_ids` attribute |
 | `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/passes/mod.rs:77` | Add `pub mod overflow_peel;` and `run_pass!(overflow_peel, Mutates::Cfg)` after `range_devirt` |
 | `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/passes/overflow_peel.rs` | **New file** — full pass implementation |
 | `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/verify.rs` | Add `CheckedAdd` validation: 2 results (I64, Bool), 2 operands (I64, I64) |
@@ -293,8 +298,8 @@ If phases A-D cannot land in one session, the correct baton is: leave `OpCode::C
 - `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/ops.rs` — OpCode enum
 - `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/passes/scev.rs` — degree-2 refusal proof, AddRec soundness rules
 - `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/passes/value_range.rs` — `fits_inline_int47`, `INLINE_INT47_LO/HI`
-- `/Users/adpena/Projects/molt/runtime/molt-backend/src/representation_plan.rs` — `repr_by_value_for`, `propagate_raw_i64_safe_values`, `compute_i64_interval_facts` (legacy)
-- `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/lower_to_lir.rs` — `lower_checked_i64_arithmetic`, `lowers_to_checked_i64_arithmetic`, `ReprOverride`
+- `/Users/adpena/Projects/molt/runtime/molt-tir/src/representation_plan/value_repr.rs` — `repr_by_value_for`, `raw_i64_safe_values_for`, internal full-deopt seed
+- `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/lower_to_lir.rs` — `lower_checked_i64_arithmetic`, `lowers_to_checked_i64_arithmetic`, `LirReprSource`
 - `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/lower_to_wasm.rs` — `emit_lir_binary_arith` (lir.checked_overflow consumer, lines 780-813)
 - `/Users/adpena/Projects/molt/runtime/molt-backend/src/llvm_backend/lowering.rs` — `emit_binary_arith`, `is_inline_safe_int` gate (line 4173)
 - `/Users/adpena/Projects/molt/runtime/molt-backend/src/native_backend/function_compiler.rs` — branchless iadd + `ensure_boxed_overflow_safe` (lines 3951-3965, 495-547)
