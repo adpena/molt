@@ -19,6 +19,7 @@ HOST_CONTROL_PLANE_TOKENS = (
     "\\app\\Codex.exe",
     "\\app\\resources\\codex.exe",
     "codex.cmd",
+    "codex --",
     "codex.exe\" app-server",
     "codex app-server",
     "codex-app-server",
@@ -71,6 +72,37 @@ HOST_CONTROL_PLANE_EXECUTABLE_NAMES = frozenset(
         "codex-win32-sandbox",
         "node_repl",
         "node_repl.exe",
+    }
+)
+HOST_CONTROL_PLANE_ARG_EXECUTABLE_NAMES = HOST_CONTROL_PLANE_EXECUTABLE_NAMES | frozenset(
+    {
+        "claude.js",
+        "codex.js",
+    }
+)
+HOST_CONTROL_PLANE_LAUNCHER_NAMES = frozenset(
+    {
+        "bun",
+        "bun.exe",
+        "bash",
+        "cmd",
+        "cmd.exe",
+        "deno",
+        "deno.exe",
+        "env",
+        "fish",
+        "node",
+        "node.exe",
+        "npm",
+        "npm.cmd",
+        "npx",
+        "npx.cmd",
+        "powershell",
+        "powershell.exe",
+        "pwsh",
+        "pwsh.exe",
+        "sh",
+        "zsh",
     }
 )
 
@@ -366,6 +398,24 @@ def command_executable_name(command: str) -> str:
     return token.replace("\\", "/").rsplit("/", 1)[-1].casefold()
 
 
+def command_arg_executable_names(command: str) -> tuple[str, ...]:
+    names: list[str] = []
+    for match in re.finditer(r'''(?:"([^"]+)"|'([^']+)'|(\S+))''', command.strip()):
+        token = next(group for group in match.groups() if group is not None)
+        normalized = token.replace("\\", "/").rstrip("/")
+        name = normalized.rsplit("/", 1)[-1].casefold()
+        if name:
+            names.append(name)
+    return tuple(names)
+
+
+def _host_control_plane_launcher_command(command: str) -> bool:
+    names = command_arg_executable_names(command)
+    if len(names) < 2 or names[0] not in HOST_CONTROL_PLANE_LAUNCHER_NAMES:
+        return False
+    return any(name in HOST_CONTROL_PLANE_ARG_EXECUTABLE_NAMES for name in names[1:])
+
+
 def is_host_control_plane_process(sample: ProcessSample) -> bool:
     command = sample.command.casefold()
     normalized_command = command.replace("\\", "/")
@@ -377,6 +427,7 @@ def is_host_control_plane_process(sample: ProcessSample) -> bool:
         )
         or command_executable_name(sample.command)
         in HOST_CONTROL_PLANE_EXECUTABLE_NAMES
+        or _host_control_plane_launcher_command(sample.command)
     )
 
 
