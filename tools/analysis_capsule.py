@@ -37,6 +37,7 @@ from molt.compiler_analysis import (  # noqa: E402
     check_compiler_analysis_against_closure,
     summarize_compiler_binary_image_analysis,
     summarize_tir_fact_graph,
+    validate_binary_image_closure_diagnostics,
 )
 from tools import binary_size_analysis, fact_graph_dump  # noqa: E402
 
@@ -48,10 +49,17 @@ class CapsuleError(ValueError):
     """Raised when an input artifact cannot be consumed as a capsule source."""
 
 
+def _reject_json_constant(value: str) -> None:
+    raise ValueError(f"invalid JSON constant {value}")
+
+
 def load_json(path: Path) -> dict[str, Any]:
     try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+        raw = json.loads(
+            path.read_text(encoding="utf-8"),
+            parse_constant=_reject_json_constant,
+        )
+    except (OSError, ValueError) as exc:
         raise CapsuleError(f"{path}: cannot read JSON artifact: {exc}") from exc
     if not isinstance(raw, dict):
         raise CapsuleError(f"{path}: artifact must be a JSON object")
@@ -83,6 +91,7 @@ def build_capsule(
 ) -> dict[str, Any]:
     errors: list[str] = []
     warnings: list[str] = []
+    validate_binary_image_closure_diagnostics(build_diagnostics, errors)
     frontend = _summarize_build_diagnostics(build_diagnostics, errors, warnings)
     compiler_binary_image_analysis = summarize_compiler_binary_image_analysis(
         build_diagnostics,
@@ -140,7 +149,6 @@ def _summarize_build_diagnostics(
 ) -> dict[str, Any]:
     closure = diagnostics.get("binary_image_closure")
     if closure is not None and not isinstance(closure, Mapping):
-        errors.append("build_diagnostics.binary_image_closure must be an object")
         closure = None
     image = _mapping_or_empty(closure.get("image") if closure else None)
     known_modules = _string_list(closure.get("known_modules") if closure else None)

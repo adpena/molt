@@ -6,9 +6,21 @@ from pathlib import Path
 import sys
 from types import ModuleType
 
+import pytest
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+SRC_ROOT = REPO_ROOT / "src"
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
 CAPSULE_PATH = REPO_ROOT / "tools" / "analysis_capsule.py"
+
+from molt.compiler_analysis.schema import (  # noqa: E402
+    ALLOCATION_OWNERSHIP_CARRIER,
+    SCHEMA_VERSION,
+    SOURCE_SITE_CARRIER,
+    TIR_BOUNDARY_CARRIER,
+)
 
 
 def _load_capsule() -> ModuleType:
@@ -68,9 +80,9 @@ def _build_diagnostics() -> dict[str, object]:
             "package_parent_modules": [],
         },
         "binary_image_analysis": {
-            "schema_version": 1,
+            "schema_version": SCHEMA_VERSION,
             "frontend": {
-                "schema_version": 1,
+                "schema_version": SCHEMA_VERSION,
                 "source_ast": {
                     "known_module_count": 3,
                     "compile_module_count": 2,
@@ -100,14 +112,14 @@ def _build_diagnostics() -> dict[str, object]:
                 },
             },
             "backend_ir": {
-                "schema_version": 1,
+                "schema_version": SCHEMA_VERSION,
                 "backend_ir": {
                     "function_count": 1,
                     "op_count": 4,
                     "call_op_count": 1,
                 },
                 "source_sites": {
-                    "carrier": "backend_ir_op_source_line",
+                    "carrier": SOURCE_SITE_CARRIER,
                     "attributed_op_count": 3,
                     "unattributed_op_count": 1,
                     "coverage_ratio": 0.75,
@@ -121,7 +133,7 @@ def _build_diagnostics() -> dict[str, object]:
                     ],
                 },
                 "allocation_ownership": {
-                    "carrier": "backend_ir_source_sites_and_ownership_kinds",
+                    "carrier": ALLOCATION_OWNERSHIP_CARRIER,
                     "event_count": 4,
                     "source_attributed_event_count": 3,
                     "unattributed_event_count": 1,
@@ -149,12 +161,12 @@ def _build_diagnostics() -> dict[str, object]:
                     "allocation_ownership_digest": "allocation-ownership",
                 },
                 "tir_boundary": {
-                    "carrier": "backend_ir_json",
+                    "carrier": TIR_BOUNDARY_CARRIER,
                     "semantic_role": "frontend-to-TIR/backend input",
                 },
             },
             "artifacts": {
-                "schema_version": 1,
+                "schema_version": SCHEMA_VERSION,
                 "kind": "native",
                 "output_binary": {
                     "path": "app_molt",
@@ -379,6 +391,81 @@ def test_build_capsule_rejects_binary_image_analysis_closure_mismatch() -> None:
     )
 
 
+def test_build_capsule_rejects_missing_binary_image_analysis() -> None:
+    capsule_mod = _load_capsule()
+    diagnostics = _build_diagnostics()
+    diagnostics.pop("binary_image_analysis")
+
+    capsule = capsule_mod.build_capsule(
+        build_diagnostics=diagnostics,
+        build_diagnostics_path="build-diagnostics.json",
+        recorded_at="2026-06-25T00:00:00+00:00",
+    )
+
+    assert capsule["cross_checks"]["passed"] is False
+    assert any(
+        "build_diagnostics.binary_image_analysis must be an object" in error
+        for error in capsule["cross_checks"]["errors"]
+    )
+
+
+def test_build_capsule_rejects_missing_or_unknown_analysis_stage() -> None:
+    capsule_mod = _load_capsule()
+    diagnostics = _build_diagnostics()
+    binary_analysis = diagnostics["binary_image_analysis"]
+    assert isinstance(binary_analysis, dict)
+    binary_analysis.pop("backend_ir")
+    binary_analysis["backend_ri"] = {"schema_version": SCHEMA_VERSION}
+
+    capsule = capsule_mod.build_capsule(
+        build_diagnostics=diagnostics,
+        build_diagnostics_path="build-diagnostics.json",
+        recorded_at="2026-06-25T00:00:00+00:00",
+    )
+
+    assert capsule["cross_checks"]["passed"] is False
+    errors = capsule["cross_checks"]["errors"]
+    assert any(
+        "build_diagnostics.binary_image_analysis.backend_ir is required" in error
+        for error in errors
+    )
+    assert any(
+        "build_diagnostics.binary_image_analysis.backend_ri is not a known stage"
+        in error
+        for error in errors
+    )
+
+
+def test_build_capsule_rejects_malformed_closure_lists() -> None:
+    capsule_mod = _load_capsule()
+    diagnostics = _build_diagnostics()
+    closure = diagnostics["binary_image_closure"]
+    assert isinstance(closure, dict)
+    image = closure["image"]
+    assert isinstance(image, dict)
+    closure["known_modules"] = ["app", 7]
+    image["root_modules"] = ["app", False]
+
+    capsule = capsule_mod.build_capsule(
+        build_diagnostics=diagnostics,
+        build_diagnostics_path="build-diagnostics.json",
+        recorded_at="2026-06-25T00:00:00+00:00",
+    )
+
+    assert capsule["cross_checks"]["passed"] is False
+    errors = capsule["cross_checks"]["errors"]
+    assert any(
+        "build_diagnostics.binary_image_closure.known_modules[1] must be a string"
+        in error
+        for error in errors
+    )
+    assert any(
+        "build_diagnostics.binary_image_closure.image.root_modules[1] must be a string"
+        in error
+        for error in errors
+    )
+
+
 def test_build_capsule_rejects_backend_source_site_coverage_mismatch() -> None:
     capsule_mod = _load_capsule()
     diagnostics = _build_diagnostics()
@@ -400,6 +487,95 @@ def test_build_capsule_rejects_backend_source_site_coverage_mismatch() -> None:
     assert any(
         "binary_image_analysis.backend_ir.source_sites coverage" in error
         for error in capsule["cross_checks"]["errors"]
+    )
+
+
+def test_build_capsule_rejects_malformed_backend_source_site_fields() -> None:
+    capsule_mod = _load_capsule()
+    diagnostics = _build_diagnostics()
+    binary_analysis = diagnostics["binary_image_analysis"]
+    assert isinstance(binary_analysis, dict)
+    backend_ir = binary_analysis["backend_ir"]
+    assert isinstance(backend_ir, dict)
+    source_sites = backend_ir["source_sites"]
+    assert isinstance(source_sites, dict)
+    source_sites["attributed_op_count"] = "3"
+    source_sites["top_source_lines_by_ops"] = [
+        {"source_file": "app.py", "line": "3", "ops": 1},
+        "bad",
+    ]
+
+    capsule = capsule_mod.build_capsule(
+        build_diagnostics=diagnostics,
+        build_diagnostics_path="build-diagnostics.json",
+        recorded_at="2026-06-25T00:00:00+00:00",
+    )
+
+    assert capsule["cross_checks"]["passed"] is False
+    errors = capsule["cross_checks"]["errors"]
+    assert any(
+        "binary_image_analysis.backend_ir.source_sites.attributed_op_count must be an integer"
+        in error
+        for error in errors
+    )
+    assert any(
+        "binary_image_analysis.backend_ir.source_sites.top_source_lines_by_ops[1] must be an object"
+        in error
+        for error in errors
+    )
+    assert any(
+        "binary_image_analysis.backend_ir.source_sites.top_source_lines_by_ops[0].line must be an integer"
+        in error
+        for error in errors
+    )
+
+
+def test_build_capsule_rejects_noncanonical_backend_carriers_and_ranges() -> None:
+    capsule_mod = _load_capsule()
+    diagnostics = _build_diagnostics()
+    binary_analysis = diagnostics["binary_image_analysis"]
+    assert isinstance(binary_analysis, dict)
+    backend_ir = binary_analysis["backend_ir"]
+    assert isinstance(backend_ir, dict)
+    source_sites = backend_ir["source_sites"]
+    allocation = backend_ir["allocation_ownership"]
+    tir_boundary = backend_ir["tir_boundary"]
+    assert isinstance(source_sites, dict)
+    assert isinstance(allocation, dict)
+    assert isinstance(tir_boundary, dict)
+    source_sites["carrier"] = "local_source_site_probe"
+    source_sites["coverage_ratio"] = 1.5
+    allocation["event_count"] = -1
+    allocation["source_coverage_ratio"] = float("inf")
+    tir_boundary["carrier"] = "local_backend_ir_json"
+
+    capsule = capsule_mod.build_capsule(
+        build_diagnostics=diagnostics,
+        build_diagnostics_path="build-diagnostics.json",
+        recorded_at="2026-06-25T00:00:00+00:00",
+    )
+
+    assert capsule["cross_checks"]["passed"] is False
+    errors = capsule["cross_checks"]["errors"]
+    assert any(
+        f"source_sites.carrier must be {SOURCE_SITE_CARRIER!r}" in error
+        for error in errors
+    )
+    assert any(
+        "source_sites.coverage_ratio must be between 0 and 1" in error
+        for error in errors
+    )
+    assert any(
+        "allocation_ownership.event_count must be nonnegative" in error
+        for error in errors
+    )
+    assert any(
+        "allocation_ownership.source_coverage_ratio must be a number" in error
+        for error in errors
+    )
+    assert any(
+        f"tir_boundary.carrier must be {TIR_BOUNDARY_CARRIER!r}" in error
+        for error in errors
     )
 
 
@@ -425,6 +601,93 @@ def test_build_capsule_rejects_backend_allocation_ownership_mismatch() -> None:
         "binary_image_analysis.backend_ir.allocation_ownership" in error
         for error in capsule["cross_checks"]["errors"]
     )
+
+
+def test_build_capsule_rejects_malformed_backend_allocation_fields() -> None:
+    capsule_mod = _load_capsule()
+    diagnostics = _build_diagnostics()
+    binary_analysis = diagnostics["binary_image_analysis"]
+    assert isinstance(binary_analysis, dict)
+    backend_ir = binary_analysis["backend_ir"]
+    assert isinstance(backend_ir, dict)
+    allocation = backend_ir["allocation_ownership"]
+    assert isinstance(allocation, dict)
+    allocation["event_count"] = "4"
+    allocation["events_by_category"] = {"heap_alloc_root": "1"}
+    allocation["top_category_kinds"] = [
+        {"category_kind": "heap_alloc_root:object_new_bound", "events": "1"}
+    ]
+    allocation["top_source_lines_by_events"] = [
+        {
+            "source_file": "app.py",
+            "line": "3",
+            "category": "heap_alloc_root",
+            "events": 1,
+        }
+    ]
+
+    capsule = capsule_mod.build_capsule(
+        build_diagnostics=diagnostics,
+        build_diagnostics_path="build-diagnostics.json",
+        recorded_at="2026-06-25T00:00:00+00:00",
+    )
+
+    assert capsule["cross_checks"]["passed"] is False
+    errors = capsule["cross_checks"]["errors"]
+    assert any(
+        "binary_image_analysis.backend_ir.allocation_ownership.event_count must be an integer"
+        in error
+        for error in errors
+    )
+    assert any(
+        "binary_image_analysis.backend_ir.allocation_ownership.events_by_category.heap_alloc_root must be an integer"
+        in error
+        for error in errors
+    )
+    assert any(
+        "binary_image_analysis.backend_ir.allocation_ownership.top_category_kinds[0].events must be an integer"
+        in error
+        for error in errors
+    )
+    assert any(
+        "binary_image_analysis.backend_ir.allocation_ownership.top_source_lines_by_events[0].line must be an integer"
+        in error
+        for error in errors
+    )
+
+
+def test_build_capsule_rejects_empty_allocation_categories_with_positive_events() -> None:
+    capsule_mod = _load_capsule()
+    diagnostics = _build_diagnostics()
+    binary_analysis = diagnostics["binary_image_analysis"]
+    assert isinstance(binary_analysis, dict)
+    backend_ir = binary_analysis["backend_ir"]
+    assert isinstance(backend_ir, dict)
+    allocation = backend_ir["allocation_ownership"]
+    assert isinstance(allocation, dict)
+    allocation["events_by_category"] = {}
+
+    capsule = capsule_mod.build_capsule(
+        build_diagnostics=diagnostics,
+        build_diagnostics_path="build-diagnostics.json",
+        recorded_at="2026-06-25T00:00:00+00:00",
+    )
+
+    assert capsule["cross_checks"]["passed"] is False
+    assert any(
+        "binary_image_analysis.backend_ir.allocation_ownership category counts do not sum to event_count"
+        in error
+        for error in capsule["cross_checks"]["errors"]
+    )
+
+
+def test_load_json_rejects_nonstandard_json_constants(tmp_path: Path) -> None:
+    capsule_mod = _load_capsule()
+    diagnostics_path = tmp_path / "diag.json"
+    diagnostics_path.write_text('{"coverage_ratio": NaN}', encoding="utf-8")
+
+    with pytest.raises(capsule_mod.CapsuleError, match="invalid JSON constant NaN"):
+        capsule_mod.load_json(diagnostics_path)
 
 
 def test_analysis_capsule_cli_writes_json(tmp_path: Path) -> None:
