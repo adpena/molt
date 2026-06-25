@@ -49,8 +49,8 @@ so the change can be reviewed as one coherent diff.
   `scalar_carriers.rs:37,60,258`).
 - **Current target:** every old `int_primary_vars.contains(name)` read is now a
   read off the already-threaded `representation_plan` via a name-keyed
-  predicate. The int cut adds these accessors next to the float cut's
-  `is_float_unboxed(name)`:
+  projection of the value-keyed TIR `repr_by_value_for` proof. The int cut adds
+  these accessors next to the float cut's `is_float_unboxed(name)`:
   - `is_inline_safe_int_name(name) -> bool` — the `RawI64Safe` name view
     (`{name | repr_by_name[name] == RawI64Safe}`), the inline-47 carriers.
   - `is_full_deopt_int_name(name) -> bool` — the `RawI64FullDeopt` name view
@@ -62,11 +62,11 @@ so the change can be reviewed as one coherent diff.
   primary_names.int` binding is gone from native backend code.
 
 > **Why a name predicate, not the value-keyed `is_inline_safe_int(id)`.** The
-> existing `is_inline_safe_int(&self, id: ValueId)`
-> (`representation_plan.rs:1020`) is keyed on `ValueId`. The native backend's
-> hot path is keyed on Variable *name* (`vars[name]`), so it needs the name-keyed
-> predicate. This mirrors the float cut, which added `is_float_unboxed(name)`
-> rather than reusing a value-keyed float query.
+> existing `is_inline_safe_int(&self, id: ValueId)` is keyed on `ValueId`. The
+> native backend's hot path is keyed on Variable *name* (`vars[name]`), so it
+> consumes the name projection produced through `SimpleValueNames`. The predicate
+> is a transport view of the value-keyed proof, not an independent interval
+> analysis.
 
 
 ## Per-file action set
@@ -186,8 +186,9 @@ box-site discipline). Every other read is the carrier-or-not predicate
 
 - `cargo test -p molt-backend --features native-backend --lib` — full native
   suite green after the 44-file carrier migration.
-- `cargo test -p molt-tir representation_plan --lib` — name-keyed and
-  value-keyed raw-i64 tiers stay coherent after the `raw_i64` extraction.
+- `cargo test -p molt-tir --features wasm-backend representation_plan --lib` —
+  native name projection and value-keyed raw-i64 tiers stay coherent after the
+  `raw_i64` extraction.
 - E2E `molt build` on an int-heavy program (the 44-file signature churn must
   build end-to-end, not just unit-compile) — mirrors the float cut using its 4
   float differentials as the E2E gate.

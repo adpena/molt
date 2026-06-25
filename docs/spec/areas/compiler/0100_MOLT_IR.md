@@ -27,17 +27,18 @@ Molt IR is typed SSA with explicit control flow, ownership, and effects. It exis
 - Backend-specific shadow state or side-channel unboxed tracking is
   implementation debt and must not be treated as a stable interface.
 - Native int, bool, and float lowering have retired their raw scalar shadow
-  lanes. Name-keyed native carrier authority now lives in
-  `ScalarRepresentationPlan::repr_by_name`: integer raw-carriers derive through
-  `is_raw_int_carrier_name`, `is_inline_safe_int_name`, and
-  `is_full_deopt_int_name`, while bool and float carriers derive through
+  lanes. Integer raw-carriers are proven by the value-keyed
+  `repr_by_value_for` / `value_range_for` path and projected through
+  `SimpleValueNames` into `ScalarRepresentationPlan::repr_by_name`, where native
+  consumes `is_raw_int_carrier_name`, `is_inline_safe_int_name`, and
+  `is_full_deopt_int_name`. Bool and float carriers still derive through
   `is_bool_unboxed` / `is_float_unboxed` as `Repr::Bool` /
-  `Repr::FloatUnboxed` views over the same map. Bool/F64 names floor to boxed
-  storage in this native name-keyed authority and are raised only by explicit
-  carrier eligibility filters. Non-primary bool and float values are represented
-  immediately in their main boxed I64 variable. The 100-year endpoint is to move
-  these representation facts through typed value-keyed TIR/LIR and every backend
-  without re-deriving native name facts.
+  `Repr::FloatUnboxed` views over the native name map. Bool/F64 names floor to
+  boxed storage in this native name-keyed authority and are raised only by
+  explicit carrier eligibility filters. Non-primary bool and float values are
+  represented immediately in their main boxed I64 variable. The 100-year
+  endpoint is to move the bool/F64 representation facts through typed
+  value-keyed TIR/LIR and every backend without re-deriving native name facts.
 - `LirRepr::Ref64` is a runtime reference-word lane for proven reference
   values such as stack-eligible user-class allocations. It is physically an
   `i64` on WASM and native pointer-sized backends, but it is not the semantic

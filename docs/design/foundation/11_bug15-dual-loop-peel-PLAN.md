@@ -151,7 +151,7 @@ More precisely: the `overflow_peel` pass annotates the fast-loop header block (o
 The TIR attribute approach is the clean one: it keeps the proof localized to where the transform was applied and does not require a new Repr variant.
 
 **Native backend consumption of `CheckedAdd`:** With the fast-loop phi raised to `RawI64Safe` and the `CheckedAdd` op in the body:
-- The phi arrives at Cranelift's `int_primary_vars` (via `primary_name_sets().int`).
+- The phi arrives at Cranelift through the value-keyed TIR `repr_by_value_for` proof projected into the native `repr_by_name` lowering view.
 - `CheckedAdd` is lowered by the new case in `function_compiler.rs` using Cranelift's `sadd_overflow`, storing `results[0]` in the main variable and `results[1]` in a bool variable.
 - The overflow branch: `CondBranch(results[1], overflow_bridge, fast_back)`.
 - The `overflow_bridge` block receives `(iv_at_overflow: I64, acc_pre_overflow: I64)` as block args (both `RawI64Safe` — they are copies of the phi and the IV which are both raw at that point). It boxes them via `ensure_boxed_overflow_safe` and calls `molt_add`.
@@ -179,9 +179,13 @@ Insert `overflow_peel` after `range_devirt` (so the IV shape is canonical) and b
 
 Update the test at `passes/mod.rs:132` (the pipeline name sequence test) to include `"overflow_peel"` in the correct position. The test is exhaustive and will fail at compile time if the pass is not registered or is in the wrong order.
 
-### Phase E: Legacy deletion (none in this arc)
+### Phase E: Legacy deletion
 
-The `compute_i64_interval_facts` chain in `representation_plan.rs:2029` is the LEGACY proof source for the name-keyed (native) `int_primary` set. It handles bounded loop IVs (via `propagate_counted_loop_intervals`) but correctly cannot handle unbounded accumulators. This arc does NOT delete the legacy chain — that is a separate bounded arc (the full migration to value-range-based name-keyed proof). The overflow_peel pass adds a new structural fast path that BYPASSES the legacy chain for the accumulator phi, via the TIR attribute. No legacy code is deleted here.
+The native name-keyed int interval proof has been deleted. `repr_by_value_for`
+and `value_range_for` now own raw-i64 carrier proof, and native receives that
+proof only as a projection into `repr_by_name` for existing Cranelift lowering
+names. Overflow-peel work must seed the value-keyed TIR representation map; it
+must not add a second native interval chain or bypass the canonical proof.
 
 ## 4. Soundness Argument
 
@@ -246,10 +250,10 @@ listing the ValueIds of the accumulator phis that must be treated as `RawI64Safe
 
 This attribute is consumed by `representation_plan::value_repr::repr_by_value_for`
 and therefore by `LlvmReprFacts::build(tir_func)`, because LLVM now delegates to
-the same pure-TIR value-keyed map as WASM. The native backend still reads the
-name-keyed plan's `int_carrier_names()` view, which already exports
-`RawI64Safe` values to `primary_name_sets().int`; any future native migration
-must preserve this as a derived view, not a second carrier authority.
+the same pure-TIR value-keyed map as WASM. Native reads
+`int_carrier_names()`/tiered raw-int predicates only as a projection of that
+value-keyed proof into `repr_by_name`; that projection is a lowering view, not a
+second carrier authority.
 
 ## 9. Files to Change (with current line anchors)
 
