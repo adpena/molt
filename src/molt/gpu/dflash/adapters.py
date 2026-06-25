@@ -2,8 +2,9 @@
 
 Adapters are intentionally model-specific and may come from external sources
 over time. Molt core only keeps a lightweight registry boundary here, but every
-registered adapter must identify its target model, draft model, and provenance
-so an anonymous generic speculative decoder cannot enter the DFlash namespace.
+registered adapter must identify its target model, draft model, target-layer
+conditioning schema, and provenance so an anonymous generic speculative decoder
+cannot enter the DFlash namespace.
 """
 
 from __future__ import annotations
@@ -22,6 +23,110 @@ def _require_non_empty_string(value, field_name: str) -> str:
     return value
 
 
+def _require_bool_true(value, field_name: str) -> bool:
+    if not isinstance(value, bool):
+        raise TypeError(f"dflash adapter {field_name} must be a bool")
+    if not value:
+        raise ValueError(f"dflash adapter {field_name} must be true")
+    return value
+
+
+def _require_token_id(value, field_name: str) -> int:
+    if isinstance(value, bool):
+        raise TypeError(f"dflash adapter {field_name} must be an integer token id")
+    token = int(value)
+    if token != value:
+        raise TypeError(f"dflash adapter {field_name} must be an integer token id")
+    if token < 0:
+        raise ValueError(f"dflash adapter {field_name} must be non-negative")
+    return token
+
+
+def _require_positive_int(value, field_name: str) -> int:
+    if isinstance(value, bool):
+        raise TypeError(f"dflash adapter {field_name} must be a positive integer")
+    number = int(value)
+    if number != value:
+        raise TypeError(f"dflash adapter {field_name} must be a positive integer")
+    if number <= 0:
+        raise ValueError(f"dflash adapter {field_name} must be positive")
+    return number
+
+
+def _require_layer_ids(value) -> tuple[int, ...]:
+    try:
+        layer_ids = tuple(value)
+    except TypeError as exc:
+        raise TypeError("dflash adapter target_layer_ids must be iterable") from exc
+    if not layer_ids:
+        raise ValueError("dflash adapter target_layer_ids must be non-empty")
+    normalized = []
+    for layer_id in layer_ids:
+        if isinstance(layer_id, bool):
+            raise TypeError("dflash adapter target_layer_ids must contain integers")
+        number = int(layer_id)
+        if number != layer_id:
+            raise TypeError("dflash adapter target_layer_ids must contain integers")
+        if number < 0:
+            raise ValueError("dflash adapter target_layer_ids must be non-negative")
+        normalized.append(number)
+    return tuple(normalized)
+
+
+class DFlashAdapterMetadata:
+    """Immutable identity metadata for a trained DFlash-family adapter.
+
+    The serving/training ecosystem now treats block size, target layer IDs,
+    hidden-state schema, KV/cross-attention schema, tokenizer, and mask-token
+    identity as part of the checkpoint contract. Keeping those facts typed here
+    prevents a generic speculative adapter from entering the registry with only
+    a model pair and a hopeful name.
+    """
+
+    def __init__(
+        self,
+        *,
+        algorithm_family: str,
+        adapter_version: str,
+        tokenizer_id: str,
+        mask_token_id: int,
+        target_layer_ids,
+        target_feature_schema: str,
+        kv_schema: str,
+        target_conditioning_path: str,
+        max_block_size: int,
+        uses_non_causal_draft_attention: bool,
+        injects_target_context_each_layer: bool,
+    ) -> None:
+        self.algorithm_family = _require_non_empty_string(
+            algorithm_family, "algorithm_family"
+        )
+        self.adapter_version = _require_non_empty_string(
+            adapter_version, "adapter_version"
+        )
+        self.tokenizer_id = _require_non_empty_string(tokenizer_id, "tokenizer_id")
+        self.mask_token_id = _require_token_id(mask_token_id, "mask_token_id")
+        self.target_layer_ids = _require_layer_ids(target_layer_ids)
+        self.target_feature_schema = _require_non_empty_string(
+            target_feature_schema, "target_feature_schema"
+        )
+        self.kv_schema = _require_non_empty_string(kv_schema, "kv_schema")
+        self.target_conditioning_path = _require_non_empty_string(
+            target_conditioning_path, "target_conditioning_path"
+        )
+        self.max_block_size = _require_positive_int(max_block_size, "max_block_size")
+        if self.max_block_size == 1:
+            raise ValueError(
+                "dflash adapter max_block_size must support block drafting"
+            )
+        self.uses_non_causal_draft_attention = _require_bool_true(
+            uses_non_causal_draft_attention, "uses_non_causal_draft_attention"
+        )
+        self.injects_target_context_each_layer = _require_bool_true(
+            injects_target_context_each_layer, "injects_target_context_each_layer"
+        )
+
+
 class DFlashAdapterSpec:
     """Typed adapter record for target/draft-model-specific DFlash integrations."""
 
@@ -32,6 +137,7 @@ class DFlashAdapterSpec:
         target_model_id: str,
         draft_model_id: str,
         provenance: str,
+        metadata: DFlashAdapterMetadata,
         supports,
         create_runtime,
         priority: int = 0,
@@ -44,6 +150,9 @@ class DFlashAdapterSpec:
             draft_model_id, "draft_model_id"
         )
         self.provenance = _require_non_empty_string(provenance, "provenance")
+        if not isinstance(metadata, DFlashAdapterMetadata):
+            raise TypeError("dflash adapter metadata must be DFlashAdapterMetadata")
+        self.metadata = metadata
         if not callable(supports):
             raise TypeError("dflash adapter supports must be callable")
         if not callable(create_runtime):
