@@ -25,7 +25,7 @@ from molt.cli.target_python import TargetPythonVersion
 from molt.type_facts import TypeFacts
 
 if TYPE_CHECKING:
-    from molt.cli import (
+    from molt.cli.module_graph import (
         ModuleSyntaxErrorInfo,
         _ModuleResolutionCache,
         _ModuleSourceCatalog,
