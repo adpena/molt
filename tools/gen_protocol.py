@@ -102,6 +102,7 @@ _TYPING_NAMES = {
 # Imports that are only valid under ``if TYPE_CHECKING`` (avoid an import cycle /
 # runtime cost): identifier -> ``from`` module.
 _TYPE_CHECKING_IMPORTS = {
+    "FunctionKind": "molt.frontend.sema",
     "SemaResult": "molt.frontend.sema",
     "TypeFacts": "molt.type_facts",
 }

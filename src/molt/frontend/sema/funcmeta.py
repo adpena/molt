@@ -18,6 +18,7 @@ deliberately does **not** live in this module.
 from __future__ import annotations
 
 import ast
+from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 
@@ -41,6 +42,182 @@ def normalize_function_kind(kind: object) -> FunctionKind | None:
     if isinstance(kind, str) and kind in FUNCTION_KIND_VALUES:
         return FunctionKind(kind)
     return None
+
+
+def _require_stateful_function_kind(kind: FunctionKind) -> FunctionKind:
+    if kind not in STATEFUL_FUNCTION_KINDS:
+        raise ValueError(f"{kind!r} is not a stateful function kind")
+    return kind
+
+
+def stateful_function_task_kind(kind: FunctionKind) -> str:
+    kind = _require_stateful_function_kind(kind)
+    if kind == FunctionKind.ASYNC:
+        return "coroutine"
+    return "generator"
+
+
+def stateful_function_result_type_hint(kind: FunctionKind) -> str:
+    kind = _require_stateful_function_kind(kind)
+    if kind == FunctionKind.ASYNC:
+        return "Future"
+    if kind == FunctionKind.ASYNC_GENERATOR:
+        return "async_generator"
+    return "generator"
+
+
+def stateful_function_tag(kind: FunctionKind, *, has_closure: bool) -> str:
+    kind = _require_stateful_function_kind(kind)
+    if kind == FunctionKind.ASYNC:
+        return "AsyncClosureFunc" if has_closure else "AsyncFunc"
+    if kind == FunctionKind.ASYNC_GENERATOR:
+        return "AsyncGenClosureFunc" if has_closure else "AsyncGenFunc"
+    return "GenClosureFunc" if has_closure else "GenFunc"
+
+
+STATEFUL_FUNCTION_TAGS: dict[str, tuple[FunctionKind, bool]] = {
+    stateful_function_tag(kind, has_closure=has_closure): (kind, has_closure)
+    for kind in (
+        FunctionKind.ASYNC,
+        FunctionKind.GENERATOR,
+        FunctionKind.ASYNC_GENERATOR,
+    )
+    for has_closure in (False, True)
+}
+
+
+@dataclass(frozen=True)
+class StatefulFunctionTypeHint:
+    kind: FunctionKind
+    has_closure: bool
+    poll_symbol: str
+    closure_size: int
+
+    def __post_init__(self) -> None:
+        _require_stateful_function_kind(self.kind)
+        if self.closure_size < 0:
+            raise ValueError("stateful function closure_size must be non-negative")
+
+    @property
+    def result_type_hint(self) -> str:
+        return stateful_function_result_type_hint(self.kind)
+
+    @property
+    def task_kind(self) -> str:
+        return stateful_function_task_kind(self.kind)
+
+    @property
+    def function_tag(self) -> str:
+        return stateful_function_tag(self.kind, has_closure=self.has_closure)
+
+    def frame_plan(
+        self,
+        *,
+        param_count: int,
+        gen_control_size: int,
+    ) -> StatefulFunctionFramePlan:
+        return stateful_function_frame_plan(
+            kind=self.kind,
+            poll_symbol=self.poll_symbol,
+            param_count=param_count,
+            has_closure=self.has_closure,
+            gen_control_size=gen_control_size,
+        )
+
+
+def parse_stateful_function_type_hint(
+    type_hint: object,
+) -> StatefulFunctionTypeHint | None:
+    if not isinstance(type_hint, str):
+        return None
+    parts = type_hint.split(":")
+    if len(parts) != 3:
+        return None
+    tag, poll_symbol, raw_closure_size = parts
+    tag_entry = STATEFUL_FUNCTION_TAGS.get(tag)
+    if tag_entry is None or not poll_symbol:
+        return None
+    try:
+        closure_size = int(raw_closure_size)
+    except ValueError:
+        return None
+    kind, has_closure = tag_entry
+    return StatefulFunctionTypeHint(
+        kind=kind,
+        has_closure=has_closure,
+        poll_symbol=poll_symbol,
+        closure_size=closure_size,
+    )
+
+
+@dataclass(frozen=True)
+class StatefulFunctionFramePlan:
+    kind: FunctionKind
+    poll_symbol: str
+    param_count: int
+    has_closure: bool
+    gen_control_size: int
+
+    def __post_init__(self) -> None:
+        _require_stateful_function_kind(self.kind)
+        if self.param_count < 0:
+            raise ValueError("stateful function param_count must be non-negative")
+
+    @property
+    def include_gen_control(self) -> bool:
+        return self.kind != FunctionKind.ASYNC
+
+    @property
+    def payload_slots(self) -> int:
+        return self.param_count + (1 if self.has_closure else 0)
+
+    @property
+    def task_kind(self) -> str:
+        return stateful_function_task_kind(self.kind)
+
+    @property
+    def result_type_hint(self) -> str:
+        return stateful_function_result_type_hint(self.kind)
+
+    @property
+    def function_tag(self) -> str:
+        return stateful_function_tag(self.kind, has_closure=self.has_closure)
+
+    @property
+    def async_closure_offset(self) -> int | None:
+        if not self.has_closure:
+            return None
+        if self.include_gen_control:
+            return self.gen_control_size
+        return 0
+
+    @property
+    def async_locals_base(self) -> int:
+        if self.has_closure:
+            return (self.gen_control_size if self.include_gen_control else 0) + 8
+        if self.include_gen_control:
+            return self.gen_control_size
+        return 0
+
+    def function_type_hint(self, closure_size: int) -> str:
+        return f"{self.function_tag}:{self.poll_symbol}:{closure_size}"
+
+
+def stateful_function_frame_plan(
+    *,
+    kind: FunctionKind,
+    poll_symbol: str,
+    param_count: int,
+    has_closure: bool,
+    gen_control_size: int,
+) -> StatefulFunctionFramePlan:
+    return StatefulFunctionFramePlan(
+        kind=kind,
+        poll_symbol=poll_symbol,
+        param_count=param_count,
+        has_closure=has_closure,
+        gen_control_size=gen_control_size,
+    )
 
 
 def _push_arg_annotations(stack: list[ast.AST], args: ast.arguments) -> None:
