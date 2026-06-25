@@ -214,12 +214,14 @@ RawF64` atomically across molt-tir. That moots this doc's original STEP 7 rename
 > because the rename was deferred into the int cut for atomicity; once the float
 > cut lands it is already done. The int cut's STEPs 1–6 below assume `RawF64`.
 
-The float cut also established the exact migration shape this cut mirrors: it
-folded the name-keyed `float_primary_vars` set into `repr_by_name` and migrated
-"all 41 `fc/` handler files + `function_compiler.rs` as one structural arc (1206
-lines)" (float doc, STEP 4). The int cut used the same full-arc shape for the
-deleted `int_primary_vars` authority (1353 pre-migration audit occurrences; see
-the migration map).
+The float cut established the exact migration shape this cut mirrors: it
+stopped native handlers from owning a cloned raw-F64 membership set and migrated
+"all 41 `fc/` handler files + `function_compiler.rs` as one structural arc"
+(float doc, STEP 4). The int cut used the same full-arc shape for the deleted
+`int_primary_vars` authority (1353 pre-migration audit occurrences; see the
+migration map). The later native scalar-plan cut completed that authority class
+for native lowering: bool/F64 membership and raw-int membership now enter every
+native handler through one `ScalarRepresentationPlan` reference and predicates.
 
 One difference in expected outcome: the float cut was classified
 PARITY-PRESERVING / TIE because the native float phi was already raw `f64`. The

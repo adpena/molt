@@ -40,14 +40,12 @@ pub(in crate::native_backend::function_compiler) fn handle_module_op(
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
-    int_carriers_plan: &ScalarRepresentationPlan,
-    float_primary_vars: &BTreeSet<String>,
-    bool_primary_vars: &BTreeSet<String>,
+    representation_plan: &ScalarRepresentationPlan,
     nbc: &crate::NanBoxConsts,
     local_inc_ref_obj: FuncRef,
     hoisted_str_slot: &BTreeMap<String, cranelift_codegen::ir::StackSlot>,
 ) {
-    // Reconstruct the original op-local closure (captures bool_primary_vars +
+    // Reconstruct the original op-local closure (captures representation_plan +
     // nbc; all other state threads through explicit params) so the moved arm
     // bodies call it exactly as they did inline.
     let var_get_boxed_overflow_safe = |module: &mut ObjectModule,
@@ -60,8 +58,7 @@ pub(in crate::native_backend::function_compiler) fn handle_module_op(
                                        sealed_blocks: &mut BTreeSet<Block>,
                                        vars: &BTreeMap<String, Variable>,
                                        name: &str,
-                                       int_carriers_plan: &ScalarRepresentationPlan,
-                                       float_primary_vars: &BTreeSet<String>|
+                                       representation_plan: &ScalarRepresentationPlan|
      -> Option<crate::VarValue> {
         var_get_boxed_overflow_safe_fn(
             module,
@@ -71,9 +68,7 @@ pub(in crate::native_backend::function_compiler) fn handle_module_op(
             sealed_blocks,
             vars,
             name,
-            int_carriers_plan,
-            float_primary_vars,
-            bool_primary_vars,
+            representation_plan,
             nbc,
         )
     };
@@ -88,8 +83,7 @@ pub(in crate::native_backend::function_compiler) fn handle_module_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Module name not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -116,8 +110,7 @@ pub(in crate::native_backend::function_compiler) fn handle_module_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Module name not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -144,8 +137,7 @@ pub(in crate::native_backend::function_compiler) fn handle_module_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Module name not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -176,8 +168,7 @@ pub(in crate::native_backend::function_compiler) fn handle_module_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Module name not found");
             let module_bits = var_get_boxed_overflow_safe(
@@ -188,8 +179,7 @@ pub(in crate::native_backend::function_compiler) fn handle_module_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Module not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -214,8 +204,7 @@ pub(in crate::native_backend::function_compiler) fn handle_module_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Module name not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -238,8 +227,7 @@ pub(in crate::native_backend::function_compiler) fn handle_module_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .unwrap_or_else(|| {
                 panic!(
@@ -273,8 +261,7 @@ pub(in crate::native_backend::function_compiler) fn handle_module_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[1],
-                    int_carriers_plan,
-                    float_primary_vars,
+                    representation_plan,
                 )
                 .unwrap_or_else(|| {
                     panic!(
@@ -316,8 +303,7 @@ pub(in crate::native_backend::function_compiler) fn handle_module_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Module not found");
             let attr_bits = *var_get_boxed_overflow_safe(
@@ -328,8 +314,7 @@ pub(in crate::native_backend::function_compiler) fn handle_module_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Attr not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -356,8 +341,7 @@ pub(in crate::native_backend::function_compiler) fn handle_module_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Module not found");
             let attr_bits = *var_get_boxed_overflow_safe(
@@ -368,8 +352,7 @@ pub(in crate::native_backend::function_compiler) fn handle_module_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Attr not found");
             let callee_name = if op.kind == "module_del_global_if_present" {
@@ -403,8 +386,7 @@ pub(in crate::native_backend::function_compiler) fn handle_module_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Module not found");
             let attr_bits = *var_get_boxed_overflow_safe(
@@ -415,8 +397,7 @@ pub(in crate::native_backend::function_compiler) fn handle_module_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Attr not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -443,8 +424,7 @@ pub(in crate::native_backend::function_compiler) fn handle_module_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Module not found");
             let attr_bits = if let Some(&slot) = hoisted_str_slot.get(&args[1]) {
@@ -458,8 +438,7 @@ pub(in crate::native_backend::function_compiler) fn handle_module_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[1],
-                    int_carriers_plan,
-                    float_primary_vars,
+                    representation_plan,
                 )
                 .expect("Attr not found")
             };
@@ -471,8 +450,7 @@ pub(in crate::native_backend::function_compiler) fn handle_module_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[2],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .unwrap_or_else(|| {
                 panic!(
@@ -502,8 +480,7 @@ pub(in crate::native_backend::function_compiler) fn handle_module_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Module not found");
             let dst_bits = var_get_boxed_overflow_safe(
@@ -514,8 +491,7 @@ pub(in crate::native_backend::function_compiler) fn handle_module_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Module not found");
             let callee = SimpleBackend::import_func_id_split(

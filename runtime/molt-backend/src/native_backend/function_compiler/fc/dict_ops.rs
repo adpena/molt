@@ -50,14 +50,11 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
-    int_carriers_plan: &ScalarRepresentationPlan,
-    float_primary_vars: &BTreeSet<String>,
-    bool_primary_vars: &BTreeSet<String>,
-    scalar_fast_paths_enabled: bool,
     representation_plan: &ScalarRepresentationPlan,
+    scalar_fast_paths_enabled: bool,
     nbc: &crate::NanBoxConsts,
 ) -> OpFlow {
-    // Reconstruct the original op-local closure (captures bool_primary_vars +
+    // Reconstruct the original op-local closure (captures representation_plan +
     // nbc; all other state threads through explicit params) so the moved arm
     // bodies call it exactly as they did inline.
     let var_get_boxed_overflow_safe = |module: &mut ObjectModule,
@@ -70,8 +67,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                                        sealed_blocks: &mut BTreeSet<Block>,
                                        vars: &BTreeMap<String, Variable>,
                                        name: &str,
-                                       int_carriers_plan: &ScalarRepresentationPlan,
-                                       float_primary_vars: &BTreeSet<String>|
+                                       representation_plan: &ScalarRepresentationPlan|
      -> Option<crate::VarValue> {
         var_get_boxed_overflow_safe_fn(
             module,
@@ -81,9 +77,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
             sealed_blocks,
             vars,
             name,
-            int_carriers_plan,
-            float_primary_vars,
-            bool_primary_vars,
+            representation_plan,
             nbc,
         )
     };
@@ -128,8 +122,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                     &mut *sealed_blocks,
                     vars,
                     &pair[0],
-                    int_carriers_plan,
-                    float_primary_vars,
+                    representation_plan,
                 )
                 .expect("Dict key not found");
                 let val = var_get_boxed_overflow_safe(
@@ -140,8 +133,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                     &mut *sealed_blocks,
                     vars,
                     &pair[1],
-                    int_carriers_plan,
-                    float_primary_vars,
+                    representation_plan,
                 )
                 .expect("Dict val not found");
                 let set_call = builder.ins().call(set_local, &[current, *key, *val]);
@@ -159,8 +151,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Dict source not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -187,8 +178,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Dict not found");
             let key = var_get_boxed_overflow_safe(
@@ -199,8 +189,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Dict key not found");
             let default = var_get_boxed_overflow_safe(
@@ -211,8 +200,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[2],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Dict default not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -239,8 +227,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Dict not found");
             let key = var_get_boxed_overflow_safe(
@@ -251,8 +238,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Dict key not found");
             let delta = var_get_boxed_overflow_safe(
@@ -263,8 +249,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[2],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Dict increment value not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -291,8 +276,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Dict not found");
             let key = var_get_boxed_overflow_safe(
@@ -303,8 +287,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Dict key not found");
             let delta = var_get_boxed_overflow_safe(
@@ -315,8 +298,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[2],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Dict increment value not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -343,8 +325,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Line not found");
             let dict = var_get_boxed_overflow_safe(
@@ -355,8 +336,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Dict not found");
             let delta = var_get_boxed_overflow_safe(
@@ -367,8 +347,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[2],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Delta not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -395,8 +374,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Dict not found");
             let line = var_get_boxed_overflow_safe(
@@ -407,8 +385,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Line not found");
             let bucket_size = var_get_boxed_overflow_safe(
@@ -419,8 +396,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[2],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Bucket size not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -449,8 +425,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Line not found");
             let sep = var_get_boxed_overflow_safe(
@@ -461,8 +436,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Separator not found");
             let dict = var_get_boxed_overflow_safe(
@@ -473,8 +447,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[2],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Dict not found");
             let delta = var_get_boxed_overflow_safe(
@@ -485,8 +458,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[3],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Delta not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -515,8 +487,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Dict not found");
             let key = var_get_boxed_overflow_safe(
@@ -527,8 +498,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Dict key not found");
             let default = var_get_boxed_overflow_safe(
@@ -539,8 +509,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[2],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Dict default not found");
             let has_default = var_get_boxed_overflow_safe(
@@ -551,8 +520,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[3],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Dict default flag not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -581,8 +549,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Dict not found");
             let key = var_get_boxed_overflow_safe(
@@ -593,8 +560,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Dict key not found");
             let default = var_get_boxed_overflow_safe(
@@ -605,8 +571,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[2],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Dict default not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -633,8 +598,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Dict not found");
             let key = var_get_boxed_overflow_safe(
@@ -645,8 +609,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Dict key not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -673,8 +636,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Dict not found");
             let other = var_get_boxed_overflow_safe(
@@ -685,8 +647,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Dict update iterable not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -713,8 +674,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Dict not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -741,8 +701,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Dict not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -769,8 +728,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Dict not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -797,8 +755,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Dict not found");
             let other = var_get_boxed_overflow_safe(
@@ -809,8 +766,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Dict update mapping not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -837,8 +793,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Dict not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -865,8 +820,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Dict not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -893,8 +847,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Dict not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -921,8 +874,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .unwrap_or_else(|| panic!("Dict not found in {} op {}", func_name, op_idx));
             let key_bits = var_get_boxed_overflow_safe(
@@ -933,8 +885,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .unwrap_or_else(|| panic!("Key not found in {} op {}", func_name, op_idx));
             let val_bits = var_get_boxed_overflow_safe(
@@ -945,8 +896,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[2],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .unwrap_or_else(|| panic!("Value not found in {} op {}", func_name, op_idx));
             // Dispatch based on container specialization:
@@ -960,8 +910,8 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
             ) {
                 // raw_int_shadow fast path for list_int dict_set.
                 // Inside loops, use Variable-only shadows (phi-correct).
-                let raw_key_opt = int_raw_value(&mut *builder, vars, int_carriers_plan, &args[1]);
-                let raw_val_opt = int_raw_value(&mut *builder, vars, int_carriers_plan, &args[2]);
+                let raw_key_opt = int_raw_value(&mut *builder, vars, representation_plan, &args[1]);
+                let raw_val_opt = int_raw_value(&mut *builder, vars, representation_plan, &args[2]);
                 if let (Some(raw_key), Some(raw_val)) = (raw_key_opt, raw_val_opt) {
                     let callee = SimpleBackend::import_func_id_split(
                         &mut *module,
@@ -1028,8 +978,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .unwrap_or_else(|| panic!("Dict not found in {} op {}", func_name, op_idx));
             let key_bits = var_get_boxed_overflow_safe(
@@ -1040,8 +989,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .unwrap_or_else(|| panic!("Key not found in {} op {}", func_name, op_idx));
             let val_bits = var_get_boxed_overflow_safe(
@@ -1052,8 +1000,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[2],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .unwrap_or_else(|| panic!("Value not found in {} op {}", func_name, op_idx));
             let callee = SimpleBackend::import_func_id_split(

@@ -32,12 +32,10 @@ pub(in crate::native_backend::function_compiler) fn handle_callargs_op(
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
-    int_carriers_plan: &ScalarRepresentationPlan,
-    float_primary_vars: &BTreeSet<String>,
-    bool_primary_vars: &BTreeSet<String>,
+    representation_plan: &ScalarRepresentationPlan,
     nbc: &crate::NanBoxConsts,
 ) -> OpFlow {
-    // Reconstruct the original op-local closure (captures bool_primary_vars +
+    // Reconstruct the original op-local closure (captures representation_plan +
     // nbc; all other state threads through explicit params) so the moved arm
     // bodies call it exactly as they did inline.
     let var_get_boxed_overflow_safe = |module: &mut ObjectModule,
@@ -50,8 +48,7 @@ pub(in crate::native_backend::function_compiler) fn handle_callargs_op(
                                        sealed_blocks: &mut BTreeSet<Block>,
                                        vars: &BTreeMap<String, Variable>,
                                        name: &str,
-                                       int_carriers_plan: &ScalarRepresentationPlan,
-                                       float_primary_vars: &BTreeSet<String>|
+                                       representation_plan: &ScalarRepresentationPlan|
      -> Option<crate::VarValue> {
         var_get_boxed_overflow_safe_fn(
             module,
@@ -61,9 +58,7 @@ pub(in crate::native_backend::function_compiler) fn handle_callargs_op(
             sealed_blocks,
             vars,
             name,
-            int_carriers_plan,
-            float_primary_vars,
-            bool_primary_vars,
+            representation_plan,
             nbc,
         )
     };
@@ -96,8 +91,7 @@ pub(in crate::native_backend::function_compiler) fn handle_callargs_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Callargs builder not found");
             let val = var_get_boxed_overflow_safe(
@@ -108,8 +102,7 @@ pub(in crate::native_backend::function_compiler) fn handle_callargs_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Callargs value not found");
             let local_callee = import_func_ref(
@@ -137,8 +130,7 @@ pub(in crate::native_backend::function_compiler) fn handle_callargs_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Callargs builder not found");
             let name = var_get_boxed_overflow_safe(
@@ -149,8 +141,7 @@ pub(in crate::native_backend::function_compiler) fn handle_callargs_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Callargs name not found");
             let val = var_get_boxed_overflow_safe(
@@ -161,8 +152,7 @@ pub(in crate::native_backend::function_compiler) fn handle_callargs_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[2],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Callargs value not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -191,8 +181,7 @@ pub(in crate::native_backend::function_compiler) fn handle_callargs_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Callargs builder not found");
             let iterable = var_get_boxed_overflow_safe(
@@ -203,8 +192,7 @@ pub(in crate::native_backend::function_compiler) fn handle_callargs_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Callargs iterable not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -231,8 +219,7 @@ pub(in crate::native_backend::function_compiler) fn handle_callargs_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Callargs builder not found");
             let mapping = var_get_boxed_overflow_safe(
@@ -243,8 +230,7 @@ pub(in crate::native_backend::function_compiler) fn handle_callargs_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Callargs mapping not found");
             let callee = SimpleBackend::import_func_id_split(

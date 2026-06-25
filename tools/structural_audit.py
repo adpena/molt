@@ -461,7 +461,9 @@ def _python_top_level_regions_fallback(text: str) -> list[SourceRegion]:
     regions: list[SourceRegion] = []
     for i, (kind, name, start) in enumerate(starts):
         end = starts[i + 1][2] - 1 if i + 1 < len(starts) else _line_count(text)
-        regions.append(SourceRegion(kind=kind, name=name, start_line=start, end_line=end))
+        regions.append(
+            SourceRegion(kind=kind, name=name, start_line=start, end_line=end)
+        )
     return regions
 
 
@@ -488,16 +490,14 @@ def _is_structural_god_region_set(large_regions: list[SourceRegion]) -> bool:
     return (
         len(large_regions) >= 2
         and kind_count >= 2
-        and _structural_god_score(large_regions)
-        >= _STRUCTURAL_GOD_MIXED_KIND_MIN_SCORE
+        and _structural_god_score(large_regions) >= _STRUCTURAL_GOD_MIXED_KIND_MIN_SCORE
     )
 
 
 def _region_summary(regions: list[SourceRegion], limit: int = 6) -> str:
     ranked = sorted(regions, key=lambda region: (-region.span, region.start_line))
     parts = [
-        f"{region.kind} {region.name} {region.span} lines"
-        for region in ranked[:limit]
+        f"{region.kind} {region.name} {region.span} lines" for region in ranked[:limit]
     ]
     if len(ranked) > limit:
         parts.append(f"{len(ranked) - limit} more")
@@ -735,6 +735,66 @@ def probe_debt_markers(root: Path) -> list[Finding]:
     return findings
 
 
+_NATIVE_SCALAR_PLAN_SURFACE_REL = (
+    "runtime/molt-backend/src/native_backend/function_compiler"
+)
+_NATIVE_SCALAR_PLAN_FORBIDDEN = {
+    r"\bbool_primary_vars\b": "raw-bool membership cloned out of ScalarRepresentationPlan",
+    r"\bfloat_primary_vars\b": "raw-f64 membership cloned out of ScalarRepresentationPlan",
+    r"\bint_carriers_plan\b": "legacy plan alias beside ScalarRepresentationPlan",
+    r"\bprimary_name_sets\s*\(": "native backend cloned primary-name sets instead of plan predicates",
+}
+
+
+def probe_native_scalar_plan_authority(root: Path) -> list[Finding]:
+    """Native scalar lowering must consume ScalarRepresentationPlan directly.
+
+    The native backend used to thread bool/float carrier BTreeSets plus an
+    int-carrier plan alias through every extracted handler. That split made raw
+    scalar representation a multi-authority contract. This probe keeps the hot
+    lowering path optimized around one plan: handlers may ask plan predicates,
+    but may not clone carrier membership into local side sets.
+    """
+    targets = [
+        root / "runtime/molt-backend/src/native_backend/function_compiler.rs",
+    ]
+    base = root / _NATIVE_SCALAR_PLAN_SURFACE_REL
+    if base.is_dir():
+        targets.extend(sorted(base.rglob("*.rs")))
+
+    findings: list[Finding] = []
+    for path in targets:
+        if not path.is_file():
+            continue
+        try:
+            text = path.read_text(errors="replace")
+        except OSError:
+            continue
+        rel = path.relative_to(root).as_posix()
+        for pattern, detail in _NATIVE_SCALAR_PLAN_FORBIDDEN.items():
+            hits = list(re.finditer(pattern, text))
+            if not hits:
+                continue
+            first_line = _line_of_offset(text, hits[0].start())
+            findings.append(
+                Finding(
+                    probe="native_scalar_plan_authority",
+                    severity="high",
+                    title=f"{len(hits)} forbidden native scalar-plan clone(s)",
+                    location=f"{rel}:{first_line}",
+                    detail=detail,
+                    suggested_action=(
+                        "route native scalar membership through "
+                        "ScalarRepresentationPlan predicates such as "
+                        "is_raw_int_carrier_name/is_bool_unboxed/is_float_unboxed"
+                    ),
+                    class_retired="native-scalar-representation-drift",
+                    metric=float(len(hits)),
+                )
+            )
+    return findings
+
+
 # Predicate-name shapes that classify a SPECIFIC opcode-semantic property.
 # Deliberately narrow (no bare `escape`/`classify`) so string-escaping helpers
 # and generic classifiers do not masquerade as duplicate opcode authorities.
@@ -900,6 +960,7 @@ PROBES = (
     probe_god_files,
     probe_structural_god_files,
     probe_debt_markers,
+    probe_native_scalar_plan_authority,
     probe_duplicate_authorities,
     probe_registry_reconciliation,
 )
@@ -933,6 +994,9 @@ def ratchet_metrics(findings: list[Finding]) -> dict[str, float]:
     debt = [f for f in findings if f.probe == "debt_marker"]
     god = [f for f in findings if f.probe == "god_file"]
     structural_god = [f for f in findings if f.probe == "structural_god_file"]
+    native_scalar_plan = [
+        f for f in findings if f.probe == "native_scalar_plan_authority"
+    ]
     dup = [f for f in findings if f.probe == "duplicate_authority"]
     return {
         # the hand-maintained-opcode-fact surface (match classifiers w/ silent default)
@@ -952,6 +1016,9 @@ def ratchet_metrics(findings: list[Finding]) -> dict[str, float]:
         ),
         "god_file_large_regions": float(
             sum(_large_region_count_from_title(f.title) for f in structural_god)
+        ),
+        "native_scalar_plan_authority_violations": float(
+            sum(int(f.metric) for f in native_scalar_plan)
         ),
         "duplicate_authorities": float(len(dup)),
     }

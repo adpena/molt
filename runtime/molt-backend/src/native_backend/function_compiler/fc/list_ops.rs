@@ -46,15 +46,13 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
-    int_carriers_plan: &ScalarRepresentationPlan,
-    float_primary_vars: &BTreeSet<String>,
-    bool_primary_vars: &BTreeSet<String>,
+    representation_plan: &ScalarRepresentationPlan,
     nbc: &crate::NanBoxConsts,
     bool_like_vars: &BTreeSet<String>,
     local_inc_ref_obj: FuncRef,
     list_index_fast_paths: &mut ListIndexFastPathState,
 ) -> OpFlow {
-    // Reconstruct the original op-local closure (captures bool_primary_vars +
+    // Reconstruct the original op-local closure (captures representation_plan +
     // nbc; all other state threads through explicit params) so the moved arm
     // bodies call it exactly as they did inline.
     let var_get_boxed_overflow_safe = |module: &mut ObjectModule,
@@ -67,8 +65,7 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                                        sealed_blocks: &mut BTreeSet<Block>,
                                        vars: &BTreeMap<String, Variable>,
                                        name: &str,
-                                       int_carriers_plan: &ScalarRepresentationPlan,
-                                       float_primary_vars: &BTreeSet<String>|
+                                       representation_plan: &ScalarRepresentationPlan|
      -> Option<crate::VarValue> {
         var_get_boxed_overflow_safe_fn(
             module,
@@ -78,9 +75,7 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
             sealed_blocks,
             vars,
             name,
-            int_carriers_plan,
-            float_primary_vars,
-            bool_primary_vars,
+            representation_plan,
             nbc,
         )
     };
@@ -121,8 +116,7 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                     &mut *sealed_blocks,
                     vars,
                     name,
-                    int_carriers_plan,
-                    float_primary_vars,
+                    representation_plan,
                 )
                 .unwrap_or_else(|| panic!("List elem not found in {} op {}", func_name, op_idx));
                 // Inc-ref each element so the builder owns its own
@@ -158,8 +152,7 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("list_int_new: count not found");
             let fill = var_get_boxed_overflow_safe(
@@ -170,8 +163,7 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("list_int_new: fill_value not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -198,8 +190,7 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("list_fill_new: count not found");
             let fill = var_get_boxed_overflow_safe(
@@ -210,8 +201,7 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("list_fill_new: fill_value not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -238,8 +228,7 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("List-from-range start not found");
             let stop = var_get_boxed_overflow_safe(
@@ -250,8 +239,7 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("List-from-range stop not found");
             let step = var_get_boxed_overflow_safe(
@@ -262,8 +250,7 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[2],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("List-from-range step not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -292,8 +279,7 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("List not found");
             // Deferred overflow re-boxing at heap store (list_append).
@@ -304,11 +290,9 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 &mut *import_refs,
                 &mut *sealed_blocks,
                 bool_like_vars,
-                bool_primary_vars,
                 vars,
                 nbc,
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
                 &args[1],
             );
             let callee = SimpleBackend::import_func_id_split(
@@ -336,8 +320,7 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("List not found");
             let idx = var_get_boxed_overflow_safe(
@@ -348,8 +331,7 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("List pop index not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -377,8 +359,7 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("List not found");
             let other = var_get_boxed_overflow_safe(
@@ -389,8 +370,7 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("List extend iterable not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -418,8 +398,7 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("List not found");
             let idx = var_get_boxed_overflow_safe(
@@ -430,8 +409,7 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("List insert index not found");
             let val = var_get_boxed_overflow_safe(
@@ -442,8 +420,7 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[2],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("List insert value not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -472,8 +449,7 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("List not found");
             let val = var_get_boxed_overflow_safe(
@@ -484,8 +460,7 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("List remove value not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -514,8 +489,7 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("List not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -542,8 +516,7 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("List not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -570,8 +543,7 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("List not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -598,8 +570,7 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("List not found");
             let val = var_get_boxed_overflow_safe(
@@ -610,8 +581,7 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("List count value not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -638,8 +608,7 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("List not found");
             let val = var_get_boxed_overflow_safe(
@@ -650,8 +619,7 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("List index value not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -678,8 +646,7 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("List not found");
             let val = var_get_boxed_overflow_safe(
@@ -690,8 +657,7 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("List index value not found");
             let start = var_get_boxed_overflow_safe(
@@ -702,8 +668,7 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[2],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("List index start not found");
             let stop = var_get_boxed_overflow_safe(
@@ -714,8 +679,7 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[3],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("List index stop not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -744,8 +708,7 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Tuple source not found");
             let callee = SimpleBackend::import_func_id_split(

@@ -28,9 +28,7 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
-    int_carriers_plan: &ScalarRepresentationPlan,
-    bool_primary_vars: &BTreeSet<String>,
-    float_primary_vars: &BTreeSet<String>,
+    representation_plan: &ScalarRepresentationPlan,
     int_like_vars: &BTreeSet<String>,
     bool_like_vars: &BTreeSet<String>,
     first_defined_at: &BTreeMap<String, usize>,
@@ -56,7 +54,6 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
     is_block_filled: &mut bool,
     native_rc_tracking_enabled: bool,
     scalar_fast_paths_enabled: bool,
-    representation_plan: &ScalarRepresentationPlan,
     maybe_debug_seal: &dyn Fn(&str, usize, Block),
     local_dec_ref_obj: FuncRef,
     nbc: &crate::NanBoxConsts,
@@ -72,8 +69,6 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
             op,
             int_like_vars,
             bool_like_vars,
-            int_carriers_plan,
-            bool_primary_vars,
         )
     };
     let var_get_boxed_overflow_safe = |module: &mut ObjectModule,
@@ -86,8 +81,7 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                                        sealed_blocks: &mut BTreeSet<Block>,
                                        vars: &BTreeMap<String, Variable>,
                                        name: &str,
-                                       int_carriers_plan: &ScalarRepresentationPlan,
-                                       float_primary_vars: &BTreeSet<String>|
+                                       representation_plan: &ScalarRepresentationPlan|
      -> Option<crate::VarValue> {
         var_get_boxed_overflow_safe_fn(
             module,
@@ -97,9 +91,7 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
             sealed_blocks,
             vars,
             name,
-            int_carriers_plan,
-            float_primary_vars,
-            bool_primary_vars,
+            representation_plan,
             nbc,
         )
     };
@@ -124,7 +116,7 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             // Inline truthiness for bool/int types to avoid function call overhead.
             let cond_bool = if let Some(raw_val) =
-                bool_raw_value(&mut *builder, vars, bool_primary_vars, &args[0])
+                bool_raw_value(&mut *builder, vars, representation_plan, &args[0])
             {
                 // Raw bool from proven list_bool getitem or const_bool.
                 // Branch directly on raw 0/1 — ZERO NaN-box overhead.
@@ -139,15 +131,14 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                     sealed_blocks,
                     vars,
                     &args[0],
-                    int_carriers_plan,
-                    float_primary_vars,
+                    representation_plan,
                 )
                 .expect("Cond not found");
                 let one = builder.ins().iconst(types::I64, 1);
                 let bit0 = builder.ins().band(*cond, one);
                 builder.ins().icmp_imm(IntCC::NotEqual, bit0, 0)
             } else if let Some(raw_shadow) =
-                int_raw_value(&mut *builder, vars, int_carriers_plan, &args[0])
+                int_raw_value(&mut *builder, vars, representation_plan, &args[0])
             {
                 // Proven raw i64 carrier: truthiness is `value != 0`.
                 builder.ins().icmp_imm(IntCC::NotEqual, raw_shadow, 0)
@@ -167,8 +158,7 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                     sealed_blocks,
                     vars,
                     &args[0],
-                    int_carriers_plan,
-                    float_primary_vars,
+                    representation_plan,
                 )
                 .expect("Cond not found");
                 let cond_val = unbox_int_or_bool(&mut *builder, *cond, nbc);
@@ -185,8 +175,7 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                     sealed_blocks,
                     vars,
                     &args[0],
-                    int_carriers_plan,
-                    float_primary_vars,
+                    representation_plan,
                 )
                 .expect("Cond not found");
                 // Speculative inline truthiness: check NaN-box tag
@@ -468,25 +457,13 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
             let phi_params: Vec<Value> = phi_ops
                 .iter()
                 .map(|(out, _, _)| {
-                    let storage = merge_rebind_storage_for_name(
-                        out,
-                        int_carriers_plan,
-                        bool_primary_vars,
-                        float_primary_vars,
-                    );
+                    let storage = merge_rebind_storage_for_name(out, representation_plan);
                     builder.append_block_param(merge_block, merge_rebind_storage_clif_type(storage))
                 })
                 .collect();
             let merge_rebind_storages: Vec<MergeRebindStorageKind> = merge_rebind_names
                 .iter()
-                .map(|name| {
-                    merge_rebind_storage_for_name(
-                        name,
-                        int_carriers_plan,
-                        bool_primary_vars,
-                        float_primary_vars,
-                    )
-                })
+                .map(|name| merge_rebind_storage_for_name(name, representation_plan))
                 .collect();
             let merge_rebind_params: Vec<Value> = merge_rebind_storages
                 .iter()
@@ -533,9 +510,7 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                             sealed_blocks,
                             vars,
                             bool_like_vars,
-                            int_carriers_plan,
-                            bool_primary_vars,
-                            float_primary_vars,
+                            representation_plan,
                             nbc,
                             name,
                             storage,
@@ -626,12 +601,7 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                 if !frame.phi_ops.is_empty() {
                     if frame.phi_params.is_empty() {
                         for (out, then_name, _else_name) in &frame.phi_ops {
-                            let storage = merge_rebind_storage_for_name(
-                                out,
-                                int_carriers_plan,
-                                bool_primary_vars,
-                                float_primary_vars,
-                            );
+                            let storage = merge_rebind_storage_for_name(out, representation_plan);
                             let then_val = merge_rebind_value_for_storage(
                                 &mut *module,
                                 &mut *import_ids,
@@ -640,9 +610,7 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                                 sealed_blocks,
                                 vars,
                                 bool_like_vars,
-                                int_carriers_plan,
-                                bool_primary_vars,
-                                float_primary_vars,
+                                representation_plan,
                                 nbc,
                                 then_name,
                                 storage,
@@ -654,12 +622,7 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                         }
                     } else {
                         for (out, then_name, _else_name) in &frame.phi_ops {
-                            let storage = merge_rebind_storage_for_name(
-                                out,
-                                int_carriers_plan,
-                                bool_primary_vars,
-                                float_primary_vars,
-                            );
+                            let storage = merge_rebind_storage_for_name(out, representation_plan);
                             let then_val = merge_rebind_value_for_storage(
                                 &mut *module,
                                 &mut *import_ids,
@@ -668,9 +631,7 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                                 sealed_blocks,
                                 vars,
                                 bool_like_vars,
-                                int_carriers_plan,
-                                bool_primary_vars,
-                                float_primary_vars,
+                                representation_plan,
                                 nbc,
                                 then_name,
                                 storage,
@@ -690,9 +651,7 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                             sealed_blocks,
                             vars,
                             bool_like_vars,
-                            int_carriers_plan,
-                            bool_primary_vars,
-                            float_primary_vars,
+                            representation_plan,
                             nbc,
                             name,
                             rebind_slot.storage,
@@ -848,12 +807,8 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                     if !frame.phi_ops.is_empty() {
                         if frame.phi_params.is_empty() {
                             for (out, _then_name, else_name) in &frame.phi_ops {
-                                let storage = merge_rebind_storage_for_name(
-                                    out,
-                                    int_carriers_plan,
-                                    bool_primary_vars,
-                                    float_primary_vars,
-                                );
+                                let storage =
+                                    merge_rebind_storage_for_name(out, representation_plan);
                                 let else_val = merge_rebind_value_for_storage(
                                     &mut *module,
                                     &mut *import_ids,
@@ -862,9 +817,7 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                                     sealed_blocks,
                                     vars,
                                     bool_like_vars,
-                                    int_carriers_plan,
-                                    bool_primary_vars,
-                                    float_primary_vars,
+                                    representation_plan,
                                     nbc,
                                     else_name,
                                     storage,
@@ -876,12 +829,8 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                             }
                         } else {
                             for (out, _then_name, else_name) in &frame.phi_ops {
-                                let storage = merge_rebind_storage_for_name(
-                                    out,
-                                    int_carriers_plan,
-                                    bool_primary_vars,
-                                    float_primary_vars,
-                                );
+                                let storage =
+                                    merge_rebind_storage_for_name(out, representation_plan);
                                 let else_val = merge_rebind_value_for_storage(
                                     &mut *module,
                                     &mut *import_ids,
@@ -890,9 +839,7 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                                     sealed_blocks,
                                     vars,
                                     bool_like_vars,
-                                    int_carriers_plan,
-                                    bool_primary_vars,
-                                    float_primary_vars,
+                                    representation_plan,
                                     nbc,
                                     else_name,
                                     storage,
@@ -912,9 +859,7 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                                 sealed_blocks,
                                 vars,
                                 bool_like_vars,
-                                int_carriers_plan,
-                                bool_primary_vars,
-                                float_primary_vars,
+                                representation_plan,
                                 nbc,
                                 name,
                                 rebind_slot.storage,
@@ -1025,12 +970,8 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                     if !frame.phi_ops.is_empty() {
                         if frame.phi_params.is_empty() {
                             for (out, then_name, _else_name) in &frame.phi_ops {
-                                let storage = merge_rebind_storage_for_name(
-                                    out,
-                                    int_carriers_plan,
-                                    bool_primary_vars,
-                                    float_primary_vars,
-                                );
+                                let storage =
+                                    merge_rebind_storage_for_name(out, representation_plan);
                                 let then_val = merge_rebind_value_for_storage(
                                     &mut *module,
                                     &mut *import_ids,
@@ -1039,9 +980,7 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                                     sealed_blocks,
                                     vars,
                                     bool_like_vars,
-                                    int_carriers_plan,
-                                    bool_primary_vars,
-                                    float_primary_vars,
+                                    representation_plan,
                                     nbc,
                                     then_name,
                                     storage,
@@ -1053,12 +992,8 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                             }
                         } else {
                             for (out, then_name, _else_name) in &frame.phi_ops {
-                                let storage = merge_rebind_storage_for_name(
-                                    out,
-                                    int_carriers_plan,
-                                    bool_primary_vars,
-                                    float_primary_vars,
-                                );
+                                let storage =
+                                    merge_rebind_storage_for_name(out, representation_plan);
                                 let then_val = merge_rebind_value_for_storage(
                                     &mut *module,
                                     &mut *import_ids,
@@ -1067,9 +1002,7 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                                     sealed_blocks,
                                     vars,
                                     bool_like_vars,
-                                    int_carriers_plan,
-                                    bool_primary_vars,
-                                    float_primary_vars,
+                                    representation_plan,
                                     nbc,
                                     then_name,
                                     storage,
@@ -1089,9 +1022,7 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                                 sealed_blocks,
                                 vars,
                                 bool_like_vars,
-                                int_carriers_plan,
-                                bool_primary_vars,
-                                float_primary_vars,
+                                representation_plan,
                                 nbc,
                                 name,
                                 rebind_slot.storage,
@@ -1205,12 +1136,8 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                     if !frame.phi_ops.is_empty() {
                         if frame.phi_params.is_empty() {
                             for (out, _then_name, else_name) in &frame.phi_ops {
-                                let storage = merge_rebind_storage_for_name(
-                                    out,
-                                    int_carriers_plan,
-                                    bool_primary_vars,
-                                    float_primary_vars,
-                                );
+                                let storage =
+                                    merge_rebind_storage_for_name(out, representation_plan);
                                 let else_val = merge_rebind_value_for_storage(
                                     &mut *module,
                                     &mut *import_ids,
@@ -1219,9 +1146,7 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                                     sealed_blocks,
                                     vars,
                                     bool_like_vars,
-                                    int_carriers_plan,
-                                    bool_primary_vars,
-                                    float_primary_vars,
+                                    representation_plan,
                                     nbc,
                                     else_name,
                                     storage,
@@ -1233,12 +1158,8 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                             }
                         } else {
                             for (out, _then_name, else_name) in &frame.phi_ops {
-                                let storage = merge_rebind_storage_for_name(
-                                    out,
-                                    int_carriers_plan,
-                                    bool_primary_vars,
-                                    float_primary_vars,
-                                );
+                                let storage =
+                                    merge_rebind_storage_for_name(out, representation_plan);
                                 let else_val = merge_rebind_value_for_storage(
                                     &mut *module,
                                     &mut *import_ids,
@@ -1247,9 +1168,7 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                                     sealed_blocks,
                                     vars,
                                     bool_like_vars,
-                                    int_carriers_plan,
-                                    bool_primary_vars,
-                                    float_primary_vars,
+                                    representation_plan,
                                     nbc,
                                     else_name,
                                     storage,
@@ -1269,9 +1188,7 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                                 sealed_blocks,
                                 vars,
                                 bool_like_vars,
-                                int_carriers_plan,
-                                bool_primary_vars,
-                                float_primary_vars,
+                                representation_plan,
                                 nbc,
                                 name,
                                 rebind_slot.storage,
@@ -1410,9 +1327,7 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                             &mut *builder,
                             import_refs,
                             vars,
-                            int_carriers_plan,
-                            bool_primary_vars,
-                            float_primary_vars,
+                            representation_plan,
                             nbc,
                             name,
                             val,
@@ -1470,33 +1385,22 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                         let param = frame.phi_params.get(idx).copied().unwrap_or_else(|| {
                             panic!("phi param missing for {out} in {}", func_name)
                         });
-                        let out_storage = merge_rebind_storage_for_name(
-                            out,
-                            int_carriers_plan,
-                            bool_primary_vars,
-                            float_primary_vars,
-                        );
+                        let out_storage = merge_rebind_storage_for_name(out, representation_plan);
                         def_var_from_merge_rebind_storage(
                             &mut *module,
                             &mut *import_ids,
                             &mut *builder,
                             import_refs,
                             vars,
-                            int_carriers_plan,
-                            bool_primary_vars,
-                            float_primary_vars,
+                            representation_plan,
                             nbc,
                             out,
                             param,
                             out_storage,
                         );
                         if let Some(Some(join_name)) = phi_join_slot_names.get(idx) {
-                            let join_storage = merge_rebind_storage_for_name(
-                                join_name,
-                                int_carriers_plan,
-                                bool_primary_vars,
-                                float_primary_vars,
-                            );
+                            let join_storage =
+                                merge_rebind_storage_for_name(join_name, representation_plan);
                             let join_value = if join_storage == out_storage {
                                 param
                             } else {
@@ -1508,9 +1412,7 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                                     sealed_blocks,
                                     vars,
                                     bool_like_vars,
-                                    int_carriers_plan,
-                                    bool_primary_vars,
-                                    float_primary_vars,
+                                    representation_plan,
                                     nbc,
                                     out,
                                     join_storage,
@@ -1522,9 +1424,7 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                                 &mut *builder,
                                 import_refs,
                                 vars,
-                                int_carriers_plan,
-                                bool_primary_vars,
-                                float_primary_vars,
+                                representation_plan,
                                 nbc,
                                 join_name,
                                 join_value,

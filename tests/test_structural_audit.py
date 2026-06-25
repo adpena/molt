@@ -284,11 +284,7 @@ def test_cfg_test_module_does_not_create_structural_god_file(tmp_path: Path):
     src.mkdir(parents=True)
     tests_body = "\n".join("    // fixture line" for _ in range(420))
     (src / "fixtures.rs").write_text(
-        "pub fn production() {}\n"
-        "#[cfg(test)]\n"
-        "mod tests {\n"
-        f"{tests_body}\n"
-        "}\n",
+        f"pub fn production() {{}}\n#[cfg(test)]\nmod tests {{\n{tests_body}\n}}\n",
         encoding="utf-8",
     )
 
@@ -361,6 +357,70 @@ def test_structural_god_metrics_are_ratchet_metrics():
     assert metrics["structural_god_files"] == 1
     assert metrics["max_god_file_structural_score"] == 900
     assert metrics["god_file_large_regions"] == 4
+
+
+def test_native_scalar_plan_authority_ratchets_side_set_clones(tmp_path: Path):
+    target = (
+        tmp_path
+        / "runtime"
+        / "molt-backend"
+        / "src"
+        / "native_backend"
+        / "function_compiler"
+        / "fc"
+        / "arith.rs"
+    )
+    target.parent.mkdir(parents=True)
+    target.write_text(
+        """
+fn lowered(representation_plan: &ScalarRepresentationPlan) {
+    let bool_primary_vars = representation_plan.primary_name_sets().bool_;
+    let float_primary_vars = representation_plan.primary_name_sets().float;
+    let int_carriers_plan = representation_plan;
+    drop((bool_primary_vars, float_primary_vars, int_carriers_plan));
+}
+""",
+        encoding="utf-8",
+    )
+
+    findings = SA.probe_native_scalar_plan_authority(tmp_path)
+    metrics = SA.ratchet_metrics(findings)
+
+    assert len(findings) == 4
+    assert {
+        "raw-bool membership cloned out of ScalarRepresentationPlan",
+        "raw-f64 membership cloned out of ScalarRepresentationPlan",
+        "legacy plan alias beside ScalarRepresentationPlan",
+        "native backend cloned primary-name sets instead of plan predicates",
+    } == {finding.detail for finding in findings}
+    assert metrics["native_scalar_plan_authority_violations"] == 8
+
+
+def test_native_scalar_plan_authority_allows_direct_plan_predicates(tmp_path: Path):
+    target = (
+        tmp_path
+        / "runtime"
+        / "molt-backend"
+        / "src"
+        / "native_backend"
+        / "function_compiler"
+        / "scalar_carriers.rs"
+    )
+    target.parent.mkdir(parents=True)
+    target.write_text(
+        """
+fn lowered(representation_plan: &ScalarRepresentationPlan, name: &str) -> bool {
+    representation_plan.is_raw_int_carrier_name(name)
+        || representation_plan.is_bool_unboxed(name)
+        || representation_plan.is_float_unboxed(name)
+}
+""",
+        encoding="utf-8",
+    )
+
+    findings = SA.probe_native_scalar_plan_authority(tmp_path)
+
+    assert findings == []
 
 
 def _scan_rust_string(rust: str, rel: str) -> list:
