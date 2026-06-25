@@ -406,6 +406,46 @@ def test_process_groups_exclude_mixed_custody_group_with_owned_child() -> None:
     assert groups == []
 
 
+def test_process_groups_exclude_windows_snapshot_helper_descendants(
+    monkeypatch,
+) -> None:
+    module = _load_process_sentinel()
+    root = Path("C:/repo/molt")
+    samples = {
+        100: module.memory_guard.ProcessSample(
+            pid=100,
+            ppid=999,
+            pgid=None,
+            rss_kb=100,
+            command=(
+                r"C:\repo\molt\.venv\Scripts\python.exe "
+                r"C:\repo\molt\tools\memory_guard_core\windows_snapshot.py "
+                "--molt-windows-process-snapshot-json"
+            ),
+        ),
+        101: module.memory_guard.ProcessSample(
+            pid=101,
+            ppid=100,
+            pgid=None,
+            rss_kb=100,
+            command=r"C:\Windows\System32\conhost.exe",
+        ),
+        200: module.memory_guard.ProcessSample(
+            pid=200,
+            ppid=1,
+            pgid=None,
+            rss_kb=200,
+            command=r"C:\repo\molt\target\dev-fast\molt-backend.exe",
+        ),
+    }
+
+    monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
+
+    groups = module.process_groups(samples, root=root, self_pid=999)
+
+    assert [group.pgid for group in groups] == [200]
+
+
 def test_process_groups_exclude_codex_group_even_with_repo_child() -> None:
     module = _load_process_sentinel()
     root = Path("/repo/molt")
