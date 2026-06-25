@@ -53,6 +53,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from tools import harness_memory_guard  # noqa: E402
+from tools import perf_authority  # noqa: E402
 
 DEFAULT_BENCHMARKS = [
     "tests/benchmarks/bench_sum.py",
@@ -375,15 +376,25 @@ def bench_one(
         and "error" not in result.get("rust", {})
     ):
         rust_res = result["rust"]
-        if rust_res["mean_ms"] > 0:
-            speedup = cpython_res["mean_ms"] / rust_res["mean_ms"]
-        else:
-            speedup = float("inf")
-        result["speedup_vs_cpython"] = round(speedup, 2)
+        # Route through the single guarded authority (SPEEDUP direction:
+        # baseline/candidate, >1 = candidate faster) so a degenerate
+        # (None/0/NaN) rust time can never render a finite OR infinite ratio.
+        speedup = perf_authority.signed_ratio_value(
+            cpython_res["mean_ms"],
+            rust_res["mean_ms"],
+            direction=perf_authority.RatioDirection.SPEEDUP,
+        )
+        result["speedup_vs_cpython"] = (
+            round(speedup, 2) if speedup is not None else None
+        )
+        result["ratio_directions"] = {
+            "speedup_vs_cpython": perf_authority.RatioDirection.SPEEDUP.value,
+        }
         output_match = cpython_res["output"] == rust_res["output"]
         result["output_match"] = output_match
+        speedup_cell = "n/a" if speedup is None else f"{speedup:.1f}x"
         print(
-            f"  Speedup: {speedup:.1f}x  "
+            f"  Speedup: {speedup_cell}  "
             f"Output match: {'YES' if output_match else 'NO'}"
         )
 

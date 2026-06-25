@@ -15,6 +15,7 @@ from molt.cli.models import (
     _BuildDiagnosticsContext,
     _FrontendTimingRecorderConfig,
 )
+from molt.metric_ratios import budget_utilization
 
 
 def _build_reason_summary(
@@ -458,25 +459,29 @@ def _emit_build_diagnostics(
                 work_units = float(item.get("work_units_spent", 0.0))
                 work_budget = float(item.get("work_budget", 0.0))
                 if b_ms > 0.0:
-                    telemetry_budget_ranked_functions.append(
-                        {
-                            "module": str(item.get("module", "")),
-                            "function": str(item.get("function", "")),
-                            "ratio": s_ms / b_ms,
-                            "spent_ms": s_ms,
-                            "budget_ms": b_ms,
-                        }
-                    )
+                    ratio = budget_utilization(s_ms, b_ms)
+                    if ratio is not None:
+                        telemetry_budget_ranked_functions.append(
+                            {
+                                "module": str(item.get("module", "")),
+                                "function": str(item.get("function", "")),
+                                "ratio": ratio,
+                                "spent_ms": s_ms,
+                                "budget_ms": b_ms,
+                            }
+                        )
                 if work_budget > 0.0:
-                    work_budget_ranked_functions.append(
-                        {
-                            "module": str(item.get("module", "")),
-                            "function": str(item.get("function", "")),
-                            "ratio": work_units / work_budget,
-                            "work_units": work_units,
-                            "work_budget": work_budget,
-                        }
-                    )
+                    ratio = budget_utilization(work_units, work_budget)
+                    if ratio is not None:
+                        work_budget_ranked_functions.append(
+                            {
+                                "module": str(item.get("module", "")),
+                                "function": str(item.get("function", "")),
+                                "ratio": ratio,
+                                "work_units": work_units,
+                                "work_budget": work_budget,
+                            }
+                        )
             telemetry_budget_ranked_functions.sort(key=lambda x: -x["ratio"])
             work_budget_ranked_functions.sort(key=lambda x: -x["ratio"])
             limit = 10 if full_details else 5
@@ -832,8 +837,9 @@ def _build_midend_diagnostics_payload(
         s_ms = max(0.0, float(raw_outcome.get("spent_ms", 0.0)))
         b_ms = max(0.0, float(raw_outcome.get("budget_ms", 0.0)))
         if b_ms > 0.0:
-            utilization = s_ms / b_ms
-            telemetry_budget_utilizations.append(utilization)
+            utilization = budget_utilization(s_ms, b_ms)
+            if utilization is not None:
+                telemetry_budget_utilizations.append(utilization)
             if s_ms > b_ms:
                 functions_over_telemetry_budget += 1
             if s_ms < 0.5 * b_ms:
@@ -841,8 +847,9 @@ def _build_midend_diagnostics_payload(
         work_units = max(0.0, float(raw_outcome.get("work_units_spent", 0.0)))
         work_budget = max(0.0, float(raw_outcome.get("work_budget", 0.0)))
         if work_budget > 0.0:
-            work_utilization = work_units / work_budget
-            work_budget_utilizations.append(work_utilization)
+            work_utilization = budget_utilization(work_units, work_budget)
+            if work_utilization is not None:
+                work_budget_utilizations.append(work_utilization)
             if work_units > work_budget:
                 functions_over_work_budget += 1
             if work_units < 0.5 * work_budget:

@@ -23,6 +23,7 @@ TOOLS_ROOT = Path(__file__).resolve().parent
 if str(TOOLS_ROOT) not in sys.path:
     sys.path.insert(0, str(TOOLS_ROOT))
 
+import perf_authority  # noqa: E402
 from bench_evidence import native_molt_speedup, native_molt_time  # noqa: E402
 
 
@@ -58,12 +59,14 @@ def speedup_value(entry: dict) -> float | None:
     # Try molt_speedup first (baseline.json style: cpython/molt)
     if (speedup := native_molt_speedup(entry)) is not None:
         return speedup
-    # Fall back to computing from times
+    # Fall back to computing from times through the single guarded authority
+    # (SPEEDUP direction: cpython/molt, >1 = molt faster) so a None/0/NaN time
+    # can never become a finite ratio.
     cpython = entry.get("cpython_time_s")
     molt = native_molt_time(entry)
-    if cpython and molt:
-        return cpython / molt
-    return None
+    return perf_authority.signed_ratio_value(
+        cpython, molt, direction=perf_authority.RatioDirection.SPEEDUP
+    )
 
 
 def ratio_value(entry: dict) -> float | None:
@@ -73,11 +76,14 @@ def ratio_value(entry: dict) -> float | None:
     r = entry.get("molt_cpython_ratio")
     if r is not None and r > 0:
         return float(r)
+    # Fall back through the single guarded authority (MOLT_OVER_BASELINE
+    # direction: molt/cpython, >1 = slower) so a None/0/NaN time can never
+    # become a finite ratio.
     cpython = entry.get("cpython_time_s")
     molt = native_molt_time(entry)
-    if cpython and molt and cpython > 0:
-        return molt / cpython
-    return None
+    return perf_authority.signed_ratio_value(
+        molt, cpython, direction=perf_authority.RatioDirection.MOLT_OVER_BASELINE
+    )
 
 
 def fmt_time(t) -> str:

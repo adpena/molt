@@ -12,6 +12,8 @@ from bench_friends_phase import (
 from bench_friends_types import RunnerResult, RunnerSpec, SuiteSpec
 
 import harness_memory_guard
+import perf_authority
+
 
 def _run_prepare_steps(
     suite: SuiteSpec,
@@ -167,7 +169,7 @@ def _run_runner(
     return result
 
 
-def _suite_metrics(runners: dict[str, RunnerResult]) -> dict[str, float | None]:
+def _suite_metrics(runners: dict[str, RunnerResult]) -> dict[str, object]:
     def _runner_median(name: str) -> float | None:
         runner = runners.get(name)
         if runner and runner.status == "ok" and runner.role == "workload":
@@ -175,14 +177,20 @@ def _suite_metrics(runners: dict[str, RunnerResult]) -> dict[str, float | None]:
         return None
 
     def _speedup(baseline_s: float | None, candidate_s: float | None) -> float | None:
-        if (
-            baseline_s is None
-            or candidate_s is None
-            or baseline_s <= 0.0
-            or candidate_s <= 0.0
-        ):
-            return None
-        return baseline_s / candidate_s
+        return perf_authority.signed_ratio_value(
+            baseline_s,
+            candidate_s,
+            direction=perf_authority.RatioDirection.SPEEDUP,
+        )
+
+    def _molt_over_baseline(
+        baseline_s: float | None,
+    ) -> dict[str, object]:
+        return perf_authority.signed_ratio(
+            mt_s,
+            baseline_s,
+            direction=perf_authority.RatioDirection.MOLT_OVER_BASELINE,
+        )
 
     cp_s = _runner_median("cpython")
     pp_s = _runner_median("pypy")
@@ -194,8 +202,41 @@ def _suite_metrics(runners: dict[str, RunnerResult]) -> dict[str, float | None]:
     tinygrad_s = _runner_median("tinygrad")
     numpy_s = _runner_median("numpy")
 
+    cpython_ratio_block = _molt_over_baseline(cp_s)
+    pypy_ratio_block = _molt_over_baseline(pp_s)
+    codon_ratio_block = _molt_over_baseline(codon_s)
+    nuitka_ratio_block = _molt_over_baseline(nuitka_s)
+    pyodide_ratio_block = _molt_over_baseline(pyodide_s)
+    tinygrad_ratio_block = _molt_over_baseline(tinygrad_s)
+    numpy_ratio_block = _molt_over_baseline(numpy_s)
+
+    speedup_direction = perf_authority.RatioDirection.SPEEDUP.value
+    ratio_directions: dict[str, str] = {
+        "molt_vs_cpython_speedup": speedup_direction,
+        "molt_vs_pypy_speedup": speedup_direction,
+        "molt_vs_codon_speedup": speedup_direction,
+        "molt_vs_friend_speedup": speedup_direction,
+        "friend_vs_molt_speedup": speedup_direction,
+        "molt_vs_nuitka_speedup": speedup_direction,
+        "nuitka_vs_molt_speedup": speedup_direction,
+        "molt_vs_pyodide_speedup": speedup_direction,
+        "pyodide_vs_molt_speedup": speedup_direction,
+        "molt_vs_tinygrad_speedup": speedup_direction,
+        "tinygrad_vs_molt_speedup": speedup_direction,
+        "molt_vs_numpy_speedup": speedup_direction,
+        "numpy_vs_molt_speedup": speedup_direction,
+        "molt_speedup": speedup_direction,
+        "molt_cpython_ratio": str(cpython_ratio_block["direction"]),
+        "molt_pypy_ratio": str(pypy_ratio_block["direction"]),
+        "molt_codon_ratio": str(codon_ratio_block["direction"]),
+        "molt_nuitka_ratio": str(nuitka_ratio_block["direction"]),
+        "molt_pyodide_ratio": str(pyodide_ratio_block["direction"]),
+        "molt_tinygrad_ratio": str(tinygrad_ratio_block["direction"]),
+        "molt_numpy_ratio": str(numpy_ratio_block["direction"]),
+    }
+
     # Standardized lane keys align with tools/bench.py JSON naming.
-    metrics: dict[str, float | None] = {
+    metrics: dict[str, object] = {
         "cpython_median_s": cp_s,
         "pypy_median_s": pp_s,
         "molt_median_s": mt_s,
@@ -227,13 +268,14 @@ def _suite_metrics(runners: dict[str, RunnerResult]) -> dict[str, float | None]:
         "molt_vs_numpy_speedup": _speedup(numpy_s, mt_s),
         "numpy_vs_molt_speedup": _speedup(mt_s, numpy_s),
         "molt_speedup": _speedup(cp_s, mt_s),
-        "molt_cpython_ratio": _speedup(mt_s, cp_s),
-        "molt_pypy_ratio": _speedup(mt_s, pp_s),
-        "molt_codon_ratio": _speedup(mt_s, codon_s),
-        "molt_nuitka_ratio": _speedup(mt_s, nuitka_s),
-        "molt_pyodide_ratio": _speedup(mt_s, pyodide_s),
-        "molt_tinygrad_ratio": _speedup(mt_s, tinygrad_s),
-        "molt_numpy_ratio": _speedup(mt_s, numpy_s),
+        "molt_cpython_ratio": cpython_ratio_block["value"],
+        "molt_pypy_ratio": pypy_ratio_block["value"],
+        "molt_codon_ratio": codon_ratio_block["value"],
+        "molt_nuitka_ratio": nuitka_ratio_block["value"],
+        "molt_pyodide_ratio": pyodide_ratio_block["value"],
+        "molt_tinygrad_ratio": tinygrad_ratio_block["value"],
+        "molt_numpy_ratio": numpy_ratio_block["value"],
+        "ratio_directions": ratio_directions,
     }
     structured_by_metric: dict[str, dict[str, float]] = {}
     for runner_name, runner in runners.items():
@@ -256,15 +298,19 @@ def _suite_metrics(runners: dict[str, RunnerResult]) -> dict[str, float | None]:
         metrics[f"molt_vs_cpython_{metric_slug}_speedup"] = _speedup(
             cpython_metric_s, molt_metric_s
         )
+        ratio_directions[f"molt_vs_cpython_{metric_slug}_speedup"] = speedup_direction
         metrics[f"molt_vs_friend_{metric_slug}_speedup"] = _speedup(
             friend_metric_s, molt_metric_s
         )
+        ratio_directions[f"molt_vs_friend_{metric_slug}_speedup"] = speedup_direction
         metrics[f"molt_vs_tinygrad_{metric_slug}_speedup"] = _speedup(
             tinygrad_metric_s, molt_metric_s
         )
+        ratio_directions[f"molt_vs_tinygrad_{metric_slug}_speedup"] = speedup_direction
         metrics[f"molt_vs_numpy_{metric_slug}_speedup"] = _speedup(
             numpy_metric_s, molt_metric_s
         )
+        ratio_directions[f"molt_vs_numpy_{metric_slug}_speedup"] = speedup_direction
     return metrics
 
 

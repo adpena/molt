@@ -274,6 +274,18 @@ def _build_checks() -> list[Check]:
     )
     checks.append(
         Check(
+            # Fail closed if a raw `<x>_time / <y>_time` ratio is ever computed
+            # outside perf_authority.py again (an unguarded, direction-less twin
+            # beside the canonical signed_ratio -- audit meta-bug item 2,
+            # ratio-direction canonicalization).
+            name="ratio-direction-scan",
+            tier=1,
+            cmd=_uv_run(str(TOOLS / "check_ratio_direction.py")),
+            timeout=30,
+        )
+    )
+    checks.append(
+        Check(
             name="analysis-capsule-contract",
             tier=1,
             cmd=_uv_pytest(str(TESTS / "tools" / "test_analysis_capsule.py"), "-q"),
@@ -291,6 +303,7 @@ def _build_checks() -> list[Check]:
                 str(TESTS / "tools" / "test_perf_schema.py"),
                 str(TESTS / "tools" / "test_perf_scoreboard.py"),
                 str(TESTS / "tools" / "test_perf_authority.py"),
+                str(TESTS / "tools" / "test_signed_ratio.py"),
                 "-q",
             ),
             timeout=120,
