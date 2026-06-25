@@ -1,5 +1,6 @@
 import os
 import hashlib
+import importlib
 import json
 from pathlib import Path
 import subprocess
@@ -13,6 +14,8 @@ from tests.cli.process_guard import run_cli_test_process
 
 
 ROOT = Path(__file__).resolve().parents[2]
+BACKEND_CACHE = importlib.import_module("molt.cli.backend_cache")
+CACHE_KEYS = importlib.import_module("molt.cli.cache_keys")
 
 
 def _cache_variant(
@@ -161,7 +164,7 @@ def test_shared_stdlib_cache_key_streams_legacy_payload_digest() -> None:
         target="native-stdlib",
         target_triple="aarch64-apple-darwin",
         variant=variant,
-        schema_version=cli._CACHE_KEY_SCHEMA_VERSION,
+        schema_version=CACHE_KEYS._CACHE_KEY_SCHEMA_VERSION,
     )
 
 
@@ -1368,8 +1371,12 @@ def test_native_object_symbol_sets_use_nm_candidate_ladder(
             "",
         )
 
-    monkeypatch.setattr(cli, "_nm_candidate_binaries", lambda: ["broken-nm", "llvm-nm"])
-    monkeypatch.setattr(cli, "_run_completed_command", fake_run_completed_command)
+    monkeypatch.setattr(
+        BACKEND_CACHE, "_nm_candidate_binaries", lambda: ["broken-nm", "llvm-nm"]
+    )
+    monkeypatch.setattr(
+        BACKEND_CACHE, "_run_completed_command", fake_run_completed_command
+    )
 
     symbols = cli._native_object_global_symbol_sets(obj)
 
@@ -1412,8 +1419,12 @@ def test_cached_native_artifact_validation_uses_nm_candidate_ladder(
             return subprocess.CompletedProcess(cmd, 1, "", "unreadable COFF")
         return subprocess.CompletedProcess(cmd, 0, "00000000 T molt_main\n", "")
 
-    monkeypatch.setattr(cli, "_nm_candidate_binaries", lambda: ["broken-nm", "llvm-nm"])
-    monkeypatch.setattr(cli, "_run_completed_command", fake_run_completed_command)
+    monkeypatch.setattr(
+        BACKEND_CACHE, "_nm_candidate_binaries", lambda: ["broken-nm", "llvm-nm"]
+    )
+    monkeypatch.setattr(
+        BACKEND_CACHE, "_run_completed_command", fake_run_completed_command
+    )
 
     assert cli._is_valid_cached_backend_artifact(obj, is_wasm=False)
     assert calls == ["broken-nm", "llvm-nm"]
