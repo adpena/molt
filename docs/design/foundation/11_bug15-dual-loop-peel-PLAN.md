@@ -14,7 +14,7 @@
 - `lower_to_lir.rs:237-267` (`lower_checked_i64_arithmetic`): emits a 3-result LirOp `(main: I64, overflow_box: DynBox, overflow_flag: Bool1)` with `lir.checked_overflow = true`. This is gated on `lowers_to_checked_i64_arithmetic` (`lower_to_lir.rs:202-235`), which requires both operands AND result to be `Repr::RawI64Safe` when a repr override is supplied.
 - `lower_to_wasm.rs:780-813`: the WASM arm that consumes this triple is LIVE and functional — it emits raw `I64Add`, range-checks the sum against `[INLINE_INT_MIN, INLINE_INT_MAX]`, takes the runtime `molt_add` slow path when out of range. The `overflow_box` and `overflow_flag` values are set and emitted.
 - The native backend (`function_compiler.rs`) does NOT have a consumer for `lir.checked_overflow`. Its int-primary path emits branchless `iadd` with overflow deferred to `ensure_boxed_overflow_safe` at escape boundaries only.
-- LLVM (`lowering.rs:4173`) gates raw arithmetic on `is_overflow_safe_int(result_id)`, which requires `RawI64Safe`; it already routes unproven accumulators to `molt_add`.
+- LLVM (`lowering.rs:4173`) gates raw arithmetic on `is_inline_safe_int(result_id)`, which requires `RawI64Safe`; it already routes unproven accumulators to `molt_add`.
 
 **Root cause for the perf cliff:** The accumulator phi is `MaybeBigInt` (unproven), so on native it reaches the `else` arm of `out_is_int_primary` at `function_compiler.rs:3966`, where `var_get_boxed_overflow_safe` boxes each operand and calls `molt_add` per iteration. LLVM takes the same boxed path. WASM takes the same boxed path via `emit_lir_binary_arith`'s `_ => { emit_get_boxed_for_repr … Call(0) }` fallthrough arm.
 
@@ -296,7 +296,7 @@ If phases A-D cannot land in one session, the correct baton is: leave `OpCode::C
 - `/Users/adpena/Projects/molt/runtime/molt-backend/src/representation_plan.rs` — `repr_by_value_for`, `propagate_raw_i64_safe_values`, `compute_i64_interval_facts` (legacy)
 - `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/lower_to_lir.rs` — `lower_checked_i64_arithmetic`, `lowers_to_checked_i64_arithmetic`, `ReprOverride`
 - `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/lower_to_wasm.rs` — `emit_lir_binary_arith` (lir.checked_overflow consumer, lines 780-813)
-- `/Users/adpena/Projects/molt/runtime/molt-backend/src/llvm_backend/lowering.rs` — `emit_binary_arith`, `is_overflow_safe_int` gate (line 4173)
+- `/Users/adpena/Projects/molt/runtime/molt-backend/src/llvm_backend/lowering.rs` — `emit_binary_arith`, `is_inline_safe_int` gate (line 4173)
 - `/Users/adpena/Projects/molt/runtime/molt-backend/src/native_backend/function_compiler.rs` — branchless iadd + `ensure_boxed_overflow_safe` (lines 3951-3965, 495-547)
 - `/Users/adpena/Projects/molt/runtime/molt-backend/src/native_backend/simple_backend.rs` — `int_value_fits_inline` (line 781), `imul_checked_inline` (line 804)
 - `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/passes/mod.rs` — pipeline registration and pass name test

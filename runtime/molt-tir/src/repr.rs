@@ -43,16 +43,19 @@ pub(crate) struct ContainerStorageFact {
 /// distinction is invisible to the semantic type alone.
 ///
 /// `Never` is the bottom element and `DynBox` is the top element. Integer
-/// carriers have a BigInt-safe chain: `RawI64Safe` joins with `MaybeBigInt` to
-/// `MaybeBigInt`, so a control-flow merge never silently treats an unknown-size
-/// Python integer as a bare machine word. Distinct scalar families join to
-/// `DynBox`; semantic subtyping such as Python `bool` being an `int` is owned by
-/// `TirType`, not by this physical-carrier lattice.
+/// carriers have two distinct raw tiers: `RawI64Safe` is the inline-47 proof,
+/// while `RawI64FullDeopt` is the full-i64 overflow-peel proof. Keeping them
+/// separate prevents a full-range checked accumulator from being mistaken for a
+/// value that can be inline-boxed without an overflow path. Distinct scalar
+/// families join to `DynBox`; semantic subtyping such as Python `bool` being an
+/// `int` is owned by `TirType`, not by this physical-carrier lattice.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Repr {
     /// Unreachable value.
     Never,
-    /// Bare `i64` register/variable proven safe for raw machine arithmetic.
+    /// Bare `i64` carrier whose safety comes from checked-overflow control flow.
+    RawI64FullDeopt,
+    /// Bare `i64` carrier proven inside the inline-int47 payload window.
     RawI64Safe,
     /// Exactly `0` or `1`.
     Bool,
@@ -83,6 +86,17 @@ impl Repr {
         matches!(self, Repr::RawI64Safe)
     }
 
+    /// True when the carrier is the full-i64 overflow-peel raw lane.
+    pub fn is_raw_i64_full_deopt(self) -> bool {
+        matches!(self, Repr::RawI64FullDeopt)
+    }
+
+    /// True when the carrier is any bare i64 lane. Box-site code must still
+    /// distinguish `RawI64Safe` from `RawI64FullDeopt`.
+    pub fn is_raw_i64_carrier(self) -> bool {
+        matches!(self, Repr::RawI64Safe | Repr::RawI64FullDeopt)
+    }
+
     /// Least upper bound for carrier facts at control-flow joins.
     ///
     /// The operation is deliberately fail-closed: only the integer raw/boxed
@@ -95,6 +109,8 @@ impl Repr {
             (a, b) if a == b => a,
             (Never, b) | (b, Never) => b,
             (DynBox, _) | (_, DynBox) => DynBox,
+            (RawI64FullDeopt, RawI64Safe) | (RawI64Safe, RawI64FullDeopt) => RawI64FullDeopt,
+            (RawI64FullDeopt, MaybeBigInt) | (MaybeBigInt, RawI64FullDeopt) => RawI64FullDeopt,
             (RawI64Safe, MaybeBigInt) | (MaybeBigInt, RawI64Safe) => MaybeBigInt,
             _ => DynBox,
         }
@@ -142,7 +158,11 @@ mod tests {
     #[test]
     fn carrier_view_predicates() {
         assert!(Repr::RawI64Safe.is_raw_i64_safe());
+        assert!(Repr::RawI64FullDeopt.is_raw_i64_full_deopt());
+        assert!(Repr::RawI64Safe.is_raw_i64_carrier());
+        assert!(Repr::RawI64FullDeopt.is_raw_i64_carrier());
         for repr in [
+            Repr::RawI64FullDeopt,
             Repr::MaybeBigInt,
             Repr::Bool,
             Repr::FloatUnboxed,
@@ -157,6 +177,7 @@ mod tests {
     fn join_is_commutative_and_idempotent() {
         let reprs = [
             Repr::Never,
+            Repr::RawI64FullDeopt,
             Repr::RawI64Safe,
             Repr::Bool,
             Repr::MaybeBigInt,
@@ -176,6 +197,14 @@ mod tests {
     fn join_respects_bottom_top_and_integer_floor() {
         assert_eq!(Repr::Never.join(Repr::RawI64Safe), Repr::RawI64Safe);
         assert_eq!(Repr::DynBox.join(Repr::RawI64Safe), Repr::DynBox);
+        assert_eq!(
+            Repr::RawI64FullDeopt.join(Repr::RawI64Safe),
+            Repr::RawI64FullDeopt
+        );
+        assert_eq!(
+            Repr::RawI64FullDeopt.join(Repr::MaybeBigInt),
+            Repr::RawI64FullDeopt
+        );
         assert_eq!(Repr::RawI64Safe.join(Repr::MaybeBigInt), Repr::MaybeBigInt);
     }
 
@@ -184,6 +213,8 @@ mod tests {
         for pair in [
             (Repr::RawI64Safe, Repr::Bool),
             (Repr::RawI64Safe, Repr::FloatUnboxed),
+            (Repr::RawI64FullDeopt, Repr::Bool),
+            (Repr::RawI64FullDeopt, Repr::FloatUnboxed),
             (Repr::MaybeBigInt, Repr::Bool),
             (Repr::MaybeBigInt, Repr::FloatUnboxed),
             (Repr::Bool, Repr::FloatUnboxed),

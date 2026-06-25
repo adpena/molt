@@ -18,23 +18,24 @@ use crate::tir::op_kinds_generated::{
 
 /// The proven per-`ValueId` representation override (the value-keyed source of
 /// truth produced by `representation_plan::repr_by_value_for`). The WASM/LIR
-/// codegen path threads `Some(map)` so `LirRepr::I64` is assigned **only** to
-/// proven `RawI64Safe` integers; an unproven `int` (`MaybeBigInt`) lowers to
-/// `DynBox` and uses the boxed BigInt-correct runtime path (typed-IR Phase 1).
+/// codegen path threads `Some(map)` so `LirRepr::I64` is assigned only to
+/// proven raw-i64 carriers (`RawI64Safe` or `RawI64FullDeopt`); an unproven
+/// `int` (`MaybeBigInt`) lowers to `DynBox` and uses the boxed BigInt-correct
+/// runtime path (typed-IR Phase 1).
 pub type ReprOverride<'a> = Option<&'a HashMap<ValueId, Repr>>;
 
 /// Derive the backend-facing [`LirRepr`] for a value from the proven [`Repr`]
 /// override when present, falling back to the type floor [`LirRepr::for_type`]
 /// when no override is supplied or the value is absent from the map.
 ///
-/// The ONLY behavior change versus a bare `for_type(ty)` is: a non-`RawI64Safe`
-/// `I64` value derives `DynBox` instead of `I64` — the Phase-1 fix that stops
-/// WASM treating an unproven (possibly heap-BigInt) `int` as a raw inline i64.
-/// `Bool`/`FloatUnboxed` are floored into `repr_by_value` by Phase 0's
-/// `default_for`, so they are present and map back to `Bool1`/`F64`.
+/// The behavior change versus a bare `for_type(ty)` is: a non-raw-carrier `I64`
+/// value derives `DynBox` instead of `I64` -- the Phase-1 fix that stops WASM
+/// treating an unproven (possibly heap-BigInt) `int` as a raw i64. `Bool` and
+/// `FloatUnboxed` are floored into `repr_by_value` by Phase 0's `default_for`,
+/// so they are present and map back to `Bool1`/`F64`.
 fn lir_repr_from_repr(repr: ReprOverride<'_>, id: ValueId, ty: &TirType) -> LirRepr {
     match repr.and_then(|map| map.get(&id)) {
-        Some(Repr::RawI64Safe) => LirRepr::I64,
+        Some(Repr::RawI64Safe | Repr::RawI64FullDeopt) => LirRepr::I64,
         Some(Repr::Bool) => LirRepr::Bool1,
         Some(Repr::FloatUnboxed) => LirRepr::F64,
         // `MaybeBigInt` (unproven int), `DynBox`, `Never`: the universal NaN-box
@@ -54,12 +55,11 @@ pub fn lower_function_to_lir(func: &TirFunction, repr: ReprOverride<'_>) -> LirF
 /// `inline_proof` is the ValueRange analysis computed on this EXACT `func`
 /// (ValueIds must line up). It gates the checked-i64 triple: the triple's
 /// raw `I64Add` + inline-range check + inline-boxed overflow arm is only
-/// sound when operands and result are PROVEN inside the 47-bit window —
-/// `Repr::RawI64Safe` alone no longer implies that (it is a FULL-RANGE
-/// carrier contract; the overflow_peel accumulators are genuinely
-/// unbounded). Production value-keyed callers (the WASM fast lane) must
-/// supply the proof; `None` keeps the legacy type/repr-gated behavior for
-/// fact extraction and hand-built-repr tests.
+/// sound when operands and result are PROVEN inside the 47-bit window. The
+/// raw-carrier view alone is not enough because `RawI64FullDeopt` is a full-i64
+/// checked carrier. Production value-keyed callers (the WASM fast lane) must
+/// supply the proof; `None` keeps the legacy type/repr-gated behavior for fact
+/// extraction and hand-built-repr tests.
 pub fn lower_function_to_lir_with_inline_proof(
     func: &TirFunction,
     repr: ReprOverride<'_>,
@@ -243,10 +243,10 @@ fn lower_op(
         }
     }
     // Arithmetic on raw-i64 carriers WITHOUT the inline-window proof: a bare
-    // machine op could silently wrap at 2^63 (`RawI64Safe` is a FULL-RANGE
-    // carrier contract — CheckedAdd sums / overflow_peel accumulators are
-    // unbounded). Such ops are marked for the BOXED runtime dispatch; only
-    // proof-carrying ops take the checked triple above, and only
+    // machine op could silently wrap at 2^63 (`RawI64FullDeopt` carriers are
+    // full-i64 CheckedAdd/CheckedMul results). Such ops are marked for the
+    // BOXED runtime dispatch; only proof-carrying ops take the checked triple
+    // above, and only
     // proven-result raw ops may use a bare machine instruction. The decision
     // is made HERE (where the value-range proof lives), not in the wasm
     // emitter (which only sees reprs).
@@ -255,7 +255,7 @@ fn lower_op(
         && op
             .operands
             .iter()
-            .any(|id| matches!(map.get(id), Some(Repr::RawI64Safe)))
+            .any(|id| matches!(map.get(id), Some(Repr::RawI64Safe | Repr::RawI64FullDeopt)))
     {
         let proven = |id: &ValueId| inline_proof.is_some_and(|vr| vr.fits_inline_int47(*id));
         let all_proven = op.operands.iter().all(proven) && op.results.iter().all(proven);
@@ -318,9 +318,8 @@ fn lowers_to_checked_i64_arithmetic(
     // When a proven `Repr` override is supplied (WASM/LIR codegen path), the
     // checked-i64 triple (raw `I64Add` + inline-bounds overflow box) is sound
     // ONLY when every operand and the result is PROVEN inside the 47-bit
-    // inline window. `Repr::RawI64Safe` alone is NOT that proof: it is a
-    // FULL-RANGE i64 carrier contract (CheckedAdd sums and overflow_peel
-    // accumulators are genuinely unbounded), and a raw `I64Add` over
+    // inline window. The raw-carrier view alone is NOT that proof:
+    // `RawI64FullDeopt` is a full-i64 checked carrier, and a raw `I64Add` over
     // full-range operands could silently wrap at 2^63 while the triple's
     // overflow arm inline-boxes operands assuming the 47-bit window. So with
     // a repr override the gate requires the VALUE-RANGE proof
