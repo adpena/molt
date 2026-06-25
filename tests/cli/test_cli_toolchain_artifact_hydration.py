@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import cast
 
 from molt import cli
+from molt.cli import backend_binary as cli_backend_binary
 from molt.cli import build_pipeline as cli_build_pipeline
 from molt.cli import runtime_build as RUNTIME_BUILD
 from molt.cli import runtime_paths as RUNTIME_PATHS
@@ -307,24 +308,24 @@ def test_ensure_backend_binary_hydrates_from_canonical_target(
 
     monkeypatch.setenv("CARGO_TARGET_DIR", str(isolated_target))
     monkeypatch.setattr(
-        cli_build_pipeline,
+        cli_backend_binary,
         "_backend_fingerprint",
         lambda *args, **kwargs: dict(fingerprint),
     )
     monkeypatch.setattr(
-        cli_build_pipeline,
+        cli_backend_binary,
         "_run_cargo_with_sccache_retry",
         lambda *args, **kwargs: (_ for _ in ()).throw(
             AssertionError("cargo should not run")
         ),
     )
     monkeypatch.setattr(
-        cli_build_pipeline,
+        cli_backend_binary,
         "_run_subprocess_captured_to_tempfiles",
         lambda cmd, **kwargs: subprocess.CompletedProcess(cmd, 0, b"", b""),
     )
 
-    assert cli_build_pipeline._ensure_backend_binary(
+    assert cli_backend_binary._ensure_backend_binary(
         isolated_backend,
         cargo_timeout=1.0,
         json_output=True,

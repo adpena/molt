@@ -19,7 +19,9 @@ from typing import Any, Mapping, Sequence, cast
 
 import molt.cli as cli
 from molt.cli import commands as cli_commands
+from molt.cli import backend_binary as cli_backend_binary
 from molt.cli import build_pipeline as cli_build_pipeline
+from molt.cli import link_pipeline as cli_link_pipeline
 import pytest
 from molt.cli import build_inputs as cli_build_inputs
 from molt.cli import build_results as cli_build_results
@@ -52,6 +54,8 @@ RUNTIME_PATHS = importlib.import_module("molt.cli.runtime_paths")
 RUNTIME_WASM_VALIDATION = importlib.import_module("molt.cli.runtime_wasm_validation")
 RUNTIME_FINGERPRINTS = importlib.import_module("molt.cli.runtime_fingerprints")
 RUNTIME_INTRINSIC_SYMBOLS = importlib.import_module("molt.cli.runtime_intrinsic_symbols")
+NATIVE_LINK_COMMAND = importlib.import_module("molt.cli.native_link_command")
+NATIVE_LINK_DEPS = importlib.import_module("molt.cli.native_link_deps")
 
 
 def _rewrite_preserving_mtime(
@@ -2754,14 +2758,14 @@ def test_link_fingerprint_reuses_inputs_digest_when_unchanged(tmp_path: Path) ->
     obj.write_bytes(b"\x7fELFobject")
     runtime.write_bytes(b"archive")
 
-    fingerprint = cli_build_pipeline._link_fingerprint(
+    fingerprint = cli_link_pipeline._link_fingerprint(
         project_root=tmp_path,
         inputs=[stub, obj, runtime],
         link_cmd=["clang", str(stub), str(obj), str(runtime), "-o", "app"],
     )
     assert fingerprint is not None
 
-    reused = cli_build_pipeline._link_fingerprint(
+    reused = cli_link_pipeline._link_fingerprint(
         project_root=tmp_path,
         inputs=[stub, obj, runtime],
         link_cmd=["clang", str(stub), str(obj), str(runtime), "-o", "app"],
@@ -2778,12 +2782,12 @@ def test_link_fingerprint_changes_when_link_command_changes(tmp_path: Path) -> N
     obj.write_bytes(b"\x7fELFobject")
     runtime.write_bytes(b"archive")
 
-    first = cli_build_pipeline._link_fingerprint(
+    first = cli_link_pipeline._link_fingerprint(
         project_root=tmp_path,
         inputs=[stub, obj, runtime],
         link_cmd=["clang", str(stub), str(obj), str(runtime), "-o", "app"],
     )
-    second = cli_build_pipeline._link_fingerprint(
+    second = cli_link_pipeline._link_fingerprint(
         project_root=tmp_path,
         inputs=[stub, obj, runtime],
         link_cmd=[
@@ -2877,10 +2881,10 @@ def test_prepare_native_link_includes_stdlib_object_in_link_fingerprint_inputs(
         captured_inputs[:] = inputs
         return {"hash": "fingerprint", "rustc": None, "inputs_digest": None}
 
-    monkeypatch.setattr(cli_build_pipeline, "_link_fingerprint", fake_link_fingerprint)
-    monkeypatch.setattr(cli_build_pipeline, "_artifact_needs_rebuild", lambda *args, **kwargs: True)
+    monkeypatch.setattr(cli_link_pipeline, "_link_fingerprint", fake_link_fingerprint)
+    monkeypatch.setattr(cli_link_pipeline, "_artifact_needs_rebuild", lambda *args, **kwargs: True)
 
-    prepared, error = cli_build_pipeline._prepare_native_link(
+    prepared, error = cli_link_pipeline._prepare_native_link(
         output_artifact=output_obj,
         trusted=False,
         capabilities_list=None,
@@ -2929,15 +2933,15 @@ def test_prepare_native_link_rehashes_when_stdlib_object_contents_change(
     artifacts_root = tmp_path / "artifacts"
     artifacts_root.mkdir()
 
-    monkeypatch.setattr(RUNTIME_BUILD, "_read_runtime_fingerprint", lambda path: None)
-    monkeypatch.setattr(cli_build_pipeline, "_artifact_needs_rebuild", lambda *args, **kwargs: True)
+    monkeypatch.setattr(cli_link_pipeline, "_read_runtime_fingerprint", lambda path: None)
+    monkeypatch.setattr(cli_link_pipeline, "_artifact_needs_rebuild", lambda *args, **kwargs: True)
     monkeypatch.setattr(
-        cli,
+        cli_link_pipeline,
         "_run_native_link_command",
         lambda **kwargs: subprocess.CompletedProcess(kwargs["link_cmd"], 0, "", ""),
     )
 
-    first, first_error = cli_build_pipeline._prepare_native_link(
+    first, first_error = cli_link_pipeline._prepare_native_link(
         output_artifact=output_obj,
         trusted=False,
         capabilities_list=None,
@@ -2965,7 +2969,7 @@ def test_prepare_native_link_rehashes_when_stdlib_object_contents_change(
     stdlib_obj.write_bytes(b"stdlib-v2")
     _write_shared_stdlib_test_contract(stdlib_obj, "stdlib-key")
 
-    second, second_error = cli_build_pipeline._prepare_native_link(
+    second, second_error = cli_link_pipeline._prepare_native_link(
         output_artifact=output_obj,
         trusted=False,
         capabilities_list=None,
@@ -3007,8 +3011,8 @@ def test_prepare_native_link_stages_stdlib_object_for_link_command(
     artifacts_root.mkdir()
     captured_link_cmd: list[str] = []
 
-    monkeypatch.setattr(RUNTIME_BUILD, "_read_runtime_fingerprint", lambda path: None)
-    monkeypatch.setattr(cli_build_pipeline, "_artifact_needs_rebuild", lambda *args, **kwargs: True)
+    monkeypatch.setattr(cli_link_pipeline, "_read_runtime_fingerprint", lambda path: None)
+    monkeypatch.setattr(cli_link_pipeline, "_artifact_needs_rebuild", lambda *args, **kwargs: True)
 
     def fake_run_native_link_command(
         *,
@@ -3020,9 +3024,9 @@ def test_prepare_native_link_stages_stdlib_object_for_link_command(
         captured_link_cmd[:] = link_cmd
         return subprocess.CompletedProcess(link_cmd, 0, "", "")
 
-    monkeypatch.setattr(cli_build_pipeline, "_run_native_link_command", fake_run_native_link_command)
+    monkeypatch.setattr(cli_link_pipeline, "_run_native_link_command", fake_run_native_link_command)
 
-    prepared, error = cli_build_pipeline._prepare_native_link(
+    prepared, error = cli_link_pipeline._prepare_native_link(
         output_artifact=output_obj,
         trusted=False,
         capabilities_list=None,
@@ -3134,12 +3138,12 @@ def test_prepare_native_link_stages_external_native_artifacts_for_runtime_custod
         captured_link_cmd[:] = link_cmd
         return subprocess.CompletedProcess(link_cmd, 0, "", "")
 
-    monkeypatch.setattr(cli_build_pipeline, "_link_fingerprint", fake_link_fingerprint)
-    monkeypatch.setattr(RUNTIME_BUILD, "_read_runtime_fingerprint", lambda path: None)
-    monkeypatch.setattr(cli_build_pipeline, "_artifact_needs_rebuild", lambda *args, **kwargs: True)
-    monkeypatch.setattr(cli_build_pipeline, "_run_native_link_command", fake_run_native_link_command)
+    monkeypatch.setattr(cli_link_pipeline, "_link_fingerprint", fake_link_fingerprint)
+    monkeypatch.setattr(cli_link_pipeline, "_read_runtime_fingerprint", lambda path: None)
+    monkeypatch.setattr(cli_link_pipeline, "_artifact_needs_rebuild", lambda *args, **kwargs: True)
+    monkeypatch.setattr(cli_link_pipeline, "_run_native_link_command", fake_run_native_link_command)
 
-    prepared, error = cli_build_pipeline._prepare_native_link(
+    prepared, error = cli_link_pipeline._prepare_native_link(
         output_artifact=output_obj,
         trusted=False,
         capabilities_list=None,
@@ -3243,7 +3247,7 @@ def test_prepare_native_link_rejects_external_native_artifact_checksum_drift(
     artifacts_root = tmp_path / "artifacts"
     artifacts_root.mkdir()
 
-    prepared, error = cli_build_pipeline._prepare_native_link(
+    prepared, error = cli_link_pipeline._prepare_native_link(
         output_artifact=output_obj,
         trusted=False,
         capabilities_list=None,
@@ -3373,9 +3377,9 @@ def test_linux_release_link_omits_safe_icf_without_capable_linker(
     stub_path.write_text("int main(void) { return 0; }\n")
     runtime_lib.write_bytes(b"archive")
 
-    monkeypatch.setattr(cli.sys, "platform", "linux")
+    monkeypatch.setattr(NATIVE_LINK_COMMAND.sys, "platform", "linux")
     monkeypatch.setenv("CC", "clang")
-    monkeypatch.setattr(RUNTIME_BUILD.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(NATIVE_LINK_COMMAND.shutil, "which", lambda _name: None)
 
     link_cmd, linker_hint, _normalized_target = cli._build_native_link_command(
         output_obj=output_obj,
@@ -3408,9 +3412,9 @@ def test_linux_release_link_selects_lld_without_icf_for_fn_identity(
             return "/usr/bin/ld.lld"
         return None
 
-    monkeypatch.setattr(cli.sys, "platform", "linux")
+    monkeypatch.setattr(NATIVE_LINK_COMMAND.sys, "platform", "linux")
     monkeypatch.setenv("CC", "clang")
-    monkeypatch.setattr(RUNTIME_BUILD.shutil, "which", fake_which)
+    monkeypatch.setattr(NATIVE_LINK_COMMAND.shutil, "which", fake_which)
 
     link_cmd, linker_hint, _normalized_target = cli._build_native_link_command(
         output_obj=output_obj,
@@ -3439,9 +3443,9 @@ def test_windows_link_omits_icf_for_fn_identity(
     stub_path.write_text("int main(void) { return 0; }\n")
     runtime_lib.write_bytes(b"archive")
 
-    monkeypatch.setattr(cli.sys, "platform", "win32")
+    monkeypatch.setattr(NATIVE_LINK_COMMAND.sys, "platform", "win32")
     monkeypatch.setenv("CC", "clang")
-    monkeypatch.setattr(RUNTIME_BUILD.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(NATIVE_LINK_COMMAND.shutil, "which", lambda _name: None)
 
     link_cmd, _linker_hint, _normalized_target = cli._build_native_link_command(
         output_obj=output_obj,
@@ -3475,7 +3479,9 @@ def test_windows_gnu_link_uses_gnu_system_lib_flags(
 
     monkeypatch.setenv("CC", "zig cc")
     monkeypatch.setattr(
-        cli.shutil, "which", lambda name: "zig" if name == "zig" else None
+        NATIVE_LINK_COMMAND.shutil,
+        "which",
+        lambda name: "zig" if name == "zig" else None,
     )
 
     link_cmd, _linker_hint, normalized_target = cli._build_native_link_command(
@@ -3506,9 +3512,9 @@ def test_windows_native_partial_link_uses_coff_library_tool(
     stdlib_obj.write_bytes(b"coff")
     captured: dict[str, object] = {}
 
-    monkeypatch.setattr(cli.sys, "platform", "win32")
+    monkeypatch.setattr(NATIVE_LINK_DEPS.sys, "platform", "win32")
     monkeypatch.setattr(
-        cli.shutil,
+        NATIVE_LINK_COMMAND.shutil,
         "which",
         lambda name: "C:/LLVM/bin/llvm-lib.exe" if name == "llvm-lib" else None,
     )
@@ -3525,12 +3531,12 @@ def test_windows_native_partial_link_uses_coff_library_tool(
         return subprocess.CompletedProcess(list(link_cmd), 0, "", "")
 
     monkeypatch.setattr(
-        cli,
+        cli_link_pipeline,
         "_run_native_link_command",
         fake_run_native_link_command,
     )
 
-    result = cli_build_pipeline._run_native_partial_link_command(
+    result = cli_link_pipeline._run_native_partial_link_command(
         input_objects=[input_obj, stdlib_obj],
         output_path=output_obj,
         json_output=True,
@@ -4718,8 +4724,8 @@ def test_backend_fingerprint_path_uses_cached_artifact_hash(
         raising=True,
     )
 
-    first = cli_build_pipeline._backend_fingerprint_path(tmp_path, artifact, "dev-fast")
-    second = cli_build_pipeline._backend_fingerprint_path(tmp_path, artifact, "dev-fast")
+    first = cli_backend_binary._backend_fingerprint_path(tmp_path, artifact, "dev-fast")
+    second = cli_backend_binary._backend_fingerprint_path(tmp_path, artifact, "dev-fast")
 
     info = original.cache_info()
     assert first == second
@@ -8112,8 +8118,8 @@ def test_parallel_build_reuses_cached_lowering_across_parallel_builds(
             ),
         ),
     )
-    monkeypatch.setattr(cli_build_pipeline, "_backend_bin_path", lambda *args, **kwargs: backend_bin)
-    monkeypatch.setattr(cli_build_pipeline, "_ensure_backend_binary", lambda *args, **kwargs: True)
+    monkeypatch.setattr(cli_link_pipeline, "_backend_bin_path", lambda *args, **kwargs: backend_bin)
+    monkeypatch.setattr(cli_backend_binary, "_ensure_backend_binary", lambda *args, **kwargs: True)
     _install_fake_backend_compile(monkeypatch)
 
     submit_calls = 0
@@ -8244,8 +8250,8 @@ def test_parallel_build_reuses_dependent_cache_after_stable_interface_change(
             ),
         ),
     )
-    monkeypatch.setattr(cli_build_pipeline, "_backend_bin_path", lambda *args, **kwargs: backend_bin)
-    monkeypatch.setattr(cli_build_pipeline, "_ensure_backend_binary", lambda *args, **kwargs: True)
+    monkeypatch.setattr(cli_link_pipeline, "_backend_bin_path", lambda *args, **kwargs: backend_bin)
+    monkeypatch.setattr(cli_backend_binary, "_ensure_backend_binary", lambda *args, **kwargs: True)
     _install_fake_backend_compile(monkeypatch)
 
     class _FakeFuture:
@@ -8372,8 +8378,8 @@ def test_parallel_build_allows_scoped_type_facts(
             ),
         ),
     )
-    monkeypatch.setattr(cli_build_pipeline, "_backend_bin_path", lambda *args, **kwargs: backend_bin)
-    monkeypatch.setattr(cli_build_pipeline, "_ensure_backend_binary", lambda *args, **kwargs: True)
+    monkeypatch.setattr(cli_link_pipeline, "_backend_bin_path", lambda *args, **kwargs: backend_bin)
+    monkeypatch.setattr(cli_backend_binary, "_ensure_backend_binary", lambda *args, **kwargs: True)
     _install_fake_backend_compile(monkeypatch)
 
     captured_payloads: list[dict[str, object]] = []
@@ -8466,8 +8472,8 @@ def test_build_one_shot_backend_compile_uses_ir_file_lease(
         cli_frontend_execution, "_resolve_frontend_parallel_module_workers", lambda: 0
     )
     monkeypatch.setattr(cli, "_backend_daemon_enabled", lambda: False)
-    monkeypatch.setattr(cli_build_pipeline, "_backend_bin_path", lambda *args, **kwargs: backend_bin)
-    monkeypatch.setattr(cli_build_pipeline, "_ensure_backend_binary", lambda *args, **kwargs: True)
+    monkeypatch.setattr(cli_link_pipeline, "_backend_bin_path", lambda *args, **kwargs: backend_bin)
+    monkeypatch.setattr(cli_backend_binary, "_ensure_backend_binary", lambda *args, **kwargs: True)
     backend_inputs: list[bytes | None] = []
     backend_ir_files: list[Path] = []
     _install_fake_backend_compile(
@@ -8519,8 +8525,8 @@ def test_build_skips_daemon_preflight_when_socket_exists(
         cli_frontend_execution, "_resolve_frontend_parallel_module_workers", lambda: 0
     )
     monkeypatch.setattr(cli, "_backend_daemon_enabled", lambda: True)
-    monkeypatch.setattr(cli_build_pipeline, "_backend_bin_path", lambda *args, **kwargs: backend_bin)
-    monkeypatch.setattr(cli_build_pipeline, "_ensure_backend_binary", lambda *args, **kwargs: True)
+    monkeypatch.setattr(cli_link_pipeline, "_backend_bin_path", lambda *args, **kwargs: backend_bin)
+    monkeypatch.setattr(cli_backend_binary, "_ensure_backend_binary", lambda *args, **kwargs: True)
     monkeypatch.setattr(
         cli,
         "_backend_daemon_socket_path",
@@ -8602,8 +8608,8 @@ def test_build_emit_obj_does_not_route_stdlib_object_env_from_helper(
         cli_frontend_execution, "_resolve_frontend_parallel_module_workers", lambda: 0
     )
     monkeypatch.setattr(cli, "_backend_daemon_enabled", lambda: False)
-    monkeypatch.setattr(cli_build_pipeline, "_backend_bin_path", lambda *args, **kwargs: backend_bin)
-    monkeypatch.setattr(cli_build_pipeline, "_ensure_backend_binary", lambda *args, **kwargs: True)
+    monkeypatch.setattr(cli_link_pipeline, "_backend_bin_path", lambda *args, **kwargs: backend_bin)
+    monkeypatch.setattr(cli_backend_binary, "_ensure_backend_binary", lambda *args, **kwargs: True)
     monkeypatch.setattr(
         cli,
         "_stdlib_object_cache_path",
@@ -10981,8 +10987,8 @@ def test_prepare_backend_dispatch_prefers_reloc_runtime_for_wasm_layout_probe(
     monkeypatch.delenv("MOLT_WASM_DATA_BASE", raising=False)
     monkeypatch.delenv("MOLT_WASM_TABLE_BASE", raising=False)
     monkeypatch.delenv("MOLT_WASM_SPLIT_RUNTIME_RUNTIME_TABLE_MIN", raising=False)
-    monkeypatch.setattr(cli_build_pipeline, "_backend_bin_path", lambda *args, **kwargs: backend_bin)
-    monkeypatch.setattr(cli_build_pipeline, "_ensure_backend_binary", lambda *args, **kwargs: True)
+    monkeypatch.setattr(cli_link_pipeline, "_backend_bin_path", lambda *args, **kwargs: backend_bin)
+    monkeypatch.setattr(cli_backend_binary, "_ensure_backend_binary", lambda *args, **kwargs: True)
     monkeypatch.setattr(cli, "_backend_daemon_enabled", lambda: False)
     monkeypatch.setattr(cli, "wasm_runtime_required_import_names", lambda modules: ())
     monkeypatch.setattr(
@@ -11060,8 +11066,8 @@ def test_prepare_backend_dispatch_linked_table_base_uses_shared_runtime_prefix(
     monkeypatch.delenv("MOLT_WASM_DATA_BASE", raising=False)
     monkeypatch.delenv("MOLT_WASM_TABLE_BASE", raising=False)
     monkeypatch.delenv("MOLT_WASM_SPLIT_RUNTIME_RUNTIME_TABLE_MIN", raising=False)
-    monkeypatch.setattr(cli_build_pipeline, "_backend_bin_path", lambda *args, **kwargs: backend_bin)
-    monkeypatch.setattr(cli_build_pipeline, "_ensure_backend_binary", lambda *args, **kwargs: True)
+    monkeypatch.setattr(cli_link_pipeline, "_backend_bin_path", lambda *args, **kwargs: backend_bin)
+    monkeypatch.setattr(cli_backend_binary, "_ensure_backend_binary", lambda *args, **kwargs: True)
     monkeypatch.setattr(cli, "_backend_daemon_enabled", lambda: False)
     monkeypatch.setattr(cli, "wasm_runtime_required_import_names", lambda modules: ())
     monkeypatch.setattr(cli_build_pipeline, "_read_wasm_data_end", lambda _path: 4096)
@@ -11130,8 +11136,8 @@ def test_prepare_backend_dispatch_uses_reloc_runtime_for_split_runtime_table_min
     monkeypatch.delenv("MOLT_WASM_DATA_BASE", raising=False)
     monkeypatch.delenv("MOLT_WASM_TABLE_BASE", raising=False)
     monkeypatch.delenv("MOLT_WASM_SPLIT_RUNTIME_RUNTIME_TABLE_MIN", raising=False)
-    monkeypatch.setattr(cli_build_pipeline, "_backend_bin_path", lambda *args, **kwargs: backend_bin)
-    monkeypatch.setattr(cli_build_pipeline, "_ensure_backend_binary", lambda *args, **kwargs: True)
+    monkeypatch.setattr(cli_link_pipeline, "_backend_bin_path", lambda *args, **kwargs: backend_bin)
+    monkeypatch.setattr(cli_backend_binary, "_ensure_backend_binary", lambda *args, **kwargs: True)
     monkeypatch.setattr(cli, "_backend_daemon_enabled", lambda: False)
     monkeypatch.setattr(cli, "wasm_runtime_required_import_names", lambda modules: ())
     monkeypatch.setattr(cli_build_pipeline, "_read_wasm_data_end", lambda path: None)
@@ -11209,7 +11215,7 @@ def test_ensure_runtime_wasm_verified_key_is_stable_across_user_import_graph(
         },
     )
     monkeypatch.setattr(
-        cli_build_pipeline,
+        cli_link_pipeline,
         "_artifact_needs_rebuild",
         lambda artifact, fingerprint, stored_fingerprint: (
             verification_calls.append(
@@ -11273,7 +11279,7 @@ def test_runtime_artifact_fingerprint_match_fails_closed_without_stored_fingerpr
     artifact.write_bytes(b"\0asm\x01\0\0\0")
     fingerprint_path = tmp_path / "missing.fingerprint"
 
-    monkeypatch.setattr(cli_build_pipeline, "_artifact_needs_rebuild", lambda *args: False)
+    monkeypatch.setattr(cli_link_pipeline, "_artifact_needs_rebuild", lambda *args: False)
 
     assert (
         cli._runtime_artifact_fingerprint_matches(
@@ -11305,7 +11311,7 @@ def test_ensure_runtime_wasm_writes_integrity_sidecar_after_copy(
     monkeypatch.setattr(
         RUNTIME_BUILD, "_runtime_fingerprint", lambda *args, **kwargs: {"hash": "new"}
     )
-    monkeypatch.setattr(cli_build_pipeline, "_artifact_needs_rebuild", lambda *args, **kwargs: True)
+    monkeypatch.setattr(cli_link_pipeline, "_artifact_needs_rebuild", lambda *args, **kwargs: True)
     monkeypatch.setattr(RUNTIME_BUILD, "_inspect_wasm_binary", lambda path: "valid")
     monkeypatch.setattr(
         RUNTIME_BUILD, "_is_valid_shared_runtime_wasm_artifact", lambda path: True
@@ -11361,7 +11367,7 @@ def test_reloc_runtime_wasm_exports_runtime_owned_gpu_intrinsics(
     monkeypatch.setattr(
         RUNTIME_BUILD, "_runtime_fingerprint", lambda *args, **kwargs: {"hash": "new"}
     )
-    monkeypatch.setattr(cli_build_pipeline, "_artifact_needs_rebuild", lambda *args, **kwargs: True)
+    monkeypatch.setattr(cli_link_pipeline, "_artifact_needs_rebuild", lambda *args, **kwargs: True)
     monkeypatch.setattr(RUNTIME_BUILD, "_inspect_wasm_binary", lambda path: "valid")
 
     def fake_runtime_build(**kwargs):
@@ -11415,7 +11421,7 @@ def test_ensure_runtime_wasm_writes_integrity_sidecar_when_reusing_valid_artifac
     monkeypatch.setattr(
         RUNTIME_BUILD, "_runtime_fingerprint", lambda *args, **kwargs: {"hash": "same"}
     )
-    monkeypatch.setattr(cli_build_pipeline, "_artifact_needs_rebuild", lambda *args, **kwargs: False)
+    monkeypatch.setattr(cli_link_pipeline, "_artifact_needs_rebuild", lambda *args, **kwargs: False)
     monkeypatch.setattr(
         RUNTIME_BUILD, "_read_runtime_fingerprint", lambda path: stored_fingerprint
     )
@@ -12044,7 +12050,7 @@ def test_ensure_runtime_wasm_does_not_overwrite_satisfied_runtime_with_unsatisfi
     monkeypatch.setattr(
         RUNTIME_BUILD, "_runtime_fingerprint", lambda *args, **kwargs: {"hash": "ok"}
     )
-    monkeypatch.setattr(cli_build_pipeline, "_artifact_needs_rebuild", lambda *args, **kwargs: False)
+    monkeypatch.setattr(cli_link_pipeline, "_artifact_needs_rebuild", lambda *args, **kwargs: False)
     monkeypatch.setattr(RUNTIME_BUILD, "_is_valid_runtime_wasm_artifact", lambda path: True)
     monkeypatch.setattr(
         RUNTIME_BUILD, "_is_valid_shared_runtime_wasm_artifact", lambda path: True
@@ -12120,7 +12126,7 @@ def test_ensure_runtime_wasm_materializes_prebuilt_cargo_artifact_without_rebuil
         ),
     )
     monkeypatch.setattr(
-        cli_build_pipeline,
+        cli_link_pipeline,
         "_artifact_needs_rebuild",
         lambda artifact, current, stored: (
             stored is None
@@ -12605,7 +12611,7 @@ def test_run_backend_pipeline_defers_native_runtime_readiness_until_after_codege
         call_order.append("native_link")
         pytest.fail("native link should not run after runtime readiness failure")
 
-    monkeypatch.setattr(cli_build_pipeline, "_prepare_native_link", fake_prepare_native_link)
+    monkeypatch.setattr(cli_link_pipeline, "_prepare_native_link", fake_prepare_native_link)
 
     result = cli_build_pipeline._run_backend_pipeline(
         prepared_build_preamble=build_preamble,
@@ -12666,15 +12672,15 @@ def test_ensure_backend_binary_uses_native_feature_for_native(
         backend_bin.chmod(0o755)
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
-    monkeypatch.setattr(cli_build_pipeline, "_backend_fingerprint", fake_backend_fingerprint)
-    monkeypatch.setattr(cli_build_pipeline, "_run_cargo_with_sccache_retry", fake_run_cargo)
+    monkeypatch.setattr(cli_backend_binary, "_backend_fingerprint", fake_backend_fingerprint)
+    monkeypatch.setattr(cli_backend_binary, "_run_cargo_with_sccache_retry", fake_run_cargo)
     monkeypatch.setattr(
-        cli,
+        cli_backend_binary,
         "_run_subprocess_captured_to_tempfiles",
         lambda cmd, **kwargs: subprocess.CompletedProcess(cmd, 0, b"", b""),
     )
 
-    assert cli_build_pipeline._ensure_backend_binary(
+    assert cli_backend_binary._ensure_backend_binary(
         backend_bin,
         cargo_timeout=1.0,
         json_output=True,
@@ -12728,9 +12734,9 @@ def test_ensure_backend_binary_rebuild_does_not_signal_verified_daemons(
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     monkeypatch.setattr(
-        cli_build_pipeline, "_backend_fingerprint", lambda *args, **kwargs: fingerprint
+        cli_backend_binary, "_backend_fingerprint", lambda *args, **kwargs: fingerprint
     )
-    monkeypatch.setattr(cli_build_pipeline, "_run_cargo_with_sccache_retry", fake_run_cargo)
+    monkeypatch.setattr(cli_backend_binary, "_run_cargo_with_sccache_retry", fake_run_cargo)
     monkeypatch.setattr(
         cli.os,
         "kill",
@@ -12739,12 +12745,12 @@ def test_ensure_backend_binary_rebuild_does_not_signal_verified_daemons(
         ),
     )
     monkeypatch.setattr(
-        cli,
+        cli_backend_binary,
         "_run_subprocess_captured_to_tempfiles",
         lambda cmd, **kwargs: subprocess.CompletedProcess(cmd, 0, b"", b""),
     )
 
-    assert cli_build_pipeline._ensure_backend_binary(
+    assert cli_backend_binary._ensure_backend_binary(
         backend_bin,
         cargo_timeout=1.0,
         json_output=True,
@@ -12784,15 +12790,15 @@ def test_ensure_backend_binary_enables_wasm_feature_for_wasm(
         cargo_output.chmod(0o755)
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
-    monkeypatch.setattr(cli_build_pipeline, "_backend_fingerprint", fake_backend_fingerprint)
-    monkeypatch.setattr(cli_build_pipeline, "_run_cargo_with_sccache_retry", fake_run_cargo)
+    monkeypatch.setattr(cli_backend_binary, "_backend_fingerprint", fake_backend_fingerprint)
+    monkeypatch.setattr(cli_backend_binary, "_run_cargo_with_sccache_retry", fake_run_cargo)
     monkeypatch.setattr(
-        cli,
+        cli_backend_binary,
         "_run_subprocess_captured_to_tempfiles",
         lambda cmd, **kwargs: subprocess.CompletedProcess(cmd, 0, b"", b""),
     )
 
-    assert cli_build_pipeline._ensure_backend_binary(
+    assert cli_backend_binary._ensure_backend_binary(
         backend_bin,
         cargo_timeout=1.0,
         json_output=True,
@@ -12847,13 +12853,13 @@ def test_ensure_backend_binary_materializes_prebuilt_feature_alias_without_rebui
 
     monkeypatch.setenv("CARGO_TARGET_DIR", str(target_dir))
     monkeypatch.setattr(
-        cli_build_pipeline, "_backend_source_paths", lambda *args, **kwargs: [backend_source]
+        cli_backend_binary, "_backend_source_paths", lambda *args, **kwargs: [backend_source]
     )
     monkeypatch.setattr(
-        cli_build_pipeline, "_backend_fingerprint", lambda *args, **kwargs: dict(fingerprint)
+        cli_backend_binary, "_backend_fingerprint", lambda *args, **kwargs: dict(fingerprint)
     )
     monkeypatch.setattr(
-        cli_build_pipeline,
+        cli_backend_binary,
         "_run_cargo_with_sccache_retry",
         lambda cmd, **kwargs: (
             build_cmds.append(list(cmd))
@@ -12861,12 +12867,12 @@ def test_ensure_backend_binary_materializes_prebuilt_feature_alias_without_rebui
         ),
     )
     monkeypatch.setattr(
-        cli,
+        cli_backend_binary,
         "_run_subprocess_captured_to_tempfiles",
         lambda cmd, **kwargs: subprocess.CompletedProcess(cmd, 0, b"", b""),
     )
 
-    assert cli_build_pipeline._ensure_backend_binary(
+    assert cli_backend_binary._ensure_backend_binary(
         backend_bin,
         cargo_timeout=1.0,
         json_output=True,
@@ -12879,7 +12885,7 @@ def test_ensure_backend_binary_materializes_prebuilt_feature_alias_without_rebui
     assert backend_bin.exists()
     assert (
         cli._read_runtime_fingerprint(
-            cli_build_pipeline._backend_fingerprint_path(tmp_path, backend_bin, "dev-fast")
+            cli_backend_binary._backend_fingerprint_path(tmp_path, backend_bin, "dev-fast")
         )["hash"]
         == "abc"
     )
@@ -12902,10 +12908,10 @@ def test_ensure_backend_binary_fails_when_feature_rebuild_emits_no_binary(
         del cmd, kwargs
         return subprocess.CompletedProcess(["cargo", "build"], 0, "", "")
 
-    monkeypatch.setattr(cli_build_pipeline, "_backend_fingerprint", fake_backend_fingerprint)
-    monkeypatch.setattr(cli_build_pipeline, "_run_cargo_with_sccache_retry", fake_run_cargo)
+    monkeypatch.setattr(cli_backend_binary, "_backend_fingerprint", fake_backend_fingerprint)
+    monkeypatch.setattr(cli_backend_binary, "_run_cargo_with_sccache_retry", fake_run_cargo)
 
-    assert not cli_build_pipeline._ensure_backend_binary(
+    assert not cli_backend_binary._ensure_backend_binary(
         backend_bin,
         cargo_timeout=1.0,
         json_output=True,
@@ -12946,7 +12952,7 @@ def test_build_rust_target_uses_rust_backend_feature_and_skips_daemon(
         cli_frontend_execution, "_resolve_frontend_parallel_module_workers", lambda: 0
     )
     monkeypatch.setattr(cli, "_backend_daemon_enabled", lambda: True)
-    monkeypatch.setattr(cli_build_pipeline, "_backend_bin_path", lambda *args, **kwargs: backend_bin)
+    monkeypatch.setattr(cli_link_pipeline, "_backend_bin_path", lambda *args, **kwargs: backend_bin)
     monkeypatch.setattr(
         cli_build_pipeline,
         "_start_backend_daemon",
@@ -13014,11 +13020,18 @@ def test_build_rust_target_uses_rust_backend_feature_and_skips_daemon(
         output.write_text("fn main() {}\n")
         return subprocess.CompletedProcess(cmd, 0, b"", b"")
 
-    monkeypatch.setattr(cli_build_pipeline, "_backend_fingerprint", fake_backend_fingerprint)
-    monkeypatch.setattr(cli_build_pipeline, "_run_cargo_with_sccache_retry", fake_run_cargo)
+    monkeypatch.setattr(cli_backend_binary, "_backend_fingerprint", fake_backend_fingerprint)
+    monkeypatch.setattr(cli_backend_binary, "_run_cargo_with_sccache_retry", fake_run_cargo)
     monkeypatch.setattr(BACKEND_EXECUTION.subprocess, "run", fake_run)
     monkeypatch.setattr(
-        cli, "_run_subprocess_captured_to_tempfiles", fake_backend_compile
+        cli_backend_binary,
+        "_run_subprocess_captured_to_tempfiles",
+        fake_backend_compile,
+    )
+    monkeypatch.setattr(
+        cli_build_pipeline,
+        "_run_subprocess_captured_to_tempfiles",
+        fake_backend_compile,
     )
 
     rc = cli.build(
@@ -13084,7 +13097,7 @@ def test_build_release_rust_target_uses_release_fast_backend_profile_by_default(
         cli_frontend_execution, "_resolve_frontend_parallel_module_workers", lambda: 0
     )
     monkeypatch.setattr(cli, "_backend_daemon_enabled", lambda: True)
-    monkeypatch.setattr(cli_build_pipeline, "_backend_bin_path", lambda *args, **kwargs: backend_bin)
+    monkeypatch.setattr(cli_link_pipeline, "_backend_bin_path", lambda *args, **kwargs: backend_bin)
     monkeypatch.setattr(
         cli_build_pipeline,
         "_start_backend_daemon",
@@ -13140,11 +13153,18 @@ def test_build_release_rust_target_uses_release_fast_backend_profile_by_default(
         output.write_text("fn main() {}\n")
         return subprocess.CompletedProcess(cmd, 0, b"", b"")
 
-    monkeypatch.setattr(cli_build_pipeline, "_backend_fingerprint", fake_backend_fingerprint)
-    monkeypatch.setattr(cli_build_pipeline, "_run_cargo_with_sccache_retry", fake_run_cargo)
+    monkeypatch.setattr(cli_backend_binary, "_backend_fingerprint", fake_backend_fingerprint)
+    monkeypatch.setattr(cli_backend_binary, "_run_cargo_with_sccache_retry", fake_run_cargo)
     monkeypatch.setattr(BACKEND_EXECUTION.subprocess, "run", fake_run)
     monkeypatch.setattr(
-        cli, "_run_subprocess_captured_to_tempfiles", fake_backend_compile
+        cli_backend_binary,
+        "_run_subprocess_captured_to_tempfiles",
+        fake_backend_compile,
+    )
+    monkeypatch.setattr(
+        cli_build_pipeline,
+        "_run_subprocess_captured_to_tempfiles",
+        fake_backend_compile,
     )
 
     rc = cli.build(
@@ -18892,7 +18912,7 @@ def test_cache_variant_differs_when_stdlib_split_toggles() -> None:
     import unittest.mock as _mock
 
     with _mock.patch.object(
-        cli,
+        cli_build_pipeline,
         "_native_stdlib_object_split_enabled",
         return_value=False,
     ):
@@ -19022,7 +19042,7 @@ def test_link_fingerprint_changes_when_stdlib_artifact_content_changes(
 
     link_cmd = ["cc", "-o", "out", "user.o", "stdlib.o"]
 
-    fp1 = cli_build_pipeline._link_fingerprint(
+    fp1 = cli_link_pipeline._link_fingerprint(
         project_root=tmp_path,
         inputs=[user_obj, stdlib_obj],
         link_cmd=link_cmd,
@@ -19031,7 +19051,7 @@ def test_link_fingerprint_changes_when_stdlib_artifact_content_changes(
     # Mutate the stdlib artifact
     stdlib_obj.write_bytes(b"\x00ELF-stdlib-v2")
 
-    fp2 = cli_build_pipeline._link_fingerprint(
+    fp2 = cli_link_pipeline._link_fingerprint(
         project_root=tmp_path,
         inputs=[user_obj, stdlib_obj],
         link_cmd=link_cmd,

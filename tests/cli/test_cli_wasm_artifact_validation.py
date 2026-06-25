@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 import molt.cli as cli
+from molt.cli import backend_binary as cli_backend_binary
 from molt.cli import build_pipeline as cli_build_pipeline
 from tests.cli.process_guard import run_cli_test_process
 
@@ -490,7 +491,7 @@ def test_ensure_runtime_wasm_full_profile_fingerprint_matches_cargo_features(
         cli_build_pipeline, "_artifact_needs_rebuild", lambda *args, **kwargs: True, raising=True
     )
     monkeypatch.setattr(
-        cli_build_pipeline, "_artifact_newer_than_sources", lambda *args, **kwargs: False, raising=True
+        cli_backend_binary, "_artifact_newer_than_sources", lambda *args, **kwargs: False, raising=True
     )
     monkeypatch.setattr(
         RUNTIME_BUILD,
@@ -663,16 +664,16 @@ def test_backend_fingerprint_recomputes_when_rustflags_change(
     project_root = tmp_path / "repo"
     project_root.mkdir()
 
-    monkeypatch.setattr(cli_build_pipeline, "_backend_source_paths", lambda *_args: (), raising=True)
+    monkeypatch.setattr(cli_backend_binary, "_backend_source_paths", lambda *_args: (), raising=True)
     monkeypatch.setattr(
         cli,
         "_hash_source_tree_metadata",
         lambda *args, **kwargs: ("same-inputs", 0),
         raising=True,
     )
-    monkeypatch.setattr(cli_build_pipeline, "_rustc_version", lambda: "rustc test", raising=True)
+    monkeypatch.setattr(cli_backend_binary, "_rustc_version", lambda: "rustc test", raising=True)
 
-    first = cli_build_pipeline._backend_fingerprint(
+    first = cli_backend_binary._backend_fingerprint(
         project_root,
         cargo_profile="dev-fast",
         rustflags="-C link-arg=--export-if-defined=molt_a",
@@ -681,7 +682,7 @@ def test_backend_fingerprint_recomputes_when_rustflags_change(
     )
     assert first is not None
 
-    second = cli_build_pipeline._backend_fingerprint(
+    second = cli_backend_binary._backend_fingerprint(
         project_root,
         cargo_profile="dev-fast",
         rustflags="-C link-arg=--export-if-defined=molt_b",
