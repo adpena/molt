@@ -902,7 +902,6 @@ fn is_unhashable_type(type_id: u32) -> bool {
             | TYPE_ID_DICT
             | TYPE_ID_SET
             | TYPE_ID_BYTEARRAY
-            | TYPE_ID_MEMORYVIEW
             | TYPE_ID_LIST_BUILDER
             | TYPE_ID_DICT_BUILDER
             | TYPE_ID_SET_BUILDER
@@ -911,6 +910,69 @@ fn is_unhashable_type(type_id: u32) -> bool {
             | TYPE_ID_DICT_ITEMS_VIEW
             | TYPE_ID_CALLARGS
     )
+}
+
+/// Hash a memoryview, mirroring CPython `Objects/memoryobject.c: memory_hash`.
+///
+/// A memoryview is hashable iff it is read-only AND its format is a one-byte
+/// format (`'B'`, `'b'` or `'c'`); the hash equals the hash of the view's
+/// C-contiguous bytes (i.e. `hash(mv.tobytes())`). Error precedence, exception
+/// types, and messages are reproduced exactly.
+fn hash_memoryview(_py: &PyToken<'_>, ptr: *mut u8) -> i64 {
+    unsafe {
+        // CPython runs CHECK_RELEASED_INT first, raising
+        //   ValueError: operation forbidden on released memoryview object
+        // for a released view. molt does not yet model released-view state
+        // (`memoryview.release()` is a no-op), so there is no bit to test here.
+        // When the released-state bit lands, the released check belongs at THIS
+        // position — ahead of the writable/format checks — to preserve CPython's
+        // error precedence. The `memoryview_collect_bytes` fallback below already
+        // raises this same ValueError when the buffer cannot be materialized.
+
+        // Writable views are unhashable. Checked before the format restriction so
+        // a writable, non-byte-format view still reports "writable" (CPython order).
+        if !memoryview_readonly(ptr) {
+            return raise_exception::<i64>(
+                _py,
+                "ValueError",
+                "cannot hash writable memoryview object",
+            );
+        }
+
+        // Hashing is restricted to the one-byte formats 'B', 'b', 'c'
+        // (CPython IS_BYTE_FORMAT). Route through the canonical format parser so
+        // the byte-format predicate stays unified with every other memoryview op.
+        let is_byte_format = memoryview_format_from_bits(memoryview_format_bits(ptr))
+            .is_some_and(|fmt| matches!(fmt.code, b'b' | b'B' | b'c'));
+        if !is_byte_format {
+            return raise_exception::<i64>(
+                _py,
+                "ValueError",
+                "memoryview: hashing is restricted to formats 'B', 'b' or 'c'",
+            );
+        }
+
+        // CPython hashes the exporting object and propagates its error: a
+        // read-only view over a bytearray (via `.toreadonly()`) raises
+        // TypeError: unhashable type: 'bytearray'. The owner's hash value is
+        // discarded — only its hashability gates the view. molt flattens nested
+        // views at construction, so the owner is always the root bytes/bytearray.
+        let _ = hash_bits_signed(_py, memoryview_owner_bits(ptr));
+        if exception_pending(_py) {
+            return 0;
+        }
+
+        // The hash is the hash of the view's C-contiguous bytes (== mv.tobytes()),
+        // computed via the shared materialization primitive.
+        match memoryview_collect_bytes(ptr) {
+            Some(bytes) => hash_bytes(_py, &bytes),
+            None => raise_exception::<i64>(
+                _py,
+                "ValueError",
+                "operation forbidden on released memoryview object",
+            ),
+        }
+    }
 }
 
 pub(crate) fn hash_bits_signed(_py: &PyToken<'_>, bits: u64) -> i64 {
@@ -940,6 +1002,9 @@ pub(crate) fn hash_bits_signed(_py: &PyToken<'_>, bits: u64) -> i64 {
                 let len = bytes_len(ptr);
                 let bytes = std::slice::from_raw_parts(bytes_data(ptr), len);
                 return hash_bytes_cached(_py, ptr, bytes);
+            }
+            if type_id == TYPE_ID_MEMORYVIEW {
+                return hash_memoryview(_py, ptr);
             }
             if type_id == TYPE_ID_BIGINT {
                 return hash_bigint(ptr);

@@ -763,12 +763,67 @@ pub(crate) fn assert_no_leak_at_exit(_py: &PyToken<'_>) {
     if !crate::leak_assertion_enabled() {
         return;
     }
+    // Pre-teardown RUNAWAY / peak-working-set guard. Runs BEFORE teardown, while
+    // the program's full live working set is still resident, so `live` here is a
+    // reachable high-water-mark (NOT a leak — teardown reclaims every reachable
+    // ACYCLIC graph, including user __main__ globals via modules_clear_runtime_state).
+    // This is a coarse OOM/runaway canary at EXPECTED_LIVE_OBJECTS. Genuine leak
+    // detection is the SEPARATE post-teardown gauge `assert_no_true_leak_post_teardown`.
     let allocs = ALLOC_COUNT.load(AtomicOrdering::Relaxed);
     let deallocs = DEALLOC_COUNT.load(AtomicOrdering::Relaxed);
     let live = allocs.saturating_sub(deallocs);
     if live <= crate::EXPECTED_LIVE_OBJECTS {
         return;
     }
+    emit_leak_breakdown(
+        "MOLT_ASSERT_NO_LEAK",
+        live,
+        crate::EXPECTED_LIVE_OBJECTS,
+        allocs,
+        deallocs,
+    );
+    std::process::exit(137);
+}
+
+/// Post-teardown TRUE-LEAK gauge (ownership_lattice_phase0.md §2.4).
+///
+/// Runs AFTER `runtime_teardown_for_process_exit` has reclaimed every reachable
+/// acyclic graph — including user `__main__` globals via
+/// `modules_clear_runtime_state` — so the only survivors now are the immortal
+/// heap floor plus genuine leaks. molt is reference-counted with NO cycle
+/// collector (`formal/quint/molt_gc_safety.qnt` scopes its no-leak proof to
+/// ACYCLIC graphs), so the canonical leak class is an *unreachable reference
+/// cycle*: RC pins it at refcount ≥ 1 forever and nothing reclaims it (CPython's
+/// cyclic gc would). In exact mode (`MOLT_LEAK_TOLERANCE` set) we gate
+/// `live <= floor + tolerance`, catching a cycle leak that the coarse
+/// pre-teardown ceiling launders. No-op in the default profile (which relies on
+/// the pre-teardown runaway ceiling); this never changes default-profile behavior.
+pub(crate) fn assert_no_true_leak_post_teardown(_py: &PyToken<'_>) {
+    if !crate::leak_assertion_enabled() {
+        return;
+    }
+    let (floor, tol) = match (
+        crate::state::metrics::live_floor(),
+        crate::state::metrics::leak_exact_tolerance(),
+    ) {
+        (Some(floor), Some(tol)) => (floor, tol),
+        _ => return,
+    };
+    let allocs = ALLOC_COUNT.load(AtomicOrdering::Relaxed);
+    let deallocs = DEALLOC_COUNT.load(AtomicOrdering::Relaxed);
+    let live = allocs.saturating_sub(deallocs);
+    let limit = floor.saturating_add(tol);
+    if live <= limit {
+        return;
+    }
+    emit_leak_breakdown("MOLT_ASSERT_NO_TRUE_LEAK", live, limit, allocs, deallocs);
+    std::process::exit(137);
+}
+
+/// Shared per-type leak diagnostic emission — one authority for both the
+/// pre-teardown runaway ceiling and the post-teardown true-leak gauge, so the two
+/// gates never drift in their reporting format.
+fn emit_leak_breakdown(label: &str, live: u64, limit: u64, allocs: u64, deallocs: u64) {
     let dealloc_objects = DEALLOC_OBJECT_COUNT.load(AtomicOrdering::Relaxed);
     let dealloc_bigints = DEALLOC_BIGINT_COUNT.load(AtomicOrdering::Relaxed);
     let dealloc_strings = DEALLOC_STRING_COUNT.load(AtomicOrdering::Relaxed);
@@ -779,16 +834,18 @@ pub(crate) fn assert_no_leak_at_exit(_py: &PyToken<'_>) {
     let alloc_dicts = ALLOC_DICT_COUNT.load(AtomicOrdering::Relaxed);
     let alloc_tuples = ALLOC_TUPLE_COUNT.load(AtomicOrdering::Relaxed);
     crate::diagnostics::emit_line(&format!(
-        "[MOLT_ASSERT_NO_LEAK] FAIL: live_objects={} exceeds expected_live={} \
-         (alloc={} dealloc={})",
+        "[{}] FAIL: live_objects={} exceeds limit={} (floor={:?} alloc={} dealloc={})",
+        label,
         live,
-        crate::EXPECTED_LIVE_OBJECTS,
+        limit,
+        crate::state::metrics::live_floor(),
         allocs,
         deallocs,
     ));
     crate::diagnostics::emit_line(&format!(
-        "[MOLT_ASSERT_NO_LEAK] per-type (alloc/dealloc/live): \
+        "[{}] per-type (alloc/dealloc/live): \
          object={}/{}/{} string={}/{}/{} dict={}/{}/{} tuple={}/{}/{} bigint=?/{}/?",
+        label,
         alloc_objects,
         dealloc_objects,
         alloc_objects.saturating_sub(dealloc_objects),
@@ -803,12 +860,9 @@ pub(crate) fn assert_no_leak_at_exit(_py: &PyToken<'_>) {
         alloc_tuples.saturating_sub(dealloc_tuples),
         dealloc_bigints,
     ));
-    {
-        use std::io::Write;
-        let _ = std::io::stdout().flush();
-        let _ = std::io::stderr().flush();
-    }
-    std::process::exit(137);
+    use std::io::Write;
+    let _ = std::io::stdout().flush();
+    let _ = std::io::stderr().flush();
 }
 
 // ---------------------------------------------------------------------------

@@ -13,6 +13,44 @@ pub(crate) fn leak_assertion_enabled() -> bool {
         .unwrap_or(false)
 }
 
+/// Phase-0 exact-survivor leak gauge (doc 55 §2.5 / ownership_lattice_phase0.md
+/// §2.4). The measured immortal-survivor floor |S| for THIS program's import set,
+/// snapshot as `live = ALLOC_COUNT - DEALLOC_COUNT` at the bootstrap->user-code
+/// boundary (`molt_runtime_init` "ok"). `u64::MAX` = not snapshot (the assertion
+/// falls back to the `EXPECTED_LIVE_OBJECTS` ceiling).
+pub(crate) static LIVE_FLOOR: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(u64::MAX);
+
+/// One-shot snapshot of the survivor floor. Only records when the leak gauge is
+/// enabled (counters are then force-live); idempotent — the first call wins.
+pub(crate) fn snapshot_live_floor() {
+    if !leak_assertion_enabled() {
+        return;
+    }
+    use std::sync::atomic::Ordering as O;
+    let live = crate::ALLOC_COUNT
+        .load(O::Relaxed)
+        .saturating_sub(crate::DEALLOC_COUNT.load(O::Relaxed));
+    let _ = LIVE_FLOOR.compare_exchange(u64::MAX, live, O::Relaxed, O::Relaxed);
+}
+
+/// The measured survivor floor, or `None` if no snapshot was taken.
+pub(crate) fn live_floor() -> Option<u64> {
+    let v = LIVE_FLOOR.load(std::sync::atomic::Ordering::Relaxed);
+    if v == u64::MAX { None } else { Some(v) }
+}
+
+/// Exact-mode tolerance: `Some(n)` enables the exact-survivor gauge
+/// (`live <= floor + n`, catching BOUNDED leaks) for the memory-safety
+/// differentials; `None` keeps the default-profile `EXPECTED_LIVE_OBJECTS`
+/// ceiling. Set via `MOLT_LEAK_TOLERANCE` (a small slack covering module-level
+/// scaffolding, far below the 200K ceiling).
+pub(crate) fn leak_exact_tolerance() -> Option<u64> {
+    std::env::var("MOLT_LEAK_TOLERANCE")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+}
+
 /// The count of immortal bootstrap objects (module dicts, builtin type objects,
 /// interned singletons) that legitimately survive to process exit and so are NOT
 /// leaks. Measured on a hello-world program at the end of Phase 1 / Phase 3

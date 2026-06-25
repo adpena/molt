@@ -51,6 +51,26 @@ merely made safe), and no drop_insertion guard is needed.
   produced; find why the conditional path yields undef vs the flat path's safe init. Add a native
   bootstrap/differential regression in the same change.
 
+## Frontend investigation (this session) — fix site narrowed
+- Local-binding init lives in `src/molt/frontend/lowering/local_bindings.py`. `_box_local`
+  (lines 104-137) seeds a BOXED local to `_emit_missing_value()` (the MISSING unbound-sentinel)
+  iff it is in `scope_assigned`/`del_targets`, else to `CONST_NONE` (lines 133-137). The comment at
+  lines 49-51 states the intended mechanism: the loop-header phi merges the cell SSA with the
+  **entry-block default `None`** on the first iteration.
+- CRASH EVIDENCE rules out both seeds: the value §2.7 dec_refs has VARYING garbage `type_id`s across
+  runs (3929759456 / 876306096 / 40 / 0) — that is POISON (unseeded memory), NOT the consistent
+  MISSING sentinel and NOT `None`. So the conditional-wrapped loop-carried local's preheader phi-arg
+  is genuinely UNSEEDED.
+- LEAD (where to look next, in order): (1) determine whether the loop-local is BOXED or a plain SSA
+  local in the flat vs conditional case — a differing boxing/scope decision under the conditional
+  (check `src/molt/frontend/lowering/analysis_collect_static.py` and the boxing predicate) would
+  explain why the seed is skipped; (2) find where plain SSA-locals (not `_box_local`) get their
+  entry-default `None` seed and why a conditional preheader misses it; (3) if the frontend emits the
+  seed correctly, the gap is the molt-tir SSA construction (`runtime/molt-tir/src/tir/ssa.rs`)
+  building the loop-header-phi preheader arg through the conditional. The invariant to restore:
+  EVERY loop-carried local's header phi receives a valid `None` (or MISSING) seed on EVERY preheader
+  edge, conditional-wrapped or not — then §2.7 is correct unchanged.
+
 ## Verification gate (ALL on the compiled binary, not cargo test)
 1. `repro_flat` 513→15 MB, no crash; `repro_min` no crash, correct output.
 2. EVERY `mem_probes.py` pattern (baseline,dict,list,tuple,set,str,obj_slots,obj_dict,nested,cond,
