@@ -95,12 +95,8 @@ def _extend_module_graph_with_closure(
         target_python=target_python,
         capability_config_digest=capability_config_digest,
     )
-    if diagnostics_enabled:
-        for name, path in closure_graph.items():
-            _record_module_reason(module_reasons, name, reason)
-            module_graph.setdefault(name, path)
-        return frozenset(closure_graph)
     for name, path in closure_graph.items():
+        _record_module_reason(module_reasons, name, reason)
         module_graph.setdefault(name, path)
     return frozenset(closure_graph)
 

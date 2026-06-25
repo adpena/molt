@@ -28,10 +28,12 @@ from molt.cli.command_runtime import _resolve_timeout_env
 from molt.cli.config_resolution import _coerce_bool, _resolve_build_config
 from molt.cli.lockfiles import _check_lockfiles
 from molt.cli.models import (
+    BinaryImageKind,
     BuildProfile,
     PgoProfileSummary,
     RuntimeFeedbackSummary,
     Target,
+    _BinaryImageScope,
     _ModuleRootResolution,
     _PreparedBuildConfig,
     _PreparedBuildPreamble,
@@ -97,6 +99,137 @@ def _resolve_entry_module(
         return stripped, mod_path
     return None
 
+def _build_config_entry_value(
+    build_config: Mapping[str, Any] | None,
+    keys: Sequence[str],
+) -> tuple[str | None, str | None]:
+    if not build_config:
+        return None, None
+    for key in keys:
+        raw = build_config.get(key)
+        if raw is None:
+            continue
+        if not isinstance(raw, str):
+            return None, f"[tool.molt.build] {key} must be a string"
+        value = raw.strip()
+        if not value:
+            return None, f"[tool.molt.build] {key} must not be empty"
+        return value, key
+    return None, None
+
+def _entry_value_looks_like_path(value: str) -> bool:
+    path_markers = ("/", "\\")
+    return (
+        value.endswith(".py")
+        or value.startswith(".")
+        or any(marker in value for marker in path_markers)
+    )
+
+def _configured_build_entry_selector(
+    build_config: Mapping[str, Any] | None,
+) -> tuple[str | None, str | None, str | None, str | None]:
+    entry_file, entry_file_key = _build_config_entry_value(
+        build_config,
+        (
+            "entry-file",
+            "entry_file",
+            "entry-script",
+            "entry_script",
+            "script",
+            "file",
+        ),
+    )
+    if entry_file_key is not None and entry_file is None:
+        return None, None, None, entry_file_key
+    entry_module, entry_module_key = _build_config_entry_value(
+        build_config,
+        ("entry-module", "entry_module", "module"),
+    )
+    if entry_module_key is not None and entry_module is None:
+        return None, None, None, entry_module_key
+    generic_entry, generic_entry_key = _build_config_entry_value(
+        build_config,
+        ("entry", "main"),
+    )
+    if generic_entry_key is not None and generic_entry is None:
+        return None, None, None, generic_entry_key
+    selectors = [
+        key
+        for key, value in (
+            (entry_file_key, entry_file),
+            (entry_module_key, entry_module),
+            (generic_entry_key, generic_entry),
+        )
+        if key is not None and value is not None
+    ]
+    if len(selectors) > 1:
+        return (
+            None,
+            None,
+            None,
+            "Build config has multiple entry selectors; use exactly one of "
+            "entry-file, entry-module, or entry.",
+        )
+    if entry_file is not None:
+        return entry_file, None, f"config:{entry_file_key}", None
+    if entry_module is not None:
+        return None, entry_module, f"config:{entry_module_key}", None
+    if generic_entry is not None and generic_entry_key is not None:
+        if _entry_value_looks_like_path(generic_entry):
+            return generic_entry, None, f"config:{generic_entry_key}:file", None
+        return None, generic_entry, f"config:{generic_entry_key}:module", None
+    return None, None, None, None
+
+def _resolve_build_entry_selector(
+    *,
+    file_path: str | None,
+    module: str | None,
+    project_root: Path,
+    build_config: Mapping[str, Any] | None,
+) -> tuple[str | None, str | None, str | None, str | None]:
+    if file_path and module:
+        return None, None, None, "Use a file path or --module, not both."
+    if file_path:
+        return file_path, None, "cli:file", None
+    if module:
+        return None, module, "cli:module", None
+    configured_file, configured_module, source, error = _configured_build_entry_selector(
+        build_config
+    )
+    if error is not None:
+        return None, None, None, error
+    if configured_file is not None:
+        path = Path(configured_file).expanduser()
+        if not path.is_absolute():
+            path = project_root / path
+        return os.fspath(path), None, source, None
+    if configured_module is not None:
+        return None, configured_module, source, None
+    return (
+        None,
+        None,
+        None,
+        "Missing entry file or module. Provide a Python file, --module, or "
+        "[tool.molt.build] entry-file/entry-module.",
+    )
+
+def _binary_image_kind(
+    *,
+    selector_source: str,
+    source_path: Path,
+) -> BinaryImageKind:
+    config_selected = selector_source.startswith("config:")
+    module_selected = selector_source.endswith(":module") or selector_source in {
+        "config:entry-module",
+        "config:entry_module",
+        "config:module",
+    }
+    if module_selected and source_path.name == "__main__.py":
+        return "project_entry_package" if config_selected else "entry_package"
+    if module_selected:
+        return "project_entry_module" if config_selected else "entry_module"
+    return "project_entry_script" if config_selected else "entry_script"
+
 def _resolve_build_entry(
     *,
     file_path: str | None,
@@ -109,7 +242,17 @@ def _resolve_build_entry(
     command: str = "build",
     lib_paths: list[str] | None = None,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
+    build_config: Mapping[str, Any] | None = None,
 ) -> tuple[_ResolvedBuildEntry | None, _CliFailure | None]:
+    file_path, module, selector_source, selector_error = _resolve_build_entry_selector(
+        file_path=file_path,
+        module=module,
+        project_root=project_root,
+        build_config=build_config,
+    )
+    if selector_error is not None:
+        return None, _fail(selector_error, json_output, command=command)
+    assert selector_source is not None
     module_root_resolution = _resolve_module_root_resolution(
         project_root,
         cwd_root,
@@ -217,6 +360,17 @@ def _resolve_build_entry(
         entry_tree=entry_tree,
         target_python=target_python,
         external_module_roots=external_module_roots,
+        image_scope=_BinaryImageScope.from_entry(
+            kind=_binary_image_kind(
+                selector_source=selector_source,
+                source_path=source_path,
+            ),
+            selector_source=selector_source,
+            entry_module=entry_module,
+            source_path=source_path,
+            project_root=project_root,
+            module_roots=module_roots,
+        ),
     ), None
 
 def _prepare_build_config(
@@ -636,6 +790,7 @@ def _prepare_build_inputs(
         json_output=json_output,
         lib_paths=lib_paths or [],
         target_python=prepared_build_config.target_python,
+        build_config=build_config,
     )
     if resolved_build_entry_error is not None:
         return None, resolved_build_entry_error
@@ -812,6 +967,7 @@ def _resolve_wrapper_build_entry(
         command=command,
         lib_paths=lib_paths or None,
         target_python=target_python,
+        build_config=build_cfg,
     )
 
 def _package_root_for_override(source_path: Path, package_name: str) -> Path | None:

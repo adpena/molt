@@ -684,6 +684,7 @@ from molt.cli.models import (
     _BackendCacheSetup,
     _BackendDaemonCompileResult,
     _BackendExecutionResult,
+    _BinaryImageScope,
     _BuildDiagnosticsContext,
     _BuildOutputLayout,
     _EntryFrontendLoweringContext,
@@ -947,8 +948,6 @@ def build(
             return _fail(
                 "Use a file path or --module, not both.", json_output, command="build"
             )
-        if not file_path and not module:
-            return _fail("Missing entry file or module.", json_output, command="build")
         prepared_build_inputs, prepared_build_inputs_error = _build_inputs._prepare_build_inputs(
             file_path=file_path,
             module=module,

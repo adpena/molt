@@ -8,8 +8,10 @@ from molt.cli import build_inputs
 _BUILD_INPUT_NAMES = (
     "_VALID_AUDIT_SINKS",
     "_append_rustflags",
+    "_binary_image_kind",
     "_build_args_lib_paths",
     "_build_args_respect_pythonpath",
+    "_build_config_entry_value",
     "_capability_ambient_env_for_cache",
     "_capability_config_cache_digest",
     "_capability_config_cache_digest_from_env",
@@ -30,10 +32,13 @@ _BUILD_INPUT_NAMES = (
     "_prepare_build_preamble",
     "_prepare_build_roots",
     "_resolve_build_entry",
+    "_resolve_build_entry_selector",
     "_resolve_entry_module",
     "_resolve_module_root_resolution",
     "_resolve_module_roots",
     "_resolve_wrapper_build_entry",
+    "_configured_build_entry_selector",
+    "_entry_value_looks_like_path",
 )
 
 
