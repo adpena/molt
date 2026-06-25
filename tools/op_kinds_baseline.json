@@ -9,6 +9,7 @@
     "simpleir_lane_gap": [],
     "mapped_never_emitted": [
       "bit_not",
+      "borrow",
       "box_from_raw_int",
       "build_dict",
       "build_list",
@@ -42,6 +43,7 @@
       "module_get_name",
       "not_in",
       "object_new_bound_stack",
+      "release",
       "set_attr",
       "shl",
       "shr",

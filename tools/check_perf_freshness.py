@@ -2,8 +2,8 @@
 """Fail-closed PERF-FRESHNESS gate - no stale perf number masquerades as current.
 
 molt has exactly one citable perf source of truth: the canonical scoreboard
-(``tools/perf_scoreboard.py --profile release-fast``). Every other perf artifact
-- dated result JSONs, hand-written markdown tables, triage snapshots - is a
+command exported by ``tools/perf_authority.py``. Every other perf artifact -
+dated result JSONs, hand-written markdown tables, triage snapshots - is a
 point-in-time record that goes stale. A stale record is dangerous precisely
 because it still reads as a confident table of ratios; a design agent handed a
 3-month-old ``0.01x`` row can rank it #1 and chase a regression that no longer
@@ -146,7 +146,9 @@ def evaluate_doc(path: Path, *, max_age_days: float, now: dt.datetime) -> dict:
 
     reasons: list[str] = []
     if age is not None and age > max_age_days:
-        reasons.append(f"generated_at {generated_at} is {age:.0f}d old (> {max_age_days:.0f}d)")
+        reasons.append(
+            f"generated_at {generated_at} is {age:.0f}d old (> {max_age_days:.0f}d)"
+        )
     if ancestor is False:
         reasons.append(f"git_rev {git_rev} is NOT an ancestor of origin/main")
     # FAIL CLOSED: a doc that presents perf numbers but proves freshness through

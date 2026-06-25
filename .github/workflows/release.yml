@@ -51,7 +51,7 @@ jobs:
       REF_NAME: ${{ github.ref_name }}
       INPUT_VERSION: ${{ inputs.version }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Resolve version
         shell: bash
@@ -76,7 +76,7 @@ jobs:
             echo "PYTHON_BIN=python" >> "$GITHUB_ENV"
           fi
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v6.3.0
         if: ${{ !matrix.self_hosted }}
         with:
           python-version-file: ".python-version"
@@ -177,7 +177,7 @@ jobs:
             --output "dist/molt-worker-$VERSION-${{ matrix.platform }}-${{ matrix.arch }}.$EXT"
 
       - name: Upload build artifacts
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7.0.1
         with:
           name: release-${{ matrix.platform }}-${{ matrix.arch }}
           path: dist/molt-*-${{ matrix.platform }}-${{ matrix.arch }}.*
@@ -204,7 +204,7 @@ jobs:
       REF_NAME: ${{ github.ref_name }}
       INPUT_VERSION: ${{ inputs.version }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Resolve version
         shell: bash
@@ -220,7 +220,7 @@ jobs:
           VERSION="${VERSION#v}"
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v6.3.0
         with:
           python-version-file: ".python-version"
 
@@ -257,7 +257,7 @@ jobs:
     needs: manifest
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Deploy Cloudflare Worker
         uses: cloudflare/wrangler-action@v3
@@ -283,9 +283,9 @@ jobs:
     needs: manifest
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v6.3.0
         with:
           python-version-file: ".python-version"
 

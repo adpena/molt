@@ -9,8 +9,10 @@ See the NOTE comment at `src/molt/frontend/__init__.py` (search
 / "0.01x" figures below NO LONGER reflect the engine.
 
 The ONLY citable perf source of truth is
-`tools/perf_scoreboard.py --profile release-fast --classify`. This file is kept
-as a historical root-cause record only. See `tools/PERF_AUTHORITY.md`.
+`tools/perf_scoreboard.py --set core --backend native --backend llvm --profile
+release-fast --samples 5 --warmup 2 --repeat 5 --classify
+--require-quiescent`. This file is kept as a historical root-cause record only.
+See `tools/PERF_AUTHORITY.md`.
 
   - generated_at: 2026-03 (pre-dates provenance stamping)
   - status: FIXED

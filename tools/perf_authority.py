@@ -2,9 +2,9 @@
 """Single authority boundary for what is - and is NOT - a citable perf number.
 
 molt has exactly ONE canonical performance source of truth:
-``tools/perf_scoreboard.py`` run at ``--profile release-fast`` (cold+warm,
->=5-sample CV, quiescence guard, repeat-CI classification, and a
-git-ancestry/dirty-tree ``authoritative`` provenance check). Every OTHER lane
+``tools/perf_scoreboard.py`` run over the native+LLVM release-fast core board
+with cold+warm samples, repeat-CI classification, the quiescence guard, and a
+git-ancestry/dirty-tree ``authoritative`` provenance check. Every OTHER lane
 that emits wall-clock numbers - ``tools/bench.py`` (daemon batch builder) and
 ``bench/harness.py`` (the dev/correctness differential harness) - is
 NON-CANONICAL and must SELF-IDENTIFY as such so a design agent never cites it.
@@ -25,9 +25,9 @@ non-canonical lanes route through, instead of each re-implementing them:
      :func:`STALE_BANNER`) used by freshness consumers to flag any perf doc whose
      ``git_rev`` is not on origin/main or that is older than N days.
 
-The release-fast cargo profile is the daily contract; ``perf_scoreboard.py``
-``--profile release-fast`` is the only lane permitted to emit
-``authoritative=true``. See ``tools/PERF_AUTHORITY.md`` for the consumer rule.
+The native+LLVM release-fast core scoreboard command is the daily contract; it
+is the only lane permitted to emit ``authoritative=true``. See
+``tools/PERF_AUTHORITY.md`` for the consumer rule.
 """
 
 from __future__ import annotations
@@ -41,7 +41,11 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 # The one canonical gate. Cited in every non-canonical stamp + every stale
 # banner so a reader is always pointed back at the live truth.
-CANONICAL_GATE = "tools/perf_scoreboard.py --profile release-fast --classify"
+CANONICAL_GATE = (
+    "tools/perf_scoreboard.py --set core --backend native --backend llvm "
+    "--profile release-fast --samples 5 --warmup 2 --repeat 5 --classify "
+    "--require-quiescent"
+)
 
 # The release-fast cargo profile is the daily perf contract. A board is only
 # *eligible* for authoritative=true when it is the canonical gate at this
@@ -152,7 +156,9 @@ def non_canonical_provenance(
         "lane": source,
         "profile": profile,
         "canonical_gate": CANONICAL_GATE,
-        "git_rev": git_rev if git_rev is not None else (_git_output(["rev-parse", "HEAD"]) or "unknown"),
+        "git_rev": git_rev
+        if git_rev is not None
+        else (_git_output(["rev-parse", "HEAD"]) or "unknown"),
     }
 
 
@@ -190,7 +196,9 @@ def git_rev_is_ancestor_of_origin(git_rev: str | None) -> bool | None:
     return None
 
 
-def doc_age_days(generated_at: str | None, *, now: dt.datetime | None = None) -> float | None:
+def doc_age_days(
+    generated_at: str | None, *, now: dt.datetime | None = None
+) -> float | None:
     """Age in days of an ISO-8601 ``generated_at`` timestamp, or None if unparseable."""
     if not generated_at:
         return None
