@@ -3,11 +3,13 @@ from __future__ import annotations
 import argparse
 import copy
 import importlib
+import io
 import json
 import os
 from pathlib import Path
 import shlex
 import subprocess
+from contextlib import redirect_stdout
 from typing import Any, Mapping
 
 from molt.debug import (
@@ -46,6 +48,24 @@ def _emit_debug_payload(
         _atomic_write_text(retained_output, summary)
     print(summary, end="")
     return 0
+
+
+def _capture_json_cli_result(
+    runner: Any,
+    /,
+    *args: Any,
+    **kwargs: Any,
+) -> tuple[int, dict[str, Any] | None]:
+    stdout_buffer = io.StringIO()
+    with redirect_stdout(stdout_buffer):
+        returncode = runner(*args, json_output=True, **kwargs)
+    stdout_text = stdout_buffer.getvalue().strip()
+    if not stdout_text:
+        return returncode, None
+    payload = json.loads(stdout_text)
+    if not isinstance(payload, dict):
+        return returncode, None
+    return returncode, payload
 
 
 def _load_debug_oracle(args: argparse.Namespace) -> dict[str, Any]:
