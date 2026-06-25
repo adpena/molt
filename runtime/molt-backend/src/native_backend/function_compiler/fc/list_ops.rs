@@ -22,6 +22,7 @@ pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] = 
     "tuple_from_list",
 ];
 use super::OpFlow;
+use super::list_index_fast_path::ListIndexFastPathState;
 use super::var_get_boxed_overflow_safe_fn;
 
 /// Cranelift codegen handlers for `list` ops: construction (`list_new`/`list_int_new`/`list_fill_new`/`list_from_range`), mutation (`append`/`pop`/`extend`/`insert`/`remove`/`clear`/`reverse`/`copy`), queries (`count`/`index`/`index_range`), and `tuple_from_list`. Threads the per-function list data/len/is_bool element-cache maps the inline arms keep across loop iterations.
@@ -51,11 +52,7 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
     nbc: &crate::NanBoxConsts,
     bool_like_vars: &BTreeSet<String>,
     local_inc_ref_obj: FuncRef,
-    list_int_data_cache: &mut BTreeMap<String, Variable>,
-    list_int_len_cache: &mut BTreeMap<String, Variable>,
-    list_data_cache: &mut BTreeMap<String, Variable>,
-    list_len_cache: &mut BTreeMap<String, Variable>,
-    list_is_bool_cache: &mut BTreeMap<String, Variable>,
+    list_index_fast_paths: &mut ListIndexFastPathState,
 ) -> OpFlow {
     // Reconstruct the original op-local closure (captures bool_primary_vars +
     // nbc; all other state threads through explicit params) so the moved arm
@@ -286,11 +283,7 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
         "list_append" => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             // Invalidate cached data_ptr/len — append may reallocate.
-            list_int_data_cache.remove(&args[0]);
-            list_int_len_cache.remove(&args[0]);
-            list_data_cache.remove(&args[0]);
-            list_len_cache.remove(&args[0]);
-            list_is_bool_cache.remove(&args[0]);
+            list_index_fast_paths.invalidate_list(&args[0]);
             let list = var_get_boxed_overflow_safe(
                 &mut *module,
                 &mut *import_ids,
@@ -334,11 +327,7 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
         }
         "list_pop" => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-            list_int_data_cache.remove(&args[0]);
-            list_int_len_cache.remove(&args[0]);
-            list_data_cache.remove(&args[0]);
-            list_len_cache.remove(&args[0]);
-            list_is_bool_cache.remove(&args[0]);
+            list_index_fast_paths.invalidate_list(&args[0]);
             let list = var_get_boxed_overflow_safe(
                 &mut *module,
                 &mut *import_ids,
@@ -379,11 +368,7 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
         }
         "list_extend" => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-            list_int_data_cache.remove(&args[0]);
-            list_int_len_cache.remove(&args[0]);
-            list_data_cache.remove(&args[0]);
-            list_len_cache.remove(&args[0]);
-            list_is_bool_cache.remove(&args[0]);
+            list_index_fast_paths.invalidate_list(&args[0]);
             let list = var_get_boxed_overflow_safe(
                 &mut *module,
                 &mut *import_ids,
@@ -424,11 +409,7 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
         }
         "list_insert" => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-            list_int_data_cache.remove(&args[0]);
-            list_int_len_cache.remove(&args[0]);
-            list_data_cache.remove(&args[0]);
-            list_len_cache.remove(&args[0]);
-            list_is_bool_cache.remove(&args[0]);
+            list_index_fast_paths.invalidate_list(&args[0]);
             let list = var_get_boxed_overflow_safe(
                 &mut *module,
                 &mut *import_ids,
@@ -482,11 +463,7 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
         "list_remove" => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             // Invalidate cached data_ptr/len — remove shifts elements and changes length.
-            list_int_data_cache.remove(&args[0]);
-            list_int_len_cache.remove(&args[0]);
-            list_data_cache.remove(&args[0]);
-            list_len_cache.remove(&args[0]);
-            list_is_bool_cache.remove(&args[0]);
+            list_index_fast_paths.invalidate_list(&args[0]);
             let list = var_get_boxed_overflow_safe(
                 &mut *module,
                 &mut *import_ids,
@@ -528,11 +505,7 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
         "list_clear" => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             // Invalidate cached data_ptr/len — clear empties the list.
-            list_int_data_cache.remove(&args[0]);
-            list_int_len_cache.remove(&args[0]);
-            list_data_cache.remove(&args[0]);
-            list_len_cache.remove(&args[0]);
-            list_is_bool_cache.remove(&args[0]);
+            list_index_fast_paths.invalidate_list(&args[0]);
             let list = var_get_boxed_overflow_safe(
                 &mut *module,
                 &mut *import_ids,
