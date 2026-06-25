@@ -307,7 +307,7 @@ def sample_processes_windows(
 ) -> dict[int, ProcessSample]:
     try:
         rows = snapshot_rows()
-    except (OSError, TypeError, AttributeError):
+    except (OSError, TypeError, AttributeError, TimeoutError):
         return {}
     return parse_windows_process_snapshot_rows(rows)
 

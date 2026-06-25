@@ -1,9 +1,17 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
+import json
 import os
+from pathlib import Path
+import subprocess
+import sys
 import time
 
 
+DEFAULT_WINDOWS_PROCESS_SNAPSHOT_TIMEOUT_SEC = 5.0
+WINDOWS_PROCESS_SNAPSHOT_TIMEOUT_ENV = "MOLT_WINDOWS_PROCESS_SNAPSHOT_TIMEOUT_SEC"
+WINDOWS_PROCESS_SNAPSHOT_HELPER_ARG = "--molt-windows-process-snapshot-json"
 WINDOWS_FULL_COMMAND_LINE_EXECUTABLE_NAMES = frozenset(
     {
         "cargo.exe",
@@ -22,6 +30,91 @@ WINDOWS_FULL_COMMAND_LINE_EXECUTABLE_NAMES = frozenset(
 )
 
 
+class WindowsProcessSnapshotTimeout(TimeoutError):
+    """Raised when Windows process-table custody cannot be sampled completely."""
+
+
+def _windows_process_snapshot_timeout_sec(
+    env: Mapping[str, str] | None = None,
+) -> float | None:
+    source = os.environ if env is None else env
+    raw = source.get(WINDOWS_PROCESS_SNAPSHOT_TIMEOUT_ENV, "").strip()
+    if not raw:
+        return DEFAULT_WINDOWS_PROCESS_SNAPSHOT_TIMEOUT_SEC
+    lowered = raw.casefold()
+    if lowered in {"0", "false", "off", "no"}:
+        return None
+    try:
+        parsed = float(raw)
+    except ValueError:
+        return DEFAULT_WINDOWS_PROCESS_SNAPSHOT_TIMEOUT_SEC
+    if parsed <= 0:
+        return None
+    return parsed
+
+
+def _coerce_windows_process_snapshot_rows(
+    payload: object,
+) -> list[tuple[int, int, int, str, int | None, int | None]]:
+    if not isinstance(payload, list):
+        raise ValueError("Windows process snapshot payload must be a list")
+    rows: list[tuple[int, int, int, str, int | None, int | None]] = []
+    for row in payload:
+        if not isinstance(row, list) or len(row) != 6:
+            raise ValueError("Windows process snapshot row must have six fields")
+        pid, ppid, rss_kb, command, elapsed_sec, started_at_ns = row
+        if not (
+            isinstance(pid, int)
+            and isinstance(ppid, int)
+            and isinstance(rss_kb, int)
+            and isinstance(command, str)
+        ):
+            raise ValueError("Windows process snapshot row has invalid field types")
+        if elapsed_sec is not None and not isinstance(elapsed_sec, int):
+            raise ValueError("Windows process snapshot elapsed_sec must be int or null")
+        if started_at_ns is not None and not isinstance(started_at_ns, int):
+            raise ValueError("Windows process snapshot started_at_ns must be int or null")
+        rows.append((pid, ppid, rss_kb, command, elapsed_sec, started_at_ns))
+    return rows
+
+
+def _windows_process_snapshot_rows_hard_timeout() -> list[
+    tuple[int, int, int, str, int | None, int | None]
+]:
+    if os.name != "nt":
+        return []
+    timeout_sec = _windows_process_snapshot_timeout_sec()
+    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    try:
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(Path(__file__).resolve()),
+                WINDOWS_PROCESS_SNAPSHOT_HELPER_ARG,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=timeout_sec,
+            check=False,
+            creationflags=creationflags,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise WindowsProcessSnapshotTimeout(
+            f"Windows process snapshot helper exceeded {timeout_sec:.3f}s"
+            if timeout_sec is not None
+            else "Windows process snapshot helper timed out"
+        ) from exc
+    except OSError:
+        return []
+    if result.returncode != 0:
+        return []
+    try:
+        payload = json.loads(result.stdout)
+        return _coerce_windows_process_snapshot_rows(payload)
+    except (json.JSONDecodeError, ValueError, TypeError):
+        return []
+
+
 def _windows_process_needs_full_command_line(exe_name: str) -> bool:
     return exe_name.strip().casefold() in WINDOWS_FULL_COMMAND_LINE_EXECUTABLE_NAMES
 
@@ -36,6 +129,16 @@ def _filetime_to_unix_seconds(low: int, high: int) -> float | None:
 def _windows_process_snapshot_rows() -> list[tuple[int, int, int, str, int | None, int | None]]:
     if os.name != "nt":
         return []
+    timeout_sec = _windows_process_snapshot_timeout_sec()
+    deadline = None if timeout_sec is None else time.monotonic() + timeout_sec
+
+    def enforce_deadline(stage: str) -> None:
+        if deadline is None or time.monotonic() <= deadline:
+            return
+        raise WindowsProcessSnapshotTimeout(
+            f"Windows process snapshot exceeded {timeout_sec:.3f}s while {stage}"
+        )
+
     import ctypes
     from ctypes import wintypes
 
@@ -149,6 +252,7 @@ def _windows_process_snapshot_rows() -> list[tuple[int, int, int, str, int | Non
     command_line_buffer_offset = command_line_offset + (8 if pointer_size == 8 else 4)
 
     def read_memory(handle: wintypes.HANDLE, address: int, size: int) -> bytes | None:
+        enforce_deadline("reading process memory")
         if address <= 0 or size <= 0:
             return None
         buffer = (ctypes.c_ubyte * size)()
@@ -161,6 +265,7 @@ def _windows_process_snapshot_rows() -> list[tuple[int, int, int, str, int | Non
             ctypes.byref(bytes_read),
         ):
             return None
+        enforce_deadline("reading process memory")
         if bytes_read.value <= 0:
             return None
         return bytes(buffer[: bytes_read.value])
@@ -178,6 +283,7 @@ def _windows_process_snapshot_rows() -> list[tuple[int, int, int, str, int | Non
         return int.from_bytes(raw, "little", signed=False)
 
     def read_process_command_line(handle: wintypes.HANDLE) -> str | None:
+        enforce_deadline("reading process command line")
         info = PROCESS_BASIC_INFORMATION()
         returned = wintypes.ULONG(0)
         status = nt_query_information_process(
@@ -202,15 +308,19 @@ def _windows_process_snapshot_rows() -> list[tuple[int, int, int, str, int | Non
         raw = read_memory(handle, buffer_addr, min(byte_len, 32768))
         if raw is None:
             return None
+        enforce_deadline("reading process command line")
         return raw.decode("utf-16-le", errors="replace").strip("\x00")
 
     def read_process_image_name(handle: wintypes.HANDLE) -> str | None:
+        enforce_deadline("reading process image name")
         size = wintypes.DWORD(32768)
         buffer = ctypes.create_unicode_buffer(size.value)
         if query_full_process_image_name(handle, 0, buffer, ctypes.byref(size)):
+            enforce_deadline("reading process image name")
             return buffer.value
         return None
 
+    enforce_deadline("creating process snapshot")
     snapshot = create_snapshot(TH32CS_SNAPPROCESS, 0)
     if snapshot == INVALID_HANDLE_VALUE:
         return []
@@ -221,6 +331,7 @@ def _windows_process_snapshot_rows() -> list[tuple[int, int, int, str, int | Non
         ok = process_first(snapshot, ctypes.byref(entry))
         now = time.time()
         while ok:
+            enforce_deadline("enumerating process snapshot")
             pid = int(entry.th32ProcessID)
             if pid > 0:
                 rss_kb = 0
@@ -235,11 +346,13 @@ def _windows_process_snapshot_rows() -> list[tuple[int, int, int, str, int | Non
                 )
                 handle = None
                 for access in access_masks:
+                    enforce_deadline("opening process")
                     handle = open_process(access, False, pid)
                     if handle:
                         break
                 if handle:
                     try:
+                        enforce_deadline("reading process metadata")
                         image_name = read_process_image_name(handle)
                         if _windows_process_needs_full_command_line(exe_name):
                             command = (
@@ -256,6 +369,7 @@ def _windows_process_snapshot_rows() -> list[tuple[int, int, int, str, int | Non
                             ctypes.byref(counters),
                             counters.cb,
                         ):
+                            enforce_deadline("reading process memory counters")
                             rss_kb = max(
                                 0,
                                 int((counters.WorkingSetSize + 1023) // 1024),
@@ -271,6 +385,7 @@ def _windows_process_snapshot_rows() -> list[tuple[int, int, int, str, int | Non
                             ctypes.byref(kernel),
                             ctypes.byref(user),
                         ):
+                            enforce_deadline("reading process times")
                             created_ts = _filetime_to_unix_seconds(
                                 int(created.dwLowDateTime),
                                 int(created.dwHighDateTime),
@@ -293,7 +408,20 @@ def _windows_process_snapshot_rows() -> list[tuple[int, int, int, str, int | Non
                         started_at_ns,
                     )
                 )
+            enforce_deadline("advancing process snapshot")
             ok = process_next(snapshot, ctypes.byref(entry))
     finally:
         close_handle(snapshot)
     return rows
+
+
+def _main(argv: list[str]) -> int:
+    if argv != [WINDOWS_PROCESS_SNAPSHOT_HELPER_ARG]:
+        return 2
+    rows = _windows_process_snapshot_rows()
+    print(json.dumps(rows, separators=(",", ":")))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(_main(sys.argv[1:]))

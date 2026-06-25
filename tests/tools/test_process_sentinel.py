@@ -776,7 +776,7 @@ def test_terminate_group_refuses_protected_codex_group(monkeypatch) -> None:
         ),
     }
     sent_groups: list[tuple[int, int]] = []
-    monkeypatch.setattr(module.memory_guard, "sample_processes", lambda: samples)
+    monkeypatch.setattr(module, "sample_processes_for_sentinel", lambda: samples)
     monkeypatch.setattr(module.os, "getpid", lambda: 9999)
     monkeypatch.setattr(module, "_safe_getpgrp", lambda: 999)
     monkeypatch.setattr(
@@ -822,7 +822,7 @@ def test_terminate_group_uses_pid_kill_without_getpgrp_on_windows(monkeypatch) -
         raising=False,
     )
     monkeypatch.setattr(module.time, "sleep", lambda _seconds: None)
-    monkeypatch.setattr(module.memory_guard, "sample_processes", lambda: samples)
+    monkeypatch.setattr(module, "sample_processes_for_sentinel", lambda: samples)
 
     module.terminate_group(100, grace=0.001, root=Path("/repo/molt"))
 
@@ -857,7 +857,7 @@ def test_terminate_group_windows_refuses_reused_pid_identity(monkeypatch) -> Non
     monkeypatch.setattr(module, "_safe_getpgrp", lambda: None)
     monkeypatch.setattr(module.os, "getpid", lambda: 9999)
     monkeypatch.setattr(module.os, "kill", lambda pid, sig: killed.append((pid, sig)))
-    monkeypatch.setattr(module.memory_guard, "sample_processes", lambda: samples)
+    monkeypatch.setattr(module, "sample_processes_for_sentinel", lambda: samples)
 
     module.terminate_group(
         100,
@@ -900,7 +900,7 @@ def test_terminate_group_refuses_windows_codex_app_server(monkeypatch) -> None:
     monkeypatch.setattr(module, "_safe_getpgrp", lambda: None)
     monkeypatch.setattr(module.os, "getpid", lambda: 9999)
     monkeypatch.setattr(module.os, "kill", lambda pid, sig: killed.append((pid, sig)))
-    monkeypatch.setattr(module.memory_guard, "sample_processes", lambda: samples)
+    monkeypatch.setattr(module, "sample_processes_for_sentinel", lambda: samples)
 
     module.terminate_group(100, grace=0.001)
     module.terminate_group(101, grace=0.001)
@@ -936,13 +936,15 @@ def test_terminate_group_rechecks_protection_before_sigkill(monkeypatch) -> None
         return first if calls == 1 else protected
 
     sent_groups: list[tuple[int, int]] = []
-    monkeypatch.setattr(module.memory_guard, "sample_processes", sample_processes)
+    monkeypatch.setattr(module, "_is_windows_process_model", lambda: False)
+    monkeypatch.setattr(module, "sample_processes_for_sentinel", sample_processes)
     monkeypatch.setattr(module.os, "getpid", lambda: 9999)
-    monkeypatch.setattr(module.os, "getpgrp", lambda: 999)
+    monkeypatch.setattr(module, "_safe_getpgrp", lambda: 999)
     monkeypatch.setattr(
         module.os,
         "killpg",
         lambda pgid, sig: sent_groups.append((pgid, sig)),
+        raising=False,
     )
 
     module.terminate_group(100, grace=0.0)
@@ -1193,7 +1195,7 @@ def test_main_once_refreshes_adaptive_limits_with_matched_group_rss(
         return []
 
     monkeypatch.setattr(module.memory_guard, "adaptive_memory_budget", fake_budget)
-    monkeypatch.setattr(module.memory_guard, "sample_processes", lambda: {})
+    monkeypatch.setattr(module, "sample_processes_for_sentinel", lambda: {})
     monkeypatch.setattr(module, "process_groups", lambda *args, **kwargs: [group])
     monkeypatch.setattr(module, "find_violations", fake_find_violations)
 
@@ -1218,13 +1220,63 @@ def test_parser_accepts_group_and_tree_rss_aliases() -> None:
     assert tree_args.max_total_rss_gb == 3.5
 
 
+def test_sample_processes_for_sentinel_uses_windows_hard_sampler(monkeypatch) -> None:
+    module = _load_process_sentinel()
+    sample = module.memory_guard.ProcessSample(
+        pid=7,
+        ppid=1,
+        pgid=None,
+        rss_kb=9,
+        command="python.exe",
+    )
+
+    def fail_hot_sampler():
+        raise AssertionError("Windows sentinel cleanup must use hard-timeout sampler")
+
+    monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
+    monkeypatch.setattr(module.memory_guard, "sample_processes", fail_hot_sampler)
+    monkeypatch.setattr(
+        module.memory_guard,
+        "sample_processes_windows_hard_timeout",
+        lambda: {7: sample},
+    )
+
+    assert module.sample_processes_for_sentinel() == {7: sample}
+
+
+def test_sample_processes_for_sentinel_uses_default_sampler_on_posix(
+    monkeypatch,
+) -> None:
+    module = _load_process_sentinel()
+    sample = module.memory_guard.ProcessSample(
+        pid=7,
+        ppid=1,
+        pgid=7,
+        rss_kb=9,
+        command="python",
+    )
+
+    def fail_windows_sampler():
+        raise AssertionError("POSIX sentinel cleanup must use default process sampler")
+
+    monkeypatch.setattr(module, "_is_windows_process_model", lambda: False)
+    monkeypatch.setattr(module.memory_guard, "sample_processes", lambda: {7: sample})
+    monkeypatch.setattr(
+        module.memory_guard,
+        "sample_processes_windows_hard_timeout",
+        fail_windows_sampler,
+    )
+
+    assert module.sample_processes_for_sentinel() == {7: sample}
+
+
 def test_main_once_dry_run_reports_without_terminating(monkeypatch, capsys) -> None:
     module = _load_process_sentinel()
     terminated: list[int] = []
 
     monkeypatch.setattr(
-        module.memory_guard,
-        "sample_processes",
+        module,
+        "sample_processes_for_sentinel",
         lambda: {
             10: module.memory_guard.ProcessSample(
                 pid=10,
@@ -1259,8 +1311,8 @@ def test_main_once_reports_operator_incident_for_terminated_group(
     monkeypatch.setattr(module, "_utc_timestamp", lambda: "2026-05-24T10:00:00Z")
     monkeypatch.setattr(module.time, "monotonic", lambda: clock)
     monkeypatch.setattr(
-        module.memory_guard,
-        "sample_processes",
+        module,
+        "sample_processes_for_sentinel",
         lambda: {
             10: module.memory_guard.ProcessSample(
                 pid=10,
@@ -1304,8 +1356,8 @@ def test_main_json_reports_operator_incident_fields(monkeypatch, capsys) -> None
         "tests/tools/test_process_sentinel.py::json_unit (call)",
     )
     monkeypatch.setattr(
-        module.memory_guard,
-        "sample_processes",
+        module,
+        "sample_processes_for_sentinel",
         lambda: {
             10: module.memory_guard.ProcessSample(
                 pid=10,
@@ -1395,7 +1447,7 @@ def test_main_until_clean_drains_delayed_launches(monkeypatch) -> None:
         nonlocal clock
         clock += seconds
 
-    monkeypatch.setattr(module.memory_guard, "sample_processes", fake_sample_processes)
+    monkeypatch.setattr(module, "sample_processes_for_sentinel", fake_sample_processes)
     monkeypatch.setattr(module.time, "monotonic", fake_monotonic)
     monkeypatch.setattr(module.time, "sleep", fake_sleep)
     monkeypatch.setattr(
@@ -1448,7 +1500,7 @@ def test_main_until_clean_waits_for_no_matched_groups(monkeypatch) -> None:
         nonlocal clock
         clock += seconds
 
-    monkeypatch.setattr(module.memory_guard, "sample_processes", fake_sample_processes)
+    monkeypatch.setattr(module, "sample_processes_for_sentinel", fake_sample_processes)
     monkeypatch.setattr(module.time, "monotonic", fake_monotonic)
     monkeypatch.setattr(module.time, "sleep", fake_sleep)
 
