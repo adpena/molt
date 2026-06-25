@@ -135,6 +135,7 @@ from molt.frontend.sema import (
     analyze_module,
     expression_contains_yield,
     normalize_function_kind,
+    stateful_function_frame_plan,
 )
 
 # Visitor / lowering mixins composed into SimpleTIRGenerator (F1 decomposition).
@@ -4326,25 +4327,19 @@ class SimpleTIRGenerator(
         if kind == FunctionKind.SYNC:
             return f"Func:{func_symbol}"
         total_params = info.get("params") if info is not None else None
-        payload_slots = total_params if isinstance(total_params, int) else 0
-        if kind == FunctionKind.GENERATOR:
-            closure_size = self._task_closure_size(
-                payload_slots, include_gen_control=True
-            )
-            return f"GenFunc:{func_symbol}_poll:{closure_size}"
-        if kind == FunctionKind.ASYNC:
-            closure_size = self._task_closure_size(
-                payload_slots, include_gen_control=False
-            )
-            return f"AsyncFunc:{func_symbol}_poll:{closure_size}"
-        if kind == FunctionKind.ASYNC_GENERATOR:
-            closure_size = self._task_closure_size(
-                payload_slots, include_gen_control=True
-            )
-            return f"AsyncGenFunc:{func_symbol}_poll:{closure_size}"
-        raise ValueError(
-            f"unsupported function kind for {module_name}.{func_id}: {kind!r}"
+        param_count = total_params if isinstance(total_params, int) else 0
+        frame_plan = stateful_function_frame_plan(
+            kind=kind,
+            poll_symbol=f"{func_symbol}_poll",
+            param_count=param_count,
+            has_closure=False,
+            gen_control_size=GEN_CONTROL_SIZE,
         )
+        closure_size = self._task_closure_size(
+            frame_plan.payload_slots,
+            include_gen_control=frame_plan.include_gen_control,
+        )
+        return frame_plan.function_type_hint(closure_size)
 
     def _emit_module_attr_get_on(self, module_name: str, name: str) -> MoltValue:
         module_val = self._emit_module_load(module_name)

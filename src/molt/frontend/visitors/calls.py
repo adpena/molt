@@ -23,6 +23,7 @@ from molt.frontend._types import (
     BUILTIN_TYPE_TAGS,
     ClassInfo,
     FormatParseState,
+    GEN_CONTROL_SIZE,
     INTRINSIC_HANDLE_CLASS_CONSTRUCTORS,
     MOLT_DIRECT_CALLS,
     MOLT_DIRECT_CALL_BIND_ALWAYS,
@@ -36,7 +37,13 @@ from molt.frontend._types import (
     _MOLT_LOCALS_CACHE,
     _intrinsic_arity_exact,
 )
-from molt.frontend.sema import FunctionKind, normalize_function_kind
+from molt.frontend.sema import (
+    FunctionKind,
+    normalize_function_kind,
+    parse_stateful_function_type_hint,
+    stateful_function_frame_plan,
+    stateful_function_result_type_hint,
+)
 from molt.frontend.visitors.call_reductions import CallReductionMixin
 
 if TYPE_CHECKING:
@@ -936,6 +943,115 @@ class CallVisitorMixin(CallReductionMixin, _MixinBase):
         self.emit(MoltOp(kind="CALL_BIND", args=[callee, callargs], result=res))
         return res
 
+    def _emit_stateful_function_value_call(
+        self,
+        target_info: MoltValue | None,
+        func_id: str,
+        node: ast.Call,
+        *,
+        needs_bind: bool,
+    ) -> MoltValue | None:
+        if target_info is None:
+            return None
+        stateful_hint = parse_stateful_function_type_hint(target_info.type_hint)
+        if stateful_hint is None:
+            return None
+
+        def target_value_for_call() -> MoltValue:
+            if (
+                self.current_func_name != "molt_main"
+                and func_id not in self.locals
+                and func_id not in self.async_locals
+            ):
+                return self._emit_module_attr_get(func_id)
+            return target_info
+
+        def emit_bind_call() -> MoltValue:
+            callargs = self._emit_call_args_builder(node)
+            res = MoltValue(self.next_var(), type_hint=stateful_hint.result_type_hint)
+            self.emit(
+                MoltOp(
+                    kind="CALL_BIND",
+                    args=[target_value_for_call(), callargs],
+                    result=res,
+                )
+            )
+            return res
+
+        if needs_bind or stateful_hint.poll_symbol == self.current_func_name:
+            return emit_bind_call()
+
+        func_symbol = (
+            stateful_hint.poll_symbol[: -len("_poll")]
+            if stateful_hint.poll_symbol.endswith("_poll")
+            else stateful_hint.poll_symbol
+        )
+        args, _ = self._emit_direct_call_args_for_symbol(func_symbol, node)
+        if args is None:
+            return emit_bind_call()
+
+        if stateful_hint.has_closure and stateful_hint.kind != FunctionKind.GENERATOR:
+            res = MoltValue(self.next_var(), type_hint=stateful_hint.result_type_hint)
+            self.emit(
+                MoltOp(
+                    kind="CALL_FUNC",
+                    args=[target_value_for_call()] + args,
+                    result=res,
+                )
+            )
+            return res
+
+        task_args = args
+        if stateful_hint.has_closure:
+            closure_val = MoltValue(self.next_var(), type_hint="tuple")
+            self.emit(
+                MoltOp(
+                    kind="FUNCTION_CLOSURE_BITS",
+                    args=[target_value_for_call()],
+                    result=closure_val,
+                )
+            )
+            task_args = [closure_val] + args
+        frame_plan = stateful_hint.frame_plan(
+            param_count=len(args),
+            gen_control_size=GEN_CONTROL_SIZE,
+        )
+        closure_size = max(
+            stateful_hint.closure_size,
+            self._task_closure_size(
+                frame_plan.payload_slots,
+                include_gen_control=frame_plan.include_gen_control,
+            ),
+        )
+        if stateful_hint.kind == FunctionKind.ASYNC:
+            res = MoltValue(self.next_var(), type_hint=frame_plan.result_type_hint)
+            self.emit(
+                MoltOp(
+                    kind="ALLOC_TASK",
+                    args=[stateful_hint.poll_symbol, closure_size] + task_args,
+                    result=res,
+                    metadata={"task_kind": frame_plan.task_kind},
+                )
+            )
+            return res
+        gen_val = MoltValue(
+            self.next_var(),
+            type_hint=stateful_function_result_type_hint(FunctionKind.GENERATOR),
+        )
+        self.emit(
+            MoltOp(
+                kind="ALLOC_TASK",
+                args=[stateful_hint.poll_symbol, closure_size] + task_args,
+                result=gen_val,
+                metadata={"task_kind": frame_plan.task_kind},
+            )
+        )
+        if stateful_hint.kind == FunctionKind.GENERATOR:
+            return gen_val
+        res = MoltValue(self.next_var(), type_hint=frame_plan.result_type_hint)
+        self.emit(MoltOp(kind="ASYNCGEN_NEW", args=[gen_val], result=res))
+        return res
+
     def _emit_known_module_task_func_call(
         self,
         target_module: str,
@@ -956,11 +1072,7 @@ class CallVisitorMixin(CallReductionMixin, _MixinBase):
                 kind = raw_kind
         if kind is None:
             return None
-        result_hint = {
-            FunctionKind.ASYNC: "Future",
-            FunctionKind.ASYNC_GENERATOR: "async_generator",
-            FunctionKind.GENERATOR: "generator",
-        }[kind]
+        result_hint = stateful_function_result_type_hint(kind)
         if info is None:
             if needs_bind or node.keywords:
                 return self._emit_call_bind_for_known_module_func(
@@ -991,29 +1103,38 @@ class CallVisitorMixin(CallReductionMixin, _MixinBase):
                         result_hint=result_hint,
                     )
         poll_func = f"{self._sanitize_module_name(target_module)}__{func_id}_poll"
-        include_gen_control = kind != FunctionKind.ASYNC
+        frame_plan = stateful_function_frame_plan(
+            kind=kind,
+            poll_symbol=poll_func,
+            param_count=params,
+            has_closure=False,
+            gen_control_size=GEN_CONTROL_SIZE,
+        )
         closure_size = self._task_closure_size(
-            params,
-            include_gen_control=include_gen_control,
+            frame_plan.payload_slots,
+            include_gen_control=frame_plan.include_gen_control,
         )
         if kind == FunctionKind.ASYNC:
-            res = MoltValue(self.next_var(), type_hint="Future")
+            res = MoltValue(self.next_var(), type_hint=frame_plan.result_type_hint)
             self.emit(
                 MoltOp(
                     kind="ALLOC_TASK",
                     args=[poll_func, closure_size] + args,
                     result=res,
-                    metadata={"task_kind": "coroutine"},
+                    metadata={"task_kind": frame_plan.task_kind},
                 )
             )
             return res
-        gen_val = MoltValue(self.next_var(), type_hint="generator")
+        gen_val = MoltValue(
+            self.next_var(),
+            type_hint=stateful_function_result_type_hint(FunctionKind.GENERATOR),
+        )
         self.emit(
             MoltOp(
                 kind="ALLOC_TASK",
                 args=[poll_func, closure_size] + args,
                 result=gen_val,
-                metadata={"task_kind": "generator"},
+                metadata={"task_kind": frame_plan.task_kind},
             )
         )
         if kind == FunctionKind.GENERATOR:
@@ -6345,284 +6466,14 @@ class CallVisitorMixin(CallReductionMixin, _MixinBase):
                 )
                 return res
 
-            if target_info and str(target_info.type_hint).startswith(
-                ("AsyncFunc:", "AsyncClosureFunc:")
-            ):
-                target_value = target_info
-                if needs_bind:
-                    if (
-                        self.current_func_name != "molt_main"
-                        and func_id not in self.locals
-                        and func_id not in self.async_locals
-                    ):
-                        target_value = self._emit_module_attr_get(func_id)
-                    callargs = self._emit_call_args_builder(node)
-                    res = MoltValue(self.next_var(), type_hint="Future")
-                    self.emit(
-                        MoltOp(
-                            kind="CALL_BIND",
-                            args=[target_value, callargs],
-                            result=res,
-                        )
-                    )
-                    return res
-                parts = target_info.type_hint.split(":")
-                func_kind = parts[0]
-                poll_func = parts[1]
-                closure_size = int(parts[2])
-                if poll_func == self.current_func_name:
-                    if (
-                        self.current_func_name != "molt_main"
-                        and func_id not in self.locals
-                        and func_id not in self.async_locals
-                    ):
-                        target_value = self._emit_module_attr_get(func_id)
-                    callargs = self._emit_call_args_builder(node)
-                    res = MoltValue(self.next_var(), type_hint="Future")
-                    self.emit(
-                        MoltOp(
-                            kind="CALL_BIND",
-                            args=[target_value, callargs],
-                            result=res,
-                        )
-                    )
-                    return res
-                func_symbol = (
-                    poll_func[: -len("_poll")]
-                    if poll_func.endswith("_poll")
-                    else poll_func
-                )
-                args, _ = self._emit_direct_call_args_for_symbol(func_symbol, node)
-                if args is None:
-                    if (
-                        self.current_func_name != "molt_main"
-                        and func_id not in self.locals
-                        and func_id not in self.async_locals
-                    ):
-                        target_value = self._emit_module_attr_get(func_id)
-                    callargs = self._emit_call_args_builder(node)
-                    res = MoltValue(self.next_var(), type_hint="Future")
-                    self.emit(
-                        MoltOp(
-                            kind="CALL_BIND",
-                            args=[target_value, callargs],
-                            result=res,
-                        )
-                    )
-                    return res
-                res = MoltValue(self.next_var(), type_hint="Future")
-                if func_kind == "AsyncClosureFunc":
-                    if (
-                        self.current_func_name != "molt_main"
-                        and func_id not in self.locals
-                        and func_id not in self.async_locals
-                    ):
-                        target_value = self._emit_module_attr_get(func_id)
-                    self.emit(
-                        MoltOp(kind="CALL_FUNC", args=[target_value] + args, result=res)
-                    )
-                else:
-                    closure_size = max(
-                        closure_size,
-                        self._task_closure_size(len(args), include_gen_control=False),
-                    )
-                    self.emit(
-                        MoltOp(
-                            kind="ALLOC_TASK",
-                            args=[poll_func, closure_size] + args,
-                            result=res,
-                            metadata={"task_kind": "coroutine"},
-                        )
-                    )
-                return res
-            if target_info and str(target_info.type_hint).startswith(
-                ("AsyncGenFunc:", "AsyncGenClosureFunc:")
-            ):
-                target_value = target_info
-                if needs_bind:
-                    if (
-                        self.current_func_name != "molt_main"
-                        and func_id not in self.locals
-                        and func_id not in self.async_locals
-                    ):
-                        target_value = self._emit_module_attr_get(func_id)
-                    callargs = self._emit_call_args_builder(node)
-                    res = MoltValue(self.next_var(), type_hint="async_generator")
-                    self.emit(
-                        MoltOp(
-                            kind="CALL_BIND",
-                            args=[target_value, callargs],
-                            result=res,
-                        )
-                    )
-                    return res
-                parts = target_info.type_hint.split(":")
-                func_kind = parts[0]
-                poll_func = parts[1]
-                closure_size = int(parts[2])
-                if poll_func == self.current_func_name:
-                    if (
-                        self.current_func_name != "molt_main"
-                        and func_id not in self.locals
-                        and func_id not in self.async_locals
-                    ):
-                        target_value = self._emit_module_attr_get(func_id)
-                    callargs = self._emit_call_args_builder(node)
-                    res = MoltValue(self.next_var(), type_hint="async_generator")
-                    self.emit(
-                        MoltOp(
-                            kind="CALL_BIND",
-                            args=[target_value, callargs],
-                            result=res,
-                        )
-                    )
-                    return res
-                func_symbol = (
-                    poll_func[: -len("_poll")]
-                    if poll_func.endswith("_poll")
-                    else poll_func
-                )
-                args, _ = self._emit_direct_call_args_for_symbol(func_symbol, node)
-                if args is None:
-                    if (
-                        self.current_func_name != "molt_main"
-                        and func_id not in self.locals
-                        and func_id not in self.async_locals
-                    ):
-                        target_value = self._emit_module_attr_get(func_id)
-                    callargs = self._emit_call_args_builder(node)
-                    res = MoltValue(self.next_var(), type_hint="async_generator")
-                    self.emit(
-                        MoltOp(
-                            kind="CALL_BIND",
-                            args=[target_value, callargs],
-                            result=res,
-                        )
-                    )
-                    return res
-                res = MoltValue(self.next_var(), type_hint="async_generator")
-                if func_kind == "AsyncGenClosureFunc":
-                    if (
-                        self.current_func_name != "molt_main"
-                        and func_id not in self.locals
-                        and func_id not in self.async_locals
-                    ):
-                        target_value = self._emit_module_attr_get(func_id)
-                    self.emit(
-                        MoltOp(kind="CALL_FUNC", args=[target_value] + args, result=res)
-                    )
-                else:
-                    closure_size = max(
-                        closure_size,
-                        self._task_closure_size(len(args), include_gen_control=True),
-                    )
-                    gen_val = MoltValue(self.next_var(), type_hint="generator")
-                    self.emit(
-                        MoltOp(
-                            kind="ALLOC_TASK",
-                            args=[poll_func, closure_size] + args,
-                            result=gen_val,
-                            metadata={"task_kind": "generator"},
-                        )
-                    )
-                    self.emit(MoltOp(kind="ASYNCGEN_NEW", args=[gen_val], result=res))
-                return res
-            if target_info and str(target_info.type_hint).startswith(
-                ("GenFunc:", "GenClosureFunc:")
-            ):
-                target_value = target_info
-                if needs_bind:
-                    if (
-                        self.current_func_name != "molt_main"
-                        and func_id not in self.locals
-                        and func_id not in self.async_locals
-                    ):
-                        target_value = self._emit_module_attr_get(func_id)
-                    callargs = self._emit_call_args_builder(node)
-                    res = MoltValue(self.next_var(), type_hint="generator")
-                    self.emit(
-                        MoltOp(
-                            kind="CALL_BIND",
-                            args=[target_value, callargs],
-                            result=res,
-                        )
-                    )
-                    return res
-                parts = target_info.type_hint.split(":")
-                func_kind = parts[0]
-                poll_func = parts[1]
-                closure_size = int(parts[2])
-                if poll_func == self.current_func_name:
-                    if (
-                        self.current_func_name != "molt_main"
-                        and func_id not in self.locals
-                        and func_id not in self.async_locals
-                    ):
-                        target_value = self._emit_module_attr_get(func_id)
-                    callargs = self._emit_call_args_builder(node)
-                    res = MoltValue(self.next_var(), type_hint="generator")
-                    self.emit(
-                        MoltOp(
-                            kind="CALL_BIND",
-                            args=[target_value, callargs],
-                            result=res,
-                        )
-                    )
-                    return res
-                func_symbol = (
-                    poll_func[: -len("_poll")]
-                    if poll_func.endswith("_poll")
-                    else poll_func
-                )
-                args, _ = self._emit_direct_call_args_for_symbol(func_symbol, node)
-                if args is None:
-                    if (
-                        self.current_func_name != "molt_main"
-                        and func_id not in self.locals
-                        and func_id not in self.async_locals
-                    ):
-                        target_value = self._emit_module_attr_get(func_id)
-                    callargs = self._emit_call_args_builder(node)
-                    res = MoltValue(self.next_var(), type_hint="generator")
-                    self.emit(
-                        MoltOp(
-                            kind="CALL_BIND",
-                            args=[target_value, callargs],
-                            result=res,
-                        )
-                    )
-                    return res
-                if func_kind == "GenClosureFunc":
-                    if (
-                        self.current_func_name != "molt_main"
-                        and func_id not in self.locals
-                        and func_id not in self.async_locals
-                    ):
-                        target_value = self._emit_module_attr_get(func_id)
-                    closure_val = MoltValue(self.next_var(), type_hint="tuple")
-                    self.emit(
-                        MoltOp(
-                            kind="FUNCTION_CLOSURE_BITS",
-                            args=[target_value],
-                            result=closure_val,
-                        )
-                    )
-                    args = [closure_val] + args
-                closure_size = max(
-                    closure_size,
-                    self._task_closure_size(len(args), include_gen_control=True),
-                )
-                res = MoltValue(self.next_var(), type_hint="generator")
-                self.emit(
-                    MoltOp(
-                        kind="ALLOC_TASK",
-                        args=[poll_func, closure_size] + args,
-                        result=res,
-                        metadata={"task_kind": "generator"},
-                    )
-                )
-                return res
-
+            stateful_result = self._emit_stateful_function_value_call(
+                target_info,
+                func_id,
+                node,
+                needs_bind=needs_bind,
+            )
+            if stateful_result is not None:
+                return stateful_result
             if target_info and str(target_info.type_hint).startswith("BoundMethod:"):
                 res_hint = "Any"
                 class_name = "Unknown"
