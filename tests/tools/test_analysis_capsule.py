@@ -197,7 +197,7 @@ def _build_diagnostics() -> dict[str, object]:
 
 def _fact_graph() -> dict[str, object]:
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "kind": "molt_tir_fact_graph",
         "function": "app::main",
         "values": [
@@ -209,7 +209,12 @@ def _fact_graph() -> dict[str, object]:
                     "op_index": 0,
                     "opcode": "Alloc",
                     "result_index": 0,
-                    "source_site": {"line": 3, "col": 4, "end_col": 10},
+                    "source_site": {
+                        "source_file": "app.py",
+                        "line": 3,
+                        "col": 4,
+                        "end_col": 10,
+                    },
                 },
                 "consumers": [],
                 "facts": [
@@ -229,7 +234,12 @@ def _fact_graph() -> dict[str, object]:
                         "confidence": "proven",
                         "producer": "op_kinds.escape_alloc_site_opcodes",
                         "event_id": "app::main:bb0:op0:Alloc:result0:allocation.heap_root",
-                        "source_site": {"line": 3, "col": 4, "end_col": 10},
+                        "source_site": {
+                            "source_file": "app.py",
+                            "line": 3,
+                            "col": 4,
+                            "end_col": 10,
+                        },
                         "guards": [],
                         "invalidators": ["op_kinds.toml"],
                     },

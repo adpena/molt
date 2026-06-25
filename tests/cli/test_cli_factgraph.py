@@ -124,7 +124,7 @@ def test_execute_backend_fact_graph_uses_target_prefix_and_ir_lease(
         graph_output = Path(cmd[cmd.index("--fact-graph-output") + 1])
         graph_output.parent.mkdir(parents=True, exist_ok=True)
         graph_output.write_text(
-            '{"schema_version":2,"kind":"molt_tir_fact_graph"}\n',
+            '{"schema_version":3,"kind":"molt_tir_fact_graph"}\n',
             encoding="utf-8",
         )
         return subprocess.CompletedProcess(cmd, 0, b"", b"")
@@ -198,7 +198,7 @@ def test_emit_pipeline_fact_graph_reports_requested_target_and_backend(
         graph_output = Path(cmd[cmd.index("--fact-graph-output") + 1])
         graph_output.parent.mkdir(parents=True, exist_ok=True)
         graph_output.write_text(
-            '{"schema_version":2,"kind":"molt_tir_fact_graph"}\n',
+            '{"schema_version":3,"kind":"molt_tir_fact_graph"}\n',
             encoding="utf-8",
         )
         return subprocess.CompletedProcess(cmd, 0, b"", b"")

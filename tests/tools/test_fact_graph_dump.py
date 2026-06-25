@@ -14,7 +14,7 @@ import fact_graph_dump as fg  # noqa: E402
 
 def _graph() -> dict:
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "kind": "molt_tir_fact_graph",
         "function": "sample",
         "values": [
@@ -57,7 +57,12 @@ def _graph() -> dict:
                         "opcode": "Add",
                         "operand_index": 0,
                         "role": "operand[0]",
-                        "source_site": {"line": 7, "col": 4, "end_col": 9},
+                        "source_site": {
+                            "source_file": "app.py",
+                            "line": 7,
+                            "col": 4,
+                            "end_col": 9,
+                        },
                     }
                 ],
             },
@@ -69,7 +74,12 @@ def _graph() -> dict:
                     "op_index": 0,
                     "opcode": "Call",
                     "result_index": 0,
-                    "source_site": {"line": 7, "col": 4, "end_col": 9},
+                    "source_site": {
+                        "source_file": "app.py",
+                        "line": 7,
+                        "col": 4,
+                        "end_col": 9,
+                    },
                 },
                 "facts": [
                     {
@@ -78,7 +88,12 @@ def _graph() -> dict:
                         "confidence": "unknown",
                         "producer": "CallFactsTable::build_local",
                         "event_id": "sample:bb0:op0:Call:result0:call.target",
-                        "source_site": {"line": 7, "col": 4, "end_col": 9},
+                        "source_site": {
+                            "source_file": "app.py",
+                            "line": 7,
+                            "col": 4,
+                            "end_col": 9,
+                        },
                         "guards": [],
                         "invalidators": ["AnalysisId::CallFacts:ops_sensitive"],
                         "backend_lowering_status": "advisory",
@@ -91,7 +106,12 @@ def _graph() -> dict:
                         "confidence": "proven",
                         "producer": "op_kinds.escape_alloc_site_opcodes",
                         "event_id": "sample:bb0:op0:Call:result0:allocation.heap_root",
-                        "source_site": {"line": 7, "col": 4, "end_col": 9},
+                        "source_site": {
+                            "source_file": "app.py",
+                            "line": 7,
+                            "col": 4,
+                            "end_col": 9,
+                        },
                         "guards": [],
                         "invalidators": ["op_kinds.toml"],
                         "backend_lowering_status": "diagnostic",
@@ -114,7 +134,12 @@ def _graph() -> dict:
                     "opcode": "Add",
                     "operand_index": 0,
                     "role": "operand[0]",
-                    "source_site": {"line": 7, "col": 4, "end_col": 9},
+                    "source_site": {
+                        "source_file": "app.py",
+                        "line": 7,
+                        "col": 4,
+                        "end_col": 9,
+                    },
                 },
             }
         ],
@@ -135,7 +160,7 @@ def test_validate_graph_accepts_compiler_emitted_contract() -> None:
     fg.validate_graph(doc)
 
     text = fg.summarize_graph(doc)
-    assert "molt_tir_fact_graph schema=2" in text
+    assert "molt_tir_fact_graph schema=3" in text
     assert "%1 producer=op_result:bb0:op0:Call" in text
 
 
@@ -173,6 +198,18 @@ def test_validate_graph_rejects_duplicate_event_ids() -> None:
         assert "event_id is duplicated" in str(exc)
     else:
         raise AssertionError("duplicate event_id accepted")
+
+
+def test_validate_graph_rejects_empty_source_file() -> None:
+    doc = _graph()
+    doc["values"][1]["producer"]["source_site"]["source_file"] = ""
+
+    try:
+        fg.validate_graph(doc)
+    except fg.FactGraphError as exc:
+        assert "source_file must be a non-empty string" in str(exc)
+    else:
+        raise AssertionError("empty source_file accepted")
 
 
 def test_cli_validates_and_emits_json(tmp_path: Path, capsys) -> None:

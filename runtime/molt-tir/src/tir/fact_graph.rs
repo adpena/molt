@@ -21,12 +21,12 @@ use super::op_kinds_generated::{
     opcode_is_escape_alloc_site_table, opcode_is_refcount_heap_exposure_table,
     opcode_refcount_balance_role_table,
 };
-use super::ops::{AttrValue, OpCode, TirOp};
+use super::ops::{AttrValue, OpCode, SOURCE_FILE_ATTR, TirOp};
 use super::types::TirType;
 use super::values::ValueId;
 use crate::repr::Repr;
 
-pub const FACT_GRAPH_SCHEMA_VERSION: u32 = 2;
+pub const FACT_GRAPH_SCHEMA_VERSION: u32 = 3;
 pub const FACT_GRAPH_KIND: &str = "molt_tir_fact_graph";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -102,8 +102,10 @@ pub struct FactGraphSummary {
     pub allocation_ownership_fact_count: usize,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct FactSourceSite {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_file: Option<String>,
     pub line: u32,
     pub col: Option<u32>,
     pub end_col: Option<u32>,
@@ -135,6 +137,7 @@ impl FactGraph {
     ) -> FactGraph {
         let mut nodes: BTreeMap<u32, NodeBuilder> = BTreeMap::new();
         let mut edges = Vec::new();
+        let source_file = function_source_file(func);
 
         for (block_id, block) in sorted_blocks(func) {
             for (arg_index, arg) in block.args.iter().enumerate() {
@@ -159,8 +162,8 @@ impl FactGraph {
             }
 
             for (op_index, op) in block.ops.iter().enumerate() {
-                add_op_consumers(&mut nodes, &mut edges, block_id, op_index, op);
-                add_op_ownership_facts(&mut nodes, &func.name, block_id, op_index, op);
+                add_op_consumers(&mut nodes, &mut edges, block_id, op_index, op, source_file);
+                add_op_ownership_facts(&mut nodes, &func.name, block_id, op_index, op, source_file);
                 for (result_index, result) in op.results.iter().copied().enumerate() {
                     let producer = FactProducer {
                         kind: "op_result".to_string(),
@@ -169,7 +172,7 @@ impl FactGraph {
                         opcode: Some(format!("{:?}", op.opcode)),
                         result_index: Some(result_index),
                         param_index: None,
-                        source_site: fact_source_site(op),
+                        source_site: fact_source_site(op, source_file),
                     };
                     ensure_node(&mut nodes, result).producer = Some(producer);
                     if let Some(ty) = func.value_types.get(&result) {
@@ -183,6 +186,7 @@ impl FactGraph {
                         result_index,
                         result,
                         op,
+                        source_file,
                     );
                     if result_index == 0
                         && let Some(facts) = call_facts.get(result)
@@ -199,7 +203,7 @@ impl FactGraph {
                             result,
                             facts,
                             call_fact_source,
-                            fact_source_site(op),
+                            fact_source_site(op, source_file),
                             &event_prefix,
                         );
                     }
@@ -233,8 +237,7 @@ impl FactGraph {
             .filter(|v| {
                 v.producer
                     .as_ref()
-                    .and_then(|producer| producer.source_site)
-                    .is_some()
+                    .is_some_and(|producer| producer.source_site.is_some())
                     || v.consumers
                         .iter()
                         .any(|consumer| consumer.source_site.is_some())
@@ -286,8 +289,16 @@ fn ensure_node(nodes: &mut BTreeMap<u32, NodeBuilder>, value: ValueId) -> &mut N
     nodes.entry(value.0).or_default()
 }
 
-fn fact_source_site(op: &TirOp) -> Option<FactSourceSite> {
+fn function_source_file(func: &TirFunction) -> Option<&str> {
+    match func.attrs.get(SOURCE_FILE_ATTR) {
+        Some(AttrValue::Str(source_file)) if !source_file.is_empty() => Some(source_file.as_str()),
+        _ => None,
+    }
+}
+
+fn fact_source_site(op: &TirOp, source_file: Option<&str>) -> Option<FactSourceSite> {
     op.source_site().map(|site| FactSourceSite {
+        source_file: source_file.map(ToOwned::to_owned),
         line: site.line,
         col: site.col,
         end_col: site.end_col,
@@ -353,6 +364,7 @@ fn add_op_consumers(
     block_id: BlockId,
     op_index: usize,
     op: &TirOp,
+    source_file: Option<&str>,
 ) {
     for (operand_index, operand) in op.operands.iter().copied().enumerate() {
         let consumer = FactConsumer {
@@ -362,7 +374,7 @@ fn add_op_consumers(
             opcode: Some(format!("{:?}", op.opcode)),
             operand_index: Some(operand_index),
             role: format!("operand[{operand_index}]"),
-            source_site: fact_source_site(op),
+            source_site: fact_source_site(op, source_file),
         };
         ensure_node(nodes, operand).consumers.push(consumer.clone());
         for result in &op.results {
@@ -384,8 +396,9 @@ fn add_result_ownership_facts(
     result_index: usize,
     result: ValueId,
     op: &TirOp,
+    source_file: Option<&str>,
 ) {
-    let source_site = fact_source_site(op);
+    let source_site = fact_source_site(op, source_file);
     let event_prefix = op_event_prefix(
         function_name,
         block_id,
@@ -400,7 +413,7 @@ fn add_result_ownership_facts(
             "allocation.heap_root",
             "escape_alloc_site",
             fact_event_id(&event_prefix, "allocation.heap_root"),
-            source_site,
+            source_site.clone(),
             "op_kinds.escape_alloc_site_opcodes",
             "fresh heap roots drive escape analysis and stack promotion",
         );
@@ -412,7 +425,7 @@ fn add_result_ownership_facts(
             "allocation.stack_root",
             "stack_alloc_site",
             fact_event_id(&event_prefix, "allocation.stack_root"),
-            source_site,
+            source_site.clone(),
             "op_kind + escape_analysis stack promotion",
             "stack roots remove heap allocation and refcount traffic",
         );
@@ -424,7 +437,7 @@ fn add_result_ownership_facts(
             "allocation.arena_eligible",
             "true",
             fact_event_id(&event_prefix, "allocation.arena_eligible"),
-            source_site,
+            source_site.clone(),
             "escape_analysis",
             "arena placement amortizes allocation/free overhead",
         );
@@ -436,7 +449,7 @@ fn add_result_ownership_facts(
             "ownership.finalizer_sensitive",
             "true",
             fact_event_id(&event_prefix, "ownership.finalizer_sensitive"),
-            source_site,
+            source_site.clone(),
             "frontend class MRO + escape_analysis",
             "finalizer-sensitive roots constrain stack promotion and drop order",
         );
@@ -449,8 +462,9 @@ fn add_op_ownership_facts(
     block_id: BlockId,
     op_index: usize,
     op: &TirOp,
+    source_file: Option<&str>,
 ) {
-    let source_site = fact_source_site(op);
+    let source_site = fact_source_site(op, source_file);
     let balance = opcode_refcount_balance_role_table(op.opcode);
     if balance.is_refcount_balance() {
         let value = match balance {
@@ -472,7 +486,7 @@ fn add_op_ownership_facts(
                 "ownership.refcount_balance",
                 value,
                 fact_event_id(&event_prefix, "ownership.refcount_balance"),
-                source_site,
+                source_site.clone(),
                 "op_kinds.refcount_balance_*_opcodes",
                 "refcount balance events explain retained and released ownership",
             );
@@ -494,7 +508,7 @@ fn add_op_ownership_facts(
                 "ownership.heap_exposure",
                 "true",
                 fact_event_id(&event_prefix, "ownership.heap_exposure"),
-                source_site,
+                source_site.clone(),
                 "op_kinds.refcount_heap_exposure_opcodes",
                 "heap exposure blocks deferred RC elimination and stack-only assumptions",
             );
@@ -518,7 +532,7 @@ fn add_op_ownership_facts(
                     "ownership.explicit_release",
                     format!("operand[{operand_index}]"),
                     fact_event_id(&event_prefix, "ownership.explicit_release"),
-                    source_site,
+                    source_site.clone(),
                     "op_kinds.explicit_release_operands",
                     "explicit releases are terminal ownership events",
                 );
@@ -539,7 +553,7 @@ fn add_op_ownership_facts(
                     "ownership.explicit_release",
                     format!("operand[{index}]"),
                     fact_event_id(&event_prefix, "ownership.explicit_release"),
-                    source_site,
+                    source_site.clone(),
                     "op_kinds.explicit_release_operands",
                     "explicit releases are terminal ownership events",
                 );
@@ -679,7 +693,7 @@ fn add_call_facts(
         call_target_value(&facts.target),
         call_target_confidence(&facts.target),
         producer,
-        source_site,
+        source_site.clone(),
         event_prefix,
         "direct target enables devirtualized calls and removes generic helper traffic",
     ));
@@ -695,7 +709,7 @@ fn add_call_facts(
             "unknown"
         },
         producer,
-        source_site,
+        source_site.clone(),
         event_prefix,
         "typed returns keep call results out of DynBox lanes",
     ));
@@ -704,7 +718,7 @@ fn add_call_facts(
         fact_value_string(facts.leaf),
         fact_value_confidence(facts.leaf),
         producer,
-        source_site,
+        source_site.clone(),
         event_prefix,
         "leaf calls unlock frame and spill elision",
     ));
@@ -713,7 +727,7 @@ fn add_call_facts(
         fact_value_string(facts.no_throw),
         fact_value_confidence(facts.no_throw),
         producer,
-        source_site,
+        source_site.clone(),
         event_prefix,
         "no-throw calls remove exception-region churn on normal edges",
     ));
@@ -722,7 +736,7 @@ fn add_call_facts(
         fact_value_string(facts.no_alloc),
         fact_value_confidence(facts.no_alloc),
         producer,
-        source_site,
+        source_site.clone(),
         event_prefix,
         "no-alloc calls allow borrowed args and RC elision across calls",
     ));
@@ -833,7 +847,7 @@ fn dedupe_facts(mut facts: Vec<FactEntry>) -> Vec<FactEntry> {
             &a.confidence,
             &a.producer,
             &a.event_id,
-            a.source_site,
+            &a.source_site,
         )
             .cmp(&(
                 &b.kind,
@@ -841,7 +855,7 @@ fn dedupe_facts(mut facts: Vec<FactEntry>) -> Vec<FactEntry> {
                 &b.confidence,
                 &b.producer,
                 &b.event_id,
-                b.source_site,
+                &b.source_site,
             ))
     });
     facts.dedup_by(|a, b| {
@@ -882,7 +896,7 @@ fn dedupe_consumers(mut consumers: Vec<FactConsumer>) -> Vec<FactConsumer> {
 mod tests {
     use super::*;
     use crate::tir::blocks::{BlockId, TirBlock};
-    use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, SourceSite};
+    use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, SOURCE_FILE_ATTR, SourceSite};
     use crate::tir::values::TirValue;
 
     fn op(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
@@ -988,6 +1002,10 @@ mod tests {
     #[test]
     fn graph_records_sourced_allocation_and_ownership_events() {
         let mut func = TirFunction::new("own".into(), vec![], TirType::None);
+        func.attrs.insert(
+            SOURCE_FILE_ATTR.into(),
+            AttrValue::Str("app.py".to_string()),
+        );
         let root = func.fresh_value();
         func.value_types.insert(root, TirType::DynBox);
         let mut alloc = op(OpCode::Alloc, vec![], vec![root]);
@@ -1012,6 +1030,7 @@ mod tests {
         assert_eq!(
             node.producer.as_ref().unwrap().source_site,
             Some(FactSourceSite {
+                source_file: Some("app.py".to_string()),
                 line: 11,
                 col: Some(4),
                 end_col: Some(14),
@@ -1023,6 +1042,7 @@ mod tests {
                 .any(|c| c.opcode.as_deref() == Some("DecRef")
                     && c.source_site
                         == Some(FactSourceSite {
+                            source_file: Some("app.py".to_string()),
                             line: 12,
                             col: Some(8),
                             end_col: Some(15),
@@ -1033,6 +1053,7 @@ mod tests {
                 && f.event_id.as_deref() == Some("own:bb0:op0:Alloc:result0:allocation.heap_root")
                 && f.source_site
                     == Some(FactSourceSite {
+                        source_file: Some("app.py".to_string()),
                         line: 11,
                         col: Some(4),
                         end_col: Some(14),
@@ -1044,6 +1065,7 @@ mod tests {
                     == Some("own:bb0:op1:DecRef:operand0:ownership.explicit_release")
                 && f.source_site
                     == Some(FactSourceSite {
+                        source_file: Some("app.py".to_string()),
                         line: 12,
                         col: Some(8),
                         end_col: Some(15),

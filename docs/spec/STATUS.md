@@ -198,8 +198,9 @@ the implementation. For forward-looking priorities, use
   `opcode_is_escape_alloc_site_table` classifier. The classifier is intentionally
   distinct from refcount heap exposure: it answers whether an opcode result is a
   fresh allocation root whose escape state should be tracked.
-- Fact graph schema v2 carries `source_site` on producers, consumers, and facts,
-  `event_id` on event facts, and allocation/ownership facts derived from the
+- Fact graph schema v3 carries `source_site` on producers, consumers, and facts,
+  includes `source_file` when frontend source identity is available, records
+  `event_id` on event facts, and derives allocation/ownership facts from the
   generated op-kind ownership tables. The fact graph and analysis capsule now
   report source-site and allocation/ownership counts from that same carrier.
   Binary image allocation/refcount analysis also consumes generated
@@ -1228,10 +1229,11 @@ the implementation. For forward-looking priorities, use
 		  same carrier: heap/stack allocation roots, retain/release events,
 		  heap-exposure ops, arena eligibility, and finalizer-sensitive results
 		  are counted by source line with a stable event digest. The companion
-		  schema-v2 fact graph carries matching `source_site`/`event_id` fields
-		  and generated allocation/ownership facts; the analysis capsule exposes
-		  the source-site and allocation/ownership counts instead of requiring a
-		  second parser or CLI-local classifier.
+		  schema-v3 fact graph carries matching file-qualified
+		  `source_site`/`event_id` fields and generated allocation/ownership
+		  facts; the analysis capsule exposes the source-site and
+		  allocation/ownership counts instead of requiring a second parser or
+		  CLI-local classifier.
 		  Core stdlib closure honors the same nested-scan exception
 		  set as regular stdlib discovery, so `collections` keeps its required
 		  function-body `copy` import in the graph and native hello-world no longer
