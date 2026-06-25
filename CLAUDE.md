@@ -205,7 +205,7 @@ owner and structural fix."
 
 **Ratified fork resolutions** (full record: memory project_council_decisions_20260608):
 - **Finalizer ordering goes on a minimal OWNERSHIP LATTICE, never as another DropInsertion
-  special-case.** Build the smallest slice `alias-root → ownership state → Python lifetime
+  special-case.** Build the smallest complete ownership aperture `alias-root → ownership state → Python lifetime
   boundary → ordered release obligation` (new `ownership_lattice_min.rs`/`ownership_boundaries.rs`),
   then ship ordering on it. Narrow is allowed; a disguised ad-hoc finalizer patch is not. This
   is the rung-1→rung-2 bridge — do NOT boil the ocean, do NOT re-patch DropInsertion.
@@ -225,7 +225,7 @@ at-scale SIGSEGV) OUTRANKS the native RC flip and all performance/feature work �
 trust in the memory model. Root-cause structurally; never cap the repro or mark it expected.
 
 **Three-lane model** (non-overlapping files, continuous): A = P0 semantic safety (corruption,
-finalizer ordering, ownership-lattice slice, flip blockers, leak/finalizer/weakref/unwind tests);
+finalizer ordering, ownership-lattice arc, flip blockers, leak/finalizer/weakref/unwind tests);
 B = performance frontier (CPython-reds, regressions, PyPy/Codon harness, raw/boxed/dispatch/loop/
 generator bottlenecks); C = infra/scoreboards/decomposition that makes A&B faster. A blocks B only
 when memory unsafety makes perf numbers untrustworthy; B blocks new features when any benchmark
@@ -238,7 +238,7 @@ MEASUREMENT PATH, not optimize blind. Perf work's deliverable is a NEW IR FACT t
 class of slow programs unexpressible — not "faster code." Five-year target = retire one CLASS
 of slowness per month (the compression ladder), not one benchmark.
 
-**Tranche & evidence standard (binding).** A unit of reported work ("tranche") must CHANGE
+**Structural landing & evidence standard (binding).** A reported unit of work must CHANGE
 PROJECT STATE — landed code/tests/tooling/docs, a verified refusal that deletes a bad plan, or
 (only at a real fork) a decision packet with a recommended default — never "status + a question."
 Build first; ask only when the next step encodes a semantic invariant, needs a public/API/subset

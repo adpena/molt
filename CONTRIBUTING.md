@@ -13,6 +13,9 @@ Molt expects production-grade changes, not opportunistic patches.
    - `tmp/` for scratch and quarantine material
 4. Update docs in the same change when structure, workflow, or semantics move.
 5. Remove dead files, duplicate paths, and stale references instead of preserving legacy layout.
+6. If a maintainer says the work is being sliced too small, treat that as a
+   binding scope correction: finish the live structural arc that exposed the
+   duplicate authority instead of converting it into checkpoint commits.
 
 ## Quality Bar
 
