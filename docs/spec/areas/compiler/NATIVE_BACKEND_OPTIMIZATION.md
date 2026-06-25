@@ -87,9 +87,14 @@ those fields. The native backend now reads all scalar-primary membership from
 `is_bool_unboxed`, and raw-F64 storage through `is_float_unboxed`. Extracted
 native handlers no longer receive cloned `bool_primary_vars` /
 `float_primary_vars` BTreeSets or the legacy `int_carriers_plan` alias; the
-single plan reference is the authority at every lowering boundary. Non-primary
-bool/float results are boxed immediately in their main I64 variables instead of
-being tracked through side-channel shadow maps.
+single plan reference is the authority at every lowering boundary. The native
+function compiler also no longer materializes semantic scalar clones such as
+`int_like_vars`, `bool_like_vars`, `float_like_vars`, `str_like_vars`, or
+`none_like_vars`; fast-path lane selection, primitive boxing, non-heap proofs,
+guard satisfaction, branch truthiness, and merge rebinding ask the plan for
+semantic scalar kind directly. Non-primary bool/float results are boxed
+immediately in their main I64 variables instead of being tracked through
+side-channel shadow maps.
 
 This is an implementation compromise, not the desired endpoint. The native
 duplicate-authority int lane is deleted: raw-int carrier eligibility is proven by
@@ -134,7 +139,7 @@ proofs without re-deriving them at native codegen.
 
 | Issue | Location | Impact | Effort |
 |-------|----------|--------|--------|
-| **Specialization still crosses a legacy SimpleIR transport**. Native int carriers are now projected from value-keyed TIR facts, and bool/float lanes no longer use raw scalar shadow maps, but the TIR/LIR representation plan is still lowered through SimpleIR before native codegen. This leaves bool/F64 eligibility and broader transport recovery logic behind a native name bridge. | TIR/LIR bridge, `lower_to_simple.rs`, native backend lowering | High | High |
+| **Specialization still crosses a SimpleIR name projection**. Native int carriers are now projected from value-keyed TIR facts, bool/float lanes no longer use raw scalar shadow maps, and native semantic scalar queries are plan-owned, but the TIR/LIR representation plan is still projected through SimpleIR names before native codegen. This leaves bool/F64 eligibility and broader transport recovery logic behind a native name projection rather than a backend-neutral value-keyed lowering contract. | TIR/LIR bridge, `lower_to_simple.rs`, native backend lowering | High | High |
 | **Bool/float scalar proofs are not yet cross-backend value facts**. Native bool/float lowering consumes one plan authority, but bool/float eligibility still lives behind name-keyed plan predicates rather than a value-keyed proof propagated through every backend. | TIR/LIR bridge, representation lattice propagation, wasm/llvm/luau parity | High | High |
 | **No container element type specialization**. `container_elem_hints` and `dict_key_hints` are tracked (frontend line 963-965) but not used for specialization. A list known to contain only ints could use a packed representation. | Frontend type tracking, backend container ops | Medium-High for numeric workloads | High |
 | **No return type propagation across calls**. If `def foo() -> int` is annotated, callers of `foo()` don't get `fast_int` on the result. The type facts system supports this but it's not wired to the call site specialization. | `FunctionFacts.returns` (type_facts.py:24), call lowering in frontend | Medium | Medium |

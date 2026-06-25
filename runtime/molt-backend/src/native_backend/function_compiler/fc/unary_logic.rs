@@ -38,21 +38,12 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
-    int_like_vars: &BTreeSet<String>,
-    bool_like_vars: &BTreeSet<String>,
     local_inc_ref_obj: FuncRef,
     scalar_fast_paths_enabled: bool,
     nbc: &crate::NanBoxConsts,
 ) -> OpFlow {
-    let op_prefers_int_lane = |op: &OpIR| {
-        super::op_prefers_int_lane(
-            scalar_fast_paths_enabled,
-            representation_plan,
-            op,
-            int_like_vars,
-            bool_like_vars,
-        )
-    };
+    let op_prefers_int_lane =
+        |op: &OpIR| super::op_prefers_int_lane(scalar_fast_paths_enabled, representation_plan, op);
     let op_prefers_integer_runtime_lane = |op: &OpIR| {
         scalar_fast_paths_enabled && representation_plan.op_prefers_integer_runtime_lane(op)
     };

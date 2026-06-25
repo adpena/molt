@@ -743,17 +743,23 @@ _NATIVE_SCALAR_PLAN_FORBIDDEN = {
     r"\bfloat_primary_vars\b": "raw-f64 membership cloned out of ScalarRepresentationPlan",
     r"\bint_carriers_plan\b": "legacy plan alias beside ScalarRepresentationPlan",
     r"\bprimary_name_sets\s*\(": "native backend cloned primary-name sets instead of plan predicates",
+    r"\bint_like_vars\b": "semantic int membership cloned out of ScalarRepresentationPlan",
+    r"\bbool_like_vars\b": "semantic bool membership cloned out of ScalarRepresentationPlan",
+    r"\bfloat_like_vars\b": "semantic float membership cloned out of ScalarRepresentationPlan",
+    r"\bstr_like_vars\b": "semantic str membership cloned out of ScalarRepresentationPlan",
+    r"\bnone_like_vars\b": "semantic None membership cloned out of ScalarRepresentationPlan",
 }
 
 
 def probe_native_scalar_plan_authority(root: Path) -> list[Finding]:
     """Native scalar lowering must consume ScalarRepresentationPlan directly.
 
-    The native backend used to thread bool/float carrier BTreeSets plus an
-    int-carrier plan alias through every extracted handler. That split made raw
-    scalar representation a multi-authority contract. This probe keeps the hot
-    lowering path optimized around one plan: handlers may ask plan predicates,
-    but may not clone carrier membership into local side sets.
+    The native backend used to thread bool/float carrier BTreeSets, semantic
+    scalar "like" sets, plus an int-carrier plan alias through every extracted
+    handler. That split made raw scalar representation and semantic scalar
+    classification a multi-authority contract. This probe keeps the hot lowering
+    path optimized around one plan: handlers may ask plan predicates, but may
+    not clone carrier or scalar-kind membership into local side sets.
     """
     targets = [
         root / "runtime/molt-backend/src/native_backend/function_compiler.rs",
@@ -786,7 +792,8 @@ def probe_native_scalar_plan_authority(root: Path) -> list[Finding]:
                     suggested_action=(
                         "route native scalar membership through "
                         "ScalarRepresentationPlan predicates such as "
-                        "is_raw_int_carrier_name/is_bool_unboxed/is_float_unboxed"
+                        "is_raw_int_carrier_name/is_bool_unboxed/is_float_unboxed "
+                        "and name_is_* scalar-kind queries"
                     ),
                     class_retired="native-scalar-representation-drift",
                     metric=float(len(hits)),

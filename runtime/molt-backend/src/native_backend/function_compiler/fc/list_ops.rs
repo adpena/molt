@@ -48,7 +48,6 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
     nbc: &crate::NanBoxConsts,
-    bool_like_vars: &BTreeSet<String>,
     local_inc_ref_obj: FuncRef,
     list_index_fast_paths: &mut ListIndexFastPathState,
 ) -> OpFlow {
@@ -289,7 +288,6 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 &mut *builder,
                 &mut *import_refs,
                 &mut *sealed_blocks,
-                bool_like_vars,
                 vars,
                 nbc,
                 representation_plan,

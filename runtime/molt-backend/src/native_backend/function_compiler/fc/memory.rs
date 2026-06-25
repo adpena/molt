@@ -46,10 +46,6 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
-    int_like_vars: &BTreeSet<String>,
-    float_like_vars: &BTreeSet<String>,
-    bool_like_vars: &BTreeSet<String>,
-    str_like_vars: &BTreeSet<String>,
     param_name_set: &BTreeSet<&str>,
     last_use: &BTreeMap<String, usize>,
     alias_roots: &BTreeMap<String, String>,
@@ -1401,12 +1397,10 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
             if scalar_fast_paths_enabled {
                 let tag = op.s_value.as_deref().unwrap_or("");
                 let val_name = args.first().map(String::as_str).unwrap_or("");
-                if (tag == "int"
-                    && (int_like_vars.contains(val_name)
-                        || representation_plan.is_raw_int_carrier_name(val_name)))
-                    || (tag == "float" && float_like_vars.contains(val_name))
-                    || (tag == "bool" && bool_like_vars.contains(val_name))
-                    || (tag == "str" && str_like_vars.contains(val_name))
+                if (tag == "int" && representation_plan.name_is_integer_scalar(val_name))
+                    || (tag == "float" && representation_plan.name_is_float_scalar(val_name))
+                    || (tag == "bool" && representation_plan.name_is_bool_scalar(val_name))
+                    || (tag == "str" && representation_plan.name_is_str_scalar(val_name))
                 {
                     // Type already proven — skip runtime guard.
                     return OpFlow::Continue;
