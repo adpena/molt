@@ -46,6 +46,7 @@ RUNTIME_BUILD = importlib.import_module("molt.cli.runtime_build")
 RUNTIME_PATHS = importlib.import_module("molt.cli.runtime_paths")
 RUNTIME_WASM_VALIDATION = importlib.import_module("molt.cli.runtime_wasm_validation")
 RUNTIME_FINGERPRINTS = importlib.import_module("molt.cli.runtime_fingerprints")
+RUNTIME_INTRINSIC_SYMBOLS = importlib.import_module("molt.cli.runtime_intrinsic_symbols")
 
 
 def _rewrite_preserving_mtime(
@@ -191,7 +192,7 @@ def _install_fake_backend_compile(
         RUNTIME_BUILD, "_ensure_runtime_lib_ready", fake_ensure_runtime_lib_ready
     )
     monkeypatch.setattr(
-        cli,
+        RUNTIME_INTRINSIC_SYMBOLS,
         "_runtime_intrinsic_symbols_file",
         lambda runtime_lib: (fake_symbols_file, None),
     )
@@ -10440,17 +10441,19 @@ def test_prepare_backend_setup_stages_runtime_intrinsics_before_native_cache_hit
     monkeypatch.setattr(
         cli, "_prepare_backend_cache_setup", fake_prepare_backend_cache_setup
     )
+    def fake_ensure_runtime_lib_ready(runtime_state: object, **kwargs: object) -> bool:
+        del kwargs
+        assert isinstance(runtime_state, cli._RuntimeArtifactState)
+        ensure_calls.append(runtime_state.runtime_lib)
+        runtime_lib.write_bytes(b"runtime")
+        return True
+
+    monkeypatch.setattr(cli, "_ensure_runtime_lib_ready", fake_ensure_runtime_lib_ready)
     monkeypatch.setattr(
-        cli,
-        "_ensure_runtime_lib_ready",
-        lambda runtime_state, **kwargs: (
-            ensure_calls.append(runtime_state.runtime_lib)
-            or runtime_lib.write_bytes(b"runtime")
-            or True
-        ),
+        RUNTIME_BUILD, "_ensure_runtime_lib_ready", fake_ensure_runtime_lib_ready
     )
     monkeypatch.setattr(
-        cli,
+        RUNTIME_INTRINSIC_SYMBOLS,
         "_runtime_intrinsic_symbols_file",
         lambda runtime_lib_path: (symbols_file, None),
     )
@@ -10490,7 +10493,7 @@ def test_prepare_backend_setup_stages_runtime_intrinsics_before_native_cache_hit
     assert ensure_calls == [runtime_lib]
     assert os.environ["MOLT_RUNTIME_INTRINSIC_SYMBOLS"] == str(symbols_file)
     assert cache_setup_kwargs[0]["runtime_intrinsic_symbols_digest"] == (
-        cli._runtime_intrinsic_symbols_digest(symbols_file)
+        RUNTIME_INTRINSIC_SYMBOLS._runtime_intrinsic_symbols_digest(symbols_file)
     )
 
 
@@ -10537,17 +10540,19 @@ def test_prepare_backend_setup_stages_runtime_intrinsics_before_native_cache_mis
     monkeypatch.setattr(
         cli, "_prepare_backend_cache_setup", fake_prepare_backend_cache_setup
     )
+    def fake_ensure_runtime_lib_ready(runtime_state: object, **kwargs: object) -> bool:
+        del kwargs
+        assert isinstance(runtime_state, cli._RuntimeArtifactState)
+        ensure_calls.append(runtime_state.runtime_lib)
+        runtime_lib.write_bytes(b"runtime")
+        return True
+
+    monkeypatch.setattr(cli, "_ensure_runtime_lib_ready", fake_ensure_runtime_lib_ready)
     monkeypatch.setattr(
-        cli,
-        "_ensure_runtime_lib_ready",
-        lambda runtime_state, **kwargs: (
-            ensure_calls.append(runtime_state.runtime_lib)
-            or runtime_lib.write_bytes(b"runtime")
-            or True
-        ),
+        RUNTIME_BUILD, "_ensure_runtime_lib_ready", fake_ensure_runtime_lib_ready
     )
     monkeypatch.setattr(
-        cli,
+        RUNTIME_INTRINSIC_SYMBOLS,
         "_runtime_intrinsic_symbols_file",
         lambda runtime_lib_path: (symbols_file, None),
     )
@@ -10586,7 +10591,7 @@ def test_prepare_backend_setup_stages_runtime_intrinsics_before_native_cache_mis
     assert prepared_backend_setup.cache_hit is False
     assert ensure_calls == [runtime_lib]
     assert cache_setup_kwargs[0]["runtime_intrinsic_symbols_digest"] == (
-        cli._runtime_intrinsic_symbols_digest(symbols_file)
+        RUNTIME_INTRINSIC_SYMBOLS._runtime_intrinsic_symbols_digest(symbols_file)
     )
 
 
@@ -10633,13 +10638,17 @@ def test_prepare_backend_setup_uses_runtime_intrinsic_digest_instead_of_native_a
     monkeypatch.setattr(
         cli, "_prepare_backend_cache_setup", fake_prepare_backend_cache_setup
     )
+    def fake_ensure_runtime_lib_ready(runtime_state: object, **kwargs: object) -> bool:
+        del runtime_state, kwargs
+        runtime_lib.write_bytes(b"runtime")
+        return True
+
+    monkeypatch.setattr(cli, "_ensure_runtime_lib_ready", fake_ensure_runtime_lib_ready)
     monkeypatch.setattr(
-        cli,
-        "_ensure_runtime_lib_ready",
-        lambda runtime_state, **kwargs: runtime_lib.write_bytes(b"runtime") or True,
+        RUNTIME_BUILD, "_ensure_runtime_lib_ready", fake_ensure_runtime_lib_ready
     )
     monkeypatch.setattr(
-        cli,
+        RUNTIME_INTRINSIC_SYMBOLS,
         "_runtime_intrinsic_symbols_file",
         lambda runtime_lib_path: (symbols_file, None),
     )
@@ -10685,7 +10694,7 @@ def test_prepare_backend_setup_uses_runtime_intrinsic_digest_instead_of_native_a
     assert prepared_backend_setup is not None
     assert scheduled == []
     assert cache_setup_kwargs[0]["runtime_intrinsic_symbols_digest"] == (
-        cli._runtime_intrinsic_symbols_digest(symbols_file)
+        RUNTIME_INTRINSIC_SYMBOLS._runtime_intrinsic_symbols_digest(symbols_file)
     )
 
 
@@ -10731,17 +10740,19 @@ def test_prepare_backend_setup_stages_runtime_intrinsics_for_object_emit_without
             cache_hit_tier=None,
         ),
     )
+    def fake_ensure_runtime_lib_ready(runtime_state: object, **kwargs: object) -> bool:
+        del kwargs
+        assert isinstance(runtime_state, cli._RuntimeArtifactState)
+        ensure_calls.append(runtime_state.runtime_lib)
+        runtime_lib.write_bytes(b"runtime")
+        return True
+
+    monkeypatch.setattr(cli, "_ensure_runtime_lib_ready", fake_ensure_runtime_lib_ready)
     monkeypatch.setattr(
-        cli,
-        "_ensure_runtime_lib_ready",
-        lambda runtime_state, **kwargs: (
-            ensure_calls.append(runtime_state.runtime_lib)
-            or runtime_lib.write_bytes(b"runtime")
-            or True
-        ),
+        RUNTIME_BUILD, "_ensure_runtime_lib_ready", fake_ensure_runtime_lib_ready
     )
     monkeypatch.setattr(
-        cli,
+        RUNTIME_INTRINSIC_SYMBOLS,
         "_runtime_intrinsic_symbols_file",
         lambda runtime_lib_path: (symbols_file, None),
     )
@@ -10782,7 +10793,7 @@ def test_prepare_backend_setup_stages_runtime_intrinsics_for_object_emit_without
     assert scheduled == []
     assert os.environ["MOLT_RUNTIME_INTRINSIC_SYMBOLS"] == str(symbols_file)
     assert cache_setup_kwargs[0]["runtime_intrinsic_symbols_digest"] == (
-        cli._runtime_intrinsic_symbols_digest(symbols_file)
+        RUNTIME_INTRINSIC_SYMBOLS._runtime_intrinsic_symbols_digest(symbols_file)
     )
 
 
