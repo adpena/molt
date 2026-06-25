@@ -307,6 +307,12 @@ before guessing. Manual killing of a Molt-owned child/helper must stay scoped to
 that child; never broaden cleanup to Codex, Claude, app-server, renderer,
 node-repl, ancestors, or unrelated host control-plane processes.
 
+Only proved Molt-owned processes may ever be cleanup targets. A repo path,
+process name, stale PID, or missing sampler identity is not enough authority to
+signal a process. If live identity cannot prove a non-host Molt-owned target,
+do not kill it; preserve evidence and fix custody first. Codex itself is never
+a cleanup target.
+
 ## Build & Test
 
 - Build with `cargo build --profile release-fast -p molt-backend --features native-backend`
@@ -320,6 +326,9 @@ node-repl, ancestors, or unrelated host control-plane processes.
 - After a session with multiple agents, run `molt clean --apply --kill-processes`
   so process cleanup and artifact deletion stay inside the canonical guard and
   allowlist.
+- Cleanup commands must fail closed on ambiguous ownership: no blanket
+  `taskkill`, no name-based Codex cleanup, no signaling a PID that cannot be
+  reidentified as a live non-host Molt-owned worker.
 
 ## Safe Execution (Non-Negotiable: never OOM or hang the host)
 
