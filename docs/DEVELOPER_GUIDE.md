@@ -29,12 +29,15 @@ For the canonical vision and scope, read [spec/areas/core/0000-vision.md](spec/a
 
 ## Work Granularity
 
-Molt engineering work is sized by invariant, not by visible issue count. Before
-starting a fix, identify the full bug class or duplicated-authority cluster:
-all sibling classifiers, call sites, generated facts, backend/frontend/tooling
-consumers, docs, and proof lanes that govern the same semantic fact. Avoiding
-the larger abstraction by landing one match arm, one file-local patch, one test
-case, or one easy audit decrement leaves the system worse.
+Molt engineering work starts from one tiny, named aperture: one invariant,
+command family, file cluster, authority surface, or failing execution path. The
+aperture keeps discovery bounded; it is not the deliverable. Once the aperture
+exposes the real structure, rip through the full bug class or
+duplicated-authority cluster: all sibling classifiers, call sites, generated
+facts, backend/frontend/tooling consumers, docs, and proof lanes that govern the
+same semantic fact. Avoiding the larger abstraction by landing one match arm,
+one file-local patch, one test case, or one easy audit decrement leaves the
+system worse.
 
 Carve work smaller only along real subsystem boundaries. A valid cut removes all
 parallel sources of truth inside that subsystem and leaves a stronger
@@ -48,12 +51,13 @@ operator or reviewer says the work is being sliced too small, treat that as a
 binding correction: stop defending the local plan, widen the design radius, and
 close the coherent structural class.
 
-### Structural Aperture, Full Rip
+### Tiny Aperture, Full Rip
 
-"Tiny slice and rip it open" means the slice is the entry aperture, not the
-deliverable or work-size limit. Pick one concrete invariant, command family,
-file cluster, or authority surface that exposes the real structure, then follow
-it through every sibling consumer needed to delete or unify the duplicate lane.
+"Tiny slice and rip it open" is binding operator policy. The slice is the entry
+aperture, not the deliverable or work-size limit. Pick one concrete invariant,
+command family, file cluster, authority surface, or failing execution path that
+exposes the real structure, then follow it through every sibling consumer needed
+to delete or unify the duplicate lane.
 
 This is the stable way to work after Codex/Desktop/process instability: one
 active structural arc, one bounded proof lane, no retry storms, and no parallel

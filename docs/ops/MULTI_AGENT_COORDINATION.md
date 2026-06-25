@@ -13,6 +13,8 @@ benchmark, or broad validation lanes.
 
 The goal is highest expected signal per machine hour:
 
+- one tiny, named aperture before any broad work;
+- one full structural rip through the authority exposed by that aperture;
 - one authority per proof lane;
 - one supervising broad differential or regrtest run per shared target root;
 - targeted verification before broad sweeps;
@@ -26,7 +28,11 @@ benchmarks, or long validation must do this before the first heavy command:
 
 1. Read `AGENTS.md`, this file, and the relevant routing doc for the touched
    subsystem.
-2. Determine the local environment and choose commands from facts, not
+2. Name the tiny aperture and the structural authority it exposes. Do not start
+   a broad proof lane, decomposition arc, or multi-agent migration until the
+   entry invariant, command family, file cluster, authority surface, or failing
+   execution path is explicit.
+3. Determine the local environment and choose commands from facts, not
    assumptions:
 
    ```bash
@@ -38,13 +44,13 @@ benchmarks, or long validation must do this before the first heavy command:
    command for this host. Use the wrapper `tools/new-agent-task.sh` only when a
    POSIX shell is available; otherwise run
    `uv run --python 3.12 python tools/agent_coordination.py init <task>`.
-3. Inspect local ownership without reverting partner work:
+4. Inspect local ownership without reverting partner work:
 
    ```bash
    git status --short
    ```
 
-4. Create or update a task log:
+5. Create or update a task log:
 
    ```bash
    tools/new-agent-task.sh <task-slug>
@@ -53,19 +59,20 @@ benchmarks, or long validation must do this before the first heavy command:
    The wrapper delegates to `tools/agent_coordination.py init` and writes both
    a markdown report and `logs/agents/<task>/coordination.json`.
 
-5. Set a unique session before any build or harness command:
+6. Set a unique session before any build or harness command:
 
    ```bash
    export MOLT_SESSION_ID="<agent-or-task-id>"
    ```
 
-6. Bootstrap shared throughput defaults when a long proof lane is likely:
+7. Bootstrap shared throughput defaults when a long proof lane is likely:
 
    ```bash
    tools/throughput_env.sh --apply
    ```
 
-7. Record in `logs/agents/<task>/`:
+8. Record in `logs/agents/<task>/`:
+   - named aperture and exposed authority;
    - owned files/directories;
    - intended proof lane;
    - whether this agent is the broad-sweep coordinator;

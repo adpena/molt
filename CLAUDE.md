@@ -15,18 +15,22 @@ When you identify a structurally correct fix and feel pulled toward an "immediat
 
 If you cannot complete the structural fix in this session, **do not commit the localized hack as a placeholder**. Leave a clean baton-pass note describing the structural fix needed; the next session picks it up. Half-measures committed to main are worse than nothing committed.
 
-### Structural aperture, full rip
+### Tiny Aperture, Full Rip
 
-The bounded unit is not a tiny chip, checkpoint, or proof-friendly slice; it is
-a complete structural rip through one concrete invariant, authority cluster, or
-execution path, followed through every consumer needed to delete the old lane.
-Narrow the entry point only to expose the real structure; once exposed, widen to
-the whole bug class inside that boundary.
+Default to one tiny, named aperture into the real structure: one invariant,
+command family, file cluster, authority surface, or failing execution path. The
+aperture keeps discovery bounded; it is not the deliverable. The deliverable is
+a complete structural rip through the authority exposed by that aperture,
+followed through every consumer needed to delete or unify the old lane.
 
-- "Tiny slice and rip it open" is binding operator shorthand. Tiny slice means
-  only one concrete aperture into the real structure; it never means shrinking
-  the engineering unit. Rip it open means delete or unify the duplicate
+- "Tiny slice and rip it open" is binding operator policy. Tiny slice means the
+  smallest concrete opening that exposes the duplicate authority; it never means
+  shrinking the engineering unit. Rip it open means delete or unify the duplicate
   authority behind that aperture before moving on.
+- Do not start with a broad soup of goals, and do not stop at a tiny chip. Begin
+  with the narrow aperture, then widen only along the structure it reveals:
+  callers, tests, docs, generated facts, backend/frontend/tooling consumers, and
+  proof lanes that govern the same invariant.
 - The entry point may be narrow; the work may not be a chip. Do not scope
   broadly into endless planning before real structure is exposed, but once it is
   exposed, migrate the sibling authorities and consumers that define the
@@ -42,6 +46,9 @@ the whole bug class inside that boundary.
   and surface patching that leaves the real structure intact. When uncertain,
   narrow the entry point and deepen the structural rip; never narrow the
   ambition.
+- Crash recovery constrains process fanout, not work integrity. In unstable
+  sessions, keep one active aperture and one bounded proof lane; never convert
+  the structural rip into a queue of isolated tiny chips.
 
 ### Concrete examples of partial implementations to reject
 
@@ -94,9 +101,10 @@ insofar as it proves the structural invariant being moved; once it proves that
 invariant, return to unifying the system instead of orbiting the tests.
 
 Operator correction is binding. If the user says the work is being sliced too
-small, do not defend the current plan, do not rename the slice, and do not
-continue the same local tactic. Expand the task boundary to the underlying
-structural class and proceed.
+small, says "tiny slice", says "rip it open", or uses equivalent language, do
+not defend the current plan, do not rename the slice, and do not continue the
+same local tactic. Name the aperture, expand through the underlying structural
+class it exposes, and proceed.
 
 This rule applies equally to:
 - **Correctness**: bug class fixes, not bug instance fixes (e.g., fix the phi-representation invariant, not just the one site that exposed it)
