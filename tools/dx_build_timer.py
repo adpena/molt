@@ -19,6 +19,7 @@ process-tree custody.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import shutil
@@ -33,25 +34,98 @@ if str(REPO_ROOT) not in sys.path:
 
 from tools import harness_memory_guard  # noqa: E402
 
+TOUCH_MARKER = b"\n// dx_build_timer touch\n"
+
 
 def _now() -> float:
     return time.perf_counter()
 
 
-def _touch(path: Path) -> None:
-    """Append + remove a trailing no-op comment line to force a content change.
+def _sha256(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
 
-    Pure `os.utime` (mtime bump) is enough for cargo's fingerprint, but a real
-    content edit is the honest model of what an agent edit does (it invalidates
-    the incremental-compilation cache for that file's codegen unit). We add then
-    immediately remove a blank comment so the file content returns to identical
-    bytes across runs (deterministic), while still changing mtime."""
-    text = path.read_text()
-    marker = "\n// dx_build_timer touch\n"
-    if text.endswith(marker):
-        path.write_text(text[: -len(marker)])
-    else:
-        path.write_text(text + marker)
+
+class TouchJournal:
+    """Crash-recoverable source touch journal for incremental build probes."""
+
+    def __init__(self, path: Path):
+        self.path = path
+
+    def recover(self) -> None:
+        entries = self._read()
+        if not entries:
+            return
+        remaining = []
+        for entry in entries:
+            source = Path(entry["path"])
+            if not source.exists():
+                remaining.append(entry)
+                continue
+            current = source.read_bytes()
+            current_sha = _sha256(current)
+            if current_sha == entry["touched_sha256"]:
+                source.write_bytes(current[: -len(TOUCH_MARKER)])
+                continue
+            if current_sha != entry["original_sha256"]:
+                remaining.append(entry)
+        self._write(remaining)
+
+    def touch(self, source: Path) -> dict[str, str]:
+        """Append a marker and persist enough state to recover after a crash.
+
+        A real content edit is the honest model of what an agent edit does: it
+        invalidates Cargo's fingerprint and the incremental compilation cache for
+        that file's codegen unit. The journal is written before the source edit,
+        so an interrupted harness can be recovered on the next run without
+        guessing or overwriting unrelated user edits.
+        """
+        self.recover()
+        original = source.read_bytes()
+        if original.endswith(TOUCH_MARKER):
+            raise RuntimeError(f"{source} already ends with dx_build_timer marker")
+        touched = original + TOUCH_MARKER
+        entry = {
+            "path": str(source),
+            "original_sha256": _sha256(original),
+            "touched_sha256": _sha256(touched),
+        }
+        entries = [e for e in self._read() if e.get("path") != entry["path"]]
+        entries.append(entry)
+        self._write(entries)
+        source.write_bytes(touched)
+        return entry
+
+    def restore(self, entry: dict[str, str]) -> None:
+        source = Path(entry["path"])
+        current = source.read_bytes()
+        current_sha = _sha256(current)
+        if current_sha == entry["touched_sha256"]:
+            source.write_bytes(current[: -len(TOUCH_MARKER)])
+        elif current_sha != entry["original_sha256"]:
+            raise RuntimeError(
+                f"refusing to restore {source}: content changed outside dx_build_timer"
+            )
+        entries = [e for e in self._read() if e.get("path") != entry["path"]]
+        self._write(entries)
+
+    def _read(self) -> list[dict[str, str]]:
+        if not self.path.exists():
+            return []
+        raw = json.loads(self.path.read_text(encoding="utf-8"))
+        entries = raw.get("entries", [])
+        if not isinstance(entries, list):
+            raise RuntimeError(f"invalid dx_build_timer touch journal: {self.path}")
+        return entries
+
+    def _write(self, entries: list[dict[str, str]]) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        if entries:
+            payload = json.dumps({"entries": entries}, indent=2) + "\n"
+            tmp = self.path.with_suffix(self.path.suffix + ".tmp")
+            tmp.write_text(payload, encoding="utf-8")
+            tmp.replace(self.path)
+        elif self.path.exists():
+            self.path.unlink()
 
 
 def _output_text(value: object) -> str:
@@ -126,6 +200,62 @@ def _test_build_cmd(args: argparse.Namespace) -> list[str]:
     ]
 
 
+def _snapshot_payload(
+    args: argparse.Namespace,
+    results: dict[str, dict],
+    *,
+    cargo_version: str,
+    prime: dict[str, object] | None = None,
+    active: dict[str, object] | None = None,
+) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "meta": {
+            "profile": args.profile,
+            "package": args.package,
+            "features": args.features,
+            "runs": args.runs,
+            "target_dir": args.target_dir,
+            "cargo": cargo_version,
+        },
+        "results": results,
+    }
+    if prime is not None:
+        payload["prime"] = prime
+    if active is not None:
+        payload["active"] = active
+    return payload
+
+
+def _write_snapshot(
+    args: argparse.Namespace,
+    results: dict[str, dict],
+    *,
+    cargo_version: str,
+    prime: dict[str, object] | None = None,
+    active: dict[str, object] | None = None,
+) -> None:
+    if not args.json_out:
+        return
+    path = Path(args.json_out)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(
+        json.dumps(
+            _snapshot_payload(
+                args,
+                results,
+                cargo_version=cargo_version,
+                prime=prime,
+                active=active,
+            ),
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    tmp.replace(path)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--profile", default="release-fast")
@@ -154,6 +284,8 @@ def main() -> int:
 
     env = os.environ.copy()
     env["CARGO_TARGET_DIR"] = args.target_dir
+    touch_journal = TouchJournal(Path(args.target_dir) / ".dx_build_timer_touches.json")
+    touch_journal.recover()
 
     touch_files = {
         "value_range": REPO_ROOT / "runtime/molt-tir/src/tir/passes/value_range.rs",
@@ -164,38 +296,79 @@ def main() -> int:
     }
 
     results: dict[str, dict] = {}
+    cargo_version = _output_text(
+        _run_completed(["cargo", "--version"], env, REPO_ROOT)[0].stdout
+    ).strip()
+    prime: dict[str, object] | None = None
 
     def measure(label: str, prep, cmd: list[str]) -> None:
         samples = []
         rc_last = 0
         tail_last = ""
         for i in range(args.runs):
+            touch_entry = None
             if prep:
-                prep()
-            rc, elapsed, tail = _run(
-                cmd,
-                env,
-                REPO_ROOT,
-                progress_label=f"dx-build {label} run {i + 1}/{args.runs}",
+                touch_entry = prep()
+            _write_snapshot(
+                args,
+                results,
+                cargo_version=cargo_version,
+                prime=prime,
+                active={
+                    "label": label,
+                    "run": i + 1,
+                    "runs": args.runs,
+                    "cmd": cmd,
+                    "touch": touch_entry,
+                    "started_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                },
             )
+            try:
+                rc, elapsed, tail = _run(
+                    cmd,
+                    env,
+                    REPO_ROOT,
+                    progress_label=f"dx-build {label} run {i + 1}/{args.runs}",
+                )
+            finally:
+                if touch_entry is not None:
+                    touch_journal.restore(touch_entry)
             rc_last, tail_last = rc, tail
             samples.append(round(elapsed, 2))
             print(
                 f"  [{label}] run {i + 1}/{args.runs}: {elapsed:.2f}s rc={rc}",
                 flush=True,
             )
+            results[label] = {
+                "samples_sec": samples,
+                "min": min(samples) if samples else None,
+                "median": round(statistics.median(samples), 2) if samples else None,
+                "max": max(samples) if samples else None,
+                "rc": rc_last,
+                "cmd": cmd,
+                "stderr_tail": tail_last if rc_last != 0 else "",
+            }
+            _write_snapshot(
+                args,
+                results,
+                cargo_version=cargo_version,
+                prime=prime,
+            )
             if rc != 0:
                 print(f"    FAILED:\n{tail}", flush=True)
                 break
-        results[label] = {
-            "samples_sec": samples,
-            "min": min(samples) if samples else None,
-            "median": round(statistics.median(samples), 2) if samples else None,
-            "max": max(samples) if samples else None,
-            "rc": rc_last,
-            "cmd": cmd,
-            "stderr_tail": tail_last if rc_last != 0 else "",
-        }
+        results.setdefault(
+            label,
+            {
+                "samples_sec": samples,
+                "min": min(samples) if samples else None,
+                "median": round(statistics.median(samples), 2) if samples else None,
+                "max": max(samples) if samples else None,
+                "rc": rc_last,
+                "cmd": cmd,
+                "stderr_tail": tail_last if rc_last != 0 else "",
+            },
+        )
 
     # Ensure a warm baseline build exists first (so incremental scenarios are real).
     print("[dx] priming warm build ...", flush=True)
@@ -206,6 +379,13 @@ def main() -> int:
         progress_label="dx-build prime",
     )
     print(f"[dx] prime build: {elapsed:.2f}s rc={rc}", flush=True)
+    prime = {
+        "elapsed_sec": round(elapsed, 2),
+        "rc": rc,
+        "cmd": _build_cmd(args),
+        "stderr_tail": tail if rc != 0 else "",
+    }
+    _write_snapshot(args, results, cargo_version=cargo_version, prime=prime)
     if rc != 0:
         print(f"[dx] prime FAILED:\n{tail}", file=sys.stderr)
         return 1
@@ -223,32 +403,20 @@ def main() -> int:
         elif scen.startswith("inc-"):
             key = scen[len("inc-") :]
             f = touch_files[key]
-            measure(scen, (lambda f=f: _touch(f)), _build_cmd(args))
+            measure(scen, (lambda f=f: touch_journal.touch(f)), _build_cmd(args))
         elif scen == "test-lib":
             measure(
                 "test-lib",
-                (lambda: _touch(touch_files["value_range"])),
+                (lambda: touch_journal.touch(touch_files["value_range"])),
                 _test_build_cmd(args),
             )
         else:
             print(f"unknown scenario: {scen}", file=sys.stderr)
 
-    payload = {
-        "meta": {
-            "profile": args.profile,
-            "package": args.package,
-            "features": args.features,
-            "runs": args.runs,
-            "target_dir": args.target_dir,
-            "cargo": _output_text(
-                _run_completed(["cargo", "--version"], env, REPO_ROOT)[0].stdout
-            ).strip(),
-        },
-        "results": results,
-    }
+    payload = _snapshot_payload(args, results, cargo_version=cargo_version, prime=prime)
     out = json.dumps(payload, indent=2)
     if args.json_out:
-        Path(args.json_out).write_text(out + "\n")
+        _write_snapshot(args, results, cargo_version=cargo_version, prime=prime)
         print(f"wrote {args.json_out}")
     print(out)
     return 0
