@@ -4,6 +4,8 @@ from typing import Any
 
 from molt.cli.capability_spec import CapabilityInput
 
+STATIC_IMPORT_MODULES_ENV = "MOLT_STATIC_IMPORT_MODULES"
+
 
 def _config_value(config: dict[str, Any], path: list[str]) -> Any | None:
     current: Any = config
