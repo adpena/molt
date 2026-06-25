@@ -19,6 +19,7 @@ COMPILER_METADATA = importlib.import_module("molt.cli.compiler_metadata")
 COMMAND_RUNTIME = importlib.import_module("molt.cli.command_runtime")
 CARGO_EXECUTION = importlib.import_module("molt.cli.cargo_execution")
 NATIVE_LINK_DEPS = importlib.import_module("molt.cli.native_link_deps")
+NATIVE_TOOLCHAIN = importlib.import_module("molt.cli.native_toolchain")
 TOOLCHAIN_VALIDATION = importlib.import_module("molt.cli.toolchain_validation")
 RUNTIME_BUILD = importlib.import_module("molt.cli.runtime_build")
 RUNTIME_WASM_VALIDATION = importlib.import_module("molt.cli.runtime_wasm_validation")
@@ -603,6 +604,12 @@ def test_cli_build_toolchain_probes_use_memory_guard(
         raising=True,
     )
     monkeypatch.setattr(
+        NATIVE_TOOLCHAIN,
+        "_run_completed_command",
+        fake_run_completed_command,
+        raising=True,
+    )
+    monkeypatch.setattr(
         cli.shutil,
         "which",
         lambda name: (
@@ -1083,6 +1090,80 @@ def test_cli_update_steps_use_memory_guard(monkeypatch: pytest.MonkeyPatch) -> N
             "memory_guard_prefix": "MOLT_CLI",
         }
     ]
+
+
+def test_update_plan_bootstraps_missing_cargo_tool_helpers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    present = {
+        "cargo": "cargo",
+        "rustup": "rustup",
+        "wasm-tools": "wasm-tools",
+    }
+
+    monkeypatch.setattr(
+        TOOLCHAIN_VALIDATION.shutil,
+        "which",
+        lambda name: present.get(name),
+        raising=True,
+    )
+    monkeypatch.setattr(
+        TOOLCHAIN_VALIDATION,
+        "_detect_llvm_backend_toolchain",
+        lambda _root: (22, None),
+        raising=True,
+    )
+
+    steps, warnings = TOOLCHAIN_VALIDATION._planned_update_steps(
+        ROOT,
+        include_toolchains=True,
+        include_locks=False,
+        include_manifests=False,
+    )
+
+    names = {step.name for step in steps}
+    assert "cargo-install-wasm-pack" in names
+    assert "cargo-install-llvmenv" in names
+    assert "cargo-install-wasm-tools" not in names
+    assert warnings == []
+
+
+def test_llvm_backend_advice_names_exact_prefix_and_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(TOOLCHAIN_VALIDATION.platform, "system", lambda: "Windows")
+
+    advice = TOOLCHAIN_VALIDATION._llvm_backend_advice(22)
+
+    joined = "\n".join(advice)
+    assert "LLVM_SYS_221_PREFIX" in joined
+    assert "llvm-config.exe" in joined
+
+
+def test_llvm_detection_rejects_mismatched_config_major(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        TOOLCHAIN_VALIDATION,
+        "_required_llvm_backend_major",
+        lambda _root: 22,
+        raising=True,
+    )
+    monkeypatch.setattr(
+        TOOLCHAIN_VALIDATION.shutil,
+        "which",
+        lambda name: "C:/LLVM/bin/llvm-config.exe"
+        if name in {"llvm-config", "llvm-config.exe"}
+        else None,
+        raising=True,
+    )
+
+    def fake_run(_cmd, **_kwargs):
+        return subprocess.CompletedProcess(_cmd, 0, "21.1.0\n", "")
+
+    monkeypatch.setattr(TOOLCHAIN_VALIDATION.subprocess, "run", fake_run, raising=True)
+
+    assert TOOLCHAIN_VALIDATION._detect_llvm_backend_toolchain(ROOT) == (22, None)
 
 
 def test_cli_repl_command_delegates_to_guarded_repl(
