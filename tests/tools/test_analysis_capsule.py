@@ -314,8 +314,22 @@ def test_build_capsule_bridges_frontend_tir_allocation_and_binary() -> None:
     )
     assert capsule["ir_tir"]["tir_fact_graphs"][0]["fact_count"] == 2
     assert capsule["ir_tir"]["tir_fact_graphs"][0]["source_site_value_count"] == 1
+    assert capsule["ir_tir"]["tir_fact_graphs"][0]["source_site_record_count"] == 2
+    assert capsule["ir_tir"]["tir_fact_graphs"][0]["source_files"] == ["app.py"]
+    assert (
+        capsule["ir_tir"]["tir_fact_graphs"][0]["top_source_lines_by_records"][0][
+            "records"
+        ]
+        == 2
+    )
     assert (
         capsule["ir_tir"]["tir_fact_graphs"][0]["allocation_ownership_fact_count"] == 1
+    )
+    assert (
+        capsule["ir_tir"]["tir_fact_graphs"][0]["allocation_ownership_by_kind"][
+            "allocation.heap_root"
+        ]
+        == 1
     )
     assert capsule["allocation"]["peak_bytes"] == 240
     assert capsule["binary"]["size"]["total_bytes"] == 128
