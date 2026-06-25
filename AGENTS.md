@@ -439,6 +439,11 @@ Read these first instead of rediscovering project structure:
   cleanup to Codex, Claude, app-server, renderer, node-repl, ancestors, or any
   unrelated host control-plane process. If custody is uncertain, patch custody
   first.
+- Only proved Molt-owned processes may ever be cleanup targets. A repo path,
+  process name, stale PID, or missing sampler identity is not enough authority
+  to signal a process. If live identity cannot prove a non-host Molt-owned
+  target, do not kill it; preserve evidence and fix custody first. Codex itself
+  is never a cleanup target.
 - Re-enable multi-hour broad execution only after the active death-capsule state
   explains the previous failure mode and the next lane can proceed without
   risking host/control-plane instability.
@@ -452,6 +457,9 @@ Read these first instead of rediscovering project structure:
   stable and deterministic, but never terminate Claude, the Codex app,
   app-server, renderer, node-repl, or any ancestor/host control-plane process
   group as cleanup collateral.
+- Cleanup commands must fail closed on ambiguous ownership: no blanket
+  `taskkill`, no name-based Codex cleanup, no signaling a PID that cannot be
+  reidentified as a live non-host Molt-owned worker.
 - Do not stop at neat local checkpoints or convenient chips outside recovery mode.
   Only stop for a real blocker, a safety constraint, or when remote proof on
   tertiary is the next required step.
