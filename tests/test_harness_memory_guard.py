@@ -49,6 +49,72 @@ def test_enabled_from_env_ignores_legacy_disable_knobs(monkeypatch) -> None:
     assert harness_memory_guard.enabled_from_env("MOLT_BENCH") is True
 
 
+def test_force_close_process_group_uses_custody_termination(monkeypatch) -> None:
+    samples = {
+        100: harness_memory_guard.memory_guard.ProcessSample(
+            100,
+            1,
+            100,
+            "/repo/molt/target/dev-fast/molt-backend",
+            pgid=None,
+        )
+    }
+    calls: list[dict[str, object]] = []
+
+    class FakeProc:
+        pid = 100
+        polls = 0
+
+        def poll(self):  # noqa: ANN201
+            self.polls += 1
+            return None if self.polls == 1 else 0
+
+        def wait(self, timeout=None):  # noqa: ANN001, ANN201
+            return 0
+
+        def terminate(self) -> None:
+            raise AssertionError("force_close_process_group must use custody")
+
+        def kill(self) -> None:
+            raise AssertionError("force_close_process_group must use custody")
+
+    def fake_terminate_watched_processes(root_pid, **kwargs):  # noqa: ANN001
+        calls.append({"root_pid": root_pid, **kwargs})
+        return harness_memory_guard.memory_guard.GuardTerminationReport(
+            reason="test",
+            started_at="start",
+            completed_at="end",
+            root_pid=root_pid,
+            root_pgid=root_pid,
+            root_sid=None,
+            grace_sec=kwargs["grace"],
+            watched_pids=tuple(sorted(kwargs["watched"])),
+            protected_pgids=(),
+            escaped_pids=(),
+            remaining_pgids=(),
+            remaining_pids=(),
+            actions=(),
+        )
+
+    monkeypatch.setattr(
+        harness_memory_guard.memory_guard,
+        "sample_processes",
+        lambda: samples,
+    )
+    monkeypatch.setattr(
+        harness_memory_guard.memory_guard,
+        "terminate_watched_processes",
+        fake_terminate_watched_processes,
+    )
+
+    harness_memory_guard.force_close_process_group(FakeProc())  # type: ignore[arg-type]
+
+    assert len(calls) == 1
+    assert calls[0]["root_pid"] == 100
+    assert calls[0]["root_owned"] is True
+    assert calls[0]["watched"] == {100}
+
+
 def test_timeout_from_env_prefers_harness_prefix(monkeypatch) -> None:
     monkeypatch.setenv("MOLT_TEST_PROCESS_TIMEOUT_SEC", "99")
     monkeypatch.setenv("MOLT_CLI_TEST_TIMEOUT_SEC", "12.5")

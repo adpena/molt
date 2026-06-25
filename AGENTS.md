@@ -53,11 +53,12 @@ touching code, docs, tests, benchmarks, or roadmap state.
   Documentation, AGENTS guidance, indexes, specs, matrices, tests, and tooling
   are part of the compiler architecture and must move with the code.
 
-## Execution Velocity Doctrine: Tiny Aperture, Full Rip, Bounded Proof
+## Execution Velocity Doctrine: Narrow Aperture, Full Structural Rip, Bounded Proof
 
-- Default to one tiny, named aperture into the real structure: one invariant,
+- Default to one narrow, named aperture into the real structure: one invariant,
   command family, file cluster, authority surface, or failing execution path.
-  The aperture keeps discovery bounded; it is not the deliverable.
+  The aperture keeps discovery bounded; it is not the deliverable, not the
+  commit size, and not a smallest-next-chip plan.
 - "Tiny slice and rip it open" is binding operator policy. Tiny slice means the
   smallest concrete opening that exposes the duplicate authority. Rip it open
   means follow that authority through every sibling consumer needed to delete or
@@ -66,6 +67,10 @@ touching code, docs, tests, benchmarks, or roadmap state.
   Begin with the narrow aperture, then widen only along the structure it reveals:
   callers, tests, docs, generated facts, backend/frontend/tooling consumers, and
   proof lanes that govern the same invariant.
+- Boldness is required once the aperture exposes structure. Expand to the whole
+  coherent authority class, even when that is larger than the comfortable
+  checkpoint, and delete or unify the old lane instead of preserving a hybrid
+  path.
 - A maintainer saying "tiny slice", "rip it open", "stop taking tiny slices", or
   equivalent is a binding scope override. Cancel the comfort-sized plan, name the
   aperture, finish the live WIP that exposes the authority boundary, and rip
@@ -83,6 +88,9 @@ touching code, docs, tests, benchmarks, or roadmap state.
   mistakes for the owned arc, then return to code. Broad differential,
   conformance, benchmark, regrtest, or validation lanes are for explicit
   compatibility/performance claims, release/merge gates, or user request.
+- No local minima, no smallest-next-chip progress, and no excessive
+  test/conformance/proof apparatus as a substitute for changing the
+  architecture.
 - Do not get trapped in repeated lint/test loops. If a proof fails, fix the
   structural cause once, rerun the specific failing proof once, and keep
   implementing. Avoid expanding proof scope unless the failure exposes a real
@@ -444,6 +452,10 @@ Read these first instead of rediscovering project structure:
   to signal a process. If live identity cannot prove a non-host Molt-owned
   target, do not kill it; preserve evidence and fix custody first. Codex itself
   is never a cleanup target.
+- Only Molt processes should ever be cleaned for Molt work. Do not clean, kill,
+  restart, rewrite, or repair Codex/Claude/app control-plane state as a side
+  effect of recovering a Molt command unless the operator explicitly asks for
+  Codex or Claude app repair.
 - Molt-owned means live command, sidecar, session, backend-daemon, guard, or
   runtime-child identity for this repo's Molt build/test/bench/runtime work.
   Codex, Claude, app-server, renderer, node-repl, MCP/plugin helpers, shell

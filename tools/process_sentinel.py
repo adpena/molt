@@ -864,18 +864,16 @@ def terminate_group(
             sampler=sample_processes_for_sentinel,
         )
         return
-    if expected_identities is not None:
-        action = memory_guard._send_process_group_signal_if_identities_match_action(
-            pgid,
-            expected_identities,
-            signal.SIGTERM,
-            sampler=sample_processes_for_sentinel,
-        )
-        if action.result != "sent":
-            return
-    else:
-        with contextlib.suppress(ProcessLookupError, PermissionError):
-            os.killpg(pgid, signal.SIGTERM)
+    if expected_identities is None:
+        return
+    action = memory_guard._send_process_group_signal_if_identities_match_action(
+        pgid,
+        expected_identities,
+        signal.SIGTERM,
+        sampler=sample_processes_for_sentinel,
+    )
+    if action.result != "sent":
+        return
     deadline = time.monotonic() + max(0.0, grace)
     while time.monotonic() < deadline:
         try:
@@ -891,16 +889,12 @@ def terminate_group(
     )
     if pgid in protected_pgids:
         return
-    if expected_identities is not None:
-        memory_guard._send_process_group_signal_if_identities_match_action(
-            pgid,
-            expected_identities,
-            memory_guard.fallback_kill_signal(),
-            sampler=sample_processes_for_sentinel,
-        )
-    else:
-        with contextlib.suppress(ProcessLookupError, PermissionError):
-            os.killpg(pgid, memory_guard.fallback_kill_signal())
+    memory_guard._send_process_group_signal_if_identities_match_action(
+        pgid,
+        expected_identities,
+        memory_guard.fallback_kill_signal(),
+        sampler=sample_processes_for_sentinel,
+    )
 
 
 def _parser() -> argparse.ArgumentParser:

@@ -1703,41 +1703,32 @@ def _child_resource_limit_preexec(limit_kb: int) -> Callable[[], None]:
 def force_close_process_group(proc: subprocess.Popen[str]) -> None:
     if proc.poll() is not None:
         return
-    if os.name == "posix":
-        tracker = memory_guard.ProcessTreeTracker(proc.pid)
-        samples = memory_guard.sample_processes()
-        watched = tracker.update(samples)
-        memory_guard.terminate_watched_processes(
-            proc.pid,
-            samples=samples,
-            watched=watched,
-            grace=0.25,
-            root_owned=True,
-        )
-        deadline = time.monotonic() + 1.0
-        while time.monotonic() < deadline:
-            if proc.poll() is not None:
-                return
-            time.sleep(0.05)
-        samples = memory_guard.sample_processes()
-        watched = tracker.update(samples)
-        memory_guard.terminate_watched_processes(
-            proc.pid,
-            samples=samples,
-            watched=watched,
-            grace=0.0,
-            root_owned=True,
-        )
-        with contextlib.suppress(subprocess.TimeoutExpired):
-            proc.wait(timeout=0.5)
-        return
-    with contextlib.suppress(ProcessLookupError, OSError):
-        proc.terminate()
+    tracker = memory_guard.ProcessTreeTracker(proc.pid)
+    samples = memory_guard.sample_processes()
+    watched = tracker.update(samples)
+    memory_guard.terminate_watched_processes(
+        proc.pid,
+        samples=samples,
+        watched=watched,
+        grace=0.25,
+        root_owned=True,
+    )
+    deadline = time.monotonic() + 1.0
+    while time.monotonic() < deadline:
+        if proc.poll() is not None:
+            return
+        time.sleep(0.05)
+    samples = memory_guard.sample_processes()
+    watched = tracker.update(samples)
+    memory_guard.terminate_watched_processes(
+        proc.pid,
+        samples=samples,
+        watched=watched,
+        grace=0.0,
+        root_owned=True,
+    )
     with contextlib.suppress(subprocess.TimeoutExpired):
         proc.wait(timeout=0.5)
-    if proc.poll() is None:
-        with contextlib.suppress(ProcessLookupError, OSError):
-            proc.kill()
 
 
 class RepoProcessMemorySentinel:
