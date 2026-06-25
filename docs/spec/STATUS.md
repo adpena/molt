@@ -1009,10 +1009,13 @@ the implementation. For forward-looking priorities, use
   reference throughout `function_compiler.rs`, `scalar_carriers.rs`, and the
   extracted `fc/*` handler family. The old cloned
   `bool_primary_vars`/`float_primary_vars` side sets and `int_carriers_plan`
-  alias are gone from native backend code; raw-bool and raw-F64 membership is
-  queried through `is_bool_unboxed` / `is_float_unboxed` beside the raw-int plan
-  predicates. Non-primary float values are boxed immediately in their main I64
-  variables. Liveness cleanup and exception-check scrubbing are
+  alias are gone from native backend code. Inside the plan, name-keyed int,
+  bool, and F64 carrier eligibility now has the same `repr_by_name` authority:
+  bool/F64 names floor to boxed storage and are raised to `Repr::Bool` /
+  `Repr::FloatUnboxed` only by the raw-bool/raw-F64 eligibility filters, with
+  `is_bool_unboxed` / `is_float_unboxed` deriving from that map beside the
+  raw-int predicates. Non-primary float values are boxed immediately in their
+  main I64 variables. Liveness cleanup and exception-check scrubbing are
   representation-aware: dead F64-primary slots are poisoned with an F64 zero,
   while boxed slots keep the boxed `None`/zero sentinel, so cleanup cannot
   violate Cranelift variable typing after raw-f64 shadow deletion. Native bool

@@ -9,5 +9,6 @@
   "max_god_file_lines": 18484.0,
   "max_god_file_structural_score": 12487.0,
   "native_scalar_plan_authority_violations": 0.0,
+  "repr_name_scalar_authority_violations": 0.0,
   "structural_god_files": 14.0
 }

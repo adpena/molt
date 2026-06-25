@@ -92,12 +92,15 @@ bool/float results are boxed immediately in their main I64 variables instead of
 being tracked through side-channel shadow maps.
 
 This is an implementation compromise, not the desired endpoint. The native
-duplicate-authority lane is deleted, but bool/float eligibility is still stored
-inside the plan as dedicated name sets behind predicates rather than propagated
-through a value-keyed cross-backend representation proof. The next performance
+duplicate-authority lane is deleted, and native name-keyed int/bool/float
+carrier eligibility is folded into the single `ScalarRepresentationPlan`
+`repr_by_name` lattice. Bool and F64 names floor to boxed storage in that
+name-keyed native authority and are raised to `Repr::Bool` /
+`Repr::FloatUnboxed` only by the existing raw-carrier eligibility filters, so
+semantic type facts alone cannot authorize unboxed storage. The next performance
 class is to carry the shared `Repr::Bool` / `Repr::FloatUnboxed` facts through
-frontend, TIR, LIR, optimizer, and every backend without re-deriving them at
-native codegen.
+frontend, TIR, LIR, optimizer, and every backend as value-keyed representation
+proofs without re-deriving them at native codegen.
 
 **How native raw-primary lowering works**:
 - `ScalarRepresentationPlan::is_raw_int_carrier_name` names carry raw i64 in

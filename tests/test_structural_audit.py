@@ -423,6 +423,59 @@ fn lowered(representation_plan: &ScalarRepresentationPlan, name: &str) -> bool {
     assert findings == []
 
 
+def test_repr_name_scalar_authority_ratchets_bool_float_side_stores(tmp_path: Path):
+    target = tmp_path / "runtime" / "molt-tir" / "src" / "representation_plan.rs"
+    target.parent.mkdir(parents=True)
+    target.write_text(
+        """
+struct ScalarRepresentationPlan {
+    repr_by_name: PlanHashMap<String, Repr>,
+    bool_primary_names: PlanHashSet<String>,
+    float_primary_names: PlanHashSet<String>,
+}
+""",
+        encoding="utf-8",
+    )
+
+    findings = SA.probe_repr_name_scalar_authority(tmp_path)
+    metrics = SA.ratchet_metrics(findings)
+
+    assert len(findings) == 2
+    assert {
+        "raw-bool membership stored beside repr_by_name",
+        "raw-f64 membership stored beside repr_by_name",
+    } == {finding.detail for finding in findings}
+    assert metrics["repr_name_scalar_authority_violations"] == 2
+
+
+def test_repr_name_scalar_authority_allows_map_views_and_computation(tmp_path: Path):
+    target = tmp_path / "runtime" / "molt-tir" / "src" / "representation_plan.rs"
+    target.parent.mkdir(parents=True)
+    target.write_text(
+        """
+struct ScalarRepresentationPlan {
+    repr_by_name: PlanHashMap<String, Repr>,
+}
+
+impl ScalarRepresentationPlan {
+    fn compute_bool_primary_names(&self) {}
+    fn compute_float_primary_names(&self) {}
+    fn is_bool_unboxed(&self, name: &str) -> bool {
+        self.repr_by_name.get(name).is_some_and(|repr| repr.is_bool_carrier())
+    }
+    fn is_float_unboxed(&self, name: &str) -> bool {
+        self.repr_by_name.get(name).is_some_and(|repr| repr.is_float_unboxed())
+    }
+}
+""",
+        encoding="utf-8",
+    )
+
+    findings = SA.probe_repr_name_scalar_authority(tmp_path)
+
+    assert findings == []
+
+
 def _scan_rust_string(rust: str, rel: str) -> list:
     """Drive probe_semantic_fallthroughs over an in-memory file by writing it to
     a temp tree mirroring the expected relative path (the probe walks the FS)."""
