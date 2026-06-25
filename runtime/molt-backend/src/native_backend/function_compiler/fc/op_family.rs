@@ -373,4 +373,59 @@ mod tests {
             );
         }
     }
+
+    /// Every canonical kind that `tir::lower_to_simple::lower_op` emits as its
+    /// no-`_original_kind` default (the `unwrap_or_else(|| "<kind>")` fallbacks)
+    /// and that reaches the native SimpleIR backend MUST be claimed by a native
+    /// handler family. A synthesized op carrying such a spelling otherwise
+    /// reaches the dispatch's loud no-codegen catch-all and panics at user
+    /// `molt build` time — the `__future__._Feature.__repr__` regression, where
+    /// the attribute handler claimed every specialized alias but not the
+    /// canonical `get_attr`/`set_attr`/`del_attr`. The attribute (`LoadAttr`/
+    /// `StoreAttr`/`DelAttr`) and indexing/call (`Index`/`StoreIndex`/`DelIndex`/
+    /// `Call`) defaults are covered here.
+    ///
+    /// `call_builtin` (the `CallBuiltin` default) is deliberately NOT asserted:
+    /// no native family claims the bare `call_builtin` spelling. Builtin calls
+    /// reach native codegen via specialized spellings, never the bare canonical
+    /// kind, so that `lower_op` default is dormant and the loud no-codegen
+    /// catch-all is its backstop — builtin-using programs compile without
+    /// hitting it. Whether any pass can surface a bare `call_builtin` to native
+    /// (the same dispatch-gap class this guards, just for the calls family) is
+    /// tracked as a separate investigation, not asserted as a live invariant
+    /// here.
+    #[test]
+    fn canonical_lowering_default_kinds_are_natively_handled() {
+        for kind in [
+            "get_attr",
+            "set_attr",
+            "del_attr",
+            "index",
+            "store_index",
+            "del_index",
+            "call",
+        ] {
+            assert!(
+                native_op_family(kind).is_some(),
+                "canonical lower_to_simple default `{kind}` is claimed by no native \
+                 handler family; a synthesized `{kind}` op would panic native codegen \
+                 at the dispatch no-codegen catch-all",
+            );
+        }
+    }
+
+    /// The three canonical attribute defaults specifically route to the Attrs
+    /// family — pins the exact regression that panicked
+    /// `__future__._Feature.__repr__` (canonical `get_attr` claimed by no arm).
+    #[test]
+    fn canonical_attribute_defaults_route_to_attrs() {
+        for kind in ["get_attr", "set_attr", "del_attr"] {
+            assert_eq!(
+                native_op_family(kind),
+                Some(NativeOpFamily::Attrs),
+                "canonical attribute default `{kind}` must route to the Attrs handler \
+                 (lower_to_simple emits it as the no-_original_kind default)",
+            );
+        }
+    }
 }
