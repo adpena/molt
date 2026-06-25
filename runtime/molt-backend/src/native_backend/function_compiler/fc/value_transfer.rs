@@ -7,6 +7,7 @@ pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] = 
     "inc_ref",
     "borrow",
     "dec_ref",
+    "del_boundary",
     "release",
     "box",
     "unbox",
@@ -19,9 +20,9 @@ pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] = 
 use super::var_get_boxed_overflow_safe_fn;
 
 /// Cranelift codegen handlers for value-custody transfer ops: `inc_ref`,
-/// `borrow`, `dec_ref`, `release`, `box`, `unbox`, `cast`, `widen`, and
-/// retained alias ops. This owns alias-preserving refcount adjustment and
-/// tracked cleanup-root scrubbing for explicit release operations.
+/// `borrow`, `dec_ref`, `del_boundary`, `release`, `box`, `unbox`, `cast`,
+/// `widen`, and retained alias ops. This owns alias-preserving refcount
+/// adjustment and tracked cleanup-root scrubbing for explicit release operations.
 #[cfg(feature = "native-backend")]
 #[allow(clippy::too_many_arguments)]
 pub(in crate::native_backend::function_compiler) fn handle_value_transfer_op(
@@ -174,6 +175,12 @@ pub(in crate::native_backend::function_compiler) fn handle_value_transfer_op(
                     def_var_named(&mut *builder, vars, out_name.clone(), none_bits);
                 }
             }
+        }
+        "del_boundary" => {
+            // Native preanalysis consumes DelBoundary to pin Python lifetime
+            // boundaries. Drop insertion normally normalizes it away; if it
+            // survives on a dormant-native lane, codegen must route it
+            // explicitly and perform no second release here.
         }
         "box" | "unbox" | "cast" | "widen" => {
             let args_names = op.args.as_ref().expect("conversion args missing");

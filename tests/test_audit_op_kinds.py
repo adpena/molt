@@ -10,11 +10,11 @@ arm and hits the dispatch's loud catch-all panic at codegen — exactly how
 ``value_transfer::HANDLED_KINDS``). These tests prove the audit's
 ``native_codegen_gap`` cell:
 
-  1. is EMPTY on the current healthy tree (no false positives — in particular the
-     no-result statement ops ``del_boundary`` / ``try_end`` are exempt),
-  2. CATCHES a synthetic unrouted result-producing kind and NAMES it,
+  1. is EMPTY on the current healthy tree,
+  2. CATCHES synthetic unrouted result-producing and no-result kinds and NAMES them,
   3. correctly classifies result-producing vs no-result kinds from the
-     ``lower_to_simple.rs`` ``fn lower_op`` ``out:`` dispositions.
+     ``lower_to_simple.rs`` ``fn lower_op`` ``out:`` dispositions, and
+  4. treats handler ``match`` arm / ``HANDLED_KINDS`` drift as a dangerous cell.
 """
 
 from __future__ import annotations
@@ -65,20 +65,19 @@ def test_copy_is_result_producing_and_natively_routed() -> None:
     assert row.native_arm
 
 
-def test_no_result_statement_kinds_are_exempt() -> None:
-    """``del_boundary`` / ``try_end`` reach the native catch-all but are ignored
-    there (``op.out.is_some()`` is false), so they must be classified non-result
-    and excluded from D8 — otherwise D8 false-positives on the healthy tree."""
+def test_no_result_statement_kinds_are_natively_routed() -> None:
+    """No-result statement ops are still side-effect/control-flow facts. They
+    must be classified non-result for reporting, but D8 must require an explicit
+    native routing slice so the catch-all cannot silently skip them."""
     res = AUDIT.run_audit()
-    for kind in ("del_boundary", "try_end"):
+    for kind in ("del_boundary", "try_start", "try_end"):
         row = res.rows[kind]
         assert row.frontend_emits, kind
-        assert row.mapper_maps, kind  # they DO map to an OpCode (DelBoundary/TryEnd)
+        assert row.mapper_maps, kind
         assert not row.produces_result, (
             f"{kind} must be non-result (lower_op emits it with no `out`)"
         )
-        # No routing slice — yet exempt from D8 by virtue of being non-result.
-        assert not row.native_routing_slice, kind
+        assert row.native_routing_slice, kind
 
 
 def test_lower_op_nonresult_extractor_ground_truth() -> None:
@@ -151,12 +150,41 @@ def test_d8_keys_on_exact_slice_not_advisory_native_arm() -> None:
     assert "copy" in broken.dangerous()["native_codegen_gap"]
 
 
-def test_d8_does_not_flag_unrouted_no_result_kind() -> None:
-    """Removing a no-result statement kind from the native slices must NOT trip
-    D8 — the catch-all ignores it (no result), so it needs no slice."""
+def test_d8_catches_unrouted_no_result_kind() -> None:
+    """Removing a no-result statement kind from the native slices must trip D8:
+    no-result side effects and control metadata are not allowed to disappear
+    through the catch-all."""
     res = AUDIT.run_audit()
     live_slice = {k for k, r in res.rows.items() if r.native_routing_slice}
-    # del_boundary/try_end have no slice anyway; force-remove to assert the
-    # non-result exemption holds even when absent from every routing slice.
     broken = _synthetic_broken_result(live_slice - {"try_end", "del_boundary"})
-    assert broken.dangerous()["native_codegen_gap"] == []
+    gap = broken.dangerous()["native_codegen_gap"]
+    assert "try_end" in gap
+    assert "del_boundary" in gap
+
+
+def test_d9_treats_handler_arm_slice_drift_as_dangerous() -> None:
+    res = AUDIT.run_audit()
+    assert res.dangerous()["native_handler_routing_drift"] == []
+    broken = replace(
+        res,
+        native_handler_routing_drift=[
+            "runtime/molt-backend/src/native_backend/function_compiler/fc/value_transfer.rs:"
+            "handle_value_transfer_op:copy:arm-not-in-HANDLED_KINDS"
+        ],
+    )
+    assert broken.dangerous()["native_handler_routing_drift"] == [
+        "runtime/molt-backend/src/native_backend/function_compiler/fc/value_transfer.rs:"
+        "handle_value_transfer_op:copy:arm-not-in-HANDLED_KINDS"
+    ]
+
+
+def test_d9_uses_routed_slice_union_for_delegated_handlers() -> None:
+    """`handle_arith_op` owns both arith and delegated vec-reduction slices."""
+    dispatch_slices = AUDIT.extract_native_family_dispatch_slices()
+    assert dispatch_slices["Arith"] == [
+        ("arith", "HANDLED_KINDS"),
+        ("vec_reductions", "HANDLED_KINDS"),
+    ]
+    handlers = AUDIT.extract_native_family_handlers()
+    assert handlers["Arith"] == ("arith", "handle_arith_op")
+    assert AUDIT.extract_native_handler_routing_drifts() == []
