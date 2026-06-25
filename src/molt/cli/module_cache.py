@@ -37,6 +37,8 @@ from molt.cli.models import (
 from molt.cli.module_graph import (
     _load_module_imports,
     _module_dependency_closure,
+)
+from molt.cli.module_graph_cache import (
     _read_persisted_import_scan,
     _resolved_module_cache_key,
 )
