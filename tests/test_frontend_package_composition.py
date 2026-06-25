@@ -74,6 +74,7 @@ EXPECTED_MIXINS = [
     "FunctionMetadataMixin",
     "ModuleLifecycleMixin",
     "SymbolNamingMixin",
+    "AttributeAccessMixin",
     "ClassResolutionMixin",
     "TypeAnnotationMixin",
     "AnalysisCollectStaticMixin",
@@ -159,6 +160,13 @@ def test_moved_methods_resolve_on_class() -> None:
     assert hasattr(SimpleTIRGenerator, "_function_symbol")
     assert hasattr(SimpleTIRGenerator, "_register_code_symbol")
     assert hasattr(SimpleTIRGenerator, "_qualname_for_def")
+    # attribute access
+    assert hasattr(SimpleTIRGenerator, "_emit_module_attr_get")
+    assert hasattr(SimpleTIRGenerator, "_emit_module_attr_get_on")
+    assert hasattr(SimpleTIRGenerator, "_emit_guarded_getattr")
+    assert hasattr(SimpleTIRGenerator, "_emit_guarded_setattr")
+    assert hasattr(SimpleTIRGenerator, "_emit_attribute_load")
+    assert hasattr(SimpleTIRGenerator, "_emit_attribute_store")
     # class resolution
     assert hasattr(SimpleTIRGenerator, "_c3_merge")
     assert hasattr(SimpleTIRGenerator, "_class_mro_names")
@@ -225,6 +233,7 @@ def test_mixin_modules_import_standalone() -> None:
         "molt.frontend._types",
         "molt.frontend.lowering.analysis_collect_static",
         "molt.frontend.lowering.analysis_patterns",
+        "molt.frontend.lowering.attribute_access",
         "molt.frontend.lowering.class_resolution",
         "molt.frontend.lowering.compile_warnings",
         "molt.frontend.lowering.emission_core",
