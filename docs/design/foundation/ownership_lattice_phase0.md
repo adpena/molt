@@ -177,30 +177,115 @@ silent-pass threshold). Two composable parts:
   re-drop satisfies it while the object is alive at the assertion point,
   doc 55:359-360). NO.
 
-### 2.5 Files (Phase 0)
+### 2.4.1 MEASURED CORRECTION (2026-06-25): the gauge must run POST-teardown
 
-- `runtime/molt-runtime/src/object/ops.rs` — `assert_no_leak_at_exit` (ops.rs:762):
-  consult the measured `live_floor` + `MOLT_LEAK_TOLERANCE` instead of the bare
-  `EXPECTED_LIVE_OBJECTS` ceiling when exact mode is enabled.
-- `runtime/molt-runtime/src/state/metrics.rs` — add the `live_floor` cell + its
-  snapshot setter (called at end of bootstrap) + the `MOLT_LEAK_TOLERANCE` /
-  exact-mode reader beside `leak_assertion_enabled` (metrics.rs:10). Keep
+The §2.4 mechanism as first specified (snapshot floor at end-of-bootstrap, gate
+`live ≤ floor + tol` *inside `assert_no_leak_at_exit`*) was **implemented and then
+falsified by measurement** before commit. It is structurally wrong on two counts;
+both were proven against a real native binary, not argued.
+
+**Falsification run** (cycle/global-stash leak binary, `MOLT_ASSERT_NO_LEAK=1
+MOLT_LEAK_TOLERANCE=8`): the gauge fired with `live_objects=828`, `floor=18`,
+**`dealloc_object=0`**. The `dealloc_object=0` is the load-bearing fact: at the
+`assert_no_leak_at_exit` call site, molt has freed **zero** of the program's heap
+objects. The 828 ≫ 18 is not a leak — it is the program's entire still-reachable
+working set, resident because **molt reclaims reachable graphs at TEARDOWN, not at
+the assertion point**.
+
+**Root cause — the assertion site is pre-teardown.**
+`runtime/molt-runtime/src/state/runtime_state.rs` `molt_runtime_exit` calls
+`assert_no_leak_at_exit` (the §2.4 site) *before*
+`runtime_teardown_for_process_exit`. Teardown (`lifecycle.rs:107`) is what runs
+`modules_clear_runtime_state` (`builtins/modules.rs:313-317`), which clears the
+module registry slots and so DecRefs every user `__main__` global. Until that
+runs, every reachable object — module globals, their transitive closure, interned
+working strings/dicts/tuples — is still live. So `live == |S|` (§2.2) is
+**unreachable** at the §2.4 site for *any* non-trivial program; the exact gauge
+there false-positives on the working set of every clean program. §2.1's "S = …
+the immortal bootstrap floor" is correct as a *post-teardown* survivor set, not a
+*pre-teardown* one. §2.2/§2.4 silently assumed the two coincide. They do not.
+
+**Root cause — the §2.3 negative test is not a leak.** A bounded count of
+finalizer objects stashed in a never-cleared module global is **reachable** and is
+freed by `modules_clear_runtime_state` at teardown — exactly as CPython clears
+module dicts at interpreter shutdown (and runs those `__del__`s). It is not a
+leak; it is ordinary shutdown reclamation. Pre-teardown it is indistinguishable
+from the working set; post-teardown it is gone. So the §2.3 test can never be the
+falsification artifact for a *true*-leak gauge.
+
+**What a TRUE leak is in molt.** molt is reference-counted with **no cycle
+collector**: `formal/quint/molt_gc_safety.qnt:3-5` proves absence of leaks for
+**acyclic** object graphs only; `include/molt/Python.h` carries `tp_traverse`
+slots purely as C-ABI stubs (`Python.h:3210` discards them — nothing consumes them
+for collection). Therefore the canonical — and essentially *only* — leak class is
+an **unreachable reference cycle**: RC pins each node at refcount ≥ 1 (its peer
+holds the reference), teardown's module-clear cannot reach it, and nothing
+reclaims it. CPython's cyclic gc would collect it; molt leaks it. (This is itself a
+known, deliberate parity gap, scoped by the formal model — the gauge's job is to
+make it *visible and gated*, not to hide it.)
+
+**Corrected mechanism — two gates for two distinct properties:**
+
+1. **Pre-teardown RUNAWAY guard** (`assert_no_leak_at_exit`, unchanged behavior):
+   the existing `EXPECTED_LIVE_OBJECTS` ceiling, measuring peak reachable
+   high-water-mark. A coarse OOM/runaway canary. NOT a leak gauge (it sees the
+   working set). Retained verbatim for the default `molt run` profile.
+2. **Post-teardown TRUE-LEAK gauge** (`assert_no_true_leak_post_teardown`, NEW;
+   called in `molt_runtime_exit` *after* `runtime_teardown_for_process_exit`):
+   teardown has now reclaimed every reachable acyclic graph, so survivors =
+   immortal floor + genuine leaks. Gate `live ≤ floor + MOLT_LEAK_TOLERANCE` in
+   exact mode (tolerance set); the `floor` snapshot from §2.4 part 1 is still the
+   right reference because the immortal set is stable across teardown. No-op in the
+   default profile. Additive; never changes default behavior. (One shared
+   `emit_leak_breakdown` authority backs both gates so their reporting cannot
+   drift.)
+
+**Corrected positive contract (supersedes §2.2's assertion site).** A program that
+truly destroys all transients reports `live == floor` **post-teardown** (not at the
+pre-teardown site). Witness control: `cycle_leak_clean_control.py` (acyclic churn,
+all dropped) — exact mode exit 0.
+
+**Corrected negative contract (supersedes §2.3).** The falsification artifact is
+`tests/differential/memory/cycle_leak_negative.py`: 64 unreachable 2-cycles. Exact
+mode → exit 137 (post-teardown survivors = floor + 128 cycle nodes); default
+ceiling → exit 0 (laundered). That delta is the Phase-0 acceptance. The
+global-stash test (`bounded_leak_negative.py`) is **deleted** as semantically
+incorrect.
+
+### 2.5 Files (Phase 0) — as corrected by §2.4.1 (two-gate design)
+
+- `runtime/molt-runtime/src/object/ops.rs`:
+  - `assert_no_leak_at_exit` (ops.rs:762) — kept as the **pre-teardown runaway
+    ceiling** (`EXPECTED_LIVE_OBJECTS`), behavior unchanged; refactored to emit via
+    the shared `emit_leak_breakdown`.
+  - `assert_no_true_leak_post_teardown` (NEW) — the **post-teardown exact gauge**:
+    gate `live ≤ floor + MOLT_LEAK_TOLERANCE`, exact-mode-only (no-op without
+    tolerance), emits via the same shared `emit_leak_breakdown`.
+  - `emit_leak_breakdown` (NEW, private) — the single per-type diagnostic authority
+    backing both gates so reporting cannot drift.
+- `runtime/molt-runtime/src/state/runtime_state.rs` — `molt_runtime_exit`: call
+  `assert_no_true_leak_post_teardown(&py)` **after** `runtime_teardown_for_process_exit`
+  (the pre-teardown `assert_no_leak_at_exit` call stays where it is). GIL still held;
+  reads crate-static counters only.
+- `runtime/molt-runtime/src/state/metrics.rs` — the `live_floor` cell + its
+  snapshot setter (`snapshot_live_floor`, called at end of bootstrap) + the
+  `leak_exact_tolerance` reader beside `leak_assertion_enabled`. Keep
   `EXPECTED_LIVE_OBJECTS` as the default-profile ceiling.
-- The bootstrap site that calls the snapshot setter (the same end-of-bootstrap
-  point that today initializes profiling) — route through the existing bootstrap
-  boundary, not a new probe (CLAUDE.md Bootstrap Authority).
+- The bootstrap site that calls the snapshot setter — routed through the existing
+  end-of-bootstrap boundary in `molt_runtime_init` (CLAUDE.md Bootstrap Authority).
 
-### 2.6 Gate (G0)
+### 2.6 Gate (G0) — as corrected by §2.4.1
 
-- `tests/differential/memory/finalizer_resurrection_leak_gauge.py` and
-  `resurrect_once_N1000.py` PASS under exact mode (`live == live_floor`): positive
-  contract.
-- The NEW deliberate-leak negative test FAILS under exact mode and PASSES (wrongly)
-  without the fix: negative contract + the falsification delta.
-- Run under `MOLT_ASSERT_NO_LEAK=1` via `tools/safe_run.py --rss-mb 1024
-  --timeout 180` (CLAUDE.md Safe Execution — never a raw binary).
+- `tests/differential/memory/cycle_leak_clean_control.py` (acyclic churn) PASSES
+  under exact mode (`live ≤ floor + tol`, post-teardown): positive contract.
+- `tests/differential/memory/cycle_leak_negative.py` (64 unreachable 2-cycles)
+  FAILS under exact mode (exit 137) and PASSES (wrongly, exit 0) under the default
+  ceiling: negative contract + the falsification delta.
+- The leak is exit-code-only; stdout is byte-identical to CPython, so the gauge
+  composes with the standard differential stdout check.
 - No behavior change for the default profile (200K ceiling path) on the full
-  differential corpus.
+  differential corpus — the post-teardown gauge is a no-op without
+  `MOLT_LEAK_TOLERANCE`.
 
 ---
 
