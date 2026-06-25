@@ -66,6 +66,10 @@ Molt expects production-grade changes, not opportunistic patches.
   current identity proves they belong to this repo's Molt work. Codex, Claude,
   app-server, renderer, node-repl, MCP/plugin helpers, shell hosts, Git pollers,
   and ancestor/control-plane processes are never cleanup targets.
+- The cleanup classifier authority is `tools/memory_guard_core/process_model.py`.
+  If a change touches process cleanup, process sampling, or kill eligibility for
+  Codex/Claude/app-server/node-repl boundaries, update that classifier and its
+  host-control tests instead of adding one-off process-name matches elsewhere.
 - Only Molt processes should ever be cleaned for Molt work. Do not clean, kill,
   restart, rewrite, or repair Codex/Claude/app control-plane state as a side
   effect of recovering a Molt command unless the operator explicitly asks for
