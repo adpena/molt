@@ -63,6 +63,7 @@ if str(_SRC_DIR) not in sys.path:
     sys.path.insert(0, str(_SRC_DIR))
 
 import molt.cli as molt_cli  # noqa: E402
+from molt.cli import build_inputs as cli_build_inputs  # noqa: E402
 
 _DEFAULT_TIMEOUT = int(os.environ.get("MOLT_TV_TIMEOUT", "60"))
 _DEFAULT_BUILD_PROFILE = os.environ.get("MOLT_TV_BUILD_PROFILE", "dev")
@@ -107,7 +108,7 @@ def _resolve_target_python(
     return molt_cli._resolve_target_python_version(
         explicit=explicit,
         build_config=molt_cli._resolve_build_config(
-            molt_cli._load_molt_config(project_root)
+            cli_build_inputs._load_molt_config(project_root)
         ),
         project_root=project_root,
     )

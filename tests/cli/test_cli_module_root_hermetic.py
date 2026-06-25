@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import molt.cli as cli
+from molt.cli import build_inputs as cli_build_inputs
 
 
 def test_resolve_module_roots_omits_auto_site_packages_when_hermetic(
@@ -30,7 +31,7 @@ def test_resolve_module_roots_omits_auto_site_packages_when_hermetic(
     monkeypatch.setenv("MOLT_HERMETIC_MODULE_ROOTS", "1")
     monkeypatch.setenv("MOLT_MODULE_ROOTS", str(explicit_root))
 
-    roots = cli._resolve_module_roots(
+    roots = cli_build_inputs._resolve_module_roots(
         project_root,
         cwd_root,
         respect_pythonpath=False,

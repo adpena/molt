@@ -10,6 +10,7 @@ from typing import Mapping
 import pytest
 
 import molt.cli as cli
+from molt.cli import build_inputs as cli_build_inputs
 from tests.cli.process_guard import run_cli_test_process
 
 
@@ -244,7 +245,7 @@ def test_shared_stdlib_cache_key_changes_with_capability_config() -> None:
         stdlib_ops=[{"kind": "code_slot_set", "value": 73}],
     )
     base_variant = _cache_variant()
-    caps_digest = cli._capability_config_cache_digest(
+    caps_digest = cli_build_inputs._capability_config_cache_digest(
         capabilities_list=["fs.read"],
         capability_profiles=["fs"],
         manifest_env_vars={"MOLT_CAPABILITIES": "fs.read"},
@@ -284,13 +285,13 @@ def test_capability_config_digest_changes_with_ambient_capability_env(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("MOLT_CAPABILITIES", "fs.read")
-    digest_fs = cli._capability_config_cache_digest(
+    digest_fs = cli_build_inputs._capability_config_cache_digest(
         capabilities_list=None,
         capability_profiles=None,
         manifest_env_vars=None,
     )
     monkeypatch.setenv("MOLT_CAPABILITIES", "env.read")
-    digest_env = cli._capability_config_cache_digest(
+    digest_env = cli_build_inputs._capability_config_cache_digest(
         capabilities_list=None,
         capability_profiles=None,
         manifest_env_vars=None,
