@@ -330,7 +330,7 @@ impl WasmBackend {
                     let mut tir_func = crate::tir::lower_from_simple::lower_to_tir(func_ir);
                     crate::tir::type_refine::refine_types(&mut tir_func);
                     if is_production_lir_wasm_fast_path_name(&func_ir.name)
-                        && let Some(output) = prepare_lir_wasm_fast_output(func_ir, &tir_func)
+                        && let Some(output) = prepare_lir_wasm_fast_output(&tir_func)
                     {
                         lir_fast_outputs.insert(func_ir.name.clone(), output);
                     }
@@ -364,13 +364,11 @@ impl WasmBackend {
                 let serialized = crate::tir::serialize::serialize_ops(&optimized_ops);
                 tir_cache.put(&content_hash, &serialized, vec![]);
                 func_ir.ops = optimized_ops;
-                // Compute the LIR fast output AFTER `func_ir.ops` is the
-                // round-tripped optimized SimpleIR, so the `repr_by_value`
-                // derivation (built from `func_ir`) lines up with the optimized
-                // `tir_func` — identical to the LLVM `LlvmReprFacts::build` call
-                // contract (post-pipeline SimpleIR + post-pipeline TIR).
+                // Compute the LIR fast output from optimized TIR itself. The
+                // value-keyed `repr_by_value` proof is pure TIR; SimpleIR
+                // round-tripping is transport, not carrier authority.
                 if is_production_lir_wasm_fast_path_name(&func_ir.name)
-                    && let Some(output) = prepare_lir_wasm_fast_output(func_ir, &tir_func)
+                    && let Some(output) = prepare_lir_wasm_fast_output(&tir_func)
                 {
                     lir_fast_outputs.insert(func_ir.name.clone(), output);
                 }
@@ -453,14 +451,11 @@ impl WasmBackend {
                 // The LIR fast-path output was computed per-function PRE-inline
                 // (the cache loop above). An inlined-into allowlist function's
                 // body changed, so recompute its output from the post-inline
-                // pair — the same post-pipeline SimpleIR + post-pipeline TIR
-                // contract the per-function path honors. `run_inliner` returned
-                // this body fully type-refined, so `tir_func` is the
-                // post-pipeline TIR. A fast path that no longer applies is
-                // removed (the generic emission path takes over — sound).
+                // TIR. A fast path that no longer applies is removed (the
+                // generic emission path takes over - sound).
                 let func_ir = &ir.functions[orig_idx];
                 if is_production_lir_wasm_fast_path_name(&func_ir.name) {
-                    match prepare_lir_wasm_fast_output(func_ir, tir_func) {
+                    match prepare_lir_wasm_fast_output(tir_func) {
                         Some(output) => {
                             lir_fast_outputs.insert(func_ir.name.clone(), output);
                         }

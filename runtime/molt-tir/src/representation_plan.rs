@@ -6,22 +6,19 @@ use crate::repr::{ContainerKind, ContainerStorageFact, ContainerStorageKind, Rep
 use crate::tir::function::TirFunction;
 use crate::tir::lir::{LirRepr, LirValue};
 use crate::tir::lower_from_simple::lower_to_tir;
-use crate::tir::lower_to_lir::lower_function_to_lir;
+use crate::tir::lower_to_lir::lower_function_to_lir_for_repr_fact_extraction;
 use crate::tir::lower_to_simple::SimpleValueNames;
 use crate::tir::ops::{AttrValue, TirOp};
 use crate::tir::type_refine::refine_types;
 use crate::tir::types::TirType;
 use crate::tir::values::ValueId;
 
-mod raw_i64;
+mod value_repr;
 
-#[cfg(feature = "llvm")]
-use raw_i64::name_by_value_for;
-pub(crate) use raw_i64::raw_i64_carrier_values_for;
+pub(crate) use value_repr::raw_i64_carrier_values_for;
 #[cfg(test)]
-pub(crate) use raw_i64::raw_i64_safe_values_for;
-#[cfg(any(feature = "llvm", feature = "wasm-backend", test))]
-pub use raw_i64::{repr_by_value_for, value_range_for};
+pub(crate) use value_repr::raw_i64_safe_values_for;
+pub use value_repr::{repr_by_value_for, value_range_for};
 
 const PLAN_HASH_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
 const PLAN_HASH_PRIME: u64 = 0x0000_0100_0000_01b3;
@@ -947,12 +944,10 @@ pub struct ScalarPrimaryNameSets {
 
 /// Per-function representation facts consumed by the LLVM backend.
 ///
-/// The LLVM backend lowers `TirFunction` (SSA `ValueId`s) directly, while the
-/// `ScalarRepresentationPlan` is keyed by the legacy SimpleIR variable
-/// namespace. This struct bridges the two: it carries the plan's
-/// representation decisions (overflow-safe int carrier subset, container
-/// dispatch kinds) and the `ValueId -> SimpleIR name` mapping derived from the
-/// *same* `TirFunction` the LLVM backend is lowering.
+/// The LLVM backend lowers `TirFunction` (SSA `ValueId`s) directly. This struct
+/// carries the same value-keyed representation proof the WASM/LIR path consumes:
+/// every backend decision here is derived from the post-pipeline TIR function
+/// being lowered.
 ///
 /// This makes the LLVM backend consume the identical typed facts the
 /// native/WASM/Luau backends consume, rather than treating `TirType::I64` as an
@@ -962,63 +957,30 @@ pub struct ScalarPrimaryNameSets {
 #[derive(Clone, Debug, Default)]
 #[cfg(feature = "llvm")]
 pub struct LlvmReprFacts {
-    /// Container dispatch kind keyed by SimpleIR name (the plan's authority for
-    /// `len`/container-kind specialization).
-    pub(crate) container_kind_by_name: BTreeMap<String, ContainerKind>,
-    /// `ValueId -> SimpleIR name` for this exact `TirFunction`. Built from the
-    /// LLVM backend's own post-pipeline TIR so names line up with the op
-    /// `_simple_out` attributes the plan keys on.
-    pub(crate) name_by_value: HashMap<ValueId, String>,
-    /// The representation lattice element per TIR `ValueId` — the value-keyed
-    /// source of truth, the LLVM/`ValueId` mirror of the plan's name-keyed
-    /// `repr_by_name`. Every value floors to [`Repr::default_for`] of its refined
+    /// The representation lattice element per TIR `ValueId`: the value-keyed
+    /// source of truth. Every value floors to [`Repr::default_for`] of its refined
     /// `TirType`; inline-int47 carriers raise to [`Repr::RawI64Safe`], while
     /// checked overflow-peel carriers raise to [`Repr::RawI64FullDeopt`].
     ///
     /// The raw-i64 tiers are seeded from value-range and checked-op proofs, then
     /// propagated across TIR SSA identity edges: through `Copy` chains and block
-    /// arguments (phis). Loop-carried block arguments have no stable
-    /// `_simple_out` name (they are canonical slot names), so dataflow
-    /// propagation is what lets the backend keep unproven accumulators boxed
-    /// (`MaybeBigInt`/`DynBox`) while preserving proven raw carriers.
+    /// arguments (phis). Dataflow propagation is what lets the backend keep
+    /// unproven accumulators boxed (`MaybeBigInt`/`DynBox`) while preserving
+    /// proven raw carriers.
     pub repr_by_value: HashMap<ValueId, Repr>,
 }
 
 #[cfg(feature = "llvm")]
 impl LlvmReprFacts {
-    /// Build the LLVM representation facts for `func_ir` (the SimpleIR function
-    /// about to be lowered) and `tir_func` (the LLVM backend's post-pipeline
-    /// TIR for that function).
-    pub fn build(func_ir: &FunctionIR, tir_func: &TirFunction) -> Self {
-        let plan = ScalarRepresentationPlan::for_function_ir(func_ir);
-        let container_kind_by_name = plan
-            .facts_by_name
-            .iter()
-            .filter_map(|(name, fact)| fact.container_kind().map(|kind| (name.clone(), kind)))
-            .collect();
-        let name_by_value = name_by_value_for(tir_func);
-        // The value-keyed representation map is the single source of truth shared
-        // with the WASM/LIR backend. `LlvmReprFacts` is a thin LLVM-specific
-        // wrapper over it plus the container-dispatch + name bridge; delegating
-        // to `repr_by_value_for` with the value-range computed on this exact
-        // `tir_func` guarantees LLVM and WASM derive the *identical* `Repr` per
-        // `ValueId` from the *same* proof source (no second source of truth, so
-        // the native-vs-wasm trusted-unbox divergence cannot recur).
+    /// Build the LLVM representation facts from the post-pipeline TIR function
+    /// the LLVM backend is about to lower.
+    pub fn build(tir_func: &TirFunction) -> Self {
         let vr = value_range_for(tir_func);
-        let repr_by_value = repr_by_value_for(func_ir, tir_func, Some(&vr));
-        Self {
-            container_kind_by_name,
-            name_by_value,
-            repr_by_value,
-        }
+        let repr_by_value = repr_by_value_for(tir_func, Some(&vr));
+        Self { repr_by_value }
     }
 
-    /// SimpleIR name for a TIR `ValueId`, if known.
-    pub(crate) fn name_for(&self, id: ValueId) -> Option<&str> {
-        self.name_by_value.get(&id).map(String::as_str)
-    }
-
-    /// Whether the value `id` is an inline-int47-safe raw i64 carrier — the
+    /// Whether the value `id` is an inline-int47-safe raw i64 carrier: the
     /// `{RawI64Safe}` view over `repr_by_value`.
     pub fn is_inline_safe_int(&self, id: ValueId) -> bool {
         self.repr_by_value
@@ -1039,12 +1001,6 @@ impl LlvmReprFacts {
         self.repr_by_value
             .get(&id)
             .is_some_and(|repr| repr.is_raw_i64_carrier())
-    }
-
-    /// Container dispatch kind for the value named by `id`, per the plan.
-    pub fn container_kind(&self, id: ValueId) -> Option<ContainerKind> {
-        self.name_for(id)
-            .and_then(|name| self.container_kind_by_name.get(name).copied())
     }
 
     /// The **effective** parameter carrier types `tir_func`'s callers must
@@ -1111,10 +1067,10 @@ impl ScalarRepresentationPlan {
         let mut tir_func = lower_to_tir(func_ir);
         refine_types(&mut tir_func);
         let names = SimpleValueNames::for_function(&tir_func);
-        // Fact extraction: the `None` (type-floor) repr is REQUIRED here. This
-        // call FEEDS `repr_by_value` (via `int_carrier_names`), so threading the
-        // proven repr would be circular AND would change the analysis input.
-        let lir_func = lower_function_to_lir(&tir_func, None);
+        // Fact extraction uses the semantic type floor because this call builds
+        // the name-keyed scalar plan that later feeds `repr_by_value`; consuming
+        // the proven value map here would make the analysis circular.
+        let lir_func = lower_function_to_lir_for_repr_fact_extraction(&tir_func);
 
         let mut plan = Self::with_capacity(func_ir.ops.len());
         plan.seed_container_storage_from_tir(&tir_func, &names);
@@ -5481,10 +5437,6 @@ mod tests {
         (func, iv, next)
     }
 
-    fn empty_func_ir() -> FunctionIR {
-        function("rl", &[], None, vec![])
-    }
-
     /// The overflow_peel'd loop's carrier cycle must admit into the native
     /// int-primary set — the slots, their loads, and the checked sums — while
     /// the bool flag lane, the exit-merge slot, and the boxed slow loop must
@@ -5586,7 +5538,7 @@ mod tests {
     fn range_loop_iv_is_raw_i64_safe_from_value_range() {
         let (func, iv, next) = range_loop_tir(0, 10);
         let vr = value_range_for(&func);
-        let repr = repr_by_value_for(&empty_func_ir(), &func, Some(&vr));
+        let repr = repr_by_value_for(&func, Some(&vr));
         assert!(
             is_inline_safe(&repr, iv),
             "range(10) IV must be RawI64Safe (range [0,9] ⊂ inline-int47)"
@@ -5609,7 +5561,7 @@ mod tests {
         let huge_start = 1i64 << 46;
         let (func, iv, _next) = range_loop_tir(huge_start, huge_start + 10);
         let vr = value_range_for(&func);
-        let repr = repr_by_value_for(&empty_func_ir(), &func, Some(&vr));
+        let repr = repr_by_value_for(&func, Some(&vr));
         assert!(
             !is_inline_safe(&repr, iv),
             "an IV reaching/exceeding 2^46 must stay MaybeBigInt (no trusted unbox of a possible heap BigInt)"
@@ -5627,12 +5579,40 @@ mod tests {
     #[test]
     fn no_value_range_leaves_everything_maybe_bigint() {
         let (func, iv, next) = range_loop_tir(0, 10);
-        let repr = repr_by_value_for(&empty_func_ir(), &func, None);
+        let repr = repr_by_value_for(&func, None);
         assert_eq!(repr.get(&iv), Some(&Repr::MaybeBigInt));
         assert_eq!(repr.get(&next), Some(&Repr::MaybeBigInt));
         assert!(
             repr.values().all(|r| !r.is_raw_i64_safe()),
             "None means no RawI64Safe raise anywhere"
+        );
+    }
+
+    #[test]
+    fn bool_select_range_proof_does_not_promote_to_raw_i64() {
+        let mut func = TirFunction::new(
+            "bool_select".into(),
+            vec![TirType::Bool, TirType::Bool],
+            TirType::Bool,
+        );
+        let result = func.fresh_value();
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(tir_op(
+            TirOpCode::And,
+            vec![ValueId(0), ValueId(1)],
+            vec![result],
+        ));
+        entry.terminator = Terminator::Return {
+            values: vec![result],
+        };
+        crate::tir::type_refine::refine_types(&mut func);
+
+        let vr = value_range_for(&func);
+        let repr = repr_by_value_for(&func, Some(&vr));
+        assert_eq!(
+            repr.get(&result),
+            Some(&Repr::Bool),
+            "bool values can have [0,1] ranges but must stay in the Bool carrier, not RawI64Safe"
         );
     }
 
@@ -5726,7 +5706,7 @@ mod tests {
         func.loop_roles.insert(exit, LoopRole::LoopEnd);
 
         let vr = value_range_for(&func);
-        let repr = repr_by_value_for(&empty_func_ir(), &func, Some(&vr));
+        let repr = repr_by_value_for(&func, Some(&vr));
         // The counted IV is fine; the unbounded accumulator must NOT be raw.
         assert!(
             is_inline_safe(&repr, iv),
@@ -5762,7 +5742,7 @@ mod tests {
             entry.terminator = Terminator::Return { values: vec![tid] };
         }
         let vr = value_range_for(&func);
-        let repr = repr_by_value_for(&empty_func_ir(), &func, Some(&vr));
+        let repr = repr_by_value_for(&func, Some(&vr));
         assert!(
             is_inline_safe(&repr, tid),
             "molt_gpu_thread_id result must be pre-seeded RawI64Safe"
@@ -5784,7 +5764,7 @@ mod tests {
             entry.terminator = Terminator::Return { values: vec![r] };
         }
         let vr2 = value_range_for(&func2);
-        let repr2 = repr_by_value_for(&empty_func_ir(), &func2, Some(&vr2));
+        let repr2 = repr_by_value_for(&func2, Some(&vr2));
         assert!(
             !is_raw_carrier(&repr2, r),
             "an arbitrary runtime-call result must NOT be pre-seeded raw (only bounded GPU index intrinsics are)"
@@ -5911,7 +5891,7 @@ mod tests {
     fn unreachable_none_vestige_does_not_poison_checked_loop_phi() {
         let (func, acc, sum) = checked_loop_with_none_vestige(false);
         let vr = value_range_for(&func);
-        let repr = repr_by_value_for(&empty_func_ir(), &func, Some(&vr));
+        let repr = repr_by_value_for(&func, Some(&vr));
         assert!(
             is_full_deopt(&repr, sum),
             "the CheckedAdd wrapping sum is the unconditional full-range seed"
@@ -5932,7 +5912,7 @@ mod tests {
     fn reachable_none_edge_still_poisons_checked_loop_phi() {
         let (func, acc, _sum) = checked_loop_with_none_vestige(true);
         let vr = value_range_for(&func);
-        let repr = repr_by_value_for(&empty_func_ir(), &func, Some(&vr));
+        let repr = repr_by_value_for(&func, Some(&vr));
         assert!(
             !is_raw_carrier(&repr, acc),
             "a REACHABLE None incoming must keep the phi boxed (MaybeBigInt floor)"
@@ -6034,7 +6014,7 @@ mod tests {
         );
 
         let vr = value_range_for(&func);
-        let repr = repr_by_value_for(&empty_func_ir(), &func, Some(&vr));
+        let repr = repr_by_value_for(&func, Some(&vr));
         assert!(
             is_full_deopt(&repr, sum),
             "CheckedAdd's wrapping sum remains a valid raw carrier"
@@ -6060,10 +6040,9 @@ mod tests {
     #[cfg(feature = "llvm")]
     fn wasm_and_llvm_derive_identical_repr_from_one_value_range() {
         let (func, _iv, _next) = range_loop_tir(0, 10);
-        let func_ir = empty_func_ir();
         let vr = value_range_for(&func);
-        let wasm_map = repr_by_value_for(&func_ir, &func, Some(&vr));
-        let llvm_facts = LlvmReprFacts::build(&func_ir, &func);
+        let wasm_map = repr_by_value_for(&func, Some(&vr));
+        let llvm_facts = LlvmReprFacts::build(&func);
         assert_eq!(
             wasm_map, llvm_facts.repr_by_value,
             "WASM and LLVM must derive the same Repr per ValueId from the same ValueRange"

@@ -337,7 +337,6 @@ pub(crate) const DEFAULT_GPU_INTRINSIC_MANIFEST_NAMES: &[&str] = &[
 ];
 
 pub(crate) fn prepare_lir_wasm_fast_output(
-    func_ir: &FunctionIR,
     tir_func: &crate::tir::function::TirFunction,
 ) -> Option<crate::tir::lower_to_wasm::WasmFunctionOutput> {
     // Drive the LIR carrier derivation from the PROVEN `repr_by_value` (the
@@ -352,11 +351,9 @@ pub(crate) fn prepare_lir_wasm_fast_output(
     // rejected below so the function falls back to the IntFastLane-guarded slow
     // path (correctness preserved; the unsound bare op is un-emittable here).
     let vr = crate::representation_plan::value_range_for(tir_func);
-    let repr = crate::representation_plan::repr_by_value_for(func_ir, tir_func, Some(&vr));
+    let repr = crate::representation_plan::repr_by_value_for(tir_func, Some(&vr));
     let output = crate::tir::lower_to_wasm::lower_tir_to_wasm_boxed_i64_abi_with_proof(
-        tir_func,
-        Some(&repr),
-        Some(&vr),
+        tir_func, &repr, &vr,
     )?;
     let has_placeholder_call = output
         .instructions

@@ -67,7 +67,10 @@ fn run() -> Result<(Value, bool), String> {
             &molt_backend::tir::target_info::TargetInfo::native_release_fast(),
         );
         molt_backend::tir::type_refine::refine_types(&mut tir_func);
-        let lir_func = molt_backend::tir::lower_to_lir::lower_function_to_lir(&tir_func, None);
+        let lir_func =
+            molt_backend::tir::lower_to_lir::lower_function_to_lir_for_repr_fact_extraction(
+                &tir_func,
+            );
 
         let lir_errors = molt_backend::tir::verify_lir::verify_lir_function(&lir_func)
             .err()
