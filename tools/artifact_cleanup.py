@@ -236,7 +236,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--kill-processes",
         action="store_true",
-        help="Run process_sentinel before cleanup to stop repo-scoped build/test jobs.",
+        help=(
+            "Run process_sentinel before cleanup to stop live-proved Molt "
+            "build/test/bench workers."
+        ),
     )
     parser.add_argument(
         "--extra-path",
