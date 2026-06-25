@@ -74,6 +74,7 @@ EXPECTED_MIXINS = [
     "ModuleLifecycleMixin",
     "SymbolNamingMixin",
     "ClassResolutionMixin",
+    "TypeAnnotationMixin",
     "AnalysisCollectStaticMixin",
     "AnalysisPatternMixin",
     "AsyncGenVisitorMixin",
@@ -155,6 +156,13 @@ def test_moved_methods_resolve_on_class() -> None:
     assert hasattr(SimpleTIRGenerator, "_c3_merge")
     assert hasattr(SimpleTIRGenerator, "_class_mro_names")
     assert hasattr(SimpleTIRGenerator, "_resolve_method_info")
+    # type annotations and hints
+    assert hasattr(SimpleTIRGenerator, "_module_has_future_annotations")
+    assert hasattr(SimpleTIRGenerator, "_annotation_to_hint")
+    assert hasattr(SimpleTIRGenerator, "_propagate_container_hints")
+    assert hasattr(SimpleTIRGenerator, "_emit_function_annotate")
+    assert hasattr(SimpleTIRGenerator, "_iterable_element_hint")
+    assert hasattr(SimpleTIRGenerator, "_emit_guard_type")
     # pattern_match
     assert hasattr(SimpleTIRGenerator, "visit_Match")
     assert hasattr(SimpleTIRGenerator, "_emit_match_class")
@@ -219,6 +227,7 @@ def test_mixin_modules_import_standalone() -> None:
         "molt.frontend.lowering.module_lifecycle",
         "molt.frontend.lowering.serialization",
         "molt.frontend.lowering.symbol_naming",
+        "molt.frontend.lowering.type_annotations",
         "molt.frontend.visitors.async_gen",
         "molt.frontend.visitors.pattern_match",
         "molt.frontend.visitors.call_reductions",
