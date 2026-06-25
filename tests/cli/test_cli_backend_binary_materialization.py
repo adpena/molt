@@ -5,7 +5,7 @@ import subprocess
 from pathlib import Path
 
 import molt.cli as cli
-from molt.cli import build_pipeline as cli_build_pipeline
+from molt.cli import backend_binary as cli_backend_binary
 import pytest
 
 
@@ -28,7 +28,7 @@ def test_ensure_backend_binary_refreshes_feature_tagged_alias_from_newer_cargo_o
     os.utime(backend_bin, ns=(stale_mtime, stale_mtime))
 
     fingerprint = {"hash": "abc", "rustc": "rustc", "inputs_digest": "inputs"}
-    fingerprint_path = cli_build_pipeline._backend_fingerprint_path(
+    fingerprint_path = cli_backend_binary._backend_fingerprint_path(
         tmp_path, backend_bin, "dev-fast"
     )
     cli._write_runtime_fingerprint(fingerprint_path, fingerprint)
@@ -42,19 +42,19 @@ def test_ensure_backend_binary_refreshes_feature_tagged_alias_from_newer_cargo_o
         raise AssertionError("unexpected cargo rebuild")
 
     monkeypatch.setattr(
-        cli_build_pipeline, "_backend_fingerprint", fake_backend_fingerprint
+        cli_backend_binary, "_backend_fingerprint", fake_backend_fingerprint
     )
-    monkeypatch.setattr(cli_build_pipeline, "_codesign_binary", lambda _path: None)
+    monkeypatch.setattr(cli_backend_binary, "_codesign_binary", lambda _path: None)
     monkeypatch.setattr(
-        cli_build_pipeline, "_run_cargo_with_sccache_retry", fail_run_cargo
+        cli_backend_binary, "_run_cargo_with_sccache_retry", fail_run_cargo
     )
     monkeypatch.setattr(
-        cli_build_pipeline,
+        cli_backend_binary,
         "_run_subprocess_captured_to_tempfiles",
         lambda cmd, **kwargs: subprocess.CompletedProcess(cmd, 0, b"", b""),
     )
 
-    assert cli_build_pipeline._ensure_backend_binary(
+    assert cli_backend_binary._ensure_backend_binary(
         backend_bin,
         cargo_timeout=1.0,
         json_output=True,

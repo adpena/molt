@@ -6,6 +6,7 @@ from pathlib import Path
 
 import molt.cli as cli
 from molt.cli import build_pipeline as cli_build_pipeline
+from molt.cli import link_pipeline as cli_link_pipeline
 
 
 def _write_complete_stdlib_contract(stdlib_obj: Path, cache_key: str) -> str:
@@ -70,10 +71,10 @@ def test_prepare_native_link_keeps_current_keyed_stdlib_when_runtime_is_newer(
         return subprocess.CompletedProcess(link_cmd, 0, "", "")
 
     monkeypatch.setattr(cli, "_read_runtime_fingerprint", lambda path: None)
-    monkeypatch.setattr(cli_build_pipeline, "_artifact_needs_rebuild", lambda *args, **kwargs: True)
-    monkeypatch.setattr(cli_build_pipeline, "_run_native_link_command", fake_run_native_link_command)
+    monkeypatch.setattr(cli_link_pipeline, "_artifact_needs_rebuild", lambda *args, **kwargs: True)
+    monkeypatch.setattr(cli_link_pipeline, "_run_native_link_command", fake_run_native_link_command)
 
-    prepared, error = cli_build_pipeline._prepare_native_link(
+    prepared, error = cli_link_pipeline._prepare_native_link(
         output_artifact=output_obj,
         trusted=False,
         capabilities_list=None,
@@ -135,10 +136,10 @@ def test_prepare_native_link_uses_pre_staged_stdlib_copy(
         return subprocess.CompletedProcess(link_cmd, 0, "", "")
 
     monkeypatch.setattr(cli, "_read_runtime_fingerprint", lambda path: None)
-    monkeypatch.setattr(cli_build_pipeline, "_artifact_needs_rebuild", lambda *args, **kwargs: True)
-    monkeypatch.setattr(cli_build_pipeline, "_run_native_link_command", fake_run_native_link_command)
+    monkeypatch.setattr(cli_link_pipeline, "_artifact_needs_rebuild", lambda *args, **kwargs: True)
+    monkeypatch.setattr(cli_link_pipeline, "_run_native_link_command", fake_run_native_link_command)
 
-    prepared, error = cli_build_pipeline._prepare_native_link(
+    prepared, error = cli_link_pipeline._prepare_native_link(
         output_artifact=output_obj,
         trusted=False,
         capabilities_list=None,

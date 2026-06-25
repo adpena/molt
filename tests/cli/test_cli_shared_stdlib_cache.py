@@ -10,6 +10,7 @@ from typing import Mapping
 import pytest
 
 import molt.cli as cli
+from molt.cli import backend_binary as cli_backend_binary
 from molt.cli import build_pipeline as cli_build_pipeline
 from molt.cli import build_inputs as cli_build_inputs
 from tests.cli.process_guard import run_cli_test_process
@@ -898,19 +899,19 @@ def test_ensure_backend_binary_preserves_repo_local_shared_stdlib_cache(
     monkeypatch.setenv("MOLT_CACHE", str(cache_root))
     monkeypatch.setenv("MOLT_HOME", str(home_bin.parent))
     monkeypatch.setattr(
-        cli_build_pipeline, "_backend_fingerprint", fake_backend_fingerprint
+        cli_backend_binary, "_backend_fingerprint", fake_backend_fingerprint
     )
-    monkeypatch.setattr(cli_build_pipeline, "_codesign_binary", lambda _path: None)
+    monkeypatch.setattr(cli_backend_binary, "_codesign_binary", lambda _path: None)
     monkeypatch.setattr(
-        cli_build_pipeline, "_run_cargo_with_sccache_retry", fake_run_cargo
+        cli_backend_binary, "_run_cargo_with_sccache_retry", fake_run_cargo
     )
     monkeypatch.setattr(
-        cli_build_pipeline,
+        cli_backend_binary,
         "_run_subprocess_captured_to_tempfiles",
         lambda cmd, **kwargs: subprocess.CompletedProcess(cmd, 0, b"", b""),
     )
 
-    assert cli_build_pipeline._ensure_backend_binary(
+    assert cli_backend_binary._ensure_backend_binary(
         backend_bin,
         cargo_timeout=1.0,
         json_output=True,
