@@ -25,12 +25,12 @@ the fail-closed corpus now.
 | field | value |
 |---|---|
 | **paper** | Chen, Liang, and Liu, "DFlash: Block Diffusion for Flash Speculative Decoding" |
-| **arXiv** | `arXiv:2602.06036` — <https://arxiv.org/abs/2602.06036> |
+| **arXiv** | `arXiv:2602.06036v2` — <https://arxiv.org/abs/2602.06036> |
 | **official project** | DFlash, Z-Lab — <https://z-lab.ai/projects/dflash/> |
 | **molt contract layer** | `src/molt/gpu/dflash/{contracts,adapters,runtime}.py` |
 | **molt mislabel guard** | `src/molt/stdlib/tinygrad/dflash.py` (fails closed: `tinygrad.dflash` raises `ImportError`) |
 
-### Primary-source verification (arXiv:2602.06036v2, fetched 2026-06-24)
+### Primary-source verification (arXiv:2602.06036v2, refreshed 2026-06-25)
 
 Verified against the ACTUAL paper (not molt prose), per the project's online-research fidelity rule:
 - **Authors:** Jian Chen, Yesheng Liang, Zhijian Liu. **Version:** v2 (submitted 2026-02-05, revised 2026-05-28).
@@ -44,6 +44,33 @@ Verified against the ACTUAL paper (not molt prose), per the project's online-res
 - **F1 (§4.1, verbatim):** "the hidden representations of large autoregressive target models encode substantially more information than token-level logits."
 - **F4 (§4.1, verbatim):** "DFlash predicts the next token block using a block-level diffusion process. All masked positions within a block are decoded in parallel in a single forward pass."
 - **F5 caveat (honest):** the paper asserts losslessness as the standard accept-on-target-match speculative-decoding property; it states NO separate formal `output == greedy-decode` theorem. F5 transcribes that standard guarantee as the obligation the verification protocol must satisfy — it is not quoted as a verbatim paper theorem.
+
+### Current ecosystem evidence (refreshed 2026-06-25)
+
+This section records live implementation and follow-on-paper evidence so Molt's
+DFlash contract stays aligned with the public source of truth instead of an
+older prose snapshot.
+
+- **Official Z-Lab implementation/model registry:** <https://github.com/z-lab/dflash>
+  and <https://huggingface.co/collections/z-lab/dflash> publish model-paired
+  DFlash draft artifacts. Public usage examples pass a target model plus a
+  specific draft model id, for example vLLM `{"method":"dflash","model":...}`.
+- **vLLM/speculators training path:** <https://docs.vllm.ai/projects/speculators/en/latest/user_guide/algorithms/dflash/>
+  documents DFlash as a small diffusion-LLM draft model conditioned on target
+  hidden states, with block-size, max-anchor, and target-layer-id training
+  parameters.
+- **vLLM runtime path:** <https://docs.vllm.ai/en/v0.23.0/api/vllm/v1/spec_decode/dflash/>
+  exposes a `DFlashProposer` whose key differences include one draft forward
+  pass, unpadded context states, query-only spec tokens, pre-inserted context
+  KVs, and non-causal attention requirements.
+- **SGLang/Modal/Z-Lab implementation work:** <https://www.lmsys.org/blog/2026-06-15-next-generation-speculative-decoding-dflash-v2/>
+  emphasizes the same two base mechanisms Molt gates here: block-parallel
+  diffusion drafting and target-feature/KV injection.
+- **Follow-on papers are related, not interchangeable:** DDTree
+  (<https://arxiv.org/abs/2604.12989>) builds draft trees from one-pass DFlash
+  marginals; DFlare (<https://arxiv.org/abs/2606.02091>) changes the DFlash
+  conditioning bottleneck with layer-wise fusion. Neither should be silently
+  labeled "base DFlash" by a Molt adapter without explicit provenance.
 
 This provenance is the same revision cited by `src/molt/gpu/dflash/contracts.py`
 (module docstring) and `src/molt/stdlib/tinygrad/dflash.py`. DFlash is defined by
@@ -117,8 +144,9 @@ here so the algorithm cannot be declared done without satisfying it.
   by the verifier, consumed by the drafter). They may not be collapsed into one
   autoregressive path.
 - **Checkable assertion (today):** `DFlashRuntime` requires *two distinct
-  callables* `draft_step` and `verify_step`, each validated `callable`
-  (`contracts.py:153-156`); the conditioned decode loop re-validates DFlash
+  callables* `draft_step` and `verify_step`, each validated `callable`, and
+  rejects the same callable supplied for both roles (`contracts.py`); the
+  conditioned decode loop re-validates DFlash
   conditioning on every verifier-refreshed conditioning when the initial
   conditioning is DFlash (`runtime.py:209-215`). A non-callable for either, or a
   generic (non-`DFlashConditioning`) conditioning, raises.
@@ -174,7 +202,8 @@ here so the algorithm cannot be declared done without satisfying it.
   typed, fail-closed state — never a silent fallback to a generic/faked drafter.
 - **Checkable assertion (today):**
   - constructing `DFlashRuntime` with non-callable `draft_step`/`verify_step`
-    raises `TypeError` (`contracts.py:153-156`);
+    raises `TypeError`, and constructing it with the same callable for both
+    roles raises `TypeError`;
   - constructing `DFlashRuntime` / calling `require_dflash_conditioning` with a
     generic (non-`DFlashConditioning`) or incomplete conditioning raises
     `TypeError`/`ValueError` (`contracts.py:77-88`, `:157`);
@@ -186,6 +215,20 @@ here so the algorithm cannot be declared done without satisfying it.
     imported under the DFlash name.
 - **Status:** STRUCTURALLY ENFORCED + GATED (fail-closed corpus exercises every
   one of these typed refusals).
+
+### F7 — `model_pair_provenance`: every adapter declares its target/draft pair and source
+
+- **Cite:** the official Z-Lab model registry and current vLLM/SGLang usage all
+  configure DFlash by pairing a target verifier model with a specific DFlash
+  draft artifact. DFlash is not an anonymous "speculative mode".
+- **Invariant:** a `DFlashAdapterSpec` must declare the exact target model id,
+  draft model id, and provenance/source string for the adapter. Empty or
+  non-string metadata is rejected before registration.
+- **Checkable assertion (today):** `DFlashAdapterSpec` validates non-empty
+  `target_model_id`, `draft_model_id`, and `provenance`; the fail-closed corpus
+  asserts the typed refusals. Test fixtures use `test://...` ids and explicit
+  test-only provenance so they cannot be mistaken for production model support.
+- **Status:** STRUCTURALLY ENFORCED + GATED.
 
 ---
 
@@ -205,7 +248,11 @@ typed error, by `tests/gpu/dflash/test_dflash_fidelity.py`:
 | generic conditioning at boundary | `require_dflash_conditioning(SpeculativeConditioning(...))` | `TypeError("… must be DFlashConditioning")` | `contracts.py:78-79` |
 | non-callable `draft_step` | `DFlashRuntime(draft_step=object(), …)` | `TypeError("DFlashRuntime draft_step must be callable")` | `contracts.py:153-154` |
 | non-callable `verify_step` | `DFlashRuntime(verify_step=object(), …)` | `TypeError("DFlashRuntime verify_step must be callable")` | `contracts.py:155-156` |
+| collapsed drafter/verifier | `DFlashRuntime(draft_step=f, verify_step=f, …)` | `TypeError("DFlashRuntime draft_step and verify_step must be distinct callables")` | `contracts.py` |
 | generic conditioning into runtime | `DFlashRuntime(initial_conditioning=SpeculativeConditioning(...))` | `TypeError("initial_conditioning must be DFlashConditioning")` | `contracts.py:157` → `:78-79` |
+| anonymous adapter target | `DFlashAdapterSpec(target_model_id="", …)` | `ValueError("dflash adapter target_model_id must be non-empty")` | `adapters.py` |
+| anonymous adapter draft | `DFlashAdapterSpec(draft_model_id="   ", …)` | `ValueError("dflash adapter draft_model_id must be non-empty")` | `adapters.py` |
+| missing adapter provenance | `DFlashAdapterSpec(provenance=None, …)` | `TypeError("dflash adapter provenance must be a string")` | `adapters.py` |
 | non-spec adapter registration | `register_dflash_adapter(object())` | `TypeError("register_dflash_adapter expects DFlashAdapterSpec")` | `adapters.py:46-47` |
 | generic adapter returns non-runtime | adapter `create_runtime` returns a non-`DFlashRuntime` | `TypeError("dflash adapter create_runtime() must return DFlashRuntime")` | `adapters.py:139-140` |
 | named adapter unavailable | `build_dflash_runtime(…, dflash_adapter="x")` with no supporting adapter | `LookupError("dflash adapter 'x' is unavailable for this context")` | `adapters.py:167-170` |

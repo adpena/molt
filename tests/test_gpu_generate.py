@@ -54,6 +54,26 @@ def _dflash_conditioning(tag="prefill", token=0):
     )
 
 
+def _dflash_adapter_spec(
+    *,
+    name: str,
+    supports,
+    create_runtime,
+    priority: int = 0,
+):
+    from molt.gpu.dflash import DFlashAdapterSpec
+
+    return DFlashAdapterSpec(
+        name=name,
+        target_model_id=f"test://target/{name}",
+        draft_model_id=f"test://draft/{name}",
+        provenance="test-only synthetic DFlash adapter fixture",
+        supports=supports,
+        create_runtime=create_runtime,
+        priority=priority,
+    )
+
+
 def test_speculative_decode_greedy_accepts_full_block_and_commits_extra_token():
     from molt.gpu.generate import speculative_decode_greedy
 
@@ -628,7 +648,7 @@ def test_greedy_decode_uses_registered_dflash_adapter_by_default_on_gpu_backend(
 
     monkeypatch.setenv("MOLT_GPU_BACKEND", "webgpu")
     register_dflash_adapter(
-        DFlashAdapterSpec(
+        _dflash_adapter_spec(
             name="fake-adapter",
             supports=supports,
             create_runtime=create_runtime,
@@ -781,7 +801,7 @@ def test_greedy_decode_dflash_adapter_refreshes_target_conditioning_after_reject
 
     monkeypatch.setenv("MOLT_GPU_BACKEND", "webgpu")
     register_dflash_adapter(
-        DFlashAdapterSpec(
+        _dflash_adapter_spec(
             name="fake-refreshing-adapter",
             supports=supports,
             create_runtime=create_runtime,
@@ -816,7 +836,7 @@ def test_greedy_decode_fails_closed_when_registered_dflash_adapter_has_no_traine
 
     monkeypatch.setenv("MOLT_GPU_BACKEND", "webgpu")
     register_dflash_adapter(
-        DFlashAdapterSpec(
+        _dflash_adapter_spec(
             name="trained-drafter-only",
             supports=lambda _context: False,
             create_runtime=create_runtime,
@@ -869,7 +889,7 @@ def test_greedy_decode_chooses_highest_priority_matching_dflash_adapter(monkeypa
 
     monkeypatch.setenv("MOLT_GPU_BACKEND", "webgpu")
     register_dflash_adapter(
-        DFlashAdapterSpec(
+        _dflash_adapter_spec(
             name="priority-low-adapter",
             supports=low_supports,
             create_runtime=low_create_runtime,
@@ -877,7 +897,7 @@ def test_greedy_decode_chooses_highest_priority_matching_dflash_adapter(monkeypa
         )
     )
     register_dflash_adapter(
-        DFlashAdapterSpec(
+        _dflash_adapter_spec(
             name="priority-high-adapter",
             supports=high_supports,
             create_runtime=high_create_runtime,
@@ -908,7 +928,7 @@ def test_greedy_decode_raises_when_top_priority_dflash_adapters_are_ambiguous(
 
     monkeypatch.setenv("MOLT_GPU_BACKEND", "webgpu")
     register_dflash_adapter(
-        DFlashAdapterSpec(
+        _dflash_adapter_spec(
             name="ambiguous-a",
             supports=supports,
             create_runtime=create_runtime,
@@ -916,7 +936,7 @@ def test_greedy_decode_raises_when_top_priority_dflash_adapters_are_ambiguous(
         )
     )
     register_dflash_adapter(
-        DFlashAdapterSpec(
+        _dflash_adapter_spec(
             name="ambiguous-b",
             supports=supports,
             create_runtime=create_runtime,
@@ -958,7 +978,7 @@ def test_greedy_decode_skips_dflash_default_without_supported_gpu_backend(monkey
 
     monkeypatch.delenv("MOLT_GPU_BACKEND", raising=False)
     register_dflash_adapter(
-        DFlashAdapterSpec(
+        _dflash_adapter_spec(
             name="fake-adapter-no-gpu",
             supports=supports,
             create_runtime=create_runtime,
@@ -1007,7 +1027,7 @@ def test_greedy_decode_allows_plain_decode_when_dflash_preference_disabled(monke
 def test_register_dflash_adapter_rejects_duplicate_names():
     from molt.gpu.dflash import DFlashAdapterSpec, register_dflash_adapter
 
-    spec = DFlashAdapterSpec(
+    spec = _dflash_adapter_spec(
         name="duplicate-test-adapter",
         supports=lambda _context: True,
         create_runtime=lambda _context: None,
@@ -1034,7 +1054,7 @@ def test_dflash_adapter_registry_snapshot_restore_isolates_mutation():
 
     baseline = snapshot_dflash_adapters()
     register_dflash_adapter(
-        DFlashAdapterSpec(
+        _dflash_adapter_spec(
             name="snapshot-adapter",
             supports=lambda _context: True,
             create_runtime=lambda _context: None,
@@ -1090,7 +1110,7 @@ def test_greedy_decode_accepts_explicit_dflash_adapter_override(monkeypatch):
 
     monkeypatch.setenv("MOLT_GPU_BACKEND", "webgpu")
     register_dflash_adapter(
-        DFlashAdapterSpec(
+        _dflash_adapter_spec(
             name="explicit-adapter",
             supports=supports,
             create_runtime=create_runtime,
@@ -1189,7 +1209,7 @@ def test_greedy_decode_rejects_non_boolean_dflash_supports_result(monkeypatch):
 
     monkeypatch.setenv("MOLT_GPU_BACKEND", "webgpu")
     register_dflash_adapter(
-        DFlashAdapterSpec(
+        _dflash_adapter_spec(
             name="bad-supports",
             supports=supports,
             create_runtime=create_runtime,
@@ -1222,7 +1242,7 @@ def test_greedy_decode_rejects_invalid_dflash_runtime_type(monkeypatch):
 
     monkeypatch.setenv("MOLT_GPU_BACKEND", "webgpu")
     register_dflash_adapter(
-        DFlashAdapterSpec(
+        _dflash_adapter_spec(
             name="bad-runtime",
             supports=supports,
             create_runtime=create_runtime,
@@ -1270,7 +1290,7 @@ def test_build_dflash_runtime_constructs_runtime_from_explicit_adapter():
         pass
 
     register_dflash_adapter(
-        DFlashAdapterSpec(
+        _dflash_adapter_spec(
             name="builder-adapter",
             supports=supports,
             create_runtime=create_runtime,
@@ -1335,7 +1355,7 @@ def test_build_dflash_runtime_passes_adapter_payload_into_context():
         pass
 
     register_dflash_adapter(
-        DFlashAdapterSpec(
+        _dflash_adapter_spec(
             name="payload-adapter",
             supports=supports,
             create_runtime=create_runtime,

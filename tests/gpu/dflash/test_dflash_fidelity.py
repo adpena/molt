@@ -181,6 +181,21 @@ def test_runtime_noncallable_verify_step_raises_typeerror():
         )
 
 
+def test_runtime_same_draft_and_verify_callable_raises_typeerror():
+    def collapsed_step(req):
+        return req
+
+    with pytest.raises(
+        TypeError,
+        match="DFlashRuntime draft_step and verify_step must be distinct callables",
+    ):
+        DFlashRuntime(
+            draft_step=collapsed_step,
+            verify_step=collapsed_step,
+            initial_conditioning=_valid_conditioning(),
+        )
+
+
 def test_runtime_generic_conditioning_raises_typeerror():
     # Even with valid callables, a generic (non-DFlash) conditioning cannot
     # produce a DFlashRuntime — the runtime is target-conditioned by contract.
@@ -238,11 +253,68 @@ def _ctx(backend: str = "native") -> DFlashSelectionContext:
     )
 
 
+def _adapter_spec(
+    *,
+    name: str,
+    supports,
+    create_runtime,
+    priority: int = 0,
+) -> DFlashAdapterSpec:
+    return DFlashAdapterSpec(
+        name=name,
+        target_model_id=f"test://target/{name}",
+        draft_model_id=f"test://draft/{name}",
+        provenance="test-only synthetic DFlash adapter fixture",
+        supports=supports,
+        create_runtime=create_runtime,
+        priority=priority,
+    )
+
+
 def test_register_dflash_adapter_rejects_non_spec():
     # The registry is typed: only DFlashAdapterSpec instances register. A bare
     # callable (a "generic adapter") cannot be smuggled in.
     with pytest.raises(TypeError, match="register_dflash_adapter expects DFlashAdapterSpec"):
         register_dflash_adapter(object())
+
+
+@pytest.mark.parametrize(
+    ("field_name", "field_value", "exc_type", "message"),
+    (
+        (
+            "target_model_id",
+            "",
+            ValueError,
+            "dflash adapter target_model_id must be non-empty",
+        ),
+        (
+            "draft_model_id",
+            "   ",
+            ValueError,
+            "dflash adapter draft_model_id must be non-empty",
+        ),
+        (
+            "provenance",
+            None,
+            TypeError,
+            "dflash adapter provenance must be a string",
+        ),
+    ),
+)
+def test_adapter_spec_requires_model_pair_provenance(
+    field_name, field_value, exc_type, message
+):
+    kwargs = {
+        "name": "metadata-required",
+        "target_model_id": "test://target/metadata-required",
+        "draft_model_id": "test://draft/metadata-required",
+        "provenance": "test-only synthetic DFlash adapter fixture",
+        "supports": lambda _context: True,
+        "create_runtime": lambda _context: object(),
+    }
+    kwargs[field_name] = field_value
+    with pytest.raises(exc_type, match=message):
+        DFlashAdapterSpec(**kwargs)
 
 
 def test_generic_adapter_returning_non_runtime_raises_typeerror():
@@ -258,7 +330,7 @@ def test_generic_adapter_returning_non_runtime_raises_typeerror():
         # accepted under the DFlash name.
         return {"kind": "generic-speculative-decoder", "draft": lambda *a: [0]}
 
-    spec = DFlashAdapterSpec(
+    spec = _adapter_spec(
         name="generic_mislabel",
         supports=_supports,
         create_runtime=_create_generic,
@@ -296,7 +368,7 @@ def test_unsupported_adapter_under_dflash_name_does_not_resolve():
         # called when supports() is False.
         raise AssertionError("create_runtime must not run for an unsupported adapter")
 
-    spec = DFlashAdapterSpec(
+    spec = _adapter_spec(
         name="unsupported_adapter",
         supports=_supports_false,
         create_runtime=_create,

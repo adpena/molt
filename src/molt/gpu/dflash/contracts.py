@@ -154,6 +154,10 @@ class DFlashRuntime:
             raise TypeError("DFlashRuntime draft_step must be callable")
         if not callable(verify_step):
             raise TypeError("DFlashRuntime verify_step must be callable")
+        if draft_step is verify_step:
+            raise TypeError(
+                "DFlashRuntime draft_step and verify_step must be distinct callables"
+            )
         require_dflash_conditioning(initial_conditioning, "initial_conditioning")
         self.draft_step = draft_step
         self.verify_step = verify_step
