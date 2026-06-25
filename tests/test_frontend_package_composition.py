@@ -65,6 +65,8 @@ PUBLIC_SURFACE = [
 
 # Mixins extracted from SimpleTIRGenerator (extend as more families move).
 EXPECTED_MIXINS = [
+    "LocalBindingMixin",
+    "MidendOptimizationMixin",
     "SerializationMixin",
     "AnalysisCollectStaticMixin",
     "AnalysisPatternMixin",
@@ -108,6 +110,14 @@ def test_mixins_present_in_mro() -> None:
 
 def test_moved_methods_resolve_on_class() -> None:
     """Representative methods from each mixin resolve on the assembled class."""
+    # local bindings
+    assert hasattr(SimpleTIRGenerator, "_load_local_value")
+    assert hasattr(SimpleTIRGenerator, "_store_local_value")
+    assert hasattr(SimpleTIRGenerator, "_value_reads_plain_local_binding")
+    # midend optimization
+    assert hasattr(SimpleTIRGenerator, "_run_ir_midend_passes")
+    assert hasattr(SimpleTIRGenerator, "_resolve_midend_function_policy")
+    assert hasattr(SimpleTIRGenerator, "_canonicalize_control_aware_ops")
     # serialization
     assert hasattr(SimpleTIRGenerator, "map_ops_to_json")
     assert hasattr(SimpleTIRGenerator, "_scalarize_string_split_fields_json")
@@ -166,6 +176,8 @@ def test_mixin_modules_import_standalone() -> None:
         "molt.frontend._types",
         "molt.frontend.lowering.analysis_collect_static",
         "molt.frontend.lowering.analysis_patterns",
+        "molt.frontend.lowering.local_bindings",
+        "molt.frontend.lowering.midend_optimization",
         "molt.frontend.lowering.serialization",
         "molt.frontend.visitors.async_gen",
         "molt.frontend.visitors.pattern_match",
