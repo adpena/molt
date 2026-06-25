@@ -187,6 +187,52 @@ The ML surface has **real structure** (crate, intrinsics, adapter contract) but 
 **fidelity is declared in prose and hand-written tests**, so drift is *invisible*. The
 arc converts every fidelity claim into a **derived, gated FACT**.
 
+### 1.4 External DFlash source refresh (2026-06-25)
+
+The DFlash contract is no longer only the February preprint plus local prose. The live
+source-of-truth set now includes:
+
+- **DFlash v2 / ICML 2026 camera-ready.** `arXiv:2602.06036` was revised on
+  2026-05-28 and is marked accepted at ICML 2026. The invariant remains: a
+  lightweight block diffusion drafter generates a block in one pass, conditioned on
+  target-model context features, and the target verifier checks the draft losslessly.
+  Any implementation that uses an unconditioned or autoregressive generic drafter is
+  not DFlash.
+- **Official OSS backend surface.** `https://github.com/z-lab/dflash` now publishes
+  model-specific draft checkpoints plus backend entry points for vLLM, SGLang,
+  Transformers, and MLX. The README states vLLM `0.20.1+` has core DFlash support;
+  non-Gemma models are launched with `--speculative-config {"method":"dflash", ...}`;
+  SGLang uses `--speculative-algorithm DFLASH`; Transformers/MLX support is limited
+  to named model families. This strengthens the fail-closed rule: Molt must require a
+  real model-specific DFlash draft adapter and backend capability, not infer support
+  from the target model name alone.
+- **Spec V2 / serving integration.** The 2026-06-15 LMSYS/Modal/SGLang release shows
+  DFlash running through SGLang's Spec V2 engine and Qwen3.5-397B-A17B draft
+  checkpoints, with block-size and draft-attention backend controls. Molt must model
+  DFlash serving metadata as part of the algorithmic contract: block size, draft
+  attention backend, target feature/KV injection, and accepted-token synchronization
+  are semantic inputs, not tuning afterthoughts.
+- **TPU/vLLM state custody.** Google's 2026 TPU writeup identifies DFlash-specific
+  runtime state that generic speculative decoders do not need: dual KV/cache paths,
+  target hidden-feature context buffers, consumed-feature counters, draft KV
+  positions, RoPE offsets, and strict synchronization to accepted token count. The
+  Molt contract must carry these as typed state facts. Sequence-length inflation or
+  metadata drift is a correctness bug, not a performance bug.
+- **Adjacent algorithms are explicit extensions, not aliases.** DDTree
+  (`arXiv:2604.12989`) builds draft trees from DFlash per-position marginal
+  distributions and verifies them with an ancestor-only attention mask. DFlare
+  (`arXiv:2606.02091`) changes the conditioning architecture with per-layer fusion
+  over broader target layers. Draft-OPD (`arXiv:2605.29343`) changes draft-model
+  training with on-policy distillation. These are important routes, but none may be
+  silently folded into base `molt.gpu.dflash`. They require named modes, provenance,
+  and their own fidelity gates.
+
+Implementation consequence: the first executable DFlash gate must validate the
+contract shape before numerical speed claims: `(target model, trained drafter,
+conditioning fields, KV/feature injection state, verifier ownership, block/tree mode,
+accepted-token synchronization)`. Throughput evidence is invalid until that shape gate
+passes.
+
 ---
 
 ## 2. METHOD: parity as a fact, not a promise (time-traveler back-cast)
