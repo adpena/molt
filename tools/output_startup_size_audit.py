@@ -120,6 +120,7 @@ def _run_guarded(
     env: dict[str, str],
     timeout: float | None,
     prefix: str = "MOLT_BENCH",
+    progress_label: str | None = None,
 ) -> harness_memory_guard.GuardedCompletedProcess:
     return harness_memory_guard.guarded_completed_process(
         command,
@@ -128,6 +129,7 @@ def _run_guarded(
         env=env,
         capture_output=True,
         timeout=timeout,
+        progress_label=progress_label,
     )
 
 
@@ -400,7 +402,12 @@ def _build_molt_artifact(
         timeout_sec=timeout,
         out_dir=str(out_dir),
     )
-    result = _run_guarded(command, env=env, timeout=timeout)
+    result = _run_guarded(
+        command,
+        env=env,
+        timeout=timeout,
+        progress_label=f"output-audit build {case.id}",
+    )
     _progress(
         "build_done",
         case=case.id,
@@ -474,6 +481,7 @@ def _measure_artifact(
 
     for index in range(samples):
         run_path = artifact
+        progress_label = f"output-audit startup {label} run {index + 1}/{samples}"
         if fresh_copies:
             run_path = _fresh_copy_path(artifact, fresh_dir, index)
             shutil.copy2(artifact, run_path)
@@ -484,7 +492,12 @@ def _measure_artifact(
             command, env_overrides = runner_factory(run_path, env)
             if env_overrides:
                 run_env = {**env, **env_overrides}
-            result = _run_guarded(command, env=run_env, timeout=timeout)
+            result = _run_guarded(
+                command,
+                env=run_env,
+                timeout=timeout,
+                progress_label=progress_label,
+            )
         finally:
             if fresh_copies:
                 try:
@@ -588,7 +601,12 @@ def _measure_cold_first_sighting(
     """
     command, env_overrides = runner_factory(artifact, env)
     run_env = {**env, **env_overrides} if env_overrides else env
-    result = _run_guarded(command, env=run_env, timeout=timeout)
+    result = _run_guarded(
+        command,
+        env=run_env,
+        timeout=timeout,
+        progress_label=f"output-audit startup {label} cold-first",
+    )
     elapsed = (
         [result.elapsed_s]
         if result.returncode == 0 and result.elapsed_s is not None
@@ -740,7 +758,13 @@ def _measure_cpython(
     interpreter = harness_memory_guard.canonical_interpreter(sys.executable)
     for index in range(samples):
         command = [interpreter, str(script)]
-        result = _run_guarded(command, env=env, timeout=timeout, prefix="MOLT_BENCH")
+        result = _run_guarded(
+            command,
+            env=env,
+            timeout=timeout,
+            prefix="MOLT_BENCH",
+            progress_label=f"output-audit cpython run {index + 1}/{samples}",
+        )
         records.append(_sample_record(index=index, command=command, result=result))
         if result.returncode == 0 and result.elapsed_s is not None:
             elapsed.append(result.elapsed_s)
@@ -770,7 +794,12 @@ def _measure_c_baseline(
         encoding="utf-8",
     )
     command = [cc, "-Os", str(source), "-o", str(binary)]
-    compile_result = _run_guarded(command, env=env, timeout=timeout)
+    compile_result = _run_guarded(
+        command,
+        env=env,
+        timeout=timeout,
+        progress_label="output-audit c-baseline compile",
+    )
     if compile_result.returncode != 0:
         return {
             "label": "c_baseline",

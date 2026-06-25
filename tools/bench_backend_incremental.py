@@ -127,6 +127,7 @@ def _run_command(
             text=True,
             timeout=timeout_sec,
             limits=limits,
+            progress_label=f"backend-incremental {phase}",
         )
         stdout = result.stdout or ""
         stderr = result.stderr or ""
