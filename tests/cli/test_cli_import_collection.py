@@ -20,6 +20,7 @@ from typing import Any, Mapping, Sequence, cast
 import molt.cli as cli
 from molt.cli import commands as cli_commands
 from molt.cli import backend_binary as cli_backend_binary
+from molt.cli import backend_cache_setup as cli_backend_cache_setup
 from molt.cli import build_pipeline as cli_build_pipeline
 from molt.cli import link_pipeline as cli_link_pipeline
 import pytest
@@ -757,7 +758,7 @@ def test_core_closure_copy_reaches_backend_stdlib_symbol_contract(
         module_source_catalog=frontend_analysis.module_source_catalog,
         module_deps=frontend_analysis.module_deps,
     )
-    backend_setup = cli_build_pipeline._prepare_backend_cache_setup(
+    backend_setup = cli_backend_cache_setup._prepare_backend_cache_setup(
         cache_enabled=False,
         ir={"functions": []},
         target="native",
@@ -10453,7 +10454,7 @@ def test_prepare_backend_setup_stages_runtime_intrinsics_before_native_cache_hit
         )
 
     monkeypatch.setattr(
-        cli_build_pipeline, "_prepare_backend_cache_setup", fake_prepare_backend_cache_setup
+        cli_backend_cache_setup, "_prepare_backend_cache_setup", fake_prepare_backend_cache_setup
     )
     def fake_ensure_runtime_lib_ready(runtime_state: object, **kwargs: object) -> bool:
         del kwargs
@@ -10552,7 +10553,7 @@ def test_prepare_backend_setup_stages_runtime_intrinsics_before_native_cache_mis
         )
 
     monkeypatch.setattr(
-        cli_build_pipeline, "_prepare_backend_cache_setup", fake_prepare_backend_cache_setup
+        cli_backend_cache_setup, "_prepare_backend_cache_setup", fake_prepare_backend_cache_setup
     )
     def fake_ensure_runtime_lib_ready(runtime_state: object, **kwargs: object) -> bool:
         del kwargs
@@ -10650,7 +10651,7 @@ def test_prepare_backend_setup_uses_runtime_intrinsic_digest_instead_of_native_a
         )
 
     monkeypatch.setattr(
-        cli_build_pipeline, "_prepare_backend_cache_setup", fake_prepare_backend_cache_setup
+        cli_backend_cache_setup, "_prepare_backend_cache_setup", fake_prepare_backend_cache_setup
     )
     def fake_ensure_runtime_lib_ready(runtime_state: object, **kwargs: object) -> bool:
         del runtime_state, kwargs
@@ -18901,7 +18902,7 @@ def test_cache_variant_differs_when_stdlib_split_toggles() -> None:
         target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
     )
 
-    setup_split = cli_build_pipeline._prepare_backend_cache_setup(
+    setup_split = cli_backend_cache_setup._prepare_backend_cache_setup(
         emit_mode="obj",  # native + obj  => split enabled
         output_artifact=ROOT / "dummy_split.o",
         **common,
@@ -18912,11 +18913,11 @@ def test_cache_variant_differs_when_stdlib_split_toggles() -> None:
     import unittest.mock as _mock
 
     with _mock.patch.object(
-        cli_build_pipeline,
+        cli_backend_cache_setup,
         "_native_stdlib_object_split_enabled",
         return_value=False,
     ):
-        setup_mono = cli_build_pipeline._prepare_backend_cache_setup(
+        setup_mono = cli_backend_cache_setup._prepare_backend_cache_setup(
             emit_mode="obj",
             output_artifact=ROOT / "dummy_mono.o",
             **common,
@@ -18951,7 +18952,7 @@ def test_prepare_backend_cache_setup_routes_stdlib_object_to_explicit_cache_dir(
         frontend_module_costs=None,
         stdlib_like_by_module={"sys": True},
     )
-    setup = cli_build_pipeline._prepare_backend_cache_setup(
+    setup = cli_backend_cache_setup._prepare_backend_cache_setup(
         cache_enabled=True,
         ir=tiny_ir,
         target="native",
@@ -18999,7 +19000,7 @@ def test_prepare_backend_cache_setup_routes_no_cache_stdlib_object_to_explicit_c
         frontend_module_costs=None,
         stdlib_like_by_module={"sys": True},
     )
-    setup = cli_build_pipeline._prepare_backend_cache_setup(
+    setup = cli_backend_cache_setup._prepare_backend_cache_setup(
         cache_enabled=False,
         ir=tiny_ir,
         target="native",
@@ -19068,7 +19069,7 @@ def test_stdlib_partition_mode_changes_cache_identity():
     import sys
 
     sys.path.insert(0, "src")
-    from molt.cli.build_pipeline import _build_cache_variant
+    from molt.cli.backend_cache_setup import _build_cache_variant
 
     variant_mono = _build_cache_variant(
         profile="dev",
@@ -19100,7 +19101,7 @@ def test_stdlib_partition_mode_changes_cache_identity():
 
 
 def test_external_static_package_digest_changes_backend_cache_identity() -> None:
-    variant_a = cli_build_pipeline._build_cache_variant(
+    variant_a = cli_backend_cache_setup._build_cache_variant(
         profile="dev",
         runtime_cargo="debug",
         backend_cargo="debug",
@@ -19111,7 +19112,7 @@ def test_external_static_package_digest_changes_backend_cache_identity() -> None
         target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
         external_static_packages_digest="a" * 64,
     )
-    variant_b = cli_build_pipeline._build_cache_variant(
+    variant_b = cli_backend_cache_setup._build_cache_variant(
         profile="dev",
         runtime_cargo="debug",
         backend_cargo="debug",
@@ -19128,7 +19129,7 @@ def test_external_static_package_digest_changes_backend_cache_identity() -> None
 
 
 def test_runtime_intrinsic_symbol_digest_changes_backend_cache_identity() -> None:
-    variant_a = cli_build_pipeline._build_cache_variant(
+    variant_a = cli_backend_cache_setup._build_cache_variant(
         profile="dev",
         runtime_cargo="debug",
         backend_cargo="debug",
@@ -19139,7 +19140,7 @@ def test_runtime_intrinsic_symbol_digest_changes_backend_cache_identity() -> Non
         target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
         runtime_intrinsic_symbols_digest="a" * 64,
     )
-    variant_b = cli_build_pipeline._build_cache_variant(
+    variant_b = cli_backend_cache_setup._build_cache_variant(
         profile="dev",
         runtime_cargo="debug",
         backend_cargo="debug",
