@@ -1932,7 +1932,7 @@ class SimpleTIRGenerator(
         # gate on _function_contains_locals_call().  The previous unconditional
         # _init_locals_cache() here caused a heap dict allocation on every
         # function call, even for functions that never use locals().
-        # See bench/results/fib_regression_analysis.md for details.
+        # See bench/results/fib_regression_analysis.txt for details.
 
     def _module_can_defer_attrs(self, node: ast.Module) -> bool:
         for current in ast.walk(node):

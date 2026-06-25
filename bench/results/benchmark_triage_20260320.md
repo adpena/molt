@@ -2,8 +2,10 @@
 > **STALE PERF SNAPSHOT - NOT AUTHORITATIVE.**
 >
 > The ONLY citable perf source of truth is
-> `tools/perf_scoreboard.py --profile release-fast --classify` (release-fast,
-> cold+warm, quiescent, with a git-ancestry provenance check). This file is a
+> `tools/perf_scoreboard.py --set core --backend native --backend llvm
+> --profile release-fast --samples 5 --warmup 2 --repeat 5 --classify
+> --require-quiescent` (release-fast, cold+warm, native+LLVM, repeat-CI,
+> quiescent, with a git-ancestry provenance check). This file is a
 > 2026-03-20 triage snapshot kept for historical context only. Its `0.01x` /
 > sub-1.0x cells reflect that day's tree and harness, NOT the current engine -
 > several were measurement artifacts or have since been fixed (e.g. the

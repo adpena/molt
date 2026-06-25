@@ -110,6 +110,59 @@ def test_non_canonical_stamp_resolves_rev_when_omitted() -> None:
     assert isinstance(prov["git_rev"], str) and prov["git_rev"]
 
 
+def test_canonical_gate_names_full_release_fast_backend_contract() -> None:
+    gate = pa.CANONICAL_GATE
+
+    for token in (
+        "tools/perf_scoreboard.py",
+        "--set core",
+        "--backend native",
+        "--backend llvm",
+        "--profile release-fast",
+        "--samples 5",
+        "--warmup 2",
+        "--repeat 5",
+        "--classify",
+        "--require-quiescent",
+    ):
+        assert token in gate
+    assert "--no-gate" not in gate
+    assert "--allow-nonauthoritative" not in gate
+
+
+def test_perf_gate_workflow_runs_canonical_matrix_contract() -> None:
+    workflow = (REPO_ROOT / ".github/workflows/perf-gate.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "backend: [native, llvm]" in workflow
+    assert "fail-fast: false" in workflow
+    assert "perfscore-${{ matrix.backend }}" in workflow
+    assert '--backend "${{ matrix.backend }}"' in workflow
+    for token in (
+        "--set core",
+        "--profile release-fast",
+        "--samples 5",
+        "--warmup 2",
+        "--repeat 5",
+        "--classify",
+        "--require-quiescent",
+        "--print-provenance",
+    ):
+        assert token in workflow
+    assert "--no-gate" not in workflow
+    assert "--allow-nonauthoritative" not in workflow
+    assert "memory note" not in workflow
+    assert "push-requires-ssh" not in workflow
+
+
+def test_ci_docs_gate_runs_perf_freshness_and_authority_tests() -> None:
+    workflow = (REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+
+    assert "tools/check_perf_freshness.py" in workflow
+    assert "tests/tools/test_perf_authority.py" in workflow
+
+
 # --- freshness helpers -------------------------------------------------------
 
 

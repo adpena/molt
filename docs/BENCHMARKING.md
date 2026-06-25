@@ -39,7 +39,19 @@ For `--target wasm --split-runtime`, the packaging contract is:
 
 ## Running Benchmarks
 
-We use `tools/bench.py` for native and `tools/bench_wasm.py` for WASM.
+The citable release performance authority is the canonical scoreboard, not the
+developer harness:
+
+```bash
+uv run --python 3.12 python3 tools/perf_scoreboard.py \
+  --set core --backend native --backend llvm --profile release-fast \
+  --samples 5 --warmup 2 --repeat 5 --classify --require-quiescent
+```
+
+It is mirrored by `.github/workflows/perf-gate.yml`. Use `tools/bench.py` for
+native triage and `tools/bench_wasm.py` for WASM triage; their JSON and Markdown
+outputs are non-canonical evidence and must not be cited as PR/release
+performance authority.
 To exercise single-module linking, add `--linked` (requires `wasm-ld` and
 `wasm-tools`).
 Use `tools/bench_individual.py` for focused native micro-benchmark slices. It
@@ -148,7 +160,7 @@ uv run --python 3.14 python3 tools/bench.py
 molt bench --script path/to/script.py
 uv run --python 3.14 python3 tools/bench.py --script path/to/script.py
 
-# Record results to JSON (standard for PRs)
+# Record triage results to JSON (not PR/release authority)
 uv run --python 3.14 python3 tools/bench.py --json-out bench/results/my_change.json
 
 # Isolated dynamic-builtin micro-slices (not part of core KPI suite)

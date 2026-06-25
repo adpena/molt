@@ -36,6 +36,7 @@ the source of truth.
 - Ordinary class constructor and `__new__` parity status: [spec/STATUS.md](spec/STATUS.md)
 - Standalone binary proof workflow: [proofs/STANDALONE_BINARY_PROOF_WORKFLOW.md](proofs/STANDALONE_BINARY_PROOF_WORKFLOW.md)
 - Benchmarking guide: [BENCHMARKING.md](BENCHMARKING.md)
+- Performance authority rule: [../tools/PERF_AUTHORITY.md](../tools/PERF_AUTHORITY.md)
 - Detailed benchmark report: [benchmarks/bench_summary.md](benchmarks/bench_summary.md)
 - Ecosystem compatibility matrix and NumPy source-recompiled extension package/native artifact publication custody: [spec/areas/compat/surfaces/ecosystem/ecosystem_compat_matrix.generated.md](spec/areas/compat/surfaces/ecosystem/ecosystem_compat_matrix.generated.md)
 - GPU primitive stack architecture, public tinygrad shim custody, and runtime-handle surface: [architecture/gpu-primitive-stack.md](architecture/gpu-primitive-stack.md)

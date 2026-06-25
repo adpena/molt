@@ -110,16 +110,19 @@ def test_github_workflows_opt_into_node24_action_runtime() -> None:
 def test_github_workflows_do_not_reintroduce_node20_action_pins() -> None:
     node20_action_pins = {
         "actions/checkout@v4",
+        "actions/checkout@v5",
         "actions/setup-python@v5",
         "actions/setup-node@v4",
         "actions/cache@v4",
         "actions/upload-artifact@v4",
+        "actions/upload-artifact@v6",
         "actions/download-artifact@v4",
         "actions/github-script@v7",
         "actions/attest-build-provenance@v2",
         "astral-sh/setup-uv@v3",
         "astral-sh/setup-uv@v4",
         "astral-sh/setup-uv@v7",
+        "astral-sh/setup-uv@v8.1.0",
         "softprops/action-gh-release@v2",
     }
 
@@ -138,7 +141,7 @@ def test_github_workflows_use_current_setup_uv_release() -> None:
         if not setup_uv_lines:
             continue
 
-        assert all("astral-sh/setup-uv@v8.1.0" in line for line in setup_uv_lines), (
+        assert all("astral-sh/setup-uv@v8.2.0" in line for line in setup_uv_lines), (
             workflow,
             setup_uv_lines,
         )
@@ -175,7 +178,7 @@ def test_default_ci_python_version_comes_from_single_file() -> None:
         assert f'python-version: "{default_python}"' not in text
         assert f"python-version: '{default_python}'" not in text
 
-    for workflow in ("ci.yml", "formal.yml", "perf-validation.yml", "release.yml"):
+    for workflow in ("ci.yml", "formal.yml", "release.yml"):
         assert 'python-version-file: ".python-version"' in _read(
             f".github/workflows/{workflow}"
         )
@@ -452,22 +455,36 @@ def test_hosted_workflow_heavy_commands_enter_memory_guard() -> None:
 
 def test_release_and_perf_workflows_exist_for_hosted_validation() -> None:
     release_text = _read(".github/workflows/release.yml")
-    perf_text = _read(".github/workflows/perf-validation.yml")
+    perf_text = _read(".github/workflows/perf-gate.yml")
 
     assert "push:" in release_text
     assert "tags:" in release_text
     assert "workflow_dispatch:" in release_text
     assert "macos-14" in release_text
     assert "ubuntu-24.04" in release_text
-    assert "schedule:" not in perf_text
-    assert "MOLT_SESSION_ID: perf-validation" in perf_text
-    assert "CARGO_TARGET_DIR: ${{ github.workspace }}/target" in perf_text
+    assert "schedule:" in perf_text
+    assert "MOLT_SESSION_ID: perfscore-${{ matrix.backend }}" in perf_text
+    assert (
+        "CARGO_TARGET_DIR: ${{ github.workspace }}/target/sessions/perfscore-${{ matrix.backend }}"
+        in perf_text
+    )
     assert "MOLT_CACHE: ${{ github.workspace }}/.molt_cache" in perf_text
     assert "TMPDIR: ${{ github.workspace }}/tmp" in perf_text
     assert "tools/guarded_exec.py --prefix MOLT_BENCH" in perf_text
-    assert "tools/bench.py" in perf_text
-    assert "--molt-profile release" in perf_text
-    assert "bench/results/" in perf_text
+    assert "tools/perf_scoreboard.py" in perf_text
+    assert "backend: [native, llvm]" in perf_text
+    assert '--backend "${{ matrix.backend }}"' in perf_text
+    assert "--profile release-fast" in perf_text
+    assert "--samples 5" in perf_text
+    assert "--warmup 2" in perf_text
+    assert "--repeat 5" in perf_text
+    assert "--classify" in perf_text
+    assert "--require-quiescent" in perf_text
+    assert "--no-gate" not in perf_text
+    assert "--allow-nonauthoritative" not in perf_text
+    assert "tools/bench.py" not in perf_text
+    assert "bench/results/" not in perf_text
+    assert not (WORKFLOW_ROOT / "perf-validation.yml").exists()
 
 
 def test_perf_demo_workflow_uses_canonical_env_and_single_uv_sync() -> None:

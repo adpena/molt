@@ -23,9 +23,9 @@ jobs:
       UV_CACHE_DIR: ${{ github.workspace }}/.uv-cache
       MOLT_UV_SYNC: "0"
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Install uv
-        uses: astral-sh/setup-uv@v8.1.0
+        uses: astral-sh/setup-uv@v8.2.0
         with:
           version: "latest"
       - name: Set up project Python
@@ -70,7 +70,7 @@ jobs:
           print("Perf check OK")
           PY
       - name: Upload k6 artifacts
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7.0.1
         with:
           name: demo-k6
           path: bench/results/*.json
