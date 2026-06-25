@@ -67,6 +67,60 @@ def _build_diagnostics() -> dict[str, object]:
             "stdlib_support_modules": ["base64"],
             "package_parent_modules": [],
         },
+        "binary_image_analysis": {
+            "schema_version": 1,
+            "frontend": {
+                "schema_version": 1,
+                "source_ast": {
+                    "known_module_count": 3,
+                    "compile_module_count": 2,
+                    "source_bytes_known": 120,
+                    "source_bytes_compile": 90,
+                    "known": {
+                        "ast_nodes": 24,
+                        "calls": 1,
+                        "function_defs": 1,
+                    },
+                    "compile": {
+                        "ast_nodes": 18,
+                        "calls": 1,
+                        "function_defs": 1,
+                    },
+                },
+                "module_schedule": {
+                    "module_order_len": 3,
+                    "compile_order_len": 2,
+                    "module_order_hash": "module-order",
+                    "compile_order_hash": "compile-order",
+                },
+                "lowering": {
+                    "target_python": "3.12",
+                    "enable_phi": True,
+                    "compile_equals_known": False,
+                },
+            },
+            "backend_ir": {
+                "schema_version": 1,
+                "backend_ir": {
+                    "function_count": 1,
+                    "op_count": 4,
+                    "call_op_count": 1,
+                },
+                "tir_boundary": {
+                    "carrier": "backend_ir_json",
+                    "semantic_role": "frontend-to-TIR/backend input",
+                },
+            },
+            "artifacts": {
+                "schema_version": 1,
+                "kind": "native",
+                "output_binary": {
+                    "path": "app_molt",
+                    "exists": True,
+                    "size_bytes": 4096,
+                },
+            },
+        },
         "allocations": {
             "current_bytes": 100,
             "peak_bytes": 240,
@@ -154,6 +208,17 @@ def test_build_capsule_bridges_frontend_tir_allocation_and_binary() -> None:
     assert capsule["cross_checks"]["passed"] is True
     assert capsule["source_frontend"]["closure"]["known_module_count"] == 3
     assert capsule["source_frontend"]["closure"]["compile_module_count"] == 2
+    assert capsule["compiler_binary_image_analysis"]["stages"] == [
+        "artifacts",
+        "backend_ir",
+        "frontend",
+    ]
+    assert (
+        capsule["compiler_binary_image_analysis"]["frontend"]["source_ast"][
+            "source_bytes_compile"
+        ]
+        == 90
+    )
     assert capsule["ir_tir"]["tir_fact_graphs"][0]["fact_count"] == 1
     assert capsule["allocation"]["peak_bytes"] == 240
     assert capsule["binary"]["size"]["total_bytes"] == 128
@@ -175,6 +240,30 @@ def test_build_capsule_fails_closed_on_compile_modules_outside_known() -> None:
     assert capsule["cross_checks"]["passed"] is False
     assert any(
         "compile_modules contains entries outside known_modules" in error
+        for error in capsule["cross_checks"]["errors"]
+    )
+
+
+def test_build_capsule_rejects_binary_image_analysis_closure_mismatch() -> None:
+    capsule_mod = _load_capsule()
+    diagnostics = _build_diagnostics()
+    binary_analysis = diagnostics["binary_image_analysis"]
+    assert isinstance(binary_analysis, dict)
+    frontend = binary_analysis["frontend"]
+    assert isinstance(frontend, dict)
+    source_ast = frontend["source_ast"]
+    assert isinstance(source_ast, dict)
+    source_ast["compile_module_count"] = 99
+
+    capsule = capsule_mod.build_capsule(
+        build_diagnostics=diagnostics,
+        build_diagnostics_path="build-diagnostics.json",
+        recorded_at="2026-06-25T00:00:00+00:00",
+    )
+
+    assert capsule["cross_checks"]["passed"] is False
+    assert any(
+        "binary_image_analysis.frontend.source_ast.compile_module_count=99" in error
         for error in capsule["cross_checks"]["errors"]
     )
 

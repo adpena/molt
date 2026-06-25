@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from molt.cli import build_inputs as cli_build_inputs
+from molt.cli import binary_image_analysis as cli_binary_image_analysis
 from molt.cli import frontend_pipeline as cli_frontend_pipeline
 from molt.cli import module_graph as cli_module_graph
 from molt.cli import module_resolution as cli_module_resolution
@@ -365,6 +366,10 @@ def test_build_diagnostics_emits_final_binary_image_closure(
         image_scope=import_plan.image_scope,
     )
     callbacks.set_binary_image_closure_payload(narrowed_plan.closure_payload())
+    callbacks.record_binary_image_analysis(
+        "frontend",
+        {"source_ast": {"compile_module_count": 1}},
+    )
 
     payload, diagnostics_path = callbacks.build_diagnostics_payload()
 
@@ -378,3 +383,105 @@ def test_build_diagnostics_emits_final_binary_image_closure(
         import_plan.known_modules
     )
     assert payload["binary_image_closure"]["compile_modules"] == ["app"]
+    assert payload["binary_image_analysis"]["frontend"]["source_ast"][
+        "compile_module_count"
+    ] == 1
+
+
+def test_frontend_binary_image_analysis_bridges_ast_schedule_and_lowering(
+    tmp_path: Path,
+) -> None:
+    entry = tmp_path / "app.py"
+    helper = tmp_path / "helper.py"
+    entry.write_text("import helper\n\ndef run():\n    return helper.VALUE\n")
+    helper.write_text("VALUE = 7\n")
+    import_plan = _materialize_plan(tmp_path, entry, "app")
+    analysis = _prepare_analysis_for_plan(tmp_path, import_plan)
+    narrowed_plan = import_plan.with_compile_modules({"app"})
+
+    payload = cli_binary_image_analysis._frontend_binary_image_analysis_payload(
+        import_plan=narrowed_plan,
+        frontend_analysis=analysis,
+        frontend_module_costs={"app": 3.0, "helper": 1.0},
+        known_classes={},
+        enable_phi=True,
+        module_chunking=False,
+        module_chunk_max_ops=100,
+        type_facts_present=False,
+        compile_module_order=["app"],
+        compile_module_layers=[["app"]],
+        target_python=_DEFAULT_TARGET_PYTHON_VERSION,
+    )
+
+    assert payload["source_ast"]["known_module_count"] == len(import_plan.known_modules)
+    assert payload["source_ast"]["compile_module_count"] == 1
+    assert payload["source_ast"]["compile"]["function_defs"] == 1
+    assert payload["source_ast"]["compile"]["import_statements"] == 1
+    assert payload["source_identity"]["semantic_identity_digest"]
+    assert payload["source_identity"]["module_count"] == len(import_plan.known_modules)
+    assert payload["source_identity"]["compile_module_count"] == 1
+    app_identity = next(
+        module
+        for module in payload["source_identity"]["modules"]
+        if module["module"] == "app"
+    )
+    assert {"compile", "declared_root", "known"}.issubset(app_identity["roles"])
+    assert app_identity["site_count"] >= 3
+    assert app_identity["source_sha256"]
+    assert app_identity["site_digest"]
+    assert payload["module_schedule"]["compile_order_len"] == 1
+    assert payload["module_schedule"]["dependency_edge_count"] >= 1
+    assert payload["lowering"]["target_python"] == _DEFAULT_TARGET_PYTHON_VERSION.tag
+    assert payload["lowering"]["compile_equals_known"] is False
+
+
+def test_backend_ir_and_artifact_analysis_attach_to_same_contract(
+    tmp_path: Path,
+) -> None:
+    ir_payload = cli_binary_image_analysis._backend_ir_binary_image_analysis_payload(
+        {
+            "functions": [
+                {
+                    "name": "app__run",
+                    "ops": [
+                        {"kind": "const"},
+                        {"kind": "call", "s_value": "helper__value"},
+                    ],
+                }
+            ]
+        }
+    )
+    binary = tmp_path / "app_molt"
+    obj = tmp_path / "app.o"
+    runtime = tmp_path / "libmolt_runtime.a"
+    binary.write_bytes(b"binary")
+    obj.write_bytes(b"object")
+    runtime.write_bytes(b"runtime")
+    artifact_payload = (
+        cli_binary_image_analysis._native_artifact_binary_image_analysis_payload(
+            output_binary=binary,
+            output_obj=obj,
+            runtime_lib=runtime,
+            stdlib_obj_path=None,
+            link_skipped=False,
+            link_fingerprint={"hash": "abc"},
+            link_fingerprint_path=tmp_path / "link.json",
+            external_native_artifact_count=0,
+        )
+    )
+    diagnostics: dict[str, object] = {}
+    cli_binary_image_analysis._merge_binary_image_analysis_stage(
+        diagnostics, "backend_ir", ir_payload
+    )
+    cli_binary_image_analysis._merge_binary_image_analysis_stage(
+        diagnostics, "artifacts", artifact_payload
+    )
+
+    analysis_payload = diagnostics["binary_image_analysis"]
+    assert analysis_payload["backend_ir"]["backend_ir"]["function_count"] == 1
+    assert analysis_payload["backend_ir"]["backend_ir"]["op_count"] == 2
+    assert analysis_payload["backend_ir"]["tir_boundary"]["carrier"] == (
+        "backend_ir_json"
+    )
+    assert analysis_payload["artifacts"]["output_binary"]["size_bytes"] == 6
+    assert analysis_payload["artifacts"]["link"]["fingerprint_hash"] == "abc"

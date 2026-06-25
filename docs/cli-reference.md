@@ -93,6 +93,13 @@ from project configuration: `[tool.molt.build] entry-file = "app.py"` or
 Diagnostics JSON includes `binary_image_closure`, the same closure plan used by
 lowering and wrapper-cache manifests. `known_modules` is the full admitted
 runtime closure; `compile_modules` is the set actually lowered into the binary.
+It also includes `binary_image_analysis`, a compact cross-layer evidence
+envelope for source/AST metrics, module schedule hashes, lowering configuration,
+backend IR/TIR-input shape, and final artifact/link facts when available. Its
+frontend `source_identity` section carries the SourceSite digest family:
+source hashes, span-derived AST site digests, binary-image roles, and one
+semantic identity digest for joining IR/TIR/backend evidence back to parsed
+source without embedding raw source text.
 
 </details>
 

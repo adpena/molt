@@ -523,6 +523,7 @@ class _BuildDiagnosticsContext:
     phase_starts: Mapping[str, float]
     image_scope: _BinaryImageScope | None
     binary_image_closure: Mapping[str, Any] | None
+    binary_image_analysis: Mapping[str, Any] | None
     module_graph: Mapping[str, Path]
     module_reasons: Mapping[str, set[str]]
     frontend_module_timings: Sequence[dict[str, Any]]
@@ -1089,6 +1090,7 @@ class _PreparedBuildCallbacks:
     record_frontend_timing: Callable[..., None]
     build_diagnostics_payload: Callable[[], tuple[dict[str, Any] | None, Path | None]]
     set_binary_image_closure_payload: Callable[[Mapping[str, Any] | None], None]
+    record_binary_image_analysis: Callable[[str, Mapping[str, Any] | None], None]
 
 
 class _ModuleLowerError(RuntimeError):

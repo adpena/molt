@@ -13,6 +13,7 @@ from molt.type_facts import TypeFacts, load_type_facts
 from molt.cli import frontend_execution as _frontend_execution
 from molt.cli import frontend_parallel as _frontend_parallel
 from molt.cli import typecheck as _typecheck
+from molt.cli.binary_image_analysis import _frontend_binary_image_analysis_payload
 from molt.cli.build_diagnostics import (
     _build_build_diagnostics_payload,
     _record_frontend_timing_item,
@@ -93,6 +94,7 @@ _PreparedFrontendPipelineBundle = tuple[
     _MidendDiagnosticsState,
     Callable[..., None],
     Callable[[], tuple[dict[str, Any] | None, Path | None]],
+    Callable[[str, Mapping[str, Any] | None], None],
     Path,
     _ExternalPackageNativeArtifactPlan,
 ]
@@ -501,12 +503,21 @@ def _prepare_build_callbacks(
     image_scope: _BinaryImageScope | None,
 ) -> _PreparedBuildCallbacks:
     binary_image_closure_payload: Mapping[str, Any] | None = None
+    binary_image_analysis_payload: dict[str, Any] = {"schema_version": 1}
 
     def _set_binary_image_closure_payload(
         payload: Mapping[str, Any] | None,
     ) -> None:
         nonlocal binary_image_closure_payload
         binary_image_closure_payload = payload
+
+    def _record_binary_image_analysis(
+        stage: str,
+        payload: Mapping[str, Any] | None,
+    ) -> None:
+        if payload is None:
+            return
+        binary_image_analysis_payload[stage] = dict(payload)
 
     timing_config = _FrontendTimingRecorderConfig(
         enabled=frontend_timing_enabled,
@@ -545,6 +556,7 @@ def _prepare_build_callbacks(
                 phase_starts=phase_starts,
                 image_scope=image_scope,
                 binary_image_closure=binary_image_closure_payload,
+                binary_image_analysis=dict(binary_image_analysis_payload),
                 module_graph=module_graph,
                 module_reasons=module_reasons,
                 frontend_module_timings=frontend_module_timings,
@@ -566,6 +578,7 @@ def _prepare_build_callbacks(
         record_frontend_timing=_record_frontend_timing,
         build_diagnostics_payload=_build_diagnostics_payload,
         set_binary_image_closure_payload=_set_binary_image_closure_payload,
+        record_binary_image_analysis=_record_binary_image_analysis,
     )
 
 def _prepare_frontend_stage_state(
@@ -598,6 +611,7 @@ def _prepare_frontend_stage_state(
         Callable[..., None],
         Callable[[], tuple[dict[str, Any] | None, Path | None]],
         Callable[[Mapping[str, Any] | None], None],
+        Callable[[str, Mapping[str, Any] | None], None],
         Path,
     ]
     | None,
@@ -787,6 +801,7 @@ def _prepare_frontend_stage_state(
             prepared_build_callbacks.record_frontend_timing,
             prepared_build_callbacks.build_diagnostics_payload,
             prepared_build_callbacks.set_binary_image_closure_payload,
+            prepared_build_callbacks.record_binary_image_analysis,
             artifacts_root,
         ),
         None,
@@ -850,6 +865,7 @@ def _prepare_frontend_pipeline(
         record_frontend_timing,
         build_diagnostics_payload,
         set_binary_image_closure_payload,
+        record_binary_image_analysis,
         artifacts_root,
     ) = prepared_frontend_stage_bundle
     midend_policy_outcomes_by_function = (
@@ -930,6 +946,29 @@ def _prepare_frontend_pipeline(
             command="build",
         )
     set_binary_image_closure_payload(import_plan.closure_payload())
+    if prepared_build_preamble.diagnostics_enabled:
+        record_binary_image_analysis(
+            "frontend",
+            _frontend_binary_image_analysis_payload(
+                import_plan=import_plan,
+                frontend_analysis=prepared_frontend_analysis,
+                frontend_module_costs=(
+                    prepared_frontend_lowering_config.frontend_module_costs
+                ),
+                known_classes=prepared_frontend_lowering_config.known_classes,
+                enable_phi=prepared_frontend_lowering_config.enable_phi,
+                module_chunking=prepared_frontend_lowering_config.module_chunking,
+                module_chunk_max_ops=(
+                    prepared_frontend_lowering_config.module_chunk_max_ops
+                ),
+                type_facts_present=(
+                    prepared_frontend_lowering_config.type_facts is not None
+                ),
+                compile_module_order=compile_module_order,
+                compile_module_layers=compile_module_layers,
+                target_python=prepared_build_config.target_python,
+            ),
+        )
     compile_module_graph = {
         name: path
         for name, path in import_plan.module_graph.items()
@@ -1026,6 +1065,7 @@ def _prepare_frontend_pipeline(
             midend_diagnostics_state,
             record_frontend_timing,
             build_diagnostics_payload,
+            record_binary_image_analysis,
             artifacts_root,
             import_plan.native_artifact_plan,
         ),

@@ -120,15 +120,29 @@ Modules may be:
   functions is cache content, not permission to skip cache emission.
 - Build-time graph materialization has one immutable binary image closure plan.
   The resolved entry scope records whether the image came from a CLI script,
-  CLI module/package, or configured project entry; the import plan classifies
-  declared roots, entry-reachable modules, runtime support, stdlib support,
-  package parents, namespace/generated modules, and external native artifacts.
+  CLI module/package, or configured project entry; the final image root set
+  includes the entry plus explicit static import roots. The import plan
+  classifies declared roots, entry-reachable modules, runtime support, stdlib
+  support, package parents, namespace/generated modules, and external native
+  artifacts.
   `known_modules` is the whole admitted runtime closure, and `compile_modules`
   is the sole authority for modules lowered into the binary. Dead-module
   elimination may narrow `compile_modules`, but it must not mutate the known
   closure, runtime import dispatch roots, or wrapper-cache dependency graph.
-  Wrapper build manifests must fingerprint the same closure plan rather than
-  rediscovering a parallel graph.
+  Wrapper build manifests and diagnostics must carry and fingerprint the same
+  closure plan, including dead-module-elimination mode, rather than exposing a
+  selector-only payload or rediscovering a parallel graph.
+- Build diagnostics carry a versioned `binary_image_analysis` envelope beside
+  the closure plan. It bridges source/AST metrics, module schedule hashes,
+  lowering policy, backend IR/TIR-input shape, and final artifact/link evidence
+  without becoming a second semantic authority. Cache keys use stable closure
+  and toolchain identities; volatile timing/allocation samples remain evidence
+  that joins back to those identities, not cache-key inputs.
+- The frontend `source_identity` projection is the SourceSite digest family:
+  source hashes, span-derived AST site digests, binary-image module roles, and a
+  semantic identity digest that IR, TIR, backend, allocation, and binary
+  projections can join against without embedding raw source text or duplicating
+  TIR facts.
 - `__import__` and `importlib.import_module` share the same Rust-owned runtime
   import transaction. Source-language imports call
   `molt_importlib_import_transaction` directly with explicit
@@ -217,7 +231,9 @@ Import/bootstrap changes are expected to be covered by the existing in-tree regr
   covers configured entry-file/entry-module image scopes, CLI selector
   override, ambiguous configured selectors, import-plan closure payload
   classification, fail-closed compile modules outside the admitted closure, and
-  wrapper-cache static-import closure fingerprinting.
+  diagnostics closure/analysis payloads, DME-aware wrapper-cache identity,
+  backend IR/artifact analysis projections, and wrapper-cache static-import
+  closure fingerprinting.
 - Module graph authority guards: `tests/cli/test_cli_module_graph_authority.py`
   keeps wrapper build cache dependency fingerprints routed through
   `_prepare_entry_module_graph` instead of direct discovery/static-import

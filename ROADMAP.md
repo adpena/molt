@@ -639,6 +639,10 @@ always/type-gated/constant opcode lists.
   `from importlib import import_module as alias`, while refusing static target
   collection after `import_module` rebinding. Module graph resolution now requires exact
   filesystem casing, known project modules authorize only exact graph members,
+  final binary-image closure payloads flow through build diagnostics and
+  wrapper-cache manifests with static roots plus DME cache identity, and
+  `binary_image_analysis` bridges source/AST, lowering schedule, backend
+  IR/TIR-input, and artifact evidence through a SourceSite digest ledger,
   and ordinary source syntax imports now call the same transaction intrinsic
   with explicit `name`/`fromlist`/`level` payloads while bootstrap/importlib
   modules keep a private cycle-breaking `MODULE_IMPORT` boundary, and the
