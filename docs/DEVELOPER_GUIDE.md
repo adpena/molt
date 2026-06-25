@@ -48,6 +48,18 @@ operator or reviewer says the work is being sliced too small, treat that as a
 binding correction: stop defending the local plan, widen the design radius, and
 close the coherent structural class.
 
+### Tiny Entry Slice, Full Structural Rip
+
+"Tiny slice and rip it open" means the slice is the entry aperture, not the
+deliverable. Pick one concrete invariant, command family, file cluster, or
+authority surface small enough to keep stable, then follow it through every
+sibling consumer needed to delete or unify the duplicate lane.
+
+This is the stable way to work after Codex/Desktop/process instability: one
+active slice, one bounded proof lane, no retry storms, and no parallel proof
+fanout. Subagents may map or migrate disjoint consumers inside the slice, but
+they must not multiply status chatter or broaden cleanup scope.
+
 ### Crash Recovery Structural Stability Mode
 
 If Codex, Claude, Desktop, WSL bridging, MCP/tool discovery, subagents, process
