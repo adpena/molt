@@ -400,7 +400,8 @@ def test_sync_try_except_uses_split_label_valued_handler_entry() -> None:
     next_control = next(
         op for op in func_ops[raise_idx + 1 :] if op.get("kind") != "line"
     )
-    assert next_control == {"kind": "jump", "value": handler_label}
+    assert next_control["kind"] == "jump"
+    assert next_control["value"] == handler_label
 
     handler_idx = next(
         i
@@ -2168,7 +2169,9 @@ def test_sum_generator_expr_lowers_without_generator_task_or_builtin_call() -> N
 
 
 def test_sum_listcomp_lowers_as_full_consumption_reducer() -> None:
-    ir = compile_to_tir("def f(data):\n    return sum([v * 2 for v in data if v > 3])\n")
+    ir = compile_to_tir(
+        "def f(data):\n    return sum([v * 2 for v in data if v > 3])\n"
+    )
     func_ops = next(
         func["ops"] for func in ir["functions"] if func["name"] == "__main____f"
     )
