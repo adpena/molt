@@ -380,6 +380,19 @@ process-sampling change that touches Codex/Claude/app-server/node-repl identity
 must update that classifier and the host-control matrix tests before changing
 kill behavior. Do not add ad hoc name/path matching elsewhere.
 
+## Tools — discover before you build (canonical registry)
+
+**Before building ANY analysis / verification / perf / audit / gate tool, it almost
+certainly EXISTS.** Read `tools/REGISTRY.md` first — the canonical, agent-facing catalog
+of molt's highest-signal tools. Agents have re-authored the same tool twice (two
+independent `perf_authority.py`; the float and int repr cuts built from opposite ends);
+that waste is forbidden. Run `uv run --python 3.12 python3 tools/ci_gate.py` to run every
+wired gate by default. A tool counts as real only when it is **wired** (run by ci_gate /
+a workflow / the build pipeline), **fast** (under its tier wall-clock budget), and
+**registered** in `tools/REGISTRY.md`; the `check_tool_registry` + `check_ci_walltime_budget`
+gates fail CI otherwise — so a potent tool can never go undiscovered, unrun, slow-enough-to-mute,
+or rebuilt.
+
 ## Build & Test
 
 - Build with `cargo build --profile release-fast -p molt-backend --features native-backend`
