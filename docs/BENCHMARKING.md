@@ -578,9 +578,13 @@ fixes Gatekeeper *trust*, not launch *speed*.
 Run the audit and feed it into the report:
 
 ```bash
-uv run --python 3.14 python3 tools/output_startup_size_audit.py \
+uv run --python 3.12 python3 tools/uv_project_env.py \
+  --python 3.14 --purpose output-startup-size -- \
+  uv run --python 3.14 python3 tools/output_startup_size_audit.py \
   --out-dir bench/results --json
-uv run --python 3.14 python3 tools/bench_report.py \
+uv run --python 3.12 python3 tools/uv_project_env.py \
+  --python 3.14 --purpose bench-report -- \
+  uv run --python 3.14 python3 tools/bench_report.py \
   --manifest bench/results/docs_manifest.json \
   --startup-audit bench/results/output_startup_size_audit.json \
   --update-status-doc
@@ -708,8 +712,13 @@ When enabled for `target=native`, Molt appends `-C target-cpu=native` to `RUSTFL
 ## Compile Throughput Tuning
 
 - Bootstrap a consistent throughput environment first:
-  - `eval "$(tools/throughput_env.sh --print)"`
-  - or `tools/throughput_env.sh --apply` (configures `sccache` size and runs cache prune policy)
+  - `uv run --python 3.12 python -m molt.cli dx env`
+  - or run the command directly under the same facts:
+    `uv run --python 3.12 python -m molt.cli dx run -- <command>`
+  - shell activation remains available with
+    `uv run --python 3.12 python -m molt.cli dx env --format posix`
+    or `--format powershell`; `tools/throughput_env.sh --apply` is a POSIX
+    compatibility wrapper over that resolver and still runs cache prune policy.
 - Defaults preserve explicit root env vars. When external artifacts are
   preferred, the tooling selects the first healthy configured external root
   (default order `/Volumes/VertigoDataTier/Molt`, then
@@ -749,7 +758,8 @@ When enabled for `target=native`, Molt appends `-C target-cpu=native` to `RUSTFL
   - `MOLT_CACHE=$MOLT_EXT_ROOT/.molt_cache`
   - `CARGO_TARGET_DIR=$MOLT_EXT_ROOT/target`
 - Keep diff runs on the same shared target:
-  - `MOLT_DIFF_CARGO_TARGET_DIR=$CARGO_TARGET_DIR` (set automatically by `tools/throughput_env.sh --apply`)
+  - `MOLT_DIFF_CARGO_TARGET_DIR=$CARGO_TARGET_DIR` (set automatically by
+    `molt dx env` / `molt dx run`)
 - One-file import/stdlib regression loops should use the first-class diff
   stdlib-profile flag and the persistent diff cache root:
   - `uv run --python 3.12 python3 -u tests/molt_diff.py --jobs 1 --stdlib-profile full --json tests/differential/stdlib/importlib_import_module_basic.py`

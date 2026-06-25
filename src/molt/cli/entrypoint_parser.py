@@ -14,6 +14,7 @@ from molt.cli.build_output_layout import (
     _BUILD_PROFILE_CHOICES,
     _DEPLOY_PROFILE_CHOICES,
 )
+from molt.cli.dx_cli import add_dx_parser
 from molt.cli.toolchain_validation import _VALIDATE_SUITE_CHOICES
 
 
@@ -1171,6 +1172,8 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
     doctor_parser.add_argument(
         "--verbose", action="store_true", help="Emit verbose diagnostics."
     )
+
+    add_dx_parser(subparsers)
 
     update_parser = subparsers.add_parser(
         "update",

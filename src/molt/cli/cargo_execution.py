@@ -9,6 +9,7 @@ import sys
 import time
 from typing import Iterator
 
+from molt.dx import DEFAULT_SCCACHE_CACHE_SIZE
 from molt.cli.build_locks import _release_file_lock, _try_acquire_file_lock
 from molt.cli.command_runtime import _run_completed_command
 from molt.cli.project_roots import _find_molt_root
@@ -34,6 +35,12 @@ def _maybe_enable_sccache(env: dict[str, str]) -> None:
     sccache = shutil.which("sccache")
     if sccache is None:
         return
+    root = _find_molt_root(Path.cwd()) or Path.cwd()
+    ext_root = Path(env.get("MOLT_EXT_ROOT", root)).expanduser()
+    if not ext_root.is_absolute():
+        ext_root = root / ext_root
+    env.setdefault("SCCACHE_DIR", str((ext_root / ".sccache").resolve()))
+    env.setdefault("SCCACHE_CACHE_SIZE", DEFAULT_SCCACHE_CACHE_SIZE)
     env["RUSTC_WRAPPER"] = sccache
 
 

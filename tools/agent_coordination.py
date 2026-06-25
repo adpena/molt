@@ -17,6 +17,12 @@ from typing import Any, BinaryIO, Sequence, TextIO
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+SRC_ROOT = REPO_ROOT / "src"
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
+
+from molt.dx import DX_ENV_KEYS, RunContext, render_env  # noqa: E402
+
 LOG_ROOT = Path("logs/agents")
 CODEX_STALL_ROOT = LOG_ROOT / "codex_stall"
 CANONICAL_ARTIFACT_ROOTS = (
@@ -706,7 +712,9 @@ def build_record(
     if role not in VALID_ROLES:
         raise ValueError(f"unknown proof role: {role}")
     branch, commit = read_git_identity(repo_root)
-    session_id = session or os.environ.get("MOLT_SESSION_ID") or task
+    session_id = (
+        session or os.environ.get("MOLT_SESSION_ID") or f"agent-{task}-{os.getpid()}"
+    )
     agent_id = agent or os.environ.get("MOLT_AGENT_ID") or session_id
     base = task_dir(repo_root, task)
     return {
@@ -726,6 +734,8 @@ def build_record(
         "owned_paths": list(owned_paths),
         "artifact_roots": ["target/", "tmp/", "logs/", "bench/results/"],
         "environment": environment_snapshot(repo_root),
+        "env_sh": str(base / "env.sh"),
+        "env_ps1": str(base / "env.ps1"),
         "report_path": repo_relative(report_path, repo_root),
         "progress_log": repo_relative(base / "progress.log", repo_root),
         "artifacts_dir": repo_relative(base / "artifacts", repo_root),
@@ -760,6 +770,10 @@ def render_report(record: dict[str, Any]) -> str:
 {owned_lines}
 - Canonical artifact roots:
 {artifact_lines}
+- Env: {record["env_sh"]}
+- Env PowerShell: {record["env_ps1"]}
+- MOLT_SESSION_ID: {record["session_id"]}
+- CARGO_TARGET_DIR: {record.get("dx_env", {}).get("CARGO_TARGET_DIR", "see env file")}
 
 ## Environment
 - Platform: {environment.get("platform_system", "unknown")} {environment.get("platform_release", "")} {environment.get("platform_machine", "")}
@@ -781,10 +795,12 @@ def render_report(record: dict[str, Any]) -> str:
 1. Read docs/ops/MULTI_AGENT_COORDINATION.md.
 2. Fill coordination fields.
 3. Write plan and first falsifying command.
-4. Start implementation or proof lane.
+4. Run commands with `molt dx run -- <command>` or source the env file first.
 
 ## Resume Instructions
 - Export MOLT_SESSION_ID="{record["session_id"]}"
+- POSIX: source "{record["env_sh"]}"
+- PowerShell: . "{record["env_ps1"]}"
 - Resume from the next command recorded above.
 """
 
@@ -1104,8 +1120,29 @@ def init_task(args: argparse.Namespace) -> dict[str, Any]:
         session=args.session,
         created_at=created_at,
     )
+    dx_env = RunContext(
+        repo_root,
+        session_prefix=f"agent-{task}",
+        prefer_external_artifacts=True,
+    ).dx_env(
+        os.environ | {"MOLT_SESSION_ID": record["session_id"]},
+        create_dirs=False,
+    )
+    record["dx_env"] = {key: dx_env[key] for key in DX_ENV_KEYS if key in dx_env}
+    (base / "env.sh").write_text(
+        render_env(dx_env, DX_ENV_KEYS, "posix") + "\n",
+        encoding="utf-8",
+    )
+    (base / "env.ps1").write_text(
+        render_env(dx_env, DX_ENV_KEYS, "powershell") + "\n",
+        encoding="utf-8",
+    )
     report_path.write_text(render_report(record), encoding="utf-8")
     write_json(base / "coordination.json", record)
+    with (base / "progress.log").open("a", encoding="utf-8") as progress:
+        progress.write(
+            f"{created_at} initialized task={task} session={record['session_id']}\n"
+        )
     return record
 
 
@@ -1339,7 +1376,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.json:
             print(json.dumps(record, indent=2, sort_keys=True))
         else:
-            print(f"Created task scaffold at {LOG_ROOT / record['task']}")
+            print(f"Created task scaffold at {task_dir(repo_root, record['task'])}")
             print("Read docs/ops/MULTI_AGENT_COORDINATION.md before long proof lanes.")
         return 0
 

@@ -5,7 +5,7 @@ import argparse
 import os
 from pathlib import Path
 import sys
-from typing import Sequence
+from typing import Literal, Sequence, cast
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -13,21 +13,16 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from molt.dx import CANONICAL_RUN_ENV_KEYS, RunContext  # noqa: E402
-
-
-def _shell_double_quote(value: str) -> str:
-    escaped = (
-        value.replace("\\", "\\\\")
-        .replace('"', '\\"')
-        .replace("$", "\\$")
-        .replace("`", "\\`")
-    )
-    return f'"{escaped}"'
+from molt.dx import (  # noqa: E402
+    CANONICAL_RUN_ENV_KEYS,
+    DX_ENV_KEYS,
+    RunContext,
+    render_env,
+)
 
 
 def emit_shell_exports(env: dict[str, str], keys: Sequence[str]) -> str:
-    return "\n".join(f"export {key}={_shell_double_quote(env[key])}" for key in keys)
+    return render_env(env, keys, "posix")
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -41,14 +36,35 @@ def main(argv: Sequence[str] | None = None) -> int:
         action="store_true",
         help="Prefer a healthy external artifact root when MOLT_EXT_ROOT is unset.",
     )
+    parser.add_argument(
+        "--dx",
+        action="store_true",
+        help="Emit the full cross-platform Molt DX environment facts.",
+    )
+    parser.add_argument(
+        "--format",
+        choices=("dotenv", "posix", "powershell", "cmd", "json"),
+        default="posix",
+        help="Output format (default: posix).",
+    )
     args = parser.parse_args(argv)
 
-    env = RunContext(
+    context = RunContext(
         args.root,
         session_prefix=args.session_prefix,
         prefer_external_artifacts=args.prefer_external_artifacts,
-    ).canonical_env(os.environ, create_dirs=False)
-    print(emit_shell_exports(env, CANONICAL_RUN_ENV_KEYS))
+    )
+    env = (
+        context.dx_env(os.environ, create_dirs=False)
+        if args.dx
+        else context.canonical_env(os.environ, create_dirs=False)
+    )
+    keys = DX_ENV_KEYS if args.dx else CANONICAL_RUN_ENV_KEYS
+    fmt = cast(
+        Literal["dotenv", "posix", "powershell", "cmd", "json"],
+        args.format,
+    )
+    print(render_env(env, keys, fmt))
     return 0
 
 
