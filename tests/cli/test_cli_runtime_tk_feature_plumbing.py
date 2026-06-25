@@ -1063,7 +1063,7 @@ def test_backend_fingerprint_reuses_stored_hash_when_inputs_unchanged(
     assert baseline is not None
 
     calls = 0
-    original = cli_build_pipeline._hash_runtime_file
+    original = RUNTIME_FINGERPRINTS._hash_runtime_file
 
     def wrapped(path: Path, root: Path, hasher: object) -> None:
         nonlocal calls

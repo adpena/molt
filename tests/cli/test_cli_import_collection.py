@@ -34,6 +34,7 @@ from molt.cli import frontend_execution as cli_frontend_execution
 from molt.cli import frontend_pipeline as cli_frontend_pipeline
 from molt.cli import module_cache as cli_module_cache
 from molt.cli import module_graph as cli_module_graph
+from molt.cli import module_resolution as cli_module_resolution
 from molt.cli import module_source as cli_module_source
 from molt.cli import typecheck as cli_typecheck
 
@@ -253,7 +254,7 @@ def test_resolve_module_path_prefers_package_over_module(tmp_path: Path) -> None
     package_dir.mkdir()
     package_init = package_dir / "__init__.py"
     package_init.write_text("value = 'package'\n")
-    assert cli._resolve_module_path("shadowed", [tmp_path]) == package_init
+    assert cli_module_resolution._resolve_module_path("shadowed", [tmp_path]) == package_init
 
 
 def test_resolve_module_path_requires_exact_case(tmp_path: Path) -> None:
@@ -262,18 +263,18 @@ def test_resolve_module_path_requires_exact_case(tmp_path: Path) -> None:
     tensor = package_dir / "tensor.py"
     tensor.write_text("class Tensor:\n    pass\n", encoding="utf-8")
 
-    assert cli._resolve_module_path("tinygrad.tensor", [tmp_path]) == tensor
-    assert cli._resolve_module_path("tinygrad.Tensor", [tmp_path]) is None
+    assert cli_module_resolution._resolve_module_path("tinygrad.tensor", [tmp_path]) == tensor
+    assert cli_module_resolution._resolve_module_path("tinygrad.Tensor", [tmp_path]) is None
 
 
 def test_stdlib_test_support_layout_resolves_like_cpython() -> None:
-    stdlib_root = cli._stdlib_root_path()
-    support_pkg = cli._resolve_module_path("test.support", [stdlib_root])
-    import_helper = cli._resolve_module_path(
+    stdlib_root = cli_module_resolution._stdlib_root_path()
+    support_pkg = cli_module_resolution._resolve_module_path("test.support", [stdlib_root])
+    import_helper = cli_module_resolution._resolve_module_path(
         "test.support.import_helper", [stdlib_root]
     )
-    os_helper = cli._resolve_module_path("test.support.os_helper", [stdlib_root])
-    warnings_helper = cli._resolve_module_path(
+    os_helper = cli_module_resolution._resolve_module_path("test.support.os_helper", [stdlib_root])
+    warnings_helper = cli_module_resolution._resolve_module_path(
         "test.support.warnings_helper", [stdlib_root]
     )
 
@@ -565,7 +566,7 @@ def test_prepare_entry_module_graph_adds_runtime_import_support_once(
         source_path=entry_path,
         entry_module="demo",
         module_roots=[tmp_path],
-        stdlib_root=cli._stdlib_root_path(),
+        stdlib_root=cli_module_resolution._stdlib_root_path(),
         project_root=None,
         entry_tree=entry_tree,
         diagnostics_enabled=True,
@@ -597,7 +598,7 @@ def test_materialize_import_plan_does_not_rescan_importlib_support(
         source_path=entry_path,
         entry_module="demo",
         module_roots=[tmp_path],
-        stdlib_root=cli._stdlib_root_path(),
+        stdlib_root=cli_module_resolution._stdlib_root_path(),
         project_root=None,
         entry_tree=entry_tree,
         diagnostics_enabled=False,
@@ -620,7 +621,7 @@ def test_materialize_import_plan_does_not_rescan_importlib_support(
     import_plan = cli._materialize_import_plan(
         prepared_module_graph=prepared,
         module_reasons=module_reasons,
-        stdlib_root=cli._stdlib_root_path(),
+        stdlib_root=cli_module_resolution._stdlib_root_path(),
         artifacts_root=tmp_path,
         entry_module="demo",
         diagnostics_enabled=False,
@@ -655,7 +656,7 @@ def test_materialize_import_plan_retains_external_native_artifact_plan(
         source_path=entry_path,
         entry_module="demo",
         module_roots=[tmp_path, external_root],
-        stdlib_root=cli._stdlib_root_path(),
+        stdlib_root=cli_module_resolution._stdlib_root_path(),
         project_root=None,
         entry_tree=entry_tree,
         diagnostics_enabled=False,
@@ -670,7 +671,7 @@ def test_materialize_import_plan_retains_external_native_artifact_plan(
     import_plan = cli._materialize_import_plan(
         prepared_module_graph=prepared,
         module_reasons=module_reasons,
-        stdlib_root=cli._stdlib_root_path(),
+        stdlib_root=cli_module_resolution._stdlib_root_path(),
         artifacts_root=tmp_path,
         entry_module="demo",
         diagnostics_enabled=False,
@@ -696,7 +697,7 @@ def test_core_closure_preserves_stdlib_nested_scan_exceptions(
         source_path=entry_path,
         entry_module="demo",
         module_roots=[tmp_path],
-        stdlib_root=cli._stdlib_root_path(),
+        stdlib_root=cli_module_resolution._stdlib_root_path(),
         project_root=None,
         entry_tree=entry_tree,
         diagnostics_enabled=True,
@@ -724,7 +725,7 @@ def test_core_closure_copy_reaches_backend_stdlib_symbol_contract(
         source_path=entry_path,
         entry_module="demo",
         module_roots=[tmp_path],
-        stdlib_root=cli._stdlib_root_path(),
+        stdlib_root=cli_module_resolution._stdlib_root_path(),
         project_root=None,
         entry_tree=entry_tree,
         diagnostics_enabled=True,
@@ -738,7 +739,7 @@ def test_core_closure_copy_reaches_backend_stdlib_symbol_contract(
     import_plan = cli._materialize_import_plan(
         prepared_module_graph=prepared,
         module_reasons=module_reasons,
-        stdlib_root=cli._stdlib_root_path(),
+        stdlib_root=cli_module_resolution._stdlib_root_path(),
         artifacts_root=tmp_path / "artifacts",
         entry_module="demo",
         diagnostics_enabled=False,
@@ -802,7 +803,7 @@ def test_prepare_entry_module_graph_marks_source_import_syntax_runtime_supported
         source_path=entry_path,
         entry_module="demo",
         module_roots=[tmp_path],
-        stdlib_root=cli._stdlib_root_path(),
+        stdlib_root=cli_module_resolution._stdlib_root_path(),
         project_root=None,
         entry_tree=entry_tree,
         diagnostics_enabled=False,
@@ -831,7 +832,7 @@ def test_prepare_entry_module_graph_marks_dynamic_import_entry_as_runtime_suppor
         source_path=entry_path,
         entry_module="demo",
         module_roots=[tmp_path],
-        stdlib_root=cli._stdlib_root_path(),
+        stdlib_root=cli_module_resolution._stdlib_root_path(),
         project_root=None,
         entry_tree=entry_tree,
         diagnostics_enabled=False,
@@ -869,7 +870,7 @@ def test_prepare_entry_module_graph_keeps_dependency_function_dynamic_import_laz
         source_path=entry_path,
         entry_module="demo",
         module_roots=[tmp_path],
-        stdlib_root=cli._stdlib_root_path(),
+        stdlib_root=cli_module_resolution._stdlib_root_path(),
         project_root=None,
         entry_tree=entry_tree,
         diagnostics_enabled=False,
@@ -910,7 +911,7 @@ def test_prepare_entry_module_graph_admits_declared_static_runtime_import(
         source_path=entry_path,
         entry_module="demo",
         module_roots=[tmp_path],
-        stdlib_root=cli._stdlib_root_path(),
+        stdlib_root=cli_module_resolution._stdlib_root_path(),
         project_root=None,
         entry_tree=entry_tree,
         diagnostics_enabled=False,
@@ -954,7 +955,7 @@ def test_prepare_entry_module_graph_full_scans_declared_static_module(
         source_path=entry_path,
         entry_module="demo",
         module_roots=[tmp_path],
-        stdlib_root=cli._stdlib_root_path(),
+        stdlib_root=cli_module_resolution._stdlib_root_path(),
         project_root=None,
         entry_tree=entry_tree,
         diagnostics_enabled=False,
@@ -992,7 +993,7 @@ def test_prepare_entry_module_graph_rejects_unadmitted_static_runtime_import(
         source_path=entry_path,
         entry_module="demo",
         module_roots=[tmp_path],
-        stdlib_root=cli._stdlib_root_path(),
+        stdlib_root=cli_module_resolution._stdlib_root_path(),
         project_root=None,
         entry_tree=entry_tree,
         diagnostics_enabled=False,
@@ -1030,7 +1031,7 @@ def test_prepare_entry_module_graph_marks_dependency_module_init_dynamic_import(
         source_path=entry_path,
         entry_module="demo",
         module_roots=[tmp_path],
-        stdlib_root=cli._stdlib_root_path(),
+        stdlib_root=cli_module_resolution._stdlib_root_path(),
         project_root=None,
         entry_tree=entry_tree,
         diagnostics_enabled=False,
@@ -1056,7 +1057,7 @@ def test_prepare_entry_module_graph_collects_literal_dunder_import_targets(
         source_path=entry_path,
         entry_module="demo",
         module_roots=[tmp_path],
-        stdlib_root=cli._stdlib_root_path(),
+        stdlib_root=cli_module_resolution._stdlib_root_path(),
         project_root=None,
         entry_tree=entry_tree,
         diagnostics_enabled=False,
@@ -1109,7 +1110,7 @@ def test_prepare_entry_module_graph_closes_added_package_parent_imports(
         source_path=entry_path,
         entry_module="demo",
         module_roots=[tmp_path],
-        stdlib_root=cli._stdlib_root_path(),
+        stdlib_root=cli_module_resolution._stdlib_root_path(),
         project_root=tmp_path,
         entry_tree=entry_tree,
         diagnostics_enabled=True,
@@ -1142,7 +1143,7 @@ def test_prepare_entry_module_graph_marks_generated_importer_references_explicit
         source_path=entry_path,
         entry_module="demo",
         module_roots=[tmp_path],
-        stdlib_root=cli._stdlib_root_path(),
+        stdlib_root=cli_module_resolution._stdlib_root_path(),
         project_root=None,
         entry_tree=entry_tree,
         diagnostics_enabled=False,
@@ -1167,7 +1168,7 @@ def test_materialize_import_plan_does_not_mutate_prepared_entry_graph(
         source_path=entry_path,
         entry_module="demo",
         module_roots=[tmp_path],
-        stdlib_root=cli._stdlib_root_path(),
+        stdlib_root=cli_module_resolution._stdlib_root_path(),
         project_root=None,
         entry_tree=entry_tree,
         diagnostics_enabled=False,
@@ -1183,7 +1184,7 @@ def test_materialize_import_plan_does_not_mutate_prepared_entry_graph(
     import_plan = cli._materialize_import_plan(
         prepared_module_graph=prepared,
         module_reasons={},
-        stdlib_root=cli._stdlib_root_path(),
+        stdlib_root=cli_module_resolution._stdlib_root_path(),
         artifacts_root=tmp_path,
         entry_module="demo",
         diagnostics_enabled=False,
@@ -1202,7 +1203,7 @@ def test_import_plan_freezes_graph_and_allowlist(tmp_path: Path) -> None:
         source_path=entry_path,
         entry_module="demo",
         module_roots=[tmp_path],
-        stdlib_root=cli._stdlib_root_path(),
+        stdlib_root=cli_module_resolution._stdlib_root_path(),
         project_root=None,
         entry_tree=entry_tree,
         diagnostics_enabled=False,
@@ -1216,7 +1217,7 @@ def test_import_plan_freezes_graph_and_allowlist(tmp_path: Path) -> None:
     import_plan = cli._materialize_import_plan(
         prepared_module_graph=prepared,
         module_reasons={},
-        stdlib_root=cli._stdlib_root_path(),
+        stdlib_root=cli_module_resolution._stdlib_root_path(),
         artifacts_root=tmp_path,
         entry_module="demo",
         diagnostics_enabled=False,
@@ -1245,7 +1246,7 @@ def test_generated_importer_import_plan_includes_runtime_support_modules(
         source_path=entry_path,
         entry_module="demo",
         module_roots=[tmp_path],
-        stdlib_root=cli._stdlib_root_path(),
+        stdlib_root=cli_module_resolution._stdlib_root_path(),
         project_root=None,
         entry_tree=entry_tree,
         diagnostics_enabled=False,
@@ -1259,7 +1260,7 @@ def test_generated_importer_import_plan_includes_runtime_support_modules(
     import_plan = cli._materialize_import_plan(
         prepared_module_graph=prepared,
         module_reasons={},
-        stdlib_root=cli._stdlib_root_path(),
+        stdlib_root=cli_module_resolution._stdlib_root_path(),
         artifacts_root=tmp_path,
         entry_module="demo",
         diagnostics_enabled=False,
@@ -1487,7 +1488,7 @@ def test_prepare_entry_module_graph_marks_getattr_runtime_import_entry_as_suppor
         source_path=entry_path,
         entry_module="demo",
         module_roots=[tmp_path],
-        stdlib_root=cli._stdlib_root_path(),
+        stdlib_root=cli_module_resolution._stdlib_root_path(),
         project_root=None,
         entry_tree=entry_tree,
         diagnostics_enabled=False,
@@ -1755,7 +1756,7 @@ def test_static_backend_ir_module_call_closure_allows_lazy_missing_import() -> N
 
 
 def _discover_with_core_modules(entry: Path) -> dict[str, Path]:
-    stdlib_root = cli._stdlib_root_path()
+    stdlib_root = cli_module_resolution._stdlib_root_path()
     module_roots = [ROOT.resolve(), (ROOT / "src").resolve(), entry.parent.resolve()]
     roots = module_roots + [stdlib_root]
     stdlib_allowlist = cli._stdlib_allowlist()
@@ -1811,7 +1812,7 @@ def test_external_root_direct_import_does_not_admit_transitive_children(
     (project / "main.py").write_text("import hugepkg\n")
     (package / "__init__.py").write_text("import hugepkg.heavy\nVALUE = 1\n")
     (package / "heavy.py").write_text("VALUE = 2\n")
-    stdlib_root = cli._stdlib_root_path()
+    stdlib_root = cli_module_resolution._stdlib_root_path()
     module_roots = [project.resolve(), external_root.resolve()]
     policy = cli._ImportAdmissionPolicy(external_roots=(external_root.resolve(),))
 
@@ -1842,7 +1843,7 @@ def test_external_static_package_admission_closes_transitive_children(
     (project / "main.py").write_text("import hugepkg\n")
     (package / "__init__.py").write_text("import hugepkg.heavy\nVALUE = 1\n")
     (package / "heavy.py").write_text("VALUE = 2\n")
-    stdlib_root = cli._stdlib_root_path()
+    stdlib_root = cli_module_resolution._stdlib_root_path()
     module_roots = [project.resolve(), external_root.resolve()]
     policy = cli._ImportAdmissionPolicy(
         external_roots=(external_root.resolve(),),
@@ -1878,7 +1879,7 @@ def test_external_package_parent_closure_cannot_backdoor_children(
     (subpackage / "__init__.py").write_text("import externalpkg.sub.massive\n")
     (subpackage / "massive.py").write_text("VALUE = 2\n")
     (subpackage / "leaf.py").write_text("VALUE = 3\n")
-    stdlib_root = cli._stdlib_root_path()
+    stdlib_root = cli_module_resolution._stdlib_root_path()
     policy = cli._ImportAdmissionPolicy(external_roots=(external_root.resolve(),))
 
     prepared, error = cli._prepare_entry_module_graph(
@@ -1921,7 +1922,7 @@ def test_from_import_graph_does_not_admit_case_mismatched_attribute_child(
     tensor = package / "tensor.py"
     tensor.write_text("class Tensor:\n    pass\n", encoding="utf-8")
 
-    stdlib_root = cli._stdlib_root_path()
+    stdlib_root = cli_module_resolution._stdlib_root_path()
     module_roots = [project.resolve(), site.resolve()]
     graph, explicit_imports = cli._discover_module_graph(
         entry,
@@ -1954,11 +1955,11 @@ def test_from_import_star_graph_admits_static_all_child_module(
     tensor = package / "tensor.py"
     tensor.write_text("class Tensor:\n    pass\n", encoding="utf-8")
 
-    stdlib_root = cli._stdlib_root_path()
+    stdlib_root = cli_module_resolution._stdlib_root_path()
     module_roots = [project.resolve(), site.resolve()]
     roots = [*module_roots, stdlib_root]
     stdlib_allowlist = cli._stdlib_allowlist()
-    cache = cli._ModuleResolutionCache()
+    cache = cli_module_resolution._ModuleResolutionCache()
     graph, explicit_imports = cli._discover_module_graph(
         entry,
         roots,
@@ -2546,7 +2547,7 @@ def test_collect_imports_resolves_importlib_relative_resolve_name() -> None:
 
 
 def test_collect_imports_real_importlib_init_includes_runtime_submodules() -> None:
-    importlib_init = cli._stdlib_root_path() / "importlib" / "__init__.py"
+    importlib_init = cli_module_resolution._stdlib_root_path() / "importlib" / "__init__.py"
     tree = ast.parse(importlib_init.read_text(encoding="utf-8"), filename=str(importlib_init))
 
     imports = cli._collect_imports(
@@ -2650,7 +2651,7 @@ def test_discover_module_graph_includes_importlib_from_alias_target(
         "mod = load_module('pkg.helper')\n",
         encoding="utf-8",
     )
-    stdlib_root = cli._stdlib_root_path()
+    stdlib_root = cli_module_resolution._stdlib_root_path()
     module_roots = [tmp_path.resolve()]
 
     graph, explicit_imports = cli._discover_module_graph(
@@ -3663,22 +3664,22 @@ def test_shared_module_resolution_cache_reduces_repeated_resolution(
     helper = subpkg / "helper.py"
     helper.write_text("VALUE = 1\n")
 
-    stdlib_root = cli._stdlib_root_path()
+    stdlib_root = cli_module_resolution._stdlib_root_path()
     module_roots = [tmp_path.resolve()]
     roots = module_roots + [stdlib_root]
     stdlib_allowlist = cli._stdlib_allowlist()
 
     resolve_calls = 0
-    original = cli_module_graph._resolve_module_path_parts
+    original = cli_module_resolution._resolve_module_path_parts
 
     def wrapped(parts: tuple[str, ...], roots_arg: list[Path]) -> Path | None:
         nonlocal resolve_calls
         resolve_calls += 1
         return original(parts, roots_arg)
 
-    monkeypatch.setattr(cli_module_graph, "_resolve_module_path_parts", wrapped)
+    monkeypatch.setattr(cli_module_resolution, "_resolve_module_path_parts", wrapped)
 
-    shared_cache = cli._ModuleResolutionCache()
+    shared_cache = cli_module_resolution._ModuleResolutionCache()
     cli._discover_module_graph(
         entry,
         roots,
@@ -3749,7 +3750,7 @@ def test_shared_module_resolution_cache_reuses_source_and_ast_across_passes(
     entry = pkg / "helper.py"
     entry.write_text("VALUE = 1\n")
 
-    stdlib_root = cli._stdlib_root_path()
+    stdlib_root = cli_module_resolution._stdlib_root_path()
     module_roots = [tmp_path.resolve()]
     roots = module_roots + [stdlib_root]
     stdlib_allowlist = cli._stdlib_allowlist()
@@ -3785,7 +3786,7 @@ def test_shared_module_resolution_cache_reuses_source_and_ast_across_passes(
     monkeypatch.setattr(cli_module_source, "_read_module_source", wrapped_read)
     monkeypatch.setattr(cli.ast, "parse", wrapped_parse)
 
-    shared_cache = cli._ModuleResolutionCache()
+    shared_cache = cli_module_resolution._ModuleResolutionCache()
     graph, _ = cli._discover_module_graph(
         entry,
         roots,
@@ -3835,7 +3836,7 @@ def test_shared_module_resolution_cache_reuses_resolved_paths(
     entry = tmp_path / "pkg" / "__init__.py"
     entry.parent.mkdir()
     entry.write_text("VALUE = 1\n")
-    stdlib_root = cli._stdlib_root_path()
+    stdlib_root = cli_module_resolution._stdlib_root_path()
 
     resolve_calls = 0
     original_resolve = Path.resolve
@@ -3847,7 +3848,7 @@ def test_shared_module_resolution_cache_reuses_resolved_paths(
 
     monkeypatch.setattr(Path, "resolve", wrapped_resolve)
 
-    cache = cli._ModuleResolutionCache()
+    cache = cli_module_resolution._ModuleResolutionCache()
     module_roots = [tmp_path]
     first_name = cache.module_name_from_path(entry, module_roots, stdlib_root)
     first_is_stdlib = cache.is_stdlib_path(entry, stdlib_root)
@@ -3866,7 +3867,7 @@ def test_shared_module_resolution_cache_reuses_resolved_paths(
 def test_shared_module_resolution_cache_skips_resolve_for_normalized_absolute_paths(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    cache = cli._ModuleResolutionCache()
+    cache = cli_module_resolution._ModuleResolutionCache()
     path = (tmp_path / "module.py").resolve()
 
     def fail_resolve(self: Path, *args: object, **kwargs: object) -> Path:
@@ -3880,7 +3881,7 @@ def test_shared_module_resolution_cache_skips_resolve_for_normalized_absolute_pa
 def test_shared_module_resolution_cache_resolves_relative_paths(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    cache = cli._ModuleResolutionCache()
+    cache = cli_module_resolution._ModuleResolutionCache()
     rel_path = Path("pkg") / "module.py"
     resolved_path = (tmp_path / rel_path).resolve()
     calls = 0
@@ -3907,7 +3908,7 @@ def test_shared_module_resolution_cache_reuses_import_scans(
     helper = entry.parent / "helper.py"
     helper.write_text("import warnings\n")
 
-    stdlib_root = cli._stdlib_root_path()
+    stdlib_root = cli_module_resolution._stdlib_root_path()
     module_roots = [tmp_path.resolve()]
     roots = module_roots + [stdlib_root]
     stdlib_allowlist = cli._stdlib_allowlist()
@@ -3928,7 +3929,7 @@ def test_shared_module_resolution_cache_reuses_import_scans(
         cli, "_read_persisted_module_graph", lambda *args, **kwargs: None
     )
 
-    cache = cli._ModuleResolutionCache()
+    cache = cli_module_resolution._ModuleResolutionCache()
     graph, _ = cli._discover_module_graph(
         entry,
         roots,
@@ -3953,6 +3954,7 @@ def test_shared_module_resolution_cache_reuses_import_scans(
         cache.collect_imports(
             module_path,
             tree,
+            collector=cli_module_graph._collect_imports,
             module_name=module_name,
             is_package=module_path.name == "__init__.py",
             import_scan_mode=import_scan_mode,
@@ -3970,7 +3972,7 @@ def test_discover_module_graph_reuses_persisted_import_scan_cache(
     helper = entry.parent / "helper.py"
     helper.write_text("import warnings\n")
 
-    stdlib_root = cli._stdlib_root_path()
+    stdlib_root = cli_module_resolution._stdlib_root_path()
     module_roots = [tmp_path.resolve()]
     roots = module_roots + [stdlib_root]
     stdlib_allowlist = cli._stdlib_allowlist()
@@ -4321,7 +4323,7 @@ def test_discover_module_graph_skips_persisted_caches_when_disabled(
     helper = entry.parent / "helper.py"
     helper.write_text("VALUE = 1\n")
 
-    stdlib_root = cli._stdlib_root_path()
+    stdlib_root = cli_module_resolution._stdlib_root_path()
     module_roots = [tmp_path.resolve()]
     roots = module_roots + [stdlib_root]
     stdlib_allowlist = cli._stdlib_allowlist()
@@ -4376,7 +4378,7 @@ def test_discover_module_graph_reuses_persisted_graph_cache(
     helper = entry.parent / "helper.py"
     helper.write_text("import warnings\n")
 
-    stdlib_root = cli._stdlib_root_path()
+    stdlib_root = cli_module_resolution._stdlib_root_path()
     module_roots = [tmp_path.resolve()]
     roots = module_roots + [stdlib_root]
     stdlib_allowlist = cli._stdlib_allowlist()
@@ -4404,11 +4406,11 @@ def test_discover_module_graph_reuses_precomputed_entry_imports(
     helper = package / "helper.py"
     helper.write_text("VALUE = 1\n")
 
-    stdlib_root = cli._stdlib_root_path()
+    stdlib_root = cli_module_resolution._stdlib_root_path()
     module_roots = [tmp_path.resolve()]
     roots = module_roots + [stdlib_root]
     stdlib_allowlist = cli._stdlib_allowlist()
-    cache = cli._ModuleResolutionCache()
+    cache = cli_module_resolution._ModuleResolutionCache()
     reads: list[Path] = []
     original_read = cache.read_module_source
 
@@ -4446,10 +4448,10 @@ def test_discover_module_graph_from_paths_batches_shared_dependency_scan(
     shared = tmp_path / "shared.py"
     shared.write_text("VALUE = 1\n")
 
-    stdlib_root = cli._stdlib_root_path()
+    stdlib_root = cli_module_resolution._stdlib_root_path()
     module_roots = [tmp_path.resolve()]
     roots = module_roots + [stdlib_root]
-    cache = cli._ModuleResolutionCache()
+    cache = cli_module_resolution._ModuleResolutionCache()
     reads: list[Path] = []
     original_read = cache.read_module_source
 
@@ -4486,7 +4488,7 @@ def test_discover_module_graph_from_paths_deduplicates_repeated_import_names(
     shared = tmp_path / "shared.py"
     shared.write_text("VALUE = 1\n")
 
-    stdlib_root = cli._stdlib_root_path()
+    stdlib_root = cli_module_resolution._stdlib_root_path()
     module_roots = [tmp_path.resolve()]
     roots = module_roots + [stdlib_root]
     expand_calls = 0
@@ -4540,7 +4542,7 @@ def test_module_graph_dependency_scan_skips_lazy_backend_bodies(
     (autogen / "__init__.py").write_text("", encoding="utf-8")
     (autogen / "mesa.py").write_text("VALUE = 3\n", encoding="utf-8")
 
-    stdlib_root = cli._stdlib_root_path()
+    stdlib_root = cli_module_resolution._stdlib_root_path()
     module_roots = [tmp_path.resolve()]
     roots = module_roots + [stdlib_root]
 
@@ -4551,7 +4553,7 @@ def test_module_graph_dependency_scan_skips_lazy_backend_bodies(
         stdlib_root,
         None,
         set(),
-        resolver_cache=cli._ModuleResolutionCache(),
+        resolver_cache=cli_module_resolution._ModuleResolutionCache(),
     )
 
     assert "pkg.device" in graph
@@ -4572,7 +4574,7 @@ def test_discover_module_graph_reuses_persisted_paths_for_unchanged_modules(
     extra = entry.parent / "extra.py"
     extra.write_text("VALUE = 2\n")
 
-    stdlib_root = cli._stdlib_root_path()
+    stdlib_root = cli_module_resolution._stdlib_root_path()
     module_roots = [tmp_path.resolve()]
     roots = module_roots + [stdlib_root]
     stdlib_allowlist = cli._stdlib_allowlist()
@@ -4589,7 +4591,7 @@ def test_discover_module_graph_reuses_persisted_paths_for_unchanged_modules(
     assert {"pkg.helper", "pkg.extra"} <= explicit_imports
 
     helper.write_text("VALUE = 10\n")
-    cache = cli._ModuleResolutionCache()
+    cache = cli_module_resolution._ModuleResolutionCache()
     read_paths: list[Path] = []
     original_read = cache.read_module_source
     original_resolve = cache.resolve_module
@@ -4641,7 +4643,7 @@ def test_discover_module_graph_prunes_removed_persisted_dependency(
     old = entry.parent / "old.py"
     old.write_text("VALUE = 2\n")
 
-    stdlib_root = cli._stdlib_root_path()
+    stdlib_root = cli_module_resolution._stdlib_root_path()
     module_roots = [tmp_path.resolve()]
     roots = module_roots + [stdlib_root]
     stdlib_allowlist = cli._stdlib_allowlist()
@@ -4669,7 +4671,7 @@ def test_discover_module_graph_prunes_removed_persisted_dependency(
     assert "pkg.old" not in graph
     assert "pkg.old" not in explicit_imports
 
-    cache = cli._ModuleResolutionCache()
+    cache = cli_module_resolution._ModuleResolutionCache()
 
     def fail_resolve(*args: object, **kwargs: object) -> Path | None:
         raise AssertionError("unexpected module resolution")
@@ -5903,7 +5905,7 @@ def test_load_module_imports_reuses_persisted_cache(
     module_path = tmp_path / "pkg.py"
     module_path.write_text("import warnings\n")
     source = cli_module_source._read_module_source(module_path)
-    cache = cli._ModuleResolutionCache()
+    cache = cli_module_resolution._ModuleResolutionCache()
     tree = cache.parse_module_ast(module_path, source, filename=str(module_path))
 
     imports = cli._load_module_imports(
@@ -5939,7 +5941,7 @@ def test_load_module_analysis_reuses_persisted_cache(
     module_path = tmp_path / "pkg.py"
     module_path.write_text("import warnings\n\ndef f(a, *, b=1):\n    return a + b\n")
     source = cli_module_source._read_module_source(module_path)
-    cache = cli._ModuleResolutionCache()
+    cache = cli_module_resolution._ModuleResolutionCache()
 
     (
         tree,
@@ -6009,7 +6011,7 @@ def test_load_module_analysis_persists_bytes_defaults(
     module_path = tmp_path / "pkg.py"
     module_path.write_text("def f(blob=b'abc'):\n    return blob\n")
     source = cli_module_source._read_module_source(module_path)
-    cache = cli._ModuleResolutionCache()
+    cache = cli_module_resolution._ModuleResolutionCache()
 
     (
         tree,
@@ -6088,7 +6090,7 @@ def test_load_module_analysis_rejects_persisted_defaults_without_function_kind(
 ) -> None:
     module_path = tmp_path / "pkg.py"
     module_path.write_text("def g():\n    yield 1\n")
-    cache = cli._ModuleResolutionCache()
+    cache = cli_module_resolution._ModuleResolutionCache()
     stat = module_path.stat()
     source_sha256 = cli_module_source._source_content_sha256(module_path, stat)
     assert source_sha256 is not None
@@ -6161,7 +6163,7 @@ def test_load_module_analysis_reuses_persisted_module_analysis_imports(
     module_path = tmp_path / "pkg.py"
     module_path.write_text("import warnings\n\ndef f(a, *, b=1):\n    return a + b\n")
     source = cli_module_source._read_module_source(module_path)
-    cache = cli._ModuleResolutionCache()
+    cache = cli_module_resolution._ModuleResolutionCache()
 
     cli._load_module_analysis(
         module_path,
@@ -6222,7 +6224,7 @@ def test_load_module_analysis_keeps_full_and_module_init_caches_disjoint(
     module_path = tmp_path / "pkg.py"
     module_path.write_text("import os\n\ndef f():\n    import warnings\n")
     source = cli_module_source._read_module_source(module_path)
-    cache = cli._ModuleResolutionCache()
+    cache = cli_module_resolution._ModuleResolutionCache()
 
     first = cli._load_module_analysis(
         module_path,
@@ -6256,7 +6258,7 @@ def test_load_module_analysis_keeps_full_and_module_init_caches_disjoint(
     def fail_parse(*args: object, **kwargs: object) -> ast.AST:
         raise AssertionError("unexpected parse")
 
-    cache = cli._ModuleResolutionCache()
+    cache = cli_module_resolution._ModuleResolutionCache()
     monkeypatch.setattr(cache, "parse_module_ast", fail_parse)
     full_cached = cli._load_module_analysis(
         module_path,
@@ -6293,7 +6295,7 @@ def test_load_module_analysis_keeps_module_init_and_full_caches_disjoint_reverse
     module_path = tmp_path / "pkg.py"
     module_path.write_text("import os\n\ndef f():\n    import warnings\n")
     source = cli_module_source._read_module_source(module_path)
-    cache = cli._ModuleResolutionCache()
+    cache = cli_module_resolution._ModuleResolutionCache()
 
     first = cli._load_module_analysis(
         module_path,
@@ -6331,7 +6333,7 @@ def test_load_module_analysis_reuses_single_module_stat_for_persisted_hits(
     module_path = tmp_path / "pkg.py"
     module_path.write_text("import warnings\n\ndef f(a, *, b=1):\n    return a + b\n")
     source = cli_module_source._read_module_source(module_path)
-    cache = cli._ModuleResolutionCache()
+    cache = cli_module_resolution._ModuleResolutionCache()
 
     cli._load_module_analysis(
         module_path,
@@ -6397,7 +6399,7 @@ def test_load_module_analysis_marks_body_only_edit_as_interface_stable(
 ) -> None:
     module_path = tmp_path / "pkg.py"
     module_path.write_text("import warnings\n\ndef f(a, *, b=1):\n    return a + b\n")
-    cache = cli._ModuleResolutionCache()
+    cache = cli_module_resolution._ModuleResolutionCache()
 
     cli._load_module_analysis(
         module_path,
@@ -6413,7 +6415,7 @@ def test_load_module_analysis_marks_body_only_edit_as_interface_stable(
     module_path.write_text(
         "import warnings\n\ndef f(a, *, b=1):\n    total = a + b\n    return total\n"
     )
-    cache = cli._ModuleResolutionCache()
+    cache = cli_module_resolution._ModuleResolutionCache()
 
     (
         tree,
@@ -6750,7 +6752,7 @@ def test_prepare_frontend_parallel_batch_reuses_precomputed_context_digest(
             module_sources={},
             project_root=project_root,
             known_classes_snapshot={},
-            module_resolution_cache=cli._ModuleResolutionCache(),
+            module_resolution_cache=cli_module_resolution._ModuleResolutionCache(),
             parse_codec="json",
             type_hint_policy="ignore",
             fallback_policy="error",
@@ -6787,7 +6789,7 @@ def test_load_cached_module_lowering_result_reuses_single_module_stat(
 ) -> None:
     module_path = tmp_path / "alpha.py"
     module_path.write_text("VALUE = 1\n")
-    cache = cli._ModuleResolutionCache()
+    cache = cli_module_resolution._ModuleResolutionCache()
     context_digest = cli._module_lowering_context_digest({"module": "alpha", "v": 1})
     assert context_digest is not None
 
@@ -7318,7 +7320,7 @@ def test_prepare_frontend_parallel_batch_precomputes_scoped_known_classes_once(
                 "DepClass": {"module": "alpha", "fields": {}},
                 "UnrelatedClass": {"module": "unrelated", "fields": {}},
             },
-            module_resolution_cache=cli._ModuleResolutionCache(),
+            module_resolution_cache=cli_module_resolution._ModuleResolutionCache(),
             parse_codec="json",
             type_hint_policy="ignore",
             fallback_policy="error",
@@ -7379,7 +7381,7 @@ def test_prepare_frontend_parallel_batch_uses_path_backed_source_leases(
             module_source_catalog=module_source_catalog,
             project_root=tmp_path,
             known_classes_snapshot={},
-            module_resolution_cache=cli._ModuleResolutionCache(),
+            module_resolution_cache=cli_module_resolution._ModuleResolutionCache(),
             parse_codec="json",
             type_hint_policy="ignore",
             fallback_policy="error",
@@ -7787,7 +7789,7 @@ def test_load_cached_module_lowering_result_reuses_precomputed_views(
 ) -> None:
     module_path = tmp_path / "alpha.py"
     module_path.write_text("VALUE = 1\n")
-    cache = cli._ModuleResolutionCache()
+    cache = cli_module_resolution._ModuleResolutionCache()
     context_digest = cli._module_lowering_context_digest({"module": "alpha", "v": 1})
     assert context_digest is not None
 
@@ -8705,14 +8707,14 @@ def test_prepare_frontend_analysis_uses_path_backed_source_catalog(
         entry_module="main",
         namespace_module_names=set(),
     )
-    resolution_cache = cli._ModuleResolutionCache()
+    resolution_cache = cli_module_resolution._ModuleResolutionCache()
 
     analysis, failure = cli_frontend_pipeline._prepare_frontend_analysis(
         module_graph=module_graph,
         module_graph_metadata=metadata,
         module_resolution_cache=resolution_cache,
         roots=[tmp_path],
-        stdlib_root=cli._stdlib_root_path(),
+        stdlib_root=cli_module_resolution._stdlib_root_path(),
         stdlib_allowlist=cli._stdlib_allowlist(),
         project_root=tmp_path,
         entry_module="main",
@@ -8857,7 +8859,7 @@ def test_typing_enables_nested_import_scan_for_collections_abc(tmp_path: Path) -
 def test_spawn_entry_override_not_required_for_plain_script(tmp_path: Path) -> None:
     entry = tmp_path / "main.py"
     entry.write_text("print('ok')\n")
-    stdlib_root = cli._stdlib_root_path()
+    stdlib_root = cli_module_resolution._stdlib_root_path()
     module_roots = [ROOT.resolve(), (ROOT / "src").resolve(), entry.parent.resolve()]
     roots = module_roots + [stdlib_root]
     stdlib_allowlist = cli._stdlib_allowlist()
@@ -8905,7 +8907,7 @@ def test_spawn_entry_override_not_required_for_plain_script(tmp_path: Path) -> N
 def test_spawn_entry_override_required_for_multiprocessing(tmp_path: Path) -> None:
     entry = tmp_path / "main.py"
     entry.write_text("import multiprocessing\nprint('ok')\n")
-    stdlib_root = cli._stdlib_root_path()
+    stdlib_root = cli_module_resolution._stdlib_root_path()
     module_roots = [ROOT.resolve(), (ROOT / "src").resolve(), entry.parent.resolve()]
     roots = module_roots + [stdlib_root]
     stdlib_allowlist = cli._stdlib_allowlist()
@@ -9221,7 +9223,7 @@ def test_build_frontend_module_costs_precomputes_source_and_dep_costs() -> None:
 def test_build_stdlib_like_module_flags_precomputes_classification() -> None:
     flags = cli._build_stdlib_like_module_flags(
         {
-            "warnings": cli._stdlib_root_path() / "warnings.py",
+            "warnings": cli_module_resolution._stdlib_root_path() / "warnings.py",
             "pkg.mod": Path("/tmp/pkg/mod.py"),
         }
     )
@@ -9230,7 +9232,7 @@ def test_build_stdlib_like_module_flags_precomputes_classification() -> None:
 
 
 def test_build_stdlib_like_module_flags_marks_runtime_shipped_modules() -> None:
-    package_root = cli._stdlib_root_path().parent
+    package_root = cli_module_resolution._stdlib_root_path().parent
     flags = cli._build_stdlib_like_module_flags(
         {
             "molt.gpu.tensor": package_root / "gpu" / "tensor.py",
@@ -9275,7 +9277,7 @@ def test_augment_module_graph_does_not_add_entry_alias_as_second_module(
     examples_dir.mkdir()
     source_path = examples_dir / "hello.py"
     source_path.write_text("print('hello')\n")
-    stdlib_root = cli._stdlib_root_path()
+    stdlib_root = cli_module_resolution._stdlib_root_path()
     module_graph = {"hello": source_path}
 
     augmentation, error = cli._augment_module_graph_for_entry_and_runtime(
@@ -9287,7 +9289,7 @@ def test_augment_module_graph_does_not_add_entry_alias_as_second_module(
         project_root=project_root,
         stdlib_allowlist=cli._stdlib_allowlist(),
         entry_imports=(),
-        module_resolution_cache=cli._ModuleResolutionCache(),
+        module_resolution_cache=cli_module_resolution._ModuleResolutionCache(),
         module_graph=module_graph,
         module_reasons={},
         diagnostics_enabled=False,
@@ -9792,7 +9794,7 @@ def test_module_name_from_path_outside_module_roots_uses_stem(tmp_path: Path) ->
     roots_root = tmp_path / "module_roots"
     stdlib_root = roots_root / "stdlib"
     roots = [roots_root / "project", roots_root / "src"]
-    assert cli._module_name_from_path(script, roots, stdlib_root) == "outside_script"
+    assert cli_module_resolution._module_name_from_path(script, roots, stdlib_root) == "outside_script"
 
 
 def test_expand_module_chain_ignores_invalid_module_names() -> None:
@@ -12450,7 +12452,7 @@ def test_run_backend_pipeline_defers_native_runtime_readiness_until_after_codege
             module_graph={},
             module_source_catalog=cli_module_source._ModuleSourceCatalog(leases={}),
             project_root=tmp_path,
-            module_resolution_cache=cli._ModuleResolutionCache(),
+            module_resolution_cache=cli_module_resolution._ModuleResolutionCache(),
             parse_codec="json",
             type_hint_policy="check",
             fallback_policy="error",
