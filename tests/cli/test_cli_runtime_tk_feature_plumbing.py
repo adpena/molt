@@ -7,6 +7,7 @@ import subprocess
 from pathlib import Path
 
 import molt.cli as cli
+from molt.cli import build_pipeline as cli_build_pipeline
 
 COMPILER_METADATA = importlib.import_module("molt.cli.compiler_metadata")
 RUNTIME_FEATURES = importlib.import_module("molt.cli.runtime_features")
@@ -577,7 +578,7 @@ def test_ensure_runtime_lib_full_profile_passes_stdlib_full_to_cargo(
         raising=True,
     )
     monkeypatch.setattr(
-        cli,
+        cli_build_pipeline,
         "_artifact_needs_rebuild",
         lambda *args, **kwargs: True,
         raising=True,
@@ -785,13 +786,13 @@ def test_prepare_native_link_resolves_runtime_alias_for_stdlib_profile(
         return ["clang", str(runtime_lib)], None, None
 
     monkeypatch.setattr(
-        cli,
+        cli_build_pipeline,
         "_build_native_link_command",
         fake_build_native_link_command,
         raising=True,
     )
     monkeypatch.setattr(
-        cli,
+        cli_build_pipeline,
         "_link_fingerprint",
         lambda *args, **kwargs: {
             "hash": "link",
@@ -801,14 +802,14 @@ def test_prepare_native_link_resolves_runtime_alias_for_stdlib_profile(
         raising=True,
     )
     monkeypatch.setattr(RUNTIME_BUILD, "_read_runtime_fingerprint", lambda path: None)
-    monkeypatch.setattr(cli, "_artifact_needs_rebuild", lambda *args, **kwargs: True)
+    monkeypatch.setattr(cli_build_pipeline, "_artifact_needs_rebuild", lambda *args, **kwargs: True)
     monkeypatch.setattr(
-        cli,
+        cli_build_pipeline,
         "_run_native_link_command",
         lambda **kwargs: subprocess.CompletedProcess(kwargs["link_cmd"], 0, "", ""),
     )
 
-    prepared, error = cli._prepare_native_link(
+    prepared, error = cli_build_pipeline._prepare_native_link(
         output_artifact=output_obj,
         trusted=False,
         capabilities_list=None,
@@ -864,25 +865,31 @@ def test_prepare_backend_setup_warms_native_runtime_with_requested_stdlib_profil
     warmed_profiles: list[str | None] = []
 
     monkeypatch.setattr(
-        cli,
+        cli_build_pipeline,
         "_initialize_runtime_artifact_state",
         lambda *args, **kwargs: runtime_state,
         raising=True,
     )
     monkeypatch.setattr(
-        cli,
+        cli_build_pipeline,
         "_prepare_backend_cache_setup",
         lambda *args, **kwargs: cache_setup,
         raising=True,
     )
     monkeypatch.setattr(
-        cli,
+        cli_build_pipeline,
+        "_stage_runtime_intrinsic_symbols_for_native_codegen",
+        lambda *args, **kwargs: ("", None),
+        raising=True,
+    )
+    monkeypatch.setattr(
+        cli_build_pipeline,
         "_maybe_start_native_runtime_lib_ready_async",
         lambda *args, **kwargs: warmed_profiles.append(kwargs["stdlib_profile"]),
         raising=True,
     )
 
-    prepared, err = cli._prepare_backend_setup(
+    prepared, err = cli_build_pipeline._prepare_backend_setup(
         is_rust_transpile=False,
         is_luau_transpile=False,
         is_wasm=False,
@@ -946,7 +953,7 @@ def test_ensure_runtime_lib_rebuilds_unfingerprinted_prebuilt_archive(
     )
     monkeypatch.setattr(RUNTIME_BUILD, "_read_runtime_fingerprint", lambda path: None)
     monkeypatch.setattr(
-        cli, "_artifact_needs_rebuild", lambda *args, **kwargs: True, raising=True
+        cli_build_pipeline, "_artifact_needs_rebuild", lambda *args, **kwargs: True, raising=True
     )
     monkeypatch.setattr(
         cli,
@@ -1035,14 +1042,14 @@ def test_backend_fingerprint_reuses_stored_hash_when_inputs_unchanged(
     source = tmp_path / "backend_source.rs"
     source.write_text("pub fn marker() {}\n")
     monkeypatch.setattr(
-        cli,
+        cli_build_pipeline,
         "_backend_source_paths",
         lambda _project_root, _features=(): [source],
         raising=True,
     )
-    monkeypatch.setattr(cli, "_rustc_version", lambda: "rustc-test", raising=True)
+    monkeypatch.setattr(cli_build_pipeline, "_rustc_version", lambda: "rustc-test", raising=True)
 
-    baseline = cli._backend_fingerprint(
+    baseline = cli_build_pipeline._backend_fingerprint(
         tmp_path,
         cargo_profile="dev-fast",
         rustflags="",
@@ -1051,15 +1058,15 @@ def test_backend_fingerprint_reuses_stored_hash_when_inputs_unchanged(
     assert baseline is not None
 
     calls = 0
-    original = cli._hash_runtime_file
+    original = cli_build_pipeline._hash_runtime_file
 
     def wrapped(path: Path, root: Path, hasher: object) -> None:
         nonlocal calls
         calls += 1
         original(path, root, hasher)
 
-    monkeypatch.setattr(cli, "_hash_runtime_file", wrapped, raising=True)
-    reused = cli._backend_fingerprint(
+    monkeypatch.setattr(cli_build_pipeline, "_hash_runtime_file", wrapped, raising=True)
+    reused = cli_build_pipeline._backend_fingerprint(
         tmp_path,
         cargo_profile="dev-fast",
         rustflags="",
@@ -1157,7 +1164,7 @@ def test_ensure_runtime_lib_passes_tk_feature_to_native_build(
         raising=True,
     )
     monkeypatch.setattr(
-        cli, "_artifact_needs_rebuild", lambda *args, **kwargs: True, raising=True
+        cli_build_pipeline, "_artifact_needs_rebuild", lambda *args, **kwargs: True, raising=True
     )
     monkeypatch.setattr(RUNTIME_BUILD, "_maybe_enable_sccache", lambda _env: None, raising=True)
     monkeypatch.setattr(
@@ -1234,7 +1241,7 @@ def test_ensure_runtime_lib_does_not_probe_fingerprint_exists(
         raising=True,
     )
     monkeypatch.setattr(
-        cli, "_artifact_needs_rebuild", lambda *args, **kwargs: True, raising=True
+        cli_build_pipeline, "_artifact_needs_rebuild", lambda *args, **kwargs: True, raising=True
     )
     monkeypatch.setattr(RUNTIME_BUILD, "_maybe_enable_sccache", lambda _env: None, raising=True)
     monkeypatch.setattr(

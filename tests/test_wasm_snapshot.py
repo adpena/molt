@@ -149,7 +149,7 @@ def test_generate_snapshot_header_function(tmp_path):
     wasm_path = tmp_path / "output.wasm"
     wasm_path.write_bytes(b"\x00asm" + b"\x00" * 100)
 
-    from molt.cli import _generate_snapshot_header
+    from molt.cli.build_pipeline import _generate_snapshot_header
 
     _generate_snapshot_header(
         output_wasm=wasm_path,

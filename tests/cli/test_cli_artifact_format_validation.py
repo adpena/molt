@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import molt.cli as cli
+from molt.cli import build_pipeline as cli_build_pipeline
 
 
 def test_is_valid_static_library_artifact_checks_archive_magic(tmp_path: Path) -> None:
@@ -41,4 +42,4 @@ def test_artifact_newer_than_sources_rejects_invalid_static_library(
     source = tmp_path / "source.rs"
     source.write_text("// source\n")
 
-    assert cli._artifact_newer_than_sources(runtime_lib, [source]) is False
+    assert cli_build_pipeline._artifact_newer_than_sources(runtime_lib, [source]) is False

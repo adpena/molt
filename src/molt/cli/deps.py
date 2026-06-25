@@ -62,7 +62,9 @@ def _fail(*args: Any, **kwargs: Any) -> Any:
 
 
 def _replace_directory_tree_from_source(*args: Any, **kwargs: Any) -> Any:
-    return _cli_module()._replace_directory_tree_from_source(*args, **kwargs)
+    from molt.cli import build_pipeline as _build_pipeline
+
+    return _build_pipeline._replace_directory_tree_from_source(*args, **kwargs)
 
 
 def _atomic_write_bytes(*args: Any, **kwargs: Any) -> Any:

@@ -10,12 +10,14 @@ from typing import Mapping
 import pytest
 
 import molt.cli as cli
+from molt.cli import build_pipeline as cli_build_pipeline
 from molt.cli import build_inputs as cli_build_inputs
 from tests.cli.process_guard import run_cli_test_process
 
 
 ROOT = Path(__file__).resolve().parents[2]
 BACKEND_CACHE = importlib.import_module("molt.cli.backend_cache")
+BACKEND_EXECUTION = importlib.import_module("molt.cli.backend_execution")
 CACHE_KEYS = importlib.import_module("molt.cli.cache_keys")
 
 
@@ -24,7 +26,7 @@ def _cache_variant(
     *,
     codegen_env: str = "codegen=v1",
 ) -> str:
-    return cli._build_cache_variant(
+    return cli_build_pipeline._build_cache_variant(
         profile="dev",
         runtime_cargo="dev-fast",
         backend_cargo="dev-fast",
@@ -250,7 +252,7 @@ def test_shared_stdlib_cache_key_changes_with_capability_config() -> None:
         capability_profiles=["fs"],
         manifest_env_vars={"MOLT_CAPABILITIES": "fs.read"},
     )
-    variant_with_caps = cli._build_cache_variant(
+    variant_with_caps = cli_build_pipeline._build_cache_variant(
         profile="dev",
         runtime_cargo="dev-fast",
         backend_cargo="dev-fast",
@@ -335,11 +337,11 @@ def test_prepare_backend_cache_setup_threads_capability_config_to_stdlib_key(
         stdlib_profile="micro",
     )
 
-    setup_base = cli._prepare_backend_cache_setup(
+    setup_base = cli_build_pipeline._prepare_backend_cache_setup(
         output_artifact=tmp_path / "base.o",
         **common,
     )
-    setup_caps = cli._prepare_backend_cache_setup(
+    setup_caps = cli_build_pipeline._prepare_backend_cache_setup(
         output_artifact=tmp_path / "caps.o",
         capabilities_list=["fs.read"],
         capability_profiles=["fs"],
@@ -389,12 +391,12 @@ def test_prepare_backend_cache_setup_threads_ambient_capability_env_to_stdlib_ke
     )
 
     monkeypatch.delenv("MOLT_CAPABILITIES", raising=False)
-    setup_without_env = cli._prepare_backend_cache_setup(
+    setup_without_env = cli_build_pipeline._prepare_backend_cache_setup(
         output_artifact=tmp_path / "without-env.o",
         **common,
     )
     monkeypatch.setenv("MOLT_CAPABILITIES", "fs.read,fs.write,env.read")
-    setup_with_env = cli._prepare_backend_cache_setup(
+    setup_with_env = cli_build_pipeline._prepare_backend_cache_setup(
         output_artifact=tmp_path / "with-env.o",
         **common,
     )
@@ -874,7 +876,8 @@ def test_ensure_backend_binary_preserves_repo_local_shared_stdlib_cache(
     fingerprint_sidecar = cache_root / "module_cache_old.fingerprint"
     fingerprint_sidecar.write_text("old-fingerprint\n", encoding="utf-8")
 
-    backend_bin = tmp_path / "target" / "dev-fast" / "molt-backend"
+    exe_suffix = ".exe" if os.name == "nt" else ""
+    backend_bin = tmp_path / "target" / "dev-fast" / f"molt-backend{exe_suffix}"
     fingerprint = {"hash": "abc", "rustc": "rustc", "inputs_digest": "inputs"}
     build_cmds: list[list[str]] = []
 
@@ -894,11 +897,20 @@ def test_ensure_backend_binary_preserves_repo_local_shared_stdlib_cache(
 
     monkeypatch.setenv("MOLT_CACHE", str(cache_root))
     monkeypatch.setenv("MOLT_HOME", str(home_bin.parent))
-    monkeypatch.setattr(cli, "_backend_fingerprint", fake_backend_fingerprint)
-    monkeypatch.setattr(cli, "_codesign_binary", lambda _binary_path: None)
-    monkeypatch.setattr(cli, "_run_cargo_with_sccache_retry", fake_run_cargo)
+    monkeypatch.setattr(
+        cli_build_pipeline, "_backend_fingerprint", fake_backend_fingerprint
+    )
+    monkeypatch.setattr(cli_build_pipeline, "_codesign_binary", lambda _path: None)
+    monkeypatch.setattr(
+        cli_build_pipeline, "_run_cargo_with_sccache_retry", fake_run_cargo
+    )
+    monkeypatch.setattr(
+        cli_build_pipeline,
+        "_run_subprocess_captured_to_tempfiles",
+        lambda cmd, **kwargs: subprocess.CompletedProcess(cmd, 0, b"", b""),
+    )
 
-    assert cli._ensure_backend_binary(
+    assert cli_build_pipeline._ensure_backend_binary(
         backend_bin,
         cargo_timeout=1.0,
         json_output=True,
@@ -1490,13 +1502,13 @@ def test_shared_stdlib_cache_key_changes_with_relocatable_linker_identity(
     linker_a.write_text("a", encoding="utf-8")
     linker_b.write_text("b", encoding="utf-8")
     variant_a = _cache_variant(
-        codegen_env=cli._backend_codegen_env_digest(
+        codegen_env=BACKEND_EXECUTION._backend_codegen_env_digest(
             is_wasm=False,
             env={"MOLT_LINKER": str(linker_a)},
         )
     )
     variant_b = _cache_variant(
-        codegen_env=cli._backend_codegen_env_digest(
+        codegen_env=BACKEND_EXECUTION._backend_codegen_env_digest(
             is_wasm=False,
             env={"MOLT_LINKER": str(linker_b)},
         )

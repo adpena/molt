@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 import molt.cli as cli
+from molt.cli import build_pipeline as cli_build_pipeline
 from molt.cli import typecheck as cli_typecheck
 
 BACKEND_EXECUTION = importlib.import_module("molt.cli.backend_execution")
@@ -80,12 +81,12 @@ def test_native_link_command_uses_build_memory_guard(monkeypatch) -> None:
     class FakeHarness:
         memory_guard = FakeMemoryGuard()
 
-    monkeypatch.setattr(cli, "_run_completed_command", fake_run)
+    monkeypatch.setattr(cli_build_pipeline, "_run_completed_command", fake_run)
     monkeypatch.setattr(
         cli, "_load_cli_harness_memory_guard", lambda cwd: FakeHarness()
     )
 
-    result = cli._run_native_link_command(
+    result = cli_build_pipeline._run_native_link_command(
         link_cmd=["cc", "main.o"],
         json_output=True,
         link_timeout=12.0,

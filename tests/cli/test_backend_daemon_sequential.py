@@ -21,6 +21,7 @@ from pathlib import Path
 
 import pytest
 import molt.cli as cli
+from molt.cli import build_pipeline as cli_build_pipeline
 
 from tests.cli.process_guard import cli_test_popen_kwargs, close_cli_test_process_group
 
@@ -42,7 +43,7 @@ def _candidate_daemon_binaries() -> list[Path]:
     profile = "dev-fast"
     path = cli._backend_bin_path(ROOT, profile, ("native-backend",))
     try:
-        if cli._ensure_backend_binary(
+        if cli_build_pipeline._ensure_backend_binary(
             path,
             cargo_timeout=180.0,
             json_output=True,
