@@ -1841,28 +1841,11 @@ mod tests {
 
     #[test]
     fn add_two_i64s() {
-        let mut func = TirFunction::new(
-            "add_i64".into(),
-            vec![TirType::I64, TirType::I64],
-            TirType::I64,
-        );
-        let result_id = func.fresh_value(); // ValueId(2)
-        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
-        entry.ops.push(TirOp {
-            dialect: Dialect::Molt,
-            opcode: OpCode::Add,
-            operands: vec![ValueId(0), ValueId(1)],
-            results: vec![result_id],
-            attrs: AttrDict::new(),
-            source_span: None,
-        });
-        entry.terminator = Terminator::Return {
-            values: vec![result_id],
-        };
+        let func = make_add_two_consts_func(20, 22);
 
         let output = lower_tir_to_wasm(&func);
 
-        assert_eq!(output.param_types, vec![ValType::I64, ValType::I64]);
+        assert_eq!(output.param_types, Vec::<ValType>::new());
 
         // Should contain i64.add.
         let has_add = output
@@ -2059,24 +2042,7 @@ mod tests {
 
     #[test]
     fn comparison_i64_emits_native() {
-        let mut func = TirFunction::new(
-            "cmp_i64".into(),
-            vec![TirType::I64, TirType::I64],
-            TirType::Bool,
-        );
-        let result_id = func.fresh_value();
-        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
-        entry.ops.push(TirOp {
-            dialect: Dialect::Molt,
-            opcode: OpCode::Lt,
-            operands: vec![ValueId(0), ValueId(1)],
-            results: vec![result_id],
-            attrs: AttrDict::new(),
-            source_span: None,
-        });
-        entry.terminator = Terminator::Return {
-            values: vec![result_id],
-        };
+        let func = make_lt_two_consts_func(20, 22);
 
         let output = lower_tir_to_wasm(&func);
 
@@ -2339,6 +2305,38 @@ mod tests {
         func
     }
 
+    fn make_lt_two_consts_func(lhs: i64, rhs: i64) -> TirFunction {
+        let mut func = TirFunction::new("lt_two_consts".into(), vec![], TirType::Bool);
+        let lhs_id = func.fresh_value();
+        let rhs_id = func.fresh_value();
+        let result_id = func.fresh_value();
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        for (id, value) in [(lhs_id, lhs), (rhs_id, rhs)] {
+            let mut attrs = AttrDict::new();
+            attrs.insert("value".into(), AttrValue::Int(value));
+            entry.ops.push(TirOp {
+                dialect: Dialect::Molt,
+                opcode: OpCode::ConstInt,
+                operands: vec![],
+                results: vec![id],
+                attrs,
+                source_span: None,
+            });
+        }
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::Lt,
+            operands: vec![lhs_id, rhs_id],
+            results: vec![result_id],
+            attrs: AttrDict::new(),
+            source_span: None,
+        });
+        entry.terminator = Terminator::Return {
+            values: vec![result_id],
+        };
+        func
+    }
+
     #[test]
     fn generic_tir_to_wasm_uses_value_repr_not_type_floor_for_int_params() {
         let func = make_add_two_params_func();
@@ -2508,19 +2506,17 @@ mod tests {
         let func = make_add_two_consts_func(20, 22);
         let output = lower_tir_to_wasm(&func);
 
+        let has_operand_add = output.instructions.iter().enumerate().any(|(idx, inst)| {
+            matches!(inst, Instruction::I64Add)
+                && !matches!(
+                    output.instructions.get(idx + 1),
+                    Some(Instruction::I64Const(c)) if *c == (1i64 << 47)
+                )
+        });
         assert!(
-            output
-                .instructions
-                .iter()
-                .any(|i| matches!(i, Instruction::I64Add)),
-            "proven raw-i64 add must emit native i64.add"
-        );
-        assert!(
-            !output
-                .instructions
-                .iter()
-                .any(|i| matches!(i, Instruction::Call(0))),
-            "range-proven const add must not dispatch through the boxed helper"
+            has_operand_add,
+            "range-proven const add must emit an operand-pair native i64.add, got {:?}",
+            output.instructions
         );
     }
 

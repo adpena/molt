@@ -140,19 +140,19 @@ fn s_value(op: &TirOp) -> Option<&str> {
 /// these annotations are *function-local name strings* (a Python local like `x`
 /// or `i`) with no id to remap — a verbatim copy carries the callee's names into
 /// the caller. If a callee name collides with a caller value of a different
-/// container kind, the name-keyed container-dispatch plan
-/// (`LlvmReprFacts::container_kind`, the only `_simple_out`-keyed reader on the
-/// merged TIR) would resolve the inlined value to the *caller's* kind — a wrong
-/// `molt_len_*` selection, i.e. a miscompile. It would likewise alias two values
-/// onto one SimpleIR slot in the native TIR→SimpleIR lowering.
+/// container kind, any surviving name-keyed SimpleIR consumer would resolve the
+/// inlined value to the *caller's* kind — a wrong specialization, i.e. a
+/// miscompile. It would likewise alias two values onto one SimpleIR slot in the
+/// native TIR→SimpleIR lowering.
 ///
 /// Dropping the names lets each inlined value fall to its unique canonical
 /// (`ValueId`-derived) name, so it is classified by the authoritative
 /// `ValueId`-keyed `TirType` instead. Freshly-built inlined containers keep their
-/// concrete `TirType`, so the correct kind is preserved for the common case; only
-/// a `DynBox`-typed inlined container loses `len` specialization (sound — generic
-/// dispatch). The soundness-critical integer-carrier `repr_by_value` is already
-/// `ValueId`-keyed and is unaffected either way.
+/// concrete `TirType`, so the correct kind is preserved for the common case;
+/// only a `DynBox`-typed inlined container loses name-keyed specialization
+/// (sound — generic dispatch). LLVM `len` specialization now reads refined TIR
+/// type directly, and the soundness-critical carrier `repr_by_value` is
+/// `ValueId`-keyed, so neither path depends on cloned SimpleIR names.
 fn clone_attrs_without_simple_names(attrs: &AttrDict) -> AttrDict {
     attrs
         .iter()
