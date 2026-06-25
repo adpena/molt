@@ -224,7 +224,6 @@ struct AliasEdge<'a> {
 struct FunctionFactIndex<'a> {
     stores: Vec<StoreVarEdge<'a>>,
     aliases: Vec<AliasEdge<'a>>,
-    output_ops: Vec<&'a OpIR>,
     data_ops: Vec<&'a OpIR>,
     store_index_ops: Vec<&'a OpIR>,
     sentinel_outputs: PlanHashSet<String>,
@@ -235,7 +234,6 @@ impl<'a> FunctionFactIndex<'a> {
     fn for_function(func_ir: &'a FunctionIR) -> Self {
         let mut stores = Vec::with_capacity(func_ir.ops.len() / 4 + 1);
         let mut aliases = Vec::with_capacity(func_ir.ops.len() / 4 + 1);
-        let mut output_ops = Vec::with_capacity(func_ir.ops.len());
         let mut data_ops = Vec::with_capacity(func_ir.ops.len());
         let mut store_index_ops = Vec::with_capacity(func_ir.ops.len() / 8 + 1);
         let mut sentinel_outputs = plan_hash_set(func_ir.ops.len() / 16 + 1);
@@ -254,7 +252,6 @@ impl<'a> FunctionFactIndex<'a> {
                 delete_targets.insert(target.clone());
             }
             if let Some(out) = op.out.as_deref() {
-                output_ops.push(op);
                 if op.kind == "missing" {
                     sentinel_outputs.insert(out.to_string());
                 }
@@ -273,7 +270,6 @@ impl<'a> FunctionFactIndex<'a> {
         Self {
             stores,
             aliases,
-            output_ops,
             data_ops,
             store_index_ops,
             sentinel_outputs,
@@ -2137,23 +2133,13 @@ impl ScalarRepresentationPlan {
             return ScalarPrimaryNameSets::default();
         }
 
-        let (int_like, bool_like, float_like, str_like, _) = self.scalar_name_sets();
-        let param_name_set: BTreeSet<&str> = func_ir.params.iter().map(String::as_str).collect();
-        let (int_inline_safe, int_full_deopt) =
-            self.project_int_primary_name_tiers_from_tir_views(fact_index, tir_value_views);
+        let projected = self.project_scalar_name_reprs_from_tir_views(fact_index, tir_value_views);
+        let int_inline_safe = Self::projected_names_with_repr(&projected, Repr::RawI64Safe);
+        let int_full_deopt = Self::projected_names_with_repr(&projected, Repr::RawI64FullDeopt);
         let mut int_primary = int_inline_safe.clone();
         int_primary.extend(int_full_deopt.iter().cloned());
-        let bool_primary = self.compute_bool_primary_names(
-            fact_index,
-            &param_name_set,
-            &int_primary,
-            &bool_like,
-            &int_like,
-            &float_like,
-            &str_like,
-        );
-        let float_primary =
-            self.compute_float_primary_names(fact_index, &param_name_set, &int_like, &float_like);
+        let bool_primary = Self::projected_names_with_repr(&projected, Repr::Bool);
+        let float_primary = Self::projected_names_with_repr(&projected, Repr::FloatUnboxed);
 
         ScalarPrimaryNameSets {
             int: int_primary,
@@ -2164,371 +2150,184 @@ impl ScalarRepresentationPlan {
         }
     }
 
-    fn project_int_primary_name_tiers_from_tir_views(
+    fn projected_names_with_repr(
+        projected: &BTreeMap<String, Repr>,
+        expected: Repr,
+    ) -> BTreeSet<String> {
+        projected
+            .iter()
+            .filter(|(_, repr)| **repr == expected)
+            .map(|(name, _)| name.clone())
+            .collect()
+    }
+
+    fn project_scalar_name_reprs_from_tir_views(
         &self,
         fact_index: &FunctionFactIndex<'_>,
         tir_value_views: &[(&TirFunction, &SimpleValueNames)],
-    ) -> (BTreeSet<String>, BTreeSet<String>) {
-        let mut inline_safe = BTreeSet::new();
-        let mut full_deopt = BTreeSet::new();
+    ) -> BTreeMap<String, Repr> {
+        let mut projected = BTreeMap::new();
+        let mut blocked = BTreeSet::new();
         for (tir_func, names) in tir_value_views {
-            let (view_inline_safe, view_full_deopt) =
-                self.project_int_primary_name_tiers_from_tir(fact_index, tir_func, names);
-            inline_safe.extend(view_inline_safe);
-            for name in view_full_deopt {
-                inline_safe.remove(&name);
-                full_deopt.insert(name);
+            for (name, repr) in projected_scalar_carrier_name_reprs_for(tir_func, names) {
+                self.insert_projected_scalar_name_repr(
+                    fact_index,
+                    name,
+                    repr,
+                    &mut projected,
+                    &mut blocked,
+                );
             }
         }
-        inline_safe.retain(|name| !full_deopt.contains(name));
-        (inline_safe, full_deopt)
+        self.propagate_projected_scalar_name_reprs(fact_index, &mut projected, &mut blocked);
+        projected
     }
 
-    fn project_int_primary_name_tiers_from_tir(
+    fn insert_projected_scalar_name_repr(
         &self,
         fact_index: &FunctionFactIndex<'_>,
-        tir_func: &TirFunction,
-        names: &SimpleValueNames,
-    ) -> (BTreeSet<String>, BTreeSet<String>) {
-        let mut inline_safe = BTreeSet::new();
-        let mut full_deopt = BTreeSet::new();
-
-        for (name, repr) in projected_scalar_carrier_name_reprs_for(tir_func, names) {
-            self.insert_projected_raw_i64_name(
-                fact_index,
-                name,
-                repr,
-                &mut inline_safe,
-                &mut full_deopt,
-            );
-        }
-
-        self.propagate_projected_raw_i64_name_tiers(fact_index, &mut inline_safe, &mut full_deopt);
-        (inline_safe, full_deopt)
-    }
-
-    fn insert_projected_raw_i64_name(
-        &self,
-        fact_index: &FunctionFactIndex<'_>,
-        name: String,
+        name: impl Into<String>,
         repr: Repr,
-        inline_safe: &mut BTreeSet<String>,
-        full_deopt: &mut BTreeSet<String>,
+        projected: &mut BTreeMap<String, Repr>,
+        blocked: &mut BTreeSet<String>,
     ) -> bool {
-        if !self.name_allows_projected_raw_i64(fact_index, &name) {
+        let name = name.into();
+        if blocked.contains(&name)
+            || !self.name_allows_projected_scalar_repr(fact_index, &name, repr)
+        {
             return false;
         }
-        match repr {
-            Repr::RawI64FullDeopt => {
-                let removed_inline = inline_safe.remove(&name);
-                full_deopt.insert(name) || removed_inline
-            }
-            Repr::RawI64Safe => {
-                if full_deopt.contains(&name) {
-                    false
+        match projected.get(&name).copied() {
+            Some(existing) if existing == repr => false,
+            Some(existing) => {
+                if let Some(merged) = Self::merge_projected_scalar_repr(existing, repr) {
+                    if merged != existing {
+                        projected.insert(name, merged);
+                        true
+                    } else {
+                        false
+                    }
                 } else {
-                    inline_safe.insert(name)
+                    projected.remove(&name);
+                    blocked.insert(name);
+                    true
                 }
             }
-            _ => false,
+            None => {
+                projected.insert(name, repr);
+                true
+            }
         }
     }
 
-    fn name_allows_projected_raw_i64(
+    fn name_allows_projected_scalar_repr(
         &self,
         fact_index: &FunctionFactIndex<'_>,
         name: &str,
+        repr: Repr,
     ) -> bool {
         if fact_index.sentinel_outputs.contains(name) || fact_index.delete_targets.contains(name) {
             return false;
         }
-        matches!(self.name_scalar_kind(name), None | Some(ScalarKind::Int))
-    }
-
-    fn raw_i64_tier_for_name(
-        name: &str,
-        inline_safe: &BTreeSet<String>,
-        full_deopt: &BTreeSet<String>,
-    ) -> Option<Repr> {
-        if full_deopt.contains(name) {
-            Some(Repr::RawI64FullDeopt)
-        } else if inline_safe.contains(name) {
-            Some(Repr::RawI64Safe)
-        } else {
-            None
+        match repr {
+            Repr::RawI64Safe | Repr::RawI64FullDeopt => {
+                matches!(self.name_scalar_kind(name), None | Some(ScalarKind::Int))
+            }
+            Repr::Bool => {
+                self.name_scalar_kind(name) == Some(ScalarKind::Bool)
+                    && !self.scalar_slot_exclusion_unsafe.contains(name)
+            }
+            Repr::FloatUnboxed => self.name_scalar_kind(name) == Some(ScalarKind::Float),
+            _ => false,
         }
     }
 
-    fn store_var_target_raw_i64_tiers(
+    fn merge_projected_scalar_repr(existing: Repr, incoming: Repr) -> Option<Repr> {
+        match (existing, incoming) {
+            (lhs, rhs) if lhs == rhs => Some(lhs),
+            (Repr::RawI64Safe, Repr::RawI64FullDeopt)
+            | (Repr::RawI64FullDeopt, Repr::RawI64Safe)
+            | (Repr::RawI64FullDeopt, Repr::RawI64FullDeopt) => Some(Repr::RawI64FullDeopt),
+            _ => None,
+        }
+    }
+
+    fn block_projected_scalar_name(
+        projected: &mut BTreeMap<String, Repr>,
+        blocked: &mut BTreeSet<String>,
+        name: &str,
+    ) -> bool {
+        let removed = projected.remove(name).is_some();
+        let inserted = blocked.insert(name.to_string());
+        removed || inserted
+    }
+
+    fn projected_scalar_repr_for_name(
+        name: &str,
+        projected: &BTreeMap<String, Repr>,
+    ) -> Option<Repr> {
+        projected.get(name).copied()
+    }
+
+    fn store_var_target_projected_scalar_reprs(
         fact_index: &FunctionFactIndex<'_>,
-        inline_safe: &BTreeSet<String>,
-        full_deopt: &BTreeSet<String>,
-    ) -> Vec<(String, Repr)> {
-        let mut target_tiers: PlanHashMap<&str, Option<Repr>> =
+        projected: &BTreeMap<String, Repr>,
+    ) -> Vec<(String, Option<Repr>)> {
+        let mut target_reprs: PlanHashMap<&str, Option<Repr>> =
             plan_hash_map(fact_index.stores.len().saturating_add(1));
         for edge in &fact_index.stores {
-            let source_tier = edge
+            let source_repr = edge
                 .source
-                .and_then(|source| Self::raw_i64_tier_for_name(source, inline_safe, full_deopt));
-            target_tiers
+                .and_then(|source| Self::projected_scalar_repr_for_name(source, projected));
+            target_reprs
                 .entry(edge.target)
                 .and_modify(|existing| {
-                    *existing = match (*existing, source_tier) {
-                        (Some(Repr::RawI64FullDeopt), Some(_))
-                        | (Some(_), Some(Repr::RawI64FullDeopt)) => Some(Repr::RawI64FullDeopt),
-                        (Some(Repr::RawI64Safe), Some(Repr::RawI64Safe)) => Some(Repr::RawI64Safe),
+                    *existing = match (*existing, source_repr) {
+                        (Some(lhs), Some(rhs)) => Self::merge_projected_scalar_repr(lhs, rhs),
                         _ => None,
                     };
                 })
-                .or_insert(source_tier);
+                .or_insert(source_repr);
         }
-        target_tiers
+        target_reprs
             .into_iter()
-            .filter_map(|(target, tier)| tier.map(|tier| (target.to_string(), tier)))
+            .map(|(target, repr)| (target.to_string(), repr))
             .collect()
     }
 
-    fn propagate_projected_raw_i64_name_tiers(
+    fn propagate_projected_scalar_name_reprs(
         &self,
         fact_index: &FunctionFactIndex<'_>,
-        inline_safe: &mut BTreeSet<String>,
-        full_deopt: &mut BTreeSet<String>,
+        projected: &mut BTreeMap<String, Repr>,
+        blocked: &mut BTreeSet<String>,
     ) {
         let mut changed = true;
         while changed {
             changed = false;
-            for (target, tier) in
-                Self::store_var_target_raw_i64_tiers(fact_index, inline_safe, full_deopt)
+            for (target, repr) in
+                Self::store_var_target_projected_scalar_reprs(fact_index, projected)
             {
-                changed |= self.insert_projected_raw_i64_name(
-                    fact_index,
-                    target,
-                    tier,
-                    inline_safe,
-                    full_deopt,
-                );
+                if let Some(repr) = repr {
+                    changed |= self.insert_projected_scalar_name_repr(
+                        fact_index, target, repr, projected, blocked,
+                    );
+                } else {
+                    changed |= Self::block_projected_scalar_name(projected, blocked, &target);
+                }
             }
             for edge in &fact_index.aliases {
-                if let Some(tier) =
-                    Self::raw_i64_tier_for_name(edge.source, inline_safe, full_deopt)
-                {
-                    changed |= self.insert_projected_raw_i64_name(
+                if let Some(repr) = Self::projected_scalar_repr_for_name(edge.source, projected) {
+                    changed |= self.insert_projected_scalar_name_repr(
                         fact_index,
                         edge.out.to_string(),
-                        tier,
-                        inline_safe,
-                        full_deopt,
+                        repr,
+                        projected,
+                        blocked,
                     );
                 }
             }
         }
     }
-    fn compute_bool_primary_names(
-        &self,
-        fact_index: &FunctionFactIndex<'_>,
-        param_name_set: &BTreeSet<&str>,
-        int_primary: &BTreeSet<String>,
-        bool_like: &BTreeSet<String>,
-        int_like: &BTreeSet<String>,
-        float_like: &BTreeSet<String>,
-        str_like: &BTreeSet<String>,
-    ) -> BTreeSet<String> {
-        let bool_unsafe_outputs: BTreeSet<String> = fact_index
-            .output_ops
-            .iter()
-            .filter_map(|op| {
-                let out = op.out.as_ref()?;
-                let is_safe_bool_op = op.kind == "store_var"
-                    || self.op_produces_raw_bool_for_bool_primary(op, bool_like, int_primary);
-                (!is_safe_bool_op && bool_like.contains(out)).then(|| out.clone())
-            })
-            .collect();
-        let vars_with_non_bool_defs =
-            self.vars_with_non_bool_defs(fact_index, bool_like, int_primary);
-        let passes_filter = |name: &str| {
-            bool_like.contains(name)
-                && !param_name_set.contains(name)
-                && !bool_unsafe_outputs.contains(name)
-                && !vars_with_non_bool_defs.contains(name)
-                && !fact_index.sentinel_outputs.contains(name)
-                && !fact_index.delete_targets.contains(name)
-                && !int_like.contains(name)
-                && !float_like.contains(name)
-                && !str_like.contains(name)
-                && !self.scalar_slot_exclusion_unsafe.contains(name)
-        };
-        let mut candidates = BTreeSet::new();
-        let mut changed = true;
-        while changed {
-            changed = false;
-            for target in store_var_targets_all_sources_in(fact_index, &candidates) {
-                if passes_filter(&target) && candidates.insert(target) {
-                    changed = true;
-                }
-            }
-            for op in &fact_index.data_ops {
-                let Some(out) = op.out.as_ref() else {
-                    continue;
-                };
-                if candidates.contains(out) || !passes_filter(out) {
-                    continue;
-                }
-                if self.op_produces_raw_bool_for_bool_primary(op, &candidates, int_primary)
-                    && candidates.insert(out.clone())
-                {
-                    changed = true;
-                }
-            }
-        }
-        candidates
-    }
-
-    fn vars_with_non_bool_defs(
-        &self,
-        fact_index: &FunctionFactIndex<'_>,
-        bool_like: &BTreeSet<String>,
-        int_primary: &BTreeSet<String>,
-    ) -> BTreeSet<String> {
-        let mut non_bool = BTreeSet::new();
-        for edge in &fact_index.stores {
-            let source_is_bool = edge
-                .source
-                .is_some_and(|s| bool_like.contains(s) && !fact_index.sentinel_outputs.contains(s));
-            if !source_is_bool {
-                non_bool.insert(edge.target.to_string());
-            }
-        }
-        for op in &fact_index.output_ops {
-            if let Some(out) = op.out.as_ref() {
-                let lane = self.infer_scalar_lane(op);
-                let raw_bool_output =
-                    self.op_produces_raw_bool_for_bool_primary(op, bool_like, int_primary);
-                if lane != Some(ScalarKind::Bool) && !raw_bool_output && bool_like.contains(out) {
-                    non_bool.insert(out.clone());
-                }
-            }
-        }
-        non_bool
-    }
-
-    fn op_produces_raw_bool_for_bool_primary(
-        &self,
-        op: &OpIR,
-        candidates: &BTreeSet<String>,
-        int_primary: &BTreeSet<String>,
-    ) -> bool {
-        let first_source = || {
-            op.var.as_deref().or_else(|| {
-                op.args
-                    .as_ref()
-                    .and_then(|args| args.first().map(String::as_str))
-            })
-        };
-        match op.kind.as_str() {
-            "const_bool" | "lt" | "le" | "gt" | "ge" | "eq" | "ne" | "string_eq" | "is" | "not"
-            | "bool" | "cast_bool" | "builtin_bool" => true,
-            // checked_add/checked_mul's `out` is the overflow flag — defined
-            // raw 0/1 on both native lanes (hardware `of` widened, or constant
-            // false on the boxed fallback).
-            "checked_add" | "checked_mul" => true,
-            // Python `and`/`or` are value-selects, but a value-select over two
-            // raw 0/1 bools IS the boolean op — the native arms emit a raw
-            // band/bor lane when both operands are bool-primary, so the result
-            // is a raw producer exactly when both inputs are.
-            "and" | "or" => op
-                .args
-                .as_ref()
-                .is_some_and(|args| args.len() >= 2 && args.iter().all(|a| candidates.contains(a))),
-            "copy" | "copy_var" | "load_var" | "identity_alias" | "binding_alias" => {
-                first_source().is_some_and(|s| candidates.contains(s))
-            }
-            "index" => {
-                self.op_has_container_kind(op, ContainerKind::List)
-                    && op
-                        .args
-                        .as_ref()
-                        .and_then(|args| args.get(1))
-                        .is_some_and(|idx| int_primary.contains(idx))
-            }
-            _ => false,
-        }
-    }
-
-    fn compute_float_primary_names(
-        &self,
-        fact_index: &FunctionFactIndex<'_>,
-        param_name_set: &BTreeSet<&str>,
-        int_like: &BTreeSet<String>,
-        float_like: &BTreeSet<String>,
-    ) -> BTreeSet<String> {
-        let float_unsafe_outputs: BTreeSet<String> = fact_index
-            .output_ops
-            .iter()
-            .filter_map(|op| {
-                let out = op.out.as_ref()?;
-                let is_safe_float_op = matches!(
-                    op.kind.as_str(),
-                    "const_float"
-                        | "add"
-                        | "sub"
-                        | "mul"
-                        | "div"
-                        | "inplace_add"
-                        | "inplace_sub"
-                        | "inplace_mul"
-                        | "inplace_div"
-                        | "neg"
-                        | "unary_neg"
-                        | "copy_var"
-                        | "load_var"
-                        | "identity_alias"
-                        | "binding_alias"
-                        | "store_var"
-                        | "float_from_obj"
-                );
-                (!is_safe_float_op && float_like.contains(out)).then(|| out.clone())
-            })
-            .collect();
-        let vars_with_non_float_defs = self.vars_with_non_float_defs(fact_index, float_like);
-        float_like
-            .iter()
-            .filter(|name| {
-                !param_name_set.contains(name.as_str())
-                    && !float_unsafe_outputs.contains(*name)
-                    && !int_like.contains(*name)
-                    && !vars_with_non_float_defs.contains(*name)
-                    && !fact_index.sentinel_outputs.contains(name.as_str())
-                    && !fact_index.delete_targets.contains(name.as_str())
-            })
-            .cloned()
-            .collect()
-    }
-
-    fn vars_with_non_float_defs(
-        &self,
-        fact_index: &FunctionFactIndex<'_>,
-        float_like: &BTreeSet<String>,
-    ) -> BTreeSet<String> {
-        let mut non_float = BTreeSet::new();
-        for edge in &fact_index.stores {
-            let source_is_float = edge.source.is_some_and(|s| {
-                float_like.contains(s) && !fact_index.sentinel_outputs.contains(s)
-            });
-            if !source_is_float {
-                non_float.insert(edge.target.to_string());
-            }
-        }
-        for op in &fact_index.output_ops {
-            if let Some(out) = op.out.as_ref() {
-                let lane = self.infer_scalar_lane(op);
-                if lane != Some(ScalarKind::Float) && float_like.contains(out) {
-                    non_float.insert(out.clone());
-                }
-            }
-        }
-        non_float
-    }
-
     fn compute_scalar_slot_exclusion_unsafe(&self, func_ir: &FunctionIR) -> PlanHashSet<String> {
         let mut unsafe_set = plan_hash_set(func_ir.ops.len() / 4 + 1);
         for (op_index, op) in func_ir.ops.iter().enumerate() {
@@ -3985,75 +3784,33 @@ mod tests {
     }
 
     #[test]
-    fn bool_primary_predicate_is_raw_closed() {
-        let candidates = BTreeSet::from(["flag".to_string()]);
-        let int_primary = BTreeSet::from(["idx".to_string()]);
-        let empty_plan = ScalarRepresentationPlan::default();
-        let const_bool = const_bool("flag", true);
-        assert!(empty_plan.op_produces_raw_bool_for_bool_primary(
-            &const_bool,
-            &BTreeSet::new(),
-            &int_primary,
-        ));
+    fn bool_primary_projection_is_tir_value_owned() {
+        let func = function(
+            "bool_primary_projection",
+            &["lhs", "rhs"],
+            Some(vec!["int", "int"]),
+            vec![
+                const_bool("flag", true),
+                op("copy_var", Some("flag_copy"), Some("flag"), &[]),
+                op("eq", Some("cmp"), None, &["lhs", "rhs"]),
+                op("not", Some("negated"), None, &["cmp"]),
+                op("is_truthy", Some("legacy_truthy"), None, &["flag"]),
+            ],
+        );
 
-        let copy = op("copy_var", Some("flag_copy"), Some("flag"), &[]);
-        assert!(empty_plan.op_produces_raw_bool_for_bool_primary(&copy, &candidates, &int_primary));
+        let primary = ScalarRepresentationPlan::for_function_ir(&func).primary_name_sets();
 
-        let comparison = op("eq", Some("cmp"), None, &["lhs", "rhs"]);
-        assert!(empty_plan.op_produces_raw_bool_for_bool_primary(
-            &comparison,
-            &candidates,
-            &int_primary,
-        ));
-
-        let boolean_cast = op("bool", Some("casted"), None, &["flag"]);
-        assert!(empty_plan.op_produces_raw_bool_for_bool_primary(
-            &boolean_cast,
-            &candidates,
-            &int_primary,
-        ));
-
-        let list_bool_index = op("index", Some("item"), None, &["items", "idx"]);
-        let list_plan = ScalarRepresentationPlan::for_function_ir(&function(
-            "list_bool_index",
-            &["items", "idx"],
-            Some(vec!["list[bool]", "int"]),
-            vec![list_bool_index.clone()],
-        ));
-        assert!(list_plan.op_produces_raw_bool_for_bool_primary(
-            &list_bool_index,
-            &candidates,
-            &int_primary,
-        ));
-
-        let boxed_index = op("index", Some("item"), None, &["items", "boxed_idx"]);
-        assert!(!list_plan.op_produces_raw_bool_for_bool_primary(
-            &boxed_index,
-            &candidates,
-            &int_primary,
-        ));
-
-        let mut transport_index = op("index", Some("item"), None, &["items", "idx"]);
-        transport_index.container_type = Some("list".to_string());
-        assert!(!empty_plan.op_produces_raw_bool_for_bool_primary(
-            &transport_index,
-            &candidates,
-            &int_primary,
-        ));
-
-        let generic_index = op("index", Some("item"), None, &["items", "idx"]);
-        assert!(!empty_plan.op_produces_raw_bool_for_bool_primary(
-            &generic_index,
-            &candidates,
-            &int_primary,
-        ));
-
-        let legacy_is_truthy = op("is_truthy", Some("truthy"), None, &["flag"]);
-        assert!(!empty_plan.op_produces_raw_bool_for_bool_primary(
-            &legacy_is_truthy,
-            &candidates,
-            &int_primary,
-        ));
+        for name in ["flag", "flag_copy", "cmp", "negated"] {
+            assert!(
+                primary.bool_.contains(name),
+                "{name} must be projected through TIR bool ValueId facts; got {:?}",
+                primary.bool_
+            );
+        }
+        assert!(
+            !primary.bool_.contains("legacy_truthy"),
+            "legacy SimpleIR truthiness must not mint a raw bool carrier"
+        );
     }
 
     #[test]
