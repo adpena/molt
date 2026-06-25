@@ -7,6 +7,7 @@ import subprocess
 from pathlib import Path
 
 import molt.cli as cli
+from molt.cli import commands as cli_commands
 from molt.cli import build_pipeline as cli_build_pipeline
 
 COMPILER_METADATA = importlib.import_module("molt.cli.compiler_metadata")
@@ -1017,19 +1018,19 @@ def test_ensure_runtime_lib_rebuilds_unfingerprinted_prebuilt_archive(
 
 
 def test_internal_batch_build_stdlib_profile_is_explicit_and_validated() -> None:
-    assert cli._normalize_internal_batch_stdlib_profile({}) == ("micro", None)
-    assert cli._normalize_internal_batch_stdlib_profile({"stdlib_profile": "full"}) == (
+    assert cli_commands._normalize_internal_batch_stdlib_profile({}) == ("micro", None)
+    assert cli_commands._normalize_internal_batch_stdlib_profile({"stdlib_profile": "full"}) == (
         "full",
         None,
     )
 
-    missing_value, type_error = cli._normalize_internal_batch_stdlib_profile(
+    missing_value, type_error = cli_commands._normalize_internal_batch_stdlib_profile(
         {"stdlib_profile": 1}
     )
     assert missing_value is None
     assert type_error == "stdlib_profile must be a string"
 
-    invalid_value, choice_error = cli._normalize_internal_batch_stdlib_profile(
+    invalid_value, choice_error = cli_commands._normalize_internal_batch_stdlib_profile(
         {"stdlib_profile": "standard"}
     )
     assert invalid_value is None

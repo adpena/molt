@@ -8,7 +8,9 @@ import inspect
 from typing import Any, cast
 
 import molt.cli as cli
+from molt.cli import commands as cli_commands
 from molt.cli import build_inputs as cli_build_inputs
+from molt.cli import runtime_build as cli_runtime_build
 import pytest
 
 
@@ -120,12 +122,12 @@ def test_nested_build_keeps_platform_profile_and_forwards_dev_build_profile(
         build_cmds.append(list(cmd))
         return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
 
-    monkeypatch.setattr(cli, "_find_project_root", lambda start: project)
-    monkeypatch.setattr(cli, "_find_molt_root", lambda start, cwd=None: project)
-    monkeypatch.setattr(cli.subprocess, "run", fake_subprocess_run)
-    monkeypatch.setattr(cli, "_run_command", lambda cmd, **kwargs: 0)
+    monkeypatch.setattr(cli_commands, "_find_project_root", lambda start: project)
+    monkeypatch.setattr(cli_commands, "_find_molt_root", lambda start, cwd=None: project)
+    monkeypatch.setattr(cli_runtime_build, "_run_completed_command", fake_subprocess_run)
+    monkeypatch.setattr(cli_commands, "_run_command", lambda cmd, **kwargs: 0)
 
-    rc = cli.run_script(
+    rc = cli_commands.run_script(
         str(entry),
         None,
         [],
