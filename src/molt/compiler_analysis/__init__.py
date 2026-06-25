@@ -7,6 +7,7 @@ from molt.compiler_analysis.backend_ir import (
     backend_ir_op_source_site,
 )
 from molt.compiler_analysis.hashing import stable_payload_hash
+from molt.compiler_analysis.tir_fact_graph import summarize_tir_fact_graph
 from molt.compiler_analysis.validation import (
     check_compiler_analysis_against_closure,
     summarize_compiler_binary_image_analysis,
@@ -20,4 +21,5 @@ __all__ = [
     "check_compiler_analysis_against_closure",
     "stable_payload_hash",
     "summarize_compiler_binary_image_analysis",
+    "summarize_tir_fact_graph",
 ]
