@@ -263,6 +263,15 @@ def _build_checks() -> list[Check]:
     )
     checks.append(
         Check(
+            name="analysis-capsule-contract",
+            tier=1,
+            cmd=_uv_pytest(str(TESTS / "tools" / "test_analysis_capsule.py"), "-q"),
+            timeout=60,
+            needs_pytest=True,
+        )
+    )
+    checks.append(
+        Check(
             name="perf-scoreboard-contract",
             tier=1,
             cmd=_uv_pytest(

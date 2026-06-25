@@ -1,9 +1,51 @@
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping
 from typing import Any
 
-from molt.compiler_analysis.schema import SCHEMA_VERSION
+from molt.compiler_analysis.schema import (
+    ALLOCATION_OWNERSHIP_CARRIER,
+    BINARY_IMAGE_ANALYSIS_STAGES,
+    SCHEMA_VERSION,
+    SOURCE_SITE_CARRIER,
+    TIR_BOUNDARY_CARRIER,
+)
+
+
+def validate_binary_image_closure_diagnostics(
+    diagnostics: Mapping[str, Any],
+    errors: list[str],
+) -> None:
+    closure = diagnostics.get("binary_image_closure")
+    if not isinstance(closure, Mapping):
+        errors.append("build_diagnostics.binary_image_closure must be an object")
+        return
+    image = closure.get("image")
+    if not isinstance(image, Mapping):
+        errors.append("build_diagnostics.binary_image_closure.image must be an object")
+        image = {}
+    for field in (
+        "known_modules",
+        "compile_modules",
+        "declared_root_modules",
+        "entry_reachable_modules",
+        "runtime_support_modules",
+        "stdlib_support_modules",
+        "package_parent_modules",
+    ):
+        _required_string_list(
+            closure,
+            field,
+            "build_diagnostics.binary_image_closure",
+            errors,
+        )
+    _required_string_list(
+        image,
+        "root_modules",
+        "build_diagnostics.binary_image_closure.image",
+        errors,
+    )
 
 
 def summarize_compiler_binary_image_analysis(
@@ -12,6 +54,7 @@ def summarize_compiler_binary_image_analysis(
 ) -> dict[str, Any]:
     raw = diagnostics.get("binary_image_analysis")
     if raw is None:
+        errors.append("build_diagnostics.binary_image_analysis must be an object")
         return {"present": False}
     if not isinstance(raw, Mapping):
         errors.append("build_diagnostics.binary_image_analysis must be an object")
@@ -21,16 +64,29 @@ def summarize_compiler_binary_image_analysis(
         errors.append(
             f"build_diagnostics.binary_image_analysis.schema_version must be {SCHEMA_VERSION}"
         )
+    allowed_keys = {"schema_version", *BINARY_IMAGE_ANALYSIS_STAGES}
+    for key in sorted(raw):
+        if key not in allowed_keys:
+            errors.append(
+                f"build_diagnostics.binary_image_analysis.{key} is not a known stage"
+            )
     stages: dict[str, Mapping[str, Any]] = {}
-    for stage in ("frontend", "backend_ir", "artifacts"):
+    for stage in BINARY_IMAGE_ANALYSIS_STAGES:
         payload = raw.get(stage)
         if payload is None:
+            errors.append(f"build_diagnostics.binary_image_analysis.{stage} is required")
             continue
         if not isinstance(payload, Mapping):
             errors.append(
                 f"build_diagnostics.binary_image_analysis.{stage} must be an object"
             )
             continue
+        stage_schema_version = payload.get("schema_version")
+        if stage_schema_version != SCHEMA_VERSION:
+            errors.append(
+                "build_diagnostics.binary_image_analysis."
+                f"{stage}.schema_version must be {SCHEMA_VERSION}"
+            )
         stages[stage] = payload
     return {
         "present": True,
@@ -44,6 +100,10 @@ def summarize_compiler_binary_image_analysis(
             errors,
         ),
         "allocation_ownership": _summarize_backend_allocation_ownership(
+            stages.get("backend_ir"),
+            errors,
+        ),
+        "tir_boundary": _summarize_backend_tir_boundary(
             stages.get("backend_ir"),
             errors,
         ),
@@ -129,7 +189,7 @@ def check_compiler_analysis_against_closure(
                         f"source_coverage_ratio={coverage_ratio} != {expected_ratio}"
                     )
         categories = _mapping_or_empty(allocation_ownership.get("events_by_category"))
-        if isinstance(event_count, int) and categories:
+        if isinstance(event_count, int):
             category_total = sum(
                 count
                 for count in categories.values()
@@ -157,23 +217,66 @@ def _summarize_backend_source_sites(
         return {"present": False}
     return {
         "present": True,
-        "carrier": _string_or_none(raw.get("carrier")),
-        "attributed_op_count": _int_or_none(raw.get("attributed_op_count")),
-        "unattributed_op_count": _int_or_none(raw.get("unattributed_op_count")),
-        "coverage_ratio": _number_or_none(raw.get("coverage_ratio")),
-        "function_count_with_source": _int_or_none(
-            raw.get("function_count_with_source")
+        "carrier": _required_literal(
+            raw,
+            "carrier",
+            SOURCE_SITE_CARRIER,
+            "build_diagnostics.binary_image_analysis.backend_ir.source_sites",
+            errors,
         ),
-        "line_count": _int_or_none(raw.get("line_count")),
-        "explicit_source_line_count": _int_or_none(
-            raw.get("explicit_source_line_count")
+        "attributed_op_count": _required_nonnegative_int(
+            raw,
+            "attributed_op_count",
+            "build_diagnostics.binary_image_analysis.backend_ir.source_sites",
+            errors,
         ),
-        "line_marker_fallback_count": _int_or_none(
-            raw.get("line_marker_fallback_count")
+        "unattributed_op_count": _required_nonnegative_int(
+            raw,
+            "unattributed_op_count",
+            "build_diagnostics.binary_image_analysis.backend_ir.source_sites",
+            errors,
         ),
-        "source_site_digest": _string_or_none(raw.get("source_site_digest")),
-        "top_source_lines_by_ops": _list_of_mappings(
-            raw.get("top_source_lines_by_ops")
+        "coverage_ratio": _required_ratio(
+            raw,
+            "coverage_ratio",
+            "build_diagnostics.binary_image_analysis.backend_ir.source_sites",
+            errors,
+        ),
+        "function_count_with_source": _required_nonnegative_int(
+            raw,
+            "function_count_with_source",
+            "build_diagnostics.binary_image_analysis.backend_ir.source_sites",
+            errors,
+        ),
+        "line_count": _required_nonnegative_int(
+            raw,
+            "line_count",
+            "build_diagnostics.binary_image_analysis.backend_ir.source_sites",
+            errors,
+        ),
+        "explicit_source_line_count": _required_nonnegative_int(
+            raw,
+            "explicit_source_line_count",
+            "build_diagnostics.binary_image_analysis.backend_ir.source_sites",
+            errors,
+        ),
+        "line_marker_fallback_count": _required_nonnegative_int(
+            raw,
+            "line_marker_fallback_count",
+            "build_diagnostics.binary_image_analysis.backend_ir.source_sites",
+            errors,
+        ),
+        "source_site_digest": _required_string(
+            raw,
+            "source_site_digest",
+            "build_diagnostics.binary_image_analysis.backend_ir.source_sites",
+            errors,
+        ),
+        "top_source_lines_by_ops": _required_source_line_rows(
+            raw,
+            "top_source_lines_by_ops",
+            "build_diagnostics.binary_image_analysis.backend_ir.source_sites",
+            errors,
         )[:20],
     }
 
@@ -193,20 +296,91 @@ def _summarize_backend_allocation_ownership(
         return {"present": False}
     return {
         "present": True,
-        "carrier": _string_or_none(raw.get("carrier")),
-        "event_count": _int_or_none(raw.get("event_count")),
-        "source_attributed_event_count": _int_or_none(
-            raw.get("source_attributed_event_count")
+        "carrier": _required_literal(
+            raw,
+            "carrier",
+            ALLOCATION_OWNERSHIP_CARRIER,
+            "build_diagnostics.binary_image_analysis.backend_ir.allocation_ownership",
+            errors,
         ),
-        "unattributed_event_count": _int_or_none(raw.get("unattributed_event_count")),
-        "source_coverage_ratio": _number_or_none(raw.get("source_coverage_ratio")),
-        "events_by_category": _int_mapping(raw.get("events_by_category")),
-        "top_category_kinds": _list_of_mappings(raw.get("top_category_kinds"))[:20],
-        "top_source_lines_by_events": _list_of_mappings(
-            raw.get("top_source_lines_by_events")
+        "event_count": _required_nonnegative_int(
+            raw,
+            "event_count",
+            "build_diagnostics.binary_image_analysis.backend_ir.allocation_ownership",
+            errors,
+        ),
+        "source_attributed_event_count": _required_nonnegative_int(
+            raw,
+            "source_attributed_event_count",
+            "build_diagnostics.binary_image_analysis.backend_ir.allocation_ownership",
+            errors,
+        ),
+        "unattributed_event_count": _required_nonnegative_int(
+            raw,
+            "unattributed_event_count",
+            "build_diagnostics.binary_image_analysis.backend_ir.allocation_ownership",
+            errors,
+        ),
+        "source_coverage_ratio": _required_ratio(
+            raw,
+            "source_coverage_ratio",
+            "build_diagnostics.binary_image_analysis.backend_ir.allocation_ownership",
+            errors,
+        ),
+        "events_by_category": _required_int_mapping(
+            raw,
+            "events_by_category",
+            "build_diagnostics.binary_image_analysis.backend_ir.allocation_ownership",
+            errors,
+        ),
+        "top_category_kinds": _required_category_kind_rows(
+            raw,
+            "top_category_kinds",
+            "build_diagnostics.binary_image_analysis.backend_ir.allocation_ownership",
+            errors,
         )[:20],
-        "allocation_ownership_digest": _string_or_none(
-            raw.get("allocation_ownership_digest")
+        "top_source_lines_by_events": _required_allocation_source_line_rows(
+            raw,
+            "top_source_lines_by_events",
+            "build_diagnostics.binary_image_analysis.backend_ir.allocation_ownership",
+            errors,
+        )[:20],
+        "allocation_ownership_digest": _required_string(
+            raw,
+            "allocation_ownership_digest",
+            "build_diagnostics.binary_image_analysis.backend_ir.allocation_ownership",
+            errors,
+        ),
+    }
+
+
+def _summarize_backend_tir_boundary(
+    backend_stage: Mapping[str, Any] | None,
+    errors: list[str],
+) -> dict[str, Any]:
+    if backend_stage is None:
+        return {"present": False}
+    raw = backend_stage.get("tir_boundary")
+    if not isinstance(raw, Mapping):
+        errors.append(
+            "build_diagnostics.binary_image_analysis.backend_ir.tir_boundary "
+            "must be an object"
+        )
+        return {"present": False}
+    return {
+        "present": True,
+        "carrier": _required_literal(
+            raw,
+            "carrier",
+            TIR_BOUNDARY_CARRIER,
+            "build_diagnostics.binary_image_analysis.backend_ir.tir_boundary",
+            errors,
+        ),
+        "semantic_role": _required_string(
+            raw,
+            "semantic_role",
+            "build_diagnostics.binary_image_analysis.backend_ir.tir_boundary",
+            errors,
         ),
     }
 
@@ -215,36 +389,247 @@ def _mapping_or_empty(value: Any) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
 
 
-def _list_of_mappings(value: Any) -> list[Mapping[str, Any]]:
-    if not isinstance(value, list):
-        return []
-    return [item for item in value if isinstance(item, Mapping)]
+def _required_string(
+    raw: Mapping[str, Any],
+    field: str,
+    path: str,
+    errors: list[str],
+) -> str | None:
+    value = raw.get(field)
+    if isinstance(value, str):
+        return value
+    errors.append(f"{path}.{field} must be a string")
+    return None
 
 
-def _string_or_none(value: Any) -> str | None:
-    return value if isinstance(value, str) else None
-
-
-def _number_or_none(value: Any) -> float | None:
-    if isinstance(value, bool) or not isinstance(value, int | float):
+def _required_literal(
+    raw: Mapping[str, Any],
+    field: str,
+    expected: str,
+    path: str,
+    errors: list[str],
+) -> str | None:
+    value = _required_string(raw, field, path, errors)
+    if value is None:
         return None
-    return float(value)
-
-
-def _int_or_none(value: Any) -> int | None:
-    if isinstance(value, bool) or not isinstance(value, int):
+    if value != expected:
+        errors.append(f"{path}.{field} must be {expected!r}")
         return None
     return value
 
 
-def _int_mapping(value: Any) -> dict[str, int]:
+def _required_number(
+    raw: Mapping[str, Any],
+    field: str,
+    path: str,
+    errors: list[str],
+) -> float | None:
+    value = raw.get(field)
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int | float)
+        or not math.isfinite(float(value))
+    ):
+        errors.append(f"{path}.{field} must be a number")
+        return None
+    return float(value)
+
+
+def _required_ratio(
+    raw: Mapping[str, Any],
+    field: str,
+    path: str,
+    errors: list[str],
+) -> float | None:
+    value = _required_number(raw, field, path, errors)
+    if value is None:
+        return None
+    if not 0.0 <= value <= 1.0:
+        errors.append(f"{path}.{field} must be between 0 and 1")
+        return None
+    return value
+
+
+def _required_nonnegative_int(
+    raw: Mapping[str, Any],
+    field: str,
+    path: str,
+    errors: list[str],
+) -> int | None:
+    value = raw.get(field)
+    if isinstance(value, bool) or not isinstance(value, int):
+        errors.append(f"{path}.{field} must be an integer")
+        return None
+    if value < 0:
+        errors.append(f"{path}.{field} must be nonnegative")
+        return None
+    return value
+
+
+def _required_positive_int(
+    raw: Mapping[str, Any],
+    field: str,
+    path: str,
+    errors: list[str],
+) -> int | None:
+    value = _required_nonnegative_int(raw, field, path, errors)
+    if value is None:
+        return None
+    if value <= 0:
+        errors.append(f"{path}.{field} must be positive")
+        return None
+    return value
+
+
+def _required_int_mapping(
+    raw: Mapping[str, Any],
+    field: str,
+    path: str,
+    errors: list[str],
+) -> dict[str, int]:
+    value = raw.get(field)
     if not isinstance(value, Mapping):
+        errors.append(f"{path}.{field} must be an object")
         return {}
-    return {
-        str(key): int(item)
-        for key, item in value.items()
-        if isinstance(key, str) and isinstance(item, int) and not isinstance(item, bool)
-    }
+    result: dict[str, int] = {}
+    for key, item in value.items():
+        if not isinstance(key, str):
+            errors.append(f"{path}.{field} keys must be strings")
+            continue
+        if isinstance(item, bool) or not isinstance(item, int):
+            errors.append(f"{path}.{field}.{key} must be an integer")
+            continue
+        if item < 0:
+            errors.append(f"{path}.{field}.{key} must be nonnegative")
+            continue
+        result[key] = item
+    return result
+
+
+def _required_source_line_rows(
+    raw: Mapping[str, Any],
+    field: str,
+    path: str,
+    errors: list[str],
+) -> list[dict[str, Any]]:
+    rows = _required_list_of_mappings(raw, field, path, errors)
+    result: list[dict[str, Any]] = []
+    for index, row in enumerate(rows):
+        row_path = f"{path}.{field}[{index}]"
+        _reject_unknown_fields(row, {"source_file", "line", "ops"}, row_path, errors)
+        source_file = _required_string(row, "source_file", row_path, errors)
+        line = _required_positive_int(row, "line", row_path, errors)
+        ops = _required_nonnegative_int(row, "ops", row_path, errors)
+        if source_file is not None and line is not None and ops is not None:
+            result.append({"source_file": source_file, "line": line, "ops": ops})
+    return result
+
+
+def _required_category_kind_rows(
+    raw: Mapping[str, Any],
+    field: str,
+    path: str,
+    errors: list[str],
+) -> list[dict[str, Any]]:
+    rows = _required_list_of_mappings(raw, field, path, errors)
+    result: list[dict[str, Any]] = []
+    for index, row in enumerate(rows):
+        row_path = f"{path}.{field}[{index}]"
+        _reject_unknown_fields(row, {"category_kind", "events"}, row_path, errors)
+        category_kind = _required_string(row, "category_kind", row_path, errors)
+        events = _required_nonnegative_int(row, "events", row_path, errors)
+        if category_kind is not None and events is not None:
+            result.append({"category_kind": category_kind, "events": events})
+    return result
+
+
+def _required_allocation_source_line_rows(
+    raw: Mapping[str, Any],
+    field: str,
+    path: str,
+    errors: list[str],
+) -> list[dict[str, Any]]:
+    rows = _required_list_of_mappings(raw, field, path, errors)
+    result: list[dict[str, Any]] = []
+    for index, row in enumerate(rows):
+        row_path = f"{path}.{field}[{index}]"
+        _reject_unknown_fields(
+            row,
+            {"source_file", "line", "category", "events"},
+            row_path,
+            errors,
+        )
+        source_file = _required_string(row, "source_file", row_path, errors)
+        line = _required_positive_int(row, "line", row_path, errors)
+        category = _required_string(row, "category", row_path, errors)
+        events = _required_nonnegative_int(row, "events", row_path, errors)
+        if (
+            source_file is not None
+            and line is not None
+            and category is not None
+            and events is not None
+        ):
+            result.append(
+                {
+                    "source_file": source_file,
+                    "line": line,
+                    "category": category,
+                    "events": events,
+                }
+            )
+    return result
+
+
+def _required_list_of_mappings(
+    raw: Mapping[str, Any],
+    field: str,
+    path: str,
+    errors: list[str],
+) -> list[Mapping[str, Any]]:
+    value = raw.get(field)
+    if not isinstance(value, list):
+        errors.append(f"{path}.{field} must be an array")
+        return []
+    result: list[Mapping[str, Any]] = []
+    for index, item in enumerate(value):
+        if not isinstance(item, Mapping):
+            errors.append(f"{path}.{field}[{index}] must be an object")
+            continue
+        result.append(item)
+    return result
+
+
+def _reject_unknown_fields(
+    raw: Mapping[str, Any],
+    allowed: set[str],
+    path: str,
+    errors: list[str],
+) -> None:
+    for key in raw:
+        if not isinstance(key, str):
+            errors.append(f"{path} keys must be strings")
+            continue
+        if key not in allowed:
+            errors.append(f"{path}.{key} is not a known field")
+
+
+def _required_string_list(
+    raw: Mapping[str, Any],
+    field: str,
+    path: str,
+    errors: list[str],
+) -> list[str]:
+    value = raw.get(field)
+    if not isinstance(value, list):
+        errors.append(f"{path}.{field} must be an array")
+        return []
+    result: list[str] = []
+    for index, item in enumerate(value):
+        if not isinstance(item, str):
+            errors.append(f"{path}.{field}[{index}] must be a string")
+            continue
+        result.append(item)
+    return result
 
 
 def _check_count(
