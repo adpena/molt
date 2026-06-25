@@ -11,6 +11,9 @@ the implementation. For forward-looking priorities, use
 - Strategic target: full CPython `>=3.12` parity for supported Molt semantics.
 - Product target: full CPython `>=3.12` parity without hidden host fallback for
   the semantics Molt claims today.
+- Python packaging has no artificial upper cap: every new CPython release line
+  is in scope as it appears, with behavior gated by the verified subset and
+  version-specific differential evidence.
 - Compiled binaries must not rely on a host Python installation.
 - runtime monkeypatching, unrestricted `exec`/`eval`/`compile`, and unrestricted
   reflection remain intentional design exclusions for compiled binaries.
