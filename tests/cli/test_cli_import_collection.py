@@ -19,6 +19,8 @@ from typing import Any, Mapping, Sequence, cast
 
 import molt.cli as cli
 import pytest
+from molt.cli import build_results as cli_build_results
+from molt.cli import frontend_execution as cli_frontend_execution
 from molt.cli import module_cache as cli_module_cache
 from molt.cli import module_graph as cli_module_graph
 from molt.frontend import MoltValue, SimpleTIRGenerator
@@ -2780,7 +2782,11 @@ def test_write_link_fingerprint_reports_json_warning_on_metadata_loss(
         del path, payload
         raise OSError("state volume read-only")
 
-    monkeypatch.setattr(RUNTIME_BUILD, "_write_runtime_fingerprint", raise_metadata_write)
+    monkeypatch.setattr(
+        cli_build_results,
+        "_write_runtime_fingerprint",
+        raise_metadata_write,
+    )
 
     warning = cli._write_link_fingerprint_if_needed(
         link_skipped=False,
@@ -7249,7 +7255,7 @@ def test_prepare_frontend_parallel_batch_precomputes_scoped_known_classes_once(
         cli_module_cache, "_scoped_known_classes", wrapped_scoped_known_classes
     )
     monkeypatch.setattr(
-        cli_module_cache,
+        cli_frontend_execution,
         "_load_cached_module_lowering_result",
         lambda *args, **kwargs: None,
     )
@@ -8044,13 +8050,21 @@ def test_parallel_build_reuses_cached_lowering_across_parallel_builds(
     monkeypatch.setenv("CARGO_TARGET_DIR", str(build_state_root / "cargo-target"))
     monkeypatch.setenv("MOLT_CACHE", str(cache_root))
     monkeypatch.setattr(cli, "_find_project_root", lambda start: project)
-    monkeypatch.setattr(cli, "_resolve_frontend_parallel_module_workers", lambda: 2)
-    monkeypatch.setattr(cli, "_resolve_frontend_parallel_min_modules", lambda: 2)
     monkeypatch.setattr(
-        cli, "_resolve_frontend_parallel_min_predicted_cost", lambda: 0.0
+        cli_frontend_execution, "_resolve_frontend_parallel_module_workers", lambda: 2
     )
     monkeypatch.setattr(
-        cli, "_resolve_frontend_parallel_target_cost_per_worker", lambda: 1.0
+        cli_frontend_execution, "_resolve_frontend_parallel_min_modules", lambda: 2
+    )
+    monkeypatch.setattr(
+        cli_frontend_execution,
+        "_resolve_frontend_parallel_min_predicted_cost",
+        lambda: 0.0,
+    )
+    monkeypatch.setattr(
+        cli_frontend_execution,
+        "_resolve_frontend_parallel_target_cost_per_worker",
+        lambda: 1.0,
     )
     monkeypatch.setattr(cli, "_backend_daemon_enabled", lambda: False)
     monkeypatch.setattr(
@@ -8105,7 +8119,7 @@ def test_parallel_build_reuses_cached_lowering_across_parallel_builds(
             assert fn is cli._frontend_lower_module_worker
             return _FakeFuture(payload)
 
-    monkeypatch.setattr(cli, "ProcessPoolExecutor", _FakeExecutor)
+    monkeypatch.setattr(cli_frontend_execution, "ProcessPoolExecutor", _FakeExecutor)
     first_stdout = io.StringIO()
     with contextlib.redirect_stdout(first_stdout):
         rc = cli.build(
@@ -8168,13 +8182,21 @@ def test_parallel_build_only_relowers_changed_frontier(
     monkeypatch.setenv("CARGO_TARGET_DIR", str(build_state_root / "cargo-target"))
     monkeypatch.setenv("MOLT_CACHE", str(cache_root))
     monkeypatch.setattr(cli, "_find_project_root", lambda start: project)
-    monkeypatch.setattr(cli, "_resolve_frontend_parallel_module_workers", lambda: 2)
-    monkeypatch.setattr(cli, "_resolve_frontend_parallel_min_modules", lambda: 2)
     monkeypatch.setattr(
-        cli, "_resolve_frontend_parallel_min_predicted_cost", lambda: 0.0
+        cli_frontend_execution, "_resolve_frontend_parallel_module_workers", lambda: 2
     )
     monkeypatch.setattr(
-        cli, "_resolve_frontend_parallel_target_cost_per_worker", lambda: 1.0
+        cli_frontend_execution, "_resolve_frontend_parallel_min_modules", lambda: 2
+    )
+    monkeypatch.setattr(
+        cli_frontend_execution,
+        "_resolve_frontend_parallel_min_predicted_cost",
+        lambda: 0.0,
+    )
+    monkeypatch.setattr(
+        cli_frontend_execution,
+        "_resolve_frontend_parallel_target_cost_per_worker",
+        lambda: 1.0,
     )
     monkeypatch.setattr(cli, "_backend_daemon_enabled", lambda: False)
     monkeypatch.setattr(
@@ -8225,7 +8247,7 @@ def test_parallel_build_only_relowers_changed_frontier(
             assert fn is cli._frontend_lower_module_worker
             return _FakeFuture(payload)
 
-    monkeypatch.setattr(cli, "ProcessPoolExecutor", _FakeExecutor)
+    monkeypatch.setattr(cli_frontend_execution, "ProcessPoolExecutor", _FakeExecutor)
 
     first_stdout = io.StringIO()
     with contextlib.redirect_stdout(first_stdout):
@@ -8288,13 +8310,21 @@ def test_parallel_build_allows_scoped_type_facts(
     monkeypatch.setenv("CARGO_TARGET_DIR", str(build_state_root / "cargo-target"))
     monkeypatch.setenv("MOLT_CACHE", str(cache_root))
     monkeypatch.setattr(cli, "_find_project_root", lambda start: project)
-    monkeypatch.setattr(cli, "_resolve_frontend_parallel_module_workers", lambda: 2)
-    monkeypatch.setattr(cli, "_resolve_frontend_parallel_min_modules", lambda: 2)
     monkeypatch.setattr(
-        cli, "_resolve_frontend_parallel_min_predicted_cost", lambda: 0.0
+        cli_frontend_execution, "_resolve_frontend_parallel_module_workers", lambda: 2
     )
     monkeypatch.setattr(
-        cli, "_resolve_frontend_parallel_target_cost_per_worker", lambda: 1.0
+        cli_frontend_execution, "_resolve_frontend_parallel_min_modules", lambda: 2
+    )
+    monkeypatch.setattr(
+        cli_frontend_execution,
+        "_resolve_frontend_parallel_min_predicted_cost",
+        lambda: 0.0,
+    )
+    monkeypatch.setattr(
+        cli_frontend_execution,
+        "_resolve_frontend_parallel_target_cost_per_worker",
+        lambda: 1.0,
     )
     monkeypatch.setattr(cli, "_backend_daemon_enabled", lambda: False)
     monkeypatch.setattr(
@@ -8343,7 +8373,7 @@ def test_parallel_build_allows_scoped_type_facts(
             captured_payloads.append(payload)
             return _FakeFuture(payload)
 
-    monkeypatch.setattr(cli, "ProcessPoolExecutor", _FakeExecutor)
+    monkeypatch.setattr(cli_frontend_execution, "ProcessPoolExecutor", _FakeExecutor)
 
     type_facts = TypeFacts(
         modules={
@@ -8404,7 +8434,9 @@ def test_build_one_shot_backend_compile_uses_ir_file_lease(
     monkeypatch.setenv("CARGO_TARGET_DIR", str(build_state_root / "cargo-target"))
     monkeypatch.setenv("MOLT_CACHE", str(cache_root))
     monkeypatch.setattr(cli, "_find_project_root", lambda start: project)
-    monkeypatch.setattr(cli, "_resolve_frontend_parallel_module_workers", lambda: 0)
+    monkeypatch.setattr(
+        cli_frontend_execution, "_resolve_frontend_parallel_module_workers", lambda: 0
+    )
     monkeypatch.setattr(cli, "_backend_daemon_enabled", lambda: False)
     monkeypatch.setattr(cli, "_backend_bin_path", lambda *args, **kwargs: backend_bin)
     monkeypatch.setattr(cli, "_ensure_backend_binary", lambda *args, **kwargs: True)
@@ -8455,7 +8487,9 @@ def test_build_skips_daemon_preflight_when_socket_exists(
     monkeypatch.setenv("CARGO_TARGET_DIR", str(build_state_root / "cargo-target"))
     monkeypatch.setenv("MOLT_CACHE", str(cache_root))
     monkeypatch.setattr(cli, "_find_project_root", lambda start: project)
-    monkeypatch.setattr(cli, "_resolve_frontend_parallel_module_workers", lambda: 0)
+    monkeypatch.setattr(
+        cli_frontend_execution, "_resolve_frontend_parallel_module_workers", lambda: 0
+    )
     monkeypatch.setattr(cli, "_backend_daemon_enabled", lambda: True)
     monkeypatch.setattr(cli, "_backend_bin_path", lambda *args, **kwargs: backend_bin)
     monkeypatch.setattr(cli, "_ensure_backend_binary", lambda *args, **kwargs: True)
@@ -8536,7 +8570,9 @@ def test_build_emit_obj_does_not_route_stdlib_object_env_from_helper(
     monkeypatch.setenv("CARGO_TARGET_DIR", str(build_state_root / "cargo-target"))
     monkeypatch.setenv("MOLT_CACHE", str(cache_root))
     monkeypatch.setattr(cli, "_find_project_root", lambda start: project)
-    monkeypatch.setattr(cli, "_resolve_frontend_parallel_module_workers", lambda: 0)
+    monkeypatch.setattr(
+        cli_frontend_execution, "_resolve_frontend_parallel_module_workers", lambda: 0
+    )
     monkeypatch.setattr(cli, "_backend_daemon_enabled", lambda: False)
     monkeypatch.setattr(cli, "_backend_bin_path", lambda *args, **kwargs: backend_bin)
     monkeypatch.setattr(cli, "_ensure_backend_binary", lambda *args, **kwargs: True)
@@ -9290,14 +9326,14 @@ def test_choose_frontend_parallel_layer_workers_uses_precomputed_costs_and_flags
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        cli,
+        cli_frontend_execution,
         "_predict_frontend_module_cost",
         lambda *args, **kwargs: (_ for _ in ()).throw(
             AssertionError("unexpected live cost recompute")
         ),
     )
     monkeypatch.setattr(
-        cli,
+        cli_frontend_execution,
         "_looks_like_stdlib_module_name",
         lambda *args, **kwargs: (_ for _ in ()).throw(
             AssertionError("unexpected stdlib classification recompute")
@@ -12868,7 +12904,9 @@ def test_build_rust_target_uses_rust_backend_feature_and_skips_daemon(
     monkeypatch.setenv("CARGO_TARGET_DIR", str(build_state_root / "cargo-target"))
     monkeypatch.setenv("MOLT_CACHE", str(cache_root))
     monkeypatch.setattr(cli, "_find_project_root", lambda start: project)
-    monkeypatch.setattr(cli, "_resolve_frontend_parallel_module_workers", lambda: 0)
+    monkeypatch.setattr(
+        cli_frontend_execution, "_resolve_frontend_parallel_module_workers", lambda: 0
+    )
     monkeypatch.setattr(cli, "_backend_daemon_enabled", lambda: True)
     monkeypatch.setattr(cli, "_backend_bin_path", lambda *args, **kwargs: backend_bin)
     monkeypatch.setattr(
@@ -13004,7 +13042,9 @@ def test_build_release_rust_target_uses_release_fast_backend_profile_by_default(
     monkeypatch.delenv("MOLT_RELEASE_BACKEND_CARGO_PROFILE", raising=False)
     monkeypatch.delenv("MOLT_RELEASE_CARGO_PROFILE", raising=False)
     monkeypatch.setattr(cli, "_find_project_root", lambda start: project)
-    monkeypatch.setattr(cli, "_resolve_frontend_parallel_module_workers", lambda: 0)
+    monkeypatch.setattr(
+        cli_frontend_execution, "_resolve_frontend_parallel_module_workers", lambda: 0
+    )
     monkeypatch.setattr(cli, "_backend_daemon_enabled", lambda: True)
     monkeypatch.setattr(cli, "_backend_bin_path", lambda *args, **kwargs: backend_bin)
     monkeypatch.setattr(
