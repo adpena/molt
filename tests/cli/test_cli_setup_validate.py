@@ -246,9 +246,8 @@ def test_cli_validate_check_json_reports_canonical_matrix() -> None:
     assert luau_compile_step["cmd"][
         luau_compile_step["cmd"].index("--profile") + 1
     ] == ("release")
-    assert (
-        "tmp/validate/luau-smoke/hello.luau"
-        in luau_compile_step["cmd"][-1].replace("\\", "/")
+    assert "tmp/validate/luau-smoke/hello.luau" in luau_compile_step["cmd"][-1].replace(
+        "\\", "/"
     )
     luau_runner_step = next(
         entry for entry in steps if entry["name"] == "luau-runner-available"
@@ -512,6 +511,26 @@ def test_cli_cargo_build_helper_uses_default_memory_guard(
     }
 
 
+def test_maybe_enable_sccache_installs_shared_dx_cache_defaults(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    artifact_root = tmp_path / "artifacts"
+    env = {
+        "PATH": "/usr/bin",
+        "MOLT_EXT_ROOT": str(artifact_root),
+    }
+    monkeypatch.setattr(
+        CARGO_EXECUTION.shutil, "which", lambda _name: "/usr/bin/sccache"
+    )
+
+    CARGO_EXECUTION._maybe_enable_sccache(env)
+
+    assert env["RUSTC_WRAPPER"] == "/usr/bin/sccache"
+    assert env["SCCACHE_DIR"] == str((artifact_root / ".sccache").resolve())
+    assert env["SCCACHE_CACHE_SIZE"] == "10G"
+
+
 def test_cli_wrapper_build_uses_default_memory_guard(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -589,7 +608,10 @@ def test_cli_build_toolchain_probes_use_memory_guard(
         return subprocess.CompletedProcess(cmd, 0, stdout, "")
 
     monkeypatch.setattr(
-        RUNTIME_BUILD, "_run_completed_command", fake_run_completed_command, raising=True
+        RUNTIME_BUILD,
+        "_run_completed_command",
+        fake_run_completed_command,
+        raising=True,
     )
     monkeypatch.setattr(
         COMPILER_METADATA,
@@ -645,7 +667,9 @@ def test_cli_build_toolchain_probes_use_memory_guard(
     assert cli._git_rev(ROOT) == "abc123"
     assert COMPILER_METADATA._rustc_version() == "rustc 1.91.0"
     assert cli._validate_wasm_structural(wasm_path) is None
-    assert RUNTIME_BUILD._rust_target_libdir("wasm32-wasip1") == Path("/rust/target/lib")
+    assert RUNTIME_BUILD._rust_target_libdir("wasm32-wasip1") == Path(
+        "/rust/target/lib"
+    )
     assert cli._is_valid_cached_backend_artifact(obj_path, is_wasm=False) is False
     assert cli._runtime_archive_crate_names(archive_path) == frozenset()
     assert cli._detect_macos_arch(obj_path) is None
@@ -659,8 +683,6 @@ def test_cli_build_toolchain_probes_use_memory_guard(
 def test_cli_diff_command_uses_diff_memory_guard(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from molt import cli
-
     calls: list[dict[str, object]] = []
 
     def fake_run_command(cmd: list[str], **kwargs: object) -> int:
@@ -683,8 +705,6 @@ def test_cli_compare_uses_diff_memory_guard_for_children(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from molt import cli
-
     project = tmp_path / "project"
     project.mkdir()
     entry = project / "main.py"
@@ -720,7 +740,10 @@ def test_cli_compare_uses_diff_memory_guard_for_children(
         cli_commands, "_resolve_python_exe", lambda exe: "python3", raising=True
     )
     monkeypatch.setattr(
-        cli_commands, "_resolve_binary_output", lambda output: built_binary, raising=True
+        cli_commands,
+        "_resolve_binary_output",
+        lambda output: built_binary,
+        raising=True,
     )
     monkeypatch.setattr(
         cli_commands, "_run_command_timed", fake_run_command_timed, raising=True
@@ -813,8 +836,6 @@ def test_cli_cross_run_uses_cross_memory_guard(
 def test_cli_bench_outer_process_uses_bench_memory_guard(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from molt import cli
-
     calls: list[dict[str, object]] = []
 
     def fake_run_command(cmd: list[str], **kwargs: object) -> int:
@@ -1008,8 +1029,6 @@ def test_tools_dev_validate_delegates_to_canonical_cli() -> None:
 
 
 def test_cli_lint_uses_shared_dx_planner(monkeypatch: pytest.MonkeyPatch) -> None:
-    from molt import cli
-
     calls: list[list[str]] = []
 
     class FakeDxProject:
@@ -1040,7 +1059,9 @@ def test_cli_lint_uses_shared_dx_planner(monkeypatch: pytest.MonkeyPatch) -> Non
         return subprocess.CompletedProcess(cmd, 0)
 
     monkeypatch.setattr(cli_commands, "DxProject", FakeDxProject, raising=True)
-    monkeypatch.setattr(cli_commands, "_run_completed_command", fake_run_completed, raising=True)
+    monkeypatch.setattr(
+        cli_commands, "_run_completed_command", fake_run_completed, raising=True
+    )
 
     assert cli_commands.lint(json_output=False, verbose=False) == 0
     assert calls == [["python3", "-m", "ruff", "check", "."]]
@@ -1202,9 +1223,11 @@ def test_llvm_detection_rejects_mismatched_config_major(
     monkeypatch.setattr(
         TOOLCHAIN_VALIDATION.shutil,
         "which",
-        lambda name: "C:/LLVM/bin/llvm-config.exe"
-        if name in {"llvm-config", "llvm-config.exe"}
-        else None,
+        lambda name: (
+            "C:/LLVM/bin/llvm-config.exe"
+            if name in {"llvm-config", "llvm-config.exe"}
+            else None
+        ),
         raising=True,
     )
 
@@ -1257,7 +1280,9 @@ def test_cli_install_uses_memory_guard_for_venv_and_uv(
 
     monkeypatch.setattr(deps, "_ensure_uv", lambda: "uv", raising=True)
     monkeypatch.setattr(deps, "_find_molt_root", lambda _cwd: tmp_path, raising=True)
-    monkeypatch.setattr(deps, "_run_completed_command", fake_run_completed, raising=True)
+    monkeypatch.setattr(
+        deps, "_run_completed_command", fake_run_completed, raising=True
+    )
 
     assert cli.install(["attrs"], json_output=True) == 0
 

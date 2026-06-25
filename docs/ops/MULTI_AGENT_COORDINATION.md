@@ -59,17 +59,28 @@ benchmarks, or long validation must do this before the first heavy command:
    The wrapper delegates to `tools/agent_coordination.py init` and writes both
    a markdown report and `logs/agents/<task>/coordination.json`.
 
-6. Set a unique session before any build or harness command:
+6. Use the cross-platform DX authority before any build or harness command:
 
    ```bash
-   export MOLT_SESSION_ID="<agent-or-task-id>"
+   uv run --python 3.12 python -m molt.cli dx env
+   uv run --python 3.12 python -m molt.cli dx run -- <command>
    ```
 
-7. Bootstrap shared throughput defaults when a long proof lane is likely:
+   The command syntax is identical on Windows, macOS, and Linux. The tool
+   resolves host OS/architecture facts, canonical artifact roots, session id,
+   backend-daemon socket directory, shared `SCCACHE_DIR`, and cache-retention
+   defaults. Use `molt dx env --format powershell|posix|cmd|json` only when a
+   parent shell must import the values.
+
+7. Bootstrap shared throughput defaults when a long proof lane still needs
+   shell activation:
 
    ```bash
-   tools/throughput_env.sh --apply
+   uv run --python 3.12 python -m molt.cli dx env --format posix
    ```
+
+   `tools/throughput_env.sh --apply` remains a POSIX compatibility wrapper over
+   the same Python DX resolver, not a second environment authority.
 
 8. Record in `logs/agents/<task>/`:
    - named aperture and exposed authority;
@@ -109,8 +120,10 @@ uv run --python 3.12 python tools/agent_coordination.py proof-plan
   stalled or crash-adjacent during Windows proof work; it records first-output
   gaps, stream-idle spans, byte/chunk counts, elapsed time, and return code,
   but not child stdout/stderr text or Codex state.
-- `tools/new-agent-task.sh <task>` is the short wrapper for
-  `tools/agent_coordination.py init <task>`.
+- `tools/new-agent-task.sh <task>` is the POSIX short wrapper for
+  `tools/agent_coordination.py init <task>`. The init command writes
+  `logs/agents/<task>/env.sh` and `env.ps1` from the same DX facts; the
+  primary cross-platform command path remains `molt dx run -- <command>`.
 - `coordination.json` is a discovery index, not a lock. The real serialization
   authority for differential work remains the harness lock under
   `<CARGO_TARGET_DIR>/.molt_state/diff_run.lock`.

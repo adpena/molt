@@ -14,12 +14,23 @@ def _export_value(stdout: str, key: str) -> str:
     line = next(
         line for line in stdout.splitlines() if line.startswith(f"export {key}=")
     )
-    return line.split('"', 2)[1]
+    return line.split('"', 2)[1].replace("\\\\", "\\")
 
 
-def test_throughput_env_exports_short_backend_daemon_socket_dir() -> None:
+def test_run_context_env_exports_short_backend_daemon_socket_dir() -> None:
     result = run_native_test_process(
-        ["bash", "tools/throughput_env.sh", "--print"],
+        [
+            "uv",
+            "run",
+            "--python",
+            "3.12",
+            "python",
+            "tools/run_context_env.py",
+            "--dx",
+            "--format",
+            "posix",
+            "--prefer-external-artifacts",
+        ],
         cwd=REPO_ROOT,
         text=True,
         capture_output=True,
@@ -31,11 +42,11 @@ def test_throughput_env_exports_short_backend_daemon_socket_dir() -> None:
     assert 'export MOLT_SESSION_ID="' in result.stdout
     assert 'export MOLT_BACKEND_DAEMON_SOCKET_DIR="' in result.stdout
     socket_dir = _export_value(result.stdout, "MOLT_BACKEND_DAEMON_SOCKET_DIR")
-    assert socket_dir.startswith("/tmp/molt-backend-")
+    assert Path(socket_dir).name.startswith("molt-backend-")
     assert len(socket_dir) < 80
 
 
-def test_throughput_env_prefers_external_artifact_root() -> None:
+def test_run_context_env_prefers_external_artifact_root() -> None:
     external_root = Path("/tmp") / f"molt-throughput-env-{uuid4().hex}" / "Molt"
     env = dict(os.environ)
     for key in (
@@ -57,7 +68,18 @@ def test_throughput_env_prefers_external_artifact_root() -> None:
     )
 
     result = run_native_test_process(
-        ["bash", "tools/throughput_env.sh", "--print"],
+        [
+            "uv",
+            "run",
+            "--python",
+            "3.12",
+            "python",
+            "tools/run_context_env.py",
+            "--dx",
+            "--format",
+            "posix",
+            "--prefer-external-artifacts",
+        ],
         cwd=REPO_ROOT,
         env=env,
         text=True,
@@ -70,6 +92,40 @@ def test_throughput_env_prefers_external_artifact_root() -> None:
     assert _export_value(result.stdout, "CARGO_TARGET_DIR") == str(
         external_root.resolve() / "target"
     )
-    assert _export_value(result.stdout, "MOLT_BACKEND_DAEMON_SOCKET_DIR").startswith(
-        "/tmp/molt-backend-"
+    socket_dir = _export_value(result.stdout, "MOLT_BACKEND_DAEMON_SOCKET_DIR")
+    assert Path(socket_dir).name.startswith("molt-backend-")
+
+
+def test_run_context_env_prints_powershell_dx_facts() -> None:
+    env = dict(os.environ)
+    for key in (
+        "MOLT_EXT_ROOT",
+        "CARGO_TARGET_DIR",
+        "MOLT_BACKEND_DAEMON_SOCKET_DIR",
+        "SCCACHE_DIR",
+    ):
+        env.pop(key, None)
+
+    result = run_native_test_process(
+        [
+            "uv",
+            "run",
+            "--python",
+            "3.12",
+            "python",
+            "tools/run_context_env.py",
+            "--dx",
+            "--format",
+            "powershell",
+        ],
+        cwd=REPO_ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
     )
+
+    assert result.returncode == 0, result.stderr
+    assert "$env:MOLT_SESSION_ID = " in result.stdout
+    assert "$env:MOLT_BACKEND_DAEMON_SOCKET_DIR = " in result.stdout
+    assert "$env:SCCACHE_DIR = " in result.stdout

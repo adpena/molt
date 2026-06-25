@@ -508,7 +508,10 @@ uv run --python 3.12 python -u tests/molt_diff.py tests/differential/basic/exec_
   session sentinel.
 - **One-shot backend capture**: one-shot native backend compiles must capture stdout/stderr through temp-file-backed handles instead of pipe-backed `capture_output=True`. Child/grandchild toolchain processes may inherit stdio; temp-file capture avoids silent stalls where the parent waits forever on a still-open pipe after codegen has already finished.
 - **Native runtime overlap**: native builds start runtime verification/build overlap after cache/setup and join it only at the true native link boundary. `emit=obj` skips that async runtime work because there is no native link step to hide it behind.
-- **Bootstrap command**: `tools/throughput_env.sh --apply` (or `eval "$(tools/throughput_env.sh --print)"`) configures:
+- **Bootstrap command**: `uv run --python 3.12 python -m molt.cli dx env`
+  reports the same canonical DX facts on Windows, macOS, and Linux, and
+  `uv run --python 3.12 python -m molt.cli dx run -- <command>` runs a command
+  under those facts without shell activation. The resolver configures:
   - `MOLT_EXT_ROOT=<artifact-root>` (repo-local by default, or caller-provided external root)
   - `MOLT_CACHE=$MOLT_EXT_ROOT/.molt_cache`
   - `CARGO_TARGET_DIR=$MOLT_EXT_ROOT/target`
@@ -518,7 +521,11 @@ uv run --python 3.12 python -u tests/molt_diff.py tests/differential/basic/exec_
   - `SCCACHE_DIR=$MOLT_EXT_ROOT/.sccache` and `SCCACHE_CACHE_SIZE=<policy default>`
   - `MOLT_USE_SCCACHE=1`, `MOLT_DIFF_ALLOW_RUSTC_WRAPPER=1`, and `CARGO_INCREMENTAL=0` for better cross-agent cacheability
 - **Artifact root policy**: throughput bootstrap now prefers `MOLT_EXT_ROOT` when set and otherwise uses canonical repo-local roots. Use an external root when you want shared artifacts across machines or larger local capacity.
-- **Cache retention**: `tools/throughput_env.sh --apply` runs `tools/molt_cache_prune.py` using policy defaults. Override with `MOLT_CACHE_MAX_GB`, `MOLT_CACHE_MAX_AGE_DAYS`, or disable via `MOLT_CACHE_PRUNE=0`.
+- **Cache retention**: the DX resolver emits `MOLT_CACHE_MAX_GB` and
+  `MOLT_CACHE_MAX_AGE_DAYS`; the POSIX compatibility wrapper
+  `tools/throughput_env.sh --apply` still runs `tools/molt_cache_prune.py`
+  using those policy defaults. Override with `MOLT_CACHE_MAX_GB`,
+  `MOLT_CACHE_MAX_AGE_DAYS`, or disable via `MOLT_CACHE_PRUNE=0`.
 - **Diff run coordination lock**: `tests/molt_diff.py` acquires `<CARGO_TARGET_DIR>/.molt_state/diff_run.lock` so concurrent agents queue instead of running overlapping diff sweeps. Tune with `MOLT_DIFF_RUN_LOCK_WAIT_SEC` (default 900) and `MOLT_DIFF_RUN_LOCK_POLL_SEC`.
 - **Matrix harness**: use `tools/throughput_matrix.py` for reproducible single-vs-concurrent build throughput checks (profiles + wrapper modes), with optional differential mini-matrix.
   - Example: `uv run --python 3.12 python tools/throughput_matrix.py --concurrency 2 --timeout-sec 75 --shared-target-dir /Volumes/APDataStore/Molt/cargo-target --run-diff --diff-jobs 2 --diff-timeout-sec 180`

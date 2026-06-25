@@ -343,9 +343,7 @@ def test_resolve_output_roots_defaults_final_outputs_to_dist(
     monkeypatch.setenv("MOLT_CACHE", str(tmp_path / ".molt_cache"))
 
     _artifacts_root, bin_root, output_root = (
-        cli_build_output_layout._resolve_output_roots(
-            tmp_path, None, "app"
-        )
+        cli_build_output_layout._resolve_output_roots(tmp_path, None, "app")
     )
 
     assert output_root == tmp_path / "dist"
@@ -1650,6 +1648,20 @@ def test_cli_config_json() -> None:
     assert "sources" in payload["data"]
 
 
+def test_cli_dx_env_json_has_cross_platform_defaults() -> None:
+    res = _run_cli(["dx", "env", "--format", "json"])
+    assert res.returncode == 0, res.stderr
+    payload = json.loads(res.stdout)
+    env = payload["env"]
+
+    assert payload["kind"] == "molt_dx_env"
+    assert "os" in payload["host"]
+    assert "arch" in payload["host"]
+    assert env["MOLT_SESSION_ID"].startswith("tests-cli-smoke-")
+    assert env["SCCACHE_DIR"].endswith(".sccache")
+    assert "MOLT_BACKEND_DAEMON_SOCKET_DIR" in env
+
+
 def test_cli_completion_includes_build_flags() -> None:
     res = _run_cli(["completion", "--shell", "bash", "--json"])
     assert res.returncode == 0
@@ -1658,6 +1670,8 @@ def test_cli_completion_includes_build_flags() -> None:
     assert "extension" in script
     assert "build audit" in script
     assert "factgraph" in script
+    assert "dx" in script
+    assert "env run" in script
     assert "parity-run" in script
     assert "--emit" in script
     assert "--rebuild" in script

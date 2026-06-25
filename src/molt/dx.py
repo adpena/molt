@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 from collections.abc import Collection
+import hashlib
+import json
 import os
+import platform
 import shlex
 import shutil
+import tempfile
 import tomllib
 import uuid
 from pathlib import Path
-from typing import Mapping, cast
+from typing import Literal, Mapping, Sequence, cast
 
 
 TEST_PYTHONS = ["3.12", "3.13", "3.14"]
@@ -26,10 +30,23 @@ CANONICAL_RUN_ENV_KEYS = (
     "CARGO_INCREMENTAL",
     "MOLT_SESSION_ID",
 )
+DX_ENV_KEYS = (
+    *CANONICAL_RUN_ENV_KEYS,
+    "MOLT_BACKEND_DAEMON_SOCKET_DIR",
+    "MOLT_USE_SCCACHE",
+    "MOLT_DIFF_ALLOW_RUSTC_WRAPPER",
+    "SCCACHE_DIR",
+    "SCCACHE_CACHE_SIZE",
+    "MOLT_CACHE_MAX_GB",
+    "MOLT_CACHE_MAX_AGE_DAYS",
+)
 DEFAULT_POSIX_EXTERNAL_ARTIFACT_ROOTS = (
     "/Volumes/VertigoDataTier/Molt",
     "/Volumes/APDataStore/Molt",
 )
+DEFAULT_SCCACHE_CACHE_SIZE = "10G"
+DEFAULT_MOLT_CACHE_MAX_GB = "30"
+DEFAULT_MOLT_CACHE_MAX_AGE_DAYS = "30"
 TRUE_VALUES = {"1", "true", "yes", "on"}
 FALSE_VALUES = {"0", "false", "no", "off"}
 
@@ -109,7 +126,9 @@ def _default_external_artifact_roots(env: Mapping[str, str]) -> tuple[Path, ...]
             raw = env.get(key, "").strip()
             if raw:
                 roots.append(Path(raw).expanduser() / "Molt")
-    roots.extend(Path(path).expanduser() for path in DEFAULT_POSIX_EXTERNAL_ARTIFACT_ROOTS)
+    roots.extend(
+        Path(path).expanduser() for path in DEFAULT_POSIX_EXTERNAL_ARTIFACT_ROOTS
+    )
     return _dedupe_paths(roots)
 
 
@@ -203,6 +222,95 @@ def select_external_artifact_root(
     return None
 
 
+def _backend_daemon_socket_root(env: Mapping[str, str]) -> Path:
+    raw = env.get("MOLT_BACKEND_DAEMON_SOCKET_ROOT", "").strip()
+    if raw:
+        return Path(raw).expanduser()
+    if os.name == "nt":
+        return Path(tempfile.gettempdir())
+    return Path("/tmp")
+
+
+def backend_daemon_socket_dir(repo_root: Path, env: Mapping[str, str]) -> Path:
+    """Resolve the short local backend-daemon socket directory for this checkout."""
+
+    root_hash = hashlib.sha256(str(repo_root.resolve()).encode()).hexdigest()[:12]
+    return (_backend_daemon_socket_root(env) / f"molt-backend-{root_hash}").resolve()
+
+
+def _install_dx_defaults(repo_root: Path, env: dict[str, str]) -> None:
+    artifact_root = Path(env["MOLT_EXT_ROOT"]).expanduser()
+    env.setdefault(
+        "MOLT_BACKEND_DAEMON_SOCKET_DIR",
+        str(backend_daemon_socket_dir(repo_root, env)),
+    )
+    env.setdefault("MOLT_USE_SCCACHE", "1")
+    env.setdefault("MOLT_DIFF_ALLOW_RUSTC_WRAPPER", "1")
+    env.setdefault("SCCACHE_DIR", str((artifact_root / ".sccache").resolve()))
+    env.setdefault("SCCACHE_CACHE_SIZE", DEFAULT_SCCACHE_CACHE_SIZE)
+    env.setdefault("MOLT_CACHE_MAX_GB", DEFAULT_MOLT_CACHE_MAX_GB)
+    env.setdefault("MOLT_CACHE_MAX_AGE_DAYS", DEFAULT_MOLT_CACHE_MAX_AGE_DAYS)
+
+
+def _host_facts() -> dict[str, str]:
+    return {
+        "os": platform.system().lower() or os.name,
+        "platform": platform.platform(),
+        "arch": platform.machine().lower(),
+        "python": platform.python_version(),
+    }
+
+
+def dx_env_payload(env: Mapping[str, str], keys: Sequence[str]) -> dict[str, object]:
+    return {
+        "schema_version": "1.0",
+        "kind": "molt_dx_env",
+        "host": _host_facts(),
+        "keys": list(keys),
+        "env": {key: env[key] for key in keys if key in env},
+    }
+
+
+def _posix_quote(value: str) -> str:
+    escaped = (
+        value.replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("$", "\\$")
+        .replace("`", "\\`")
+    )
+    return f'"{escaped}"'
+
+
+def _powershell_quote(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
+def _cmd_quote(value: str) -> str:
+    return value.replace("^", "^^").replace("&", "^&").replace("|", "^|")
+
+
+EnvRenderFormat = Literal["dotenv", "posix", "powershell", "cmd", "json"]
+
+
+def render_env(
+    env: Mapping[str, str], keys: Sequence[str], fmt: EnvRenderFormat
+) -> str:
+    present = [(key, env[key]) for key in keys if key in env]
+    if fmt == "json":
+        return json.dumps(dx_env_payload(env, keys), indent=2, sort_keys=True)
+    if fmt == "posix":
+        return "\n".join(
+            f"export {key}={_posix_quote(value)}" for key, value in present
+        )
+    if fmt == "powershell":
+        return "\n".join(
+            f"$env:{key} = {_powershell_quote(value)}" for key, value in present
+        )
+    if fmt == "cmd":
+        return "\n".join(f'set "{key}={_cmd_quote(value)}"' for key, value in present)
+    return "\n".join(f"{key}={value}" for key, value in present)
+
+
 class RunContext:
     """Canonical artifact roots and session identity for dev subprocesses."""
 
@@ -265,6 +373,26 @@ class RunContext:
 
         if create_dirs:
             for key in CANONICAL_ROOT_ENV_KEYS:
+                value = env.get(key)
+                if value:
+                    Path(value).expanduser().mkdir(parents=True, exist_ok=True)
+        return env
+
+    def dx_env(
+        self,
+        base: Mapping[str, str] | None = None,
+        *,
+        create_dirs: bool = True,
+        force_default_keys: Collection[str] = (),
+    ) -> dict[str, str]:
+        env = self.canonical_env(
+            base,
+            create_dirs=create_dirs,
+            force_default_keys=force_default_keys,
+        )
+        _install_dx_defaults(self.root, env)
+        if create_dirs:
+            for key in ("MOLT_BACKEND_DAEMON_SOCKET_DIR", "SCCACHE_DIR"):
                 value = env.get(key)
                 if value:
                     Path(value).expanduser().mkdir(parents=True, exist_ok=True)
@@ -378,6 +506,21 @@ class DxProject:
         env.setdefault("MOLT_SESSION_ID", f"dev-{os.getpid()}")
         env.setdefault("MOLT_BACKEND_DAEMON", "1" if dx.get("backend_daemon") else "0")
         env.setdefault("CARGO_BUILD_JOBS", str(dx.get("cargo_build_jobs", 2)))
+        return env
+
+    def dx_env(
+        self,
+        base: Mapping[str, str] | None = None,
+        *,
+        create_dirs: bool = True,
+    ) -> dict[str, str]:
+        env = self.canonical_env(base, create_dirs=create_dirs)
+        _install_dx_defaults(self.root, env)
+        if create_dirs:
+            for key in ("MOLT_BACKEND_DAEMON_SOCKET_DIR", "SCCACHE_DIR"):
+                value = env.get(key)
+                if value:
+                    Path(value).expanduser().mkdir(parents=True, exist_ok=True)
         return env
 
     def require_project_python(self, context: str) -> Path:

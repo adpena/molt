@@ -3,7 +3,13 @@ from __future__ import annotations
 from pathlib import Path
 
 import molt.dx as dx
-from molt.dx import CANONICAL_RUN_ENV_KEYS, DxProject, RunContext
+from molt.dx import (
+    CANONICAL_RUN_ENV_KEYS,
+    DX_ENV_KEYS,
+    DxProject,
+    RunContext,
+    render_env,
+)
 from tools import run_context_env
 
 
@@ -115,7 +121,9 @@ def test_run_context_skips_unhealthy_windows_local_appdata_default(
         del create_dirs
         return path != local_appdata / "Molt"
 
-    monkeypatch.setattr(dx, "_artifact_root_accepts_child_dirs", fake_accepts_child_dirs)
+    monkeypatch.setattr(
+        dx, "_artifact_root_accepts_child_dirs", fake_accepts_child_dirs
+    )
 
     env = RunContext(
         repo_root,
@@ -194,6 +202,40 @@ def test_run_context_shell_exports_are_eval_safe(tmp_path: Path) -> None:
     assert shell == 'export MOLT_SESSION_ID="session-\\"\\$\\`\\\\"'
 
 
+def test_run_context_dx_env_installs_cross_platform_tool_defaults(
+    tmp_path: Path,
+) -> None:
+    env = RunContext(tmp_path, session_prefix="dx").dx_env(
+        {"MOLT_BACKEND_DAEMON_SOCKET_ROOT": str(tmp_path / "sockets")},
+        create_dirs=False,
+    )
+
+    assert env["MOLT_BACKEND_DAEMON_SOCKET_DIR"].startswith(
+        str((tmp_path / "sockets").resolve())
+    )
+    assert env["SCCACHE_DIR"] == str(tmp_path.resolve() / ".sccache")
+    assert env["SCCACHE_CACHE_SIZE"] == "10G"
+    assert env["MOLT_USE_SCCACHE"] == "1"
+    assert env["MOLT_DIFF_ALLOW_RUSTC_WRAPPER"] == "1"
+    assert env["MOLT_CACHE_MAX_GB"] == "30"
+    assert env["MOLT_CACHE_MAX_AGE_DAYS"] == "30"
+
+
+def test_dx_env_renders_shell_neutral_and_powershell(tmp_path: Path) -> None:
+    env = RunContext(tmp_path, session_prefix="quote").dx_env(
+        {
+            "MOLT_SESSION_ID": "session-'value'",
+        },
+        create_dirs=False,
+    )
+
+    dotenv = render_env(env, ("MOLT_SESSION_ID",), "dotenv")
+    powershell = render_env(env, ("MOLT_SESSION_ID",), "powershell")
+
+    assert dotenv == "MOLT_SESSION_ID=session-'value'"
+    assert powershell == "$env:MOLT_SESSION_ID = 'session-''value'''"
+
+
 def test_dx_project_preserves_explicit_root_with_external_defaults(
     tmp_path: Path,
 ) -> None:
@@ -229,3 +271,18 @@ PYTHONPATH = "{root}/src"
     assert env["CARGO_TARGET_DIR"] == str(resolved_root / "target")
     assert env["MOLT_CACHE"] == str(resolved_root / ".molt_cache")
     assert env["PYTHONPATH"] == str(project_root / "src")
+
+
+def test_dx_project_dx_env_uses_same_key_authority(tmp_path: Path) -> None:
+    project_root = tmp_path / "repo"
+    project_root.mkdir()
+    (project_root / "pyproject.toml").write_text(
+        "[tool.molt.dx]\nprefer_external_artifacts = false\n",
+        encoding="utf-8",
+    )
+
+    env = DxProject(project_root).dx_env({"PATH": "/usr/bin"}, create_dirs=False)
+
+    assert tuple(key for key in DX_ENV_KEYS if key in env)
+    assert env["MOLT_EXT_ROOT"] == str(project_root.resolve())
+    assert env["SCCACHE_DIR"] == str(project_root.resolve() / ".sccache")
