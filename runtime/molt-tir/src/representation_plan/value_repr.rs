@@ -4,7 +4,7 @@ use crate::repr::Repr;
 use crate::tir::blocks::{BlockId, Terminator};
 use crate::tir::function::TirFunction;
 use crate::tir::lower_to_simple::SimpleValueNames;
-use crate::tir::ops::{AttrValue, OpCode};
+use crate::tir::ops::{AttrValue, OpCode, TirOp};
 use crate::tir::types::TirType;
 use crate::tir::values::ValueId;
 
@@ -153,7 +153,7 @@ fn native_projectable_scalar_reprs_for(
     repr_by_value: &HashMap<ValueId, Repr>,
 ) -> HashMap<ValueId, Repr> {
     let value_types = value_type_by_id_for(tir_func);
-    repr_by_value
+    let mut carrier_by_value: HashMap<ValueId, Repr> = repr_by_value
         .iter()
         .filter_map(|(&value, &repr)| match repr {
             Repr::RawI64Safe | Repr::RawI64FullDeopt
@@ -163,7 +163,45 @@ fn native_projectable_scalar_reprs_for(
             }
             _ => None,
         })
-        .collect()
+        .collect();
+
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for block in tir_func.blocks.values() {
+            for op in &block.ops {
+                for result_index in 0..op.results.len() {
+                    if let Some(repr) = native_projectable_op_result_repr(
+                        op,
+                        result_index,
+                        &carrier_by_value,
+                        repr_by_value,
+                        &value_types,
+                    ) {
+                        let result = op.results[result_index];
+                        if insert_projected_value_repr(
+                            &mut carrier_by_value,
+                            result,
+                            repr,
+                            &value_types,
+                        ) {
+                            changed = true;
+                        }
+                    }
+                }
+            }
+        }
+        if propagate_native_projectable_identity_values(
+            tir_func,
+            repr_by_value,
+            &value_types,
+            &mut carrier_by_value,
+        ) {
+            changed = true;
+        }
+    }
+
+    carrier_by_value
 }
 
 pub fn value_range_for(
@@ -347,6 +385,329 @@ fn raw_i64_safe_value_seed(
 
 fn is_raw_i64_semantic_candidate(value_types: &HashMap<ValueId, TirType>, id: ValueId) -> bool {
     matches!(value_types.get(&id), Some(TirType::I64 | TirType::BigInt))
+}
+
+fn is_bool_semantic_candidate(value_types: &HashMap<ValueId, TirType>, id: ValueId) -> bool {
+    matches!(value_types.get(&id), Some(TirType::Bool))
+}
+
+fn is_float_semantic_candidate(value_types: &HashMap<ValueId, TirType>, id: ValueId) -> bool {
+    matches!(value_types.get(&id), Some(TirType::F64))
+}
+
+fn value_allows_projected_repr(
+    value_types: &HashMap<ValueId, TirType>,
+    value: ValueId,
+    repr: Repr,
+) -> bool {
+    match repr {
+        Repr::RawI64Safe | Repr::RawI64FullDeopt => {
+            is_raw_i64_semantic_candidate(value_types, value)
+        }
+        Repr::Bool => is_bool_semantic_candidate(value_types, value),
+        Repr::FloatUnboxed => is_float_semantic_candidate(value_types, value),
+        _ => false,
+    }
+}
+
+fn insert_projected_value_repr(
+    carrier_by_value: &mut HashMap<ValueId, Repr>,
+    value: ValueId,
+    repr: Repr,
+    value_types: &HashMap<ValueId, TirType>,
+) -> bool {
+    if !value_allows_projected_repr(value_types, value, repr) {
+        return false;
+    }
+    match carrier_by_value.get(&value).copied() {
+        Some(existing) if existing == repr => false,
+        Some(existing)
+            if matches!(
+                (existing, repr),
+                (Repr::RawI64Safe, Repr::RawI64FullDeopt)
+                    | (Repr::RawI64FullDeopt, Repr::RawI64Safe)
+            ) =>
+        {
+            if existing == Repr::RawI64FullDeopt {
+                false
+            } else {
+                carrier_by_value.insert(value, Repr::RawI64FullDeopt);
+                true
+            }
+        }
+        Some(_) => false,
+        None => {
+            carrier_by_value.insert(value, repr);
+            true
+        }
+    }
+}
+
+fn native_projectable_op_result_repr(
+    op: &TirOp,
+    result_index: usize,
+    carrier_by_value: &HashMap<ValueId, Repr>,
+    repr_by_value: &HashMap<ValueId, Repr>,
+    value_types: &HashMap<ValueId, TirType>,
+) -> Option<Repr> {
+    let result = *op.results.get(result_index)?;
+    native_projectable_bool_result(op, result_index, result, carrier_by_value, value_types).or_else(
+        || {
+            native_projectable_float_result(
+                op,
+                result,
+                carrier_by_value,
+                repr_by_value,
+                value_types,
+            )
+        },
+    )
+}
+
+fn native_projectable_bool_result(
+    op: &TirOp,
+    result_index: usize,
+    result: ValueId,
+    carrier_by_value: &HashMap<ValueId, Repr>,
+    value_types: &HashMap<ValueId, TirType>,
+) -> Option<Repr> {
+    if !is_bool_semantic_candidate(value_types, result) {
+        return None;
+    }
+    let operands_all_bool = || {
+        !op.operands.is_empty()
+            && op
+                .operands
+                .iter()
+                .all(|operand| carrier_by_value.get(operand) == Some(&Repr::Bool))
+    };
+    match op.opcode {
+        OpCode::ConstBool
+        | OpCode::Eq
+        | OpCode::Ne
+        | OpCode::Lt
+        | OpCode::Le
+        | OpCode::Gt
+        | OpCode::Ge
+        | OpCode::Is
+        | OpCode::IsNot
+        | OpCode::Not
+        | OpCode::Bool
+        | OpCode::ExceptionPending => Some(Repr::Bool),
+        OpCode::CheckedAdd | OpCode::CheckedMul if result_index == 1 => Some(Repr::Bool),
+        OpCode::IterNextUnboxed if result_index == 1 => Some(Repr::Bool),
+        OpCode::And | OpCode::Or if operands_all_bool() => Some(Repr::Bool),
+        OpCode::Index
+            if op.operands.get(1).is_some_and(|index| {
+                carrier_by_value
+                    .get(index)
+                    .is_some_and(|repr| repr.is_raw_i64_carrier())
+            }) =>
+        {
+            Some(Repr::Bool)
+        }
+        OpCode::Copy
+            if crate::tir::passes::value_identity::copy_value_source(op)
+                .is_some_and(|source| carrier_by_value.get(&source) == Some(&Repr::Bool)) =>
+        {
+            Some(Repr::Bool)
+        }
+        _ => None,
+    }
+}
+
+fn native_projectable_float_result(
+    op: &TirOp,
+    result: ValueId,
+    carrier_by_value: &HashMap<ValueId, Repr>,
+    repr_by_value: &HashMap<ValueId, Repr>,
+    value_types: &HashMap<ValueId, TirType>,
+) -> Option<Repr> {
+    if !is_float_semantic_candidate(value_types, result) {
+        return None;
+    }
+    let operand_is_float_input = |operand: &ValueId| {
+        carrier_by_value
+            .get(operand)
+            .is_some_and(|repr| repr.is_float_unboxed() || repr.is_raw_i64_carrier())
+            || matches!(
+                repr_by_value.get(operand),
+                Some(Repr::FloatUnboxed | Repr::RawI64Safe | Repr::RawI64FullDeopt)
+            )
+    };
+    let operands_are_float_inputs =
+        || !op.operands.is_empty() && op.operands.iter().all(operand_is_float_input);
+    match op.opcode {
+        OpCode::ConstFloat => Some(Repr::FloatUnboxed),
+        OpCode::Add
+        | OpCode::Sub
+        | OpCode::Mul
+        | OpCode::Div
+        | OpCode::InplaceAdd
+        | OpCode::InplaceSub
+        | OpCode::InplaceMul
+            if operands_are_float_inputs() =>
+        {
+            Some(Repr::FloatUnboxed)
+        }
+        OpCode::Neg if op.operands.first().is_some_and(operand_is_float_input) => {
+            Some(Repr::FloatUnboxed)
+        }
+        OpCode::Copy
+            if op_original_kind(op) == Some("float_from_obj")
+                || crate::tir::passes::value_identity::copy_value_source(op).is_some_and(
+                    |source| {
+                        carrier_by_value
+                            .get(&source)
+                            .is_some_and(|repr| repr.is_float_unboxed())
+                            || repr_by_value.get(&source) == Some(&Repr::FloatUnboxed)
+                    },
+                ) =>
+        {
+            Some(Repr::FloatUnboxed)
+        }
+        _ => None,
+    }
+}
+
+fn op_original_kind(op: &TirOp) -> Option<&str> {
+    match op.attrs.get("_original_kind") {
+        Some(AttrValue::Str(kind)) => Some(kind.as_str()),
+        _ => None,
+    }
+}
+
+fn block_arg_incomings_for(tir_func: &TirFunction) -> HashMap<(BlockId, usize), Vec<ValueId>> {
+    let reachable = crate::tir::dominators::executable_reachable_blocks(tir_func);
+    let mut block_arg_incomings: HashMap<(BlockId, usize), Vec<ValueId>> = HashMap::new();
+    let mut add_edge = |target: BlockId, args: &[ValueId]| {
+        for (index, &arg) in args.iter().enumerate() {
+            block_arg_incomings
+                .entry((target, index))
+                .or_default()
+                .push(arg);
+        }
+    };
+    for block in tir_func.blocks.values() {
+        if !reachable.contains(&block.id) {
+            continue;
+        }
+        match &block.terminator {
+            Terminator::Branch { target, args } => add_edge(*target, args),
+            Terminator::CondBranch {
+                then_block,
+                then_args,
+                else_block,
+                else_args,
+                ..
+            } => {
+                add_edge(*then_block, then_args);
+                add_edge(*else_block, else_args);
+            }
+            Terminator::Switch {
+                cases,
+                default,
+                default_args,
+                ..
+            }
+            | Terminator::StateDispatch {
+                cases,
+                default,
+                default_args,
+                ..
+            } => {
+                for (_, target, args) in cases {
+                    add_edge(*target, args);
+                }
+                add_edge(*default, default_args);
+            }
+            Terminator::Return { .. } | Terminator::Unreachable => {}
+        }
+    }
+    block_arg_incomings
+}
+
+fn merge_projected_reprs<'a>(reprs: impl Iterator<Item = &'a Repr>) -> Option<Repr> {
+    let mut merged: Option<Repr> = None;
+    let mut saw_any = false;
+    for &repr in reprs {
+        saw_any = true;
+        merged = match (merged, repr) {
+            (None, repr) => Some(repr),
+            (Some(existing), repr) if existing == repr => Some(existing),
+            (Some(Repr::RawI64Safe), Repr::RawI64FullDeopt)
+            | (Some(Repr::RawI64FullDeopt), Repr::RawI64Safe)
+            | (Some(Repr::RawI64FullDeopt), Repr::RawI64FullDeopt) => Some(Repr::RawI64FullDeopt),
+            _ => return None,
+        };
+    }
+    saw_any.then_some(merged).flatten()
+}
+
+fn propagate_native_projectable_identity_values(
+    tir_func: &TirFunction,
+    repr_by_value: &HashMap<ValueId, Repr>,
+    value_types: &HashMap<ValueId, TirType>,
+    carrier_by_value: &mut HashMap<ValueId, Repr>,
+) -> bool {
+    let block_arg_incomings = block_arg_incomings_for(tir_func);
+    let mut changed = false;
+    let mut copy_source: HashMap<ValueId, ValueId> = HashMap::new();
+    let mut block_arg_ids: HashMap<ValueId, (BlockId, usize)> = HashMap::new();
+    let mut all_value_ids: Vec<ValueId> = Vec::new();
+    for block in tir_func.blocks.values() {
+        for (index, arg) in block.args.iter().enumerate() {
+            block_arg_ids.insert(arg.id, (block.id, index));
+            all_value_ids.push(arg.id);
+        }
+        for op in &block.ops {
+            if let Some(source) = crate::tir::passes::value_identity::copy_value_source(op)
+                && let Some(&result) = op.results.first()
+            {
+                copy_source.insert(result, source);
+            }
+            for &result in &op.results {
+                all_value_ids.push(result);
+            }
+        }
+    }
+
+    for id in all_value_ids {
+        if carrier_by_value.contains_key(&id) {
+            continue;
+        }
+        let projected = if let Some(source) = copy_source.get(&id) {
+            carrier_by_value.get(source).copied().or_else(|| {
+                (repr_by_value.get(source) == Some(&Repr::FloatUnboxed))
+                    .then_some(Repr::FloatUnboxed)
+            })
+        } else if let Some(&(block, index)) = block_arg_ids.get(&id) {
+            block_arg_incomings
+                .get(&(block, index))
+                .and_then(|incomings| {
+                    if incomings.is_empty()
+                        || incomings
+                            .iter()
+                            .any(|incoming| !carrier_by_value.contains_key(incoming))
+                    {
+                        return None;
+                    }
+                    merge_projected_reprs(
+                        incomings
+                            .iter()
+                            .filter_map(|value| carrier_by_value.get(value)),
+                    )
+                })
+        } else {
+            None
+        };
+        if let Some(repr) = projected
+            && insert_projected_value_repr(carrier_by_value, id, repr, value_types)
+        {
+            changed = true;
+        }
+    }
+    changed
 }
 
 /// The result `ValueId`s of GPU thread/block-id intrinsic calls — hardware lane,
