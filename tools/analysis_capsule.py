@@ -76,6 +76,15 @@ def build_capsule(
     errors: list[str] = []
     warnings: list[str] = []
     frontend = _summarize_build_diagnostics(build_diagnostics, errors, warnings)
+    compiler_binary_image_analysis = _summarize_compiler_binary_image_analysis(
+        build_diagnostics,
+        errors,
+    )
+    _check_compiler_analysis_against_closure(
+        compiler_binary_image_analysis,
+        frontend,
+        errors,
+    )
     ir_tir = _summarize_ir_tir(build_diagnostics, tir_fact_graphs, errors, warnings)
     allocation = _summarize_allocation(build_diagnostics)
     binary = _summarize_binary(binary_size, startup_audit)
@@ -98,6 +107,7 @@ def build_capsule(
             "tir_fact_graphs": [path for path, _ in tir_fact_graphs],
         },
         "source_frontend": frontend,
+        "compiler_binary_image_analysis": compiler_binary_image_analysis,
         "ir_tir": ir_tir,
         "allocation": allocation,
         "binary": binary,
@@ -113,6 +123,62 @@ def build_capsule(
         },
     }
     return capsule
+
+
+def _summarize_compiler_binary_image_analysis(
+    diagnostics: Mapping[str, Any],
+    errors: list[str],
+) -> dict[str, Any]:
+    raw = diagnostics.get("binary_image_analysis")
+    if raw is None:
+        return {"present": False}
+    if not isinstance(raw, Mapping):
+        errors.append("build_diagnostics.binary_image_analysis must be an object")
+        return {"present": False}
+    schema_version = raw.get("schema_version")
+    if schema_version != 1:
+        errors.append("build_diagnostics.binary_image_analysis.schema_version must be 1")
+    stages: dict[str, Mapping[str, Any]] = {}
+    for stage in ("frontend", "backend_ir", "artifacts"):
+        payload = raw.get(stage)
+        if payload is None:
+            continue
+        if not isinstance(payload, Mapping):
+            errors.append(f"build_diagnostics.binary_image_analysis.{stage} must be an object")
+            continue
+        stages[stage] = payload
+    return {
+        "present": True,
+        "schema_version": schema_version,
+        "stages": sorted(stages),
+        "frontend": dict(stages.get("frontend", {})),
+        "backend_ir": dict(stages.get("backend_ir", {})),
+        "artifacts": dict(stages.get("artifacts", {})),
+    }
+
+
+def _check_compiler_analysis_against_closure(
+    compiler_analysis: Mapping[str, Any],
+    frontend: Mapping[str, Any],
+    errors: list[str],
+) -> None:
+    if not compiler_analysis.get("present"):
+        return
+    closure = _mapping_or_empty(frontend.get("closure"))
+    raw_frontend = _mapping_or_empty(compiler_analysis.get("frontend"))
+    source_ast = _mapping_or_empty(raw_frontend.get("source_ast"))
+    _check_count(
+        "binary_image_analysis.frontend.source_ast.known_module_count",
+        source_ast.get("known_module_count"),
+        int(closure.get("known_module_count", 0)),
+        errors,
+    )
+    _check_count(
+        "binary_image_analysis.frontend.source_ast.compile_module_count",
+        source_ast.get("compile_module_count"),
+        int(closure.get("compile_module_count", 0)),
+        errors,
+    )
 
 
 def _summarize_build_diagnostics(

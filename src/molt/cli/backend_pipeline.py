@@ -9,6 +9,7 @@ from molt.cli import backend_output_pipeline as _backend_output_pipeline
 from molt.cli import factgraph as _factgraph
 from molt.cli import frontend_pipeline as _frontend_pipeline
 from molt.cli.backend_execution import _write_backend_ir_lease
+from molt.cli.binary_image_analysis import _backend_ir_binary_image_analysis_payload
 from molt.cli.command_runtime import _run_subprocess_captured_to_tempfiles
 from molt.cli.config_resolution import ENTRY_OVERRIDE_ENV
 from molt.cli.external_native import _external_native_artifact_output_custody_error
@@ -77,6 +78,7 @@ def _run_backend_pipeline(
         diagnostics_state,
         record_frontend_timing,
         build_diagnostics_payload,
+        record_binary_image_analysis,
         artifacts_root,
         native_artifact_plan,
     ) = prepared_frontend_pipeline_bundle
@@ -124,6 +126,11 @@ def _run_backend_pipeline(
         return prepared_backend_ir_error
     assert prepared_backend_ir is not None
     ir = prepared_backend_ir.ir
+    if prepared_build_preamble.diagnostics_enabled:
+        record_binary_image_analysis(
+            "backend_ir",
+            _backend_ir_binary_image_analysis_payload(ir),
+        )
     resolved_modules = frozenset(module_graph)
     backend_ir_file_path: Path | None = None
 

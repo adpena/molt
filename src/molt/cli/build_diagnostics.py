@@ -978,6 +978,10 @@ def _build_build_diagnostics_payload(
             payload["compile_module_count"] = len(compile_modules)
     elif diagnostics_context.image_scope is not None:
         payload["binary_image"] = diagnostics_context.image_scope.diagnostic_payload()
+    if diagnostics_context.binary_image_analysis is not None:
+        payload["binary_image_analysis"] = dict(
+            diagnostics_context.binary_image_analysis
+        )
     frontend_module_timings = list(diagnostics_context.frontend_module_timings)
     if frontend_module_timings:
         payload["frontend_module_timings"] = frontend_module_timings
