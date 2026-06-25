@@ -263,6 +263,17 @@ def _build_checks() -> list[Check]:
     )
     checks.append(
         Check(
+            # Fail closed if the canonical perf gate is ever un-wired from main
+            # again (a gate that never fires certifies nothing -- the TIER-0
+            # proxy-measurement meta-bug).
+            name="perf-gate-wiring",
+            tier=1,
+            cmd=_uv_run(str(TOOLS / "check_perf_gate_wiring.py")),
+            timeout=30,
+        )
+    )
+    checks.append(
+        Check(
             name="analysis-capsule-contract",
             tier=1,
             cmd=_uv_pytest(str(TESTS / "tools" / "test_analysis_capsule.py"), "-q"),
