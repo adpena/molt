@@ -3,7 +3,7 @@
 use molt_backend::tir::blocks::{BlockId, Terminator, TirBlock};
 use molt_backend::tir::function::TirFunction;
 use molt_backend::tir::lir::LirRepr;
-use molt_backend::tir::lower_to_lir::lower_function_to_lir;
+use molt_backend::tir::lower_to_lir::lower_function_to_lir_for_repr_fact_extraction;
 use molt_backend::tir::lower_to_wasm::lower_lir_to_wasm;
 use molt_backend::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
 use molt_backend::tir::types::TirType;
@@ -83,7 +83,7 @@ fn wasm_lir_ref64_stack_object_uses_i64_reference_word() {
         1,
     );
 
-    let lir = lower_function_to_lir(&func, None);
+    let lir = lower_function_to_lir_for_repr_fact_extraction(&func);
     let alloc = &lir.blocks[&entry_id].ops[0];
     assert_eq!(alloc.result_values[0].repr, LirRepr::Ref64);
 
@@ -143,7 +143,7 @@ fn wasm_lir_ref64_condition_uses_runtime_truthiness() {
     );
     let func = empty_tir_function("ref64_truthy", blocks, TirType::None, 1, 3);
 
-    let lir = lower_function_to_lir(&func, None);
+    let lir = lower_function_to_lir_for_repr_fact_extraction(&func);
     assert_eq!(
         lir.blocks[&entry_id].ops[0].result_values[0].repr,
         LirRepr::Ref64
@@ -239,7 +239,7 @@ fn wasm_lir_truthiness_materialization_uses_bool_local_and_br_if() {
         loop_cond_blocks: std::collections::HashMap::new(),
     };
 
-    let lir = lower_function_to_lir(&func, None);
+    let lir = lower_function_to_lir_for_repr_fact_extraction(&func);
     let output = lower_lir_to_wasm(&lir);
 
     assert!(output.locals.contains(&ValType::I32));
@@ -326,7 +326,7 @@ fn wasm_lir_loop_carried_i64_params_stay_i64() {
         loop_cond_blocks: std::collections::HashMap::new(),
     };
 
-    let lir = lower_function_to_lir(&func, None);
+    let lir = lower_function_to_lir_for_repr_fact_extraction(&func);
     let output = lower_lir_to_wasm(&lir);
 
     assert_eq!(output.param_types, vec![ValType::I64]);
@@ -378,7 +378,7 @@ fn wasm_lir_checked_i64_add_does_not_emit_plain_i64_add() {
         loop_cond_blocks: std::collections::HashMap::new(),
     };
 
-    let lir = lower_function_to_lir(&func, None);
+    let lir = lower_function_to_lir_for_repr_fact_extraction(&func);
     let output = lower_lir_to_wasm(&lir);
 
     assert!(

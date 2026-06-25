@@ -248,10 +248,11 @@ In `representation_plan.rs`, SPLIT the conflated seed:
   `fits_inline_int47` results (lines 1264-1276) and the proven-`[0,63]` shift
   case; it STOPS unconditionally seeding `CheckedAdd`/`CheckedMul`
   (delete the `representation_plan.rs:1231-1236` arm from this function).
-- Add `raw_i64_full_deopt_values_for(tir_func)`: seed `CheckedAdd`/`CheckedMul`
-  `results[0]`, then propagate across value-identity edges (`Copy` chains and
-  all-incomings phis) reusing the existing `propagate_raw_i64_safe_values`
-  structure. This is the value-keyed full-range proof WASM/LLVM consume.
+- Add the internal full-deopt seed inside `repr_by_value_for`: seed
+  `CheckedAdd`/`CheckedMul` `results[0]`, then propagate across value-identity
+  edges (`Copy` chains and all-incomings phis) reusing the shared raw-i64
+  propagation structure. This is the value-keyed full-range proof WASM/LLVM
+  consume; do not expose it as a second carrier authority.
 - `repr_by_value_for` (`representation_plan.rs:1120`) now inserts
   `RawI64FullDeopt` for the full-deopt set and `RawI64Safe` for the inline-47 set
   (full-deopt wins on overlap, per the join).

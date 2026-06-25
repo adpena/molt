@@ -63,8 +63,8 @@ Cranelift       WASM        LLVM opt+emit
 - `run_module_pipeline(module: &mut TirModule, tti: &TargetInfo) -> ModuleAnalysis` — `tir/module_phase.rs:110`
 - `ModuleAnalysis { call_graph: CallGraph, summaries: ModuleSummaries }` with `.leaf_functions() -> BTreeSet<String>` — `tir/module_phase.rs:72-88`
 - `lower_to_simple_ir(func: &TirFunction) -> Vec<OpIR>` — `tir/lower_to_simple.rs:159` (the TIR→SimpleIR back-conversion)
-- `repr_by_value_for(_func_ir, tir_func, Some(&vr))` — `representation_plan.rs:405` (value-keyed Repr, works purely from TIR ValueIds, the `_func_ir` parameter is logically unused)
-- `LlvmReprFacts::build(func_ir, tir_func)` — `representation_plan.rs:306` (the `func_ir` is used only for container-dispatch name-keyed lookup; see Phase d)
+- `repr_by_value_for(tir_func, Some(&vr))` — `representation_plan.rs` (value-keyed Repr, pure TIR `ValueId` carrier authority; no `FunctionIR` or `SimpleValueNames` bridge participates in the proof)
+- `LlvmReprFacts::build(tir_func)` — `representation_plan.rs` (pure TIR value-keyed LLVM Repr facts; container dispatch no longer routes through the ValueId→SimpleIR-name bridge)
 - The held LLVM driver-wiring patch at `/Users/adpena/.claude/projects/-Users-adpena-Projects-molt/memory/phase_e_e1_llvm_driver_wiring.patch` — complete, already handles the `function_repr_facts` name-keyed rebuild and the externs-out/module-run/reassemble pattern.
 
 ### 3.2 What must be built
@@ -80,7 +80,7 @@ pub fn lower_function_vec_to_tir_module(
 
 The `Vec<bool>` carries the `is_extern` flag in alignment with the returned module's `functions` vec so the caller can reconstruct the extern/non-extern partition after the module pipeline runs.
 
-**`ReprFactsForInlinedTir`** — a thin wrapper in `representation_plan.rs` that can build `LlvmReprFacts` for a function that has been inlined-into (and may have fresh `ValueId`s with no corresponding `FunctionIR` name). The LLVM held patch addresses this correctly: it uses the `simple_by_name` lookup to fall back to the pre-inline `FunctionIR` for container-dispatch name keying, while `repr_by_value` (the soundness-critical int-carrier gate) is derived purely from the post-inline `TirFunction`'s own value-range. No new struct needed — the existing `LlvmReprFacts::build` already works correctly when called with the pre-inline `FunctionIR` and the post-inline `TirFunction`, because `repr_by_value_for`'s `_func_ir` parameter is only used by the name-keyed path (container dispatch), not the value-keyed path (the Repr/trusted-unbox gate).
+**`ReprFactsForInlinedTir`** — no wrapper is needed. `LlvmReprFacts::build(tir_func)` now consumes the post-inline `TirFunction` directly, so fresh `ValueId`s introduced by inlining are classified from that merged body’s own value-range. Container dispatch no longer participates in `LlvmReprFacts`; LLVM len specialization resolves from refined TIR type instead of a `ValueId -> SimpleIR name -> container kind` bridge.
 
 ---
 
@@ -120,7 +120,13 @@ This function is the consolidation point for the three backends' identical lift 
 4. Back-convert each post-inline `TirFunction` via `lower_to_simple_ir` → update `func_ir.ops`.
 5. Delete the `crate::inline_functions(...)` call at line 2159-2162.
 
-**LIR fast path**: The `prepare_lir_wasm_fast_output(func_ir, &tir_func)` call that produces `lir_fast_outputs` currently runs inside the per-function loop using the pre-inline `tir_func`. After the module phase, the `tir_func` has been potentially modified (inlined callers have new ops). The LIR fast path must be called on the **post-inline** `TirFunction`. Move the `prepare_lir_wasm_fast_output` call to after the module phase back-conversion, using the post-inline `TirFunction`.
+**LIR fast path**: The `prepare_lir_wasm_fast_output(&tir_func)` call that
+produces `lir_fast_outputs` currently runs inside the per-function loop using the
+pre-inline `tir_func`. After the module phase, the `tir_func` has been
+potentially modified (inlined callers have new ops). The LIR fast path must be
+called on the **post-inline** `TirFunction`. Move the call to after the module
+phase back-conversion, using the post-inline `TirFunction`; no SimpleIR companion
+participates in value-carrier proof.
 
 ### 4.4 `/Users/adpena/Projects/molt/runtime/molt-backend/src/native_backend/simple_backend.rs` (LLVM branch, lines ~2700-2840)
 
@@ -198,7 +204,7 @@ All existing tests pass. Add:
 
 **`test_native_leaf_set_post_inline`** — after inlining the leaf into the caller, `ModuleAnalysis.leaf_functions()` must contain the caller. Without inlining the caller retained a `Call` and was not a leaf.
 
-**`test_repr_fresh_values_are_maybebigint`** — after inlining a simple `fn add(a, b): return a+b` callee into a caller, call `repr_by_value_for(func_ir, tir_func, Some(&vr))` with `vr` from `value_range_for`. The fresh cloned ValueIds for `a+b` result must floor to `MaybeBigInt` unless the value-range proves them in range.
+**`test_repr_fresh_values_are_maybebigint`** — after inlining a simple `fn add(a, b): return a+b` callee into a caller, call `repr_by_value_for(tir_func, Some(&vr))` with `vr` from `value_range_for`. The fresh cloned ValueIds for `a+b` result must floor to `MaybeBigInt` unless the value-range proves them in range.
 
 **`test_observation_only_callee_inline_refcount`** — inline an observation-only callee (has `CheckException`, no handlers), verify no unbalanced `IncRef`/`DecRef` vs the un-inlined baseline using `verify_function`.
 
@@ -354,7 +360,13 @@ The Cranelift and WASM backends use `lower_to_simple_ir` as a final step to prod
 
 ### 9.4 Risk: WASM LIR fast path
 
-The `prepare_lir_wasm_fast_output(func_ir, &tir_func)` path at `wasm.rs:2149-2153` must be called with the post-inline `TirFunction`, not the pre-inline one. Moving this call after the module phase is structurally correct; the only risk is that the `func_ir` (the SimpleIR companion) is still the pre-inline one. Since `prepare_lir_wasm_fast_output` uses `func_ir` only for the `ScalarRepresentationPlan` name-keyed container dispatch (the same pattern as `LlvmReprFacts::build`), and the value-keyed repr is derived from the post-inline `tir_func`, this is safe by the same argument as Section 5.3.
+The `prepare_lir_wasm_fast_output(&tir_func)` path must be called with the
+post-inline `TirFunction`, not the pre-inline one. It no longer accepts a
+SimpleIR companion for representation proof: WASM computes `value_range_for` and
+`repr_by_value_for` directly from that post-pipeline TIR body, matching
+`LlvmReprFacts::build(tir_func)`. Container specialization is outside the
+value-carrier proof and must be resolved from refined TIR facts or the surviving
+name-keyed scalar plan at the consumer that still owns that namespace.
 
 ### 9.5 Risk: Megafunction splitting interaction
 

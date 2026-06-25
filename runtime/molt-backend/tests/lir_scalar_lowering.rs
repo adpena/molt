@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use molt_backend::tir::blocks::{BlockId, Terminator, TirBlock};
 use molt_backend::tir::function::TirFunction;
 use molt_backend::tir::lower_from_simple::lower_to_tir;
-use molt_backend::tir::lower_to_lir::lower_function_to_lir;
+use molt_backend::tir::lower_to_lir::lower_function_to_lir_for_repr_fact_extraction;
 use molt_backend::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
 use molt_backend::tir::types::TirType;
 use molt_backend::tir::values::{TirValue, ValueId};
@@ -114,7 +114,7 @@ fn lower_const_int_to_i64_repr() {
     )];
     let func = single_block_func(ops, TirType::I64, 1);
 
-    let lir = lower_function_to_lir(&func, None);
+    let lir = lower_function_to_lir_for_repr_fact_extraction(&func);
     let entry = &lir.blocks[&lir.entry_block];
     let op = &entry.ops[0];
 
@@ -146,7 +146,7 @@ fn lower_mixed_add_to_f64_repr() {
     ];
     let func = single_block_func(ops, TirType::F64, 3);
 
-    let lir = lower_function_to_lir(&func, None);
+    let lir = lower_function_to_lir_for_repr_fact_extraction(&func);
     let entry = &lir.blocks[&lir.entry_block];
     let op = &entry.ops[2];
 
@@ -185,7 +185,7 @@ fn lower_simple_float_param_arithmetic_return_to_f64_repr() {
     assert_eq!(tir.return_type, TirType::F64);
     assert_eq!(tir.blocks[&tir.entry_block].args[0].ty, TirType::F64);
 
-    let lir = lower_function_to_lir(&tir, None);
+    let lir = lower_function_to_lir_for_repr_fact_extraction(&tir);
     let entry = &lir.blocks[&lir.entry_block];
     let return_value = match &entry.terminator {
         molt_backend::tir::lir::LirTerminator::Return { values } => values[0],
@@ -228,7 +228,7 @@ fn lower_dynbox_float_arithmetic_return_stays_dynbox() {
         "unproven dynamic+float arithmetic must not create an F64 return contract"
     );
 
-    let lir = lower_function_to_lir(&tir, None);
+    let lir = lower_function_to_lir_for_repr_fact_extraction(&tir);
     let entry = &lir.blocks[&lir.entry_block];
     let return_value = match &entry.terminator {
         molt_backend::tir::lir::LirTerminator::Return { values } => values[0],
@@ -263,7 +263,7 @@ fn lower_comparison_to_bool1_repr() {
     ];
     let func = single_block_func(ops, TirType::Bool, 3);
 
-    let lir = lower_function_to_lir(&func, None);
+    let lir = lower_function_to_lir_for_repr_fact_extraction(&func);
     let entry = &lir.blocks[&lir.entry_block];
     let op = &entry.ops[2];
 
@@ -322,7 +322,7 @@ fn lower_dynbox_add_to_dynbox_repr() {
         loop_cond_blocks: HashMap::new(),
     };
 
-    let lir = lower_function_to_lir(&func, None);
+    let lir = lower_function_to_lir_for_repr_fact_extraction(&func);
     let entry = &lir.blocks[&lir.entry_block];
     let op = &entry.ops[0];
 
@@ -349,7 +349,7 @@ fn lower_i64_add_with_explicit_overflow_materialization() {
     ];
     let func = single_block_func(ops, TirType::I64, 3);
 
-    let lir = lower_function_to_lir(&func, None);
+    let lir = lower_function_to_lir_for_repr_fact_extraction(&func);
     let entry = &lir.blocks[&lir.entry_block];
     let add = &entry.ops[2];
 
@@ -429,7 +429,7 @@ fn lower_box_and_unbox_align_with_verifier_contract() {
         loop_cond_blocks: HashMap::new(),
     };
 
-    let lir = lower_function_to_lir(&func, None);
+    let lir = lower_function_to_lir_for_repr_fact_extraction(&func);
     let entry = &lir.blocks[&lir.entry_block];
     assert_eq!(
         entry.ops[0].result_values[0].repr,
@@ -507,7 +507,7 @@ fn lower_truthy_condition_materializes_bool1_before_branch() {
         loop_cond_blocks: HashMap::new(),
     };
 
-    let lir = lower_function_to_lir(&func, None);
+    let lir = lower_function_to_lir_for_repr_fact_extraction(&func);
     let entry = &lir.blocks[&entry_id];
     assert_eq!(
         entry.ops.len(),

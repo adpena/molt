@@ -76,9 +76,12 @@ These six are absent and are prerequisites cited repeatedly across lanes.
   Fix: block-elimination reachability must preserve blocks that are check_exception label targets.
 - **C4: block_versioning arg-remap** (block_versioning.rs:577-598) — verify cloned-block block-args
   other than the guarded value are correctly threaded from predecessors (possible dangling ValueId).
-- **C5: LirRepr::for_type two-tier correctness** (lower_to_lir.rs:31) — the analysis-free path
-  (ReprOverride=None, used by lower_tir_to_wasm) maps I64→I64 raw, bypassing the MaybeBigInt floor.
-  Thread the override consistently so there's one correctness class.
+- **C5: LirRepr::for_type two-tier correctness** (lower_to_lir.rs) — RESOLVED in the
+  value-Repr authority cut. `lower_tir_to_wasm` now calls the value-keyed
+  `lower_function_to_lir` path, which computes `repr_by_value_for(tir_func,
+  Some(&vr))`; the analysis-floor lowering is explicitly named
+  `lower_function_to_lir_for_repr_fact_extraction` and is not the production
+  WASM carrier path.
 
 ---
 
