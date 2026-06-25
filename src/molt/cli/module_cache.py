@@ -34,10 +34,8 @@ from molt.cli.models import (
     _ScopedLoweringInputView,
     _ScopedLoweringInputs,
 )
-from molt.cli.module_graph import (
-    _load_module_imports,
-    _module_dependency_closure,
-)
+from molt.cli.module_dependencies import _module_dependency_closure
+from molt.cli.module_graph import _load_module_imports
 from molt.cli.module_graph_cache import (
     _read_persisted_import_scan,
     _resolved_module_cache_key,

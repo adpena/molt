@@ -13,6 +13,7 @@ from pathlib import Path
 import tomllib
 
 import molt.cli as cli
+from molt.cli import module_stdlib_policy as cli_module_stdlib_policy
 from molt.cli import runtime_features as RUNTIME_FEATURES
 from molt._runtime_feature_gates import (
     LINK_AFFECTING_FEATURES,
@@ -76,42 +77,42 @@ def test_full_profile_includes_stdlib_zoneinfo() -> None:
 
 
 def test_ast_module_requires_stdlib_ast_gate() -> None:
-    gap = cli._profile_feature_gap_for_module(STDLIB_ROOT / "ast.py", _micro_features())
+    gap = cli_module_stdlib_policy._profile_feature_gap_for_module(STDLIB_ROOT / "ast.py", _micro_features())
     assert "stdlib_ast" in gap
     # The gap names the concrete intrinsics that would be undefined at link.
     assert any(sym.startswith("molt_ast_") for sym in gap["stdlib_ast"])
 
 
 def test_ast_module_buildable_on_full_profile() -> None:
-    gap = cli._profile_feature_gap_for_module(STDLIB_ROOT / "ast.py", _full_features())
+    gap = cli_module_stdlib_policy._profile_feature_gap_for_module(STDLIB_ROOT / "ast.py", _full_features())
     assert gap == {}
 
 
 def test_second_gated_module_hashlib_requires_stdlib_crypto() -> None:
     # Negative-control completeness: the refusal names the RIGHT feature for a
     # different gated module, proving it is data-driven, not ast-special-cased.
-    gap = cli._profile_feature_gap_for_module(
+    gap = cli_module_stdlib_policy._profile_feature_gap_for_module(
         STDLIB_ROOT / "hashlib.py", _micro_features()
     )
     assert set(gap) == {"stdlib_crypto"}
 
 
 def test_third_gated_module_sqlite_requires_sqlite_feature() -> None:
-    gap = cli._profile_feature_gap_for_module(
+    gap = cli_module_stdlib_policy._profile_feature_gap_for_module(
         STDLIB_ROOT / "_sqlite3.py", _micro_features()
     )
     assert set(gap) == {"sqlite"}
 
 
 def test_sqlite_module_buildable_on_full_profile() -> None:
-    gap = cli._profile_feature_gap_for_module(
+    gap = cli_module_stdlib_policy._profile_feature_gap_for_module(
         STDLIB_ROOT / "_sqlite3.py", _full_features()
     )
     assert gap == {}
 
 
 def test_stringprep_module_requires_stdlib_stringprep_gate() -> None:
-    gap = cli._profile_feature_gap_for_module(
+    gap = cli_module_stdlib_policy._profile_feature_gap_for_module(
         STDLIB_ROOT / "stringprep.py", _micro_features()
     )
     assert set(gap) == {"stdlib_stringprep"}
@@ -119,14 +120,14 @@ def test_stringprep_module_requires_stdlib_stringprep_gate() -> None:
 
 
 def test_stringprep_module_buildable_on_full_profile() -> None:
-    gap = cli._profile_feature_gap_for_module(
+    gap = cli_module_stdlib_policy._profile_feature_gap_for_module(
         STDLIB_ROOT / "stringprep.py", _full_features()
     )
     assert gap == {}
 
 
 def test_html_module_requires_stdlib_text_gate() -> None:
-    gap = cli._profile_feature_gap_for_module(
+    gap = cli_module_stdlib_policy._profile_feature_gap_for_module(
         STDLIB_ROOT / "html" / "__init__.py", _micro_features()
     )
     assert set(gap) == {"stdlib_text"}
@@ -134,7 +135,7 @@ def test_html_module_requires_stdlib_text_gate() -> None:
 
 
 def test_unicodedata_module_requires_stdlib_text_gate() -> None:
-    gap = cli._profile_feature_gap_for_module(
+    gap = cli_module_stdlib_policy._profile_feature_gap_for_module(
         STDLIB_ROOT / "unicodedata.py", _micro_features()
     )
     assert set(gap) == {"stdlib_text"}
@@ -143,13 +144,13 @@ def test_unicodedata_module_requires_stdlib_text_gate() -> None:
 
 def test_text_modules_buildable_on_full_profile() -> None:
     assert (
-        cli._profile_feature_gap_for_module(
+        cli_module_stdlib_policy._profile_feature_gap_for_module(
             STDLIB_ROOT / "html" / "__init__.py", _full_features()
         )
         == {}
     )
     assert (
-        cli._profile_feature_gap_for_module(
+        cli_module_stdlib_policy._profile_feature_gap_for_module(
             STDLIB_ROOT / "unicodedata.py", _full_features()
         )
         == {}
@@ -157,7 +158,7 @@ def test_text_modules_buildable_on_full_profile() -> None:
 
 
 def test_zoneinfo_module_requires_stdlib_zoneinfo_gate() -> None:
-    gap = cli._profile_feature_gap_for_module(
+    gap = cli_module_stdlib_policy._profile_feature_gap_for_module(
         STDLIB_ROOT / "zoneinfo" / "__init__.py", _micro_features()
     )
     assert set(gap) == {"stdlib_zoneinfo"}
@@ -166,7 +167,7 @@ def test_zoneinfo_module_requires_stdlib_zoneinfo_gate() -> None:
 
 def test_zoneinfo_module_buildable_on_full_profile() -> None:
     assert (
-        cli._profile_feature_gap_for_module(
+        cli_module_stdlib_policy._profile_feature_gap_for_module(
             STDLIB_ROOT / "zoneinfo" / "__init__.py", _full_features()
         )
         == {}
@@ -174,7 +175,7 @@ def test_zoneinfo_module_buildable_on_full_profile() -> None:
 
 
 def test_tinygrad_package_requires_gpu_primitives_gate_on_micro_profile() -> None:
-    gap = cli._profile_feature_gap_for_module(
+    gap = cli_module_stdlib_policy._profile_feature_gap_for_module(
         STDLIB_ROOT / "tinygrad" / "__init__.py", _micro_features()
     )
     assert set(gap) == {"molt_gpu_primitives"}
@@ -182,7 +183,7 @@ def test_tinygrad_package_requires_gpu_primitives_gate_on_micro_profile() -> Non
 
 
 def test_tinygrad_package_buildable_on_full_profile() -> None:
-    gap = cli._profile_feature_gap_for_module(
+    gap = cli_module_stdlib_policy._profile_feature_gap_for_module(
         STDLIB_ROOT / "tinygrad" / "__init__.py", _full_features()
     )
     assert gap == {}
@@ -191,7 +192,7 @@ def test_tinygrad_package_buildable_on_full_profile() -> None:
 def test_ungated_ssl_abi_is_never_refused() -> None:
     # ssl keeps a deliberately always-linkable ABI (asyncio imports it eagerly
     # even on micro); importing it must NOT trigger a feature refusal.
-    gap = cli._profile_feature_gap_for_module(STDLIB_ROOT / "ssl.py", _micro_features())
+    gap = cli_module_stdlib_policy._profile_feature_gap_for_module(STDLIB_ROOT / "ssl.py", _micro_features())
     assert gap == {}
 
 
@@ -211,7 +212,7 @@ def test_importlib_extra_is_resolver_only_not_link_affecting() -> None:
     # ... but the link-affecting predicate (the one the refusal uses) returns
     # None, so it is never refused.
     assert link_affecting_feature_gate_for_symbol(sym) is None
-    gap = cli._profile_feature_gap_for_module(
+    gap = cli_module_stdlib_policy._profile_feature_gap_for_module(
         STDLIB_ROOT / "importlib" / "machinery.py", _micro_features()
     )
     assert gap == {}
@@ -249,19 +250,19 @@ def test_empty_cargo_group_features_are_resolver_only() -> None:
 def _run_pass(module_paths, profile, target):
     captured: list[str] = []
     graph = {name: path for name, path in module_paths}
-    orig_fail = cli._fail
+    orig_fail = cli_module_stdlib_policy._fail
 
     def fake_fail(message, json_output, code=2, command="molt"):
         captured.append(message)
         return code
 
-    cli._fail = fake_fail  # type: ignore[assignment]
+    cli_module_stdlib_policy._fail = fake_fail  # type: ignore[assignment]
     try:
-        rc = cli._enforce_profile_feature_availability(
+        rc = cli_module_stdlib_policy._enforce_profile_feature_availability(
             graph, STDLIB_ROOT, profile, target, json_output=False
         )
     finally:
-        cli._fail = orig_fail  # type: ignore[assignment]
+        cli_module_stdlib_policy._fail = orig_fail  # type: ignore[assignment]
     return rc, (captured[0] if captured else None)
 
 

@@ -28,13 +28,15 @@ from molt.cli.module_cache import (
 )
 from molt.cli.module_graph import (
     ModuleSyntaxErrorInfo,
+    _build_module_graph_metadata,
+    _materialize_import_plan,
+    _prepare_entry_module_graph,
+)
+from molt.cli.module_dependencies import (
     _analyze_module_schedule,
     _apply_dead_module_elimination,
-    _build_module_graph_metadata,
     _dependent_module_closure,
-    _materialize_import_plan,
     _module_dependencies_from_imports,
-    _prepare_entry_module_graph,
 )
 from molt.cli.module_resolution import _ModuleResolutionCache
 from molt.cli.module_source import _ModuleSourceCatalog, _ModuleSourceLease
