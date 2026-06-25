@@ -54,6 +54,7 @@
       "yield_from"
     ],
     "freshvalue_never_emitted": [],
-    "llvm_void_runtime_abi_mismatch": []
+    "llvm_void_runtime_abi_mismatch": [],
+    "native_codegen_gap": []
   }
 }

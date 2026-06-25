@@ -20,7 +20,16 @@ copy of the table:
      (``alias_analysis.rs``) — whose ``_ => TransparentAlias`` default is the
      UAF-escalation precondition,
   5. the native + WASM SimpleIR dispatch (``function_compiler.rs`` / ``wasm.rs``),
-     reached via the ``lower_to_simple`` ``_original_kind`` restoration.
+     reached via the ``lower_to_simple`` ``_original_kind`` restoration. The native
+     dispatch routes purely via each ``fc/*`` handler's ``HANDLED_KINDS`` slice
+     (``op_family::native_op_family``); a result-producing kind that the frontend
+     emits but that NO slice claims is dead at its handler ``match`` arm and hits
+     the dispatch's loud catch-all panic at codegen. The audit therefore also
+     enforces native-routing COMPLETENESS for codegen-reaching emitted kinds (the
+     ``native_codegen_gap`` cell): a frontend-emitted, non-structural,
+     result-producing kind absent from every native routing slice fails CI by
+     NAME — closing the ``copy`` instance, where ``value_transfer.rs`` matched
+     ``"copy"`` but omitted it from ``value_transfer::HANDLED_KINDS``.
 
 The proven failure: ``serialization.py`` emits ``"floordiv"`` while ``ssa.rs``
 recognized only ``"floor_div"`` -> silent lift to ``Copy{_original_kind}``; and
@@ -66,6 +75,13 @@ LLVM_RS = ROOT / "runtime/molt-backend/src/llvm_backend/lowering.rs"
 ALIAS_RS = ROOT / "runtime/molt-tir/src/tir/passes/alias_analysis.rs"
 NATIVE_RS = ROOT / "runtime/molt-backend/src/native_backend/function_compiler.rs"
 NATIVE_FC_DIR = ROOT / "runtime/molt-backend/src/native_backend/function_compiler/fc"
+# The SSA -> SimpleIR lowering. `fn lower_op` is the per-OpCode authority for
+# whether a kind's lowered SimpleIR op carries a result (`out: Some`) or is a
+# no-result statement op (`out` absent / `None`). The native dispatch's loud
+# catch-all only panics on a `result-producing` op (`op.out.is_some()`), so this
+# file is the source of truth for the "codegen-reaching" bound of the D8
+# native_codegen_gap check (see extract_native_lower_nonresult_kinds).
+LOWER_TO_SIMPLE_RS = ROOT / "runtime/molt-tir/src/tir/lower_to_simple.rs"
 WASM_RS = ROOT / "runtime/molt-backend/src/wasm.rs"
 RUNTIME_SRC = ROOT / "runtime/molt-runtime/src"
 
@@ -720,23 +736,131 @@ def extract_rust_str_slice_consts(path: Path, names: set[str] | None = None) -> 
     return out
 
 
-def extract_native_simpleir_arm_kinds() -> set[str]:
-    """Native SimpleIR coverage from extracted op-family authorities.
+def extract_native_routing_slice_kinds() -> set[str]:
+    """The EXACT native routing authority: the union of every
+    `fc/*::HANDLED_KINDS`, `INLINE_DISPATCH_KINDS`, and
+    `NATIVE_NO_CODEGEN_RESULT_KINDS` slice.
 
-    `fc/*::HANDLED_KINDS` is now the native routing source of truth. The old
-    `function_compiler.rs` arm scan remains included so inline arms and any
-    not-yet-extracted residual arms stay visible during decomposition.
+    This is precisely the set `op_family::native_op_family` routes (plus the
+    inline-dispatch and legitimate-no-codegen allowlists). A result-producing kind
+    NOT in this set is dead at its handler `match` arm and hits the native
+    dispatch's loud catch-all panic. Unlike `extract_native_simpleir_arm_kinds`,
+    this does NOT include the advisory textual `function_compiler.rs` arm scan,
+    which over-counts (it picks up `"k" =>` arms in unrelated pre-analysis helpers
+    — e.g. `"copy" =>` in a `op.var` reader at function_compiler.rs:1919 — that do
+    NOT route the value op). The D8 native_codegen_gap check MUST key on this exact
+    set, not the advisory union, or the very `copy` bug it exists to catch is
+    masked by the textual over-count.
     """
-    out = extract_simpleir_arm_kinds(NATIVE_RS)
+    out: set[str] = set()
     if NATIVE_FC_DIR.exists():
         for path in sorted(NATIVE_FC_DIR.glob("*.rs")):
             consts = extract_rust_str_slice_consts(path)
             for name, kinds in consts.items():
-                if name == "INLINE_DISPATCH_KINDS" or name.endswith("HANDLED_KINDS"):
-                    out.update(kinds)
-                elif name == "NATIVE_NO_CODEGEN_RESULT_KINDS":
+                if (
+                    name == "INLINE_DISPATCH_KINDS"
+                    or name.endswith("HANDLED_KINDS")
+                    or name == "NATIVE_NO_CODEGEN_RESULT_KINDS"
+                ):
                     out.update(kinds)
     return out
+
+
+def extract_native_simpleir_arm_kinds() -> set[str]:
+    """Native SimpleIR coverage from extracted op-family authorities (ADVISORY).
+
+    `fc/*::HANDLED_KINDS` is now the native routing source of truth. The old
+    `function_compiler.rs` arm scan remains included so inline arms and any
+    not-yet-extracted residual arms stay visible during decomposition. Because the
+    textual scan can over-count (see extract_simpleir_arm_kinds's caveat), this
+    union is the ADVISORY `native_arm` column; the EXACT routing authority used by
+    the D8 native_codegen_gap check is `extract_native_routing_slice_kinds`.
+    """
+    out = extract_simpleir_arm_kinds(NATIVE_RS)
+    out.update(extract_native_routing_slice_kinds())
+    return out
+
+
+def extract_native_lower_nonresult_kinds() -> set[str]:
+    """Kinds whose lowered SimpleIR op carries NO result (`out` absent/`None`).
+
+    The native dispatch's loud catch-all (`function_compiler.rs`, the
+    ``_ => { if op.out.is_some() && !NATIVE_NO_CODEGEN_RESULT_KINDS… panic! }``
+    arm) fires ONLY for a *result-producing* op. A no-result statement op
+    (`del_boundary`, `try_end`, …) reaches the same catch-all but is a deliberate
+    no-op there because ``op.out.is_some()`` is false — so it does NOT need a
+    native routing slice, and must be EXEMPT from the D8 native_codegen_gap check.
+
+    The single source of truth for "does this kind's SimpleIR op carry a result?"
+    is ``fn lower_op`` in ``lower_to_simple.rs`` (the per-OpCode SSA->SimpleIR
+    lowering): each ``OpCode::X => Some(OpIR { kind: "K", … })`` arm sets ``out``
+    to ``out_var`` / ``Some(..)`` / a ``*_var`` (result-producing) or omits it /
+    sets ``None`` (no result). This extractor returns exactly the kinds for which
+    EVERY ``lower_op`` arm omits/``None``s ``out`` — the precise mirror of the
+    catch-all's ``op.out.is_some()`` gate.
+
+    A kind that ``lower_op`` does not mention (e.g. the ``copy``/``add`` family,
+    which reach SimpleIR via the ``_original_kind`` passthrough in
+    ``lower_preserved_op``, not ``lower_op``) is NOT returned, i.e. it is treated
+    as result-producing and therefore IS checked by D8. That is the safe
+    direction: the only way to be exempted is to be PROVEN no-result here. This is
+    exactly why the ``copy`` instance is caught — ``copy`` is not in this set, so a
+    missing ``value_transfer::HANDLED_KINDS`` entry surfaces as a D8 gap rather
+    than a silent latent panic.
+    """
+    src = LOWER_TO_SIMPLE_RS.read_text(encoding="utf-8")
+    fm = re.search(r"\bfn\s+lower_op\b", src)
+    if fm is None:
+        raise RustMatchParseError("fn lower_op not found in lower_to_simple.rs")
+    open_idx = src.index("{", fm.end())
+    depth = 0
+    end = None
+    for idx in range(open_idx, len(src)):
+        c = src[idx]
+        if c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                end = idx
+                break
+    if end is None:
+        raise RustMatchParseError("unbalanced braces in fn lower_op")
+    body = src[open_idx + 1 : end]
+
+    # kind -> set of `out:` dispositions seen across that kind's OpIR struct
+    # literal(s). A struct with no top-level `out:` defaults to `out: None`
+    # (`..OpIR::default()`), recorded as the "<absent>" disposition.
+    dispositions: dict[str, set[str]] = {}
+    for km in re.finditer(r'kind:\s*"([a-z][a-z0-9_]*)"\.to_string\(\)', body):
+        kind = km.group(1)
+        # The enclosing OpIR struct literal is the nearest `{` before `kind:`.
+        brace = body.rfind("{", 0, km.start())
+        if brace == -1:
+            continue
+        d = 0
+        j = brace
+        close = None
+        while j < len(body):
+            ch = body[j]
+            if ch == "{":
+                d += 1
+            elif ch == "}":
+                d -= 1
+                if d == 0:
+                    close = j
+                    break
+            j += 1
+        struct = body[brace : close if close is not None else len(body)]
+        om = re.search(r"\bout:\s*([A-Za-z_][A-Za-z0-9_:]*|Some|None)", struct)
+        dispositions.setdefault(kind, set()).add(
+            om.group(1) if om else "<absent>"
+        )
+    return {
+        kind
+        for kind, disp in dispositions.items()
+        if disp <= {"None", "<absent>"}
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -800,9 +924,11 @@ class KindRow:
     llvm_vec_table: bool  # in VEC_REDUCTION_OPS (lowered before the match)
     llvm_runtime_fallback_eligible: bool
     classifier_class: str  # FreshValue / OwnedAlias / TransparentAlias / InertMarker
-    native_arm: bool
+    native_arm: bool  # ADVISORY: textual function_compiler.rs scan ∪ routing slices
+    native_routing_slice: bool  # EXACT: in a fc/*::HANDLED_KINDS/INLINE/NO_CODEGEN slice
     wasm_arm: bool
     structural: bool
+    produces_result: bool  # lowered SimpleIR op carries `out: Some` (not a no-result stmt)
 
     @property
     def llvm_covered(self) -> bool:
@@ -826,8 +952,10 @@ class KindRow:
             "llvm_covered": self.llvm_covered,
             "classifier_class": self.classifier_class,
             "native_arm": self.native_arm,
+            "native_routing_slice": self.native_routing_slice,
             "wasm_arm": self.wasm_arm,
             "structural": self.structural,
+            "produces_result": self.produces_result,
         }
 
 
@@ -899,6 +1027,32 @@ class AuditResult:
             # arity, or non-boxed parameter must fail the audit before emission
             # reaches the stale ABI row.
             "llvm_void_runtime_abi_mismatch": list(self.llvm_void_runtime_abi_mismatch),
+            # D8 — native codegen gap (the `copy`-instance precondition, fixed
+            # 2026-06-24). A kind the frontend EMITS that REACHES native codegen
+            # as a RESULT-PRODUCING op, but that NO native routing slice claims
+            # (not in any fc/*::HANDLED_KINDS, INLINE_DISPATCH_KINDS, or
+            # NATIVE_NO_CODEGEN_RESULT_KINDS). Such a kind is dead at its handler
+            # `match` arm — `native_op_family()` returns None — and, being
+            # result-producing, hits the native dispatch's loud catch-all panic
+            # (function_compiler.rs `_ =>`, the `op.out.is_some()` guard) for any
+            # program that emits it. The four op_family.rs tests check the slices
+            # that ARE listed but never the handler match arms, so an
+            # arm-without-HANDLED_KINDS (the `copy` instance: matched in
+            # value_transfer.rs but absent from value_transfer::HANDLED_KINDS) was
+            # invisible to CI and only panicked on a user program emitting a
+            # surviving `copy`. This category makes that arm⊄HANDLED_KINDS drift
+            # fail in CI, NAMING the kind. The "reaches native codegen" bound is
+            # exactly the catch-all's: frontend-emitted, NOT structural, AND
+            # result-producing (`KindRow.produces_result`, derived from
+            # lower_to_simple.rs `fn lower_op` `out:` dispositions) — so no-result
+            # statement ops (`del_boundary`, `try_end`) that reach the catch-all
+            # but are ignored there are correctly exempt. "Claimed by native
+            # routing" is keyed on the EXACT routing slices
+            # (`native_routing_slice`), NOT the advisory textual `native_arm`
+            # union — the textual scan over-counts `copy` from an unrelated
+            # pre-analysis helper, which would otherwise MASK the very bug this
+            # closes.
+            "native_codegen_gap": [],
         }
         for kind, row in self.rows.items():
             if row.structural:
@@ -938,6 +1092,20 @@ class AuditResult:
                 cats["mapped_never_emitted"].append(kind)
             if row.classifier_class == "FreshValue" and not row.frontend_emits:
                 cats["freshvalue_never_emitted"].append(kind)
+            # D8 — native codegen gap. Mirrors the native dispatch catch-all's
+            # `op.out.is_some() && !NATIVE_NO_CODEGEN_RESULT_KINDS.contains(kind)`
+            # gate statically: a result-producing emitted kind (row.structural is
+            # already excluded by the `continue` above) with no native routing
+            # SLICE is dead at its handler arm and panics at codegen. Keyed on the
+            # EXACT `native_routing_slice` (HANDLED_KINDS/INLINE/NO_CODEGEN), not
+            # the advisory textual `native_arm` — the latter over-counts `copy`
+            # from a pre-analysis helper and would mask the bug.
+            if (
+                row.frontend_emits
+                and row.produces_result
+                and not row.native_routing_slice
+            ):
+                cats["native_codegen_gap"].append(kind)
         return {k: sorted(v) for k, v in cats.items()}
 
 
@@ -1006,8 +1174,15 @@ def run_audit() -> AuditResult:
     }
     llvm_runtime_fallback |= boxed_runtime_fallback
     native_arms = extract_native_simpleir_arm_kinds()
+    native_routing = extract_native_routing_slice_kinds()
     wasm_arms = extract_simpleir_arm_kinds(WASM_RS)
     structural = structural_kinds_from_registry(registry)
+    # Kinds PROVEN no-result by lower_to_simple.rs `fn lower_op` (their SimpleIR op
+    # carries no `out`). These are the no-result statement ops the native dispatch
+    # catch-all ignores (`op.out.is_some()` false), so they are exempt from the D8
+    # native_codegen_gap check. Any kind NOT in this set is treated as
+    # result-producing — the safe direction (it gets checked).
+    native_nonresult = extract_native_lower_nonresult_kinds()
 
     universe = (
         fk.all
@@ -1041,8 +1216,10 @@ def run_audit() -> AuditResult:
                 no_heap,
             ),
             native_arm=kind in native_arms,
+            native_routing_slice=kind in native_routing,
             wasm_arm=kind in wasm_arms,
             structural=kind in structural,
+            produces_result=kind not in native_nonresult,
         )
 
     return AuditResult(
@@ -1131,6 +1308,51 @@ def self_validate(res: AuditResult) -> list[str]:
         res.rows.get("binding_alias") is not None
         and res.rows["binding_alias"].classifier_class == "OwnedAlias",
         "'binding_alias' must classify OwnedAlias",
+    )
+    # D8 native_codegen_gap ground-truth anchors. `copy` is the 2026-06-24
+    # instance: frontend-emitted, result-producing (a reassigned-local ternary
+    # `r = a if c else b` produces a value), and now claimed by
+    # value_transfer::HANDLED_KINDS. These anchors fail LOUD if the check were ever
+    # silently disabled or mis-scoped.
+    check("copy" in res.frontend.all, "frontend must emit 'copy'")
+    check(
+        res.rows["copy"].produces_result,
+        "'copy' must be result-producing (else D8 would never check it — the "
+        "exact blind spot that hid the copy bug)",
+    )
+    check(
+        res.rows["copy"].native_routing_slice,
+        "'copy' must be claimed by a native routing SLICE "
+        "(value_transfer::HANDLED_KINDS) — else native_codegen_gap regresses. "
+        "NB: this asserts the EXACT slice authority, not the advisory textual "
+        "native_arm (which over-counts copy from a pre-analysis helper).",
+    )
+    # The value-custody/alias family (the same family as the copy bug, emitted as
+    # registry-bypassing literals by serialization.py) must all be claimed by a
+    # native routing slice.
+    for k in ("borrow", "release", "cast", "widen", "identity_alias", "binding_alias"):
+        check(
+            res.rows.get(k) is not None and res.rows[k].native_routing_slice,
+            f"value-custody kind '{k}' must be claimed by a native routing slice",
+        )
+    # No-result statement ops reach the native catch-all but are ignored there
+    # (`op.out.is_some()` false); they MUST be exempt from D8 (no native slice
+    # required). If the lower_op `out:` extractor regressed, these would flip to
+    # result-producing and falsely populate native_codegen_gap.
+    for k in ("del_boundary", "try_end"):
+        check(
+            res.rows.get(k) is not None and not res.rows[k].produces_result,
+            f"no-result statement kind '{k}' must be extracted as non-result "
+            "(else it false-positives native_codegen_gap)",
+        )
+        check(
+            res.rows.get(k) is not None and not res.rows[k].native_routing_slice,
+            f"no-result statement kind '{k}' has no native routing slice; D8 must "
+            "exempt it via non-result, proving the exemption is load-bearing",
+        )
+    check(
+        res.dangerous()["native_codegen_gap"] == [],
+        "native_codegen_gap must be empty on a healthy tree",
     )
     return fails
 
@@ -1259,7 +1481,15 @@ def check_against_baseline(res: AuditResult) -> int:
             "(dedicated arm or molt_<kind> symbol), and refresh the baseline once "
             "the fix lands. If the error is stale baseline-only danger, refresh "
             "the baseline from the current audit after verifying the removal is "
-            "intentional.",
+            "intentional.\n"
+            "If the failure is in 'native_codegen_gap', a native handler `match`es "
+            "a result-producing kind it OMITS from its `HANDLED_KINDS`, so "
+            "`fc::native_op_family` routes it to nothing and the native dispatch "
+            "catch-all panics at codegen (the `copy` instance). Add the kind to "
+            "the owning `function_compiler/fc/*::HANDLED_KINDS` (or, if it "
+            "legitimately needs no native codegen, to "
+            "`op_family::NATIVE_NO_CODEGEN_RESULT_KINDS`), then refresh the "
+            "baseline.",
             file=sys.stderr,
         )
     return rc
