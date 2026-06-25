@@ -192,6 +192,12 @@
 #                  that belong to generator/async/coroutine state machines and
 #                  therefore cannot be linearly spliced by the TIR function
 #                  inliner or module-slot promotion.
+#   - module_concurrency_marker_source_roles - opcode-role facts consumed by
+#                  module_slot_promotion.rs when scanning for threading
+#                  reachability; the pass owns string policy and attr values.
+#   - module_slot_access_roles - opcode-role facts consumed by
+#                  module_slot_promotion.rs for keyed module ATTR access vs
+#                  wildcard module-dict access; the pass owns root/name proof.
 #   - exception_handling_opcodes - opcode-only function flag source for
 #                  `TirFunction::has_exception_handling`, including observation
 #                  edges and real handler/state regions.
@@ -781,6 +787,21 @@ state_machine_opcodes = [
     "StateYield",
     "Yield",
     "YieldFrom",
+]
+
+module_concurrency_marker_source_roles = [
+    { opcode = "Import", role = "module_name", attrs = ["s_value", "name"] },
+    { opcode = "ImportFrom", role = "module_name", attrs = ["s_value", "name"] },
+    { opcode = "Call", role = "thread_intrinsic_callee", attrs = ["s_value", "name"] },
+    { opcode = "CallBuiltin", role = "thread_intrinsic_callee", attrs = ["s_value", "name"] },
+]
+
+module_slot_access_roles = [
+    { opcode = "ModuleGetAttr", role = "keyed_attr" },
+    { opcode = "ModuleSetAttr", role = "keyed_attr" },
+    { opcode = "ModuleGetGlobal", role = "wildcard_module_dict" },
+    { opcode = "ModuleDelGlobal", role = "wildcard_module_dict" },
+    { opcode = "ModuleDelGlobalIfPresent", role = "wildcard_module_dict" },
 ]
 
 exception_handling_opcodes = [
