@@ -15,11 +15,22 @@ HOST_CONTROL_PLANE_TOKENS = (
     "Codex (Renderer)",
     "Codex Helper",
     "OpenAI.Codex_",
+    "/codex.app/",
     "\\app\\Codex.exe",
     "\\app\\resources\\codex.exe",
+    "codex.cmd",
     "codex.exe\" app-server",
     "codex app-server",
+    "codex.ps1",
     "codex_chronicle",
+    "/.codex/",
+    "/appdata/local/codex/",
+    "/appdata/local/openai/codex/",
+    "/appdata/local/temp/codex/",
+    "/appdata/roaming/codex/",
+    "/node_modules/@openai/codex/",
+    "\\node_modules\\@openai\\codex\\",
+    "@openai/codex",
     "/cua_node/bin/node_repl",
     "\\runtimes\\cua_node\\",
     "node_repl.exe",
@@ -31,6 +42,7 @@ HOST_CONTROL_PLANE_TOKENS = (
     "\\node_modules\\@anthropic-ai\\claude-code\\",
     "Claude.app/Contents/",
     "/.claude/",
+    "/appdata/local/temp/claude/",
     "@anthropic-ai/claude-code",
     "CLAUDE_PLUGIN_DATA=",
 )
@@ -41,7 +53,13 @@ HOST_CONTROL_PLANE_EXECUTABLE_NAMES = frozenset(
         "claude-code.exe",
         "claude.cmd",
         "claude.exe",
+        "codex",
+        "codex.appimage",
+        "codex-cli",
+        "codex-cli.exe",
+        "codex.cmd",
         "codex.exe",
+        "codex.ps1",
         "node_repl.exe",
     }
 )
@@ -340,8 +358,13 @@ def command_executable_name(command: str) -> str:
 
 def is_host_control_plane_process(sample: ProcessSample) -> bool:
     command = sample.command.casefold()
+    normalized_command = command.replace("\\", "/")
     return (
-        any(token.casefold() in command for token in HOST_CONTROL_PLANE_TOKENS)
+        any(
+            token.casefold() in command
+            or token.casefold().replace("\\", "/") in normalized_command
+            for token in HOST_CONTROL_PLANE_TOKENS
+        )
         or command_executable_name(sample.command)
         in HOST_CONTROL_PLANE_EXECUTABLE_NAMES
     )
@@ -378,6 +401,35 @@ def has_host_control_plane_ancestor(
             pid,
             include_self=include_self,
         )
+    )
+
+
+def has_external_host_control_plane_lineage(
+    samples: Mapping[int, ProcessSample],
+    pid: int | None,
+    *,
+    current_pid: int | None = None,
+    include_self: bool = True,
+) -> bool:
+    """Return true when pid belongs to host-control lineage outside this guard.
+
+    Codex/Claude/app-server/renderer/node-repl processes are the operator control
+    plane. Their descendants are also protected unless they are descendants of
+    the currently running guard process, which is the only process subtree a
+    guard is allowed to own and terminate.
+    """
+
+    if pid is None or pid <= 0:
+        return False
+    if current_pid is not None and current_pid > 0:
+        current_descendants = descendant_pids(samples, current_pid)
+        if pid in current_descendants:
+            sample = samples.get(pid)
+            return sample is not None and is_host_control_plane_process(sample)
+    return has_host_control_plane_ancestor(
+        samples,
+        pid,
+        include_self=include_self,
     )
 
 
@@ -454,6 +506,12 @@ def root_pid_is_kill_eligible(
     sample = samples.get(root_pid)
     if sample is None:
         return False
+    if has_external_host_control_plane_lineage(
+        samples,
+        root_pid,
+        current_pid=current_pid,
+    ):
+        return False
     return (
         sample_pgid_or_pid(sample) not in protected_pgids
         and not is_host_control_plane_process(sample)
@@ -465,11 +523,18 @@ def filter_protected_watched_pids(
     watched: set[int],
     *,
     protected_pgids: set[int],
+    current_pid: int | None = None,
 ) -> set[int]:
     filtered: set[int] = set()
     for pid in watched:
         sample = samples.get(pid)
         if sample is None:
+            continue
+        if has_external_host_control_plane_lineage(
+            samples,
+            pid,
+            current_pid=current_pid,
+        ):
             continue
         if is_host_control_plane_process(sample):
             continue
@@ -494,6 +559,7 @@ def watched_pids(
         samples,
         observed,
         protected_pgids=set() if protected_pgids is None else protected_pgids,
+        current_pid=os.getpid(),
     )
 
 

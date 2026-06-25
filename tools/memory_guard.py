@@ -456,6 +456,7 @@ def _filter_protected_watched_pids(
         samples,
         watched,
         protected_pgids=_current_protected_process_group_ids(samples),
+        current_pid=os.getpid(),
     )
 
 
@@ -583,35 +584,29 @@ def _terminate_single_process_group(pgid: int, *, grace: float) -> bool:
         return True
     if _is_windows_process_model():
         return _terminate_single_pid(pgid, grace=grace)
-    if os.name == "posix":
-        if pgid == os.getpgrp():
-            return True
-        samples = sample_processes()
-        if pgid in _current_protected_process_group_ids(samples):
-            return True
-    try:
-        os.killpg(pgid, signal.SIGTERM)
-    except KeyboardInterrupt:
-        return False
-    except ProcessLookupError:
+    if os.name != "posix" or pgid == os.getpgrp():
         return True
-    except OSError:
-        with contextlib.suppress(ProcessLookupError):
-            os.kill(pgid, signal.SIGTERM)
-        return False
-    deadline = time.monotonic() + max(0.0, grace)
-    while time.monotonic() < deadline:
-        try:
-            os.killpg(pgid, 0)
-        except ProcessLookupError:
-            return True
-        except OSError:
-            return True
-        try:
-            time.sleep(0.02)
-        except KeyboardInterrupt:
-            return False
-    return False
+    samples = sample_processes()
+    identities = {
+        sample.pid: process_identity(sample)
+        for sample in _process_group_members(samples, pgid)
+    }
+    if not identities:
+        return True
+    action = _terminate_process_group_if_identities_match_action(
+        pgid,
+        identities,
+        sampler=sample_processes,
+        grace=grace,
+    )
+    return action.result in {
+        "completed_or_missing",
+        "missing",
+        "skipped_protected_group",
+        "skipped_host_control_lineage",
+        "skipped_host_control_plane",
+        "skipped_identity_mismatch",
+    }
 
 
 def _terminate_single_pid(pid: int, *, grace: float) -> bool:
@@ -620,6 +615,12 @@ def _terminate_single_pid(pid: int, *, grace: float) -> bool:
     samples = sample_processes()
     sample = samples.get(pid)
     if sample is None:
+        return True
+    if _process_model.has_external_host_control_plane_lineage(
+        samples,
+        pid,
+        current_pid=os.getpid(),
+    ):
         return True
     if is_host_control_plane_process(sample):
         return True
@@ -780,6 +781,17 @@ def _send_pid_signal_if_identity_action(
             signum=signum,
             result="skipped_identity_mismatch",
         )
+    if _process_model.has_external_host_control_plane_lineage(
+        samples,
+        pid,
+        current_pid=os.getpid(),
+    ):
+        return _termination_action(
+            target_kind="process",
+            target_id=pid,
+            signum=signum,
+            result="skipped_host_control_lineage",
+        )
     if is_host_control_plane_process(sample):
         return _termination_action(
             target_kind="process",
@@ -829,6 +841,17 @@ def _send_process_group_signal_if_identities_match_action(
                 target_id=pgid,
                 signum=signum,
                 result="skipped_identity_mismatch",
+            )
+        if _process_model.has_external_host_control_plane_lineage(
+            samples,
+            sample.pid,
+            current_pid=os.getpid(),
+        ):
+            return _termination_action(
+                target_kind="process_group",
+                target_id=pgid,
+                signum=signum,
+                result="skipped_host_control_lineage",
             )
         if is_host_control_plane_process(sample):
             return _termination_action(
@@ -965,6 +988,15 @@ def terminate_watched_processes(
                 result = "skipped_missing_identity"
             elif root_sample is not None and is_host_control_plane_process(root_sample):
                 result = "skipped_host_control_plane"
+            elif (
+                root_sample is not None
+                and _process_model.has_external_host_control_plane_lineage(
+                    observed_samples,
+                    root_pid,
+                    current_pid=os.getpid(),
+                )
+            ):
+                result = "skipped_host_control_lineage"
             elif root_sample is not None and _sample_pgid(root_sample) in protected_pgids:
                 result = "skipped_protected_root_group"
             else:

@@ -137,6 +137,8 @@ def _guarded_dev_cleanup_process(
     capture_output: bool = False,
 ) -> harness_memory_guard.GuardedCompletedProcess:
     env = harness_memory_guard.canonical_harness_env(None, repo_root=repo_root)
+    env["MOLT_DEV_CLEANUP_STALE_ORPHAN_CLEANUP"] = "0"
+    env["MOLT_STALE_ORPHAN_CLEANUP"] = "0"
     return harness_memory_guard.guarded_completed_process(
         list(cmd),
         prefix="MOLT_DEV_CLEANUP",

@@ -282,6 +282,70 @@ def test_windows_codex_and_claude_processes_are_host_control_plane() -> None:
                 r"\claude-code\cli.js"
             ),
         ),
+        module.ProcessSample(
+            pid=14,
+            ppid=1,
+            rss_kb=1,
+            command=(
+                r"C:\Program Files\Git\usr\bin\tail.exe -f "
+                r"C:\Users\adpen\AppData\Local\Temp\claude"
+                r"\C--Users-adpen-OneDrive-Documents-molt\tasks\b1.output"
+            ),
+        ),
+        module.ProcessSample(
+            pid=15,
+            ppid=1,
+            rss_kb=1,
+            command=(
+                r"C:\Users\adpen\.codex\vendor_imports\node.exe "
+                r"C:\Users\adpen\OneDrive\Documents\molt\tests\molt_diff.py"
+            ),
+        ),
+        module.ProcessSample(
+            pid=16,
+            ppid=1,
+            rss_kb=1,
+            command=(
+                r"C:\Users\adpen\.claude\shell-snapshots"
+                r"\snapshot-bash-1782248792725.sh"
+            ),
+        ),
+        module.ProcessSample(
+            pid=17,
+            ppid=1,
+            rss_kb=1,
+            command="codex --project C:\\Users\\adpen\\OneDrive\\Documents\\molt",
+        ),
+        module.ProcessSample(
+            pid=18,
+            ppid=1,
+            rss_kb=1,
+            command="/Applications/Codex.app/Contents/MacOS/Codex",
+        ),
+        module.ProcessSample(
+            pid=19,
+            ppid=1,
+            rss_kb=1,
+            command=(
+                "/usr/bin/node "
+                "/usr/local/lib/node_modules/@openai/codex/bin/codex.js"
+            ),
+        ),
+        module.ProcessSample(
+            pid=20,
+            ppid=1,
+            rss_kb=1,
+            command=(
+                r"C:\Users\adpen\AppData\Roaming\npm\codex.cmd "
+                r"--project C:\Users\adpen\OneDrive\Documents\molt"
+            ),
+        ),
+        module.ProcessSample(
+            pid=21,
+            ppid=1,
+            rss_kb=1,
+            command="/opt/Codex/codex.AppImage --project /repo/molt",
+        ),
     ]
 
     assert all(module.is_host_control_plane_process(sample) for sample in samples)
@@ -559,9 +623,152 @@ def test_terminate_watched_processes_windows_refuses_external_codex_descendant_r
     assert any(
         action.target_kind == "process"
         and action.target_id == 200
-        and action.result == "skipped_protected_root_group"
+        and action.result == "skipped_host_control_lineage"
         for action in report.actions
     )
+
+
+def test_pid_signal_windows_refuses_external_codex_lineage_without_group_net(
+    monkeypatch,
+) -> None:
+    module = _load_memory_guard()
+    samples = {
+        100: module.ProcessSample(
+            pid=100,
+            ppid=1,
+            pgid=None,
+            rss_kb=500_000,
+            command=(
+                r"C:\Program Files\WindowsApps\OpenAI.Codex_26.609.4994.0_x64__2p2nqsd0c76g0"
+                r"\app\Codex.exe"
+            ),
+        ),
+        101: module.ProcessSample(
+            pid=101,
+            ppid=100,
+            pgid=None,
+            rss_kb=10_000,
+            command="powershell.exe",
+        ),
+        200: module.ProcessSample(
+            pid=200,
+            ppid=101,
+            pgid=None,
+            rss_kb=250_000,
+            command=(
+                r"C:\Users\adpen\OneDrive\Documents\molt"
+                r"\target\dev-fast\molt-backend.exe --daemon"
+            ),
+        ),
+    }
+    sent: list[tuple[int, int]] = []
+
+    monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
+    monkeypatch.setattr(module, "_current_protected_process_group_ids", lambda _s: set())
+    monkeypatch.setattr(module.os, "getpid", lambda: 99999)
+    monkeypatch.setattr(module.os, "kill", lambda pid, sig: sent.append((pid, sig)))
+
+    action = module._send_pid_signal_if_identity_action(
+        200,
+        module.process_identity(samples[200]),
+        module.signal.SIGTERM,
+        sampler=lambda: samples,
+    )
+
+    assert action.result == "skipped_host_control_lineage"
+    assert sent == []
+
+
+def test_terminate_single_pid_windows_refuses_external_codex_lineage(
+    monkeypatch,
+) -> None:
+    module = _load_memory_guard()
+    samples = {
+        100: module.ProcessSample(
+            pid=100,
+            ppid=1,
+            pgid=None,
+            rss_kb=500_000,
+            command=(
+                r"C:\Program Files\WindowsApps\OpenAI.Codex_26.609.4994.0_x64__2p2nqsd0c76g0"
+                r"\app\Codex.exe"
+            ),
+        ),
+        200: module.ProcessSample(
+            pid=200,
+            ppid=100,
+            pgid=None,
+            rss_kb=250_000,
+            command=(
+                r"C:\Users\adpen\OneDrive\Documents\molt"
+                r"\target\dev-fast\molt-backend.exe --daemon"
+            ),
+        ),
+    }
+    sent: list[tuple[int, int]] = []
+
+    monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
+    monkeypatch.setattr(module, "sample_processes", lambda: samples)
+    monkeypatch.setattr(module, "_current_protected_process_group_ids", lambda _s: set())
+    monkeypatch.setattr(module.os, "getpid", lambda: 99999)
+    monkeypatch.setattr(module.os, "kill", lambda pid, sig: sent.append((pid, sig)))
+
+    assert module._terminate_single_pid(200, grace=0.0) is True
+    assert sent == []
+
+
+def test_pid_signal_windows_keeps_current_guard_child_killable(
+    monkeypatch,
+) -> None:
+    module = _load_memory_guard()
+    samples = {
+        100: module.ProcessSample(
+            pid=100,
+            ppid=1,
+            pgid=None,
+            rss_kb=500_000,
+            command=(
+                r"C:\Program Files\WindowsApps\OpenAI.Codex_26.609.4994.0_x64__2p2nqsd0c76g0"
+                r"\app\Codex.exe"
+            ),
+        ),
+        999: module.ProcessSample(
+            pid=999,
+            ppid=100,
+            pgid=None,
+            rss_kb=30_000,
+            command=(
+                r"C:\Users\adpen\OneDrive\Documents\molt"
+                r"\tools\memory_guard.py --"
+            ),
+        ),
+        200: module.ProcessSample(
+            pid=200,
+            ppid=999,
+            pgid=None,
+            rss_kb=250_000,
+            command=(
+                r"C:\Users\adpen\OneDrive\Documents\molt"
+                r"\target\dev-fast\molt-backend.exe --owned"
+            ),
+        ),
+    }
+    sent: list[tuple[int, int]] = []
+
+    monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
+    monkeypatch.setattr(module, "_current_protected_process_group_ids", lambda _s: set())
+    monkeypatch.setattr(module.os, "getpid", lambda: 999)
+    monkeypatch.setattr(module.os, "kill", lambda pid, sig: sent.append((pid, sig)))
+
+    action = module._send_pid_signal_if_identity_action(
+        200,
+        module.process_identity(samples[200]),
+        module.signal.SIGTERM,
+        sampler=lambda: samples,
+    )
+
+    assert action.result == "sent"
+    assert sent == [(200, module.signal.SIGTERM)]
 
 
 def test_terminate_watched_processes_windows_keeps_current_guard_child_killable(

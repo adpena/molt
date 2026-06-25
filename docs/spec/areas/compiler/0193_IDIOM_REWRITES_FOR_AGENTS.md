@@ -25,12 +25,18 @@ This is *not* about style. It is about semantics and performance.
 When you see an unsupported or Tier 2 idiom:
 1. Identify the pattern
 2. Choose a rewrite from this doc
-3. Apply the smallest change that enables Tier 0/1 lowering
+3. Apply the smallest complete rewrite that removes the Tier 2 authority for
+   the exposed idiom class and enables Tier 0/1 lowering
 4. Add a test (or extend an existing one)
 5. Emit a progress report with:
    - before/after snippet
    - why it improves Molt tiering
    - how to resume
+
+Do not interpret "smallest" as a checkpoint chip. The rewrite boundary is
+complete only when the sibling expressions, helper paths, and tests governed by
+the same idiom authority move together, with no compatibility crutch or local
+minimum left behind.
 
 ---
 
