@@ -8,6 +8,7 @@ import zipfile
 from pathlib import Path
 
 import molt.cli as cli
+from molt.cli import commands as cli_commands
 import pytest
 
 from tests.cli.process_guard import run_cli_test_process
@@ -444,11 +445,11 @@ def test_extension_build_emits_wheel_and_manifest(tmp_path: Path, monkeypatch) -
             out_path.write_bytes(b"shared")
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
-    monkeypatch.setattr(cli, "_ensure_runtime_lib", fake_ensure_runtime_lib)
+    monkeypatch.setattr(cli_commands, "_ensure_runtime_lib", fake_ensure_runtime_lib)
     monkeypatch.setattr(cli.subprocess, "run", fake_run)
 
     out_dir = project_root / "dist"
-    rc = cli.extension_build(
+    rc = cli_commands.extension_build(
         project=str(project_root),
         out_dir=str(out_dir),
         deterministic=False,
@@ -486,7 +487,7 @@ def test_extension_build_compiles_iterator_mapping_surface_without_subprocess_mo
     _write_extension_iterator_mapping_project(project_root)
 
     out_dir = project_root / "dist"
-    rc = cli.extension_build(
+    rc = cli_commands.extension_build(
         project=str(project_root),
         out_dir=str(out_dir),
         deterministic=False,
@@ -551,8 +552,8 @@ def test_extension_build_cross_target_uses_target_runtime(
             out_path.write_bytes(b"shared")
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
-    monkeypatch.setattr(cli, "_ensure_runtime_lib", fake_ensure_runtime_lib)
-    monkeypatch.setattr(cli, "_ensure_rustup_target", lambda _target, _warnings: True)
+    monkeypatch.setattr(cli_commands, "_ensure_runtime_lib", fake_ensure_runtime_lib)
+    monkeypatch.setattr(cli_commands, "_ensure_rustup_target", lambda _target, _warnings: True)
     monkeypatch.setattr(
         cli.shutil, "which", lambda tool: "/usr/bin/zig" if tool == "zig" else None
     )
@@ -560,7 +561,7 @@ def test_extension_build_cross_target_uses_target_runtime(
 
     out_dir = project_root / "dist"
     target = "aarch64-unknown-linux-gnu"
-    rc = cli.extension_build(
+    rc = cli_commands.extension_build(
         project=str(project_root),
         out_dir=str(out_dir),
         deterministic=False,
@@ -585,7 +586,7 @@ def test_extension_build_rejects_wasm_target(tmp_path: Path) -> None:
     project_root = tmp_path / "extproj"
     project_root.mkdir()
     _write_extension_project(project_root)
-    rc = cli.extension_build(
+    rc = cli_commands.extension_build(
         project=str(project_root),
         out_dir=str(project_root / "dist"),
         target="wasm",
@@ -643,7 +644,7 @@ def test_extension_numpy_build_audit_publish_dry_run_matrix(
             out_path.write_bytes(b"shared")
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
-    monkeypatch.setattr(cli, "_ensure_runtime_lib", fake_ensure_runtime_lib)
+    monkeypatch.setattr(cli_commands, "_ensure_runtime_lib", fake_ensure_runtime_lib)
     monkeypatch.setattr(cli.subprocess, "run", fake_run)
 
     if target is not None:
@@ -655,7 +656,7 @@ def test_extension_numpy_build_audit_publish_dry_run_matrix(
         )
 
     out_dir = project_root / ("dist-" + (target or "native"))
-    rc = cli.extension_build(
+    rc = cli_commands.extension_build(
         project=str(project_root),
         out_dir=str(out_dir),
         deterministic=False,
