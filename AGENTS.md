@@ -461,6 +461,15 @@ Read these first instead of rediscovering project structure:
   Codex, Claude, app-server, renderer, node-repl, MCP/plugin helpers, shell
   hosts, Git pollers, and ancestor/control-plane processes are never Molt-owned
   just because they reference the repo path or spawned a Molt child.
+- Codex app and Codex CLI are host control-plane processes on Windows, macOS,
+  and Linux. This includes `codex`, `codex.exe`, Electron/renderer helpers,
+  app-server helpers, shell hosts whose ancestry is Codex/Claude, and Codex
+  Git polling children. Never use `pkill`, `killall`, raw `kill -TERM/-KILL`,
+  process-group kills, `taskkill`, `Stop-Process`, name-based sweeps, stale PID
+  files, repo-path matches, or parent-chain cleanup against them while doing
+  Molt work. If Codex itself is wedged, preserve logs/state evidence and either
+  continue through a healthy lane or ask for explicit Codex app/CLI repair; do
+  not make Codex repair collateral damage of Molt cleanup.
 - Re-enable multi-hour broad execution only after the active death-capsule state
   explains the previous failure mode and the next lane can proceed without
   risking host/control-plane instability.
@@ -686,7 +695,9 @@ working in this repo:
   a coherent native runtime if WSL mode is unstable, and back up any state file
   before manual repair.
 - On macOS and Linux, keep the same control-plane boundary: never raw-kill the
-  Codex app, renderer, app-server, Claude, node-repl, or ancestor process group.
+  Codex app, Codex CLI, renderer, app-server, Claude, node-repl, shell host, or
+  ancestor process group. Do not use `pkill -f codex`, `killall codex`, broad
+  `kill -9` process-group cleanup, or terminal-session sweeps as Molt cleanup.
   Use repo custody tools for Molt-owned workers, and use platform capability
   checks for signals (`SIGKILL` exists on Unix but not all Python signal
   surfaces are portable to Windows).
