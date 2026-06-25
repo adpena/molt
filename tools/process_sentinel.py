@@ -333,6 +333,30 @@ def _owned_process_ids(
     return owned
 
 
+def _windows_snapshot_helper_tree_ids(
+    samples: Mapping[int, memory_guard.ProcessSample],
+) -> set[int]:
+    helper_pids = {
+        sample.pid
+        for sample in samples.values()
+        if _command_contains(
+            _normalized_path_text(sample.command),
+            _normalized_path_text("--molt-windows-process-snapshot-json"),
+        )
+    }
+    if not helper_pids:
+        return set()
+    blocked = set(helper_pids)
+    changed = True
+    while changed:
+        changed = False
+        for sample in samples.values():
+            if sample.pid not in blocked and sample.ppid in blocked:
+                blocked.add(sample.pid)
+                changed = True
+    return blocked
+
+
 def _candidate_process_group_ids(
     samples: Mapping[int, memory_guard.ProcessSample],
     owned_pids: set[int],
@@ -401,6 +425,7 @@ def process_groups(
             known_process_identities=known_process_identities,
         )
     )
+    owned.difference_update(_windows_snapshot_helper_tree_ids(samples))
     matched = _candidate_process_group_ids(samples, owned)
     groups = [
         ProcessGroup(
