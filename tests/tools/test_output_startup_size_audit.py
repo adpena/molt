@@ -160,9 +160,59 @@ def test_wasm_fresh_copy_preserves_linked_suffix(tmp_path: Path) -> None:
     assert copied.name == "output.fresh-7_linked.wasm"
 
 
+def test_build_molt_artifact_emits_progress_on_stderr(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    audit = _load_audit()
+    script = tmp_path / "probe.py"
+    script.write_text("print(1)\n", encoding="utf-8")
+    out_dir = tmp_path / "out"
+    artifact = out_dir / "probe.luau"
+
+    def fake_run(command, **kwargs):  # type: ignore[no-untyped-def]
+        del command, kwargs
+        out_dir.mkdir(parents=True, exist_ok=True)
+        artifact.write_text("print(1)\n", encoding="utf-8")
+        return SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps({"data": {"artifacts": {"luau": str(artifact)}}}),
+            stderr="",
+            elapsed_s=2.5,
+            timed_out=False,
+        )
+
+    monkeypatch.setattr(audit, "_run_guarded", fake_run)
+
+    result = audit._build_molt_artifact(
+        case=audit.MatrixCase(target="luau", build_profile="dev", backend="luau"),
+        script=script,
+        out_dir=out_dir,
+        env={},
+        timeout=42.0,
+        extra_molt_args=[],
+    )
+
+    progress_events = [
+        json.loads(line)
+        for line in capsys.readouterr().err.splitlines()
+        if line.strip()
+    ]
+    assert result.artifact == artifact
+    assert [event["event"] for event in progress_events] == [
+        "output_startup_size_audit.build_start",
+        "output_startup_size_audit.build_done",
+    ]
+    assert progress_events[0]["case"] == "luau-dev-luau-stdlib-micro"
+    assert progress_events[1]["returncode"] == 0
+    assert progress_events[1]["elapsed_s"] == 2.5
+
+
 def test_main_writes_json_report_without_running_real_build(
     tmp_path: Path,
     monkeypatch,
+    capsys,
 ) -> None:
     audit = _load_audit()
     script = tmp_path / "probe.py"
@@ -240,11 +290,31 @@ def test_main_writes_json_report_without_running_real_build(
             str(json_out),
             "--no-c-baseline",
             "--no-cpython-baseline",
+            "--json",
         ]
     )
 
+    captured = capsys.readouterr()
+    stdout_payload = json.loads(captured.out)
+    progress_events = [
+        json.loads(line)
+        for line in captured.err.splitlines()
+        if line.strip()
+    ]
     payload = json.loads(json_out.read_text(encoding="utf-8"))
     assert rc == 0
+    assert stdout_payload == payload
+    assert [
+        event["event"]
+        for event in progress_events
+    ] == [
+        "output_startup_size_audit.case_start",
+        "output_startup_size_audit.case_done",
+        "output_startup_size_audit.baseline_start",
+        "output_startup_size_audit.baseline_done",
+        "output_startup_size_audit.baseline_start",
+        "output_startup_size_audit.baseline_done",
+    ]
     assert payload["event"] == "output_startup_size_audit"
     assert payload["summary"]["cases"] == 1
     assert payload["cases"][0]["artifact"]["bytes"] == len(b"molt-binary")
