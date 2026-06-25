@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import inspect
+from pathlib import Path
 
+import pytest
 import molt.cli as cli
 from molt.cli import native_binary
-import pytest
 
 _NATIVE_BINARY_NAMES = (
     "_NativeBinaryInvalid",
@@ -38,7 +39,7 @@ def test_cli_native_binary_authority_is_single_home() -> None:
         assert marker not in cli_source
 
 
-def _write_binary(tmp_path, name: str, header: bytes) -> None:
+def _write_binary(tmp_path: Path, name: str, header: bytes) -> None:
     (tmp_path / name).write_bytes(header + b"\x00" * 16)
 
 
@@ -90,7 +91,16 @@ def test_native_binary_validation_identifies_32_bit_macho_corruption(tmp_path) -
 
 
 def test_expected_binary_format_for_explicit_targets() -> None:
-    assert native_binary._expected_binary_format_for_target("aarch64-apple-darwin") == "macho"
-    assert native_binary._expected_binary_format_for_target("x86_64-unknown-linux-gnu") == "elf"
-    assert native_binary._expected_binary_format_for_target("x86_64-pc-windows-msvc") == "pe"
+    assert (
+        native_binary._expected_binary_format_for_target("aarch64-apple-darwin")
+        == "macho"
+    )
+    assert (
+        native_binary._expected_binary_format_for_target("x86_64-unknown-linux-gnu")
+        == "elf"
+    )
+    assert (
+        native_binary._expected_binary_format_for_target("x86_64-pc-windows-msvc")
+        == "pe"
+    )
     assert native_binary._target_is_host_executable("wasm32-wasi") is False
