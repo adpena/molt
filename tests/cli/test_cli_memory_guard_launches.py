@@ -11,6 +11,7 @@ BACKEND_EXECUTION = importlib.import_module("molt.cli.backend_execution")
 COMMAND_RUNTIME = importlib.import_module("molt.cli.command_runtime")
 COMPILER_METADATA = importlib.import_module("molt.cli.compiler_metadata")
 LOCKFILES = importlib.import_module("molt.cli.lockfiles")
+MLIR_BACKEND = importlib.import_module("molt.cli.mlir_backend")
 TOOLCHAIN_VALIDATION = importlib.import_module("molt.cli.toolchain_validation")
 
 
@@ -136,8 +137,16 @@ def test_mlir_backend_pipeline_uses_tempfile_memory_guard(
         output.write_text("module {}\n")
         return subprocess.CompletedProcess(cmd, 0, b"", b"")
 
-    monkeypatch.setattr(cli, "_find_mlir_backend_binary", lambda root: backend)
-    monkeypatch.setattr(cli, "_run_subprocess_captured_to_tempfiles", fake_tempfiles)
+    monkeypatch.setattr(
+        MLIR_BACKEND,
+        "_find_mlir_backend_binary",
+        lambda root: backend,
+    )
+    monkeypatch.setattr(
+        MLIR_BACKEND,
+        "_run_subprocess_captured_to_tempfiles",
+        fake_tempfiles,
+    )
 
     rc = cli._run_mlir_backend_pipeline(
         ir={"functions": []},
