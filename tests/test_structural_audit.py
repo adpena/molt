@@ -192,6 +192,24 @@ def test_silent_classifier_default_is_flagged():
     assert "hand-classified" in findings[0].title
 
 
+def test_generated_opcode_table_role_match_is_not_flagged():
+    """Generated-role consumers are not hand-maintained opcode authorities."""
+    rust = (
+        "fn scan(op: &TirOp) {\n"
+        "    match opcode_module_slot_access_role_table(op.opcode) {\n"
+        "        ModuleSlotAccessRole::KeyedAttr => {\n"
+        "            let is_set = op.opcode == OpCode::ModuleSetAttr;\n"
+        "            if is_set { record_set(); }\n"
+        "        }\n"
+        "        _ if op.opcode == OpCode::CheckException => {}\n"
+        "        _ => {}\n"
+        "    }\n"
+        "}\n"
+    )
+    findings = _scan_rust_string(rust, "tir/passes/module_slot_promotion.rs")
+    assert findings == [], f"generated role match wrongly flagged: {findings}"
+
+
 def test_exhaustive_match_is_not_flagged():
     """A match with NO wildcard is rustc-gated and must not be flagged."""
     rust = (
