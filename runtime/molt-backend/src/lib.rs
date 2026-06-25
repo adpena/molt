@@ -67,6 +67,8 @@ pub mod rust;
 #[cfg(feature = "wasm-backend")]
 pub mod wasm;
 #[cfg(feature = "wasm-backend")]
+mod wasm_abi;
+#[cfg(feature = "wasm-backend")]
 mod wasm_binary;
 #[cfg(feature = "wasm-backend")]
 mod wasm_dispatch;
