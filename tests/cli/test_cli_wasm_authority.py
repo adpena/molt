@@ -5,6 +5,26 @@ import inspect
 import molt.cli as cli
 from molt.cli import wasm as cli_wasm
 
+_WASM_BINARY_READER_NAMES = (
+    "_read_wasm_varuint",
+    "_read_wasm_string",
+    "_read_wasm_ref_func_expr",
+    "_read_wasm_varint",
+    "_read_wasm_const_expr_i32",
+    "_read_wasm_data_end",
+    "_read_wasm_memory_min_bytes",
+    "_read_wasm_table_min",
+    "_collect_wasm_module_import_names",
+)
+
+_CLI_REEXPORTED_WASM_BINARY_READER_NAMES = (
+    "_read_wasm_ref_func_expr",
+    "_read_wasm_data_end",
+    "_read_wasm_memory_min_bytes",
+    "_read_wasm_table_min",
+    "_collect_wasm_module_import_names",
+)
+
 
 def _wasm_import(module: str, name: str, kind: int, payload: bytes) -> bytes:
     return (
@@ -17,18 +37,11 @@ def _wasm_import(module: str, name: str, kind: int, payload: bytes) -> bytes:
 
 def test_cli_wasm_binary_inspection_authority_is_single_home() -> None:
     """Residual wasm binary readers must live in ``molt.cli.wasm`` only."""
-    moved_names = (
-        "_read_wasm_data_end",
-        "_read_wasm_memory_min_bytes",
-        "_read_wasm_table_min",
-        "_collect_wasm_module_import_names",
-    )
-
-    for name in moved_names:
+    for name in _CLI_REEXPORTED_WASM_BINARY_READER_NAMES:
         assert getattr(cli, name) is getattr(cli_wasm, name)
 
     cli_source = inspect.getsource(cli)
-    for name in moved_names:
+    for name in _WASM_BINARY_READER_NAMES:
         assert f"def {name}(" not in cli_source
 
 

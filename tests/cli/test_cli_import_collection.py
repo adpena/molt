@@ -11422,15 +11422,16 @@ def _install_fake_wasm_link_runner(
             link_calls.append(command)
         output_path = Path(command[command.index("--output") + 1])
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_bytes(b"\0asm\x01\0\0\0linked")
+        valid_wasm = b"\0asm\x01\0\0\0"
+        output_path.write_bytes(valid_wasm)
         if "--split-runtime" in command:
             split_dir = Path(command[command.index("--split-output-dir") + 1])
             split_dir.mkdir(parents=True, exist_ok=True)
-            (split_dir / "app.wasm").write_bytes(b"\0asm\x01\0\0\0app")
-            (split_dir / "molt_runtime.wasm").write_bytes(b"\0asm\x01\0\0\0runtime")
+            (split_dir / "app.wasm").write_bytes(valid_wasm)
+            (split_dir / "molt_runtime.wasm").write_bytes(valid_wasm)
         return subprocess.CompletedProcess(command, 0, "", "")
 
-    monkeypatch.setattr(RUNTIME_BUILD, "_run_completed_command", fake_run)
+    monkeypatch.setattr(cli, "_run_completed_command", fake_run)
 
 
 def _write_split_runtime_vfs_support(molt_root: Path) -> None:
