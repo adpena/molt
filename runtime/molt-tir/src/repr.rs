@@ -97,6 +97,16 @@ impl Repr {
         matches!(self, Repr::RawI64Safe | Repr::RawI64FullDeopt)
     }
 
+    /// True when the carrier is a raw 0/1 bool lane.
+    pub fn is_bool_carrier(self) -> bool {
+        matches!(self, Repr::Bool)
+    }
+
+    /// True when the carrier is a bare f64 lane.
+    pub fn is_float_unboxed(self) -> bool {
+        matches!(self, Repr::FloatUnboxed)
+    }
+
     /// Least upper bound for carrier facts at control-flow joins.
     ///
     /// The operation is deliberately fail-closed: only the integer raw/boxed
@@ -171,6 +181,10 @@ mod tests {
         ] {
             assert!(!repr.is_raw_i64_safe(), "{repr:?} is not raw-i64-safe");
         }
+        assert!(Repr::Bool.is_bool_carrier());
+        assert!(Repr::FloatUnboxed.is_float_unboxed());
+        assert!(!Repr::DynBox.is_bool_carrier());
+        assert!(!Repr::DynBox.is_float_unboxed());
     }
 
     #[test]

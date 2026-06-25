@@ -920,20 +920,14 @@ pub struct ScalarRepresentationPlan {
     container_storage_conflicted_names: PlanHashSet<String>,
     container_storage_ops: PlanHashMap<usize, ContainerStorageFact>,
     /// The representation lattice element per SimpleIR name — the single source
-    /// of truth for integer raw-carrier classification (design §2.1). Every
-    /// scalar name floors to [`Repr::default_for`] of its `TirType`; inline-int47
-    /// carriers are raised to [`Repr::RawI64Safe`], and checked full-i64
-    /// overflow-peel carriers are raised to [`Repr::RawI64FullDeopt`]. The
-    /// native `primary_names.int` set is the union view over these two tiers; see
-    /// [`Self::primary_name_sets`]. A later cut can fold the bool/float carrier
-    /// sets (below) into this map as their own lattice raises.
+    /// of truth for native scalar-carrier classification. Integer names floor to
+    /// [`Repr::MaybeBigInt`] and can be raised to [`Repr::RawI64Safe`] or
+    /// [`Repr::RawI64FullDeopt`]. Bool/F64 names floor to boxed
+    /// [`Repr::DynBox`] in this name-keyed native authority and are raised to
+    /// [`Repr::Bool`] / [`Repr::FloatUnboxed`] only by the explicit raw-carrier
+    /// eligibility filters. The `primary_names.*` sets are views over this map;
+    /// see [`Self::primary_name_sets`].
     repr_by_name: PlanHashMap<String, Repr>,
-    /// Raw-bool carrier names — kept as an independent set until Phase 4 folds
-    /// the bool lane into `repr_by_name`.
-    bool_primary_names: PlanHashSet<String>,
-    /// Raw-f64 carrier names — kept as an independent set until Phase 4 folds the
-    /// float lane into `repr_by_name`.
-    float_primary_names: PlanHashSet<String>,
     scalar_slot_exclusion_unsafe: PlanHashSet<String>,
     scalar_store_targets_by_kind: BTreeMap<ScalarKind, BTreeSet<String>>,
 }
@@ -1100,8 +1094,6 @@ impl ScalarRepresentationPlan {
             container_storage_conflicted_names: plan_hash_set(op_count / 8 + 1),
             container_storage_ops: plan_hash_map(op_count / 8 + 1),
             repr_by_name: plan_hash_map(name_capacity),
-            bool_primary_names: plan_hash_set(op_count / 4 + 1),
-            float_primary_names: plan_hash_set(op_count / 4 + 1),
             scalar_slot_exclusion_unsafe: plan_hash_set(op_count / 4 + 1),
             scalar_store_targets_by_kind: BTreeMap::new(),
         }
@@ -1198,20 +1190,18 @@ impl ScalarRepresentationPlan {
         plan
     }
 
-    /// Compute the integer/bool/float raw-carrier sets and translate the
-    /// **integer** carrier tiers into the `repr_by_name` source of truth: every
-    /// scalar name floors to [`Repr::default_for`] of its refined `TirType`,
-    /// interval-proven inline carriers are raised to [`Repr::RawI64Safe`], and
-    /// overflow-peel checked-loop carriers are raised to
-    /// [`Repr::RawI64FullDeopt`]. The bool/float carriers are stored as
-    /// independent sets pending the Phase-4 fold.
+    /// Compute the integer/bool/float raw-carrier sets and translate all native
+    /// name-keyed scalar carrier tiers into the `repr_by_name` source of truth.
+    /// Integer names floor to `MaybeBigInt` and are raised by range/overflow-peel
+    /// proofs. Bool/F64 names floor to boxed `DynBox` here and are raised only
+    /// by the raw-bool/raw-f64 eligibility filters, so semantic type facts alone
+    /// cannot authorize unboxed native storage.
     fn seed_repr_by_name(&mut self, func_ir: &FunctionIR, fact_index: &FunctionFactIndex<'_>) {
         let primary = self.compute_primary_name_sets(func_ir, fact_index);
-        // Type floor for every scalar name we have a representation fact for.
         let mut repr_by_name =
             plan_hash_map(self.facts_by_name.len().saturating_add(primary.int.len()));
         for (name, fact) in &self.facts_by_name {
-            repr_by_name.insert(name.clone(), Repr::default_for(&fact.ty));
+            repr_by_name.insert(name.clone(), Self::name_keyed_repr_floor(&fact.ty));
         }
         // Raise inline-safe first, then full-deopt so the more precise checked
         // overflow tier wins when a name appears in both through alias/store
@@ -1222,9 +1212,20 @@ impl ScalarRepresentationPlan {
         for name in &primary.int_full_deopt {
             repr_by_name.insert(name.clone(), Repr::RawI64FullDeopt);
         }
+        for name in &primary.bool_ {
+            repr_by_name.insert(name.clone(), Repr::Bool);
+        }
+        for name in &primary.float {
+            repr_by_name.insert(name.clone(), Repr::FloatUnboxed);
+        }
         self.repr_by_name = repr_by_name;
-        self.bool_primary_names = primary.bool_.into_iter().collect();
-        self.float_primary_names = primary.float.into_iter().collect();
+    }
+
+    fn name_keyed_repr_floor(ty: &TirType) -> Repr {
+        match ty {
+            TirType::Bool | TirType::F64 => Repr::DynBox,
+            _ => Repr::default_for(ty),
+        }
     }
 
     pub fn scalar_name_sets(
@@ -1272,21 +1273,23 @@ impl ScalarRepresentationPlan {
     /// The raw-primary carrier sets, as a **view** over the representation
     /// lattice. `int` is the native raw-i64 carrier union; `int_inline_safe` and
     /// `int_full_deopt` expose the two name-keyed tiers separately so box sites
-    /// cannot confuse the inline-int47 proof with the overflow-peel proof.
-    /// Bool/float are the independent sets pending their fold into
-    /// `repr_by_name`.
+    /// cannot confuse the inline-int47 proof with the overflow-peel proof. Bool
+    /// and float are the raw 0/1 and unboxed-f64 views over the same
+    /// `repr_by_name` authority.
     #[cfg(any(feature = "native-backend", feature = "llvm", test))]
     pub fn primary_name_sets(&self) -> ScalarPrimaryNameSets {
         let int_inline_safe = self.int_carrier_names();
         let int_full_deopt = self.int_full_deopt_names();
         let mut int = int_inline_safe.clone();
         int.extend(int_full_deopt.iter().cloned());
+        let bool_ = self.bool_carrier_names();
+        let float = self.float_unboxed_names();
         ScalarPrimaryNameSets {
             int,
             int_inline_safe,
             int_full_deopt,
-            bool_: self.bool_primary_names.iter().cloned().collect(),
-            float: self.float_primary_names.iter().cloned().collect(),
+            bool_,
+            float,
         }
     }
 
@@ -1322,6 +1325,24 @@ impl ScalarRepresentationPlan {
             .collect()
     }
 
+    /// Raw-bool carrier names — the `{Bool}` view over `repr_by_name`.
+    pub fn bool_carrier_names(&self) -> BTreeSet<String> {
+        self.repr_by_name
+            .iter()
+            .filter(|(_, repr)| repr.is_bool_carrier())
+            .map(|(name, _)| name.clone())
+            .collect()
+    }
+
+    /// Raw-f64 carrier names — the `{FloatUnboxed}` view over `repr_by_name`.
+    pub fn float_unboxed_names(&self) -> BTreeSet<String> {
+        self.repr_by_name
+            .iter()
+            .filter(|(_, repr)| repr.is_float_unboxed())
+            .map(|(name, _)| name.clone())
+            .collect()
+    }
+
     /// Name-keyed inline-int47 predicate for native lowering.
     pub fn is_inline_safe_int_name(&self, name: &str) -> bool {
         self.repr_by_name
@@ -1347,12 +1368,16 @@ impl ScalarRepresentationPlan {
 
     /// Name-keyed raw-bool carrier predicate for native lowering.
     pub fn is_bool_unboxed(&self, name: &str) -> bool {
-        self.bool_primary_names.contains(name)
+        self.repr_by_name
+            .get(name)
+            .is_some_and(|repr| repr.is_bool_carrier())
     }
 
     /// Name-keyed raw-f64 carrier predicate for native lowering.
     pub fn is_float_unboxed(&self, name: &str) -> bool {
-        self.float_primary_names.contains(name)
+        self.repr_by_name
+            .get(name)
+            .is_some_and(|repr| repr.is_float_unboxed())
     }
 
     #[cfg(any(feature = "native-backend", test))]
@@ -4307,6 +4332,10 @@ mod tests {
             !primary.bool_.contains("item"),
             "semantic element type alone must not prove native raw-bool carrier codegen"
         );
+        assert!(
+            !plan.is_bool_unboxed("item"),
+            "native raw-bool predicate must derive from repr_by_name eligibility, not semantic type"
+        );
     }
 
     #[test]
@@ -4828,7 +4857,8 @@ mod tests {
             ],
         );
 
-        let primary = ScalarRepresentationPlan::for_function_ir(&func).primary_name_sets();
+        let plan = ScalarRepresentationPlan::for_function_ir(&func);
+        let primary = plan.primary_name_sets();
 
         assert!(primary.int.contains("lhs"));
         assert!(primary.int.contains("rhs"));
@@ -4846,7 +4876,8 @@ mod tests {
             vec![op("add", Some("sum"), None, &["lhs", "rhs"])],
         );
 
-        let primary = ScalarRepresentationPlan::for_function_ir(&func).primary_name_sets();
+        let plan = ScalarRepresentationPlan::for_function_ir(&func);
+        let primary = plan.primary_name_sets();
 
         assert!(!primary.int.contains("lhs"));
         assert!(!primary.int.contains("rhs"));
@@ -5213,7 +5244,8 @@ mod tests {
             ],
         );
 
-        let primary = ScalarRepresentationPlan::for_function_ir(&func).primary_name_sets();
+        let plan = ScalarRepresentationPlan::for_function_ir(&func);
+        let primary = plan.primary_name_sets();
 
         assert!(primary.float.contains("base"));
         assert!(primary.float.contains("exp"));
@@ -5222,6 +5254,7 @@ mod tests {
         assert!(!primary.float.contains("pow_result"));
         assert!(!primary.float.contains("p"));
         assert!(primary.float.contains("param_copy"));
+        assert!(!plan.is_float_unboxed("pow_result"));
     }
 
     #[test]

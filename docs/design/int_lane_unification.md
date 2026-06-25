@@ -219,9 +219,11 @@ stopped native handlers from owning a cloned raw-F64 membership set and migrated
 "all 41 `fc/` handler files + `function_compiler.rs` as one structural arc"
 (float doc, STEP 4). The int cut used the same full-arc shape for the deleted
 `int_primary_vars` authority (1353 pre-migration audit occurrences; see the
-migration map). The later native scalar-plan cut completed that authority class
+migration map). The later native scalar-plan cuts completed that authority class
 for native lowering: bool/F64 membership and raw-int membership now enter every
-native handler through one `ScalarRepresentationPlan` reference and predicates.
+native handler through one `ScalarRepresentationPlan` reference and predicates,
+and the plan's name-keyed carrier facts are folded into one `repr_by_name`
+lattice instead of storing bool/F64 side sets beside the raw-int map.
 
 One difference in expected outcome: the float cut was classified
 PARITY-PRESERVING / TIE because the native float phi was already raw `f64`. The
