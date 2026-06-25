@@ -1246,6 +1246,7 @@ def guarded_completed_process(
     limits: HarnessMemoryLimits | None = None,
     stream: str = "",
     cleanup_orphans: bool | None = None,
+    progress_label: str | None = None,
     encoding: str = "utf-8",
     errors: str = "replace",
 ) -> GuardedCompletedProcess:
@@ -1266,9 +1267,17 @@ def guarded_completed_process(
         env=env,
         limits=resolved_limits,
     ):
+        default_progress_label = (
+            f"memory_guard: {_normalize_prefix(prefix)} guarded command"
+        )
+        active_progress_label = (
+            progress_label
+            if progress_label is not None
+            else (default_progress_label if not capture_output else None)
+        )
         keepalive_interval = (
             _subprocess_keepalive_interval_secs(env, prefix=prefix)
-            if not capture_output
+            if active_progress_label is not None
             else None
         )
         guarded = memory_guard.run_guarded(
@@ -1294,11 +1303,7 @@ def guarded_completed_process(
             dynamic_process_rss=resolved_limits.dynamic_process_rss,
             dynamic_total_rss=resolved_limits.dynamic_total_rss,
             cleanup_orphans=cleanup_tracked_orphans,
-            progress_label=(
-                f"memory_guard: {_normalize_prefix(prefix)} guarded command"
-                if keepalive_interval is not None
-                else None
-            ),
+            progress_label=active_progress_label,
             keepalive_interval=keepalive_interval,
             encoding=encoding,
             errors=errors,
@@ -2304,6 +2309,7 @@ class HarnessExecutionContext:
         text: bool = True,
         timeout: float | None = None,
         stream: str = "",
+        progress_label: str | None = None,
         encoding: str = "utf-8",
         errors: str = "replace",
     ) -> GuardedCompletedProcess:
@@ -2334,6 +2340,7 @@ class HarnessExecutionContext:
             timeout=timeout,
             limits=limits,
             stream=stream,
+            progress_label=progress_label,
             encoding=encoding,
             errors=errors,
         )

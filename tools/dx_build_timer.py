@@ -66,6 +66,8 @@ def _run_completed(
     cmd: list[str],
     env: dict[str, str],
     cwd: Path,
+    *,
+    progress_label: str | None = None,
 ) -> tuple[harness_memory_guard.GuardedCompletedProcess, float]:
     start = _now()
     proc = harness_memory_guard.guarded_completed_process(
@@ -75,13 +77,20 @@ def _run_completed(
         capture_output=True,
         text=True,
         prefix="MOLT_DX_BUILD",
+        progress_label=progress_label,
     )
     elapsed = proc.elapsed_s if proc.elapsed_s is not None else _now() - start
     return proc, elapsed
 
 
-def _run(cmd: list[str], env: dict[str, str], cwd: Path) -> tuple[int, float, str]:
-    proc, elapsed = _run_completed(cmd, env, cwd)
+def _run(
+    cmd: list[str],
+    env: dict[str, str],
+    cwd: Path,
+    *,
+    progress_label: str | None = None,
+) -> tuple[int, float, str]:
+    proc, elapsed = _run_completed(cmd, env, cwd, progress_label=progress_label)
     tail = "\n".join(_output_text(proc.stderr).splitlines()[-8:])
     return proc.returncode, elapsed, tail
 
@@ -163,7 +172,12 @@ def main() -> int:
         for i in range(args.runs):
             if prep:
                 prep()
-            rc, elapsed, tail = _run(cmd, env, REPO_ROOT)
+            rc, elapsed, tail = _run(
+                cmd,
+                env,
+                REPO_ROOT,
+                progress_label=f"dx-build {label} run {i + 1}/{args.runs}",
+            )
             rc_last, tail_last = rc, tail
             samples.append(round(elapsed, 2))
             print(
@@ -185,7 +199,12 @@ def main() -> int:
 
     # Ensure a warm baseline build exists first (so incremental scenarios are real).
     print("[dx] priming warm build ...", flush=True)
-    rc, elapsed, tail = _run(_build_cmd(args), env, REPO_ROOT)
+    rc, elapsed, tail = _run(
+        _build_cmd(args),
+        env,
+        REPO_ROOT,
+        progress_label="dx-build prime",
+    )
     print(f"[dx] prime build: {elapsed:.2f}s rc={rc}", flush=True)
     if rc != 0:
         print(f"[dx] prime FAILED:\n{tail}", file=sys.stderr)
