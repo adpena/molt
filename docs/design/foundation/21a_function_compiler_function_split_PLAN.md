@@ -6,7 +6,7 @@ the working tree (post-T1 molt-tir extraction). Move-only / zero-logic-change. -
 
 # 21a — Decompose `function_compiler` (Move #1, function-extraction)
 
-## Executive finding: premise corrected; M1.1-M1.18 now landed
+## Executive finding: premise corrected; M1.1-M1.19 now landed
 
 doc 21's original move #1 ("STRICT move-only **file** split into opcode-family
 submodules") was investigated, **REFUSED, and replaced** by the DX lane. Execution of
@@ -17,15 +17,18 @@ M1.8 `ret_jump`, M1.9 `control_flow`, M1.10 `loops`, M1.11 full
 exception control, M1.15 value transfer, M1.16 runtime ops, and M1.17 const
 literals are landed as standalone `fc/` handlers. The shared scalar carrier,
 boxing, merge-rebind, live-through, guarded bitwise, and float transport helper
-belt is now lifted into the sibling private authority module
-`function_compiler/scalar_carriers.rs`. Do not undo it.
+belt is lifted into the sibling private authority module
+`function_compiler/scalar_carriers.rs`, and the list/index fast-path support
+authority is lifted into `function_compiler/fc/list_index_fast_path.rs`. Do not
+undo it.
 Three load-bearing facts:
 
 1. **`function_compiler` is already a directory module, partially extracted.**
-   `runtime/molt-backend/src/native_backend/function_compiler.rs` (now **7,727 lines**,
+   `runtime/molt-backend/src/native_backend/function_compiler.rs` (now **7,223 lines**,
    down from doc 21's 39,043) declares `mod scalar_carriers; use scalar_carriers::*; mod fc;`
-   (lines 7-10) → a sibling helper-authority module plus `function_compiler/fc/`, a
-   subtree of **42 already-extracted handler files** (`arith.rs`, `compare.rs`,
+   plus explicit list-index support imports (lines 7-13) → a sibling
+   helper-authority module plus `function_compiler/fc/`, a subtree of **43
+   already-extracted handler/support files** (`arith.rs`, `compare.rs`,
    `unary_logic.rs`, `funcobj.rs`, `coroutine.rs`, `calls.rs`, `memory.rs`, `ret_jump.rs`, `control_flow.rs`, `loops.rs`, `list_ops.rs`,
    `dict_ops.rs`, `set_ops.rs`, `attrs.rs`, `exceptions.rs`, `const_literals.rs`,
    `text_predicates.rs` (1,716),
@@ -37,7 +40,12 @@ Three load-bearing facts:
    families through `fc::<family>::handle_*` handlers as well. The shared
    scalar-carrier module is a private implementation authority for raw/boxed
    transport, merge-rebind storage, live-through params, guarded bitwise, and
-   float compare/value helpers that multiple `fc::*` handlers consume.
+   float compare/value helpers that multiple `fc::*` handlers consume. The
+   list-index support module is the private authority for loop-index prelude
+   classification, metadata-only structured loop scans, list pointer hoist
+   eligibility, fallback import policy, regular-list store absorption, integer
+   sum-reduction detection, and the `ListIndexFastPathState` cache/shadow maps
+   consumed by `indexing`, `loops`, `list_ops`, `control_flow`, and `ret_jump`.
 
 2. **The file-split buys ~0 build win and was explicitly rejected.** `dx_baseline.md`
    §3.3/§4/§6 (MEASURED) proves `function_compiler.rs` is essentially ONE method,
@@ -54,26 +62,26 @@ Three load-bearing facts:
    explicit split-borrowed `&mut` params, with `OpFlow` returns replicating outer-loop
    `continue`. Arm bodies move **byte-identically**; only field-access paths change.
 
-**Move #1 = continue the function-extraction of `compile_func_inner`** (now ~2,670
-lines, lines 2042-4715, with the planned large opcode-family clusters extracted).
+**Move #1 = continue the function-extraction of `compile_func_inner`** (now ~2,620
+lines, lines 1587-4208, with the planned large opcode-family clusters extracted).
 The current continuation moves shared helper authority out of the shell only
 when that authority is consumed across extracted families. Strictly move-only /
 zero-logic-change / no-API-widening.
 
 ## 1. Current structure map
 
-### 1.1 `function_compiler.rs` (7,727 lines)
+### 1.1 `function_compiler.rs` (7,223 lines)
 | Region | Lines | Contents |
 |---|---|---|
-| `mod scalar_carriers; use scalar_carriers::*; mod fc;` + orchestration helpers | 1-1928 | Loop/body scans, container-store helpers, imports, cleanup-root helpers, data-segment/module helpers, and other shell-owned orchestration. Scalar carrier, boxing, merge-rebind, live-through, guarded bitwise, and float transport helpers moved to `scalar_carriers.rs`. |
-| `impl SimpleBackend` open | 1929 | |
-| `compile_func()` | 1930-2041 | Thin wrapper -> `compile_func_inner`. |
-| **`compile_func_inner()`** | **2042-4715** | THE MONOLITH (~2,670 lines). Preanalysis destructure, pre-passes, literal-family prologue call, dispatch loop `for op_idx in 0..ops.len()` at **2888**, central `match op.kind.as_str()` at **3071**, and per-op epilogue/cleanup after the family dispatch. |
-| `drain_dead_block_temps_for_suspend()` | 4716-4759 | trailing helper |
-| `#[cfg(test)] mod tests` | 4761-7727 | 63 tests |
+| `mod scalar_carriers; use scalar_carriers::*; mod fc;` + orchestration helpers | 1-1473 | Preanalysis, import, cleanup-root, data-segment/module, and other shell-owned orchestration. Scalar carrier helpers moved to `scalar_carriers.rs`; list/index fast-path support moved to `fc/list_index_fast_path.rs`. |
+| `impl SimpleBackend` open | 1474 | |
+| `compile_func()` | 1475-1586 | Thin wrapper -> `compile_func_inner`. |
+| **`compile_func_inner()`** | **1587-4208** | THE MONOLITH (~2,620 lines). Preanalysis destructure, pre-passes, literal-family prologue call, dispatch loop `for op_idx in 0..ops.len()` at **2396**, central `match op.kind.as_str()` at **2579**, and per-op epilogue/cleanup after the family dispatch. |
+| `drain_dead_block_temps_for_suspend()` | 4209-4252 | trailing helper |
+| `#[cfg(test)] mod tests` | 4254-7223 | 63 tests |
 
 ### 1.2 Dispatch + already-extracted families
-Dispatch fn `SimpleBackend::compile_func_inner` (2042); match at 3071;
+Dispatch fn `SimpleBackend::compile_func_inner` (1587); match at 2579;
 epilogue follows the dispatch for any arm that fell through (did not `continue`).
 Already delegated families: vec_reductions, scalar_builtins, callargs, list_ops,
 dict_ops, set_ops, generators, indexing, sequence_ops, text_predicates, text_transform, runtime_ops, statistics,
@@ -101,13 +109,14 @@ Landed in `fc/`:
 - `fc::runtime_ops::handle_runtime_op` (`runtime_ops.rs`) covers `env_get`, `exception_pending`, `function_defaults_version`, `print`, `warn_stderr`, `print_newline`, `block_on`, and `bridge_unavailable`, including runtime state probes and side-effecting runtime helper calls that always fall through to the parent epilogue.
 - `fc::const_literals::handle_const_literal_op` (`const_literals.rs`) covers `const`, `const_bigint`, `const_bool`, `const_none`, `const_not_implemented`, `const_ellipsis`, `const_float`, `const_str`, and `const_bytes`, including inline-int range policy, const-str payload fallback, loop-entry constant pre-materialization, heap-literal prologue hoisting, data-segment interning, per-kind stack-slot maps, string-output slot exports for module ops, and `rc_skip_dec` updates for hoisted heap constants.
 
-Remaining inline families, current as of the M1.18 landing:
+Remaining inline families, current as of the M1.19 landing:
 
 No planned M1 opcode-family cluster remains inline. Constant/literal materialization and hoisting moved as one structural contract into `fc::const_literals`; `op_family::INLINE_DISPATCH_KINDS` is empty and remains only as an enforcement hook for future extracted-family routing.
 
 ### 1.4 Shared helper + shared-state sets
 - **Private shared helper module** (`scalar_carriers.rs`, reached via `super::*`): `name_is_int_like`, `int_raw_value`, `def_inline_int_value`, `bool_raw_value`, `ensure_boxed_*`, `box_raw_*`, `var_get_boxed_overflow_safe_base`, `def_var_from_*`, `emit_protect_borrowed_args_aliased_return`, `merge_rebind_*`, live-through param rebinding, guarded boxed bitwise, `float_value_for*`, dead-scrub value selection, and float compare emission. This is the extracted representation transport authority used by multiple `fc::*` handlers.
-- **Shell-owned free helpers** (1-1928, reached via `super::*`): loop/body scans, container-store helpers, `def_var_named`, `import_func_ref`, cleanup-root helpers, data-segment/module helpers, and other orchestration that remains coupled to `compile_func_inner`. Plus assoc fns `SimpleBackend::import_func_id_split`, `SimpleBackend::intern_data_segment`; shared `fc` helpers own `op_prefers_int_lane` for extracted arithmetic/unary/control-flow handlers.
+- **Private list/index support module** (`fc/list_index_fast_path.rs`): `ListIndexFastPathState`, cache invalidation, loop-index prelude classification, metadata-only loop control scans, loop-hoistable list detection, pre-loop definition collection, generic-list integer-lane eligibility, fallback import policy, regular-list store absorption, and integer sum-reduction detection. This is the extracted fast-path support authority shared by `indexing`, `loops`, `list_ops`, `control_flow`, and `ret_jump`.
+- **Shell-owned free helpers** (1-1473, reached via `super::*`): `def_var_named`, `import_func_ref`, cleanup-root helpers, data-segment/module helpers, preanalysis, and other orchestration that remains coupled to `compile_func_inner`. Plus assoc fns `SimpleBackend::import_func_id_split`, `SimpleBackend::intern_data_segment`; shared `fc` helpers own `op_prefers_int_lane` for extracted arithmetic/unary/control-flow handlers.
 - **lib.rs `pub(crate)` surface** (via `crate::`): `NanBoxConsts`, `VarValue`, `DeferredDefine`, `block_has_terminator`, `switch_to_block_tracking`, `extend_unique_tracked`, `unbox_int`, `box_int`. **Already pub(crate) — no widening.**
 - **Shared `let mut` locals** (~45 from preanalysis + in-loop caches): `builder`, `import_refs`, `sealed_blocks`, `vars`, `int/float/bool_primary_vars`, `bool_like_vars`, `loop_stack`, `if_stack`, `label_blocks`, element caches, `tracked_obj_vars`, `entry_vars`, `already_decrefed`, `alias_roots`, `last_use`, … → passed as split-borrowed explicit params (existing `handle_list_op` threads 20).
 
@@ -117,9 +126,11 @@ with a single free `fn handle_<family>_op(...) -> OpFlow` (or `-> ()` if no
 `continue`), registered in `fc/mod.rs` with
 `pub(in crate::native_backend::function_compiler) mod <family>;`. Shared helper
 authority modules that serve multiple families may live as sibling private
-modules under `function_compiler/` (currently `scalar_carriers.rs`) and be
-glob-imported by the shell; they must stay narrower than `pub(crate)` and must
-not become backend-wide API. File header idiom: `use super::super::*; use
+modules under `function_compiler/` (currently `scalar_carriers.rs`) or as
+private `fc/` support modules when the authority is specific to extracted
+family codegen (currently `fc/list_index_fast_path.rs`); they must stay
+narrower than `pub(crate)` and must not become backend-wide API. File header
+idiom: `use super::super::*; use
 super::OpFlow;` (+ shared helpers as needed).
 
 **Stays in `function_compiler.rs`:** the `compile_func_inner` shell (preanalysis, pre-passes,
@@ -144,10 +155,11 @@ op-local closures reconstructed with identical captures (template: `list_ops.rs:
    items (`OpFlow`, `var_get_boxed_overflow_safe_fn`) are `pub(in crate::native_backend::function_compiler)`
    — narrower than pub(crate), zero external-API change. `function_compiler.rs` bare-private
    helpers are reachable by `fc` descendants via the glob (ancestry privacy).
-   Cross-file helpers that live in `scalar_carriers.rs` are
-   `pub(in crate::native_backend::function_compiler)`, not `pub(crate)`.
+   Cross-file helpers that live in `scalar_carriers.rs` or private `fc/`
+   support modules are `pub(in crate::native_backend::function_compiler)`, not
+   `pub(crate)`.
 3. **`continue`/`break`/epilogue fidelity (correctness-critical):** outer op-loop is UNLABELED
-   (2888). `OpFlow::Continue` ⇒ caller `continue` (skips the post-dispatch epilogue); `OpFlow::Proceed` ⇒
+   (2396). `OpFlow::Continue` ⇒ caller `continue` (skips the post-dispatch epilogue); `OpFlow::Proceed` ⇒
    fall through (runs epilogue). Inner-loop breaks stay inside handlers. The labeled `break 'find_phi`
    (`fc/loops.rs:357-407`) is fully inside its local arm. **Audit each candidate's arm range for a
    bare outer-loop `break;` (not inside a nested for/while/loop) before moving**; if found, add an
@@ -186,9 +198,13 @@ op-local closures reconstructed with identical captures (template: `list_ops.rs:
   scalar carriers, merge-rebind storage, live-through params, guarded bitwise,
   dead-scrub value selection, float transport, and float compare helpers shared
   by the shell and extracted `fc::*` handlers.
-Stop-anywhere: M1.1-M1.18 removed the largest arithmetic/compare/unary/function-object,
+- **M1.19 `fc::list_index_fast_path` shared support authority** - landed for
+  `ListIndexFastPathState`, loop/list hoist scans, fallback import policy,
+  regular-list store absorption, and integer sum-reduction detection shared by
+  list, indexing, loop, control-flow, and branch/return handlers.
+Stop-anywhere: M1.1-M1.19 removed the largest arithmetic/compare/unary/function-object,
 coroutine, call, memory, ret/jump, structured control-flow, loop, subscript, and
-sequence/iterator families plus complete dict mutation, exception control, value-custody transfer, runtime shims, constant/literal materialization, and the shared scalar carrier helper authority. Future work should start
+sequence/iterator families plus complete dict mutation, exception control, value-custody transfer, runtime shims, constant/literal materialization, the shared scalar carrier helper authority, and the list/index fast-path support authority. Future work should start
 from the next foundation routing doc or a fresh residual-inline contract rather than
 reopening these landed family moves.
 
@@ -204,11 +220,13 @@ A commit is not done until G1–G5 pass.
 1. **Intra-crate codegen parallelism (the function-split win):** `compile_func_inner` is now ~2,670 lines instead of the original ~39K-line god-file center, and each extracted `handle_*_op` is its own codegen unit. The shell now holds orchestration, shared setup, and epilogue logic; the large M1 opcode families codegen independently.
 2. **Ownership-collision blast-radius (headline friction win, now):** the #1 god-file collision source is materially smaller. The dominant opcode families now live in independently-owned `fc/*.rs` handlers; an arith fix touches only `fc/arith.rs` (~4K) + a 1-line dispatch arm, while loop/subscript work touches `fc/loops.rs` or `fc/indexing.rs` instead of the monolith.
 3. **Representation-helper authority:** scalar raw/boxed carriers, merge-rebind storage, live-through params, guarded bitwise, and float transport helpers now live in one private helper module instead of being buried in the shell above `compile_func_inner`.
+4. **List/index support authority:** loop-hoist scans, fast-path list caches, conditional bool carriers, fallback import names, store absorption, and sum-reduction detection now live in one private support module instead of being split between the parent shell and extracted handlers.
 
 ## Critical files
-- `runtime/molt-backend/src/native_backend/function_compiler.rs` (shell + `compile_func_inner` 2042-4715)
+- `runtime/molt-backend/src/native_backend/function_compiler.rs` (shell + `compile_func_inner` 1587-4208)
 - `runtime/molt-backend/src/native_backend/function_compiler/scalar_carriers.rs` (shared raw/boxed scalar carrier, merge-rebind, live-through, guarded bitwise, and float transport helpers)
 - `runtime/molt-backend/src/native_backend/function_compiler/fc/mod.rs` (register families; `OpFlow`; shared `var_get_boxed_overflow_safe_fn`)
+- `runtime/molt-backend/src/native_backend/function_compiler/fc/list_index_fast_path.rs` (list/index cache state, hoist scanners, fallback import policy, store absorption, sum-reduction detector)
 - `runtime/molt-backend/src/native_backend/function_compiler/fc/const_literals.rs` (constant/literal materialization, loop-entry constants, heap-literal hoists, and string slot exports for module ops)
 - `runtime/molt-backend/src/native_backend/function_compiler/fc/runtime_ops.rs` (runtime state probes and side-effecting runtime helper calls)
 - `runtime/molt-backend/src/native_backend/function_compiler/fc/value_transfer.rs` (explicit refcount, release, conversion-alias, identity-alias, and binding-alias custody transfer)

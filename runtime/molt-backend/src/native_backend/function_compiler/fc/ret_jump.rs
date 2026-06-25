@@ -18,6 +18,7 @@ pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] = 
     "load_param",
 ];
 use super::OpFlow;
+use super::list_index_fast_path::ListIndexFastPathState;
 use super::var_get_boxed_overflow_safe_fn;
 
 /// Cranelift codegen handlers for return, jump/branch, label, phi, and
@@ -62,8 +63,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
     function_exception_label_id: Option<i64>,
     slot_backed_join_slots: &BTreeMap<String, cranelift_codegen::ir::StackSlot>,
     raw_backed_slot_names: &BTreeSet<String>,
-    conditional_list_bool_shadows: &BTreeMap<String, ConditionalListBoolShadow>,
-    list_is_bool_cache: &BTreeMap<String, Variable>,
+    list_index_fast_paths: &ListIndexFastPathState,
     master_return_block: Block,
     is_block_filled: &mut bool,
     returns_value: bool,
@@ -698,8 +698,10 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                 emit_conditional_list_bool_truthiness(
                     &mut *builder,
                     &mut *sealed_blocks,
-                    list_is_bool_cache,
-                    conditional_list_bool_shadows.get(cond_name),
+                    &list_index_fast_paths.list_is_bool_cache,
+                    list_index_fast_paths
+                        .conditional_list_bool_shadows
+                        .get(cond_name),
                     brif_truthy_merge,
                     &[],
                 );
