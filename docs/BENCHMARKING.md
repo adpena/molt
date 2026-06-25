@@ -827,6 +827,28 @@ payloads automatically.
 - Progress board and KPI targets live in
   `docs/benchmarks/compile_progress.md`.
 
+### Cross-Layer Analysis Capsule
+
+Use `tools/analysis_capsule.py` when a performance or correctness question must
+bridge frontend parsing/module closure, IR/TIR pass telemetry, compiler
+allocation diagnostics, and final binary/startup evidence. Existing tools remain
+the producers; the capsule is the coupled schema and cross-check gate.
+
+```bash
+uv run --python 3.12 python tools/analysis_capsule.py \
+  --build-diagnostics bench/results/build_diag.json \
+  --binary-size-json bench/results/binary_size.json \
+  --startup-audit bench/results/output_startup_size_audit.json \
+  --tir-fact-graph bench/results/fact_graph_app_main.json \
+  --out bench/results/analysis_capsule.json
+```
+
+The capsule fails closed when the layers contradict each other, for example when
+`compile_modules` contains a module outside the admitted binary-image
+`known_modules` closure. Treat this as the preferred handoff artifact before
+turning local AST, IR/TIR, allocation, or binary observations into roadmap or
+performance claims.
+
 ### Cache Retention Policy
 
 - `tools/throughput_env.sh --apply` runs `tools/molt_cache_prune.py` by default.
