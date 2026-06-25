@@ -4,6 +4,7 @@ import importlib.util
 import datetime as dt
 import sys
 import uuid
+from types import SimpleNamespace
 from pathlib import Path
 from types import ModuleType
 
@@ -80,3 +81,64 @@ def test_resolve_output_root_defaults_under_tmp(tmp_path: Path, monkeypatch) -> 
         output_root == ext_root / "tmp" / "bench_backend_incremental_20260409T101112Z"
     )
     assert molt_ext_root == ext_root
+
+
+def test_backend_incremental_uses_shared_phase_result_schema() -> None:
+    mod = _load_module()
+    from tools import throughput_measurement
+
+    assert mod.PhaseResult is throughput_measurement.PhaseResult
+
+
+def test_run_command_records_shared_measurement_payload(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    mod = _load_module()
+    output = tmp_path / "program.rs"
+    output.write_bytes(b"compiled")
+
+    stdout = "\n".join(f"out-{i}" for i in range(20))
+    stderr = "\n".join(f"err-{i}" for i in range(20))
+
+    def fake_limits_from_env(prefix, env):  # type: ignore[no-untyped-def]
+        assert prefix == "MOLT_BENCH"
+        assert env == {"X": "1"}
+        return None
+
+    def fake_guarded_completed_process(command, **kwargs):  # type: ignore[no-untyped-def]
+        assert command == ["molt", "build"]
+        assert kwargs["cwd"] == tmp_path
+        assert kwargs["env"] == {"X": "1"}
+        assert kwargs["progress_label"] == "backend-incremental cold"
+        return SimpleNamespace(
+            stdout=stdout,
+            stderr=stderr,
+            returncode=0,
+            elapsed_s=1.23456,
+        )
+
+    monkeypatch.setattr(
+        mod.harness_memory_guard, "limits_from_env", fake_limits_from_env
+    )
+    monkeypatch.setattr(
+        mod.harness_memory_guard,
+        "guarded_completed_process",
+        fake_guarded_completed_process,
+    )
+
+    result = mod._run_command(
+        ["molt", "build"],
+        cwd=tmp_path,
+        env={"X": "1"},
+        timeout_sec=9.0,
+        phase="cold",
+        output_path=output,
+    )
+
+    assert result.phase == "cold"
+    assert result.cwd == str(tmp_path)
+    assert result.elapsed_sec == 1.235
+    assert result.output_size_bytes == len(b"compiled")
+    assert result.stdout_tail == "\n".join(f"out-{i}" for i in range(8, 20))
+    assert result.stderr_tail == "\n".join(f"err-{i}" for i in range(8, 20))

@@ -5,6 +5,8 @@ import importlib.util
 import sys
 from pathlib import Path
 
+from tools import throughput_measurement
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT_PATH = REPO_ROOT / "tools" / "throughput_matrix.py"
@@ -41,10 +43,19 @@ def test_diff_matrix_inherits_adaptive_child_rlimit_by_default(
     tmp_path: Path,
 ) -> None:
     module = _load_throughput_matrix()
+    assert module.CommandResult is throughput_measurement.CommandResult
     captured_envs: list[dict[str, str]] = []
 
-    def fake_run_command(command, *, cwd, env, timeout_sec):  # type: ignore[no-untyped-def]
-        del command, cwd, timeout_sec
+    def fake_run_command(  # type: ignore[no-untyped-def]
+        command,
+        *,
+        cwd,
+        env,
+        timeout_sec,
+        progress_label=None,
+        output_path=None,
+    ):
+        del command, cwd, timeout_sec, progress_label, output_path
         captured_envs.append(dict(env))
         return module.CommandResult(
             command=[],
@@ -75,8 +86,16 @@ def test_diff_matrix_explicit_child_rlimit_is_opt_in(
     module = _load_throughput_matrix()
     captured_envs: list[dict[str, str]] = []
 
-    def fake_run_command(command, *, cwd, env, timeout_sec):  # type: ignore[no-untyped-def]
-        del command, cwd, timeout_sec
+    def fake_run_command(  # type: ignore[no-untyped-def]
+        command,
+        *,
+        cwd,
+        env,
+        timeout_sec,
+        progress_label=None,
+        output_path=None,
+    ):
+        del command, cwd, timeout_sec, progress_label, output_path
         captured_envs.append(dict(env))
         return module.CommandResult(
             command=[],
