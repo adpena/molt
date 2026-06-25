@@ -34,6 +34,16 @@ def _atomic_write_text(path: Path, text: str) -> None:
                 tmp_path.unlink()
 
 
+def _write_text_if_changed(path: Path, content: str) -> None:
+    try:
+        existing = path.read_text()
+    except OSError:
+        existing = None
+    if existing == content:
+        return
+    _atomic_write_text(path, content)
+
+
 def _atomic_write_bytes(path: Path, data: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
