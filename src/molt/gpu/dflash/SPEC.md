@@ -30,6 +30,21 @@ the fail-closed corpus now.
 | **molt contract layer** | `src/molt/gpu/dflash/{contracts,adapters,runtime}.py` |
 | **molt mislabel guard** | `src/molt/stdlib/tinygrad/dflash.py` (fails closed: `tinygrad.dflash` raises `ImportError`) |
 
+### Primary-source verification (arXiv:2602.06036v2, fetched 2026-06-24)
+
+Verified against the ACTUAL paper (not molt prose), per the project's online-research fidelity rule:
+- **Authors:** Jian Chen, Yesheng Liang, Zhijian Liu. **Version:** v2 (submitted 2026-02-05, revised 2026-05-28).
+- **Performance (abstract, verbatim):** "DFlash achieves over 6x **lossless** acceleration ... delivering up to 2.5x higher speedup than the state-of-the-art speculative decoding method EAGLE-3."
+- **Section structure:** 1 Introduction · 2 Related Work · 3 Preliminaries · 4 Method · 5 Experiments · 6 Conclusion.
+- **Verified section mapping (these SUPERSEDE the first-pass inline §-refs below, which were sourced from molt prose and were off by a section):**
+  - F1 target-conditioning · F2 KV-injection · F4 block-diffusion → **§4.1 (Method — Inference)**.
+  - F4 last-verified-token / anchor conditioning · F6 trained-drafter → **§4.2 (Method — Training)**.
+  - F3 drafter/verifier separation · F5 speculative verification → **§3.1 (Preliminaries)**.
+- **F2 core mechanism (§4.1, verbatim):** "we treat the fused target context feature as persistent contextual information and directly inject it into the Key and Value projections of every draft model layer."
+- **F1 (§4.1, verbatim):** "the hidden representations of large autoregressive target models encode substantially more information than token-level logits."
+- **F4 (§4.1, verbatim):** "DFlash predicts the next token block using a block-level diffusion process. All masked positions within a block are decoded in parallel in a single forward pass."
+- **F5 caveat (honest):** the paper asserts losslessness as the standard accept-on-target-match speculative-decoding property; it states NO separate formal `output == greedy-decode` theorem. F5 transcribes that standard guarantee as the obligation the verification protocol must satisfy — it is not quoted as a verbatim paper theorem.
+
 This provenance is the same revision cited by `src/molt/gpu/dflash/contracts.py`
 (module docstring) and `src/molt/stdlib/tinygrad/dflash.py`. DFlash is defined by
 that source as **target-conditioned block-diffusion drafting**: target hidden
