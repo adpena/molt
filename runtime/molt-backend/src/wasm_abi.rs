@@ -128,14 +128,6 @@ pub(crate) const TAG_EXCEPTION_INDEX: u32 = 0;
 // once both the host import and call-site lowering are updated.
 // ---------------------------------------------------------------------------
 
-/// First dynamic type index; must equal the count of all statically-defined types.
-///
-/// Static signatures currently occupy indices 0..=50 inclusive (types 41-50 are
-/// the fused method-dispatch IC signatures `call_method_icN` /
-/// `call_super_method_icN`). Dynamic user arity signatures and wrapper
-/// signatures must start after that fixed set.
-pub(crate) const STATIC_TYPE_COUNT: u32 = 51;
-
 pub(crate) trait TypeSectionExt {
     fn function<P, R>(&mut self, params: P, results: R)
     where
@@ -157,6 +149,97 @@ impl TypeSectionExt for TypeSection {
     }
 }
 
+#[derive(Clone, Copy)]
+struct StaticFuncType {
+    params: &'static [ValType],
+    results: &'static [ValType],
+}
+
+const fn static_func_type(
+    params: &'static [ValType],
+    results: &'static [ValType],
+) -> StaticFuncType {
+    StaticFuncType { params, results }
+}
+
+const I64: ValType = ValType::I64;
+const I32: ValType = ValType::I32;
+
+const STATIC_FUNC_TYPES: [StaticFuncType; 51] = [
+    static_func_type(&[], &[I64]),
+    static_func_type(&[I64], &[]),
+    static_func_type(&[I64], &[I64]),
+    static_func_type(&[I64, I64], &[I64]),
+    static_func_type(&[I64, I64, I64], &[I32]),
+    static_func_type(&[I64, I64, I64], &[I64]),
+    static_func_type(&[I64, I64], &[]),
+    static_func_type(&[I64, I64, I64, I64], &[I64]),
+    static_func_type(&[], &[]),
+    static_func_type(&[I64, I64, I64, I64, I64, I64], &[I64]),
+    static_func_type(&[I64, I64, I64, I64, I64, I64, I64], &[I64]),
+    static_func_type(&[I64, I64, I64, I64], &[I32]),
+    static_func_type(&[I64, I64, I64, I64, I64], &[I64]),
+    static_func_type(&[I64], &[I32]),
+    static_func_type(&[I32], &[I64]),
+    static_func_type(&[I32], &[]),
+    static_func_type(&[I32, I64], &[I64]),
+    static_func_type(&[I32, I64, I64], &[I64]),
+    static_func_type(&[I64, I32, I64], &[I64]),
+    static_func_type(&[I32, I64, I32], &[I32]),
+    static_func_type(&[I64, I32, I32], &[I32]),
+    static_func_type(&[I32, I64, I64, I64, I32, I64], &[I64]),
+    static_func_type(&[I32, I64, I64, I64, I64, I32, I64], &[I64]),
+    static_func_type(&[I32, I32, I64], &[I64]),
+    static_func_type(&[I32, I32, I64, I64], &[I64]),
+    static_func_type(&[I64, I32, I64, I64], &[I64]),
+    static_func_type(&[I32, I64, I32, I64], &[I32]),
+    static_func_type(&[I32, I32], &[I64]),
+    static_func_type(&[I64, I64, I64, I64, I64, I64, I64, I64], &[I64]),
+    static_func_type(&[I64, I64, I64, I64, I64, I64], &[I64]),
+    static_func_type(&[I64, I64, I64], &[]),
+    static_func_type(&[I64, I64], &[I64, I64]),
+    static_func_type(&[I64, I64, I64], &[I64, I64, I64]),
+    static_func_type(&[I64], &[I64, I64]),
+    static_func_type(&[], &[I64, I64]),
+    static_func_type(&[I64, I64, I64, I64, I64, I64, I64, I64, I64], &[I64]),
+    static_func_type(&[I64, I64, I64, I64, I64, I64, I64, I64, I64, I64], &[I64]),
+    static_func_type(
+        &[I64, I64, I64, I64, I64, I64, I64, I64, I64, I64, I64],
+        &[I64],
+    ),
+    static_func_type(
+        &[I64, I64, I64, I64, I64, I64, I64, I64, I64, I64, I64, I64],
+        &[I64],
+    ),
+    static_func_type(&[I32, I64], &[]),
+    static_func_type(&[I64, I32, I64, I32, I64, I64, I64, I64], &[I64]),
+    static_func_type(&[I64, I64, I32, I64], &[I64]),
+    static_func_type(&[I64, I64, I32, I64, I64], &[I64]),
+    static_func_type(&[I64, I64, I32, I64, I64, I64], &[I64]),
+    static_func_type(&[I64, I64, I32, I64, I64, I64, I64], &[I64]),
+    static_func_type(&[I64, I64, I32, I64, I64, I64, I64, I64], &[I64]),
+    static_func_type(&[I64, I64, I64, I32, I64], &[I64]),
+    static_func_type(&[I64, I64, I64, I32, I64, I64], &[I64]),
+    static_func_type(&[I64, I64, I64, I32, I64, I64, I64], &[I64]),
+    static_func_type(&[I64, I64, I64, I32, I64, I64, I64, I64], &[I64]),
+    static_func_type(&[I64, I64, I64, I32, I64, I64, I64, I64, I64], &[I64]),
+];
+
+/// First dynamic type index; must equal the count of all statically-defined types.
+///
+/// Static signatures occupy indices `0..STATIC_TYPE_COUNT`. Dynamic user arity
+/// signatures and wrapper signatures must start after that fixed set.
+pub(crate) const STATIC_TYPE_COUNT: u32 = STATIC_FUNC_TYPES.len() as u32;
+
+pub(crate) fn emit_static_type_section(types: &mut TypeSection) {
+    for static_type in STATIC_FUNC_TYPES {
+        types.function(
+            static_type.params.iter().copied(),
+            static_type.results.iter().copied(),
+        );
+    }
+}
+
 // Constant folding pass is now shared via crate::fold_constants in passes.rs.
 
 pub(crate) fn canonical_static_import_type_idx(name: &str, registry_type_idx: u32) -> u32 {
@@ -168,5 +251,70 @@ pub(crate) fn canonical_static_import_type_idx(name: &str, registry_type_idx: u3
         // the wrapper stack after `call`.
         "importlib_import_transaction" => SIMPLE_I64_ARITY5_RET_I64_TYPE,
         _ => registry_type_idx,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wasm_encoder::Module;
+    use wasmparser::{CompositeInnerType, Parser, Payload};
+
+    fn static_type_section_signatures() -> Vec<(usize, usize)> {
+        let mut types = TypeSection::new();
+        emit_static_type_section(&mut types);
+        let mut module = Module::new();
+        module.section(&types);
+        let wasm = module.finish();
+
+        let mut sigs = Vec::new();
+        for payload in Parser::new(0).parse_all(&wasm) {
+            if let Payload::TypeSection(reader) = payload.expect("valid payload") {
+                for rec_group in reader.into_iter() {
+                    let rec_group = rec_group.expect("valid rec group");
+                    for sub_type in rec_group.into_types() {
+                        if let CompositeInnerType::Func(func_type) = &sub_type.composite_type.inner
+                        {
+                            sigs.push((func_type.params().len(), func_type.results().len()));
+                        }
+                    }
+                }
+            }
+        }
+        sigs
+    }
+
+    #[test]
+    fn static_type_section_signatures_are_pinned_to_static_type_count() {
+        let sigs = static_type_section_signatures();
+
+        assert_eq!(
+            sigs.len(),
+            STATIC_TYPE_COUNT as usize,
+            "static type table must emit exactly STATIC_TYPE_COUNT entries"
+        );
+
+        let pinned: &[(usize, (usize, usize))] = &[
+            (0, (0, 1)),   // () -> i64
+            (1, (1, 0)),   // (i64) -> ()
+            (8, (0, 0)),   // () -> ()
+            (31, (2, 2)),  // MULTI_RETURN_2
+            (32, (3, 3)),  // MULTI_RETURN_3
+            (33, (1, 2)),  // MULTI_RETURN_UNARY_TO_2
+            (34, (0, 2)),  // MULTI_RETURN_NULLARY_TO_2
+            (35, (9, 1)),  // high arity
+            (38, (12, 1)), // high arity
+            (41, (4, 1)),  // call_method_ic0
+            (45, (8, 1)),  // call_method_ic4
+            (46, (5, 1)),  // call_super_method_ic0
+            (50, (9, 1)),  // call_super_method_ic4
+        ];
+        for &(idx, expected) in pinned {
+            assert_eq!(
+                sigs[idx], expected,
+                "static WASM type {idx} drifted to {:?}, expected {expected:?}",
+                sigs[idx]
+            );
+        }
     }
 }

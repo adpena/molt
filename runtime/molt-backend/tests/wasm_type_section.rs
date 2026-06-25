@@ -48,7 +48,7 @@ fn count_types(wasm: &[u8]) -> usize {
 fn type_section_has_at_least_51_static_types() {
     // The WASM backend defines 51 static types (STATIC_TYPE_COUNT = 51).
     // The exact static signatures are pinned by index in the in-crate guard
-    // `wasm::tests::static_type_section_signatures_are_pinned_to_static_type_count`
+    // `wasm_abi::tests::static_type_section_signatures_are_pinned_to_static_type_count`
     // (which can see the private STATIC_TYPE_COUNT const). This integration
     // test only asserts the lower bound, since it cannot see the const.
     let wasm = compile_ir(SimpleIR {
