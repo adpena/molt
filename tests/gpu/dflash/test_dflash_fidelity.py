@@ -1,0 +1,380 @@
+"""DFlash fail-closed fidelity corpus (doc 67 Phase 5b; §3.5.2).
+
+This corpus makes the EXISTING-but-untested DFlash contract guards executable
+and gated. It exercises the real typed refusals in
+``src/molt/gpu/dflash/{contracts,adapters}.py`` and the mislabel guard in
+``src/molt/stdlib/tinygrad/dflash.py`` so that the constitutional invariant —
+"generic speculative decoding mislabeled DFlash is UNEXPRESSIBLE"
+(CLAUDE.md "Top Priority: Tinygrad + DFlash Fidelity") — is held by a RED gate,
+not by prose.
+
+Every test asserts BOTH the exact exception type AND the exact molt message
+text. That is deliberate: if a future change weakens a guard (e.g. drops a
+required conditioning field, accepts a generic adapter, or replaces the
+fail-closed ``ImportError`` with a silent fallback), the corresponding test must
+FAIL LOUDLY rather than silently pass. The message-text assertions are what turn
+"the guard was removed" and "the guard now raises a generic error" into RED.
+
+These are the F3/F6 obligations (and the transport-contract half of F1/F2/F4)
+from ``src/molt/gpu/dflash/SPEC.md`` — the parts gated TODAY. The F1/F2/F4/F5
+*algorithm* obligations (the drafter actually consuming the conditioning, KV
+injection, block diffusion, end-to-end losslessness) are Phase 5a and require the
+build-heavy reference model under ``tests/gpu/dflash/reference/`` run through
+``tools/safe_run.py``; they are intentionally NOT in this pure-Python corpus.
+
+No build / no cargo: the guards under test are pure Python.
+"""
+
+from __future__ import annotations
+
+import importlib.util
+from pathlib import Path
+
+import pytest
+
+from molt.gpu.dflash import (
+    DFlashAdapterSpec,
+    DFlashConditioning,
+    DFlashRuntime,
+    DFlashSelectionContext,
+    SpeculativeConditioning,
+    build_dflash_runtime,
+    clear_dflash_adapters,
+    register_dflash_adapter,
+    require_dflash_conditioning,
+    resolve_dflash_runtime,
+    snapshot_dflash_adapters,
+    restore_dflash_adapters,
+)
+from molt.gpu.dflash.contracts import DFlashSelectionContext as _CtxAlias  # noqa: F401
+
+
+# --- shared fixtures: a *valid* DFlash conditioning, so each negative test ---
+# --- isolates exactly one missing/invalid field (no false green from a -------
+# --- second unrelated failure). ---------------------------------------------
+
+
+def _valid_conditioning_kwargs() -> dict:
+    """Kwargs that construct a fully-valid DFlashConditioning.
+
+    Each fail-closed test below mutates exactly ONE of these to the invalid
+    value it is probing, proving the guard fires on that specific field rather
+    than on an incidental second problem.
+    """
+    return {
+        "target_features": [[0.0, 1.0]],
+        "target_kv": [[0.0, 0.0]],
+        "position_ids": [0],
+        "last_verified_token": 7,
+    }
+
+
+def _valid_conditioning() -> DFlashConditioning:
+    return DFlashConditioning(**_valid_conditioning_kwargs())
+
+
+@pytest.fixture(autouse=True)
+def _isolated_adapter_registry():
+    """Run each test against a clean, restored adapter registry.
+
+    The registry is process-global module state; snapshot/restore keeps these
+    tests hermetic and order-independent without mutating any other suite's
+    registered adapters.
+    """
+    snapshot = snapshot_dflash_adapters()
+    clear_dflash_adapters()
+    try:
+        yield
+    finally:
+        restore_dflash_adapters(snapshot)
+
+
+# === (a) DFlashConditioning / DFlashRuntime: missing or invalid conditioning ===
+# Exercises contracts.py require_dflash_conditioning + DFlashConditioning ctor +
+# DFlashRuntime ctor. SPEC.md F1/F2/F3/F4/F6.
+
+
+def test_conditioning_missing_target_features_raises_valueerror():
+    kwargs = _valid_conditioning_kwargs()
+    kwargs["target_features"] = None
+    with pytest.raises(ValueError, match="DFlashConditioning requires target_features"):
+        DFlashConditioning(**kwargs)
+
+
+def test_conditioning_missing_target_kv_raises_valueerror():
+    kwargs = _valid_conditioning_kwargs()
+    kwargs["target_kv"] = None
+    with pytest.raises(ValueError, match="DFlashConditioning requires target_kv"):
+        DFlashConditioning(**kwargs)
+
+
+def test_conditioning_missing_position_ids_raises_valueerror():
+    kwargs = _valid_conditioning_kwargs()
+    kwargs["position_ids"] = None
+    with pytest.raises(ValueError, match="DFlashConditioning requires position_ids"):
+        DFlashConditioning(**kwargs)
+
+
+def test_conditioning_bool_last_verified_token_raises_typeerror():
+    # bool is a subclass of int in Python; DFlash rejects it explicitly so a
+    # truthy flag can never masquerade as token id 1 (SPEC.md F4).
+    kwargs = _valid_conditioning_kwargs()
+    kwargs["last_verified_token"] = True
+    with pytest.raises(
+        TypeError, match="last_verified_token must be an integer token id"
+    ):
+        DFlashConditioning(**kwargs)
+
+
+def test_conditioning_nonintegral_last_verified_token_raises_typeerror():
+    kwargs = _valid_conditioning_kwargs()
+    kwargs["last_verified_token"] = 1.5
+    with pytest.raises(
+        TypeError, match="last_verified_token must be an integer token id"
+    ):
+        DFlashConditioning(**kwargs)
+
+
+def test_valid_conditioning_constructs_and_normalizes():
+    # Positive control: the valid kwargs really do build, so the negative tests
+    # above isolate the single mutated field rather than a broken baseline.
+    cond = _valid_conditioning()
+    assert isinstance(cond, DFlashConditioning)
+    assert isinstance(cond, SpeculativeConditioning)
+    assert cond.last_verified_token == 7
+    # position_ids is defensively copied to a list.
+    assert cond.position_ids == [0]
+
+
+def test_require_dflash_conditioning_rejects_generic_conditioning():
+    # A *generic* SpeculativeConditioning is the canonical "generic speculative
+    # decoding" payload. It must be rejected at the boundary (SPEC.md F3/F6).
+    generic = SpeculativeConditioning(
+        target_features=[[0.0]],
+        target_kv=[[0.0]],
+        position_ids=[0],
+    )
+    with pytest.raises(TypeError, match="must be DFlashConditioning"):
+        require_dflash_conditioning(generic, "initial_conditioning")
+
+
+def test_require_dflash_conditioning_accepts_valid_dflash_conditioning():
+    cond = _valid_conditioning()
+    assert require_dflash_conditioning(cond, "initial_conditioning") is cond
+
+
+def test_runtime_noncallable_draft_step_raises_typeerror():
+    with pytest.raises(TypeError, match="DFlashRuntime draft_step must be callable"):
+        DFlashRuntime(
+            draft_step=object(),
+            verify_step=lambda req: req,
+            initial_conditioning=_valid_conditioning(),
+        )
+
+
+def test_runtime_noncallable_verify_step_raises_typeerror():
+    with pytest.raises(TypeError, match="DFlashRuntime verify_step must be callable"):
+        DFlashRuntime(
+            draft_step=lambda req: req,
+            verify_step=object(),
+            initial_conditioning=_valid_conditioning(),
+        )
+
+
+def test_runtime_generic_conditioning_raises_typeerror():
+    # Even with valid callables, a generic (non-DFlash) conditioning cannot
+    # produce a DFlashRuntime — the runtime is target-conditioned by contract.
+    generic = SpeculativeConditioning(
+        target_features=[[0.0]],
+        target_kv=[[0.0]],
+        position_ids=[0],
+    )
+    with pytest.raises(TypeError, match="initial_conditioning must be DFlashConditioning"):
+        DFlashRuntime(
+            draft_step=lambda req: req,
+            verify_step=lambda req: req,
+            initial_conditioning=generic,
+        )
+
+
+def test_runtime_none_conditioning_raises_typeerror():
+    # None is the degenerate "no conditioning at all" case; isinstance(None,
+    # DFlashConditioning) is False so require_dflash_conditioning rejects it.
+    with pytest.raises(TypeError, match="must be DFlashConditioning"):
+        DFlashRuntime(
+            draft_step=lambda req: req,
+            verify_step=lambda req: req,
+            initial_conditioning=None,
+        )
+
+
+def test_runtime_with_valid_inputs_constructs():
+    # Positive control for the runtime path.
+    rt = DFlashRuntime(
+        draft_step=lambda req: req,
+        verify_step=lambda req: req,
+        initial_conditioning=_valid_conditioning(),
+        block_size=8,
+    )
+    assert callable(rt.draft_step)
+    assert callable(rt.verify_step)
+    assert isinstance(rt.initial_conditioning, DFlashConditioning)
+    assert rt.block_size == 8
+
+
+# === (b) adapters: a generic, non-target-conditioned adapter under the =========
+# DFlash name must not resolve to a runtime. Exercises adapters.py typed
+# registry. SPEC.md F6.
+
+
+def _ctx(backend: str = "native") -> DFlashSelectionContext:
+    return DFlashSelectionContext(
+        model=object(),
+        backend=backend,
+        prompt_tokens=[1, 2, 3],
+        eos_token_id=None,
+        max_new_tokens=8,
+        block_size=4,
+    )
+
+
+def test_register_dflash_adapter_rejects_non_spec():
+    # The registry is typed: only DFlashAdapterSpec instances register. A bare
+    # callable (a "generic adapter") cannot be smuggled in.
+    with pytest.raises(TypeError, match="register_dflash_adapter expects DFlashAdapterSpec"):
+        register_dflash_adapter(object())
+
+
+def test_generic_adapter_returning_non_runtime_raises_typeerror():
+    # The sharpest mislabel path: an adapter that registers fine but whose
+    # create_runtime returns a *generic* object (e.g. a plain speculative
+    # decoder), not a DFlashRuntime. Resolving it under the DFlash name must
+    # raise rather than hand back the generic object as if it were DFlash.
+    def _supports(context) -> bool:
+        return True
+
+    def _create_generic(context):
+        # A generic, non-target-conditioned "runtime" — exactly what must NOT be
+        # accepted under the DFlash name.
+        return {"kind": "generic-speculative-decoder", "draft": lambda *a: [0]}
+
+    spec = DFlashAdapterSpec(
+        name="generic_mislabel",
+        supports=_supports,
+        create_runtime=_create_generic,
+    )
+    register_dflash_adapter(spec)
+
+    with pytest.raises(
+        TypeError, match="dflash adapter create_runtime\\(\\) must return DFlashRuntime"
+    ):
+        resolve_dflash_runtime(_ctx(), preferred_name="generic_mislabel")
+
+
+def test_named_unavailable_adapter_raises_lookuperror():
+    # Requesting a named DFlash adapter that is absent / unsupported must be a
+    # typed LookupError — never a silent generic fallback runtime (SPEC.md F6).
+    with pytest.raises(
+        LookupError, match="dflash adapter 'no_such_adapter' is unavailable for this context"
+    ):
+        build_dflash_runtime(
+            model=object(),
+            prompt_tokens=[1, 2, 3],
+            backend="native",
+            dflash_adapter="no_such_adapter",
+        )
+
+
+def test_unsupported_adapter_under_dflash_name_does_not_resolve():
+    # An adapter whose supports() returns False must not resolve under its name;
+    # build_dflash_runtime with that name raises LookupError (no fallback).
+    def _supports_false(context) -> bool:
+        return False
+
+    def _create(context):
+        # Would be wrong to ever reach this; present only to prove it is not
+        # called when supports() is False.
+        raise AssertionError("create_runtime must not run for an unsupported adapter")
+
+    spec = DFlashAdapterSpec(
+        name="unsupported_adapter",
+        supports=_supports_false,
+        create_runtime=_create,
+    )
+    register_dflash_adapter(spec)
+
+    with pytest.raises(
+        LookupError,
+        match="dflash adapter 'unsupported_adapter' is unavailable for this context",
+    ):
+        build_dflash_runtime(
+            model=object(),
+            prompt_tokens=[1, 2, 3],
+            backend="native",
+            dflash_adapter="unsupported_adapter",
+        )
+
+
+def test_no_adapter_no_name_returns_none_not_generic_runtime():
+    # With no preferred name and no registered adapters, build returns None
+    # (no DFlash claim) rather than fabricating a generic runtime.
+    result = build_dflash_runtime(
+        model=object(),
+        prompt_tokens=[1, 2, 3],
+        backend="native",
+    )
+    assert result is None
+
+
+# === (c) tinygrad.dflash import must fail closed, pointing at molt.gpu.dflash ===
+# Exercises src/molt/stdlib/tinygrad/dflash.py. SPEC.md F6.
+#
+# A bare `import tinygrad.dflash` under host pytest would resolve `tinygrad` to
+# whatever tinygrad is installed in the host environment (the upstream package),
+# whose missing `dflash` submodule raises a *generic* ModuleNotFoundError — that
+# would test the wrong thing. To exercise MOLT's fail-closed guard file
+# directly, load the actual molt stdlib source by path (the same
+# spec_from_file_location mechanism the repo's tinygrad_stdlib_loader uses) and
+# assert the molt ImportError it raises at module load.
+
+_MOLT_TINYGRAD_DFLASH = (
+    Path(__file__).resolve().parents[3]
+    / "src"
+    / "molt"
+    / "stdlib"
+    / "tinygrad"
+    / "dflash.py"
+)
+
+
+def _load_molt_tinygrad_dflash_guard():
+    """Execute molt's tinygrad/dflash.py guard module from source.
+
+    Returns nothing on success path (there is none — the module raises at import
+    by design); the caller wraps this in pytest.raises.
+    """
+    assert _MOLT_TINYGRAD_DFLASH.exists(), (
+        f"molt tinygrad.dflash guard missing at {_MOLT_TINYGRAD_DFLASH}"
+    )
+    spec = importlib.util.spec_from_file_location(
+        "molt_stdlib_tinygrad_dflash_probe", _MOLT_TINYGRAD_DFLASH
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    # Executing the module body triggers the module-level raise ImportError.
+    spec.loader.exec_module(module)
+
+
+def test_tinygrad_dflash_guard_raises_importerror():
+    with pytest.raises(ImportError) as excinfo:
+        _load_molt_tinygrad_dflash_guard()
+    message = str(excinfo.value)
+    # The fail-closed message must (1) say it's unavailable, (2) explain DFlash
+    # needs a target-conditioned block-diffusion drafter/verifier, (3) point at
+    # the paper-faithful molt.gpu.dflash contract, and (4) name
+    # tinygrad.speculative as the *generic* alternative. Each substring guards a
+    # distinct fidelity claim; dropping any is a fidelity regression.
+    assert "tinygrad.dflash is not available" in message
+    assert "target-conditioned block-diffusion" in message
+    assert "molt.gpu.dflash" in message
+    assert "tinygrad.speculative" in message
