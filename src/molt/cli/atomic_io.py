@@ -44,6 +44,13 @@ def _write_text_if_changed(path: Path, content: str) -> None:
     _atomic_write_text(path, content)
 
 
+def _remove_file_or_tree(path: Path) -> None:
+    if path.is_dir() and not path.is_symlink():
+        shutil.rmtree(path)
+    else:
+        path.unlink()
+
+
 def _atomic_write_bytes(path: Path, data: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")

@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import ast
 import codecs
-from collections import deque
 import copy
 import contextlib
 from concurrent.futures import Future, ProcessPoolExecutor
@@ -140,6 +139,7 @@ from molt.cli.atomic_io import (
     _atomic_write_json,
     _atomic_write_text,
     _atomic_zip_file,
+    _remove_file_or_tree,
     _write_json_sidecar,
     _write_text_if_changed,
 )
@@ -459,6 +459,30 @@ from molt.cli.env_paths import (
 )
 from molt.cli.env_overrides import temporary_env_overrides as _temporary_env_overrides
 from molt.cli.file_hashing import _sha256_file
+from molt.cli.external_native import (
+    _EXTERNAL_PACKAGE_NATIVE_ARTIFACT_EXCLUDED_DIRS,
+    _EXTERNAL_PACKAGE_NATIVE_ARTIFACT_SUFFIXES,
+    _extension_path_matches_manifest,
+    _external_extension_module_name,
+    _external_native_artifact_output_custody_error,
+    _external_native_support_source_paths,
+    _external_package_dir,
+    _external_package_init_source_paths,
+    _external_package_source_root,
+    _external_staged_path_for_source,
+    _find_external_extension_manifest,
+    _is_external_package_native_artifact,
+    _iter_external_package_native_artifacts,
+    _parse_external_static_packages,
+    _remove_staged_external_candidate,
+    _required_manifest_str,
+    _resolve_external_package_native_artifact_plan,
+    _resolve_import_admission_policy,
+    _stage_external_native_required_file,
+    _stage_external_native_support_files,
+    _stage_external_package_native_artifacts_for_build,
+    _validate_external_package_native_artifact,
+)
 from molt.cli.wrapper_build import (
     _build_args_has_json_flag,
     _build_args_has_python_version_flag,
@@ -742,6 +766,8 @@ from molt.cli.target_python import (
 from molt.cli.module_graph import (
     _augment_module_graph_for_entry_and_runtime,
     _augment_support_modules,
+    _analyze_module_schedule,
+    _apply_dead_module_elimination,
     _build_frontend_module_costs,
     _build_module_graph_metadata,
     _build_module_lowering_metadata,
@@ -781,6 +807,8 @@ from molt.cli.module_graph import (
     _logical_generated_module_path,
     _looks_like_stdlib_module_name,
     _materialize_import_plan,
+    _compute_reachable_modules,
+    _dependent_module_closure,
     _module_graph_cache_key,
     _module_graph_cache_path,
     _MODULE_GRAPH_CACHE_SCHEMA_VERSION,
@@ -788,6 +816,12 @@ from molt.cli.module_graph import (
     _module_graph_needs_runtime_import_support,
     _module_graph_policy_digest,
     _module_init_scan_nodes,
+    _module_dependencies,
+    _module_dependencies_from_imports,
+    _module_dependency_closure,
+    _module_dependency_closures,
+    _module_dependency_layers,
+    _module_order_has_back_edges,
     _module_name_from_path,
     _module_name_from_relative_parts,
     _module_name_from_resolved_path,
@@ -836,11 +870,17 @@ from molt.cli.module_graph import (
     _stdlib_root_path,
     STUB_MODULES,
     STUB_PARENT_MODULES,
+    _reverse_module_dependencies,
+    _topo_sort_modules,
     _tree_uses_runtime_import_protocol,
     _write_importer_module,
     _write_namespace_module,
     _write_persisted_import_scan,
     _write_persisted_module_graph,
+)
+from molt.cli.mlir_backend import (
+    _find_mlir_backend_binary,
+    _run_mlir_backend_pipeline,
 )
 from molt.cli.native_binary import (
     _NativeBinaryInvalid,
@@ -1972,293 +2012,6 @@ def _resolve_module_roots(
     )
 
 
-def _parse_external_static_packages(raw: str) -> tuple[frozenset[str], str | None]:
-    packages: set[str] = set()
-    for part in re.split(r"[\s,]+", raw.strip()):
-        if not part:
-            continue
-        if not re.fullmatch(
-            r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*",
-            part,
-        ):
-            return frozenset(), (
-                "MOLT_EXTERNAL_STATIC_PACKAGES must contain comma/space-separated "
-                f"Python package names; invalid entry: {part!r}"
-            )
-        packages.add(part)
-    return frozenset(packages), None
-
-
-
-_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_SUFFIXES = (".so", ".pyd")
-_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_EXCLUDED_DIRS = {
-    ".git",
-    ".hg",
-    ".mypy_cache",
-    ".nox",
-    ".pytest_cache",
-    ".ruff_cache",
-    ".tox",
-    ".venv",
-    "__pycache__",
-    "build",
-    "dist",
-    "node_modules",
-    "site-packages",
-}
-
-
-def _external_package_dir(root: Path, package: str) -> Path | None:
-    package_dir = root.joinpath(*package.split("."))
-    init_file = package_dir / "__init__.py"
-    if package_dir.is_dir() and _case_exact_file(init_file):
-        return package_dir.resolve()
-    return None
-
-
-def _is_external_package_native_artifact(path: Path) -> bool:
-    name = path.name.lower()
-    return any(
-        name.endswith(suffix) for suffix in _EXTERNAL_PACKAGE_NATIVE_ARTIFACT_SUFFIXES
-    )
-
-
-def _iter_external_package_native_artifacts(package_dir: Path) -> list[Path]:
-    artifacts: list[Path] = []
-    for current_root, dirnames, filenames in os.walk(package_dir):
-        dirnames[:] = sorted(
-            dirname
-            for dirname in dirnames
-            if dirname not in _EXTERNAL_PACKAGE_NATIVE_ARTIFACT_EXCLUDED_DIRS
-            and not (Path(current_root) / dirname).is_symlink()
-        )
-        current = Path(current_root)
-        for filename in sorted(filenames):
-            path = current / filename
-            if path.is_symlink() or not _is_external_package_native_artifact(path):
-                continue
-            artifacts.append(path.resolve())
-    return artifacts
-
-
-def _external_extension_module_name(
-    *,
-    package: str,
-    package_dir: Path,
-    artifact_path: Path,
-) -> str:
-    rel = artifact_path.resolve().relative_to(package_dir.resolve())
-    parent_parts = rel.parent.parts
-    basename = rel.name
-    for suffix in _EXTERNAL_PACKAGE_NATIVE_ARTIFACT_SUFFIXES:
-        if basename.lower().endswith(suffix):
-            basename = basename[: -len(suffix)]
-            break
-    basename = basename.split(".", 1)[0]
-    return ".".join(part for part in (package, *parent_parts, basename) if part)
-
-
-def _extension_path_matches_manifest(
-    *,
-    path: Path,
-    manifest_extension: str,
-    manifest_dir: Path,
-    package_dir: Path,
-) -> bool:
-    expected_norm = manifest_extension.replace("\\", "/").strip()
-    if not expected_norm:
-        return False
-    artifact_path = path.resolve()
-    manifest_path = Path(expected_norm)
-    if manifest_path.is_absolute():
-        return manifest_path.resolve() == artifact_path
-    return (manifest_dir / manifest_path).resolve() == artifact_path or (
-        package_dir / manifest_path
-    ).resolve() == artifact_path
-
-
-def _find_external_extension_manifest(
-    *,
-    artifact_path: Path,
-    package_dir: Path,
-) -> Path | None:
-    package_root = package_dir.resolve()
-    current = artifact_path.resolve().parent
-    for _ in range(6):
-        if not (current == package_root or current.is_relative_to(package_root)):
-            return None
-        candidate = current / "extension_manifest.json"
-        if _case_exact_file(candidate):
-            return candidate.resolve()
-        if current == package_root:
-            return None
-        current = current.parent
-    return None
-
-
-def _required_manifest_str(
-    manifest: Mapping[str, Any],
-    field_name: str,
-    errors: list[str],
-) -> str:
-    value = manifest.get(field_name)
-    if isinstance(value, str) and value.strip():
-        return value.strip()
-    errors.append(f"extension_manifest.json missing non-empty {field_name!r}")
-    return ""
-
-
-def _validate_external_package_native_artifact(
-    *,
-    package: str,
-    package_dir: Path,
-    artifact_path: Path,
-) -> tuple[_ExternalPackageNativeArtifact | None, list[str]]:
-    errors: list[str] = []
-    module_name = _external_extension_module_name(
-        package=package,
-        package_dir=package_dir,
-        artifact_path=artifact_path,
-    )
-    manifest_path = _find_external_extension_manifest(
-        artifact_path=artifact_path,
-        package_dir=package_dir,
-    )
-    if manifest_path is None:
-        return None, [
-            f"{package}: native artifact {artifact_path} is missing "
-            "extension_manifest.json sidecar"
-        ]
-    try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        return None, [f"{package}: invalid extension manifest {manifest_path}: {exc}"]
-    if not isinstance(manifest, dict):
-        return None, [
-            f"{package}: extension manifest {manifest_path} must be an object"
-        ]
-    validation = _validate_extension_manifest(
-        manifest,
-        manifest_dir=manifest_path.parent,
-        wheel_path=None,
-        require_capabilities=True,
-        required_abi=None,
-        require_checksum=False,
-        warn_missing_checksum=False,
-    )
-    errors.extend(f"{package}: {error}" for error in validation.errors)
-    manifest_module = _required_manifest_str(manifest, "module", errors)
-    if manifest_module and manifest_module != module_name:
-        errors.append(
-            f"{package}: manifest module {manifest_module!r} does not match "
-            f"native artifact module {module_name!r}"
-        )
-    manifest_extension = _required_manifest_str(manifest, "extension", errors)
-    if manifest_extension and not _extension_path_matches_manifest(
-        path=artifact_path,
-        manifest_extension=manifest_extension,
-        manifest_dir=manifest_path.parent,
-        package_dir=package_dir,
-    ):
-        errors.append(
-            f"{package}: manifest extension {manifest_extension!r} does not "
-            f"match native artifact {artifact_path}"
-        )
-    expected_extension_sha = _required_manifest_str(
-        manifest,
-        "extension_sha256",
-        errors,
-    ).lower()
-    actual_extension_sha = _sha256_file(artifact_path).lower()
-    if expected_extension_sha and expected_extension_sha != actual_extension_sha:
-        errors.append(
-            f"{package}: extension_sha256 mismatch for {artifact_path.name}: "
-            f"expected {expected_extension_sha}, got {actual_extension_sha}"
-        )
-    target_triple = _required_manifest_str(manifest, "target_triple", errors)
-    platform_tag = _required_manifest_str(manifest, "platform_tag", errors)
-    abi_tag = _required_manifest_str(manifest, "abi_tag", errors)
-    if errors:
-        return None, errors
-    return (
-        _ExternalPackageNativeArtifact(
-            package=package,
-            module=module_name,
-            package_dir=package_dir.resolve(),
-            path=artifact_path.resolve(),
-            manifest_path=manifest_path.resolve(),
-            extension_sha256=actual_extension_sha,
-            manifest_sha256=_sha256_file(manifest_path),
-            capabilities=tuple(validation.capabilities),
-            abi_tag=abi_tag,
-            target_triple=target_triple,
-            platform_tag=platform_tag,
-        ),
-        [],
-    )
-
-
-def _resolve_external_package_native_artifact_plan(
-    *,
-    external_module_roots: Sequence[Path],
-    admitted_packages: Collection[str],
-) -> tuple[_ExternalPackageNativeArtifactPlan | None, list[str]]:
-    artifacts: list[_ExternalPackageNativeArtifact] = []
-    errors: list[str] = []
-    for package in sorted(admitted_packages):
-        for root in external_module_roots:
-            package_dir = _external_package_dir(root.resolve(), package)
-            if package_dir is None:
-                continue
-            for artifact_path in _iter_external_package_native_artifacts(package_dir):
-                artifact, artifact_errors = _validate_external_package_native_artifact(
-                    package=package,
-                    package_dir=package_dir,
-                    artifact_path=artifact_path,
-                )
-                errors.extend(artifact_errors)
-                if artifact is not None:
-                    artifacts.append(artifact)
-    if errors:
-        return None, errors
-    return (
-        _ExternalPackageNativeArtifactPlan(
-            artifacts=tuple(
-                sorted(artifacts, key=lambda item: (item.module, str(item.path)))
-            )
-        ),
-        [],
-    )
-
-
-def _resolve_import_admission_policy(
-    *,
-    external_module_roots: Sequence[Path],
-    json_output: bool,
-) -> tuple[_ImportAdmissionPolicy | None, _CliFailure | None]:
-    packages, error = _parse_external_static_packages(
-        os.environ.get("MOLT_EXTERNAL_STATIC_PACKAGES", "")
-    )
-    if error is not None:
-        return None, _fail(error, json_output, command="build")
-    native_plan, native_plan_errors = _resolve_external_package_native_artifact_plan(
-        external_module_roots=external_module_roots,
-        admitted_packages=packages,
-    )
-    if native_plan_errors:
-        return None, _fail(
-            "External static package native-artifact custody errors: "
-            + "; ".join(native_plan_errors),
-            json_output,
-            command="build",
-        )
-    assert native_plan is not None
-    return _ImportAdmissionPolicy(
-        external_roots=tuple(external_module_roots),
-        admitted_external_packages=packages,
-        native_artifact_plan=native_plan,
-    ), None
-
 
 def _build_args_respect_pythonpath(args: list[str]) -> bool:
     if any(arg == "--no-respect-pythonpath" for arg in args):
@@ -2350,48 +2103,6 @@ def _is_stdlib_path(path: Path, stdlib_root: Path) -> bool:
     return _is_stdlib_resolved_path(resolved, resolved_stdlib_root)
 
 
-
-def _module_dependencies_from_imports(
-    module_name: str,
-    module_graph: Mapping[str, Path],
-    imports: Iterable[str],
-) -> set[str]:
-    deps: set[str] = set()
-    for name in imports:
-        for candidate in _expand_module_chain_cached(name):
-            if candidate == "molt" and module_name.startswith("molt."):
-                continue
-            if candidate in module_graph and candidate != module_name:
-                deps.add(candidate)
-            if candidate.startswith("molt.stdlib."):
-                stdlib_candidate = candidate[len("molt.stdlib.") :]
-                if stdlib_candidate in module_graph and stdlib_candidate != module_name:
-                    deps.add(stdlib_candidate)
-    return deps
-
-
-def _module_dependencies(
-    tree: ast.AST,
-    module_name: str,
-    module_graph: dict[str, Path],
-    *,
-    imports: list[str] | None = None,
-) -> set[str]:
-    path = module_graph.get(module_name)
-    is_package = path is not None and path.name == "__init__.py"
-    collected_imports = (
-        imports
-        if imports is not None
-        else _collect_imports(tree, module_name, is_package)
-    )
-    return _module_dependencies_from_imports(
-        module_name,
-        module_graph,
-        collected_imports,
-    )
-
-
-
 def _syntax_error_info_from_exception(
     exc: Exception, *, path: Path
 ) -> ModuleSyntaxErrorInfo:
@@ -2481,247 +2192,6 @@ def _collect_func_kinds(tree: ast.AST) -> dict[str, str]:
     if not isinstance(tree, ast.Module):
         return {}
     return collect_module_func_kinds(tree)
-
-
-def _topo_sort_modules(
-    module_graph: dict[str, Path], module_deps: dict[str, set[str]]
-) -> list[str]:
-    in_degree = {name: 0 for name in module_graph}
-    dependents = _reverse_module_dependencies(module_deps, module_graph)
-    for name, deps in module_deps.items():
-        for dep in deps:
-            in_degree[name] += 1
-    ready = deque(sorted(name for name, degree in in_degree.items() if degree == 0))
-    order: list[str] = []
-    while ready:
-        name = ready.popleft()
-        order.append(name)
-        for child in sorted(dependents[name]):
-            in_degree[child] -= 1
-            if in_degree[child] == 0:
-                ready.append(child)
-    if len(order) != len(module_graph):
-        remaining = sorted(name for name in module_graph if name not in order)
-        order.extend(remaining)
-    return order
-
-
-def _analyze_module_schedule(
-    module_graph: Mapping[str, Path],
-    module_deps: Mapping[str, set[str]],
-) -> tuple[
-    list[str],
-    dict[str, set[str]],
-    bool,
-    list[list[str]],
-    dict[str, frozenset[str]],
-]:
-    module_names = set(module_graph)
-    in_degree = {name: 0 for name in module_names}
-    reverse_module_deps = _reverse_module_dependencies(dict(module_deps), module_names)
-    for name, deps in module_deps.items():
-        for dep in deps:
-            if dep in module_names and name in in_degree:
-                in_degree[name] += 1
-    ready = deque(sorted(name for name, degree in in_degree.items() if degree == 0))
-    order: list[str] = []
-    while ready:
-        name = ready.popleft()
-        order.append(name)
-        for child in sorted(reverse_module_deps.get(name, ())):
-            if child not in in_degree:
-                continue
-            in_degree[child] -= 1
-            if in_degree[child] == 0:
-                ready.append(child)
-    has_back_edges = len(order) != len(module_names)
-    if has_back_edges:
-        remaining = sorted(name for name in module_names if name not in order)
-        order.extend(remaining)
-    layers = _module_dependency_layers(order, dict(module_deps))
-    module_dep_closures = _module_dependency_closures(
-        dict(module_deps),
-        module_names,
-        module_order=order,
-        has_back_edges=has_back_edges,
-    )
-    return order, reverse_module_deps, has_back_edges, layers, module_dep_closures
-
-
-def _reverse_module_dependencies(
-    module_deps: dict[str, set[str]],
-    module_names: Collection[str],
-) -> dict[str, set[str]]:
-    dependents: dict[str, set[str]] = {name: set() for name in module_names}
-    for name, deps in module_deps.items():
-        if name not in dependents:
-            dependents[name] = set()
-        for dep in deps:
-            dependents.setdefault(dep, set()).add(name)
-    return dependents
-
-
-def _dependent_module_closure(
-    dirty_modules: Collection[str],
-    module_deps: dict[str, set[str]],
-    module_names: Collection[str],
-    reverse_module_deps: Mapping[str, set[str]] | None = None,
-) -> set[str]:
-    dependents = (
-        reverse_module_deps
-        if reverse_module_deps is not None
-        else _reverse_module_dependencies(module_deps, module_names)
-    )
-    closure: set[str] = {name for name in dirty_modules if name in dependents}
-    queue = deque(sorted(closure))
-    while queue:
-        module_name = queue.popleft()
-        for dependent in sorted(dependents.get(module_name, ())):
-            if dependent not in closure:
-                closure.add(dependent)
-                queue.append(dependent)
-    return closure
-
-
-def _module_dependency_closure(
-    module_name: str,
-    module_deps: dict[str, set[str]],
-) -> set[str]:
-    closure: set[str] = {module_name}
-    queue = deque([module_name])
-    while queue:
-        current = queue.popleft()
-        for dep in sorted(module_deps.get(current, ())):
-            if dep not in closure:
-                closure.add(dep)
-                queue.append(dep)
-    return closure
-
-
-# ---------------------------------------------------------------------------
-# Dead module elimination
-# ---------------------------------------------------------------------------
-
-_DEAD_MODULE_ELIMINATION_SAFELIST: frozenset[str] = frozenset(
-    {
-        "builtins",
-        "sys",
-        "os",
-        "os.path",
-        "_collections_abc",
-        "abc",
-        "io",
-        "typing",
-        "types",
-        "functools",
-        "collections",
-        "collections.abc",
-        "enum",
-        "dataclasses",
-        "warnings",
-        "importlib",
-        "importlib.util",
-        "importlib.machinery",
-        "importlib.abc",
-        "_thread",
-        "threading",
-        "copyreg",
-        "keyword",
-        "operator",
-        "reprlib",
-        "itertools",
-        IMPORTER_MODULE_NAME,
-        "molt.stdlib",
-    }
-)
-
-
-def _compute_reachable_modules(
-    entry_module: str,
-    module_deps: dict[str, set[str]],
-    module_names: Collection[str],
-    *,
-    extra_roots: Collection[str] = (),
-) -> set[str]:
-    """Compute modules transitively reachable from *entry_module*."""
-    reachable: set[str] = set()
-    queue: deque[str] = deque()
-    module_name_set = set(module_names)
-
-    def _seed(name: str) -> None:
-        if name in reachable:
-            return
-        reachable.add(name)
-        queue.append(name)
-
-    _seed(entry_module)
-    for safe in _DEAD_MODULE_ELIMINATION_SAFELIST:
-        if safe in module_name_set:
-            _seed(safe)
-    for root in extra_roots:
-        if root in module_name_set:
-            _seed(root)
-    while queue:
-        current = queue.popleft()
-        for dep in module_deps.get(current, ()):
-            _seed(dep)
-    parents_to_add: set[str] = set()
-    for name in list(reachable):
-        parts = name.split(".")
-        for i in range(1, len(parts)):
-            parent = ".".join(parts[:i])
-            if parent in module_name_set:
-                parents_to_add.add(parent)
-    reachable.update(parents_to_add)
-    return reachable
-
-
-def _apply_dead_module_elimination(
-    module_order: list[str],
-    module_layers: list[list[str]],
-    entry_module: str,
-    module_deps: dict[str, set[str]],
-    module_names: Collection[str],
-    *,
-    extra_roots: Collection[str] = (),
-) -> tuple[list[str], list[list[str]], int]:
-    """Filter *module_order* and *module_layers* to only reachable modules."""
-    reachable = _compute_reachable_modules(
-        entry_module,
-        module_deps,
-        module_names,
-        extra_roots=extra_roots,
-    )
-    filtered_order = [m for m in module_order if m in reachable]
-    filtered_layers = [[m for m in layer if m in reachable] for layer in module_layers]
-    filtered_layers = [layer for layer in filtered_layers if layer]
-    eliminated_count = len(module_order) - len(filtered_order)
-    return filtered_order, filtered_layers, eliminated_count
-
-
-def _module_dependency_closures(
-    module_deps: dict[str, set[str]],
-    module_names: Collection[str],
-    *,
-    module_order: Sequence[str] | None = None,
-    has_back_edges: bool = False,
-) -> dict[str, frozenset[str]]:
-    if module_order is not None and not has_back_edges:
-        closures: dict[str, frozenset[str]] = {}
-        for module_name in tuple(module_order):
-            closure: set[str] = {module_name}
-            for dep in module_deps.get(module_name, ()):
-                closure.update(closures.get(dep, frozenset({dep})))
-            closures[module_name] = frozenset(closure)
-        for module_name in module_names:
-            closures.setdefault(module_name, frozenset({module_name}))
-        return closures
-    closures: dict[str, frozenset[str]] = {}
-    for module_name in sorted(module_names):
-        closures[module_name] = frozenset(
-            _module_dependency_closure(module_name, module_deps)
-        )
-    return closures
 
 
 def _scoped_known_func_defaults(
@@ -4201,43 +3671,6 @@ def _choose_frontend_parallel_layer_workers(
     }
 
 
-def _module_dependency_layers(
-    module_order: list[str],
-    module_deps: dict[str, set[str]],
-) -> list[list[str]]:
-    if not module_order:
-        return []
-    depth_by_module: dict[str, int] = {}
-    for name in module_order:
-        deps = [
-            dep
-            for dep in module_deps.get(name, set())
-            if dep in depth_by_module and dep != name
-        ]
-        if not deps:
-            depth_by_module[name] = 0
-            continue
-        depth_by_module[name] = max(depth_by_module[dep] for dep in deps) + 1
-    grouped: dict[int, list[str]] = {}
-    for name in module_order:
-        grouped.setdefault(depth_by_module.get(name, 0), []).append(name)
-    return [grouped[level] for level in sorted(grouped)]
-
-
-def _module_order_has_back_edges(
-    module_order: list[str],
-    module_deps: dict[str, set[str]],
-) -> bool:
-    seen: set[str] = set()
-    module_set = set(module_order)
-    for name in module_order:
-        deps = {dep for dep in module_deps.get(name, set()) if dep in module_set}
-        if not deps.issubset(seen):
-            return True
-        seen.add(name)
-    return False
-
-
 def _read_worker_source_lease(raw_lease: object) -> str:
     if not isinstance(raw_lease, Mapping):
         raise ValueError("missing source lease")
@@ -4653,13 +4086,6 @@ def _session_target_dir(project_root: Path) -> Path | None:
     return project_root / "target" / "sessions" / _session_artifact_component(sid)
 
 
-def _remove_file_or_tree(path: Path) -> None:
-    if path.is_dir() and not path.is_symlink():
-        shutil.rmtree(path)
-    else:
-        path.unlink()
-
-
 def _replace_directory_tree_from_source(
     src: Path,
     dst: Path,
@@ -4726,212 +4152,6 @@ def _link_fingerprint_path(
         stem_suffix=f"{profile}.{target}",
         extension="fingerprint",
     )
-
-
-def _external_package_source_root(package_dir: Path, package: str) -> Path:
-    resolved = package_dir.resolve()
-    package_parts = tuple(part for part in package.split(".") if part)
-    if (
-        package_parts
-        and len(resolved.parts) >= len(package_parts)
-        and tuple(resolved.parts[-len(package_parts) :]) == package_parts
-    ):
-        return resolved.parents[len(package_parts) - 1]
-    return resolved.parent
-
-
-def _external_package_init_source_paths(
-    *,
-    package_dir: Path,
-    package: str,
-) -> tuple[Path, ...]:
-    package_root = _external_package_source_root(package_dir, package)
-    package_parts = tuple(part for part in package.split(".") if part)
-    return tuple(
-        package_root.joinpath(*package_parts[:index], "__init__.py")
-        for index in range(1, len(package_parts) + 1)
-    )
-
-
-def _external_native_support_source_paths(
-    artifact: _ExternalPackageNativeArtifact,
-) -> tuple[Path, ...]:
-    out: list[Path] = []
-    seen: set[Path] = set()
-
-    def add(path: Path) -> None:
-        resolved = path.resolve()
-        if resolved not in seen:
-            seen.add(resolved)
-            out.append(path)
-
-    for init_path in _external_package_init_source_paths(
-        package_dir=artifact.package_dir,
-        package=artifact.package,
-    ):
-        add(init_path)
-
-    artifact_path = artifact.path
-    add(artifact_path.with_name(f"{artifact_path.name}.molt.py"))
-    add(artifact_path.with_name(f"{artifact_path.name}.py"))
-    stripped = artifact_path.with_suffix("")
-    if stripped != artifact_path:
-        add(stripped.with_name(f"{stripped.name}.molt.py"))
-        add(stripped.with_name(f"{stripped.name}.py"))
-        for marker in (".cpython-", ".abi", ".cp"):
-            marker_index = stripped.name.rfind(marker)
-            if marker_index > 0:
-                prefix_name = stripped.name[:marker_index]
-                add(stripped.with_name(f"{prefix_name}.molt.py"))
-                add(stripped.with_name(f"{prefix_name}.py"))
-    if artifact_path.parent.name == "__pycache__":
-        parent = artifact_path.parent.parent
-        stem = artifact_path.name.rsplit(".", 1)[0]
-        module_stem = stem.split(".", 1)[0]
-        if module_stem:
-            add(parent / f"{module_stem}.molt.py")
-            add(parent / f"{module_stem}.py")
-    local_name = artifact.module.rsplit(".", 1)[-1]
-    if local_name:
-        add(artifact_path.parent / f"{local_name}.molt.py")
-        add(artifact_path.parent / f"{local_name}.py")
-        add(artifact_path.parent / local_name / "__init__.molt.py")
-        add(artifact_path.parent / local_name / "__init__.py")
-    if artifact_path.name.startswith("__init__."):
-        add(artifact_path.parent / "__init__.molt.py")
-        add(artifact_path.parent / "__init__.py")
-    return tuple(out)
-
-
-def _external_staged_path_for_source(
-    *,
-    runtime_root: Path,
-    package_source_root: Path,
-    source_path: Path,
-) -> Path:
-    resolved_source = source_path.resolve()
-    try:
-        relative = resolved_source.relative_to(package_source_root)
-    except ValueError as exc:
-        raise OSError(
-            f"external native support path escapes admitted package root: {source_path}"
-        ) from exc
-    return runtime_root / relative
-
-
-def _remove_staged_external_candidate(path: Path) -> None:
-    with contextlib.suppress(OSError):
-        if path.exists() or path.is_symlink():
-            _remove_file_or_tree(path)
-
-
-def _stage_external_native_required_file(
-    *,
-    source_path: Path,
-    staged_path: Path,
-    expected_sha256: str,
-    label: str,
-) -> None:
-    expected = expected_sha256.lower()
-    actual = _sha256_file(source_path).lower()
-    if actual != expected:
-        raise OSError(
-            f"External native artifact {label} checksum changed before staging: "
-            f"{source_path} expected {expected}, got {actual}"
-        )
-    _atomic_copy_file(source_path, staged_path)
-    staged = _sha256_file(staged_path).lower()
-    if staged != expected:
-        _remove_staged_external_candidate(staged_path)
-        raise OSError(
-            f"External native artifact {label} changed during staging: "
-            f"{source_path} expected {expected}, staged {staged}"
-        )
-
-
-def _stage_external_native_support_files(
-    artifact: _ExternalPackageNativeArtifact,
-    *,
-    runtime_root: Path,
-    package_source_root: Path,
-) -> tuple[Path, ...]:
-    staged_paths: list[Path] = []
-    for source_path in _external_native_support_source_paths(artifact):
-        staged_path = _external_staged_path_for_source(
-            runtime_root=runtime_root,
-            package_source_root=package_source_root,
-            source_path=source_path,
-        )
-        if source_path.is_file():
-            _atomic_copy_file(source_path, staged_path)
-            staged_paths.append(staged_path)
-        else:
-            _remove_staged_external_candidate(staged_path)
-    return tuple(staged_paths)
-
-
-def _stage_external_package_native_artifacts_for_build(
-    native_artifact_plan: _ExternalPackageNativeArtifactPlan,
-    *,
-    artifacts_root: Path,
-) -> tuple[_StagedExternalPackageNativeArtifact, ...]:
-    if not native_artifact_plan.artifacts:
-        return ()
-    runtime_root = (
-        artifacts_root / "external_static_packages" / native_artifact_plan.digest()
-    )
-    staged_artifacts: list[_StagedExternalPackageNativeArtifact] = []
-    for artifact in native_artifact_plan.artifacts:
-        package_source_root = _external_package_source_root(
-            artifact.package_dir,
-            artifact.package,
-        )
-        staged_path = _external_staged_path_for_source(
-            runtime_root=runtime_root,
-            package_source_root=package_source_root,
-            source_path=artifact.path,
-        )
-        staged_manifest_path = _external_staged_path_for_source(
-            runtime_root=runtime_root,
-            package_source_root=package_source_root,
-            source_path=artifact.manifest_path,
-        )
-        _stage_external_native_required_file(
-            source_path=artifact.path,
-            staged_path=staged_path,
-            expected_sha256=artifact.extension_sha256,
-            label="extension",
-        )
-        _stage_external_native_required_file(
-            source_path=artifact.manifest_path,
-            staged_path=staged_manifest_path,
-            expected_sha256=artifact.manifest_sha256,
-            label="manifest",
-        )
-        staged_support_paths = _stage_external_native_support_files(
-            artifact,
-            runtime_root=runtime_root,
-            package_source_root=package_source_root,
-        )
-        staged_artifacts.append(
-            _StagedExternalPackageNativeArtifact(
-                package=artifact.package,
-                module=artifact.module,
-                runtime_root=runtime_root,
-                source_path=artifact.path,
-                source_manifest_path=artifact.manifest_path,
-                staged_path=staged_path,
-                staged_manifest_path=staged_manifest_path,
-                staged_support_paths=staged_support_paths,
-                extension_sha256=artifact.extension_sha256,
-                manifest_sha256=artifact.manifest_sha256,
-                capabilities=artifact.capabilities,
-                abi_tag=artifact.abi_tag,
-                target_triple=artifact.target_triple,
-                platform_tag=artifact.platform_tag,
-            )
-        )
-    return tuple(staged_artifacts)
 
 
 
@@ -8749,34 +7969,6 @@ def _resolve_build_output_layout(
         output_binary=output_binary,
         linked_output_path=linked_output_path,
         emit_ir_path=emit_ir_path,
-    )
-
-
-def _external_native_artifact_output_custody_error(
-    *,
-    native_artifact_plan: _ExternalPackageNativeArtifactPlan,
-    output_layout: _BuildOutputLayout,
-    target: str,
-) -> str | None:
-    if not native_artifact_plan.artifacts:
-        return None
-    if (
-        not output_layout.is_wasm
-        and not output_layout.is_rust_transpile
-        and not output_layout.is_luau_transpile
-        and not output_layout.is_mlir_emit
-        and output_layout.emit_mode == "bin"
-    ):
-        return None
-    packages = ", ".join(
-        sorted({artifact.package for artifact in native_artifact_plan.artifacts})
-    )
-    return (
-        "External static native packages require native binary output so Molt can "
-        "stage validated package bytes and inject the staged root into runtime "
-        "import custody before startup. "
-        f"Unsupported target/emit combination: target={target}, "
-        f"emit={output_layout.emit_mode}, packages={packages}."
     )
 
 
@@ -15181,9 +14373,6 @@ def _resolve_native_linker_hint(
 
 
 
-
-
-
 def _resolve_output_roots(
     project_root: Path, out_dir: Path | None, output_base: str
 ) -> tuple[Path, Path, Path]:
@@ -15424,134 +14613,6 @@ def build(
             stdlib_profile=stdlib_profile,
             fact_graph_request=fact_graph_request,
         )
-
-
-def _find_mlir_backend_binary(project_root: Path) -> Path | None:
-    """Locate the ``molt-backend-mlir`` binary.
-
-    Search order:
-    1. ``target/<profile>/molt-backend-mlir`` under the MLIR crate directory
-       (for local dev builds with explicit ``cargo build -p molt-backend-mlir``).
-    2. ``$PATH`` (for installed binaries).
-    """
-    mlir_crate_dir = project_root / "runtime" / "molt-backend-mlir"
-    for profile in ("release", "debug"):
-        candidate = mlir_crate_dir / "target" / profile / "molt-backend-mlir"
-        if candidate.is_file():
-            return candidate
-    # Also check the workspace-level target directory (both session-scoped and
-    # default).
-    session_id = _molt_session_id()
-    target_dirs = []
-    if session_id:
-        target_dirs.append(project_root / f"target-{session_id}")
-    target_dirs.append(project_root / "target")
-    for tdir in target_dirs:
-        for profile in ("release", "release-fast", "debug"):
-            candidate = tdir / profile / "molt-backend-mlir"
-            if candidate.is_file():
-                return candidate
-    # Fall back to $PATH.
-    from_path = shutil.which("molt-backend-mlir")
-    if from_path is not None:
-        return Path(from_path)
-    return None
-
-
-def _run_mlir_backend_pipeline(
-    *,
-    ir: dict[str, Any],
-    output_artifact: Path,
-    project_root: Path,
-    json_output: bool,
-    verbose: bool,
-    emit_llvm: bool = False,
-) -> int:
-    """Run the standalone MLIR backend binary on the prepared IR.
-
-    Serializes the IR as JSON, pipes it to ``molt-backend-mlir``, and writes
-    the resulting MLIR text to *output_artifact*.
-    """
-    mlir_bin = _find_mlir_backend_binary(project_root)
-    if mlir_bin is None:
-        msg = (
-            "Error: MLIR backend binary not found.\n"
-            "\n"
-            "The MLIR backend requires LLVM 22 and is built separately:\n"
-            "\n"
-            "  1. Install LLVM:  brew install llvm\n"
-            "  2. Build the MLIR backend:\n"
-            "     cargo build --release -p molt-backend-mlir\n"
-            "\n"
-            "Then retry: molt build --target mlir <file>"
-        )
-        if json_output:
-            return _fail(msg, json_output, command="build")
-        print(msg, file=sys.stderr)
-        return 1
-
-    cmd: list[str] = [str(mlir_bin), "--output", str(output_artifact)]
-    if emit_llvm:
-        cmd.append("--emit-llvm")
-
-    ir_bytes = json.dumps(ir, separators=(",", ":"), default=_json_ir_default).encode(
-        "utf-8"
-    )
-
-    if verbose and not json_output:
-        print(f"MLIR backend: {shlex.join(cmd)}", file=sys.stderr)
-        print(
-            f"  IR size: {len(ir_bytes)} bytes, "
-            f"functions: {len(ir.get('functions', []))}",
-            file=sys.stderr,
-        )
-
-    try:
-        result = _run_subprocess_captured_to_tempfiles(
-            cmd,
-            input=ir_bytes,
-            cwd=project_root,
-            env=None,
-            timeout=120,
-            progress_label="MLIR backend",
-        )
-    except FileNotFoundError:
-        return _fail(
-            f"MLIR backend binary not executable: {mlir_bin}",
-            json_output,
-            command="build",
-        )
-    except subprocess.TimeoutExpired:
-        return _fail(
-            "MLIR backend timed out after 120 seconds",
-            json_output,
-            command="build",
-        )
-
-    stderr_text = result.stderr.decode("utf-8", errors="replace").strip()
-    if stderr_text and (verbose or result.returncode != 0):
-        print(stderr_text, file=sys.stderr)
-
-    if result.returncode != 0:
-        return _fail(
-            f"MLIR backend failed (exit {result.returncode})",
-            json_output,
-            command="build",
-        )
-
-    if json_output:
-        data: dict[str, Any] = {
-            "target": "mlir",
-            "output": str(output_artifact),
-            "consumer_output": str(output_artifact),
-            "artifacts": {"mlir": str(output_artifact)},
-        }
-        payload = _json_payload("build", "ok", data=data)
-        _emit_json(payload, json_output)
-    else:
-        print(f"Wrote MLIR output: {output_artifact}", file=sys.stderr)
-
-    return 0
 
 
 def _run_script_cross(
