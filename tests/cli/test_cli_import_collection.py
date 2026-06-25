@@ -21,8 +21,10 @@ import molt.cli as cli
 import pytest
 from molt.cli import build_results as cli_build_results
 from molt.cli import frontend_execution as cli_frontend_execution
+from molt.cli import frontend_pipeline as cli_frontend_pipeline
 from molt.cli import module_cache as cli_module_cache
 from molt.cli import module_graph as cli_module_graph
+from molt.cli import typecheck as cli_typecheck
 from molt.frontend import MoltValue, SimpleTIRGenerator
 from molt.type_facts import Fact, FunctionFacts, ModuleFacts, TypeFacts
 from tests.cli.process_guard import (
@@ -724,7 +726,7 @@ def test_core_closure_copy_reaches_backend_stdlib_symbol_contract(
         entry_module="demo",
         diagnostics_enabled=False,
     )
-    frontend_analysis, frontend_error = cli._prepare_frontend_analysis(
+    frontend_analysis, frontend_error = cli_frontend_pipeline._prepare_frontend_analysis(
         module_graph=import_plan.module_graph,
         module_graph_metadata=import_plan.module_graph_metadata,
         module_resolution_cache=import_plan.module_resolution_cache,
@@ -8318,8 +8320,9 @@ def test_parallel_build_allows_scoped_type_facts(
         '[project]\nname = "demo"\nversion = "0.1.0"\n'
     )
     entry = project / "main.py"
-    entry.write_text("import alpha\nprint(alpha.VALUE)\n")
+    entry.write_text("import alpha\nimport beta\nprint(alpha.VALUE + beta.VALUE)\n")
     (project / "alpha.py").write_text("VALUE = 1\n")
+    (project / "beta.py").write_text("VALUE = 2\n")
 
     build_state_root = tmp_path / "build-state"
     cache_root = tmp_path / "cache"
@@ -8399,13 +8402,14 @@ def test_parallel_build_allows_scoped_type_facts(
         modules={
             "main": ModuleFacts(globals={"ENTRY": Fact(type="int", trust="trusted")}),
             "alpha": ModuleFacts(globals={"VALUE": Fact(type="int", trust="trusted")}),
+            "beta": ModuleFacts(globals={"VALUE": Fact(type="int", trust="trusted")}),
             "unrelated": ModuleFacts(
                 globals={"NOPE": Fact(type="bytes", trust="trusted")}
             ),
         }
     )
     monkeypatch.setattr(
-        cli,
+        cli_typecheck,
         "_collect_type_facts_for_build",
         lambda *args, **kwargs: (type_facts, True),
     )
@@ -8685,7 +8689,7 @@ def test_prepare_frontend_analysis_uses_path_backed_source_catalog(
     )
     resolution_cache = cli._ModuleResolutionCache()
 
-    analysis, failure = cli._prepare_frontend_analysis(
+    analysis, failure = cli_frontend_pipeline._prepare_frontend_analysis(
         module_graph=module_graph,
         module_graph_metadata=metadata,
         module_resolution_cache=resolution_cache,
@@ -9450,7 +9454,7 @@ def test_prepare_frontend_lowering_config_uses_tighter_native_chunk_default(
     monkeypatch.delenv("MOLT_MODULE_CHUNK_OPS", raising=False)
     monkeypatch.delenv("MOLT_WASM_MODULE_CHUNK_OPS", raising=False)
 
-    config, failure = cli._prepare_frontend_lowering_config(
+    config, failure = cli_frontend_pipeline._prepare_frontend_lowering_config(
         type_facts_path=None,
         type_hint_policy="ignore",
         module_graph={"entry": source_path},

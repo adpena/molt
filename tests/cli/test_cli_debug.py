@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 
 import molt.cli as molt_cli
+from molt.cli import debug_helpers as cli_debug_helpers
 from molt.debug import DebugSubcommand, allocate_debug_paths
 
 from tests.cli.process_guard import run_cli_test_process
@@ -414,7 +415,7 @@ def test_debug_repro_runs_one_file_and_records_execution(
         run_id="repro-test-run",
     )
 
-    rc = molt_cli._handle_debug_repro(
+    rc = cli_debug_helpers._handle_debug_repro(
         args,
         subcommand=DebugSubcommand.REPRO,
         paths=paths,
@@ -475,7 +476,7 @@ def test_debug_trace_records_enabled_families_and_restores_env(
         run_id="trace-test-run",
     )
 
-    rc = molt_cli._handle_debug_trace(
+    rc = cli_debug_helpers._handle_debug_trace(
         args,
         subcommand=DebugSubcommand.TRACE,
         paths=paths,
@@ -547,7 +548,7 @@ def test_debug_trace_can_enable_success_path_assertion(
         run_id="trace-assert-test-run",
     )
 
-    rc = molt_cli._handle_debug_trace(
+    rc = cli_debug_helpers._handle_debug_trace(
         args,
         subcommand=DebugSubcommand.TRACE,
         paths=paths,
@@ -602,7 +603,7 @@ def test_debug_trace_can_enable_backend_timing_family(
         run_id="trace-backend-timing-test-run",
     )
 
-    rc = molt_cli._handle_debug_trace(
+    rc = cli_debug_helpers._handle_debug_trace(
         args,
         subcommand=DebugSubcommand.TRACE,
         paths=paths,
@@ -661,7 +662,7 @@ def test_debug_trace_can_enable_compile_func_family(
         run_id="trace-compile-func-test-run",
     )
 
-    rc = molt_cli._handle_debug_trace(
+    rc = cli_debug_helpers._handle_debug_trace(
         args,
         subcommand=DebugSubcommand.TRACE,
         paths=paths,

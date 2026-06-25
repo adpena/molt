@@ -36,6 +36,7 @@ TypeHintPolicy = Literal["ignore", "trust", "check"]
 FallbackPolicy = Literal["error", "bridge"]
 BuildProfile = Literal["dev", "release"]
 EmitMode = Literal["bin", "obj", "wasm"]
+Target = str
 ImportScanMode = Literal["full", "module_init"]
 
 
