@@ -233,3 +233,70 @@ fn roundtrip_does_not_reseed_legacy_transport_hints() {
             .collect::<Vec<_>>(),
     );
 }
+
+#[test]
+fn roundtrip_preserves_structural_source_site() {
+    let ir = FunctionIR {
+        name: "source_site".to_string(),
+        ops: vec![
+            OpIR {
+                kind: "line".to_string(),
+                value: Some(12),
+                source_line: Some(12),
+                col_offset: Some(4),
+                end_col_offset: Some(18),
+                ..Default::default()
+            },
+            OpIR {
+                kind: "const".to_string(),
+                value: Some(41),
+                out: Some("x".into()),
+                ..Default::default()
+            },
+            OpIR {
+                kind: "add".to_string(),
+                args: Some(vec!["x".into(), "1".into()]),
+                out: Some("y".into()),
+                ..Default::default()
+            },
+            OpIR {
+                kind: "ret".to_string(),
+                args: Some(vec!["y".into()]),
+                ..Default::default()
+            },
+        ],
+        params: vec![],
+        param_types: None,
+        source_file: None,
+        is_extern: false,
+    };
+
+    let tir_func = molt_backend::tir::lower_from_simple::lower_to_tir(&ir);
+    let mut sites = tir_func
+        .blocks
+        .values()
+        .flat_map(|block| block.ops.iter())
+        .filter_map(|op| op.source_site());
+    let site = sites
+        .find(|site| site.line == 12)
+        .expect("TIR ops should carry the active source line");
+    assert_eq!(site.col, Some(4));
+    assert_eq!(site.end_col, Some(18));
+
+    let roundtripped = molt_backend::tir::lower_to_simple::lower_to_simple_ir(&tir_func);
+    let const_op = roundtripped
+        .iter()
+        .find(|op| op.kind == "const" && op.out.as_deref() == Some("x"))
+        .expect("roundtrip should retain the const op");
+    assert_eq!(const_op.source_line, Some(12));
+    assert_eq!(const_op.col_offset, Some(4));
+    assert_eq!(const_op.end_col_offset, Some(18));
+
+    let add_op = roundtripped
+        .iter()
+        .find(|op| op.kind == "add" && op.out.as_deref() == Some("y"))
+        .expect("roundtrip should retain the add op");
+    assert_eq!(add_op.source_line, Some(12));
+    assert_eq!(add_op.col_offset, Some(4));
+    assert_eq!(add_op.end_col_offset, Some(18));
+}

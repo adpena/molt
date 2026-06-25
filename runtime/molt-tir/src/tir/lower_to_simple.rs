@@ -3510,16 +3510,17 @@ fn annotate_type_flags(opir: &mut OpIR, tir_op: &TirOp) {
         opir.arena_eligible = Some(true);
     }
 
-    // Restore col_offset/end_col_offset for traceback caret annotations.
-    if opir.col_offset.is_none()
-        && let Some(AttrValue::Int(col)) = tir_op.attrs.get("_col_offset")
-    {
-        opir.col_offset = Some(*col);
-    }
-    if opir.end_col_offset.is_none()
-        && let Some(AttrValue::Int(ecol)) = tir_op.attrs.get("_end_col_offset")
-    {
-        opir.end_col_offset = Some(*ecol);
+    // Restore source-site coordinates for source/binary attribution and
+    // traceback caret annotations. SourceSite is the only decoder for the
+    // line/column attr family, so this boundary cannot drift on raw keys.
+    if let Some(site) = tir_op.source_site() {
+        opir.source_line.get_or_insert(site.line as i64);
+        if let Some(col) = site.col {
+            opir.col_offset.get_or_insert(col as i64);
+        }
+        if let Some(end_col) = site.end_col {
+            opir.end_col_offset.get_or_insert(end_col as i64);
+        }
     }
 }
 
@@ -4341,10 +4342,7 @@ mod tests {
             .find(|op| op.kind == "checked_mul")
             .expect("re-emit must preserve checked_mul");
         assert_eq!(cm.args.as_ref().map(Vec::len), Some(2));
-        let product_var = cm
-            .var
-            .as_deref()
-            .expect("product must round-trip in var");
+        let product_var = cm.var.as_deref().expect("product must round-trip in var");
         let flag_var = cm.out.as_deref().expect("flag must round-trip in out");
         assert_ne!(product_var, flag_var, "the two outputs must stay distinct");
     }

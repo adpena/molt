@@ -137,14 +137,17 @@ pub fn run(func: &mut TirFunction) -> PassStats {
                     if op.opcode == OpCode::Not
                         && let Some(&inner_src) = not_source.get(&operand)
                     {
-                        *op = TirOp {
+                        let old = op.clone();
+                        let mut replacement = TirOp {
                             dialect: Dialect::Molt,
                             opcode: OpCode::Copy,
                             operands: vec![inner_src],
                             results: vec![result],
                             attrs: Default::default(),
-                            source_span: op.source_span,
+                            source_span: None,
                         };
+                        replacement.inherit_source_from(&old);
+                        *op = replacement;
                         stats.values_changed += 1;
                     }
 
@@ -152,14 +155,17 @@ pub fn run(func: &mut TirFunction) -> PassStats {
                     if op.opcode == OpCode::Neg
                         && let Some(&inner_src) = neg_source.get(&operand)
                     {
-                        *op = TirOp {
+                        let old = op.clone();
+                        let mut replacement = TirOp {
                             dialect: Dialect::Molt,
                             opcode: OpCode::Copy,
                             operands: vec![inner_src],
                             results: vec![result],
                             attrs: Default::default(),
-                            source_span: op.source_span,
+                            source_span: None,
                         };
+                        replacement.inherit_source_from(&old);
+                        *op = replacement;
                         stats.values_changed += 1;
                     }
 
@@ -167,7 +173,8 @@ pub fn run(func: &mut TirFunction) -> PassStats {
                     if op.opcode == OpCode::Not
                         && let Some(&val) = bool_consts.get(&operand)
                     {
-                        *op = TirOp {
+                        let old = op.clone();
+                        let mut replacement = TirOp {
                             dialect: Dialect::Molt,
                             opcode: OpCode::ConstBool,
                             operands: vec![],
@@ -177,8 +184,10 @@ pub fn run(func: &mut TirFunction) -> PassStats {
                                 m.insert("value".into(), AttrValue::Bool(!val));
                                 m
                             },
-                            source_span: op.source_span,
+                            source_span: None,
                         };
+                        replacement.inherit_source_from(&old);
+                        *op = replacement;
                         stats.values_changed += 1;
                     }
                 }
@@ -373,18 +382,22 @@ fn can_reorder_comparison(
 }
 
 fn replace_with_copy(op: &mut TirOp, source: ValueId, result: ValueId) {
-    *op = TirOp {
+    let old = op.clone();
+    let mut replacement = TirOp {
         dialect: Dialect::Molt,
         opcode: OpCode::Copy,
         operands: vec![source],
         results: vec![result],
         attrs: Default::default(),
-        source_span: op.source_span,
+        source_span: None,
     };
+    replacement.inherit_source_from(&old);
+    *op = replacement;
 }
 
 fn replace_with_const_int(op: &mut TirOp, value: i64, result: ValueId) {
-    *op = TirOp {
+    let old = op.clone();
+    let mut replacement = TirOp {
         dialect: Dialect::Molt,
         opcode: OpCode::ConstInt,
         operands: vec![],
@@ -394,12 +407,15 @@ fn replace_with_const_int(op: &mut TirOp, value: i64, result: ValueId) {
             m.insert("value".into(), AttrValue::Int(value));
             m
         },
-        source_span: op.source_span,
+        source_span: None,
     };
+    replacement.inherit_source_from(&old);
+    *op = replacement;
 }
 
 fn replace_with_const_bool(op: &mut TirOp, value: bool, result: ValueId) {
-    *op = TirOp {
+    let old = op.clone();
+    let mut replacement = TirOp {
         dialect: Dialect::Molt,
         opcode: OpCode::ConstBool,
         operands: vec![],
@@ -409,8 +425,10 @@ fn replace_with_const_bool(op: &mut TirOp, value: bool, result: ValueId) {
             m.insert("value".into(), AttrValue::Bool(value));
             m
         },
-        source_span: op.source_span,
+        source_span: None,
     };
+    replacement.inherit_source_from(&old);
+    *op = replacement;
 }
 
 // ---------------------------------------------------------------------------

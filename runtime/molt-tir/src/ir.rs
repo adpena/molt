@@ -93,6 +93,10 @@ pub struct OpIR {
     pub col_offset: Option<i64>,
     /// End column offset (0-based) for traceback caret annotations.
     pub end_col_offset: Option<i64>,
+    /// Source line number (1-based) for structural source-site attribution.
+    /// Frontend JSON annotates executable ops from the active `line` marker;
+    /// the SimpleIR -> TIR lift preserves it as the TIR source-site authority.
+    pub source_line: Option<i64>,
     /// When true, the bounds-check elimination pass has proven this index
     /// operation is in-range.  Codegen can skip the runtime bounds check
     /// and emit a straight-line element access.
@@ -119,6 +123,39 @@ pub struct OpIR {
     /// `from_json_value` parser and the serde derive (rmp/cbor path) agree on it.
     #[serde(rename = "class")]
     pub class_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct OpSourceSite {
+    pub source_line: Option<i64>,
+    pub col_offset: Option<i64>,
+    pub end_col_offset: Option<i64>,
+}
+
+impl OpSourceSite {
+    pub fn from_op(op: &OpIR) -> Self {
+        Self {
+            source_line: op.source_line,
+            col_offset: op.col_offset,
+            end_col_offset: op.end_col_offset,
+        }
+    }
+
+    pub fn apply_to_op(self, op: &mut OpIR) {
+        op.source_line = self.source_line;
+        op.col_offset = self.col_offset;
+        op.end_col_offset = self.end_col_offset;
+    }
+}
+
+impl OpIR {
+    pub fn source_site(&self) -> OpSourceSite {
+        OpSourceSite::from_op(self)
+    }
+
+    pub fn inherit_source_site_from(&mut self, other: &OpIR) {
+        other.source_site().apply_to_op(self);
+    }
 }
 
 impl PgoProfileIR {
@@ -357,6 +394,7 @@ impl OpIR {
             ic_index,
             col_offset: optional_i64(obj, "col_offset", ctx)?,
             end_col_offset: optional_i64(obj, "end_col_offset", ctx)?,
+            source_line: optional_i64(obj, "source_line", ctx)?,
             bce_safe: optional_bool(obj, "bce_safe", ctx)?,
             arena_eligible: optional_bool(obj, "arena_eligible", ctx)?,
             defines_del: optional_bool(obj, "defines_del", ctx)?,

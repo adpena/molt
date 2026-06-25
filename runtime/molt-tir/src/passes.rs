@@ -464,8 +464,8 @@ pub fn deforest_split_field_reads(func_ir: &mut FunctionIR) {
 
         // Rewrite len(field) -> string_split_field_len_from_bounds.
         for &i in &plan.len_ops {
-            let span = (func_ir.ops[i].col_offset, func_ir.ops[i].end_col_offset);
-            func_ir.ops[i] = OpIR {
+            let source_site = func_ir.ops[i].source_site();
+            let mut rewritten = OpIR {
                 kind: "string_split_field_len_from_bounds".to_string(),
                 args: Some(vec![
                     plan.hay.clone(),
@@ -474,10 +474,10 @@ pub fn deforest_split_field_reads(func_ir: &mut FunctionIR) {
                     asc_var.clone(),
                 ]),
                 out: func_ir.ops[i].out.clone(),
-                col_offset: span.0,
-                end_col_offset: span.1,
                 ..OpIR::default()
             };
+            source_site.apply_to_op(&mut rewritten);
+            func_ir.ops[i] = rewritten;
         }
         // Rewrite ord_at(field, i) -> string_split_field_ord_at_bounds.
         for &i in &plan.ord_ops {
@@ -486,8 +486,8 @@ pub fn deforest_split_field_reads(func_ir: &mut FunctionIR) {
                 .as_ref()
                 .and_then(|a| a.get(1).cloned())
                 .unwrap_or_default();
-            let span = (func_ir.ops[i].col_offset, func_ir.ops[i].end_col_offset);
-            func_ir.ops[i] = OpIR {
+            let source_site = func_ir.ops[i].source_site();
+            let mut rewritten = OpIR {
                 kind: "string_split_field_ord_at_bounds".to_string(),
                 args: Some(vec![
                     plan.hay.clone(),
@@ -497,10 +497,10 @@ pub fn deforest_split_field_reads(func_ir: &mut FunctionIR) {
                     char_idx,
                 ]),
                 out: func_ir.ops[i].out.clone(),
-                col_offset: span.0,
-                end_col_offset: span.1,
                 ..OpIR::default()
             };
+            source_site.apply_to_op(&mut rewritten);
+            func_ir.ops[i] = rewritten;
         }
         // Rewrite field == const -> string_split_field_eq(hay, sep, idx, const).
         for &i in &plan.eq_ops {
@@ -511,8 +511,8 @@ pub fn deforest_split_field_reads(func_ir: &mut FunctionIR) {
                 .find(|a| a.as_str() != plan.field)
                 .cloned()
                 .unwrap_or_default();
-            let span = (func_ir.ops[i].col_offset, func_ir.ops[i].end_col_offset);
-            func_ir.ops[i] = OpIR {
+            let source_site = func_ir.ops[i].source_site();
+            let mut rewritten = OpIR {
                 kind: "string_split_field_eq".to_string(),
                 args: Some(vec![
                     plan.hay.clone(),
@@ -521,25 +521,24 @@ pub fn deforest_split_field_reads(func_ir: &mut FunctionIR) {
                     const_operand,
                 ]),
                 out: func_ir.ops[i].out.clone(),
-                col_offset: span.0,
-                end_col_offset: span.1,
                 ..OpIR::default()
             };
+            source_site.apply_to_op(&mut rewritten);
+            func_ir.ops[i] = rewritten;
         }
 
         // Replace the field op with start/end/is_ascii + check_exception.
-        let span = (
-            func_ir.ops[plan.field_op_index].col_offset,
-            func_ir.ops[plan.field_op_index].end_col_offset,
-        );
+        let field_source_site = func_ir.ops[plan.field_op_index].source_site();
         let three_args = vec![plan.hay.clone(), plan.sep.clone(), plan.idx.clone()];
-        let mk = |kind: &str, out: &str| OpIR {
-            kind: kind.to_string(),
-            args: Some(three_args.clone()),
-            out: Some(out.to_string()),
-            col_offset: span.0,
-            end_col_offset: span.1,
-            ..OpIR::default()
+        let mk = |kind: &str, out: &str| {
+            let mut op = OpIR {
+                kind: kind.to_string(),
+                args: Some(three_args.clone()),
+                out: Some(out.to_string()),
+                ..OpIR::default()
+            };
+            field_source_site.apply_to_op(&mut op);
+            op
         };
         // No fresh `check_exception` is appended: the `string_split_field` we
         // replace was ALWAYS immediately followed by the frontend's own
@@ -2039,9 +2038,7 @@ fn fuse_method_dispatch_inner(func_ir: &mut FunctionIR, disabled: bool) {
         fused.out = func_ir.ops[idx].out.clone();
         fused.args = Some(fused_args);
         fused.s_value = Some(method_name);
-        // Preserve traceback span from the original call_bind.
-        fused.col_offset = func_ir.ops[idx].col_offset;
-        fused.end_col_offset = func_ir.ops[idx].end_col_offset;
+        fused.inherit_source_site_from(&func_ir.ops[idx]);
 
         replacement[idx] = Some(fused);
         remove[getattr_idx] = true;
@@ -2182,8 +2179,7 @@ fn fuse_method_dispatch_inner(func_ir: &mut FunctionIR, disabled: bool) {
         fused.out = func_ir.ops[idx].out.clone();
         fused.args = Some(fused_args);
         fused.s_value = Some(method_name);
-        fused.col_offset = func_ir.ops[idx].col_offset;
-        fused.end_col_offset = func_ir.ops[idx].end_col_offset;
+        fused.inherit_source_site_from(&func_ir.ops[idx]);
 
         replacement[idx] = Some(fused);
         remove[super_idx] = true;
@@ -6397,6 +6393,62 @@ mod tests {
         }
     }
 
+    fn assert_source_site(op: &OpIR, line: i64, col: i64, end_col: i64) {
+        assert_eq!(op.source_line, Some(line), "source_line for {}", op.kind);
+        assert_eq!(op.col_offset, Some(col), "col_offset for {}", op.kind);
+        assert_eq!(
+            op.end_col_offset,
+            Some(end_col),
+            "end_col_offset for {}",
+            op.kind
+        );
+    }
+
+    #[test]
+    fn split_field_deforestation_preserves_source_site() {
+        let mut field = op_with(
+            "string_split_field",
+            Some("field"),
+            None,
+            &["hay", "sep", "idx"],
+        );
+        field.source_line = Some(31);
+        field.col_offset = Some(2);
+        field.end_col_offset = Some(12);
+        let mut len = op_with("len", Some("n"), None, &["field"]);
+        len.source_line = Some(32);
+        len.col_offset = Some(4);
+        len.end_col_offset = Some(9);
+        let mut func = FunctionIR {
+            name: "f".to_string(),
+            params: vec![],
+            ops: vec![field, op_with("check_exception", None, None, &[]), len],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+        };
+
+        deforest_split_field_reads(&mut func);
+
+        let start = func
+            .ops
+            .iter()
+            .find(|op| op.kind == "string_split_field_start")
+            .unwrap_or_else(|| {
+                panic!(
+                    "field source op should be split into property reads: {:?}",
+                    func.ops
+                )
+            });
+        assert_source_site(start, 31, 2, 12);
+        let len_from_bounds = func
+            .ops
+            .iter()
+            .find(|op| op.kind == "string_split_field_len_from_bounds")
+            .expect("len consumer should be rewritten through bounds");
+        assert_source_site(len_from_bounds, 32, 4, 9);
+    }
+
     #[test]
     fn fuse_method_dispatch_rewrites_getattr_call_idiom() {
         // get_attr_generic_ptr(recv, "compute") -> callargs -> call_bind
@@ -6421,6 +6473,9 @@ mod tests {
             source_file: None,
             is_extern: false,
         };
+        func.ops[4].source_line = Some(44);
+        func.ops[4].col_offset = Some(6);
+        func.ops[4].end_col_offset = Some(19);
         fuse_method_dispatch(&mut func);
         // The getattr / callargs_new / callargs_push_pos / call_bind quartet
         // collapses to a single call_method_ic; check_exception + ret survive.
@@ -6437,6 +6492,7 @@ mod tests {
             ic.args.as_ref().unwrap(),
             &vec!["recv".to_string(), "x".to_string()]
         );
+        assert_source_site(ic, 44, 6, 19);
     }
 
     #[test]

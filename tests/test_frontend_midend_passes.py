@@ -70,6 +70,59 @@ def test_bound_local_serializes_for_all_absorbing_container_constructors() -> No
         assert emitted.get("bound_local") is True
 
 
+def test_source_line_serializes_and_survives_split_field_rewrites() -> None:
+    lowered = _lower_ops(
+        [
+            MoltOp(
+                kind="LINE",
+                args=[17],
+                result=MoltValue("none"),
+                source_line=17,
+                col_offset=4,
+                end_col_offset=14,
+            ),
+            MoltOp(kind="CONST", args=[1], result=MoltValue("value")),
+            MoltOp(kind="RETURN", args=[MoltValue("value")], result=MoltValue("none")),
+        ]
+    )
+
+    const_op = next(op for op in lowered if op.get("kind") == "const")
+    ret_op = next(op for op in lowered if op.get("kind") == "ret_void")
+    assert const_op["source_line"] == 17
+    assert ret_op["source_line"] == 17
+
+    fused = SimpleTIRGenerator._fuse_string_split_field_consumers_json(
+        [
+            {
+                "kind": "string_split_field",
+                "args": ["hay", "sep", "idx"],
+                "out": "field",
+                "source_line": 31,
+                "col_offset": 2,
+                "end_col_offset": 12,
+            },
+            {
+                "kind": "len",
+                "args": ["field"],
+                "out": "n",
+                "source_line": 31,
+                "col_offset": 2,
+                "end_col_offset": 12,
+            },
+        ]
+    )
+    assert fused == [
+        {
+            "kind": "string_split_field_len",
+            "args": ["hay", "sep", "idx"],
+            "out": "n",
+            "source_line": 31,
+            "col_offset": 2,
+            "end_col_offset": 12,
+        }
+    ]
+
+
 @contextmanager
 def _temp_env(name: str, value: str) -> object:
     prior = os.environ.get(name)

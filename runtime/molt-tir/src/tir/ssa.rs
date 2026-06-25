@@ -21,7 +21,7 @@ use super::op_kinds_generated::{
     kind_to_opcode_table, opcode_ssa_s_value_attr_key_table,
     simpleir_kind_preserves_original_kind_for_ssa,
 };
-use super::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
+use super::ops::{AttrDict, AttrValue, Dialect, OpCode, SourceSite, TirOp};
 use super::types::TirType;
 use super::values::{TirValue, ValueId};
 
@@ -111,6 +111,9 @@ struct SsaContext<'a> {
     iter_fuse_map: HashMap<usize, (usize, usize, String, String)>,
     /// Op indices to skip globally (fused into IterNextUnboxed).
     iter_fuse_skip: HashSet<usize>,
+    /// Source-site fact active at each SimpleIR op index, derived once from
+    /// frontend `line` markers plus per-op source fields.
+    source_sites: Vec<Option<SourceSite>>,
     /// Augmented predecessors: regular predecessors ∪ exception edges. Used
     /// for SSA-correct dominance analysis. Exception handler blocks are
     /// reached only via implicit exception edges; without folding those into
@@ -142,8 +145,47 @@ impl<'a> SsaContext<'a> {
             undef_value: None,
             iter_fuse_map: HashMap::new(),
             iter_fuse_skip: HashSet::new(),
+            source_sites: Self::build_source_sites(ops),
             aug_predecessors: vec![Vec::new(); n],
             aug_dominators: vec![None; n],
+        }
+    }
+
+    fn build_source_sites(ops: &[OpIR]) -> Vec<Option<SourceSite>> {
+        let mut sites = Vec::with_capacity(ops.len());
+        let mut active: Option<SourceSite> = None;
+        for op in ops {
+            let explicit_line = op
+                .source_line
+                .or_else(|| if op.kind == "line" { op.value } else { None });
+            let mut site = explicit_line
+                .and_then(|line| SourceSite::from_line_col(line, op.col_offset, op.end_col_offset))
+                .or(active);
+            if let (Some(current), Some(active_site)) = (&mut site, active)
+                && current.line == active_site.line
+            {
+                if current.col.is_none() {
+                    current.col = active_site.col;
+                }
+                if current.end_col.is_none() {
+                    current.end_col = active_site.end_col;
+                }
+            }
+            if op.kind == "line" && site.is_some() {
+                active = site;
+            }
+            sites.push(site);
+        }
+        sites
+    }
+
+    fn source_site_for_op(&self, op_idx: usize) -> Option<SourceSite> {
+        self.source_sites.get(op_idx).copied().flatten()
+    }
+
+    fn stamp_source_site(&self, tir_op: &mut TirOp, op_idx: usize) {
+        if let Some(site) = self.source_site_for_op(op_idx) {
+            tir_op.set_source_site(site);
         }
     }
 
@@ -766,7 +808,7 @@ impl<'a> SsaContext<'a> {
                     attrs.insert("_original_kind".into(), AttrValue::Str("iter_next".into()));
                     attrs.insert("_simple_result_0".into(), AttrValue::Str(val_var.clone()));
                     attrs.insert("_simple_result_1".into(), AttrValue::Str(done_var.clone()));
-                    let tir_op = TirOp {
+                    let mut tir_op = TirOp {
                         dialect: Dialect::Molt,
                         opcode: OpCode::IterNextUnboxed,
                         operands: vec![iter_vid],
@@ -774,6 +816,7 @@ impl<'a> SsaContext<'a> {
                         attrs,
                         source_span: None,
                     };
+                    self.stamp_source_site(&mut tir_op, op_idx);
                     // Push val and done onto their variable stacks.
                     var_stacks.entry(val_var.clone()).or_default().push(val_vid);
                     block_pushed
@@ -810,7 +853,7 @@ impl<'a> SsaContext<'a> {
                     continue;
                 }
 
-                let tir_op = self.translate_op(op, &var_stacks);
+                let tir_op = self.translate_op(op_idx, op, &var_stacks);
 
                 for (idx, var) in self.get_def_vars(op).iter().enumerate() {
                     let vid = tir_op
@@ -981,7 +1024,7 @@ impl<'a> SsaContext<'a> {
                 let op_indices = self.block_info[bid].op_indices.clone();
                 for &op_idx in &op_indices {
                     let op = &self.ops[op_idx];
-                    let tir_op = self.translate_op(op, &local_stacks);
+                    let tir_op = self.translate_op(op_idx, op, &local_stacks);
 
                     for (idx, var) in self.get_def_vars(op).iter().enumerate() {
                         let vid = tir_op
@@ -1114,7 +1157,12 @@ impl<'a> SsaContext<'a> {
     }
 
     /// Translate a single SimpleIR op into a TIR op.
-    fn translate_op(&mut self, op: &OpIR, var_stacks: &HashMap<String, Vec<ValueId>>) -> TirOp {
+    fn translate_op(
+        &mut self,
+        op_idx: usize,
+        op: &OpIR,
+        var_stacks: &HashMap<String, Vec<ValueId>>,
+    ) -> TirOp {
         // Resolve operands from args.
         // SimpleIR args can be variable names OR inline constants (e.g., "1", "3.14").
         // Variables resolve via var_stacks; constants get a fresh ConstInt/ConstFloat value.
@@ -1135,28 +1183,32 @@ impl<'a> SsaContext<'a> {
                     let vid = self.fresh_value_typed();
                     let mut attrs = super::ops::AttrDict::new();
                     attrs.insert("value".into(), super::ops::AttrValue::Int(int_val));
-                    self.pending_inline_consts.push(super::ops::TirOp {
+                    let mut const_op = super::ops::TirOp {
                         dialect: super::ops::Dialect::Molt,
                         opcode: super::ops::OpCode::ConstInt,
                         operands: vec![],
                         results: vec![vid],
                         attrs,
                         source_span: None,
-                    });
+                    };
+                    self.stamp_source_site(&mut const_op, op_idx);
+                    self.pending_inline_consts.push(const_op);
                     operands.push(vid);
                 } else if let Ok(float_val) = a.parse::<f64>() {
                     // Inline float constant
                     let vid = self.fresh_value_typed();
                     let mut attrs = super::ops::AttrDict::new();
                     attrs.insert("f_value".into(), super::ops::AttrValue::Float(float_val));
-                    self.pending_inline_consts.push(super::ops::TirOp {
+                    let mut const_op = super::ops::TirOp {
                         dialect: super::ops::Dialect::Molt,
                         opcode: super::ops::OpCode::ConstFloat,
                         operands: vec![],
                         results: vec![vid],
                         attrs,
                         source_span: None,
-                    });
+                    };
+                    self.stamp_source_site(&mut const_op, op_idx);
+                    self.pending_inline_consts.push(const_op);
                     operands.push(vid);
                 } else {
                     // Unresolved non-numeric arg — treat as string constant
@@ -1164,14 +1216,16 @@ impl<'a> SsaContext<'a> {
                     let vid = self.fresh_value_typed();
                     let mut attrs = super::ops::AttrDict::new();
                     attrs.insert("s_value".into(), super::ops::AttrValue::Str(a.clone()));
-                    self.pending_inline_consts.push(super::ops::TirOp {
+                    let mut const_op = super::ops::TirOp {
                         dialect: super::ops::Dialect::Molt,
                         opcode: super::ops::OpCode::ConstStr,
                         operands: vec![],
                         results: vec![vid],
                         attrs,
                         source_span: None,
-                    });
+                    };
+                    self.stamp_source_site(&mut const_op, op_idx);
+                    self.pending_inline_consts.push(const_op);
                     operands.push(vid);
                 }
             }
@@ -1301,16 +1355,6 @@ impl<'a> SsaContext<'a> {
                 }
             }
         }
-        // Preserve column offsets for traceback caret annotations through
-        // the TIR roundtrip.  Without this, per-op col_offset is lost when
-        // lower_to_simple reconstructs OpIR from TirOp.
-        if let Some(col) = op.col_offset {
-            attrs.insert("_col_offset".into(), AttrValue::Int(col));
-        }
-        if let Some(ecol) = op.end_col_offset {
-            attrs.insert("_end_col_offset".into(), AttrValue::Int(ecol));
-        }
-
         let opcode = kind_to_opcode(&op.kind);
 
         if std::env::var("MOLT_TRACE_SSA_IMPORT").as_deref() == Ok("1") && opcode == OpCode::Import
@@ -1370,14 +1414,16 @@ impl<'a> SsaContext<'a> {
             attrs.insert("_class".into(), AttrValue::Str(class.clone()));
         }
 
-        TirOp {
+        let mut tir_op = TirOp {
             dialect: Dialect::Molt,
             opcode,
             operands,
             results,
             attrs,
             source_span: None,
-        }
+        };
+        self.stamp_source_site(&mut tir_op, op_idx);
+        tir_op
     }
 
     /// Build the terminator for a given CFG block.
@@ -1995,6 +2041,41 @@ mod tests {
         assert_eq!(
             fallback_count, 0,
             "module_get_attr must be a first-class TIR op, not Copy[_original_kind]"
+        );
+    }
+
+    #[test]
+    fn active_line_marker_stamps_tir_source_site() {
+        let ops = vec![
+            OpIR {
+                kind: "line".to_string(),
+                value: Some(17),
+                source_line: Some(17),
+                col_offset: Some(4),
+                end_col_offset: Some(13),
+                ..OpIR::default()
+            },
+            op_val_out("const", 5, "x"),
+            op_args("ret", &["x"]),
+        ];
+        let cfg = CFG::build(&ops);
+        let output = convert_to_ssa(&cfg, &ops);
+
+        let attributed_ops: Vec<_> = output
+            .blocks
+            .iter()
+            .flat_map(|block| block.ops.iter())
+            .filter_map(|op| op.source_site().map(|site| (op.opcode, site)))
+            .collect();
+
+        assert!(
+            attributed_ops.iter().any(|(opcode, site)| {
+                *opcode == OpCode::ConstInt
+                    && site.line == 17
+                    && site.col == Some(4)
+                    && site.end_col == Some(13)
+            }),
+            "SSA lift must stamp executable ops from the active source line marker"
         );
     }
 

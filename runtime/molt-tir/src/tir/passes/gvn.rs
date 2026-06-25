@@ -409,15 +409,18 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
         if let Some(block) = func.blocks.get_mut(bid)
             && *op_idx < block.ops.len()
         {
-            let result = block.ops[*op_idx].results[0];
-            block.ops[*op_idx] = TirOp {
+            let old = block.ops[*op_idx].clone();
+            let result = old.results[0];
+            let mut replacement = TirOp {
                 dialect: Dialect::Molt,
                 opcode: OpCode::Copy,
                 operands: vec![*leader],
                 results: vec![result],
                 attrs: Default::default(),
-                source_span: block.ops[*op_idx].source_span,
+                source_span: None,
             };
+            replacement.inherit_source_from(&old);
+            block.ops[*op_idx] = replacement;
             stats.values_changed += 1;
         }
     }
