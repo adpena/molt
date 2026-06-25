@@ -6,12 +6,7 @@ import molt.cli as cli
 from molt.cli import build_pipeline
 
 _BUILD_PIPELINE_NAMES = (
-    "_execute_backend_compile",
     "_generate_snapshot_header",
-    "_prepare_backend_compile",
-    "_prepare_backend_dispatch",
-    "_prepare_backend_runtime_context",
-    "_prepare_backend_setup",
     "_prepare_non_native_build_result",
     "_replace_directory_tree_from_source",
     "_run_backend_pipeline",

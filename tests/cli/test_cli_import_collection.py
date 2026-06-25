@@ -21,6 +21,7 @@ import molt.cli as cli
 from molt.cli import commands as cli_commands
 from molt.cli import backend_binary as cli_backend_binary
 from molt.cli import backend_cache_setup as cli_backend_cache_setup
+from molt.cli import backend_compile as cli_backend_compile
 from molt.cli import build_pipeline as cli_build_pipeline
 from molt.cli import link_pipeline as cli_link_pipeline
 import pytest
@@ -168,7 +169,7 @@ def _install_fake_backend_compile(
         return subprocess.CompletedProcess(cmd, 0, b"", b"")
 
     monkeypatch.setattr(
-        cli_build_pipeline,
+        cli_backend_compile,
         "_run_subprocess_captured_to_tempfiles",
         fake_run_subprocess_captured_to_tempfiles,
     )
@@ -178,7 +179,7 @@ def _install_fake_backend_compile(
         fake_run_subprocess_captured_to_tempfiles,
     )
     monkeypatch.setattr(
-        cli_build_pipeline,
+        cli_backend_compile,
         "_initialize_runtime_artifact_state",
         fake_initialize_runtime_artifact_state,
     )
@@ -188,7 +189,7 @@ def _install_fake_backend_compile(
         fake_initialize_runtime_artifact_state,
     )
     monkeypatch.setattr(
-        cli_build_pipeline,
+        cli_backend_compile,
         "_maybe_start_native_runtime_lib_ready_async",
         lambda *args, **kwargs: None,
     )
@@ -8100,7 +8101,7 @@ def test_parallel_build_reuses_cached_lowering_across_parallel_builds(
         "_resolve_frontend_parallel_target_cost_per_worker",
         lambda: 1.0,
     )
-    monkeypatch.setattr(cli_build_pipeline, "_backend_daemon_enabled", lambda: False)
+    monkeypatch.setattr(cli_backend_compile, "_backend_daemon_enabled", lambda: False)
     monkeypatch.setattr(
         cli_frontend_pipeline,
         "_analyze_module_schedule",
@@ -8119,7 +8120,7 @@ def test_parallel_build_reuses_cached_lowering_across_parallel_builds(
             ),
         ),
     )
-    monkeypatch.setattr(cli_build_pipeline, "_backend_bin_path", lambda *args, **kwargs: backend_bin)
+    monkeypatch.setattr(cli_backend_compile, "_backend_bin_path", lambda *args, **kwargs: backend_bin)
     monkeypatch.setattr(cli_backend_binary, "_ensure_backend_binary", lambda *args, **kwargs: True)
     _install_fake_backend_compile(monkeypatch)
 
@@ -8232,7 +8233,7 @@ def test_parallel_build_reuses_dependent_cache_after_stable_interface_change(
         "_resolve_frontend_parallel_target_cost_per_worker",
         lambda: 1.0,
     )
-    monkeypatch.setattr(cli_build_pipeline, "_backend_daemon_enabled", lambda: False)
+    monkeypatch.setattr(cli_backend_compile, "_backend_daemon_enabled", lambda: False)
     monkeypatch.setattr(
         cli_frontend_pipeline,
         "_analyze_module_schedule",
@@ -8251,7 +8252,7 @@ def test_parallel_build_reuses_dependent_cache_after_stable_interface_change(
             ),
         ),
     )
-    monkeypatch.setattr(cli_build_pipeline, "_backend_bin_path", lambda *args, **kwargs: backend_bin)
+    monkeypatch.setattr(cli_backend_compile, "_backend_bin_path", lambda *args, **kwargs: backend_bin)
     monkeypatch.setattr(cli_backend_binary, "_ensure_backend_binary", lambda *args, **kwargs: True)
     _install_fake_backend_compile(monkeypatch)
 
@@ -8360,7 +8361,7 @@ def test_parallel_build_allows_scoped_type_facts(
         "_resolve_frontend_parallel_target_cost_per_worker",
         lambda: 1.0,
     )
-    monkeypatch.setattr(cli_build_pipeline, "_backend_daemon_enabled", lambda: False)
+    monkeypatch.setattr(cli_backend_compile, "_backend_daemon_enabled", lambda: False)
     monkeypatch.setattr(
         cli_frontend_pipeline,
         "_analyze_module_schedule",
@@ -8379,7 +8380,7 @@ def test_parallel_build_allows_scoped_type_facts(
             ),
         ),
     )
-    monkeypatch.setattr(cli_build_pipeline, "_backend_bin_path", lambda *args, **kwargs: backend_bin)
+    monkeypatch.setattr(cli_backend_compile, "_backend_bin_path", lambda *args, **kwargs: backend_bin)
     monkeypatch.setattr(cli_backend_binary, "_ensure_backend_binary", lambda *args, **kwargs: True)
     _install_fake_backend_compile(monkeypatch)
 
@@ -8472,8 +8473,8 @@ def test_build_one_shot_backend_compile_uses_ir_file_lease(
     monkeypatch.setattr(
         cli_frontend_execution, "_resolve_frontend_parallel_module_workers", lambda: 0
     )
-    monkeypatch.setattr(cli_build_pipeline, "_backend_daemon_enabled", lambda: False)
-    monkeypatch.setattr(cli_build_pipeline, "_backend_bin_path", lambda *args, **kwargs: backend_bin)
+    monkeypatch.setattr(cli_backend_compile, "_backend_daemon_enabled", lambda: False)
+    monkeypatch.setattr(cli_backend_compile, "_backend_bin_path", lambda *args, **kwargs: backend_bin)
     monkeypatch.setattr(cli_backend_binary, "_ensure_backend_binary", lambda *args, **kwargs: True)
     backend_inputs: list[bytes | None] = []
     backend_ir_files: list[Path] = []
@@ -8525,18 +8526,18 @@ def test_build_skips_daemon_preflight_when_socket_exists(
     monkeypatch.setattr(
         cli_frontend_execution, "_resolve_frontend_parallel_module_workers", lambda: 0
     )
-    monkeypatch.setattr(cli_build_pipeline, "_backend_daemon_enabled", lambda: True)
-    monkeypatch.setattr(cli_build_pipeline, "_backend_bin_path", lambda *args, **kwargs: backend_bin)
+    monkeypatch.setattr(cli_backend_compile, "_backend_daemon_enabled", lambda: True)
+    monkeypatch.setattr(cli_backend_compile, "_backend_bin_path", lambda *args, **kwargs: backend_bin)
     monkeypatch.setattr(cli_backend_binary, "_ensure_backend_binary", lambda *args, **kwargs: True)
     monkeypatch.setattr(
-        cli,
+        cli_backend_compile,
         "_backend_daemon_socket_path",
         lambda *args, **kwargs: daemon_socket,
     )
     # _start_backend_daemon is always called now (socket existence is
     # checked internally).  Stub it to report the daemon as ready.
     monkeypatch.setattr(
-        cli_build_pipeline,
+        cli_backend_compile,
         "_start_backend_daemon",
         lambda *args, **kwargs: True,
     )
@@ -8565,7 +8566,7 @@ def test_build_skips_daemon_preflight_when_socket_exists(
         )
 
     monkeypatch.setattr(
-        cli_build_pipeline, "_compile_with_backend_daemon", fake_compile_with_backend_daemon
+        cli_backend_compile, "_compile_with_backend_daemon", fake_compile_with_backend_daemon
     )
 
     stdout = io.StringIO()
@@ -8608,11 +8609,11 @@ def test_build_emit_obj_does_not_route_stdlib_object_env_from_helper(
     monkeypatch.setattr(
         cli_frontend_execution, "_resolve_frontend_parallel_module_workers", lambda: 0
     )
-    monkeypatch.setattr(cli_build_pipeline, "_backend_daemon_enabled", lambda: False)
-    monkeypatch.setattr(cli_build_pipeline, "_backend_bin_path", lambda *args, **kwargs: backend_bin)
+    monkeypatch.setattr(cli_backend_compile, "_backend_daemon_enabled", lambda: False)
+    monkeypatch.setattr(cli_backend_compile, "_backend_bin_path", lambda *args, **kwargs: backend_bin)
     monkeypatch.setattr(cli_backend_binary, "_ensure_backend_binary", lambda *args, **kwargs: True)
     monkeypatch.setattr(
-        cli,
+        cli_backend_cache_setup,
         "_stdlib_object_cache_path",
         lambda cache_path, cache_key: expected_stdlib_obj,
     )
@@ -10433,7 +10434,7 @@ def test_prepare_backend_setup_stages_runtime_intrinsics_before_native_cache_hit
     )
 
     monkeypatch.setattr(
-        cli_build_pipeline,
+        cli_backend_compile,
         "_initialize_runtime_artifact_state",
         lambda **kwargs: cli._RuntimeArtifactState(runtime_lib=runtime_lib),
     )
@@ -10473,12 +10474,12 @@ def test_prepare_backend_setup_stages_runtime_intrinsics_before_native_cache_hit
         lambda runtime_lib_path: (symbols_file, None),
     )
     monkeypatch.setattr(
-        cli_build_pipeline,
+        cli_backend_compile,
         "_maybe_start_native_runtime_lib_ready_async",
         lambda *args, **kwargs: None,
     )
 
-    prepared_backend_setup, backend_setup_error = cli_build_pipeline._prepare_backend_setup(
+    prepared_backend_setup, backend_setup_error = cli_backend_compile._prepare_backend_setup(
         is_rust_transpile=False,
         is_wasm=False,
         emit_mode="bin",
@@ -10532,7 +10533,7 @@ def test_prepare_backend_setup_stages_runtime_intrinsics_before_native_cache_mis
     )
 
     monkeypatch.setattr(
-        cli_build_pipeline,
+        cli_backend_compile,
         "_initialize_runtime_artifact_state",
         lambda **kwargs: cli._RuntimeArtifactState(runtime_lib=runtime_lib),
     )
@@ -10572,12 +10573,12 @@ def test_prepare_backend_setup_stages_runtime_intrinsics_before_native_cache_mis
         lambda runtime_lib_path: (symbols_file, None),
     )
     monkeypatch.setattr(
-        cli_build_pipeline,
+        cli_backend_compile,
         "_maybe_start_native_runtime_lib_ready_async",
         lambda *args, **kwargs: None,
     )
 
-    prepared_backend_setup, backend_setup_error = cli_build_pipeline._prepare_backend_setup(
+    prepared_backend_setup, backend_setup_error = cli_backend_compile._prepare_backend_setup(
         is_rust_transpile=False,
         is_wasm=False,
         emit_mode="bin",
@@ -10630,7 +10631,7 @@ def test_prepare_backend_setup_uses_runtime_intrinsic_digest_instead_of_native_a
     )
 
     monkeypatch.setattr(
-        cli_build_pipeline,
+        cli_backend_compile,
         "_initialize_runtime_artifact_state",
         lambda **kwargs: cli._RuntimeArtifactState(runtime_lib=runtime_lib),
     )
@@ -10668,7 +10669,7 @@ def test_prepare_backend_setup_uses_runtime_intrinsic_digest_instead_of_native_a
         lambda runtime_lib_path: (symbols_file, None),
     )
     monkeypatch.setattr(
-        cli_build_pipeline,
+        cli_backend_compile,
         "_maybe_start_native_runtime_lib_ready_async",
         lambda runtime_state, **kwargs: scheduled.append(
             (
@@ -10680,7 +10681,7 @@ def test_prepare_backend_setup_uses_runtime_intrinsic_digest_instead_of_native_a
         ),
     )
 
-    prepared_backend_setup, backend_setup_error = cli_build_pipeline._prepare_backend_setup(
+    prepared_backend_setup, backend_setup_error = cli_backend_compile._prepare_backend_setup(
         is_rust_transpile=False,
         is_wasm=False,
         emit_mode="bin",
@@ -10734,12 +10735,12 @@ def test_prepare_backend_setup_stages_runtime_intrinsics_for_object_emit_without
     )
 
     monkeypatch.setattr(
-        cli_build_pipeline,
+        cli_backend_compile,
         "_initialize_runtime_artifact_state",
         lambda **kwargs: cli._RuntimeArtifactState(runtime_lib=runtime_lib),
     )
     monkeypatch.setattr(
-        cli_build_pipeline,
+        cli_backend_cache_setup,
         "_prepare_backend_cache_setup",
         lambda **kwargs: cache_setup_kwargs.append(dict(kwargs))
         or cli._BackendCacheSetup(
@@ -10772,12 +10773,12 @@ def test_prepare_backend_setup_stages_runtime_intrinsics_for_object_emit_without
         lambda runtime_lib_path: (symbols_file, None),
     )
     monkeypatch.setattr(
-        cli_build_pipeline,
+        cli_backend_compile,
         "_maybe_start_native_runtime_lib_ready_async",
         lambda runtime_state, **kwargs: scheduled.append(runtime_state.runtime_lib),
     )
 
-    prepared_backend_setup, backend_setup_error = cli_build_pipeline._prepare_backend_setup(
+    prepared_backend_setup, backend_setup_error = cli_backend_compile._prepare_backend_setup(
         is_rust_transpile=False,
         is_wasm=False,
         emit_mode="obj",
@@ -10942,7 +10943,7 @@ def test_prepare_backend_runtime_context_passes_resolved_modules_to_wasm_runtime
     captured: list[tuple[bool, frozenset[str]]] = []
 
     monkeypatch.setattr(
-        cli,
+        cli_backend_compile,
         "_ensure_runtime_wasm_artifact",
         lambda runtime_state, *, reloc, **kwargs: (
             captured.append(
@@ -10952,7 +10953,7 @@ def test_prepare_backend_runtime_context_passes_resolved_modules_to_wasm_runtime
         ),
     )
 
-    runtime_context, failure = cli_build_pipeline._prepare_backend_runtime_context(
+    runtime_context, failure = cli_backend_compile._prepare_backend_runtime_context(
         prepared_backend_setup=prepared_backend_setup,
         is_wasm_freestanding=False,
         json_output=True,
@@ -10988,22 +10989,24 @@ def test_prepare_backend_dispatch_prefers_reloc_runtime_for_wasm_layout_probe(
     monkeypatch.delenv("MOLT_WASM_DATA_BASE", raising=False)
     monkeypatch.delenv("MOLT_WASM_TABLE_BASE", raising=False)
     monkeypatch.delenv("MOLT_WASM_SPLIT_RUNTIME_RUNTIME_TABLE_MIN", raising=False)
-    monkeypatch.setattr(cli_build_pipeline, "_backend_bin_path", lambda *args, **kwargs: backend_bin)
+    monkeypatch.setattr(cli_backend_compile, "_backend_bin_path", lambda *args, **kwargs: backend_bin)
     monkeypatch.setattr(cli_backend_binary, "_ensure_backend_binary", lambda *args, **kwargs: True)
-    monkeypatch.setattr(cli_build_pipeline, "_backend_daemon_enabled", lambda: False)
-    monkeypatch.setattr(cli, "wasm_runtime_required_import_names", lambda modules: ())
+    monkeypatch.setattr(cli_backend_compile, "_backend_daemon_enabled", lambda: False)
     monkeypatch.setattr(
-        cli_build_pipeline,
+        cli_backend_compile, "wasm_runtime_required_import_names", lambda modules: ()
+    )
+    monkeypatch.setattr(
+        cli_backend_compile,
         "_read_wasm_data_end",
         lambda path: 4096 if path == runtime_reloc_wasm else None,
     )
     monkeypatch.setattr(
-        cli_build_pipeline,
+        cli_backend_compile,
         "_read_wasm_memory_min_bytes",
         lambda path: 8192 if path == runtime_reloc_wasm else None,
     )
     monkeypatch.setattr(
-        cli_build_pipeline,
+        cli_backend_compile,
         "_read_wasm_table_min",
         lambda path: 1234 if path == runtime_reloc_wasm else None,
     )
@@ -11017,7 +11020,7 @@ def test_prepare_backend_dispatch_prefers_reloc_runtime_for_wasm_layout_probe(
         runtime_reloc_wasm.write_bytes(b"\0asm\x01\0\0\0")
         return True
 
-    prepared, err = cli_build_pipeline._prepare_backend_dispatch(
+    prepared, err = cli_backend_compile._prepare_backend_dispatch(
         is_rust_transpile=False,
         is_luau_transpile=False,
         is_wasm=True,
@@ -11067,14 +11070,16 @@ def test_prepare_backend_dispatch_linked_table_base_uses_shared_runtime_prefix(
     monkeypatch.delenv("MOLT_WASM_DATA_BASE", raising=False)
     monkeypatch.delenv("MOLT_WASM_TABLE_BASE", raising=False)
     monkeypatch.delenv("MOLT_WASM_SPLIT_RUNTIME_RUNTIME_TABLE_MIN", raising=False)
-    monkeypatch.setattr(cli_build_pipeline, "_backend_bin_path", lambda *args, **kwargs: backend_bin)
+    monkeypatch.setattr(cli_backend_compile, "_backend_bin_path", lambda *args, **kwargs: backend_bin)
     monkeypatch.setattr(cli_backend_binary, "_ensure_backend_binary", lambda *args, **kwargs: True)
-    monkeypatch.setattr(cli_build_pipeline, "_backend_daemon_enabled", lambda: False)
-    monkeypatch.setattr(cli, "wasm_runtime_required_import_names", lambda modules: ())
-    monkeypatch.setattr(cli_build_pipeline, "_read_wasm_data_end", lambda _path: 4096)
-    monkeypatch.setattr(cli_build_pipeline, "_read_wasm_memory_min_bytes", lambda _path: 8192)
+    monkeypatch.setattr(cli_backend_compile, "_backend_daemon_enabled", lambda: False)
     monkeypatch.setattr(
-        cli_build_pipeline,
+        cli_backend_compile, "wasm_runtime_required_import_names", lambda modules: ()
+    )
+    monkeypatch.setattr(cli_backend_compile, "_read_wasm_data_end", lambda _path: 4096)
+    monkeypatch.setattr(cli_backend_compile, "_read_wasm_memory_min_bytes", lambda _path: 8192)
+    monkeypatch.setattr(
+        cli_backend_compile,
         "_read_wasm_table_min",
         lambda path: 3074 if path == runtime_reloc_wasm else 3867,
     )
@@ -11088,7 +11093,7 @@ def test_prepare_backend_dispatch_linked_table_base_uses_shared_runtime_prefix(
         calls.append(("reloc", frozenset(required) if required else None))
         return True
 
-    prepared, err = cli_build_pipeline._prepare_backend_dispatch(
+    prepared, err = cli_backend_compile._prepare_backend_dispatch(
         is_rust_transpile=False,
         is_luau_transpile=False,
         is_wasm=True,
@@ -11137,14 +11142,16 @@ def test_prepare_backend_dispatch_uses_reloc_runtime_for_split_runtime_table_min
     monkeypatch.delenv("MOLT_WASM_DATA_BASE", raising=False)
     monkeypatch.delenv("MOLT_WASM_TABLE_BASE", raising=False)
     monkeypatch.delenv("MOLT_WASM_SPLIT_RUNTIME_RUNTIME_TABLE_MIN", raising=False)
-    monkeypatch.setattr(cli_build_pipeline, "_backend_bin_path", lambda *args, **kwargs: backend_bin)
+    monkeypatch.setattr(cli_backend_compile, "_backend_bin_path", lambda *args, **kwargs: backend_bin)
     monkeypatch.setattr(cli_backend_binary, "_ensure_backend_binary", lambda *args, **kwargs: True)
-    monkeypatch.setattr(cli_build_pipeline, "_backend_daemon_enabled", lambda: False)
-    monkeypatch.setattr(cli, "wasm_runtime_required_import_names", lambda modules: ())
-    monkeypatch.setattr(cli_build_pipeline, "_read_wasm_data_end", lambda path: None)
-    monkeypatch.setattr(cli_build_pipeline, "_read_wasm_memory_min_bytes", lambda path: None)
+    monkeypatch.setattr(cli_backend_compile, "_backend_daemon_enabled", lambda: False)
     monkeypatch.setattr(
-        cli_build_pipeline,
+        cli_backend_compile, "wasm_runtime_required_import_names", lambda modules: ()
+    )
+    monkeypatch.setattr(cli_backend_compile, "_read_wasm_data_end", lambda path: None)
+    monkeypatch.setattr(cli_backend_compile, "_read_wasm_memory_min_bytes", lambda path: None)
+    monkeypatch.setattr(
+        cli_backend_compile,
         "_read_wasm_table_min",
         lambda path: 1234 if path == runtime_reloc_wasm else None,
     )
@@ -11157,7 +11164,7 @@ def test_prepare_backend_dispatch_uses_reloc_runtime_for_split_runtime_table_min
         calls.append(("reloc", frozenset(required) if required else None))
         return True
 
-    prepared, err = cli_build_pipeline._prepare_backend_dispatch(
+    prepared, err = cli_backend_compile._prepare_backend_dispatch(
         is_rust_transpile=False,
         is_luau_transpile=False,
         is_wasm=True,
@@ -12557,9 +12564,9 @@ def test_run_backend_pipeline_defers_native_runtime_readiness_until_after_codege
             None,
         )
 
-    monkeypatch.setattr(cli_build_pipeline, "_prepare_backend_setup", fake_prepare_backend_setup)
+    monkeypatch.setattr(cli_backend_compile, "_prepare_backend_setup", fake_prepare_backend_setup)
     monkeypatch.setattr(
-        cli_build_pipeline,
+        cli_backend_compile,
         "_prepare_backend_runtime_context",
         lambda **kwargs: (
             cli._PreparedBackendRuntimeContext(
@@ -12582,7 +12589,7 @@ def test_run_backend_pipeline_defers_native_runtime_readiness_until_after_codege
         ),
     )
     monkeypatch.setattr(
-        cli_build_pipeline,
+        cli_backend_compile,
         "_prepare_backend_compile",
         lambda **kwargs: (
             call_order.append("backend_compile")
@@ -12952,17 +12959,17 @@ def test_build_rust_target_uses_rust_backend_feature_and_skips_daemon(
     monkeypatch.setattr(
         cli_frontend_execution, "_resolve_frontend_parallel_module_workers", lambda: 0
     )
-    monkeypatch.setattr(cli_build_pipeline, "_backend_daemon_enabled", lambda: True)
-    monkeypatch.setattr(cli_build_pipeline, "_backend_bin_path", lambda *args, **kwargs: backend_bin)
+    monkeypatch.setattr(cli_backend_compile, "_backend_daemon_enabled", lambda: True)
+    monkeypatch.setattr(cli_backend_compile, "_backend_bin_path", lambda *args, **kwargs: backend_bin)
     monkeypatch.setattr(
-        cli_build_pipeline,
+        cli_backend_compile,
         "_start_backend_daemon",
         lambda *args, **kwargs: (_ for _ in ()).throw(
             AssertionError("rust target should not start backend daemon")
         ),
     )
     monkeypatch.setattr(
-        cli_build_pipeline,
+        cli_backend_compile,
         "_compile_with_backend_daemon",
         lambda *args, **kwargs: (_ for _ in ()).throw(
             AssertionError("rust target should not use backend daemon compile")
@@ -13030,7 +13037,7 @@ def test_build_rust_target_uses_rust_backend_feature_and_skips_daemon(
         fake_backend_compile,
     )
     monkeypatch.setattr(
-        cli_build_pipeline,
+        cli_backend_compile,
         "_run_subprocess_captured_to_tempfiles",
         fake_backend_compile,
     )
@@ -13097,17 +13104,17 @@ def test_build_release_rust_target_uses_release_fast_backend_profile_by_default(
     monkeypatch.setattr(
         cli_frontend_execution, "_resolve_frontend_parallel_module_workers", lambda: 0
     )
-    monkeypatch.setattr(cli_build_pipeline, "_backend_daemon_enabled", lambda: True)
-    monkeypatch.setattr(cli_build_pipeline, "_backend_bin_path", lambda *args, **kwargs: backend_bin)
+    monkeypatch.setattr(cli_backend_compile, "_backend_daemon_enabled", lambda: True)
+    monkeypatch.setattr(cli_backend_compile, "_backend_bin_path", lambda *args, **kwargs: backend_bin)
     monkeypatch.setattr(
-        cli_build_pipeline,
+        cli_backend_compile,
         "_start_backend_daemon",
         lambda *args, **kwargs: (_ for _ in ()).throw(
             AssertionError("rust target should not start backend daemon")
         ),
     )
     monkeypatch.setattr(
-        cli_build_pipeline,
+        cli_backend_compile,
         "_compile_with_backend_daemon",
         lambda *args, **kwargs: (_ for _ in ()).throw(
             AssertionError("rust target should not use backend daemon compile")
@@ -13163,7 +13170,7 @@ def test_build_release_rust_target_uses_release_fast_backend_profile_by_default(
         fake_backend_compile,
     )
     monkeypatch.setattr(
-        cli_build_pipeline,
+        cli_backend_compile,
         "_run_subprocess_captured_to_tempfiles",
         fake_backend_compile,
     )
@@ -14391,12 +14398,12 @@ def test_native_backend_compile_routes_stdlib_object_env(
         return subprocess.CompletedProcess(cmd, 0, b"", b"")
 
     monkeypatch.setattr(
-        cli,
+        cli_backend_compile,
         "_run_subprocess_captured_to_tempfiles",
         fake_run_subprocess_captured_to_tempfiles,
     )
 
-    result, error = cli_build_pipeline._execute_backend_compile(
+    result, error = cli_backend_compile._execute_backend_compile(
         cache=False,
         cache_path=None,
         function_cache_path=None,
@@ -14482,12 +14489,12 @@ def test_native_backend_compile_overrides_stale_ambient_partition_env(
         return subprocess.CompletedProcess(cmd, 0, b"", b"")
 
     monkeypatch.setattr(
-        cli,
+        cli_backend_compile,
         "_run_subprocess_captured_to_tempfiles",
         fake_run_subprocess_captured_to_tempfiles,
     )
 
-    result, error = cli_build_pipeline._execute_backend_compile(
+    result, error = cli_backend_compile._execute_backend_compile(
         cache=False,
         cache_path=None,
         function_cache_path=None,
@@ -14573,12 +14580,12 @@ def test_native_backend_compile_clears_stale_partition_env_without_split(
         return subprocess.CompletedProcess(cmd, 0, b"", b"")
 
     monkeypatch.setattr(
-        cli,
+        cli_backend_compile,
         "_run_subprocess_captured_to_tempfiles",
         fake_run_subprocess_captured_to_tempfiles,
     )
 
-    result, error = cli_build_pipeline._execute_backend_compile(
+    result, error = cli_backend_compile._execute_backend_compile(
         cache=False,
         cache_path=None,
         function_cache_path=None,
@@ -14660,12 +14667,12 @@ def test_backend_compile_stages_one_shot_output_into_cache(
         return subprocess.CompletedProcess(cmd, 0, b"", b"")
 
     monkeypatch.setattr(
-        cli,
+        cli_backend_compile,
         "_run_subprocess_captured_to_tempfiles",
         fake_run_subprocess_captured_to_tempfiles,
     )
 
-    result, error = cli_build_pipeline._execute_backend_compile(
+    result, error = cli_backend_compile._execute_backend_compile(
         cache=True,
         cache_path=cache_path,
         function_cache_path=function_cache_path,
@@ -14769,13 +14776,10 @@ def test_execute_backend_compile_defers_full_daemon_request_encode_until_probe_m
         )
 
     monkeypatch.setattr(
-        cli_build_pipeline, "_backend_daemon_compile_request_bytes", fake_request_bytes
-    )
-    monkeypatch.setattr(
-        cli_build_pipeline, "_compile_with_backend_daemon", fake_compile_with_backend_daemon
+        cli_backend_compile, "_compile_with_backend_daemon", fake_compile_with_backend_daemon
     )
 
-    result, error = cli_build_pipeline._execute_backend_compile(
+    result, error = cli_backend_compile._execute_backend_compile(
         cache=True,
         cache_path=cache_path,
         function_cache_path=function_cache_path,
@@ -14895,14 +14899,11 @@ def test_execute_backend_compile_keeps_probe_path_across_daemon_restart(
         return True
 
     monkeypatch.setattr(
-        cli_build_pipeline, "_backend_daemon_compile_request_bytes", fake_request_bytes
+        cli_backend_compile, "_compile_with_backend_daemon", fake_compile_with_backend_daemon
     )
-    monkeypatch.setattr(
-        cli_build_pipeline, "_compile_with_backend_daemon", fake_compile_with_backend_daemon
-    )
-    monkeypatch.setattr(cli_build_pipeline, "_start_backend_daemon", fake_start_backend_daemon)
+    monkeypatch.setattr(cli_backend_compile, "_start_backend_daemon", fake_start_backend_daemon)
 
-    result, error = cli_build_pipeline._execute_backend_compile(
+    result, error = cli_backend_compile._execute_backend_compile(
         cache=True,
         cache_path=cache_path,
         function_cache_path=function_cache_path,
@@ -15009,16 +15010,16 @@ def test_execute_backend_compile_does_not_retry_after_full_daemon_request(
         return subprocess.CompletedProcess([], 0, b"", b"")
 
     monkeypatch.setattr(
-        cli_build_pipeline, "_compile_with_backend_daemon", fake_compile_with_backend_daemon
+        cli_backend_compile, "_compile_with_backend_daemon", fake_compile_with_backend_daemon
     )
-    monkeypatch.setattr(cli_build_pipeline, "_start_backend_daemon", fake_start_backend_daemon)
+    monkeypatch.setattr(cli_backend_compile, "_start_backend_daemon", fake_start_backend_daemon)
     monkeypatch.setattr(
-        cli,
+        cli_backend_compile,
         "_run_subprocess_captured_to_tempfiles",
         fake_run_subprocess_captured_to_tempfiles,
     )
 
-    result, error = cli_build_pipeline._execute_backend_compile(
+    result, error = cli_backend_compile._execute_backend_compile(
         cache=False,
         cache_path=None,
         function_cache_path=None,
@@ -15111,15 +15112,15 @@ def test_execute_backend_compile_fails_closed_after_daemon_failure(
         return subprocess.CompletedProcess([], 0, b"", b"")
 
     monkeypatch.setattr(
-        cli_build_pipeline, "_compile_with_backend_daemon", fake_compile_with_backend_daemon
+        cli_backend_compile, "_compile_with_backend_daemon", fake_compile_with_backend_daemon
     )
     monkeypatch.setattr(
-        cli,
+        cli_backend_compile,
         "_run_subprocess_captured_to_tempfiles",
         fake_run_subprocess_captured_to_tempfiles,
     )
 
-    result, error = cli_build_pipeline._execute_backend_compile(
+    result, error = cli_backend_compile._execute_backend_compile(
         cache=False,
         cache_path=None,
         function_cache_path=None,
@@ -15189,7 +15190,7 @@ def test_execute_backend_compile_verbose_prints_only_fresh_daemon_log(
     log_path.write_text("old stdlib compile line\n", encoding="utf-8")
 
     monkeypatch.setattr(
-        cli, "_backend_daemon_log_path", lambda *args, **kwargs: log_path
+        cli_backend_compile, "_backend_daemon_log_path", lambda *args, **kwargs: log_path
     )
 
     def fake_compile_with_backend_daemon(
@@ -15213,10 +15214,10 @@ def test_execute_backend_compile_verbose_prints_only_fresh_daemon_log(
         )
 
     monkeypatch.setattr(
-        cli_build_pipeline, "_compile_with_backend_daemon", fake_compile_with_backend_daemon
+        cli_backend_compile, "_compile_with_backend_daemon", fake_compile_with_backend_daemon
     )
 
-    result, error = cli_build_pipeline._execute_backend_compile(
+    result, error = cli_backend_compile._execute_backend_compile(
         cache=False,
         cache_path=None,
         function_cache_path=None,
@@ -15283,7 +15284,7 @@ def test_execute_backend_compile_rejects_unsynced_daemon_output_skip(
     output_artifact.write_bytes(b"stale")
 
     monkeypatch.setattr(
-        cli_build_pipeline,
+        cli_backend_compile,
         "_compile_with_backend_daemon",
         lambda socket_path, **kwargs: cli._BackendDaemonCompileResult(
             True,
@@ -15296,7 +15297,7 @@ def test_execute_backend_compile_rejects_unsynced_daemon_output_skip(
         ),
     )
 
-    result, error = cli_build_pipeline._execute_backend_compile(
+    result, error = cli_backend_compile._execute_backend_compile(
         cache=True,
         cache_path=project_root / ".molt_cache" / "cache-key.o",
         function_cache_path=None,

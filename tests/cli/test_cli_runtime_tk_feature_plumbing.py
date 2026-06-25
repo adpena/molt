@@ -10,6 +10,7 @@ import molt.cli as cli
 from molt.cli import commands as cli_commands
 from molt.cli import backend_binary as cli_backend_binary
 from molt.cli import backend_cache_setup as cli_backend_cache_setup
+from molt.cli import backend_compile as cli_backend_compile
 from molt.cli import build_pipeline as cli_build_pipeline
 from molt.cli import link_pipeline as cli_link_pipeline
 
@@ -869,7 +870,7 @@ def test_prepare_backend_setup_warms_native_runtime_with_requested_stdlib_profil
     warmed_profiles: list[str | None] = []
 
     monkeypatch.setattr(
-        cli_build_pipeline,
+        cli_backend_compile,
         "_initialize_runtime_artifact_state",
         lambda *args, **kwargs: runtime_state,
         raising=True,
@@ -881,19 +882,19 @@ def test_prepare_backend_setup_warms_native_runtime_with_requested_stdlib_profil
         raising=True,
     )
     monkeypatch.setattr(
-        cli_build_pipeline,
+        cli_backend_compile,
         "_stage_runtime_intrinsic_symbols_for_native_codegen",
         lambda *args, **kwargs: ("", None),
         raising=True,
     )
     monkeypatch.setattr(
-        cli_build_pipeline,
+        cli_backend_compile,
         "_maybe_start_native_runtime_lib_ready_async",
         lambda *args, **kwargs: warmed_profiles.append(kwargs["stdlib_profile"]),
         raising=True,
     )
 
-    prepared, err = cli_build_pipeline._prepare_backend_setup(
+    prepared, err = cli_backend_compile._prepare_backend_setup(
         is_rust_transpile=False,
         is_luau_transpile=False,
         is_wasm=False,
