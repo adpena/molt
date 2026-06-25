@@ -128,7 +128,7 @@ pub(in crate::native_backend::function_compiler) fn handle_parse_op(
                 seal_block_once(&mut *builder, &mut *sealed_blocks, ok_block);
                 let ok_res = builder
                     .ins()
-                    .load(types::I64, MemFlags::trusted(), out_ptr, 0);
+                    .load(types::I64, MemFlagsData::trusted(), out_ptr, 0);
                 jump_block(&mut *builder, merge_block, &[ok_res]);
 
                 switch_to_block_materialized(&mut *builder, err_block);
@@ -258,7 +258,7 @@ pub(in crate::native_backend::function_compiler) fn handle_parse_op(
                 seal_block_once(&mut *builder, &mut *sealed_blocks, ok_block);
                 let ok_res = builder
                     .ins()
-                    .load(types::I64, MemFlags::trusted(), out_ptr, 0);
+                    .load(types::I64, MemFlagsData::trusted(), out_ptr, 0);
                 jump_block(&mut *builder, merge_block, &[ok_res]);
 
                 switch_to_block_materialized(&mut *builder, err_block);
@@ -388,7 +388,7 @@ pub(in crate::native_backend::function_compiler) fn handle_parse_op(
                 seal_block_once(&mut *builder, &mut *sealed_blocks, ok_block);
                 let ok_res = builder
                     .ins()
-                    .load(types::I64, MemFlags::trusted(), out_ptr, 0);
+                    .load(types::I64, MemFlagsData::trusted(), out_ptr, 0);
                 jump_block(&mut *builder, merge_block, &[ok_res]);
 
                 switch_to_block_materialized(&mut *builder, err_block);

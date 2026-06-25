@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=80", "wheel"]
+requires = ["setuptools>=80.9.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -10,10 +10,10 @@ readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.12, <3.15"
 dependencies = [
-    "click>=8.1.7",
-    "packaging>=25.0",
-    "rich>=13.7.0",
-    "ty>=0.0.8",
+    "click>=8.4.2",
+    "packaging>=26.2",
+    "rich>=15.0.0",
+    "ty>=0.0.53",
 ]
 
 [project.scripts]
@@ -161,28 +161,28 @@ bench = [
     "pyperformance==1.14.0",
 ]
 dev = [
-    "cbor2>=5.8.0",
-    "msgpack>=1.1.2",
-    "pre-commit>=4.5.1",
-    "pytest>=9.0.3",
-    "ruff>=0.14.10",
-    "ty>=0.0.8",
+    "cbor2>=6.1.2",
+    "msgpack>=1.2.1",
+    "pre-commit>=4.6.0",
+    "pytest>=9.1.1",
+    "ruff>=0.15.19",
+    "ty>=0.0.53",
     "setuptools>=80.9.0",
     "django>=6.0.6",
-    "idna>=3.15",
+    "idna>=3.18",
     "stdlib-list>=0.12.0",
-    "coverage>=7.13.1",
-    "pip-audit>=2.10.0",
-    "py-spy>=0.4.1",
-    "hypothesis>=6.100.0",
+    "coverage>=7.14.3",
+    "pip-audit>=2.10.1",
+    "py-spy>=0.4.2",
+    "hypothesis>=6.155.7",
     "urllib3>=2.7.0",
     "pytest-xdist>=3.8.0",
 ]
 demo = [
     "django>=6.0.6",
-    "gunicorn>=23.0.0",
-    "msgpack>=1.1.2",
-    "uvicorn>=0.34.0",
+    "gunicorn>=26.0.0",
+    "msgpack>=1.2.1",
+    "uvicorn>=0.49.0",
 ]
 
 [tool.setuptools]
@@ -190,7 +190,7 @@ packages = {find = {where = ["src"], exclude = ["tests*"]}}
 
 [project.optional-dependencies]
 accel = [
-    "msgpack>=1.0.0",
+    "msgpack>=1.2.1",
 ]
 
 [tool.setuptools.package-data]

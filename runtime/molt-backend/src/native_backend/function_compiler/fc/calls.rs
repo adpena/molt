@@ -912,7 +912,7 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
             let func_ptr = builder.inst_results(resolve_call)[0];
             let fn_ptr = builder
                 .ins()
-                .load(types::I64, MemFlags::trusted(), func_ptr, 0);
+                .load(types::I64, MemFlagsData::trusted(), func_ptr, 0);
             let matches = builder.ins().icmp(IntCC::Equal, fn_ptr, expected_addr);
             let then_block = builder.create_block();
             let else_block = builder.create_block();
@@ -1137,7 +1137,7 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
                 let ptr_val = builder.ins().sshr(shifted, shift16);
                 let type_id = builder
                     .ins()
-                    .load(types::I32, MemFlags::trusted(), ptr_val, -16i32);
+                    .load(types::I32, MemFlagsData::trusted(), ptr_val, -16i32);
                 let expected_type = builder.ins().iconst(types::I32, 221);
                 let type_ok = builder.ins().icmp(IntCC::Equal, type_id, expected_type);
                 let closure_check_block = builder.create_block();
@@ -1156,7 +1156,7 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
                 let closure_bits_v =
                     builder
                         .ins()
-                        .load(types::I64, MemFlags::trusted(), ptr_val, 24i32);
+                        .load(types::I64, MemFlagsData::trusted(), ptr_val, 24i32);
                 let zero = builder.ins().iconst(types::I64, 0);
                 let no_closure = builder.ins().icmp(IntCC::Equal, closure_bits_v, zero);
                 let trampoline_check_block = builder.create_block();
@@ -1177,7 +1177,7 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
                 let tramp_ptr_v =
                     builder
                         .ins()
-                        .load(types::I64, MemFlags::trusted(), ptr_val, 40i32);
+                        .load(types::I64, MemFlagsData::trusted(), ptr_val, 40i32);
                 let no_trampoline = builder.ins().icmp(IntCC::Equal, tramp_ptr_v, zero);
                 let binder_check_block = builder.create_block();
                 let arity_check_block = builder.create_block();
@@ -1223,7 +1223,7 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
                 seal_block_once(&mut *builder, &mut *sealed_blocks, arity_check_block);
                 let arity = builder
                     .ins()
-                    .load(types::I64, MemFlags::trusted(), ptr_val, 8i32);
+                    .load(types::I64, MemFlagsData::trusted(), ptr_val, 8i32);
                 let expected_arity = builder.ins().iconst(types::I64, nargs as i64);
                 let arity_ok = builder.ins().icmp(IntCC::Equal, arity, expected_arity);
                 let direct_call_block = builder.create_block();
@@ -1241,7 +1241,7 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
                 seal_block_once(&mut *builder, &mut *sealed_blocks, direct_call_block);
                 let fn_ptr_v = builder
                     .ins()
-                    .load(types::I64, MemFlags::trusted(), ptr_val, 0i32);
+                    .load(types::I64, MemFlagsData::trusted(), ptr_val, 0i32);
                 let guard_enter = import_func_ref(
                     &mut *module,
                     &mut *import_ids,

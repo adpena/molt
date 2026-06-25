@@ -191,7 +191,7 @@ libc = "0.2"
 unicode-ident = "1.0"
 unicode-casefold = "0.2"
 wtf8 = "0.1"
-unicode_names2 = { version = "2.0", optional = true }
+unicode_names2 = { version = "3.1", optional = true }
 
 # Crypto (always-on subset used directly by molt-runtime internals)
 # Full crypto implementation lives in molt-runtime-crypto, gated by stdlib_crypto.

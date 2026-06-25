@@ -165,10 +165,10 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                                 let storage_ptr =
                                     builder
                                         .ins()
-                                        .load(types::I64, MemFlags::trusted(), obj_ptr, 0);
+                                        .load(types::I64, MemFlagsData::trusted(), obj_ptr, 0);
                                 let dp = builder.ins().load(
                                     types::I64,
-                                    MemFlags::trusted(),
+                                    MemFlagsData::trusted(),
                                     storage_ptr,
                                     LIST_INT_STORAGE_DATA_OFFSET,
                                 );
@@ -178,7 +178,7 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                                 // Also cache len
                                 let len = builder.ins().load(
                                     types::I64,
-                                    MemFlags::trusted(),
+                                    MemFlagsData::trusted(),
                                     storage_ptr,
                                     LIST_INT_STORAGE_LEN_OFFSET,
                                 );
@@ -197,10 +197,10 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                                 let storage_ptr =
                                     builder
                                         .ins()
-                                        .load(types::I64, MemFlags::trusted(), obj_ptr, 0);
+                                        .load(types::I64, MemFlagsData::trusted(), obj_ptr, 0);
                                 let len = builder.ins().load(
                                     types::I64,
-                                    MemFlags::trusted(),
+                                    MemFlagsData::trusted(),
                                     storage_ptr,
                                     LIST_INT_STORAGE_LEN_OFFSET,
                                 );
@@ -220,7 +220,7 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                             let raw_result =
                                 builder
                                     .ins()
-                                    .load(types::I64, MemFlags::trusted(), elem_addr, 0);
+                                    .load(types::I64, MemFlagsData::trusted(), elem_addr, 0);
                             let boxed_res = box_int_value(&mut *builder, raw_result, nbc);
                             if let Some(out__) = op.out.as_ref() {
                                 def_var_named(&mut *builder, vars, out__, boxed_res);
@@ -250,7 +250,7 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                             let raw_result =
                                 builder
                                     .ins()
-                                    .load(types::I64, MemFlags::trusted(), elem_addr, 0);
+                                    .load(types::I64, MemFlagsData::trusted(), elem_addr, 0);
                             let boxed_res = box_int_value(&mut *builder, raw_result, nbc);
                             jump_block(&mut *builder, merge_block, &[boxed_res, raw_result]);
 
@@ -352,7 +352,7 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                                 let storage_ptr =
                                     builder
                                         .ins()
-                                        .load(types::I64, MemFlags::trusted(), obj_ptr, 0);
+                                        .load(types::I64, MemFlagsData::trusted(), obj_ptr, 0);
                                 if getitem_out_is_bool {
                                     // Proven bool list -- skip type_id check, use
                                     // ListBoolStorage layout (repr(C): data@0, len@8).
@@ -362,13 +362,13 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                                     list_is_bool_cache.insert(args[0].clone(), ibvar);
                                     let dp = builder.ins().load(
                                         types::I64,
-                                        MemFlags::trusted(),
+                                        MemFlagsData::trusted(),
                                         storage_ptr,
                                         0i32,
                                     );
                                     let len = builder.ins().load(
                                         types::I64,
-                                        MemFlags::trusted(),
+                                        MemFlagsData::trusted(),
                                         storage_ptr,
                                         8i32,
                                     );
@@ -388,13 +388,13 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                                     list_is_bool_cache.insert(args[0].clone(), ibvar);
                                     let dp = builder.ins().load(
                                         types::I64,
-                                        MemFlags::trusted(),
+                                        MemFlagsData::trusted(),
                                         storage_ptr,
                                         vec_layout.data_offset,
                                     );
                                     let len = builder.ins().load(
                                         types::I64,
-                                        MemFlags::trusted(),
+                                        MemFlagsData::trusted(),
                                         storage_ptr,
                                         vec_layout.len_offset,
                                     );
@@ -409,7 +409,7 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                                     // Unknown element type -- load type_id and both layouts.
                                     let tid = builder.ins().load(
                                         types::I32,
-                                        MemFlags::trusted(),
+                                        MemFlagsData::trusted(),
                                         obj_ptr,
                                         HEADER_TYPE_ID_OFFSET,
                                     );
@@ -421,25 +421,25 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                                     list_is_bool_cache.insert(args[0].clone(), ibvar);
                                     let dp_bool = builder.ins().load(
                                         types::I64,
-                                        MemFlags::trusted(),
+                                        MemFlagsData::trusted(),
                                         storage_ptr,
                                         0i32,
                                     );
                                     let len_bool = builder.ins().load(
                                         types::I64,
-                                        MemFlags::trusted(),
+                                        MemFlagsData::trusted(),
                                         storage_ptr,
                                         8i32,
                                     );
                                     let dp_vec = builder.ins().load(
                                         types::I64,
-                                        MemFlags::trusted(),
+                                        MemFlagsData::trusted(),
                                         storage_ptr,
                                         vec_layout.data_offset,
                                     );
                                     let len_vec = builder.ins().load(
                                         types::I64,
-                                        MemFlags::trusted(),
+                                        MemFlagsData::trusted(),
                                         storage_ptr,
                                         vec_layout.len_offset,
                                     );
@@ -464,14 +464,14 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                                 let storage_ptr =
                                     builder
                                         .ins()
-                                        .load(types::I64, MemFlags::trusted(), obj_ptr, 0);
+                                        .load(types::I64, MemFlagsData::trusted(), obj_ptr, 0);
                                 // Use is_bool_cache if available, otherwise re-probe.
                                 let is_bool = if let Some(&ibv) = list_is_bool_cache.get(&args[0]) {
                                     builder.use_var(ibv)
                                 } else {
                                     let tid = builder.ins().load(
                                         types::I32,
-                                        MemFlags::trusted(),
+                                        MemFlagsData::trusted(),
                                         obj_ptr,
                                         HEADER_TYPE_ID_OFFSET,
                                     );
@@ -485,13 +485,13 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                                 };
                                 let len_bool = builder.ins().load(
                                     types::I64,
-                                    MemFlags::trusted(),
+                                    MemFlagsData::trusted(),
                                     storage_ptr,
                                     8i32,
                                 );
                                 let len_vec = builder.ins().load(
                                     types::I64,
-                                    MemFlags::trusted(),
+                                    MemFlagsData::trusted(),
                                     storage_ptr,
                                     vec_layout.len_offset,
                                 );
@@ -519,7 +519,7 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                             let bool_elem_addr = builder.ins().iadd(data_ptr, raw_idx);
                             let byte_val = builder.ins().load(
                                 types::I8,
-                                MemFlags::trusted(),
+                                MemFlagsData::trusted(),
                                 bool_elem_addr,
                                 0,
                             );
@@ -544,7 +544,7 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                             let elem =
                                 builder
                                     .ins()
-                                    .load(types::I64, MemFlags::trusted(), elem_addr, 0);
+                                    .load(types::I64, MemFlagsData::trusted(), elem_addr, 0);
                             emit_inc_ref_obj(&mut *builder, elem, local_inc_ref_obj, nbc);
                             if let Some(out__) = op.out.as_ref() {
                                 def_var_named(&mut *builder, vars, out__, elem);
@@ -592,7 +592,7 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                                 let bool_elem_addr = builder.ins().iadd(data_ptr, raw_idx);
                                 let byte_val = builder.ins().load(
                                     types::I8,
-                                    MemFlags::trusted(),
+                                    MemFlagsData::trusted(),
                                     bool_elem_addr,
                                     0,
                                 );
@@ -607,7 +607,7 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                                 let elem_addr = builder.ins().iadd(data_ptr, byte_offset);
                                 let elem = builder.ins().load(
                                     types::I64,
-                                    MemFlags::trusted(),
+                                    MemFlagsData::trusted(),
                                     elem_addr,
                                     0,
                                 );
@@ -635,7 +635,7 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                                 let bool_elem_addr = builder.ins().iadd(data_ptr, raw_idx);
                                 let byte_val = builder.ins().load(
                                     types::I8,
-                                    MemFlags::trusted(),
+                                    MemFlagsData::trusted(),
                                     bool_elem_addr,
                                     0,
                                 );
@@ -657,7 +657,7 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                                 let elem_addr = builder.ins().iadd(data_ptr, byte_offset);
                                 let elem = builder.ins().load(
                                     types::I64,
-                                    MemFlags::trusted(),
+                                    MemFlagsData::trusted(),
                                     elem_addr,
                                     0,
                                 );
@@ -861,10 +861,10 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                             let storage_ptr =
                                 builder
                                     .ins()
-                                    .load(types::I64, MemFlags::trusted(), obj_ptr, 0);
+                                    .load(types::I64, MemFlagsData::trusted(), obj_ptr, 0);
                             let dp = builder.ins().load(
                                 types::I64,
-                                MemFlags::trusted(),
+                                MemFlagsData::trusted(),
                                 storage_ptr,
                                 LIST_INT_STORAGE_DATA_OFFSET,
                             );
@@ -873,7 +873,7 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                             list_int_data_cache.insert(args[0].clone(), cvar);
                             let len = builder.ins().load(
                                 types::I64,
-                                MemFlags::trusted(),
+                                MemFlagsData::trusted(),
                                 storage_ptr,
                                 LIST_INT_STORAGE_LEN_OFFSET,
                             );
@@ -891,10 +891,10 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                             let storage_ptr =
                                 builder
                                     .ins()
-                                    .load(types::I64, MemFlags::trusted(), obj_ptr, 0);
+                                    .load(types::I64, MemFlagsData::trusted(), obj_ptr, 0);
                             let len = builder.ins().load(
                                 types::I64,
-                                MemFlags::trusted(),
+                                MemFlagsData::trusted(),
                                 storage_ptr,
                                 LIST_INT_STORAGE_LEN_OFFSET,
                             );
@@ -913,7 +913,7 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                         let elem_addr = builder.ins().iadd(data_ptr, byte_offset);
                         builder
                             .ins()
-                            .store(MemFlags::trusted(), raw_val, elem_addr, 0);
+                            .store(MemFlagsData::trusted(), raw_val, elem_addr, 0);
                         if let Some(out__) = op.out.as_ref() {
                             def_var_named(&mut *builder, vars, out__, *obj);
                         }
@@ -938,7 +938,7 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                         let elem_addr = builder.ins().iadd(data_ptr, byte_offset);
                         builder
                             .ins()
-                            .store(MemFlags::trusted(), raw_val, elem_addr, 0);
+                            .store(MemFlagsData::trusted(), raw_val, elem_addr, 0);
                         jump_block(&mut *builder, merge_block, &[]);
 
                         // Slow path: safe runtime call
@@ -997,7 +997,7 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                             // Load type_id from header (obj_ptr - 24).
                             let tid = builder.ins().load(
                                 types::I32,
-                                MemFlags::trusted(),
+                                MemFlagsData::trusted(),
                                 obj_ptr,
                                 HEADER_TYPE_ID_OFFSET,
                             );
@@ -1009,30 +1009,30 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                             let storage_ptr =
                                 builder
                                     .ins()
-                                    .load(types::I64, MemFlags::trusted(), obj_ptr, 0);
+                                    .load(types::I64, MemFlagsData::trusted(), obj_ptr, 0);
                             // ListBoolStorage (repr(C)): data@0, len@8
                             let dp_bool = builder.ins().load(
                                 types::I64,
-                                MemFlags::trusted(),
+                                MemFlagsData::trusted(),
                                 storage_ptr,
                                 0i32,
                             );
                             let len_bool = builder.ins().load(
                                 types::I64,
-                                MemFlags::trusted(),
+                                MemFlagsData::trusted(),
                                 storage_ptr,
                                 8i32,
                             );
                             // Vec<u64> (repr(Rust), probed offsets)
                             let dp_vec = builder.ins().load(
                                 types::I64,
-                                MemFlags::trusted(),
+                                MemFlagsData::trusted(),
                                 storage_ptr,
                                 vec_layout.data_offset,
                             );
                             let len_vec = builder.ins().load(
                                 types::I64,
-                                MemFlags::trusted(),
+                                MemFlagsData::trusted(),
                                 storage_ptr,
                                 vec_layout.len_offset,
                             );
@@ -1055,13 +1055,13 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                             let storage_ptr =
                                 builder
                                     .ins()
-                                    .load(types::I64, MemFlags::trusted(), obj_ptr, 0);
+                                    .load(types::I64, MemFlagsData::trusted(), obj_ptr, 0);
                             let is_bool = if let Some(&ibv) = list_is_bool_cache.get(&args[0]) {
                                 builder.use_var(ibv)
                             } else {
                                 let tid = builder.ins().load(
                                     types::I32,
-                                    MemFlags::trusted(),
+                                    MemFlagsData::trusted(),
                                     obj_ptr,
                                     HEADER_TYPE_ID_OFFSET,
                                 );
@@ -1075,13 +1075,13 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                             };
                             let len_bool = builder.ins().load(
                                 types::I64,
-                                MemFlags::trusted(),
+                                MemFlagsData::trusted(),
                                 storage_ptr,
                                 8i32,
                             );
                             let len_vec = builder.ins().load(
                                 types::I64,
-                                MemFlags::trusted(),
+                                MemFlagsData::trusted(),
                                 storage_ptr,
                                 vec_layout.len_offset,
                             );
@@ -1127,7 +1127,7 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                             let lb = builder.ins().band_imm(*val, 1);
                             builder.ins().ireduce(types::I8, lb)
                         };
-                        builder.ins().store(MemFlags::trusted(), bv, baddr, 0);
+                        builder.ins().store(MemFlagsData::trusted(), bv, baddr, 0);
                         jump_block(&mut *builder, merge_bce, &[]);
                         // Regular list path: store the inline bool, then release old.
                         switch_to_block_materialized(&mut *builder, vec_store_bce);
@@ -1201,7 +1201,7 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                             };
                             builder
                                 .ins()
-                                .store(MemFlags::trusted(), byte_val, bool_elem_addr, 0);
+                                .store(MemFlagsData::trusted(), byte_val, bool_elem_addr, 0);
                             jump_block(&mut *builder, merge_block, &[]);
 
                             // Regular list path: store the inline bool, then release old.

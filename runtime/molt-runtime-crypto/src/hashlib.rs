@@ -11,7 +11,8 @@ use num_traits::ToPrimitive;
 use ripemd::Ripemd160;
 use sha1::Sha1;
 use sha2::{Sha224, Sha256, Sha384, Sha512, Sha512_224, Sha512_256};
-use sha3::{Sha3_224, Sha3_256, Sha3_384, Sha3_512, Shake128, Shake256};
+use sha3::{Sha3_224, Sha3_256, Sha3_384, Sha3_512};
+use shake::{Shake128, Shake256};
 
 #[derive(Clone)]
 pub enum HashKind {
@@ -858,10 +859,22 @@ pub extern "C" fn molt_pbkdf2_hmac(
             "sha512" => pbkdf2::pbkdf2_hmac::<Sha512>(password, salt, rounds, &mut out),
             "sha512_224" => pbkdf2::pbkdf2_hmac::<Sha512_224>(password, salt, rounds, &mut out),
             "sha512_256" => pbkdf2::pbkdf2_hmac::<Sha512_256>(password, salt, rounds, &mut out),
-            "sha3_224" => pbkdf2::pbkdf2_hmac::<Sha3_224>(password, salt, rounds, &mut out),
-            "sha3_256" => pbkdf2::pbkdf2_hmac::<Sha3_256>(password, salt, rounds, &mut out),
-            "sha3_384" => pbkdf2::pbkdf2_hmac::<Sha3_384>(password, salt, rounds, &mut out),
-            "sha3_512" => pbkdf2::pbkdf2_hmac::<Sha3_512>(password, salt, rounds, &mut out),
+            "sha3_224" => pbkdf2::pbkdf2::<hmac::SimpleHmac<Sha3_224>>(
+                password, salt, rounds, &mut out,
+            )
+            .expect("HMAC can be initialized with any key length"),
+            "sha3_256" => pbkdf2::pbkdf2::<hmac::SimpleHmac<Sha3_256>>(
+                password, salt, rounds, &mut out,
+            )
+            .expect("HMAC can be initialized with any key length"),
+            "sha3_384" => pbkdf2::pbkdf2::<hmac::SimpleHmac<Sha3_384>>(
+                password, salt, rounds, &mut out,
+            )
+            .expect("HMAC can be initialized with any key length"),
+            "sha3_512" => pbkdf2::pbkdf2::<hmac::SimpleHmac<Sha3_512>>(
+                password, salt, rounds, &mut out,
+            )
+            .expect("HMAC can be initialized with any key length"),
             _ => {
                 return raise_exception::<u64>(
                     _py,
@@ -962,7 +975,7 @@ pub extern "C" fn molt_scrypt(
             );
         }
         let log_n = (64 - n.leading_zeros() - 1) as u8;
-        let params = match scrypt::Params::new(log_n, r as u32, p as u32, 32) {
+        let params = match scrypt::Params::new(log_n, r as u32, p as u32) {
             Ok(val) => val,
             Err(_) => {
                 return raise_exception::<u64>(
