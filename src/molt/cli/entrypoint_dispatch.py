@@ -22,6 +22,7 @@ from molt.cli.build_output_layout import (
 )
 from molt.cli.config_resolution import _coerce_bool
 from molt.cli.deps import deps, install, install_add, vendor
+from molt.cli.dx_cli import handle_dx_command
 from molt.cli.extension_audit import extension_audit
 from molt.cli.extension_scan import extension_scan
 from molt.cli.maintenance import clean, show_config
@@ -734,6 +735,8 @@ def _dispatch_entrypoint_command(
         return setup(args.json, args.verbose, args.strict)
     if args.command == "doctor":
         return doctor(args.json, args.verbose, args.strict)
+    if args.command == "dx":
+        return handle_dx_command(args)
     if args.command == "update":
         include_manifests = args.manifests or args.all
         return update_repo(

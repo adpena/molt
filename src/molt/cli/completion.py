@@ -16,6 +16,7 @@ def _completion_script(shell: str) -> str:
         "bench",
         "profile",
         "lint",
+        "dx",
         "doctor",
         "package",
         "publish",
@@ -160,6 +161,7 @@ def _completion_script(shell: str) -> str:
         "bench": ["--wasm", "--script", "--json", "--verbose"],
         "profile": ["--json", "--verbose"],
         "lint": ["--json", "--verbose"],
+        "dx": ["env", "run"],
         "doctor": ["--strict", "--json", "--verbose"],
         "package": [
             "--output",

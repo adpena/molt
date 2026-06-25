@@ -17,6 +17,7 @@ tmp/
 .molt_cache-*/
 .molt_cache_*/
 .molt-cache/
+.sccache/
 .uv-cache/
 .uv-cache-*/
 diff/

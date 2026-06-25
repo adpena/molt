@@ -188,7 +188,7 @@ def _canonical_harness_env(
     *,
     create_dirs: bool = True,
 ) -> dict[str, str]:
-    dx_env = DX.canonical_env(env, create_dirs=create_dirs)
+    dx_env = DX.dx_env(env, create_dirs=create_dirs)
     return harness_memory_guard.canonical_harness_env(dx_env, repo_root=ROOT)
 
 
@@ -251,23 +251,8 @@ def _require_project_python() -> Path:
 
 
 def _print_canonical_env(env: dict[str, str]) -> None:
-    keys = [
-        "MOLT_EXT_ROOT",
-        "CARGO_TARGET_DIR",
-        "MOLT_DIFF_CARGO_TARGET_DIR",
-        "CARGO_INCREMENTAL",
-        "MOLT_CACHE",
-        "MOLT_DIFF_ROOT",
-        "MOLT_DIFF_TMPDIR",
-        "UV_CACHE_DIR",
-        "TMPDIR",
-        "MOLT_SESSION_ID",
-        "MOLT_BACKEND_DAEMON",
-        "CARGO_BUILD_JOBS",
-        "PYTHONPATH",
-    ]
-    for key in keys:
-        print(f"export {key}={shlex.quote(env[key])}")
+    keys = tuple(key for key in _DX_MODULE.DX_ENV_KEYS if key in env)
+    print(_DX_MODULE.render_env(env, keys, "posix"))
 
 
 def _default_gates_summary_path() -> Path:
