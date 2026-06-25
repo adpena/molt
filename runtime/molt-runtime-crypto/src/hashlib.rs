@@ -859,22 +859,22 @@ pub extern "C" fn molt_pbkdf2_hmac(
             "sha512" => pbkdf2::pbkdf2_hmac::<Sha512>(password, salt, rounds, &mut out),
             "sha512_224" => pbkdf2::pbkdf2_hmac::<Sha512_224>(password, salt, rounds, &mut out),
             "sha512_256" => pbkdf2::pbkdf2_hmac::<Sha512_256>(password, salt, rounds, &mut out),
-            "sha3_224" => pbkdf2::pbkdf2::<hmac::SimpleHmac<Sha3_224>>(
-                password, salt, rounds, &mut out,
-            )
-            .expect("HMAC can be initialized with any key length"),
-            "sha3_256" => pbkdf2::pbkdf2::<hmac::SimpleHmac<Sha3_256>>(
-                password, salt, rounds, &mut out,
-            )
-            .expect("HMAC can be initialized with any key length"),
-            "sha3_384" => pbkdf2::pbkdf2::<hmac::SimpleHmac<Sha3_384>>(
-                password, salt, rounds, &mut out,
-            )
-            .expect("HMAC can be initialized with any key length"),
-            "sha3_512" => pbkdf2::pbkdf2::<hmac::SimpleHmac<Sha3_512>>(
-                password, salt, rounds, &mut out,
-            )
-            .expect("HMAC can be initialized with any key length"),
+            "sha3_224" => {
+                pbkdf2::pbkdf2::<hmac::SimpleHmac<Sha3_224>>(password, salt, rounds, &mut out)
+                    .expect("HMAC can be initialized with any key length")
+            }
+            "sha3_256" => {
+                pbkdf2::pbkdf2::<hmac::SimpleHmac<Sha3_256>>(password, salt, rounds, &mut out)
+                    .expect("HMAC can be initialized with any key length")
+            }
+            "sha3_384" => {
+                pbkdf2::pbkdf2::<hmac::SimpleHmac<Sha3_384>>(password, salt, rounds, &mut out)
+                    .expect("HMAC can be initialized with any key length")
+            }
+            "sha3_512" => {
+                pbkdf2::pbkdf2::<hmac::SimpleHmac<Sha3_512>>(password, salt, rounds, &mut out)
+                    .expect("HMAC can be initialized with any key length")
+            }
             _ => {
                 return raise_exception::<u64>(
                     _py,

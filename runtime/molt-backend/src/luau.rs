@@ -6410,9 +6410,8 @@ mod tests {
         assert!(source.contains("local function molt_checked_i64_mul"));
         assert!(source.contains("if p >= 9007199254740992 or p <= -9007199254740992"));
         assert!(
-            source.contains(
-                "local product: number, overflow: boolean = molt_checked_i64_mul(a, b)"
-            )
+            source
+                .contains("local product: number, overflow: boolean = molt_checked_i64_mul(a, b)")
         );
         assert!(!source.contains("[unsupported op: checked_mul]"));
     }

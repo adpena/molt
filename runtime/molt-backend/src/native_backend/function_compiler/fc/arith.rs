@@ -2902,7 +2902,9 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                 let local_callee = module.declare_func_in_func(callee, builder.func);
                 let call = builder.ins().call(local_callee, &[*lhs_boxed, *rhs_boxed]);
                 let slow_res = builder.inst_results(call)[0];
-                let slow_f = builder.ins().bitcast(types::F64, MemFlagsData::new(), slow_res);
+                let slow_f = builder
+                    .ins()
+                    .bitcast(types::F64, MemFlagsData::new(), slow_res);
                 if out_is_float_primary {
                     jump_block(&mut *builder, merge_block, &[slow_f]);
                 } else {
@@ -2999,7 +3001,9 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                 seal_block_once(&mut *builder, &mut *sealed_blocks, slow_block);
                 let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                 let slow_res = builder.inst_results(call)[0];
-                let slow_f = builder.ins().bitcast(types::F64, MemFlagsData::new(), slow_res);
+                let slow_f = builder
+                    .ins()
+                    .bitcast(types::F64, MemFlagsData::new(), slow_res);
                 if div_out_is_float_primary {
                     jump_block(&mut *builder, merge_block, &[slow_f]);
                 } else {
@@ -3111,7 +3115,9 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                 seal_block_once(&mut *builder, &mut *sealed_blocks, call_block);
                 let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                 let slow_res = builder.inst_results(call)[0];
-                let slow_f = builder.ins().bitcast(types::F64, MemFlagsData::new(), slow_res);
+                let slow_f = builder
+                    .ins()
+                    .bitcast(types::F64, MemFlagsData::new(), slow_res);
                 if gen_div_out_fp {
                     jump_block(&mut *builder, merge_block, &[slow_f]);
                 } else {

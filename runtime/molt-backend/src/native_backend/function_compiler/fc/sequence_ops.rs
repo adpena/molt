@@ -541,9 +541,10 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
                     .call(local_callee, &[*iter, key_ptr, value_ptr]);
                 let done_bits = builder.inst_results(call)[0];
 
-                let loaded_key = builder
-                    .ins()
-                    .load(types::I64, MemFlagsData::trusted(), key_ptr, 0);
+                let loaded_key =
+                    builder
+                        .ins()
+                        .load(types::I64, MemFlagsData::trusted(), key_ptr, 0);
                 let loaded_value =
                     builder
                         .ins()
@@ -631,9 +632,10 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
                 let local_callee = module.declare_func_in_func(callee, builder.func);
                 let call = builder.ins().call(local_callee, &[*iter, val_ptr]);
                 let done_bits = builder.inst_results(call)[0];
-                let loaded_val = builder
-                    .ins()
-                    .load(types::I64, MemFlagsData::trusted(), val_ptr, 0);
+                let loaded_val =
+                    builder
+                        .ins()
+                        .load(types::I64, MemFlagsData::trusted(), val_ptr, 0);
 
                 if !done_name.is_empty() && done_name != "none" {
                     def_var_from_boxed_transport(
