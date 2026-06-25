@@ -18,6 +18,11 @@ Molt's DFlash support is derived from these public sources:
   <https://huggingface.co/collections/z-lab/dflash>
 - vLLM Speculators DFlash documentation:
   <https://docs.vllm.ai/projects/speculators/en/latest/user_guide/algorithms/dflash/>
+- vLLM DFlash runtime API:
+  <https://docs.vllm.ai/en/v0.23.0/api/vllm/v1/spec_decode/dflash/>
+- vLLM Speculators release notes and repository:
+  <https://github.com/vllm-project/speculators/releases>
+  <https://github.com/vllm-project/speculators>
 - SGLang/Modal/Z Lab Spec V2 implementation note:
   <https://www.lmsys.org/blog/2026-06-15-next-generation-speculative-decoding-dflash-v2/>
 - NVIDIA TensorRT-LLM/vLLM/SGLang deployment note:
@@ -30,6 +35,9 @@ Molt's DFlash support is derived from these public sources:
 - DFlare follow-on, Jiebin Zhang et al., **"DFlare: Scaling Up Draft Capacity
   for Block Diffusion Speculative Decoding"**, arXiv:2606.02091:
   <https://arxiv.org/abs/2606.02091>
+- Dual Diffusion Draft Models follow-on, **"2 SD: Accelerating Speculative
+  Decoding with Dual Diffusion Draft Models"**, arXiv:2606.04446:
+  <https://arxiv.org/abs/2606.04446>
 - Baseline speculative decoding provenance:
   Yaniv Leviathan, Matan Kalman, and Yossi Matias, **"Fast Inference from
   Transformers via Speculative Decoding"**, ICML 2023:
@@ -104,10 +112,19 @@ routing, not the core identity:
   plus install routes for Transformers, SGLang, vLLM, and MLX. Missing model
   support is therefore a registry/checkpoint issue, not permission to synthesize
   an untrained generic drafter.
-- vLLM Speculators describes DFlash as a small diffusion-LLM draft model that
-  predicts an entire block in one forward pass, conditioned on target hidden
-  states, using non-causal attention over verifier hidden states and mask token
-  embeddings. Molt's adapter boundary must preserve that shape.
+- vLLM Speculators v0.5.0 adds DFlash training support, online training, and a
+  unified hidden-state extraction path for both online and offline data. Molt
+  adapters must treat block size, max anchors, target layer ids, hidden-state
+  extraction, and draft-model config as serialized adapter identity, not launch
+  flags that can drift outside the checkpoint contract.
+- vLLM runtime support exposes DFlash as a one-forward-pass proposer with
+  unpadded context states, query-only spec tokens, pre-inserted context KV, and
+  no multimodal support in that path. Molt must preserve those shape/custody
+  distinctions when mapping DFlash onto its GPU primitive and scheduler layers.
+- Public Speculators discussion records a concrete config hazard: published
+  DFlash and Eagle-style configs use different target-layer-id conventions, and
+  an off-by-one mismatch can silently corrupt training targets. Molt must
+  normalize layer ids into one typed adapter schema before training or serving.
 - SGLang Spec V2 moves DFlash from a research loop into a scheduler/KV-cache
   integration problem: `DFlashWorker`/draft-model execution wraps target
   verification, target latents are projected into draft KV state, and scheduler
@@ -125,6 +142,11 @@ routing, not the core identity:
   broader set of target layers. It is evidence that the adapter contract needs
   explicit layer/feature/KV metadata, not a reason to erase target-conditioned
   DFlash requirements.
+- Dual-draft diffusion work treats baseline DFlash as the first block drafter
+  and adds a second variable-prefix diffusion drafter plus joint verification.
+  That is a DFlash-family extension, not base DFlash; Molt should expose it only
+  under an explicit adapter/version name with separate first/second-drafter KV
+  custody and verifier attention metadata.
 
 ## Current Scope
 
