@@ -160,6 +160,10 @@ def test_import_plan_classifies_binary_image_closure(tmp_path: Path) -> None:
     assert {"app", "helper"}.issubset(payload["known_modules"])
     assert {"app", "helper"}.issubset(payload["compile_modules"])
     assert "helper" not in payload["declared_root_modules"]
+    narrowed_plan = import_plan.with_compile_modules({"app"})
+    assert narrowed_plan.compile_modules == frozenset({"app"})
+    assert narrowed_plan.known_modules == import_plan.known_modules
+    assert narrowed_plan.module_graph == import_plan.module_graph
     with pytest.raises(ValueError, match="outside the closure plan"):
         import_plan.with_compile_modules({"outside"})
 
