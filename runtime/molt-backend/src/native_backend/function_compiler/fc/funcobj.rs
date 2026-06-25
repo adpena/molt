@@ -54,9 +54,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
-    int_carriers_plan: &ScalarRepresentationPlan,
-    float_primary_vars: &BTreeSet<String>,
-    bool_primary_vars: &BTreeSet<String>,
+    representation_plan: &ScalarRepresentationPlan,
     task_kinds: &BTreeMap<String, TrampolineKind>,
     task_closure_sizes: &BTreeMap<String, i64>,
     defined_functions: &BTreeSet<String>,
@@ -84,8 +82,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
                                        sealed_blocks: &mut BTreeSet<Block>,
                                        vars: &BTreeMap<String, Variable>,
                                        name: &str,
-                                       int_carriers_plan: &ScalarRepresentationPlan,
-                                       float_primary_vars: &BTreeSet<String>|
+                                       representation_plan: &ScalarRepresentationPlan|
      -> Option<crate::VarValue> {
         var_get_boxed_overflow_safe_fn(
             module,
@@ -95,9 +92,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
             sealed_blocks,
             vars,
             name,
-            int_carriers_plan,
-            float_primary_vars,
-            bool_primary_vars,
+            representation_plan,
             nbc,
         )
     };
@@ -267,8 +262,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
                 &mut *sealed_blocks,
                 vars,
                 closure_name,
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("closure arg not found");
             let target_ret = function_has_ret
@@ -357,8 +351,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("filename not found");
             let name_bits = var_get_boxed_overflow_safe(
@@ -369,8 +362,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("name not found");
             let firstlineno_bits = var_get_boxed_overflow_safe(
@@ -381,8 +373,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[2],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("firstlineno not found");
             let linetable_bits = var_get_boxed_overflow_safe(
@@ -393,8 +384,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[3],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("linetable not found");
             let varnames_bits = var_get_boxed_overflow_safe(
@@ -405,8 +395,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[4],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("varnames not found");
             let names_bits = var_get_boxed_overflow_safe(
@@ -417,8 +406,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[5],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("names not found");
             let argcount_bits = var_get_boxed_overflow_safe(
@@ -429,8 +417,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[6],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("argcount not found");
             let posonlyargcount_bits = var_get_boxed_overflow_safe(
@@ -441,8 +428,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[7],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("posonly not found");
             let kwonlyargcount_bits = var_get_boxed_overflow_safe(
@@ -453,8 +439,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[8],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("kwonly not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -504,8 +489,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("code bits not found");
             let code_id = op.value.unwrap_or(0);
@@ -530,8 +514,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("code bits not found");
             let func_name = op.s_value.as_ref().expect("fn_ptr_code_set expects symbol");
@@ -584,8 +567,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("names tuple not found");
             let offsets_bits = var_get_boxed_overflow_safe(
@@ -596,8 +578,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("offsets tuple not found");
             let func_name = op
@@ -650,8 +631,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("names tuple not found");
             let offsets_bits = var_get_boxed_overflow_safe(
@@ -662,8 +642,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("offsets tuple not found");
             let func_name = op
@@ -748,8 +727,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
                         &mut *sealed_blocks,
                         vars,
                         name,
-                        int_carriers_plan,
-                        float_primary_vars,
+                        representation_plan,
                     )
                     .expect("Arg not found")
                 })
@@ -839,8 +817,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
                                 &mut *sealed_blocks,
                                 vars,
                                 &name,
-                                int_carriers_plan,
-                                float_primary_vars,
+                                representation_plan,
                             )
                             .map(|v| *v)
                         });
@@ -874,8 +851,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
                                 &mut *sealed_blocks,
                                 vars,
                                 &name,
-                                int_carriers_plan,
-                                float_primary_vars,
+                                representation_plan,
                             )
                             .map(|v| *v)
                         });
@@ -913,8 +889,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Func not found");
             let callee = SimpleBackend::import_func_id_split(

@@ -53,12 +53,10 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
-    int_carriers_plan: &ScalarRepresentationPlan,
-    float_primary_vars: &BTreeSet<String>,
-    bool_primary_vars: &BTreeSet<String>,
+    representation_plan: &ScalarRepresentationPlan,
     nbc: &crate::NanBoxConsts,
 ) {
-    // Reconstruct the original op-local closure (captures bool_primary_vars +
+    // Reconstruct the original op-local closure (captures representation_plan +
     // nbc; all other state threads through explicit params) so the moved arm
     // bodies call it exactly as they did inline.
     let var_get_boxed_overflow_safe = |module: &mut ObjectModule,
@@ -71,8 +69,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                                        sealed_blocks: &mut BTreeSet<Block>,
                                        vars: &BTreeMap<String, Variable>,
                                        name: &str,
-                                       int_carriers_plan: &ScalarRepresentationPlan,
-                                       float_primary_vars: &BTreeSet<String>|
+                                       representation_plan: &ScalarRepresentationPlan|
      -> Option<crate::VarValue> {
         var_get_boxed_overflow_safe_fn(
             module,
@@ -82,9 +79,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
             sealed_blocks,
             vars,
             name,
-            int_carriers_plan,
-            float_primary_vars,
-            bool_primary_vars,
+            representation_plan,
             nbc,
         )
     };
@@ -116,8 +111,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 &mut *sealed_blocks,
                 vars,
                 name,
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("split-field deforestation operand not found");
             arg_vals.push(*v);
@@ -148,8 +142,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("bytearray fill target not found");
             let start = var_get_boxed_overflow_safe(
@@ -160,8 +153,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("bytearray fill start not found");
             let stop = var_get_boxed_overflow_safe(
@@ -172,8 +164,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 &mut *sealed_blocks,
                 vars,
                 &args[2],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("bytearray fill stop not found");
             let value = var_get_boxed_overflow_safe(
@@ -184,8 +175,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 &mut *sealed_blocks,
                 vars,
                 &args[3],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("bytearray fill value not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -214,8 +204,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Format value not found");
             let spec = var_get_boxed_overflow_safe(
@@ -226,8 +215,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Format spec not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -254,8 +242,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Join separator not found");
             let items = var_get_boxed_overflow_safe(
@@ -266,8 +253,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Join items not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -294,8 +280,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Split haystack not found");
             let needle = var_get_boxed_overflow_safe(
@@ -306,8 +291,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Split needle not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -334,8 +318,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Split haystack not found");
             let needle = var_get_boxed_overflow_safe(
@@ -346,8 +329,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Split needle not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -374,8 +356,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Split haystack not found");
             let needle = var_get_boxed_overflow_safe(
@@ -386,8 +367,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Split needle not found");
             let index = var_get_boxed_overflow_safe(
@@ -398,8 +378,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 &mut *sealed_blocks,
                 vars,
                 &args[2],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Split field index not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -426,8 +405,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Split haystack not found");
             let needle = var_get_boxed_overflow_safe(
@@ -438,8 +416,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Split needle not found");
             let index = var_get_boxed_overflow_safe(
@@ -450,8 +427,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 &mut *sealed_blocks,
                 vars,
                 &args[2],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Split field index not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -478,8 +454,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Split haystack not found");
             let needle = var_get_boxed_overflow_safe(
@@ -490,8 +465,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Split needle not found");
             let index = var_get_boxed_overflow_safe(
@@ -502,8 +476,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 &mut *sealed_blocks,
                 vars,
                 &args[2],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Split field index not found");
             let expected = var_get_boxed_overflow_safe(
@@ -514,8 +487,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 &mut *sealed_blocks,
                 vars,
                 &args[3],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Split field expected string not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -544,8 +516,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Split haystack not found");
             let needle = var_get_boxed_overflow_safe(
@@ -556,8 +527,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Split needle not found");
             let maxsplit = var_get_boxed_overflow_safe(
@@ -568,8 +538,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 &mut *sealed_blocks,
                 vars,
                 &args[2],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Split maxsplit not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -598,8 +567,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Lower string not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -626,8 +594,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Upper string not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -654,8 +621,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Capitalize string not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -682,8 +648,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Strip string not found");
             let chars = var_get_boxed_overflow_safe(
@@ -694,8 +659,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Strip chars not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -722,8 +686,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Lstrip string not found");
             let chars = var_get_boxed_overflow_safe(
@@ -734,8 +697,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Lstrip chars not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -762,8 +724,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Rstrip string not found");
             let chars = var_get_boxed_overflow_safe(
@@ -774,8 +735,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Rstrip chars not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -802,8 +762,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Replace haystack not found");
             let needle = var_get_boxed_overflow_safe(
@@ -814,8 +773,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Replace needle not found");
             let replacement = var_get_boxed_overflow_safe(
@@ -826,8 +784,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 &mut *sealed_blocks,
                 vars,
                 &args[2],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Replace replacement not found");
             let count = var_get_boxed_overflow_safe(
@@ -838,8 +795,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 &mut *sealed_blocks,
                 vars,
                 &args[3],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Replace count not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -868,8 +824,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Split haystack not found");
             let needle = var_get_boxed_overflow_safe(
@@ -880,8 +835,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Split needle not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -908,8 +862,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Split haystack not found");
             let needle = var_get_boxed_overflow_safe(
@@ -920,8 +873,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Split needle not found");
             let maxsplit = var_get_boxed_overflow_safe(
@@ -932,8 +884,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 &mut *sealed_blocks,
                 vars,
                 &args[2],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Split maxsplit not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -962,8 +913,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Split haystack not found");
             let needle = var_get_boxed_overflow_safe(
@@ -974,8 +924,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Split needle not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -1002,8 +951,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Split haystack not found");
             let needle = var_get_boxed_overflow_safe(
@@ -1014,8 +962,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Split needle not found");
             let maxsplit = var_get_boxed_overflow_safe(
@@ -1026,8 +973,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 &mut *sealed_blocks,
                 vars,
                 &args[2],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Split maxsplit not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -1056,8 +1002,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Replace haystack not found");
             let needle = var_get_boxed_overflow_safe(
@@ -1068,8 +1013,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Replace needle not found");
             let replacement = var_get_boxed_overflow_safe(
@@ -1080,8 +1024,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 &mut *sealed_blocks,
                 vars,
                 &args[2],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Replace replacement not found");
             let count = var_get_boxed_overflow_safe(
@@ -1092,8 +1035,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 &mut *sealed_blocks,
                 vars,
                 &args[3],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Replace count not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -1122,8 +1064,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Replace haystack not found");
             let needle = var_get_boxed_overflow_safe(
@@ -1134,8 +1075,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Replace needle not found");
             let replacement = var_get_boxed_overflow_safe(
@@ -1146,8 +1086,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 &mut *sealed_blocks,
                 vars,
                 &args[2],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Replace replacement not found");
             let count = var_get_boxed_overflow_safe(
@@ -1158,8 +1097,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 &mut *sealed_blocks,
                 vars,
                 &args[3],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Replace count not found");
             let callee = SimpleBackend::import_func_id_split(

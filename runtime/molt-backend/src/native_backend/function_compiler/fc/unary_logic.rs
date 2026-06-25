@@ -37,14 +37,11 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
-    int_carriers_plan: &ScalarRepresentationPlan,
-    float_primary_vars: &BTreeSet<String>,
-    bool_primary_vars: &BTreeSet<String>,
+    representation_plan: &ScalarRepresentationPlan,
     int_like_vars: &BTreeSet<String>,
     bool_like_vars: &BTreeSet<String>,
     local_inc_ref_obj: FuncRef,
     scalar_fast_paths_enabled: bool,
-    representation_plan: &ScalarRepresentationPlan,
     nbc: &crate::NanBoxConsts,
 ) -> OpFlow {
     let op_prefers_int_lane = |op: &OpIR| {
@@ -54,8 +51,6 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
             op,
             int_like_vars,
             bool_like_vars,
-            int_carriers_plan,
-            bool_primary_vars,
         )
     };
     let op_prefers_integer_runtime_lane = |op: &OpIR| {
@@ -80,8 +75,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                                        sealed_blocks: &mut BTreeSet<Block>,
                                        vars: &BTreeMap<String, Variable>,
                                        name: &str,
-                                       int_carriers_plan: &ScalarRepresentationPlan,
-                                       float_primary_vars: &BTreeSet<String>|
+                                       representation_plan: &ScalarRepresentationPlan|
      -> Option<crate::VarValue> {
         var_get_boxed_overflow_safe_fn(
             module,
@@ -91,9 +85,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
             sealed_blocks,
             vars,
             name,
-            int_carriers_plan,
-            float_primary_vars,
-            bool_primary_vars,
+            representation_plan,
             nbc,
         )
     };
@@ -109,8 +101,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("LHS not found");
             let rhs = var_get_boxed_overflow_safe(
@@ -121,8 +112,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("RHS not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -136,14 +126,14 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
             let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
             let res = builder.inst_results(call)[0];
             if let Some(out__) = op.out.as_ref() {
-                def_bool_result(&mut *builder, vars, bool_primary_vars, out__, res, None);
+                def_bool_result(&mut *builder, vars, representation_plan, out__, res, None);
             }
         }
         "not" => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let mut not_raw: Option<Value> = None;
             let res = if let Some(raw_val) =
-                bool_raw_value(&mut *builder, vars, bool_primary_vars, &args[0])
+                bool_raw_value(&mut *builder, vars, representation_plan, &args[0])
             {
                 // Raw bool: not(x) = bool(x == 0). Skip runtime call.
                 let is_zero = builder.ins().icmp_imm(IntCC::Equal, raw_val, 0);
@@ -163,8 +153,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[0],
-                    int_carriers_plan,
-                    float_primary_vars,
+                    representation_plan,
                 )
                 .expect("Value not found");
                 let one = builder.ins().iconst(types::I64, 1);
@@ -189,22 +178,28 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[0],
-                    int_carriers_plan,
-                    float_primary_vars,
+                    representation_plan,
                 )
                 .expect("Value not found");
                 let call = builder.ins().call(local_callee, &[*val]);
                 builder.inst_results(call)[0]
             };
             if let Some(out__) = op.out.as_ref() {
-                def_bool_result(&mut *builder, vars, bool_primary_vars, out__, res, not_raw);
+                def_bool_result(
+                    &mut *builder,
+                    vars,
+                    representation_plan,
+                    out__,
+                    res,
+                    not_raw,
+                );
             }
         }
         "neg" | "unary_neg" => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let res = if op_prefers_float_lane(op) {
                 // Float-primary operands are raw f64; boxed floats are extracted explicitly.
-                let src_f = float_value_for(&mut *builder, vars, float_primary_vars, &args[0])
+                let src_f = float_value_for(&mut *builder, vars, representation_plan, &args[0])
                     .unwrap_or_else(|| {
                         let val = var_get_boxed_overflow_safe(
                             &mut *module,
@@ -214,8 +209,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                             &mut *sealed_blocks,
                             vars,
                             &args[0],
-                            int_carriers_plan,
-                            float_primary_vars,
+                            representation_plan,
                         )
                         .expect("Value not found");
                         builder.ins().bitcast(types::F64, MemFlagsData::new(), *val)
@@ -224,7 +218,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                 if op
                     .out
                     .as_ref()
-                    .is_some_and(|o| float_primary_vars.contains(o))
+                    .is_some_and(|o| representation_plan.is_float_unboxed(o))
                 {
                     neg_f
                 } else {
@@ -233,7 +227,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
             } else if op_prefers_int_lane(op) {
                 // -x == 0 - x; overflow deferred to boxing escape.
                 let src_name = &args[0];
-                let src_raw = int_raw_value(&mut *builder, vars, int_carriers_plan, src_name);
+                let src_raw = int_raw_value(&mut *builder, vars, representation_plan, src_name);
 
                 if let Some(src_raw) = src_raw {
                     // Raw i64 primary negation: branchless.
@@ -252,8 +246,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                         &mut *sealed_blocks,
                         vars,
                         &args[0],
-                        int_carriers_plan,
-                        float_primary_vars,
+                        representation_plan,
                     )
                     .expect("Value not found");
                     let callee = SimpleBackend::import_func_id_split(
@@ -310,8 +303,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[0],
-                    int_carriers_plan,
-                    float_primary_vars,
+                    representation_plan,
                 )
                 .expect("Value not found");
                 let callee = SimpleBackend::import_func_id_split(
@@ -332,7 +324,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
         "pos" | "unary_pos" => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let res = if op_prefers_float_lane(op) {
-                let src_f = float_value_for(&mut *builder, vars, float_primary_vars, &args[0])
+                let src_f = float_value_for(&mut *builder, vars, representation_plan, &args[0])
                     .unwrap_or_else(|| {
                         let val = var_get_boxed_overflow_safe(
                             &mut *module,
@@ -342,8 +334,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                             &mut *sealed_blocks,
                             vars,
                             &args[0],
-                            int_carriers_plan,
-                            float_primary_vars,
+                            representation_plan,
                         )
                         .expect("Value not found");
                         builder.ins().bitcast(types::F64, MemFlagsData::new(), *val)
@@ -351,7 +342,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                 if op
                     .out
                     .as_ref()
-                    .is_some_and(|o| float_primary_vars.contains(o))
+                    .is_some_and(|o| representation_plan.is_float_unboxed(o))
                 {
                     src_f
                 } else {
@@ -360,7 +351,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
             } else if op_prefers_int_lane(op) {
                 let src_name = &args[0];
                 if let Some(src_raw) =
-                    int_raw_value(&mut *builder, vars, int_carriers_plan, src_name)
+                    int_raw_value(&mut *builder, vars, representation_plan, src_name)
                 {
                     if let Some(ref out__) = op.out {
                         def_var_named(&mut *builder, vars, out__, src_raw);
@@ -375,8 +366,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[0],
-                    int_carriers_plan,
-                    float_primary_vars,
+                    representation_plan,
                 )
                 .expect("Value not found");
                 let callee = SimpleBackend::import_func_id_split(
@@ -398,8 +388,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[0],
-                    int_carriers_plan,
-                    float_primary_vars,
+                    representation_plan,
                 )
                 .expect("Value not found");
                 let callee = SimpleBackend::import_func_id_split(
@@ -422,7 +411,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
             let res = if op_prefers_int_lane(op) {
                 // abs(x): select(x < 0, -x, x). Overflow deferred.
                 let src_name = &args[0];
-                let src_raw = int_raw_value(&mut *builder, vars, int_carriers_plan, src_name);
+                let src_raw = int_raw_value(&mut *builder, vars, representation_plan, src_name);
 
                 if let Some(src_raw) = src_raw {
                     // Raw i64 primary abs: branchless select.
@@ -443,8 +432,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                         &mut *sealed_blocks,
                         vars,
                         &args[0],
-                        int_carriers_plan,
-                        float_primary_vars,
+                        representation_plan,
                     )
                     .expect("Value not found");
                     let callee = SimpleBackend::import_func_id_split(
@@ -503,8 +491,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[0],
-                    int_carriers_plan,
-                    float_primary_vars,
+                    representation_plan,
                 )
                 .expect("Value not found");
                 let callee = SimpleBackend::import_func_id_split(
@@ -527,7 +514,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
             let res = if op_prefers_int_lane(op) {
                 // ~x == x ^ -1 for integers; magnitude changes by at most 1.
                 let src_name = &args[0];
-                let src_raw = int_raw_value(&mut *builder, vars, int_carriers_plan, src_name);
+                let src_raw = int_raw_value(&mut *builder, vars, representation_plan, src_name);
 
                 if let Some(src_raw) = src_raw {
                     // Raw i64 primary invert: branchless, no overflow.
@@ -546,8 +533,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                         &mut *sealed_blocks,
                         vars,
                         &args[0],
-                        int_carriers_plan,
-                        float_primary_vars,
+                        representation_plan,
                     )
                     .expect("Value not found");
                     // op_prefers_int_lane only proves Python-`int` type,
@@ -602,8 +588,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[0],
-                    int_carriers_plan,
-                    float_primary_vars,
+                    representation_plan,
                 )
                 .expect("Value not found");
                 let callee = SimpleBackend::import_func_id_split(
@@ -624,7 +609,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
         "bool" | "cast_bool" | "builtin_bool" => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let (res, bool_raw) = if let Some(raw_val) =
-                bool_raw_value(&mut *builder, vars, bool_primary_vars, &args[0])
+                bool_raw_value(&mut *builder, vars, representation_plan, &args[0])
             {
                 // Raw bool from proven list_bool getitem or const_bool.
                 // bool(x) where x is already raw 0/1 — just re-box.
@@ -635,7 +620,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                     Some(raw_val),
                 )
             } else if let Some(raw_shadow) =
-                int_raw_value(&mut *builder, vars, int_carriers_plan, &args[0])
+                int_raw_value(&mut *builder, vars, representation_plan, &args[0])
             {
                 // Proven raw i64 carrier: bool(x) is `x != 0`.
                 let zero = builder.ins().iconst(types::I64, 0);
@@ -661,8 +646,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[0],
-                    int_carriers_plan,
-                    float_primary_vars,
+                    representation_plan,
                 )
                 .expect("Value not found");
                 let int_val = unbox_int_or_bool(&mut *builder, *val, nbc);
@@ -688,8 +672,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[0],
-                    int_carriers_plan,
-                    float_primary_vars,
+                    representation_plan,
                 )
                 .expect("Value not found");
                 let one = builder.ins().iconst(types::I64, 1);
@@ -713,8 +696,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[0],
-                    int_carriers_plan,
-                    float_primary_vars,
+                    representation_plan,
                 )
                 .expect("Value not found");
                 let call = builder.ins().call(local_callee, &[*val]);
@@ -723,7 +705,14 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                 (box_bool_value(&mut *builder, cond, nbc), Some(truthy))
             };
             if let Some(ref out__) = op.out {
-                def_bool_result(&mut *builder, vars, bool_primary_vars, out__, res, bool_raw);
+                def_bool_result(
+                    &mut *builder,
+                    vars,
+                    representation_plan,
+                    out__,
+                    res,
+                    bool_raw,
+                );
             }
         }
         "and" => {
@@ -734,12 +723,12 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
             // overflow_peel break-condition chain rides
             // (`And(cond, Not(of))` every iteration).
             if let (Some(lhs_raw), Some(rhs_raw), Some(out__)) = (
-                bool_raw_value(&mut *builder, vars, bool_primary_vars, &args[0]),
-                bool_raw_value(&mut *builder, vars, bool_primary_vars, &args[1]),
+                bool_raw_value(&mut *builder, vars, representation_plan, &args[0]),
+                bool_raw_value(&mut *builder, vars, representation_plan, &args[1]),
                 op.out.as_deref(),
             ) {
                 let res = builder.ins().band(lhs_raw, rhs_raw);
-                def_raw_bool_value(&mut *builder, vars, bool_primary_vars, out__, res, nbc);
+                def_raw_bool_value(&mut *builder, vars, representation_plan, out__, res, nbc);
                 return OpFlow::Continue;
             }
             let lhs = var_get_boxed_overflow_safe(
@@ -750,8 +739,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("LHS not found");
             let rhs = var_get_boxed_overflow_safe(
@@ -762,18 +750,17 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("RHS not found");
             let cond = if let Some(raw_val) =
-                bool_raw_value(&mut *builder, vars, bool_primary_vars, &args[0])
+                bool_raw_value(&mut *builder, vars, representation_plan, &args[0])
             {
                 // Raw bool from proven list_bool getitem or const_bool.
                 builder.ins().icmp_imm(IntCC::NotEqual, raw_val, 0)
             } else if op_prefers_int_lane(op) {
                 // Known int: inline unbox + compare, no function call.
-                let raw_val = int_raw_value(&mut *builder, vars, int_carriers_plan, &args[0])
+                let raw_val = int_raw_value(&mut *builder, vars, representation_plan, &args[0])
                     .unwrap_or_else(|| unbox_int(&mut *builder, *lhs, nbc));
                 builder.ins().icmp_imm(IntCC::NotEqual, raw_val, 0)
             } else if op_prefers_bool_lane(op) {
@@ -817,12 +804,12 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
             // matching `and` lane above; this is the overflow_peel
             // flag fan-in `Or(f1, f2)` every iteration).
             if let (Some(lhs_raw), Some(rhs_raw), Some(out__)) = (
-                bool_raw_value(&mut *builder, vars, bool_primary_vars, &args[0]),
-                bool_raw_value(&mut *builder, vars, bool_primary_vars, &args[1]),
+                bool_raw_value(&mut *builder, vars, representation_plan, &args[0]),
+                bool_raw_value(&mut *builder, vars, representation_plan, &args[1]),
                 op.out.as_deref(),
             ) {
                 let res = builder.ins().bor(lhs_raw, rhs_raw);
-                def_raw_bool_value(&mut *builder, vars, bool_primary_vars, out__, res, nbc);
+                def_raw_bool_value(&mut *builder, vars, representation_plan, out__, res, nbc);
                 return OpFlow::Continue;
             }
             let lhs = var_get_boxed_overflow_safe(
@@ -833,8 +820,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("LHS not found");
             let rhs = var_get_boxed_overflow_safe(
@@ -845,18 +831,17 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("RHS not found");
             let cond = if let Some(raw_val) =
-                bool_raw_value(&mut *builder, vars, bool_primary_vars, &args[0])
+                bool_raw_value(&mut *builder, vars, representation_plan, &args[0])
             {
                 // Raw bool from proven list_bool getitem or const_bool.
                 builder.ins().icmp_imm(IntCC::NotEqual, raw_val, 0)
             } else if op_prefers_int_lane(op) {
                 // Known int: inline unbox + compare, no function call.
-                let raw_val = int_raw_value(&mut *builder, vars, int_carriers_plan, &args[0])
+                let raw_val = int_raw_value(&mut *builder, vars, representation_plan, &args[0])
                     .unwrap_or_else(|| unbox_int(&mut *builder, *lhs, nbc));
                 builder.ins().icmp_imm(IntCC::NotEqual, raw_val, 0)
             } else if op_prefers_bool_lane(op) {
@@ -900,8 +885,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Container not found");
             let item = var_get_boxed_overflow_safe(
@@ -912,8 +896,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Item not found");
             let func_name = match representation_plan.name_container_kind(&args[0]) {

@@ -81,30 +81,39 @@ default.
 **Current transport-level specialization mechanism**: Legacy `fast_int` /
 `fast_float` / `type_hint` fields may still appear on the SimpleIR transport,
 but native scalar representation is not allowed to recover its authority from
-those fields. The native backend now reads integer raw-carrier facts from
-`ScalarRepresentationPlan` rather than from a cloned `int_primary_vars` set.
-`bool_primary_vars` and `float_primary_vars` remain the raw-bool/raw-F64
-authorities pending the same fold, and non-primary bool/float results are boxed
-immediately in their main I64 variables instead of being tracked through
-side-channel shadow maps.
+those fields. The native backend now reads all scalar-primary membership from
+`ScalarRepresentationPlan` predicates: raw-int storage through
+`is_raw_int_carrier_name` / tiered int predicates, raw-bool storage through
+`is_bool_unboxed`, and raw-F64 storage through `is_float_unboxed`. Extracted
+native handlers no longer receive cloned `bool_primary_vars` /
+`float_primary_vars` BTreeSets or the legacy `int_carriers_plan` alias; the
+single plan reference is the authority at every lowering boundary. Non-primary
+bool/float results are boxed immediately in their main I64 variables instead of
+being tracked through side-channel shadow maps.
 
-This is an implementation compromise, not the desired endpoint. Upstream TIR
-type refinement and type facts can prove richer representation facts than a
-single `fast_int` bit, but the current lowering path often compresses those
-facts before native codegen.
+This is an implementation compromise, not the desired endpoint. The native
+duplicate-authority lane is deleted, but bool/float eligibility is still stored
+inside the plan as dedicated name sets behind predicates rather than propagated
+through a value-keyed cross-backend representation proof. The next performance
+class is to carry the shared `Repr::Bool` / `Repr::FloatUnboxed` facts through
+frontend, TIR, LIR, optimizer, and every backend without re-deriving them at
+native codegen.
 
 **How native raw-primary lowering works**:
 - `ScalarRepresentationPlan::is_raw_int_carrier_name` names carry raw i64 in
   their main Cranelift Variable. Boxing happens at explicit escape points, with
   `RawI64Safe` and `RawI64FullDeopt` distinguished by plan predicates.
-- `bool_primary_vars` names carry raw 0/1 in their main Cranelift Variable.
+- `ScalarRepresentationPlan::is_bool_unboxed` names carry raw 0/1 in their main
+  Cranelift Variable.
   Non-primary bools stay boxed in their main I64 Variable and recover payload
   bits only through explicit boxed-bool extraction at use sites.
-- `float_primary_vars` names carry raw f64 in their main Cranelift Variable.
+- `ScalarRepresentationPlan::is_float_unboxed` names carry raw f64 in their main
+  Cranelift Variable.
   Non-primary floats stay boxed in their main I64 Variable and recover raw f64
-  by bitcast only at proven float use sites. Cleanup scrubbing uses the same
-  representation contract: dead F64-primary variables are scrubbed with F64
-  zero, while boxed variables retain the boxed `None`/zero cleanup sentinel.
+  through the extended float extractor at proven float use sites. Cleanup
+  scrubbing uses the same representation contract: dead F64-primary variables
+  are scrubbed with F64 zero, while boxed variables retain the boxed
+  `None`/zero cleanup sentinel.
 - Fixed-layout object stores use a native direct-write proof instead of a
   profile/header/tag slow path when the object root is fresh
   (`object_new_bound_stack` or sized `object_new_bound`), the value is proven
@@ -123,7 +132,7 @@ facts before native codegen.
 | Issue | Location | Impact | Effort |
 |-------|----------|--------|--------|
 | **Specialization still crosses a legacy SimpleIR transport**. Native int, bool, and float lanes no longer use raw scalar shadow maps, but the TIR/LIR representation plan is still lowered through SimpleIR before native codegen. This leaves duplicated representation recovery logic in native. | TIR/LIR bridge, `lower_to_simple.rs`, native backend lowering | High | High |
-| **Float specialization is native-only and set-driven**. Float arithmetic has raw-F64 primary lowering, but the final architecture is a shared LIR representation plan consumed by every backend rather than native-local `float_primary_vars`. | TIR/LIR bridge, native backend lowering, wasm/llvm/luau parity | High | High |
+| **Bool/float scalar proofs are not yet cross-backend value facts**. Native bool/float lowering consumes one plan authority, but bool/float eligibility still lives behind name-keyed plan predicates rather than a value-keyed proof propagated through every backend. | TIR/LIR bridge, representation lattice propagation, wasm/llvm/luau parity | High | High |
 | **No container element type specialization**. `container_elem_hints` and `dict_key_hints` are tracked (frontend line 963-965) but not used for specialization. A list known to contain only ints could use a packed representation. | Frontend type tracking, backend container ops | Medium-High for numeric workloads | High |
 | **No return type propagation across calls**. If `def foo() -> int` is annotated, callers of `foo()` don't get `fast_int` on the result. The type facts system supports this but it's not wired to the call site specialization. | `FunctionFacts.returns` (type_facts.py:24), call lowering in frontend | Medium | Medium |
 | **Loop induction variable analysis is limited**. `_analyze_loop_bound_facts` and `_analyze_affine_loop_compare_truth` (frontend line 31852-31853) analyze simple `range()` loops, but don't propagate int types through loop body operations. | SCCP, `LoopBoundFact` dataclass (line 61) | Medium — loop-heavy code misses specialization | Medium |

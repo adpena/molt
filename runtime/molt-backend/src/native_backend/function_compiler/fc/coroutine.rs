@@ -51,9 +51,7 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
-    int_carriers_plan: &ScalarRepresentationPlan,
-    float_primary_vars: &BTreeSet<String>,
-    bool_primary_vars: &BTreeSet<String>,
+    representation_plan: &ScalarRepresentationPlan,
     block_tracked_obj: &mut BTreeMap<Block, Vec<String>>,
     block_tracked_ptr: &mut BTreeMap<Block, Vec<String>>,
     last_use: &BTreeMap<String, usize>,
@@ -77,8 +75,7 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
                                        sealed_blocks: &mut BTreeSet<Block>,
                                        vars: &BTreeMap<String, Variable>,
                                        name: &str,
-                                       int_carriers_plan: &ScalarRepresentationPlan,
-                                       float_primary_vars: &BTreeSet<String>|
+                                       representation_plan: &ScalarRepresentationPlan|
      -> Option<crate::VarValue> {
         var_get_boxed_overflow_safe_fn(
             module,
@@ -88,9 +85,7 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
             sealed_blocks,
             vars,
             name,
-            int_carriers_plan,
-            float_primary_vars,
-            bool_primary_vars,
+            representation_plan,
             nbc,
         )
     };
@@ -145,8 +140,7 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Future not found");
             let future_ptr = unbox_ptr_value(&mut *builder, *future, nbc);
@@ -161,8 +155,7 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
                         &mut *sealed_blocks,
                         vars,
                         &args[1],
-                        int_carriers_plan,
-                        float_primary_vars,
+                        representation_plan,
                     )
                     .expect("Pending state not found"),
                 )
@@ -177,8 +170,7 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
                             &mut *sealed_blocks,
                             vars,
                             &args[1],
-                            int_carriers_plan,
-                            float_primary_vars,
+                            representation_plan,
                         )
                         .expect("Await slot not found"),
                     ),
@@ -190,8 +182,7 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
                         &mut *sealed_blocks,
                         vars,
                         &args[2],
-                        int_carriers_plan,
-                        float_primary_vars,
+                        representation_plan,
                     )
                     .expect("Pending state not found"),
                 )
@@ -343,9 +334,7 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
                     &mut *builder,
                     &mut *import_refs,
                     vars,
-                    int_carriers_plan,
-                    bool_primary_vars,
-                    float_primary_vars,
+                    representation_plan,
                     nbc,
                     out__,
                     res,
@@ -365,8 +354,7 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Yield pair not found");
             let next_state_id = op.value.unwrap_or(0);
@@ -447,8 +435,7 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Chan not found");
             let val = var_get_boxed_overflow_safe(
@@ -459,8 +446,7 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Val not found");
             let pending_state_bits = *var_get_boxed_overflow_safe(
@@ -471,8 +457,7 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[2],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Pending state not found");
             let next_state_id = op.value.unwrap_or(0);
@@ -574,9 +559,7 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
                     &mut *builder,
                     &mut *import_refs,
                     vars,
-                    int_carriers_plan,
-                    bool_primary_vars,
-                    float_primary_vars,
+                    representation_plan,
                     nbc,
                     out__,
                     res,
@@ -606,8 +589,7 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Chan not found");
             let pending_state_bits = *var_get_boxed_overflow_safe(
@@ -618,8 +600,7 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Pending state not found");
             let next_state_id = op.value.unwrap_or(0);
@@ -721,9 +702,7 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
                     &mut *builder,
                     &mut *import_refs,
                     vars,
-                    int_carriers_plan,
-                    bool_primary_vars,
-                    float_primary_vars,
+                    representation_plan,
                     nbc,
                     out__,
                     res,
@@ -753,8 +732,7 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Capacity not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -781,8 +759,7 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Chan not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -806,8 +783,7 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Task not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -830,8 +806,7 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Parent token not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -858,8 +833,7 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Token not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -882,8 +856,7 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Token not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -906,8 +879,7 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Token not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -930,8 +902,7 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Token not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -958,8 +929,7 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Token not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -1063,8 +1033,7 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
                         &mut *sealed_blocks,
                         vars,
                         arg_name,
-                        int_carriers_plan,
-                        float_primary_vars,
+                        representation_plan,
                     )
                     .expect("Arg not found");
                     builder

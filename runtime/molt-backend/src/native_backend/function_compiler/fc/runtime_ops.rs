@@ -31,9 +31,7 @@ pub(in crate::native_backend::function_compiler) fn handle_runtime_op(
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
-    int_carriers_plan: &ScalarRepresentationPlan,
-    float_primary_vars: &BTreeSet<String>,
-    bool_primary_vars: &BTreeSet<String>,
+    representation_plan: &ScalarRepresentationPlan,
     local_exc_pending_fast: FuncRef,
     exc_flag_ptr_slot: Option<cranelift_codegen::ir::StackSlot>,
     nbc: &crate::NanBoxConsts,
@@ -48,8 +46,7 @@ pub(in crate::native_backend::function_compiler) fn handle_runtime_op(
                                        sealed_blocks: &mut BTreeSet<Block>,
                                        vars: &BTreeMap<String, Variable>,
                                        name: &str,
-                                       int_carriers_plan: &ScalarRepresentationPlan,
-                                       float_primary_vars: &BTreeSet<String>|
+                                       representation_plan: &ScalarRepresentationPlan|
      -> Option<crate::VarValue> {
         var_get_boxed_overflow_safe_fn(
             module,
@@ -59,9 +56,7 @@ pub(in crate::native_backend::function_compiler) fn handle_runtime_op(
             sealed_blocks,
             vars,
             name,
-            int_carriers_plan,
-            float_primary_vars,
-            bool_primary_vars,
+            representation_plan,
             nbc,
         )
     };
@@ -77,8 +72,7 @@ pub(in crate::native_backend::function_compiler) fn handle_runtime_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Env key not found");
             let default = var_get_boxed_overflow_safe(
@@ -89,8 +83,7 @@ pub(in crate::native_backend::function_compiler) fn handle_runtime_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Env default not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -118,7 +111,14 @@ pub(in crate::native_backend::function_compiler) fn handle_runtime_op(
             );
             let raw_bool = builder.ins().uextend(types::I64, cond_bool);
             if let Some(out__) = op.out.as_ref() {
-                def_raw_bool_value(&mut *builder, vars, bool_primary_vars, out__, raw_bool, nbc);
+                def_raw_bool_value(
+                    &mut *builder,
+                    vars,
+                    representation_plan,
+                    out__,
+                    raw_bool,
+                    nbc,
+                );
             }
         }
         "function_defaults_version" => {
@@ -131,8 +131,7 @@ pub(in crate::native_backend::function_compiler) fn handle_runtime_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("FunctionDefaultsVersion arg not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -146,7 +145,7 @@ pub(in crate::native_backend::function_compiler) fn handle_runtime_op(
             let call = builder.ins().call(local_callee, &[*func_boxed]);
             let boxed_res = builder.inst_results(call)[0];
             if let Some(out__) = op.out.as_ref() {
-                if int_carriers_plan.is_raw_int_carrier_name(out__) {
+                if representation_plan.is_raw_int_carrier_name(out__) {
                     let raw_res = unbox_int(&mut *builder, boxed_res, nbc);
                     def_var_named(&mut *builder, vars, out__, raw_res);
                 } else {
@@ -164,8 +163,7 @@ pub(in crate::native_backend::function_compiler) fn handle_runtime_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             ) {
                 *val
             } else {
@@ -198,8 +196,7 @@ pub(in crate::native_backend::function_compiler) fn handle_runtime_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("warn_stderr arg");
             let callee = SimpleBackend::import_func_id_split(
@@ -233,8 +230,7 @@ pub(in crate::native_backend::function_compiler) fn handle_runtime_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Task not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -261,8 +257,7 @@ pub(in crate::native_backend::function_compiler) fn handle_runtime_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Message not found");
             let callee = SimpleBackend::import_func_id_split(

@@ -45,9 +45,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
-    int_carriers_plan: &ScalarRepresentationPlan,
-    float_primary_vars: &BTreeSet<String>,
-    bool_primary_vars: &BTreeSet<String>,
+    representation_plan: &ScalarRepresentationPlan,
     int_like_vars: &BTreeSet<String>,
     float_like_vars: &BTreeSet<String>,
     bool_like_vars: &BTreeSet<String>,
@@ -83,8 +81,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                                        sealed_blocks: &mut BTreeSet<Block>,
                                        vars: &BTreeMap<String, Variable>,
                                        name: &str,
-                                       int_carriers_plan: &ScalarRepresentationPlan,
-                                       float_primary_vars: &BTreeSet<String>|
+                                       representation_plan: &ScalarRepresentationPlan|
      -> Option<crate::VarValue> {
         var_get_boxed_overflow_safe_fn(
             module,
@@ -94,9 +91,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
             sealed_blocks,
             vars,
             name,
-            int_carriers_plan,
-            float_primary_vars,
-            bool_primary_vars,
+            representation_plan,
             nbc,
         )
     };
@@ -153,8 +148,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Class not found");
             let iconst = builder.ins().iconst(types::I64, size);
@@ -185,8 +179,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Class not found");
             let iconst = builder.ins().iconst(types::I64, size);
@@ -217,8 +210,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Class not found");
             let iconst = builder.ins().iconst(types::I64, size);
@@ -289,8 +281,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                         &mut *sealed_blocks,
                         vars,
                         name,
-                        int_carriers_plan,
-                        float_primary_vars,
+                        representation_plan,
                     )
                     .expect("Arg not found for alloc_task");
                     let offset = payload_base + (i * 8) as i32;
@@ -362,8 +353,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Object not found");
             let val = var_get_boxed_overflow_safe(
@@ -374,8 +364,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Value not found");
             let offset = op.value.unwrap_or(0) as i32;
@@ -415,13 +404,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 switch_to_block_materialized(&mut *builder, dfs_cont_block);
                 seal_block_once(&mut *builder, &mut *sealed_blocks, dfs_cont_block);
                 for name in origin_obj_cleanup {
-                    if cleanup_name_excluded(
-                        &name,
-                        None,
-                        param_name_set,
-                        int_carriers_plan,
-                        float_primary_vars,
-                    ) {
+                    if cleanup_name_excluded(&name, None, param_name_set, representation_plan) {
                         continue;
                     }
                     if let Some(cleanup_val) = entry_vars.get(&name).copied().or_else(|| {
@@ -433,8 +416,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                             &mut *sealed_blocks,
                             vars,
                             &name,
-                            int_carriers_plan,
-                            float_primary_vars,
+                            representation_plan,
                         )
                         .map(|v| *v)
                     }) {
@@ -442,13 +424,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                     }
                 }
                 for name in origin_ptr_cleanup {
-                    if cleanup_name_excluded(
-                        &name,
-                        None,
-                        param_name_set,
-                        int_carriers_plan,
-                        float_primary_vars,
-                    ) {
+                    if cleanup_name_excluded(&name, None, param_name_set, representation_plan) {
                         continue;
                     }
                     if let Some(cleanup_val) = entry_vars.get(&name).copied().or_else(|| {
@@ -460,8 +436,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                             &mut *sealed_blocks,
                             vars,
                             &name,
-                            int_carriers_plan,
-                            float_primary_vars,
+                            representation_plan,
                         )
                         .map(|v| *v)
                     }) {
@@ -675,13 +650,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 );
             }
             for name in origin_obj_cleanup {
-                if cleanup_name_excluded(
-                    &name,
-                    None,
-                    param_name_set,
-                    int_carriers_plan,
-                    float_primary_vars,
-                ) {
+                if cleanup_name_excluded(&name, None, param_name_set, representation_plan) {
                     continue;
                 }
                 if let Some(cleanup_val) = entry_vars.get(&name).copied().or_else(|| {
@@ -693,8 +662,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                         &mut *sealed_blocks,
                         vars,
                         &name,
-                        int_carriers_plan,
-                        float_primary_vars,
+                        representation_plan,
                     )
                     .map(|v| *v)
                 }) {
@@ -702,13 +670,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 }
             }
             for name in origin_ptr_cleanup {
-                if cleanup_name_excluded(
-                    &name,
-                    None,
-                    param_name_set,
-                    int_carriers_plan,
-                    float_primary_vars,
-                ) {
+                if cleanup_name_excluded(&name, None, param_name_set, representation_plan) {
                     continue;
                 }
                 if let Some(cleanup_val) = entry_vars.get(&name).copied().or_else(|| {
@@ -720,8 +682,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                         &mut *sealed_blocks,
                         vars,
                         &name,
-                        int_carriers_plan,
-                        float_primary_vars,
+                        representation_plan,
                     )
                     .map(|v| *v)
                 }) {
@@ -768,8 +729,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Object not found");
             let val = var_get_boxed_overflow_safe(
@@ -780,8 +740,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Value not found");
             let offset = op.value.unwrap_or(0) as i32;
@@ -820,13 +779,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 switch_to_block_materialized(&mut *builder, dfs_cont_block);
                 seal_block_once(&mut *builder, &mut *sealed_blocks, dfs_cont_block);
                 for name in origin_obj_cleanup {
-                    if cleanup_name_excluded(
-                        &name,
-                        None,
-                        param_name_set,
-                        int_carriers_plan,
-                        float_primary_vars,
-                    ) {
+                    if cleanup_name_excluded(&name, None, param_name_set, representation_plan) {
                         continue;
                     }
                     if let Some(cleanup_val) = entry_vars.get(&name).copied().or_else(|| {
@@ -838,8 +791,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                             &mut *sealed_blocks,
                             vars,
                             &name,
-                            int_carriers_plan,
-                            float_primary_vars,
+                            representation_plan,
                         )
                         .map(|v| *v)
                     }) {
@@ -847,13 +799,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                     }
                 }
                 for name in origin_ptr_cleanup {
-                    if cleanup_name_excluded(
-                        &name,
-                        None,
-                        param_name_set,
-                        int_carriers_plan,
-                        float_primary_vars,
-                    ) {
+                    if cleanup_name_excluded(&name, None, param_name_set, representation_plan) {
                         continue;
                     }
                     if let Some(cleanup_val) = entry_vars.get(&name).copied().or_else(|| {
@@ -865,8 +811,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                             &mut *sealed_blocks,
                             vars,
                             &name,
-                            int_carriers_plan,
-                            float_primary_vars,
+                            representation_plan,
                         )
                         .map(|v| *v)
                     }) {
@@ -977,13 +922,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 );
             }
             for name in origin_obj_cleanup {
-                if cleanup_name_excluded(
-                    &name,
-                    None,
-                    param_name_set,
-                    int_carriers_plan,
-                    float_primary_vars,
-                ) {
+                if cleanup_name_excluded(&name, None, param_name_set, representation_plan) {
                     continue;
                 }
                 if let Some(cleanup_val) = entry_vars.get(&name).copied().or_else(|| {
@@ -995,8 +934,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                         &mut *sealed_blocks,
                         vars,
                         &name,
-                        int_carriers_plan,
-                        float_primary_vars,
+                        representation_plan,
                     )
                     .map(|v| *v)
                 }) {
@@ -1004,13 +942,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 }
             }
             for name in origin_ptr_cleanup {
-                if cleanup_name_excluded(
-                    &name,
-                    None,
-                    param_name_set,
-                    int_carriers_plan,
-                    float_primary_vars,
-                ) {
+                if cleanup_name_excluded(&name, None, param_name_set, representation_plan) {
                     continue;
                 }
                 if let Some(cleanup_val) = entry_vars.get(&name).copied().or_else(|| {
@@ -1022,8 +954,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                         &mut *sealed_blocks,
                         vars,
                         &name,
-                        int_carriers_plan,
-                        float_primary_vars,
+                        representation_plan,
                     )
                     .map(|v| *v)
                 }) {
@@ -1047,8 +978,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Object not found");
             let offset_val = op.value.unwrap_or(0);
@@ -1081,8 +1011,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[0],
-                    int_carriers_plan,
-                    float_primary_vars,
+                    representation_plan,
                 )
                 .expect("Object not found");
                 unbox_ptr_value(&mut *builder, *obj, nbc)
@@ -1112,8 +1041,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Value not found");
             let offset = builder.ins().iconst(types::I64, op.value.unwrap_or(0));
@@ -1128,8 +1056,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[0],
-                    int_carriers_plan,
-                    float_primary_vars,
+                    representation_plan,
                 )
                 .expect("Object not found");
                 unbox_ptr_value(&mut *builder, *obj, nbc)
@@ -1158,8 +1085,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Object not found");
             let offset = op.value.unwrap_or(0);
@@ -1188,8 +1114,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Object not found");
             let obj_ptr = unbox_ptr_value(&mut *builder, *obj, nbc);
@@ -1201,8 +1126,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Class not found");
             let expected_version = var_get_boxed_overflow_safe(
@@ -1213,8 +1137,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[2],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Expected version not found");
             let Some(attr_name) = op.s_value.as_ref() else {
@@ -1278,8 +1201,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Object not found");
             let obj_ptr = unbox_ptr_value(&mut *builder, *obj, nbc);
@@ -1291,8 +1213,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Class not found");
             let expected_version = var_get_boxed_overflow_safe(
@@ -1303,8 +1224,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[2],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Expected version not found");
             let val = var_get_boxed_overflow_safe(
@@ -1315,8 +1235,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[3],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Value not found");
             let Some(attr_name) = op.s_value.as_ref() else {
@@ -1383,8 +1302,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Object not found");
             let obj_ptr = unbox_ptr_value(&mut *builder, *obj, nbc);
@@ -1396,8 +1314,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Class not found");
             let expected_version = var_get_boxed_overflow_safe(
@@ -1408,8 +1325,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[2],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Expected version not found");
             let val = var_get_boxed_overflow_safe(
@@ -1420,8 +1336,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[3],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Value not found");
             let Some(attr_name) = op.s_value.as_ref() else {
@@ -1488,7 +1403,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 let val_name = args.first().map(String::as_str).unwrap_or("");
                 if (tag == "int"
                     && (int_like_vars.contains(val_name)
-                        || int_carriers_plan.is_raw_int_carrier_name(val_name)))
+                        || representation_plan.is_raw_int_carrier_name(val_name)))
                     || (tag == "float" && float_like_vars.contains(val_name))
                     || (tag == "bool" && bool_like_vars.contains(val_name))
                     || (tag == "str" && str_like_vars.contains(val_name))
@@ -1502,8 +1417,8 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
             // an int value always matches an int tag.  Skip the
             // runtime call entirely.
             if scalar_fast_paths_enabled
-                && int_carriers_plan.is_raw_int_carrier_name(&args[0])
-                && int_carriers_plan.is_raw_int_carrier_name(&args[1])
+                && representation_plan.is_raw_int_carrier_name(&args[0])
+                && representation_plan.is_raw_int_carrier_name(&args[1])
             {
                 // Static guard: int matches int.  No-op.
             } else {
@@ -1515,8 +1430,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[0],
-                    int_carriers_plan,
-                    float_primary_vars,
+                    representation_plan,
                 )
                 .expect("Guard value not found");
                 let expected = var_get_boxed_overflow_safe(
@@ -1527,8 +1441,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[1],
-                    int_carriers_plan,
-                    float_primary_vars,
+                    representation_plan,
                 )
                 .expect("Guard expected tag not found");
                 let callee = SimpleBackend::import_func_id_split(
@@ -1552,8 +1465,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Guard object not found");
             let obj_ptr = unbox_ptr_value(&mut *builder, *obj, nbc);
@@ -1565,8 +1477,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Guard class not found");
             let expected_version = var_get_boxed_overflow_safe(
@@ -1577,8 +1488,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[2],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Guard version not found");
             let callee = SimpleBackend::import_func_id_split(

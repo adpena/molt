@@ -60,7 +60,7 @@ pub(in crate::native_backend::function_compiler) fn op_uses_heap_literal_data_se
 #[cfg(feature = "native-backend")]
 pub(in crate::native_backend::function_compiler) fn collect_loop_entry_const_defs(
     func_ir: &FunctionIR,
-    int_carriers_plan: &ScalarRepresentationPlan,
+    representation_plan: &ScalarRepresentationPlan,
 ) -> BTreeMap<String, i64> {
     func_ir
         .ops
@@ -71,7 +71,7 @@ pub(in crate::native_backend::function_compiler) fn collect_loop_entry_const_def
             match op.kind.as_str() {
                 "const" => {
                     let val = op.value.unwrap_or(0);
-                    if int_carriers_plan.is_raw_int_carrier_name(out) {
+                    if representation_plan.is_raw_int_carrier_name(out) {
                         return Some((out.clone(), val));
                     }
                     if native_int_literal_fits_inline(val) {
@@ -203,7 +203,7 @@ pub(in crate::native_backend::function_compiler) fn hoist_heap_literals(
     next_data_id: &mut u64,
     builder: &mut FunctionBuilder<'_>,
     vars: &BTreeMap<String, Variable>,
-    int_carriers_plan: &ScalarRepresentationPlan,
+    representation_plan: &ScalarRepresentationPlan,
 ) -> HeapLiteralHoists {
     let mut const_str_slots: BTreeMap<Vec<u8>, cranelift_codegen::ir::StackSlot> = BTreeMap::new();
     let mut const_bytes_slots: BTreeMap<Vec<u8>, cranelift_codegen::ir::StackSlot> =
@@ -259,7 +259,7 @@ pub(in crate::native_backend::function_compiler) fn hoist_heap_literals(
             "const" => {
                 let val = op.value.unwrap_or(0);
                 let out_name = match &op.out {
-                    Some(n) if !int_carriers_plan.is_raw_int_carrier_name(n) => n.clone(),
+                    Some(n) if !representation_plan.is_raw_int_carrier_name(n) => n.clone(),
                     _ => continue,
                 };
                 if native_int_literal_fits_inline(val) {
@@ -410,9 +410,7 @@ pub(in crate::native_backend::function_compiler) fn handle_const_literal_op(
     next_data_id: &mut u64,
     builder: &mut FunctionBuilder<'_>,
     vars: &BTreeMap<String, Variable>,
-    int_carriers_plan: &ScalarRepresentationPlan,
-    bool_primary_vars: &BTreeSet<String>,
-    float_primary_vars: &BTreeSet<String>,
+    representation_plan: &ScalarRepresentationPlan,
     hoists: &HeapLiteralHoists,
     rc_skip_dec: &mut std::collections::HashSet<String>,
 ) -> OpFlow {
@@ -422,7 +420,7 @@ pub(in crate::native_backend::function_compiler) fn handle_const_literal_op(
             let Some(out_name) = op.out.as_ref() else {
                 return OpFlow::Continue;
             };
-            if int_carriers_plan.is_raw_int_carrier_name(out_name.as_str()) {
+            if representation_plan.is_raw_int_carrier_name(out_name.as_str()) {
                 let raw_val = builder.ins().iconst(types::I64, val);
                 def_var_named(builder, vars, out_name, raw_val);
             } else if native_int_literal_fits_inline(val) {
@@ -430,7 +428,7 @@ pub(in crate::native_backend::function_compiler) fn handle_const_literal_op(
                 def_inline_int_value(
                     builder,
                     vars,
-                    int_carriers_plan,
+                    representation_plan,
                     out_name,
                     raw_val,
                     box_int(val),
@@ -485,7 +483,7 @@ pub(in crate::native_backend::function_compiler) fn handle_const_literal_op(
             let iconst = builder.ins().iconst(types::I64, boxed);
             if let Some(ref out__) = op.out {
                 let raw = builder.ins().iconst(types::I64, val);
-                def_bool_result(builder, vars, bool_primary_vars, out__, iconst, Some(raw));
+                def_bool_result(builder, vars, representation_plan, out__, iconst, Some(raw));
             }
         }
         "const_none" => {
@@ -528,7 +526,7 @@ pub(in crate::native_backend::function_compiler) fn handle_const_literal_op(
             let val = op.f_value.expect("Float value not found");
             let raw_f64 = builder.ins().f64const(val);
             if let Some(ref out__) = op.out {
-                if float_primary_vars.contains(out__.as_str()) {
+                if representation_plan.is_float_unboxed(out__.as_str()) {
                     def_var_named(builder, vars, out__, raw_f64);
                 } else {
                     let boxed = box_float(val);

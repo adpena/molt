@@ -37,12 +37,10 @@ pub(in crate::native_backend::function_compiler) fn handle_type_conversion(
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
-    int_carriers_plan: &ScalarRepresentationPlan,
-    float_primary_vars: &BTreeSet<String>,
-    bool_primary_vars: &BTreeSet<String>,
+    representation_plan: &ScalarRepresentationPlan,
     nbc: &crate::NanBoxConsts,
 ) {
-    // Reconstruct the original op-local closure (captures bool_primary_vars +
+    // Reconstruct the original op-local closure (captures representation_plan +
     // nbc; all other state threads through explicit params) so the moved arm
     // bodies call it exactly as they did inline.
     let var_get_boxed_overflow_safe = |module: &mut ObjectModule,
@@ -55,8 +53,7 @@ pub(in crate::native_backend::function_compiler) fn handle_type_conversion(
                                        sealed_blocks: &mut BTreeSet<Block>,
                                        vars: &BTreeMap<String, Variable>,
                                        name: &str,
-                                       int_carriers_plan: &ScalarRepresentationPlan,
-                                       float_primary_vars: &BTreeSet<String>|
+                                       representation_plan: &ScalarRepresentationPlan|
      -> Option<crate::VarValue> {
         var_get_boxed_overflow_safe_fn(
             module,
@@ -66,9 +63,7 @@ pub(in crate::native_backend::function_compiler) fn handle_type_conversion(
             sealed_blocks,
             vars,
             name,
-            int_carriers_plan,
-            float_primary_vars,
-            bool_primary_vars,
+            representation_plan,
             nbc,
         )
     };
@@ -83,8 +78,7 @@ pub(in crate::native_backend::function_compiler) fn handle_type_conversion(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Bytes source not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -111,8 +105,7 @@ pub(in crate::native_backend::function_compiler) fn handle_type_conversion(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Bytes source not found");
             let encoding = var_get_boxed_overflow_safe(
@@ -123,8 +116,7 @@ pub(in crate::native_backend::function_compiler) fn handle_type_conversion(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Bytes encoding not found");
             let errors = var_get_boxed_overflow_safe(
@@ -135,8 +127,7 @@ pub(in crate::native_backend::function_compiler) fn handle_type_conversion(
                 &mut *sealed_blocks,
                 vars,
                 &args[2],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Bytes errors not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -165,8 +156,7 @@ pub(in crate::native_backend::function_compiler) fn handle_type_conversion(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Bytearray source not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -193,8 +183,7 @@ pub(in crate::native_backend::function_compiler) fn handle_type_conversion(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Bytearray source not found");
             let encoding = var_get_boxed_overflow_safe(
@@ -205,8 +194,7 @@ pub(in crate::native_backend::function_compiler) fn handle_type_conversion(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Bytearray encoding not found");
             let errors = var_get_boxed_overflow_safe(
@@ -217,8 +205,7 @@ pub(in crate::native_backend::function_compiler) fn handle_type_conversion(
                 &mut *sealed_blocks,
                 vars,
                 &args[2],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Bytearray errors not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -247,8 +234,7 @@ pub(in crate::native_backend::function_compiler) fn handle_type_conversion(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Float source not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -262,7 +248,7 @@ pub(in crate::native_backend::function_compiler) fn handle_type_conversion(
             let call = builder.ins().call(local_callee, &[*src]);
             let res = builder.inst_results(call)[0];
             if let Some(out__) = op.out.as_ref() {
-                if float_primary_vars.contains(out__.as_str()) {
+                if representation_plan.is_float_unboxed(out__.as_str()) {
                     let raw_f64 = float_value_from_boxed_extended(
                         &mut *module,
                         &mut *import_ids,
@@ -286,8 +272,7 @@ pub(in crate::native_backend::function_compiler) fn handle_type_conversion(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Int value not found");
             let base = var_get_boxed_overflow_safe(
@@ -298,8 +283,7 @@ pub(in crate::native_backend::function_compiler) fn handle_type_conversion(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Int base not found");
             let has_base = var_get_boxed_overflow_safe(
@@ -310,8 +294,7 @@ pub(in crate::native_backend::function_compiler) fn handle_type_conversion(
                 &mut *sealed_blocks,
                 vars,
                 &args[2],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Int base flag not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -338,8 +321,7 @@ pub(in crate::native_backend::function_compiler) fn handle_type_conversion(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Int value not found");
             let base = var_get_boxed_overflow_safe(
@@ -350,8 +332,7 @@ pub(in crate::native_backend::function_compiler) fn handle_type_conversion(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Int base not found");
             let has_base = var_get_boxed_overflow_safe(
@@ -362,8 +343,7 @@ pub(in crate::native_backend::function_compiler) fn handle_type_conversion(
                 &mut *sealed_blocks,
                 vars,
                 &args[2],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Int base flag not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -390,8 +370,7 @@ pub(in crate::native_backend::function_compiler) fn handle_type_conversion(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Complex value not found");
             let imag = var_get_boxed_overflow_safe(
@@ -402,8 +381,7 @@ pub(in crate::native_backend::function_compiler) fn handle_type_conversion(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Complex imag not found");
             let has_imag = var_get_boxed_overflow_safe(
@@ -414,8 +392,7 @@ pub(in crate::native_backend::function_compiler) fn handle_type_conversion(
                 &mut *sealed_blocks,
                 vars,
                 &args[2],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Complex flag not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -442,8 +419,7 @@ pub(in crate::native_backend::function_compiler) fn handle_type_conversion(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Intarray source not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -470,8 +446,7 @@ pub(in crate::native_backend::function_compiler) fn handle_type_conversion(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Str source not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -498,8 +473,7 @@ pub(in crate::native_backend::function_compiler) fn handle_type_conversion(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Repr source not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -526,8 +500,7 @@ pub(in crate::native_backend::function_compiler) fn handle_type_conversion(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Ascii source not found");
             let callee = SimpleBackend::import_func_id_split(

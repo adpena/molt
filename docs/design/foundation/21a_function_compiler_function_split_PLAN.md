@@ -118,7 +118,7 @@ No planned M1 opcode-family cluster remains inline. Constant/literal materializa
 - **Private list/index support module** (`fc/list_index_fast_path.rs`): `ListIndexFastPathState`, cache invalidation, loop-index prelude classification, metadata-only loop control scans, loop-hoistable list detection, pre-loop definition collection, generic-list integer-lane eligibility, fallback import policy, regular-list store absorption, and integer sum-reduction detection. This is the extracted fast-path support authority shared by `indexing`, `loops`, `list_ops`, `control_flow`, and `ret_jump`.
 - **Shell-owned free helpers** (1-1473, reached via `super::*`): `def_var_named`, `import_func_ref`, cleanup-root helpers, data-segment/module helpers, preanalysis, and other orchestration that remains coupled to `compile_func_inner`. Plus assoc fns `SimpleBackend::import_func_id_split`, `SimpleBackend::intern_data_segment`; shared `fc` helpers own `op_prefers_int_lane` for extracted arithmetic/unary/control-flow handlers.
 - **lib.rs `pub(crate)` surface** (via `crate::`): `NanBoxConsts`, `VarValue`, `DeferredDefine`, `block_has_terminator`, `switch_to_block_tracking`, `extend_unique_tracked`, `unbox_int`, `box_int`. **Already pub(crate) — no widening.**
-- **Shared `let mut` locals** (~45 from preanalysis + in-loop caches): `builder`, `import_refs`, `sealed_blocks`, `vars`, `int/float/bool_primary_vars`, `bool_like_vars`, `loop_stack`, `if_stack`, `label_blocks`, element caches, `tracked_obj_vars`, `entry_vars`, `already_decrefed`, `alias_roots`, `last_use`, … → passed as split-borrowed explicit params (existing `handle_list_op` threads 20).
+- **Shared `let mut` locals** (~45 from preanalysis + in-loop caches): `builder`, `import_refs`, `sealed_blocks`, `vars`, `representation_plan`, `bool_like_vars`, `loop_stack`, `if_stack`, `label_blocks`, element caches, `tracked_obj_vars`, `entry_vars`, `already_decrefed`, `alias_roots`, `last_use`, … → passed as split-borrowed explicit params (existing `handle_list_op` threads 20).
 
 ## 2. Target layout
 Extend existing `function_compiler/fc/`. Each opcode family → one `fc/<family>.rs`
@@ -164,7 +164,7 @@ op-local closures reconstructed with identical captures (template: `list_ops.rs:
    (`fc/loops.rs:357-407`) is fully inside its local arm. **Audit each candidate's arm range for a
    bare outer-loop `break;` (not inside a nested for/while/loop) before moving**; if found, add an
    `OpFlow::Break` variant + a `fc::OpFlow::Break => break,` caller arm (mod.rs anticipates this).
-4. **Op-local closures** (e.g. `var_get_boxed_overflow_safe` capturing `bool_primary_vars`+`nbc`)
+4. **Op-local closures** (e.g. `var_get_boxed_overflow_safe` capturing `representation_plan`+`nbc`)
    reconstructed at handler top with identical captures (pattern `list_ops.rs:41`).
 
 ## 4. Ordering — each an independently-compiling move-only commit, green build

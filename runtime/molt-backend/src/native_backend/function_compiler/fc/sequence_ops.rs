@@ -39,9 +39,6 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
     vars: &BTreeMap<String, Variable>,
     scalarized_tuples: &mut BTreeMap<String, Vec<Value>>,
     skip_ops: &mut BTreeSet<usize>,
-    int_carriers_plan: &ScalarRepresentationPlan,
-    float_primary_vars: &BTreeSet<String>,
-    bool_primary_vars: &BTreeSet<String>,
     representation_plan: &ScalarRepresentationPlan,
     nbc: &crate::NanBoxConsts,
 ) -> OpFlow {
@@ -55,8 +52,7 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
                                        sealed_blocks: &mut BTreeSet<Block>,
                                        vars: &BTreeMap<String, Variable>,
                                        name: &str,
-                                       int_carriers_plan: &ScalarRepresentationPlan,
-                                       float_primary_vars: &BTreeSet<String>|
+                                       representation_plan: &ScalarRepresentationPlan|
      -> Option<crate::VarValue> {
         var_get_boxed_overflow_safe_fn(
             module,
@@ -66,9 +62,7 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
             sealed_blocks,
             vars,
             name,
-            int_carriers_plan,
-            float_primary_vars,
-            bool_primary_vars,
+            representation_plan,
             nbc,
         )
     };
@@ -84,7 +78,7 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
                     def_inline_int_value(
                         &mut *builder,
                         vars,
-                        int_carriers_plan,
+                        representation_plan,
                         out__,
                         raw_len,
                         box_int(len),
@@ -99,8 +93,7 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[0],
-                    int_carriers_plan,
-                    float_primary_vars,
+                    representation_plan,
                 )
                 .expect("Len arg not found");
                 // Dispatch to specialized fast-path len when container
@@ -124,7 +117,7 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
                 let call = builder.ins().call(local_callee, &[*val]);
                 let boxed_res = builder.inst_results(call)[0];
                 if let Some(out__) = op.out.as_ref() {
-                    if int_carriers_plan.is_raw_int_carrier_name(out__) {
+                    if representation_plan.is_raw_int_carrier_name(out__) {
                         let raw_res = unbox_int(&mut *builder, boxed_res, nbc);
                         def_var_named(&mut *builder, vars, out__, raw_res);
                     } else {
@@ -143,8 +136,7 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Range start not found");
             let stop = var_get_boxed_overflow_safe(
@@ -155,8 +147,7 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Range stop not found");
             let step = var_get_boxed_overflow_safe(
@@ -167,8 +158,7 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[2],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Range step not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -203,8 +193,7 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
                         &mut *sealed_blocks,
                         vars,
                         name,
-                        int_carriers_plan,
-                        float_primary_vars,
+                        representation_plan,
                     )
                     .expect("Tuple elem not found");
                     elems.push(*val);
@@ -229,8 +218,7 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
                         &mut *sealed_blocks,
                         vars,
                         name,
-                        int_carriers_plan,
-                        float_primary_vars,
+                        representation_plan,
                     )
                     .expect("Tuple elem not found");
                     builder
@@ -268,8 +256,7 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Unpack sequence source not found");
             let expected_count = op.value.unwrap_or(0) as usize;
@@ -317,8 +304,7 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Tuple not found");
             let val = var_get_boxed_overflow_safe(
@@ -329,8 +315,7 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Tuple count value not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -357,8 +342,7 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Tuple not found");
             let val = var_get_boxed_overflow_safe(
@@ -369,8 +353,7 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Tuple index value not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -397,8 +380,7 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Iter source not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -425,8 +407,7 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Enumerate iterable not found");
             let start = var_get_boxed_overflow_safe(
@@ -437,8 +418,7 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Enumerate start not found");
             let has_start = var_get_boxed_overflow_safe(
@@ -449,8 +429,7 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[2],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Enumerate has_start not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -482,8 +461,7 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Iter not found");
             let val_name = op.var.clone().unwrap_or_default();
@@ -557,9 +535,7 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
                         &mut *builder,
                         &mut *import_refs,
                         vars,
-                        int_carriers_plan,
-                        bool_primary_vars,
-                        float_primary_vars,
+                        representation_plan,
                         nbc,
                         &done_name,
                         done_bits,
@@ -573,9 +549,7 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
                         &mut *builder,
                         &mut *import_refs,
                         vars,
-                        int_carriers_plan,
-                        bool_primary_vars,
-                        float_primary_vars,
+                        representation_plan,
                         nbc,
                         &val_name,
                         loaded_key,
@@ -591,9 +565,7 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
                         &mut *builder,
                         &mut *import_refs,
                         vars,
-                        int_carriers_plan,
-                        bool_primary_vars,
-                        float_primary_vars,
+                        representation_plan,
                         nbc,
                         &unpack_args[1],
                         loaded_key,
@@ -604,9 +576,7 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
                         &mut *builder,
                         &mut *import_refs,
                         vars,
-                        int_carriers_plan,
-                        bool_primary_vars,
-                        float_primary_vars,
+                        representation_plan,
                         nbc,
                         &unpack_args[2],
                         loaded_value,
@@ -644,9 +614,7 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
                         &mut *builder,
                         &mut *import_refs,
                         vars,
-                        int_carriers_plan,
-                        bool_primary_vars,
-                        float_primary_vars,
+                        representation_plan,
                         nbc,
                         &done_name,
                         done_bits,
@@ -659,9 +627,7 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
                         &mut *builder,
                         &mut *import_refs,
                         vars,
-                        int_carriers_plan,
-                        bool_primary_vars,
-                        float_primary_vars,
+                        representation_plan,
                         nbc,
                         &val_name,
                         loaded_val,
@@ -679,8 +645,7 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Iter not found");
             let pair_name = op.out.clone().unwrap();

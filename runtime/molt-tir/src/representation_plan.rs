@@ -1345,6 +1345,16 @@ impl ScalarRepresentationPlan {
             .is_some_and(|repr| repr.is_raw_i64_carrier())
     }
 
+    /// Name-keyed raw-bool carrier predicate for native lowering.
+    pub fn is_bool_unboxed(&self, name: &str) -> bool {
+        self.bool_primary_names.contains(name)
+    }
+
+    /// Name-keyed raw-f64 carrier predicate for native lowering.
+    pub fn is_float_unboxed(&self, name: &str) -> bool {
+        self.float_primary_names.contains(name)
+    }
+
     #[cfg(any(feature = "native-backend", test))]
     #[cfg_attr(not(feature = "native-backend"), allow(dead_code))]
     pub fn scalar_slot_exclusion_unsafe(&self) -> BTreeSet<String> {

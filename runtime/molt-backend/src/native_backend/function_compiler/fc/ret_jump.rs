@@ -41,9 +41,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
-    int_carriers_plan: &ScalarRepresentationPlan,
-    float_primary_vars: &BTreeSet<String>,
-    bool_primary_vars: &BTreeSet<String>,
+    representation_plan: &ScalarRepresentationPlan,
     int_like_vars: &BTreeSet<String>,
     bool_like_vars: &BTreeSet<String>,
     param_name_set: &BTreeSet<&str>,
@@ -86,8 +84,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                                        sealed_blocks: &mut BTreeSet<Block>,
                                        vars: &BTreeMap<String, Variable>,
                                        name: &str,
-                                       int_carriers_plan: &ScalarRepresentationPlan,
-                                       float_primary_vars: &BTreeSet<String>|
+                                       representation_plan: &ScalarRepresentationPlan|
      -> Option<crate::VarValue> {
         var_get_boxed_overflow_safe_fn(
             module,
@@ -97,9 +94,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
             sealed_blocks,
             vars,
             name,
-            int_carriers_plan,
-            float_primary_vars,
-            bool_primary_vars,
+            representation_plan,
             nbc,
         )
     };
@@ -144,8 +139,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                                 &name,
                                 None,
                                 param_name_set,
-                                int_carriers_plan,
-                                float_primary_vars,
+                                representation_plan,
                             ) || !mark_cleanup_root_once(
                                 alias_roots,
                                 &mut *already_decrefed,
@@ -169,8 +163,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                                 &name,
                                 None,
                                 param_name_set,
-                                int_carriers_plan,
-                                float_primary_vars,
+                                representation_plan,
                             ) || !mark_cleanup_root_once(
                                 alias_roots,
                                 &mut *already_decrefed,
@@ -190,13 +183,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                     }
                 }
                 for name in tracked_vars.iter() {
-                    if cleanup_name_excluded(
-                        name,
-                        None,
-                        param_name_set,
-                        int_carriers_plan,
-                        float_primary_vars,
-                    ) {
+                    if cleanup_name_excluded(name, None, param_name_set, representation_plan) {
                         continue;
                     }
                     if let Some(val) = var_get_boxed_overflow_safe(
@@ -207,21 +194,14 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                         &mut *sealed_blocks,
                         vars,
                         name,
-                        int_carriers_plan,
-                        float_primary_vars,
+                        representation_plan,
                     ) && mark_cleanup_root_once(alias_roots, &mut *already_decrefed, name)
                     {
                         builder.ins().call(local_dec_ref_obj, &[*val]);
                     }
                 }
                 for name in tracked_obj_vars.iter() {
-                    if cleanup_name_excluded(
-                        name,
-                        None,
-                        param_name_set,
-                        int_carriers_plan,
-                        float_primary_vars,
-                    ) {
+                    if cleanup_name_excluded(name, None, param_name_set, representation_plan) {
                         continue;
                     }
                     if let Some(val) = var_get_boxed_overflow_safe(
@@ -232,8 +212,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                         &mut *sealed_blocks,
                         vars,
                         name,
-                        int_carriers_plan,
-                        float_primary_vars,
+                        representation_plan,
                     ) && mark_cleanup_root_once(alias_roots, &mut *already_decrefed, name)
                     {
                         builder.ins().call(local_dec_ref_obj, &[*val]);
@@ -257,11 +236,9 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                 &mut *import_refs,
                 &mut *sealed_blocks,
                 bool_like_vars,
-                bool_primary_vars,
                 vars,
                 nbc,
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
                 var_name,
             );
             let ret_root = alias_roots
@@ -282,8 +259,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                             &name,
                             Some(&protected_return_aliases),
                             param_name_set,
-                            int_carriers_plan,
-                            float_primary_vars,
+                            representation_plan,
                         ) || !mark_cleanup_root_once(alias_roots, &mut *already_decrefed, &name)
                         {
                             continue;
@@ -297,8 +273,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                                 &mut *sealed_blocks,
                                 vars,
                                 &name,
-                                int_carriers_plan,
-                                float_primary_vars,
+                                representation_plan,
                             )
                             .map(|v| *v)
                         });
@@ -314,8 +289,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                             &name,
                             Some(&protected_return_aliases),
                             param_name_set,
-                            int_carriers_plan,
-                            float_primary_vars,
+                            representation_plan,
                         ) || !mark_cleanup_root_once(alias_roots, &mut *already_decrefed, &name)
                         {
                             continue;
@@ -329,8 +303,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                                 &mut *sealed_blocks,
                                 vars,
                                 &name,
-                                int_carriers_plan,
-                                float_primary_vars,
+                                representation_plan,
                             )
                             .map(|v| *v)
                         });
@@ -352,8 +325,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                     name,
                     Some(&protected_return_aliases),
                     param_name_set,
-                    int_carriers_plan,
-                    float_primary_vars,
+                    representation_plan,
                 ) {
                     continue;
                 }
@@ -366,8 +338,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                         &mut *sealed_blocks,
                         vars,
                         name,
-                        int_carriers_plan,
-                        float_primary_vars,
+                        representation_plan,
                     )
                     .map(|v| *v)
                 });
@@ -382,8 +353,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                     name,
                     Some(&protected_return_aliases),
                     param_name_set,
-                    int_carriers_plan,
-                    float_primary_vars,
+                    representation_plan,
                 ) {
                     continue;
                 }
@@ -396,8 +366,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                         &mut *sealed_blocks,
                         vars,
                         name,
-                        int_carriers_plan,
-                        float_primary_vars,
+                        representation_plan,
                     )
                     .map(|v| *v)
                 });
@@ -429,13 +398,8 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                 // Function return: fully drain per-block tracked values.
                 if let Some(names) = block_tracked_obj.remove(&block) {
                     for name in names {
-                        if cleanup_name_excluded(
-                            &name,
-                            None,
-                            param_name_set,
-                            int_carriers_plan,
-                            float_primary_vars,
-                        ) || !mark_cleanup_root_once(alias_roots, &mut *already_decrefed, &name)
+                        if cleanup_name_excluded(&name, None, param_name_set, representation_plan)
+                            || !mark_cleanup_root_once(alias_roots, &mut *already_decrefed, &name)
                         {
                             continue;
                         }
@@ -451,13 +415,8 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                 }
                 if let Some(names) = block_tracked_ptr.remove(&block) {
                     for name in names {
-                        if cleanup_name_excluded(
-                            &name,
-                            None,
-                            param_name_set,
-                            int_carriers_plan,
-                            float_primary_vars,
-                        ) || !mark_cleanup_root_once(alias_roots, &mut *already_decrefed, &name)
+                        if cleanup_name_excluded(&name, None, param_name_set, representation_plan)
+                            || !mark_cleanup_root_once(alias_roots, &mut *already_decrefed, &name)
                         {
                             continue;
                         }
@@ -473,13 +432,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                 }
             }
             for name in tracked_vars.iter() {
-                if cleanup_name_excluded(
-                    name,
-                    None,
-                    param_name_set,
-                    int_carriers_plan,
-                    float_primary_vars,
-                ) {
+                if cleanup_name_excluded(name, None, param_name_set, representation_plan) {
                     continue;
                 }
                 if let Some(val) = entry_vars.get(name)
@@ -489,13 +442,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                 }
             }
             for name in tracked_obj_vars.iter() {
-                if cleanup_name_excluded(
-                    name,
-                    None,
-                    param_name_set,
-                    int_carriers_plan,
-                    float_primary_vars,
-                ) {
+                if cleanup_name_excluded(name, None, param_name_set, representation_plan) {
                     continue;
                 }
                 if let Some(val) = entry_vars.get(name)
@@ -540,8 +487,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                             &mut *sealed_blocks,
                             vars,
                             &name,
-                            int_carriers_plan,
-                            float_primary_vars,
+                            representation_plan,
                         )
                         .map(|v| *v)
                     });
@@ -577,8 +523,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                             &mut *sealed_blocks,
                             vars,
                             &name,
-                            int_carriers_plan,
-                            float_primary_vars,
+                            representation_plan,
                         )
                         .map(|v| *v)
                     });
@@ -614,11 +559,11 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                 );
             }
             // cond is NaN-boxed unless representation facts prove a raw
-            // bool-primary value; dispatch from bool_primary_vars to avoid
+            // bool-primary value; dispatch from representation_plan to avoid
             // unnecessary GIL-wrapped molt_is_truthy calls.
             let cond_name = &args[0];
             let cond_bool = if let Some(raw_val) =
-                bool_raw_value(&mut *builder, vars, bool_primary_vars, cond_name)
+                bool_raw_value(&mut *builder, vars, representation_plan, cond_name)
             {
                 // Raw bool from proven list_bool getitem or const_bool.
                 // Branch directly on raw 0/1 — ZERO NaN-box overhead.
@@ -633,21 +578,20 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[0],
-                    int_carriers_plan,
-                    float_primary_vars,
+                    representation_plan,
                 )
                 .expect("Cond not found");
                 let one = builder.ins().iconst(types::I64, 1);
                 let bit0 = builder.ins().band(*cond, one);
                 builder.ins().icmp_imm(IntCC::NotEqual, bit0, 0)
             } else if let Some(raw_shadow) =
-                int_raw_value(&mut *builder, vars, int_carriers_plan, &args[0])
+                int_raw_value(&mut *builder, vars, representation_plan, &args[0])
             {
                 // Proven raw i64 carrier: truthiness is `value != 0`.
                 builder.ins().icmp_imm(IntCC::NotEqual, raw_shadow, 0)
             } else if scalar_fast_paths_enabled
                 && (int_like_vars.contains(cond_name)
-                    || int_carriers_plan.is_raw_int_carrier_name(cond_name))
+                    || representation_plan.is_raw_int_carrier_name(cond_name))
             {
                 // `var_is_int` only proves Python-`int` type, which includes
                 // heap BigInts (TAG_PTR). The trusted unbox would truncate a
@@ -663,8 +607,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[0],
-                    int_carriers_plan,
-                    float_primary_vars,
+                    representation_plan,
                 )
                 .expect("Cond not found");
                 let cond_val = unbox_int_or_bool(&mut *builder, *cond, nbc);
@@ -681,8 +624,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[0],
-                    int_carriers_plan,
-                    float_primary_vars,
+                    representation_plan,
                 )
                 .expect("Cond not found");
                 // Speculative inline truthiness: check NaN-box tag
@@ -942,14 +884,14 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                 // AND destination is proven-int, transfer the raw i64 directly.
                 // This eliminates box+unbox round-trips in tight loops like
                 // `total += i; i += 1` where both sides are proven-int.
-                if int_carriers_plan.is_raw_int_carrier_name(&args[0])
+                if representation_plan.is_raw_int_carrier_name(&args[0])
                     && scalar_fast_paths_enabled
-                    && int_carriers_plan.is_raw_int_carrier_name(name)
+                    && representation_plan.is_raw_int_carrier_name(name)
                     && !slot_backed_join_slots.contains_key(name)
                 {
                     // Read raw i64 from source Variable (no boxing).
                     let raw_val =
-                        { int_raw_value(&mut *builder, vars, int_carriers_plan, &args[0]) }
+                        { int_raw_value(&mut *builder, vars, representation_plan, &args[0]) }
                             .unwrap_or_else(|| {
                                 // Source is raw-primary but has no shadow entry yet.
                                 // Read directly from the main Variable (which holds raw i64).
@@ -958,7 +900,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                                     .expect("store_var: raw src var not found");
                                 builder.use_var(var)
                             });
-                    // Phase 1c: int_carriers_plan join slots write raw
+                    // Phase 1c: representation_plan join slots write raw
                     // i64 directly to the main Variable. The
                     // loop_start demote is taught to skip them, so
                     // both the entry preheader and the back edge
@@ -983,12 +925,12 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                 // When destination is a float-primary variable, transfer
                 // raw f64 directly with no boxing and no refcount ops.
                 // Float values are always stack values, never heap pointers.
-                if float_primary_vars.contains(name)
+                if representation_plan.is_float_unboxed(name)
                     && scalar_fast_paths_enabled
                     && !slot_backed_join_slots.contains_key(name)
                 {
                     let raw_f64 =
-                        float_value_for(&mut *builder, vars, float_primary_vars, &args[0])
+                        float_value_for(&mut *builder, vars, representation_plan, &args[0])
                             .unwrap_or_else(|| {
                                 // Source is NaN-boxed -- extract f64 bits.
                                 let boxed = var_get_boxed_overflow_safe(
@@ -999,8 +941,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                                     &mut *sealed_blocks,
                                     vars,
                                     &args[0],
-                                    int_carriers_plan,
-                                    float_primary_vars,
+                                    representation_plan,
                                 )
                                 .expect("store_var: float src not found");
                                 builder
@@ -1016,15 +957,23 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                 // main Cranelift Variable, including proven join
                 // carriers. The static fixpoint only admits targets
                 // whose store sources are themselves raw-closed.
-                if bool_primary_vars.contains(name)
+                if representation_plan.is_bool_unboxed(name)
                     && scalar_fast_paths_enabled
                     && !slot_backed_join_slots.contains_key(name)
                 {
-                    let raw_bool = bool_raw_value(&mut *builder, vars, bool_primary_vars, &args[0])
-                        .unwrap_or_else(|| {
-                            panic!("store_var: bool-primary src missing raw bool: {}", args[0])
-                        });
-                    def_raw_bool_value(&mut *builder, vars, bool_primary_vars, name, raw_bool, nbc);
+                    let raw_bool =
+                        bool_raw_value(&mut *builder, vars, representation_plan, &args[0])
+                            .unwrap_or_else(|| {
+                                panic!("store_var: bool-primary src missing raw bool: {}", args[0])
+                            });
+                    def_raw_bool_value(
+                        &mut *builder,
+                        vars,
+                        representation_plan,
+                        name,
+                        raw_bool,
+                        nbc,
+                    );
                     // No refcount ops needed -- raw bool is an inline scalar.
                     return OpFlow::Continue;
                 }
@@ -1039,10 +988,10 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                 if raw_backed_slot_names.contains(name)
                     && let Some(&slot) = slot_backed_join_slots.get(name)
                 {
-                    let raw_val = if bool_primary_vars.contains(name) {
-                        bool_raw_value(&mut *builder, vars, bool_primary_vars, &args[0])
+                    let raw_val = if representation_plan.is_bool_unboxed(name) {
+                        bool_raw_value(&mut *builder, vars, representation_plan, &args[0])
                     } else {
-                        int_raw_value(&mut *builder, vars, int_carriers_plan, &args[0])
+                        int_raw_value(&mut *builder, vars, representation_plan, &args[0])
                     }
                     .unwrap_or_else(|| {
                         panic!(
@@ -1062,8 +1011,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[0],
-                    int_carriers_plan,
-                    float_primary_vars,
+                    representation_plan,
                 )
                 .expect("store_var: src not found");
                 if let Some(&slot) = slot_backed_join_slots.get(name) {
@@ -1121,9 +1069,9 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                     }
                     found
                 };
-                let store_uses_boxed_transport = !int_carriers_plan.is_raw_int_carrier_name(name)
-                    && !bool_primary_vars.contains(name)
-                    && !float_primary_vars.contains(name);
+                let store_uses_boxed_transport = !representation_plan.is_raw_int_carrier_name(name)
+                    && !representation_plan.is_bool_unboxed(name)
+                    && !representation_plan.is_float_unboxed(name);
                 // RC drop-insertion substrate (design 20, R1 guard — inc
                 // side): when the TIR drop pass processed this function it
                 // already inserted the loop-carried RC ownership transfer
@@ -1163,9 +1111,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                     &mut *builder,
                     &mut *import_refs,
                     vars,
-                    int_carriers_plan,
-                    bool_primary_vars,
-                    float_primary_vars,
+                    representation_plan,
                     nbc,
                     name,
                     *val,
@@ -1182,8 +1128,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[0],
-                    int_carriers_plan,
-                    float_primary_vars,
+                    representation_plan,
                 );
             }
         }
@@ -1211,8 +1156,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                 &mut *sealed_blocks,
                 vars,
                 missing_name,
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("delete_var: missing sentinel not found");
             let old_val = *var_get_boxed_overflow_safe(
@@ -1223,8 +1167,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                 &mut *sealed_blocks,
                 vars,
                 old_name,
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("delete_var: old local operand not found");
             if let Some(&slot) = slot_backed_join_slots.get(name) {
@@ -1236,9 +1179,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                     &mut *builder,
                     &mut *import_refs,
                     vars,
-                    int_carriers_plan,
-                    bool_primary_vars,
-                    float_primary_vars,
+                    representation_plan,
                     nbc,
                     name,
                     missing_val,
@@ -1279,16 +1220,17 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                     if raw_backed_slot_names.contains(var_name.as_str()) {
                         let raw_val = builder.ins().stack_load(types::I64, slot, 0);
                         if let Some(out_name) = op.out.as_ref().as_ref() {
-                            if bool_primary_vars.contains(var_name.as_str()) {
+                            if representation_plan.is_bool_unboxed(var_name.as_str()) {
                                 def_raw_bool_value(
                                     &mut *builder,
                                     vars,
-                                    bool_primary_vars,
+                                    representation_plan,
                                     out_name,
                                     raw_val,
                                     nbc,
                                 );
-                            } else if int_carriers_plan.is_raw_int_carrier_name(out_name.as_str()) {
+                            } else if representation_plan.is_raw_int_carrier_name(out_name.as_str())
+                            {
                                 def_var_named(&mut *builder, vars, out_name, raw_val);
                             } else {
                                 let boxed = box_raw_i64_value_overflow_safe(
@@ -1305,9 +1247,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                                     &mut *builder,
                                     &mut *import_refs,
                                     vars,
-                                    int_carriers_plan,
-                                    bool_primary_vars,
-                                    float_primary_vars,
+                                    representation_plan,
                                     nbc,
                                     out_name,
                                     boxed,
@@ -1342,9 +1282,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                             &mut *builder,
                             &mut *import_refs,
                             vars,
-                            int_carriers_plan,
-                            bool_primary_vars,
-                            float_primary_vars,
+                            representation_plan,
                             nbc,
                             out_name,
                             val,
@@ -1355,14 +1293,14 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                 // --- Raw-primary int fast path ---
                 // When source is raw-primary and output is proven-int,
                 // transfer raw i64 directly -- no boxing, no refcount.
-                if int_carriers_plan.is_raw_int_carrier_name(var_name.as_str())
+                if representation_plan.is_raw_int_carrier_name(var_name.as_str())
                     && scalar_fast_paths_enabled
                     && op
                         .out
                         .as_ref()
-                        .is_some_and(|o| int_carriers_plan.is_raw_int_carrier_name(o))
+                        .is_some_and(|o| representation_plan.is_raw_int_carrier_name(o))
                 {
-                    let raw_val = int_raw_value(&mut *builder, vars, int_carriers_plan, var_name)
+                    let raw_val = int_raw_value(&mut *builder, vars, representation_plan, var_name)
                         .unwrap_or_else(|| {
                             let var = *vars
                                 .get(var_name.as_str())
@@ -1378,11 +1316,11 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                 if op
                     .out
                     .as_ref()
-                    .is_some_and(|o| float_primary_vars.contains(o))
+                    .is_some_and(|o| representation_plan.is_float_unboxed(o))
                     && scalar_fast_paths_enabled
                 {
                     let raw_f64 =
-                        float_value_for(&mut *builder, vars, float_primary_vars, var_name)
+                        float_value_for(&mut *builder, vars, representation_plan, var_name)
                             .unwrap_or_else(|| {
                                 let boxed = var_get_boxed_overflow_safe(
                                     &mut *module,
@@ -1392,8 +1330,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                                     &mut *sealed_blocks,
                                     vars,
                                     var_name,
-                                    int_carriers_plan,
-                                    float_primary_vars,
+                                    representation_plan,
                                 )
                                 .expect("load_var: float src not found");
                                 builder
@@ -1405,19 +1342,20 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                     return OpFlow::Continue;
                 }
                 // --- Raw-primary bool fast path ---
-                if bool_primary_vars.contains(var_name.as_str())
+                if representation_plan.is_bool_unboxed(var_name.as_str())
                     && scalar_fast_paths_enabled
                     && op.out.as_ref().is_some_and(|o| bool_like_vars.contains(o))
                 {
-                    let raw_bool = bool_raw_value(&mut *builder, vars, bool_primary_vars, var_name)
-                        .unwrap_or_else(|| {
-                            panic!("load_var: bool-primary src missing raw bool: {var_name}")
-                        });
+                    let raw_bool =
+                        bool_raw_value(&mut *builder, vars, representation_plan, var_name)
+                            .unwrap_or_else(|| {
+                                panic!("load_var: bool-primary src missing raw bool: {var_name}")
+                            });
                     let out_name = op.out.as_ref().unwrap();
                     def_raw_bool_value(
                         &mut *builder,
                         vars,
-                        bool_primary_vars,
+                        representation_plan,
                         out_name,
                         raw_bool,
                         nbc,
@@ -1432,8 +1370,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                     &mut *sealed_blocks,
                     vars,
                     var_name,
-                    int_carriers_plan,
-                    float_primary_vars,
+                    representation_plan,
                 )
                 .expect("load_var: var not found");
                 if let Some(out_name) = op.out.as_ref().as_ref() {
@@ -1443,9 +1380,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                         &mut *builder,
                         &mut *import_refs,
                         vars,
-                        int_carriers_plan,
-                        bool_primary_vars,
-                        float_primary_vars,
+                        representation_plan,
                         nbc,
                         out_name,
                         *val,
@@ -1459,16 +1394,17 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                     if raw_backed_slot_names.contains(args[0].as_str()) {
                         let raw_val = builder.ins().stack_load(types::I64, slot, 0);
                         if let Some(out_name) = op.out.as_ref().as_ref() {
-                            if bool_primary_vars.contains(args[0].as_str()) {
+                            if representation_plan.is_bool_unboxed(args[0].as_str()) {
                                 def_raw_bool_value(
                                     &mut *builder,
                                     vars,
-                                    bool_primary_vars,
+                                    representation_plan,
                                     out_name,
                                     raw_val,
                                     nbc,
                                 );
-                            } else if int_carriers_plan.is_raw_int_carrier_name(out_name.as_str()) {
+                            } else if representation_plan.is_raw_int_carrier_name(out_name.as_str())
+                            {
                                 def_var_named(&mut *builder, vars, out_name, raw_val);
                             } else {
                                 let boxed = box_raw_i64_value_overflow_safe(
@@ -1485,9 +1421,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                                     &mut *builder,
                                     &mut *import_refs,
                                     vars,
-                                    int_carriers_plan,
-                                    bool_primary_vars,
-                                    float_primary_vars,
+                                    representation_plan,
                                     nbc,
                                     out_name,
                                     boxed,
@@ -1522,9 +1456,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                             &mut *builder,
                             &mut *import_refs,
                             vars,
-                            int_carriers_plan,
-                            bool_primary_vars,
-                            float_primary_vars,
+                            representation_plan,
                             nbc,
                             out_name,
                             val,
@@ -1533,14 +1465,14 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                     return OpFlow::Continue;
                 }
                 // --- Raw-primary int fast path (args-based copy_var) ---
-                if int_carriers_plan.is_raw_int_carrier_name(&args[0])
+                if representation_plan.is_raw_int_carrier_name(&args[0])
                     && scalar_fast_paths_enabled
                     && op
                         .out
                         .as_ref()
-                        .is_some_and(|o| int_carriers_plan.is_raw_int_carrier_name(o))
+                        .is_some_and(|o| representation_plan.is_raw_int_carrier_name(o))
                 {
-                    let raw_val = int_raw_value(&mut *builder, vars, int_carriers_plan, &args[0])
+                    let raw_val = int_raw_value(&mut *builder, vars, representation_plan, &args[0])
                         .unwrap_or_else(|| {
                             let var = *vars.get(&args[0]).expect("copy_var: raw src var not found");
                             builder.use_var(var)
@@ -1550,19 +1482,20 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                     return OpFlow::Continue;
                 }
                 // --- Raw-primary bool fast path (args-based copy_var) ---
-                if bool_primary_vars.contains(&args[0])
+                if representation_plan.is_bool_unboxed(&args[0])
                     && scalar_fast_paths_enabled
                     && op.out.as_ref().is_some_and(|o| bool_like_vars.contains(o))
                 {
-                    let raw_bool = bool_raw_value(&mut *builder, vars, bool_primary_vars, &args[0])
-                        .unwrap_or_else(|| {
-                            panic!("copy_var: bool-primary src missing raw bool: {}", args[0])
-                        });
+                    let raw_bool =
+                        bool_raw_value(&mut *builder, vars, representation_plan, &args[0])
+                            .unwrap_or_else(|| {
+                                panic!("copy_var: bool-primary src missing raw bool: {}", args[0])
+                            });
                     let out_name = op.out.as_ref().unwrap();
                     def_raw_bool_value(
                         &mut *builder,
                         vars,
-                        bool_primary_vars,
+                        representation_plan,
                         out_name,
                         raw_bool,
                         nbc,
@@ -1577,8 +1510,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[0],
-                    int_carriers_plan,
-                    float_primary_vars,
+                    representation_plan,
                 )
                 .expect("copy_var: src not found");
                 if let Some(out_name) = op.out.as_ref().as_ref() {
@@ -1588,9 +1520,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                         &mut *builder,
                         &mut *import_refs,
                         vars,
-                        int_carriers_plan,
-                        bool_primary_vars,
-                        float_primary_vars,
+                        representation_plan,
                         nbc,
                         out_name,
                         *val,

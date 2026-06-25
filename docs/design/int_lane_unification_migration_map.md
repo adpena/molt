@@ -14,13 +14,21 @@ Current binding gate: `git grep int_primary_vars -- runtime/molt-backend` is
 empty. The counts below are the pre-migration audit that made the atomic move
 reviewable; they are retained as provenance, not as live instructions.
 
+Native scalar-plan follow-through: the same handler-wide authority class now
+also forbids cloned `bool_primary_vars` / `float_primary_vars` sets and the
+legacy `int_carriers_plan` alias in native backend code. The live gate is
+`tools/structural_audit.py --check`, metric
+`native_scalar_plan_authority_violations = 0`, backed by direct scans of
+`runtime/molt-backend/src/native_backend/function_compiler.rs` and
+`runtime/molt-backend/src/native_backend/function_compiler/**`.
+
 **Framing (binding):** this is ONE atomic threading change, NOT 41 chips. Every
 file below is part of the same structural arc — the same arc the FLOAT-lane cut
 executed for `float_primary_vars` ("all 41 `fc/` handler files +
 `function_compiler.rs` as one structural arc, 1206 lines", float doc STEP 4).
-Partial migration leaves two int-carrier authorities live, which the CLAUDE.md
-asymmetry rule forbids. The map exists so no `fc/` site is missed and so the
-change can be reviewed as one coherent diff.
+Partial migration leaves two scalar-carrier authorities live, which the
+CLAUDE.md asymmetry rule forbids. The map exists so no `fc/` site is missed and
+so the change can be reviewed as one coherent diff.
 
 
 ## The authority that was unified
