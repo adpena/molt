@@ -216,18 +216,27 @@ here so the algorithm cannot be declared done without satisfying it.
 - **Status:** STRUCTURALLY ENFORCED + GATED (fail-closed corpus exercises every
   one of these typed refusals).
 
-### F7 — `model_pair_provenance`: every adapter declares its target/draft pair and source
+### F7 — `adapter_identity_metadata`: every adapter declares its target/draft pair and checkpoint schema
 
 - **Cite:** the official Z-Lab model registry and current vLLM/SGLang usage all
   configure DFlash by pairing a target verifier model with a specific DFlash
-  draft artifact. DFlash is not an anonymous "speculative mode".
+  draft artifact. Current vLLM/SGLang/DFlash-family integrations also make
+  block size, target layer IDs, hidden-state schema, KV/cross-attention schema,
+  tokenizer, mask-token identity, and target-context injection path part of the
+  checkpoint contract. DFlash is not an anonymous "speculative mode".
 - **Invariant:** a `DFlashAdapterSpec` must declare the exact target model id,
-  draft model id, and provenance/source string for the adapter. Empty or
-  non-string metadata is rejected before registration.
+  draft model id, provenance/source string, and typed `DFlashAdapterMetadata`.
+  The metadata must identify the DFlash-family algorithm/version, tokenizer,
+  mask token, target layer IDs, target feature schema, KV schema, target
+  conditioning path, maximum block size, non-causal draft attention, and
+  per-layer target-context injection. Empty, loose, single-token-only, causal
+  autoregressive, or non-injecting metadata is rejected before registration.
 - **Checkable assertion (today):** `DFlashAdapterSpec` validates non-empty
-  `target_model_id`, `draft_model_id`, and `provenance`; the fail-closed corpus
-  asserts the typed refusals. Test fixtures use `test://...` ids and explicit
-  test-only provenance so they cannot be mistaken for production model support.
+  `target_model_id`, `draft_model_id`, and `provenance`, requires a typed
+  `DFlashAdapterMetadata`, and that metadata validates the schema fields above;
+  the fail-closed corpus asserts the typed refusals. Test fixtures use
+  `test://...` ids and explicit test-only provenance/metadata so they cannot be
+  mistaken for production model support.
 - **Status:** STRUCTURALLY ENFORCED + GATED.
 
 ---
@@ -253,6 +262,15 @@ typed error, by `tests/gpu/dflash/test_dflash_fidelity.py`:
 | anonymous adapter target | `DFlashAdapterSpec(target_model_id="", …)` | `ValueError("dflash adapter target_model_id must be non-empty")` | `adapters.py` |
 | anonymous adapter draft | `DFlashAdapterSpec(draft_model_id="   ", …)` | `ValueError("dflash adapter draft_model_id must be non-empty")` | `adapters.py` |
 | missing adapter provenance | `DFlashAdapterSpec(provenance=None, …)` | `TypeError("dflash adapter provenance must be a string")` | `adapters.py` |
+| loose adapter metadata | `DFlashAdapterSpec(metadata={...}, …)` | `TypeError("dflash adapter metadata must be DFlashAdapterMetadata")` | `adapters.py` |
+| missing adapter tokenizer | `DFlashAdapterMetadata(tokenizer_id="", …)` | `ValueError("dflash adapter tokenizer_id must be non-empty")` | `adapters.py` |
+| invalid adapter mask token | `DFlashAdapterMetadata(mask_token_id=True, …)` | `TypeError("dflash adapter mask_token_id must be an integer token id")` | `adapters.py` |
+| missing target layer IDs | `DFlashAdapterMetadata(target_layer_ids=[], …)` | `ValueError("dflash adapter target_layer_ids must be non-empty")` | `adapters.py` |
+| missing hidden-state schema | `DFlashAdapterMetadata(target_feature_schema=" ", …)` | `ValueError("dflash adapter target_feature_schema must be non-empty")` | `adapters.py` |
+| missing KV schema | `DFlashAdapterMetadata(kv_schema=None, …)` | `TypeError("dflash adapter kv_schema must be a string")` | `adapters.py` |
+| single-token-only adapter | `DFlashAdapterMetadata(max_block_size=1, …)` | `ValueError("dflash adapter max_block_size must support block drafting")` | `adapters.py` |
+| causal/autoregressive metadata | `DFlashAdapterMetadata(uses_non_causal_draft_attention=False, …)` | `ValueError("dflash adapter uses_non_causal_draft_attention must be true")` | `adapters.py` |
+| non-injecting metadata | `DFlashAdapterMetadata(injects_target_context_each_layer=False, …)` | `ValueError("dflash adapter injects_target_context_each_layer must be true")` | `adapters.py` |
 | non-spec adapter registration | `register_dflash_adapter(object())` | `TypeError("register_dflash_adapter expects DFlashAdapterSpec")` | `adapters.py:46-47` |
 | generic adapter returns non-runtime | adapter `create_runtime` returns a non-`DFlashRuntime` | `TypeError("dflash adapter create_runtime() must return DFlashRuntime")` | `adapters.py:139-140` |
 | named adapter unavailable | `build_dflash_runtime(…, dflash_adapter="x")` with no supporting adapter | `LookupError("dflash adapter 'x' is unavailable for this context")` | `adapters.py:167-170` |

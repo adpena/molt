@@ -33,6 +33,7 @@ from pathlib import Path
 import pytest
 
 from molt.gpu.dflash import (
+    DFlashAdapterMetadata,
     DFlashAdapterSpec,
     DFlashConditioning,
     DFlashRuntime,
@@ -204,7 +205,9 @@ def test_runtime_generic_conditioning_raises_typeerror():
         target_kv=[[0.0]],
         position_ids=[0],
     )
-    with pytest.raises(TypeError, match="initial_conditioning must be DFlashConditioning"):
+    with pytest.raises(
+        TypeError, match="initial_conditioning must be DFlashConditioning"
+    ):
         DFlashRuntime(
             draft_step=lambda req: req,
             verify_step=lambda req: req,
@@ -265,16 +268,35 @@ def _adapter_spec(
         target_model_id=f"test://target/{name}",
         draft_model_id=f"test://draft/{name}",
         provenance="test-only synthetic DFlash adapter fixture",
+        metadata=_adapter_metadata(name),
         supports=supports,
         create_runtime=create_runtime,
         priority=priority,
     )
 
 
+def _adapter_metadata(name: str = "synthetic") -> DFlashAdapterMetadata:
+    return DFlashAdapterMetadata(
+        algorithm_family="base_dflash",
+        adapter_version=f"test://adapter-version/{name}",
+        tokenizer_id=f"test://tokenizer/{name}",
+        mask_token_id=0,
+        target_layer_ids=[0, 2],
+        target_feature_schema="test:hidden_states[batch,seq,hidden]",
+        kv_schema="test:kv[layer,batch,heads,seq,dim]",
+        target_conditioning_path="kv_injection_each_draft_layer",
+        max_block_size=4,
+        uses_non_causal_draft_attention=True,
+        injects_target_context_each_layer=True,
+    )
+
+
 def test_register_dflash_adapter_rejects_non_spec():
     # The registry is typed: only DFlashAdapterSpec instances register. A bare
     # callable (a "generic adapter") cannot be smuggled in.
-    with pytest.raises(TypeError, match="register_dflash_adapter expects DFlashAdapterSpec"):
+    with pytest.raises(
+        TypeError, match="register_dflash_adapter expects DFlashAdapterSpec"
+    ):
         register_dflash_adapter(object())
 
 
@@ -309,12 +331,102 @@ def test_adapter_spec_requires_model_pair_provenance(
         "target_model_id": "test://target/metadata-required",
         "draft_model_id": "test://draft/metadata-required",
         "provenance": "test-only synthetic DFlash adapter fixture",
+        "metadata": _adapter_metadata("metadata-required"),
         "supports": lambda _context: True,
         "create_runtime": lambda _context: object(),
     }
     kwargs[field_name] = field_value
     with pytest.raises(exc_type, match=message):
         DFlashAdapterSpec(**kwargs)
+
+
+@pytest.mark.parametrize(
+    ("field_name", "field_value", "exc_type", "message"),
+    (
+        (
+            "tokenizer_id",
+            "",
+            ValueError,
+            "dflash adapter tokenizer_id must be non-empty",
+        ),
+        (
+            "mask_token_id",
+            True,
+            TypeError,
+            "dflash adapter mask_token_id must be an integer token id",
+        ),
+        (
+            "target_layer_ids",
+            [],
+            ValueError,
+            "dflash adapter target_layer_ids must be non-empty",
+        ),
+        (
+            "target_feature_schema",
+            " ",
+            ValueError,
+            "dflash adapter target_feature_schema must be non-empty",
+        ),
+        (
+            "kv_schema",
+            None,
+            TypeError,
+            "dflash adapter kv_schema must be a string",
+        ),
+        (
+            "max_block_size",
+            1,
+            ValueError,
+            "dflash adapter max_block_size must support block drafting",
+        ),
+        (
+            "uses_non_causal_draft_attention",
+            False,
+            ValueError,
+            "dflash adapter uses_non_causal_draft_attention must be true",
+        ),
+        (
+            "injects_target_context_each_layer",
+            False,
+            ValueError,
+            "dflash adapter injects_target_context_each_layer must be true",
+        ),
+    ),
+)
+def test_adapter_metadata_requires_dflash_identity_fields(
+    field_name, field_value, exc_type, message
+):
+    kwargs = {
+        "algorithm_family": "base_dflash",
+        "adapter_version": "test://adapter-version/metadata-required",
+        "tokenizer_id": "test://tokenizer/metadata-required",
+        "mask_token_id": 0,
+        "target_layer_ids": [0, 2],
+        "target_feature_schema": "test:hidden_states[batch,seq,hidden]",
+        "kv_schema": "test:kv[layer,batch,heads,seq,dim]",
+        "target_conditioning_path": "kv_injection_each_draft_layer",
+        "max_block_size": 4,
+        "uses_non_causal_draft_attention": True,
+        "injects_target_context_each_layer": True,
+    }
+    kwargs[field_name] = field_value
+    with pytest.raises(exc_type, match=message):
+        DFlashAdapterMetadata(**kwargs)
+
+
+def test_adapter_spec_requires_typed_metadata():
+    with pytest.raises(
+        TypeError, match="dflash adapter metadata must be DFlashAdapterMetadata"
+    ):
+        DFlashAdapterSpec(
+            name="metadata-type-required",
+            target_model_id="test://target/metadata-type-required",
+            draft_model_id="test://draft/metadata-type-required",
+            provenance="test-only synthetic DFlash adapter fixture",
+            metadata={"kind": "loose-dict"},
+            supports=lambda _context: True,
+            create_runtime=lambda _context: object(),
+        )
 
 
 def test_generic_adapter_returning_non_runtime_raises_typeerror():
@@ -347,7 +459,8 @@ def test_named_unavailable_adapter_raises_lookuperror():
     # Requesting a named DFlash adapter that is absent / unsupported must be a
     # typed LookupError — never a silent generic fallback runtime (SPEC.md F6).
     with pytest.raises(
-        LookupError, match="dflash adapter 'no_such_adapter' is unavailable for this context"
+        LookupError,
+        match="dflash adapter 'no_such_adapter' is unavailable for this context",
     ):
         build_dflash_runtime(
             model=object(),
