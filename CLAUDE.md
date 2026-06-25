@@ -285,7 +285,7 @@ When Codex, Claude, Desktop, WSL bridging, MCP/tool discovery, subagents,
 process custody, or a guarded command has crashed, stalled, disappeared, or
 been manually killed in the current session, stabilize the control plane without
 shrinking the engineering ambition into tiny chips. Reduce concurrency, isolate
-project-owned process scope, record evidence paths, and keep the unit of work a
+Molt-owned process scope, record evidence paths, and keep the unit of work a
 complete structural primitive that deletes or unifies a real authority.
 
 Recovery mode constrains process fanout, not engineering scope: one active
@@ -312,20 +312,26 @@ process name, stale PID, or missing sampler identity is not enough authority to
 signal a process. If live identity cannot prove a non-host Molt-owned target,
 do not kill it; preserve evidence and fix custody first. Codex itself is never
 a cleanup target.
+Molt-owned means live command, sidecar, session, backend-daemon, guard, or
+runtime-child identity for this repo's Molt build/test/bench/runtime work.
+Codex, Claude, app-server, renderer, node-repl, MCP/plugin helpers, shell hosts,
+Git pollers, and ancestor/control-plane processes are never Molt-owned just
+because they reference the repo path or spawned a Molt child.
 
 ## Build & Test
 
 - Build with `cargo build --profile release-fast -p molt-backend --features native-backend`
 - Test with `python3 -m molt build --target native --output /tmp/test_out test_file.py --rebuild`
-- Backend daemon uses release-fast profile. Drain stale repo-scoped build/test/bench
+- Backend daemon uses release-fast profile. Drain stale live-proved Molt build/test/bench
   workers through `molt clean --apply --kill-processes` or
   `python3 tools/process_sentinel.py --once --stale-orphan-sec 3600 --stale-pytest-sec 900`
   before testing new builds.
 - Max 2 build-triggering agents at once. 5 concurrent builds OOM the machine.
 - Max 3 backend daemons enforced by the CLI. Stale sockets are auto-cleaned.
 - After a session with multiple agents, run `molt clean --apply --kill-processes`
-  so process cleanup and artifact deletion stay inside the canonical guard and
-  allowlist.
+  only when stale Molt-owned workers need draining, so process cleanup and
+  artifact deletion stay inside the canonical guard and allowlist. It is never
+  Codex, Claude, app-server, renderer, node-repl, shell, or Git cleanup.
 - Cleanup commands must fail closed on ambiguous ownership: no blanket
   `taskkill`, no name-based Codex cleanup, no signaling a PID that cannot be
   reidentified as a live non-host Molt-owned worker.

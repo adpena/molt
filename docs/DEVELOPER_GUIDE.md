@@ -70,7 +70,7 @@ If Codex, Claude, Desktop, WSL bridging, MCP/tool discovery, subagents, process
 custody, or a guarded command has crashed, stalled, disappeared, or been
 manually killed in the current session, stabilize the control plane without
 shrinking the engineering unit into tiny chips. Reduce concurrency, isolate
-project-owned process scope, record evidence paths, and keep the landing a
+Molt-owned process scope, record evidence paths, and keep the landing a
 complete structural primitive that deletes or unifies a real authority.
 
 Before risky commands in this mode, leave a death capsule: command, cwd, guard
@@ -80,6 +80,11 @@ summaries, and `logs/agents/codex_stall/*.json` before relying on chat history.
 Manual killing of a Molt-owned child/helper must be recorded as child failure or
 interruption; cleanup must not expand to Codex, Claude, app-server, renderer,
 node-repl, ancestors, or unrelated host control-plane processes.
+Only live-proved Molt-owned processes may be cleaned: build, test, bench,
+backend-daemon, runtime-child, or guard-owned process groups whose current
+command, sidecar, session, or lineage identity proves this repo's Molt custody.
+Repo path, process name, stale PID, or a Codex/Claude parent is not cleanup
+authority.
 
 ## Verification Budget
 
@@ -205,7 +210,7 @@ Interpretation:
   timeout/RSS cleanup cannot deliver interrupt-style console control events into
   the parent guard or Codex/app control plane.
 - Shared guarded subprocesses also run the default stale-orphan preflight before
-  launch: orphaned Molt process groups older than one hour and orphaned
+  launch: orphaned live-proved Molt process groups older than one hour and orphaned
   pytest-style groups older than fifteen minutes are drained with process age,
   kill time, reason, pids, command, and next-action custody. Tune with
   `MOLT_STALE_ORPHAN_SEC`, `MOLT_STALE_PYTEST_SEC`, or disable deliberately with
@@ -217,6 +222,9 @@ Interpretation:
   payload. Harness profiles live under `logs/harness_memory_guard/commands.jsonl`
   by default; direct `tools/memory_guard.py` incidents without `--summary-json`
   write bounded summaries under `tmp/memory_guard/incidents/`.
+  If identity is ambiguous, cleanup skips the process and preserves evidence;
+  it must never terminate Codex, Claude, app-server, renderer, node-repl, shell,
+  Git, MCP/plugin, ancestor, or other host-control-plane processes.
 - `tools/dev.py bench` runs the pyproject-owned benchmark smoke lane by default
   and writes `bench/results/dev-bench-smoke.json`; pass explicit `molt bench`
   arguments when a custom native/WASM benchmark slice is needed. The outer

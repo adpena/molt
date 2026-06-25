@@ -391,7 +391,7 @@ Read these first instead of rediscovering project structure:
 - Canonical cleanup commands:
   - `molt clean`: dry-run the canonical ignored artifact/cache cleanup allowlist.
   - `molt clean --apply`: delete ignored artifacts from the canonical allowlist.
-  - `molt clean --apply --kill-processes`: first run the repo process sentinel, then delete ignored artifacts; use this for stale/interrupted build, bench, or test workers before reclaiming `target/`.
+  - `molt clean --apply --kill-processes`: first run the repo process sentinel, then delete ignored artifacts; use this only for live-proved stale/interrupted Molt build, bench, or test workers before reclaiming `target/`, never for Codex/Claude/app cleanup.
   - `tools/dev.py clean-artifacts --apply`: dev-wrapper alias for the same cleanup engine.
 - Notes:
   - `CARGO_TARGET_DIR` also relocates Molt’s shared build state under `<CARGO_TARGET_DIR>/.molt_state/` (locks, fingerprints, daemon state). Keep that state in the canonical target root rather than inventing parallel targets.
@@ -414,7 +414,7 @@ Read these first instead of rediscovering project structure:
   app, WSL bridging, MCP/tool discovery, subagent orchestration, process
   custody, or a guarded command has crashed, stalled, disappeared, or been
   manually killed during the current session.
-- In this mode, reduce concurrency and isolate project-owned process scope, but
+- In this mode, reduce concurrency and isolate Molt-owned process scope, but
   do not shrink the engineering unit into tiny chips. The landing still has to
   be a complete structural primitive: no hack, no duplicate authority, no
   dangling legacy lane, and no half-migrated invariant.
@@ -444,6 +444,11 @@ Read these first instead of rediscovering project structure:
   to signal a process. If live identity cannot prove a non-host Molt-owned
   target, do not kill it; preserve evidence and fix custody first. Codex itself
   is never a cleanup target.
+- Molt-owned means live command, sidecar, session, backend-daemon, guard, or
+  runtime-child identity for this repo's Molt build/test/bench/runtime work.
+  Codex, Claude, app-server, renderer, node-repl, MCP/plugin helpers, shell
+  hosts, Git pollers, and ancestor/control-plane processes are never Molt-owned
+  just because they reference the repo path or spawned a Molt child.
 - Re-enable multi-hour broad execution only after the active death-capsule state
   explains the previous failure mode and the next lane can proceed without
   risking host/control-plane instability.
@@ -456,7 +461,8 @@ Read these first instead of rediscovering project structure:
 - Proactively clean stale Molt-owned worker groups when needed to keep execution
   stable and deterministic, but never terminate Claude, the Codex app,
   app-server, renderer, node-repl, or any ancestor/host control-plane process
-  group as cleanup collateral.
+  group as cleanup collateral. If a process is not definitely Molt-owned,
+  preserve evidence and leave it running.
 - Cleanup commands must fail closed on ambiguous ownership: no blanket
   `taskkill`, no name-based Codex cleanup, no signaling a PID that cannot be
   reidentified as a live non-host Molt-owned worker.
@@ -624,8 +630,9 @@ working in this repo:
   residue before adding more agents or long-running proof lanes. If many
   overlapping `git.exe`/`conhost.exe` processes appear with `Codex.exe` as the
   parent, stop expanding orchestration, preserve command-line/parent-chain
-  evidence, and only clean up processes after proving they are stale Codex-owned
-  polling children rather than user-launched Git work.
+  evidence, and do not treat those Codex-owned polling children as Molt cleanup
+  targets. Cleanup in this repo remains limited to live-proved Molt-owned
+  process groups.
 - Cleanup must remain custody-aware. Do not use blanket `taskkill`, Task
   Manager-style process sweeps, or name-based kills against `codex.exe`,
   Electron/renderer helpers, app-server, node-repl, Claude, or ancestor process
@@ -880,7 +887,7 @@ Build relentlessly with high productivity, velocity, and vision in the spirit an
 - Runtime/backend Cargo rebuilds use lock files under `<CARGO_TARGET_DIR>/.molt_state/build_locks/` to prevent duplicate rebuild storms across concurrent agents.
 - Native backend compiles use a local backend daemon by default (`MOLT_BACKEND_DAEMON=1`) to amortize Cranelift startup; tune with `MOLT_BACKEND_DAEMON_START_TIMEOUT` and `MOLT_BACKEND_DAEMON_CACHE_MB`.
 - Build/daemon fingerprints + lock state live under `<CARGO_TARGET_DIR>/.molt_state/` (or `MOLT_BUILD_STATE_DIR` when set). Daemon sockets default to a local temp dir (`MOLT_BACKEND_DAEMON_SOCKET_DIR`) to avoid external filesystems that do not support Unix sockets; identity sidecars and logs remain under build state, while legacy `.pid` files are cleanup debris and never signal authority.
-- `molt clean` dry-runs canonical ignored artifact cleanup; `molt clean --apply` deletes those ignored artifacts; add `--kill-processes` when stale repo-scoped Molt build/test/bench processes must be drained first.
+- `molt clean` dry-runs canonical ignored artifact cleanup; `molt clean --apply` deletes those ignored artifacts; add `--kill-processes` only when stale live-proved Molt build/test/bench processes must be drained first.
 - `tools/dev.py lint`: run `ruff` checks, `ruff format --check`, and `ty check` via `uv run` (Python 3.12).
 - `tools/dev.py test`: run the Python test suite (`pytest -q`) via `uv run` on Python 3.12/3.13/3.14; direct pytest invocations re-exec under `tools/memory_guard.py` before collection when not already guarded.
 - `python3 tools/cpython_regrtest.py --clone`: run CPython regrtest against Molt (logs under `logs/cpython_regrtest/`); defaults to `python -m molt.cli run`.
