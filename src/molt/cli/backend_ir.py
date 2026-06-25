@@ -13,7 +13,7 @@ from molt.cli.backend_cache import (
 )
 from molt.cli.cache_keys import _json_ir_default
 from molt.cli.config_resolution import ENTRY_OVERRIDE_ENV
-from molt.cli.frontend_execution import _register_global_code_id_with_state
+from molt.cli.frontend_integration import _register_global_code_id_with_state
 from molt.cli.models import (
     FallbackPolicy,
     ParseCodec,
