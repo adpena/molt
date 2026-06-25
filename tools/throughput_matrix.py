@@ -85,6 +85,7 @@ def _run_command(
     cwd: Path,
     env: dict[str, str],
     timeout_sec: float,
+    progress_label: str | None = None,
 ) -> CommandResult:
     start = time.perf_counter()
     timed_out = False
@@ -99,6 +100,7 @@ def _run_command(
             text=True,
             timeout=timeout_sec,
             limits=limits,
+            progress_label=progress_label,
         )
         stdout = result.stdout or ""
         stderr = result.stderr or ""
@@ -215,6 +217,7 @@ def _run_build_matrix(
                 cwd=repo_root,
                 env=env,
                 timeout_sec=args.timeout_sec,
+                progress_label=f"throughput build {case_name} single",
             )
 
             print(f"[build] {case_name}: concurrent phase", flush=True)
@@ -241,6 +244,10 @@ def _run_build_matrix(
                     cwd=repo_root,
                     env=env,
                     timeout_sec=args.timeout_sec,
+                    progress_label=(
+                        f"throughput build {case_name} concurrent "
+                        f"{index + 1}/{len(args.build_scripts)}"
+                    ),
                 )
 
             conc_start = time.perf_counter()
@@ -336,6 +343,7 @@ def _run_diff_matrix(
                 cwd=repo_root,
                 env=env,
                 timeout_sec=args.diff_timeout_sec,
+                progress_label=f"throughput diff {case_name}",
             )
             payload: dict[str, Any] = {
                 "case": case_name,

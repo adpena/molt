@@ -885,6 +885,47 @@ def test_guarded_completed_process_streamed_commands_emit_keepalive(
     assert calls[0]["keepalive_interval"] == 3
 
 
+def test_guarded_completed_process_capture_commands_use_explicit_keepalive(
+    monkeypatch,
+) -> None:
+    calls: list[dict[str, object]] = []
+
+    def fake_run_guarded(command, **kwargs):
+        calls.append({"command": command, **kwargs})
+        return harness_memory_guard.memory_guard.GuardResult(
+            returncode=0,
+            violation=None,
+            peak=None,
+            peak_total=None,
+            stdout="",
+            stderr="",
+        )
+
+    monkeypatch.setattr(
+        harness_memory_guard.memory_guard, "run_guarded", fake_run_guarded
+    )
+    limits = harness_memory_guard.HarnessMemoryLimits(
+        enabled=True,
+        max_process_rss_gb=2,
+        max_total_rss_gb=3,
+        max_global_rss_gb=4,
+        poll_interval=0.1,
+    )
+
+    result = harness_memory_guard.guarded_completed_process(
+        [sys.executable, "-c", "print('ok')"],
+        prefix="MOLT_BENCH",
+        env={"MOLT_BENCH_KEEPALIVE_SEC": "4"},
+        limits=limits,
+        capture_output=True,
+        progress_label="throughput matrix build",
+    )
+
+    assert result.returncode == 0
+    assert calls[0]["progress_label"] == "throughput matrix build"
+    assert calls[0]["keepalive_interval"] == 4
+
+
 def test_guarded_completed_process_starts_default_repo_sentinel(monkeypatch) -> None:
     run_calls: list[dict[str, object]] = []
     sentinel_calls: list[dict[str, object]] = []

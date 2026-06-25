@@ -329,6 +329,7 @@ def _run_case(
                 capture_output=True,
                 text=True,
                 timeout=timeout_sec,
+                progress_label=f"compile-progress {case.name} {label}",
             )
             stdout = result.stdout or ""
             stderr = result.stderr or ""
