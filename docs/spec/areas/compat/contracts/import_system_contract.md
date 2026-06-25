@@ -142,7 +142,10 @@ Modules may be:
   source hashes, span-derived AST site digests, binary-image module roles, and a
   semantic identity digest that IR, TIR, backend, allocation, and binary
   projections can join against without embedding raw source text or duplicating
-  TIR facts.
+  TIR facts. Backend IR diagnostics now carry the matching `source_sites`
+  projection from the lowered op stream: attributed-op coverage, per-line
+  operation counts, and a stable digest over `source_line`/column coordinates.
+  This is evidence over the compiler carrier, not a second AST parser.
 - `__import__` and `importlib.import_module` share the same Rust-owned runtime
   import transaction. Source-language imports call
   `molt_importlib_import_transaction` directly with explicit

@@ -99,7 +99,11 @@ backend IR/TIR-input shape, and final artifact/link facts when available. Its
 frontend `source_identity` section carries the SourceSite digest family:
 source hashes, span-derived AST site digests, binary-image roles, and one
 semantic identity digest for joining IR/TIR/backend evidence back to parsed
-source without embedding raw source text.
+source without embedding raw source text. The backend IR section also reports
+`source_sites`: attributed-op coverage, line hot spots, and a stable digest over
+the actual lowered op stream's `source_line` / column carrier, so backend and
+artifact evidence can join to the same source-site authority without rewalking
+the AST.
 
 </details>
 

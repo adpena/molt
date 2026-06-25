@@ -342,6 +342,62 @@ pub enum AttrValue {
 /// Attribute dictionary attached to an operation.
 pub type AttrDict = HashMap<String, AttrValue>;
 
+pub const SOURCE_LINE_ATTR: &str = "_source_line";
+pub const SOURCE_COL_ATTR: &str = "_col_offset";
+pub const SOURCE_END_COL_ATTR: &str = "_end_col_offset";
+
+/// Stable source-site coordinates carried through TIR attrs.
+///
+/// `source_span` remains the byte-range carrier. This fact is explicitly
+/// line/column based because the current frontend authority is the SimpleIR
+/// `line` marker plus expression-level column offsets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SourceSite {
+    pub line: u32,
+    pub col: Option<u32>,
+    pub end_col: Option<u32>,
+}
+
+impl SourceSite {
+    pub fn from_line_col(line: i64, col: Option<i64>, end_col: Option<i64>) -> Option<Self> {
+        if line <= 0 || line > u32::MAX as i64 {
+            return None;
+        }
+        let col = col.and_then(|value| u32::try_from(value).ok());
+        let end_col = end_col.and_then(|value| u32::try_from(value).ok());
+        Some(Self {
+            line: line as u32,
+            col,
+            end_col,
+        })
+    }
+
+    pub fn from_attrs(attrs: &AttrDict) -> Option<Self> {
+        let Some(AttrValue::Int(line)) = attrs.get(SOURCE_LINE_ATTR) else {
+            return None;
+        };
+        let col = match attrs.get(SOURCE_COL_ATTR) {
+            Some(AttrValue::Int(value)) => Some(*value),
+            _ => None,
+        };
+        let end_col = match attrs.get(SOURCE_END_COL_ATTR) {
+            Some(AttrValue::Int(value)) => Some(*value),
+            _ => None,
+        };
+        Self::from_line_col(*line, col, end_col)
+    }
+
+    pub fn write_attrs(self, attrs: &mut AttrDict) {
+        attrs.insert(SOURCE_LINE_ATTR.into(), AttrValue::Int(self.line as i64));
+        if let Some(col) = self.col {
+            attrs.insert(SOURCE_COL_ATTR.into(), AttrValue::Int(col as i64));
+        }
+        if let Some(end_col) = self.end_col {
+            attrs.insert(SOURCE_END_COL_ATTR.into(), AttrValue::Int(end_col as i64));
+        }
+    }
+}
+
 /// A single operation in the TIR.
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct TirOp {
@@ -360,6 +416,21 @@ pub struct TirOp {
 }
 
 impl TirOp {
+    pub fn source_site(&self) -> Option<SourceSite> {
+        SourceSite::from_attrs(&self.attrs)
+    }
+
+    pub fn set_source_site(&mut self, site: SourceSite) {
+        site.write_attrs(&mut self.attrs);
+    }
+
+    pub fn inherit_source_from(&mut self, other: &TirOp) {
+        self.source_span = other.source_span;
+        if let Some(site) = other.source_site() {
+            self.set_source_site(site);
+        }
+    }
+
     /// True only for a structural SSA value copy.
     ///
     /// `OpCode::Copy` is also the legacy fallback carrier for SimpleIR

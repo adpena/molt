@@ -2127,6 +2127,7 @@ class MidendOptimizationMixin(_MixinBase):
                 args=canonical_args,
                 result=op.result,
                 metadata=op.metadata,
+                source_line=op.source_line,
                 col_offset=op.col_offset,
                 end_col_offset=op.end_col_offset,
             )
@@ -2240,6 +2241,7 @@ class MidendOptimizationMixin(_MixinBase):
                                 kind="CONST_BIGINT",
                                 args=[str(folded)],
                                 result=canonical_op.result,
+                                source_line=canonical_op.source_line,
                                 col_offset=canonical_op.col_offset,
                                 end_col_offset=canonical_op.end_col_offset,
                             )
@@ -2249,6 +2251,7 @@ class MidendOptimizationMixin(_MixinBase):
                                 kind="CONST",
                                 args=[folded],
                                 result=canonical_op.result,
+                                source_line=canonical_op.source_line,
                                 col_offset=canonical_op.col_offset,
                                 end_col_offset=canonical_op.end_col_offset,
                             )
@@ -2306,6 +2309,7 @@ class MidendOptimizationMixin(_MixinBase):
                                         kind="CONST_BIGINT",
                                         args=[str(folded_bw)],
                                         result=canonical_op.result,
+                                        source_line=canonical_op.source_line,
                                         col_offset=canonical_op.col_offset,
                                         end_col_offset=canonical_op.end_col_offset,
                                     )
