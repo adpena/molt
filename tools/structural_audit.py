@@ -190,6 +190,9 @@ _MATCH_HEAD_RE = re.compile(
 )
 _OPCODE_ARM_RE = re.compile(r"\bOpCode::[A-Za-z0-9_]+")
 _KIND_SCRUTINEE_RE = re.compile(r"\.opcode\b|\.kind\b|_original_kind|opcode\b|kind\b")
+_GENERATED_OPCODE_TABLE_SCRUTINEE_RE = re.compile(
+    r"\bopcode_[A-Za-z0-9_]*_table\s*\("
+)
 _WILDCARD_ARM_RE = re.compile(r"(^|\n)\s*_\s*(=>|if\b)")
 # matches!(scrutinee, PATTERN) — capture the whole call's argument region.
 _MATCHES_MACRO_RE = re.compile(r"\bmatches!\s*\(")
@@ -528,6 +531,12 @@ def probe_semantic_fallthroughs(root: Path) -> list[Finding]:
         # (a) match blocks with a wildcard default over opcode-like scrutinee.
         for m in _MATCH_HEAD_RE.finditer(text):
             scrutinee = m.group(1)
+            if _GENERATED_OPCODE_TABLE_SCRUTINEE_RE.search(scrutinee):
+                # Generated opcode tables are exhaustive and rustc-gated at the
+                # authority boundary. A consumer matching their role enum may
+                # still mention OpCode for operand-shape details; that is not
+                # a hand-maintained opcode membership list.
+                continue
             brace_idx = m.end() - 1
             _, block = _balanced_block(text, brace_idx)
             opcode_arms = len(set(_OPCODE_ARM_RE.findall(block)))
