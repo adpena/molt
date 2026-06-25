@@ -255,6 +255,14 @@ def _build_checks() -> list[Check]:
     )
     checks.append(
         Check(
+            name="structural-audit-ratchet",
+            tier=1,
+            cmd=_uv_run(str(TOOLS / "structural_audit.py"), "--check"),
+            timeout=60,
+        )
+    )
+    checks.append(
+        Check(
             name="perf-scoreboard-contract",
             tier=1,
             cmd=_uv_pytest(
