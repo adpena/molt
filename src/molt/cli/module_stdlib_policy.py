@@ -1,0 +1,353 @@
+from __future__ import annotations
+
+import ast
+import functools
+import os
+from pathlib import Path
+
+from molt._runtime_feature_gates import link_affecting_feature_gate_for_symbol
+from molt.cli.compiler_metadata import _compiler_root
+from molt.cli import module_resolution as _module_resolution
+from molt.cli.output import fail as _fail
+from molt.cli.runtime_features import _runtime_builtin_features_for_profile
+
+
+@functools.lru_cache(maxsize=8)
+def _stdlib_allowlist_cached(project_root_text: str | None) -> frozenset[str]:
+    allowlist: set[str] = set()
+    spec_path = Path("docs/spec/areas/compat/surfaces/stdlib/stdlib_surface_matrix.md")
+    if not spec_path.exists():
+        if project_root_text:
+            spec_path = (
+                Path(project_root_text)
+                / "docs/spec/areas/compat/surfaces/stdlib/stdlib_surface_matrix.md"
+            )
+        else:
+            spec_path = (
+                _compiler_root()
+                / "docs/spec/areas/compat/surfaces/stdlib/stdlib_surface_matrix.md"
+            )
+    if not spec_path.exists():
+        return frozenset(allowlist)
+    for line in spec_path.read_text().splitlines():
+        if not line.startswith("|"):
+            continue
+        if line.startswith("| ---"):
+            continue
+        parts = [part.strip() for part in line.strip().strip("|").split("|")]
+        if not parts:
+            continue
+        module_name = parts[0]
+        if not module_name or module_name == "Module":
+            continue
+        for entry in module_name.split("/"):
+            entry = entry.strip()
+            if entry:
+                allowlist.add(entry)
+    return frozenset(allowlist)
+
+
+def _stdlib_allowlist() -> set[str]:
+    project_root = os.environ.get("MOLT_PROJECT_ROOT")
+    return set(_stdlib_allowlist_cached(project_root))
+
+
+_INTRINSIC_CALL_NAMES = {
+    "load_intrinsic",
+    "require_intrinsic",
+    "require_optional_intrinsic",
+    "_load_intrinsic",
+    "_intrinsic_load",
+    "_intrinsics_require",
+    "_intrinsic_require",
+    "_require_intrinsic",
+    "_require_callable_intrinsic",
+}
+
+
+_STDLIB_PROBE_INTRINSIC = "molt_stdlib_probe"
+
+
+_STDLIB_POLICY_GATE_STATUS = "policy-gate"
+
+
+def _is_fail_closed_import_policy_gate(text: str) -> bool:
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return False
+    body = list(tree.body)
+    if (
+        body
+        and isinstance(body[0], ast.Expr)
+        and isinstance(body[0].value, ast.Constant)
+        and isinstance(body[0].value.value, str)
+    ):
+        body = body[1:]
+    while (
+        body and isinstance(body[0], ast.ImportFrom) and body[0].module == "__future__"
+    ):
+        body = body[1:]
+    if len(body) != 1 or not isinstance(body[0], ast.Raise):
+        return False
+    exc = body[0].exc
+    if isinstance(exc, ast.Call):
+        exc = exc.func
+    if isinstance(exc, ast.Name):
+        return exc.id == "ImportError"
+    if isinstance(exc, ast.Attribute):
+        return exc.attr == "ImportError"
+    return False
+
+
+def _module_required_intrinsic_names(path: Path) -> frozenset[str]:
+    """Return every ``molt_*`` intrinsic a module statically requires.
+
+    The same extraction classifies intrinsic backing and feature-profile gaps,
+    so those two policy views cannot disagree.
+    """
+    try:
+        source = path.read_text(encoding="utf-8")
+    except Exception:
+        return frozenset()
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return frozenset()
+
+    intrinsic_names: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        call_name: str | None = None
+        if isinstance(node.func, ast.Name):
+            call_name = node.func.id
+        elif isinstance(node.func, ast.Attribute):
+            call_name = node.func.attr
+        if call_name not in _INTRINSIC_CALL_NAMES and call_name != "_lazy_intrinsic":
+            continue
+        first: ast.expr | None = None
+        if node.args:
+            first = node.args[0]
+        else:
+            for keyword in node.keywords:
+                if keyword.arg == "name":
+                    first = keyword.value
+                    break
+        if not isinstance(first, ast.Constant) or not isinstance(first.value, str):
+            continue
+        name = first.value
+        if name.startswith("molt_"):
+            intrinsic_names.add(name)
+    return frozenset(intrinsic_names)
+
+
+def _stdlib_module_intrinsic_status(path: Path) -> str:
+    if path.name == "_intrinsics.py":
+        return "intrinsic-backed"
+    try:
+        text = path.read_text(encoding="utf-8")
+    except Exception:
+        return "python-only"
+
+    intrinsic_names = _module_required_intrinsic_names(path)
+    if not intrinsic_names:
+        if _is_fail_closed_import_policy_gate(text):
+            return _STDLIB_POLICY_GATE_STATUS
+        return "python-only"
+    if intrinsic_names == {_STDLIB_PROBE_INTRINSIC}:
+        return "probe-only"
+    return "intrinsic-backed"
+
+
+def _enforce_intrinsic_stdlib(
+    module_graph: dict[str, Path],
+    stdlib_root: Path,
+    json_output: bool,
+) -> int | None:
+    missing: list[str] = []
+    probe_only: list[str] = []
+    stdlib_root = stdlib_root.resolve()
+    for name, path in module_graph.items():
+        if not path or not path.suffix == ".py":
+            continue
+        try:
+            path.resolve().relative_to(stdlib_root)
+        except ValueError:
+            continue
+        status = _stdlib_module_intrinsic_status(path)
+        if status == "python-only":
+            missing.append(name)
+        elif status == "probe-only":
+            probe_only.append(name)
+    if not missing:
+        return None
+    missing.sort()
+    probe_only.sort()
+    message = (
+        "Intrinsic-only stdlib enforcement failed. These modules are Python-only "
+        "and must be lowered to Rust intrinsics (or become thin intrinsic wrappers):\n"
+        + "\n".join(f"  - {name}" for name in missing)
+    )
+    if probe_only:
+        message += (
+            "\n\nProbe-only modules in this build (thin wrappers + policy gate only):\n"
+            + "\n".join(f"  - {name}" for name in probe_only)
+        )
+    return _fail(message, json_output, command="build")
+
+
+def _profile_feature_gap_for_module(
+    path: Path,
+    enabled_features: frozenset[str],
+) -> dict[str, list[str]]:
+    """Map each excluded link-affecting feature to required intrinsics."""
+    gap: dict[str, set[str]] = {}
+    for symbol in _module_required_intrinsic_names(path):
+        feature = link_affecting_feature_gate_for_symbol(symbol)
+        if feature is None or feature in enabled_features:
+            continue
+        gap.setdefault(feature, set()).add(symbol)
+    return {feature: sorted(symbols) for feature, symbols in gap.items()}
+
+
+def _enforce_profile_feature_availability(
+    module_graph: dict[str, Path],
+    stdlib_root: Path,
+    stdlib_profile: str | None,
+    target: str,
+    json_output: bool,
+) -> int | None:
+    """Fail before link when the selected stdlib profile omits needed features."""
+    is_wasm = target in {"wasm", "wasm-freestanding"} or target.startswith("wasm32")
+    effective_triple = "wasm32-wasip1" if is_wasm else None
+    enabled_features = frozenset(
+        _runtime_builtin_features_for_profile(
+            stdlib_profile,
+            target_triple=effective_triple,
+        )
+    )
+    profile_name = stdlib_profile or "micro"
+    stdlib_root = stdlib_root.resolve()
+
+    blocked: dict[str, dict[str, list[str]]] = {}
+    for name, path in module_graph.items():
+        if not path or path.suffix != ".py":
+            continue
+        try:
+            path.resolve().relative_to(stdlib_root)
+        except ValueError:
+            continue
+        gap = _profile_feature_gap_for_module(path, enabled_features)
+        for feature, symbols in gap.items():
+            blocked.setdefault(feature, {})[name] = symbols
+    if not blocked:
+        return None
+
+    lines: list[str] = []
+    for feature in sorted(blocked):
+        modules = blocked[feature]
+        module_list = ", ".join(repr(m) for m in sorted(modules))
+        plural = "module" if len(modules) == 1 else "modules"
+        lines.append(f"  {feature}: required by {plural} {module_list}")
+        for module_name in sorted(modules):
+            sample = ", ".join(modules[module_name][:4])
+            more = len(modules[module_name]) - 4
+            if more > 0:
+                sample += f", ... (+{more} more)"
+            lines.append(f"      {module_name} -> {sample}")
+
+    excluded_features = sorted(blocked)
+    feature_phrase = (
+        f"the {excluded_features[0]!r} runtime feature"
+        if len(excluded_features) == 1
+        else "runtime features " + ", ".join(repr(f) for f in excluded_features)
+    )
+    message = (
+        f"Profile '{profile_name}' excludes {feature_phrase} that this program's "
+        f"import graph requires.\n"
+        f"These statically-imported stdlib modules need a feature profile "
+        f"'{profile_name}' does not build, so their runtime intrinsics would be "
+        f"undefined at link:\n"
+        + "\n".join(lines)
+        + "\n\nFeature selection is profile-driven, not import-driven: the "
+        "native 'micro' profile omits heavy domains (ast, crypto, "
+        "compression, ...) to keep small binaries small.\n"
+        "Rebuild with the full stdlib profile, which includes these features:\n"
+        "    --stdlib-profile full\n"
+        "or set the environment knob the build reads as its canonical profile:\n"
+        "    MOLT_STDLIB_PROFILE=full"
+    )
+    return _fail(message, json_output, command="build")
+
+
+_CORE_STDLIB_MODULES_FULL = (
+    "builtins",
+    "sys",
+    "types",
+    "importlib",
+    "importlib.util",
+    "importlib.machinery",
+)
+
+
+_CORE_STDLIB_MODULES_MICRO = (
+    "builtins",
+    "sys",
+)
+
+
+def _core_stdlib_module_names_for_profile(stdlib_profile: str | None) -> tuple[str, ...]:
+    if (stdlib_profile or "micro") == "micro":
+        return _CORE_STDLIB_MODULES_MICRO
+    return _CORE_STDLIB_MODULES_FULL
+
+
+def _ensure_core_stdlib_modules(
+    module_graph: dict[str, Path], stdlib_root: Path
+) -> None:
+    """Add the profile's unconditional core stdlib modules to the graph."""
+    core_modules = _core_stdlib_module_names_for_profile(
+        os.environ.get("MOLT_STDLIB_PROFILE", "micro")
+    )
+    for name in core_modules:
+        path = _module_resolution._resolve_module_path(name, [stdlib_root])
+        if path is not None:
+            module_graph.setdefault(name, path)
+
+
+def _looks_like_stdlib_module_name(module_name: str) -> bool:
+    if module_name == "molt.stdlib" or module_name.startswith("molt.stdlib."):
+        return True
+    root = module_name.split(".", 1)[0]
+    return root in {
+        "__future__",
+        "_collections_abc",
+        "abc",
+        "builtins",
+        "collections",
+        "dataclasses",
+        "importlib",
+        "os",
+        "pathlib",
+        "runpy",
+        "signal",
+        "sys",
+        "test",
+        "typing",
+        "warnings",
+        "zipfile",
+        "zipimport",
+    }
+
+
+def _build_stdlib_like_module_flags(
+    module_graph: dict[str, Path],
+) -> dict[str, bool]:
+    return {
+        module_name: (
+            _module_resolution._is_runtime_owned_module_path(module_path)
+            or _looks_like_stdlib_module_name(module_name)
+        )
+        for module_name, module_path in sorted(module_graph.items())
+    }

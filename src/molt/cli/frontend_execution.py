@@ -45,11 +45,9 @@ from molt.cli.models import (
     _SerialFrontendLoweringHooks,
     _WorkerTimingSummary,
 )
-from molt.cli.module_graph import (
-    ModuleSyntaxErrorInfo,
-    _looks_like_stdlib_module_name,
-)
+from molt.cli.module_graph import ModuleSyntaxErrorInfo
 from molt.cli.module_resolution import _ModuleResolutionCache
+from molt.cli.module_stdlib_policy import _looks_like_stdlib_module_name
 from molt.cli.module_source import (
     _ModuleSourceCatalog,
     _build_module_source_catalog,

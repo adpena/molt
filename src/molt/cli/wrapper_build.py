@@ -43,10 +43,10 @@ from molt.cli.module_graph import (
     _discover_module_graph,
     _extend_module_graph_with_static_import_modules,
     _parse_static_import_modules,
-    _stdlib_allowlist,
 )
 from molt.cli.module_resolution import _ModuleResolutionCache, _stdlib_root_path
 from molt.cli.module_source import _source_content_sha256
+from molt.cli.module_stdlib_policy import _stdlib_allowlist
 from molt.cli.models import (
     _ImportAdmissionPolicy,
     _ResolvedBuildEntry,
