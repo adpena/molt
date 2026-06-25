@@ -8,6 +8,11 @@ import subprocess
 import sys
 from typing import Any
 
+from molt.cli.binary_image_analysis import (
+    _merge_binary_image_analysis_stage,
+    _native_artifact_binary_image_analysis_payload,
+    _non_native_artifact_binary_image_analysis_payload,
+)
 from molt.cli.build_diagnostics import _emit_build_diagnostics_if_present
 from molt.cli.command_runtime import _run_completed_command
 from molt.cli.extension_manifest import _cpu_baseline
@@ -381,6 +386,20 @@ def _emit_native_link_result(
             warnings.append(link_fingerprint_warning)
             if not json_output:
                 print(f"Warning: {link_fingerprint_warning}", file=sys.stderr)
+        _merge_binary_image_analysis_stage(
+            diagnostics_payload,
+            "artifacts",
+            _native_artifact_binary_image_analysis_payload(
+                output_binary=output_binary,
+                output_obj=output_obj,
+                runtime_lib=runtime_lib,
+                stdlib_obj_path=stdlib_obj_path,
+                link_skipped=link_skipped,
+                link_fingerprint=link_fingerprint,
+                link_fingerprint_path=link_fingerprint_path,
+                external_native_artifact_count=len(external_native_artifacts),
+            ),
+        )
         if json_output:
             cache_info = _build_cache_info(
                 enabled=cache,
@@ -519,6 +538,16 @@ def _emit_non_native_build_result(
     extra_fields: Mapping[str, Any] | None = None,
     success_messages: Sequence[str] = (),
 ) -> int:
+    _merge_binary_image_analysis_stage(
+        diagnostics_payload,
+        "artifacts",
+        _non_native_artifact_binary_image_analysis_payload(
+            kind=target,
+            output=output,
+            consumer_output=consumer_output,
+            artifacts=artifacts,
+        ),
+    )
     if json_output:
         cache_info = _build_cache_info(
             enabled=cache,

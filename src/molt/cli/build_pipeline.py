@@ -9,6 +9,7 @@ from molt.cli import factgraph as _factgraph
 from molt.cli.backend_daemon_paths import (
     _unix_socket_path_exceeds_limit as _unix_socket_path_exceeds_limit,
 )
+from molt.cli.binary_image_analysis import _backend_ir_binary_image_analysis_payload
 from molt.cli.backend_diagnostics import (
     _BACKEND_DIAGNOSTIC_ENV_KNOBS as _BACKEND_DIAGNOSTIC_ENV_KNOBS,
     _PYTHON_WARNING_RE as _PYTHON_WARNING_RE,
@@ -118,7 +119,7 @@ def _run_build_pipeline(
     # standalone molt-backend-mlir binary. This bypasses the standard backend
     # pipeline entirely because the MLIR crate is out-of-workspace.
     output_layout: _BuildOutputLayout = prepared_frontend_pipeline_bundle[5]
-    native_artifact_plan = prepared_frontend_pipeline_bundle[21]
+    native_artifact_plan = prepared_frontend_pipeline_bundle[22]
     native_artifact_custody_error = _external_native_artifact_output_custody_error(
         native_artifact_plan=native_artifact_plan,
         output_layout=output_layout,
@@ -154,6 +155,7 @@ def _run_build_pipeline(
             diagnostics_state,
             record_frontend_timing,
             _build_diagnostics_payload,
+            record_binary_image_analysis,
             artifacts_root,
             _native_artifact_plan,
         ) = prepared_frontend_pipeline_bundle
@@ -193,6 +195,11 @@ def _run_build_pipeline(
         if prepared_backend_ir_error is not None:
             return prepared_backend_ir_error
         assert prepared_backend_ir is not None
+        if prepared_build_preamble.diagnostics_enabled:
+            record_binary_image_analysis(
+                "backend_ir",
+                _backend_ir_binary_image_analysis_payload(prepared_backend_ir.ir),
+            )
         return _run_mlir_backend_pipeline(
             ir=prepared_backend_ir.ir,
             output_artifact=output_layout.output_artifact,

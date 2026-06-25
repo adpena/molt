@@ -1199,7 +1199,15 @@ the implementation. For forward-looking priorities, use
 	  runtime-import support closure, while final materialization owns namespace
 		  stubs, generated importer modules, known-module sets, allowlist snapshots,
 		  and module graph metadata before frontend analysis or backend lowering can
-		  observe the graph. Core stdlib closure honors the same nested-scan exception
+		  observe the graph. The final binary-image closure payload is emitted in
+		  build diagnostics and wrapper-cache manifests; static imports are final
+		  image roots, and dead-module-elimination mode participates in wrapper
+		  cache identity. Build diagnostics also emit `binary_image_analysis`,
+		  a cross-layer source/AST, schedule, lowering, backend IR/TIR-input, and
+		  artifact evidence envelope with a frontend SourceSite digest ledger:
+		  source hashes, span-derived AST site digests, binary-image roles, and a
+		  semantic identity digest for later IR/TIR source-span transport.
+		  Core stdlib closure honors the same nested-scan exception
 		  set as regular stdlib discovery, so `collections` keeps its required
 		  function-body `copy` import in the graph and native hello-world no longer
 		  links against a missing `copy__copy` symbol. Shared stdlib cache identity now
