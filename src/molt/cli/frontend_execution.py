@@ -348,12 +348,6 @@ def _module_frontend_generator(
     )
 
 
-def _known_classes_snapshot_copy(known_classes: Mapping[str, Any]) -> dict[str, Any]:
-    if not known_classes:
-        return {}
-    return dict(known_classes)
-
-
 def _resolve_tree_for_serial_frontend_module(
     module_name: str,
     module_path: Path,
@@ -1188,7 +1182,9 @@ def _run_frontend_parallel_layer_batches(
     target_python: TargetPythonVersion,
 ) -> tuple[_FrontendParallelLayerState, str | None, str | None]:
     layer_state = _frontend_parallel._fresh_frontend_parallel_layer_state()
-    known_classes_snapshot = _known_classes_snapshot_copy(known_classes_snapshot_source)
+    known_classes_snapshot = _frontend_parallel._known_classes_snapshot_copy(
+        known_classes_snapshot_source
+    )
     scoped_known_classes_by_module = _build_scoped_known_classes_snapshot(
         candidates,
         module_deps=module_deps,

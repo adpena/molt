@@ -22,6 +22,7 @@ _FRONTEND_PARALLEL_NAMES = (
     "_frontend_result_timings",
     "_frontend_serial_worker_mode",
     "_initialize_frontend_parallel_details",
+    "_known_classes_snapshot_copy",
     "_layer_cache_hit_count",
     "_predict_frontend_module_cost",
     "_record_parallel_cached_module_result",
@@ -40,6 +41,10 @@ _FRONTEND_PARALLEL_NAMES = (
     "_worker_timing_summary_payload",
 )
 
+_FRONTEND_PARALLEL_DEFINITIONS = tuple(
+    f"def {name}(" for name in _FRONTEND_PARALLEL_NAMES
+)
+
 
 def test_cli_frontend_parallel_authority_is_single_home() -> None:
     for name in _FRONTEND_PARALLEL_NAMES:
@@ -49,6 +54,6 @@ def test_cli_frontend_parallel_authority_is_single_home() -> None:
 
     frontend_execution_source = inspect.getsource(frontend_execution)
     cli_source = inspect.getsource(cli)
-    for name in _FRONTEND_PARALLEL_NAMES:
-        assert f"def {name}(" not in frontend_execution_source
-        assert f"def {name}(" not in cli_source
+    for marker in _FRONTEND_PARALLEL_DEFINITIONS:
+        assert marker not in frontend_execution_source
+        assert marker not in cli_source
