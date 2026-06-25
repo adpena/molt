@@ -29,6 +29,8 @@ Molt's DFlash support is derived from these public sources:
   <https://developer.nvidia.com/blog/boost-inference-performance-up-to-15x-on-nvidia-blackwell-using-dflash-speculative-decoding/>
 - TensorRT-LLM speculative-decoding feature documentation:
   <https://github.com/NVIDIA/TensorRT-LLM/blob/main/docs/source/features/speculative-decoding.md>
+- Google TPU/JAX/vLLM DFlash deployment note:
+  <https://developers.googleblog.com/supercharging-llm-inference-on-google-tpus-achieving-3x-speedups-with-diffusion-style-speculative-decoding/>
 - DDTree follow-on, Liran Ringel and Yaniv Romano, **"Accelerating
   Speculative Decoding with Block Diffusion Draft Trees"**, arXiv:2604.12989:
   <https://arxiv.org/abs/2604.12989>
@@ -112,6 +114,11 @@ routing, not the core identity:
   plus install routes for Transformers, SGLang, vLLM, and MLX. Missing model
   support is therefore a registry/checkpoint issue, not permission to synthesize
   an untrained generic drafter.
+- The official z-lab repository now treats vLLM v0.20.1+ as the normal DFlash
+  path for most models, with explicit special-case branches/builds only for
+  model families whose attention/KV shape needs are not yet in the standard
+  stack. Molt must model those branches as adapter/backend capability metadata,
+  not as silent runtime fallbacks.
 - vLLM Speculators v0.5.0 adds DFlash training support, online training, and a
   unified hidden-state extraction path for both online and offline data. Molt
   adapters must treat block size, max anchors, target layer ids, hidden-state
@@ -134,6 +141,12 @@ routing, not the core identity:
   claims must name the serving stack, GPU, concurrency/interactivity target,
   model pair, draft length, and checkpoint revision; a raw tokens/sec number is
   not a portable DFlash claim.
+- Google's TPU/JAX deployment note makes DFlash state custody explicit outside
+  CUDA/PyTorch: non-causal draft attention cannot reuse the target model's
+  paged-attention cache directly, so the target verifier and drafter need
+  separate cache paths plus persistent context-buffer, KV-position, RoPE-offset,
+  and verification-metadata tracking. Molt's backend-neutral DFlash contract
+  must expose those facts instead of hiding them inside a backend adapter.
 - DDTree shows that one DFlash pass produces per-position marginals, not
   path-conditioned continuation probabilities. A tree verifier can consume
   those marginals under a node budget, but that is a distinct DFlash-family
