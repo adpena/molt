@@ -762,6 +762,15 @@ def _windows_group_expected_identity(
     return None
 
 
+def process_group_expected_identities(
+    violation: SentinelViolation,
+) -> dict[int, memory_guard.ProcessIdentity]:
+    return {
+        sample.pid: memory_guard.process_identity(sample)
+        for sample in violation.samples
+    }
+
+
 def sample_processes_for_sentinel() -> dict[int, memory_guard.ProcessSample]:
     if _is_windows_process_model():
         return memory_guard.sample_processes_windows_hard_timeout()
@@ -774,6 +783,7 @@ def terminate_group(
     grace: float,
     root: Path | None = None,
     expected_identity: memory_guard.ProcessIdentity | None = None,
+    expected_identities: Mapping[int, memory_guard.ProcessIdentity] | None = None,
 ) -> None:
     self_pgid = _safe_getpgrp()
     if pgid <= 0 or (self_pgid is not None and pgid == self_pgid):
@@ -791,20 +801,45 @@ def terminate_group(
         sample = samples.get(pgid)
         if sample is None:
             return
-        if expected_identity is not None and (
-            memory_guard.process_identity(sample) != expected_identity
-        ):
+        expected_pid_identity = (
+            expected_identities.get(sample.pid)
+            if expected_identities is not None
+            else expected_identity
+        )
+        if expected_pid_identity is None:
+            expected_pid_identity = memory_guard.process_identity(sample)
+        if memory_guard.process_identity(sample) != expected_pid_identity:
             return
         if not is_molt_process(sample, root=root, self_pid=os.getpid()):
             return
-        with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
-            os.kill(pgid, signal.SIGTERM)
+        action = memory_guard._send_pid_signal_if_identity_action(
+            pgid,
+            expected_pid_identity,
+            signal.SIGTERM,
+            sampler=sample_processes_for_sentinel,
+        )
+        if action.result != "sent":
+            return
         time.sleep(max(0.0, grace))
-        with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
-            os.kill(pgid, memory_guard.fallback_kill_signal())
+        memory_guard._send_pid_signal_if_identity_action(
+            pgid,
+            expected_pid_identity,
+            memory_guard.fallback_kill_signal(),
+            sampler=sample_processes_for_sentinel,
+        )
         return
-    with contextlib.suppress(ProcessLookupError, PermissionError):
-        os.killpg(pgid, signal.SIGTERM)
+    if expected_identities is not None:
+        action = memory_guard._send_process_group_signal_if_identities_match_action(
+            pgid,
+            expected_identities,
+            signal.SIGTERM,
+            sampler=sample_processes_for_sentinel,
+        )
+        if action.result != "sent":
+            return
+    else:
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.killpg(pgid, signal.SIGTERM)
     deadline = time.monotonic() + max(0.0, grace)
     while time.monotonic() < deadline:
         try:
@@ -820,8 +855,16 @@ def terminate_group(
     )
     if pgid in protected_pgids:
         return
-    with contextlib.suppress(ProcessLookupError, PermissionError):
-        os.killpg(pgid, memory_guard.fallback_kill_signal())
+    if expected_identities is not None:
+        memory_guard._send_process_group_signal_if_identities_match_action(
+            pgid,
+            expected_identities,
+            memory_guard.fallback_kill_signal(),
+            sampler=sample_processes_for_sentinel,
+        )
+    else:
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.killpg(pgid, memory_guard.fallback_kill_signal())
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -1093,6 +1136,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     grace=args.grace_sec,
                     root=root,
                     expected_identity=_windows_group_expected_identity(violation),
+                    expected_identities=process_group_expected_identities(violation),
                 )
         return violations
 

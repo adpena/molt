@@ -481,7 +481,7 @@ def test_terminate_watched_processes_windows_refuses_codex_root(
     assert sent == []
 
 
-def test_terminate_watched_processes_windows_kills_owned_root_with_empty_samples(
+def test_terminate_watched_processes_windows_refuses_owned_root_with_empty_samples(
     monkeypatch,
 ) -> None:
     module = _load_memory_guard()
@@ -491,7 +491,7 @@ def test_terminate_watched_processes_windows_kills_owned_root_with_empty_samples
     monkeypatch.setattr(module.os, "getpid", lambda: 99999)
     monkeypatch.setattr(module.os, "kill", lambda pid, sig: sent.append((pid, sig)))
 
-    module.terminate_watched_processes(
+    report = module.terminate_watched_processes(
         100,
         samples={},
         watched=set(),
@@ -499,8 +499,122 @@ def test_terminate_watched_processes_windows_kills_owned_root_with_empty_samples
         root_owned=True,
     )
 
-    assert (100, module.signal.SIGTERM) in sent
-    assert (100, module.fallback_kill_signal()) in sent
+    assert sent == []
+    assert any(
+        action.target_kind == "process"
+        and action.target_id == 100
+        and action.result == "skipped_missing_identity"
+        for action in report.actions
+    )
+
+
+def test_terminate_watched_processes_windows_refuses_external_codex_descendant_root(
+    monkeypatch,
+) -> None:
+    module = _load_memory_guard()
+    samples = {
+        100: module.ProcessSample(
+            pid=100,
+            ppid=1,
+            pgid=None,
+            rss_kb=500_000,
+            command=(
+                r"C:\Program Files\WindowsApps\OpenAI.Codex_26.609.4994.0_x64__2p2nqsd0c76g0"
+                r"\app\resources\codex.exe"
+            ),
+        ),
+        101: module.ProcessSample(
+            pid=101,
+            ppid=100,
+            pgid=None,
+            rss_kb=10_000,
+            command="powershell.exe",
+        ),
+        200: module.ProcessSample(
+            pid=200,
+            ppid=101,
+            pgid=None,
+            rss_kb=250_000,
+            command=(
+                r"C:\Users\adpen\OneDrive\Documents\molt"
+                r"\target\dev-fast\molt-backend.exe --daemon"
+            ),
+        ),
+    }
+    sent: list[tuple[int, int]] = []
+
+    monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
+    monkeypatch.setattr(module.os, "getpid", lambda: 99999)
+    monkeypatch.setattr(module.os, "kill", lambda pid, sig: sent.append((pid, sig)))
+
+    report = module.terminate_watched_processes(
+        200,
+        samples=samples,
+        watched={200},
+        grace=0.0,
+        root_owned=True,
+    )
+
+    assert sent == []
+    assert any(
+        action.target_kind == "process"
+        and action.target_id == 200
+        and action.result == "skipped_protected_root_group"
+        for action in report.actions
+    )
+
+
+def test_terminate_watched_processes_windows_keeps_current_guard_child_killable(
+    monkeypatch,
+) -> None:
+    module = _load_memory_guard()
+    samples = {
+        100: module.ProcessSample(
+            pid=100,
+            ppid=1,
+            pgid=None,
+            rss_kb=500_000,
+            command=(
+                r"C:\Program Files\WindowsApps\OpenAI.Codex_26.609.4994.0_x64__2p2nqsd0c76g0"
+                r"\app\resources\codex.exe"
+            ),
+        ),
+        999: module.ProcessSample(
+            pid=999,
+            ppid=100,
+            pgid=None,
+            rss_kb=30_000,
+            command=(
+                r"C:\Users\adpen\OneDrive\Documents\molt"
+                r"\tools\memory_guard.py --"
+            ),
+        ),
+        200: module.ProcessSample(
+            pid=200,
+            ppid=999,
+            pgid=None,
+            rss_kb=250_000,
+            command=(
+                r"C:\Users\adpen\OneDrive\Documents\molt"
+                r"\target\dev-fast\molt-backend.exe --owned"
+            ),
+        ),
+    }
+    sent: list[tuple[int, int]] = []
+
+    monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
+    monkeypatch.setattr(module.os, "getpid", lambda: 999)
+    monkeypatch.setattr(module.os, "kill", lambda pid, sig: sent.append((pid, sig)))
+
+    module.terminate_watched_processes(
+        200,
+        samples=samples,
+        watched={200},
+        grace=0.0,
+    )
+
+    assert (200, module.signal.SIGTERM) in sent
+    assert (200, module.fallback_kill_signal()) in sent
 
 
 def test_cleanup_tracked_orphans_windows_passes_live_descendants_to_terminator(
