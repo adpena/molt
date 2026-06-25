@@ -55,8 +55,9 @@ direction (judgment, prose), and explicitly NOT-objectives (anti-Goodhart rails)
 ### A.3 Direction (judgment — the compression ladder, doc 51)
 Retire one CLASS of wrongness/slowness per unit of work by carrying a new FACT
 in the representation. Never patch the consumer when the producer can carry the
-fact. Prefer the smallest COMPLETE structural change; verified refusal (proving
-an approach unsound and deleting the plan, with evidence) counts as success.
+fact. Prefer the broadest coherent COMPLETE structural class that can land
+without preserving duplicate authority; verified refusal (proving an approach
+unsound and deleting the plan, with evidence) counts as success.
 
 ### A.4 NOT-objectives (anti-Goodhart rails, learned from SpecBench/METR)
 - "Tests green" is necessary, never sufficient — completion claims require the
@@ -93,9 +94,10 @@ the tree (file:line) and against MEASUREMENT before acting. Code beats docs;
 measurement beats reasoning; the dump/repro beats both of your theories.
 
 ## The loop (each unit of work)
-1. PICK the smallest complete structural change with the largest class-kill,
-   from the ladder/ledger. If the top task is monolithic, the task IS
-   decomposition (with an oracle for each piece).
+1. PICK a complete structural work class with the largest class-kill from the
+   ladder/ledger. If the top task is monolithic, the task IS decomposition
+   through the first real authority boundary (with an oracle for each piece),
+   not a sequence of checkpoint chips.
 2. PRE-REGISTER the done-contract BEFORE implementing: in the task entry write
    (a) exact commands that will prove it, (b) expected outputs, (c) the
    corpus/benchmarks that must stay green, (d) what would falsify it. Done is
@@ -122,7 +124,8 @@ measurement beats reasoning; the dump/repro beats both of your theories.
 - Evidence or it didn't happen: every claim carries its reproducing command.
 - Never imply an unrun gate is green; list omitted gates with reasons.
 - Failures are reported with output, not summarized away. A partial fix is
-  reported as partial with the exact remaining slice.
+  reported as partial with the exact remaining structural blocker or authority
+  class.
 - When verification rejects your work, the FINDING is the deliverable.
   Delete the bad plan loudly and re-scope.
 
