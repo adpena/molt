@@ -157,6 +157,11 @@ This updates the Rust stable toolchain, ensures the wasm Rust targets exist,
 installs missing cargo-hosted helper tools such as `wasm-tools`/`wasm-pack`,
 and refreshes the repo lockfiles.
 
+Python dependency resolution is uv-owned and future-forward. The project floor
+is CPython `>=3.12` with no artificial upper cap; run floor checks with
+`uv run --python 3.12 ...`, then add newer CPython lanes as they become
+available and relevant to the touched compatibility surface.
+
 For a deliberate maintainer sweep that also upgrades direct Rust dependency requirements in manifests:
 
 ```bash
@@ -168,6 +173,12 @@ Treat `--all` as a coordinated change: rebuild the touched crates and rerun the 
 Node package surfaces are package-manager pinned. Use Corepack so the
 `packageManager` field in each `package.json` selects the lockfile writer and
 audit engine, rather than whatever stale global `npm` happens to be on PATH:
+
+Molt's JavaScript tooling is future-forward with a hard floor, not an upper cap:
+Node `>=24.18.0` (current Active LTS floor) and npm `>=11.17.0`. The preferred
+maintainer lane tracks the current Node release line as it appears; on
+2026-06-25 that is Node `26.4.0` with npm `11.17.0`. Keep package manifests'
+`engines` and `packageManager` fields aligned with that policy.
 
 ```bash
 corepack npm install --package-lock-only
