@@ -3152,7 +3152,7 @@ def test_state_machine_opcodes_delegate_to_generated_table() -> None:
     assert set(data["state_machine_opcodes"]) == expected
 
     table_block = rendered.split("fn opcode_is_state_machine_table")[1].split(
-        "fn opcode_requires_i64_overflow_box_dispatch_table"
+        "fn opcode_module_concurrency_marker_source_facts_table"
     )[0]
     for row in data["opcode"]:
         expected_bool = "true" if row["name"] in expected else "false"
@@ -3180,6 +3180,103 @@ def test_state_machine_opcodes_delegate_to_generated_table() -> None:
         assert f"{table_name}(opcode)" in body
         assert "matches!" not in body
         assert "OpCode::" not in body
+
+
+def test_module_slot_promotion_roles_delegate_to_generated_tables() -> None:
+    """Module-slot promotion opcode roles belong to the op-kind registry."""
+    gen = _gen()
+    data = gen.load_table()
+    rendered = gen.render_rs(data)
+    promotion = (
+        ROOT / "runtime/molt-tir/src/tir/passes/module_slot_promotion.rs"
+    ).read_text(encoding="utf-8")
+    production = promotion.split("#[cfg(test)]", maxsplit=1)[0]
+
+    assert data["module_concurrency_marker_source_roles"] == [
+        {
+            "opcode": "Import",
+            "role": "module_name",
+            "attrs": ["s_value", "name"],
+        },
+        {
+            "opcode": "ImportFrom",
+            "role": "module_name",
+            "attrs": ["s_value", "name"],
+        },
+        {
+            "opcode": "Call",
+            "role": "thread_intrinsic_callee",
+            "attrs": ["s_value", "name"],
+        },
+        {
+            "opcode": "CallBuiltin",
+            "role": "thread_intrinsic_callee",
+            "attrs": ["s_value", "name"],
+        },
+    ]
+    assert data["module_slot_access_roles"] == [
+        {"opcode": "ModuleGetAttr", "role": "keyed_attr"},
+        {"opcode": "ModuleSetAttr", "role": "keyed_attr"},
+        {"opcode": "ModuleGetGlobal", "role": "wildcard_module_dict"},
+        {"opcode": "ModuleDelGlobal", "role": "wildcard_module_dict"},
+        {"opcode": "ModuleDelGlobalIfPresent", "role": "wildcard_module_dict"},
+    ]
+
+    assert _rust_pub_decl(rendered, "enum", "ModuleConcurrencyMarkerSourceRole")
+    assert _rust_pub_decl(rendered, "struct", "ModuleConcurrencyMarkerSourceFacts")
+    assert _rust_pub_fn(
+        rendered, "opcode_module_concurrency_marker_source_facts_table"
+    )
+    assert _rust_pub_decl(rendered, "enum", "ModuleSlotAccessRole")
+    assert _rust_pub_fn(rendered, "opcode_module_slot_access_role_table")
+
+    concurrency_table = rendered.split(
+        "fn opcode_module_concurrency_marker_source_facts_table"
+    )[1].split("pub enum ModuleSlotAccessRole")[0]
+    assert "OpCode::Import => ModuleConcurrencyMarkerSourceFacts" in concurrency_table
+    assert "role: ModuleConcurrencyMarkerSourceRole::ModuleName" in concurrency_table
+    assert "attrs: MODULE_CONCURRENCY_MARKER_ATTRS_IMPORT" in concurrency_table
+    assert "OpCode::Call => ModuleConcurrencyMarkerSourceFacts" in concurrency_table
+    assert (
+        "role: ModuleConcurrencyMarkerSourceRole::ThreadIntrinsicCallee"
+        in concurrency_table
+    )
+    assert "attrs: MODULE_CONCURRENCY_MARKER_ATTRS_CALL" in concurrency_table
+    assert "OpCode::ModuleCacheGet => MODULE_CONCURRENCY_MARKER_SOURCE_NONE" in (
+        concurrency_table
+    )
+
+    access_table = rendered.split("fn opcode_module_slot_access_role_table")[1].split(
+        "fn opcode_sets_exception_handling_table"
+    )[0]
+    assert "OpCode::ModuleGetAttr => ModuleSlotAccessRole::KeyedAttr" in access_table
+    assert "OpCode::ModuleSetAttr => ModuleSlotAccessRole::KeyedAttr" in access_table
+    assert (
+        "OpCode::ModuleGetGlobal => ModuleSlotAccessRole::WildcardModuleDict"
+        in access_table
+    )
+    assert "OpCode::ModuleCacheGet => ModuleSlotAccessRole::None" in access_table
+
+    assert "opcode_module_concurrency_marker_source_facts_table" in production
+    assert "opcode_module_slot_access_role_table" in production
+    for helper in (
+        "fn module_has_concurrency_markers(",
+        "fn single_module_root(",
+        "fn is_wildcard_module_op(",
+    ):
+        body = _rust_fn_body(production, helper)
+        assert "OpCode::" not in body
+        assert "matches!" not in body
+
+    assert "OpCode::Import | OpCode::ImportFrom" not in production
+    assert "OpCode::Call | OpCode::CallBuiltin" not in production
+    assert "OpCode::ModuleGetAttr | OpCode::ModuleSetAttr" not in production
+    assert (
+        "OpCode::ModuleGetGlobal | OpCode::ModuleDelGlobal | "
+        "OpCode::ModuleDelGlobalIfPresent"
+        not in production
+    )
+    assert "matches!(op.opcode, OpCode::ModuleGetAttr" not in production
 
 
 def test_refcount_heap_exposure_delegates_to_generated_table() -> None:

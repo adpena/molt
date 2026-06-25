@@ -274,6 +274,16 @@ _COUNTED_LOOP_COMPARISON_ROLES = {
     "decreasing_exclusive": "DecreasingExclusive",
     "decreasing_inclusive": "DecreasingInclusive",
 }
+_MODULE_CONCURRENCY_MARKER_SOURCE_ROLES = {
+    "none": "None",
+    "module_name": "ModuleName",
+    "thread_intrinsic_callee": "ThreadIntrinsicCallee",
+}
+_MODULE_SLOT_ACCESS_ROLES = {
+    "none": "None",
+    "keyed_attr": "KeyedAttr",
+    "wildcard_module_dict": "WildcardModuleDict",
+}
 _CALL_OPCODE_ROLES = {
     "not_call": "NotCall",
     "user_call": "UserCall",
@@ -676,6 +686,8 @@ def load_table() -> dict:
         "projectable float result rule",
     )
     _validate_counted_loop_comparison_roles(data, seen_opcodes)
+    _validate_module_concurrency_marker_source_roles(data, seen_opcodes)
+    _validate_module_slot_access_roles(data, seen_opcodes)
     _validate_exception_region_nesting_roles(data, seen_opcodes)
     _validate_call_opcode_roles(data, seen_opcodes)
     _validate_pass_delta_opcode_facts(data)
@@ -1339,6 +1351,101 @@ def _validate_counted_loop_comparison_roles(data: dict, opcodes: set[str]) -> No
             raise OpKindTableError(
                 "counted_loop_comparison_roles inverses must be symmetric: "
                 f"{opcode}->{inverse}, but {inverse}->{inverse_by_opcode.get(inverse)}"
+            )
+
+
+def _validate_module_concurrency_marker_source_roles(
+    data: dict, opcodes: set[str]
+) -> None:
+    rows = data.get("module_concurrency_marker_source_roles", [])
+    if not isinstance(rows, list):
+        raise OpKindTableError(
+            "module_concurrency_marker_source_roles must be an array of tables"
+        )
+    seen: set[str] = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            raise OpKindTableError(
+                "module_concurrency_marker_source_roles rows must be inline tables"
+            )
+        unknown = set(row) - {"opcode", "role", "attrs"}
+        if unknown:
+            raise OpKindTableError(
+                "module_concurrency_marker_source_roles row has unknown fields "
+                f"{sorted(unknown)}: {row}"
+            )
+        opcode = row.get("opcode")
+        if not isinstance(opcode, str) or not opcode:
+            raise OpKindTableError(
+                f"module_concurrency_marker_source_roles row missing opcode: {row}"
+            )
+        if opcode not in opcodes:
+            raise OpKindTableError(
+                "module_concurrency_marker_source_roles opcode "
+                f"{opcode!r} is not a known OpCode"
+            )
+        if opcode in seen:
+            raise OpKindTableError(
+                f"duplicate module_concurrency_marker_source_roles opcode: {opcode}"
+            )
+        seen.add(opcode)
+        role = row.get("role")
+        if role not in _MODULE_CONCURRENCY_MARKER_SOURCE_ROLES or role == "none":
+            raise OpKindTableError(
+                f"module_concurrency_marker_source_roles {opcode}: role must be one of "
+                f"{sorted(k for k in _MODULE_CONCURRENCY_MARKER_SOURCE_ROLES if k != 'none')}"
+            )
+        attrs = row.get("attrs")
+        if not isinstance(attrs, list) or not attrs:
+            raise OpKindTableError(
+                f"module_concurrency_marker_source_roles {opcode}: attrs must be "
+                "a non-empty list"
+            )
+        if not all(
+            isinstance(attr, str) and re.fullmatch(r"[_a-z][a-z0-9_]*", attr)
+            for attr in attrs
+        ):
+            raise OpKindTableError(
+                f"module_concurrency_marker_source_roles {opcode}: attrs must be "
+                "attribute-name strings"
+            )
+        if len(set(attrs)) != len(attrs):
+            raise OpKindTableError(
+                f"module_concurrency_marker_source_roles {opcode}: duplicate attrs"
+            )
+
+
+def _validate_module_slot_access_roles(data: dict, opcodes: set[str]) -> None:
+    rows = data.get("module_slot_access_roles", [])
+    if not isinstance(rows, list):
+        raise OpKindTableError("module_slot_access_roles must be an array of tables")
+    seen: set[str] = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            raise OpKindTableError(
+                "module_slot_access_roles rows must be inline tables"
+            )
+        unknown = set(row) - {"opcode", "role"}
+        if unknown:
+            raise OpKindTableError(
+                "module_slot_access_roles row has unknown fields "
+                f"{sorted(unknown)}: {row}"
+            )
+        opcode = row.get("opcode")
+        if not isinstance(opcode, str) or not opcode:
+            raise OpKindTableError(f"module_slot_access_roles row missing opcode: {row}")
+        if opcode not in opcodes:
+            raise OpKindTableError(
+                f"module_slot_access_roles opcode {opcode!r} is not a known OpCode"
+            )
+        if opcode in seen:
+            raise OpKindTableError(f"duplicate module_slot_access_roles opcode: {opcode}")
+        seen.add(opcode)
+        role = row.get("role")
+        if role not in _MODULE_SLOT_ACCESS_ROLES or role == "none":
+            raise OpKindTableError(
+                f"module_slot_access_roles {opcode}: role must be one of "
+                f"{sorted(k for k in _MODULE_SLOT_ACCESS_ROLES if k != 'none')}"
             )
 
 
@@ -2649,6 +2756,9 @@ def _render_rs_unformatted(data: dict) -> str:
     )
     out.append(_render_opcode_bool_arms(opcodes, state_machine_opcodes))
     out.append("    }\n}\n\n")
+
+    out.append(_render_module_slot_promotion_roles(opcodes, data))
+    out.append("\n")
 
     exception_handling_opcodes = list(data.get("exception_handling_opcodes", []))
     out.append(
@@ -3984,6 +4094,111 @@ def _render_counted_loop_comparison_roles(opcodes: list[dict], data: dict) -> st
         name = row["name"]
         inverse = inverse_by_opcode.get(name)
         variant = f"Some(OpCode::{inverse})" if inverse is not None else "None"
+        lines.append(f"        OpCode::{name} => {variant},\n")
+    lines.append("    }\n}\n")
+    return "".join(lines)
+
+
+def _module_concurrency_marker_attrs_const(opcode: str) -> str:
+    return f"MODULE_CONCURRENCY_MARKER_ATTRS_{_opcode_const_suffix(opcode)}"
+
+
+def _render_module_slot_promotion_roles(opcodes: list[dict], data: dict) -> str:
+    concurrency_rows = list(data.get("module_concurrency_marker_source_roles", []))
+    concurrency_by_opcode = {row["opcode"]: row for row in concurrency_rows}
+    access_by_opcode = {
+        row["opcode"]: row["role"] for row in data.get("module_slot_access_roles", [])
+    }
+    lines = [
+        "/// Module-slot promotion concurrency evidence role. The registry owns\n",
+        "/// opcode membership and attribute payload names; module_slot_promotion.rs\n",
+        "/// owns the string policy for threading modules and direct thread intrinsics.\n",
+        "#[derive(Clone, Copy, Debug, PartialEq, Eq)]\n",
+        "pub enum ModuleConcurrencyMarkerSourceRole {\n",
+    ]
+    for variant in sorted(_MODULE_CONCURRENCY_MARKER_SOURCE_ROLES.values()):
+        lines.append(f"    {variant},\n")
+    lines.extend(
+        [
+            "}\n\n",
+            "#[derive(Clone, Copy, Debug, PartialEq, Eq)]\n",
+            "pub struct ModuleConcurrencyMarkerSourceFacts {\n",
+            "    pub role: ModuleConcurrencyMarkerSourceRole,\n",
+            "    pub attrs: &'static [&'static str],\n",
+            "}\n\n",
+            "const MODULE_CONCURRENCY_MARKER_SOURCE_NONE: ModuleConcurrencyMarkerSourceFacts =\n",
+            "    ModuleConcurrencyMarkerSourceFacts {\n",
+            "        role: ModuleConcurrencyMarkerSourceRole::None,\n",
+            "        attrs: &[],\n",
+            "    };\n",
+        ]
+    )
+    for row in concurrency_rows:
+        const_name = _module_concurrency_marker_attrs_const(row["opcode"])
+        attrs = ", ".join(_rs_string(attr) for attr in row.get("attrs", []))
+        lines.append(f"const {const_name}: &[&str] = &[{attrs}];\n")
+    lines.extend(
+        [
+            "\n",
+            "/// Module-slot promotion concurrency marker facts by opcode. EXHAUSTIVE over\n",
+            "/// OpCode so new import/call carriers cannot silently bypass the module-wide\n",
+            "/// concurrency refusal scan through pass-local wildcard/default logic.\n",
+            "#[inline]\n",
+            "pub fn opcode_module_concurrency_marker_source_facts_table(\n",
+            "    opcode: OpCode,\n",
+            ") -> ModuleConcurrencyMarkerSourceFacts {\n",
+            "    match opcode {\n",
+        ]
+    )
+    for row in opcodes:
+        name = row["name"]
+        facts = concurrency_by_opcode.get(name)
+        if facts is None:
+            lines.append(
+                f"        OpCode::{name} => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,\n"
+            )
+            continue
+        variant = _MODULE_CONCURRENCY_MARKER_SOURCE_ROLES[facts["role"]]
+        const_name = _module_concurrency_marker_attrs_const(name)
+        lines.append(
+            "        "
+            f"OpCode::{name} => ModuleConcurrencyMarkerSourceFacts {{ "
+            f"role: ModuleConcurrencyMarkerSourceRole::{variant}, "
+            f"attrs: {const_name} "
+            "},\n"
+        )
+    lines.extend(
+        [
+            "    }\n",
+            "}\n\n",
+            "/// Module-slot promotion module-dict access role. `KeyedAttr` ops are safe\n",
+            "/// only after module-root and const-name proof in the pass; wildcard ops\n",
+            "/// disqualify promotion for the whole function.\n",
+            "#[derive(Clone, Copy, Debug, PartialEq, Eq)]\n",
+            "pub enum ModuleSlotAccessRole {\n",
+        ]
+    )
+    for variant in sorted(_MODULE_SLOT_ACCESS_ROLES.values()):
+        lines.append(f"    {variant},\n")
+    lines.extend(
+        [
+            "}\n\n",
+            "/// Module-slot promotion access role by opcode. EXHAUSTIVE over OpCode so\n",
+            "/// module ATTR/dict membership cannot drift across prefilters, preheader\n",
+            "/// scans, and in-loop legality scans.\n",
+            "#[inline]\n",
+            "pub fn opcode_module_slot_access_role_table(opcode: OpCode) -> ModuleSlotAccessRole {\n",
+            "    match opcode {\n",
+        ]
+    )
+    for row in opcodes:
+        name = row["name"]
+        role = access_by_opcode.get(name)
+        variant = (
+            f"ModuleSlotAccessRole::{_MODULE_SLOT_ACCESS_ROLES[role]}"
+            if role is not None
+            else "ModuleSlotAccessRole::None"
+        )
         lines.append(f"        OpCode::{name} => {variant},\n")
     lines.append("    }\n}\n")
     return "".join(lines)
