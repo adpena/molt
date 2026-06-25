@@ -103,8 +103,8 @@ the architecture is still mid-move.
 ## Cross-Platform Notes
 - **macOS**: install Xcode CLT (`xcode-select --install`) and LLVM via Homebrew.
 - **Linux**: install LLVM/Clang, CMake, and Ninja via your package manager.
-- **Windows**: install Visual Studio Build Tools (MSVC) plus LLVM/Clang, CMake, and Ninja (see [spec/areas/tooling/0001-toolchains.md](spec/areas/tooling/0001-toolchains.md)).
-- **WASM**: linked builds require `wasm-ld` + `wasm-tools` across platforms.
+- **Windows**: install Visual Studio Build Tools (MSVC) plus a complete LLVM/Clang distribution, CMake, and Ninja (see [spec/areas/tooling/0001-toolchains.md](spec/areas/tooling/0001-toolchains.md)). The LLVM backend requires `llvm-config`, not just `clang`.
+- **WASM**: linked builds require `wasm-ld` + `wasm-tools` across platforms; packaging/demo flows also use `wasm-pack`.
 
 ## Platform Pitfalls
 - **macOS SDK versioning**: if linking fails, ensure Xcode CLT is installed and `xcrun --show-sdk-version` works; set `MACOSX_DEPLOYMENT_TARGET` when cross-linking.
@@ -126,7 +126,8 @@ molt update --check
 ```
 
 - `molt setup` is the canonical bootstrap/readiness command. It reports exact
-  toolchain actions plus the canonical Molt env layout.
+  toolchain actions plus the canonical Molt env layout, including the exact
+  `LLVM_SYS_<ver>_PREFIX` expected by the Rust LLVM binding.
 - `molt doctor` reports missing tools and version-pinned backend prerequisites such as the LLVM lane required by `runtime/molt-backend/Cargo.toml`.
 - `molt validate --check --suite smoke` prints the canonical local validation
   matrix without executing it.
@@ -138,7 +139,9 @@ For a normal repo refresh:
 molt update
 ```
 
-This updates the Rust stable toolchain, ensures the wasm Rust targets exist, and refreshes the repo lockfiles.
+This updates the Rust stable toolchain, ensures the wasm Rust targets exist,
+installs missing cargo-hosted helper tools such as `wasm-tools`/`wasm-pack`,
+and refreshes the repo lockfiles.
 
 For a deliberate maintainer sweep that also upgrades direct Rust dependency requirements in manifests:
 

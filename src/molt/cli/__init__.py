@@ -468,6 +468,7 @@ from molt.cli.wrapper_build import (
 from molt.cli.native_toolchain import (
     _append_darwin_runtime_frameworks,
     _codesign_binary,
+    _detect_macos_arch,
     _resolve_macos_sdk_root,
     _run_bolt_post_link,
     _zig_target_query,
