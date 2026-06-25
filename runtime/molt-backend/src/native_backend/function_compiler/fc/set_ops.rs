@@ -41,12 +41,10 @@ pub(in crate::native_backend::function_compiler) fn handle_set_op(
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
-    int_carriers_plan: &ScalarRepresentationPlan,
-    float_primary_vars: &BTreeSet<String>,
-    bool_primary_vars: &BTreeSet<String>,
+    representation_plan: &ScalarRepresentationPlan,
     nbc: &crate::NanBoxConsts,
 ) -> OpFlow {
-    // Reconstruct the original op-local closure (captures bool_primary_vars +
+    // Reconstruct the original op-local closure (captures representation_plan +
     // nbc; all other state threads through explicit params) so the moved arm
     // bodies call it exactly as they did inline.
     let var_get_boxed_overflow_safe = |module: &mut ObjectModule,
@@ -59,8 +57,7 @@ pub(in crate::native_backend::function_compiler) fn handle_set_op(
                                        sealed_blocks: &mut BTreeSet<Block>,
                                        vars: &BTreeMap<String, Variable>,
                                        name: &str,
-                                       int_carriers_plan: &ScalarRepresentationPlan,
-                                       float_primary_vars: &BTreeSet<String>|
+                                       representation_plan: &ScalarRepresentationPlan|
      -> Option<crate::VarValue> {
         var_get_boxed_overflow_safe_fn(
             module,
@@ -70,9 +67,7 @@ pub(in crate::native_backend::function_compiler) fn handle_set_op(
             sealed_blocks,
             vars,
             name,
-            int_carriers_plan,
-            float_primary_vars,
-            bool_primary_vars,
+            representation_plan,
             nbc,
         )
     };
@@ -114,8 +109,7 @@ pub(in crate::native_backend::function_compiler) fn handle_set_op(
                         &mut *sealed_blocks,
                         vars,
                         name,
-                        int_carriers_plan,
-                        float_primary_vars,
+                        representation_plan,
                     )
                     .unwrap_or_else(|| panic!("Set elem not found in {} op {}", func_name, op_idx));
                     builder.ins().call(add_local, &[set_bits, *val]);
@@ -161,8 +155,7 @@ pub(in crate::native_backend::function_compiler) fn handle_set_op(
                         &mut *sealed_blocks,
                         vars,
                         name,
-                        int_carriers_plan,
-                        float_primary_vars,
+                        representation_plan,
                     )
                     .unwrap_or_else(|| {
                         panic!("Frozenset elem not found in {} op {}", func_name, op_idx)
@@ -183,8 +176,7 @@ pub(in crate::native_backend::function_compiler) fn handle_set_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Set not found");
             let key_bits = var_get_boxed_overflow_safe(
@@ -195,8 +187,7 @@ pub(in crate::native_backend::function_compiler) fn handle_set_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Set key not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -225,8 +216,7 @@ pub(in crate::native_backend::function_compiler) fn handle_set_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Set not found");
             let key_bits = var_get_boxed_overflow_safe(
@@ -237,8 +227,7 @@ pub(in crate::native_backend::function_compiler) fn handle_set_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Set key not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -265,8 +254,7 @@ pub(in crate::native_backend::function_compiler) fn handle_set_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Frozenset not found");
             let key_bits = var_get_boxed_overflow_safe(
@@ -277,8 +265,7 @@ pub(in crate::native_backend::function_compiler) fn handle_set_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Frozenset key not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -305,8 +292,7 @@ pub(in crate::native_backend::function_compiler) fn handle_set_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Set not found");
             let key_bits = var_get_boxed_overflow_safe(
@@ -317,8 +303,7 @@ pub(in crate::native_backend::function_compiler) fn handle_set_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Set key not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -345,8 +330,7 @@ pub(in crate::native_backend::function_compiler) fn handle_set_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Set not found");
             let key_bits = var_get_boxed_overflow_safe(
@@ -357,8 +341,7 @@ pub(in crate::native_backend::function_compiler) fn handle_set_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Set key not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -385,8 +368,7 @@ pub(in crate::native_backend::function_compiler) fn handle_set_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Set not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -413,8 +395,7 @@ pub(in crate::native_backend::function_compiler) fn handle_set_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Set not found");
             let other_bits = var_get_boxed_overflow_safe(
@@ -425,8 +406,7 @@ pub(in crate::native_backend::function_compiler) fn handle_set_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Set update arg not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -453,8 +433,7 @@ pub(in crate::native_backend::function_compiler) fn handle_set_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Set not found");
             let other_bits = var_get_boxed_overflow_safe(
@@ -465,8 +444,7 @@ pub(in crate::native_backend::function_compiler) fn handle_set_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Set intersection update arg not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -493,8 +471,7 @@ pub(in crate::native_backend::function_compiler) fn handle_set_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Set not found");
             let other_bits = var_get_boxed_overflow_safe(
@@ -505,8 +482,7 @@ pub(in crate::native_backend::function_compiler) fn handle_set_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Set difference update arg not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -533,8 +509,7 @@ pub(in crate::native_backend::function_compiler) fn handle_set_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Set not found");
             let other_bits = var_get_boxed_overflow_safe(
@@ -545,8 +520,7 @@ pub(in crate::native_backend::function_compiler) fn handle_set_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Set symdiff update arg not found");
             let callee = SimpleBackend::import_func_id_split(

@@ -21,23 +21,20 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
-    int_carriers_plan: &ScalarRepresentationPlan,
-    float_primary_vars: &BTreeSet<String>,
-    bool_primary_vars: &BTreeSet<String>,
+    representation_plan: &ScalarRepresentationPlan,
     int_like_vars: &BTreeSet<String>,
     float_like_vars: &BTreeSet<String>,
     bool_like_vars: &BTreeSet<String>,
     loop_stack: &[LoopFrame],
     scalar_fast_paths_enabled: bool,
-    representation_plan: &ScalarRepresentationPlan,
     nbc: &crate::NanBoxConsts,
 ) {
     let name_is_numeric_scalar = |name: &str| {
         int_like_vars.contains(name)
             || bool_like_vars.contains(name)
             || float_like_vars.contains(name)
-            || int_carriers_plan.is_raw_int_carrier_name(name)
-            || float_primary_vars.contains(name)
+            || representation_plan.is_raw_int_carrier_name(name)
+            || representation_plan.is_float_unboxed(name)
     };
     let op_prefers_integer_runtime_lane = |op: &OpIR| {
         scalar_fast_paths_enabled && representation_plan.op_prefers_integer_runtime_lane(op)
@@ -54,8 +51,8 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
         };
         let has_float_operand = float_like_vars.contains(lhs)
             || float_like_vars.contains(rhs)
-            || float_primary_vars.contains(lhs)
-            || float_primary_vars.contains(rhs);
+            || representation_plan.is_float_unboxed(lhs)
+            || representation_plan.is_float_unboxed(rhs);
         has_float_operand && name_is_numeric_scalar(lhs) && name_is_numeric_scalar(rhs)
     };
     let var_get_boxed_overflow_safe = |module: &mut ObjectModule,
@@ -68,8 +65,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                                        sealed_blocks: &mut BTreeSet<Block>,
                                        vars: &BTreeMap<String, Variable>,
                                        name: &str,
-                                       int_carriers_plan: &ScalarRepresentationPlan,
-                                       float_primary_vars: &BTreeSet<String>|
+                                       representation_plan: &ScalarRepresentationPlan|
      -> Option<crate::VarValue> {
         var_get_boxed_overflow_safe_fn(
             module,
@@ -79,9 +75,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
             sealed_blocks,
             vars,
             name,
-            int_carriers_plan,
-            float_primary_vars,
-            bool_primary_vars,
+            representation_plan,
             nbc,
         )
     };
@@ -93,11 +87,11 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
             let lr = if in_active_loop {
                 // Variable-backed shadows are phi-correct across loop
                 // back-edges; Value-tier may be stale.
-                int_raw_value(&mut *builder, vars, int_carriers_plan, &args[0])
+                int_raw_value(&mut *builder, vars, representation_plan, &args[0])
             } else {
-                int_raw_value(&mut *builder, vars, int_carriers_plan, &args[0])
+                int_raw_value(&mut *builder, vars, representation_plan, &args[0])
             };
-            let rr = int_raw_value(&mut *builder, vars, int_carriers_plan, &args[1]);
+            let rr = int_raw_value(&mut *builder, vars, representation_plan, &args[1]);
             // Helper: propagate raw bool result from a Cranelift icmp/fcmp
             // result (i8) so downstream loop_break_if_true/false and `if`
             // ops branch directly on the raw value, eliminating NaN-box
@@ -111,11 +105,9 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     &mut *import_refs,
                     &mut *sealed_blocks,
                     vars,
-                    float_primary_vars,
-                    int_carriers_plan,
+                    representation_plan,
                     int_like_vars,
                     bool_like_vars,
-                    bool_primary_vars,
                     nbc,
                     op.out.as_ref(),
                     &args[0],
@@ -128,7 +120,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                 let cmp = builder.ins().icmp(IntCC::SignedLessThan, lr, rr);
                 let (result, raw_bool) = compare_bool_result_value(
                     &mut *builder,
-                    bool_primary_vars,
+                    representation_plan,
                     op.out.as_ref(),
                     cmp,
                     nbc,
@@ -147,8 +139,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     &mut *import_refs,
                     &mut *sealed_blocks,
                     vars,
-                    float_primary_vars,
-                    int_carriers_plan,
+                    representation_plan,
                     int_like_vars,
                     bool_like_vars,
                     nbc,
@@ -161,8 +152,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     &mut *import_refs,
                     &mut *sealed_blocks,
                     vars,
-                    float_primary_vars,
-                    int_carriers_plan,
+                    representation_plan,
                     int_like_vars,
                     bool_like_vars,
                     nbc,
@@ -171,7 +161,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                 let cmp = builder.ins().fcmp(FloatCC::LessThan, lf, rf);
                 let (result, raw_bool) = compare_bool_result_value(
                     &mut *builder,
-                    bool_primary_vars,
+                    representation_plan,
                     op.out.as_ref(),
                     cmp,
                     nbc,
@@ -187,8 +177,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[0],
-                    int_carriers_plan,
-                    float_primary_vars,
+                    representation_plan,
                 )
                 .expect("LHS not found");
                 let rhs = var_get_boxed_overflow_safe(
@@ -199,8 +188,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[1],
-                    int_carriers_plan,
-                    float_primary_vars,
+                    representation_plan,
                 )
                 .expect("RHS not found");
                 let (lhs_xored, lhs_val) = fused_tag_check_and_unbox_int(&mut *builder, *lhs, nbc);
@@ -261,7 +249,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                 def_bool_result(
                     &mut *builder,
                     vars,
-                    bool_primary_vars,
+                    representation_plan,
                     out__,
                     res,
                     lt_raw_bool,
@@ -270,8 +258,8 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
         }
         "le" => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-            let lr = int_raw_value(&mut *builder, vars, int_carriers_plan, &args[0]);
-            let rr = int_raw_value(&mut *builder, vars, int_carriers_plan, &args[1]);
+            let lr = int_raw_value(&mut *builder, vars, representation_plan, &args[0]);
+            let rr = int_raw_value(&mut *builder, vars, representation_plan, &args[1]);
             let mut le_raw_bool: Option<Value> = None;
             let res = if op_prefers_float_numeric_lane(op) {
                 let (boxed, raw) = emit_float_numeric_compare(
@@ -281,11 +269,9 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     &mut *import_refs,
                     &mut *sealed_blocks,
                     vars,
-                    float_primary_vars,
-                    int_carriers_plan,
+                    representation_plan,
                     int_like_vars,
                     bool_like_vars,
-                    bool_primary_vars,
                     nbc,
                     op.out.as_ref(),
                     &args[0],
@@ -298,7 +284,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                 let cmp = builder.ins().icmp(IntCC::SignedLessThanOrEqual, lr, rr);
                 let (result, raw_bool) = compare_bool_result_value(
                     &mut *builder,
-                    bool_primary_vars,
+                    representation_plan,
                     op.out.as_ref(),
                     cmp,
                     nbc,
@@ -317,8 +303,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     &mut *import_refs,
                     &mut *sealed_blocks,
                     vars,
-                    float_primary_vars,
-                    int_carriers_plan,
+                    representation_plan,
                     int_like_vars,
                     bool_like_vars,
                     nbc,
@@ -331,8 +316,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     &mut *import_refs,
                     &mut *sealed_blocks,
                     vars,
-                    float_primary_vars,
-                    int_carriers_plan,
+                    representation_plan,
                     int_like_vars,
                     bool_like_vars,
                     nbc,
@@ -341,7 +325,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                 let cmp = builder.ins().fcmp(FloatCC::LessThanOrEqual, lf, rf);
                 let (result, raw_bool) = compare_bool_result_value(
                     &mut *builder,
-                    bool_primary_vars,
+                    representation_plan,
                     op.out.as_ref(),
                     cmp,
                     nbc,
@@ -357,8 +341,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[0],
-                    int_carriers_plan,
-                    float_primary_vars,
+                    representation_plan,
                 )
                 .expect("LHS not found");
                 let rhs = var_get_boxed_overflow_safe(
@@ -369,8 +352,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[1],
-                    int_carriers_plan,
-                    float_primary_vars,
+                    representation_plan,
                 )
                 .expect("RHS not found");
                 let (lhs_xored, lhs_val) = fused_tag_check_and_unbox_int(&mut *builder, *lhs, nbc);
@@ -433,7 +415,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                 def_bool_result(
                     &mut *builder,
                     vars,
-                    bool_primary_vars,
+                    representation_plan,
                     out__,
                     res,
                     le_raw_bool,
@@ -442,8 +424,8 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
         }
         "gt" => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-            let lhs_shadow = int_raw_value(&mut *builder, vars, int_carriers_plan, &args[0]);
-            let rhs_shadow = int_raw_value(&mut *builder, vars, int_carriers_plan, &args[1]);
+            let lhs_shadow = int_raw_value(&mut *builder, vars, representation_plan, &args[0]);
+            let rhs_shadow = int_raw_value(&mut *builder, vars, representation_plan, &args[1]);
             let mut gt_raw_bool: Option<Value> = None;
             let res = if op_prefers_float_numeric_lane(op) {
                 let (boxed, raw) = emit_float_numeric_compare(
@@ -453,11 +435,9 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     &mut *import_refs,
                     &mut *sealed_blocks,
                     vars,
-                    float_primary_vars,
-                    int_carriers_plan,
+                    representation_plan,
                     int_like_vars,
                     bool_like_vars,
-                    bool_primary_vars,
                     nbc,
                     op.out.as_ref(),
                     &args[0],
@@ -470,7 +450,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                 let cmp = builder.ins().icmp(IntCC::SignedGreaterThan, lr, rr);
                 let (result, raw_bool) = compare_bool_result_value(
                     &mut *builder,
-                    bool_primary_vars,
+                    representation_plan,
                     op.out.as_ref(),
                     cmp,
                     nbc,
@@ -489,8 +469,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     &mut *import_refs,
                     &mut *sealed_blocks,
                     vars,
-                    float_primary_vars,
-                    int_carriers_plan,
+                    representation_plan,
                     int_like_vars,
                     bool_like_vars,
                     nbc,
@@ -503,8 +482,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     &mut *import_refs,
                     &mut *sealed_blocks,
                     vars,
-                    float_primary_vars,
-                    int_carriers_plan,
+                    representation_plan,
                     int_like_vars,
                     bool_like_vars,
                     nbc,
@@ -513,7 +491,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                 let cmp = builder.ins().fcmp(FloatCC::GreaterThan, lf, rf);
                 let (result, raw_bool) = compare_bool_result_value(
                     &mut *builder,
-                    bool_primary_vars,
+                    representation_plan,
                     op.out.as_ref(),
                     cmp,
                     nbc,
@@ -529,8 +507,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[0],
-                    int_carriers_plan,
-                    float_primary_vars,
+                    representation_plan,
                 )
                 .expect("LHS not found");
                 let rhs = var_get_boxed_overflow_safe(
@@ -541,8 +518,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[1],
-                    int_carriers_plan,
-                    float_primary_vars,
+                    representation_plan,
                 )
                 .expect("RHS not found");
                 let (lhs_xored, lhs_val) = fused_tag_check_and_unbox_int(&mut *builder, *lhs, nbc);
@@ -605,7 +581,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                 def_bool_result(
                     &mut *builder,
                     vars,
-                    bool_primary_vars,
+                    representation_plan,
                     out__,
                     res,
                     gt_raw_bool,
@@ -614,8 +590,8 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
         }
         "ge" => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-            let lhs_shadow = int_raw_value(&mut *builder, vars, int_carriers_plan, &args[0]);
-            let rhs_shadow = int_raw_value(&mut *builder, vars, int_carriers_plan, &args[1]);
+            let lhs_shadow = int_raw_value(&mut *builder, vars, representation_plan, &args[0]);
+            let rhs_shadow = int_raw_value(&mut *builder, vars, representation_plan, &args[1]);
             let mut ge_raw_bool: Option<Value> = None;
             let res = if op_prefers_float_numeric_lane(op) {
                 let (boxed, raw) = emit_float_numeric_compare(
@@ -625,11 +601,9 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     &mut *import_refs,
                     &mut *sealed_blocks,
                     vars,
-                    float_primary_vars,
-                    int_carriers_plan,
+                    representation_plan,
                     int_like_vars,
                     bool_like_vars,
-                    bool_primary_vars,
                     nbc,
                     op.out.as_ref(),
                     &args[0],
@@ -642,7 +616,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                 let cmp = builder.ins().icmp(IntCC::SignedGreaterThanOrEqual, lr, rr);
                 let (result, raw_bool) = compare_bool_result_value(
                     &mut *builder,
-                    bool_primary_vars,
+                    representation_plan,
                     op.out.as_ref(),
                     cmp,
                     nbc,
@@ -661,8 +635,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     &mut *import_refs,
                     &mut *sealed_blocks,
                     vars,
-                    float_primary_vars,
-                    int_carriers_plan,
+                    representation_plan,
                     int_like_vars,
                     bool_like_vars,
                     nbc,
@@ -675,8 +648,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     &mut *import_refs,
                     &mut *sealed_blocks,
                     vars,
-                    float_primary_vars,
-                    int_carriers_plan,
+                    representation_plan,
                     int_like_vars,
                     bool_like_vars,
                     nbc,
@@ -685,7 +657,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                 let cmp = builder.ins().fcmp(FloatCC::GreaterThanOrEqual, lf, rf);
                 let (result, raw_bool) = compare_bool_result_value(
                     &mut *builder,
-                    bool_primary_vars,
+                    representation_plan,
                     op.out.as_ref(),
                     cmp,
                     nbc,
@@ -701,8 +673,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[0],
-                    int_carriers_plan,
-                    float_primary_vars,
+                    representation_plan,
                 )
                 .expect("LHS not found");
                 let rhs = var_get_boxed_overflow_safe(
@@ -713,8 +684,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[1],
-                    int_carriers_plan,
-                    float_primary_vars,
+                    representation_plan,
                 )
                 .expect("RHS not found");
                 let (lhs_xored, lhs_val) = fused_tag_check_and_unbox_int(&mut *builder, *lhs, nbc);
@@ -779,7 +749,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                 def_bool_result(
                     &mut *builder,
                     vars,
-                    bool_primary_vars,
+                    representation_plan,
                     out__,
                     res,
                     ge_raw_bool,
@@ -788,8 +758,8 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
         }
         "eq" => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-            let eq_lr = int_raw_value(&mut *builder, vars, int_carriers_plan, &args[0]);
-            let eq_rr = int_raw_value(&mut *builder, vars, int_carriers_plan, &args[1]);
+            let eq_lr = int_raw_value(&mut *builder, vars, representation_plan, &args[0]);
+            let eq_rr = int_raw_value(&mut *builder, vars, representation_plan, &args[1]);
             let mut eq_raw_bool: Option<Value> = None;
             let res = if op_prefers_float_numeric_lane(op) {
                 let (boxed, raw) = emit_float_numeric_compare(
@@ -799,11 +769,9 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     &mut *import_refs,
                     &mut *sealed_blocks,
                     vars,
-                    float_primary_vars,
-                    int_carriers_plan,
+                    representation_plan,
                     int_like_vars,
                     bool_like_vars,
-                    bool_primary_vars,
                     nbc,
                     op.out.as_ref(),
                     &args[0],
@@ -818,7 +786,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                 let cmp = builder.ins().icmp(IntCC::Equal, lr, rr);
                 let (result, raw_bool) = compare_bool_result_value(
                     &mut *builder,
-                    bool_primary_vars,
+                    representation_plan,
                     op.out.as_ref(),
                     cmp,
                     nbc,
@@ -837,8 +805,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     &mut *import_refs,
                     &mut *sealed_blocks,
                     vars,
-                    float_primary_vars,
-                    int_carriers_plan,
+                    representation_plan,
                     int_like_vars,
                     bool_like_vars,
                     nbc,
@@ -851,8 +818,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     &mut *import_refs,
                     &mut *sealed_blocks,
                     vars,
-                    float_primary_vars,
-                    int_carriers_plan,
+                    representation_plan,
                     int_like_vars,
                     bool_like_vars,
                     nbc,
@@ -861,7 +827,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                 let cmp = builder.ins().fcmp(FloatCC::Equal, lf, rf);
                 let (result, raw_bool) = compare_bool_result_value(
                     &mut *builder,
-                    bool_primary_vars,
+                    representation_plan,
                     op.out.as_ref(),
                     cmp,
                     nbc,
@@ -877,8 +843,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[0],
-                    int_carriers_plan,
-                    float_primary_vars,
+                    representation_plan,
                 )
                 .expect("LHS not found");
                 let rhs = var_get_boxed_overflow_safe(
@@ -889,8 +854,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[1],
-                    int_carriers_plan,
-                    float_primary_vars,
+                    representation_plan,
                 )
                 .expect("RHS not found");
                 let (lhs_xored, lhs_val) = fused_tag_check_and_unbox_int(&mut *builder, *lhs, nbc);
@@ -933,7 +897,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                 def_bool_result(
                     &mut *builder,
                     vars,
-                    bool_primary_vars,
+                    representation_plan,
                     out__,
                     res,
                     eq_raw_bool,
@@ -942,8 +906,8 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
         }
         "ne" => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-            let ne_lr = int_raw_value(&mut *builder, vars, int_carriers_plan, &args[0]);
-            let ne_rr = int_raw_value(&mut *builder, vars, int_carriers_plan, &args[1]);
+            let ne_lr = int_raw_value(&mut *builder, vars, representation_plan, &args[0]);
+            let ne_rr = int_raw_value(&mut *builder, vars, representation_plan, &args[1]);
             let mut ne_raw_bool: Option<Value> = None;
             let res = if op_prefers_float_numeric_lane(op) {
                 let (boxed, raw) = emit_float_numeric_compare(
@@ -953,11 +917,9 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     &mut *import_refs,
                     &mut *sealed_blocks,
                     vars,
-                    float_primary_vars,
-                    int_carriers_plan,
+                    representation_plan,
                     int_like_vars,
                     bool_like_vars,
-                    bool_primary_vars,
                     nbc,
                     op.out.as_ref(),
                     &args[0],
@@ -971,7 +933,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                 let cmp = builder.ins().icmp(IntCC::NotEqual, lr, rr);
                 let (result, raw_bool) = compare_bool_result_value(
                     &mut *builder,
-                    bool_primary_vars,
+                    representation_plan,
                     op.out.as_ref(),
                     cmp,
                     nbc,
@@ -990,8 +952,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     &mut *import_refs,
                     &mut *sealed_blocks,
                     vars,
-                    float_primary_vars,
-                    int_carriers_plan,
+                    representation_plan,
                     int_like_vars,
                     bool_like_vars,
                     nbc,
@@ -1004,8 +965,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     &mut *import_refs,
                     &mut *sealed_blocks,
                     vars,
-                    float_primary_vars,
-                    int_carriers_plan,
+                    representation_plan,
                     int_like_vars,
                     bool_like_vars,
                     nbc,
@@ -1014,7 +974,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                 let cmp = builder.ins().fcmp(FloatCC::NotEqual, lf, rf);
                 let (result, raw_bool) = compare_bool_result_value(
                     &mut *builder,
-                    bool_primary_vars,
+                    representation_plan,
                     op.out.as_ref(),
                     cmp,
                     nbc,
@@ -1030,8 +990,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[0],
-                    int_carriers_plan,
-                    float_primary_vars,
+                    representation_plan,
                 )
                 .expect("LHS not found");
                 let rhs = var_get_boxed_overflow_safe(
@@ -1042,8 +1001,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[1],
-                    int_carriers_plan,
-                    float_primary_vars,
+                    representation_plan,
                 )
                 .expect("RHS not found");
                 let (lhs_xored, lhs_val) = fused_tag_check_and_unbox_int(&mut *builder, *lhs, nbc);
@@ -1086,7 +1044,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                 def_bool_result(
                     &mut *builder,
                     vars,
-                    bool_primary_vars,
+                    representation_plan,
                     out__,
                     res,
                     ne_raw_bool,
@@ -1103,8 +1061,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("LHS not found");
             let rhs = var_get_boxed_overflow_safe(
@@ -1115,8 +1072,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("RHS not found");
             // Use the fast path: pointer-identity check before byte scan.
@@ -1131,7 +1087,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
             let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
             let res = builder.inst_results(call)[0];
             if let Some(out__) = op.out.as_ref() {
-                def_bool_result(&mut *builder, vars, bool_primary_vars, out__, res, None);
+                def_bool_result(&mut *builder, vars, representation_plan, out__, res, None);
             }
         }
         _ => unreachable!("non-compare op routed to handle_compare_op"),

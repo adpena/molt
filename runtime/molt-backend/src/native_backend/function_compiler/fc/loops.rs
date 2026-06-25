@@ -40,9 +40,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
-    int_carriers_plan: &ScalarRepresentationPlan,
-    bool_primary_vars: &BTreeSet<String>,
-    float_primary_vars: &BTreeSet<String>,
+    representation_plan: &ScalarRepresentationPlan,
     int_like_vars: &BTreeSet<String>,
     bool_like_vars: &BTreeSet<String>,
     last_use: &BTreeMap<String, usize>,
@@ -63,7 +61,6 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
     scalar_fast_paths_enabled: bool,
     debug_loop_cfg: Option<&str>,
     debug_block_origins: Option<&str>,
-    representation_plan: &ScalarRepresentationPlan,
     maybe_debug_seal: &dyn Fn(&str, usize, Block),
     local_exc_pending_fast: FuncRef,
     exc_flag_ptr_slot: Option<cranelift_codegen::ir::StackSlot>,
@@ -73,7 +70,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
     let ops = &func_ir.ops;
     let var_is_int = |name: &str| {
         scalar_fast_paths_enabled
-            && (int_like_vars.contains(name) || int_carriers_plan.is_raw_int_carrier_name(name))
+            && (int_like_vars.contains(name) || representation_plan.is_raw_int_carrier_name(name))
     };
     let var_is_bool = |name: &str| scalar_fast_paths_enabled && bool_like_vars.contains(name);
     let var_get_boxed_overflow_safe = |module: &mut ObjectModule,
@@ -86,8 +83,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                                        sealed_blocks: &mut BTreeSet<Block>,
                                        vars: &BTreeMap<String, Variable>,
                                        name: &str,
-                                       int_carriers_plan: &ScalarRepresentationPlan,
-                                       float_primary_vars: &BTreeSet<String>|
+                                       representation_plan: &ScalarRepresentationPlan|
      -> Option<crate::VarValue> {
         var_get_boxed_overflow_safe_fn(
             module,
@@ -97,9 +93,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
             sealed_blocks,
             vars,
             name,
-            int_carriers_plan,
-            float_primary_vars,
-            bool_primary_vars,
+            representation_plan,
             nbc,
         )
     };
@@ -127,7 +121,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                     let none_val = builder.ins().iconst(types::I64, 0);
                     let none_f64 = builder.ins().f64const(0.0);
                     for name in body_vars {
-                        if float_primary_vars.contains(name) {
+                        if representation_plan.is_float_unboxed(name) {
                             def_var_named(&mut *builder, vars, name, none_f64);
                         } else {
                             def_var_named(&mut *builder, vars, name, none_val);
@@ -168,8 +162,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                             sealed_blocks,
                             vars,
                             list_name,
-                            int_carriers_plan,
-                            float_primary_vars,
+                            representation_plan,
                         ) else {
                             continue;
                         };
@@ -218,8 +211,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                             sealed_blocks,
                             vars,
                             list_name,
-                            int_carriers_plan,
-                            float_primary_vars,
+                            representation_plan,
                         ) else {
                             continue;
                         };
@@ -394,8 +386,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                                     sealed_blocks,
                                     vars,
                                     out,
-                                    int_carriers_plan,
-                                    float_primary_vars,
+                                    representation_plan,
                                 )
                             {
                                 break 'find_phi Some(*v);
@@ -435,7 +426,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                         let none_val = builder.ins().iconst(types::I64, 0);
                         let none_f64 = builder.ins().f64const(0.0);
                         for name in body_vars {
-                            if float_primary_vars.contains(name) {
+                            if representation_plan.is_float_unboxed(name) {
                                 def_var_named(&mut *builder, vars, name, none_f64);
                             } else {
                                 def_var_named(&mut *builder, vars, name, none_val);
@@ -483,22 +474,21 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                         sealed_blocks,
                         vars,
                         &args[0],
-                        int_carriers_plan,
-                        float_primary_vars,
+                        representation_plan,
                     )
                     .expect("Loop index start not found")
                 });
-                let start = if int_carriers_plan.is_raw_int_carrier_name(out_name.as_str()) {
+                let start = if representation_plan.is_raw_int_carrier_name(out_name.as_str()) {
                     args.first()
                         .and_then(|name| {
-                            int_raw_value(&mut *builder, vars, int_carriers_plan, name)
+                            int_raw_value(&mut *builder, vars, representation_plan, name)
                         })
                         .unwrap_or_else(|| unbox_int_or_bool(&mut *builder, start, nbc))
                 } else {
                     start
                 };
                 // Step 1: define counter Variable with initial value.
-                // For int_carriers_plan the main Variable is the raw i64
+                // For representation_plan the main Variable is the raw i64
                 // carrier; Cranelift SSA provides the loop phi.
                 def_var_named(&mut *builder, vars, out_name.clone(), start);
                 // Initialize loop-body output variables to None (0)
@@ -508,7 +498,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                     let none_val = builder.ins().iconst(types::I64, 0);
                     let none_f64 = builder.ins().f64const(0.0);
                     for name in body_vars {
-                        if float_primary_vars.contains(name) {
+                        if representation_plan.is_float_unboxed(name) {
                             def_var_named(&mut *builder, vars, name, none_f64);
                         } else {
                             def_var_named(&mut *builder, vars, name, none_val);
@@ -546,8 +536,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                             sealed_blocks,
                             vars,
                             list_name,
-                            int_carriers_plan,
-                            float_primary_vars,
+                            representation_plan,
                         ) else {
                             continue;
                         };
@@ -596,8 +585,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                             sealed_blocks,
                             vars,
                             list_name,
-                            int_carriers_plan,
-                            float_primary_vars,
+                            representation_plan,
                         ) else {
                             continue;
                         };
@@ -689,7 +677,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                             int_raw_value(
                                 &mut *builder,
                                 vars,
-                                int_carriers_plan,
+                                representation_plan,
                                 &reduction.acc_operand_name,
                             )
                             .unwrap_or_else(|| {
@@ -701,8 +689,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                                     sealed_blocks,
                                     vars,
                                     &reduction.acc_operand_name,
-                                    int_carriers_plan,
-                                    float_primary_vars,
+                                    representation_plan,
                                 )
                                 .expect("Sum reduction accumulator not found");
                                 unbox_int(&mut *builder, *boxed, nbc)
@@ -717,10 +704,10 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                         let raw_start_idx = args
                             .first()
                             .and_then(|name| {
-                                int_raw_value(&mut *builder, vars, int_carriers_plan, name)
+                                int_raw_value(&mut *builder, vars, representation_plan, name)
                             })
                             .unwrap_or_else(|| {
-                                if int_carriers_plan.is_raw_int_carrier_name(out_name.as_str()) {
+                                if representation_plan.is_raw_int_carrier_name(out_name.as_str()) {
                                     start
                                 } else {
                                     unbox_int(&mut *builder, start, nbc)
@@ -835,15 +822,15 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                         // of these names, the typed-IR invariant is too
                         // narrow and should fail during verification.
                         debug_assert!(
-                            int_carriers_plan
+                            representation_plan
                                 .is_raw_int_carrier_name(reduction.add_out_name.as_str())
                         );
                         debug_assert!(
-                            int_carriers_plan
+                            representation_plan
                                 .is_raw_int_carrier_name(reduction.acc_store_slot.as_str())
                         );
                         debug_assert!(
-                            int_carriers_plan
+                            representation_plan
                                 .is_raw_int_carrier_name(reduction.acc_operand_name.as_str())
                         );
                         def_var_named(&mut *builder, vars, &reduction.add_out_name, final_acc);
@@ -1071,7 +1058,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                 let cond_is_bool_typed = var_is_bool(cond_name);
                 let cond_is_int_typed = !cond_is_bool_typed && var_is_int(cond_name);
                 let cond_bool = if let Some(raw_val) =
-                    bool_raw_value(&mut *builder, vars, bool_primary_vars, cond_name)
+                    bool_raw_value(&mut *builder, vars, representation_plan, cond_name)
                 {
                     // Raw bool from proven list_bool getitem or const_bool.
                     builder.ins().icmp_imm(IntCC::NotEqual, raw_val, 0)
@@ -1085,15 +1072,14 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                         sealed_blocks,
                         vars,
                         &args[0],
-                        int_carriers_plan,
-                        float_primary_vars,
+                        representation_plan,
                     )
                     .expect("Loop break cond not found");
                     let one = builder.ins().iconst(types::I64, 1);
                     let payload = builder.ins().band(*cond, one);
                     builder.ins().icmp_imm(IntCC::NotEqual, payload, 0)
                 } else if let Some(raw_shadow) =
-                    int_raw_value(&mut *builder, vars, int_carriers_plan, &args[0])
+                    int_raw_value(&mut *builder, vars, representation_plan, &args[0])
                 {
                     // Proven raw i64 carrier: truthiness is `value != 0`.
                     builder.ins().icmp_imm(IntCC::NotEqual, raw_shadow, 0)
@@ -1113,8 +1099,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                         sealed_blocks,
                         vars,
                         &args[0],
-                        int_carriers_plan,
-                        float_primary_vars,
+                        representation_plan,
                     )
                     .expect("Loop break cond not found");
                     let cond_val = unbox_int_or_bool(&mut *builder, *cond, nbc);
@@ -1131,8 +1116,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                         sealed_blocks,
                         vars,
                         &args[0],
-                        int_carriers_plan,
-                        float_primary_vars,
+                        representation_plan,
                     )
                     .expect("Loop break cond not found");
                     let callee = SimpleBackend::import_func_id_split(
@@ -1260,7 +1244,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                 let cond_is_bool_typed = var_is_bool(cond_name);
                 let cond_is_int_typed = !cond_is_bool_typed && var_is_int(cond_name);
                 let cond_bool = if let Some(raw_val) =
-                    bool_raw_value(&mut *builder, vars, bool_primary_vars, cond_name)
+                    bool_raw_value(&mut *builder, vars, representation_plan, cond_name)
                 {
                     // Raw bool from proven list_bool getitem or const_bool.
                     builder.ins().icmp_imm(IntCC::NotEqual, raw_val, 0)
@@ -1274,15 +1258,14 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                         sealed_blocks,
                         vars,
                         &args[0],
-                        int_carriers_plan,
-                        float_primary_vars,
+                        representation_plan,
                     )
                     .expect("Loop break cond not found");
                     let one = builder.ins().iconst(types::I64, 1);
                     let payload = builder.ins().band(*cond, one);
                     builder.ins().icmp_imm(IntCC::NotEqual, payload, 0)
                 } else if let Some(raw_shadow) =
-                    int_raw_value(&mut *builder, vars, int_carriers_plan, &args[0])
+                    int_raw_value(&mut *builder, vars, representation_plan, &args[0])
                 {
                     // Proven raw i64 carrier: truthiness is `value != 0`.
                     builder.ins().icmp_imm(IntCC::NotEqual, raw_shadow, 0)
@@ -1302,8 +1285,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                         sealed_blocks,
                         vars,
                         &args[0],
-                        int_carriers_plan,
-                        float_primary_vars,
+                        representation_plan,
                     )
                     .expect("Loop break cond not found");
                     let cond_val = unbox_int_or_bool(&mut *builder, *cond, nbc);
@@ -1320,8 +1302,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                         sealed_blocks,
                         vars,
                         &args[0],
-                        int_carriers_plan,
-                        float_primary_vars,
+                        representation_plan,
                     )
                     .expect("Loop break cond not found");
                     let callee = SimpleBackend::import_func_id_split(
@@ -1437,8 +1418,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                                 sealed_blocks,
                                 vars,
                                 &name,
-                                int_carriers_plan,
-                                float_primary_vars,
+                                representation_plan,
                             )
                             .map(|v| *v)
                         });
@@ -1468,8 +1448,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                                 sealed_blocks,
                                 vars,
                                 &name,
-                                int_carriers_plan,
-                                float_primary_vars,
+                                representation_plan,
                             )
                             .map(|v| *v)
                         });
@@ -1495,8 +1474,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                 sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Loop index next not found");
             if loop_stack.is_empty() {
@@ -1508,11 +1486,11 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                 let frame = loop_stack.last_mut().unwrap();
                 let next_raw = args
                     .first()
-                    .and_then(|name| int_raw_value(&mut *builder, vars, int_carriers_plan, name));
+                    .and_then(|name| int_raw_value(&mut *builder, vars, representation_plan, name));
                 let next_value = if frame
                     .index_name
                     .as_deref()
-                    .is_some_and(|name| int_carriers_plan.is_raw_int_carrier_name(name))
+                    .is_some_and(|name| representation_plan.is_raw_int_carrier_name(name))
                 {
                     next_raw.unwrap_or_else(|| unbox_int_or_bool(&mut *builder, *next_idx, nbc))
                 } else {
@@ -1522,12 +1500,12 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                 if let Some(out_name) = op.out.as_ref()
                     && frame.index_name.as_ref() != Some(out_name)
                 {
-                    let out_value = if int_carriers_plan.is_raw_int_carrier_name(out_name.as_str())
-                    {
-                        next_raw.unwrap_or(next_value)
-                    } else {
-                        *next_idx
-                    };
+                    let out_value =
+                        if representation_plan.is_raw_int_carrier_name(out_name.as_str()) {
+                            next_raw.unwrap_or(next_value)
+                        } else {
+                            *next_idx
+                        };
                     def_var_named(&mut *builder, vars, out_name.clone(), out_value);
                 }
             }
@@ -1569,8 +1547,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                                         sealed_blocks,
                                         vars,
                                         src_name,
-                                        int_carriers_plan,
-                                        float_primary_vars,
+                                        representation_plan,
                                     )
                                 {
                                     frame.next_index = Some(*next_idx);
@@ -1607,8 +1584,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                                 sealed_blocks,
                                 vars,
                                 &name,
-                                int_carriers_plan,
-                                float_primary_vars,
+                                representation_plan,
                             )
                             .map(|v| *v)
                         });
@@ -1638,8 +1614,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                                 sealed_blocks,
                                 vars,
                                 &name,
-                                int_carriers_plan,
-                                float_primary_vars,
+                                representation_plan,
                             )
                             .map(|v| *v)
                         });
@@ -1665,12 +1640,11 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                         sealed_blocks,
                         vars,
                         name,
-                        int_carriers_plan,
-                        float_primary_vars,
+                        representation_plan,
                     )
                 {
-                    let current = if int_carriers_plan.is_raw_int_carrier_name(name.as_str()) {
-                        int_raw_value(&mut *builder, vars, int_carriers_plan, name)
+                    let current = if representation_plan.is_raw_int_carrier_name(name.as_str()) {
+                        int_raw_value(&mut *builder, vars, representation_plan, name)
                             .unwrap_or_else(|| unbox_int_or_bool(&mut *builder, *current, nbc))
                     } else {
                         *current

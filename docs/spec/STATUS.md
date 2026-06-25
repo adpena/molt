@@ -1005,18 +1005,22 @@ the implementation. For forward-looking priorities, use
   validate allocation size before constructing wide BigInts. Native lowering
   calls those runtime shift primitives directly; raw Cranelift shift lowering
   requires a future explicit range and nonnegative shift-count proof.
-  Native float-primary lowering likewise uses static `float_primary_vars` as
-  the only authority for F64-primary Cranelift variables; the raw-f64 shadow
-  lane has been removed, and non-primary float values are boxed immediately in
-  their main I64 variables. Liveness cleanup and exception-check scrubbing are
+  Native scalar-primary lowering now consumes one `ScalarRepresentationPlan`
+  reference throughout `function_compiler.rs`, `scalar_carriers.rs`, and the
+  extracted `fc/*` handler family. The old cloned
+  `bool_primary_vars`/`float_primary_vars` side sets and `int_carriers_plan`
+  alias are gone from native backend code; raw-bool and raw-F64 membership is
+  queried through `is_bool_unboxed` / `is_float_unboxed` beside the raw-int plan
+  predicates. Non-primary float values are boxed immediately in their main I64
+  variables. Liveness cleanup and exception-check scrubbing are
   representation-aware: dead F64-primary slots are poisoned with an F64 zero,
   while boxed slots keep the boxed `None`/zero sentinel, so cleanup cannot
   violate Cranelift variable typing after raw-f64 shadow deletion. Native bool
-  lowering now has a raw-closed
-  `bool_primary_vars` subset for constants, alias/store propagation,
-  comparisons, identity checks, and truthiness casts. Bool-primary escape
-  boxing uses an explicit raw-bool `0/1` carrier conversion before NaN-boxing,
-  so the b1-condition bool boxer is not used as a mixed raw/condition helper.
+  lowering has a raw-closed plan predicate for constants, alias/store
+  propagation, comparisons, identity checks, and truthiness casts. Bool-primary
+  escape boxing uses an explicit raw-bool `0/1` carrier conversion before
+  NaN-boxing, so the b1-condition bool boxer is not used as a mixed
+  raw/condition helper.
   Raw-closed bool join carriers use the same main-Variable raw `0/1` contract
   across store/load/copy and structured phi binding; join slots that are unsafe
   for scalar slot exclusion remain boxed. Proven-bool list indexing is admitted
@@ -1030,8 +1034,8 @@ the implementation. For forward-looking priorities, use
   all-sources rule; float-primary eligibility is definition-scoped, so
   unsupported producers such as `pow` keep their own outputs boxed without
   disabling unrelated proven-float locals in the same function. The raw-bool
-  shadow lane has been removed: `bool_primary_vars` is the only raw-bool
-  authority, and non-primary bools stay boxed in their main I64 variables.
+  shadow lane has been removed; non-primary bools stay boxed in their main I64
+  variables.
   Native fixed-layout field stores now share a single direct-write proof for
   fresh stack and sized heap objects: `store_init` is direct for non-heap
   values, later `store` is direct only when the slot's prior direct write is

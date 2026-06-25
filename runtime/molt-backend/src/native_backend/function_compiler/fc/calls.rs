@@ -42,9 +42,7 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
-    int_carriers_plan: &ScalarRepresentationPlan,
-    float_primary_vars: &BTreeSet<String>,
-    bool_primary_vars: &BTreeSet<String>,
+    representation_plan: &ScalarRepresentationPlan,
     bool_like_vars: &BTreeSet<String>,
     param_name_set: &BTreeSet<&str>,
     first_defined_at: &BTreeMap<String, usize>,
@@ -81,8 +79,7 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
                                        sealed_blocks: &mut BTreeSet<Block>,
                                        vars: &BTreeMap<String, Variable>,
                                        name: &str,
-                                       int_carriers_plan: &ScalarRepresentationPlan,
-                                       float_primary_vars: &BTreeSet<String>|
+                                       representation_plan: &ScalarRepresentationPlan|
      -> Option<crate::VarValue> {
         var_get_boxed_overflow_safe_fn(
             module,
@@ -92,9 +89,7 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
             sealed_blocks,
             vars,
             name,
-            int_carriers_plan,
-            float_primary_vars,
-            bool_primary_vars,
+            representation_plan,
             nbc,
         )
     };
@@ -113,11 +108,9 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
                     &mut *import_refs,
                     &mut *sealed_blocks,
                     bool_like_vars,
-                    bool_primary_vars,
                     vars,
                     nbc,
-                    int_carriers_plan,
-                    float_primary_vars,
+                    representation_plan,
                     name,
                 );
                 args.push(val);
@@ -206,8 +199,7 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
                     &mut *sealed_blocks,
                     vars,
                     func_obj_var,
-                    int_carriers_plan,
-                    float_primary_vars,
+                    representation_plan,
                 )
                 .expect("Closure func obj not found for direct call");
                 let extract_local = import_func_ref(
@@ -487,8 +479,7 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
                         &mut *sealed_blocks,
                         vars,
                         name,
-                        int_carriers_plan,
-                        float_primary_vars,
+                        representation_plan,
                     )
                     .map(|v| *v)
                 });
@@ -510,8 +501,7 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
                         &mut *sealed_blocks,
                         vars,
                         name,
-                        int_carriers_plan,
-                        float_primary_vars,
+                        representation_plan,
                     )
                     .map(|v| *v)
                 });
@@ -598,8 +588,7 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
                         &mut *sealed_blocks,
                         vars,
                         name,
-                        int_carriers_plan,
-                        float_primary_vars,
+                        representation_plan,
                     )
                     .expect("Arg not found"),
                 );
@@ -617,8 +606,7 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
                     &mut *sealed_blocks,
                     vars,
                     func_obj_var,
-                    int_carriers_plan,
-                    float_primary_vars,
+                    representation_plan,
                 )
                 .expect("Closure func obj not found for direct call");
                 let extract_local = import_func_ref(
@@ -674,7 +662,7 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
             } else {
                 // Target doesn't return -- assign None if output var requested.
                 if let Some(out__) = op.out.as_ref() {
-                    if float_primary_vars.contains(out__) {
+                    if representation_plan.is_float_unboxed(out__) {
                         let zero_f = builder.ins().f64const(0.0);
                         def_var_named(&mut *builder, vars, out__, zero_f);
                     } else {
@@ -695,8 +683,7 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
                 &mut *sealed_blocks,
                 vars,
                 &args_names[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Callee not found");
             let mut args = Vec::new();
@@ -710,8 +697,7 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
                         &mut *sealed_blocks,
                         vars,
                         name,
-                        int_carriers_plan,
-                        float_primary_vars,
+                        representation_plan,
                     )
                     .expect("Arg not found"),
                 );
@@ -729,8 +715,7 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
                     &mut *sealed_blocks,
                     vars,
                     func_obj_var,
-                    int_carriers_plan,
-                    float_primary_vars,
+                    representation_plan,
                 )
                 .expect("Closure func obj not found for direct call");
                 let extract_fn = SimpleBackend::import_func_id_split(
@@ -1073,8 +1058,7 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
                 &mut *sealed_blocks,
                 vars,
                 &args_names[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Func not found");
             let mut args = Vec::new();
@@ -1088,8 +1072,7 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
                         &mut *sealed_blocks,
                         vars,
                         name,
-                        int_carriers_plan,
-                        float_primary_vars,
+                        representation_plan,
                     )
                     .expect("Arg not found"),
                 );
@@ -1390,9 +1373,7 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
                     &mut *builder,
                     &mut *import_refs,
                     vars,
-                    int_carriers_plan,
-                    bool_primary_vars,
-                    float_primary_vars,
+                    representation_plan,
                     nbc,
                     out__,
                     res,
@@ -1409,8 +1390,7 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
                 &mut *sealed_blocks,
                 vars,
                 &args_names[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Func not found");
             let mut args = Vec::new();
@@ -1424,8 +1404,7 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
                         &mut *sealed_blocks,
                         vars,
                         name,
-                        int_carriers_plan,
-                        float_primary_vars,
+                        representation_plan,
                     )
                     .expect("Arg not found"),
                 );
@@ -1495,9 +1474,7 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
                     &mut *builder,
                     &mut *import_refs,
                     vars,
-                    int_carriers_plan,
-                    bool_primary_vars,
-                    float_primary_vars,
+                    representation_plan,
                     nbc,
                     out__,
                     res,
@@ -1514,8 +1491,7 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
                 &mut *sealed_blocks,
                 vars,
                 &args_names[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Func not found");
             let builder_ptr = var_get_boxed_overflow_safe(
@@ -1526,8 +1502,7 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
                 &mut *sealed_blocks,
                 vars,
                 &args_names[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Callargs not found");
             let callargs_name = &args_names[1];
@@ -1577,9 +1552,7 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
                     &mut *builder,
                     &mut *import_refs,
                     vars,
-                    int_carriers_plan,
-                    bool_primary_vars,
-                    float_primary_vars,
+                    representation_plan,
                     nbc,
                     out__,
                     res,
@@ -1624,8 +1597,7 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
                 &mut *sealed_blocks,
                 vars,
                 &args_names[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("call_method_ic receiver not found");
             let mut extra_args = Vec::new();
@@ -1639,8 +1611,7 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
                         &mut *sealed_blocks,
                         vars,
                         name,
-                        int_carriers_plan,
-                        float_primary_vars,
+                        representation_plan,
                     )
                     .expect("call_method_ic arg not found"),
                 );
@@ -1697,9 +1668,7 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
                     &mut *builder,
                     &mut *import_refs,
                     vars,
-                    int_carriers_plan,
-                    bool_primary_vars,
-                    float_primary_vars,
+                    representation_plan,
                     nbc,
                     out__,
                     res,
@@ -1721,8 +1690,7 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
                 &mut *sealed_blocks,
                 vars,
                 &args_names[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("call_super_method_ic class not found");
             let self_bits = *var_get_boxed_overflow_safe(
@@ -1733,8 +1701,7 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
                 &mut *sealed_blocks,
                 vars,
                 &args_names[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("call_super_method_ic self not found");
             let mut extra_args = Vec::new();
@@ -1748,8 +1715,7 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
                         &mut *sealed_blocks,
                         vars,
                         name,
-                        int_carriers_plan,
-                        float_primary_vars,
+                        representation_plan,
                     )
                     .expect("call_super_method_ic arg not found"),
                 );
@@ -1804,9 +1770,7 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
                     &mut *builder,
                     &mut *import_refs,
                     vars,
-                    int_carriers_plan,
-                    bool_primary_vars,
-                    float_primary_vars,
+                    representation_plan,
                     nbc,
                     out__,
                     res,
@@ -1823,8 +1787,7 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
                 &mut *sealed_blocks,
                 vars,
                 &args_names[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Method not found");
             let mut extra_args = Vec::new();
@@ -1838,8 +1801,7 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
                         &mut *sealed_blocks,
                         vars,
                         name,
-                        int_carriers_plan,
-                        float_primary_vars,
+                        representation_plan,
                     )
                     .expect("Arg not found"),
                 );
@@ -2006,9 +1968,7 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
                     &mut *builder,
                     &mut *import_refs,
                     vars,
-                    int_carriers_plan,
-                    bool_primary_vars,
-                    float_primary_vars,
+                    representation_plan,
                     nbc,
                     out__,
                     res,
@@ -2040,8 +2000,7 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("depth not found");
             let callee = SimpleBackend::import_func_id_split(

@@ -49,12 +49,10 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
-    int_carriers_plan: &ScalarRepresentationPlan,
-    float_primary_vars: &BTreeSet<String>,
-    bool_primary_vars: &BTreeSet<String>,
+    representation_plan: &ScalarRepresentationPlan,
     nbc: &crate::NanBoxConsts,
 ) {
-    // Reconstruct the original op-local closure (captures bool_primary_vars +
+    // Reconstruct the original op-local closure (captures representation_plan +
     // nbc; all other state threads through explicit params) so the moved arm
     // bodies call it exactly as they did inline.
     let var_get_boxed_overflow_safe = |module: &mut ObjectModule,
@@ -67,8 +65,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                                        sealed_blocks: &mut BTreeSet<Block>,
                                        vars: &BTreeMap<String, Variable>,
                                        name: &str,
-                                       int_carriers_plan: &ScalarRepresentationPlan,
-                                       float_primary_vars: &BTreeSet<String>|
+                                       representation_plan: &ScalarRepresentationPlan|
      -> Option<crate::VarValue> {
         var_get_boxed_overflow_safe_fn(
             module,
@@ -78,9 +75,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
             sealed_blocks,
             vars,
             name,
-            int_carriers_plan,
-            float_primary_vars,
-            bool_primary_vars,
+            representation_plan,
             nbc,
         )
     };
@@ -95,8 +90,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Find haystack not found");
             let needle = var_get_boxed_overflow_safe(
@@ -107,8 +101,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Find needle not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -135,8 +128,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Find haystack not found");
             let needle = var_get_boxed_overflow_safe(
@@ -147,8 +139,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Find needle not found");
             let start = var_get_boxed_overflow_safe(
@@ -159,8 +150,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[2],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Find start not found");
             let end = var_get_boxed_overflow_safe(
@@ -171,8 +161,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[3],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Find end not found");
             let has_start = var_get_boxed_overflow_safe(
@@ -183,8 +172,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[4],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Find has_start not found");
             let has_end = var_get_boxed_overflow_safe(
@@ -195,8 +183,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[5],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Find has_end not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -233,8 +220,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Find haystack not found");
             let needle = var_get_boxed_overflow_safe(
@@ -245,8 +231,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Find needle not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -273,8 +258,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Find haystack not found");
             let needle = var_get_boxed_overflow_safe(
@@ -285,8 +269,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Find needle not found");
             let start = var_get_boxed_overflow_safe(
@@ -297,8 +280,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[2],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Find start not found");
             let end = var_get_boxed_overflow_safe(
@@ -309,8 +291,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[3],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Find end not found");
             let has_start = var_get_boxed_overflow_safe(
@@ -321,8 +302,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[4],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Find has_start not found");
             let has_end = var_get_boxed_overflow_safe(
@@ -333,8 +313,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[5],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Find has_end not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -371,8 +350,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Find haystack not found");
             let needle = var_get_boxed_overflow_safe(
@@ -383,8 +361,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Find needle not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -411,8 +388,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Find haystack not found");
             let needle = var_get_boxed_overflow_safe(
@@ -423,8 +399,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Find needle not found");
             let start = var_get_boxed_overflow_safe(
@@ -435,8 +410,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[2],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Find start not found");
             let end = var_get_boxed_overflow_safe(
@@ -447,8 +421,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[3],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Find end not found");
             let has_start = var_get_boxed_overflow_safe(
@@ -459,8 +432,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[4],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Find has_start not found");
             let has_end = var_get_boxed_overflow_safe(
@@ -471,8 +443,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[5],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Find has_end not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -509,8 +480,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Startswith haystack not found");
             let needle = var_get_boxed_overflow_safe(
@@ -521,8 +491,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Startswith needle not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -549,8 +518,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Startswith haystack not found");
             let needle = var_get_boxed_overflow_safe(
@@ -561,8 +529,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Startswith needle not found");
             let start = var_get_boxed_overflow_safe(
@@ -573,8 +540,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[2],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Startswith start not found");
             let end = var_get_boxed_overflow_safe(
@@ -585,8 +551,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[3],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Startswith end not found");
             let has_start = var_get_boxed_overflow_safe(
@@ -597,8 +562,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[4],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Startswith has_start not found");
             let has_end = var_get_boxed_overflow_safe(
@@ -609,8 +573,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[5],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Startswith has_end not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -647,8 +610,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Startswith haystack not found");
             let needle = var_get_boxed_overflow_safe(
@@ -659,8 +621,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Startswith needle not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -687,8 +648,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Startswith haystack not found");
             let needle = var_get_boxed_overflow_safe(
@@ -699,8 +659,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Startswith needle not found");
             let start = var_get_boxed_overflow_safe(
@@ -711,8 +670,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[2],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Startswith start not found");
             let end = var_get_boxed_overflow_safe(
@@ -723,8 +681,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[3],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Startswith end not found");
             let has_start = var_get_boxed_overflow_safe(
@@ -735,8 +692,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[4],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Startswith has_start not found");
             let has_end = var_get_boxed_overflow_safe(
@@ -747,8 +703,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[5],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Startswith has_end not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -785,8 +740,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Startswith haystack not found");
             let needle = var_get_boxed_overflow_safe(
@@ -797,8 +751,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Startswith needle not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -825,8 +778,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Startswith haystack not found");
             let needle = var_get_boxed_overflow_safe(
@@ -837,8 +789,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Startswith needle not found");
             let start = var_get_boxed_overflow_safe(
@@ -849,8 +800,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[2],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Startswith start not found");
             let end = var_get_boxed_overflow_safe(
@@ -861,8 +811,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[3],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Startswith end not found");
             let has_start = var_get_boxed_overflow_safe(
@@ -873,8 +822,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[4],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Startswith has_start not found");
             let has_end = var_get_boxed_overflow_safe(
@@ -885,8 +833,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[5],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Startswith has_end not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -923,8 +870,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Endswith haystack not found");
             let needle = var_get_boxed_overflow_safe(
@@ -935,8 +881,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Endswith needle not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -963,8 +908,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Endswith haystack not found");
             let needle = var_get_boxed_overflow_safe(
@@ -975,8 +919,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Endswith needle not found");
             let start = var_get_boxed_overflow_safe(
@@ -987,8 +930,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[2],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Endswith start not found");
             let end = var_get_boxed_overflow_safe(
@@ -999,8 +941,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[3],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Endswith end not found");
             let has_start = var_get_boxed_overflow_safe(
@@ -1011,8 +952,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[4],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Endswith has_start not found");
             let has_end = var_get_boxed_overflow_safe(
@@ -1023,8 +963,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[5],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Endswith has_end not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -1061,8 +1000,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Endswith haystack not found");
             let needle = var_get_boxed_overflow_safe(
@@ -1073,8 +1011,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Endswith needle not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -1101,8 +1038,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Endswith haystack not found");
             let needle = var_get_boxed_overflow_safe(
@@ -1113,8 +1049,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Endswith needle not found");
             let start = var_get_boxed_overflow_safe(
@@ -1125,8 +1060,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[2],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Endswith start not found");
             let end = var_get_boxed_overflow_safe(
@@ -1137,8 +1071,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[3],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Endswith end not found");
             let has_start = var_get_boxed_overflow_safe(
@@ -1149,8 +1082,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[4],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Endswith has_start not found");
             let has_end = var_get_boxed_overflow_safe(
@@ -1161,8 +1093,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[5],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Endswith has_end not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -1199,8 +1130,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Endswith haystack not found");
             let needle = var_get_boxed_overflow_safe(
@@ -1211,8 +1141,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Endswith needle not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -1239,8 +1168,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Endswith haystack not found");
             let needle = var_get_boxed_overflow_safe(
@@ -1251,8 +1179,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Endswith needle not found");
             let start = var_get_boxed_overflow_safe(
@@ -1263,8 +1190,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[2],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Endswith start not found");
             let end = var_get_boxed_overflow_safe(
@@ -1275,8 +1201,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[3],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Endswith end not found");
             let has_start = var_get_boxed_overflow_safe(
@@ -1287,8 +1212,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[4],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Endswith has_start not found");
             let has_end = var_get_boxed_overflow_safe(
@@ -1299,8 +1223,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[5],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Endswith has_end not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -1337,8 +1260,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Count haystack not found");
             let needle = var_get_boxed_overflow_safe(
@@ -1349,8 +1271,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Count needle not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -1377,8 +1298,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Count haystack not found");
             let needle = var_get_boxed_overflow_safe(
@@ -1389,8 +1309,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Count needle not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -1417,8 +1336,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Count haystack not found");
             let needle = var_get_boxed_overflow_safe(
@@ -1429,8 +1347,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Count needle not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -1457,8 +1374,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Count haystack not found");
             let needle = var_get_boxed_overflow_safe(
@@ -1469,8 +1385,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Count needle not found");
             let start = var_get_boxed_overflow_safe(
@@ -1481,8 +1396,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[2],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Count start not found");
             let end = var_get_boxed_overflow_safe(
@@ -1493,8 +1407,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[3],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Count end not found");
             let has_start = var_get_boxed_overflow_safe(
@@ -1505,8 +1418,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[4],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Count has_start not found");
             let has_end = var_get_boxed_overflow_safe(
@@ -1517,8 +1429,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[5],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Count has_end not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -1555,8 +1466,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Count haystack not found");
             let needle = var_get_boxed_overflow_safe(
@@ -1567,8 +1477,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Count needle not found");
             let start = var_get_boxed_overflow_safe(
@@ -1579,8 +1488,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[2],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Count start not found");
             let end = var_get_boxed_overflow_safe(
@@ -1591,8 +1499,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[3],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Count end not found");
             let has_start = var_get_boxed_overflow_safe(
@@ -1603,8 +1510,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[4],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Count has_start not found");
             let has_end = var_get_boxed_overflow_safe(
@@ -1615,8 +1521,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[5],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Count has_end not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -1653,8 +1558,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Count haystack not found");
             let needle = var_get_boxed_overflow_safe(
@@ -1665,8 +1569,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Count needle not found");
             let start = var_get_boxed_overflow_safe(
@@ -1677,8 +1580,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[2],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Count start not found");
             let end = var_get_boxed_overflow_safe(
@@ -1689,8 +1591,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[3],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Count end not found");
             let has_start = var_get_boxed_overflow_safe(
@@ -1701,8 +1602,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[4],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Count has_start not found");
             let has_end = var_get_boxed_overflow_safe(
@@ -1713,8 +1613,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_predicate(
                 &mut *sealed_blocks,
                 vars,
                 &args[5],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Count has_end not found");
             let callee = SimpleBackend::import_func_id_split(

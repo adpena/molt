@@ -34,9 +34,7 @@ pub(in crate::native_backend::function_compiler) fn handle_value_transfer_op(
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
-    int_carriers_plan: &ScalarRepresentationPlan,
-    float_primary_vars: &BTreeSet<String>,
-    bool_primary_vars: &BTreeSet<String>,
+    representation_plan: &ScalarRepresentationPlan,
     block_tracked_obj: &mut BTreeMap<Block, Vec<String>>,
     block_tracked_ptr: &mut BTreeMap<Block, Vec<String>>,
     tracked_obj_vars: &mut Vec<String>,
@@ -61,8 +59,7 @@ pub(in crate::native_backend::function_compiler) fn handle_value_transfer_op(
                                        sealed_blocks: &mut BTreeSet<Block>,
                                        vars: &BTreeMap<String, Variable>,
                                        name: &str,
-                                       int_carriers_plan: &ScalarRepresentationPlan,
-                                       float_primary_vars: &BTreeSet<String>|
+                                       representation_plan: &ScalarRepresentationPlan|
      -> Option<crate::VarValue> {
         var_get_boxed_overflow_safe_fn(
             module,
@@ -72,9 +69,7 @@ pub(in crate::native_backend::function_compiler) fn handle_value_transfer_op(
             sealed_blocks,
             vars,
             name,
-            int_carriers_plan,
-            float_primary_vars,
-            bool_primary_vars,
+            representation_plan,
             nbc,
         )
     };
@@ -94,8 +89,7 @@ pub(in crate::native_backend::function_compiler) fn handle_value_transfer_op(
                     &mut *sealed_blocks,
                     vars,
                     src_name,
-                    int_carriers_plan,
-                    float_primary_vars,
+                    representation_plan,
                 )
                 .expect("inc_ref/borrow source not found");
                 emit_inc_ref_obj(&mut *builder, src, local_inc_ref_obj, nbc);
@@ -119,8 +113,7 @@ pub(in crate::native_backend::function_compiler) fn handle_value_transfer_op(
                     &mut *sealed_blocks,
                     vars,
                     src_name,
-                    int_carriers_plan,
-                    float_primary_vars,
+                    representation_plan,
                 )
                 .expect("inc_ref/borrow source not found (coalesced)");
                 def_var_named(&mut *builder, vars, out_name.clone(), src);
@@ -149,8 +142,7 @@ pub(in crate::native_backend::function_compiler) fn handle_value_transfer_op(
                     &mut *sealed_blocks,
                     vars,
                     src_name,
-                    int_carriers_plan,
-                    float_primary_vars,
+                    representation_plan,
                 )
                 .expect("dec_ref/release source not found");
                 builder.ins().call(local_dec_ref_obj, &[src]);
@@ -195,8 +187,7 @@ pub(in crate::native_backend::function_compiler) fn handle_value_transfer_op(
                 &mut *sealed_blocks,
                 vars,
                 src_name,
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("conversion source not found");
             if let Some(out_name) = op.out.as_ref()
@@ -227,8 +218,8 @@ pub(in crate::native_backend::function_compiler) fn handle_value_transfer_op(
             if let Some(out_name) = op.out.as_ref()
                 && out_name != "none"
             {
-                // The unboxed-scalar primary lanes (`int_carriers_plan`,
-                // `bool_primary_vars`, `float_primary_vars`) each carry a RAW
+                // The unboxed-scalar primary lanes (`representation_plan`,
+                // `representation_plan`, `representation_plan`) each carry a RAW
                 // machine value in the destination's Cranelift Variable — raw
                 // i64, raw 0/1, raw f64 respectively (see `int_raw_value` /
                 // `bool_raw_value` / `float_value_for`). An alias whose OUT is a
@@ -240,9 +231,9 @@ pub(in crate::native_backend::function_compiler) fn handle_value_transfer_op(
                 // boxed in an int-primary slot, so the loop carried garbage).
                 // Unboxed scalars are not heap objects, so no inc_ref is taken
                 // (mirroring the raw-scalar arms of `merge_rebind_value_for_storage`).
-                if float_primary_vars.contains(out_name) {
+                if representation_plan.is_float_unboxed(out_name) {
                     let raw_f64 =
-                        float_value_for(&mut *builder, vars, float_primary_vars, src_name)
+                        float_value_for(&mut *builder, vars, representation_plan, src_name)
                             .unwrap_or_else(|| {
                                 let boxed = var_get_boxed_overflow_safe(
                                     &mut *module,
@@ -252,8 +243,7 @@ pub(in crate::native_backend::function_compiler) fn handle_value_transfer_op(
                                     &mut *sealed_blocks,
                                     vars,
                                     src_name,
-                                    int_carriers_plan,
-                                    float_primary_vars,
+                                    representation_plan,
                                 )
                                 .expect("alias source not found");
                                 float_value_from_boxed_extended(
@@ -265,11 +255,11 @@ pub(in crate::native_backend::function_compiler) fn handle_value_transfer_op(
                                 )
                             });
                     def_var_named(&mut *builder, vars, out_name.clone(), raw_f64);
-                } else if int_carriers_plan.is_raw_int_carrier_name(out_name) {
+                } else if representation_plan.is_raw_int_carrier_name(out_name) {
                     // Int-primary: transfer raw i64 directly.
-                    let raw_i64 = int_raw_value(&mut *builder, vars, int_carriers_plan, src_name)
+                    let raw_i64 = int_raw_value(&mut *builder, vars, representation_plan, src_name)
                         .or_else(|| {
-                            bool_raw_value(&mut *builder, vars, bool_primary_vars, src_name)
+                            bool_raw_value(&mut *builder, vars, representation_plan, src_name)
                         })
                         .unwrap_or_else(|| {
                             let boxed = var_get_boxed_overflow_safe(
@@ -280,32 +270,33 @@ pub(in crate::native_backend::function_compiler) fn handle_value_transfer_op(
                                 &mut *sealed_blocks,
                                 vars,
                                 src_name,
-                                int_carriers_plan,
-                                float_primary_vars,
+                                representation_plan,
                             )
                             .expect("alias source not found");
                             unbox_int_or_bool(&mut *builder, *boxed, nbc)
                         });
                     def_var_named(&mut *builder, vars, out_name.clone(), raw_i64);
-                } else if bool_primary_vars.contains(out_name) {
+                } else if representation_plan.is_bool_unboxed(out_name) {
                     // Bool-primary: transfer raw 0/1 directly.
-                    let raw_bool = bool_raw_value(&mut *builder, vars, bool_primary_vars, src_name)
-                        .or_else(|| int_raw_value(&mut *builder, vars, int_carriers_plan, src_name))
-                        .unwrap_or_else(|| {
-                            let boxed = var_get_boxed_overflow_safe(
-                                &mut *module,
-                                &mut *import_ids,
-                                &mut *builder,
-                                &mut *import_refs,
-                                &mut *sealed_blocks,
-                                vars,
-                                src_name,
-                                int_carriers_plan,
-                                float_primary_vars,
-                            )
-                            .expect("alias source not found");
-                            unbox_int_or_bool(&mut *builder, *boxed, nbc)
-                        });
+                    let raw_bool =
+                        bool_raw_value(&mut *builder, vars, representation_plan, src_name)
+                            .or_else(|| {
+                                int_raw_value(&mut *builder, vars, representation_plan, src_name)
+                            })
+                            .unwrap_or_else(|| {
+                                let boxed = var_get_boxed_overflow_safe(
+                                    &mut *module,
+                                    &mut *import_ids,
+                                    &mut *builder,
+                                    &mut *import_refs,
+                                    &mut *sealed_blocks,
+                                    vars,
+                                    src_name,
+                                    representation_plan,
+                                )
+                                .expect("alias source not found");
+                                unbox_int_or_bool(&mut *builder, *boxed, nbc)
+                            });
                     def_var_named(&mut *builder, vars, out_name.clone(), raw_bool);
                 } else {
                     let src = *var_get_boxed_overflow_safe(
@@ -316,8 +307,7 @@ pub(in crate::native_backend::function_compiler) fn handle_value_transfer_op(
                         &mut *sealed_blocks,
                         vars,
                         src_name,
-                        int_carriers_plan,
-                        float_primary_vars,
+                        representation_plan,
                     )
                     .expect("alias source not found");
                     // Same aliasing hazard as box/unbox/cast/widen above.

@@ -46,14 +46,12 @@ pub(in crate::native_backend::function_compiler) fn op_prefers_int_lane(
     op: &OpIR,
     int_like_vars: &BTreeSet<String>,
     bool_like_vars: &BTreeSet<String>,
-    int_carriers_plan: &ScalarRepresentationPlan,
-    bool_primary_vars: &BTreeSet<String>,
 ) -> bool {
     let name_is_integer_scalar = |name: &str| {
         int_like_vars.contains(name)
             || bool_like_vars.contains(name)
-            || int_carriers_plan.is_raw_int_carrier_name(name)
-            || bool_primary_vars.contains(name)
+            || representation_plan.is_raw_int_carrier_name(name)
+            || representation_plan.is_bool_unboxed(name)
     };
     let op_args_are_integer_scalar = op
         .args
@@ -139,7 +137,7 @@ pub(in crate::native_backend::function_compiler) use op_family::{
 /// overflow-safely, special-casing bool-primary carriers (raw 0/1 ->
 /// TAG_BOOL NaN-box) before delegating to `var_get_boxed_overflow_safe_base`.
 ///
-/// The inline closure captured `bool_primary_vars` + `nbc`; here they are
+/// The inline closure captured `representation_plan` + `nbc`; here they are
 /// explicit params so extracted family handlers can reconstruct the exact
 /// closure shape (capturing these two) and leave their moved arm bodies
 /// unchanged.
@@ -153,12 +151,10 @@ pub(in crate::native_backend::function_compiler) fn var_get_boxed_overflow_safe_
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     name: &str,
-    int_carriers_plan: &ScalarRepresentationPlan,
-    float_primary_vars: &BTreeSet<String>,
-    bool_primary_vars: &BTreeSet<String>,
+    representation_plan: &ScalarRepresentationPlan,
     nbc: &crate::NanBoxConsts,
 ) -> Option<crate::VarValue> {
-    if bool_primary_vars.contains(name) {
+    if representation_plan.is_bool_unboxed(name) {
         let raw = vars.get(name).map(|&var| builder.use_var(var))?;
         return Some(crate::VarValue(box_raw_bool_value(builder, raw, nbc)));
     }
@@ -170,7 +166,6 @@ pub(in crate::native_backend::function_compiler) fn var_get_boxed_overflow_safe_
         sealed_blocks,
         vars,
         name,
-        int_carriers_plan,
-        float_primary_vars,
+        representation_plan,
     )
 }

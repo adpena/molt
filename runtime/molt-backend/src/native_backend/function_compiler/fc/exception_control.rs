@@ -29,9 +29,7 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_control_op(
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
-    int_carriers_plan: &ScalarRepresentationPlan,
-    float_primary_vars: &BTreeSet<String>,
-    bool_primary_vars: &BTreeSet<String>,
+    representation_plan: &ScalarRepresentationPlan,
     block_tracked_obj: &mut BTreeMap<Block, Vec<String>>,
     block_tracked_ptr: &mut BTreeMap<Block, Vec<String>>,
     tracked_obj_vars: &mut Vec<String>,
@@ -58,8 +56,7 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_control_op(
                                        sealed_blocks: &mut BTreeSet<Block>,
                                        vars: &BTreeMap<String, Variable>,
                                        name: &str,
-                                       int_carriers_plan: &ScalarRepresentationPlan,
-                                       float_primary_vars: &BTreeSet<String>|
+                                       representation_plan: &ScalarRepresentationPlan|
      -> Option<crate::VarValue> {
         var_get_boxed_overflow_safe_fn(
             module,
@@ -69,9 +66,7 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_control_op(
             sealed_blocks,
             vars,
             name,
-            int_carriers_plan,
-            float_primary_vars,
-            bool_primary_vars,
+            representation_plan,
             nbc,
         )
     };
@@ -93,8 +88,7 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_control_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_carriers_plan,
-                float_primary_vars,
+                representation_plan,
             )
             .expect("Exception not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -204,8 +198,7 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_control_op(
                             &mut *sealed_blocks,
                             vars,
                             &name,
-                            int_carriers_plan,
-                            float_primary_vars,
+                            representation_plan,
                         )
                         .map(|v| *v)
                     });
@@ -216,7 +209,7 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_control_op(
                     entry_vars.remove(&name);
                     if let Some(var) = vars.get(&name) {
                         let scrub =
-                            dead_scrub_value_for_var(&mut *builder, float_primary_vars, &name);
+                            dead_scrub_value_for_var(&mut *builder, representation_plan, &name);
                         builder.def_var(*var, scrub);
                     }
                     scrubbed_names.insert(name);
@@ -259,8 +252,7 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_control_op(
                             &mut *sealed_blocks,
                             vars,
                             &name,
-                            int_carriers_plan,
-                            float_primary_vars,
+                            representation_plan,
                         )
                         .map(|v| *v)
                     });
@@ -271,7 +263,7 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_control_op(
                     entry_vars.remove(&name);
                     if let Some(var) = vars.get(&name) {
                         let scrub =
-                            dead_scrub_value_for_var(&mut *builder, float_primary_vars, &name);
+                            dead_scrub_value_for_var(&mut *builder, representation_plan, &name);
                         builder.def_var(*var, scrub);
                     }
                     scrubbed_names.insert(name);
