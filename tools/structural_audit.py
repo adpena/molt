@@ -795,6 +795,53 @@ def probe_native_scalar_plan_authority(root: Path) -> list[Finding]:
     return findings
 
 
+_REPR_NAME_SCALAR_AUTHORITY_REL = "runtime/molt-tir/src/representation_plan.rs"
+_REPR_NAME_SCALAR_FORBIDDEN = {
+    r"\bbool_primary_names\b": "raw-bool membership stored beside repr_by_name",
+    r"\bfloat_primary_names\b": "raw-f64 membership stored beside repr_by_name",
+}
+
+
+def probe_repr_name_scalar_authority(root: Path) -> list[Finding]:
+    """Name-keyed scalar carriers must have one representation-map authority.
+
+    `ScalarRepresentationPlan::repr_by_name` owns the native name-keyed carrier
+    lattice for int, bool, and f64. Raw-bool/raw-f64 candidate computation may
+    still exist, but storing the results in side sets re-creates the drift lane
+    this authority cut removed.
+    """
+    path = root / _REPR_NAME_SCALAR_AUTHORITY_REL
+    if not path.is_file():
+        return []
+    try:
+        text = path.read_text(errors="replace")
+    except OSError:
+        return []
+
+    findings: list[Finding] = []
+    for pattern, detail in _REPR_NAME_SCALAR_FORBIDDEN.items():
+        hits = list(re.finditer(pattern, text))
+        if not hits:
+            continue
+        first_line = _line_of_offset(text, hits[0].start())
+        findings.append(
+            Finding(
+                probe="repr_name_scalar_authority",
+                severity="high",
+                title=f"{len(hits)} forbidden repr-by-name scalar side store(s)",
+                location=f"{_REPR_NAME_SCALAR_AUTHORITY_REL}:{first_line}",
+                detail=detail,
+                suggested_action=(
+                    "store native bool/f64 carrier eligibility in repr_by_name "
+                    "as Repr::Bool/Repr::FloatUnboxed and derive views from that map"
+                ),
+                class_retired="repr-by-name-scalar-representation-drift",
+                metric=float(len(hits)),
+            )
+        )
+    return findings
+
+
 # Predicate-name shapes that classify a SPECIFIC opcode-semantic property.
 # Deliberately narrow (no bare `escape`/`classify`) so string-escaping helpers
 # and generic classifiers do not masquerade as duplicate opcode authorities.
@@ -961,6 +1008,7 @@ PROBES = (
     probe_structural_god_files,
     probe_debt_markers,
     probe_native_scalar_plan_authority,
+    probe_repr_name_scalar_authority,
     probe_duplicate_authorities,
     probe_registry_reconciliation,
 )
@@ -997,6 +1045,9 @@ def ratchet_metrics(findings: list[Finding]) -> dict[str, float]:
     native_scalar_plan = [
         f for f in findings if f.probe == "native_scalar_plan_authority"
     ]
+    repr_name_scalar = [
+        f for f in findings if f.probe == "repr_name_scalar_authority"
+    ]
     dup = [f for f in findings if f.probe == "duplicate_authority"]
     return {
         # the hand-maintained-opcode-fact surface (match classifiers w/ silent default)
@@ -1019,6 +1070,9 @@ def ratchet_metrics(findings: list[Finding]) -> dict[str, float]:
         ),
         "native_scalar_plan_authority_violations": float(
             sum(int(f.metric) for f in native_scalar_plan)
+        ),
+        "repr_name_scalar_authority_violations": float(
+            sum(int(f.metric) for f in repr_name_scalar)
         ),
         "duplicate_authorities": float(len(dup)),
     }

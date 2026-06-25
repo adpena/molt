@@ -20,7 +20,11 @@ legacy `int_carriers_plan` alias in native backend code. The live gate is
 `tools/structural_audit.py --check`, metric
 `native_scalar_plan_authority_violations = 0`, backed by direct scans of
 `runtime/molt-backend/src/native_backend/function_compiler.rs` and
-`runtime/molt-backend/src/native_backend/function_compiler/**`.
+`runtime/molt-backend/src/native_backend/function_compiler/**`. The deeper
+plan-owned carrier authority also forbids `bool_primary_names` /
+`float_primary_names` side stores in `runtime/molt-tir/src/representation_plan.rs`;
+bool/F64 primary views must derive from `repr_by_name` alongside the int tiers,
+with `repr_name_scalar_authority_violations = 0`.
 
 **Framing (binding):** this is ONE atomic threading change, NOT 41 chips. Every
 file below is part of the same structural arc — the same arc the FLOAT-lane cut
