@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 
 import molt.cli as cli
+from molt.cli import build_pipeline as cli_build_pipeline
 from molt.cli import backend_ir as cli_backend_ir
 from molt.cli import build_inputs as cli_build_inputs
 
@@ -191,11 +192,11 @@ def test_backend_cache_variant_changes_with_target_python() -> None:
         linked=False,
     )
 
-    py312 = cli._build_cache_variant(
+    py312 = cli_build_pipeline._build_cache_variant(
         **common,
         target_python=cli._SUPPORTED_TARGET_PYTHON_BY_SHORT["3.12"],
     )
-    py314 = cli._build_cache_variant(
+    py314 = cli_build_pipeline._build_cache_variant(
         **common,
         target_python=cli._SUPPORTED_TARGET_PYTHON_BY_SHORT["3.14"],
     )

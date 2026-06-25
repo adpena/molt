@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 import molt.cli as cli
+from molt.cli import build_pipeline as cli_build_pipeline
 from tests.cli.process_guard import run_cli_test_process
 
 RUNTIME_FINGERPRINTS = importlib.import_module("molt.cli.runtime_fingerprints")
@@ -100,7 +101,7 @@ def test_ensure_runtime_wasm_recovers_from_invalid_primary_artifact(
         raising=True,
     )
     monkeypatch.setattr(
-        cli, "_artifact_needs_rebuild", lambda *args, **kwargs: True, raising=True
+        cli_build_pipeline, "_artifact_needs_rebuild", lambda *args, **kwargs: True, raising=True
     )
     monkeypatch.setattr(
         RUNTIME_BUILD,
@@ -196,7 +197,7 @@ def test_ensure_runtime_wasm_uses_fallback_profile_when_release_artifacts_invali
         raising=True,
     )
     monkeypatch.setattr(
-        cli, "_artifact_needs_rebuild", lambda *args, **kwargs: True, raising=True
+        cli_build_pipeline, "_artifact_needs_rebuild", lambda *args, **kwargs: True, raising=True
     )
     monkeypatch.setattr(
         RUNTIME_BUILD,
@@ -398,7 +399,7 @@ def test_ensure_runtime_wasm_rebuilds_prebuilt_missing_shared_import_abi(
         "_artifact_newer_than_sources",
         lambda artifact, sources: Path(artifact) == cargo_runtime,
     )
-    monkeypatch.setattr(cli, "_artifact_needs_rebuild", lambda *args, **kwargs: True)
+    monkeypatch.setattr(cli_build_pipeline, "_artifact_needs_rebuild", lambda *args, **kwargs: True)
     monkeypatch.setattr(RUNTIME_BUILD, "_inspect_wasm_binary", lambda path: "valid")
     monkeypatch.setattr(RUNTIME_BUILD, "_is_valid_runtime_wasm_artifact", lambda path: True)
     monkeypatch.setattr(
@@ -486,10 +487,10 @@ def test_ensure_runtime_wasm_full_profile_fingerprint_matches_cargo_features(
         RUNTIME_BUILD, "_read_runtime_fingerprint", lambda path: None, raising=True
     )
     monkeypatch.setattr(
-        cli, "_artifact_needs_rebuild", lambda *args, **kwargs: True, raising=True
+        cli_build_pipeline, "_artifact_needs_rebuild", lambda *args, **kwargs: True, raising=True
     )
     monkeypatch.setattr(
-        cli, "_artifact_newer_than_sources", lambda *args, **kwargs: False, raising=True
+        cli_build_pipeline, "_artifact_newer_than_sources", lambda *args, **kwargs: False, raising=True
     )
     monkeypatch.setattr(
         RUNTIME_BUILD,
@@ -662,16 +663,16 @@ def test_backend_fingerprint_recomputes_when_rustflags_change(
     project_root = tmp_path / "repo"
     project_root.mkdir()
 
-    monkeypatch.setattr(cli, "_backend_source_paths", lambda *_args: (), raising=True)
+    monkeypatch.setattr(cli_build_pipeline, "_backend_source_paths", lambda *_args: (), raising=True)
     monkeypatch.setattr(
         cli,
         "_hash_source_tree_metadata",
         lambda *args, **kwargs: ("same-inputs", 0),
         raising=True,
     )
-    monkeypatch.setattr(cli, "_rustc_version", lambda: "rustc test", raising=True)
+    monkeypatch.setattr(cli_build_pipeline, "_rustc_version", lambda: "rustc test", raising=True)
 
-    first = cli._backend_fingerprint(
+    first = cli_build_pipeline._backend_fingerprint(
         project_root,
         cargo_profile="dev-fast",
         rustflags="-C link-arg=--export-if-defined=molt_a",
@@ -680,7 +681,7 @@ def test_backend_fingerprint_recomputes_when_rustflags_change(
     )
     assert first is not None
 
-    second = cli._backend_fingerprint(
+    second = cli_build_pipeline._backend_fingerprint(
         project_root,
         cargo_profile="dev-fast",
         rustflags="-C link-arg=--export-if-defined=molt_b",
@@ -850,7 +851,7 @@ def test_ensure_runtime_wasm_reloc_requests_staticlib_build(
         raising=True,
     )
     monkeypatch.setattr(
-        cli, "_artifact_needs_rebuild", lambda *args, **kwargs: True, raising=True
+        cli_build_pipeline, "_artifact_needs_rebuild", lambda *args, **kwargs: True, raising=True
     )
     monkeypatch.setattr(
         RUNTIME_BUILD, "_write_runtime_fingerprint", lambda *args, **kwargs: None, raising=True
@@ -1025,7 +1026,7 @@ def test_ensure_runtime_wasm_defaults_cargo_incremental_off_and_preserves_explic
         raising=True,
     )
     monkeypatch.setattr(
-        cli, "_artifact_needs_rebuild", lambda *args, **kwargs: True, raising=True
+        cli_build_pipeline, "_artifact_needs_rebuild", lambda *args, **kwargs: True, raising=True
     )
     monkeypatch.setattr(
         RUNTIME_BUILD, "_write_runtime_fingerprint", lambda *args, **kwargs: None, raising=True

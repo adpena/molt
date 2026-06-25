@@ -4,7 +4,7 @@ from molt._wasm_runtime_exports import (
     wasm_runtime_import_names,
     wasm_runtime_required_import_names,
 )
-from molt.cli import _backend_codegen_env_digest
+from molt.cli.backend_execution import _backend_codegen_env_digest
 
 
 RUNTIME_OWNED_GPU_MODULES = {
