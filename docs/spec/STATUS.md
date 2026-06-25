@@ -271,6 +271,13 @@ the implementation. For forward-looking priorities, use
   `opcode_is_polyhedral_affine_body_table`. `polyhedral.rs` owns loop-body
   traversal, tiling annotation, and live Copy refinement, not private
   loop-header or affine-body opcode sets.
+- SSA attr transport is registry-owned:
+  `ssa_s_value_attr_keys` generates the exhaustive
+  `opcode_ssa_s_value_attr_key_table`, and
+  `ssa_original_kind_preserving_kinds` generates
+  `simpleir_kind_preserves_original_kind_for_ssa`. `ssa.rs` owns live operand
+  resolution and attr insertion, not private opcode/string sets for string
+  payload routing or mapped `_original_kind` preservation.
 - Vectorization opcode classification is registry-owned:
   `vectorize_opcode_facts` generates the exhaustive
   `opcode_vectorize_facts_table` consumed by `vectorize.rs`. The pass owns

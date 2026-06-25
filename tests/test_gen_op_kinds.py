@@ -836,6 +836,163 @@ def test_call_role_validation_rejects_drift() -> None:
         raise AssertionError("call_builtin was accepted as a user-call kind")
 
 
+def test_ssa_attr_transport_delegates_to_generated_tables() -> None:
+    """SSA attr transport owns live values; op_kinds.toml owns membership."""
+    gen = _gen()
+    data = gen.load_table()
+    rendered = gen.render_rs(data)
+    ssa = (ROOT / "runtime/molt-tir/src/tir/ssa.rs").read_text(encoding="utf-8")
+
+    expected_attrs = {
+        "Import": "module",
+        "ImportFrom": "name",
+        "LoadAttr": "name",
+        "StoreAttr": "name",
+        "DelAttr": "name",
+        "CallBuiltin": "name",
+        "CallMethod": "method",
+    }
+    assert {
+        row["opcode"]: row["attr"] for row in data["ssa_s_value_attr_keys"]
+    } == expected_attrs
+
+    expected_original_kind = {
+        "store_var",
+        "call_func",
+        "call_internal",
+        "call_indirect",
+        "call_bind",
+        "call_function",
+        "call_guarded",
+        "invoke_ffi",
+        "gpu_thread_id",
+        "gpu_block_id",
+        "gpu_block_dim",
+        "gpu_grid_dim",
+        "gpu_barrier",
+        "builtin_print",
+        "print",
+        "range_new",
+        "get_attr_generic_ptr",
+        "get_attr_generic_obj",
+        "get_attr_name",
+        "guarded_field_get",
+        "load",
+        "load_attr",
+        "store_attr",
+        "set_attr_name",
+        "set_attr_generic_ptr",
+        "set_attr_generic_obj",
+        "guarded_field_set",
+        "guarded_field_init",
+        "store",
+        "store_init",
+        "del_attr_name",
+        "del_attr_generic_ptr",
+        "del_attr_generic_obj",
+        "index_set",
+    }
+    assert set(data["ssa_original_kind_preserving_kinds"]) == expected_original_kind
+    copy_row = next(row for row in data["kind"] if row["canonical"] == "copy")
+    assert set(copy_row["aliases"]) == {"store_var", "load_var", "copy_var"}
+    assert "copy_var" not in data["ssa_original_kind_preserving_kinds"]
+    assert "load_var" not in data["ssa_original_kind_preserving_kinds"]
+
+    attr_block = rendered.split("fn opcode_ssa_s_value_attr_key_table", maxsplit=1)[
+        1
+    ].split("fn simpleir_kind_preserves_original_kind_for_ssa", maxsplit=1)[0]
+    for opcode, attr in expected_attrs.items():
+        assert f'OpCode::{opcode} => Some("{attr}"),' in attr_block
+    for opcode in ("Call", "Copy", "Index", "StoreIndex"):
+        assert f"OpCode::{opcode} => None," in attr_block
+
+    preserve_block = rendered.split(
+        "fn simpleir_kind_preserves_original_kind_for_ssa", maxsplit=1
+    )[1].split("fn copy_kind_mints_fresh_owned_ref_table", maxsplit=1)[0]
+    for kind in expected_original_kind:
+        assert f'"{kind}"' in preserve_block
+    for kind in ("copy", "load_var", "copy_var", "call", "call_builtin"):
+        assert f'"{kind}"' not in preserve_block
+
+    mapper_block = rendered.split("fn kind_to_opcode_table", maxsplit=1)[1].split(
+        "fn opcode_ssa_s_value_attr_key_table", maxsplit=1
+    )[0]
+    assert '"copy" | "store_var" | "load_var" | "copy_var" => Some(OpCode::Copy)' in mapper_block
+
+    production = ssa.split("#[cfg(test)]", maxsplit=1)[0]
+    assert "opcode_ssa_s_value_attr_key_table(opcode)" in production
+    assert "simpleir_kind_preserves_original_kind_for_ssa(op.kind.as_str())" in production
+    assert "kind_to_opcode_table(op.kind.as_str()).is_some()" in production
+    for stale in (
+        "match opcode {\n                OpCode::Import",
+        "OpCode::ImportFrom\n                | OpCode::LoadAttr",
+        "OpCode::Call && op.kind != \"call\"",
+        "OpCode::CallBuiltin && !matches!",
+        "OpCode::LoadAttr\n                | OpCode::StoreAttr",
+        "\"get_attr\" | \"set_attr\" | \"index\"",
+        "!matches!(op.kind.as_str(), \"copy\" | \"load_var\" | \"copy_var\")",
+    ):
+        assert stale not in production
+
+
+def test_ssa_attr_transport_validation_rejects_drift() -> None:
+    gen = _gen()
+    data = gen.load_table()
+    opcodes = {row["name"] for row in data["opcode"]}
+    mapper_opcode_by_spelling = {
+        spelling: row["mapper_opcode"]
+        for row in data["kind"]
+        for spelling in [row["canonical"], *row.get("aliases", [])]
+    }
+
+    bad_attr = json.loads(json.dumps(data))
+    bad_attr["ssa_s_value_attr_keys"][0]["attr"] = "s_value"
+    try:
+        gen._validate_ssa_attr_transport(bad_attr, opcodes, mapper_opcode_by_spelling)
+    except gen.OpKindTableError as exc:
+        assert "attr must be one of" in str(exc)
+    else:
+        raise AssertionError("bad SSA s_value attr key was accepted")
+
+    duplicate = json.loads(json.dumps(data))
+    duplicate["ssa_s_value_attr_keys"].append(
+        json.loads(json.dumps(duplicate["ssa_s_value_attr_keys"][0]))
+    )
+    try:
+        gen._validate_ssa_attr_transport(duplicate, opcodes, mapper_opcode_by_spelling)
+    except gen.OpKindTableError as exc:
+        assert "duplicate ssa_s_value_attr_keys opcode" in str(exc)
+    else:
+        raise AssertionError("duplicate SSA s_value attr row was accepted")
+
+    unknown_kind = json.loads(json.dumps(data))
+    unknown_kind["ssa_original_kind_preserving_kinds"].append("not_a_kind")
+    try:
+        gen._validate_ssa_attr_transport(unknown_kind, opcodes, mapper_opcode_by_spelling)
+    except gen.OpKindTableError as exc:
+        assert "not a known mapper spelling" in str(exc)
+    else:
+        raise AssertionError("unknown SSA original-kind spelling was accepted")
+
+    forbidden_copy = json.loads(json.dumps(data))
+    forbidden_copy["ssa_original_kind_preserving_kinds"].append("load_var")
+    try:
+        gen._validate_ssa_attr_transport(forbidden_copy, opcodes, mapper_opcode_by_spelling)
+    except gen.OpKindTableError as exc:
+        assert "only store_var may preserve for OpCode::Copy" in str(exc)
+    else:
+        raise AssertionError("load_var original-kind preservation was accepted")
+
+    wrong_opcode = json.loads(json.dumps(data))
+    wrong_opcode["ssa_original_kind_preserving_kinds"].append("add")
+    try:
+        gen._validate_ssa_attr_transport(wrong_opcode, opcodes, mapper_opcode_by_spelling)
+    except gen.OpKindTableError as exc:
+        assert "not an SSA original-kind transport opcode" in str(exc)
+    else:
+        raise AssertionError("non-transport opcode preservation was accepted")
+
+
 def test_fuzz_tir_passes_uses_generated_opcode_shapes() -> None:
     """The TIR pass fuzzer's opcode/input-generation shape is registry-owned."""
     gen = _gen()

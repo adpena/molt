@@ -17,6 +17,10 @@ use crate::ir::OpIR;
 
 use super::blocks::{BlockId, Terminator, TirBlock};
 use super::cfg::CFG;
+use super::op_kinds_generated::{
+    kind_to_opcode_table, opcode_ssa_s_value_attr_key_table,
+    simpleir_kind_preserves_original_kind_for_ssa,
+};
 use super::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
 use super::types::TirType;
 use super::values::{TirValue, ValueId};
@@ -1317,27 +1321,12 @@ impl<'a> SsaContext<'a> {
             );
         }
 
-        // Opcode-specific attr key aliases: the lowering reads s_value under
-        // different keys depending on the opcode (e.g., "module" for Import,
-        // "name" for LoadAttr/StoreAttr/DelAttr/ImportFrom/CallBuiltin,
-        // "method" for CallMethod).  Store it under the expected key so the
-        // back-conversion finds it.
+        // Opcode-specific attr key aliases: the lowering reads SimpleIR's
+        // `s_value` under generated stable names. The registry owns opcode
+        // membership; SSA owns copying the live attr payload.
         if let Some(ref v) = op.s_value {
-            match opcode {
-                OpCode::Import => {
-                    attrs.insert("module".into(), AttrValue::Str(v.clone()));
-                }
-                OpCode::ImportFrom
-                | OpCode::LoadAttr
-                | OpCode::StoreAttr
-                | OpCode::DelAttr
-                | OpCode::CallBuiltin => {
-                    attrs.insert("name".into(), AttrValue::Str(v.clone()));
-                }
-                OpCode::CallMethod => {
-                    attrs.insert("method".into(), AttrValue::Str(v.clone()));
-                }
-                _ => {}
+            if let Some(attr_key) = opcode_ssa_s_value_attr_key_table(opcode) {
+                attrs.insert(attr_key.into(), AttrValue::Str(v.clone()));
             }
         }
 
@@ -1358,39 +1347,15 @@ impl<'a> SsaContext<'a> {
             attrs.insert("_var".into(), AttrValue::Str(v.clone()));
         }
 
-        // For ops that map to OpCode::Copy as a fallback (unknown ops),
-        // preserve the original kind string so the back-conversion can
-        // emit the correct SimpleIR op.
-        if opcode == OpCode::Copy
-            && (op.kind == "store_var"
-                || !matches!(op.kind.as_str(), "copy" | "load_var" | "copy_var"))
+        // Preserve `_original_kind` for unknown Copy fallbacks and for mapped
+        // spellings whose non-canonical name is semantically visible to
+        // round-trip/backends. The generated predicate owns the mapped spelling
+        // set; unknown fallback preservation stays here because SSA is the
+        // backstop for kinds with no first-class opcode.
+        let mapped_kind = kind_to_opcode_table(op.kind.as_str()).is_some();
+        if (opcode == OpCode::Copy && !mapped_kind)
+            || simpleir_kind_preserves_original_kind_for_ssa(op.kind.as_str())
         {
-            attrs.insert("_original_kind".into(), AttrValue::Str(op.kind.clone()));
-        }
-
-        // For call variants that are not literally "call", preserve the
-        // original kind so the lowering back to SimpleIR emits the correct
-        // op kind (call_func, call_indirect, call_bind, etc.).
-        if opcode == OpCode::Call && op.kind != "call" {
-            attrs.insert("_original_kind".into(), AttrValue::Str(op.kind.clone()));
-        }
-        if opcode == OpCode::CallBuiltin && !matches!(op.kind.as_str(), "call_builtin") {
-            attrs.insert("_original_kind".into(), AttrValue::Str(op.kind.clone()));
-        }
-        // Preserve original kind for attr/index ops that have backend-specific
-        // variants (get_attr_generic_obj, set_attr_generic_obj, store_index, etc.).
-        if matches!(
-            opcode,
-            OpCode::LoadAttr
-                | OpCode::StoreAttr
-                | OpCode::Index
-                | OpCode::StoreIndex
-                | OpCode::DelIndex
-                | OpCode::DelAttr
-        ) && !matches!(
-            op.kind.as_str(),
-            "get_attr" | "set_attr" | "index" | "store_index" | "del_index" | "del_attr"
-        ) {
             attrs.insert("_original_kind".into(), AttrValue::Str(op.kind.clone()));
         }
 
@@ -1912,7 +1877,7 @@ use super::is_structural;
 /// registry's sync test (`tests/test_gen_op_kinds.py`) and the drift audit
 /// (`tools/audit_op_kinds.py --check`) keep statically total for known kinds.
 fn kind_to_opcode(kind: &str) -> OpCode {
-    crate::tir::op_kinds_generated::kind_to_opcode_table(kind).unwrap_or(OpCode::Copy)
+    kind_to_opcode_table(kind).unwrap_or(OpCode::Copy)
 }
 
 fn gpu_runtime_symbol_for_simple_kind(kind: &str) -> Option<&'static str> {

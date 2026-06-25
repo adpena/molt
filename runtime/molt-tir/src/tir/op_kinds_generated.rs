@@ -290,7 +290,7 @@ pub fn kind_to_opcode_table(kind: &str) -> Option<OpCode> {
         "const_bool" => Some(OpCode::ConstBool),
         "const_none" => Some(OpCode::ConstNone),
         "const_bytes" => Some(OpCode::ConstBytes),
-        "copy" | "store_var" | "load_var" => Some(OpCode::Copy),
+        "copy" | "store_var" | "load_var" | "copy_var" => Some(OpCode::Copy),
         "import" | "import_name" | "module_import" => Some(OpCode::Import),
         "import_from" => Some(OpCode::ImportFrom),
         "module_cache_get" => Some(OpCode::ModuleCacheGet),
@@ -306,6 +306,167 @@ pub fn kind_to_opcode_table(kind: &str) -> Option<OpCode> {
         "warn_stderr" => Some(OpCode::WarnStderr),
         _ => None,
     }
+}
+
+/// Opcode-specific attr key for SimpleIR `s_value` during SSA lift.
+/// EXHAUSTIVE over OpCode so ssa.rs cannot grow a private string-payload
+/// transport match beside the generated op-kind registry.
+#[inline]
+pub fn opcode_ssa_s_value_attr_key_table(opcode: OpCode) -> Option<&'static str> {
+    match opcode {
+        OpCode::Add => None,
+        OpCode::Sub => None,
+        OpCode::Mul => None,
+        OpCode::CheckedAdd => None,
+        OpCode::InplaceAdd => None,
+        OpCode::InplaceSub => None,
+        OpCode::InplaceMul => None,
+        OpCode::Div => None,
+        OpCode::FloorDiv => None,
+        OpCode::Mod => None,
+        OpCode::Pow => None,
+        OpCode::Neg => None,
+        OpCode::Pos => None,
+        OpCode::Eq => None,
+        OpCode::Ne => None,
+        OpCode::Lt => None,
+        OpCode::Le => None,
+        OpCode::Gt => None,
+        OpCode::Ge => None,
+        OpCode::Is => None,
+        OpCode::IsNot => None,
+        OpCode::In => None,
+        OpCode::NotIn => None,
+        OpCode::BitAnd => None,
+        OpCode::BitOr => None,
+        OpCode::BitXor => None,
+        OpCode::BitNot => None,
+        OpCode::Shl => None,
+        OpCode::Shr => None,
+        OpCode::And => None,
+        OpCode::Or => None,
+        OpCode::Not => None,
+        OpCode::Bool => None,
+        OpCode::Alloc => None,
+        OpCode::StackAlloc => None,
+        OpCode::ObjectNewBound => None,
+        OpCode::ObjectNewBoundStack => None,
+        OpCode::Free => None,
+        OpCode::LoadAttr => Some("name"),
+        OpCode::StoreAttr => Some("name"),
+        OpCode::DelAttr => Some("name"),
+        OpCode::Index => None,
+        OpCode::StoreIndex => None,
+        OpCode::DelIndex => None,
+        OpCode::DeleteVar => None,
+        OpCode::Call => None,
+        OpCode::CallMethod => Some("method"),
+        OpCode::CallBuiltin => Some("name"),
+        OpCode::OrdAt => None,
+        OpCode::BoxVal => None,
+        OpCode::UnboxVal => None,
+        OpCode::TypeGuard => None,
+        OpCode::IncRef => None,
+        OpCode::DecRef => None,
+        OpCode::DelBoundary => None,
+        OpCode::BuildList => None,
+        OpCode::BuildDict => None,
+        OpCode::BuildTuple => None,
+        OpCode::BuildSet => None,
+        OpCode::BuildSlice => None,
+        OpCode::GetIter => None,
+        OpCode::IterNext => None,
+        OpCode::IterNextUnboxed => None,
+        OpCode::ForIter => None,
+        OpCode::AllocTask => None,
+        OpCode::StateSwitch => None,
+        OpCode::StateTransition => None,
+        OpCode::StateYield => None,
+        OpCode::ChanSendYield => None,
+        OpCode::ChanRecvYield => None,
+        OpCode::ClosureLoad => None,
+        OpCode::ClosureStore => None,
+        OpCode::Yield => None,
+        OpCode::YieldFrom => None,
+        OpCode::Raise => None,
+        OpCode::CheckException => None,
+        OpCode::ExceptionPending => None,
+        OpCode::FunctionDefaultsVersion => None,
+        OpCode::TryStart => None,
+        OpCode::TryEnd => None,
+        OpCode::StateBlockStart => None,
+        OpCode::StateBlockEnd => None,
+        OpCode::ConstInt => None,
+        OpCode::ConstBigInt => None,
+        OpCode::ConstFloat => None,
+        OpCode::ConstStr => None,
+        OpCode::ConstBool => None,
+        OpCode::ConstNone => None,
+        OpCode::ConstBytes => None,
+        OpCode::Copy => None,
+        OpCode::Import => Some("module"),
+        OpCode::ImportFrom => Some("name"),
+        OpCode::ModuleCacheGet => None,
+        OpCode::ModuleCacheSet => None,
+        OpCode::ModuleCacheDel => None,
+        OpCode::ModuleGetAttr => None,
+        OpCode::ModuleImportFrom => None,
+        OpCode::ModuleGetGlobal => None,
+        OpCode::ModuleGetName => None,
+        OpCode::ModuleSetAttr => None,
+        OpCode::ModuleDelGlobal => None,
+        OpCode::ModuleDelGlobalIfPresent => None,
+        OpCode::WarnStderr => None,
+        OpCode::ScfIf => None,
+        OpCode::ScfFor => None,
+        OpCode::ScfWhile => None,
+        OpCode::ScfYield => None,
+        OpCode::Deopt => None,
+    }
+}
+
+/// SimpleIR spellings that must survive SSA lift in `_original_kind` even
+/// though their opcode is first-class. Unknown unmapped kinds still preserve
+/// through the Copy fallback in ssa.rs; this table owns mapped spellings.
+#[inline]
+pub fn simpleir_kind_preserves_original_kind_for_ssa(kind: &str) -> bool {
+    matches!(
+        kind,
+        "store_var"
+            | "call_func"
+            | "call_internal"
+            | "call_indirect"
+            | "call_bind"
+            | "call_function"
+            | "call_guarded"
+            | "invoke_ffi"
+            | "gpu_thread_id"
+            | "gpu_block_id"
+            | "gpu_block_dim"
+            | "gpu_grid_dim"
+            | "gpu_barrier"
+            | "builtin_print"
+            | "print"
+            | "range_new"
+            | "get_attr_generic_ptr"
+            | "get_attr_generic_obj"
+            | "get_attr_name"
+            | "guarded_field_get"
+            | "load"
+            | "load_attr"
+            | "store_attr"
+            | "set_attr_name"
+            | "set_attr_generic_ptr"
+            | "set_attr_generic_obj"
+            | "guarded_field_set"
+            | "guarded_field_init"
+            | "store"
+            | "store_init"
+            | "del_attr_name"
+            | "del_attr_generic_ptr"
+            | "del_attr_generic_obj"
+            | "index_set"
+    )
 }
 
 /// EXACT-match arm of `copy_kind_mints_fresh_owned_ref`: kinds whose

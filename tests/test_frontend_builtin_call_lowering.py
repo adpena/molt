@@ -2167,6 +2167,22 @@ def test_sum_generator_expr_lowers_without_generator_task_or_builtin_call() -> N
     )
 
 
+def test_sum_listcomp_lowers_as_full_consumption_reducer() -> None:
+    ir = compile_to_tir("def f(data):\n    return sum([v * 2 for v in data if v > 3])\n")
+    func_ops = next(
+        func["ops"] for func in ir["functions"] if func["name"] == "__main____f"
+    )
+
+    assert any(op.get("kind") == "loop_start" for op in func_ops)
+    assert any(op.get("kind") == "mul" for op in func_ops)
+    assert any(op.get("kind") == "add" for op in func_ops)
+    assert all(op.get("kind") != "alloc_task" for op in func_ops)
+    assert not any(
+        op.get("kind") == "builtin_func" and op.get("s_value") == "molt_sum_builtin"
+        for op in func_ops
+    )
+
+
 def test_sum_generator_expr_tuple_target_lowers_inline() -> None:
     ir = compile_to_tir(
         "def f(pairs):\n    return sum(a * b for a, b in pairs if a > 2)\n"

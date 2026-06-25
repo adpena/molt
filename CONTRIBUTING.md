@@ -26,21 +26,20 @@ Molt expects production-grade changes, not opportunistic patches.
   authority while pretending to create velocity. When a maintainer says a change
   is too narrow, widen the work to the coherent structural class instead of
   defending or renaming the narrow cut.
-- **Force a tiny slice, then rip it open.** The legitimate small unit is the
-  smallest slice that still cuts through the REAL structure end-to-end (one case,
-  one path, one invariant), *ripped fully open* — the missing IR fact, the one
-  authority, the ownership boundary, and the whole bug class it exposes inside
-  that boundary, with zero workarounds, until correct + measured + gated. That is
-  the OPPOSITE of the convenient chip above: tiny in scope, total in depth, no
-  sibling of its bug class left un-migrated. A plan is not a slice — investigation
-  may *find* the slice, but the deliverable is the ripped-open slice. Shrink the
-  scope and deepen the rip; never patch the surface, never boil the ocean.
+- **Narrow entry, full structural rip.** The legitimate bounded unit is a
+  complete structural rip through one invariant, authority cluster, or execution
+  path: the missing IR fact, the one authority, the ownership boundary, and the
+  whole bug class it exposes inside that boundary, with zero workarounds. A plan
+  is not a deliverable. Narrow the entry point only to expose the structure; once
+  exposed, widen to every sibling authority and consumer needed to delete the old
+  lane. Never patch the surface, never boil the ocean, and never mistake a
+  checkpoint chip for engineering progress.
 - Crash recovery is the exception that proves the rule: after Codex, Claude,
   Desktop, WSL bridging, process custody, subagent orchestration, or a guarded
-  command crashes, stalls, disappears, or gets manually killed, use tiny complete
-  structural primitives. Each primitive must be staged, focused-tested, and
-  committed before the next risky lane, with a death capsule in the canonical
-  evidence roots.
+  command crashes, stalls, disappears, or gets manually killed, stabilize the
+  control plane by reducing concurrency and recording death-capsule evidence.
+  Recovery does not authorize tiny chips; the landing still has to delete or
+  unify a real authority without leaving duplicate paths behind.
 - Keep repo-facing docs and examples accurate after every move or rename.
 - Verify only the claims you make. Fresh command output is required for
   correctness/performance/support claims, but broad proof lanes are not a
