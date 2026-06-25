@@ -58,6 +58,7 @@
     ],
     "freshvalue_never_emitted": [],
     "llvm_void_runtime_abi_mismatch": [],
-    "native_codegen_gap": []
+    "native_codegen_gap": [],
+    "native_handler_routing_drift": []
   }
 }
