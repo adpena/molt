@@ -23,8 +23,9 @@ re-implementing the math:
      :func:`budget_utilization` - re-exported from ``molt.metric_ratios``, the
      ONE implementation authority for guarded ratio arithmetic.
   3. freshness checks (:func:`git_rev_is_ancestor_of_origin`, :func:`doc_age_days`,
-     :func:`STALE_BANNER`) used by freshness consumers to flag any perf doc whose
-     ``git_rev`` is not on origin/main or that is older than N days.
+     :func:`STALE_BANNER`, and :func:`stale_snapshot_metadata`) used by
+     freshness consumers to flag any perf doc/store whose ``git_rev`` is not on
+     origin/main or that is older than N days.
 
 The native+LLVM release-fast core scoreboard command is the daily contract; it
 is the only lane permitted to emit ``authoritative=true``. See
@@ -58,15 +59,18 @@ __all__ = [
     "DEFAULT_STALE_DAYS",
     "STALE_BANNER",
     "STALE_BANNER_MARK",
+    "STALE_METADATA_KEY",
     "RatioDirection",
     "budget_utilization",
     "doc_age_days",
     "git_rev_is_ancestor_of_origin",
+    "is_stale_snapshot_metadata",
     "non_canonical_provenance",
     "relative_time_delta",
     "safe_speedup",
     "signed_ratio",
     "signed_ratio_value",
+    "stale_snapshot_metadata",
 ]
 
 # The one canonical gate. Cited in every non-canonical stamp + every stale
@@ -93,10 +97,48 @@ DEFAULT_STALE_DAYS = 30
 # the doc as non-authoritative and points at the live gate.
 STALE_BANNER_MARK = "<!-- PERF-AUTHORITY:stale -->"
 
+# The top-level JSON key used by stale perf stores. Markdown and JSON share the
+# same mark so the freshness checker has one acknowledgement vocabulary across
+# both channels.
+STALE_METADATA_KEY = "perf_authority"
+
+
+def stale_snapshot_metadata(
+    *, generated_at: str | None, git_rev: str | None
+) -> dict[str, object]:
+    """Return the structured stale acknowledgement for historical perf stores."""
+    return {
+        "kind": "stale-perf-snapshot",
+        "mark": STALE_BANNER_MARK,
+        "stale": True,
+        "authoritative": False,
+        "authoritative_reason": (
+            "historical perf snapshot; the only citable perf source is "
+            f"`{CANONICAL_GATE}`"
+        ),
+        "canonical_gate": CANONICAL_GATE,
+        "generated_at": generated_at or "unknown",
+        "git_rev": git_rev or "unknown",
+    }
+
+
+def is_stale_snapshot_metadata(value: object) -> bool:
+    """Does ``value`` carry the canonical structured stale acknowledgement?"""
+    if not isinstance(value, dict):
+        return False
+    return (
+        value.get("kind") == "stale-perf-snapshot"
+        and value.get("mark") == STALE_BANNER_MARK
+        and value.get("stale") is True
+        and value.get("authoritative") is False
+        and value.get("canonical_gate") == CANONICAL_GATE
+    )
+
 
 def STALE_BANNER(*, generated_at: str, git_rev: str | None) -> str:
     """Return the freshness banner block to prepend to a stale perf markdown."""
-    rev = git_rev or "unknown"
+    meta = stale_snapshot_metadata(generated_at=generated_at, git_rev=git_rev)
+    rev = str(meta["git_rev"])
     return (
         f"{STALE_BANNER_MARK}\n"
         "> **STALE PERF SNAPSHOT - NOT AUTHORITATIVE.**\n"
@@ -107,7 +149,7 @@ def STALE_BANNER(*, generated_at: str, git_rev: str | None) -> str:
         "> context only; its numbers may reflect a different profile, a stale\n"
         "> tree, or an already-fixed regression. Do NOT rank or cite it.\n"
         f">\n"
-        f"> - generated_at: `{generated_at}`\n"
+        f"> - generated_at: `{meta['generated_at']}`\n"
         f"> - git_rev: `{rev}`\n"
     )
 

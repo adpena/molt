@@ -1,3 +1,15 @@
+<!-- PERF-AUTHORITY:stale -->
+> **STALE PERF SNAPSHOT - NOT AUTHORITATIVE.**
+>
+> The ONLY citable perf source of truth is `tools/perf_scoreboard.py --set core --backend native --backend llvm --profile release-fast --samples 5 --warmup 2 --repeat 5 --classify --require-quiescent`
+> (release-fast, cold+warm, quiescent, with a git-ancestry provenance
+> check). This file is a point-in-time snapshot kept for historical
+> context only; its numbers may reflect a different profile, a stale
+> tree, or an already-fixed regression. Do NOT rank or cite it.
+>
+> - generated_at: `unknown`
+> - git_rev: `unknown`
+
 # TIR/Native Performance Snapshot - 2026-04-22
 
 Command pattern:
