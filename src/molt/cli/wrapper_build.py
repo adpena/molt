@@ -39,7 +39,7 @@ from molt.cli.json_contract import (
     _extract_payload_text_list,
     _wrapper_build_payload_data,
 )
-from molt.cli.module_graph import (
+from molt.cli.module_graph_discovery import (
     _discover_module_graph,
     _extend_module_graph_with_static_import_modules,
     _parse_static_import_modules,

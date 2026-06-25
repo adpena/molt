@@ -24,18 +24,18 @@ from molt.cli import backend_cache_setup as cli_backend_cache_setup
 from molt.cli import backend_compile as cli_backend_compile
 from molt.cli import backend_output_pipeline as cli_backend_output_pipeline
 from molt.cli import backend_pipeline as cli_backend_pipeline
-from molt.cli import build_pipeline as cli_build_pipeline
 from molt.cli import link_pipeline as cli_link_pipeline
 from molt.cli import non_native_output as cli_non_native_output
 import pytest
 from molt.cli import build_inputs as cli_build_inputs
 from molt.cli import build_results as cli_build_results
 from molt.cli import frontend_execution as cli_frontend_execution
+from molt.cli import frontend_parallel as cli_frontend_parallel
 from molt.cli import frontend_pipeline as cli_frontend_pipeline
 from molt.cli import module_cache as cli_module_cache
 from molt.cli import module_dependencies as cli_module_dependencies
-from molt.cli import module_graph as cli_module_graph
 from molt.cli import module_graph_cache as cli_module_graph_cache
+from molt.cli import module_graph_discovery as cli_module_graph_discovery
 from molt.cli import module_import_scanner as cli_module_import_scanner
 from molt.cli import module_resolution as cli_module_resolution
 from molt.cli import module_source as cli_module_source
@@ -209,9 +209,6 @@ def _install_fake_backend_compile(
         RUNTIME_BUILD,
         "_maybe_start_native_runtime_lib_ready_async",
         lambda *args, **kwargs: None,
-    )
-    monkeypatch.setattr(
-        cli_build_pipeline, "_ensure_runtime_lib_ready", fake_ensure_runtime_lib_ready
     )
     monkeypatch.setattr(
         RUNTIME_BUILD, "_ensure_runtime_lib_ready", fake_ensure_runtime_lib_ready
@@ -1770,7 +1767,7 @@ def _discover_with_core_modules(entry: Path) -> dict[str, Path]:
     module_roots = [ROOT.resolve(), (ROOT / "src").resolve(), entry.parent.resolve()]
     roots = module_roots + [stdlib_root]
     stdlib_allowlist = cli_module_stdlib_policy._stdlib_allowlist()
-    module_graph, _ = cli._discover_module_graph(
+    module_graph, _ = cli_module_graph_discovery._discover_module_graph(
         entry,
         roots,
         module_roots,
@@ -1795,7 +1792,7 @@ def _discover_with_core_modules(entry: Path) -> dict[str, Path]:
         if (path := module_graph.get(name)) is not None
     ]
     if core_paths:
-        core_graph, _ = cli._discover_module_graph_from_paths(
+        core_graph, _ = cli_module_graph_discovery._discover_module_graph_from_paths(
             core_paths,
             roots,
             module_roots,
@@ -1826,7 +1823,7 @@ def test_external_root_direct_import_does_not_admit_transitive_children(
     module_roots = [project.resolve(), external_root.resolve()]
     policy = cli._ImportAdmissionPolicy(external_roots=(external_root.resolve(),))
 
-    graph, explicit_imports = cli._discover_module_graph(
+    graph, explicit_imports = cli_module_graph_discovery._discover_module_graph(
         project / "main.py",
         [*module_roots, stdlib_root],
         module_roots,
@@ -1860,7 +1857,7 @@ def test_external_static_package_admission_closes_transitive_children(
         admitted_external_packages=frozenset({"hugepkg"}),
     )
 
-    graph, _ = cli._discover_module_graph(
+    graph, _ = cli_module_graph_discovery._discover_module_graph(
         project / "main.py",
         [*module_roots, stdlib_root],
         module_roots,
@@ -1934,7 +1931,7 @@ def test_from_import_graph_does_not_admit_case_mismatched_attribute_child(
 
     stdlib_root = cli_module_resolution._stdlib_root_path()
     module_roots = [project.resolve(), site.resolve()]
-    graph, explicit_imports = cli._discover_module_graph(
+    graph, explicit_imports = cli_module_graph_discovery._discover_module_graph(
         entry,
         [*module_roots, stdlib_root],
         module_roots,
@@ -1970,7 +1967,7 @@ def test_from_import_star_graph_admits_static_all_child_module(
     roots = [*module_roots, stdlib_root]
     stdlib_allowlist = cli_module_stdlib_policy._stdlib_allowlist()
     cache = cli_module_resolution._ModuleResolutionCache()
-    graph, explicit_imports = cli._discover_module_graph(
+    graph, explicit_imports = cli_module_graph_discovery._discover_module_graph(
         entry,
         roots,
         module_roots,
@@ -2664,7 +2661,7 @@ def test_discover_module_graph_includes_importlib_from_alias_target(
     stdlib_root = cli_module_resolution._stdlib_root_path()
     module_roots = [tmp_path.resolve()]
 
-    graph, explicit_imports = cli._discover_module_graph(
+    graph, explicit_imports = cli_module_graph_discovery._discover_module_graph(
         entry,
         [*module_roots, stdlib_root],
         module_roots,
@@ -3652,13 +3649,13 @@ def test_streamed_cache_keys_preserve_legacy_payload_semantics() -> None:
 
 
 def test_frontend_parallel_layer_result_take_releases_result_map() -> None:
-    layer_state = cli._fresh_frontend_parallel_layer_state()
+    layer_state = cli_frontend_parallel._fresh_frontend_parallel_layer_state()
     result = {"ok": True, "functions": [{"name": "pkg__module", "ops": []}]}
     layer_state.results["pkg"] = result
 
-    assert cli._take_frontend_parallel_layer_result(layer_state, "pkg") is result
+    assert cli_frontend_parallel._take_frontend_parallel_layer_result(layer_state, "pkg") is result
     assert "pkg" not in layer_state.results
-    assert cli._take_frontend_parallel_layer_result(layer_state, "pkg") is None
+    assert cli_frontend_parallel._take_frontend_parallel_layer_result(layer_state, "pkg") is None
 
 
 def test_shared_module_resolution_cache_reduces_repeated_resolution(
@@ -3690,7 +3687,7 @@ def test_shared_module_resolution_cache_reduces_repeated_resolution(
     monkeypatch.setattr(cli_module_resolution, "_resolve_module_path_parts", wrapped)
 
     shared_cache = cli_module_resolution._ModuleResolutionCache()
-    cli._discover_module_graph(
+    cli_module_graph_discovery._discover_module_graph(
         entry,
         roots,
         module_roots,
@@ -3700,7 +3697,7 @@ def test_shared_module_resolution_cache_reduces_repeated_resolution(
         resolver_cache=shared_cache,
     )
     shared_first = resolve_calls
-    cli._discover_module_graph(
+    cli_module_graph_discovery._discover_module_graph(
         entry,
         roots,
         module_roots,
@@ -3712,7 +3709,7 @@ def test_shared_module_resolution_cache_reduces_repeated_resolution(
     shared_second = resolve_calls - shared_first
 
     resolve_calls = 0
-    graph, explicit_imports = cli._discover_module_graph(
+    graph, explicit_imports = cli_module_graph_discovery._discover_module_graph(
         entry,
         roots,
         module_roots,
@@ -3729,7 +3726,7 @@ def test_shared_module_resolution_cache_reduces_repeated_resolution(
         stdlib_allowlist,
         explicit_imports,
     )
-    graph, explicit_imports = cli._discover_module_graph(
+    graph, explicit_imports = cli_module_graph_discovery._discover_module_graph(
         entry,
         roots,
         module_roots,
@@ -3797,7 +3794,7 @@ def test_shared_module_resolution_cache_reuses_source_and_ast_across_passes(
     monkeypatch.setattr(TARGET_PYTHON.ast, "parse", wrapped_parse)
 
     shared_cache = cli_module_resolution._ModuleResolutionCache()
-    graph, _ = cli._discover_module_graph(
+    graph, _ = cli_module_graph_discovery._discover_module_graph(
         entry,
         roots,
         module_roots,
@@ -3825,7 +3822,7 @@ def test_shared_module_resolution_cache_reuses_source_and_ast_across_passes(
 
     read_calls = 0
     parse_calls = 0
-    unshared_graph, _ = cli._discover_module_graph(
+    unshared_graph, _ = cli_module_graph_discovery._discover_module_graph(
         entry,
         roots,
         module_roots,
@@ -3946,7 +3943,7 @@ def test_shared_module_resolution_cache_reuses_import_scans(
     )
 
     cache = cli_module_resolution._ModuleResolutionCache()
-    graph, _ = cli._discover_module_graph(
+    graph, _ = cli_module_graph_discovery._discover_module_graph(
         entry,
         roots,
         module_roots,
@@ -3960,7 +3957,7 @@ def test_shared_module_resolution_cache_reuses_import_scans(
     for module_name, module_path in graph.items():
         source = cache.read_module_source(module_path)
         tree = cache.parse_module_ast(module_path, source, filename=str(module_path))
-        import_scan_mode = cli._module_graph_import_scan_mode(
+        import_scan_mode = cli_module_graph_discovery._module_graph_import_scan_mode(
             path=module_path,
             module_name=module_name,
             entry_paths=frozenset({cache.resolved_path(entry)}),
@@ -3995,7 +3992,7 @@ def test_discover_module_graph_reuses_persisted_import_scan_cache(
     roots = module_roots + [stdlib_root]
     stdlib_allowlist = cli_module_stdlib_policy._stdlib_allowlist()
 
-    graph, explicit_imports = cli._discover_module_graph(
+    graph, explicit_imports = cli_module_graph_discovery._discover_module_graph(
         entry,
         roots,
         module_roots,
@@ -4011,7 +4008,7 @@ def test_discover_module_graph_reuses_persisted_import_scan_cache(
 
     monkeypatch.setattr(cli_module_source, "_read_module_source", fail_read)
 
-    graph, explicit_imports = cli._discover_module_graph(
+    graph, explicit_imports = cli_module_graph_discovery._discover_module_graph(
         entry,
         roots,
         module_roots,
@@ -4358,7 +4355,7 @@ def test_discover_module_graph_skips_persisted_caches_when_disabled(
     roots = module_roots + [stdlib_root]
     stdlib_allowlist = cli_module_stdlib_policy._stdlib_allowlist()
 
-    graph, explicit_imports = cli._discover_module_graph(
+    graph, explicit_imports = cli_module_graph_discovery._discover_module_graph(
         entry,
         roots,
         module_roots,
@@ -4390,7 +4387,7 @@ def test_discover_module_graph_skips_persisted_caches_when_disabled(
         lambda *args, **kwargs: None,
     )
 
-    graph, explicit_imports = cli._discover_module_graph(
+    graph, explicit_imports = cli_module_graph_discovery._discover_module_graph(
         entry,
         roots,
         module_roots,
@@ -4417,7 +4414,7 @@ def test_discover_module_graph_reuses_persisted_graph_cache(
     roots = module_roots + [stdlib_root]
     stdlib_allowlist = cli_module_stdlib_policy._stdlib_allowlist()
 
-    graph, explicit_imports = cli._discover_module_graph(
+    graph, explicit_imports = cli_module_graph_discovery._discover_module_graph(
         entry,
         roots,
         module_roots,
@@ -4454,7 +4451,7 @@ def test_discover_module_graph_reuses_precomputed_entry_imports(
 
     monkeypatch.setattr(cache, "read_module_source", wrapped_read)
 
-    graph, explicit_imports = cli._discover_module_graph(
+    graph, explicit_imports = cli_module_graph_discovery._discover_module_graph(
         entry,
         roots,
         module_roots,
@@ -4495,7 +4492,7 @@ def test_discover_module_graph_from_paths_batches_shared_dependency_scan(
 
     monkeypatch.setattr(cache, "read_module_source", wrapped_read)
 
-    graph, explicit_imports = cli_module_graph._discover_module_graph_from_paths(
+    graph, explicit_imports = cli_module_graph_discovery._discover_module_graph_from_paths(
         [first, second],
         roots,
         module_roots,
@@ -4540,7 +4537,7 @@ def test_discover_module_graph_from_paths_deduplicates_repeated_import_names(
         wrapped_expand,
     )
 
-    graph, explicit_imports = cli_module_graph._discover_module_graph_from_paths(
+    graph, explicit_imports = cli_module_graph_discovery._discover_module_graph_from_paths(
         [first, second],
         roots,
         module_roots,
@@ -4584,7 +4581,7 @@ def test_module_graph_dependency_scan_skips_lazy_backend_bodies(
     module_roots = [tmp_path.resolve()]
     roots = module_roots + [stdlib_root]
 
-    graph, explicit_imports = cli._discover_module_graph(
+    graph, explicit_imports = cli_module_graph_discovery._discover_module_graph(
         entry,
         roots,
         module_roots,
@@ -4617,7 +4614,7 @@ def test_discover_module_graph_reuses_persisted_paths_for_unchanged_modules(
     roots = module_roots + [stdlib_root]
     stdlib_allowlist = cli_module_stdlib_policy._stdlib_allowlist()
 
-    graph, explicit_imports = cli._discover_module_graph(
+    graph, explicit_imports = cli_module_graph_discovery._discover_module_graph(
         entry,
         roots,
         module_roots,
@@ -4653,7 +4650,7 @@ def test_discover_module_graph_reuses_persisted_paths_for_unchanged_modules(
     monkeypatch.setattr(cache, "read_module_source", wrapped_read)
     monkeypatch.setattr(cache, "resolve_module", wrapped_resolve)
 
-    graph, explicit_imports = cli._discover_module_graph(
+    graph, explicit_imports = cli_module_graph_discovery._discover_module_graph(
         entry,
         roots,
         module_roots,
@@ -4686,7 +4683,7 @@ def test_discover_module_graph_prunes_removed_persisted_dependency(
     roots = module_roots + [stdlib_root]
     stdlib_allowlist = cli_module_stdlib_policy._stdlib_allowlist()
 
-    graph, _ = cli._discover_module_graph(
+    graph, _ = cli_module_graph_discovery._discover_module_graph(
         entry,
         roots,
         module_roots,
@@ -4697,7 +4694,7 @@ def test_discover_module_graph_prunes_removed_persisted_dependency(
     assert "pkg.old" in graph
 
     entry.write_text("import pkg.helper\n")
-    graph, explicit_imports = cli._discover_module_graph(
+    graph, explicit_imports = cli_module_graph_discovery._discover_module_graph(
         entry,
         roots,
         module_roots,
@@ -4725,7 +4722,7 @@ def test_discover_module_graph_prunes_removed_persisted_dependency(
 
     monkeypatch.setattr(Path, "read_text", fail_read_text)
 
-    graph, explicit_imports = cli._discover_module_graph(
+    graph, explicit_imports = cli_module_graph_discovery._discover_module_graph(
         entry,
         roots,
         module_roots,
@@ -5948,7 +5945,7 @@ def test_load_module_imports_reuses_persisted_cache(
     cache = cli_module_resolution._ModuleResolutionCache()
     tree = cache.parse_module_ast(module_path, source, filename=str(module_path))
 
-    imports = cli._load_module_imports(
+    imports = cli_module_graph_discovery._load_module_imports(
         module_path,
         module_name="pkg",
         is_package=False,
@@ -5963,7 +5960,7 @@ def test_load_module_imports_reuses_persisted_cache(
         raise AssertionError("unexpected import scan")
 
     monkeypatch.setattr(cache, "collect_imports", fail_collect)
-    cached_imports = cli._load_module_imports(
+    cached_imports = cli_module_graph_discovery._load_module_imports(
         module_path,
         module_name="pkg",
         is_package=False,
@@ -8134,18 +8131,18 @@ def test_parallel_build_reuses_cached_lowering_across_parallel_builds(
     monkeypatch.setenv("MOLT_CACHE", str(cache_root))
     monkeypatch.setattr(cli_build_inputs, "_find_project_root", lambda start: project)
     monkeypatch.setattr(
-        cli_frontend_execution, "_resolve_frontend_parallel_module_workers", lambda: 2
+        cli_frontend_parallel, "_resolve_frontend_parallel_module_workers", lambda: 2
     )
     monkeypatch.setattr(
-        cli_frontend_execution, "_resolve_frontend_parallel_min_modules", lambda: 2
+        cli_frontend_parallel, "_resolve_frontend_parallel_min_modules", lambda: 2
     )
     monkeypatch.setattr(
-        cli_frontend_execution,
+        cli_frontend_parallel,
         "_resolve_frontend_parallel_min_predicted_cost",
         lambda: 0.0,
     )
     monkeypatch.setattr(
-        cli_frontend_execution,
+        cli_frontend_parallel,
         "_resolve_frontend_parallel_target_cost_per_worker",
         lambda: 1.0,
     )
@@ -8266,18 +8263,18 @@ def test_parallel_build_reuses_dependent_cache_after_stable_interface_change(
     monkeypatch.setenv("MOLT_CACHE", str(cache_root))
     monkeypatch.setattr(cli_build_inputs, "_find_project_root", lambda start: project)
     monkeypatch.setattr(
-        cli_frontend_execution, "_resolve_frontend_parallel_module_workers", lambda: 2
+        cli_frontend_parallel, "_resolve_frontend_parallel_module_workers", lambda: 2
     )
     monkeypatch.setattr(
-        cli_frontend_execution, "_resolve_frontend_parallel_min_modules", lambda: 2
+        cli_frontend_parallel, "_resolve_frontend_parallel_min_modules", lambda: 2
     )
     monkeypatch.setattr(
-        cli_frontend_execution,
+        cli_frontend_parallel,
         "_resolve_frontend_parallel_min_predicted_cost",
         lambda: 0.0,
     )
     monkeypatch.setattr(
-        cli_frontend_execution,
+        cli_frontend_parallel,
         "_resolve_frontend_parallel_target_cost_per_worker",
         lambda: 1.0,
     )
@@ -8394,18 +8391,18 @@ def test_parallel_build_allows_scoped_type_facts(
     monkeypatch.setenv("MOLT_CACHE", str(cache_root))
     monkeypatch.setattr(cli_build_inputs, "_find_project_root", lambda start: project)
     monkeypatch.setattr(
-        cli_frontend_execution, "_resolve_frontend_parallel_module_workers", lambda: 2
+        cli_frontend_parallel, "_resolve_frontend_parallel_module_workers", lambda: 2
     )
     monkeypatch.setattr(
-        cli_frontend_execution, "_resolve_frontend_parallel_min_modules", lambda: 2
+        cli_frontend_parallel, "_resolve_frontend_parallel_min_modules", lambda: 2
     )
     monkeypatch.setattr(
-        cli_frontend_execution,
+        cli_frontend_parallel,
         "_resolve_frontend_parallel_min_predicted_cost",
         lambda: 0.0,
     )
     monkeypatch.setattr(
-        cli_frontend_execution,
+        cli_frontend_parallel,
         "_resolve_frontend_parallel_target_cost_per_worker",
         lambda: 1.0,
     )
@@ -8519,7 +8516,7 @@ def test_build_one_shot_backend_compile_uses_ir_file_lease(
     monkeypatch.setenv("MOLT_CACHE", str(cache_root))
     monkeypatch.setattr(cli_build_inputs, "_find_project_root", lambda start: project)
     monkeypatch.setattr(
-        cli_frontend_execution, "_resolve_frontend_parallel_module_workers", lambda: 0
+        cli_frontend_parallel, "_resolve_frontend_parallel_module_workers", lambda: 0
     )
     monkeypatch.setattr(cli_backend_compile, "_backend_daemon_enabled", lambda: False)
     monkeypatch.setattr(cli_backend_compile, "_backend_bin_path", lambda *args, **kwargs: backend_bin)
@@ -8572,7 +8569,7 @@ def test_build_skips_daemon_preflight_when_socket_exists(
     monkeypatch.setenv("MOLT_CACHE", str(cache_root))
     monkeypatch.setattr(cli_build_inputs, "_find_project_root", lambda start: project)
     monkeypatch.setattr(
-        cli_frontend_execution, "_resolve_frontend_parallel_module_workers", lambda: 0
+        cli_frontend_parallel, "_resolve_frontend_parallel_module_workers", lambda: 0
     )
     monkeypatch.setattr(cli_backend_compile, "_backend_daemon_enabled", lambda: True)
     monkeypatch.setattr(cli_backend_compile, "_backend_bin_path", lambda *args, **kwargs: backend_bin)
@@ -8655,7 +8652,7 @@ def test_build_emit_obj_does_not_route_stdlib_object_env_from_helper(
     monkeypatch.setenv("MOLT_CACHE", str(cache_root))
     monkeypatch.setattr(cli_build_inputs, "_find_project_root", lambda start: project)
     monkeypatch.setattr(
-        cli_frontend_execution, "_resolve_frontend_parallel_module_workers", lambda: 0
+        cli_frontend_parallel, "_resolve_frontend_parallel_module_workers", lambda: 0
     )
     monkeypatch.setattr(cli_backend_compile, "_backend_daemon_enabled", lambda: False)
     monkeypatch.setattr(cli_backend_compile, "_backend_bin_path", lambda *args, **kwargs: backend_bin)
@@ -8903,7 +8900,7 @@ def test_spawn_entry_override_not_required_for_plain_script(tmp_path: Path) -> N
     module_roots = [ROOT.resolve(), (ROOT / "src").resolve(), entry.parent.resolve()]
     roots = module_roots + [stdlib_root]
     stdlib_allowlist = cli_module_stdlib_policy._stdlib_allowlist()
-    module_graph, explicit_imports = cli._discover_module_graph(
+    module_graph, explicit_imports = cli_module_graph_discovery._discover_module_graph(
         entry,
         roots,
         module_roots,
@@ -8928,7 +8925,7 @@ def test_spawn_entry_override_not_required_for_plain_script(tmp_path: Path) -> N
         if (path := module_graph.get(name)) is not None
     ]
     if core_paths:
-        core_graph, _ = cli._discover_module_graph_from_paths(
+        core_graph, _ = cli_module_graph_discovery._discover_module_graph_from_paths(
             core_paths,
             roots,
             module_roots,
@@ -8951,7 +8948,7 @@ def test_spawn_entry_override_required_for_multiprocessing(tmp_path: Path) -> No
     module_roots = [ROOT.resolve(), (ROOT / "src").resolve(), entry.parent.resolve()]
     roots = module_roots + [stdlib_root]
     stdlib_allowlist = cli_module_stdlib_policy._stdlib_allowlist()
-    module_graph, explicit_imports = cli._discover_module_graph(
+    module_graph, explicit_imports = cli_module_graph_discovery._discover_module_graph(
         entry,
         roots,
         module_roots,
@@ -9145,16 +9142,16 @@ def test_resolve_frontend_parallel_module_workers_from_env(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("MOLT_FRONTEND_PARALLEL_MODULES", raising=False)
-    assert cli._resolve_frontend_parallel_module_workers() == 0
+    assert cli_frontend_parallel._resolve_frontend_parallel_module_workers() == 0
 
     monkeypatch.setenv("MOLT_FRONTEND_PARALLEL_MODULES", "0")
-    assert cli._resolve_frontend_parallel_module_workers() == 0
+    assert cli_frontend_parallel._resolve_frontend_parallel_module_workers() == 0
 
     monkeypatch.setenv("MOLT_FRONTEND_PARALLEL_MODULES", "3")
-    assert cli._resolve_frontend_parallel_module_workers() == 3
+    assert cli_frontend_parallel._resolve_frontend_parallel_module_workers() == 3
 
     monkeypatch.setenv("MOLT_FRONTEND_PARALLEL_MODULES", "auto")
-    assert cli._resolve_frontend_parallel_module_workers() >= 2
+    assert cli_frontend_parallel._resolve_frontend_parallel_module_workers() >= 2
 
 
 def test_module_dependency_layers_preserve_topological_determinism() -> None:
@@ -9205,7 +9202,7 @@ def test_analyze_module_schedule_reuses_reverse_edges_and_layers() -> None:
 
 
 def test_choose_frontend_parallel_layer_workers_applies_policy_gates() -> None:
-    decision = cli._choose_frontend_parallel_layer_workers(
+    decision = cli_frontend_parallel._choose_frontend_parallel_layer_workers(
         candidates=["a", "b"],
         module_sources={"a": "x=1\n", "b": "y=2\n"},
         module_deps={"a": set(), "b": set()},
@@ -9217,7 +9214,7 @@ def test_choose_frontend_parallel_layer_workers_applies_policy_gates() -> None:
     assert decision["enabled"] is False
     assert decision["reason"] == "layer_module_count_below_min"
 
-    decision = cli._choose_frontend_parallel_layer_workers(
+    decision = cli_frontend_parallel._choose_frontend_parallel_layer_workers(
         candidates=["a", "b", "c"],
         module_sources={"a": "x=1\n", "b": "y=2\n", "c": "z=3\n"},
         module_deps={"a": set(), "b": set(), "c": set()},
@@ -9231,7 +9228,7 @@ def test_choose_frontend_parallel_layer_workers_applies_policy_gates() -> None:
 
 
 def test_choose_frontend_parallel_layer_workers_scales_workers_by_cost() -> None:
-    decision = cli._choose_frontend_parallel_layer_workers(
+    decision = cli_frontend_parallel._choose_frontend_parallel_layer_workers(
         candidates=["a", "b", "c", "d"],
         module_sources={
             "a": "x" * 40_000,
@@ -9410,21 +9407,21 @@ def test_choose_frontend_parallel_layer_workers_uses_precomputed_costs_and_flags
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        cli_frontend_execution,
+        cli_frontend_parallel,
         "_predict_frontend_module_cost",
         lambda *args, **kwargs: (_ for _ in ()).throw(
             AssertionError("unexpected live cost recompute")
         ),
     )
     monkeypatch.setattr(
-        cli_frontend_execution,
+        cli_frontend_parallel,
         "_looks_like_stdlib_module_name",
         lambda *args, **kwargs: (_ for _ in ()).throw(
             AssertionError("unexpected stdlib classification recompute")
         ),
     )
 
-    decision = cli._choose_frontend_parallel_layer_workers(
+    decision = cli_frontend_parallel._choose_frontend_parallel_layer_workers(
         candidates=["a", "b", "warnings"],
         module_sources={},
         module_deps={},
@@ -12996,7 +12993,7 @@ def test_build_rust_target_uses_rust_backend_feature_and_skips_daemon(
     monkeypatch.setenv("MOLT_CACHE", str(cache_root))
     monkeypatch.setattr(cli_build_inputs, "_find_project_root", lambda start: project)
     monkeypatch.setattr(
-        cli_frontend_execution, "_resolve_frontend_parallel_module_workers", lambda: 0
+        cli_frontend_parallel, "_resolve_frontend_parallel_module_workers", lambda: 0
     )
     monkeypatch.setattr(cli_backend_compile, "_backend_daemon_enabled", lambda: True)
     monkeypatch.setattr(cli_backend_compile, "_backend_bin_path", lambda *args, **kwargs: backend_bin)
@@ -13141,7 +13138,7 @@ def test_build_release_rust_target_uses_release_fast_backend_profile_by_default(
     monkeypatch.delenv("MOLT_RELEASE_CARGO_PROFILE", raising=False)
     monkeypatch.setattr(cli_build_inputs, "_find_project_root", lambda start: project)
     monkeypatch.setattr(
-        cli_frontend_execution, "_resolve_frontend_parallel_module_workers", lambda: 0
+        cli_frontend_parallel, "_resolve_frontend_parallel_module_workers", lambda: 0
     )
     monkeypatch.setattr(cli_backend_compile, "_backend_daemon_enabled", lambda: True)
     monkeypatch.setattr(cli_backend_compile, "_backend_bin_path", lambda *args, **kwargs: backend_bin)
