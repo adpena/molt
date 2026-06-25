@@ -990,14 +990,16 @@ the implementation. For forward-looking priorities, use
   than storage authority.
 - Native int-lane lowering now reads raw i64 values from
   `ScalarRepresentationPlan` raw-int carrier predicates instead of a separate
-  raw-int shadow transport or cloned `int_primary_vars` set. Raw-int carrier
-  membership is an exact-i64 representation contract, not a semantic `int`
-  claim: bounded add/sub and raw-closed counted store/load loop carriers may
-  enter raw-primary only after shared interval proof shows that the
-  operation cannot overflow i64 or promote to BigInt. Unbounded arithmetic and
-  shifts stay boxed/runtime-backed until a range/shift-count proof can show
-  that the operation cannot overflow i64, promote to BigInt, or raise for
-  Python shift semantics.
+  raw-int shadow transport, cloned `int_primary_vars` set, or name-keyed
+  interval proof. Raw-int carrier membership is an exact-i64 representation
+  contract, not a semantic `int` claim: bounded add/sub and raw-closed counted
+  store/load loop carriers enter raw-primary only after the value-keyed
+  `value_range_for` / `repr_by_value_for` proof shows that the operation cannot
+  overflow i64 or promote to BigInt. Native receives that proof as a
+  `SimpleValueNames` projection into `repr_by_name`. Unbounded arithmetic and
+  shifts stay boxed/runtime-backed until a range/shift-count proof can show that
+  the operation cannot overflow i64, promote to BigInt, or raise for Python
+  shift semantics.
   Runtime integer shifts preserve the same contract directly: shift operands
   are strict integer/bool/BigInt values rather than exact-float or arbitrary
   `__index__` coercions, BigInt shift counts are not narrowed through fixed
@@ -1009,13 +1011,13 @@ the implementation. For forward-looking priorities, use
   reference throughout `function_compiler.rs`, `scalar_carriers.rs`, and the
   extracted `fc/*` handler family. The old cloned
   `bool_primary_vars`/`float_primary_vars` side sets and `int_carriers_plan`
-  alias are gone from native backend code. Inside the plan, name-keyed int,
-  bool, and F64 carrier eligibility now has the same `repr_by_name` authority:
-  bool/F64 names floor to boxed storage and are raised to `Repr::Bool` /
+  alias are gone from native backend code. Inside the plan, int carrier
+  eligibility is projected from the value-keyed TIR representation proof, while
+  bool/F64 names still floor to boxed storage and are raised to `Repr::Bool` /
   `Repr::FloatUnboxed` only by the raw-bool/raw-F64 eligibility filters, with
-  `is_bool_unboxed` / `is_float_unboxed` deriving from that map beside the
-  raw-int predicates. Non-primary float values are boxed immediately in their
-  main I64 variables. Liveness cleanup and exception-check scrubbing are
+  `is_bool_unboxed` / `is_float_unboxed` deriving from `repr_by_name` beside the
+  raw-int projection predicates. Non-primary float values are boxed immediately
+  in their main I64 variables. Liveness cleanup and exception-check scrubbing are
   representation-aware: dead F64-primary slots are poisoned with an F64 zero,
   while boxed slots keep the boxed `None`/zero sentinel, so cleanup cannot
   violate Cranelift variable typing after raw-f64 shadow deletion. Native bool

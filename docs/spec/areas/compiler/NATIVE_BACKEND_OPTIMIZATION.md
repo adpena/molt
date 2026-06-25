@@ -92,10 +92,10 @@ bool/float results are boxed immediately in their main I64 variables instead of
 being tracked through side-channel shadow maps.
 
 This is an implementation compromise, not the desired endpoint. The native
-duplicate-authority lane is deleted, and native name-keyed int/bool/float
-carrier eligibility is folded into the single `ScalarRepresentationPlan`
-`repr_by_name` lattice. Bool and F64 names floor to boxed storage in that
-name-keyed native authority and are raised to `Repr::Bool` /
+duplicate-authority int lane is deleted: raw-int carrier eligibility is proven by
+the value-keyed `repr_by_value_for` / `value_range_for` path and projected into
+`repr_by_name` only for native lowering. Bool and F64 names still floor to boxed
+storage in that name-keyed native authority and are raised to `Repr::Bool` /
 `Repr::FloatUnboxed` only by the existing raw-carrier eligibility filters, so
 semantic type facts alone cannot authorize unboxed storage. The next performance
 class is to carry the shared `Repr::Bool` / `Repr::FloatUnboxed` facts through
@@ -134,7 +134,7 @@ proofs without re-deriving them at native codegen.
 
 | Issue | Location | Impact | Effort |
 |-------|----------|--------|--------|
-| **Specialization still crosses a legacy SimpleIR transport**. Native int, bool, and float lanes no longer use raw scalar shadow maps, but the TIR/LIR representation plan is still lowered through SimpleIR before native codegen. This leaves duplicated representation recovery logic in native. | TIR/LIR bridge, `lower_to_simple.rs`, native backend lowering | High | High |
+| **Specialization still crosses a legacy SimpleIR transport**. Native int carriers are now projected from value-keyed TIR facts, and bool/float lanes no longer use raw scalar shadow maps, but the TIR/LIR representation plan is still lowered through SimpleIR before native codegen. This leaves bool/F64 eligibility and broader transport recovery logic behind a native name bridge. | TIR/LIR bridge, `lower_to_simple.rs`, native backend lowering | High | High |
 | **Bool/float scalar proofs are not yet cross-backend value facts**. Native bool/float lowering consumes one plan authority, but bool/float eligibility still lives behind name-keyed plan predicates rather than a value-keyed proof propagated through every backend. | TIR/LIR bridge, representation lattice propagation, wasm/llvm/luau parity | High | High |
 | **No container element type specialization**. `container_elem_hints` and `dict_key_hints` are tracked (frontend line 963-965) but not used for specialization. A list known to contain only ints could use a packed representation. | Frontend type tracking, backend container ops | Medium-High for numeric workloads | High |
 | **No return type propagation across calls**. If `def foo() -> int` is annotated, callers of `foo()` don't get `fast_int` on the result. The type facts system supports this but it's not wired to the call site specialization. | `FunctionFacts.returns` (type_facts.py:24), call lowering in frontend | Medium | Medium |

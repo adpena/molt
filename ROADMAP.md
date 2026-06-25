@@ -756,9 +756,10 @@ from `op_kinds.toml`, and frontend `borrow`/`release` aliases canonicalize to
   TIR-to-SimpleIR lowering no longer accepts an external type map for scalar
   hint reseeding; remaining performance work must flow through shared
   representation-aware TIR/LIR contracts. Native int codegen has retired the
-  raw-int shadow transport in favor of plan-backed raw-int carrier predicates,
-  and native float-primary codegen now treats
-  `float_primary_vars` as the single static authority for F64-primary variables.
+  raw-int shadow transport and the name-keyed interval proof in favor of
+  value-keyed raw-int facts projected into plan-backed native predicates. Native
+  float-primary codegen now consumes `repr_by_name` predicates instead of cloned
+  `float_primary_vars` side sets.
   TIR functions now own a persistent `value_types` map, and type refinement
   writes op-result facts back into that map instead of leaving them as a
   transient extraction side table. The type-refine solver treats produced values
@@ -788,8 +789,8 @@ from `op_kinds.toml`, and frontend `borrow`/`release` aliases canonicalize to
   `list_int` storage proof; native direct storage optimizations now require a
   shared `ContainerStorageKind::FlatListInt` fact seeded by structural
   `list_int_new` producers and queried through the representation plan.
-  Native bool codegen has the same raw-closed `bool_primary_vars` contract for
-  constants, alias/store propagation, comparisons, identity checks, and
+  Native bool codegen consumes the same plan-backed raw-closed bool predicate
+  for constants, alias/store propagation, comparisons, identity checks, and
   truthiness casts. Bool-primary escape points now box raw `0/1` carriers
   through a dedicated raw-bool boxing helper instead of feeding I64 carriers to
   the b1-condition bool boxer. Raw-closed bool join carriers also stay on the
@@ -802,16 +803,16 @@ from `op_kinds.toml`, and frontend `borrow`/`release` aliases canonicalize to
   eligibility is now definition-scoped: unsupported producers such as `pow`
   keep only their own outputs boxed and cannot disable unrelated proven float
   locals in the same function. The native raw-f64 shadow lane is retired:
-  `float_primary_vars` is the only raw-F64 authority, and non-primary floats
-  are boxed immediately in their main I64 variable. Native scalar store-target
+  `repr_by_name` is the native raw-F64 authority, and non-primary floats are
+  boxed immediately in their main I64 variable. Native scalar store-target
   discovery is now shared across int, float, bool, and str lanes, preserving
   the all-sources rule. The native raw-bool shadow lane is retired as well:
-  `bool_primary_vars` is the only raw-bool authority, and non-primary bools
-  stay boxed in their main I64 variables. Native int-primary now means exact
-  i64 representation, not semantic Python `int`; bounded add/sub and
-  raw-closed counted store/load loop carriers may enter raw-primary only after
-  shared interval proof, while unbounded arithmetic and shifts stay
-  boxed/runtime-backed until range and shift-count proofs make raw lowering
+  `repr_by_name` is the native raw-bool authority, and non-primary bools stay
+  boxed in their main I64 variables. Native int-primary now means exact i64
+  representation, not semantic Python `int`; bounded add/sub and raw-closed
+  counted store/load loop carriers may enter raw-primary only after the
+  value-keyed range/representation proof, while unbounded arithmetic and shifts
+  stay boxed/runtime-backed until range and shift-count proofs make raw lowering
   sound.
 - Harden daemon, build, and harness workflows for multi-agent development.
 - Move more hot semantics into runtime primitives and intrinsics.

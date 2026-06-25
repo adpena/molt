@@ -747,7 +747,6 @@ pub fn compute_value_range(func: &TirFunction, scev: &ScevResult) -> ValueRangeR
     // last value). We seed the IV's range from that descriptor for any header SCEV
     // left un-ranged. This is the producer that unblocks SROA's hot-loop field
     // promotion on the dominant `for i in range(C): obj.field = <i-derived>` shape.
-    seed_guarded_loop_iv_ranges(func, &loop_bodies, &mut result);
     seed_counted_loop_iv_ranges(func, &loop_bodies, &mut result);
 
     // ---- forward transfer-function propagation ------------------------------
@@ -870,62 +869,6 @@ fn counted_loop_iv_hull(start: i64, step: i64, trip: i64) -> Option<IntRange> {
         return None; // endpoint left the i64 domain ⇒ untrustworthy trip.
     }
     Some(IntRange::new(lo as i64, hi as i64))
-}
-
-fn seed_guarded_loop_iv_ranges(
-    func: &TirFunction,
-    loop_bodies: &HashMap<BlockId, HashSet<BlockId>>,
-    result: &mut ValueRangeResult,
-) {
-    let mut headers: Vec<BlockId> = loop_bodies.keys().copied().collect();
-    headers.sort_unstable_by_key(|b| b.0);
-
-    for header in headers {
-        let Some(body) = loop_bodies.get(&header) else {
-            continue;
-        };
-        for iv_fact in super::counted_loop::recognize_guarded_loop_ivs(func, header, body) {
-            let Some(iv_range) =
-                counted_loop_iv_hull(iv_fact.start, iv_fact.step, iv_fact.trip_count)
-            else {
-                continue;
-            };
-            let iv_canon = result.resolve(iv_fact.induction_var);
-            let existing = result
-                .global_range
-                .get(&iv_canon)
-                .copied()
-                .unwrap_or(IntRange::FULL_I64);
-            result
-                .global_range
-                .insert(iv_canon, existing.meet(iv_range));
-            for &block in body {
-                let existing = result
-                    .block_range
-                    .get(&(block, iv_canon))
-                    .copied()
-                    .unwrap_or(IntRange::FULL_I64);
-                result
-                    .block_range
-                    .insert((block, iv_canon), existing.meet(iv_range));
-            }
-
-            if let Some(next_start) = iv_fact.start.checked_add(iv_fact.step)
-                && let Some(next_range) =
-                    counted_loop_iv_hull(next_start, iv_fact.step, iv_fact.trip_count)
-            {
-                let next_canon = result.resolve(iv_fact.back_value);
-                let existing = result
-                    .global_range
-                    .get(&next_canon)
-                    .copied()
-                    .unwrap_or(IntRange::FULL_I64);
-                result
-                    .global_range
-                    .insert(next_canon, existing.meet(next_range));
-            }
-        }
-    }
 }
 
 /// Seed IV ranges from the canonical counted-loop recognizer for any header that

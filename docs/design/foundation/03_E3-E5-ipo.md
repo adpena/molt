@@ -345,7 +345,7 @@ The existing `pub fn compute_return_alias_summaries` at passes.rs:156 operates o
 
 **E5 phase**:
 - `tti.specialization_budget = 0` on all constructors until the perf gate passes. The specializer is a no-op gated behind `is_specialization_enabled()`. No dual path until the gate opens — no legacy code to delete.
-- When the perf gate passes on native/release-fast and the specializer is activated: the representation_plan's `repr_by_name` map (the string-keyed legacy carrier of Repr facts) can be retired as the sole source of truth. The `ValueId`-keyed `repr_by_value` already is the single source of truth for intra-function decisions; specialization makes it the inter-function truth as well.
+- When the perf gate passes on native/release-fast and the specializer is activated: the representation plan's remaining name-keyed projection surfaces can be retired as sources consumed by native lowering. The `ValueId`-keyed `repr_by_value` already owns int carrier proof for intra-function decisions; specialization makes that value-keyed representation the inter-function truth as well.
 
 **Deferred S4 `compute_return_alias_summaries` migration**:
 - The legacy `passes::compute_return_alias_summaries` (passes.rs:156) operating on `&[FunctionIR]` is replaced by the new TIR-native version in ip_summary.rs. The legacy version is deleted when the TIR version produces byte-identical codegen on all three backends (native, WASM, LLVM).
