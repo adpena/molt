@@ -4445,13 +4445,18 @@ impl SimpleBackend {
                 }
                 for idx in 0..arity {
                     let arg_offset = (idx * std::mem::size_of::<u64>()) as i32;
-                    let arg_val =
-                        builder
-                            .ins()
-                            .load(types::I64, MemFlagsData::trusted(), args_ptr, arg_offset);
-                    builder
-                        .ins()
-                        .store(MemFlagsData::trusted(), arg_val, obj_ptr, offset + arg_offset);
+                    let arg_val = builder.ins().load(
+                        types::I64,
+                        MemFlagsData::trusted(),
+                        args_ptr,
+                        arg_offset,
+                    );
+                    builder.ins().store(
+                        MemFlagsData::trusted(),
+                        arg_val,
+                        obj_ptr,
+                        offset + arg_offset,
+                    );
                     builder.ins().call(local_inc_ref_obj, &[arg_val]);
                 }
                 builder.ins().return_(&[obj]);
@@ -4601,13 +4606,18 @@ impl SimpleBackend {
                 }
                 for idx in 0..arity {
                     let arg_offset = (idx * std::mem::size_of::<u64>()) as i32;
-                    let arg_val =
-                        builder
-                            .ins()
-                            .load(types::I64, MemFlagsData::trusted(), args_ptr, arg_offset);
-                    builder
-                        .ins()
-                        .store(MemFlagsData::trusted(), arg_val, obj_ptr, offset + arg_offset);
+                    let arg_val = builder.ins().load(
+                        types::I64,
+                        MemFlagsData::trusted(),
+                        args_ptr,
+                        arg_offset,
+                    );
+                    builder.ins().store(
+                        MemFlagsData::trusted(),
+                        arg_val,
+                        obj_ptr,
+                        offset + arg_offset,
+                    );
                     builder.ins().call(local_inc_ref_obj, &[arg_val]);
                 }
 

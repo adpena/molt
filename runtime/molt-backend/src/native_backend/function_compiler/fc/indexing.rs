@@ -162,10 +162,12 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                                 let masked = builder.ins().band_imm(*obj, POINTER_MASK as i64);
                                 let shifted = builder.ins().ishl_imm(masked, 16);
                                 let obj_ptr = builder.ins().sshr_imm(shifted, 16);
-                                let storage_ptr =
-                                    builder
-                                        .ins()
-                                        .load(types::I64, MemFlagsData::trusted(), obj_ptr, 0);
+                                let storage_ptr = builder.ins().load(
+                                    types::I64,
+                                    MemFlagsData::trusted(),
+                                    obj_ptr,
+                                    0,
+                                );
                                 let dp = builder.ins().load(
                                     types::I64,
                                     MemFlagsData::trusted(),
@@ -194,10 +196,12 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                                 let masked = builder.ins().band_imm(*obj, POINTER_MASK as i64);
                                 let shifted = builder.ins().ishl_imm(masked, 16);
                                 let obj_ptr = builder.ins().sshr_imm(shifted, 16);
-                                let storage_ptr =
-                                    builder
-                                        .ins()
-                                        .load(types::I64, MemFlagsData::trusted(), obj_ptr, 0);
+                                let storage_ptr = builder.ins().load(
+                                    types::I64,
+                                    MemFlagsData::trusted(),
+                                    obj_ptr,
+                                    0,
+                                );
                                 let len = builder.ins().load(
                                     types::I64,
                                     MemFlagsData::trusted(),
@@ -217,10 +221,12 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                             // with no bounds check, no branch, no slow path.
                             let byte_offset = builder.ins().ishl_imm(raw_idx, 3);
                             let elem_addr = builder.ins().iadd(data_ptr, byte_offset);
-                            let raw_result =
-                                builder
-                                    .ins()
-                                    .load(types::I64, MemFlagsData::trusted(), elem_addr, 0);
+                            let raw_result = builder.ins().load(
+                                types::I64,
+                                MemFlagsData::trusted(),
+                                elem_addr,
+                                0,
+                            );
                             let boxed_res = box_int_value(&mut *builder, raw_result, nbc);
                             if let Some(out__) = op.out.as_ref() {
                                 def_var_named(&mut *builder, vars, out__, boxed_res);
@@ -247,10 +253,12 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                             seal_block_once(&mut *builder, sealed_blocks, fast_block);
                             let byte_offset = builder.ins().imul_imm(raw_idx, 8);
                             let elem_addr = builder.ins().iadd(data_ptr, byte_offset);
-                            let raw_result =
-                                builder
-                                    .ins()
-                                    .load(types::I64, MemFlagsData::trusted(), elem_addr, 0);
+                            let raw_result = builder.ins().load(
+                                types::I64,
+                                MemFlagsData::trusted(),
+                                elem_addr,
+                                0,
+                            );
                             let boxed_res = box_int_value(&mut *builder, raw_result, nbc);
                             jump_block(&mut *builder, merge_block, &[boxed_res, raw_result]);
 
@@ -349,10 +357,12 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                                 let shifted = builder.ins().ishl_imm(masked, 16);
                                 let obj_ptr = builder.ins().sshr_imm(shifted, 16);
                                 // obj_ptr[0] = storage pointer (Vec<u64> or ListBoolStorage)
-                                let storage_ptr =
-                                    builder
-                                        .ins()
-                                        .load(types::I64, MemFlagsData::trusted(), obj_ptr, 0);
+                                let storage_ptr = builder.ins().load(
+                                    types::I64,
+                                    MemFlagsData::trusted(),
+                                    obj_ptr,
+                                    0,
+                                );
                                 if getitem_out_is_bool {
                                     // Proven bool list -- skip type_id check, use
                                     // ListBoolStorage layout (repr(C): data@0, len@8).
@@ -461,10 +471,12 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                                 let masked = builder.ins().band_imm(*obj, POINTER_MASK as i64);
                                 let shifted = builder.ins().ishl_imm(masked, 16);
                                 let obj_ptr = builder.ins().sshr_imm(shifted, 16);
-                                let storage_ptr =
-                                    builder
-                                        .ins()
-                                        .load(types::I64, MemFlagsData::trusted(), obj_ptr, 0);
+                                let storage_ptr = builder.ins().load(
+                                    types::I64,
+                                    MemFlagsData::trusted(),
+                                    obj_ptr,
+                                    0,
+                                );
                                 // Use is_bool_cache if available, otherwise re-probe.
                                 let is_bool = if let Some(&ibv) = list_is_bool_cache.get(&args[0]) {
                                     builder.use_var(ibv)
@@ -541,10 +553,12 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                             // u64-load, no bounds check.
                             let byte_offset = builder.ins().ishl_imm(raw_idx, 3);
                             let elem_addr = builder.ins().iadd(data_ptr, byte_offset);
-                            let elem =
-                                builder
-                                    .ins()
-                                    .load(types::I64, MemFlagsData::trusted(), elem_addr, 0);
+                            let elem = builder.ins().load(
+                                types::I64,
+                                MemFlagsData::trusted(),
+                                elem_addr,
+                                0,
+                            );
                             emit_inc_ref_obj(&mut *builder, elem, local_inc_ref_obj, nbc);
                             if let Some(out__) = op.out.as_ref() {
                                 def_var_named(&mut *builder, vars, out__, elem);
@@ -1199,9 +1213,12 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                                 let low_bit = builder.ins().band_imm(*val, 1);
                                 builder.ins().ireduce(types::I8, low_bit)
                             };
-                            builder
-                                .ins()
-                                .store(MemFlagsData::trusted(), byte_val, bool_elem_addr, 0);
+                            builder.ins().store(
+                                MemFlagsData::trusted(),
+                                byte_val,
+                                bool_elem_addr,
+                                0,
+                            );
                             jump_block(&mut *builder, merge_block, &[]);
 
                             // Regular list path: store the inline bool, then release old.
