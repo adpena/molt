@@ -329,6 +329,15 @@ runtime-child identity for this repo's Molt build/test/bench/runtime work.
 Codex, Claude, app-server, renderer, node-repl, MCP/plugin helpers, shell hosts,
 Git pollers, and ancestor/control-plane processes are never Molt-owned just
 because they reference the repo path or spawned a Molt child.
+Codex app and Codex CLI are host control-plane processes on Windows, macOS, and
+Linux. This includes `codex`, `codex.exe`, Electron/renderer helpers, app-server
+helpers, shell hosts whose ancestry is Codex/Claude, and Codex Git polling
+children. Never use `pkill`, `killall`, raw `kill -TERM/-KILL`, process-group
+kills, `taskkill`, `Stop-Process`, name-based sweeps, stale PID files,
+repo-path matches, or parent-chain cleanup against them while doing Molt work.
+If Codex itself is wedged, preserve logs/state evidence and either continue
+through a healthy lane or ask for explicit Codex app/CLI repair; do not make
+Codex repair collateral damage of Molt cleanup.
 
 ## Build & Test
 
