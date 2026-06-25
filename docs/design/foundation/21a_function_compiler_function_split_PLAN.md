@@ -22,7 +22,7 @@ belt is now lifted into the sibling private authority module
 Three load-bearing facts:
 
 1. **`function_compiler` is already a directory module, partially extracted.**
-   `runtime/molt-backend/src/native_backend/function_compiler.rs` (now **8,237 lines**,
+   `runtime/molt-backend/src/native_backend/function_compiler.rs` (now **7,727 lines**,
    down from doc 21's 39,043) declares `mod scalar_carriers; use scalar_carriers::*; mod fc;`
    (lines 7-10) → a sibling helper-authority module plus `function_compiler/fc/`, a
    subtree of **42 already-extracted handler files** (`arith.rs`, `compare.rs`,
@@ -55,25 +55,25 @@ Three load-bearing facts:
    `continue`. Arm bodies move **byte-identically**; only field-access paths change.
 
 **Move #1 = continue the function-extraction of `compile_func_inner`** (now ~2,670
-lines, lines 2552-5225, with the planned large opcode-family clusters extracted).
+lines, lines 2042-4715, with the planned large opcode-family clusters extracted).
 The current continuation moves shared helper authority out of the shell only
 when that authority is consumed across extracted families. Strictly move-only /
 zero-logic-change / no-API-widening.
 
 ## 1. Current structure map
 
-### 1.1 `function_compiler.rs` (8,237 lines)
+### 1.1 `function_compiler.rs` (7,727 lines)
 | Region | Lines | Contents |
 |---|---|---|
-| `mod scalar_carriers; use scalar_carriers::*; mod fc;` + orchestration helpers | 1-2438 | Loop/body scans, container-store helpers, imports, cleanup-root helpers, data-segment/module helpers, and other shell-owned orchestration. Scalar carrier, boxing, merge-rebind, live-through, guarded bitwise, and float transport helpers moved to `scalar_carriers.rs`. |
-| `impl SimpleBackend` open | 2439 | |
-| `compile_func()` | 2440-2551 | Thin wrapper -> `compile_func_inner`. |
-| **`compile_func_inner()`** | **2552-5225** | THE MONOLITH (~2,670 lines). Preanalysis destructure, pre-passes, literal-family prologue call, dispatch loop `for op_idx in 0..ops.len()` at **2888**, central `match op.kind.as_str()` at **3071**, and per-op epilogue/cleanup after the family dispatch. |
-| `drain_dead_block_temps_for_suspend()` | 5226-5269 | trailing helper |
-| `#[cfg(test)] mod tests` | 5271-8237 | 63 tests |
+| `mod scalar_carriers; use scalar_carriers::*; mod fc;` + orchestration helpers | 1-1928 | Loop/body scans, container-store helpers, imports, cleanup-root helpers, data-segment/module helpers, and other shell-owned orchestration. Scalar carrier, boxing, merge-rebind, live-through, guarded bitwise, and float transport helpers moved to `scalar_carriers.rs`. |
+| `impl SimpleBackend` open | 1929 | |
+| `compile_func()` | 1930-2041 | Thin wrapper -> `compile_func_inner`. |
+| **`compile_func_inner()`** | **2042-4715** | THE MONOLITH (~2,670 lines). Preanalysis destructure, pre-passes, literal-family prologue call, dispatch loop `for op_idx in 0..ops.len()` at **2888**, central `match op.kind.as_str()` at **3071**, and per-op epilogue/cleanup after the family dispatch. |
+| `drain_dead_block_temps_for_suspend()` | 4716-4759 | trailing helper |
+| `#[cfg(test)] mod tests` | 4761-7727 | 63 tests |
 
 ### 1.2 Dispatch + already-extracted families
-Dispatch fn `SimpleBackend::compile_func_inner` (2552); match at 3071;
+Dispatch fn `SimpleBackend::compile_func_inner` (2042); match at 3071;
 epilogue follows the dispatch for any arm that fell through (did not `continue`).
 Already delegated families: vec_reductions, scalar_builtins, callargs, list_ops,
 dict_ops, set_ops, generators, indexing, sequence_ops, text_predicates, text_transform, runtime_ops, statistics,
@@ -107,7 +107,7 @@ No planned M1 opcode-family cluster remains inline. Constant/literal materializa
 
 ### 1.4 Shared helper + shared-state sets
 - **Private shared helper module** (`scalar_carriers.rs`, reached via `super::*`): `name_is_int_like`, `int_raw_value`, `def_inline_int_value`, `bool_raw_value`, `ensure_boxed_*`, `box_raw_*`, `var_get_boxed_overflow_safe_base`, `def_var_from_*`, `emit_protect_borrowed_args_aliased_return`, `merge_rebind_*`, live-through param rebinding, guarded boxed bitwise, `float_value_for*`, dead-scrub value selection, and float compare emission. This is the extracted representation transport authority used by multiple `fc::*` handlers.
-- **Shell-owned free helpers** (1-2438, reached via `super::*`): loop/body scans, container-store helpers, `def_var_named`, `import_func_ref`, cleanup-root helpers, data-segment/module helpers, and other orchestration that remains coupled to `compile_func_inner`. Plus assoc fns `SimpleBackend::import_func_id_split`, `SimpleBackend::intern_data_segment`; shared `fc` helpers own `op_prefers_int_lane` for extracted arithmetic/unary/control-flow handlers.
+- **Shell-owned free helpers** (1-1928, reached via `super::*`): loop/body scans, container-store helpers, `def_var_named`, `import_func_ref`, cleanup-root helpers, data-segment/module helpers, and other orchestration that remains coupled to `compile_func_inner`. Plus assoc fns `SimpleBackend::import_func_id_split`, `SimpleBackend::intern_data_segment`; shared `fc` helpers own `op_prefers_int_lane` for extracted arithmetic/unary/control-flow handlers.
 - **lib.rs `pub(crate)` surface** (via `crate::`): `NanBoxConsts`, `VarValue`, `DeferredDefine`, `block_has_terminator`, `switch_to_block_tracking`, `extend_unique_tracked`, `unbox_int`, `box_int`. **Already pub(crate) — no widening.**
 - **Shared `let mut` locals** (~45 from preanalysis + in-loop caches): `builder`, `import_refs`, `sealed_blocks`, `vars`, `int/float/bool_primary_vars`, `bool_like_vars`, `loop_stack`, `if_stack`, `label_blocks`, element caches, `tracked_obj_vars`, `entry_vars`, `already_decrefed`, `alias_roots`, `last_use`, … → passed as split-borrowed explicit params (existing `handle_list_op` threads 20).
 
@@ -206,7 +206,7 @@ A commit is not done until G1–G5 pass.
 3. **Representation-helper authority:** scalar raw/boxed carriers, merge-rebind storage, live-through params, guarded bitwise, and float transport helpers now live in one private helper module instead of being buried in the shell above `compile_func_inner`.
 
 ## Critical files
-- `runtime/molt-backend/src/native_backend/function_compiler.rs` (shell + `compile_func_inner` 2552-5225)
+- `runtime/molt-backend/src/native_backend/function_compiler.rs` (shell + `compile_func_inner` 2042-4715)
 - `runtime/molt-backend/src/native_backend/function_compiler/scalar_carriers.rs` (shared raw/boxed scalar carrier, merge-rebind, live-through, guarded bitwise, and float transport helpers)
 - `runtime/molt-backend/src/native_backend/function_compiler/fc/mod.rs` (register families; `OpFlow`; shared `var_get_boxed_overflow_safe_fn`)
 - `runtime/molt-backend/src/native_backend/function_compiler/fc/const_literals.rs` (constant/literal materialization, loop-entry constants, heap-literal hoists, and string slot exports for module ops)
