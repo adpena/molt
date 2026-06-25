@@ -878,18 +878,6 @@ def _backend_daemon_health_probe(
     return _backend_daemon_ping_health(socket_path, timeout=timeout)
 
 
-def _backend_daemon_identity_health_matches(
-    identity: _BackendDaemonIdentity,
-    *,
-    timeout: float = 0.25,
-) -> bool:
-    return _daemon_custody._backend_daemon_identity_health_matches(
-        identity,
-        health_probe=_backend_daemon_health_probe,
-        timeout=timeout,
-    )
-
-
 def _backend_daemon_identity_is_verified(
     identity: _BackendDaemonIdentity,
     *,
@@ -972,7 +960,6 @@ def _terminate_backend_daemon_identity(
         identity,
         grace=grace,
         health_probe=_backend_daemon_health_probe,
-        process_command=_backend_daemon_process_command,
         pid_alive=_pid_alive,
     )
 

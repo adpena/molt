@@ -1385,6 +1385,40 @@ def _terminate_pid_if_identity_action(
     )
 
 
+def terminate_verified_pid(
+    pid: int,
+    identity: ProcessIdentity,
+    *,
+    sampler: Callable[[], Mapping[int, ProcessSample]] = sample_processes,
+    grace: float = 0.25,
+) -> tuple[GuardTerminationAction, ...]:
+    """Terminate one PID only through the shared identity/custody gate.
+
+    Callers may capture ``identity`` from a previous trusted snapshot, but every
+    signal is sent only after a fresh sampler pass proves that the PID still has
+    the same identity and is outside host-control-plane/protected groups.
+    """
+
+    actions: list[GuardTerminationAction] = [
+        _terminate_pid_if_identity_action(
+            pid,
+            identity,
+            sampler=sampler,
+            grace=grace,
+        )
+    ]
+    if actions[0].result == "still_live":
+        actions.append(
+            _send_pid_signal_if_identity_action(
+                pid,
+                identity,
+                fallback_kill_signal(),
+                sampler=sampler,
+            )
+        )
+    return tuple(actions)
+
+
 def _repo_scoped_orphan_cleanup_report(
     group: Any,
     *,

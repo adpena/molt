@@ -962,13 +962,9 @@ def _terminate_verified_backend_daemon(
     if record is None:
         return False
 
-    def process_command(pid: int) -> str | None:
-        return process.command if pid == process.pid else None
-
     if not daemon_custody.terminate_backend_daemon_identity(
         record.identity,
         grace=grace,
-        process_command=process_command,
         pid_alive=_pid_alive,
     ):
         return False

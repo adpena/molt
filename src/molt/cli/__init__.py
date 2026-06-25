@@ -263,7 +263,6 @@ from molt.cli.backend_execution import (
     _backend_daemon_health_probe,
     _backend_daemon_identity_for_pid,
     _backend_daemon_identity_from_health,
-    _backend_daemon_identity_health_matches,
     _backend_daemon_identity_is_verified,
     _backend_daemon_identity_matches_context,
     _backend_daemon_identity_path,

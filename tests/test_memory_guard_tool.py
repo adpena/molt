@@ -1760,6 +1760,87 @@ def test_cleanup_repo_scoped_orphans_revalidates_identity_before_signal(
     assert terminated == []
 
 
+def test_terminate_verified_pid_revalidates_identity_before_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = memory_guard.ROOT.as_posix()
+    original = memory_guard.ProcessSample(
+        pid=200,
+        ppid=1,
+        pgid=200,
+        rss_kb=64,
+        command=f"{root}/target/dev-fast/molt-backend --owned",
+        started_at_ns=111,
+    )
+    reused_pid = memory_guard.ProcessSample(
+        pid=200,
+        ppid=1,
+        pgid=200,
+        rss_kb=64,
+        command="/Applications/Claude.app/Contents/MacOS/Claude",
+        started_at_ns=222,
+    )
+    sample_sets = iter([{200: original}, {200: original}, {200: reused_pid}])
+    sent: list[tuple[int, int]] = []
+
+    monkeypatch.setattr(memory_guard.os, "getpid", lambda: 999)
+    monkeypatch.setattr(memory_guard.os, "getpgrp", lambda: 999, raising=False)
+    monkeypatch.setattr(
+        memory_guard,
+        "_pid_exited_or_unobservable",
+        lambda pid, *, grace: False,
+    )
+    monkeypatch.setattr(
+        memory_guard.os,
+        "kill",
+        lambda pid, sig: None if sig == 0 else sent.append((pid, sig)),
+    )
+
+    actions = memory_guard.terminate_verified_pid(
+        200,
+        memory_guard.process_identity(original),
+        sampler=lambda: next(sample_sets),
+        grace=0.125,
+    )
+
+    assert [action.result for action in actions] == [
+        "still_live",
+        "skipped_identity_mismatch",
+    ]
+    assert sent == [(200, memory_guard.signal.SIGTERM)]
+
+
+def test_terminate_verified_pid_preserves_host_control_plane(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sample = memory_guard.ProcessSample(
+        pid=300,
+        ppid=1,
+        pgid=300,
+        rss_kb=64,
+        command="codex exec --dangerously-skip-approvals",
+        started_at_ns=333,
+    )
+    sent: list[tuple[int, int]] = []
+    monkeypatch.setattr(memory_guard.os, "getpid", lambda: 999)
+    monkeypatch.setattr(memory_guard.os, "getpgrp", lambda: 999, raising=False)
+    monkeypatch.setattr(
+        memory_guard.os,
+        "kill",
+        lambda pid, sig: None if sig == 0 else sent.append((pid, sig)),
+    )
+
+    actions = memory_guard.terminate_verified_pid(
+        300,
+        memory_guard.process_identity(sample),
+        sampler=lambda: {300: sample},
+        grace=0.125,
+    )
+
+    assert [action.result for action in actions] == ["skipped_host_control_plane"]
+    assert sent == []
+
+
 def test_cleanup_tracked_orphans_sampler_failure_uses_remembered_watched(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

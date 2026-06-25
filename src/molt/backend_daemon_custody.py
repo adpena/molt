@@ -6,7 +6,6 @@ import json
 import os
 from pathlib import Path
 import shlex
-import signal
 import subprocess
 import time
 from collections.abc import Callable, Mapping, Sequence
@@ -356,17 +355,19 @@ def _backend_daemon_identity_process_matches(
     )
 
 
-def _backend_daemon_identity_health_matches(
+def _backend_daemon_health_contradicts_identity(
     identity: BackendDaemonIdentity,
     *,
-    health_probe: HealthProbe,
+    health_probe: HealthProbe | None,
     timeout: float = 0.25,
 ) -> bool:
+    if health_probe is None:
+        return False
     ready, health = health_probe(identity.socket_path, timeout)
     if not ready or health is None:
         return False
     raw_pid = health.get("pid")
-    return isinstance(raw_pid, int) and raw_pid == identity.pid
+    return isinstance(raw_pid, int) and raw_pid != identity.pid
 
 
 def backend_daemon_identity_is_verified(
@@ -380,15 +381,14 @@ def backend_daemon_identity_is_verified(
     alive_probe = pid_alive or _pid_alive
     if identity.pid <= 0 or not alive_probe(identity.pid):
         return False
-    if _backend_daemon_identity_process_matches(
+    if not _backend_daemon_identity_process_matches(
         identity,
         process_command=process_command,
     ):
-        return True
-    return (
+        return False
+    return not (
         allow_health_probe
-        and health_probe is not None
-        and _backend_daemon_identity_health_matches(
+        and _backend_daemon_health_contradicts_identity(
             identity,
             health_probe=health_probe,
         )
@@ -466,48 +466,86 @@ def backend_daemon_identity_from_health(
     )
 
 
+def _load_memory_guard_module() -> Any | None:
+    try:
+        from tools import memory_guard
+    except ModuleNotFoundError:
+        return None
+    return memory_guard
+
+
+def _backend_daemon_snapshot_sample(
+    identity: BackendDaemonIdentity,
+    *,
+    memory_guard: Any,
+) -> Any | None:
+    samples = memory_guard.sample_processes()
+    sample = samples.get(identity.pid)
+    if sample is None:
+        return None
+    if memory_guard.is_host_control_plane_process(sample):
+        return None
+    if not backend_daemon_command_matches_identity(
+        sample.command,
+        backend_bin=identity.backend_bin,
+        socket_path=identity.socket_path,
+    ):
+        return None
+    return sample
+
+
+def _termination_actions_succeeded(actions: Sequence[Any]) -> bool:
+    if not actions:
+        return False
+    first_result = getattr(actions[0], "result", "")
+    if first_result in {"completed_or_missing", "skipped_missing"}:
+        return True
+    if first_result != "still_live":
+        return False
+    if len(actions) == 1:
+        return False
+    final_result = getattr(actions[-1], "result", "")
+    return final_result in {
+        "sent",
+        "missing",
+        "skipped_identity_mismatch",
+        "skipped_host_control_lineage",
+        "skipped_host_control_plane",
+        "skipped_protected_group_member",
+    }
+
+
 def terminate_backend_daemon_identity(
     identity: BackendDaemonIdentity,
     *,
     grace: float = 1.0,
     health_probe: HealthProbe | None = None,
-    process_command: ProcessCommandProbe | None = None,
     pid_alive: PidAliveProbe | None = None,
 ) -> bool:
     alive_probe = pid_alive or _pid_alive
-    if not backend_daemon_identity_is_verified(
+    if identity.pid <= 0 or not alive_probe(identity.pid):
+        return False
+    if _backend_daemon_health_contradicts_identity(
         identity,
-        allow_health_probe=True,
         health_probe=health_probe,
-        process_command=process_command,
-        pid_alive=alive_probe,
     ):
         return False
-    try:
-        os.kill(identity.pid, signal.SIGTERM)
-    except ProcessLookupError:
-        return True
-    except OSError:
+    memory_guard = _load_memory_guard_module()
+    if memory_guard is None:
         return False
-    deadline = time.monotonic() + max(0.05, grace)
-    while time.monotonic() < deadline:
-        if not alive_probe(identity.pid):
-            return True
-        time.sleep(0.05)
-    if not backend_daemon_identity_is_verified(
+    sample = _backend_daemon_snapshot_sample(
         identity,
-        allow_health_probe=True,
-        health_probe=health_probe,
-        process_command=process_command,
-        pid_alive=alive_probe,
-    ):
-        return True
-    kill_signal = getattr(signal, "SIGKILL", signal.SIGTERM)
-    try:
-        os.kill(identity.pid, kill_signal)
-    except OSError:
+        memory_guard=memory_guard,
+    )
+    if sample is None:
         return False
-    return True
+    actions = memory_guard.terminate_verified_pid(
+        identity.pid,
+        memory_guard.process_identity(sample),
+        sampler=memory_guard.sample_processes,
+        grace=grace,
+    )
+    return _termination_actions_succeeded(actions)
 
 
 def terminate_backend_daemons_for_session(
@@ -516,7 +554,6 @@ def terminate_backend_daemons_for_session(
     project_root: Path,
     grace: float = 1.0,
     health_probe: HealthProbe | None = None,
-    process_command: ProcessCommandProbe | None = None,
     pid_alive: PidAliveProbe | None = None,
     remove_identity_files: bool = True,
 ) -> tuple[BackendDaemonIdentityRecord, ...]:
@@ -529,7 +566,6 @@ def terminate_backend_daemons_for_session(
             record.identity,
             grace=grace,
             health_probe=health_probe,
-            process_command=process_command,
             pid_alive=pid_alive,
         ):
             continue
