@@ -7,8 +7,8 @@
 //!    the validator catches all invalid states without panicking.
 
 #![no_main]
-use libfuzzer_sys::fuzz_target;
 use arbitrary::{Arbitrary, Unstructured};
+use libfuzzer_sys::fuzz_target;
 use molt_backend::{FunctionIR, OpIR, SimpleIR, validate_simple_ir};
 
 #[derive(Debug)]
@@ -102,11 +102,7 @@ impl<'a> Arbitrary<'a> for ValidationInput {
                         },
                         args: if u.arbitrary()? {
                             let n = u.int_in_range(0..=5)?;
-                            Some(
-                                (0..n)
-                                    .map(|a| format!("a{a}"))
-                                    .collect(),
-                            )
+                            Some((0..n).map(|a| format!("a{a}")).collect())
                         } else {
                             None
                         },
@@ -126,11 +122,6 @@ impl<'a> Arbitrary<'a> for ValidationInput {
                         } else {
                             None
                         },
-                        raw_int: if u.arbitrary()? {
-                            Some(u.arbitrary()?)
-                        } else {
-                            None
-                        },
                         stack_eligible: if u.arbitrary()? {
                             Some(u.arbitrary()?)
                         } else {
@@ -139,6 +130,7 @@ impl<'a> Arbitrary<'a> for ValidationInput {
                         task_kind: None,
                         container_type: None,
                         type_hint: None,
+                        ..OpIR::default()
                     };
                     ops.push(op);
                 }
@@ -152,6 +144,7 @@ impl<'a> Arbitrary<'a> for ValidationInput {
                     } else {
                         None
                     },
+                    ..FunctionIR::default()
                 });
             }
 
