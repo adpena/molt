@@ -23,7 +23,10 @@ from molt.frontend.sema.constenv import collect_module_const_dicts
 from molt.frontend.sema.funcmeta import (
     FUNCTION_KIND_VALUES,
     STATEFUL_FUNCTION_KINDS,
+    STATEFUL_FUNCTION_TAGS,
     FunctionKind,
+    StatefulFunctionFramePlan,
+    StatefulFunctionTypeHint,
     async_generator_contains_return_value,
     async_generator_contains_yield_from,
     collect_module_class_names,
@@ -32,7 +35,12 @@ from molt.frontend.sema.funcmeta import (
     expression_contains_yield,
     function_contains_yield,
     normalize_function_kind,
+    parse_stateful_function_type_hint,
     signature_contains_yield,
+    stateful_function_frame_plan,
+    stateful_function_result_type_hint,
+    stateful_function_tag,
+    stateful_function_task_kind,
 )
 from molt.frontend.sema.result import (
     ClassGraph,
@@ -46,7 +54,10 @@ __all__ = [
     "FunctionMeta",
     "FunctionKind",
     "STATEFUL_FUNCTION_KINDS",
+    "STATEFUL_FUNCTION_TAGS",
     "SemaResult",
+    "StatefulFunctionFramePlan",
+    "StatefulFunctionTypeHint",
     "analyze_module",
     "async_generator_contains_return_value",
     "async_generator_contains_yield_from",
@@ -58,7 +69,12 @@ __all__ = [
     "expression_contains_yield",
     "function_contains_yield",
     "normalize_function_kind",
+    "parse_stateful_function_type_hint",
     "signature_contains_yield",
+    "stateful_function_frame_plan",
+    "stateful_function_result_type_hint",
+    "stateful_function_tag",
+    "stateful_function_task_kind",
 ]
 
 

@@ -55,6 +55,7 @@ from molt.frontend._types import (
 )
 
 if TYPE_CHECKING:
+    from molt.frontend.sema import FunctionKind
     from molt.frontend.sema import SemaResult
     from molt.type_facts import TypeFacts
 
@@ -804,6 +805,8 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _emit_state_yield_resume_entry(self, state_id: int) -> None: ...
 
     def _emit_state_yield_resume_try_starts(self) -> None: ...
+
+    def _emit_stateful_function_value_call(self, target_info: MoltValue | None, func_id: str, node: ast.Call, *, needs_bind: bool) -> MoltValue | None: ...
 
     def _emit_static_if_live_branch(self, branch: list[ast.stmt]) -> None: ...
 

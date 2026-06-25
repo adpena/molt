@@ -35,10 +35,13 @@ from molt.frontend._types import (
     _next_ic_index,
 )
 from molt.frontend.sema import (
+    FunctionKind,
     async_generator_contains_return_value,
     async_generator_contains_yield_from,
     function_contains_yield,
     signature_contains_yield,
+    stateful_function_frame_plan,
+    stateful_function_result_type_hint,
 )
 
 if TYPE_CHECKING:
@@ -1223,13 +1226,20 @@ class ClassDefVisitorMixin(_MixinBase):
                 self._compute_method_closure(item)
             )
             has_return = self._function_contains_return(item)
-            func_kind = "GenClosureFunc" if has_closure else "GenFunc"
-            payload_slots = len(params) + (1 if has_closure else 0)
+            frame_plan = stateful_function_frame_plan(
+                kind=FunctionKind.GENERATOR,
+                poll_symbol=poll_symbol,
+                param_count=len(params),
+                has_closure=has_closure,
+                gen_control_size=GEN_CONTROL_SIZE,
+            )
             closure_size = self._task_closure_size(
-                payload_slots, include_gen_control=True
+                frame_plan.payload_slots,
+                include_gen_control=frame_plan.include_gen_control,
             )
             func_val = MoltValue(
-                self.next_var(), type_hint=f"{func_kind}:{poll_symbol}:{closure_size}"
+                self.next_var(),
+                type_hint=frame_plan.function_type_hint(closure_size),
             )
             if has_closure and closure_val is not None:
                 self.emit(
@@ -1307,13 +1317,11 @@ class ClassDefVisitorMixin(_MixinBase):
             }
             self.async_internal_locals = set()
             self.in_generator = True
+            self.async_locals_base = frame_plan.async_locals_base
             if has_closure:
-                self.async_closure_offset = GEN_CONTROL_SIZE
-                self.async_locals_base = GEN_CONTROL_SIZE + 8
+                self.async_closure_offset = frame_plan.async_closure_offset
                 self.free_vars = {name: idx for idx, name in enumerate(free_vars)}
                 self.free_var_hints = free_var_hints
-            else:
-                self.async_locals_base = GEN_CONTROL_SIZE
             for i, arg in enumerate(arg_nodes):
                 self.async_locals[arg.arg] = self.async_locals_base + i * 8
                 hint = None
@@ -1388,13 +1396,14 @@ class ClassDefVisitorMixin(_MixinBase):
             self._spill_async_temporaries()
             gen_public_locals = self._async_locals_public_entries()
             closure_size = self._task_closure_size(
-                payload_slots, include_gen_control=True
+                frame_plan.payload_slots,
+                include_gen_control=frame_plan.include_gen_control,
             )
             self.resume_function(prev_func)
             self._restore_function_state(prev_state)
             self.current_class = prev_class
             self.current_method_first_param = prev_first_param
-            func_val.type_hint = f"{func_kind}:{poll_symbol}:{closure_size}"
+            func_val.type_hint = frame_plan.function_type_hint(closure_size)
             names_vals: list[MoltValue] = []
             offsets_vals: list[MoltValue] = []
             for local_name, offset in gen_public_locals:
@@ -1843,6 +1852,13 @@ class ClassDefVisitorMixin(_MixinBase):
                     self._compute_method_closure(item)
                 )
                 has_return = self._function_contains_return(item)
+                frame_plan = stateful_function_frame_plan(
+                    kind=FunctionKind.ASYNC_GENERATOR,
+                    poll_symbol=poll_symbol,
+                    param_count=len(params),
+                    has_closure=has_closure,
+                    gen_control_size=GEN_CONTROL_SIZE,
+                )
 
                 prev_func = self.current_func_name
                 prev_state = self._capture_function_state()
@@ -1868,13 +1884,11 @@ class ClassDefVisitorMixin(_MixinBase):
                 }
                 self.async_internal_locals = set()
                 self.in_generator = True
+                self.async_locals_base = frame_plan.async_locals_base
                 if has_closure:
-                    self.async_closure_offset = GEN_CONTROL_SIZE
-                    self.async_locals_base = GEN_CONTROL_SIZE + 8
+                    self.async_closure_offset = frame_plan.async_closure_offset
                     self.free_vars = {name: idx for idx, name in enumerate(free_vars)}
                     self.free_var_hints = free_var_hints
-                else:
-                    self.async_locals_base = GEN_CONTROL_SIZE
                 for i, arg in enumerate(arg_nodes):
                     self.async_locals[arg.arg] = self.async_locals_base + i * 8
                     hint = None
@@ -1954,9 +1968,9 @@ class ClassDefVisitorMixin(_MixinBase):
                     self.emit(MoltOp(kind="ret", args=[pair], result=MoltValue("none")))
                 self._spill_async_temporaries()
                 asyncgen_public_locals = self._async_locals_public_entries()
-                payload_slots = len(params) + (1 if has_closure else 0)
                 closure_size = self._task_closure_size(
-                    payload_slots, include_gen_control=True
+                    frame_plan.payload_slots,
+                    include_gen_control=frame_plan.include_gen_control,
                 )
                 self.resume_function(prev_func)
                 self._restore_function_state(prev_state)
@@ -2102,16 +2116,19 @@ class ClassDefVisitorMixin(_MixinBase):
                 args = [self.locals[arg.arg] for arg in arg_nodes]
                 if has_closure:
                     args = [self.locals[_MOLT_CLOSURE_PARAM]] + args
-                gen_val = MoltValue(self.next_var(), type_hint="generator")
+                gen_val = MoltValue(
+                    self.next_var(),
+                    type_hint=stateful_function_result_type_hint(FunctionKind.GENERATOR),
+                )
                 self.emit(
                     MoltOp(
                         kind="ALLOC_TASK",
                         args=[poll_symbol, closure_size] + args,
                         result=gen_val,
-                        metadata={"task_kind": "generator"},
+                        metadata={"task_kind": frame_plan.task_kind},
                     )
                 )
-                res = MoltValue(self.next_var(), type_hint="async_generator")
+                res = MoltValue(self.next_var(), type_hint=frame_plan.result_type_hint)
                 self.emit(MoltOp(kind="ASYNCGEN_NEW", args=[gen_val], result=res))
                 self.emit(MoltOp(kind="ret", args=[res], result=MoltValue("none")))
                 self.resume_function(prev_func)
@@ -2165,6 +2182,13 @@ class ClassDefVisitorMixin(_MixinBase):
                 self._compute_method_closure(item)
             )
             has_return = self._function_contains_return(item)
+            frame_plan = stateful_function_frame_plan(
+                kind=FunctionKind.ASYNC,
+                poll_symbol=poll_symbol,
+                param_count=len(params),
+                has_closure=has_closure,
+                gen_control_size=GEN_CONTROL_SIZE,
+            )
 
             prev_func = self.current_func_name
             prev_state = self._capture_function_state()
@@ -2185,9 +2209,9 @@ class ClassDefVisitorMixin(_MixinBase):
             self.del_targets = self._collect_deleted_names(item.body)
             self.scope_assigned = assigned - self.nonlocal_decls - self.global_decls
             self.unbound_check_names = set(self.scope_assigned)
+            self.async_locals_base = frame_plan.async_locals_base
             if has_closure:
-                self.async_closure_offset = 0
-                self.async_locals_base = 8
+                self.async_closure_offset = frame_plan.async_closure_offset
                 self.free_vars = {name: idx for idx, name in enumerate(free_vars)}
                 self.free_var_hints = free_var_hints
             for i, arg in enumerate(arg_nodes):
@@ -2232,9 +2256,9 @@ class ClassDefVisitorMixin(_MixinBase):
                 self.emit(MoltOp(kind="CONST_NONE", args=[], result=res))
                 self.emit(MoltOp(kind="ret", args=[res], result=MoltValue("none")))
             self._spill_async_temporaries()
-            payload_slots = len(params) + (1 if has_closure else 0)
             closure_size = self._task_closure_size(
-                payload_slots, include_gen_control=False
+                frame_plan.payload_slots,
+                include_gen_control=frame_plan.include_gen_control,
             )
             self.resume_function(prev_func)
             self._restore_function_state(prev_state)
@@ -2355,13 +2379,13 @@ class ClassDefVisitorMixin(_MixinBase):
             args = [self.locals[arg.arg] for arg in arg_nodes]
             if has_closure:
                 args = [self.locals[_MOLT_CLOSURE_PARAM]] + args
-            res = MoltValue(self.next_var(), type_hint="Future")
+            res = MoltValue(self.next_var(), type_hint=frame_plan.result_type_hint)
             self.emit(
                 MoltOp(
                     kind="ALLOC_TASK",
                     args=[poll_symbol, closure_size] + args,
                     result=res,
-                    metadata={"task_kind": "coroutine"},
+                    metadata={"task_kind": frame_plan.task_kind},
                 )
             )
             self.emit(MoltOp(kind="ret", args=[res], result=MoltValue("none")))
