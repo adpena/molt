@@ -25,6 +25,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from molt.frontend.sema.funcmeta import FunctionKind
+
 
 @dataclass(frozen=True)
 class ClassGraph:
@@ -48,7 +50,7 @@ class FunctionMeta:
     """Per-top-level-function metadata computed pre-walk.
 
     * ``declared_funcs`` maps each top-level ``def``/``async def`` name to its
-      kind (``"sync"`` / ``"async"`` / ``"gen"`` / ``"asyncgen"``).
+      canonical :class:`FunctionKind`.
     * ``declared_classes`` is the set of top-level ``class`` names.
     * ``defaults`` maps each top-level function name to its default/param-shape
       spec (param count, default specs, posonly/kwonly counts, function kind,
@@ -58,7 +60,7 @@ class FunctionMeta:
       here.
     """
 
-    declared_funcs: dict[str, str]
+    declared_funcs: dict[str, FunctionKind]
     declared_classes: set[str]
     defaults: dict[str, dict[str, Any]]
 

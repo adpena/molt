@@ -16,7 +16,6 @@ from collections.abc import Callable
 from typing import (
     TYPE_CHECKING,
     Any,
-    cast,
 )
 
 from molt.frontend._types import (
@@ -37,6 +36,7 @@ from molt.frontend._types import (
     _MOLT_LOCALS_CACHE,
     _intrinsic_arity_exact,
 )
+from molt.frontend.sema import FunctionKind, normalize_function_kind
 from molt.frontend.visitors.call_reductions import CallReductionMixin
 
 if TYPE_CHECKING:
@@ -910,14 +910,16 @@ class CallVisitorMixin(CallReductionMixin, _MixinBase):
         return args, func_obj
 
     @staticmethod
-    def _known_module_func_kind(info: dict[str, Any] | None) -> str | None:
+    def _known_module_func_kind(info: dict[str, Any] | None) -> FunctionKind | None:
         if info is None:
             return None
-        kind = info.get("kind")
-        if kind == "async_gen":
-            return "asyncgen"
-        if kind in {"async", "asyncgen", "gen"}:
-            return cast(str, kind)
+        kind = normalize_function_kind(info.get("kind"))
+        if kind in {
+            FunctionKind.ASYNC,
+            FunctionKind.ASYNC_GENERATOR,
+            FunctionKind.GENERATOR,
+        }:
+            return kind
         return None
 
     def _emit_call_bind_for_known_module_func(
@@ -946,14 +948,18 @@ class CallVisitorMixin(CallReductionMixin, _MixinBase):
         kind = self._known_module_func_kind(info)
         if kind is None:
             raw_kind = self._lookup_func_kind(target_module, func_id)
-            if raw_kind in {"async", "asyncgen", "gen"}:
+            if raw_kind in {
+                FunctionKind.ASYNC,
+                FunctionKind.ASYNC_GENERATOR,
+                FunctionKind.GENERATOR,
+            }:
                 kind = raw_kind
         if kind is None:
             return None
         result_hint = {
-            "async": "Future",
-            "asyncgen": "async_generator",
-            "gen": "generator",
+            FunctionKind.ASYNC: "Future",
+            FunctionKind.ASYNC_GENERATOR: "async_generator",
+            FunctionKind.GENERATOR: "generator",
         }[kind]
         if info is None:
             if needs_bind or node.keywords:
@@ -985,12 +991,12 @@ class CallVisitorMixin(CallReductionMixin, _MixinBase):
                         result_hint=result_hint,
                     )
         poll_func = f"{self._sanitize_module_name(target_module)}__{func_id}_poll"
-        include_gen_control = kind != "async"
+        include_gen_control = kind != FunctionKind.ASYNC
         closure_size = self._task_closure_size(
             params,
             include_gen_control=include_gen_control,
         )
-        if kind == "async":
+        if kind == FunctionKind.ASYNC:
             res = MoltValue(self.next_var(), type_hint="Future")
             self.emit(
                 MoltOp(
@@ -1010,7 +1016,7 @@ class CallVisitorMixin(CallReductionMixin, _MixinBase):
                 metadata={"task_kind": "generator"},
             )
         )
-        if kind == "gen":
+        if kind == FunctionKind.GENERATOR:
             return gen_val
         res = MoltValue(self.next_var(), type_hint="async_generator")
         self.emit(MoltOp(kind="ASYNCGEN_NEW", args=[gen_val], result=res))
@@ -1035,14 +1041,15 @@ class CallVisitorMixin(CallReductionMixin, _MixinBase):
         has_known_direct_target = known_direct_target is not None
         known_info_kind = self._known_module_func_kind(known_direct_target)
         has_known_task_target = (
-            target_kind not in {None, "sync"} or known_info_kind is not None
+            target_kind not in {None, FunctionKind.SYNC}
+            or known_info_kind is not None
         )
         direct_target_is_linkable = self._is_linkable_module_function_symbol(
             target_module
         )
         allow_speculative_internal_direct = (
             not has_known_direct_target
-            and target_kind in {None, "sync"}
+            and target_kind in {None, FunctionKind.SYNC}
             and imported_from is not None
             and imported_from not in self.stdlib_allowlist
             and (normalized is None or normalized not in self.stdlib_allowlist)
@@ -4768,7 +4775,7 @@ class CallVisitorMixin(CallReductionMixin, _MixinBase):
             if (
                 target_info is None
                 and self.current_func_name != "molt_main"
-                and self.module_declared_funcs.get(func_id) == "sync"
+                and self.module_declared_funcs.get(func_id) == FunctionKind.SYNC
             ):
                 func_symbol = self._function_symbol_for_reference(func_id)
                 target_info = MoltValue(func_id, type_hint=f"Func:{func_symbol}")
