@@ -1,3 +1,16 @@
+<!-- PERF-AUTHORITY:stale -->
+> **STALE PERF SNAPSHOT - NOT AUTHORITATIVE.**
+>
+> The ONLY citable perf source of truth is
+> `tools/perf_scoreboard.py --profile release-fast --classify` (release-fast,
+> cold+warm, quiescent, with a git-ancestry provenance check). This file is a
+> point-in-time snapshot kept for historical context only; its numbers reflect
+> a 2026-03-25 dev/release run on different hardware and are NOT the current
+> contract. Do NOT rank or cite it. See `tools/PERF_AUTHORITY.md`.
+>
+> - generated_at: `2026-03-25`
+> - git_rev: `unknown` (pre-dates provenance stamping)
+
 # Molt Benchmark Results
 
 **Date:** 2026-03-25
@@ -14,9 +27,9 @@
 | fib(30)         | 0.063       | 0.001    | 63x     |
 | dict(1M)        | 0.114       | 0.001    | 114x    |
 | calls(1M)       | 0.055       | 0.001    | 55x     |
-| float(1M)       | —           | —        | TBD     |
-| string(100K)    | —           | —        | TBD     |
-| list(1M)        | —           | —        | TBD     |
+| float(1M)       | -           | -        | TBD     |
+| string(100K)    | -           | -        | TBD     |
+| list(1M)        | -           | -        | TBD     |
 
 ## Methodology
 

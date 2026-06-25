@@ -57,6 +57,7 @@ if str(TOOLS_ROOT) not in sys.path:
     sys.path.insert(0, str(TOOLS_ROOT))
 
 import harness_memory_guard  # noqa: E402
+import perf_authority  # noqa: E402
 
 BENCH_MEMORY_PREFIX = "MOLT_BENCH"
 
@@ -291,9 +292,13 @@ def run_single_test(
     result.output_match = cp_out == m_out
 
     if suite == "bench":
-        # For benchmarks, compute speedup; pass if molt ran successfully
-        if m_rc == 0 and cp_time > 0:
-            result.molt_speedup = round(cp_time / m_time, 2) if m_time > 0 else None
+        # For benchmarks, compute speedup; pass if molt ran successfully.
+        # Route through the single authority guard so a build failure / crash
+        # (m_rc != 0, or a None/non-positive time) can NEVER become a finite
+        # ratio - it stays None and renders as n/a downstream.
+        if m_rc == 0:
+            speedup = perf_authority.safe_speedup(cp_time, m_time)
+            result.molt_speedup = round(speedup, 2) if speedup is not None else None
         if m_rc == 0:
             result.status = "pass" if result.output_match else "fail"
         else:
@@ -491,9 +496,18 @@ def build_json_report(
     regressions: list,
     *,
     memory_guard: dict[str, object] | None = None,
+    molt_profile: str = "dev",
 ) -> dict:
+    # bench/harness.py is the dev/correctness differential harness - a
+    # NON-CANONICAL perf lane (it runs `molt run` at dev/release, not the
+    # release-fast scoreboard gate). Stamp the report so its numbers
+    # self-identify and are never cited as the perf contract.
     report = {
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "provenance": perf_authority.non_canonical_provenance(
+            profile=molt_profile,
+            source="bench/harness.py",
+        ),
         "summaries": {},
         "regressions": regressions,
         "results": {},
@@ -517,6 +531,14 @@ def build_json_report(
     bench_baseline = {}
     for r in all_results:
         if r.suite == "bench":
+            # molt_cpython_ratio is molt_time / cpython_time (lower = faster),
+            # the SAME definition tools/bench.py and its baseline consumer use.
+            # Previously this field was (wrongly) set to molt_speedup
+            # (cpython_time / molt_time, higher = faster) - an inverted value
+            # that broke cross-tool regression comparison. Compute the true
+            # ratio via the authority guard so a missing time stays None.
+            speedup = perf_authority.safe_speedup(r.cpython_time_s, r.molt_time_s)
+            molt_cpython_ratio = (1.0 / speedup) if speedup else None
             bench_baseline[r.name] = {
                 "molt_ok": r.status == "pass",
                 "build_ok": r.status != "error"
@@ -524,7 +546,7 @@ def build_json_report(
                 "molt_time_s": r.molt_time_s,
                 "cpython_time_s": r.cpython_time_s,
                 "molt_speedup": r.molt_speedup,
-                "molt_cpython_ratio": r.molt_speedup,
+                "molt_cpython_ratio": molt_cpython_ratio,
                 "output_match": r.output_match,
                 "status": r.status,
             }
@@ -744,6 +766,7 @@ def main():
         summaries,
         regressions,
         memory_guard=harness_memory_guard.limits_summary(limits),
+        molt_profile=args.molt_profile,
     )
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
