@@ -10,7 +10,9 @@ use crate::ir::FunctionIR;
 use super::blocks::{BlockId, LoopBreakKind, LoopRole, TirBlock};
 use super::cfg::CFG;
 use super::function::{TirFunction, TirModule};
-use super::op_kinds_generated::simpleir_kind_is_pre_ssa_rewritten;
+use super::op_kinds_generated::{
+    opcode_sets_exception_handling_table, simpleir_kind_is_pre_ssa_rewritten,
+};
 use super::ssa::{SsaOutput, convert_to_ssa_with_name_and_params};
 use super::types::TirType;
 use super::values::ValueId;
@@ -386,16 +388,10 @@ fn assemble_function(ir: &FunctionIR, cfg: &CFG, ssa: SsaOutput) -> TirFunction 
 
     // Detect whether the function contains exception-handling ops.
     let has_exception_handling = block_map.values().any(|block| {
-        block.ops.iter().any(|op| {
-            matches!(
-                op.opcode,
-                super::ops::OpCode::TryStart
-                    | super::ops::OpCode::TryEnd
-                    | super::ops::OpCode::StateBlockStart
-                    | super::ops::OpCode::StateBlockEnd
-                    | super::ops::OpCode::CheckException
-            )
-        })
+        block
+            .ops
+            .iter()
+            .any(|op| opcode_sets_exception_handling_table(op.opcode))
     });
 
     // Build label_id_map: for each CFG block that starts with a label/state_label,

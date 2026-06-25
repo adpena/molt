@@ -3521,6 +3521,12 @@ def test_exception_label_opcode_facts_delegate_to_generated_tables() -> None:
         "lower_to_simple": (
             ROOT / "runtime/molt-tir/src/tir/lower_to_simple.rs"
         ).read_text(encoding="utf-8"),
+        "lower_from_simple": (
+            ROOT / "runtime/molt-tir/src/tir/lower_from_simple.rs"
+        ).read_text(encoding="utf-8"),
+        "function": (ROOT / "runtime/molt-tir/src/tir/function.rs").read_text(
+            encoding="utf-8"
+        ),
         "dominators": (ROOT / "runtime/molt-tir/src/tir/dominators.rs").read_text(
             encoding="utf-8"
         ),
@@ -3534,14 +3540,35 @@ def test_exception_label_opcode_facts_delegate_to_generated_tables() -> None:
 
     label_attr = {"CheckException", "TryStart", "TryEnd"}
     transfer_edge = {"CheckException", "TryStart"}
+    exception_handling = {
+        "CheckException",
+        "TryStart",
+        "TryEnd",
+        "StateBlockStart",
+        "StateBlockEnd",
+    }
+    handler_regions = {"TryStart", "TryEnd", "StateBlockStart", "StateBlockEnd"}
+    structured_scf = {"ScfIf", "ScfFor", "ScfWhile", "ScfYield"}
     nesting_roles = [
         {"opcode": "TryStart", "role": "enter"},
         {"opcode": "TryEnd", "role": "exit"},
     ]
     assert set(data["exception_label_attr_opcodes"]) == label_attr
     assert set(data["exception_transfer_edge_opcodes"]) == transfer_edge
+    assert set(data["exception_handling_opcodes"]) == exception_handling
+    assert set(data["exception_handler_region_opcodes"]) == handler_regions
+    assert set(data["structured_scf_marker_opcodes"]) == structured_scf
     assert data["exception_region_nesting_roles"] == nesting_roles
 
+    handling_block = rendered.split("fn opcode_sets_exception_handling_table")[
+        1
+    ].split("fn opcode_is_exception_handler_region_table")[0]
+    handler_block = rendered.split("fn opcode_is_exception_handler_region_table")[
+        1
+    ].split("fn opcode_is_structured_scf_marker_table")[0]
+    scf_block = rendered.split("fn opcode_is_structured_scf_marker_table")[1].split(
+        "fn opcode_requires_i64_overflow_box_dispatch_table"
+    )[0]
     label_block = rendered.split("fn opcode_has_exception_label_attr_table")[1].split(
         "fn opcode_is_exception_transfer_edge_table"
     )[0]
@@ -3551,6 +3578,15 @@ def test_exception_label_opcode_facts_delegate_to_generated_tables() -> None:
     nesting_block = rendered.split("enum ExceptionRegionNestingRole")[1].split(
         "enum AliasTypedSlotRole"
     )[0]
+    for opcode in exception_handling:
+        assert f"OpCode::{opcode} => true," in handling_block
+    assert "OpCode::ExceptionPending => false," in handling_block
+    for opcode in handler_regions:
+        assert f"OpCode::{opcode} => true," in handler_block
+    assert "OpCode::CheckException => false," in handler_block
+    for opcode in structured_scf:
+        assert f"OpCode::{opcode} => true," in scf_block
+    assert "OpCode::ForIter => false," in scf_block
     for opcode in label_attr:
         assert f"OpCode::{opcode} => true," in label_block
     assert "OpCode::ExceptionPending => false," in label_block
@@ -3572,6 +3608,9 @@ def test_exception_label_opcode_facts_delegate_to_generated_tables() -> None:
     assert "ExceptionRegionNestingRole" in sources["dce"]
     assert "opcode_exception_region_nesting_role_table" in sources["sccp"]
     assert "ExceptionRegionNestingRole" in sources["sccp"]
+    assert "opcode_sets_exception_handling_table" in sources["lower_from_simple"]
+    assert "opcode_is_exception_handler_region_table" in sources["function"]
+    assert "opcode_is_structured_scf_marker_table" in sources["lower_to_simple"]
 
     stale_literal = "OpCode::CheckException | OpCode::TryStart | OpCode::TryEnd"
     for name, source in sources.items():

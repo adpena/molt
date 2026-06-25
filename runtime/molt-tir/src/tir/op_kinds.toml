@@ -192,6 +192,14 @@
 #                  that belong to generator/async/coroutine state machines and
 #                  therefore cannot be linearly spliced by the TIR function
 #                  inliner or module-slot promotion.
+#   - exception_handling_opcodes - opcode-only function flag source for
+#                  `TirFunction::has_exception_handling`, including observation
+#                  edges and real handler/state regions.
+#   - exception_handler_region_opcodes - opcode-only predicate for the narrower
+#                  `TirFunction::has_exception_handlers()` gate: real try/state
+#                  regions, excluding observation-only CheckException.
+#   - structured_scf_marker_opcodes - opcode-only marker set for structured SCF
+#                  operations handled by TIR structured lowering/backconversion.
 #   - i64_overflow_box_dispatch_opcodes - opcode-only raw-i64 overflow-risk fact.
 #                  These ops must use boxed dispatch unless value-range proof
 #                  keeps operands and results inside the inline integer window.
@@ -773,6 +781,28 @@ state_machine_opcodes = [
     "StateYield",
     "Yield",
     "YieldFrom",
+]
+
+exception_handling_opcodes = [
+    "CheckException",
+    "StateBlockEnd",
+    "StateBlockStart",
+    "TryEnd",
+    "TryStart",
+]
+
+exception_handler_region_opcodes = [
+    "StateBlockEnd",
+    "StateBlockStart",
+    "TryEnd",
+    "TryStart",
+]
+
+structured_scf_marker_opcodes = [
+    "ScfFor",
+    "ScfIf",
+    "ScfWhile",
+    "ScfYield",
 ]
 
 # i64_overflow_box_dispatch_opcodes: arithmetic opcodes whose raw-i64 operands
