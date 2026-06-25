@@ -22,8 +22,8 @@ use crate::wasm_import_tracking::{TrackedImportIds, selected_import_id};
 use crate::wasm_imports::collect_reloc_required_imports;
 pub use crate::wasm_options::{WasmCompileOptions, WasmProfile};
 use crate::wasm_plan::{
-    DEFAULT_GPU_INTRINSIC_MANIFEST_NAMES, emit_wasm_stage_audit, gpu_runtime_call_symbol,
-    is_production_lir_wasm_fast_path_name, is_shared_drop_fact_marker,
+    DEFAULT_GPU_INTRINSIC_MANIFEST_NAMES, detect_multi_return_candidates, emit_wasm_stage_audit,
+    gpu_runtime_call_symbol, is_production_lir_wasm_fast_path_name, is_shared_drop_fact_marker,
     prepare_lir_wasm_fast_output, simple_ir_stage_shape, tir_module_stage_shape,
     wasm_scalar_integer_fast_path_for_op, wasm_scalar_truthiness_fast_path_for_name,
     wasm_specialized_container_import,
@@ -270,133 +270,6 @@ impl WasmBackend {
     ) {
         self.data_segments
             .emit_ptr_i32(reloc_enabled, func_index, func, data);
-    }
-
-    // ------------------------------------------------------------------
-    // Multi-value return analysis  (WASM_OPTIMIZATION_PLAN.md §3.1)
-    //
-    // Scans every function in the IR and identifies call sites whose
-    // result is **immediately destructured** via a fixed number of
-    // `tuple_index` ops with constant indices 0..N-1.  These are
-    // candidates for the multi-value return optimisation: the callee
-    // can push N i64 results directly, and the caller can consume them
-    // without a heap-allocated tuple.
-    //
-    // Returns a map: callee_name -> required_return_count (2 or 3).
-    // Only functions where *every* call site destructures to the same
-    // arity are included.
-    // ------------------------------------------------------------------
-    fn detect_multi_return_candidates(ir: &SimpleIR) -> BTreeMap<String, usize> {
-        // callee -> Option<arity>  (None means conflicting arities => ineligible)
-        let mut candidate_arity: BTreeMap<String, Option<usize>> = BTreeMap::new();
-
-        for func_ir in &ir.functions {
-            let ops = &func_ir.ops;
-            for (i, op) in ops.iter().enumerate() {
-                // Only consider call_internal (user-defined functions we control).
-                if op.kind != "call_internal" {
-                    continue;
-                }
-                let Some(callee) = op.s_value.as_ref() else {
-                    continue;
-                };
-                let Some(result_var) = op.out.as_ref() else {
-                    continue;
-                };
-
-                // Scan forward to find consecutive tuple_index ops on result_var.
-                let mut unpack_count = 0usize;
-                let mut seen_indices: BTreeSet<i64> = BTreeSet::new();
-                for j in (i + 1)..ops.len() {
-                    let next_op = &ops[j];
-                    if next_op.kind != "tuple_index" {
-                        break;
-                    }
-                    let Some(args) = next_op.args.as_ref() else {
-                        break;
-                    };
-                    if args.len() < 2 || args[0] != *result_var {
-                        break;
-                    }
-                    // The index argument should be a const-int; we check
-                    // by looking at the preceding ops, but for this analysis
-                    // just count the tuple_index ops.
-                    if let Some(idx_val) = next_op.value {
-                        seen_indices.insert(idx_val);
-                    }
-                    unpack_count += 1;
-                }
-
-                // Only 2 or 3 element unpacks are worth multi-value.
-                // Mark callees with non-destructuring call sites as ineligible.
-                if !(2..=3).contains(&unpack_count) {
-                    candidate_arity.insert(callee.clone(), None);
-                    continue;
-                }
-
-                // Record or verify consistency.
-                match candidate_arity.entry(callee.clone()) {
-                    std::collections::btree_map::Entry::Vacant(e) => {
-                        e.insert(Some(unpack_count));
-                    }
-                    std::collections::btree_map::Entry::Occupied(mut e) => {
-                        if *e.get() != Some(unpack_count) {
-                            // Conflicting arities across call sites — not eligible.
-                            *e.get_mut() = None;
-                        }
-                    }
-                }
-            }
-        }
-
-        let call_site_candidates: BTreeMap<String, usize> = candidate_arity
-            .into_iter()
-            .filter_map(|(name, arity)| arity.map(|a| (name, a)))
-            .collect();
-
-        // Phase 2: Verify the callee function body — every `ret` must return
-        // a variable that was produced by a `tuple_new` with the expected arity.
-        // This ensures the callee genuinely always returns a fixed-size tuple.
-        let func_map: BTreeMap<&str, &FunctionIR> =
-            ir.functions.iter().map(|f| (f.name.as_str(), f)).collect();
-
-        call_site_candidates
-            .into_iter()
-            .filter(|(name, expected_arity)| {
-                let Some(func_ir) = func_map.get(name.as_str()) else {
-                    return false;
-                };
-                // Track which variables are produced by tuple_new of the right arity.
-                let mut tuple_new_vars: BTreeSet<String> = BTreeSet::new();
-                let mut has_any_ret = false;
-                let mut all_rets_ok = true;
-
-                for op in &func_ir.ops {
-                    match op.kind.as_str() {
-                        "tuple_new" => {
-                            if let Some(args) = &op.args
-                                && args.len() == *expected_arity
-                                && let Some(out) = &op.out
-                            {
-                                tuple_new_vars.insert(out.clone());
-                            }
-                        }
-                        "ret" => {
-                            has_any_ret = true;
-                            match &op.var {
-                                Some(var) if tuple_new_vars.contains(var) => {}
-                                _ => {
-                                    all_rets_ok = false;
-                                }
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-
-                has_any_ret && all_rets_ok
-            })
-            .collect()
     }
 
     pub fn compile(mut self, ir: SimpleIR) -> Vec<u8> {
@@ -649,7 +522,7 @@ impl WasmBackend {
         // This analysis identifies internal functions whose call sites always
         // destructure the result via 2-3 consecutive tuple_index ops AND whose
         // body always returns via tuple_new of the matching arity.
-        let multi_return_candidates = Self::detect_multi_return_candidates(&ir);
+        let multi_return_candidates = detect_multi_return_candidates(&ir);
 
         if std::env::var("MOLT_WASM_IMPORT_AUDIT").as_deref() == Ok("1")
             && !multi_return_candidates.is_empty()
