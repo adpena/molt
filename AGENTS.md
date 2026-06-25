@@ -99,6 +99,32 @@ touching code, docs, tests, benchmarks, or roadmap state.
   migrate non-overlapping files while the main agent lands the authority move.
   Do not use subagents to multiply proof lanes or produce status theater.
 
+## Comprehensive Analysis Spine: AST To Binary Closure
+
+- Every compiler/runtime change must bridge micro facts to macro architecture.
+  Local parser, AST, lowering, IR, TIR, allocation, ownership, backend, runtime,
+  binary-image, and DX facts are one structural chain; do not fix or upgrade one
+  layer while leaving adjacent facts stale or contradictory.
+- Build new analysis around canonical fact paths, not scattered local scans.
+  Parser and AST facts should feed IR/TIR facts; TIR facts should drive
+  allocation, ownership, escape, effect, drop, backend, and binary-closure
+  analysis; binary and allocation analysis should feed back into diagnostics,
+  proof selection, and dependency risk classification.
+- Dependency updates are compiler architecture work. Research current upstream
+  changelogs and release notes from primary sources, update the manifest and
+  lock authority together, and migrate API or semantic changes through every
+  affected AST/IR/TIR/backend/runtime consumer. Never pin around a breakage,
+  downgrade for comfort, or fake a toolchain surface such as `llvm-config`.
+- No-regression is structural, not just test-count based. Before accepting a
+  latest dependency, prove the changed contract at the narrowest layer that can
+  catch real regressions: parser/AST for syntax tools, IR/TIR for compiler
+  semantics, allocation/drop/escape for memory facts, backend checks for codegen
+  APIs, and binary closure checks for packaged artifacts.
+- Prefer one shared analysis primitive over repeated ad-hoc probes. If a check
+  is needed by CLI setup, diagnostics, validation, binary closure, and docs,
+  route them all through the same implementation and generated facts so future
+  dependency churn cannot split authority again.
+
 ### Structural aperture, full rip
 
 The aperture rule above governs sequencing: tiny opening first, structural rip

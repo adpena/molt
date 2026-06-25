@@ -58,6 +58,33 @@ every consumer needed to delete or unify the old lane.
   test/conformance/proof apparatus as a substitute for changing the
   architecture.
 
+### Comprehensive Analysis Spine: AST To Binary Closure
+
+Every compiler/runtime change must bridge micro facts to macro architecture.
+Parser, AST, lowering, IR, TIR, allocation, ownership, escape/effect/drop,
+backend, runtime, binary-image, and DX facts are one structural chain. Do not
+fix or upgrade one layer while leaving adjacent facts stale, duplicated, or
+contradictory.
+
+- Build new analysis around canonical fact paths, not scattered local scans.
+  Parser and AST facts feed IR/TIR facts; TIR facts drive allocation, ownership,
+  backend codegen, runtime custody, and binary closure; binary/allocation
+  findings feed diagnostics, proof selection, and dependency risk.
+- Dependency updates are compiler architecture work. Research current upstream
+  changelogs and release notes from primary sources, update manifest and lock
+  authorities together, and migrate API or semantic changes through every
+  affected AST/IR/TIR/backend/runtime consumer.
+- Never pin around a breakage, downgrade for comfort, fake a toolchain surface,
+  or accept a silent fallback. If latest dependencies expose a wrong local
+  abstraction, move the abstraction.
+- No-regression is structural. Prove parser/AST changes at the syntax layer,
+  IR/TIR changes at the semantic layer, allocation/drop/escape changes at the
+  memory-fact layer, backend API changes at codegen, and packaging changes at
+  binary closure.
+- Prefer one shared analysis primitive over repeated probes. If CLI setup,
+  diagnostics, validation, binary closure, docs, and tests need the same fact,
+  route them through the same implementation or generated authority.
+
 ### Concrete examples of partial implementations to reject
 
 These are real shortcuts caught and reversed in past sessions. Do not repeat them:
