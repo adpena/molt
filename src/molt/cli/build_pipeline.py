@@ -8,7 +8,6 @@ from concurrent.futures import Future, ProcessPoolExecutor
 import errno
 import datetime as dt
 import functools
-import hashlib
 import importlib.util
 import io
 import tempfile
@@ -60,10 +59,12 @@ from molt.debug import DebugSubcommand
 from molt.dx import DxConfigError, DxProject
 from molt.frontend import SimpleTIRGenerator
 from molt.cli.completion import _completion_script
+from molt.cli import backend_binary as _backend_binary
 from molt.cli import backend_ir as _backend_ir
 from molt.cli import build_inputs as _build_inputs
 from molt.cli import debug_helpers as _debug_helpers
 from molt.cli import frontend_pipeline as _frontend_pipeline
+from molt.cli import link_pipeline as _link_pipeline
 from molt.cli import typecheck as _typecheck
 from molt.cli import factgraph as _factgraph
 from molt.cli.maintenance import _load_artifact_cleanup_module, clean, show_config
@@ -160,7 +161,6 @@ from molt.cli.build_locks import (
     _try_acquire_file_lock,
 )
 from molt.cli.cache_fingerprints import (
-    _backend_source_paths,
     _cache_fingerprint,
     _cache_tooling_fingerprint,
 )
@@ -208,7 +208,6 @@ from molt.cli.backend_cache import (
     _shared_stdlib_cache_key,
     _shared_stdlib_cache_lock,
     _shared_stdlib_cache_matches_key,
-    _shared_stdlib_cache_matches_key_locked,
     _shared_stdlib_cache_mismatch_detail,
     _shared_stdlib_cache_payload_ir,
     _shared_stdlib_compiler_fingerprint,
@@ -216,7 +215,6 @@ from molt.cli.backend_cache import (
     _shared_stdlib_native_symbol_closure_issue,
     _shared_stdlib_publish_lock_path,
     _stage_backend_output_and_caches,
-    _stage_shared_stdlib_object_for_link,
     _stdlib_module_symbols,
     _stdlib_object_cache_path,
     _stdlib_object_count_sidecar_path,
@@ -239,7 +237,6 @@ from molt.cli.backend_execution import (
     _BACKEND_REQUEST_ENV_KNOBS,
     _BACKEND_RESOURCE_ENV_KNOBS,
     _DAEMON_CONFIG_DIGEST_SCHEMA_VERSION,
-    _DEFAULT_BACKEND_FEATURES,
     _NATIVE_CODEGEN_ENV_KNOBS,
     _NATIVE_RELOCATABLE_LINKER_ENV_KEYS,
     _WASM_CODEGEN_ENV_KNOBS,
@@ -308,16 +305,11 @@ from molt.cli.backend_execution import (
 )
 from molt.cli.cargo_execution import (
     _build_slot,
-    _cargo_build_env,
-    _maybe_enable_native_cpu,
-    _maybe_enable_sccache,
-    _run_cargo_with_sccache_retry,
 )
 from molt.cli.command_runtime import (
     _CLI_MEMORY_GUARD_PREFIX,
     _CROSS_MEMORY_GUARD_PREFIX,
     _DIFF_MEMORY_GUARD_PREFIX,
-    _load_cli_harness_memory_guard,
     _resolve_timeout_env,
     _run_completed_command,
     _run_subprocess_captured_to_tempfiles,
@@ -579,7 +571,6 @@ from molt.cli.wrapper_build import (
 )
 from molt.cli.native_toolchain import (
     _append_darwin_runtime_frameworks,
-    _codesign_binary,
     _resolve_macos_sdk_root,
     _run_bolt_post_link,
     _zig_target_query,
@@ -588,20 +579,15 @@ from molt.cli.native_link_deps import (
     _collect_cargo_native_link_deps,
     _crate_name_from_archive_member,
     _crate_name_from_cargo_build_dir,
-    _native_target_is_windows,
     _runtime_archive_crate_names,
 )
 from molt.cli.native_link_command import (
-    _build_native_link_command,
-    _build_native_link_driver_command,
     _resolve_available_fast_linker,
     _resolve_dev_linker,
     _resolve_native_linker_hint,
-    _windows_coff_library_command,
 )
 from molt.cli.native_main_stub import (
     _native_main_stub_snippets,
-    _render_native_main_stub,
 )
 from molt.cli.output import (
     JSON_SCHEMA_VERSION,
@@ -654,15 +640,11 @@ from molt.cli.runtime_paths import (
     _RUNTIME_STDLIB_PROFILE_ALIASES,
     _build_state_root,
     _build_state_root_cached,
-    _cargo_profile_dir,
-    _cargo_target_root,
     _cargo_target_root_cached,
     _molt_session_id,
     _normalize_runtime_stdlib_profile,
     _runtime_lib_archive_name,
     _runtime_lib_archive_names,
-    _runtime_lib_path,
-    _runtime_lib_path_cached,
     _runtime_cargo_scratch_lib_name,
     _runtime_cargo_scratch_lib_path,
     _runtime_staticlib_target_is_windows,
@@ -671,7 +653,6 @@ from molt.cli.runtime_paths import (
     _session_artifact_component,
 )
 from molt.cli.runtime_fingerprints import (
-    _artifact_content_looks_valid,
     _artifact_needs_rebuild,
     _hash_runtime_file,
     _hash_source_tree_metadata,
@@ -731,12 +712,10 @@ from molt.cli.toolchain_validation import (
     _format_validate_guard_summary,
     _is_path_within,
     _llvm_backend_advice,
-    _llvm_sys_prefix_env_var,
     _persist_validate_summary,
     _planned_update_steps,
     _planned_validate_steps,
     _python_setup_advice,
-    _required_llvm_backend_major,
     _resolve_validate_summary_path,
     _resolved_env_dir_from_root,
     _rustup_setup_advice,
@@ -1024,8 +1003,6 @@ from molt.cli.mlir_backend import (
 from molt.cli.native_binary import (
     _NativeBinaryInvalid,
     _assert_native_binary_valid,
-    _darwin_binary_imports_validation_error,
-    _darwin_binary_magic_error,
     _expected_binary_format_for_target,
     _smoke_probe_native_binary,
     _target_is_host_executable,
@@ -1105,271 +1082,6 @@ def _replace_directory_tree_from_source(
         with contextlib.suppress(OSError):
             if backup_path.exists():
                 _remove_file_or_tree(backup_path)
-
-def _backend_fingerprint_path(
-    project_root: Path,
-    artifact: Path,
-    cargo_profile: str,
-) -> Path:
-    return _artifact_state_path(
-        project_root,
-        artifact,
-        subdir="backend_fingerprints",
-        stem_suffix=f"{cargo_profile}",
-        extension="fingerprint",
-    )
-
-def _link_fingerprint_path(
-    project_root: Path,
-    artifact: Path,
-    profile: BuildProfile,
-    target_triple: str | None,
-) -> Path:
-    target = (target_triple or "native").replace(os.sep, "_").replace(":", "_")
-    return _artifact_state_path(
-        project_root,
-        artifact,
-        subdir="link_fingerprints",
-        stem_suffix=f"{profile}.{target}",
-        extension="fingerprint",
-    )
-
-def _run_native_link_command(
-    *,
-    link_cmd: Sequence[str],
-    json_output: bool,
-    link_timeout: float | None,
-) -> subprocess.CompletedProcess[str]:
-    result = _run_completed_command(
-        list(link_cmd),
-        capture_output=json_output,
-        env=None,
-        cwd=None,
-        timeout=link_timeout,
-        memory_guard_prefix="MOLT_BUILD",
-    )
-    harness_memory_guard = _load_cli_harness_memory_guard(None)
-    if (
-        link_timeout is not None
-        and result.returncode == harness_memory_guard.memory_guard.TIMEOUT_RETURN_CODE
-    ):
-        raise subprocess.TimeoutExpired(
-            list(link_cmd),
-            link_timeout,
-            output=result.stdout,
-            stderr=result.stderr,
-        )
-    return result
-
-def _run_native_partial_link_command(
-    *,
-    input_objects: Sequence[Path],
-    output_path: Path,
-    json_output: bool,
-    link_timeout: float | None,
-    target_triple: str | None = None,
-    sysroot_path: Path | None = None,
-) -> subprocess.CompletedProcess[str]:
-    if _native_target_is_windows(target_triple):
-        link_cmd = _windows_coff_library_command(
-            input_objects=input_objects,
-            output_path=output_path,
-        )
-        return _run_native_link_command(
-            link_cmd=link_cmd,
-            json_output=json_output,
-            link_timeout=link_timeout,
-        )
-    primary_object = input_objects[0] if input_objects else None
-    link_cmd, _linker_hint, _normalized_target = _build_native_link_driver_command(
-        output_obj=primary_object,
-        target_triple=target_triple,
-        sysroot_path=None,
-        profile="dev",
-    )
-    link_cmd = [arg for arg in link_cmd if not arg.startswith("-fuse-ld=")]
-    link_cmd.extend(
-        ["-Wl,-r", "-o", str(output_path), *[str(path) for path in input_objects]]
-    )
-    return _run_native_link_command(
-        link_cmd=link_cmd,
-        json_output=json_output,
-        link_timeout=link_timeout,
-    )
-
-def _prepare_native_object_artifact(
-    *,
-    output_artifact: Path,
-    artifacts_root: Path,
-    stdlib_obj_path: Path | None,
-    stdlib_object_cache_key: str | None,
-    stdlib_object_manifest: str | None,
-    stdlib_module_symbols: Collection[str] | None = None,
-    json_output: bool,
-    link_timeout: float | None,
-    target_triple: str | None = None,
-    sysroot_path: Path | None = None,
-) -> tuple[Path | None, subprocess.CompletedProcess[str] | None, _CliFailure | None]:
-    if stdlib_obj_path is None or not stdlib_obj_path.exists():
-        return output_artifact, None, None
-    if not _shared_stdlib_cache_matches_key_locked(
-        stdlib_obj_path,
-        stdlib_object_cache_key,
-        stdlib_object_manifest=stdlib_object_manifest,
-        stdlib_module_symbols=stdlib_module_symbols,
-    ):
-        return (
-            None,
-            None,
-            _fail(
-                "Shared stdlib cache mismatch before native object link",
-                json_output,
-                command="build",
-            ),
-        )
-    merged_output = artifacts_root / (
-        f".{output_artifact.stem}_linked."
-        f"{os.getpid()}.{uuid.uuid4().hex}{output_artifact.suffix}"
-    )
-    try:
-        link_process = _run_native_partial_link_command(
-            input_objects=[output_artifact, stdlib_obj_path],
-            output_path=merged_output,
-            json_output=json_output,
-            link_timeout=link_timeout,
-            target_triple=target_triple,
-            sysroot_path=sysroot_path,
-        )
-    except subprocess.TimeoutExpired:
-        with contextlib.suppress(OSError):
-            if merged_output.exists():
-                merged_output.unlink()
-        return (
-            None,
-            None,
-            _fail(
-                "Native object partial link timed out",
-                json_output,
-                command="build",
-            ),
-        )
-    except RuntimeError as exc:
-        with contextlib.suppress(OSError):
-            if merged_output.exists():
-                merged_output.unlink()
-        return None, None, _fail(str(exc), json_output, command="build")
-    if link_process.returncode != 0:
-        with contextlib.suppress(OSError):
-            if merged_output.exists():
-                merged_output.unlink()
-        err = (link_process.stderr or "").strip() or (link_process.stdout or "").strip()
-        msg = "Native object partial link failed"
-        if err:
-            msg = f"{msg}: {err}"
-        return None, link_process, _fail(msg, json_output, command="build")
-    try:
-        os.replace(merged_output, output_artifact)
-    finally:
-        with contextlib.suppress(OSError):
-            if merged_output.exists():
-                merged_output.unlink()
-    return output_artifact, link_process, None
-
-def _retry_native_link_without_hint(
-    *,
-    link_cmd: Sequence[str],
-    linker_hint: str | None,
-    json_output: bool,
-    link_timeout: float | None,
-) -> tuple[subprocess.CompletedProcess[str] | None, list[str]]:
-    if linker_hint is None:
-        return None, list(link_cmd)
-    retry_cmd = [
-        arg
-        for arg in link_cmd
-        if arg != f"-fuse-ld={linker_hint}" and arg != "-Wl,--icf=safe"
-    ]
-    if retry_cmd == list(link_cmd):
-        return None, retry_cmd
-    retry_process = _run_native_link_command(
-        link_cmd=retry_cmd,
-        json_output=json_output,
-        link_timeout=link_timeout,
-    )
-    return retry_process, retry_cmd
-
-def _darwin_link_validation_failure(
-    *,
-    output_binary: Path,
-    kind: str,
-) -> str | None:
-    if kind == "magic":
-        detail = _darwin_binary_magic_error(output_binary)
-        if detail is None:
-            return None
-        return "Generated binary failed Mach-O header validation.\n" + detail + "\n"
-    detail = _darwin_binary_imports_validation_error(output_binary)
-    if detail is None:
-        return None
-    return "Generated binary failed dyld import validation.\n" + detail + "\n"
-
-def _validate_darwin_link_output(
-    *,
-    link_process: subprocess.CompletedProcess[str],
-    link_cmd: Sequence[str],
-    linker_hint: str | None,
-    output_binary: Path,
-    validation_kind: str,
-    json_output: bool,
-    link_timeout: float | None,
-    warnings: list[str],
-) -> subprocess.CompletedProcess[str]:
-    validation_error = _darwin_link_validation_failure(
-        output_binary=output_binary,
-        kind=validation_kind,
-    )
-    if (
-        validation_error is not None
-        and linker_hint is not None
-        and any(arg == f"-fuse-ld={linker_hint}" for arg in link_cmd)
-    ):
-        retry_process, _ = _retry_native_link_without_hint(
-            link_cmd=link_cmd,
-            linker_hint=linker_hint,
-            json_output=json_output,
-            link_timeout=link_timeout,
-        )
-        if retry_process is not None:
-            if retry_process.returncode == 0:
-                retry_validation_error = _darwin_link_validation_failure(
-                    output_binary=output_binary,
-                    kind=validation_kind,
-                )
-                if retry_validation_error is None:
-                    label = (
-                        "invalid output"
-                        if validation_kind == "magic"
-                        else "invalid dyld imports"
-                    )
-                    warnings.append(
-                        "Linker fallback: "
-                        f"-fuse-ld={linker_hint} produced {label}; "
-                        "retried default linker."
-                    )
-                    return retry_process
-                link_process = retry_process
-                validation_error = retry_validation_error
-            else:
-                return retry_process
-    if validation_error is None:
-        return link_process
-    failure_stderr = (link_process.stderr or "") + "\n" + validation_error
-    return subprocess.CompletedProcess(
-        args=list(link_cmd),
-        returncode=1,
-        stdout=link_process.stdout,
-        stderr=failure_stderr,
-    )
 
 def _prepare_backend_setup(
     *,
@@ -1736,7 +1448,7 @@ def _prepare_backend_dispatch(
         backend_env["MOLT_WASM_LINK"] = "1"
 
     backend_bin = _backend_bin_path(molt_root, backend_cargo_profile, backend_features)
-    if not _ensure_backend_binary(
+    if not _backend_binary._ensure_backend_binary(
         backend_bin,
         cargo_timeout=cargo_timeout,
         json_output=json_output,
@@ -2866,7 +2578,7 @@ def _run_backend_pipeline(
 
     if output_layout.emit_mode == "obj":
         prepared_object_output, _partial_link_process, prepared_object_error = (
-            _prepare_native_object_artifact(
+            _link_pipeline._prepare_native_object_artifact(
                 output_artifact=output_layout.output_artifact,
                 artifacts_root=artifacts_root,
                 stdlib_obj_path=prepared_backend_setup.cache_setup.stdlib_object_path,
@@ -2921,22 +2633,6 @@ def _run_backend_pipeline(
         )
 
     stdlib_link_obj_path = prepared_backend_setup.cache_setup.stdlib_object_path
-    if stdlib_link_obj_path is not None and stdlib_link_obj_path.exists():
-        try:
-            staged_stdlib_obj = _stage_shared_stdlib_object_for_link(
-                stdlib_link_obj_path,
-                stdlib_object_cache_key=prepared_backend_setup.cache_setup.stdlib_object_cache_key,
-                stdlib_object_manifest=prepared_backend_setup.cache_setup.stdlib_object_manifest,
-                stdlib_module_symbols=prepared_backend_setup.cache_setup.stdlib_module_symbols,
-                artifacts_root=artifacts_root,
-            )
-        except OSError as exc:
-            return _fail(
-                f"Failed to stage shared stdlib object before native link: {exc}",
-                json_output,
-                command="build",
-            )
-        stdlib_link_obj_path = staged_stdlib_obj
 
     if not _ensure_native_runtime_lib_ready_before_link(
         prepared_backend_runtime_context.runtime_state,
@@ -2953,7 +2649,7 @@ def _run_backend_pipeline(
         return _fail("Runtime build failed", json_output, command="build")
     if prepared_build_preamble.diagnostics_enabled:
         diagnostics_payload, diagnostics_path = build_diagnostics_payload()
-    prepared_native_link, prepared_native_link_error = _prepare_native_link(
+    prepared_native_link, prepared_native_link_error = _link_pipeline._prepare_native_link(
         output_artifact=output_layout.output_artifact,
         trusted=trusted,
         capabilities_list=prepared_build_config.capabilities_list,
@@ -3149,14 +2845,14 @@ def _prepare_non_native_build_result(
             if wasm_opt_enabled:
                 link_cmd.extend(["--optimize", "--optimize-level", wasm_opt_level])
             link_project_root = project_root or molt_root
-            link_fingerprint_path = _link_fingerprint_path(
+            link_fingerprint_path = _link_pipeline._link_fingerprint_path(
                 link_project_root,
                 resolved_linked_output,
                 profile,
                 "wasm32-wasip1",
             )
             stored_link_fingerprint = _read_runtime_fingerprint(link_fingerprint_path)
-            link_fingerprint = _link_fingerprint(
+            link_fingerprint = _link_pipeline._link_fingerprint(
                 project_root=link_project_root,
                 inputs=[output_wasm, runtime_reloc_wasm, tool],
                 link_cmd=link_cmd,
@@ -3504,282 +3200,6 @@ def _prepare_non_native_build_result(
         success_messages=[f"Successfully built {output_artifact}"],
         extra_fields={},
         artifacts={"object": str(output_artifact)},
-    ), None
-
-def _prepare_native_link(
-    *,
-    output_artifact: Path,
-    trusted: bool,
-    capabilities_list: list[str] | None,
-    artifacts_root: Path,
-    json_output: bool,
-    output_binary: Path | None,
-    runtime_lib: Path | None,
-    molt_root: Path,
-    runtime_cargo_profile: str,
-    target_triple: str | None,
-    sysroot_path: Path | None,
-    profile: BuildProfile,
-    project_root: Path,
-    diagnostics_enabled: bool,
-    phase_starts: dict[str, float],
-    link_timeout: float | None,
-    warnings: list[str],
-    stdlib_obj_path: Path | None = None,
-    stdlib_object_cache_key: str | None = None,
-    stdlib_object_manifest: str | None = None,
-    stdlib_module_symbols: Collection[str] | None = None,
-    native_artifact_plan: _ExternalPackageNativeArtifactPlan = (
-        _EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN
-    ),
-    stdlib_profile: str | None = "micro",
-) -> tuple[_PreparedNativeLink | None, _CliFailure | None]:
-    output_obj = output_artifact
-    link_stdlib_obj = stdlib_obj_path
-    if stdlib_obj_path is not None:
-        if stdlib_obj_path.exists() and not _shared_stdlib_cache_matches_key_locked(
-            stdlib_obj_path,
-            stdlib_object_cache_key,
-            stdlib_object_manifest=stdlib_object_manifest,
-            stdlib_module_symbols=stdlib_module_symbols,
-        ):
-            return None, _fail(
-                "Shared stdlib cache key mismatch before native link",
-                json_output,
-                command="build",
-            )
-        if stdlib_obj_path.exists() and stdlib_obj_path.parent != artifacts_root:
-            try:
-                staged_stdlib_obj = _stage_shared_stdlib_object_for_link(
-                    stdlib_obj_path,
-                    stdlib_object_cache_key=stdlib_object_cache_key,
-                    stdlib_object_manifest=stdlib_object_manifest,
-                    stdlib_module_symbols=stdlib_module_symbols,
-                    artifacts_root=artifacts_root,
-                )
-            except OSError as exc:
-                return None, _fail(
-                    f"Failed to stage shared stdlib object for native link: {exc}",
-                    json_output,
-                    command="build",
-                )
-            link_stdlib_obj = staged_stdlib_obj
-    try:
-        staged_external_native_artifacts = (
-            _stage_external_package_native_artifacts_for_build(
-                native_artifact_plan,
-                artifacts_root=artifacts_root,
-            )
-        )
-    except OSError as exc:
-        return None, _fail(
-            f"Failed to stage external native artifacts for native build: {exc}",
-            json_output,
-            command="build",
-        )
-    main_c_content = _render_native_main_stub(
-        trusted=trusted,
-        capabilities_list=capabilities_list,
-        runtime_module_roots=tuple(
-            dict.fromkeys(
-                artifact.runtime_root for artifact in staged_external_native_artifacts
-            )
-        ),
-    )
-    stub_path = artifacts_root / "main_stub.c"
-    _write_text_if_changed(stub_path, main_c_content)
-
-    if output_binary is None:
-        return None, _fail("Binary output unavailable", json_output, command="build")
-    if output_binary.parent != Path("."):
-        output_binary.parent.mkdir(parents=True, exist_ok=True)
-    resolved_runtime_lib = runtime_lib
-    if resolved_runtime_lib is None:
-        resolved_runtime_lib = _runtime_lib_path(
-            molt_root,
-            runtime_cargo_profile,
-            target_triple,
-            stdlib_profile=stdlib_profile,
-        )
-    try:
-        link_cmd, linker_hint, normalized_target = _build_native_link_command(
-            output_obj=output_obj,
-            stub_path=stub_path,
-            runtime_lib=resolved_runtime_lib,
-            output_binary=output_binary,
-            target_triple=target_triple,
-            sysroot_path=sysroot_path,
-            profile=profile,
-            stdlib_obj_path=link_stdlib_obj,
-        )
-    except RuntimeError as exc:
-        return None, _fail(str(exc), json_output, command="build")
-    if os.environ.get("MOLT_TRACE_NATIVE_LINK") == "1":
-        stdlib_exists = (
-            link_stdlib_obj.exists() if link_stdlib_obj is not None else False
-        )
-        print(
-            "native-link trace: "
-            f"output_obj={output_obj} "
-            f"stdlib_obj={link_stdlib_obj} "
-            f"stdlib_exists={stdlib_exists} "
-            f"runtime_lib={resolved_runtime_lib} "
-            f"output_binary={output_binary}",
-            file=sys.stderr,
-        )
-        print(f"native-link cmd: {link_cmd}", file=sys.stderr)
-    if (
-        normalized_target is not None
-        and target_triple is not None
-        and normalized_target != target_triple
-    ):
-        warnings.append(
-            f"Zig target normalized to {normalized_target} from {target_triple}."
-        )
-
-    link_fingerprint_path = _link_fingerprint_path(
-        project_root, output_binary, profile, target_triple
-    )
-    stored_link_fingerprint = _read_runtime_fingerprint(link_fingerprint_path)
-    external_native_fingerprint_inputs = [
-        path
-        for artifact in staged_external_native_artifacts
-        for path in (
-            artifact.staged_path,
-            artifact.staged_manifest_path,
-            *artifact.staged_support_paths,
-        )
-    ]
-    link_fingerprint = _link_fingerprint(
-        project_root=project_root,
-        inputs=[
-            stub_path,
-            output_obj,
-            resolved_runtime_lib,
-            *(
-                [link_stdlib_obj]
-                if link_stdlib_obj is not None and link_stdlib_obj.exists()
-                else []
-            ),
-            *external_native_fingerprint_inputs,
-        ],
-        link_cmd=link_cmd,
-        stored_fingerprint=stored_link_fingerprint,
-    )
-    link_skipped = not _artifact_needs_rebuild(
-        output_binary,
-        link_fingerprint,
-        stored_link_fingerprint,
-    )
-    # Staleness guard: even when the fingerprint matches, the cached binary
-    # may be stale if ANY link input was rebuilt after the binary was linked.
-    # This catches backend changes that produce identical .o files (from TIR
-    # cache) but changed runtime internals. Comparing mtimes is O(1) and
-    # eliminates the entire class of stale-binary bugs.
-    if link_skipped and output_binary.exists():
-        try:
-            binary_mtime = output_binary.stat().st_mtime
-            # Include the backend binary: when function_compiler.rs changes,
-            # the backend is rebuilt, which changes how .o files are generated.
-            # Even if the .o content is identical (TIR cache), the binary must
-            # be relinked because the runtime library was also rebuilt.
-            backend_cargo_profile, _ = _resolve_backend_cargo_profile_name(profile)
-            backend_bin = _backend_bin_path(molt_root, backend_cargo_profile)
-            deps = [
-                resolved_runtime_lib,
-                output_obj,
-                stub_path,
-                backend_bin,
-                *external_native_fingerprint_inputs,
-            ]
-            for dep in deps:
-                if dep.exists() and dep.stat().st_mtime > binary_mtime:
-                    link_skipped = False
-                    break
-        except OSError:
-            pass
-    if link_skipped:
-        link_process = subprocess.CompletedProcess(
-            args=link_cmd,
-            returncode=0,
-            stdout="",
-            stderr="",
-        )
-    else:
-        if diagnostics_enabled and "link" not in phase_starts:
-            phase_starts["link"] = time.perf_counter()
-        try:
-            link_process = _run_native_link_command(
-                link_cmd=link_cmd,
-                json_output=json_output,
-                link_timeout=link_timeout,
-            )
-        except subprocess.TimeoutExpired:
-            return None, _fail("Linker timed out", json_output, command="build")
-        if link_process.returncode != 0 and linker_hint is not None:
-            try:
-                retry_process, _ = _retry_native_link_without_hint(
-                    link_cmd=link_cmd,
-                    linker_hint=linker_hint,
-                    json_output=json_output,
-                    link_timeout=link_timeout,
-                )
-            except subprocess.TimeoutExpired:
-                return None, _fail("Linker timed out", json_output, command="build")
-            if retry_process is not None and retry_process.returncode == 0:
-                warnings.append(
-                    f"Linker fallback: -fuse-ld={linker_hint} failed; retried default linker."
-                )
-                link_process = retry_process
-        if (
-            link_process.returncode == 0
-            and sys.platform == "darwin"
-            and not target_triple
-        ):
-            try:
-                link_process = _validate_darwin_link_output(
-                    link_process=link_process,
-                    link_cmd=link_cmd,
-                    linker_hint=linker_hint,
-                    output_binary=output_binary,
-                    validation_kind="magic",
-                    json_output=json_output,
-                    link_timeout=link_timeout,
-                    warnings=warnings,
-                )
-            except subprocess.TimeoutExpired:
-                return None, _fail("Linker timed out", json_output, command="build")
-        if (
-            link_process.returncode == 0
-            and sys.platform == "darwin"
-            and not target_triple
-        ):
-            try:
-                link_process = _validate_darwin_link_output(
-                    link_process=link_process,
-                    link_cmd=link_cmd,
-                    linker_hint=linker_hint,
-                    output_binary=output_binary,
-                    validation_kind="dyld",
-                    json_output=json_output,
-                    link_timeout=link_timeout,
-                    warnings=warnings,
-                )
-            except subprocess.TimeoutExpired:
-                return None, _fail("Linker timed out", json_output, command="build")
-    return _PreparedNativeLink(
-        output_obj=output_obj,
-        stub_path=stub_path,
-        runtime_lib=resolved_runtime_lib,
-        output_binary=output_binary,
-        external_native_artifacts=staged_external_native_artifacts,
-        link_cmd=link_cmd,
-        linker_hint=linker_hint,
-        normalized_target=normalized_target,
-        link_fingerprint_path=link_fingerprint_path,
-        link_fingerprint=link_fingerprint,
-        link_skipped=link_skipped,
-        link_process=link_process,
     ), None
 
 def _run_build_pipeline(
@@ -4243,451 +3663,3 @@ def _prepare_backend_cache_setup(
         stdlib_module_symbols_json=stdlib_module_symbols_json,
         stdlib_module_symbols=frozenset(stdlib_module_symbols),
     )
-
-def _link_fingerprint(
-    *,
-    project_root: Path,
-    inputs: list[Path],
-    link_cmd: list[str],
-    stored_fingerprint: dict[str, Any] | None = None,
-) -> dict[str, str | None] | None:
-    inputs_meta = _hash_source_tree_metadata(inputs, project_root)
-    inputs_digest = inputs_meta[0] if inputs_meta is not None else None
-    meta_digest = hashlib.sha256("\0".join(link_cmd).encode("utf-8")).hexdigest()
-    if _stored_fingerprint_matches_source_metadata(
-        stored_fingerprint,
-        inputs_digest=inputs_digest,
-        rustc=None,
-        meta_digest=meta_digest,
-    ):
-        assert stored_fingerprint is not None
-        return {
-            "hash": cast(str, stored_fingerprint.get("hash")),
-            "rustc": None,
-            "inputs_digest": inputs_digest,
-            "meta_digest": meta_digest,
-        }
-    hasher = hashlib.sha256()
-    hasher.update("\0".join(link_cmd).encode("utf-8"))
-    hasher.update(b"\0")
-    try:
-        for path in inputs:
-            _hash_runtime_file(path, project_root, hasher)
-    except OSError:
-        return None
-    return {
-        "hash": hasher.hexdigest(),
-        "rustc": None,
-        "inputs_digest": inputs_digest,
-        "meta_digest": meta_digest,
-    }
-
-def _backend_fingerprint(
-    project_root: Path,
-    *,
-    cargo_profile: str,
-    rustflags: str,
-    backend_features: tuple[str, ...],
-    stored_fingerprint: dict[str, Any] | None = None,
-) -> dict[str, str | None] | None:
-    meta = f"profile:{cargo_profile}\n"
-    meta += f"rustflags:{rustflags}\n"
-    meta += f"features:{','.join(backend_features)}\n"
-    meta_digest = hashlib.sha256(meta.encode("utf-8")).hexdigest()
-    source_paths = _backend_source_paths(project_root, backend_features)
-    rustc_info = _rustc_version()
-    inputs_meta = _hash_source_tree_metadata(source_paths, project_root)
-    inputs_digest = inputs_meta[0] if inputs_meta is not None else None
-    if _stored_fingerprint_matches_source_metadata(
-        stored_fingerprint,
-        inputs_digest=inputs_digest,
-        rustc=rustc_info,
-        meta_digest=meta_digest,
-    ):
-        assert stored_fingerprint is not None
-        return {
-            "hash": cast(str, stored_fingerprint.get("hash")),
-            "rustc": rustc_info,
-            "inputs_digest": inputs_digest,
-            "meta_digest": meta_digest,
-        }
-
-    hasher = hashlib.sha256()
-    hasher.update(meta.encode("utf-8"))
-    try:
-        for path in sorted(source_paths, key=lambda p: str(p)):
-            if path.is_dir():
-                for item in sorted(path.rglob("*"), key=lambda p: str(p)):
-                    if item.is_file():
-                        _hash_runtime_file(item, project_root, hasher)
-            elif path.exists():
-                _hash_runtime_file(path, project_root, hasher)
-    except OSError:
-        return None
-    return {
-        "hash": hasher.hexdigest(),
-        "rustc": rustc_info,
-        "inputs_digest": inputs_digest,
-        "meta_digest": meta_digest,
-    }
-
-def _ensure_backend_binary(
-    backend_bin: Path,
-    *,
-    cargo_timeout: float | None,
-    json_output: bool,
-    cargo_profile: str,
-    project_root: Path,
-    backend_features: tuple[str, ...],
-) -> bool:
-    # MOLT_SKIP_RUNTIME_REBUILD=1 also skips the backend fingerprint check.
-    if os.environ.get("MOLT_SKIP_RUNTIME_REBUILD") == "1":
-        if backend_bin.exists():
-            return True
-    rustflags = os.environ.get("RUSTFLAGS", "")
-    fingerprint_path = _backend_fingerprint_path(
-        project_root, backend_bin, cargo_profile
-    )
-    stored_fingerprint = _read_runtime_fingerprint(fingerprint_path)
-    fingerprint = _backend_fingerprint(
-        project_root,
-        cargo_profile=cargo_profile,
-        rustflags=rustflags,
-        backend_features=backend_features,
-        stored_fingerprint=stored_fingerprint,
-    )
-    features_tag = "_".join(sorted(backend_features)) if backend_features else "default"
-    lock_name = f"backend.{cargo_profile}.{features_tag}"
-    with _build_lock(project_root, lock_name):
-
-        def _canonical_cargo_backend_output() -> Path:
-            exe_suffix = ".exe" if os.name == "nt" else ""
-            return backend_bin.parent / f"molt-backend{exe_suffix}"
-
-        def _materialize_backend_binary_from(source: Path) -> bool:
-            if not source.exists():
-                return False
-            if source != backend_bin:
-                _atomic_copy_file(source, backend_bin, codesign=True)
-            else:
-                _codesign_binary(backend_bin)
-            return backend_bin.exists()
-
-        def _materialize_rebuilt_backend_binary() -> bool:
-            return _materialize_backend_binary_from(_canonical_cargo_backend_output())
-
-        def _backend_probe_target() -> str:
-            if "wasm-backend" in backend_features:
-                return "wasm"
-            if "luau-backend" in backend_features:
-                return "luau"
-            if "rust-backend" in backend_features:
-                return "rust"
-            return "native"
-
-        def _probe_backend_binary_support(
-            probe_target: str,
-            *,
-            binary_path: Path | None = None,
-        ) -> tuple[bool, str]:
-            probe_ir = json.dumps(
-                {
-                    "functions": [],
-                    "module": "__probe__",
-                    "entry": "main",
-                    "metadata": {"target": probe_target, "deterministic": True},
-                }
-            ).encode()
-            probe_suffix = ".o"
-            if probe_target == "wasm":
-                probe_suffix = ".wasm"
-            elif probe_target == "luau":
-                probe_suffix = ".luau"
-            elif probe_target == "rust":
-                probe_suffix = ".rs"
-            probe_tmp = tempfile.NamedTemporaryFile(
-                prefix="molt_backend_probe_",
-                suffix=probe_suffix,
-                delete=False,
-            )
-            probe_path = Path(probe_tmp.name)
-            probe_tmp.close()
-            probe_cmd = [str(binary_path or backend_bin), "--output", str(probe_path)]
-            if probe_target == "wasm":
-                probe_cmd.extend(["--target", "wasm"])
-            elif probe_target == "luau":
-                probe_cmd.extend(["--target", "luau"])
-            elif probe_target == "rust":
-                probe_cmd.extend(["--target", "rust"])
-            try:
-                probe = _run_subprocess_captured_to_tempfiles(
-                    probe_cmd,
-                    input=probe_ir,
-                    cwd=project_root,
-                    timeout=10,
-                    memory_guard_prefix="MOLT_BUILD",
-                )
-            except (subprocess.TimeoutExpired, OSError) as exc:
-                return False, str(exc)
-            finally:
-                try:
-                    probe_path.unlink()
-                except OSError:
-                    pass
-            stderr = probe.stderr.decode(errors="replace")
-            stdout = probe.stdout.decode(errors="replace")
-            return probe.returncode == 0, (stderr or stdout).strip()
-
-        def _refresh_feature_tagged_backend_alias(probe_target: str) -> None:
-            if backend_features == _DEFAULT_BACKEND_FEATURES:
-                return
-            cargo_output = _canonical_cargo_backend_output()
-            if cargo_output == backend_bin or not cargo_output.exists():
-                return
-            try:
-                cargo_mtime = cargo_output.stat().st_mtime_ns
-            except OSError:
-                return
-            try:
-                alias_mtime = backend_bin.stat().st_mtime_ns
-            except OSError:
-                alias_mtime = -1
-            if alias_mtime >= cargo_mtime:
-                return
-            probe_ok, _probe_detail = _probe_backend_binary_support(
-                probe_target,
-                binary_path=cargo_output,
-            )
-            if probe_ok:
-                _materialize_backend_binary_from(cargo_output)
-
-        if stored_fingerprint is None:
-            stored_fingerprint = _read_runtime_fingerprint(fingerprint_path)
-        if not _artifact_needs_rebuild(backend_bin, fingerprint, stored_fingerprint):
-            # Force a real compile-path probe. An empty stdin-only probe can
-            # miss feature-lane poisoning because it never exercises output
-            # emission for the requested target.
-            _quick_target = _backend_probe_target()
-            _refresh_feature_tagged_backend_alias(_quick_target)
-            _probe_ok, _probe_detail = _probe_backend_binary_support(_quick_target)
-            if _probe_ok:
-                return True
-        canonical_target_root = _canonical_target_root(project_root)
-        canonical_backend_bin = (
-            canonical_target_root / _cargo_profile_dir(cargo_profile) / backend_bin.name
-        )
-        canonical_fingerprint_path = _artifact_state_path_for_build_state_root(
-            _canonical_build_state_root(project_root),
-            canonical_backend_bin,
-            subdir="backend_fingerprints",
-            stem_suffix=f"{cargo_profile}",
-            extension="fingerprint",
-        )
-        if _maybe_hydrate_artifact_from_canonical_target(
-            artifact=backend_bin,
-            fingerprint=fingerprint,
-            fingerprint_path=fingerprint_path,
-            candidate_artifact=canonical_backend_bin,
-            candidate_fingerprint_path=canonical_fingerprint_path,
-        ):
-            _probe_target = _backend_probe_target()
-            _probe_ok, _probe_detail = _probe_backend_binary_support(_probe_target)
-            if _probe_ok:
-                return True
-        # Cargo always writes the executable as `molt-backend`; Molt keeps
-        # feature-specific aliases beside it so native/wasm/rust lanes cannot
-        # poison each other.  When CI or a developer prebuilds the correct
-        # feature lane with cargo, materialize the alias after probing the
-        # canonical binary instead of rebuilding the backend.
-        if backend_features != _DEFAULT_BACKEND_FEATURES:
-            cargo_output = _canonical_cargo_backend_output()
-            if _artifact_newer_than_sources(
-                cargo_output,
-                _backend_source_paths(project_root, backend_features),
-            ):
-                _probe_target = _backend_probe_target()
-                _probe_ok, _probe_detail = _probe_backend_binary_support(
-                    _probe_target,
-                    binary_path=cargo_output,
-                )
-                if _probe_ok and _materialize_backend_binary_from(cargo_output):
-                    if fingerprint is not None:
-                        try:
-                            fingerprint_path.parent.mkdir(
-                                parents=True,
-                                exist_ok=True,
-                            )
-                            _write_runtime_fingerprint(fingerprint_path, fingerprint)
-                        except OSError:
-                            if not json_output:
-                                print(
-                                    "Warning: failed to write backend fingerprint metadata.",
-                                    file=sys.stderr,
-                                )
-                    return True
-        # Fast path: if the backend binary exists and is newer than every
-        # source file that contributes to the fingerprint, skip the expensive
-        # cargo build and just update the stored fingerprint.  This handles
-        # the common case of running `cargo build` manually before `molt build`.
-        if _artifact_newer_than_sources(
-            backend_bin,
-            _backend_source_paths(project_root, backend_features),
-        ):
-            _probe_target = _backend_probe_target()
-            _probe_ok, _probe_detail = _probe_backend_binary_support(_probe_target)
-            if _probe_ok:
-                assert fingerprint is not None
-                _write_runtime_fingerprint(fingerprint_path, fingerprint)
-                return True
-        if not json_output:
-            print("Backend sources changed; rebuilding backend...", file=sys.stderr)
-        # Cache entries include backend/tooling/runtime identity in their keys.
-        # A backend rebuild therefore invalidates by selecting new keys, not by
-        # deleting shared immutable cache artifacts that concurrent sessions may
-        # still be reading. Size/age retention belongs to `molt clean`.
-        cmd = [
-            "cargo",
-            "build",
-            "--package",
-            "molt-backend",
-            "--profile",
-            cargo_profile,
-        ]
-        if backend_features:
-            cmd.append("--no-default-features")
-            cmd.extend(["--features", ",".join(backend_features)])
-        build_env = _cargo_build_env()
-        # Per-session build isolation: route cargo output to
-        # target/sessions/<id>/ under the canonical target root
-        # when MOLT_SESSION_ID is active to prevent concurrent agents from
-        # clobbering each other's backend artifacts.
-        build_env["CARGO_TARGET_DIR"] = str(_cargo_target_root(project_root))
-        # When building with the LLVM feature, ensure the pinned llvm-sys
-        # prefix env var points at the matching Homebrew install so
-        # inkwell/llvm-sys can link without extra shell setup.
-        if "llvm" in backend_features:
-            llvm_major = _required_llvm_backend_major(project_root)
-            if llvm_major is not None:
-                llvm_prefix_env = _llvm_sys_prefix_env_var(llvm_major)
-                if llvm_prefix_env not in build_env:
-                    llvm_prefix = f"/opt/homebrew/opt/llvm@{llvm_major}"
-                    if os.path.isdir(llvm_prefix):
-                        build_env[llvm_prefix_env] = llvm_prefix
-        _maybe_enable_sccache(build_env)
-        _maybe_enable_native_cpu(build_env)
-        try:
-            build = _run_cargo_with_sccache_retry(
-                cmd,
-                cwd=project_root,
-                env=build_env,
-                timeout=cargo_timeout,
-                json_output=json_output,
-                label="Backend build",
-            )
-        except subprocess.TimeoutExpired:
-            if not json_output:
-                timeout_note = (
-                    f"Backend build timed out after {cargo_timeout:.1f}s."
-                    if cargo_timeout is not None
-                    else "Backend build timed out."
-                )
-                print(timeout_note, file=sys.stderr)
-            return False
-        if build.returncode != 0:
-            if not json_output:
-                err = build.stderr.strip() or build.stdout.strip()
-                if err:
-                    print(err, file=sys.stderr)
-            return False
-        # Cargo always produces target/<profile>/molt-backend regardless of
-        # features.  When the requested feature set is non-default, copy
-        # the freshly-built binary to the feature-tagged path so that
-        # concurrent or sequential builds with different feature sets
-        # (native vs wasm vs rust) do not overwrite each other.
-        if not _materialize_rebuilt_backend_binary():
-            if not json_output:
-                print("Backend binary missing after rebuild.", file=sys.stderr)
-            return False
-        # -- Post-build feature probe (defense-in-depth) -----------------
-        # Cargo's incremental cache may skip recompilation when only
-        # features change, leaving a binary built for the wrong target.
-        # Probe the binary and, on mismatch, clean + rebuild once.
-        _probe_target = _backend_probe_target()
-        _probe_ok, _probe_detail = _probe_backend_binary_support(_probe_target)
-        if not _probe_ok:
-            if not json_output:
-                print(
-                    "Backend feature mismatch detected; cleaning and rebuilding...",
-                    file=sys.stderr,
-                )
-            # Skip cargo clean: the deterministic rebuild path plus post-build
-            # feature probe is the authority, while cargo clean would hold the
-            # Cargo lock and block concurrent sessions.
-            try:
-                rebuild = _run_cargo_with_sccache_retry(
-                    cmd,
-                    cwd=project_root,
-                    env=build_env,
-                    timeout=cargo_timeout,
-                    json_output=json_output,
-                    label="Backend rebuild (feature fix)",
-                )
-            except subprocess.TimeoutExpired:
-                if not json_output:
-                    print("Backend rebuild timed out.", file=sys.stderr)
-                return False
-            if rebuild.returncode != 0:
-                if not json_output:
-                    err = rebuild.stderr.strip() or rebuild.stdout.strip()
-                    if err:
-                        print(err, file=sys.stderr)
-                return False
-            if not _materialize_rebuilt_backend_binary():
-                if not json_output:
-                    print("Backend binary missing after rebuild.", file=sys.stderr)
-                return False
-            _reprobe_ok, _reprobe_detail = _probe_backend_binary_support(_probe_target)
-            if not _reprobe_ok:
-                if not json_output and _reprobe_detail:
-                    print(_reprobe_detail, file=sys.stderr)
-                return False
-        # -- End post-build feature probe --------------------------------
-        if fingerprint is not None:
-            try:
-                fingerprint_path.parent.mkdir(parents=True, exist_ok=True)
-                _write_runtime_fingerprint(fingerprint_path, fingerprint)
-            except OSError:
-                if not json_output:
-                    print(
-                        "Warning: failed to write backend fingerprint metadata.",
-                        file=sys.stderr,
-                    )
-    return True
-
-def _artifact_newer_than_sources(
-    artifact: Path,
-    source_paths: list[Path],
-) -> bool:
-    """Return True if *artifact* exists and is newer than every file in *source_paths*.
-
-    Handles both individual files and directories (recursed for all files).
-    Returns False on any OS error or if no source files are found.
-    """
-    try:
-        lib_mtime = artifact.stat().st_mtime
-    except OSError:
-        return False
-    if not _artifact_content_looks_valid(artifact):
-        return False
-    newest_src = 0.0
-    for path in source_paths:
-        try:
-            if path.is_dir():
-                for item in path.rglob("*"):
-                    if item.is_file():
-                        newest_src = max(newest_src, item.stat().st_mtime)
-            elif path.exists():
-                newest_src = max(newest_src, path.stat().st_mtime)
-        except OSError:
-            return False
-    return newest_src > 0 and lib_mtime > newest_src

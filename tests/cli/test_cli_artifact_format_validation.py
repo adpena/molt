@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import molt.cli as cli
+from molt.cli import backend_binary as cli_backend_binary
 from molt.cli import build_pipeline as cli_build_pipeline
 
 
@@ -42,4 +43,4 @@ def test_artifact_newer_than_sources_rejects_invalid_static_library(
     source = tmp_path / "source.rs"
     source.write_text("// source\n")
 
-    assert cli_build_pipeline._artifact_newer_than_sources(runtime_lib, [source]) is False
+    assert cli_backend_binary._artifact_newer_than_sources(runtime_lib, [source]) is False
