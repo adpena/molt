@@ -398,6 +398,9 @@ _OPCODE_FACT_SETS = (
     "generator_fusion_poll_required_yield_opcodes",
     "generator_fusion_poll_reject_opcodes",
     "state_machine_opcodes",
+    "exception_handling_opcodes",
+    "exception_handler_region_opcodes",
+    "structured_scf_marker_opcodes",
     "i64_overflow_box_dispatch_opcodes",
     "i64_checked_overflow_triple_opcodes",
     "i64_zero_divisor_guard_opcodes",
@@ -2645,6 +2648,45 @@ def _render_rs_unformatted(data: dict) -> str:
         "    match opcode {\n"
     )
     out.append(_render_opcode_bool_arms(opcodes, state_machine_opcodes))
+    out.append("    }\n}\n\n")
+
+    exception_handling_opcodes = list(data.get("exception_handling_opcodes", []))
+    out.append(
+        "/// Whether this opcode should set TirFunction::has_exception_handling.\n"
+        "/// This is broader than real handler regions: observation-only\n"
+        "/// CheckException also carries exception edges that augmented-CFG\n"
+        "/// consumers must see. EXHAUSTIVE over OpCode.\n"
+        "#[inline]\n"
+        "pub fn opcode_sets_exception_handling_table(opcode: OpCode) -> bool {\n"
+        "    match opcode {\n"
+    )
+    out.append(_render_opcode_bool_arms(opcodes, exception_handling_opcodes))
+    out.append("    }\n}\n\n")
+
+    exception_handler_region_opcodes = list(
+        data.get("exception_handler_region_opcodes", [])
+    )
+    out.append(
+        "/// Whether this opcode denotes a real try/state handler region for\n"
+        "/// TirFunction::has_exception_handlers(). This deliberately excludes\n"
+        "/// observation-only CheckException. EXHAUSTIVE over OpCode.\n"
+        "#[inline]\n"
+        "pub fn opcode_is_exception_handler_region_table(opcode: OpCode) -> bool {\n"
+        "    match opcode {\n"
+    )
+    out.append(_render_opcode_bool_arms(opcodes, exception_handler_region_opcodes))
+    out.append("    }\n}\n\n")
+
+    structured_scf_marker_opcodes = list(data.get("structured_scf_marker_opcodes", []))
+    out.append(
+        "/// Whether this opcode is a structured SCF marker handled by structured\n"
+        "/// TIR lowering/backconversion instead of the ordinary op-to-SimpleIR path.\n"
+        "/// EXHAUSTIVE over OpCode.\n"
+        "#[inline]\n"
+        "pub fn opcode_is_structured_scf_marker_table(opcode: OpCode) -> bool {\n"
+        "    match opcode {\n"
+    )
+    out.append(_render_opcode_bool_arms(opcodes, structured_scf_marker_opcodes))
     out.append("    }\n}\n\n")
 
     i64_overflow_box_dispatch = list(data.get("i64_overflow_box_dispatch_opcodes", []))

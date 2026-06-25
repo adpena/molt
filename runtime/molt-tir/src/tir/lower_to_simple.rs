@@ -19,7 +19,9 @@ use crate::ir::OpIR;
 use super::blocks::{BlockId, LoopBreakKind, Terminator, TirBlock};
 use super::dominators;
 use super::function::TirFunction;
-use super::op_kinds_generated::opcode_has_exception_label_attr_table;
+use super::op_kinds_generated::{
+    opcode_has_exception_label_attr_table, opcode_is_structured_scf_marker_table,
+};
 use super::ops::{AttrValue, OpCode, TirOp};
 use super::values::ValueId;
 
@@ -866,12 +868,10 @@ pub fn lower_to_simple_ir(func: &TirFunction) -> Vec<OpIR> {
         join_bid: Option<BlockId>,
     }
     let block_contains_nested_scf = |block: &TirBlock| {
-        block.ops.iter().any(|op| {
-            matches!(
-                op.opcode,
-                OpCode::ScfIf | OpCode::ScfFor | OpCode::ScfWhile | OpCode::ScfYield
-            )
-        })
+        block
+            .ops
+            .iter()
+            .any(|op| opcode_is_structured_scf_marker_table(op.opcode))
     };
     let mut if_patterns: HashMap<BlockId, IfPattern> = HashMap::new();
     let mut if_inlined_blocks: HashSet<BlockId> = HashSet::new();
