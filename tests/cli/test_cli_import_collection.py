@@ -161,7 +161,17 @@ def _install_fake_backend_compile(
         fake_run_subprocess_captured_to_tempfiles,
     )
     monkeypatch.setattr(
+        RUNTIME_BUILD,
+        "_run_subprocess_captured_to_tempfiles",
+        fake_run_subprocess_captured_to_tempfiles,
+    )
+    monkeypatch.setattr(
         cli,
+        "_initialize_runtime_artifact_state",
+        fake_initialize_runtime_artifact_state,
+    )
+    monkeypatch.setattr(
+        RUNTIME_BUILD,
         "_initialize_runtime_artifact_state",
         fake_initialize_runtime_artifact_state,
     )
@@ -170,7 +180,15 @@ def _install_fake_backend_compile(
         "_maybe_start_native_runtime_lib_ready_async",
         lambda *args, **kwargs: None,
     )
+    monkeypatch.setattr(
+        RUNTIME_BUILD,
+        "_maybe_start_native_runtime_lib_ready_async",
+        lambda *args, **kwargs: None,
+    )
     monkeypatch.setattr(cli, "_ensure_runtime_lib_ready", fake_ensure_runtime_lib_ready)
+    monkeypatch.setattr(
+        RUNTIME_BUILD, "_ensure_runtime_lib_ready", fake_ensure_runtime_lib_ready
+    )
     monkeypatch.setattr(
         cli,
         "_runtime_intrinsic_symbols_file",
