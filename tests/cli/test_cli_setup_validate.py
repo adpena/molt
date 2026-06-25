@@ -1161,6 +1161,60 @@ def test_llvm_backend_advice_names_exact_prefix_and_config(
     assert "tools/bootstrap_llvm.py" in joined
 
 
+def test_llvm_report_distinguishes_windows_clang_without_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(TOOLCHAIN_VALIDATION.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(
+        TOOLCHAIN_VALIDATION,
+        "_required_llvm_backend_major",
+        lambda _root: 22,
+        raising=True,
+    )
+    present = {
+        "python": "python",
+        "uv": "uv",
+        "cargo": "cargo",
+        "rustup": "rustup",
+        "cargo-upgrade": "cargo-upgrade",
+        "clang": "C:/Program Files/LLVM/bin/clang.exe",
+        "cmake": "cmake",
+        "ninja": "ninja",
+        "wasm-ld": "wasm-ld",
+        "wasm-tools": "wasm-tools",
+        "wasm-pack": "wasm-pack",
+        "wasmtime": "wasmtime",
+        "zig": "zig",
+    }
+    monkeypatch.setattr(
+        TOOLCHAIN_VALIDATION.shutil,
+        "which",
+        lambda name: present.get(name),
+        raising=True,
+    )
+
+    def fake_run(cmd, **_kwargs):
+        if cmd == ["C:/Program Files/LLVM/bin/clang.exe", "--version"]:
+            return subprocess.CompletedProcess(
+                cmd,
+                0,
+                "clang version 22.1.7\nTarget: x86_64-pc-windows-msvc\n",
+                "",
+            )
+        return subprocess.CompletedProcess(cmd, 1, "", "")
+
+    monkeypatch.setattr(TOOLCHAIN_VALIDATION.subprocess, "run", fake_run, raising=True)
+
+    report = TOOLCHAIN_VALIDATION._build_toolchain_report(ROOT)
+    llvm = next(
+        check for check in report.checks if check["name"] == "llvm-backend-toolchain"
+    )
+
+    assert llvm["ok"] is False
+    assert "clang is present" in llvm["detail"]
+    assert "llvm-config" in llvm["detail"]
+
+
 def test_windows_msvc_env_reports_inactive_dev_shell(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
