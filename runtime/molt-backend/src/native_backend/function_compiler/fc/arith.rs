@@ -64,21 +64,12 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
-    int_like_vars: &BTreeSet<String>,
-    bool_like_vars: &BTreeSet<String>,
     loop_stack: &[LoopFrame],
     scalar_fast_paths_enabled: bool,
     nbc: &crate::NanBoxConsts,
 ) -> OpFlow {
-    let op_prefers_int_lane = |op: &OpIR| {
-        super::op_prefers_int_lane(
-            scalar_fast_paths_enabled,
-            representation_plan,
-            op,
-            int_like_vars,
-            bool_like_vars,
-        )
-    };
+    let op_prefers_int_lane =
+        |op: &OpIR| super::op_prefers_int_lane(scalar_fast_paths_enabled, representation_plan, op);
     let op_prefers_integer_runtime_lane = |op: &OpIR| {
         scalar_fast_paths_enabled && representation_plan.op_prefers_integer_runtime_lane(op)
     };
@@ -174,8 +165,6 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                     &mut *sealed_blocks,
                     vars,
                     representation_plan,
-                    int_like_vars,
-                    bool_like_vars,
                     nbc,
                     lhs_name,
                 );
@@ -187,8 +176,6 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                     &mut *sealed_blocks,
                     vars,
                     representation_plan,
-                    int_like_vars,
-                    bool_like_vars,
                     nbc,
                     rhs_name,
                 );
@@ -442,7 +429,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                     out__,
                     res,
                 );
-                // raw_int_shadow propagation is handled inside the
+                // Raw-carrier propagation is handled inside the
                 // both-shadow path above (via merge phi).  Other paths
                 // (tag-check, generic) don't shadow because the output
                 // representation is unknown.
@@ -710,8 +697,6 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                     &mut *sealed_blocks,
                     vars,
                     representation_plan,
-                    int_like_vars,
-                    bool_like_vars,
                     nbc,
                     lhs_name,
                 );
@@ -723,8 +708,6 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                     &mut *sealed_blocks,
                     vars,
                     representation_plan,
-                    int_like_vars,
-                    bool_like_vars,
                     nbc,
                     rhs_name,
                 );
@@ -985,8 +968,6 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                     &mut *sealed_blocks,
                     vars,
                     representation_plan,
-                    int_like_vars,
-                    bool_like_vars,
                     nbc,
                     lhs_name,
                 );
@@ -998,8 +979,6 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                     &mut *sealed_blocks,
                     vars,
                     representation_plan,
-                    int_like_vars,
-                    bool_like_vars,
                     nbc,
                     rhs_name,
                 );
@@ -1217,7 +1196,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                     out__,
                     res,
                 );
-                // raw_int_shadow propagation is handled inside the
+                // Raw-carrier propagation is handled inside the
                 // both-shadow path above (via merge phi).  Other paths
                 // (tag-check, generic) don't shadow because the output
                 // representation is unknown.
@@ -1238,8 +1217,6 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                     &mut *sealed_blocks,
                     vars,
                     representation_plan,
-                    int_like_vars,
-                    bool_like_vars,
                     nbc,
                     lhs_name,
                 );
@@ -1251,8 +1228,6 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                     &mut *sealed_blocks,
                     vars,
                     representation_plan,
-                    int_like_vars,
-                    bool_like_vars,
                     nbc,
                     rhs_name,
                 );
@@ -1469,8 +1444,6 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                     &mut *sealed_blocks,
                     vars,
                     representation_plan,
-                    int_like_vars,
-                    bool_like_vars,
                     nbc,
                     lhs_name,
                 );
@@ -1482,8 +1455,6 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                     &mut *sealed_blocks,
                     vars,
                     representation_plan,
-                    int_like_vars,
-                    bool_like_vars,
                     nbc,
                     rhs_name,
                 );
@@ -1699,7 +1670,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                     out__,
                     res,
                 );
-                // raw_int_shadow propagation is handled inside the
+                // Raw-carrier propagation is handled inside the
                 // both-shadow path above (via merge phi).  Other paths
                 // (tag-check, generic) don't shadow because the output
                 // representation is unknown.
@@ -1720,8 +1691,6 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                     &mut *sealed_blocks,
                     vars,
                     representation_plan,
-                    int_like_vars,
-                    bool_like_vars,
                     nbc,
                     lhs_name,
                 );
@@ -1733,8 +1702,6 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                     &mut *sealed_blocks,
                     vars,
                     representation_plan,
-                    int_like_vars,
-                    bool_like_vars,
                     nbc,
                     rhs_name,
                 );
@@ -2740,8 +2707,6 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                     &mut *sealed_blocks,
                     vars,
                     representation_plan,
-                    int_like_vars,
-                    bool_like_vars,
                     nbc,
                     lhs_name,
                 );
@@ -2753,8 +2718,6 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                     &mut *sealed_blocks,
                     vars,
                     representation_plan,
-                    int_like_vars,
-                    bool_like_vars,
                     nbc,
                     rhs_name,
                 );

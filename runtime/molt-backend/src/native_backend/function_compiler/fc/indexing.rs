@@ -32,11 +32,6 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
     vars: &BTreeMap<String, Variable>,
     scalarized_tuples: &BTreeMap<String, Vec<Value>>,
     representation_plan: &ScalarRepresentationPlan,
-    int_like_vars: &BTreeSet<String>,
-    bool_like_vars: &BTreeSet<String>,
-    float_like_vars: &BTreeSet<String>,
-    str_like_vars: &BTreeSet<String>,
-    none_like_vars: &BTreeSet<String>,
     list_index_fast_paths: &mut ListIndexFastPathState,
     scalar_fast_paths_enabled: bool,
     local_inc_ref_obj: FuncRef,
@@ -44,21 +39,13 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
     nbc: &crate::NanBoxConsts,
 ) {
     let ops = func_ops;
-    let var_is_int = |name: &str| {
-        scalar_fast_paths_enabled
-            && (int_like_vars.contains(name) || representation_plan.is_raw_int_carrier_name(name))
-    };
-    let var_is_bool = |name: &str| scalar_fast_paths_enabled && bool_like_vars.contains(name);
-    let var_is_str = |name: &str| scalar_fast_paths_enabled && str_like_vars.contains(name);
-    let var_is_known_non_heap = |name: &str| {
-        int_like_vars.contains(name)
-            || representation_plan.is_raw_int_carrier_name(name)
-            || bool_like_vars.contains(name)
-            || representation_plan.is_bool_unboxed(name)
-            || float_like_vars.contains(name)
-            || representation_plan.is_float_unboxed(name)
-            || none_like_vars.contains(name)
-    };
+    let var_is_int =
+        |name: &str| scalar_fast_paths_enabled && representation_plan.name_is_integer_scalar(name);
+    let var_is_bool =
+        |name: &str| scalar_fast_paths_enabled && representation_plan.name_is_bool_scalar(name);
+    let var_is_str =
+        |name: &str| scalar_fast_paths_enabled && representation_plan.name_is_str_scalar(name);
+    let var_is_known_non_heap = |name: &str| representation_plan.name_is_non_heap_scalar(name);
     let op_index_key_is_integer_family = |op: &OpIR| {
         scalar_fast_paths_enabled && representation_plan.op_index_key_is_integer_family(op)
     };
@@ -139,7 +126,7 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                     // Inline list[int] getitem — direct memory access using
                     // ListIntStorage (#[repr(C)]): [data@0, len@8, cap@16].
                     //
-                    // Requires raw_int_shadow index for bounds-checked inline path.
+                    // Requires a plan-owned raw-int index for the bounds-checked inline path.
                     // Falls back to the safe runtime function otherwise.
                     // Inside loops, use Variable-only shadows (phi-correct).
                     let raw_idx_lookup =
@@ -365,7 +352,9 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                         // the per-access is_bool branch entirely.
                         let getitem_out_is_bool = op.out.as_ref().is_some_and(|o| var_is_bool(o));
                         let getitem_out_is_non_bool = op.out.as_ref().is_some_and(|o| {
-                            var_is_int(o) || var_is_str(o) || float_like_vars.contains(o.as_str())
+                            var_is_int(o)
+                                || var_is_str(o)
+                                || representation_plan.name_is_float_scalar(o)
                         });
                         // Extract data_ptr, len, and is_bool flag (cached across loop iterations).
                         let (data_ptr, len_val, is_bool_val) = {
@@ -801,7 +790,7 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                             }
                         }
                     } else {
-                        // No raw_int_shadow — fall back to runtime call.
+                        // No raw-int carrier: fall back to runtime call.
                         let callee = SimpleBackend::import_func_id_split(
                             &mut *module,
                             &mut *import_ids,
@@ -1363,7 +1352,7 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                         }
                     } // end else (non-bce_safe list setitem)
                 } else {
-                    // No raw_int_shadow — fall back to runtime call.
+                    // No raw-int carrier: fall back to runtime call.
                     let callee = SimpleBackend::import_func_id_split(
                         &mut *module,
                         &mut *import_ids,
@@ -1395,7 +1384,6 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                     &mut *builder,
                     import_refs,
                     sealed_blocks,
-                    bool_like_vars,
                     vars,
                     nbc,
                     representation_plan,

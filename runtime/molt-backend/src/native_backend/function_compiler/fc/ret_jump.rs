@@ -42,8 +42,6 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
-    int_like_vars: &BTreeSet<String>,
-    bool_like_vars: &BTreeSet<String>,
     param_name_set: &BTreeSet<&str>,
     alias_roots: &BTreeMap<String, String>,
     last_use: &BTreeMap<String, usize>,
@@ -235,7 +233,6 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                 &mut *builder,
                 &mut *import_refs,
                 &mut *sealed_blocks,
-                bool_like_vars,
                 vars,
                 nbc,
                 representation_plan,
@@ -568,7 +565,9 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                 // Raw bool from proven list_bool getitem or const_bool.
                 // Branch directly on raw 0/1 — ZERO NaN-box overhead.
                 builder.ins().icmp_imm(IntCC::NotEqual, raw_val, 0)
-            } else if scalar_fast_paths_enabled && bool_like_vars.contains(cond_name) {
+            } else if scalar_fast_paths_enabled
+                && representation_plan.name_is_bool_scalar(cond_name)
+            {
                 // NaN-boxed bool: bit 0 is the boolean value.
                 let cond = var_get_boxed_overflow_safe(
                     &mut *module,
@@ -590,8 +589,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                 // Proven raw i64 carrier: truthiness is `value != 0`.
                 builder.ins().icmp_imm(IntCC::NotEqual, raw_shadow, 0)
             } else if scalar_fast_paths_enabled
-                && (int_like_vars.contains(cond_name)
-                    || representation_plan.is_raw_int_carrier_name(cond_name))
+                && representation_plan.name_is_integer_scalar(cond_name)
             {
                 // `var_is_int` only proves Python-`int` type, which includes
                 // heap BigInts (TAG_PTR). The trusted unbox would truncate a
@@ -908,14 +906,9 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                     // consistent representation, no per-iteration
                     // box→unbox round trip.
                     //
-                    // Non-int_primary join slots still take the
-                    // legacy box-on-back-edge path (post 5127b12f):
-                    // the loop_start demote re-boxes on entry, and
-                    // we box here on the back edge. This is
-                    // necessary when the join slot's other
-                    // definition sites might produce boxed values
-                    // (mixed-type stores, generic-runtime calls
-                    // that return NaN-boxed results).
+                    // Boxed join slots still box on the back edge because
+                    // their other definition sites may produce NaN-boxed
+                    // values (mixed-type stores or generic runtime calls).
                     def_var_named(&mut *builder, vars, name, raw_val);
                     // Propagate shadow to destination (both tiers).
                     // No refcount ops needed -- raw i64 is not a heap pointer.
@@ -1344,7 +1337,10 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                 // --- Raw-primary bool fast path ---
                 if representation_plan.is_bool_unboxed(var_name.as_str())
                     && scalar_fast_paths_enabled
-                    && op.out.as_ref().is_some_and(|o| bool_like_vars.contains(o))
+                    && op
+                        .out
+                        .as_ref()
+                        .is_some_and(|o| representation_plan.name_is_bool_scalar(o))
                 {
                     let raw_bool =
                         bool_raw_value(&mut *builder, vars, representation_plan, var_name)
@@ -1484,7 +1480,10 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                 // --- Raw-primary bool fast path (args-based copy_var) ---
                 if representation_plan.is_bool_unboxed(&args[0])
                     && scalar_fast_paths_enabled
-                    && op.out.as_ref().is_some_and(|o| bool_like_vars.contains(o))
+                    && op
+                        .out
+                        .as_ref()
+                        .is_some_and(|o| representation_plan.name_is_bool_scalar(o))
                 {
                     let raw_bool =
                         bool_raw_value(&mut *builder, vars, representation_plan, &args[0])

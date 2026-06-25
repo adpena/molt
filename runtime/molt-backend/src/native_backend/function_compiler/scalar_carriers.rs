@@ -5,16 +5,6 @@ use super::*;
 // private to function_compiler: it is an internal representation authority, not
 // a backend-wide API.
 
-#[cfg(feature = "native-backend")]
-#[inline]
-pub(in crate::native_backend::function_compiler) fn name_is_int_like(
-    name: &str,
-    int_like_vars: &BTreeSet<String>,
-    bool_like_vars: &BTreeSet<String>,
-) -> bool {
-    int_like_vars.contains(name) || bool_like_vars.contains(name)
-}
-
 /// Phase 1d typed-IR: recover a raw i64 operand from a variable that holds
 /// raw i64 in its main Cranelift Variable.  The static `representation_plan`
 /// set (Step 0's operand-recursive fixpoint) is the single source of truth:
@@ -23,9 +13,8 @@ pub(in crate::native_backend::function_compiler) fn name_is_int_like(
 /// Cranelift's FunctionBuilder caches `use_var` within a block AND inserts
 /// phi nodes automatically at block boundaries when a Variable has multiple
 /// defs, so a single static-set lookup replaces the legacy two-tier shadow
-/// plumbing (`raw_int_shadow_vals` for in-block SSA values, `raw_int_shadow`
-/// Variable-tier for cross-block phi, dynamic `raw_primary_int` for
-/// membership).
+/// plumbing (in-block SSA shadow values, cross-block shadow Variables, and
+/// dynamic raw-carrier membership).
 #[cfg(feature = "native-backend")]
 #[inline]
 pub(in crate::native_backend::function_compiler) fn int_raw_value(
@@ -398,7 +387,6 @@ pub(in crate::native_backend::function_compiler) fn ensure_boxed_primitive_safe(
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
     sealed_blocks: &mut BTreeSet<Block>,
-    bool_like_vars: &BTreeSet<String>,
     vars: &BTreeMap<String, Variable>,
     nbc: &crate::NanBoxConsts,
     representation_plan: &ScalarRepresentationPlan,
@@ -416,7 +404,7 @@ pub(in crate::native_backend::function_compiler) fn ensure_boxed_primitive_safe(
             representation_plan,
         )
         .expect("float escape var not found")
-    } else if bool_like_vars.contains(name) {
+    } else if representation_plan.name_is_bool_scalar(name) {
         ensure_boxed_bool_safe(builder, vars, representation_plan, nbc, name)
             .expect("bool variable not found for primitive-safe boxing")
     } else {
@@ -594,7 +582,6 @@ pub(in crate::native_backend::function_compiler) fn merge_rebind_value_for_stora
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
-    bool_like_vars: &BTreeSet<String>,
     representation_plan: &ScalarRepresentationPlan,
     nbc: &crate::NanBoxConsts,
     name: &str,
@@ -609,7 +596,6 @@ pub(in crate::native_backend::function_compiler) fn merge_rebind_value_for_stora
                     builder,
                     import_refs,
                     sealed_blocks,
-                    bool_like_vars,
                     vars,
                     nbc,
                     representation_plan,
@@ -626,7 +612,6 @@ pub(in crate::native_backend::function_compiler) fn merge_rebind_value_for_stora
                     builder,
                     import_refs,
                     sealed_blocks,
-                    bool_like_vars,
                     vars,
                     nbc,
                     representation_plan,
@@ -645,7 +630,6 @@ pub(in crate::native_backend::function_compiler) fn merge_rebind_value_for_stora
                             builder,
                             import_refs,
                             sealed_blocks,
-                            bool_like_vars,
                             vars,
                             nbc,
                             representation_plan,
@@ -660,7 +644,6 @@ pub(in crate::native_backend::function_compiler) fn merge_rebind_value_for_stora
             builder,
             import_refs,
             sealed_blocks,
-            bool_like_vars,
             vars,
             nbc,
             representation_plan,
@@ -927,8 +910,6 @@ pub(in crate::native_backend::function_compiler) fn float_value_for_mixed(
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
-    int_like_vars: &BTreeSet<String>,
-    bool_like_vars: &BTreeSet<String>,
     nbc: &crate::NanBoxConsts,
     name: &str,
 ) -> Value {
@@ -938,9 +919,7 @@ pub(in crate::native_backend::function_compiler) fn float_value_for_mixed(
     }
 
     // 2. Operand is int — get raw i64 and convert to f64.
-    if name_is_int_like(name, int_like_vars, bool_like_vars)
-        || representation_plan.is_raw_int_carrier_name(name)
-    {
+    if representation_plan.name_is_integer_scalar(name) {
         // Phase 1d: representation_plan members hold raw i64 in the main
         // Variable; reading via int_raw_value avoids the box/unbox detour.
         if let Some(raw_int_val) = int_raw_value(builder, vars, representation_plan, name) {
@@ -991,8 +970,6 @@ pub(in crate::native_backend::function_compiler) fn emit_float_numeric_compare(
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
-    int_like_vars: &BTreeSet<String>,
-    bool_like_vars: &BTreeSet<String>,
     nbc: &crate::NanBoxConsts,
     out_name: Option<&String>,
     lhs_name: &str,
@@ -1007,8 +984,6 @@ pub(in crate::native_backend::function_compiler) fn emit_float_numeric_compare(
         sealed_blocks,
         vars,
         representation_plan,
-        int_like_vars,
-        bool_like_vars,
         nbc,
         lhs_name,
     );
@@ -1020,8 +995,6 @@ pub(in crate::native_backend::function_compiler) fn emit_float_numeric_compare(
         sealed_blocks,
         vars,
         representation_plan,
-        int_like_vars,
-        bool_like_vars,
         nbc,
         rhs_name,
     );

@@ -20,7 +20,12 @@ legacy `int_carriers_plan` alias in native backend code. The live gate is
 `tools/structural_audit.py --check`, metric
 `native_scalar_plan_authority_violations = 0`, backed by direct scans of
 `runtime/molt-backend/src/native_backend/function_compiler.rs` and
-`runtime/molt-backend/src/native_backend/function_compiler/**`. The deeper
+`runtime/molt-backend/src/native_backend/function_compiler/**`. Native
+function-codegen production paths also no longer carry semantic scalar-set
+clones (`int_like_vars`, `bool_like_vars`, `float_like_vars`, `str_like_vars`,
+or `none_like_vars`); guard, branch, boxing, merge, direct-field, and mixed
+numeric decisions query `ScalarRepresentationPlan::name_is_*` predicates
+directly. The deeper
 plan-owned carrier authority also forbids `bool_primary_names` /
 `float_primary_names` side stores in `runtime/molt-tir/src/representation_plan.rs`;
 bool/F64 primary views must derive from `repr_by_name` alongside the int tiers,
