@@ -8082,7 +8082,7 @@ def test_parallel_build_reuses_cached_lowering_across_parallel_builds(
     monkeypatch.setenv("MOLT_PROJECT_ROOT", str(ROOT))
     monkeypatch.setenv("CARGO_TARGET_DIR", str(build_state_root / "cargo-target"))
     monkeypatch.setenv("MOLT_CACHE", str(cache_root))
-    monkeypatch.setattr(cli, "_find_project_root", lambda start: project)
+    monkeypatch.setattr(cli_build_inputs, "_find_project_root", lambda start: project)
     monkeypatch.setattr(
         cli_frontend_execution, "_resolve_frontend_parallel_module_workers", lambda: 2
     )
@@ -8099,7 +8099,7 @@ def test_parallel_build_reuses_cached_lowering_across_parallel_builds(
         "_resolve_frontend_parallel_target_cost_per_worker",
         lambda: 1.0,
     )
-    monkeypatch.setattr(cli, "_backend_daemon_enabled", lambda: False)
+    monkeypatch.setattr(cli_build_pipeline, "_backend_daemon_enabled", lambda: False)
     monkeypatch.setattr(
         cli_frontend_pipeline,
         "_analyze_module_schedule",
@@ -8214,7 +8214,7 @@ def test_parallel_build_reuses_dependent_cache_after_stable_interface_change(
     monkeypatch.setenv("MOLT_PROJECT_ROOT", str(ROOT))
     monkeypatch.setenv("CARGO_TARGET_DIR", str(build_state_root / "cargo-target"))
     monkeypatch.setenv("MOLT_CACHE", str(cache_root))
-    monkeypatch.setattr(cli, "_find_project_root", lambda start: project)
+    monkeypatch.setattr(cli_build_inputs, "_find_project_root", lambda start: project)
     monkeypatch.setattr(
         cli_frontend_execution, "_resolve_frontend_parallel_module_workers", lambda: 2
     )
@@ -8231,7 +8231,7 @@ def test_parallel_build_reuses_dependent_cache_after_stable_interface_change(
         "_resolve_frontend_parallel_target_cost_per_worker",
         lambda: 1.0,
     )
-    monkeypatch.setattr(cli, "_backend_daemon_enabled", lambda: False)
+    monkeypatch.setattr(cli_build_pipeline, "_backend_daemon_enabled", lambda: False)
     monkeypatch.setattr(
         cli_frontend_pipeline,
         "_analyze_module_schedule",
@@ -8342,7 +8342,7 @@ def test_parallel_build_allows_scoped_type_facts(
     monkeypatch.setenv("MOLT_PROJECT_ROOT", str(ROOT))
     monkeypatch.setenv("CARGO_TARGET_DIR", str(build_state_root / "cargo-target"))
     monkeypatch.setenv("MOLT_CACHE", str(cache_root))
-    monkeypatch.setattr(cli, "_find_project_root", lambda start: project)
+    monkeypatch.setattr(cli_build_inputs, "_find_project_root", lambda start: project)
     monkeypatch.setattr(
         cli_frontend_execution, "_resolve_frontend_parallel_module_workers", lambda: 2
     )
@@ -8359,7 +8359,7 @@ def test_parallel_build_allows_scoped_type_facts(
         "_resolve_frontend_parallel_target_cost_per_worker",
         lambda: 1.0,
     )
-    monkeypatch.setattr(cli, "_backend_daemon_enabled", lambda: False)
+    monkeypatch.setattr(cli_build_pipeline, "_backend_daemon_enabled", lambda: False)
     monkeypatch.setattr(
         cli_frontend_pipeline,
         "_analyze_module_schedule",
@@ -8467,11 +8467,11 @@ def test_build_one_shot_backend_compile_uses_ir_file_lease(
     monkeypatch.setenv("MOLT_PROJECT_ROOT", str(ROOT))
     monkeypatch.setenv("CARGO_TARGET_DIR", str(build_state_root / "cargo-target"))
     monkeypatch.setenv("MOLT_CACHE", str(cache_root))
-    monkeypatch.setattr(cli, "_find_project_root", lambda start: project)
+    monkeypatch.setattr(cli_build_inputs, "_find_project_root", lambda start: project)
     monkeypatch.setattr(
         cli_frontend_execution, "_resolve_frontend_parallel_module_workers", lambda: 0
     )
-    monkeypatch.setattr(cli, "_backend_daemon_enabled", lambda: False)
+    monkeypatch.setattr(cli_build_pipeline, "_backend_daemon_enabled", lambda: False)
     monkeypatch.setattr(cli_build_pipeline, "_backend_bin_path", lambda *args, **kwargs: backend_bin)
     monkeypatch.setattr(cli_backend_binary, "_ensure_backend_binary", lambda *args, **kwargs: True)
     backend_inputs: list[bytes | None] = []
@@ -8520,11 +8520,11 @@ def test_build_skips_daemon_preflight_when_socket_exists(
     monkeypatch.setenv("MOLT_PROJECT_ROOT", str(ROOT))
     monkeypatch.setenv("CARGO_TARGET_DIR", str(build_state_root / "cargo-target"))
     monkeypatch.setenv("MOLT_CACHE", str(cache_root))
-    monkeypatch.setattr(cli, "_find_project_root", lambda start: project)
+    monkeypatch.setattr(cli_build_inputs, "_find_project_root", lambda start: project)
     monkeypatch.setattr(
         cli_frontend_execution, "_resolve_frontend_parallel_module_workers", lambda: 0
     )
-    monkeypatch.setattr(cli, "_backend_daemon_enabled", lambda: True)
+    monkeypatch.setattr(cli_build_pipeline, "_backend_daemon_enabled", lambda: True)
     monkeypatch.setattr(cli_build_pipeline, "_backend_bin_path", lambda *args, **kwargs: backend_bin)
     monkeypatch.setattr(cli_backend_binary, "_ensure_backend_binary", lambda *args, **kwargs: True)
     monkeypatch.setattr(
@@ -8603,11 +8603,11 @@ def test_build_emit_obj_does_not_route_stdlib_object_env_from_helper(
     monkeypatch.setenv("MOLT_PROJECT_ROOT", str(ROOT))
     monkeypatch.setenv("CARGO_TARGET_DIR", str(build_state_root / "cargo-target"))
     monkeypatch.setenv("MOLT_CACHE", str(cache_root))
-    monkeypatch.setattr(cli, "_find_project_root", lambda start: project)
+    monkeypatch.setattr(cli_build_inputs, "_find_project_root", lambda start: project)
     monkeypatch.setattr(
         cli_frontend_execution, "_resolve_frontend_parallel_module_workers", lambda: 0
     )
-    monkeypatch.setattr(cli, "_backend_daemon_enabled", lambda: False)
+    monkeypatch.setattr(cli_build_pipeline, "_backend_daemon_enabled", lambda: False)
     monkeypatch.setattr(cli_build_pipeline, "_backend_bin_path", lambda *args, **kwargs: backend_bin)
     monkeypatch.setattr(cli_backend_binary, "_ensure_backend_binary", lambda *args, **kwargs: True)
     monkeypatch.setattr(
@@ -10989,7 +10989,7 @@ def test_prepare_backend_dispatch_prefers_reloc_runtime_for_wasm_layout_probe(
     monkeypatch.delenv("MOLT_WASM_SPLIT_RUNTIME_RUNTIME_TABLE_MIN", raising=False)
     monkeypatch.setattr(cli_build_pipeline, "_backend_bin_path", lambda *args, **kwargs: backend_bin)
     monkeypatch.setattr(cli_backend_binary, "_ensure_backend_binary", lambda *args, **kwargs: True)
-    monkeypatch.setattr(cli, "_backend_daemon_enabled", lambda: False)
+    monkeypatch.setattr(cli_build_pipeline, "_backend_daemon_enabled", lambda: False)
     monkeypatch.setattr(cli, "wasm_runtime_required_import_names", lambda modules: ())
     monkeypatch.setattr(
         cli_build_pipeline,
@@ -11068,7 +11068,7 @@ def test_prepare_backend_dispatch_linked_table_base_uses_shared_runtime_prefix(
     monkeypatch.delenv("MOLT_WASM_SPLIT_RUNTIME_RUNTIME_TABLE_MIN", raising=False)
     monkeypatch.setattr(cli_build_pipeline, "_backend_bin_path", lambda *args, **kwargs: backend_bin)
     monkeypatch.setattr(cli_backend_binary, "_ensure_backend_binary", lambda *args, **kwargs: True)
-    monkeypatch.setattr(cli, "_backend_daemon_enabled", lambda: False)
+    monkeypatch.setattr(cli_build_pipeline, "_backend_daemon_enabled", lambda: False)
     monkeypatch.setattr(cli, "wasm_runtime_required_import_names", lambda modules: ())
     monkeypatch.setattr(cli_build_pipeline, "_read_wasm_data_end", lambda _path: 4096)
     monkeypatch.setattr(cli_build_pipeline, "_read_wasm_memory_min_bytes", lambda _path: 8192)
@@ -11138,7 +11138,7 @@ def test_prepare_backend_dispatch_uses_reloc_runtime_for_split_runtime_table_min
     monkeypatch.delenv("MOLT_WASM_SPLIT_RUNTIME_RUNTIME_TABLE_MIN", raising=False)
     monkeypatch.setattr(cli_build_pipeline, "_backend_bin_path", lambda *args, **kwargs: backend_bin)
     monkeypatch.setattr(cli_backend_binary, "_ensure_backend_binary", lambda *args, **kwargs: True)
-    monkeypatch.setattr(cli, "_backend_daemon_enabled", lambda: False)
+    monkeypatch.setattr(cli_build_pipeline, "_backend_daemon_enabled", lambda: False)
     monkeypatch.setattr(cli, "wasm_runtime_required_import_names", lambda modules: ())
     monkeypatch.setattr(cli_build_pipeline, "_read_wasm_data_end", lambda path: None)
     monkeypatch.setattr(cli_build_pipeline, "_read_wasm_memory_min_bytes", lambda path: None)
@@ -12947,11 +12947,11 @@ def test_build_rust_target_uses_rust_backend_feature_and_skips_daemon(
     monkeypatch.setenv("MOLT_PROJECT_ROOT", str(ROOT))
     monkeypatch.setenv("CARGO_TARGET_DIR", str(build_state_root / "cargo-target"))
     monkeypatch.setenv("MOLT_CACHE", str(cache_root))
-    monkeypatch.setattr(cli, "_find_project_root", lambda start: project)
+    monkeypatch.setattr(cli_build_inputs, "_find_project_root", lambda start: project)
     monkeypatch.setattr(
         cli_frontend_execution, "_resolve_frontend_parallel_module_workers", lambda: 0
     )
-    monkeypatch.setattr(cli, "_backend_daemon_enabled", lambda: True)
+    monkeypatch.setattr(cli_build_pipeline, "_backend_daemon_enabled", lambda: True)
     monkeypatch.setattr(cli_build_pipeline, "_backend_bin_path", lambda *args, **kwargs: backend_bin)
     monkeypatch.setattr(
         cli_build_pipeline,
@@ -13092,11 +13092,11 @@ def test_build_release_rust_target_uses_release_fast_backend_profile_by_default(
     monkeypatch.setenv("MOLT_CACHE", str(cache_root))
     monkeypatch.delenv("MOLT_RELEASE_BACKEND_CARGO_PROFILE", raising=False)
     monkeypatch.delenv("MOLT_RELEASE_CARGO_PROFILE", raising=False)
-    monkeypatch.setattr(cli, "_find_project_root", lambda start: project)
+    monkeypatch.setattr(cli_build_inputs, "_find_project_root", lambda start: project)
     monkeypatch.setattr(
         cli_frontend_execution, "_resolve_frontend_parallel_module_workers", lambda: 0
     )
-    monkeypatch.setattr(cli, "_backend_daemon_enabled", lambda: True)
+    monkeypatch.setattr(cli_build_pipeline, "_backend_daemon_enabled", lambda: True)
     monkeypatch.setattr(cli_build_pipeline, "_backend_bin_path", lambda *args, **kwargs: backend_bin)
     monkeypatch.setattr(
         cli_build_pipeline,
@@ -13320,7 +13320,7 @@ def test_run_uses_build_profile_flag_for_nested_build(
         run_cmds.append(list(cmd))
         return 0
 
-    monkeypatch.setattr(cli, "_find_project_root", lambda start: project)
+    monkeypatch.setattr(cli_commands, "_find_project_root", lambda start: project)
     monkeypatch.setattr(cli, "_find_molt_root", lambda start, cwd=None: ROOT)
     monkeypatch.setattr(RUNTIME_BUILD, "_run_completed_command", fake_run_completed_command)
     monkeypatch.setattr(cli_commands, "_run_command", fake_run_command)
@@ -13386,7 +13386,7 @@ def test_run_script_uses_build_resolved_entry_for_package_override_file(
         run_cmds.append(list(cmd))
         return 0
 
-    monkeypatch.setattr(cli, "_find_project_root", lambda start: project)
+    monkeypatch.setattr(cli_commands, "_find_project_root", lambda start: project)
     monkeypatch.setattr(cli, "_find_molt_root", lambda start, cwd=None: ROOT)
     monkeypatch.setattr(RUNTIME_BUILD, "_run_completed_command", fake_run_completed_command)
     monkeypatch.setattr(cli_commands, "_run_command", fake_run_command)
@@ -13440,7 +13440,7 @@ def test_run_script_uses_build_json_output_for_binary_path(
         run_cmds.append(list(cmd))
         return 0
 
-    monkeypatch.setattr(cli, "_find_project_root", lambda start: project)
+    monkeypatch.setattr(cli_commands, "_find_project_root", lambda start: project)
     monkeypatch.setattr(cli, "_find_molt_root", lambda start, cwd=None: ROOT)
     monkeypatch.setattr(RUNTIME_BUILD, "_run_completed_command", fake_run_completed_command)
     monkeypatch.setattr(cli_commands, "_run_command", fake_run_command)
@@ -13499,7 +13499,7 @@ def test_run_script_replays_build_messages_and_warnings_in_non_json_mode(
         del kwargs
         return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
 
-    monkeypatch.setattr(cli, "_find_project_root", lambda start: project)
+    monkeypatch.setattr(cli_commands, "_find_project_root", lambda start: project)
     monkeypatch.setattr(cli, "_find_molt_root", lambda start, cwd=None: ROOT)
     monkeypatch.setattr(RUNTIME_BUILD, "_run_completed_command", fake_run_completed_command)
     monkeypatch.setattr(cli_commands, "_run_command", lambda cmd, **kwargs: 0)
@@ -13546,7 +13546,7 @@ def test_run_script_surfaces_nested_build_error_detail_in_non_json_mode(
         del kwargs
         return subprocess.CompletedProcess(cmd, 1, json.dumps(payload), "")
 
-    monkeypatch.setattr(cli, "_find_project_root", lambda start: project)
+    monkeypatch.setattr(cli_commands, "_find_project_root", lambda start: project)
     monkeypatch.setattr(cli, "_find_molt_root", lambda start, cwd=None: ROOT)
     monkeypatch.setattr(RUNTIME_BUILD, "_run_completed_command", fake_run_completed_command)
 
@@ -14084,7 +14084,7 @@ def test_deploy_roblox_respects_pythonpath_for_module_artifact_resolution(
             return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
-    monkeypatch.setattr(cli, "_find_project_root", lambda start: project)
+    monkeypatch.setattr(cli_commands, "_find_project_root", lambda start: project)
     monkeypatch.setattr(cli, "_find_molt_root", lambda start, cwd=None: ROOT)
     monkeypatch.setattr(RUNTIME_BUILD, "_run_completed_command", fake_run_completed_command)
     monkeypatch.setenv("PYTHONPATH", str(pythonpath_root))
@@ -14158,7 +14158,7 @@ def test_deploy_roblox_honors_build_json_output_override(
         seen_cmds.append(list(cmd))
         return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
 
-    monkeypatch.setattr(cli, "_find_project_root", lambda start: project)
+    monkeypatch.setattr(cli_commands, "_find_project_root", lambda start: project)
     monkeypatch.setattr(cli, "_find_molt_root", lambda start, cwd=None: ROOT)
     monkeypatch.setattr(RUNTIME_BUILD, "_run_completed_command", fake_run_completed_command)
 
@@ -14234,7 +14234,7 @@ def test_deploy_cloudflare_uses_build_json_bundle_root(
         seen_calls.append((list(cmd), cast(Path | None, kwargs.get("cwd"))))
         return 0
 
-    monkeypatch.setattr(cli, "_find_project_root", lambda start: project)
+    monkeypatch.setattr(cli_commands, "_find_project_root", lambda start: project)
     monkeypatch.setattr(cli, "_find_molt_root", lambda start, cwd=None: ROOT)
     monkeypatch.setattr(RUNTIME_BUILD, "_run_completed_command", fake_run_completed_command)
     monkeypatch.setattr(cli_commands, "_run_command", fake_run_command)
@@ -14286,7 +14286,7 @@ def test_run_script_reports_run_command_on_resolution_failure_json(
         '[project]\nname = "demo"\nversion = "0.1.0"\n'
     )
 
-    monkeypatch.setattr(cli, "_find_project_root", lambda start: project)
+    monkeypatch.setattr(cli_commands, "_find_project_root", lambda start: project)
 
     rc = cli_commands.run_script(
         None,
@@ -14312,7 +14312,7 @@ def test_run_script_cross_reports_run_command_on_resolution_failure_json(
         '[project]\nname = "demo"\nversion = "0.1.0"\n'
     )
 
-    monkeypatch.setattr(cli, "_find_project_root", lambda start: project)
+    monkeypatch.setattr(cli_commands, "_find_project_root", lambda start: project)
 
     rc = cli_commands._run_script_cross(
         "luau",
@@ -14339,7 +14339,7 @@ def test_deploy_reports_deploy_command_on_resolution_failure_json(
         '[project]\nname = "demo"\nversion = "0.1.0"\n'
     )
 
-    monkeypatch.setattr(cli, "_find_project_root", lambda start: project)
+    monkeypatch.setattr(cli_commands, "_find_project_root", lambda start: project)
 
     rc = cli_commands._deploy(
         "roblox",
@@ -15542,7 +15542,7 @@ def test_compare_uses_build_profile_flag_for_nested_build(
             )
         return cli._TimedResult(0, "ok\n", "", 0.01)
 
-    monkeypatch.setattr(cli, "_find_project_root", lambda start: project)
+    monkeypatch.setattr(cli_commands, "_find_project_root", lambda start: project)
     monkeypatch.setattr(cli, "_find_molt_root", lambda start, cwd=None: ROOT)
     monkeypatch.setattr(cli_commands, "_resolve_python_exe", lambda exe: "python3")
     monkeypatch.setattr(cli_commands, "_resolve_binary_output", lambda output: built_binary)
