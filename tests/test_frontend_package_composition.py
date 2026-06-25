@@ -68,6 +68,7 @@ EXPECTED_MIXINS = [
     "LocalBindingMixin",
     "MidendOptimizationMixin",
     "SerializationMixin",
+    "ModuleLifecycleMixin",
     "AnalysisCollectStaticMixin",
     "AnalysisPatternMixin",
     "AsyncGenVisitorMixin",
@@ -121,6 +122,10 @@ def test_moved_methods_resolve_on_class() -> None:
     # serialization
     assert hasattr(SimpleTIRGenerator, "map_ops_to_json")
     assert hasattr(SimpleTIRGenerator, "_scalarize_string_split_fields_json")
+    # module lifecycle
+    assert hasattr(SimpleTIRGenerator, "_emit_module_metadata")
+    assert hasattr(SimpleTIRGenerator, "_emit_module_frame_enter")
+    assert hasattr(SimpleTIRGenerator, "_reset_module_chunk_state")
     # pattern_match
     assert hasattr(SimpleTIRGenerator, "visit_Match")
     assert hasattr(SimpleTIRGenerator, "_emit_match_class")
@@ -178,6 +183,7 @@ def test_mixin_modules_import_standalone() -> None:
         "molt.frontend.lowering.analysis_patterns",
         "molt.frontend.lowering.local_bindings",
         "molt.frontend.lowering.midend_optimization",
+        "molt.frontend.lowering.module_lifecycle",
         "molt.frontend.lowering.serialization",
         "molt.frontend.visitors.async_gen",
         "molt.frontend.visitors.pattern_match",
@@ -210,8 +216,8 @@ def test_reducer_call_lowering_stays_out_of_call_dispatcher() -> None:
     assert "def _emit_sum_call" not in calls_src
     assert "def _emit_any_all_call" not in calls_src
     assert "def _try_emit_inline_sum_genexpr" not in calls_src
-    assert 'return self._emit_sum_call(func_id, node, needs_bind)' in calls_src
-    assert 'return self._emit_any_all_call(func_id, node, needs_bind)' in calls_src
+    assert "return self._emit_sum_call(func_id, node, needs_bind)" in calls_src
+    assert "return self._emit_any_all_call(func_id, node, needs_bind)" in calls_src
 
 
 # ---------------------------------------------------------------------------
