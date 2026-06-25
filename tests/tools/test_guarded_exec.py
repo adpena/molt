@@ -127,3 +127,68 @@ def test_guarded_exec_family_timeout_can_disable_fallback(monkeypatch) -> None:
 
     assert rc == 0
     assert captured["timeout"] is None
+
+
+def test_guarded_exec_preflights_backend_llvm_toolchain(monkeypatch, capsys) -> None:
+    module = _load_guarded_exec()
+    captured = _install_fake_context(module, monkeypatch)
+    monkeypatch.setattr(
+        module,
+        "_llvm_backend_unavailable_message",
+        lambda _root: "LLVM backend requires LLVM 22.1 with llvm-config.",
+        raising=True,
+    )
+
+    rc = module.main(
+        [
+            "--prefix",
+            "MOLT_TEST_SUITE",
+            "--",
+            "cargo",
+            "test",
+            "-p",
+            "molt-backend",
+            "--features",
+            "native-backend llvm",
+            "--lib",
+        ]
+    )
+
+    assert rc == 2
+    assert "command" not in captured
+    err = capsys.readouterr().err
+    assert "guarded_exec preflight" in err
+    assert "LLVM backend requires LLVM 22.1" in err
+
+
+def test_guarded_exec_does_not_preflight_tir_all_features(monkeypatch) -> None:
+    module = _load_guarded_exec()
+    captured = _install_fake_context(module, monkeypatch)
+    monkeypatch.setattr(
+        module,
+        "_llvm_backend_unavailable_message",
+        lambda _root: "should not be queried",
+        raising=True,
+    )
+
+    rc = module.main(
+        [
+            "--prefix",
+            "MOLT_TEST_SUITE",
+            "--",
+            "cargo",
+            "clippy",
+            "-p",
+            "molt-tir",
+            "--all-features",
+        ]
+    )
+
+    assert rc == 0
+    assert captured["command"] == [
+        "cargo",
+        "clippy",
+        "-p",
+        "molt-tir",
+        "--all-features",
+    ]
