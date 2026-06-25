@@ -18,6 +18,7 @@ import types
 from typing import Any, Mapping, Sequence, cast
 
 import molt.cli as cli
+from molt.cli import commands as cli_commands
 from molt.cli import build_pipeline as cli_build_pipeline
 import pytest
 from molt.cli import build_inputs as cli_build_inputs
@@ -13302,9 +13303,9 @@ def test_run_uses_build_profile_flag_for_nested_build(
     monkeypatch.setattr(cli, "_find_project_root", lambda start: project)
     monkeypatch.setattr(cli, "_find_molt_root", lambda start, cwd=None: ROOT)
     monkeypatch.setattr(RUNTIME_BUILD, "_run_completed_command", fake_run_completed_command)
-    monkeypatch.setattr(cli, "_run_command", fake_run_command)
+    monkeypatch.setattr(cli_commands, "_run_command", fake_run_command)
 
-    rc = cli.run_script(
+    rc = cli_commands.run_script(
         str(entry),
         None,
         [],
@@ -13368,9 +13369,9 @@ def test_run_script_uses_build_resolved_entry_for_package_override_file(
     monkeypatch.setattr(cli, "_find_project_root", lambda start: project)
     monkeypatch.setattr(cli, "_find_molt_root", lambda start, cwd=None: ROOT)
     monkeypatch.setattr(RUNTIME_BUILD, "_run_completed_command", fake_run_completed_command)
-    monkeypatch.setattr(cli, "_run_command", fake_run_command)
+    monkeypatch.setattr(cli_commands, "_run_command", fake_run_command)
 
-    rc = cli.run_script(
+    rc = cli_commands.run_script(
         str(entry),
         None,
         [],
@@ -13422,9 +13423,9 @@ def test_run_script_uses_build_json_output_for_binary_path(
     monkeypatch.setattr(cli, "_find_project_root", lambda start: project)
     monkeypatch.setattr(cli, "_find_molt_root", lambda start, cwd=None: ROOT)
     monkeypatch.setattr(RUNTIME_BUILD, "_run_completed_command", fake_run_completed_command)
-    monkeypatch.setattr(cli, "_run_command", fake_run_command)
+    monkeypatch.setattr(cli_commands, "_run_command", fake_run_command)
 
-    rc = cli.run_script(
+    rc = cli_commands.run_script(
         str(entry),
         None,
         [],
@@ -13481,9 +13482,9 @@ def test_run_script_replays_build_messages_and_warnings_in_non_json_mode(
     monkeypatch.setattr(cli, "_find_project_root", lambda start: project)
     monkeypatch.setattr(cli, "_find_molt_root", lambda start, cwd=None: ROOT)
     monkeypatch.setattr(RUNTIME_BUILD, "_run_completed_command", fake_run_completed_command)
-    monkeypatch.setattr(cli, "_run_command", lambda cmd, **kwargs: 0)
+    monkeypatch.setattr(cli_commands, "_run_command", lambda cmd, **kwargs: 0)
 
-    rc = cli.run_script(
+    rc = cli_commands.run_script(
         str(entry),
         None,
         [],
@@ -13529,7 +13530,7 @@ def test_run_script_surfaces_nested_build_error_detail_in_non_json_mode(
     monkeypatch.setattr(cli, "_find_molt_root", lambda start, cwd=None: ROOT)
     monkeypatch.setattr(RUNTIME_BUILD, "_run_completed_command", fake_run_completed_command)
 
-    rc = cli.run_script(
+    rc = cli_commands.run_script(
         str(entry),
         None,
         [],
@@ -13922,13 +13923,14 @@ def test_run_script_cross_respects_pythonpath_for_module_artifact_resolution(
             return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
-    monkeypatch.setattr(cli, "_find_project_root", lambda start: project)
-    monkeypatch.setattr(cli, "_find_molt_root", lambda start, cwd=None: ROOT)
+    monkeypatch.setattr(cli_commands, "_find_project_root", lambda start: project)
+    monkeypatch.setattr(cli_commands, "_find_molt_root", lambda start, cwd=None: ROOT)
     monkeypatch.setattr(RUNTIME_BUILD, "_run_completed_command", fake_run_completed_command)
-    monkeypatch.setattr(RUNTIME_BUILD.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(cli_commands, "_run_completed_command", fake_run_completed_command)
+    monkeypatch.setattr(cli_commands.shutil, "which", lambda name: f"/usr/bin/{name}")
     monkeypatch.setenv("PYTHONPATH", str(pythonpath_root))
 
-    rc = cli._run_script_cross(
+    rc = cli_commands._run_script_cross(
         "luau",
         None,
         "demo",
@@ -13993,12 +13995,13 @@ def test_run_script_cross_wasm_honors_build_json_output_and_linked_artifact(
             return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
-    monkeypatch.setattr(cli, "_find_project_root", lambda start: project)
-    monkeypatch.setattr(cli, "_find_molt_root", lambda start, cwd=None: ROOT)
+    monkeypatch.setattr(cli_commands, "_find_project_root", lambda start: project)
+    monkeypatch.setattr(cli_commands, "_find_molt_root", lambda start, cwd=None: ROOT)
     monkeypatch.setattr(RUNTIME_BUILD, "_run_completed_command", fake_run_completed_command)
-    monkeypatch.setattr(RUNTIME_BUILD.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(cli_commands, "_run_completed_command", fake_run_completed_command)
+    monkeypatch.setattr(cli_commands.shutil, "which", lambda name: f"/usr/bin/{name}")
 
-    rc = cli._run_script_cross(
+    rc = cli_commands._run_script_cross(
         "wasm",
         str(entry),
         None,
@@ -14066,7 +14069,7 @@ def test_deploy_roblox_respects_pythonpath_for_module_artifact_resolution(
     monkeypatch.setattr(RUNTIME_BUILD, "_run_completed_command", fake_run_completed_command)
     monkeypatch.setenv("PYTHONPATH", str(pythonpath_root))
 
-    rc = cli._deploy(
+    rc = cli_commands._deploy(
         "roblox",
         None,
         "demo",
@@ -14139,7 +14142,7 @@ def test_deploy_roblox_honors_build_json_output_override(
     monkeypatch.setattr(cli, "_find_molt_root", lambda start, cwd=None: ROOT)
     monkeypatch.setattr(RUNTIME_BUILD, "_run_completed_command", fake_run_completed_command)
 
-    rc = cli._deploy(
+    rc = cli_commands._deploy(
         "roblox",
         str(entry),
         None,
@@ -14214,10 +14217,10 @@ def test_deploy_cloudflare_uses_build_json_bundle_root(
     monkeypatch.setattr(cli, "_find_project_root", lambda start: project)
     monkeypatch.setattr(cli, "_find_molt_root", lambda start, cwd=None: ROOT)
     monkeypatch.setattr(RUNTIME_BUILD, "_run_completed_command", fake_run_completed_command)
-    monkeypatch.setattr(cli, "_run_command", fake_run_command)
+    monkeypatch.setattr(cli_commands, "_run_command", fake_run_command)
     monkeypatch.setattr(RUNTIME_BUILD.shutil, "which", lambda name: f"/usr/bin/{name}")
 
-    rc = cli._deploy(
+    rc = cli_commands._deploy(
         "cloudflare",
         str(entry),
         None,
@@ -14265,7 +14268,7 @@ def test_run_script_reports_run_command_on_resolution_failure_json(
 
     monkeypatch.setattr(cli, "_find_project_root", lambda start: project)
 
-    rc = cli.run_script(
+    rc = cli_commands.run_script(
         None,
         "missing_module",
         [],
@@ -14291,7 +14294,7 @@ def test_run_script_cross_reports_run_command_on_resolution_failure_json(
 
     monkeypatch.setattr(cli, "_find_project_root", lambda start: project)
 
-    rc = cli._run_script_cross(
+    rc = cli_commands._run_script_cross(
         "luau",
         None,
         "missing_module",
@@ -14318,7 +14321,7 @@ def test_deploy_reports_deploy_command_on_resolution_failure_json(
 
     monkeypatch.setattr(cli, "_find_project_root", lambda start: project)
 
-    rc = cli._deploy(
+    rc = cli_commands._deploy(
         "roblox",
         None,
         "missing_module",
@@ -15521,11 +15524,11 @@ def test_compare_uses_build_profile_flag_for_nested_build(
 
     monkeypatch.setattr(cli, "_find_project_root", lambda start: project)
     monkeypatch.setattr(cli, "_find_molt_root", lambda start, cwd=None: ROOT)
-    monkeypatch.setattr(cli, "_resolve_python_exe", lambda exe: "python3")
-    monkeypatch.setattr(cli, "_resolve_binary_output", lambda output: built_binary)
-    monkeypatch.setattr(cli, "_run_command_timed", fake_run_command_timed)
+    monkeypatch.setattr(cli_commands, "_resolve_python_exe", lambda exe: "python3")
+    monkeypatch.setattr(cli_commands, "_resolve_binary_output", lambda output: built_binary)
+    monkeypatch.setattr(cli_commands, "_run_command_timed", fake_run_command_timed)
 
-    rc = cli.compare(
+    rc = cli_commands.compare(
         str(entry),
         None,
         "python3",
