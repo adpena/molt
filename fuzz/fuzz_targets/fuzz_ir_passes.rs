@@ -5,18 +5,17 @@
 //! - Passes must not produce IR that fails validation if the input passes
 //! - Function count must be non-negative after dead function elimination
 //!
-//! This target runs the full optimization pipeline: constant folding, cross-block
-//! folding, dead struct elision, escape analysis, loop fast-int propagation,
-//! RC coalescing, inlining, and dead function elimination.
+//! This target runs the current SimpleIR optimization surface: constant folding,
+//! cross-block folding, dead struct elision, escape analysis, loop rewrites,
+//! RC coalescing, dead-op cleanup, and dead function elimination.
 
 #![no_main]
-use libfuzzer_sys::fuzz_target;
 use arbitrary::{Arbitrary, Unstructured};
+use libfuzzer_sys::fuzz_target;
 use molt_backend::{
-    FunctionIR, OpIR, SimpleIR,
-    fold_constants, fold_constants_cross_block, elide_dead_struct_allocs,
-    escape_analysis, propagate_loop_fast_int, rc_coalescing,
-    inline_functions, eliminate_dead_functions, apply_profile_order,
+    FunctionIR, OpIR, SimpleIR, apply_profile_order, elide_dead_struct_allocs,
+    eliminate_dead_functions, eliminate_dead_ops, escape_analysis, fold_constants,
+    fold_constants_cross_block, hoist_loop_invariants, rc_coalescing, rewrite_stateful_loops,
 };
 
 /// Generate a structurally valid IR with ops that exercise the passes.
@@ -219,6 +218,7 @@ impl<'a> Arbitrary<'a> for PassFuzzInput {
                 params,
                 ops,
                 param_types: None,
+                ..FunctionIR::default()
             });
         }
 
@@ -248,12 +248,15 @@ fuzz_target!(|input: PassFuzzInput| {
         escape_analysis(func);
     }
     for func in &mut ir.functions {
-        propagate_loop_fast_int(func);
+        rewrite_stateful_loops(func);
+    }
+    for func in &mut ir.functions {
+        hoist_loop_invariants(func);
     }
     for func in &mut ir.functions {
         rc_coalescing(func);
     }
-    inline_functions(&mut ir);
+    eliminate_dead_ops(&mut ir);
     eliminate_dead_functions(&mut ir);
     apply_profile_order(&mut ir);
 

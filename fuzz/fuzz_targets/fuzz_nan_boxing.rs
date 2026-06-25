@@ -9,19 +9,19 @@
 //! - Type predicates are mutually exclusive
 
 #![no_main]
-use libfuzzer_sys::fuzz_target;
 use arbitrary::Arbitrary;
+use libfuzzer_sys::fuzz_target;
 use molt_obj_model::MoltObject;
 
 /// Enum that lets the fuzzer choose which NaN-box variant to exercise.
 #[derive(Debug, Arbitrary)]
 enum ValueInput {
     Int(i64),
-    Float(u64),    // raw bits — allows NaN, Inf, subnormals
+    Float(u64), // raw bits — allows NaN, Inf, subnormals
     Bool(bool),
     None,
     Pending,
-    RawBits(u64),  // completely arbitrary bit pattern
+    RawBits(u64), // completely arbitrary bit pattern
 }
 
 fuzz_target!(|input: ValueInput| {

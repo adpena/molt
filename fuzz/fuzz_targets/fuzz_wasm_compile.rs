@@ -5,10 +5,10 @@
 //! and feeds them through the full WASM backend pipeline.
 
 #![no_main]
-use libfuzzer_sys::fuzz_target;
 use arbitrary::{Arbitrary, Unstructured};
-use molt_backend::{FunctionIR, OpIR, SimpleIR};
+use libfuzzer_sys::fuzz_target;
 use molt_backend::wasm::WasmBackend;
+use molt_backend::{FunctionIR, OpIR, SimpleIR};
 
 /// A constrained IR generator that produces structurally valid IR.
 #[derive(Debug)]
@@ -43,6 +43,7 @@ impl<'a> Arbitrary<'a> for FuzzIR {
             params: vec![],
             ops: main_ops,
             param_types: None,
+            ..FunctionIR::default()
         });
 
         for i in 1..num_functions {
@@ -56,6 +57,7 @@ impl<'a> Arbitrary<'a> for FuzzIR {
                 params,
                 ops,
                 param_types: None,
+                ..FunctionIR::default()
             });
         }
 
