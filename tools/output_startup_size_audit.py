@@ -84,6 +84,15 @@ def _utc_stamp() -> str:
     return dt.datetime.now(dt.UTC).strftime("%Y%m%dT%H%M%SZ")
 
 
+def _progress(event: str, **fields: Any) -> None:
+    payload = {
+        "event": f"output_startup_size_audit.{event}",
+        "timestamp_utc": _utc_stamp(),
+        **fields,
+    }
+    print(json.dumps(payload, sort_keys=True), file=sys.stderr, flush=True)
+
+
 def _canonical_env(base: dict[str, str] | None = None) -> dict[str, str]:
     env = dict(base or os.environ)
     env.setdefault("MOLT_EXT_ROOT", str(ROOT))
@@ -381,7 +390,24 @@ def _build_molt_artifact(
     command.extend(extra_molt_args)
     command.append(str(script))
 
+    _progress(
+        "build_start",
+        case=case.id,
+        target=case.target,
+        build_profile=case.build_profile,
+        backend=case.backend,
+        stdlib_profile=case.stdlib_profile,
+        timeout_sec=timeout,
+        out_dir=str(out_dir),
+    )
     result = _run_guarded(command, env=env, timeout=timeout)
+    _progress(
+        "build_done",
+        case=case.id,
+        returncode=result.returncode,
+        elapsed_s=result.elapsed_s,
+        timed_out=bool(getattr(result, "timed_out", False)),
+    )
     stdout = result.stdout or ""
     stderr = result.stderr or ""
     payload = _json_payload_from_stdout(stdout)
@@ -989,16 +1015,23 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
     rows: list[dict[str, Any]] = []
     for case in cases:
         out_dir = (args.out_dir or work_dir / "outputs") / case.id
-        rows.append(
-            _build_case_row(
-                case=case,
-                script=script,
-                out_dir=out_dir,
-                env=env,
-                args=args,
-            )
+        _progress("case_start", case=case.id)
+        row = _build_case_row(
+            case=case,
+            script=script,
+            out_dir=out_dir,
+            env=env,
+            args=args,
+        )
+        rows.append(row)
+        _progress(
+            "case_done",
+            case=case.id,
+            ok=bool(row.get("ok")),
+            status=str(row.get("status")),
         )
 
+    _progress("baseline_start", baseline="cpython", enabled=not args.no_cpython_baseline)
     cpython = (
         None
         if args.no_cpython_baseline
@@ -1009,6 +1042,8 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
             timeout=args.run_timeout_sec,
         )
     )
+    _progress("baseline_done", baseline="cpython", measured=cpython is not None)
+    _progress("baseline_start", baseline="c", enabled=not args.no_c_baseline)
     c_baseline = (
         None
         if args.no_c_baseline
@@ -1019,6 +1054,7 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
             timeout=args.run_timeout_sec,
         )
     )
+    _progress("baseline_done", baseline="c", measured=c_baseline is not None)
     summary = _summary(rows)
     strict_ok = all(bool(row.get("ok")) for row in rows)
     return {
