@@ -71,6 +71,8 @@ mod wasm_abi;
 #[cfg(feature = "wasm-backend")]
 mod wasm_binary;
 #[cfg(feature = "wasm-backend")]
+mod wasm_data;
+#[cfg(feature = "wasm-backend")]
 mod wasm_dispatch;
 #[cfg(feature = "wasm-backend")]
 mod wasm_import_tracking;

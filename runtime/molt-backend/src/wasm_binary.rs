@@ -1,4 +1,4 @@
-use crate::wasm::{DataRelocSite, DataSegmentInfo};
+use crate::wasm_data::{DataRelocSite, DataSegmentInfo};
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use wasm_encoder::{
