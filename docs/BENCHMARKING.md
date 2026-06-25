@@ -845,8 +845,12 @@ uv run --python 3.12 python tools/analysis_capsule.py \
 
 The capsule fails closed when the layers contradict each other, for example when
 `compile_modules` contains a module outside the admitted binary-image
-`known_modules` closure. Treat this as the preferred handoff artifact before
-turning local AST, IR/TIR, allocation, or binary observations into roadmap or
+`known_modules` closure. Its TIR fact-graph summary surfaces schema-v2
+`source_site_value_count` and `allocation_ownership_fact_count`, and its binary
+image allocation/refcount summary consumes the generated `op_kinds.toml`
+categories after frontend `borrow`/`release` aliases canonicalize to
+`inc_ref`/`dec_ref`. Treat this as the preferred handoff artifact before turning
+local AST, IR/TIR, allocation, or binary observations into roadmap or
 performance claims.
 
 ### Cache Retention Policy

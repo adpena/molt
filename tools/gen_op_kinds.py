@@ -34,6 +34,11 @@ Usage::
     python3 tools/gen_op_kinds.py --check    # exit 1 if a generated file is stale
 """
 
+# It also renders binary-image allocation/ownership classifier sets from the
+# same OpCode and preserved-Copy ownership facts that feed TIR/refcount passes,
+# so diagnostics and analysis capsules do not grow private hand-maintained
+# allocation/refcount vocabularies.
+
 from __future__ import annotations
 
 import argparse
@@ -1074,7 +1079,10 @@ def _validate_gvn_value_keyed_constant_facts(
                 f"duplicate gvn_value_keyed_constant_opcodes opcode: {opcode}"
             )
         seen.add(opcode)
-        if opcode_row.get("purity") != "pure" or opcode_row.get("result_arity") != "one":
+        if (
+            opcode_row.get("purity") != "pure"
+            or opcode_row.get("result_arity") != "one"
+        ):
             raise OpKindTableError(
                 f"gvn_value_keyed_constant_opcodes {opcode}: value-keyed constants "
                 "must be pure single-result opcodes"
@@ -1211,7 +1219,9 @@ def _validate_opcode_rule_rows(
             raise OpKindTableError(f"{key} rows must be inline tables")
         unknown = set(row) - {"opcode", "rule"}
         if unknown:
-            raise OpKindTableError(f"{key} row has unknown fields {sorted(unknown)}: {row}")
+            raise OpKindTableError(
+                f"{key} row has unknown fields {sorted(unknown)}: {row}"
+            )
         opcode = row.get("opcode")
         if not isinstance(opcode, str) or not opcode:
             raise OpKindTableError(f"{key} row missing opcode: {row}")
@@ -2490,7 +2500,9 @@ def _render_rs_unformatted(data: dict) -> str:
         "pub fn opcode_is_drop_insertion_return_deferral_barrier_table(opcode: OpCode) -> bool {\n"
         "    match opcode {\n"
     )
-    out.append(_render_opcode_bool_arms(opcodes, drop_insertion_return_deferral_barriers))
+    out.append(
+        _render_opcode_bool_arms(opcodes, drop_insertion_return_deferral_barriers)
+    )
     out.append("    }\n}\n\n")
 
     fusion_barriers = list(data.get("fusion_barrier_opcodes", []))
@@ -2649,7 +2661,9 @@ def _render_rs_unformatted(data: dict) -> str:
         name = row["name"]
         role = exception_region_roles.get(name, "none")
         variant = _EXCEPTION_REGION_NESTING_ROLES[role]
-        out.append(f"        OpCode::{name} => ExceptionRegionNestingRole::{variant},\n")
+        out.append(
+            f"        OpCode::{name} => ExceptionRegionNestingRole::{variant},\n"
+        )
     out.append("    }\n}\n\n")
 
     out.append(_render_alias_typed_slot_role(opcodes, data))
@@ -3026,9 +3040,7 @@ def _render_fuzz_tir_opcode_shapes(opcodes: list[dict], data: dict) -> str:
         ]
     )
     for row in rows:
-        rule_variant = _FUZZ_TIR_ATTR_PAYLOAD_RULES[
-            row.get("attr_payload", "none")
-        ]
+        rule_variant = _FUZZ_TIR_ATTR_PAYLOAD_RULES[row.get("attr_payload", "none")]
         lines.extend(
             [
                 "    FuzzTirOpcodeShape {\n",
@@ -3204,7 +3216,8 @@ def _render_type_refine_attr_result_type_rule(opcodes: list[dict], data: dict) -
 
 def _render_type_refine_operand_type_rule(opcodes: list[dict], data: dict) -> str:
     rule_by_opcode = {
-        row["opcode"]: row["rule"] for row in data.get("type_refine_operand_type_rules", [])
+        row["opcode"]: row["rule"]
+        for row in data.get("type_refine_operand_type_rules", [])
     }
     lines = [
         "/// Type-refine operand-dependent result-type rule by opcode. This table\n",
@@ -3906,7 +3919,9 @@ def _render_generator_fusion_iter_use_role(opcodes: list[dict], data: dict) -> s
         name = row["name"]
         role = role_by_opcode.get(name, "none")
         variant = _GENERATOR_FUSION_ITER_USE_ROLES[role]
-        lines.append(f"        OpCode::{name} => GeneratorFusionIterUseRole::{variant},\n")
+        lines.append(
+            f"        OpCode::{name} => GeneratorFusionIterUseRole::{variant},\n"
+        )
     lines.append("    }\n}\n")
     return "".join(lines)
 
@@ -4785,9 +4800,10 @@ def _render_explicit_release_operands(opcodes: list[dict], rows: list[dict]) -> 
     out.append(
         "/// Python lifetime release-boundary fact: which operand roots an opcode\n"
         "/// explicitly releases. This is separate from operand ownership: `DecRef`\n"
-        "/// consumes/releases all operands, while `DeleteVar` releases the old slot\n"
-        "/// occupant at operand 1 after storing the missing sentinel. DropInsertion\n"
-        "/// uses this table to avoid a pass-local `DecRef | DeleteVar` hand list.\n"
+        "/// consumes/releases all operands, `DelBoundary` marks a variable lifetime\n"
+        "/// boundary, and `DeleteVar` releases the old slot occupant at operand 1\n"
+        "/// after storing the missing sentinel. DropInsertion and diagnostics use\n"
+        "/// this table to avoid pass-local release hand lists.\n"
         "#[derive(Clone, Copy, PartialEq, Eq, Debug)]\n"
         "pub enum ExplicitReleaseOperands {\n"
         "    None,\n"
@@ -4976,6 +4992,108 @@ def _operand_ownership_arm(spec: object) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Python binary-image ownership/allocation facts
+# ---------------------------------------------------------------------------
+
+
+def _canonical_kinds_for_opcodes(data: dict, opcodes: set[str]) -> list[str]:
+    out: set[str] = set()
+    for row in data.get("kind", []):
+        if row.get("mapper_opcode") in opcodes:
+            out.add(row["canonical"])
+    return sorted(out)
+
+
+def _render_py_frozenset(name: str, values: list[str]) -> str:
+    out: list[str] = [f"{name}: frozenset[str] = frozenset(\n", "    {\n"]
+    for value in sorted(values):
+        out.append(f'        "{value}",\n')
+    out.extend(["    }\n", ")\n\n"])
+    return "".join(out)
+
+
+def _render_py_binary_image_fact_sets(data: dict) -> str:
+    heap_roots = set(
+        _canonical_kinds_for_opcodes(
+            data, set(data.get("escape_alloc_site_opcodes", []))
+        )
+    )
+    heap_roots.update(data.get("classifier_fresh_value", []))
+    heap_roots.update(data.get("classifier_exception_creation_ref", []))
+    heap_roots.update(row["kind"] for row in data.get("absorbing_kind", []))
+
+    stack_roots = set(
+        _canonical_kinds_for_opcodes(data, {"StackAlloc", "ObjectNewBoundStack"})
+    )
+    ref_retain = set(
+        _canonical_kinds_for_opcodes(
+            data, set(data.get("refcount_balance_inc_opcodes", []))
+        )
+    )
+    ref_retain.update(data.get("classifier_owned_alias", []))
+    ref_retain.update(
+        _canonical_kinds_for_opcodes(
+            data,
+            {
+                row["name"]
+                for row in data.get("opcode", [])
+                if row.get("result_mints_owned_selected_operand", False)
+            },
+        )
+    )
+
+    ref_release = set(
+        _canonical_kinds_for_opcodes(
+            data, set(data.get("refcount_balance_dec_opcodes", []))
+        )
+    )
+    ref_release.update(
+        _canonical_kinds_for_opcodes(
+            data,
+            {row["opcode"] for row in data.get("explicit_release_operand", [])},
+        )
+    )
+    ref_release.update(_canonical_kinds_for_opcodes(data, {"Free"}))
+
+    heap_exposure = set(
+        _canonical_kinds_for_opcodes(
+            data, set(data.get("refcount_heap_exposure_opcodes", []))
+        )
+    )
+    heap_exposure.update(row["kind"] for row in data.get("absorbing_kind", []))
+    heap_exposure.update(row["kind"] for row in data.get("absorbing_operand_kind", []))
+
+    out: list[str] = []
+    out.append("# Binary-image allocation/ownership analysis categories. These are\n")
+    out.append(
+        "# generated from the same opcode and preserved-Copy ownership facts that\n"
+    )
+    out.append(
+        "# TIR, escape analysis, drop insertion, and refcount analysis consume.\n"
+    )
+    out.append(
+        "# The analyzer canonicalizes first-class aliases before checking these\n"
+    )
+    out.append("# sets; preserved Copy spellings stay explicit registry facts.\n")
+    out.append(
+        _render_py_frozenset("BINARY_IMAGE_HEAP_ALLOC_ROOT_KINDS", sorted(heap_roots))
+    )
+    out.append(
+        _render_py_frozenset("BINARY_IMAGE_STACK_ALLOC_ROOT_KINDS", sorted(stack_roots))
+    )
+    out.append(
+        _render_py_frozenset("BINARY_IMAGE_REF_RETAIN_KINDS", sorted(ref_retain))
+    )
+    out.append(
+        _render_py_frozenset("BINARY_IMAGE_REF_RELEASE_KINDS", sorted(ref_release))
+    )
+    out.append(
+        _render_py_frozenset("BINARY_IMAGE_HEAP_EXPOSURE_KINDS", sorted(heap_exposure))
+    )
+    return "".join(out)
+
+
+# ---------------------------------------------------------------------------
 # Python rendering (frontend canonical spellings)
 # ---------------------------------------------------------------------------
 
@@ -5092,6 +5210,8 @@ def render_py(data: dict) -> str:
     for row in binary:
         out.append(f'    "{row["ast_op"]}": "{row["augassign_kind"]}",\n')
     out.append("}\n\n\n")
+
+    out.append(_render_py_binary_image_fact_sets(data))
 
     out.append("def canonical_kind(kind: str) -> str:\n")
     out.append('    """Return the canonical wire spelling for *kind*.\n\n')
