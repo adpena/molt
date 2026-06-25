@@ -46,7 +46,7 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
-    int_primary_vars: &BTreeSet<String>,
+    int_carriers_plan: &ScalarRepresentationPlan,
     float_primary_vars: &BTreeSet<String>,
     bool_primary_vars: &BTreeSet<String>,
     nbc: &crate::NanBoxConsts,
@@ -67,7 +67,7 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                                        sealed_blocks: &mut BTreeSet<Block>,
                                        vars: &BTreeMap<String, Variable>,
                                        name: &str,
-                                       int_primary_vars: &BTreeSet<String>,
+                                       int_carriers_plan: &ScalarRepresentationPlan,
                                        float_primary_vars: &BTreeSet<String>|
      -> Option<crate::VarValue> {
         var_get_boxed_overflow_safe_fn(
@@ -78,7 +78,7 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
             sealed_blocks,
             vars,
             name,
-            int_primary_vars,
+            int_carriers_plan,
             float_primary_vars,
             bool_primary_vars,
             nbc,
@@ -121,7 +121,7 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                     &mut *sealed_blocks,
                     vars,
                     name,
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 )
                 .unwrap_or_else(|| panic!("List elem not found in {} op {}", func_name, op_idx));
@@ -158,7 +158,7 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("list_int_new: count not found");
@@ -170,7 +170,7 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("list_int_new: fill_value not found");
@@ -198,7 +198,7 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("list_fill_new: count not found");
@@ -210,7 +210,7 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("list_fill_new: fill_value not found");
@@ -238,7 +238,7 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("List-from-range start not found");
@@ -250,7 +250,7 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("List-from-range stop not found");
@@ -262,7 +262,7 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[2],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("List-from-range step not found");
@@ -292,7 +292,7 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("List not found");
@@ -307,7 +307,7 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 bool_primary_vars,
                 vars,
                 nbc,
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
                 &args[1],
             );
@@ -336,7 +336,7 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("List not found");
@@ -348,7 +348,7 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("List pop index not found");
@@ -377,7 +377,7 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("List not found");
@@ -389,7 +389,7 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("List extend iterable not found");
@@ -418,7 +418,7 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("List not found");
@@ -430,7 +430,7 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("List insert index not found");
@@ -442,7 +442,7 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[2],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("List insert value not found");
@@ -472,7 +472,7 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("List not found");
@@ -484,7 +484,7 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("List remove value not found");
@@ -514,7 +514,7 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("List not found");
@@ -542,7 +542,7 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("List not found");
@@ -570,7 +570,7 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("List not found");
@@ -598,7 +598,7 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("List not found");
@@ -610,7 +610,7 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("List count value not found");
@@ -638,7 +638,7 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("List not found");
@@ -650,7 +650,7 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("List index value not found");
@@ -678,7 +678,7 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("List not found");
@@ -690,7 +690,7 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("List index value not found");
@@ -702,7 +702,7 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[2],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("List index start not found");
@@ -714,7 +714,7 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[3],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("List index stop not found");
@@ -744,7 +744,7 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Tuple source not found");

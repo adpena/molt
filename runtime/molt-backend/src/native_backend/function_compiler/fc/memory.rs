@@ -45,7 +45,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
-    int_primary_vars: &BTreeSet<String>,
+    int_carriers_plan: &ScalarRepresentationPlan,
     float_primary_vars: &BTreeSet<String>,
     bool_primary_vars: &BTreeSet<String>,
     int_like_vars: &BTreeSet<String>,
@@ -83,7 +83,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                                        sealed_blocks: &mut BTreeSet<Block>,
                                        vars: &BTreeMap<String, Variable>,
                                        name: &str,
-                                       int_primary_vars: &BTreeSet<String>,
+                                       int_carriers_plan: &ScalarRepresentationPlan,
                                        float_primary_vars: &BTreeSet<String>|
      -> Option<crate::VarValue> {
         var_get_boxed_overflow_safe_fn(
@@ -94,7 +94,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
             sealed_blocks,
             vars,
             name,
-            int_primary_vars,
+            int_carriers_plan,
             float_primary_vars,
             bool_primary_vars,
             nbc,
@@ -153,7 +153,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Class not found");
@@ -185,7 +185,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Class not found");
@@ -217,7 +217,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Class not found");
@@ -289,7 +289,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                         &mut *sealed_blocks,
                         vars,
                         name,
-                        int_primary_vars,
+                        int_carriers_plan,
                         float_primary_vars,
                     )
                     .expect("Arg not found for alloc_task");
@@ -362,7 +362,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Object not found");
@@ -374,7 +374,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Value not found");
@@ -419,7 +419,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                         &name,
                         None,
                         param_name_set,
-                        int_primary_vars,
+                        int_carriers_plan,
                         float_primary_vars,
                     ) {
                         continue;
@@ -433,7 +433,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                             &mut *sealed_blocks,
                             vars,
                             &name,
-                            int_primary_vars,
+                            int_carriers_plan,
                             float_primary_vars,
                         )
                         .map(|v| *v)
@@ -446,7 +446,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                         &name,
                         None,
                         param_name_set,
-                        int_primary_vars,
+                        int_carriers_plan,
                         float_primary_vars,
                     ) {
                         continue;
@@ -460,7 +460,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                             &mut *sealed_blocks,
                             vars,
                             &name,
-                            int_primary_vars,
+                            int_carriers_plan,
                             float_primary_vars,
                         )
                         .map(|v| *v)
@@ -679,7 +679,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                     &name,
                     None,
                     param_name_set,
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 ) {
                     continue;
@@ -693,7 +693,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                         &mut *sealed_blocks,
                         vars,
                         &name,
-                        int_primary_vars,
+                        int_carriers_plan,
                         float_primary_vars,
                     )
                     .map(|v| *v)
@@ -706,7 +706,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                     &name,
                     None,
                     param_name_set,
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 ) {
                     continue;
@@ -720,7 +720,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                         &mut *sealed_blocks,
                         vars,
                         &name,
-                        int_primary_vars,
+                        int_carriers_plan,
                         float_primary_vars,
                     )
                     .map(|v| *v)
@@ -768,7 +768,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Object not found");
@@ -780,7 +780,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Value not found");
@@ -824,7 +824,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                         &name,
                         None,
                         param_name_set,
-                        int_primary_vars,
+                        int_carriers_plan,
                         float_primary_vars,
                     ) {
                         continue;
@@ -838,7 +838,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                             &mut *sealed_blocks,
                             vars,
                             &name,
-                            int_primary_vars,
+                            int_carriers_plan,
                             float_primary_vars,
                         )
                         .map(|v| *v)
@@ -851,7 +851,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                         &name,
                         None,
                         param_name_set,
-                        int_primary_vars,
+                        int_carriers_plan,
                         float_primary_vars,
                     ) {
                         continue;
@@ -865,7 +865,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                             &mut *sealed_blocks,
                             vars,
                             &name,
-                            int_primary_vars,
+                            int_carriers_plan,
                             float_primary_vars,
                         )
                         .map(|v| *v)
@@ -981,7 +981,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                     &name,
                     None,
                     param_name_set,
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 ) {
                     continue;
@@ -995,7 +995,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                         &mut *sealed_blocks,
                         vars,
                         &name,
-                        int_primary_vars,
+                        int_carriers_plan,
                         float_primary_vars,
                     )
                     .map(|v| *v)
@@ -1008,7 +1008,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                     &name,
                     None,
                     param_name_set,
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 ) {
                     continue;
@@ -1022,7 +1022,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                         &mut *sealed_blocks,
                         vars,
                         &name,
-                        int_primary_vars,
+                        int_carriers_plan,
                         float_primary_vars,
                     )
                     .map(|v| *v)
@@ -1047,7 +1047,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Object not found");
@@ -1081,7 +1081,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[0],
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 )
                 .expect("Object not found");
@@ -1112,7 +1112,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Value not found");
@@ -1128,7 +1128,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[0],
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 )
                 .expect("Object not found");
@@ -1158,7 +1158,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Object not found");
@@ -1188,7 +1188,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Object not found");
@@ -1201,7 +1201,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Class not found");
@@ -1213,7 +1213,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[2],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Expected version not found");
@@ -1278,7 +1278,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Object not found");
@@ -1291,7 +1291,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Class not found");
@@ -1303,7 +1303,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[2],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Expected version not found");
@@ -1315,7 +1315,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[3],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Value not found");
@@ -1383,7 +1383,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Object not found");
@@ -1396,7 +1396,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Class not found");
@@ -1408,7 +1408,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[2],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Expected version not found");
@@ -1420,7 +1420,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[3],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Value not found");
@@ -1487,7 +1487,8 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 let tag = op.s_value.as_deref().unwrap_or("");
                 let val_name = args.first().map(String::as_str).unwrap_or("");
                 if (tag == "int"
-                    && (int_like_vars.contains(val_name) || int_primary_vars.contains(val_name)))
+                    && (int_like_vars.contains(val_name)
+                        || int_carriers_plan.is_raw_int_carrier_name(val_name)))
                     || (tag == "float" && float_like_vars.contains(val_name))
                     || (tag == "bool" && bool_like_vars.contains(val_name))
                     || (tag == "str" && str_like_vars.contains(val_name))
@@ -1501,8 +1502,8 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
             // an int value always matches an int tag.  Skip the
             // runtime call entirely.
             if scalar_fast_paths_enabled
-                && int_primary_vars.contains(&args[0])
-                && int_primary_vars.contains(&args[1])
+                && int_carriers_plan.is_raw_int_carrier_name(&args[0])
+                && int_carriers_plan.is_raw_int_carrier_name(&args[1])
             {
                 // Static guard: int matches int.  No-op.
             } else {
@@ -1514,7 +1515,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[0],
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 )
                 .expect("Guard value not found");
@@ -1526,7 +1527,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[1],
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 )
                 .expect("Guard expected tag not found");
@@ -1551,7 +1552,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Guard object not found");
@@ -1564,7 +1565,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Guard class not found");
@@ -1576,7 +1577,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[2],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Guard version not found");

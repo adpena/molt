@@ -21,7 +21,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
-    int_primary_vars: &BTreeSet<String>,
+    int_carriers_plan: &ScalarRepresentationPlan,
     float_primary_vars: &BTreeSet<String>,
     bool_primary_vars: &BTreeSet<String>,
     int_like_vars: &BTreeSet<String>,
@@ -36,7 +36,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
         int_like_vars.contains(name)
             || bool_like_vars.contains(name)
             || float_like_vars.contains(name)
-            || int_primary_vars.contains(name)
+            || int_carriers_plan.is_raw_int_carrier_name(name)
             || float_primary_vars.contains(name)
     };
     let op_prefers_integer_runtime_lane = |op: &OpIR| {
@@ -68,7 +68,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                                        sealed_blocks: &mut BTreeSet<Block>,
                                        vars: &BTreeMap<String, Variable>,
                                        name: &str,
-                                       int_primary_vars: &BTreeSet<String>,
+                                       int_carriers_plan: &ScalarRepresentationPlan,
                                        float_primary_vars: &BTreeSet<String>|
      -> Option<crate::VarValue> {
         var_get_boxed_overflow_safe_fn(
@@ -79,7 +79,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
             sealed_blocks,
             vars,
             name,
-            int_primary_vars,
+            int_carriers_plan,
             float_primary_vars,
             bool_primary_vars,
             nbc,
@@ -93,11 +93,11 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
             let lr = if in_active_loop {
                 // Variable-backed shadows are phi-correct across loop
                 // back-edges; Value-tier may be stale.
-                int_raw_value(&mut *builder, vars, int_primary_vars, &args[0])
+                int_raw_value(&mut *builder, vars, int_carriers_plan, &args[0])
             } else {
-                int_raw_value(&mut *builder, vars, int_primary_vars, &args[0])
+                int_raw_value(&mut *builder, vars, int_carriers_plan, &args[0])
             };
-            let rr = int_raw_value(&mut *builder, vars, int_primary_vars, &args[1]);
+            let rr = int_raw_value(&mut *builder, vars, int_carriers_plan, &args[1]);
             // Helper: propagate raw bool result from a Cranelift icmp/fcmp
             // result (i8) so downstream loop_break_if_true/false and `if`
             // ops branch directly on the raw value, eliminating NaN-box
@@ -112,7 +112,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     &mut *sealed_blocks,
                     vars,
                     float_primary_vars,
-                    int_primary_vars,
+                    int_carriers_plan,
                     int_like_vars,
                     bool_like_vars,
                     bool_primary_vars,
@@ -148,7 +148,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     &mut *sealed_blocks,
                     vars,
                     float_primary_vars,
-                    int_primary_vars,
+                    int_carriers_plan,
                     int_like_vars,
                     bool_like_vars,
                     nbc,
@@ -162,7 +162,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     &mut *sealed_blocks,
                     vars,
                     float_primary_vars,
-                    int_primary_vars,
+                    int_carriers_plan,
                     int_like_vars,
                     bool_like_vars,
                     nbc,
@@ -187,7 +187,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[0],
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 )
                 .expect("LHS not found");
@@ -199,7 +199,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[1],
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 )
                 .expect("RHS not found");
@@ -270,8 +270,8 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
         }
         "le" => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-            let lr = int_raw_value(&mut *builder, vars, int_primary_vars, &args[0]);
-            let rr = int_raw_value(&mut *builder, vars, int_primary_vars, &args[1]);
+            let lr = int_raw_value(&mut *builder, vars, int_carriers_plan, &args[0]);
+            let rr = int_raw_value(&mut *builder, vars, int_carriers_plan, &args[1]);
             let mut le_raw_bool: Option<Value> = None;
             let res = if op_prefers_float_numeric_lane(op) {
                 let (boxed, raw) = emit_float_numeric_compare(
@@ -282,7 +282,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     &mut *sealed_blocks,
                     vars,
                     float_primary_vars,
-                    int_primary_vars,
+                    int_carriers_plan,
                     int_like_vars,
                     bool_like_vars,
                     bool_primary_vars,
@@ -318,7 +318,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     &mut *sealed_blocks,
                     vars,
                     float_primary_vars,
-                    int_primary_vars,
+                    int_carriers_plan,
                     int_like_vars,
                     bool_like_vars,
                     nbc,
@@ -332,7 +332,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     &mut *sealed_blocks,
                     vars,
                     float_primary_vars,
-                    int_primary_vars,
+                    int_carriers_plan,
                     int_like_vars,
                     bool_like_vars,
                     nbc,
@@ -357,7 +357,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[0],
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 )
                 .expect("LHS not found");
@@ -369,7 +369,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[1],
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 )
                 .expect("RHS not found");
@@ -442,8 +442,8 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
         }
         "gt" => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-            let lhs_shadow = int_raw_value(&mut *builder, vars, int_primary_vars, &args[0]);
-            let rhs_shadow = int_raw_value(&mut *builder, vars, int_primary_vars, &args[1]);
+            let lhs_shadow = int_raw_value(&mut *builder, vars, int_carriers_plan, &args[0]);
+            let rhs_shadow = int_raw_value(&mut *builder, vars, int_carriers_plan, &args[1]);
             let mut gt_raw_bool: Option<Value> = None;
             let res = if op_prefers_float_numeric_lane(op) {
                 let (boxed, raw) = emit_float_numeric_compare(
@@ -454,7 +454,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     &mut *sealed_blocks,
                     vars,
                     float_primary_vars,
-                    int_primary_vars,
+                    int_carriers_plan,
                     int_like_vars,
                     bool_like_vars,
                     bool_primary_vars,
@@ -490,7 +490,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     &mut *sealed_blocks,
                     vars,
                     float_primary_vars,
-                    int_primary_vars,
+                    int_carriers_plan,
                     int_like_vars,
                     bool_like_vars,
                     nbc,
@@ -504,7 +504,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     &mut *sealed_blocks,
                     vars,
                     float_primary_vars,
-                    int_primary_vars,
+                    int_carriers_plan,
                     int_like_vars,
                     bool_like_vars,
                     nbc,
@@ -529,7 +529,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[0],
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 )
                 .expect("LHS not found");
@@ -541,7 +541,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[1],
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 )
                 .expect("RHS not found");
@@ -614,8 +614,8 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
         }
         "ge" => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-            let lhs_shadow = int_raw_value(&mut *builder, vars, int_primary_vars, &args[0]);
-            let rhs_shadow = int_raw_value(&mut *builder, vars, int_primary_vars, &args[1]);
+            let lhs_shadow = int_raw_value(&mut *builder, vars, int_carriers_plan, &args[0]);
+            let rhs_shadow = int_raw_value(&mut *builder, vars, int_carriers_plan, &args[1]);
             let mut ge_raw_bool: Option<Value> = None;
             let res = if op_prefers_float_numeric_lane(op) {
                 let (boxed, raw) = emit_float_numeric_compare(
@@ -626,7 +626,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     &mut *sealed_blocks,
                     vars,
                     float_primary_vars,
-                    int_primary_vars,
+                    int_carriers_plan,
                     int_like_vars,
                     bool_like_vars,
                     bool_primary_vars,
@@ -662,7 +662,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     &mut *sealed_blocks,
                     vars,
                     float_primary_vars,
-                    int_primary_vars,
+                    int_carriers_plan,
                     int_like_vars,
                     bool_like_vars,
                     nbc,
@@ -676,7 +676,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     &mut *sealed_blocks,
                     vars,
                     float_primary_vars,
-                    int_primary_vars,
+                    int_carriers_plan,
                     int_like_vars,
                     bool_like_vars,
                     nbc,
@@ -701,7 +701,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[0],
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 )
                 .expect("LHS not found");
@@ -713,7 +713,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[1],
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 )
                 .expect("RHS not found");
@@ -788,8 +788,8 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
         }
         "eq" => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-            let eq_lr = int_raw_value(&mut *builder, vars, int_primary_vars, &args[0]);
-            let eq_rr = int_raw_value(&mut *builder, vars, int_primary_vars, &args[1]);
+            let eq_lr = int_raw_value(&mut *builder, vars, int_carriers_plan, &args[0]);
+            let eq_rr = int_raw_value(&mut *builder, vars, int_carriers_plan, &args[1]);
             let mut eq_raw_bool: Option<Value> = None;
             let res = if op_prefers_float_numeric_lane(op) {
                 let (boxed, raw) = emit_float_numeric_compare(
@@ -800,7 +800,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     &mut *sealed_blocks,
                     vars,
                     float_primary_vars,
-                    int_primary_vars,
+                    int_carriers_plan,
                     int_like_vars,
                     bool_like_vars,
                     bool_primary_vars,
@@ -838,7 +838,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     &mut *sealed_blocks,
                     vars,
                     float_primary_vars,
-                    int_primary_vars,
+                    int_carriers_plan,
                     int_like_vars,
                     bool_like_vars,
                     nbc,
@@ -852,7 +852,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     &mut *sealed_blocks,
                     vars,
                     float_primary_vars,
-                    int_primary_vars,
+                    int_carriers_plan,
                     int_like_vars,
                     bool_like_vars,
                     nbc,
@@ -877,7 +877,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[0],
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 )
                 .expect("LHS not found");
@@ -889,7 +889,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[1],
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 )
                 .expect("RHS not found");
@@ -942,8 +942,8 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
         }
         "ne" => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-            let ne_lr = int_raw_value(&mut *builder, vars, int_primary_vars, &args[0]);
-            let ne_rr = int_raw_value(&mut *builder, vars, int_primary_vars, &args[1]);
+            let ne_lr = int_raw_value(&mut *builder, vars, int_carriers_plan, &args[0]);
+            let ne_rr = int_raw_value(&mut *builder, vars, int_carriers_plan, &args[1]);
             let mut ne_raw_bool: Option<Value> = None;
             let res = if op_prefers_float_numeric_lane(op) {
                 let (boxed, raw) = emit_float_numeric_compare(
@@ -954,7 +954,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     &mut *sealed_blocks,
                     vars,
                     float_primary_vars,
-                    int_primary_vars,
+                    int_carriers_plan,
                     int_like_vars,
                     bool_like_vars,
                     bool_primary_vars,
@@ -991,7 +991,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     &mut *sealed_blocks,
                     vars,
                     float_primary_vars,
-                    int_primary_vars,
+                    int_carriers_plan,
                     int_like_vars,
                     bool_like_vars,
                     nbc,
@@ -1005,7 +1005,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     &mut *sealed_blocks,
                     vars,
                     float_primary_vars,
-                    int_primary_vars,
+                    int_carriers_plan,
                     int_like_vars,
                     bool_like_vars,
                     nbc,
@@ -1030,7 +1030,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[0],
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 )
                 .expect("LHS not found");
@@ -1042,7 +1042,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[1],
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 )
                 .expect("RHS not found");
@@ -1103,7 +1103,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("LHS not found");
@@ -1115,7 +1115,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("RHS not found");

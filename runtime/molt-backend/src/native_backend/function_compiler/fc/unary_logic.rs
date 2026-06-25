@@ -37,7 +37,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
-    int_primary_vars: &BTreeSet<String>,
+    int_carriers_plan: &ScalarRepresentationPlan,
     float_primary_vars: &BTreeSet<String>,
     bool_primary_vars: &BTreeSet<String>,
     int_like_vars: &BTreeSet<String>,
@@ -54,7 +54,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
             op,
             int_like_vars,
             bool_like_vars,
-            int_primary_vars,
+            int_carriers_plan,
             bool_primary_vars,
         )
     };
@@ -80,7 +80,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                                        sealed_blocks: &mut BTreeSet<Block>,
                                        vars: &BTreeMap<String, Variable>,
                                        name: &str,
-                                       int_primary_vars: &BTreeSet<String>,
+                                       int_carriers_plan: &ScalarRepresentationPlan,
                                        float_primary_vars: &BTreeSet<String>|
      -> Option<crate::VarValue> {
         var_get_boxed_overflow_safe_fn(
@@ -91,7 +91,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
             sealed_blocks,
             vars,
             name,
-            int_primary_vars,
+            int_carriers_plan,
             float_primary_vars,
             bool_primary_vars,
             nbc,
@@ -109,7 +109,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("LHS not found");
@@ -121,7 +121,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("RHS not found");
@@ -163,7 +163,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[0],
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 )
                 .expect("Value not found");
@@ -189,7 +189,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[0],
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 )
                 .expect("Value not found");
@@ -214,7 +214,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                             &mut *sealed_blocks,
                             vars,
                             &args[0],
-                            int_primary_vars,
+                            int_carriers_plan,
                             float_primary_vars,
                         )
                         .expect("Value not found");
@@ -233,7 +233,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
             } else if op_prefers_int_lane(op) {
                 // -x == 0 - x; overflow deferred to boxing escape.
                 let src_name = &args[0];
-                let src_raw = int_raw_value(&mut *builder, vars, int_primary_vars, src_name);
+                let src_raw = int_raw_value(&mut *builder, vars, int_carriers_plan, src_name);
 
                 if let Some(src_raw) = src_raw {
                     // Raw i64 primary negation: branchless.
@@ -252,7 +252,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                         &mut *sealed_blocks,
                         vars,
                         &args[0],
-                        int_primary_vars,
+                        int_carriers_plan,
                         float_primary_vars,
                     )
                     .expect("Value not found");
@@ -310,7 +310,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[0],
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 )
                 .expect("Value not found");
@@ -342,7 +342,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                             &mut *sealed_blocks,
                             vars,
                             &args[0],
-                            int_primary_vars,
+                            int_carriers_plan,
                             float_primary_vars,
                         )
                         .expect("Value not found");
@@ -360,7 +360,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
             } else if op_prefers_int_lane(op) {
                 let src_name = &args[0];
                 if let Some(src_raw) =
-                    int_raw_value(&mut *builder, vars, int_primary_vars, src_name)
+                    int_raw_value(&mut *builder, vars, int_carriers_plan, src_name)
                 {
                     if let Some(ref out__) = op.out {
                         def_var_named(&mut *builder, vars, out__, src_raw);
@@ -375,7 +375,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[0],
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 )
                 .expect("Value not found");
@@ -398,7 +398,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[0],
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 )
                 .expect("Value not found");
@@ -422,7 +422,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
             let res = if op_prefers_int_lane(op) {
                 // abs(x): select(x < 0, -x, x). Overflow deferred.
                 let src_name = &args[0];
-                let src_raw = int_raw_value(&mut *builder, vars, int_primary_vars, src_name);
+                let src_raw = int_raw_value(&mut *builder, vars, int_carriers_plan, src_name);
 
                 if let Some(src_raw) = src_raw {
                     // Raw i64 primary abs: branchless select.
@@ -443,7 +443,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                         &mut *sealed_blocks,
                         vars,
                         &args[0],
-                        int_primary_vars,
+                        int_carriers_plan,
                         float_primary_vars,
                     )
                     .expect("Value not found");
@@ -503,7 +503,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[0],
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 )
                 .expect("Value not found");
@@ -527,7 +527,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
             let res = if op_prefers_int_lane(op) {
                 // ~x == x ^ -1 for integers; magnitude changes by at most 1.
                 let src_name = &args[0];
-                let src_raw = int_raw_value(&mut *builder, vars, int_primary_vars, src_name);
+                let src_raw = int_raw_value(&mut *builder, vars, int_carriers_plan, src_name);
 
                 if let Some(src_raw) = src_raw {
                     // Raw i64 primary invert: branchless, no overflow.
@@ -546,7 +546,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                         &mut *sealed_blocks,
                         vars,
                         &args[0],
-                        int_primary_vars,
+                        int_carriers_plan,
                         float_primary_vars,
                     )
                     .expect("Value not found");
@@ -602,7 +602,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[0],
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 )
                 .expect("Value not found");
@@ -635,7 +635,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                     Some(raw_val),
                 )
             } else if let Some(raw_shadow) =
-                int_raw_value(&mut *builder, vars, int_primary_vars, &args[0])
+                int_raw_value(&mut *builder, vars, int_carriers_plan, &args[0])
             {
                 // Proven raw i64 carrier: bool(x) is `x != 0`.
                 let zero = builder.ins().iconst(types::I64, 0);
@@ -661,7 +661,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[0],
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 )
                 .expect("Value not found");
@@ -688,7 +688,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[0],
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 )
                 .expect("Value not found");
@@ -713,7 +713,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[0],
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 )
                 .expect("Value not found");
@@ -750,7 +750,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("LHS not found");
@@ -762,7 +762,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("RHS not found");
@@ -773,7 +773,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                 builder.ins().icmp_imm(IntCC::NotEqual, raw_val, 0)
             } else if op_prefers_int_lane(op) {
                 // Known int: inline unbox + compare, no function call.
-                let raw_val = int_raw_value(&mut *builder, vars, int_primary_vars, &args[0])
+                let raw_val = int_raw_value(&mut *builder, vars, int_carriers_plan, &args[0])
                     .unwrap_or_else(|| unbox_int(&mut *builder, *lhs, nbc));
                 builder.ins().icmp_imm(IntCC::NotEqual, raw_val, 0)
             } else if op_prefers_bool_lane(op) {
@@ -833,7 +833,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("LHS not found");
@@ -845,7 +845,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("RHS not found");
@@ -856,7 +856,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                 builder.ins().icmp_imm(IntCC::NotEqual, raw_val, 0)
             } else if op_prefers_int_lane(op) {
                 // Known int: inline unbox + compare, no function call.
-                let raw_val = int_raw_value(&mut *builder, vars, int_primary_vars, &args[0])
+                let raw_val = int_raw_value(&mut *builder, vars, int_carriers_plan, &args[0])
                     .unwrap_or_else(|| unbox_int(&mut *builder, *lhs, nbc));
                 builder.ins().icmp_imm(IntCC::NotEqual, raw_val, 0)
             } else if op_prefers_bool_lane(op) {
@@ -900,7 +900,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Container not found");
@@ -912,7 +912,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Item not found");

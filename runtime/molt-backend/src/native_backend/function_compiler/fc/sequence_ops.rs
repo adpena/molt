@@ -39,7 +39,7 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
     vars: &BTreeMap<String, Variable>,
     scalarized_tuples: &mut BTreeMap<String, Vec<Value>>,
     skip_ops: &mut BTreeSet<usize>,
-    int_primary_vars: &BTreeSet<String>,
+    int_carriers_plan: &ScalarRepresentationPlan,
     float_primary_vars: &BTreeSet<String>,
     bool_primary_vars: &BTreeSet<String>,
     representation_plan: &ScalarRepresentationPlan,
@@ -55,7 +55,7 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
                                        sealed_blocks: &mut BTreeSet<Block>,
                                        vars: &BTreeMap<String, Variable>,
                                        name: &str,
-                                       int_primary_vars: &BTreeSet<String>,
+                                       int_carriers_plan: &ScalarRepresentationPlan,
                                        float_primary_vars: &BTreeSet<String>|
      -> Option<crate::VarValue> {
         var_get_boxed_overflow_safe_fn(
@@ -66,7 +66,7 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
             sealed_blocks,
             vars,
             name,
-            int_primary_vars,
+            int_carriers_plan,
             float_primary_vars,
             bool_primary_vars,
             nbc,
@@ -84,7 +84,7 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
                     def_inline_int_value(
                         &mut *builder,
                         vars,
-                        int_primary_vars,
+                        int_carriers_plan,
                         out__,
                         raw_len,
                         box_int(len),
@@ -99,7 +99,7 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[0],
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 )
                 .expect("Len arg not found");
@@ -124,7 +124,7 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
                 let call = builder.ins().call(local_callee, &[*val]);
                 let boxed_res = builder.inst_results(call)[0];
                 if let Some(out__) = op.out.as_ref() {
-                    if int_primary_vars.contains(out__) {
+                    if int_carriers_plan.is_raw_int_carrier_name(out__) {
                         let raw_res = unbox_int(&mut *builder, boxed_res, nbc);
                         def_var_named(&mut *builder, vars, out__, raw_res);
                     } else {
@@ -143,7 +143,7 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Range start not found");
@@ -155,7 +155,7 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Range stop not found");
@@ -167,7 +167,7 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[2],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Range step not found");
@@ -203,7 +203,7 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
                         &mut *sealed_blocks,
                         vars,
                         name,
-                        int_primary_vars,
+                        int_carriers_plan,
                         float_primary_vars,
                     )
                     .expect("Tuple elem not found");
@@ -229,7 +229,7 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
                         &mut *sealed_blocks,
                         vars,
                         name,
-                        int_primary_vars,
+                        int_carriers_plan,
                         float_primary_vars,
                     )
                     .expect("Tuple elem not found");
@@ -268,7 +268,7 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Unpack sequence source not found");
@@ -317,7 +317,7 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Tuple not found");
@@ -329,7 +329,7 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Tuple count value not found");
@@ -357,7 +357,7 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Tuple not found");
@@ -369,7 +369,7 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Tuple index value not found");
@@ -397,7 +397,7 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Iter source not found");
@@ -425,7 +425,7 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Enumerate iterable not found");
@@ -437,7 +437,7 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Enumerate start not found");
@@ -449,7 +449,7 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[2],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Enumerate has_start not found");
@@ -482,7 +482,7 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Iter not found");
@@ -557,7 +557,7 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
                         &mut *builder,
                         &mut *import_refs,
                         vars,
-                        int_primary_vars,
+                        int_carriers_plan,
                         bool_primary_vars,
                         float_primary_vars,
                         nbc,
@@ -573,7 +573,7 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
                         &mut *builder,
                         &mut *import_refs,
                         vars,
-                        int_primary_vars,
+                        int_carriers_plan,
                         bool_primary_vars,
                         float_primary_vars,
                         nbc,
@@ -591,7 +591,7 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
                         &mut *builder,
                         &mut *import_refs,
                         vars,
-                        int_primary_vars,
+                        int_carriers_plan,
                         bool_primary_vars,
                         float_primary_vars,
                         nbc,
@@ -604,7 +604,7 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
                         &mut *builder,
                         &mut *import_refs,
                         vars,
-                        int_primary_vars,
+                        int_carriers_plan,
                         bool_primary_vars,
                         float_primary_vars,
                         nbc,
@@ -644,7 +644,7 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
                         &mut *builder,
                         &mut *import_refs,
                         vars,
-                        int_primary_vars,
+                        int_carriers_plan,
                         bool_primary_vars,
                         float_primary_vars,
                         nbc,
@@ -659,7 +659,7 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
                         &mut *builder,
                         &mut *import_refs,
                         vars,
-                        int_primary_vars,
+                        int_carriers_plan,
                         bool_primary_vars,
                         float_primary_vars,
                         nbc,
@@ -679,7 +679,7 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Iter not found");

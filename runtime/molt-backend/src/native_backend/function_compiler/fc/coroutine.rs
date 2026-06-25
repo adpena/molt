@@ -51,7 +51,7 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
-    int_primary_vars: &BTreeSet<String>,
+    int_carriers_plan: &ScalarRepresentationPlan,
     float_primary_vars: &BTreeSet<String>,
     bool_primary_vars: &BTreeSet<String>,
     block_tracked_obj: &mut BTreeMap<Block, Vec<String>>,
@@ -77,7 +77,7 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
                                        sealed_blocks: &mut BTreeSet<Block>,
                                        vars: &BTreeMap<String, Variable>,
                                        name: &str,
-                                       int_primary_vars: &BTreeSet<String>,
+                                       int_carriers_plan: &ScalarRepresentationPlan,
                                        float_primary_vars: &BTreeSet<String>|
      -> Option<crate::VarValue> {
         var_get_boxed_overflow_safe_fn(
@@ -88,7 +88,7 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
             sealed_blocks,
             vars,
             name,
-            int_primary_vars,
+            int_carriers_plan,
             float_primary_vars,
             bool_primary_vars,
             nbc,
@@ -145,7 +145,7 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Future not found");
@@ -161,7 +161,7 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
                         &mut *sealed_blocks,
                         vars,
                         &args[1],
-                        int_primary_vars,
+                        int_carriers_plan,
                         float_primary_vars,
                     )
                     .expect("Pending state not found"),
@@ -177,7 +177,7 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
                             &mut *sealed_blocks,
                             vars,
                             &args[1],
-                            int_primary_vars,
+                            int_carriers_plan,
                             float_primary_vars,
                         )
                         .expect("Await slot not found"),
@@ -190,7 +190,7 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
                         &mut *sealed_blocks,
                         vars,
                         &args[2],
-                        int_primary_vars,
+                        int_carriers_plan,
                         float_primary_vars,
                     )
                     .expect("Pending state not found"),
@@ -343,7 +343,7 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
                     &mut *builder,
                     &mut *import_refs,
                     vars,
-                    int_primary_vars,
+                    int_carriers_plan,
                     bool_primary_vars,
                     float_primary_vars,
                     nbc,
@@ -365,7 +365,7 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Yield pair not found");
@@ -447,7 +447,7 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Chan not found");
@@ -459,7 +459,7 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Val not found");
@@ -471,7 +471,7 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[2],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Pending state not found");
@@ -574,7 +574,7 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
                     &mut *builder,
                     &mut *import_refs,
                     vars,
-                    int_primary_vars,
+                    int_carriers_plan,
                     bool_primary_vars,
                     float_primary_vars,
                     nbc,
@@ -606,7 +606,7 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Chan not found");
@@ -618,7 +618,7 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Pending state not found");
@@ -721,7 +721,7 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
                     &mut *builder,
                     &mut *import_refs,
                     vars,
-                    int_primary_vars,
+                    int_carriers_plan,
                     bool_primary_vars,
                     float_primary_vars,
                     nbc,
@@ -753,7 +753,7 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Capacity not found");
@@ -781,7 +781,7 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Chan not found");
@@ -806,7 +806,7 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Task not found");
@@ -830,7 +830,7 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Parent token not found");
@@ -858,7 +858,7 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Token not found");
@@ -882,7 +882,7 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Token not found");
@@ -906,7 +906,7 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Token not found");
@@ -930,7 +930,7 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Token not found");
@@ -958,7 +958,7 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Token not found");
@@ -1063,7 +1063,7 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
                         &mut *sealed_blocks,
                         vars,
                         arg_name,
-                        int_primary_vars,
+                        int_carriers_plan,
                         float_primary_vars,
                     )
                     .expect("Arg not found");

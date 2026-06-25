@@ -81,11 +81,12 @@ default.
 **Current transport-level specialization mechanism**: Legacy `fast_int` /
 `fast_float` / `type_hint` fields may still appear on the SimpleIR transport,
 but native scalar representation is not allowed to recover its authority from
-those fields. The native backend now uses static raw-primary sets for int,
-bool, and float variables. `bool_primary_vars` and
-`float_primary_vars` are the only raw-bool/raw-F64 authorities, and
-non-primary bool/float results are boxed immediately in their main I64
-variables instead of being tracked through side-channel shadow maps.
+those fields. The native backend now reads integer raw-carrier facts from
+`ScalarRepresentationPlan` rather than from a cloned `int_primary_vars` set.
+`bool_primary_vars` and `float_primary_vars` remain the raw-bool/raw-F64
+authorities pending the same fold, and non-primary bool/float results are boxed
+immediately in their main I64 variables instead of being tracked through
+side-channel shadow maps.
 
 This is an implementation compromise, not the desired endpoint. Upstream TIR
 type refinement and type facts can prove richer representation facts than a
@@ -93,8 +94,9 @@ single `fast_int` bit, but the current lowering path often compresses those
 facts before native codegen.
 
 **How native raw-primary lowering works**:
-- `int_primary_vars` names carry raw i64 in their main Cranelift Variable.
-  Boxing happens at explicit escape points, with overflow-safe BigInt handling.
+- `ScalarRepresentationPlan::is_raw_int_carrier_name` names carry raw i64 in
+  their main Cranelift Variable. Boxing happens at explicit escape points, with
+  `RawI64Safe` and `RawI64FullDeopt` distinguished by plan predicates.
 - `bool_primary_vars` names carry raw 0/1 in their main Cranelift Variable.
   Non-primary bools stay boxed in their main I64 Variable and recover payload
   bits only through explicit boxed-bool extraction at use sites.

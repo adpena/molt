@@ -16,9 +16,9 @@ pub(in crate::native_backend::function_compiler) fn name_is_int_like(
 }
 
 /// Phase 1d typed-IR: recover a raw i64 operand from a variable that holds
-/// raw i64 in its main Cranelift Variable.  The static `int_primary_vars`
+/// raw i64 in its main Cranelift Variable.  The static `int_carriers_plan`
 /// set (Step 0's operand-recursive fixpoint) is the single source of truth:
-/// `name ∈ int_primary_vars ⇒ use_var(vars[name])` yields a raw i64.
+/// `name ∈ int_carriers_plan ⇒ use_var(vars[name])` yields a raw i64.
 ///
 /// Cranelift's FunctionBuilder caches `use_var` within a block AND inserts
 /// phi nodes automatically at block boundaries when a Variable has multiple
@@ -31,10 +31,10 @@ pub(in crate::native_backend::function_compiler) fn name_is_int_like(
 pub(in crate::native_backend::function_compiler) fn int_raw_value(
     builder: &mut FunctionBuilder<'_>,
     vars: &BTreeMap<String, Variable>,
-    int_primary_vars: &BTreeSet<String>,
+    int_carriers_plan: &ScalarRepresentationPlan,
     name: &str,
 ) -> Option<Value> {
-    if int_primary_vars.contains(name)
+    if int_carriers_plan.is_raw_int_carrier_name(name)
         && let Some(&var) = vars.get(name)
     {
         return Some(builder.use_var(var));
@@ -45,19 +45,19 @@ pub(in crate::native_backend::function_compiler) fn int_raw_value(
 /// Define a known-inline integer result under the Phase 1d representation
 /// invariant:
 ///
-/// - `out ∈ int_primary_vars` stores raw i64 in the main Variable.
+/// - `out ∈ int_carriers_plan` stores raw i64 in the main Variable.
 /// - every other output stores a NaN-boxed Python int in the main Variable.
 #[cfg(feature = "native-backend")]
 #[inline]
 pub(in crate::native_backend::function_compiler) fn def_inline_int_value(
     builder: &mut FunctionBuilder<'_>,
     vars: &BTreeMap<String, Variable>,
-    int_primary_vars: &BTreeSet<String>,
+    int_carriers_plan: &ScalarRepresentationPlan,
     out: &str,
     raw_value: Value,
     boxed_value: i64,
 ) {
-    if int_primary_vars.contains(out) {
+    if int_carriers_plan.is_raw_int_carrier_name(out) {
         def_var_named(builder, vars, out, raw_value);
     } else {
         let boxed = builder.ins().iconst(types::I64, boxed_value);
@@ -136,7 +136,7 @@ pub(in crate::native_backend::function_compiler) fn bool_raw_value(
     None
 }
 
-/// Produce a correctly NaN-boxed value for a variable in `int_primary_vars`
+/// Produce a correctly NaN-boxed value for a variable in `int_carriers_plan`
 /// whose raw i64 may exceed the 47-bit inline range.
 ///
 /// Deferred overflow guard emitted at boxing escape points (return, call
@@ -155,10 +155,10 @@ pub(in crate::native_backend::function_compiler) fn ensure_boxed_overflow_safe(
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
-    int_primary_vars: &std::collections::BTreeSet<String>,
+    int_carriers_plan: &ScalarRepresentationPlan,
     name: &str,
 ) -> Value {
-    let raw_val = int_raw_value(builder, vars, int_primary_vars, name);
+    let raw_val = int_raw_value(builder, vars, int_carriers_plan, name);
     if let Some(raw_val) = raw_val {
         let boxed = box_raw_i64_value_overflow_safe(
             module,
@@ -251,11 +251,11 @@ pub(in crate::native_backend::function_compiler) fn var_get_boxed_overflow_safe_
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     name: &str,
-    int_primary_vars: &std::collections::BTreeSet<String>,
+    int_carriers_plan: &ScalarRepresentationPlan,
     float_primary_vars: &std::collections::BTreeSet<String>,
 ) -> Option<crate::VarValue> {
     use crate::VarValue;
-    if int_primary_vars.contains(name) {
+    if int_carriers_plan.is_raw_int_carrier_name(name) {
         let boxed = ensure_boxed_overflow_safe(
             module,
             import_ids,
@@ -263,7 +263,7 @@ pub(in crate::native_backend::function_compiler) fn var_get_boxed_overflow_safe_
             import_refs,
             sealed_blocks,
             vars,
-            int_primary_vars,
+            int_carriers_plan,
             name,
         );
         Some(VarValue(boxed))
@@ -373,12 +373,12 @@ pub(in crate::native_backend::function_compiler) fn ensure_boxed_bool_safe(
     builder: &mut FunctionBuilder<'_>,
     vars: &BTreeMap<String, Variable>,
     bool_primary_vars: &BTreeSet<String>,
-    int_primary_vars: &BTreeSet<String>,
+    int_carriers_plan: &ScalarRepresentationPlan,
     nbc: &crate::NanBoxConsts,
     name: &str,
 ) -> Option<Value> {
     let raw_val = bool_raw_value(builder, vars, bool_primary_vars, name)
-        .or_else(|| int_raw_value(builder, vars, int_primary_vars, name));
+        .or_else(|| int_raw_value(builder, vars, int_carriers_plan, name));
     if let Some(raw_val) = raw_val {
         return Some(box_raw_bool_value(builder, raw_val, nbc));
     }
@@ -397,7 +397,7 @@ pub(in crate::native_backend::function_compiler) fn ensure_boxed_primitive_safe(
     bool_primary_vars: &BTreeSet<String>,
     vars: &BTreeMap<String, Variable>,
     nbc: &crate::NanBoxConsts,
-    int_primary_vars: &std::collections::BTreeSet<String>,
+    int_carriers_plan: &ScalarRepresentationPlan,
     float_primary_vars: &std::collections::BTreeSet<String>,
     name: &str,
 ) -> Value {
@@ -410,7 +410,7 @@ pub(in crate::native_backend::function_compiler) fn ensure_boxed_primitive_safe(
             sealed_blocks,
             vars,
             name,
-            int_primary_vars,
+            int_carriers_plan,
             float_primary_vars,
         )
         .expect("float escape var not found")
@@ -419,7 +419,7 @@ pub(in crate::native_backend::function_compiler) fn ensure_boxed_primitive_safe(
             builder,
             vars,
             bool_primary_vars,
-            int_primary_vars,
+            int_carriers_plan,
             nbc,
             name,
         )
@@ -432,7 +432,7 @@ pub(in crate::native_backend::function_compiler) fn ensure_boxed_primitive_safe(
             import_refs,
             sealed_blocks,
             vars,
-            int_primary_vars,
+            int_carriers_plan,
             name,
         )
     }
@@ -454,7 +454,7 @@ pub(in crate::native_backend::function_compiler) fn def_var_from_boxed_transport
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
     vars: &BTreeMap<String, Variable>,
-    int_primary_vars: &BTreeSet<String>,
+    int_carriers_plan: &ScalarRepresentationPlan,
     bool_primary_vars: &BTreeSet<String>,
     float_primary_vars: &BTreeSet<String>,
     nbc: &crate::NanBoxConsts,
@@ -468,9 +468,14 @@ pub(in crate::native_backend::function_compiler) fn def_var_from_boxed_transport
     } else if bool_primary_vars.contains(name) {
         let raw_bool = builder.ins().band_imm(boxed, 1);
         def_var_named(builder, vars, name, raw_bool);
-    } else if int_primary_vars.contains(name) {
+    } else if int_carriers_plan.is_inline_safe_int_name(name) {
         let raw_i64 = unbox_int_or_bool(builder, boxed, nbc);
         def_var_named(builder, vars, name, raw_i64);
+    } else if int_carriers_plan.is_full_deopt_int_name(name) {
+        panic!(
+            "boxed transport cannot define full-deopt raw-int home `{name}`; \
+             use a raw i64 producer or checked raw runtime ABI"
+        );
     } else {
         def_var_named(builder, vars, name, boxed);
     }
@@ -491,7 +496,7 @@ pub(in crate::native_backend::function_compiler) fn def_var_from_numeric_result(
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
     vars: &BTreeMap<String, Variable>,
-    int_primary_vars: &BTreeSet<String>,
+    int_carriers_plan: &ScalarRepresentationPlan,
     bool_primary_vars: &BTreeSet<String>,
     float_primary_vars: &BTreeSet<String>,
     nbc: &crate::NanBoxConsts,
@@ -506,7 +511,7 @@ pub(in crate::native_backend::function_compiler) fn def_var_from_numeric_result(
             builder,
             import_refs,
             vars,
-            int_primary_vars,
+            int_carriers_plan,
             bool_primary_vars,
             float_primary_vars,
             nbc,
@@ -552,7 +557,7 @@ pub(in crate::native_backend::function_compiler) fn emit_protect_borrowed_args_a
 #[inline]
 pub(in crate::native_backend::function_compiler) fn merge_rebind_storage_for_name(
     name: &str,
-    int_primary_vars: &BTreeSet<String>,
+    int_carriers_plan: &ScalarRepresentationPlan,
     bool_primary_vars: &BTreeSet<String>,
     float_primary_vars: &BTreeSet<String>,
 ) -> MergeRebindStorageKind {
@@ -560,7 +565,7 @@ pub(in crate::native_backend::function_compiler) fn merge_rebind_storage_for_nam
         MergeRebindStorageKind::RawF64
     } else if bool_primary_vars.contains(name) {
         MergeRebindStorageKind::RawBool
-    } else if int_primary_vars.contains(name) {
+    } else if int_carriers_plan.is_raw_int_carrier_name(name) {
         MergeRebindStorageKind::RawI64
     } else {
         MergeRebindStorageKind::BoxedI64
@@ -603,7 +608,7 @@ pub(in crate::native_backend::function_compiler) fn merge_rebind_value_for_stora
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     bool_like_vars: &BTreeSet<String>,
-    int_primary_vars: &BTreeSet<String>,
+    int_carriers_plan: &ScalarRepresentationPlan,
     bool_primary_vars: &BTreeSet<String>,
     float_primary_vars: &BTreeSet<String>,
     nbc: &crate::NanBoxConsts,
@@ -623,13 +628,13 @@ pub(in crate::native_backend::function_compiler) fn merge_rebind_value_for_stora
                     bool_primary_vars,
                     vars,
                     nbc,
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                     name,
                 );
                 float_value_from_boxed_extended(module, import_ids, builder, import_refs, boxed)
             }),
-        MergeRebindStorageKind::RawI64 => int_raw_value(builder, vars, int_primary_vars, name)
+        MergeRebindStorageKind::RawI64 => int_raw_value(builder, vars, int_carriers_plan, name)
             .or_else(|| bool_raw_value(builder, vars, bool_primary_vars, name))
             .unwrap_or_else(|| {
                 let boxed = ensure_boxed_primitive_safe(
@@ -642,20 +647,20 @@ pub(in crate::native_backend::function_compiler) fn merge_rebind_value_for_stora
                     bool_primary_vars,
                     vars,
                     nbc,
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                     name,
                 );
                 unbox_int_or_bool(builder, boxed, nbc)
             }),
         MergeRebindStorageKind::RawBool => bool_raw_value(builder, vars, bool_primary_vars, name)
-            .or_else(|| int_raw_value(builder, vars, int_primary_vars, name))
+            .or_else(|| int_raw_value(builder, vars, int_carriers_plan, name))
             .unwrap_or_else(|| {
                 let boxed = ensure_boxed_bool_safe(
                     builder,
                     vars,
                     bool_primary_vars,
-                    int_primary_vars,
+                    int_carriers_plan,
                     nbc,
                     name,
                 )
@@ -670,7 +675,7 @@ pub(in crate::native_backend::function_compiler) fn merge_rebind_value_for_stora
                         bool_primary_vars,
                         vars,
                         nbc,
-                        int_primary_vars,
+                        int_carriers_plan,
                         float_primary_vars,
                         name,
                     )
@@ -687,7 +692,7 @@ pub(in crate::native_backend::function_compiler) fn merge_rebind_value_for_stora
             bool_primary_vars,
             vars,
             nbc,
-            int_primary_vars,
+            int_carriers_plan,
             float_primary_vars,
             name,
         ),
@@ -702,7 +707,7 @@ pub(in crate::native_backend::function_compiler) fn def_var_from_merge_rebind_st
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
     vars: &BTreeMap<String, Variable>,
-    int_primary_vars: &BTreeSet<String>,
+    int_carriers_plan: &ScalarRepresentationPlan,
     bool_primary_vars: &BTreeSet<String>,
     float_primary_vars: &BTreeSet<String>,
     nbc: &crate::NanBoxConsts,
@@ -724,7 +729,7 @@ pub(in crate::native_backend::function_compiler) fn def_var_from_merge_rebind_st
                 builder,
                 import_refs,
                 vars,
-                int_primary_vars,
+                int_carriers_plan,
                 bool_primary_vars,
                 float_primary_vars,
                 nbc,
@@ -956,7 +961,7 @@ pub(in crate::native_backend::function_compiler) fn float_value_for_mixed(
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     float_primary_vars: &std::collections::BTreeSet<String>,
-    int_primary_vars: &std::collections::BTreeSet<String>,
+    int_carriers_plan: &ScalarRepresentationPlan,
     int_like_vars: &BTreeSet<String>,
     bool_like_vars: &BTreeSet<String>,
     nbc: &crate::NanBoxConsts,
@@ -968,13 +973,15 @@ pub(in crate::native_backend::function_compiler) fn float_value_for_mixed(
     }
 
     // 2. Operand is int — get raw i64 and convert to f64.
-    if name_is_int_like(name, int_like_vars, bool_like_vars) || int_primary_vars.contains(name) {
-        // Phase 1d: int_primary_vars members hold raw i64 in the main
+    if name_is_int_like(name, int_like_vars, bool_like_vars)
+        || int_carriers_plan.is_raw_int_carrier_name(name)
+    {
+        // Phase 1d: int_carriers_plan members hold raw i64 in the main
         // Variable; reading via int_raw_value avoids the box/unbox detour.
-        if let Some(raw_int_val) = int_raw_value(builder, vars, int_primary_vars, name) {
+        if let Some(raw_int_val) = int_raw_value(builder, vars, int_carriers_plan, name) {
             return builder.ins().fcvt_from_sint(types::F64, raw_int_val);
         }
-        // Fallback: name is int-typed but not in int_primary_vars → vars[name]
+        // Fallback: name is int-typed but not in int_carriers_plan → vars[name]
         // holds the already-NaN-boxed value. Use overflow-safe boxing so this
         // helper observes the same representation contract as generic reads.
         let boxed = var_get_boxed_overflow_safe_base(
@@ -985,7 +992,7 @@ pub(in crate::native_backend::function_compiler) fn float_value_for_mixed(
             sealed_blocks,
             vars,
             name,
-            int_primary_vars,
+            int_carriers_plan,
             float_primary_vars,
         )
         .expect("Int operand not found");
@@ -1004,7 +1011,7 @@ pub(in crate::native_backend::function_compiler) fn float_value_for_mixed(
         sealed_blocks,
         vars,
         name,
-        int_primary_vars,
+        int_carriers_plan,
         float_primary_vars,
     )
     .expect("Float operand not found");
@@ -1021,7 +1028,7 @@ pub(in crate::native_backend::function_compiler) fn emit_float_numeric_compare(
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     float_primary_vars: &BTreeSet<String>,
-    int_primary_vars: &BTreeSet<String>,
+    int_carriers_plan: &ScalarRepresentationPlan,
     int_like_vars: &BTreeSet<String>,
     bool_like_vars: &BTreeSet<String>,
     bool_primary_vars: &BTreeSet<String>,
@@ -1039,7 +1046,7 @@ pub(in crate::native_backend::function_compiler) fn emit_float_numeric_compare(
         sealed_blocks,
         vars,
         float_primary_vars,
-        int_primary_vars,
+        int_carriers_plan,
         int_like_vars,
         bool_like_vars,
         nbc,
@@ -1053,7 +1060,7 @@ pub(in crate::native_backend::function_compiler) fn emit_float_numeric_compare(
         sealed_blocks,
         vars,
         float_primary_vars,
-        int_primary_vars,
+        int_carriers_plan,
         int_like_vars,
         bool_like_vars,
         nbc,

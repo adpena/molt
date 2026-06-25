@@ -34,7 +34,7 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_stack_op(
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
-    int_primary_vars: &BTreeSet<String>,
+    int_carriers_plan: &ScalarRepresentationPlan,
     float_primary_vars: &BTreeSet<String>,
     bool_primary_vars: &BTreeSet<String>,
     nbc: &crate::NanBoxConsts,
@@ -52,7 +52,7 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_stack_op(
                                        sealed_blocks: &mut BTreeSet<Block>,
                                        vars: &BTreeMap<String, Variable>,
                                        name: &str,
-                                       int_primary_vars: &BTreeSet<String>,
+                                       int_carriers_plan: &ScalarRepresentationPlan,
                                        float_primary_vars: &BTreeSet<String>|
      -> Option<crate::VarValue> {
         var_get_boxed_overflow_safe_fn(
@@ -63,7 +63,7 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_stack_op(
             sealed_blocks,
             vars,
             name,
-            int_primary_vars,
+            int_carriers_plan,
             float_primary_vars,
             bool_primary_vars,
             nbc,
@@ -155,7 +155,7 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_stack_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("exception baseline not found");
@@ -185,7 +185,7 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_stack_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("exception depth not found");
@@ -215,7 +215,7 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_stack_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Captured exception not found");
@@ -243,7 +243,7 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_stack_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Captured exception not found");

@@ -451,6 +451,10 @@ unexpected_u64!(molt_list_int_setitem_nogil(
     value_bits: u64,
 ));
 unexpected_i64!(molt_list_int_getitem_raw(list_bits: u64, raw_index: i64));
+unexpected_i64!(molt_list_int_getitem_raw_checked(
+    list_bits: u64,
+    raw_index: i64
+));
 unexpected_u64!(molt_list_int_setitem_raw(
     list_bits: u64,
     raw_index: i64,

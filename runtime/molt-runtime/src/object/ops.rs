@@ -11782,7 +11782,33 @@ pub extern "C" fn molt_list_int_getitem_raw(list_bits: u64, raw_index: i64) -> i
     }
 }
 
-/// Ultra-fast list[int] getitem — no bounds check, no negative index handling.
+/// Raw-register list[int] getitem with Python exception semantics.
+///
+/// Takes a raw i64 index and returns the raw i64 element. On out-of-bounds it
+/// raises the same IndexError as the boxed getitem path and returns 0 only as
+/// an exception-continuation sentinel.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_list_int_getitem_raw_checked(list_bits: u64, raw_index: i64) -> i64 {
+    let list_obj = obj_from_bits(list_bits);
+    let Some(ptr) = list_obj.as_ptr() else {
+        return 0;
+    };
+    unsafe {
+        let storage = &*crate::object::layout::list_int_storage_ptr(ptr);
+        let len = storage.len as i64;
+        let mut idx = raw_index;
+        if idx < 0 {
+            idx += len;
+        }
+        if idx < 0 || idx >= len {
+            let _ = list_index_out_of_range_error();
+            return 0;
+        }
+        *storage.data.add(idx as usize)
+    }
+}
+
+/// Ultra-fast list[int] getitem: no bounds check, no negative index handling.
 /// Used when the compiler can prove the index is non-negative and in bounds
 /// (e.g., loop counter bounded by list length).
 ///

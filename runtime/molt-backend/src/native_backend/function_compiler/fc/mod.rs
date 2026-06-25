@@ -46,13 +46,13 @@ pub(in crate::native_backend::function_compiler) fn op_prefers_int_lane(
     op: &OpIR,
     int_like_vars: &BTreeSet<String>,
     bool_like_vars: &BTreeSet<String>,
-    int_primary_vars: &BTreeSet<String>,
+    int_carriers_plan: &ScalarRepresentationPlan,
     bool_primary_vars: &BTreeSet<String>,
 ) -> bool {
     let name_is_integer_scalar = |name: &str| {
         int_like_vars.contains(name)
             || bool_like_vars.contains(name)
-            || int_primary_vars.contains(name)
+            || int_carriers_plan.is_raw_int_carrier_name(name)
             || bool_primary_vars.contains(name)
     };
     let op_args_are_integer_scalar = op
@@ -153,7 +153,7 @@ pub(in crate::native_backend::function_compiler) fn var_get_boxed_overflow_safe_
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     name: &str,
-    int_primary_vars: &BTreeSet<String>,
+    int_carriers_plan: &ScalarRepresentationPlan,
     float_primary_vars: &BTreeSet<String>,
     bool_primary_vars: &BTreeSet<String>,
     nbc: &crate::NanBoxConsts,
@@ -170,7 +170,7 @@ pub(in crate::native_backend::function_compiler) fn var_get_boxed_overflow_safe_
         sealed_blocks,
         vars,
         name,
-        int_primary_vars,
+        int_carriers_plan,
         float_primary_vars,
     )
 }

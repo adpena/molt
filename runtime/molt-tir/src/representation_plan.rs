@@ -3,17 +3,25 @@ use std::hash::{BuildHasherDefault, Hasher};
 
 use crate::ir::{FunctionIR, OpIR};
 use crate::repr::{ContainerKind, ContainerStorageFact, ContainerStorageKind, Repr, ScalarKind};
-use crate::tir::blocks::{BlockId, Terminator};
 use crate::tir::function::TirFunction;
 use crate::tir::lir::{LirRepr, LirValue};
 use crate::tir::lower_from_simple::lower_to_tir;
 use crate::tir::lower_to_lir::lower_function_to_lir;
 use crate::tir::lower_to_simple::SimpleValueNames;
-use crate::tir::ops::OpCode;
 use crate::tir::ops::{AttrValue, TirOp};
 use crate::tir::type_refine::refine_types;
 use crate::tir::types::TirType;
 use crate::tir::values::ValueId;
+
+mod raw_i64;
+
+#[cfg(feature = "llvm")]
+use raw_i64::name_by_value_for;
+pub(crate) use raw_i64::raw_i64_carrier_values_for;
+#[cfg(test)]
+pub(crate) use raw_i64::raw_i64_safe_values_for;
+#[cfg(any(feature = "llvm", feature = "wasm-backend", test))]
+pub use raw_i64::{repr_by_value_for, value_range_for};
 
 const PLAN_HASH_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
 const PLAN_HASH_PRIME: u64 = 0x0000_0100_0000_01b3;
@@ -912,13 +920,13 @@ pub struct ScalarRepresentationPlan {
     container_storage_conflicted_names: PlanHashSet<String>,
     container_storage_ops: PlanHashMap<usize, ContainerStorageFact>,
     /// The representation lattice element per SimpleIR name — the single source
-    /// of truth for the integer raw-carrier classification (design §2.1). Every
-    /// scalar name floors to [`Repr::default_for`] of its `TirType`; names proven
-    /// to be raw-i64-safe int carriers are raised to [`Repr::RawI64Safe`]. The
-    /// native `primary_names.int` set is a *view* over this map
-    /// (`{name | repr.is_raw_i64_safe()}`); see [`Self::primary_name_sets`].
-    /// Phase 4 folds the bool/float carriers (below) in here as `Bool`/
-    /// `FloatUnboxed` raises.
+    /// of truth for integer raw-carrier classification (design §2.1). Every
+    /// scalar name floors to [`Repr::default_for`] of its `TirType`; inline-int47
+    /// carriers are raised to [`Repr::RawI64Safe`], and checked full-i64
+    /// overflow-peel carriers are raised to [`Repr::RawI64FullDeopt`]. The
+    /// native `primary_names.int` set is the union view over these two tiers; see
+    /// [`Self::primary_name_sets`]. A later cut can fold the bool/float carrier
+    /// sets (below) into this map as their own lattice raises.
     repr_by_name: PlanHashMap<String, Repr>,
     /// Raw-bool carrier names — kept as an independent set until Phase 4 folds
     /// the bool lane into `repr_by_name`.
@@ -932,7 +940,13 @@ pub struct ScalarRepresentationPlan {
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ScalarPrimaryNameSets {
+    /// Native raw-i64 carrier names: `RawI64Safe ∪ RawI64FullDeopt`.
     pub int: BTreeSet<String>,
+    /// Inline-int47-safe raw carriers. This is the name-keyed seed for
+    /// value-keyed `RawI64Safe` propagation.
+    pub int_inline_safe: BTreeSet<String>,
+    /// Full-i64 checked-overflow raw carriers from overflow-peel loops.
+    pub int_full_deopt: BTreeSet<String>,
     pub bool_: BTreeSet<String>,
     pub float: BTreeSet<String>,
 }
@@ -964,19 +978,15 @@ pub struct LlvmReprFacts {
     /// The representation lattice element per TIR `ValueId` — the value-keyed
     /// source of truth, the LLVM/`ValueId` mirror of the plan's name-keyed
     /// `repr_by_name`. Every value floors to [`Repr::default_for`] of its refined
-    /// `TirType`; values proven overflow-safe exact-i64 carriers are raised to
-    /// [`Repr::RawI64Safe`].
+    /// `TirType`; inline-int47 carriers raise to [`Repr::RawI64Safe`], while
+    /// checked overflow-peel carriers raise to [`Repr::RawI64FullDeopt`].
     ///
-    /// The `RawI64Safe` set is seeded from the plan's `int_carrier_names()` (an
-    /// interval-proven, no-i64-wrap carrier subset, keyed by SimpleIR name) and
-    /// propagated across the TIR SSA graph: through `Copy` chains and through
-    /// block arguments (phis) — a phi is `RawI64Safe` only when *every* incoming
-    /// edge value is `RawI64Safe`. Loop-carried block arguments have no stable
-    /// `_simple_out` name (they are canonical slot names), so a pure name lookup
-    /// cannot classify them; the dataflow propagation is what lets the backend
-    /// keep a non-overflow-safe accumulator phi boxed (`MaybeBigInt`/`DynBox`)
-    /// instead of unboxing a runtime BigInt result back into a truncating raw
-    /// i64. [`Self::is_inline_safe_int`] is the `{RawI64Safe}` view.
+    /// The raw-i64 tiers are seeded from value-range and checked-op proofs, then
+    /// propagated across TIR SSA identity edges: through `Copy` chains and block
+    /// arguments (phis). Loop-carried block arguments have no stable
+    /// `_simple_out` name (they are canonical slot names), so dataflow
+    /// propagation is what lets the backend keep unproven accumulators boxed
+    /// (`MaybeBigInt`/`DynBox`) while preserving proven raw carriers.
     pub repr_by_value: HashMap<ValueId, Repr>,
 }
 
@@ -1075,452 +1085,6 @@ impl LlvmReprFacts {
             })
             .collect()
     }
-}
-
-/// Build the `ValueId -> SimpleIR name` bridge for `tir_func` (every op result
-/// and every block argument). This is the name↔ValueId bridge consumed by both
-/// the LLVM facts and the overflow-safe propagation seed.
-#[cfg(any(feature = "llvm", feature = "wasm-backend", test))]
-pub(crate) fn name_by_value_for(tir_func: &TirFunction) -> HashMap<ValueId, String> {
-    let names = SimpleValueNames::for_function(tir_func);
-    let mut name_by_value = HashMap::new();
-    for block in tir_func.blocks.values() {
-        for op in &block.ops {
-            for &result in &op.results {
-                name_by_value.insert(result, names.value_name(result));
-            }
-        }
-        for arg in &block.args {
-            name_by_value.insert(arg.id, names.value_name(arg.id));
-        }
-    }
-    name_by_value
-}
-
-/// The backend-neutral construction of the value-keyed representation lattice
-/// map — the **single source of truth** for the integer raw-carrier
-/// classification, consumed identically by the LLVM backend
-/// ([`LlvmReprFacts::build`]) and the WASM/LIR backend (Phase 1,
-/// `lower_function_to_lir`).
-///
-/// Every value we know a `ValueId` for floors to [`Repr::default_for`] of its
-/// refined `TirType`; values proven exact-i64 carriers are then raised to
-/// [`Repr::RawI64Safe`]. The floor makes this a complete value->Repr map.
-///
-/// The `RawI64Safe` raise is sourced from the **value-range analysis** (S6)
-/// when a [`ValueRangeResult`] is supplied (`vr` = `Some`): a `ValueId` is
-/// `RawI64Safe` exactly when [`ValueRangeResult::fits_inline_int47`] proves its
-/// entire range lies in `[-2^46, 2^46 - 1]` — strictly inside the i64 domain,
-/// so the bare-i64 carrier and raw machine arithmetic are sound. This is the
-/// SOLE proof source for the value-keyed (WASM/LLVM) backends and replaces the
-/// legacy name-keyed interval chain (`int_carrier_names()`) here; it is a
-/// **strict subset** of the legacy proof set, so it can only ever *refuse* a
-/// promotion — never falsely promote a value that is physically a heap BigInt
-/// (the 2bf51b730 trusted-unbox truncation bug-class is un-creatable by
-/// construction). The GPU thread/block-id intrinsics — which the value-range
-/// analysis has no model for — are pre-seeded `RawI64Safe` (their results are
-/// hardware lane/grid indices, structurally in `[0, 2^20)`), preserving GPU
-/// kernel codegen.
-///
-/// When no value-range is supplied (`vr` = `None`) — a pre-TIR / unanalysed
-/// path — NO value is raised: every int floors to `MaybeBigInt` (conservative,
-/// boxed, BigInt-correct; never a miscompile, at worst a perf bail).
-///
-/// `func_ir` is the SimpleIR function the plan is keyed on (used only for the
-/// container-dispatch facts carried by [`LlvmReprFacts`]); `tir_func` is the
-/// post-pipeline TIR the backend is lowering, and `vr` (when present) MUST have
-/// been computed on that same `tir_func` so its `ValueId`s line up.
-#[cfg(any(feature = "llvm", feature = "wasm-backend", test))]
-pub fn repr_by_value_for(
-    _func_ir: &FunctionIR,
-    tir_func: &TirFunction,
-    vr: Option<&crate::tir::passes::value_range::ValueRangeResult>,
-) -> HashMap<ValueId, Repr> {
-    let name_by_value = name_by_value_for(tir_func);
-    let mut repr_by_value: HashMap<ValueId, Repr> = name_by_value
-        .keys()
-        .map(|&id| {
-            let repr = tir_func
-                .value_types
-                .get(&id)
-                .map(Repr::default_for)
-                .unwrap_or(Repr::DynBox);
-            (id, repr)
-        })
-        .collect();
-    // No value-range supplied → the conservative floor stands. Every int is
-    // `MaybeBigInt` (boxed, BigInt-safe); no raw-i64 carrier is minted.
-    let Some(vr) = vr else {
-        return repr_by_value;
-    };
-    // Seed the raw-i64-safe set from the value-range proof + the GPU-intrinsic
-    // pre-seed, then propagate it across value-preserving SSA edges (`Copy`
-    // chains and phis) so loop-carried induction variables — whose phi has no
-    // direct `fits_inline_int47` fact but whose every incoming value is proven —
-    // inherit the carrier. Shared with the RC drop-insertion raw-scalar filter
-    // (`raw_i64_safe_values_for`) — single source of truth.
-    let overflow_safe_values = raw_i64_safe_values_for(tir_func, vr);
-    for &id in &overflow_safe_values {
-        repr_by_value.insert(id, Repr::RawI64Safe);
-    }
-    let full_deopt_values = raw_i64_full_deopt_values_for(tir_func, &overflow_safe_values);
-    for &id in &full_deopt_values {
-        repr_by_value.insert(id, Repr::RawI64FullDeopt);
-    }
-    repr_by_value
-}
-
-/// Compute the value-range analysis for `tir_func` — the proof source for the
-/// value-keyed (WASM/LLVM) `RawI64Safe` promotion. Computed on the SAME TIR the
-/// backend lowers so its `ValueId`s line up with [`repr_by_value_for`].
-#[cfg(any(feature = "llvm", feature = "wasm-backend", test))]
-pub fn value_range_for(
-    tir_func: &TirFunction,
-) -> crate::tir::passes::value_range::ValueRangeResult {
-    let scev = crate::tir::passes::scev::compute_scev(tir_func);
-    crate::tir::passes::value_range::compute_value_range(tir_func, &scev)
-}
-
-/// The set of `ValueId`s the backend may carry as a **bare i64** (`RawI64Safe`):
-/// physically not NaN-boxed, no heap reference, raw machine arithmetic legal.
-///
-/// This is the SAME computation that mints `Repr::RawI64Safe` in
-/// [`repr_by_value_for`] — the value-range proof seed + the overflow-peel
-/// `CheckedAdd` full-range carriers + the GPU-index pre-seed, propagated across
-/// value-identity SSA edges. Factored out here so it is available **on every
-/// target** (the RC drop-insertion pass, design 20, runs in the shared TIR
-/// pipeline on native/LLVM/WASM and must filter these raw scalars out of the
-/// drop set — inserting a `DecRef` for a bare i64 register would pass a raw
-/// integer to `molt_dec_ref_obj`, a type confusion). `repr_by_value_for` now
-/// delegates its raw-i64 raise to this function (single source of truth).
-///
-/// `vr` MUST have been computed on this exact `tir_func` so its `ValueId`s line
-/// up. The result is a strict subset of the values that genuinely fit i64, so a
-/// missed promotion is at worst a perf bail (a spurious-but-harmless DecRef on a
-/// value that turns out inline — the runtime `molt_dec_ref_obj` fast-paths
-/// non-pointer tags), never an unsound carrier.
-pub(crate) fn raw_i64_safe_values_for(
-    tir_func: &TirFunction,
-    vr: &crate::tir::passes::value_range::ValueRangeResult,
-) -> std::collections::HashSet<ValueId> {
-    let mut seed = raw_i64_safe_value_seed(tir_func, vr);
-    seed.extend(gpu_intrinsic_raw_i64_values(tir_func));
-    propagate_raw_i64_identity_values(tir_func, seed)
-}
-
-/// Full-range checked-overflow raw-i64 carriers. These values are not
-/// inline-box-safe; their soundness comes from the overflow flag and the boxed
-/// slow path.
-pub(crate) fn raw_i64_full_deopt_values_for(
-    tir_func: &TirFunction,
-    inline_safe_values: &std::collections::HashSet<ValueId>,
-) -> std::collections::HashSet<ValueId> {
-    let mut seed = std::collections::HashSet::new();
-    for block in tir_func.blocks.values() {
-        for op in &block.ops {
-            if matches!(op.opcode, OpCode::CheckedAdd | OpCode::CheckedMul)
-                && let Some(&result) = op.results.first()
-            {
-                seed.insert(result);
-            }
-        }
-    }
-    propagate_raw_i64_full_deopt_identity_values(tir_func, inline_safe_values, seed)
-}
-
-/// All bare-i64 carriers, independent of box-site tier.
-pub(crate) fn raw_i64_carrier_values_for(
-    tir_func: &TirFunction,
-    vr: &crate::tir::passes::value_range::ValueRangeResult,
-) -> std::collections::HashSet<ValueId> {
-    let mut raw = raw_i64_safe_values_for(tir_func, vr);
-    raw.extend(raw_i64_full_deopt_values_for(tir_func, &raw));
-    raw
-}
-
-/// Seed the raw-i64-safe set from the value-range proof: an **op-result**
-/// `ValueId` is in the seed exactly when its entire proven range fits the signed
-/// inline-int47 window `[-2^46, 2^46 - 1]`. This is a strict subset of the i64
-/// domain, so the raw carrier is sound and overflow into a heap BigInt is
-/// structurally impossible.
-///
-/// **Block arguments (phis) are deliberately excluded from the direct seed.** A
-/// phi is raised to `RawI64Safe` only by [`propagate_raw_i64_identity_values`]'s
-/// all-incomings-raw rule. This is a hard soundness requirement of the LIR
-/// lowering (`lower_to_lir`): a `RawI64Safe` (`I64`) phi slot must never be fed a
-/// `MaybeBigInt`/`DynBox` incoming, or the lowering would emit an unsound unbox
-/// of a possible heap BigInt. Seeding a phi directly from its own proven range
-/// would bypass that check (the phi can be range-proven while a back-edge
-/// incoming is not yet/never proven, e.g. an ambiguous multi-latch loop whose
-/// update value is unrecognised). For the canonical induction variable the
-/// range analysis ranges *both* the start constant and the back-edge update
-/// value, so the IV phi is still raised — but only through the structurally safe
-/// all-incomings path. Excluding phis here loses no real promotion: the only
-/// phis the range analysis proves are AddRec IVs, whose incomings it also
-/// proves.
-fn raw_i64_safe_value_seed(
-    tir_func: &TirFunction,
-    vr: &crate::tir::passes::value_range::ValueRangeResult,
-) -> std::collections::HashSet<ValueId> {
-    let mut seed = std::collections::HashSet::new();
-    for block in tir_func.blocks.values() {
-        for op in &block.ops {
-            // CheckedAdd/CheckedMul are full-range overflow-peel carriers.
-            // They are seeded as RawI64FullDeopt, never as RawI64Safe.
-            // A `Shl`/`Shr` result is a sound raw-i64 carrier only when its
-            // machine shift-count operand is proven in `[0, 63]` — the valid
-            // range for a raw i64 machine shift — *in addition to* the generic
-            // inline-window proof below. The result-range proof alone is NOT
-            // sufficient: `0 << 70` has result range `[0, 0]` (fits inline) yet
-            // a machine shift count of 70, and `(x & 0xff) << 90` likewise. A
-            // count outside `[0, 63]` is poison on LLVM (`shl`/`ashr` undefined
-            // behaviour) and a silent wrong-value mask-mod-64 on WASM
-            // (`i64.shl`/`i64.shr_s`), and a negative count is a Python
-            // `ValueError` — all three MUST take the boxed runtime path
-            // (`molt_lshift`/`molt_rshift`), which is BigInt- and
-            // exception-correct (native already routes every shift there). So a
-            // shift whose count is not range-proven in `[0, 63]` is excluded
-            // from the raw seed here, at the single source of truth every
-            // backend consults (`is_raw_i64_safe`), rather than re-guarded in
-            // each backend's lowering. The proven-`[0, 63]` count case — a
-            // literal `<< 1` (the peel / hot-loop shape) or a bounded variable
-            // `<< (i & 63)` — keeps the raw lane and its perf.
-            if matches!(op.opcode, OpCode::Shl | OpCode::Shr) {
-                let count_in_range = op
-                    .operands
-                    .get(1)
-                    .map(|&count| {
-                        let r = vr.range_of(count);
-                        r.lo >= 0 && r.hi <= 63
-                    })
-                    .unwrap_or(false);
-                if count_in_range {
-                    for &result in &op.results {
-                        if vr.fits_inline_int47(result) {
-                            seed.insert(result);
-                        }
-                    }
-                }
-                continue;
-            }
-            for &result in &op.results {
-                if vr.fits_inline_int47(result) {
-                    seed.insert(result);
-                }
-            }
-        }
-    }
-    seed
-}
-
-/// The result `ValueId`s of GPU thread/block-id intrinsic calls — hardware lane,
-/// block, and grid indices that are structurally bounded in `[0, 2^20)` and so
-/// always fit a raw i64 carrier. The value-range analysis has no model for these
-/// `Call` results, so they are pre-seeded here to preserve GPU kernel codegen
-/// (the legacy name-keyed chain marked them unconditionally raw-safe; this
-/// reproduces exactly that population, and only that population — bounded GPU
-/// index intrinsics, never an arbitrary runtime call).
-fn gpu_intrinsic_raw_i64_values(tir_func: &TirFunction) -> std::collections::HashSet<ValueId> {
-    let mut values = std::collections::HashSet::new();
-    for block in tir_func.blocks.values() {
-        for op in &block.ops {
-            if op.opcode != OpCode::Call {
-                continue;
-            }
-            let is_gpu_index_intrinsic = matches!(
-                op.attrs.get("s_value"),
-                Some(AttrValue::Str(name))
-                    if matches!(
-                        name.as_str(),
-                        "molt_gpu_thread_id"
-                            | "molt_gpu_block_id"
-                            | "molt_gpu_block_dim"
-                            | "molt_gpu_grid_dim"
-                    )
-            );
-            if is_gpu_index_intrinsic {
-                for &result in &op.results {
-                    values.insert(result);
-                }
-            }
-        }
-    }
-    values
-}
-
-/// Propagate raw-i64-safety across the TIR SSA graph to a fixpoint, starting
-/// from `seed` (the value-range-proven inline-int47 carriers plus the
-/// GPU-intrinsic pre-seed).
-///
-/// A value is raw-i64-safe when the backend may carry it as a bare i64 and emit
-/// raw machine arithmetic for it. Beyond the seed, safety flows along
-/// value-preserving edges:
-///
-/// - A `Copy` result is safe iff its source operand is.
-/// - A block argument (phi) is safe iff *every* value passed to it on every
-///   incoming branch edge **from a reachable block** is safe (dead-edge
-///   insensitivity — see the edge-collection comment in the body).
-///
-/// Built upward from the seed (monotone — only ever adds safety), so the
-/// worklist terminates; back-edges resolve because a phi becomes safe only once
-/// all of its incomings are known safe. Because the seed is itself a strict
-/// subset of the values that genuinely fit i64 (each proven by value-range or a
-/// structurally-bounded GPU index), propagating across value-identity edges
-/// cannot introduce an unsound carrier.
-fn propagate_raw_i64_identity_values(
-    tir_func: &TirFunction,
-    seed: std::collections::HashSet<ValueId>,
-) -> std::collections::HashSet<ValueId> {
-    propagate_raw_i64_identity_values_with_phi_support(tir_func, seed, None)
-}
-
-fn propagate_raw_i64_full_deopt_identity_values(
-    tir_func: &TirFunction,
-    inline_safe_values: &std::collections::HashSet<ValueId>,
-    seed: std::collections::HashSet<ValueId>,
-) -> std::collections::HashSet<ValueId> {
-    propagate_raw_i64_identity_values_with_phi_support(tir_func, seed, Some(inline_safe_values))
-}
-
-fn propagate_raw_i64_identity_values_with_phi_support(
-    tir_func: &TirFunction,
-    seed: std::collections::HashSet<ValueId>,
-    phi_support: Option<&std::collections::HashSet<ValueId>>,
-) -> std::collections::HashSet<ValueId> {
-    use std::collections::HashSet;
-
-    // Collect block-argument incoming edges: (target block, arg index) -> list
-    // of source values passed on each emitted branch edge.
-    //
-    // DEAD-EDGE-INSENSITIVE (the standard SCCP phi semantics): only edges
-    // whose source block is reachable from the entry (under the Full policy —
-    // terminator + exception edges) contribute incomings. A block no path can
-    // execute passes args no execution can deliver; counting them is not
-    // conservatism, it is analyzing a program that cannot run. Concretely:
-    // the SSA lift keeps a vestigial `loop_end → header` edge whose args are
-    // fabricated `ConstNone`s (the block is unreachable but preserved as loop
-    // metadata). Counting that edge failed the all-incomings rule for EVERY
-    // loop-header phi, silently demoting every frontend-peeled accumulator to
-    // the boxed `molt_add` lane on the value-keyed (WASM/LLVM) backends.
-    let reachable = crate::tir::dominators::executable_reachable_blocks(tir_func);
-    let mut block_arg_incomings: HashMap<(BlockId, usize), Vec<ValueId>> = HashMap::new();
-    let mut add_edge = |target: BlockId, args: &[ValueId]| {
-        for (index, &arg) in args.iter().enumerate() {
-            block_arg_incomings
-                .entry((target, index))
-                .or_default()
-                .push(arg);
-        }
-    };
-    for block in tir_func.blocks.values() {
-        if !reachable.contains(&block.id) {
-            continue;
-        }
-        match &block.terminator {
-            Terminator::Branch { target, args } => add_edge(*target, args),
-            Terminator::CondBranch {
-                then_block,
-                then_args,
-                else_block,
-                else_args,
-                ..
-            } => {
-                add_edge(*then_block, then_args);
-                add_edge(*else_block, else_args);
-            }
-            Terminator::Switch {
-                cases,
-                default,
-                default_args,
-                ..
-            }
-            | Terminator::StateDispatch {
-                cases,
-                default,
-                default_args,
-                ..
-            } => {
-                for (_, target, args) in cases {
-                    add_edge(*target, args);
-                }
-                add_edge(*default, default_args);
-            }
-            Terminator::Return { .. } | Terminator::Unreachable => {}
-        }
-    }
-
-    // Index Copy producers and block-arg membership for the worklist.
-    let mut copy_source: HashMap<ValueId, ValueId> = HashMap::new();
-    let mut block_arg_ids: HashMap<ValueId, (BlockId, usize)> = HashMap::new();
-    let mut all_value_ids: Vec<ValueId> = Vec::new();
-    for block in tir_func.blocks.values() {
-        for (index, arg) in block.args.iter().enumerate() {
-            block_arg_ids.insert(arg.id, (block.id, index));
-            all_value_ids.push(arg.id);
-        }
-        for op in &block.ops {
-            // Forward raw-i64 safety through a `Copy` ONLY when it is a genuine
-            // value-identity move (`copy`/`copy_var`/`store_var`/`load_var`/
-            // `identity_alias`, or a plain attribute-free SSA copy) — the
-            // fail-closed `copy_value_source` predicate, shared with the
-            // value-range pass so the two cannot drift. A Copy that CARRIES an
-            // operator (`inplace_lshift`/`inplace_add`/`str_from_obj`/… — the
-            // frontend lifts the in-place augmented ops and conversions to
-            // `Copy{_original_kind}`) is NOT a value move: its result is the
-            // operator's result, not operand 0. Forwarding safety through it
-            // unconditionally marked an `a <<= 80` result (a `Copy{inplace_lshift}`
-            // of a small lhs) RawI64Safe purely because the lhs `1` fit inline —
-            // so the LLVM/WASM shift lane emitted a RAW machine shift by 80, which
-            // LLVM constant-folds to `poison` (shift >= bit width is UB). The
-            // value-range op-result range for the first-class `Shl`/`Shr` already
-            // refuses the overflow case; this aligns the propagation's Copy
-            // forwarding with that same value-identity contract.
-            if let Some(source) = crate::tir::passes::value_range::copy_value_source(op)
-                && let Some(&result) = op.results.first()
-            {
-                copy_source.insert(result, source);
-            }
-            for &result in &op.results {
-                all_value_ids.push(result);
-            }
-        }
-    }
-
-    let mut safe: HashSet<ValueId> = seed;
-    let mut changed = true;
-    while changed {
-        changed = false;
-        for &id in &all_value_ids {
-            if safe.contains(&id) {
-                continue;
-            }
-            let becomes_safe = if let Some(&src) = copy_source.get(&id) {
-                safe.contains(&src)
-            } else if let Some(&(block, index)) = block_arg_ids.get(&id) {
-                block_arg_incomings
-                    .get(&(block, index))
-                    .is_some_and(|incomings| {
-                        !incomings.is_empty()
-                            && match phi_support {
-                                Some(support) => {
-                                    incomings
-                                        .iter()
-                                        .all(|src| safe.contains(src) || support.contains(src))
-                                        && incomings.iter().any(|src| safe.contains(src))
-                                }
-                                None => incomings.iter().all(|src| safe.contains(src)),
-                            }
-                    })
-            } else {
-                false
-            };
-            if becomes_safe {
-                safe.insert(id);
-                changed = true;
-            }
-        }
-    }
-    safe
 }
 
 impl ScalarRepresentationPlan {
@@ -1634,13 +1198,13 @@ impl ScalarRepresentationPlan {
         plan
     }
 
-    /// Compute the integer/bool/float raw-carrier sets (unchanged algorithm) and
-    /// translate the **integer** carrier into the `repr_by_name` source of truth:
-    /// every scalar name floors to [`Repr::default_for`] of its refined
-    /// `TirType`, then each proven raw-i64 int carrier is raised to
-    /// [`Repr::RawI64Safe`]. The bool/float carriers are stored as independent
-    /// sets pending the Phase-4 fold. This is the single point where the legacy
-    /// carrier analyses become the typed representation lattice.
+    /// Compute the integer/bool/float raw-carrier sets and translate the
+    /// **integer** carrier tiers into the `repr_by_name` source of truth: every
+    /// scalar name floors to [`Repr::default_for`] of its refined `TirType`,
+    /// interval-proven inline carriers are raised to [`Repr::RawI64Safe`], and
+    /// overflow-peel checked-loop carriers are raised to
+    /// [`Repr::RawI64FullDeopt`]. The bool/float carriers are stored as
+    /// independent sets pending the Phase-4 fold.
     fn seed_repr_by_name(&mut self, func_ir: &FunctionIR, fact_index: &FunctionFactIndex<'_>) {
         let primary = self.compute_primary_name_sets(func_ir, fact_index);
         // Type floor for every scalar name we have a representation fact for.
@@ -1649,13 +1213,14 @@ impl ScalarRepresentationPlan {
         for (name, fact) in &self.facts_by_name {
             repr_by_name.insert(name.clone(), Repr::default_for(&fact.ty));
         }
-        // Raise the proven raw-i64 int carriers. `primary.int` is exactly the
-        // interval-/OSC-proven, no-i64-wrap carrier subset; in the lattice these
-        // are `RawI64Safe` (bare i64, not NaN-boxed). The boxed-but-proven-inline
-        // unbox operands (the `InlineInt47` element) are a distinct Phase-2
-        // concept and are not produced here.
-        for name in &primary.int {
+        // Raise inline-safe first, then full-deopt so the more precise checked
+        // overflow tier wins when a name appears in both through alias/store
+        // propagation.
+        for name in &primary.int_inline_safe {
             repr_by_name.insert(name.clone(), Repr::RawI64Safe);
+        }
+        for name in &primary.int_full_deopt {
+            repr_by_name.insert(name.clone(), Repr::RawI64FullDeopt);
         }
         self.repr_by_name = repr_by_name;
         self.bool_primary_names = primary.bool_.into_iter().collect();
@@ -1705,31 +1270,79 @@ impl ScalarRepresentationPlan {
     }
 
     /// The raw-primary carrier sets, as a **view** over the representation
-    /// lattice. The integer set is reconstructed from `repr_by_name`
-    /// (`{name | repr.is_raw_i64_safe()}`); bool/float are the independent sets
-    /// pending the Phase-4 fold. Byte-identical to the legacy stored sets because
-    /// the int view is exactly the names raised to `RawI64Safe` in
-    /// [`Self::seed_repr_by_name`].
+    /// lattice. `int` is the native raw-i64 carrier union; `int_inline_safe` and
+    /// `int_full_deopt` expose the two name-keyed tiers separately so box sites
+    /// cannot confuse the inline-int47 proof with the overflow-peel proof.
+    /// Bool/float are the independent sets pending their fold into
+    /// `repr_by_name`.
     #[cfg(any(feature = "native-backend", feature = "llvm", test))]
     pub fn primary_name_sets(&self) -> ScalarPrimaryNameSets {
+        let int_inline_safe = self.int_carrier_names();
+        let int_full_deopt = self.int_full_deopt_names();
+        let mut int = int_inline_safe.clone();
+        int.extend(int_full_deopt.iter().cloned());
         ScalarPrimaryNameSets {
-            int: self.int_carrier_names(),
+            int,
+            int_inline_safe,
+            int_full_deopt,
             bool_: self.bool_primary_names.iter().cloned().collect(),
             float: self.float_primary_names.iter().cloned().collect(),
         }
     }
 
-    /// The proven raw-i64 int carrier names — the `primary_names.int` view over
-    /// `repr_by_name`. Single source of truth for the native int-primary carrier
-    /// set, the LLVM `overflow_safe_values` seed, and the WASM/LIR `RawI64Safe`
-    /// derivation (via [`repr_by_value_for`]). Unconditionally compiled because
-    /// [`repr_by_value_for`] consumes it on the backend-neutral path.
+    /// Inline-int47 raw-i64 carrier names — the `{RawI64Safe}` view over
+    /// `repr_by_name`. Use [`Self::int_raw_carrier_names`] or
+    /// [`Self::is_raw_int_carrier_name`] when a native consumer means "any raw
+    /// i64 storage"; box sites must distinguish this tier from
+    /// [`Self::int_full_deopt_names`].
     pub fn int_carrier_names(&self) -> BTreeSet<String> {
         self.repr_by_name
             .iter()
             .filter(|(_, repr)| repr.is_raw_i64_safe())
             .map(|(name, _)| name.clone())
             .collect()
+    }
+
+    /// Full-i64 checked-overflow carrier names — the `{RawI64FullDeopt}` view
+    /// over `repr_by_name`.
+    pub fn int_full_deopt_names(&self) -> BTreeSet<String> {
+        self.repr_by_name
+            .iter()
+            .filter(|(_, repr)| repr.is_raw_i64_full_deopt())
+            .map(|(name, _)| name.clone())
+            .collect()
+    }
+
+    /// All native raw-i64 carrier names, independent of box-site tier.
+    pub fn int_raw_carrier_names(&self) -> BTreeSet<String> {
+        self.repr_by_name
+            .iter()
+            .filter(|(_, repr)| repr.is_raw_i64_carrier())
+            .map(|(name, _)| name.clone())
+            .collect()
+    }
+
+    /// Name-keyed inline-int47 predicate for native lowering.
+    pub fn is_inline_safe_int_name(&self, name: &str) -> bool {
+        self.repr_by_name
+            .get(name)
+            .is_some_and(|repr| repr.is_raw_i64_safe())
+    }
+
+    /// Name-keyed full-i64 checked-overflow predicate for native lowering.
+    pub fn is_full_deopt_int_name(&self, name: &str) -> bool {
+        self.repr_by_name
+            .get(name)
+            .is_some_and(|repr| repr.is_raw_i64_full_deopt())
+    }
+
+    /// Name-keyed raw-i64 carrier predicate for native lowering. Box-site code
+    /// must still distinguish [`Self::is_inline_safe_int_name`] from
+    /// [`Self::is_full_deopt_int_name`].
+    pub fn is_raw_int_carrier_name(&self, name: &str) -> bool {
+        self.repr_by_name
+            .get(name)
+            .is_some_and(|repr| repr.is_raw_i64_carrier())
     }
 
     #[cfg(any(feature = "native-backend", test))]
@@ -2584,7 +2197,7 @@ impl ScalarRepresentationPlan {
 
         let (int_like, bool_like, float_like, str_like, _) = self.scalar_name_sets();
         let param_name_set: BTreeSet<&str> = func_ir.params.iter().map(String::as_str).collect();
-        let int_primary = self.compute_int_primary_names(
+        let (int_inline_safe, int_full_deopt) = self.compute_int_primary_name_tiers(
             func_ir,
             fact_index,
             &param_name_set,
@@ -2592,6 +2205,8 @@ impl ScalarRepresentationPlan {
             &bool_like,
             &float_like,
         );
+        let mut int_primary = int_inline_safe.clone();
+        int_primary.extend(int_full_deopt.iter().cloned());
         let bool_primary = self.compute_bool_primary_names(
             fact_index,
             &param_name_set,
@@ -2606,12 +2221,14 @@ impl ScalarRepresentationPlan {
 
         ScalarPrimaryNameSets {
             int: int_primary,
+            int_inline_safe,
+            int_full_deopt,
             bool_: bool_primary,
             float: float_primary,
         }
     }
 
-    fn compute_int_primary_names(
+    fn compute_int_primary_name_tiers(
         &self,
         func_ir: &FunctionIR,
         fact_index: &FunctionFactIndex<'_>,
@@ -2619,7 +2236,7 @@ impl ScalarRepresentationPlan {
         int_like: &BTreeSet<String>,
         bool_like: &BTreeSet<String>,
         float_like: &BTreeSet<String>,
-    ) -> BTreeSet<String> {
+    ) -> (BTreeSet<String>, BTreeSet<String>) {
         let bounded_i64_names = compute_i64_interval_facts(func_ir);
         let int_unsafe_outputs: BTreeSet<String> = fact_index
             .output_ops
@@ -2686,11 +2303,9 @@ impl ScalarRepresentationPlan {
         // interval chain cannot: the result is a true i64 with a hardware
         // overflow flag, and the peel's CFG gates every consumption of a
         // wrapped value.
-        candidates.extend(checked_loop_seed_names(
-            func_ir,
-            &bounded_i64_names,
-            &passes_filter,
-        ));
+        let checked_loop_members =
+            checked_loop_seed_names(func_ir, &bounded_i64_names, &passes_filter);
+        candidates.extend(checked_loop_members.iter().cloned());
         let mut changed = true;
         while changed {
             changed = false;
@@ -2715,7 +2330,13 @@ impl ScalarRepresentationPlan {
                 }
             }
         }
-        candidates.into_iter().collect()
+        let full_deopt =
+            self.propagate_full_deopt_name_tier(fact_index, &candidates, checked_loop_members);
+        let inline_safe = candidates
+            .into_iter()
+            .filter(|name| !full_deopt.contains(name))
+            .collect();
+        (inline_safe, full_deopt)
     }
 
     fn vars_with_non_int_defs(
@@ -2746,6 +2367,51 @@ impl ScalarRepresentationPlan {
             }
         }
         non_int
+    }
+
+    fn propagate_full_deopt_name_tier(
+        &self,
+        fact_index: &FunctionFactIndex<'_>,
+        raw_candidates: &PlanHashSet<String>,
+        seed: BTreeSet<String>,
+    ) -> BTreeSet<String> {
+        let mut full_deopt: BTreeSet<String> = seed
+            .into_iter()
+            .filter(|name| raw_candidates.contains(name))
+            .collect();
+        let mut changed = true;
+        while changed {
+            changed = false;
+            for target in
+                store_var_targets_all_sources_where(fact_index, |src| full_deopt.contains(src))
+            {
+                if raw_candidates.contains(&target) && full_deopt.insert(target) {
+                    changed = true;
+                }
+            }
+            for op in &fact_index.data_ops {
+                let Some(out) = op.out.as_ref() else {
+                    continue;
+                };
+                if full_deopt.contains(out) || !raw_candidates.contains(out) {
+                    continue;
+                }
+                let first_source = op.var.as_deref().or_else(|| {
+                    op.args
+                        .as_ref()
+                        .and_then(|args| args.first().map(String::as_str))
+                });
+                let propagates_full_deopt = matches!(
+                    op.kind.as_str(),
+                    "copy" | "copy_var" | "load_var" | "identity_alias" | "binding_alias"
+                ) && first_source
+                    .is_some_and(|source| full_deopt.contains(source));
+                if propagates_full_deopt && full_deopt.insert(out.clone()) {
+                    changed = true;
+                }
+            }
+        }
+        full_deopt
     }
 
     fn compute_bool_primary_names(
@@ -5787,7 +5453,8 @@ mod tests {
     fn checked_loop_seed_admits_peeled_fast_loop_only() {
         let func_ir = super::test_fixtures::peeled_compute_func_ir();
         let plan = ScalarRepresentationPlan::for_function_ir(&func_ir);
-        let int_primary = plan.primary_name_sets().int;
+        let primary = plan.primary_name_sets();
+        let int_primary = &primary.int;
 
         for name in [
             "_bb1_arg0",
@@ -5804,6 +5471,16 @@ mod tests {
             assert!(
                 int_primary.contains(name),
                 "{name} must be int-primary (fast-lane admission); got {int_primary:?}"
+            );
+            assert!(
+                primary.int_full_deopt.contains(name),
+                "{name} must be full-deopt, not inline-safe; got {:?}",
+                primary.int_full_deopt
+            );
+            assert!(
+                !primary.int_inline_safe.contains(name),
+                "{name} must not seed RawI64Safe; got {:?}",
+                primary.int_inline_safe
             );
         }
         for name in [

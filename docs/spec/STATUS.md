@@ -988,11 +988,12 @@ the implementation. For forward-looking priorities, use
   structural `list_int_new` producers and queried through the shared
   representation plan. `bce_safe` remains an independent bounds proof rather
   than storage authority.
-- Native int-lane lowering now reads raw i64 values from the static
-  `int_primary_vars` contract instead of a separate raw-int shadow transport.
-  `int_primary_vars` is an exact-i64 representation contract, not a semantic
-  `int` claim: bounded add/sub and raw-closed counted store/load loop carriers
-  may enter raw-primary only after shared interval proof shows that the
+- Native int-lane lowering now reads raw i64 values from
+  `ScalarRepresentationPlan` raw-int carrier predicates instead of a separate
+  raw-int shadow transport or cloned `int_primary_vars` set. Raw-int carrier
+  membership is an exact-i64 representation contract, not a semantic `int`
+  claim: bounded add/sub and raw-closed counted store/load loop carriers may
+  enter raw-primary only after shared interval proof shows that the
   operation cannot overflow i64 or promote to BigInt. Unbounded arithmetic and
   shifts stay boxed/runtime-backed until a range/shift-count proof can show
   that the operation cannot overflow i64, promote to BigInt, or raise for

@@ -63,7 +63,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
-    int_primary_vars: &BTreeSet<String>,
+    int_carriers_plan: &ScalarRepresentationPlan,
     float_primary_vars: &BTreeSet<String>,
     bool_primary_vars: &BTreeSet<String>,
     int_like_vars: &BTreeSet<String>,
@@ -80,7 +80,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
             op,
             int_like_vars,
             bool_like_vars,
-            int_primary_vars,
+            int_carriers_plan,
             bool_primary_vars,
         )
     };
@@ -105,7 +105,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                                        sealed_blocks: &mut BTreeSet<Block>,
                                        vars: &BTreeMap<String, Variable>,
                                        name: &str,
-                                       int_primary_vars: &BTreeSet<String>,
+                                       int_carriers_plan: &ScalarRepresentationPlan,
                                        float_primary_vars: &BTreeSet<String>|
      -> Option<crate::VarValue> {
         var_get_boxed_overflow_safe_fn(
@@ -116,7 +116,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
             sealed_blocks,
             vars,
             name,
-            int_primary_vars,
+            int_carriers_plan,
             float_primary_vars,
             bool_primary_vars,
             nbc,
@@ -143,7 +143,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[0],
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 )
                 .expect("LHS not found");
@@ -155,7 +155,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[1],
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 )
                 .expect("RHS not found");
@@ -184,7 +184,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                     &mut *sealed_blocks,
                     vars,
                     float_primary_vars,
-                    int_primary_vars,
+                    int_carriers_plan,
                     int_like_vars,
                     bool_like_vars,
                     nbc,
@@ -198,7 +198,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                     &mut *sealed_blocks,
                     vars,
                     float_primary_vars,
-                    int_primary_vars,
+                    int_carriers_plan,
                     int_like_vars,
                     bool_like_vars,
                     nbc,
@@ -222,16 +222,16 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                 let rhs_name = &args[1];
                 // Phase 1b: inside loops, accept either a Variable-tier
                 // shadow (phi-correct across back-edges) OR a
-                // int_primary_vars main Variable (loop-invariant
+                // int_carriers_plan main Variable (loop-invariant
                 // constants and non-phi raw values). This widens fast
                 // path eligibility for `i + 1` patterns where the
-                // const is in int_primary_vars but never shadowed.
-                let lhs_raw = int_raw_value(&mut *builder, vars, int_primary_vars, lhs_name);
-                let rhs_raw = int_raw_value(&mut *builder, vars, int_primary_vars, rhs_name);
+                // const is in int_carriers_plan but never shadowed.
+                let lhs_raw = int_raw_value(&mut *builder, vars, int_carriers_plan, lhs_name);
+                let rhs_raw = int_raw_value(&mut *builder, vars, int_carriers_plan, rhs_name);
                 let out_is_int_primary = op
                     .out
                     .as_ref()
-                    .is_some_and(|out| int_primary_vars.contains(out));
+                    .is_some_and(|out| int_carriers_plan.is_raw_int_carrier_name(out));
 
                 let callee = SimpleBackend::import_func_id_split(
                     &mut *module,
@@ -273,7 +273,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                         &mut *sealed_blocks,
                         vars,
                         &args[0],
-                        int_primary_vars,
+                        int_carriers_plan,
                         float_primary_vars,
                     )
                     .expect("LHS not found");
@@ -285,7 +285,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                         &mut *sealed_blocks,
                         vars,
                         &args[1],
-                        int_primary_vars,
+                        int_carriers_plan,
                         float_primary_vars,
                     )
                     .expect("RHS not found");
@@ -333,7 +333,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[0],
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 )
                 .expect("LHS not found");
@@ -345,7 +345,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[1],
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 )
                 .expect("RHS not found");
@@ -368,7 +368,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[0],
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 )
                 .expect("LHS not found");
@@ -380,7 +380,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[1],
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 )
                 .expect("RHS not found");
@@ -455,7 +455,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                     &mut *builder,
                     &mut *import_refs,
                     vars,
-                    int_primary_vars,
+                    int_carriers_plan,
                     bool_primary_vars,
                     float_primary_vars,
                     nbc,
@@ -490,8 +490,8 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
             // loop — same semantics, no speedup). This mirrors the
             // Luau lowering exactly.
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-            let lhs_raw = int_raw_value(&mut *builder, vars, int_primary_vars, &args[0]);
-            let rhs_raw = int_raw_value(&mut *builder, vars, int_primary_vars, &args[1]);
+            let lhs_raw = int_raw_value(&mut *builder, vars, int_carriers_plan, &args[0]);
+            let rhs_raw = int_raw_value(&mut *builder, vars, int_carriers_plan, &args[1]);
             if let (Some(lhs_raw), Some(rhs_raw)) = (lhs_raw, rhs_raw) {
                 let (sum, of) = builder.ins().sadd_overflow(lhs_raw, rhs_raw);
                 if let Some(ref sum_name) = op.var {
@@ -500,7 +500,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                     // boxed def would truncate. Enforced here because
                     // this IS the trusted-unbox boundary.
                     assert!(
-                        int_primary_vars.contains(sum_name),
+                        int_carriers_plan.is_raw_int_carrier_name(sum_name),
                         "checked_add: raw operands but non-raw sum slot '{sum_name}' (carrier chain inconsistency)",
                     );
                     def_var_named(&mut *builder, vars, sum_name, sum);
@@ -522,7 +522,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                 assert!(
                     op.var
                         .as_ref()
-                        .is_none_or(|sum| !int_primary_vars.contains(sum)),
+                        .is_none_or(|sum| !int_carriers_plan.is_raw_int_carrier_name(sum)),
                     "checked_add: boxed operands but raw sum slot (carrier chain inconsistency)",
                 );
                 let lhs = var_get_boxed_overflow_safe(
@@ -533,7 +533,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[0],
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 )
                 .expect("checked_add: LHS not found");
@@ -545,7 +545,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[1],
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 )
                 .expect("checked_add: RHS not found");
@@ -600,8 +600,8 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
             // CONSTANT FALSE (the peel's slow path is correctly dead; the
             // "fast" loop IS the boxed loop — same semantics, no speedup).
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-            let lhs_raw = int_raw_value(&mut *builder, vars, int_primary_vars, &args[0]);
-            let rhs_raw = int_raw_value(&mut *builder, vars, int_primary_vars, &args[1]);
+            let lhs_raw = int_raw_value(&mut *builder, vars, int_carriers_plan, &args[0]);
+            let rhs_raw = int_raw_value(&mut *builder, vars, int_carriers_plan, &args[1]);
             if let (Some(lhs_raw), Some(rhs_raw)) = (lhs_raw, rhs_raw) {
                 let (prod, of) = imul_overflow64(&mut *builder, lhs_raw, rhs_raw);
                 if let Some(ref prod_name) = op.var {
@@ -610,7 +610,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                     // def would truncate. Enforced here because this IS the
                     // trusted-unbox boundary.
                     assert!(
-                        int_primary_vars.contains(prod_name),
+                        int_carriers_plan.is_raw_int_carrier_name(prod_name),
                         "checked_mul: raw operands but non-raw product slot '{prod_name}' (carrier chain inconsistency)",
                     );
                     def_var_named(&mut *builder, vars, prod_name, prod);
@@ -632,7 +632,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                 assert!(
                     op.var
                         .as_ref()
-                        .is_none_or(|prod| !int_primary_vars.contains(prod)),
+                        .is_none_or(|prod| !int_carriers_plan.is_raw_int_carrier_name(prod)),
                     "checked_mul: boxed operands but raw product slot (carrier chain inconsistency)",
                 );
                 let lhs = var_get_boxed_overflow_safe(
@@ -643,7 +643,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[0],
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 )
                 .expect("checked_mul: LHS not found");
@@ -655,7 +655,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[1],
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 )
                 .expect("checked_mul: RHS not found");
@@ -698,7 +698,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[0],
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 )
                 .expect("LHS not found");
@@ -710,7 +710,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[1],
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 )
                 .expect("RHS not found");
@@ -736,7 +736,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                     &mut *sealed_blocks,
                     vars,
                     float_primary_vars,
-                    int_primary_vars,
+                    int_carriers_plan,
                     int_like_vars,
                     bool_like_vars,
                     nbc,
@@ -750,7 +750,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                     &mut *sealed_blocks,
                     vars,
                     float_primary_vars,
-                    int_primary_vars,
+                    int_carriers_plan,
                     int_like_vars,
                     bool_like_vars,
                     nbc,
@@ -774,12 +774,12 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                 // that when inside a loop and only Value-tier shadows exist
                 // (no Variable-tier), we fall through to the proven-int path
                 // instead of panicking on unwrap.
-                let lhs_val = int_raw_value(&mut *builder, vars, int_primary_vars, &args[0]);
-                let rhs_val = int_raw_value(&mut *builder, vars, int_primary_vars, &args[1]);
+                let lhs_val = int_raw_value(&mut *builder, vars, int_carriers_plan, &args[0]);
+                let rhs_val = int_raw_value(&mut *builder, vars, int_carriers_plan, &args[1]);
                 let out_is_int_primary = op
                     .out
                     .as_ref()
-                    .is_some_and(|out| int_primary_vars.contains(out));
+                    .is_some_and(|out| int_carriers_plan.is_raw_int_carrier_name(out));
                 if out_is_int_primary && let (Some(lhs_raw), Some(rhs_raw)) = (lhs_val, rhs_val) {
                     // Typed IR: raw i64 is PRIMARY.  Branchless iadd
                     // with deferred overflow — no boxing emitted here.
@@ -801,7 +801,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[0],
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 )
                 .expect("LHS not found");
@@ -813,7 +813,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[1],
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 )
                 .expect("RHS not found");
@@ -866,7 +866,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[0],
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 )
                 .expect("LHS not found");
@@ -878,7 +878,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[1],
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 )
                 .expect("RHS not found");
@@ -952,7 +952,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                     &mut *builder,
                     &mut *import_refs,
                     vars,
-                    int_primary_vars,
+                    int_carriers_plan,
                     bool_primary_vars,
                     float_primary_vars,
                     nbc,
@@ -1000,7 +1000,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                 &mut *import_refs,
                 &mut *sealed_blocks,
                 vars,
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
                 bool_primary_vars,
                 nbc,
@@ -1021,7 +1021,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                     &mut *sealed_blocks,
                     vars,
                     float_primary_vars,
-                    int_primary_vars,
+                    int_carriers_plan,
                     int_like_vars,
                     bool_like_vars,
                     nbc,
@@ -1035,7 +1035,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                     &mut *sealed_blocks,
                     vars,
                     float_primary_vars,
-                    int_primary_vars,
+                    int_carriers_plan,
                     int_like_vars,
                     bool_like_vars,
                     nbc,
@@ -1063,15 +1063,15 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                     // (phi-correct across back-edges). Value-tier
                     // shadows may hold stale SSA values from a
                     // previous block/iteration.
-                    int_raw_value(&mut *builder, vars, int_primary_vars, lhs_name)
+                    int_raw_value(&mut *builder, vars, int_carriers_plan, lhs_name)
                 } else {
-                    int_raw_value(&mut *builder, vars, int_primary_vars, lhs_name)
+                    int_raw_value(&mut *builder, vars, int_carriers_plan, lhs_name)
                 };
-                let rhs_raw = int_raw_value(&mut *builder, vars, int_primary_vars, rhs_name);
+                let rhs_raw = int_raw_value(&mut *builder, vars, int_carriers_plan, rhs_name);
                 let out_is_int_primary = op
                     .out
                     .as_ref()
-                    .is_some_and(|out| int_primary_vars.contains(out));
+                    .is_some_and(|out| int_carriers_plan.is_raw_int_carrier_name(out));
 
                 let callee = SimpleBackend::import_func_id_split(
                     &mut *module,
@@ -1108,7 +1108,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                         &mut *sealed_blocks,
                         vars,
                         &args[0],
-                        int_primary_vars,
+                        int_carriers_plan,
                         float_primary_vars,
                     )
                     .unwrap_or_else(|| panic!("LHS not found in {} op {}", func_name, op_idx));
@@ -1120,7 +1120,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                         &mut *sealed_blocks,
                         vars,
                         &args[1],
-                        int_primary_vars,
+                        int_carriers_plan,
                         float_primary_vars,
                     )
                     .unwrap_or_else(|| panic!("RHS not found in {} op {}", func_name, op_idx));
@@ -1168,7 +1168,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[0],
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 )
                 .expect("LHS not found");
@@ -1180,7 +1180,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[1],
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 )
                 .expect("RHS not found");
@@ -1254,7 +1254,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                     &mut *builder,
                     &mut *import_refs,
                     vars,
-                    int_primary_vars,
+                    int_carriers_plan,
                     bool_primary_vars,
                     float_primary_vars,
                     nbc,
@@ -1282,7 +1282,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                     &mut *sealed_blocks,
                     vars,
                     float_primary_vars,
-                    int_primary_vars,
+                    int_carriers_plan,
                     int_like_vars,
                     bool_like_vars,
                     nbc,
@@ -1296,7 +1296,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                     &mut *sealed_blocks,
                     vars,
                     float_primary_vars,
-                    int_primary_vars,
+                    int_carriers_plan,
                     int_like_vars,
                     bool_like_vars,
                     nbc,
@@ -1315,18 +1315,18 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
             } else if op
                 .out
                 .as_ref()
-                .is_some_and(|out| int_primary_vars.contains(out))
-                && (int_primary_vars.contains(args[0].as_str()))
-                && (int_primary_vars.contains(args[1].as_str()))
+                .is_some_and(|out| int_carriers_plan.is_raw_int_carrier_name(out))
+                && (int_carriers_plan.is_raw_int_carrier_name(args[0].as_str()))
+                && (int_carriers_plan.is_raw_int_carrier_name(args[1].as_str()))
                 && op_prefers_int_lane(op)
             {
                 // Raw chain: both operands already unboxed + overflow guard.
                 // Propagate raw shadow via second merge phi.
                 // Inside loops, use Variable-only shadows (phi-correct).
                 let lhs_val =
-                    int_raw_value(&mut *builder, vars, int_primary_vars, &args[0]).unwrap();
+                    int_raw_value(&mut *builder, vars, int_carriers_plan, &args[0]).unwrap();
                 let rhs_val =
-                    int_raw_value(&mut *builder, vars, int_primary_vars, &args[1]).unwrap();
+                    int_raw_value(&mut *builder, vars, int_carriers_plan, &args[1]).unwrap();
                 // Typed IR: raw i64 is PRIMARY.  Branchless isub
                 // with deferred overflow — no boxing emitted here.
                 let raw_result = builder.ins().isub(lhs_val, rhs_val);
@@ -1344,7 +1344,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[0],
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 )
                 .unwrap_or_else(|| panic!("LHS not found in {} op {}", func_name, op_idx));
@@ -1356,7 +1356,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[1],
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 )
                 .unwrap_or_else(|| panic!("RHS not found in {} op {}", func_name, op_idx));
@@ -1409,7 +1409,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[0],
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 )
                 .expect("LHS not found");
@@ -1421,7 +1421,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[1],
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 )
                 .expect("RHS not found");
@@ -1495,7 +1495,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                     &mut *builder,
                     &mut *import_refs,
                     vars,
-                    int_primary_vars,
+                    int_carriers_plan,
                     bool_primary_vars,
                     float_primary_vars,
                     nbc,
@@ -1521,7 +1521,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                     &mut *sealed_blocks,
                     vars,
                     float_primary_vars,
-                    int_primary_vars,
+                    int_carriers_plan,
                     int_like_vars,
                     bool_like_vars,
                     nbc,
@@ -1535,7 +1535,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                     &mut *sealed_blocks,
                     vars,
                     float_primary_vars,
-                    int_primary_vars,
+                    int_carriers_plan,
                     int_like_vars,
                     bool_like_vars,
                     nbc,
@@ -1563,15 +1563,15 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                     // (phi-correct across back-edges). Value-tier
                     // shadows may hold stale SSA values from a
                     // previous block/iteration.
-                    int_raw_value(&mut *builder, vars, int_primary_vars, lhs_name)
+                    int_raw_value(&mut *builder, vars, int_carriers_plan, lhs_name)
                 } else {
-                    int_raw_value(&mut *builder, vars, int_primary_vars, lhs_name)
+                    int_raw_value(&mut *builder, vars, int_carriers_plan, lhs_name)
                 };
-                let rhs_raw = int_raw_value(&mut *builder, vars, int_primary_vars, rhs_name);
+                let rhs_raw = int_raw_value(&mut *builder, vars, int_carriers_plan, rhs_name);
                 let out_is_int_primary = op
                     .out
                     .as_ref()
-                    .is_some_and(|out| int_primary_vars.contains(out));
+                    .is_some_and(|out| int_carriers_plan.is_raw_int_carrier_name(out));
 
                 let callee = SimpleBackend::import_func_id_split(
                     &mut *module,
@@ -1608,7 +1608,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                         &mut *sealed_blocks,
                         vars,
                         &args[0],
-                        int_primary_vars,
+                        int_carriers_plan,
                         float_primary_vars,
                     )
                     .expect("LHS not found");
@@ -1620,7 +1620,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                         &mut *sealed_blocks,
                         vars,
                         &args[1],
-                        int_primary_vars,
+                        int_carriers_plan,
                         float_primary_vars,
                     )
                     .expect("RHS not found");
@@ -1667,7 +1667,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[0],
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 )
                 .expect("LHS not found");
@@ -1679,7 +1679,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[1],
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 )
                 .expect("RHS not found");
@@ -1752,7 +1752,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                     &mut *builder,
                     &mut *import_refs,
                     vars,
-                    int_primary_vars,
+                    int_carriers_plan,
                     bool_primary_vars,
                     float_primary_vars,
                     nbc,
@@ -1780,7 +1780,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                     &mut *sealed_blocks,
                     vars,
                     float_primary_vars,
-                    int_primary_vars,
+                    int_carriers_plan,
                     int_like_vars,
                     bool_like_vars,
                     nbc,
@@ -1794,7 +1794,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                     &mut *sealed_blocks,
                     vars,
                     float_primary_vars,
-                    int_primary_vars,
+                    int_carriers_plan,
                     int_like_vars,
                     bool_like_vars,
                     nbc,
@@ -1813,17 +1813,17 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
             } else if op
                 .out
                 .as_ref()
-                .is_some_and(|out| int_primary_vars.contains(out))
-                && (int_primary_vars.contains(args[0].as_str()))
-                && (int_primary_vars.contains(args[1].as_str()))
+                .is_some_and(|out| int_carriers_plan.is_raw_int_carrier_name(out))
+                && (int_carriers_plan.is_raw_int_carrier_name(args[0].as_str()))
+                && (int_carriers_plan.is_raw_int_carrier_name(args[1].as_str()))
                 && op_prefers_int_lane(op)
             {
                 // Raw chain: both operands already unboxed + overflow guard.
                 // Inside loops, use Variable-only shadows (phi-correct).
                 let lhs_val =
-                    int_raw_value(&mut *builder, vars, int_primary_vars, &args[0]).unwrap();
+                    int_raw_value(&mut *builder, vars, int_carriers_plan, &args[0]).unwrap();
                 let rhs_val =
-                    int_raw_value(&mut *builder, vars, int_primary_vars, &args[1]).unwrap();
+                    int_raw_value(&mut *builder, vars, int_carriers_plan, &args[1]).unwrap();
                 // Typed IR: raw i64 is PRIMARY.  Branchless imul
                 // with deferred overflow — no boxing emitted here.
                 let raw_result = builder.ins().imul(lhs_val, rhs_val);
@@ -1841,7 +1841,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[0],
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 )
                 .expect("LHS not found");
@@ -1853,7 +1853,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[1],
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 )
                 .expect("RHS not found");
@@ -1905,7 +1905,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[0],
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 )
                 .expect("LHS not found");
@@ -1917,7 +1917,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[1],
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 )
                 .expect("RHS not found");
@@ -1990,7 +1990,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                     &mut *builder,
                     &mut *import_refs,
                     vars,
-                    int_primary_vars,
+                    int_carriers_plan,
                     bool_primary_vars,
                     float_primary_vars,
                     nbc,
@@ -2006,12 +2006,12 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
             let res = if op_prefers_int_lane(op) {
                 let lhs_name = &args[0];
                 let rhs_name = &args[1];
-                let lhs_raw = int_raw_value(&mut *builder, vars, int_primary_vars, lhs_name);
-                let rhs_raw = int_raw_value(&mut *builder, vars, int_primary_vars, rhs_name);
+                let lhs_raw = int_raw_value(&mut *builder, vars, int_carriers_plan, lhs_name);
+                let rhs_raw = int_raw_value(&mut *builder, vars, int_carriers_plan, rhs_name);
                 let out_is_int_primary = op
                     .out
                     .as_ref()
-                    .is_some_and(|out| int_primary_vars.contains(out));
+                    .is_some_and(|out| int_carriers_plan.is_raw_int_carrier_name(out));
 
                 if out_is_int_primary && let (Some(lhs_raw), Some(rhs_raw)) = (lhs_raw, rhs_raw) {
                     // Bitwise OR on raw i64: branchless, no overflow
@@ -2030,7 +2030,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                         &mut *sealed_blocks,
                         vars,
                         &args[0],
-                        int_primary_vars,
+                        int_carriers_plan,
                         float_primary_vars,
                     )
                     .expect("LHS not found");
@@ -2042,7 +2042,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                         &mut *sealed_blocks,
                         vars,
                         &args[1],
-                        int_primary_vars,
+                        int_carriers_plan,
                         float_primary_vars,
                     )
                     .expect("RHS not found");
@@ -2068,7 +2068,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[0],
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 )
                 .expect("LHS not found");
@@ -2080,7 +2080,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[1],
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 )
                 .expect("RHS not found");
@@ -2142,7 +2142,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("LHS not found");
@@ -2154,7 +2154,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("RHS not found");
@@ -2225,12 +2225,12 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
             let res = if op_prefers_int_lane(op) {
                 let lhs_name = &args[0];
                 let rhs_name = &args[1];
-                let lhs_raw = int_raw_value(&mut *builder, vars, int_primary_vars, lhs_name);
-                let rhs_raw = int_raw_value(&mut *builder, vars, int_primary_vars, rhs_name);
+                let lhs_raw = int_raw_value(&mut *builder, vars, int_carriers_plan, lhs_name);
+                let rhs_raw = int_raw_value(&mut *builder, vars, int_carriers_plan, rhs_name);
                 let out_is_int_primary = op
                     .out
                     .as_ref()
-                    .is_some_and(|out| int_primary_vars.contains(out));
+                    .is_some_and(|out| int_carriers_plan.is_raw_int_carrier_name(out));
 
                 if out_is_int_primary && let (Some(lhs_raw), Some(rhs_raw)) = (lhs_raw, rhs_raw) {
                     // Bitwise AND on raw i64: branchless, no overflow.
@@ -2248,7 +2248,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                         &mut *sealed_blocks,
                         vars,
                         &args[0],
-                        int_primary_vars,
+                        int_carriers_plan,
                         float_primary_vars,
                     )
                     .expect("LHS not found");
@@ -2260,7 +2260,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                         &mut *sealed_blocks,
                         vars,
                         &args[1],
-                        int_primary_vars,
+                        int_carriers_plan,
                         float_primary_vars,
                     )
                     .expect("RHS not found");
@@ -2286,7 +2286,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[0],
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 )
                 .expect("LHS not found");
@@ -2298,7 +2298,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[1],
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 )
                 .expect("RHS not found");
@@ -2360,7 +2360,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("LHS not found");
@@ -2372,7 +2372,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("RHS not found");
@@ -2443,12 +2443,12 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
             let res = if op_prefers_int_lane(op) {
                 let lhs_name = &args[0];
                 let rhs_name = &args[1];
-                let lhs_raw = int_raw_value(&mut *builder, vars, int_primary_vars, lhs_name);
-                let rhs_raw = int_raw_value(&mut *builder, vars, int_primary_vars, rhs_name);
+                let lhs_raw = int_raw_value(&mut *builder, vars, int_carriers_plan, lhs_name);
+                let rhs_raw = int_raw_value(&mut *builder, vars, int_carriers_plan, rhs_name);
                 let out_is_int_primary = op
                     .out
                     .as_ref()
-                    .is_some_and(|out| int_primary_vars.contains(out));
+                    .is_some_and(|out| int_carriers_plan.is_raw_int_carrier_name(out));
 
                 if out_is_int_primary && let (Some(lhs_raw), Some(rhs_raw)) = (lhs_raw, rhs_raw) {
                     // Bitwise XOR on raw i64: branchless, no overflow.
@@ -2466,7 +2466,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                         &mut *sealed_blocks,
                         vars,
                         &args[0],
-                        int_primary_vars,
+                        int_carriers_plan,
                         float_primary_vars,
                     )
                     .expect("LHS not found");
@@ -2478,7 +2478,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                         &mut *sealed_blocks,
                         vars,
                         &args[1],
-                        int_primary_vars,
+                        int_carriers_plan,
                         float_primary_vars,
                     )
                     .expect("RHS not found");
@@ -2504,7 +2504,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[0],
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 )
                 .expect("LHS not found");
@@ -2516,7 +2516,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[1],
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 )
                 .expect("RHS not found");
@@ -2578,7 +2578,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("LHS not found");
@@ -2590,7 +2590,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("RHS not found");
@@ -2675,7 +2675,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("LHS not found");
@@ -2687,7 +2687,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("RHS not found");
@@ -2722,7 +2722,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("LHS not found");
@@ -2734,7 +2734,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("RHS not found");
@@ -2769,7 +2769,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("LHS not found");
@@ -2781,7 +2781,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("RHS not found");
@@ -2832,7 +2832,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                     &mut *sealed_blocks,
                     vars,
                     float_primary_vars,
-                    int_primary_vars,
+                    int_carriers_plan,
                     int_like_vars,
                     bool_like_vars,
                     nbc,
@@ -2846,7 +2846,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                     &mut *sealed_blocks,
                     vars,
                     float_primary_vars,
-                    int_primary_vars,
+                    int_carriers_plan,
                     int_like_vars,
                     bool_like_vars,
                     nbc,
@@ -2876,7 +2876,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[0],
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 )
                 .expect("LHS not found");
@@ -2888,7 +2888,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[1],
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 )
                 .expect("RHS not found");
@@ -2938,7 +2938,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[0],
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 )
                 .expect("LHS not found");
@@ -2950,7 +2950,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[1],
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 )
                 .expect("RHS not found");
@@ -3026,7 +3026,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[0],
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 )
                 .expect("LHS not found");
@@ -3038,7 +3038,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[1],
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 )
                 .expect("RHS not found");
@@ -3149,12 +3149,12 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                 // i64 values directly, store raw as primary.
                 let lhs_name = &args[0];
                 let rhs_name = &args[1];
-                let lhs_raw = int_raw_value(&mut *builder, vars, int_primary_vars, lhs_name);
-                let rhs_raw = int_raw_value(&mut *builder, vars, int_primary_vars, rhs_name);
+                let lhs_raw = int_raw_value(&mut *builder, vars, int_carriers_plan, lhs_name);
+                let rhs_raw = int_raw_value(&mut *builder, vars, int_carriers_plan, rhs_name);
                 let out_is_int_primary = op
                     .out
                     .as_ref()
-                    .is_some_and(|out| int_primary_vars.contains(out));
+                    .is_some_and(|out| int_carriers_plan.is_raw_int_carrier_name(out));
 
                 let callee = SimpleBackend::import_func_id_split(
                     &mut *module,
@@ -3203,7 +3203,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                         &mut *sealed_blocks,
                         vars,
                         &args[0],
-                        int_primary_vars,
+                        int_carriers_plan,
                         float_primary_vars,
                     )
                     .expect("LHS not found");
@@ -3215,7 +3215,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                         &mut *sealed_blocks,
                         vars,
                         &args[1],
-                        int_primary_vars,
+                        int_carriers_plan,
                         float_primary_vars,
                     )
                     .expect("RHS not found");
@@ -3241,7 +3241,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                         &mut *sealed_blocks,
                         vars,
                         &args[0],
-                        int_primary_vars,
+                        int_carriers_plan,
                         float_primary_vars,
                     )
                     .expect("LHS not found");
@@ -3253,7 +3253,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                         &mut *sealed_blocks,
                         vars,
                         &args[1],
-                        int_primary_vars,
+                        int_carriers_plan,
                         float_primary_vars,
                     )
                     .expect("RHS not found");
@@ -3317,7 +3317,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[0],
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 )
                 .expect("LHS not found");
@@ -3329,7 +3329,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[1],
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 )
                 .expect("RHS not found");
@@ -3418,12 +3418,12 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                 // Both-shadow raw-primary path.
                 let lhs_name = &args[0];
                 let rhs_name = &args[1];
-                let lhs_raw = int_raw_value(&mut *builder, vars, int_primary_vars, lhs_name);
-                let rhs_raw = int_raw_value(&mut *builder, vars, int_primary_vars, rhs_name);
+                let lhs_raw = int_raw_value(&mut *builder, vars, int_carriers_plan, lhs_name);
+                let rhs_raw = int_raw_value(&mut *builder, vars, int_carriers_plan, rhs_name);
                 let out_is_int_primary = op
                     .out
                     .as_ref()
-                    .is_some_and(|out| int_primary_vars.contains(out));
+                    .is_some_and(|out| int_carriers_plan.is_raw_int_carrier_name(out));
 
                 let callee = SimpleBackend::import_func_id_split(
                     &mut *module,
@@ -3469,7 +3469,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                         &mut *sealed_blocks,
                         vars,
                         &args[0],
-                        int_primary_vars,
+                        int_carriers_plan,
                         float_primary_vars,
                     )
                     .expect("LHS not found");
@@ -3481,7 +3481,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                         &mut *sealed_blocks,
                         vars,
                         &args[1],
-                        int_primary_vars,
+                        int_carriers_plan,
                         float_primary_vars,
                     )
                     .expect("RHS not found");
@@ -3506,7 +3506,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                         &mut *sealed_blocks,
                         vars,
                         &args[0],
-                        int_primary_vars,
+                        int_carriers_plan,
                         float_primary_vars,
                     )
                     .expect("LHS not found");
@@ -3518,7 +3518,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                         &mut *sealed_blocks,
                         vars,
                         &args[1],
-                        int_primary_vars,
+                        int_carriers_plan,
                         float_primary_vars,
                     )
                     .expect("RHS not found");
@@ -3580,7 +3580,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[0],
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 )
                 .expect("LHS not found");
@@ -3592,7 +3592,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[1],
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 )
                 .expect("RHS not found");
@@ -3670,7 +3670,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("LHS not found");
@@ -3682,7 +3682,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("RHS not found");
@@ -3777,8 +3777,8 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
             let res = if op_prefers_int_lane(op) {
                 let lhs_name = &args[0];
                 let rhs_name = &args[1];
-                let lhs_raw = int_raw_value(&mut *builder, vars, int_primary_vars, lhs_name);
-                let rhs_raw = int_raw_value(&mut *builder, vars, int_primary_vars, rhs_name);
+                let lhs_raw = int_raw_value(&mut *builder, vars, int_carriers_plan, lhs_name);
+                let rhs_raw = int_raw_value(&mut *builder, vars, int_carriers_plan, rhs_name);
 
                 let callee = SimpleBackend::import_func_id_split(
                     &mut *module,
@@ -3844,7 +3844,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                         &mut *sealed_blocks,
                         vars,
                         &args[0],
-                        int_primary_vars,
+                        int_carriers_plan,
                         float_primary_vars,
                     )
                     .expect("LHS not found");
@@ -3856,7 +3856,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                         &mut *sealed_blocks,
                         vars,
                         &args[1],
-                        int_primary_vars,
+                        int_carriers_plan,
                         float_primary_vars,
                     )
                     .expect("RHS not found");
@@ -3882,7 +3882,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[0],
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 )
                 .expect("LHS not found");
@@ -3894,7 +3894,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[1],
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 )
                 .expect("RHS not found");
@@ -3994,7 +3994,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[0],
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 )
                 .expect("LHS not found");
@@ -4006,7 +4006,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[1],
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 )
                 .expect("RHS not found");
@@ -4035,7 +4035,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("LHS not found");
@@ -4047,7 +4047,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("RHS not found");
@@ -4059,7 +4059,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[2],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Mod not found");
@@ -4087,7 +4087,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Round arg not found");
@@ -4099,7 +4099,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Round ndigits not found");
@@ -4111,7 +4111,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[2],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Round ndigits flag not found");
@@ -4141,7 +4141,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Trunc arg not found");

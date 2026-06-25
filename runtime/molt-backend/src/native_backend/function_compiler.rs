@@ -1436,12 +1436,12 @@ fn cleanup_name_excluded(
     name: &str,
     protected_names: Option<&BTreeSet<String>>,
     param_name_set: &BTreeSet<&str>,
-    int_primary_vars: &BTreeSet<String>,
+    int_carriers_plan: &ScalarRepresentationPlan,
     float_primary_vars: &BTreeSet<String>,
 ) -> bool {
     protected_names.is_some_and(|protected| protected.contains(name))
         || param_name_set.contains(name)
-        || int_primary_vars.contains(name)
+        || int_carriers_plan.is_raw_int_carrier_name(name)
         || float_primary_vars.contains(name)
 }
 
@@ -1697,7 +1697,7 @@ impl SimpleBackend {
         let mut vars: BTreeMap<String, Variable> = BTreeMap::new();
         let param_name_set: BTreeSet<&str> = func_ir.params.iter().map(String::as_str).collect();
         let primary_names = representation_plan.primary_name_sets();
-        let int_primary_vars = primary_names.int;
+        let int_carriers_plan = &representation_plan;
         let bool_primary_vars = primary_names.bool_;
         let float_primary_vars = primary_names.float;
         for name in var_names.iter() {
@@ -1791,14 +1791,14 @@ impl SimpleBackend {
             std::collections::BTreeSet::new();
 
         // Phase 1d: int shadow plumbing eliminated. The main Cranelift
-        // Variable IS the raw i64 carrier for int_primary_vars members.
+        // Variable IS the raw i64 carrier for int_carriers_plan members.
         // Cranelift's FunctionBuilder inserts phi nodes automatically at
         // block boundaries when a Variable has multiple defs, so the legacy
         // two-tier shadow plumbing is redundant. Reading via
-        // `int_raw_value(builder, vars, int_primary_vars, name)` returns the
+        // `int_raw_value(builder, vars, int_carriers_plan, name)` returns the
         // raw i64 directly when name is a static member.
 
-        // Phase 1d: int_primary_vars (declared above ~line 2665 via the
+        // Phase 1d: int_carriers_plan (declared above ~line 2665 via the
         // operand-recursive fixpoint) is the immutable source of truth for
         // "vars[name] holds raw i64". Float primary lowering follows the
         // same static-set rule for the F64-primary subset.
@@ -1860,7 +1860,7 @@ impl SimpleBackend {
         // creating massive block parameter lists.
         if scalar_fast_paths_enabled && exception_label_ids.is_empty() && !stateful {
             slot_backed_join_names.retain(|name| {
-                let is_scalar = int_primary_vars.contains(name)
+                let is_scalar = int_carriers_plan.is_raw_int_carrier_name(name)
                     || int_like_vars.contains(name)
                     || float_like_vars.contains(name)
                     || bool_like_vars.contains(name);
@@ -1901,7 +1901,7 @@ impl SimpleBackend {
             slot_backed_join_slots
                 .keys()
                 .filter(|name| {
-                    int_primary_vars.contains(name.as_str())
+                    int_carriers_plan.is_raw_int_carrier_name(name.as_str())
                         || bool_primary_vars.contains(name.as_str())
                 })
                 .cloned()
@@ -2073,7 +2073,7 @@ impl SimpleBackend {
                                            sealed_blocks: &mut BTreeSet<Block>,
                                            vars: &BTreeMap<String, Variable>,
                                            name: &str,
-                                           int_primary_vars: &BTreeSet<String>,
+                                           int_carriers_plan: &ScalarRepresentationPlan,
                                            float_primary_vars: &BTreeSet<String>|
          -> Option<crate::VarValue> {
             if bool_primary_vars.contains(name) {
@@ -2088,7 +2088,7 @@ impl SimpleBackend {
                 sealed_blocks,
                 vars,
                 name,
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
         };
@@ -2116,7 +2116,7 @@ impl SimpleBackend {
                 &mut sealed_blocks,
                 &vars,
                 "self",
-                &int_primary_vars,
+                int_carriers_plan,
                 &float_primary_vars,
             )
             .expect("Self not found");
@@ -2222,7 +2222,7 @@ impl SimpleBackend {
             // The phi at loop headers then picks the correct constant on
             // the first iteration instead of a bogus default.
             let const_int_defs: BTreeMap<String, i64> = if has_loop_or_backedge {
-                fc::const_literals::collect_loop_entry_const_defs(&func_ir, &int_primary_vars)
+                fc::const_literals::collect_loop_entry_const_defs(&func_ir, int_carriers_plan)
             } else {
                 BTreeMap::new()
             };
@@ -2235,7 +2235,7 @@ impl SimpleBackend {
                 if float_primary_vars.contains(name) {
                     // Float-primary: Variable is F64, initialize with f64 zero.
                     builder.def_var(*var, float_zero);
-                } else if int_primary_vars.contains(name) {
+                } else if int_carriers_plan.is_raw_int_carrier_name(name) {
                     // Int-primary: the main Variable is raw i64, including
                     // entry pre-materialization for loop phis.
                     let raw = const_int_defs.get(name).copied().unwrap_or(0);
@@ -2281,7 +2281,7 @@ impl SimpleBackend {
             &mut self.next_data_id,
             &mut builder,
             &vars,
-            &int_primary_vars,
+            int_carriers_plan,
         );
 
         // Traceback frame tracking is separate from full call tracing. The
@@ -2586,7 +2586,7 @@ impl SimpleBackend {
                         &mut self.next_data_id,
                         &mut builder,
                         &vars,
-                        &int_primary_vars,
+                        int_carriers_plan,
                         &bool_primary_vars,
                         &float_primary_vars,
                         &literal_hoists,
@@ -2616,7 +2616,7 @@ impl SimpleBackend {
                         &mut import_refs,
                         &mut sealed_blocks,
                         &vars,
-                        &int_primary_vars,
+                        int_carriers_plan,
                         &float_primary_vars,
                         &bool_primary_vars,
                         &int_like_vars,
@@ -2645,7 +2645,7 @@ impl SimpleBackend {
                         &vars,
                         &mut scalarized_tuples,
                         &mut skip_ops,
-                        &int_primary_vars,
+                        int_carriers_plan,
                         &float_primary_vars,
                         &bool_primary_vars,
                         &representation_plan,
@@ -2666,7 +2666,7 @@ impl SimpleBackend {
                         &mut import_refs,
                         &mut sealed_blocks,
                         &vars,
-                        &int_primary_vars,
+                        int_carriers_plan,
                         &float_primary_vars,
                         &bool_primary_vars,
                         &nbc,
@@ -2681,7 +2681,7 @@ impl SimpleBackend {
                         &mut import_refs,
                         &mut sealed_blocks,
                         &vars,
-                        &int_primary_vars,
+                        int_carriers_plan,
                         &float_primary_vars,
                         &bool_primary_vars,
                         &nbc,
@@ -2697,7 +2697,7 @@ impl SimpleBackend {
                         &mut import_refs,
                         &mut sealed_blocks,
                         &vars,
-                        &int_primary_vars,
+                        int_carriers_plan,
                         &float_primary_vars,
                         &bool_primary_vars,
                         &nbc,
@@ -2719,7 +2719,7 @@ impl SimpleBackend {
                         &mut import_refs,
                         &mut sealed_blocks,
                         &vars,
-                        &int_primary_vars,
+                        int_carriers_plan,
                         &float_primary_vars,
                         &bool_primary_vars,
                         &nbc,
@@ -2744,7 +2744,7 @@ impl SimpleBackend {
                         &mut import_refs,
                         &mut sealed_blocks,
                         &vars,
-                        &int_primary_vars,
+                        int_carriers_plan,
                         &float_primary_vars,
                         &bool_primary_vars,
                         scalar_fast_paths_enabled,
@@ -2768,7 +2768,7 @@ impl SimpleBackend {
                         &mut import_refs,
                         &mut sealed_blocks,
                         &vars,
-                        &int_primary_vars,
+                        int_carriers_plan,
                         &float_primary_vars,
                         &bool_primary_vars,
                         &nbc,
@@ -2792,7 +2792,7 @@ impl SimpleBackend {
                         &mut sealed_blocks,
                         &vars,
                         &scalarized_tuples,
-                        &int_primary_vars,
+                        int_carriers_plan,
                         &float_primary_vars,
                         &bool_primary_vars,
                         &int_like_vars,
@@ -2818,7 +2818,7 @@ impl SimpleBackend {
                         &mut import_refs,
                         &mut sealed_blocks,
                         &vars,
-                        &int_primary_vars,
+                        int_carriers_plan,
                         &float_primary_vars,
                         &bool_primary_vars,
                         &nbc,
@@ -2834,7 +2834,7 @@ impl SimpleBackend {
                         &mut import_refs,
                         &mut sealed_blocks,
                         &vars,
-                        &int_primary_vars,
+                        int_carriers_plan,
                         &float_primary_vars,
                         &bool_primary_vars,
                         &nbc,
@@ -2852,7 +2852,7 @@ impl SimpleBackend {
                         &mut import_refs,
                         &mut sealed_blocks,
                         &vars,
-                        &int_primary_vars,
+                        int_carriers_plan,
                         &float_primary_vars,
                         &bool_primary_vars,
                         local_exc_pending_fast,
@@ -2870,7 +2870,7 @@ impl SimpleBackend {
                         &mut import_refs,
                         &mut sealed_blocks,
                         &vars,
-                        &int_primary_vars,
+                        int_carriers_plan,
                         &float_primary_vars,
                         &bool_primary_vars,
                         &nbc,
@@ -2886,7 +2886,7 @@ impl SimpleBackend {
                         &mut import_refs,
                         &mut sealed_blocks,
                         &vars,
-                        &int_primary_vars,
+                        int_carriers_plan,
                         &float_primary_vars,
                         &bool_primary_vars,
                         &nbc,
@@ -2902,7 +2902,7 @@ impl SimpleBackend {
                         &mut import_refs,
                         &mut sealed_blocks,
                         &vars,
-                        &int_primary_vars,
+                        int_carriers_plan,
                         &float_primary_vars,
                         &bool_primary_vars,
                         &nbc,
@@ -2918,7 +2918,7 @@ impl SimpleBackend {
                         &mut import_refs,
                         &mut sealed_blocks,
                         &vars,
-                        &int_primary_vars,
+                        int_carriers_plan,
                         &float_primary_vars,
                         &bool_primary_vars,
                         &nbc,
@@ -2934,7 +2934,7 @@ impl SimpleBackend {
                         &mut import_refs,
                         &mut sealed_blocks,
                         &vars,
-                        &int_primary_vars,
+                        int_carriers_plan,
                         &float_primary_vars,
                         &bool_primary_vars,
                         &int_like_vars,
@@ -2956,7 +2956,7 @@ impl SimpleBackend {
                         &mut import_refs,
                         &mut sealed_blocks,
                         &vars,
-                        &int_primary_vars,
+                        int_carriers_plan,
                         &float_primary_vars,
                         &bool_primary_vars,
                         &int_like_vars,
@@ -2981,7 +2981,7 @@ impl SimpleBackend {
                         &mut import_refs,
                         &mut sealed_blocks,
                         &vars,
-                        &int_primary_vars,
+                        int_carriers_plan,
                         &float_primary_vars,
                         &bool_primary_vars,
                         &nbc,
@@ -3008,7 +3008,7 @@ impl SimpleBackend {
                         &mut import_refs,
                         &mut sealed_blocks,
                         &vars,
-                        &int_primary_vars,
+                        int_carriers_plan,
                         &float_primary_vars,
                         &bool_primary_vars,
                         &mut block_tracked_obj,
@@ -3039,7 +3039,7 @@ impl SimpleBackend {
                         &mut import_refs,
                         &mut sealed_blocks,
                         &vars,
-                        &int_primary_vars,
+                        int_carriers_plan,
                         &float_primary_vars,
                         &bool_primary_vars,
                         &nbc,
@@ -3061,7 +3061,7 @@ impl SimpleBackend {
                         &mut import_refs,
                         &mut sealed_blocks,
                         &vars,
-                        &int_primary_vars,
+                        int_carriers_plan,
                         &float_primary_vars,
                         &bool_primary_vars,
                         task_kinds,
@@ -3096,7 +3096,7 @@ impl SimpleBackend {
                         &mut import_refs,
                         &mut sealed_blocks,
                         &vars,
-                        &int_primary_vars,
+                        int_carriers_plan,
                         &float_primary_vars,
                         &bool_primary_vars,
                         &nbc,
@@ -3130,7 +3130,7 @@ impl SimpleBackend {
                         &mut import_refs,
                         &mut sealed_blocks,
                         &vars,
-                        &int_primary_vars,
+                        int_carriers_plan,
                         &float_primary_vars,
                         &bool_primary_vars,
                         &bool_like_vars,
@@ -3191,7 +3191,7 @@ impl SimpleBackend {
                         &mut import_refs,
                         &mut sealed_blocks,
                         &vars,
-                        &int_primary_vars,
+                        int_carriers_plan,
                         &float_primary_vars,
                         &bool_primary_vars,
                         &mut block_tracked_obj,
@@ -3221,7 +3221,7 @@ impl SimpleBackend {
                         &mut import_refs,
                         &mut sealed_blocks,
                         &vars,
-                        &int_primary_vars,
+                        int_carriers_plan,
                         &float_primary_vars,
                         &bool_primary_vars,
                         &nbc,
@@ -3239,7 +3239,7 @@ impl SimpleBackend {
                         &mut import_refs,
                         &mut sealed_blocks,
                         &vars,
-                        &int_primary_vars,
+                        int_carriers_plan,
                         &float_primary_vars,
                         &bool_primary_vars,
                         &nbc,
@@ -3256,7 +3256,7 @@ impl SimpleBackend {
                         &mut import_refs,
                         &mut sealed_blocks,
                         &vars,
-                        &int_primary_vars,
+                        int_carriers_plan,
                         &float_primary_vars,
                         &bool_primary_vars,
                         &nbc,
@@ -3272,7 +3272,7 @@ impl SimpleBackend {
                         &mut import_refs,
                         &mut sealed_blocks,
                         &vars,
-                        &int_primary_vars,
+                        int_carriers_plan,
                         &float_primary_vars,
                         &bool_primary_vars,
                         &nbc,
@@ -3288,7 +3288,7 @@ impl SimpleBackend {
                         &mut import_refs,
                         &mut sealed_blocks,
                         &vars,
-                        &int_primary_vars,
+                        int_carriers_plan,
                         &float_primary_vars,
                         &bool_primary_vars,
                         &nbc,
@@ -3304,7 +3304,7 @@ impl SimpleBackend {
                         &mut import_refs,
                         &mut sealed_blocks,
                         &vars,
-                        &int_primary_vars,
+                        int_carriers_plan,
                         &float_primary_vars,
                         &bool_primary_vars,
                         &nbc,
@@ -3328,7 +3328,7 @@ impl SimpleBackend {
                         &mut import_refs,
                         &mut sealed_blocks,
                         &vars,
-                        &int_primary_vars,
+                        int_carriers_plan,
                         &float_primary_vars,
                         &bool_primary_vars,
                         &mut block_tracked_obj,
@@ -3358,7 +3358,7 @@ impl SimpleBackend {
                         &mut import_refs,
                         &mut sealed_blocks,
                         &vars,
-                        &int_primary_vars,
+                        int_carriers_plan,
                         &float_primary_vars,
                         &bool_primary_vars,
                         &nbc,
@@ -3377,7 +3377,7 @@ impl SimpleBackend {
                         &mut import_refs,
                         &mut sealed_blocks,
                         &vars,
-                        &int_primary_vars,
+                        int_carriers_plan,
                         &bool_primary_vars,
                         &float_primary_vars,
                         &int_like_vars,
@@ -3427,7 +3427,7 @@ impl SimpleBackend {
                         &mut import_refs,
                         &mut sealed_blocks,
                         &vars,
-                        &int_primary_vars,
+                        int_carriers_plan,
                         &bool_primary_vars,
                         &float_primary_vars,
                         &int_like_vars,
@@ -3474,7 +3474,7 @@ impl SimpleBackend {
                         &mut import_refs,
                         &mut sealed_blocks,
                         &vars,
-                        &int_primary_vars,
+                        int_carriers_plan,
                         &float_primary_vars,
                         &bool_primary_vars,
                         &int_like_vars,
@@ -3519,7 +3519,7 @@ impl SimpleBackend {
                         &mut import_refs,
                         &mut sealed_blocks,
                         &vars,
-                        &int_primary_vars,
+                        int_carriers_plan,
                         &float_primary_vars,
                         &bool_primary_vars,
                         &nbc,
@@ -3543,7 +3543,7 @@ impl SimpleBackend {
                         &mut import_refs,
                         &mut sealed_blocks,
                         &vars,
-                        &int_primary_vars,
+                        int_carriers_plan,
                         &float_primary_vars,
                         &bool_primary_vars,
                         &int_like_vars,
@@ -3799,7 +3799,7 @@ impl SimpleBackend {
                         &mut sealed_blocks,
                         &vars,
                         name,
-                        &int_primary_vars,
+                        int_carriers_plan,
                         &float_primary_vars,
                     ) {
                         entry_vars.insert(name.clone(), *val);
@@ -3838,7 +3838,7 @@ impl SimpleBackend {
                     name,
                     None,
                     &param_name_set,
-                    &int_primary_vars,
+                    int_carriers_plan,
                     &float_primary_vars,
                 ) {
                     continue;
@@ -3854,7 +3854,7 @@ impl SimpleBackend {
                     name,
                     None,
                     &param_name_set,
-                    &int_primary_vars,
+                    int_carriers_plan,
                     &float_primary_vars,
                 ) {
                     continue;
@@ -4146,24 +4146,6 @@ impl SimpleBackend {
                 panic!("declare_function failed for {}: {}", func_ir.name, e);
             }
         };
-        // Typed IR Phase 1a invariant: every variable that the dynamic
-        // codegen path classified as raw-primary-int (int_primary_vars) must
-        // also have been included in the static int_primary_vars set
-        // computed before codegen.  A divergence means either the static
-        // analysis is too narrow (under-approximates the runtime decisions
-        // — Phases 1b/1c will widen it) or the dynamic path inserted a
-        // name that the static analysis cannot prove safe (a correctness
-        // hazard, since a future phase will use the static set as the
-        // ground truth).  Gated by env var so production builds skip it.
-        if std::env::var("MOLT_TYPED_IR_VERIFY").is_ok() {
-            for name in int_primary_vars.iter() {
-                debug_assert!(
-                    int_primary_vars.contains(name),
-                    "MOLT_TYPED_IR_VERIFY: int_primary_vars {{{name}}} not in int_primary_vars for fn {}",
-                    func_ir.name,
-                );
-            }
-        }
         // ── Deferred compilation ──────────────────────────────
         // Instead of compiling each function immediately, extract the
         // finalized Cranelift IR and push it onto the deferred list.
@@ -4309,6 +4291,16 @@ mod tests {
             source_file: None,
             is_extern: false,
         })
+    }
+
+    fn scalar_transport_plan_for_int_home() -> ScalarRepresentationPlan {
+        representation_plan_for_ops(&[OpIR {
+            kind: "const_int".to_string(),
+            out: Some("int_home".to_string()),
+            value: Some(7),
+            type_hint: Some("int".to_string()),
+            ..OpIR::default()
+        }])
     }
 
     fn list_int_new(out: &str) -> OpIR {
@@ -4614,7 +4606,7 @@ mod tests {
             vars.insert("bool_home".to_string(), bool_var);
             vars.insert("int_home".to_string(), int_var);
 
-            let int_primary_vars = BTreeSet::from(["int_home".to_string()]);
+            let int_carriers_plan = scalar_transport_plan_for_int_home();
             let bool_primary_vars = BTreeSet::from(["bool_home".to_string()]);
             let float_primary_vars = BTreeSet::from(["float_home".to_string()]);
             let mut import_refs = BTreeMap::new();
@@ -4627,7 +4619,7 @@ mod tests {
                 &mut builder,
                 &mut import_refs,
                 &vars,
-                &int_primary_vars,
+                &int_carriers_plan,
                 &bool_primary_vars,
                 &float_primary_vars,
                 &nbc,
@@ -4643,7 +4635,7 @@ mod tests {
                 &mut builder,
                 &mut import_refs,
                 &vars,
-                &int_primary_vars,
+                &int_carriers_plan,
                 &bool_primary_vars,
                 &float_primary_vars,
                 &nbc,
@@ -4658,7 +4650,7 @@ mod tests {
                 &mut builder,
                 &mut import_refs,
                 &vars,
-                &int_primary_vars,
+                &int_carriers_plan,
                 &bool_primary_vars,
                 &float_primary_vars,
                 &nbc,
@@ -4693,7 +4685,7 @@ mod tests {
             let mut vars = BTreeMap::new();
             vars.insert("float_home".to_string(), float_var);
 
-            let int_primary_vars = BTreeSet::new();
+            let int_carriers_plan = representation_plan_for_ops(&[]);
             let bool_primary_vars = BTreeSet::new();
             let float_primary_vars = BTreeSet::from(["float_home".to_string()]);
             let mut import_refs = BTreeMap::new();
@@ -4706,7 +4698,7 @@ mod tests {
                 &mut builder,
                 &mut import_refs,
                 &vars,
-                &int_primary_vars,
+                &int_carriers_plan,
                 &bool_primary_vars,
                 &float_primary_vars,
                 &nbc,
