@@ -130,6 +130,7 @@ pub fn value_range_for(
 /// missed promotion is at worst a perf bail (a spurious-but-harmless DecRef on a
 /// value that turns out inline — the runtime `molt_dec_ref_obj` fast-paths
 /// non-pointer tags), never an unsound carrier.
+#[cfg(test)]
 pub(crate) fn raw_i64_safe_values_for(
     tir_func: &TirFunction,
     vr: &crate::tir::passes::value_range::ValueRangeResult,
@@ -159,11 +160,23 @@ fn raw_i64_full_deopt_values_for_with_types(
     let mut seed = std::collections::HashSet::new();
     for block in tir_func.blocks.values() {
         for op in &block.ops {
-            if matches!(op.opcode, OpCode::CheckedAdd | OpCode::CheckedMul)
-                && let Some(&result) = op.results.first()
-                && is_raw_i64_semantic_candidate(value_types, result)
-            {
-                seed.insert(result);
+            match op.opcode {
+                OpCode::CheckedAdd | OpCode::CheckedMul
+                    if let Some(&result) = op.results.first()
+                        && is_raw_i64_semantic_candidate(value_types, result) =>
+                {
+                    seed.insert(result);
+                }
+                OpCode::ConstInt => {
+                    for &result in &op.results {
+                        if is_raw_i64_semantic_candidate(value_types, result)
+                            && !inline_safe_values.contains(&result)
+                        {
+                            seed.insert(result);
+                        }
+                    }
+                }
+                _ => {}
             }
         }
     }
@@ -278,10 +291,8 @@ fn is_raw_i64_semantic_candidate(value_types: &HashMap<ValueId, TirType>, id: Va
 /// The result `ValueId`s of GPU thread/block-id intrinsic calls — hardware lane,
 /// block, and grid indices that are structurally bounded in `[0, 2^20)` and so
 /// always fit a raw i64 carrier. The value-range analysis has no model for these
-/// `Call` results, so they are pre-seeded here to preserve GPU kernel codegen
-/// (the legacy name-keyed chain marked them unconditionally raw-safe; this
-/// reproduces exactly that population, and only that population — bounded GPU
-/// index intrinsics, never an arbitrary runtime call).
+/// `Call` results, so the value-keyed representation authority seeds exactly
+/// this bounded GPU-index population, never an arbitrary runtime call.
 fn gpu_intrinsic_raw_i64_values(
     tir_func: &TirFunction,
     value_types: &HashMap<ValueId, TirType>,
@@ -450,7 +461,7 @@ fn propagate_raw_i64_identity_values_with_phi_support(
             // value-range op-result range for the first-class `Shl`/`Shr` already
             // refuses the overflow case; this aligns the propagation's Copy
             // forwarding with that same value-identity contract.
-            if let Some(source) = crate::tir::passes::value_range::copy_value_source(op)
+            if let Some(source) = crate::tir::passes::value_identity::copy_value_source(op)
                 && let Some(&result) = op.results.first()
             {
                 copy_source.insert(result, source);
