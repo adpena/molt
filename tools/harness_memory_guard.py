@@ -8,7 +8,6 @@ import json
 import os
 from pathlib import Path
 import shutil
-import signal
 import subprocess
 import sys
 import threading
@@ -1195,7 +1194,13 @@ def _prune_stale_repo_processes(
             file=sys.stderr,
             end="",
         )
-        process_sentinel.terminate_group(violation.pgid, grace=0.25)
+        process_sentinel.terminate_group(
+            violation.pgid,
+            grace=0.25,
+            expected_identities=process_sentinel.process_group_expected_identities(
+                violation
+            ),
+        )
         terminated.append(violation)
     return tuple(terminated)
 
@@ -2084,7 +2089,13 @@ class RepoProcessMemorySentinel:
                 self._notify_violation(violation, current_limits, payload)
                 if not claimed:
                     continue
-                process_sentinel.terminate_group(violation.pgid, grace=0.25)
+                process_sentinel.terminate_group(
+                    violation.pgid,
+                    grace=0.25,
+                    expected_identities=process_sentinel.process_group_expected_identities(
+                        violation
+                    ),
+                )
                 self._terminated_pgids.add(violation.pgid)
         except Exception as exc:  # noqa: BLE001
             self._record(
@@ -2178,6 +2189,10 @@ class RepoProcessMemorySentinel:
                     process_sentinel.terminate_group(
                         group.pgid,
                         grace=self._drain_grace_sec,
+                        expected_identities={
+                            sample.pid: memory_guard.process_identity(sample)
+                            for sample in group.samples
+                        },
                     )
                     drained_pgids.add(group.pgid)
                     self._terminated_pgids.add(group.pgid)
