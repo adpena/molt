@@ -117,7 +117,9 @@ CANONICAL_KIND: dict[str, str] = {
     "unbox_to_raw_int": "unbox",
     "type_guard": "type_guard",
     "inc_ref": "inc_ref",
+    "borrow": "inc_ref",
     "dec_ref": "dec_ref",
+    "release": "dec_ref",
     "del_boundary": "del_boundary",
     "build_list": "build_list",
     "build_dict": "build_dict",
@@ -483,6 +485,140 @@ AUGASSIGN_OP_KIND: dict[str, str] = {
     "MatMult": "INPLACE_MATMUL",
 }
 
+
+# Binary-image allocation/ownership analysis categories. These are
+# generated from the same opcode and preserved-Copy ownership facts that
+# TIR, escape analysis, drop insertion, and refcount analysis consume.
+# The analyzer canonicalizes first-class aliases before checking these
+# sets; preserved Copy spellings stay explicit registry facts.
+BINARY_IMAGE_HEAP_ALLOC_ROOT_KINDS: frozenset[str] = frozenset(
+    {
+        "aiter",
+        "alloc",
+        "alloc_task",
+        "ascii_from_obj",
+        "build_dict",
+        "build_list",
+        "build_set",
+        "build_tuple",
+        "class_def",
+        "classmethod_new",
+        "code_new",
+        "complex_from_obj",
+        "contains",
+        "dataclass_new",
+        "dataclass_new_values",
+        "dict_from_obj",
+        "dict_items",
+        "dict_keys",
+        "dict_new",
+        "dict_values",
+        "enumerate",
+        "exception_finally_pending_observer",
+        "exception_new",
+        "exception_new_builtin",
+        "exception_new_builtin_empty",
+        "exception_new_builtin_one",
+        "exception_new_from_class",
+        "float_from_obj",
+        "frozenset_new",
+        "func_new",
+        "func_new_closure",
+        "inplace_bit_and",
+        "inplace_bit_or",
+        "inplace_bit_xor",
+        "inplace_div",
+        "inplace_floordiv",
+        "inplace_lshift",
+        "inplace_matmul",
+        "inplace_mod",
+        "inplace_pow",
+        "inplace_rshift",
+        "int_from_obj",
+        "int_from_str_of_obj",
+        "iter",
+        "list_fill_new",
+        "list_from_range",
+        "list_new",
+        "list_pop",
+        "matmul",
+        "object_new",
+        "object_new_bound",
+        "property_new",
+        "range_new",
+        "repr_from_obj",
+        "set_new",
+        "slice",
+        "slice_new",
+        "staticmethod_new",
+        "str_from_obj",
+        "string_format",
+        "string_join",
+        "string_split_field_to_int",
+        "tuple_from_list",
+        "tuple_new",
+    }
+)
+
+BINARY_IMAGE_STACK_ALLOC_ROOT_KINDS: frozenset[str] = frozenset(
+    {
+        "object_new_bound_stack",
+        "stack_alloc",
+    }
+)
+
+BINARY_IMAGE_REF_RETAIN_KINDS: frozenset[str] = frozenset(
+    {
+        "and",
+        "binding_alias",
+        "inc_ref",
+        "or",
+    }
+)
+
+BINARY_IMAGE_REF_RELEASE_KINDS: frozenset[str] = frozenset(
+    {
+        "dec_ref",
+        "del_boundary",
+        "delete_var",
+        "free",
+    }
+)
+
+BINARY_IMAGE_HEAP_EXPOSURE_KINDS: frozenset[str] = frozenset(
+    {
+        "alloc_task",
+        "build_dict",
+        "build_list",
+        "build_set",
+        "build_slice",
+        "build_tuple",
+        "call",
+        "call_builtin",
+        "call_method",
+        "chan_recv_yield",
+        "chan_send_yield",
+        "class_def",
+        "closure_store",
+        "dict_new",
+        "frozenset_new",
+        "gpu_thread_id",
+        "import",
+        "import_from",
+        "list_append",
+        "list_new",
+        "raise",
+        "set_attr",
+        "set_attr_generic_obj",
+        "set_attr_generic_ptr",
+        "set_new",
+        "state_yield",
+        "store_index",
+        "tuple_new",
+        "yield",
+        "yield_from",
+    }
+)
 
 def canonical_kind(kind: str) -> str:
     """Return the canonical wire spelling for *kind*.

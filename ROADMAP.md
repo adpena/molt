@@ -38,7 +38,13 @@ lowering and exception-check elimination. GVN numbering policy now follows the
 same generated route through `gvn_always_numberable_opcodes`,
 `gvn_type_gated_numberable_opcodes`, and `gvn_value_keyed_constant_opcodes`,
 which emit `opcode_gvn_numbering_role_table` instead of pass-local
-always/type-gated/constant opcode lists.
+always/type-gated/constant opcode lists. The fact/allocation/binary-analysis
+authority arc is now converging on the same registry-owned model: fact graph
+schema v2 records `source_site`/`event_id` identity and generated
+allocation/ownership facts, analysis capsules surface source-site and
+allocation/ownership counts, binary-image allocation/refcount categories come
+from `op_kinds.toml`, and frontend `borrow`/`release` aliases canonicalize to
+`inc_ref`/`dec_ref` before diagnostics observe the stream.
 
 1. Close the ownership-correctness front before claiming broader compatibility:
    native DropInsertion activation, finalizer ordering, standalone `__del__`
@@ -644,7 +650,8 @@ always/type-gated/constant opcode lists.
   `binary_image_analysis` bridges source/AST, lowering schedule, backend
   IR/TIR-input, and artifact evidence through a SourceSite digest ledger plus
   backend lowered-op `source_sites` coverage/digest evidence and
-  source-attributed allocation/ownership event digests,
+  source-attributed allocation/ownership event digests generated from the
+  op-kind registry-owned allocation/refcount categories,
   and ordinary source syntax imports now call the same transaction intrinsic
   with explicit `name`/`fromlist`/`level` payloads while bootstrap/importlib
   modules keep a private cycle-breaking `MODULE_IMPORT` boundary, and the

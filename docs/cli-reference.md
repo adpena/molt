@@ -106,16 +106,21 @@ artifact evidence can join to the same source-site authority without rewalking
 the AST. The same backend section includes `allocation_ownership`, a source-
 attributed event projection over heap/stack allocation roots, refcount retain/
 release ops, heap-exposure ops, arena eligibility, and finalizer-sensitive
-results; it is diagnostic evidence over existing IR/TIR facts, not a separate
-allocation classifier.
+results. The allocation/refcount categories come from the generated
+`op_kinds.toml` authority, with frontend `borrow`/`release` aliases
+canonicalized to `inc_ref`/`dec_ref` before analysis, so the diagnostic envelope
+is evidence over existing IR/TIR facts rather than a private CLI classifier.
 
 </details>
 
 #### `molt factgraph`
 
 Compile an entry module through the frontend and TIR module pipeline, then write
-the selected function's fact graph JSON. The graph records per-value producers,
-consumers, and compiler facts for debugging semantic authority drift.
+the selected function's fact graph JSON. Schema v2 records `source_site` on
+producers, consumers, and facts, `event_id` on event facts, and generated
+allocation/ownership facts for heap/stack roots, refcount balance, heap
+exposure, arena eligibility, finalizer sensitivity, and explicit release
+boundaries.
 
 ```bash
 molt factgraph app.py molt_main --output tmp/facts/molt_main.json

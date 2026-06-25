@@ -134,7 +134,7 @@ mod tests {
         let graph: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&output).expect("read graph"))
                 .expect("valid graph json");
-        assert_eq!(graph["schema_version"], 1);
+        assert_eq!(graph["schema_version"], 2);
         assert_eq!(graph["kind"], "molt_tir_fact_graph");
         assert_eq!(graph["function"], "molt_main");
         assert_eq!(graph["summary"]["call_fact_count"], 6);

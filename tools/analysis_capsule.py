@@ -137,14 +137,18 @@ def _summarize_compiler_binary_image_analysis(
         return {"present": False}
     schema_version = raw.get("schema_version")
     if schema_version != 1:
-        errors.append("build_diagnostics.binary_image_analysis.schema_version must be 1")
+        errors.append(
+            "build_diagnostics.binary_image_analysis.schema_version must be 1"
+        )
     stages: dict[str, Mapping[str, Any]] = {}
     for stage in ("frontend", "backend_ir", "artifacts"):
         payload = raw.get(stage)
         if payload is None:
             continue
         if not isinstance(payload, Mapping):
-            errors.append(f"build_diagnostics.binary_image_analysis.{stage} must be an object")
+            errors.append(
+                f"build_diagnostics.binary_image_analysis.{stage} must be an object"
+            )
             continue
         stages[stage] = payload
     return {
@@ -263,7 +267,11 @@ def _check_compiler_analysis_against_closure(
         op_count = backend_ir.get("op_count")
         attributed = source_sites.get("attributed_op_count")
         unattributed = source_sites.get("unattributed_op_count")
-        if isinstance(op_count, int) and isinstance(attributed, int) and isinstance(unattributed, int):
+        if (
+            isinstance(op_count, int)
+            and isinstance(attributed, int)
+            and isinstance(unattributed, int)
+        ):
             total = attributed + unattributed
             if total != op_count:
                 errors.append(
@@ -272,7 +280,9 @@ def _check_compiler_analysis_against_closure(
                 )
             coverage_ratio = source_sites.get("coverage_ratio")
             if isinstance(coverage_ratio, int | float):
-                expected_ratio = round(attributed / op_count, 6) if op_count > 0 else 1.0
+                expected_ratio = (
+                    round(attributed / op_count, 6) if op_count > 0 else 1.0
+                )
                 if abs(float(coverage_ratio) - expected_ratio) > 0.000001:
                     errors.append(
                         "binary_image_analysis.backend_ir.source_sites.coverage_ratio="
@@ -352,11 +362,15 @@ def _summarize_build_diagnostics(
     _check_unique("known_modules", known_modules, errors)
     _check_unique("compile_modules", compile_modules, errors)
     known_set = set(known_modules)
-    _check_subset("compile_modules", compile_modules, "known_modules", known_set, errors)
+    _check_subset(
+        "compile_modules", compile_modules, "known_modules", known_set, errors
+    )
     _check_subset(
         "declared_root_modules", declared_roots, "known_modules", known_set, errors
     )
-    _check_subset("image.root_modules", root_modules, "known_modules", known_set, errors)
+    _check_subset(
+        "image.root_modules", root_modules, "known_modules", known_set, errors
+    )
 
     _check_count(
         "known_module_count",
@@ -371,7 +385,11 @@ def _summarize_build_diagnostics(
         errors,
     )
     module_count = diagnostics.get("module_count")
-    if isinstance(module_count, int) and known_modules and module_count != len(known_modules):
+    if (
+        isinstance(module_count, int)
+        and known_modules
+        and module_count != len(known_modules)
+    ):
         warnings.append(
             "build_diagnostics.module_count does not match "
             f"binary_image_closure.known_modules: {module_count} != {len(known_modules)}"
@@ -403,9 +421,7 @@ def _summarize_build_diagnostics(
             "known_module_count": len(known_modules),
             "compile_module_count": len(compile_modules),
         },
-        "module_reason_summary": _int_mapping(
-            diagnostics.get("module_reason_summary")
-        ),
+        "module_reason_summary": _int_mapping(diagnostics.get("module_reason_summary")),
         "frontend_timing": {
             "module_timing_count": len(timings),
             "slowest_module": _compact_timing(slowest_module),
@@ -438,6 +454,10 @@ def _summarize_ir_tir(
                 "fact_count": summary.get("fact_count"),
                 "edge_count": summary.get("edge_count"),
                 "call_fact_count": summary.get("call_fact_count"),
+                "source_site_value_count": summary.get("source_site_value_count"),
+                "allocation_ownership_fact_count": summary.get(
+                    "allocation_ownership_fact_count"
+                ),
                 "boxed_value_count": len(fact_graph_dump.boxed_rows(graph)),
             }
         )
@@ -469,9 +489,9 @@ def _summarize_ir_tir(
             "pass_wall_time_ranked": _list_of_mappings(
                 midend.get("pass_wall_time_ranked")
             )[:20],
-            "pass_hotspots_top": _list_of_mappings(
-                midend.get("pass_hotspots_top")
-            )[:10],
+            "pass_hotspots_top": _list_of_mappings(midend.get("pass_hotspots_top"))[
+                :10
+            ],
             "policy_config": _mapping_or_empty(midend.get("policy_config")),
         },
         "tir_fact_graphs": fact_summaries,
@@ -519,7 +539,10 @@ def _summarize_binary(
             "schema_version": startup_audit.get("schema_version"),
             "ok": startup_audit.get("ok"),
             "summary": _mapping_or_empty(startup_audit.get("summary")),
-            "cases": [_summarize_startup_case(row) for row in _list_of_mappings(startup_audit.get("cases"))],
+            "cases": [
+                _summarize_startup_case(row)
+                for row in _list_of_mappings(startup_audit.get("cases"))
+            ],
         }
 
     return {
@@ -602,7 +625,9 @@ def _compact_timing(item: Mapping[str, Any] | None) -> dict[str, Any] | None:
         "visit_s": _number_or_none(item.get("visit_s")),
         "lower_s": _number_or_none(item.get("lower_s")),
         "total_s": _number_or_none(item.get("total_s")),
-        "timed_out": item.get("timed_out") if isinstance(item.get("timed_out"), bool) else None,
+        "timed_out": item.get("timed_out")
+        if isinstance(item.get("timed_out"), bool)
+        else None,
     }
 
 
@@ -644,7 +669,9 @@ def _numeric_mapping(value: Any) -> dict[str, float]:
     return {
         str(key): float(item)
         for key, item in value.items()
-        if isinstance(key, str) and not isinstance(item, bool) and isinstance(item, int | float)
+        if isinstance(key, str)
+        and not isinstance(item, bool)
+        and isinstance(item, int | float)
     }
 
 
@@ -700,7 +727,9 @@ def _utc_now() -> str:
 def _write_json(path: Path, payload: Mapping[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f".{path.name}.tmp")
-    tmp.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    tmp.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
     tmp.replace(path)
 
 
@@ -759,9 +788,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             binary_size = None
             binary_size_path = None
 
-        fact_graphs = [
-            (str(path), load_json(path)) for path in args.tir_fact_graph
-        ]
+        fact_graphs = [(str(path), load_json(path)) for path in args.tir_fact_graph]
         capsule = build_capsule(
             build_diagnostics=build_diagnostics,
             build_diagnostics_path=str(args.build_diagnostics),

@@ -120,11 +120,11 @@ def test_unbox_cast_widen_lower_to_explicit_conversion_lanes() -> None:
     assert widen == {"kind": "widen", "args": ["value"], "out": "wide"}
 
 
-def test_borrow_lowers_to_explicit_borrow_lane() -> None:
+def test_borrow_lowers_to_canonical_inc_ref_lane() -> None:
     op = MoltOp(kind="BORROW", args=[MoltValue("value")], result=MoltValue("borrowed"))
     lowered = _map_single(op)
     assert lowered == {
-        "kind": "borrow",
+        "kind": "inc_ref",
         "args": ["value"],
         "out": "borrowed",
     }
@@ -157,11 +157,11 @@ def test_inc_ref_and_dec_ref_lower_to_explicit_ownership_lanes() -> None:
     assert dec == {"kind": "dec_ref", "args": ["value"], "out": "released"}
 
 
-def test_release_lowers_to_explicit_release_lane() -> None:
+def test_release_lowers_to_canonical_dec_ref_lane() -> None:
     lowered = _map_single(
         MoltOp(kind="RELEASE", args=[MoltValue("value")], result=MoltValue("done"))
     )
-    assert lowered == {"kind": "release", "args": ["value"], "out": "done"}
+    assert lowered == {"kind": "dec_ref", "args": ["value"], "out": "done"}
 
 
 def _raw_kinds(source: str, **kwargs: object) -> set[str]:

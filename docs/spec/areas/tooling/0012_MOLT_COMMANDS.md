@@ -98,7 +98,10 @@ Key flags:
 
 Outputs:
 - `molt_tir_fact_graph` JSON with schema version, function name, per-value
-  producers/consumers, fact provenance, and summary counts.
+  producers/consumers, fact provenance, and summary counts. Schema v2 requires
+  `source_site` fields on producers, consumers, and facts, `event_id` on event
+  facts, and allocation/ownership facts generated from the TIR op-kind
+  authority rather than command-local classifiers.
 - JSON command status when `--json` is set. Status data reports `target` as the
   requested factgraph target, `backend` as the effective native backend fact
   lane, and `pipeline_target` as the canonical build target used internally.

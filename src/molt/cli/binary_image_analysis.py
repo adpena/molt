@@ -9,11 +9,11 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from molt.frontend.lowering import op_kinds_generated as op_kind_facts
+
 
 def _stable_payload_hash(payload: Any) -> str:
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode(
-        "utf-8"
-    )
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
 
 
@@ -172,7 +172,9 @@ def _source_site_module_payload(
     kind_counts: Counter[str] = Counter()
     site_ids: list[str] = []
 
-    def visit(node: ast.AST, *, path: tuple[int, ...], qualname: tuple[str, ...]) -> None:
+    def visit(
+        node: ast.AST, *, path: tuple[int, ...], qualname: tuple[str, ...]
+    ) -> None:
         child_qualname = qualname
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             child_qualname = (*qualname, node.name)
@@ -197,7 +199,11 @@ def _source_site_module_payload(
                     source_sha256=source_hash,
                     target_python=target_python,
                     node_kind=node_kind,
-                    qualname=".".join(qualname) if qualname else "<module>",
+                    qualname=(
+                        ".".join(child_qualname)
+                        if child_qualname
+                        else "<module>"
+                    ),
                     ast_path=path,
                     span=span,
                 )
@@ -215,9 +221,7 @@ def _source_site_module_payload(
         "roles": list(roles),
         "site_count": len(site_ids_sorted),
         "site_digest": _stable_payload_hash(site_ids_sorted),
-        "node_kind_counts": {
-            name: kind_counts[name] for name in sorted(kind_counts)
-        },
+        "node_kind_counts": {name: kind_counts[name] for name in sorted(kind_counts)},
     }
 
 
@@ -258,7 +262,9 @@ def _source_site_identity_payload(
         modules.append(
             _source_site_module_payload(
                 module_name=name,
-                logical_path=str(logical_paths.get(name, import_plan.module_graph[name])),
+                logical_path=str(
+                    logical_paths.get(name, import_plan.module_graph[name])
+                ),
                 source=source or "",
                 tree=tree,
                 target_python=target_python_tag,
@@ -338,10 +344,7 @@ def _frontend_binary_image_analysis_payload(
     frontend_cost_top = [
         {"module": name, "cost": round(float(cost), 6)}
         for name, cost in sorted(
-            (
-                (name, frontend_module_costs.get(name, 0.0))
-                for name in compile_modules
-            ),
+            ((name, frontend_module_costs.get(name, 0.0)) for name in compile_modules),
             key=lambda item: (-float(item[1]), item[0]),
         )[:10]
     ]
@@ -355,12 +358,8 @@ def _frontend_binary_image_analysis_payload(
         "source_ast": {
             "known_module_count": len(known_modules),
             "compile_module_count": len(compile_modules),
-            "source_bytes_known": _source_bytes_for(
-                source_bytes, known_modules
-            ),
-            "source_bytes_compile": _source_bytes_for(
-                source_bytes, compile_modules
-            ),
+            "source_bytes_known": _source_bytes_for(source_bytes, known_modules),
+            "source_bytes_compile": _source_bytes_for(source_bytes, compile_modules),
             "known": known_metric_totals,
             "compile": compile_metric_totals,
             "top_compile_ast_modules": _top_module_metric(
@@ -387,7 +386,9 @@ def _frontend_binary_image_analysis_payload(
             "dependency_closure_edge_count": sum(
                 len(deps) for deps in frontend_analysis.module_dep_closures.values()
             ),
-            "dirty_lowering_module_count": len(frontend_analysis.dirty_lowering_modules),
+            "dirty_lowering_module_count": len(
+                frontend_analysis.dirty_lowering_modules
+            ),
         },
         "lowering": {
             "target_python": target_python_tag,
@@ -395,7 +396,10 @@ def _frontend_binary_image_analysis_payload(
             "module_chunking": module_chunking,
             "module_chunk_max_ops": module_chunk_max_ops,
             "frontend_cost_total": round(
-                sum(float(frontend_module_costs.get(name, 0.0)) for name in compile_modules),
+                sum(
+                    float(frontend_module_costs.get(name, 0.0))
+                    for name in compile_modules
+                ),
                 6,
             ),
             "frontend_cost_top": frontend_cost_top,
@@ -422,7 +426,9 @@ def _nonnegative_int(value: Any) -> int | None:
     return None
 
 
-def _backend_ir_op_source_site(op: Mapping[str, Any]) -> tuple[dict[str, int | None] | None, str]:
+def _backend_ir_op_source_site(
+    op: Mapping[str, Any],
+) -> tuple[dict[str, int | None] | None, str]:
     source = "source_line"
     line = _positive_int(op.get("source_line"))
     if line is None and op.get("kind") == "line":
@@ -490,11 +496,7 @@ def _backend_ir_source_site_payload(
                 }
             )
     attributed_op_count = len(site_records)
-    coverage_ratio = (
-        round(attributed_op_count / op_total, 6)
-        if op_total > 0
-        else 1.0
-    )
+    coverage_ratio = round(attributed_op_count / op_total, 6) if op_total > 0 else 1.0
     top_source_lines = [
         {"source_file": source_file, "line": line, "ops": count}
         for (source_file, line), count in sorted(
@@ -516,75 +518,25 @@ def _backend_ir_source_site_payload(
     }
 
 
-_HEAP_ALLOC_ROOT_KINDS = frozenset(
-    {
-        "alloc",
-        "alloc_class",
-        "alloc_class_static",
-        "alloc_class_trusted",
-        "object_new_bound",
-        "build_list",
-        "build_dict",
-        "build_tuple",
-        "build_set",
-        "list_new",
-        "list_int_new",
-        "list_fill_new",
-        "list_from_range",
-        "list_copy",
-        "tuple_new",
-        "tuple_from_list",
-        "dict_new",
-        "dict_from_obj",
-        "set_new",
-        "frozenset_new",
-        "alloc_task",
-        "generator_create",
-        "coro_create",
-        "class_def",
-    }
-)
-_STACK_ALLOC_ROOT_KINDS = frozenset({"stack_alloc", "object_new_bound_stack"})
-_REF_RETAIN_KINDS = frozenset({"inc_ref", "borrow"})
-_REF_RELEASE_KINDS = frozenset({"dec_ref", "release", "free", "del_boundary"})
-_HEAP_EXPOSURE_KINDS = frozenset(
-    {
-        "alloc_task",
-        "build_dict",
-        "build_list",
-        "build_set",
-        "build_slice",
-        "build_tuple",
-        "call",
-        "call_builtin",
-        "call_method",
-        "chan_recv_yield",
-        "chan_send_yield",
-        "closure_store",
-        "import",
-        "import_from",
-        "raise",
-        "state_yield",
-        "store_attr",
-        "store_index",
-    }
-)
+def _backend_ir_canonical_kind(op: Mapping[str, Any]) -> str:
+    kind = op.get("kind")
+    if not isinstance(kind, str):
+        return "<unknown>"
+    return op_kind_facts.canonical_kind(kind)
 
 
 def _backend_ir_allocation_categories(op: Mapping[str, Any]) -> list[str]:
-    kind = op.get("kind")
-    if not isinstance(kind, str):
-        kind = "<unknown>"
+    kind = _backend_ir_canonical_kind(op)
     categories: list[str] = []
-    if kind in _HEAP_ALLOC_ROOT_KINDS:
+    if kind in op_kind_facts.BINARY_IMAGE_HEAP_ALLOC_ROOT_KINDS:
         categories.append("heap_alloc_root")
-    if kind in _STACK_ALLOC_ROOT_KINDS:
+    if kind in op_kind_facts.BINARY_IMAGE_STACK_ALLOC_ROOT_KINDS:
         categories.append("stack_alloc_root")
-    if kind in _REF_RETAIN_KINDS:
+    if kind in op_kind_facts.BINARY_IMAGE_REF_RETAIN_KINDS:
         categories.append("ref_retain")
-    if kind in _REF_RELEASE_KINDS:
+    if kind in op_kind_facts.BINARY_IMAGE_REF_RELEASE_KINDS:
         categories.append("ref_release")
-    if kind in _HEAP_EXPOSURE_KINDS:
+    if kind in op_kind_facts.BINARY_IMAGE_HEAP_EXPOSURE_KINDS:
         categories.append("heap_exposure")
     if op.get("arena_eligible") is True:
         categories.append("arena_eligible")
@@ -619,9 +571,7 @@ def _backend_ir_allocation_ownership_payload(
             categories = _backend_ir_allocation_categories(op)
             if not categories:
                 continue
-            kind = op.get("kind")
-            if not isinstance(kind, str):
-                kind = "<unknown>"
+            kind = _backend_ir_canonical_kind(op)
             site, _source = _backend_ir_op_source_site(op)
             for category in categories:
                 category_counts[category] += 1
@@ -722,9 +672,9 @@ def _backend_ir_binary_image_analysis_payload(ir: Mapping[str, Any]) -> dict[str
     function_ops.sort(key=lambda item: (-int(item["ops"]), str(item["function"])))
     op_kind_top = [
         {"kind": kind, "count": count}
-        for kind, count in sorted(op_counts.items(), key=lambda item: (-item[1], item[0]))[
-            :20
-        ]
+        for kind, count in sorted(
+            op_counts.items(), key=lambda item: (-item[1], item[0])
+        )[:20]
     ]
     function_names = [
         func.get("name")
