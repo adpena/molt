@@ -1212,6 +1212,10 @@ the implementation. For forward-looking priorities, use
 		  rewrites, TIR-to-SimpleIR lowering, and backend IR diagnostics; the
 		  backend `source_sites` projection reports attributed-op coverage,
 		  source-line hot spots, and a stable digest over the lowered op stream.
+		  Backend diagnostics also project allocation/ownership pressure from the
+		  same carrier: heap/stack allocation roots, retain/release events,
+		  heap-exposure ops, arena eligibility, and finalizer-sensitive results
+		  are counted by source line with a stable event digest.
 		  Core stdlib closure honors the same nested-scan exception
 		  set as regular stdlib discovery, so `collections` keeps its required
 		  function-body `copy` import in the graph and native hello-world no longer
