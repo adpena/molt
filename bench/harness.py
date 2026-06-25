@@ -400,8 +400,8 @@ def detect_regressions(results: list, baseline_path: Path, threshold: float = 0.
         if r.suite == "bench" and r.molt_time_s and bl.get("molt_time_s"):
             bl_time = bl["molt_time_s"]
             if bl_time > 0:
-                slowdown = (r.molt_time_s - bl_time) / bl_time
-                if slowdown > threshold:
+                slowdown = perf_authority.relative_time_delta(r.molt_time_s, bl_time)
+                if slowdown is not None and slowdown > threshold:
                     regressions.append(
                         {
                             "name": r.name,
@@ -535,10 +535,16 @@ def build_json_report(
             # the SAME definition tools/bench.py and its baseline consumer use.
             # Previously this field was (wrongly) set to molt_speedup
             # (cpython_time / molt_time, higher = faster) - an inverted value
-            # that broke cross-tool regression comparison. Compute the true
-            # ratio via the authority guard so a missing time stays None.
-            speedup = perf_authority.safe_speedup(r.cpython_time_s, r.molt_time_s)
-            molt_cpython_ratio = (1.0 / speedup) if speedup else None
+            # that broke cross-tool regression comparison. It is now produced by
+            # the SINGLE guarded authority (perf_authority.signed_ratio) in the
+            # MOLT_OVER_BASELINE direction, so a missing/None/0/NaN time yields
+            # None (never a finite ratio) and the field carries explicit
+            # direction metadata (audit meta-bug item 2).
+            cpython_ratio_block = perf_authority.signed_ratio(
+                r.molt_time_s,
+                r.cpython_time_s,
+                direction=perf_authority.RatioDirection.MOLT_OVER_BASELINE,
+            )
             bench_baseline[r.name] = {
                 "molt_ok": r.status == "pass",
                 "build_ok": r.status != "error"
@@ -546,7 +552,11 @@ def build_json_report(
                 "molt_time_s": r.molt_time_s,
                 "cpython_time_s": r.cpython_time_s,
                 "molt_speedup": r.molt_speedup,
-                "molt_cpython_ratio": molt_cpython_ratio,
+                "molt_cpython_ratio": cpython_ratio_block["value"],
+                "ratio_directions": {
+                    "molt_speedup": perf_authority.RatioDirection.SPEEDUP.value,
+                    "molt_cpython_ratio": cpython_ratio_block["direction"],
+                },
                 "output_match": r.output_match,
                 "status": r.status,
             }

@@ -40,6 +40,7 @@ from bench_metadata import benchmark_reference_contract  # noqa: E402
 import harness_memory_guard  # noqa: E402
 import bench_suites  # noqa: E402
 from molt import backend_daemon_custody as daemon_custody  # noqa: E402
+import perf_authority  # noqa: E402
 
 BENCHMARKS = bench_suites.BENCHMARKS
 MOLT_ARGS_BY_BENCH = bench_suites.MOLT_ARGS_BY_BENCH
@@ -720,11 +721,24 @@ def bench_one(
             result["output_match"] = False
 
     # --- Speedup ---
-    if result["molt_ok"] and result["cpython_time_s"] and result["molt_time_s"] > 0:
-        speedup = result["cpython_time_s"] / result["molt_time_s"]
-        result["speedup"] = round(speedup, 1)
+    if result["molt_ok"]:
+        speedup = perf_authority.signed_ratio_value(
+            result["cpython_time_s"],
+            result["molt_time_s"],
+            direction=perf_authority.RatioDirection.SPEEDUP,
+        )
+        cpython_ratio_block = perf_authority.signed_ratio(
+            result["molt_time_s"],
+            result["cpython_time_s"],
+            direction=perf_authority.RatioDirection.MOLT_OVER_BASELINE,
+        )
+        result["speedup"] = round(speedup, 1) if speedup is not None else None
         result["molt_speedup"] = speedup
-        result["molt_cpython_ratio"] = result["molt_time_s"] / result["cpython_time_s"]
+        result["molt_cpython_ratio"] = cpython_ratio_block["value"]
+        result["ratio_directions"] = {
+            "molt_speedup": perf_authority.RatioDirection.SPEEDUP.value,
+            "molt_cpython_ratio": cpython_ratio_block["direction"],
+        }
 
     tmp.cleanup()
     return result

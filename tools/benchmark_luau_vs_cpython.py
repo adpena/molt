@@ -39,6 +39,7 @@ if str(TOOLS_ROOT) not in sys.path:
     sys.path.insert(0, str(TOOLS_ROOT))
 
 import harness_memory_guard  # noqa: E402
+import perf_authority  # noqa: E402
 
 
 def _artifact_root() -> Path:
@@ -261,6 +262,9 @@ def run_single_benchmark(
         "luau_output_bytes": None,
         "output_match": None,
         "ratio": None,
+        "ratio_directions": {
+            "ratio": perf_authority.RatioDirection.SPEEDUP.value,
+        },
         "error": None,
     }
 
@@ -310,8 +314,15 @@ def run_single_benchmark(
     if "error" not in cpython_result and "error" not in lune_result:
         match = cpython_result["output"] == lune_result["output"]
         result["output_match"] = match
-        if lune_result["mean_ms"] > 0:
-            ratio = cpython_result["mean_ms"] / lune_result["mean_ms"]
+        # Route through the single guarded authority (SPEEDUP direction:
+        # baseline/candidate, >1 = candidate faster) so a degenerate
+        # (None/0/NaN) luau time can never render a finite ratio.
+        ratio = perf_authority.signed_ratio_value(
+            cpython_result["mean_ms"],
+            lune_result["mean_ms"],
+            direction=perf_authority.RatioDirection.SPEEDUP,
+        )
+        if ratio is not None:
             result["ratio"] = round(ratio, 2)
             tag = "Luau faster" if ratio > 1 else "CPython faster"
             print(f"    Ratio: {ratio:.2f}x ({tag})  Match: {'YES' if match else 'NO'}")
@@ -496,6 +507,9 @@ examples:
                             "luau_output_bytes": None,
                             "output_match": None,
                             "ratio": None,
+                            "ratio_directions": {
+                                "ratio": perf_authority.RatioDirection.SPEEDUP.value,
+                            },
                             "error": f"Exception: {exc}",
                         }
                     )

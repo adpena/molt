@@ -31,6 +31,7 @@ DEFAULT_RESULTS_PATH = RESULTS_DIR / "results.json"
 sys.path.insert(0, str(TOOLS_ROOT))
 
 import harness_memory_guard  # noqa: E402
+import perf_authority  # noqa: E402
 
 BENCHMARKS = [
     "bench_fibonacci.py",
@@ -345,12 +346,20 @@ def main():
                     limits=limits,
                 )
                 correct = luau_output == cpython_output
-                speedup = cpython_time / luau_time if luau_time > 0 else 0
+                # Route through the single guarded authority (SPEEDUP
+                # direction: baseline/candidate, >1 = candidate faster) so a
+                # degenerate (None/0) luau time can never render a finite ratio.
+                speedup = perf_authority.signed_ratio_value(
+                    cpython_time,
+                    luau_time,
+                    direction=perf_authority.RatioDirection.SPEEDUP,
+                )
+                speedup_cell = "n/a" if speedup is None else f"{speedup:.2f}x"
 
                 status = "PASS" if correct else "FAIL (output mismatch)"
                 print(
                     f"  Luau:       {luau_time:8.1f} ms  "
-                    f"({speedup:.2f}x vs CPython) [{status}]"
+                    f"({speedup_cell} vs CPython) [{status}]"
                 )
 
                 if not correct:
@@ -362,7 +371,10 @@ def main():
                         "name": bench_name,
                         "cpython_ms": round(cpython_time, 1),
                         "luau_ms": round(luau_time, 1),
-                        "speedup": round(speedup, 2),
+                        "speedup": round(speedup, 2) if speedup is not None else None,
+                        "ratio_directions": {
+                            "speedup": perf_authority.RatioDirection.SPEEDUP.value,
+                        },
                         "correct": correct,
                         "compile_ms": round(compile_time, 1),
                         "luau_lines": luau_lines,

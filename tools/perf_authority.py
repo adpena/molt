@@ -9,18 +9,19 @@ that emits wall-clock numbers - ``tools/bench.py`` (daemon batch builder) and
 ``bench/harness.py`` (the dev/correctness differential harness) - is
 NON-CANONICAL and must SELF-IDENTIFY as such so a design agent never cites it.
 
-This module is that shared boundary. It owns three primitives that all the
-non-canonical lanes route through, instead of each re-implementing them:
+This module is that shared perf boundary. It owns provenance/freshness policy
+and re-exports the ratio primitives implemented in ``molt.metric_ratios`` so the
+older tool imports keep one implementation authority instead of each consumer
+re-implementing the math:
 
   1. :func:`non_canonical_provenance` - the stamp every non-canonical JSON
      carries: ``authoritative=False``, ``source=non-canonical``, the ACTUAL
      profile, and a pointer to the canonical gate. It reuses the field
      vocabulary of ``perf_scoreboard.gather_provenance`` so a reader sees the
      same keys (``authoritative`` / ``authoritative_reason``) on every board.
-  2. :func:`safe_speedup` - the ONE place a ``cpython_time / molt_time`` ratio
-     is computed. A missing/None/non-positive molt time (the build-failure /
-     daemon-crash / runaway shape) yields ``None``, NEVER a finite ratio. This
-     is the mechanical kill for "a BUILD_FAILED cell rendered as ~0.01x".
+  2. :func:`safe_speedup`, :func:`signed_ratio`, and
+     :func:`budget_utilization` - re-exported from ``molt.metric_ratios``, the
+     ONE implementation authority for guarded ratio arithmetic.
   3. freshness checks (:func:`git_rev_is_ancestor_of_origin`, :func:`doc_age_days`,
      :func:`STALE_BANNER`) used by freshness consumers to flag any perf doc whose
      ``git_rev`` is not on origin/main or that is older than N days.
@@ -33,11 +34,40 @@ is the only lane permitted to emit ``authoritative=true``. See
 from __future__ import annotations
 
 import datetime as dt
-import math
 import subprocess
+import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+SRC_ROOT = REPO_ROOT / "src"
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
+
+from molt.metric_ratios import (  # noqa: E402
+    RatioDirection as RatioDirection,
+    budget_utilization as budget_utilization,
+    relative_time_delta as relative_time_delta,
+    safe_speedup as safe_speedup,
+    signed_ratio as signed_ratio,
+    signed_ratio_value as signed_ratio_value,
+)
+
+__all__ = [
+    "CANONICAL_GATE",
+    "CONTRACT_PROFILE",
+    "DEFAULT_STALE_DAYS",
+    "STALE_BANNER",
+    "STALE_BANNER_MARK",
+    "RatioDirection",
+    "budget_utilization",
+    "doc_age_days",
+    "git_rev_is_ancestor_of_origin",
+    "non_canonical_provenance",
+    "relative_time_delta",
+    "safe_speedup",
+    "signed_ratio",
+    "signed_ratio_value",
+]
 
 # The one canonical gate. Cited in every non-canonical stamp + every stale
 # banner so a reader is always pointed back at the live truth.
@@ -99,35 +129,6 @@ def _git_output(args: list[str]) -> str | None:
         return None
     out = res.stdout.strip()
     return out or None
-
-
-def safe_speedup(cpython_time: float | None, molt_time: float | None) -> float | None:
-    """Speedup = cpython_time / molt_time, or None when it is not measurable.
-
-    Returns ``None`` - never a finite number - whenever either time is missing
-    (None) or non-positive. This is the single guard that makes it STRUCTURALLY
-    IMPOSSIBLE for a build failure / daemon crash / runaway (which leave
-    ``molt_time = None``) to render as a finite ratio such as ``~0.01x``.
-
-    Direction matches the canonical board: ``> 1.0`` means molt is faster.
-    """
-    if cpython_time is None or molt_time is None:
-        return None
-    # Reject non-finite / non-positive denominators and numerators. A zero or
-    # negative molt_time is not a real measurement; it must not become a ratio.
-    try:
-        cpy = float(cpython_time)
-        mlt = float(molt_time)
-    except (TypeError, ValueError):
-        return None
-    # Reject any non-finite (NaN/inf) time outright - those are not real
-    # measurements. Combined with the >0 check this makes it impossible for a
-    # degenerate time to produce a finite OR infinite ratio.
-    if not (math.isfinite(cpy) and math.isfinite(mlt)):
-        return None
-    if not (cpy > 0.0 and mlt > 0.0):
-        return None
-    return cpy / mlt
 
 
 def non_canonical_provenance(

@@ -257,6 +257,22 @@ def test_ci_gate_tier1_includes_perf_scoreboard_contract() -> None:
     assert str(module.TESTS / "tools" / "test_perf_scoreboard.py") in check.cmd
 
 
+def test_ci_gate_tier1_includes_ratio_direction_scan() -> None:
+    module = _load_ci_gate()
+
+    checks = {check.name: check for check in module._build_checks()}
+    scan = checks["ratio-direction-scan"]
+    contract = checks["perf-scoreboard-contract"]
+
+    assert scan.tier == 1
+    assert scan.required is True
+    assert scan.needs_pytest is False
+    assert scan.needs_rust is False
+    assert scan.timeout == 30
+    assert str(module.TOOLS / "check_ratio_direction.py") in scan.cmd
+    assert str(module.TESTS / "tools" / "test_signed_ratio.py") in contract.cmd
+
+
 def test_ci_gate_tier1_includes_structural_audit_ratchet() -> None:
     module = _load_ci_gate()
 

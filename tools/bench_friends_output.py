@@ -22,6 +22,7 @@ from bench_friends_types import (
 import harness_memory_guard
 from molt import backend_daemon_custody as daemon_custody
 
+
 def _git_rev() -> str | None:
     try:
         res = subprocess.run(
@@ -35,6 +36,7 @@ def _git_rev() -> str | None:
     if res.returncode != 0:
         return None
     return res.stdout.strip() or None
+
 
 def _format_optional(value: float | None) -> str:
     if value is None:
@@ -101,7 +103,10 @@ def _render_summary_markdown(
         "`unsupported_by_molt`."
     )
     lines.append(
-        "- Ratio columns (`Molt/*`) > 1.0 indicate Molt is faster on the suite median."
+        "- Ratio direction is serialized in `metrics.ratio_directions`: "
+        "`Molt/CPython` through `Molt/Pyodide` are Molt time over baseline time "
+        "(< 1.0 means Molt is faster), while `Molt/Friend` and `Molt/NumPy` are "
+        "speedup columns (> 1.0 means Molt is faster)."
     )
     lines.append(
         "- Compile-vs-run separation is recorded per runner when build commands "

@@ -64,6 +64,7 @@ def _append_event_jsonl(path: Path, payload: dict[str, object]) -> None:
     with path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(payload, sort_keys=True) + "\n")
 
+
 if str(TOOLS_ROOT) not in sys.path:
     sys.path.insert(0, str(TOOLS_ROOT))
 if str(SRC_ROOT) not in sys.path:
@@ -337,7 +338,9 @@ def _prune_backend_daemons(env: dict[str, str] | None = None) -> int:
         event["error"] = str(exc)
         _record_backend_daemon_cleanup_event(prune_env, event)
         raise
-    event["terminated"] = [_backend_daemon_record_payload(record) for record in terminated]
+    event["terminated"] = [
+        _backend_daemon_record_payload(record) for record in terminated
+    ]
     event["terminated_count"] = len(terminated)
     _record_backend_daemon_cleanup_event(prune_env, event)
     return len(terminated)
@@ -480,15 +483,13 @@ def _bench_tmp_root(env: dict[str, str]) -> Path:
         return Path(explicit).expanduser().resolve()
     tmp_root = env.get("MOLT_DIFF_TMPDIR") or env.get("TMPDIR")
     if tmp_root:
-        return (Path(tmp_root).expanduser().resolve() / "bench")
+        return Path(tmp_root).expanduser().resolve() / "bench"
     return _selected_bench_artifact_root(env) / "tmp" / "bench"
 
 
 def _canonical_bench_env(base_env: dict[str, str] | None = None) -> dict[str, str]:
     env = (os.environ.copy() if base_env is None else base_env).copy()
-    explicit_canonical_keys = {
-        key for key in CANONICAL_RUN_ENV_KEYS if env.get(key)
-    }
+    explicit_canonical_keys = {key for key in CANONICAL_RUN_ENV_KEYS if env.get(key)}
     for key, value in build_molt_conformance_env(
         REPO_ROOT,
         _bench_session_id(env),
@@ -1769,32 +1770,36 @@ def _bench_one(
     # molt_time (build failure, daemon crash, runaway) yields None - NEVER a
     # finite ratio. A non-ok molt run must not produce a speedup even if a
     # stale molt_time lingered.
-    speedup = (
-        perf_authority.safe_speedup(cpython_time, molt_time) if molt_ok else None
+    speedup = perf_authority.safe_speedup(cpython_time, molt_time) if molt_ok else None
+    # Every emitted molt/X ratio is produced by the SINGLE guarded authority
+    # (perf_authority.signed_ratio), in the MOLT_OVER_BASELINE direction
+    # (molt_time / baseline_time; < 1.0 means molt is faster). A missing /
+    # None / 0 / NaN baseline time (the external-runtime-absent shape) yields
+    # value=None, NEVER a finite slowness ratio - the four sibling external
+    # ratios previously bypassed the guard entirely. A non-ok molt run forces
+    # the molt operand to None so no ratio is produced.
+    _molt_time_if_ok = molt_time if molt_ok else None
+    _MOB = perf_authority.RatioDirection.MOLT_OVER_BASELINE
+    cpython_ratio_block = perf_authority.signed_ratio(
+        _molt_time_if_ok, cpython_time, direction=_MOB
     )
-    ratio = (
-        molt_time / cpython_time
-        if (molt_ok and cpython_time is not None and cpython_time > 0)
-        else None
+    pypy_ratio_block = perf_authority.signed_ratio(
+        _molt_time_if_ok, pypy_time, direction=_MOB
     )
-    pypy_ratio = (
-        (molt_time / pypy_time)
-        if (molt_ok and pypy_time is not None and pypy_time > 0)
-        else None
+    codon_ratio_block = perf_authority.signed_ratio(
+        _molt_time_if_ok, codon_time if codon_ok else None, direction=_MOB
     )
-    codon_ratio = (
-        (molt_time / codon_time) if molt_ok and codon_ok and codon_time > 0 else None
+    nuitka_ratio_block = perf_authority.signed_ratio(
+        _molt_time_if_ok, nuitka_time if nuitka_ok else None, direction=_MOB
     )
-    nuitka_ratio = (
-        (molt_time / nuitka_time)
-        if molt_ok and nuitka_ok and nuitka_time is not None and nuitka_time > 0
-        else None
+    pyodide_ratio_block = perf_authority.signed_ratio(
+        _molt_time_if_ok, pyodide_time if pyodide_ok else None, direction=_MOB
     )
-    pyodide_ratio = (
-        (molt_time / pyodide_time)
-        if molt_ok and pyodide_ok and pyodide_time is not None and pyodide_time > 0
-        else None
-    )
+    ratio = cpython_ratio_block["value"]
+    pypy_ratio = pypy_ratio_block["value"]
+    codon_ratio = codon_ratio_block["value"]
+    nuitka_ratio = nuitka_ratio_block["value"]
+    pyodide_ratio = pyodide_ratio_block["value"]
 
     def _cell(value: float | None, width: int = 10) -> str:
         if value is None:
@@ -1877,6 +1882,18 @@ def _bench_one(
         "molt_codon_ratio": codon_ratio,
         "molt_nuitka_ratio": nuitka_ratio,
         "molt_pyodide_ratio": pyodide_ratio,
+        # Explicit direction metadata for every ratio field above, so a
+        # downstream/ranking consumer can never misread the sign of a ratio
+        # (audit meta-bug item 2). molt_speedup is baseline/molt (>1 = faster);
+        # every molt_*_ratio is molt/baseline (<1 = faster).
+        "ratio_directions": {
+            "molt_speedup": perf_authority.RatioDirection.SPEEDUP.value,
+            "molt_cpython_ratio": cpython_ratio_block["direction"],
+            "molt_pypy_ratio": pypy_ratio_block["direction"],
+            "molt_codon_ratio": codon_ratio_block["direction"],
+            "molt_nuitka_ratio": nuitka_ratio_block["direction"],
+            "molt_pyodide_ratio": pyodide_ratio_block["direction"],
+        },
         "molt_ok": molt_ok,
         **molt_failure_fields,
         "molt_output_parity": output_parity,
@@ -1991,9 +2008,7 @@ def _molt_failure_detail_records(
                 "message": _bounded_failure_text(raw_failure.get("message")),
                 "guard_violation": raw_failure.get("guard_violation"),
                 "signal": raw_failure.get("signal"),
-                "orphaned_process_groups": raw_failure.get(
-                    "orphaned_process_groups"
-                ),
+                "orphaned_process_groups": raw_failure.get("orphaned_process_groups"),
                 "log_refs": raw_failure.get("log_refs", []),
             }
         )
@@ -2044,7 +2059,9 @@ def _render_bench_summary_markdown(payload: dict[str, object]) -> str:
     if custody_artifacts.get("results_json"):
         lines.append(f"JSON: `{custody_artifacts['results_json']}`")
     lines.append("")
-    lines.append("| Benchmark | Molt Status | CPython s | Molt s | Molt/CPython | Failure |")
+    lines.append(
+        "| Benchmark | Molt Status | CPython s | Molt s | Molt/CPython | Failure |"
+    )
     lines.append("| --- | --- | ---: | ---: | ---: | --- |")
     benchmarks = payload.get("benchmarks")
     if isinstance(benchmarks, dict):
@@ -2298,7 +2315,9 @@ def main():
     # contract - the only citable perf source is perf_scoreboard.py
     # --profile release-fast. The actual cargo profile is recorded honestly:
     # the CLI "release" value maps to the release-fast cargo profile.
-    _measured_profile = "release-fast" if args.molt_profile == "release" else args.molt_profile
+    _measured_profile = (
+        "release-fast" if args.molt_profile == "release" else args.molt_profile
+    )
     payload = {
         "schema_version": 1,
         "created_at": dt.datetime.now(dt.timezone.utc).isoformat(),

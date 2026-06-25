@@ -20,6 +20,7 @@ RUNNER_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 MAX_FAILURE_DETAIL_RECORDS = 32
 MAX_FAILURE_MESSAGE_CHARS = 4000
 
+
 @dataclass(frozen=True)
 class RunnerSpec:
     name: str
@@ -131,7 +132,7 @@ class SuiteResult:
     adapter_notes: str | None
     tags: list[str]
     runners: dict[str, RunnerResult]
-    metrics: dict[str, float | None]
+    metrics: dict[str, Any]
 
 
 class BenchInterrupted(BaseException):

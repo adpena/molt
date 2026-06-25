@@ -17,6 +17,7 @@ DEFAULT_MANIFEST_PATH = ROOT / "bench" / "results" / "docs_manifest.json"
 if str(TOOLS_ROOT) not in sys.path:
     sys.path.insert(0, str(TOOLS_ROOT))
 
+import perf_authority  # noqa: E402
 from bench_evidence import (  # noqa: E402
     comparator_time,
     native_molt_speedup,
@@ -41,9 +42,15 @@ def _display_name(name: str) -> str:
 
 
 def _safe_div(num: float | None, den: float | None) -> float | None:
-    if num is None or den is None or den == 0:
-        return None
-    return num / den
+    # Route every display ratio through the SINGLE guarded authority
+    # (perf_authority.signed_ratio) so a None/0/NaN/negative operand can never
+    # render a finite ratio. This is a display tool over mixed time/size
+    # operands, so the generic RATIO direction applies; the column header names
+    # the operand order. No raw `time / time` division lives here (audit
+    # meta-bug item 2: ratio-direction canonicalization).
+    return perf_authority.signed_ratio_value(
+        num, den, direction=perf_authority.RatioDirection.RATIO
+    )
 
 
 def _valid_positive_time(value: Any) -> float | None:
@@ -470,9 +477,9 @@ def _render_report_markdown(
         for lane in lane_labels:
             lane_time = comparator_time(n_entry, lane)
             if lane_time is not None:
-                comparator_rows[lane].append(
-                    (name, molt_time, lane_time, molt_time / lane_time)
-                )
+                ratio = _safe_div(molt_time, lane_time)
+                if ratio is not None:
+                    comparator_rows[lane].append((name, molt_time, lane_time, ratio))
 
     regressions.sort(key=lambda item: item[1])
     wasm_slowest.sort(key=lambda item: item[3], reverse=True)

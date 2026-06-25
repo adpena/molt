@@ -35,6 +35,7 @@ DEFAULT_OUTPUT_PATH = BENCH_RESULTS_DIR / "wasm_baseline.json"
 sys.path.insert(0, str(TOOLS_ROOT))
 
 import harness_memory_guard  # noqa: E402
+import perf_authority  # noqa: E402
 
 DEFAULT_PROGRAMS: list[str] = [
     "examples/hello.py",
@@ -101,18 +102,23 @@ class BenchEntry:
         if self.wasm_ok() and self.native_ok():
             ns = self.native_result.size_bytes  # type: ignore[union-attr]
             ws = self.wasm_samples[-1].size_bytes
-            return ws / ns if ns > 0 else None
+            return perf_authority.signed_ratio_value(
+                ws, ns, direction=perf_authority.RatioDirection.RATIO
+            )
         return None
 
     def compile_speedup(self) -> float | None:
         if self.wasm_ok() and self.native_ok():
             ws = self.wasm_median_s()
             ns = self.native_result.elapsed_s  # type: ignore[union-attr]
-            return ns / ws if ws > 0 else None
+            return perf_authority.signed_ratio_value(
+                ns, ws, direction=perf_authority.RatioDirection.RATIO
+            )
         return None
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {"source": self.source}
+        ratio_directions: dict[str, str] = {}
         if self.wasm_ok():
             d["wasm_ok"] = True
             d["wasm_compile_s_median"] = round(self.wasm_median_s(), 3)
@@ -136,14 +142,22 @@ class BenchEntry:
         ratio = self.size_ratio()
         if ratio is not None:
             d["size_ratio_wasm_native"] = round(ratio, 3)
+            ratio_directions["size_ratio_wasm_native"] = (
+                perf_authority.RatioDirection.RATIO.value
+            )
         speedup = self.compile_speedup()
         if speedup is not None:
             d["compile_speedup_wasm_over_native"] = round(speedup, 2)
+            ratio_directions["compile_speedup_wasm_over_native"] = (
+                perf_authority.RatioDirection.RATIO.value
+            )
         if self.optimize_result is not None and self.optimize_result.ok:
             d["optimized_size_bytes"] = self.optimize_result.output_bytes
             d["optimized_size_kb"] = round(self.optimize_result.output_bytes / 1024, 1)
             d["optimize_reduction_pct"] = self.optimize_result.reduction_pct
             d["optimize_elapsed_s"] = round(self.optimize_result.elapsed_s, 3)
+        if ratio_directions:
+            d["ratio_directions"] = ratio_directions
         return d
 
 
