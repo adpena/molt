@@ -34,6 +34,12 @@ from molt.frontend._types import (
     _function_is_instance_method,
     _next_ic_index,
 )
+from molt.frontend.sema import (
+    async_generator_contains_return_value,
+    async_generator_contains_yield_from,
+    function_contains_yield,
+    signature_contains_yield,
+)
 
 if TYPE_CHECKING:
     from molt.frontend._protocol import _GeneratorProtocol
@@ -1242,7 +1248,7 @@ class ClassDefVisitorMixin(_MixinBase):
                     )
                 )
             func_spill = None
-            if self.in_generator and self._signature_contains_yield(
+            if self.in_generator and signature_contains_yield(
                 decorators=item.decorator_list,
                 args=item.args,
                 returns=item.returns,
@@ -1530,7 +1536,7 @@ class ClassDefVisitorMixin(_MixinBase):
                     )
                 )
             func_spill = None
-            if self.in_generator and self._signature_contains_yield(
+            if self.in_generator and signature_contains_yield(
                 decorators=item.decorator_list,
                 args=item.args,
                 returns=item.returns,
@@ -1799,11 +1805,11 @@ class ClassDefVisitorMixin(_MixinBase):
                     descriptor = "decorated"
             if descriptor == "function" and method_name == "__class_getitem__":
                 descriptor = "classmethod"
-            is_async_gen = self._function_contains_yield(item)
+            is_async_gen = function_contains_yield(item)
             if is_async_gen:
-                if self._async_generator_contains_yield_from(item):
+                if async_generator_contains_yield_from(item):
                     raise SyntaxError("'yield from' inside async function")
-                if self._async_generator_contains_return_value(item):
+                if async_generator_contains_return_value(item):
                     raise SyntaxError("'return' with value in async generator")
                 method_name = item.name
                 property_field = None
@@ -1978,7 +1984,7 @@ class ClassDefVisitorMixin(_MixinBase):
                         )
                     )
                 func_spill = None
-                if self.in_generator and self._signature_contains_yield(
+                if self.in_generator and signature_contains_yield(
                     decorators=item.decorator_list,
                     args=item.args,
                     returns=item.returns,
@@ -2256,7 +2262,7 @@ class ClassDefVisitorMixin(_MixinBase):
                     )
                 )
             func_spill = None
-            if self.in_generator and self._signature_contains_yield(
+            if self.in_generator and signature_contains_yield(
                 decorators=item.decorator_list,
                 args=item.args,
                 returns=item.returns,
@@ -2409,7 +2415,7 @@ class ClassDefVisitorMixin(_MixinBase):
         try:
             for item in node.body:
                 if isinstance(item, ast.FunctionDef):
-                    if self._function_contains_yield(item):
+                    if function_contains_yield(item):
                         method_info = compile_generator_method(item)
                     else:
                         method_info = compile_method(item)

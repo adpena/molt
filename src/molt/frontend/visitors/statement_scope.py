@@ -15,6 +15,7 @@ from molt.frontend._types import (
     MoltOp,
     MoltValue,
 )
+from molt.frontend.sema import normalize_function_kind
 
 if TYPE_CHECKING:
     from molt.frontend._protocol import _GeneratorProtocol
@@ -74,7 +75,7 @@ class StatementScopeVisitorMixin(_MixinBase):
             self.module_intrinsic_globals.values()
         )
         for func_name, kind in self.module_declared_funcs.items():
-            if kind in {"sync", "async", "gen", "async_gen"}:
+            if normalize_function_kind(kind) is not None:
                 self._reserve_function_symbol(func_name)
         self.module_defined_funcs = set()
         # module_func_defaults is populated by _populate_sema_state above (the

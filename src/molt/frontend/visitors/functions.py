@@ -1,9 +1,8 @@
 """FunctionVisitorMixin: function, lambda, and return lowering (F1 decomposition).
 
 Move-only extraction from frontend/__init__.py. Covers visit_FunctionDef,
-visit_Lambda, and visit_Return. Async function/generator visitor methods remain
-on the assembly class until the async_gen family moves; shared helpers continue
-resolving through the SimpleTIRGenerator MRO via self.<method>.
+visit_Lambda, and visit_Return. Async function/generator visitor methods live in
+``async_gen.py``; semantic function-shape facts come from ``frontend.sema``.
 """
 
 from __future__ import annotations
@@ -19,6 +18,11 @@ from molt.frontend._types import (
     MoltOp,
     MoltValue,
     _MOLT_CLOSURE_PARAM,
+)
+from molt.frontend.sema import (
+    expression_contains_yield,
+    function_contains_yield,
+    signature_contains_yield,
 )
 
 if TYPE_CHECKING:
@@ -106,7 +110,7 @@ class FunctionVisitorMixin(_MixinBase):
             # module_get_attr and see the mutation.
             for gname in new_globals:
                 self.locals.pop(gname, None)
-        is_generator = self._function_contains_yield(node)
+        is_generator = function_contains_yield(node)
         needs_locals_cache = self._function_contains_locals_call(node)
         has_return = self._function_contains_return(node)
         func_name = node.name
@@ -184,7 +188,7 @@ class FunctionVisitorMixin(_MixinBase):
                     )
                 )
             func_spill = None
-            if self.in_generator and self._signature_contains_yield(
+            if self.in_generator and signature_contains_yield(
                 decorators=node.decorator_list,
                 args=node.args,
                 returns=node.returns,
@@ -467,7 +471,7 @@ class FunctionVisitorMixin(_MixinBase):
                 )
             )
         func_spill = None
-        if self.in_generator and self._signature_contains_yield(
+        if self.in_generator and signature_contains_yield(
             decorators=node.decorator_list,
             args=node.args,
             returns=node.returns,
@@ -688,7 +692,7 @@ class FunctionVisitorMixin(_MixinBase):
         return None
 
     def visit_Lambda(self, node: ast.Lambda) -> MoltValue:
-        if self._expr_contains_yield(node.body):
+        if expression_contains_yield(node.body):
             func_symbol = self._lambda_symbol()
             poll_func_name = f"{func_symbol}_poll"
             qualname = self._qualname_for_def("<lambda>")
@@ -764,7 +768,7 @@ class FunctionVisitorMixin(_MixinBase):
                     )
                 )
             func_spill = None
-            if self.in_generator and self._signature_contains_yield(
+            if self.in_generator and signature_contains_yield(
                 decorators=[],
                 args=node.args,
                 returns=None,

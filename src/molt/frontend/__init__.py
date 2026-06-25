@@ -11,11 +11,7 @@ and ``molt.frontend.lowering`` and are mixed into the class below via MRO.
 from __future__ import annotations
 
 import ast
-import bisect
 import json
-import os
-import time
-from collections import deque
 from contextlib import contextmanager
 from pathlib import Path
 import string as _py_string
@@ -23,7 +19,6 @@ from typing import (
     TYPE_CHECKING,
     Any,
     Literal,
-    NoReturn,
     Sequence,
     cast,
 )
@@ -108,9 +103,6 @@ from molt.frontend._types import (
     _TrackedOpsList,
     CanonicalizationState,
     _CANONICALIZATION_STATE_SIGNATURE_CACHE_KEY,
-    _MIDEND_DEGRADE_CHECKPOINTS,
-    _MIDEND_WORK_GROWTH_HEADROOM,
-    _MIDEND_WORK_BASE_UNITS_PER_MS,
     CompatibilityError,
     CompatibilityReporter,
     FallbackPolicy,
@@ -137,7 +129,13 @@ from molt.frontend.lowering.op_kinds_generated import (
 # house shape. F2b is additive: visit_Module populates the existing pre-walk state
 # dicts FROM SemaResult (the _populate_sema_state shim) so the walk is byte-identical;
 # F2c rewires the read-sites onto SemaResult and deletes the mutable god-object dicts.
-from molt.frontend.sema import SemaResult, analyze_module
+from molt.frontend.sema import (
+    FunctionKind,
+    SemaResult,
+    analyze_module,
+    expression_contains_yield,
+    normalize_function_kind,
+)
 
 # Visitor / lowering mixins composed into SimpleTIRGenerator (F1 decomposition).
 from molt.frontend.lowering.analysis_collect_static import AnalysisCollectStaticMixin
@@ -381,7 +379,7 @@ class SimpleTIRGenerator(
         self.func_symbol_names: dict[str, str] = {}
         self.func_default_specs: dict[str, dict[str, Any]] = {}
         self.stable_module_funcs: set[str] = set()
-        self.module_declared_funcs: dict[str, str] = {}
+        self.module_declared_funcs: dict[str, FunctionKind] = {}
         self.module_declared_classes: set[str] = set()
         # Static class graph for this module — the soundness substrate for the
         # zero-arg ``super()`` fold (see ``_collect_module_class_graph``).
@@ -1520,59 +1518,6 @@ class SimpleTIRGenerator(
             raise self.compat.error(issue)
         return self._emit_bridge_unavailable(issue.runtime_message())
 
-    def _emit_asyncio_sleep(
-        self, args: list[ast.expr], keywords: list[ast.keyword]
-    ) -> MoltValue:
-        delay_expr: ast.expr | None = None
-        result_expr: ast.expr | None = None
-        if len(args) > 2:
-            raise NotImplementedError("asyncio.sleep expects 0-2 arguments")
-        if args:
-            delay_expr = args[0]
-            if len(args) == 2:
-                result_expr = args[1]
-        for keyword in keywords:
-            if keyword.arg is None:
-                raise NotImplementedError("asyncio.sleep does not support **kwargs")
-            if keyword.arg == "delay":
-                if delay_expr is not None:
-                    raise NotImplementedError(
-                        "asyncio.sleep got multiple values for delay"
-                    )
-                delay_expr = keyword.value
-            elif keyword.arg == "result":
-                if result_expr is not None:
-                    raise NotImplementedError(
-                        "asyncio.sleep got multiple values for result"
-                    )
-                result_expr = keyword.value
-            else:
-                raise NotImplementedError(
-                    f"asyncio.sleep got unexpected keyword {keyword.arg}"
-                )
-        if delay_expr is None:
-            delay_val = MoltValue(self.next_var(), type_hint="float")
-            self.emit(MoltOp(kind="CONST_FLOAT", args=[0.0], result=delay_val))
-        else:
-            delay_val = self.visit(delay_expr)
-            if delay_val is None:
-                raise NotImplementedError("Unsupported delay in asyncio.sleep")
-        call_args = [delay_val]
-        if result_expr is not None:
-            result_val = self.visit(result_expr)
-            if result_val is None:
-                raise NotImplementedError("Unsupported result in asyncio.sleep")
-            call_args.append(result_val)
-        res = MoltValue(self.next_var(), type_hint="Future")
-        self.emit(
-            MoltOp(
-                kind="CALL_ASYNC",
-                args=["molt_async_sleep_poll", *call_args],
-                result=res,
-            )
-        )
-        return res
-
     def _is_contextmanager_decorator(self, deco: ast.expr) -> bool:
         if isinstance(deco, ast.Name) and deco.id == "contextmanager":
             return True
@@ -1624,48 +1569,6 @@ class SimpleTIRGenerator(
         return f"molt_init_{cls._sanitize_module_name(name)}"
 
     @staticmethod
-    def _function_contains_yield(
-        node: ast.FunctionDef | ast.AsyncFunctionDef,
-    ) -> bool:
-        def push_arg_annotations(stack: list[ast.AST], args: ast.arguments) -> None:
-            for arg in (
-                args.posonlyargs
-                + args.args
-                + args.kwonlyargs
-                + ([] if args.vararg is None else [args.vararg])
-                + ([] if args.kwarg is None else [args.kwarg])
-            ):
-                if arg.annotation is not None:
-                    stack.append(arg.annotation)
-
-        stack: list[ast.AST] = list(node.body)
-        while stack:
-            current = stack.pop()
-            if isinstance(current, (ast.Yield, ast.YieldFrom)):
-                return True
-            if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                stack.extend(current.decorator_list)
-                stack.extend(current.args.defaults)
-                stack.extend(
-                    default
-                    for default in current.args.kw_defaults
-                    if default is not None
-                )
-                push_arg_annotations(stack, current.args)
-                if current.returns is not None:
-                    stack.append(current.returns)
-                continue
-            if isinstance(current, ast.ClassDef):
-                stack.extend(current.decorator_list)
-                stack.extend(current.bases)
-                stack.extend(keyword.value for keyword in current.keywords)
-                continue
-            if isinstance(current, ast.Lambda):
-                continue
-            stack.extend(ast.iter_child_nodes(current))
-        return False
-
-    @staticmethod
     def _function_contains_locals_call(
         node: ast.FunctionDef | ast.AsyncFunctionDef,
     ) -> bool:
@@ -1696,36 +1599,6 @@ class SimpleTIRGenerator(
                 and isinstance(current.func, ast.Name)
                 and current.func.id == "locals"
             ):
-                return True
-            if isinstance(
-                current,
-                (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda),
-            ):
-                continue
-            stack.extend(ast.iter_child_nodes(current))
-        return False
-
-    @staticmethod
-    def _async_generator_contains_yield_from(node: ast.AsyncFunctionDef) -> bool:
-        stack: list[ast.AST] = list(node.body)
-        while stack:
-            current = stack.pop()
-            if isinstance(current, ast.YieldFrom):
-                return True
-            if isinstance(
-                current,
-                (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda),
-            ):
-                continue
-            stack.extend(ast.iter_child_nodes(current))
-        return False
-
-    @staticmethod
-    def _async_generator_contains_return_value(node: ast.AsyncFunctionDef) -> bool:
-        stack: list[ast.AST] = list(node.body)
-        while stack:
-            current = stack.pop()
-            if isinstance(current, ast.Return) and current.value is not None:
                 return True
             if isinstance(
                 current,
@@ -1796,29 +1669,6 @@ class SimpleTIRGenerator(
                 continue
             stack.extend(ast.iter_child_nodes(current))
         return False
-
-    def _signature_contains_yield(
-        self,
-        *,
-        decorators: list[ast.expr],
-        args: ast.arguments,
-        returns: ast.expr | None,
-    ) -> bool:
-        exprs: list[ast.expr] = list(decorators)
-        exprs.extend(args.defaults)
-        exprs.extend(expr for expr in args.kw_defaults if expr is not None)
-        for arg in (
-            args.posonlyargs
-            + args.args
-            + args.kwonlyargs
-            + ([] if args.vararg is None else [args.vararg])
-            + ([] if args.kwarg is None else [args.kwarg])
-        ):
-            if arg.annotation is not None:
-                exprs.append(arg.annotation)
-        if returns is not None:
-            exprs.append(returns)
-        return any(self._expr_contains_yield(expr) for expr in exprs)
 
     def _has_typing_overload_decorator(
         self,
@@ -2222,7 +2072,7 @@ class SimpleTIRGenerator(
     # They are computed pre-walk by analyze_module() and populated into
     # self.module_declared_funcs / self.module_declared_classes /
     # self.module_class_bases / self.module_subclassed_names by
-    # _populate_sema_state.  (The per-construct helpers _function_contains_yield /
+    # _populate_sema_state. AST suspension-shape facts are owned by
     # _function_param_names / _split_function_args / _default_specs_from_args /
     # _default_spec_for_expr STAY on the class — the lowering walk still calls them
     # at ~30 sites; sema/funcmeta.py carries its own private copies.)
@@ -2658,12 +2508,6 @@ class SimpleTIRGenerator(
         self.current_func_name = name
         self.current_ops = self.funcs_map[name]["ops"]
 
-    def is_async(self) -> bool:
-        return self.current_func_name.endswith("_poll")
-
-    def is_async_context(self) -> bool:
-        return self.async_context
-
     def _parse_container_hint(self, hint: str) -> tuple[str, str | None]:
         if hint.endswith("]") and "[" in hint:
             base, inner = hint.split("[", 1)
@@ -2725,31 +2569,6 @@ class SimpleTIRGenerator(
             return False
         return True
 
-    def _async_local_offset(self, name: str) -> int:
-        if name not in self.async_locals:
-            self.async_locals[name] = (
-                self.async_locals_base + len(self.async_locals) * 8
-            )
-            if self.async_public_locals:
-                if name not in self.async_public_locals:
-                    self.async_internal_locals.add(name)
-                else:
-                    self.async_internal_locals.discard(name)
-            else:
-                self.async_internal_locals.add(name)
-        return self.async_locals[name]
-
-    def _async_locals_public_entries(self) -> list[tuple[str, int]]:
-        if not self.async_locals:
-            return []
-        entries = [
-            (name, offset)
-            for name, offset in self.async_locals.items()
-            if name not in self.async_internal_locals
-        ]
-        entries.sort(key=lambda item: item[1])
-        return entries
-
     def _task_closure_size(
         self, payload_slots: int, *, include_gen_control: bool
     ) -> int:
@@ -2760,31 +2579,6 @@ class SimpleTIRGenerator(
         if base < required:
             return required
         return base
-
-    def _init_scope_async_locals(self, arg_nodes: list[ast.arg]) -> None:
-        if not self.scope_assigned:
-            return
-        arg_names = {arg.arg for arg in arg_nodes}
-        missing_val: MoltValue | None = None
-        for name in sorted(self.scope_assigned):
-            if (
-                name in arg_names
-                or name in self.global_decls
-                or name in self.nonlocal_decls
-            ):
-                continue
-            if name in self.async_locals:
-                continue
-            if missing_val is None:
-                missing_val = self._emit_missing_value()
-            offset = self._async_local_offset(name)
-            self.emit(
-                MoltOp(
-                    kind="STORE_CLOSURE",
-                    args=["self", offset, missing_val],
-                    result=MoltValue("none"),
-                )
-            )
 
     def _apply_hint_to_value(
         self, _name: str | None, value: MoltValue, hint: str
@@ -3563,10 +3357,10 @@ class SimpleTIRGenerator(
         func_spill: int | None = None
         if self.in_generator:
             yield_in_defaults = any(
-                self._expr_contains_yield(expr) for expr in default_exprs
+                expression_contains_yield(expr) for expr in default_exprs
             )
             yield_in_kwdefaults = any(
-                self._expr_contains_yield(expr)
+                expression_contains_yield(expr)
                 for expr in kw_default_exprs
                 if expr is not None
             )
@@ -4474,12 +4268,8 @@ class SimpleTIRGenerator(
         return module_defaults.get(func_id)
 
     @staticmethod
-    def _normalize_func_kind(kind: object) -> str | None:
-        if kind == "async_gen":
-            return "asyncgen"
-        if kind in {"sync", "async", "gen", "asyncgen"}:
-            return cast(str, kind)
-        return None
+    def _normalize_func_kind(kind: object) -> FunctionKind | None:
+        return normalize_function_kind(kind)
 
     def _lookup_func_kind(self, module_name: str | None, func_id: str) -> str | None:
         if module_name is None:
@@ -4531,23 +4321,23 @@ class SimpleTIRGenerator(
             return None
         if info is not None and info.get("has_decorators"):
             return None
-        kind = kind or "sync"
+        kind = kind or FunctionKind.SYNC
         func_symbol = f"{self._sanitize_module_name(module_name)}__{func_id}"
-        if kind == "sync":
+        if kind == FunctionKind.SYNC:
             return f"Func:{func_symbol}"
         total_params = info.get("params") if info is not None else None
         payload_slots = total_params if isinstance(total_params, int) else 0
-        if kind == "gen":
+        if kind == FunctionKind.GENERATOR:
             closure_size = self._task_closure_size(
                 payload_slots, include_gen_control=True
             )
             return f"GenFunc:{func_symbol}_poll:{closure_size}"
-        if kind == "async":
+        if kind == FunctionKind.ASYNC:
             closure_size = self._task_closure_size(
                 payload_slots, include_gen_control=False
             )
             return f"AsyncFunc:{func_symbol}_poll:{closure_size}"
-        if kind == "asyncgen":
+        if kind == FunctionKind.ASYNC_GENERATOR:
             closure_size = self._task_closure_size(
                 payload_slots, include_gen_control=True
             )
@@ -5137,267 +4927,6 @@ class SimpleTIRGenerator(
             return False
         # List iteration must observe mutations (e.g., append during iteration).
         return iterable.type_hint != "list"
-
-    def _expr_may_yield(self, node: ast.AST) -> bool:
-        if not self.is_async():
-            return False
-
-        class YieldVisitor(ast.NodeVisitor):
-            def __init__(self) -> None:
-                self.may_yield = False
-
-            def visit_Await(self, node: ast.Await) -> None:
-                self.may_yield = True
-
-            def visit_Call(self, node: ast.Call) -> None:
-                if isinstance(node.func, ast.Name) and node.func.id in {
-                    "molt_chan_send",
-                    "molt_chan_recv",
-                }:
-                    self.may_yield = True
-                    return
-                self.generic_visit(node)
-
-            def visit_Lambda(self, node: ast.Lambda) -> None:
-                return
-
-            def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-                return
-
-            def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-                return
-
-        visitor = YieldVisitor()
-        visitor.visit(node)
-        return visitor.may_yield
-
-    def _expr_needs_async(self, node: ast.AST) -> bool:
-        class AsyncVisitor(ast.NodeVisitor):
-            def __init__(self) -> None:
-                self.needs_async = False
-
-            def visit_Await(self, node: ast.Await) -> None:
-                self.needs_async = True
-
-            def visit_Call(self, node: ast.Call) -> None:
-                if isinstance(node.func, ast.Name) and node.func.id in {
-                    "molt_chan_send",
-                    "molt_chan_recv",
-                }:
-                    self.needs_async = True
-                    return
-                self.generic_visit(node)
-
-            def visit_Lambda(self, node: ast.Lambda) -> None:
-                return
-
-            def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-                return
-
-            def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-                return
-
-            def visit_ClassDef(self, node: ast.ClassDef) -> None:
-                return
-
-        visitor = AsyncVisitor()
-        visitor.visit(node)
-        return visitor.needs_async
-
-    def _expr_contains_yield(self, node: ast.AST) -> bool:
-        class YieldVisitor(ast.NodeVisitor):
-            def __init__(self) -> None:
-                self.found = False
-
-            def visit_Yield(self, node: ast.Yield) -> None:
-                self.found = True
-
-            def visit_YieldFrom(self, node: ast.YieldFrom) -> None:
-                self.found = True
-
-            def visit_Lambda(self, node: ast.Lambda) -> None:
-                return
-
-            def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-                return
-
-            def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-                return
-
-            def visit_ClassDef(self, node: ast.ClassDef) -> None:
-                return
-
-        visitor = YieldVisitor()
-        visitor.visit(node)
-        return visitor.found
-
-    def _spill_async_value(self, value: MoltValue, name: str) -> int:
-        offset = self._async_local_offset(name)
-        self.emit(
-            MoltOp(
-                kind="STORE_CLOSURE",
-                args=["self", offset, value],
-                result=MoltValue("none"),
-            )
-        )
-        return offset
-
-    def _reload_async_value(self, offset: int, hint: str) -> MoltValue:
-        res = MoltValue(self.next_var(), type_hint=hint)
-        self.emit(MoltOp(kind="LOAD_CLOSURE", args=["self", offset], result=res))
-        return res
-
-    def _spill_async_temporaries(self) -> None:
-        label_indices = [
-            idx for idx, op in enumerate(self.current_ops) if op.kind == "STATE_LABEL"
-        ]
-        if not label_indices:
-            return
-        state_label_indices: dict[int, int] = {}
-        for idx in label_indices:
-            op = self.current_ops[idx]
-            if op.args and isinstance(op.args[0], int):
-                state_label_indices[op.args[0]] = idx
-        params = set(self.funcs_map[self.current_func_name]["params"])
-        spillable: set[str] = set(self.async_locals)
-        spillable.update(self.scope_assigned)
-        spillable.update(params)
-        spillable.update(self.closure_locals)
-        free_vars = getattr(self, "free_vars", None)
-        if free_vars:
-            spillable.update(free_vars)
-        type_hints: dict[str, str] = {}
-        for op in self.current_ops:
-            for arg in op.args:
-                if not isinstance(arg, MoltValue):
-                    continue
-                name = arg.name
-                if name in {"self", "none"}:
-                    continue
-                spillable.add(name)
-                if arg.type_hint:
-                    type_hints.setdefault(name, arg.type_hint)
-            out_name = op.result.name
-            if out_name != "none":
-                spillable.add(out_name)
-                if op.result.type_hint:
-                    type_hints.setdefault(out_name, op.result.type_hint)
-        last_def: dict[str, int] = {name: -1 for name in spillable}
-        label_spills: dict[int, set[str]] = {idx: set() for idx in label_indices}
-        spill_names: set[str] = set()
-        for idx, op in enumerate(self.current_ops):
-            for arg in op.args:
-                if not isinstance(arg, MoltValue):
-                    continue
-                name = arg.name
-                if name in {"self", "none"} or name not in spillable:
-                    continue
-                def_idx = last_def.get(name)
-                if def_idx is None:
-                    continue
-                start = bisect.bisect_right(label_indices, def_idx)
-                end = bisect.bisect_left(label_indices, idx)
-                if start >= end:
-                    continue
-                for label_idx in label_indices[start:end]:
-                    label_spills[label_idx].add(name)
-                spill_names.add(name)
-            out_name = op.result.name
-            if out_name != "none" and out_name in spillable:
-                last_def[out_name] = idx
-        if not spill_names:
-            return
-        # `spill_names` is a set, whose iteration order is hash-seeded and so
-        # varies with PYTHONHASHSEED.  `_async_local_offset` assigns each new
-        # name the next `len(async_locals) * 8` slot, so iterating the set
-        # directly here would let the closure-slot offsets baked into the
-        # emitted IR depend on hash order — a non-determinism bug (#34).  Any
-        # iteration order that feeds IR emission MUST be deterministic, so we
-        # assign offsets in sorted name order (matching the `sorted(...)`
-        # used by the store/load emit loops below).
-        for name in sorted(spill_names):
-            self._async_local_offset(name)
-            hint = type_hints.get(name)
-            if hint is not None:
-                self.async_local_hints.setdefault(name, hint)
-
-        new_ops: list[MoltOp] = []
-
-        def _emit_store_for_label(label_idx: int) -> None:
-            for name in sorted(label_spills.get(label_idx, set())):
-                if name not in self.async_locals:
-                    self._async_local_offset(name)
-                offset = self.async_locals[name]
-                hint = type_hints.get(name, "Unknown")
-                new_ops.append(
-                    MoltOp(
-                        kind="STORE_CLOSURE",
-                        args=["self", offset, MoltValue(name, type_hint=hint)],
-                        result=MoltValue("none"),
-                    )
-                )
-
-        def _emit_loads_for_label(label_idx: int) -> None:
-            for name in sorted(label_spills.get(label_idx, set())):
-                if name not in self.async_locals:
-                    self._async_local_offset(name)
-                offset = self.async_locals[name]
-                hint = type_hints.get(name, "Unknown")
-                new_ops.append(
-                    MoltOp(
-                        kind="LOAD_CLOSURE",
-                        args=["self", offset],
-                        result=MoltValue(name, type_hint=hint),
-                    )
-                )
-
-        def _state_label_before_try_start_run(end_idx: int) -> int | None:
-            cursor = end_idx
-            while cursor >= 0 and self.current_ops[cursor].kind == "TRY_START":
-                cursor -= 1
-            if cursor >= 0 and self.current_ops[cursor].kind == "STATE_LABEL":
-                return cursor
-            return None
-
-        for idx, op in enumerate(self.current_ops):
-            if op.kind in {"STATE_TRANSITION", "STATE_YIELD"}:
-                label_idx = None
-                if op.kind == "STATE_TRANSITION":
-                    pending_arg = op.args[1] if len(op.args) == 2 else op.args[2]
-                    pending_state = None
-                    if isinstance(pending_arg, MoltValue):
-                        pending_state = self.const_ints.get(pending_arg.name)
-                    elif isinstance(pending_arg, int):
-                        pending_state = pending_arg
-                    if pending_state is not None:
-                        label_idx = state_label_indices.get(pending_state)
-                else:
-                    pending_arg = op.args[1] if len(op.args) > 1 else None
-                    if isinstance(pending_arg, int):
-                        label_idx = state_label_indices.get(pending_arg)
-                if label_idx is not None:
-                    _emit_store_for_label(label_idx)
-            new_ops.append(op)
-            if op.kind == "STATE_LABEL":
-                next_op = (
-                    self.current_ops[idx + 1]
-                    if idx + 1 < len(self.current_ops)
-                    else None
-                )
-                if next_op is None or next_op.kind != "TRY_START":
-                    _emit_loads_for_label(idx)
-                continue
-            if op.kind == "TRY_START":
-                next_op = (
-                    self.current_ops[idx + 1]
-                    if idx + 1 < len(self.current_ops)
-                    else None
-                )
-                if next_op is None or next_op.kind != "TRY_START":
-                    label_idx = _state_label_before_try_start_run(idx)
-                    if label_idx is not None:
-                        _emit_loads_for_label(label_idx)
-        self.current_ops[:] = new_ops
 
     def _active_exception_value(self, exc: ActiveException) -> MoltValue:
         if self.is_async() and exc.slot is not None:
@@ -8867,385 +8396,6 @@ class SimpleTIRGenerator(
             or self.module_name == "importlib"
             or self.module_name.startswith("importlib.")
         )
-
-
-
-    def _emit_await_anext(
-        self,
-        iter_obj: MoltValue,
-        *,
-        default_val: MoltValue | None,
-        has_default: bool,
-    ) -> MoltValue:
-        if iter_obj.type_hint in {"iter", "generator"}:
-            pair = self._emit_iter_next_checked(iter_obj)
-            none_val = MoltValue(self.next_var(), type_hint="None")
-            self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_val))
-            is_none = MoltValue(self.next_var(), type_hint="bool")
-            self.emit(MoltOp(kind="IS", args=[pair, none_val], result=is_none))
-            self.emit(MoltOp(kind="IF", args=[is_none], result=MoltValue("none")))
-            err_val = self._emit_exception_new("TypeError", "object is not an iterator")
-            self.emit(MoltOp(kind="RAISE", args=[err_val], result=MoltValue("none")))
-            self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-            zero = MoltValue(self.next_var(), type_hint="int")
-            self.emit(MoltOp(kind="CONST", args=[0], result=zero))
-            one = MoltValue(self.next_var(), type_hint="int")
-            self.emit(MoltOp(kind="CONST", args=[1], result=one))
-            done = MoltValue(self.next_var(), type_hint="bool")
-            self.emit(MoltOp(kind="INDEX", args=[pair, one], result=done))
-            if has_default:
-                if default_val is None:
-                    default_val = MoltValue(self.next_var(), type_hint="None")
-                    self.emit(MoltOp(kind="CONST_NONE", args=[], result=default_val))
-            else:
-                default_val = MoltValue(self.next_var(), type_hint="None")
-                self.emit(MoltOp(kind="CONST_NONE", args=[], result=default_val))
-            res_cell = MoltValue(self.next_var(), type_hint="list")
-            self.emit(MoltOp(kind="LIST_NEW", args=[default_val], result=res_cell))
-            self.emit(MoltOp(kind="IF", args=[done], result=MoltValue("none")))
-            if not has_default:
-                stop_val = self._emit_exception_new("StopAsyncIteration", "")
-                self.emit(
-                    MoltOp(kind="RAISE", args=[stop_val], result=MoltValue("none"))
-                )
-            self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
-            val = MoltValue(self.next_var(), type_hint="Any")
-            self.emit(MoltOp(kind="INDEX", args=[pair, zero], result=val))
-            self.emit(
-                MoltOp(
-                    kind="STORE_INDEX",
-                    args=[res_cell, zero, val],
-                    result=MoltValue("none"),
-                )
-            )
-            self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-            res = MoltValue(self.next_var(), type_hint="Any")
-            self.emit(MoltOp(kind="INDEX", args=[res_cell, zero], result=res))
-            return res
-
-        self.emit(MoltOp(kind="EXCEPTION_PUSH", args=[], result=MoltValue("none")))
-        awaitable = MoltValue(self.next_var(), type_hint="Future")
-        self.emit(MoltOp(kind="ANEXT", args=[iter_obj], result=awaitable))
-        if has_default:
-            if default_val is None:
-                default_val = MoltValue(self.next_var(), type_hint="None")
-                self.emit(MoltOp(kind="CONST_NONE", args=[], result=default_val))
-        else:
-            default_val = MoltValue(self.next_var(), type_hint="None")
-            self.emit(MoltOp(kind="CONST_NONE", args=[], result=default_val))
-        res_cell = MoltValue(self.next_var(), type_hint="list")
-        self.emit(MoltOp(kind="LIST_NEW", args=[default_val], result=res_cell))
-        zero = MoltValue(self.next_var(), type_hint="int")
-        self.emit(MoltOp(kind="CONST", args=[0], result=zero))
-        cell_slot: int | None = None
-        if self.is_async():
-            cell_slot = self._async_local_offset(
-                f"__anext_cell_{len(self.async_locals)}"
-            )
-            self.emit(
-                MoltOp(
-                    kind="STORE_CLOSURE",
-                    args=["self", cell_slot, res_cell],
-                    result=MoltValue("none"),
-                )
-            )
-        with self._suppress_check_exception():
-            exc_val = MoltValue(self.next_var(), type_hint="exception")
-            self.emit(MoltOp(kind="EXCEPTION_LAST", args=[], result=exc_val))
-            none_val = MoltValue(self.next_var(), type_hint="None")
-            self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_val))
-            is_none = MoltValue(self.next_var(), type_hint="bool")
-            self.emit(MoltOp(kind="IS", args=[exc_val, none_val], result=is_none))
-            pending = MoltValue(self.next_var(), type_hint="bool")
-            self.emit(MoltOp(kind="NOT", args=[is_none], result=pending))
-            self.emit(MoltOp(kind="IF", args=[pending], result=MoltValue("none")))
-            kind_val = MoltValue(self.next_var(), type_hint="str")
-            self.emit(MoltOp(kind="EXCEPTION_KIND", args=[exc_val], result=kind_val))
-            stop_kind = MoltValue(self.next_var(), type_hint="str")
-            self.emit(
-                MoltOp(kind="CONST_STR", args=["StopAsyncIteration"], result=stop_kind)
-            )
-            is_stop = MoltValue(self.next_var(), type_hint="bool")
-            self.emit(
-                MoltOp(kind="STRING_EQ", args=[kind_val, stop_kind], result=is_stop)
-            )
-            self.emit(MoltOp(kind="IF", args=[is_stop], result=MoltValue("none")))
-            if not has_default:
-                self.emit(
-                    MoltOp(kind="RAISE", args=[exc_val], result=MoltValue("none"))
-                )
-            else:
-                self.emit(
-                    MoltOp(kind="EXCEPTION_CLEAR", args=[], result=MoltValue("none"))
-                )
-            self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
-            self.emit(MoltOp(kind="RAISE", args=[exc_val], result=MoltValue("none")))
-            self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-        self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
-        awaited_val = self._emit_await_value(awaitable, raise_pending=False)
-        with self._suppress_check_exception():
-            exc_after = MoltValue(self.next_var(), type_hint="exception")
-            self.emit(MoltOp(kind="EXCEPTION_LAST", args=[], result=exc_after))
-            none_after = MoltValue(self.next_var(), type_hint="None")
-            self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_after))
-            is_none_after = MoltValue(self.next_var(), type_hint="bool")
-            self.emit(
-                MoltOp(kind="IS", args=[exc_after, none_after], result=is_none_after)
-            )
-            pending_after = MoltValue(self.next_var(), type_hint="bool")
-            self.emit(MoltOp(kind="NOT", args=[is_none_after], result=pending_after))
-            self.emit(MoltOp(kind="IF", args=[pending_after], result=MoltValue("none")))
-            kind_after = MoltValue(self.next_var(), type_hint="str")
-            self.emit(
-                MoltOp(kind="EXCEPTION_KIND", args=[exc_after], result=kind_after)
-            )
-            stop_after = MoltValue(self.next_var(), type_hint="str")
-            self.emit(
-                MoltOp(kind="CONST_STR", args=["StopAsyncIteration"], result=stop_after)
-            )
-            is_stop_after = MoltValue(self.next_var(), type_hint="bool")
-            self.emit(
-                MoltOp(
-                    kind="STRING_EQ",
-                    args=[kind_after, stop_after],
-                    result=is_stop_after,
-                )
-            )
-            self.emit(MoltOp(kind="IF", args=[is_stop_after], result=MoltValue("none")))
-            if not has_default:
-                self.emit(
-                    MoltOp(kind="RAISE", args=[exc_after], result=MoltValue("none"))
-                )
-            else:
-                self.emit(
-                    MoltOp(kind="EXCEPTION_CLEAR", args=[], result=MoltValue("none"))
-                )
-            self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
-            self.emit(MoltOp(kind="RAISE", args=[exc_after], result=MoltValue("none")))
-            self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-            self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-        self.emit(MoltOp(kind="IF", args=[is_none_after], result=MoltValue("none")))
-        if cell_slot is not None:
-            res_cell_after = MoltValue(self.next_var(), type_hint="list")
-            self.emit(
-                MoltOp(
-                    kind="LOAD_CLOSURE",
-                    args=["self", cell_slot],
-                    result=res_cell_after,
-                )
-            )
-            zero_after = MoltValue(self.next_var(), type_hint="int")
-            self.emit(MoltOp(kind="CONST", args=[0], result=zero_after))
-            self.emit(
-                MoltOp(
-                    kind="STORE_INDEX",
-                    args=[res_cell_after, zero_after, awaited_val],
-                    result=MoltValue("none"),
-                )
-            )
-        else:
-            self.emit(
-                MoltOp(
-                    kind="STORE_INDEX",
-                    args=[res_cell, zero, awaited_val],
-                    result=MoltValue("none"),
-                )
-            )
-        self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-        self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-        self.emit(MoltOp(kind="EXCEPTION_POP", args=[], result=MoltValue("none")))
-        self._emit_raise_if_pending()
-        if cell_slot is not None:
-            res_cell_final = MoltValue(self.next_var(), type_hint="list")
-            self.emit(
-                MoltOp(
-                    kind="LOAD_CLOSURE",
-                    args=["self", cell_slot],
-                    result=res_cell_final,
-                )
-            )
-            zero_final = MoltValue(self.next_var(), type_hint="int")
-            self.emit(MoltOp(kind="CONST", args=[0], result=zero_final))
-            res = MoltValue(self.next_var(), type_hint="Any")
-            self.emit(
-                MoltOp(kind="INDEX", args=[res_cell_final, zero_final], result=res)
-            )
-        else:
-            res = MoltValue(self.next_var(), type_hint="Any")
-            self.emit(MoltOp(kind="INDEX", args=[res_cell, zero], result=res))
-        return res
-
-
-    def _emit_awaitable_transform(self, awaitable: MoltValue) -> MoltValue:
-        name_val = MoltValue(self.next_var(), type_hint="str")
-        self.emit(MoltOp(kind="CONST_STR", args=["__await__"], result=name_val))
-        cell = MoltValue(self.next_var(), type_hint="list")
-        self.emit(MoltOp(kind="LIST_NEW", args=[awaitable], result=cell))
-        zero = MoltValue(self.next_var(), type_hint="int")
-        self.emit(MoltOp(kind="CONST", args=[0], result=zero))
-        is_native = MoltValue(self.next_var(), type_hint="bool")
-        self.emit(
-            MoltOp(kind="IS_NATIVE_AWAITABLE", args=[awaitable], result=is_native)
-        )
-        not_native = MoltValue(self.next_var(), type_hint="bool")
-        self.emit(MoltOp(kind="NOT", args=[is_native], result=not_native))
-        has_attr = MoltValue(self.next_var(), type_hint="bool")
-        self.emit(
-            MoltOp(kind="HASATTR_NAME", args=[awaitable, name_val], result=has_attr)
-        )
-        should_transform = MoltValue(self.next_var(), type_hint="bool")
-        self.emit(
-            MoltOp(kind="AND", args=[not_native, has_attr], result=should_transform)
-        )
-        self.emit(MoltOp(kind="IF", args=[should_transform], result=MoltValue("none")))
-        method = MoltValue(self.next_var(), type_hint="Any")
-        self.emit(
-            MoltOp(kind="GETATTR_NAME", args=[awaitable, name_val], result=method)
-        )
-        awaited = self._emit_call_bound_or_func(method, [])
-        self.emit(
-            MoltOp(
-                kind="STORE_INDEX",
-                args=[cell, zero, awaited],
-                result=MoltValue("none"),
-            )
-        )
-        self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-        final_val = MoltValue(self.next_var(), type_hint="Any")
-        self.emit(MoltOp(kind="INDEX", args=[cell, zero], result=final_val))
-        return final_val
-
-    def _emit_await_value(
-        self, awaitable: MoltValue, *, raise_pending: bool = True
-    ) -> MoltValue:
-        if not self.is_async():
-            raise NotImplementedError("await outside async function")
-        awaitable_slot = self._async_local_offset(
-            f"__await_future_{len(self.async_locals)}"
-        )
-        awaitable_cached = MoltValue(self.next_var(), type_hint="Any")
-        self.emit(
-            MoltOp(
-                kind="LOAD_CLOSURE",
-                args=["self", awaitable_slot],
-                result=awaitable_cached,
-            )
-        )
-        none_cached = MoltValue(self.next_var(), type_hint="None")
-        self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_cached))
-        is_none_cached = MoltValue(self.next_var(), type_hint="bool")
-        self.emit(
-            MoltOp(
-                kind="IS",
-                args=[awaitable_cached, none_cached],
-                result=is_none_cached,
-            )
-        )
-        zero_cached = MoltValue(self.next_var(), type_hint="float")
-        self.emit(MoltOp(kind="CONST_FLOAT", args=[0.0], result=zero_cached))
-        is_zero_cached = MoltValue(self.next_var(), type_hint="bool")
-        self.emit(
-            MoltOp(
-                kind="IS",
-                args=[awaitable_cached, zero_cached],
-                result=is_zero_cached,
-            )
-        )
-        is_empty_cached = MoltValue(self.next_var(), type_hint="bool")
-        self.emit(
-            MoltOp(
-                kind="OR",
-                args=[is_none_cached, is_zero_cached],
-                result=is_empty_cached,
-            )
-        )
-        self.emit(MoltOp(kind="IF", args=[is_empty_cached], result=MoltValue("none")))
-        transformed = self._emit_awaitable_transform(awaitable)
-        self.emit(
-            MoltOp(
-                kind="STORE_CLOSURE",
-                args=["self", awaitable_slot, transformed],
-                result=MoltValue("none"),
-            )
-        )
-        self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-        self.state_count += 1
-        pending_state_id = self.state_count
-        self.emit(
-            MoltOp(
-                kind="STATE_LABEL", args=[pending_state_id], result=MoltValue("none")
-            )
-        )
-        pending_state_val = MoltValue(self.next_var(), type_hint="int")
-        self.emit(
-            MoltOp(kind="CONST", args=[pending_state_id], result=pending_state_val)
-        )
-        coro = MoltValue(self.next_var(), type_hint="Future")
-        self.emit(
-            MoltOp(
-                kind="LOAD_CLOSURE",
-                args=["self", awaitable_slot],
-                result=coro,
-            )
-        )
-        result_slot = self._async_local_offset(
-            f"__await_result_{len(self.async_locals)}"
-        )
-        result_slot_val = MoltValue(self.next_var(), type_hint="int")
-        self.emit(MoltOp(kind="CONST", args=[result_slot], result=result_slot_val))
-        self.state_count += 1
-        next_state_id = self.state_count
-        res_placeholder = MoltValue(self.next_var(), type_hint="Any")
-        with self._suppress_check_exception(emit_on_exit=raise_pending):
-            self.emit(
-                MoltOp(
-                    kind="STATE_TRANSITION",
-                    args=[coro, result_slot_val, pending_state_val, next_state_id],
-                    result=res_placeholder,
-                )
-            )
-            cleared_val = MoltValue(self.next_var(), type_hint="None")
-            self.emit(MoltOp(kind="CONST_NONE", args=[], result=cleared_val))
-            self.emit(
-                MoltOp(
-                    kind="STORE_CLOSURE",
-                    args=["self", awaitable_slot, cleared_val],
-                    result=MoltValue("none"),
-                )
-            )
-            res = MoltValue(self.next_var(), type_hint="Any")
-            self.emit(
-                MoltOp(kind="LOAD_CLOSURE", args=["self", result_slot], result=res)
-            )
-            if raise_pending:
-                self._emit_raise_if_pending()
-        return res
-
-    def _emit_state_yield_resume_try_starts(self) -> None:
-        if not self.in_generator:
-            return
-        for scope in self.try_scopes:
-            handler_label = scope.handler_label
-            if handler_label is None:
-                continue
-            args = [handler_label] if scope.try_start_has_handler_value else []
-            metadata = (
-                None
-                if scope.try_start_has_handler_value
-                else {"try_region_id": handler_label}
-            )
-            self.emit(
-                MoltOp(
-                    kind="TRY_START",
-                    args=args,
-                    result=MoltValue("none"),
-                    metadata=metadata,
-                )
-            )
-
-    def _emit_state_yield_resume_entry(self, state_id: int) -> None:
-        self.emit(MoltOp(kind="STATE_LABEL", args=[state_id], result=MoltValue("none")))
-        self._emit_state_yield_resume_try_starts()
 
 
 
