@@ -4,6 +4,7 @@ from pathlib import Path
 import signal
 
 from molt import backend_daemon_custody as custody
+from tools import memory_guard
 
 
 def _identity(tmp_path: Path, *, pid: int = 101) -> custody.BackendDaemonIdentity:
@@ -23,6 +24,47 @@ def _identity(tmp_path: Path, *, pid: int = 101) -> custody.BackendDaemonIdentit
 
 def _backend_daemon_force_kill_signal() -> int:
     return getattr(signal, "SIGKILL", signal.SIGTERM)
+
+
+def _daemon_sample(
+    identity: custody.BackendDaemonIdentity,
+    *,
+    command: str | None = None,
+    started_at_ns: int | None = 111,
+) -> memory_guard.ProcessSample:
+    return memory_guard.ProcessSample(
+        pid=identity.pid,
+        ppid=1,
+        pgid=identity.pid,
+        rss_kb=1,
+        command=command
+        if command is not None
+        else f"{identity.backend_bin} --daemon --socket {identity.socket_path}",
+        started_at_ns=started_at_ns,
+    )
+
+
+def _patch_memory_guard_termination(
+    monkeypatch,
+    *,
+    samples,
+    signals: list[int],
+) -> None:
+    monkeypatch.setattr(custody, "_load_memory_guard_module", lambda: memory_guard)
+    monkeypatch.setattr(memory_guard, "sample_processes", samples)
+    monkeypatch.setattr(memory_guard.os, "getpid", lambda: 999_999)
+    monkeypatch.setattr(memory_guard.os, "getpgrp", lambda: 999_999, raising=False)
+    monkeypatch.setattr(memory_guard.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(
+        memory_guard,
+        "_pid_exited_or_unobservable",
+        lambda pid, *, grace: False,
+    )
+    monkeypatch.setattr(
+        memory_guard.os,
+        "kill",
+        lambda pid, sig: None if sig == 0 else signals.append(sig),
+    )
 
 
 def test_backend_daemon_identity_roundtrip_and_rejects_malformed(
@@ -92,7 +134,7 @@ def test_backend_daemon_identity_rejects_live_foreign_pid(
     )
 
 
-def test_backend_daemon_identity_health_probe_can_verify_matching_pid(
+def test_backend_daemon_identity_health_probe_cannot_substitute_for_process_identity(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -100,7 +142,7 @@ def test_backend_daemon_identity_health_probe_can_verify_matching_pid(
     monkeypatch.setattr(custody, "_pid_alive", lambda pid: pid == identity.pid)
     monkeypatch.setattr(custody, "_process_command", lambda pid: "/bin/sleep 999")
 
-    assert custody.backend_daemon_identity_is_verified(
+    assert not custody.backend_daemon_identity_is_verified(
         identity,
         allow_health_probe=True,
         health_probe=lambda path, timeout: (True, {"pid": identity.pid}),
@@ -150,10 +192,12 @@ def test_backend_daemon_termination_never_signals_unverified_identity(
     signals: list[int] = []
     monkeypatch.setattr(custody, "_pid_alive", lambda pid: True)
     monkeypatch.setattr(custody, "_process_command", lambda pid: "/bin/sleep 999")
-    monkeypatch.setattr(
-        custody.os,
-        "kill",
-        lambda pid, sig: signals.append(sig),
+    _patch_memory_guard_termination(
+        monkeypatch,
+        samples=lambda: {
+            identity.pid: _daemon_sample(identity, command="/bin/sleep 999"),
+        },
+        signals=signals,
     )
 
     assert not custody.terminate_backend_daemon_identity(identity)
@@ -165,23 +209,22 @@ def test_backend_daemon_termination_revalidates_before_sigkill(
     monkeypatch,
 ) -> None:
     identity = _identity(tmp_path)
-    command = f"{identity.backend_bin} --daemon --socket {identity.socket_path}"
-    commands = [command, "/bin/sleep 999"]
     signals: list[int] = []
-    ticks = iter([0.0, 0.0, 0.1])
-
     monkeypatch.setattr(custody, "_pid_alive", lambda pid: True)
-    monkeypatch.setattr(
-        custody,
-        "_process_command",
-        lambda pid: commands.pop(0) if commands else "/bin/sleep 999",
+    original = _daemon_sample(identity, started_at_ns=111)
+    reused = _daemon_sample(identity, command="/bin/sleep 999", started_at_ns=222)
+    samples = iter(
+        [
+            {identity.pid: original},
+            {identity.pid: original},
+            {identity.pid: original},
+            {identity.pid: reused},
+        ]
     )
-    monkeypatch.setattr(custody.time, "monotonic", lambda: next(ticks))
-    monkeypatch.setattr(custody.time, "sleep", lambda seconds: None)
-    monkeypatch.setattr(
-        custody.os,
-        "kill",
-        lambda pid, sig: signals.append(sig),
+    _patch_memory_guard_termination(
+        monkeypatch,
+        samples=lambda: next(samples),
+        signals=signals,
     )
 
     assert custody.terminate_backend_daemon_identity(identity, grace=0.01)
@@ -193,18 +236,12 @@ def test_backend_daemon_termination_escalates_only_after_verified_grace(
     monkeypatch,
 ) -> None:
     identity = _identity(tmp_path)
-    command = f"{identity.backend_bin} --daemon --socket {identity.socket_path}"
     signals: list[int] = []
-    ticks = iter([0.0, 0.0, 0.1])
-
     monkeypatch.setattr(custody, "_pid_alive", lambda pid: True)
-    monkeypatch.setattr(custody, "_process_command", lambda pid: command)
-    monkeypatch.setattr(custody.time, "monotonic", lambda: next(ticks))
-    monkeypatch.setattr(custody.time, "sleep", lambda seconds: None)
-    monkeypatch.setattr(
-        custody.os,
-        "kill",
-        lambda pid, sig: signals.append(sig),
+    _patch_memory_guard_termination(
+        monkeypatch,
+        samples=lambda: {identity.pid: _daemon_sample(identity)},
+        signals=signals,
     )
 
     assert custody.terminate_backend_daemon_identity(identity, grace=0.01)
@@ -216,24 +253,17 @@ def test_backend_daemon_termination_escalates_with_sigterm_without_sigkill(
     monkeypatch,
 ) -> None:
     identity = _identity(tmp_path)
-    command = f"{identity.backend_bin} --daemon --socket {identity.socket_path}"
     signals: list[int] = []
-    ticks = iter([0.0, 0.0, 0.1])
-    signal_without_sigkill = type(
-        "SignalWithoutSigkill",
-        (),
-        {"SIGTERM": signal.SIGTERM},
-    )
-
-    monkeypatch.setattr(custody, "signal", signal_without_sigkill)
     monkeypatch.setattr(custody, "_pid_alive", lambda pid: True)
-    monkeypatch.setattr(custody, "_process_command", lambda pid: command)
-    monkeypatch.setattr(custody.time, "monotonic", lambda: next(ticks))
-    monkeypatch.setattr(custody.time, "sleep", lambda seconds: None)
     monkeypatch.setattr(
-        custody.os,
-        "kill",
-        lambda pid, sig: signals.append(sig),
+        memory_guard,
+        "fallback_kill_signal",
+        lambda: signal.SIGTERM,
+    )
+    _patch_memory_guard_termination(
+        monkeypatch,
+        samples=lambda: {identity.pid: _daemon_sample(identity)},
+        signals=signals,
     )
 
     assert custody.terminate_backend_daemon_identity(identity, grace=0.01)
