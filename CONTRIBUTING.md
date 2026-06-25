@@ -34,12 +34,19 @@ Molt expects production-grade changes, not opportunistic patches.
   exposed, widen to every sibling authority and consumer needed to delete the old
   lane. Never patch the surface, never boil the ocean, and never mistake a
   checkpoint chip for engineering progress.
+- **Tiny slice and rip it open.** A tiny slice is the entry aperture, not the
+  deliverable. Choose one concrete invariant, command family, file cluster, or
+  authority surface small enough to keep stable, then rip through all sibling
+  consumers needed to delete the duplicate lane before moving on.
 - Crash recovery is the exception that proves the rule: after Codex, Claude,
   Desktop, WSL bridging, process custody, subagent orchestration, or a guarded
   command crashes, stalls, disappears, or gets manually killed, stabilize the
   control plane by reducing concurrency and recording death-capsule evidence.
   Recovery does not authorize tiny chips; the landing still has to delete or
   unify a real authority without leaving duplicate paths behind.
+- In recovery mode, keep exactly one active tiny entry slice and one bounded
+  proof lane. Use subagents only for disjoint mapping or migration inside that
+  slice, not for parallel proof storms or status traffic.
 - Keep repo-facing docs and examples accurate after every move or rename.
 - Verify only the claims you make. Fresh command output is required for
   correctness/performance/support claims, but broad proof lanes are not a
