@@ -29,19 +29,19 @@ change can be reviewed as one coherent diff.
 - **Target:** every `int_primary_vars.contains(name)` becomes a read off the
   already-threaded `representation_plan` via a name-keyed predicate. The int cut
   adds these accessors next to the float cut's `is_float_unboxed(name)`:
-  - `is_overflow_safe_int_name(name) -> bool` — the `RawI64Safe` name view
+  - `is_inline_safe_int_name(name) -> bool` — the `RawI64Safe` name view
     (`{name | repr_by_name[name] == RawI64Safe}`), the inline-47 carriers.
   - `is_full_deopt_int(name) -> bool` — the NEW `RawI64FullDeopt` name view
     (`{name | repr_by_name[name] == RawI64FullDeopt}`), the checked-op carriers.
   - The native "is this name a raw i64 carrier at all" sites that today mean
-    "either tier" read `is_overflow_safe_int_name(name) || is_full_deopt_int(name)`
+    "either tier" read `is_inline_safe_int_name(name) || is_full_deopt_int(name)`
     (a combined accessor `is_raw_int_carrier(name)` SHOULD be added to keep the
     call sites readable and single-sourced).
 - **Deletion (STEP 5):** drop the `let int_primary_vars = primary_names.int`
   binding. BINDING GATE: `git grep int_primary_vars -- runtime/molt-backend` == 0.
 
-> **Why a name predicate, not the value-keyed `is_overflow_safe_int(id)`.** The
-> existing `is_overflow_safe_int(&self, id: ValueId)`
+> **Why a name predicate, not the value-keyed `is_inline_safe_int(id)`.** The
+> existing `is_inline_safe_int(&self, id: ValueId)`
 > (`representation_plan.rs:1020`) is keyed on `ValueId`. The native backend's
 > hot path is keyed on Variable *name* (`vars[name]`), so it needs the name-keyed
 > predicate. This mirrors the float cut, which added `is_float_unboxed(name)`
@@ -147,7 +147,7 @@ fn handle_x(
     …,
 ) {
     if representation_plan.is_raw_int_carrier(name) { /* raw i64 carrier path */ }
-    // …or is_full_deopt_int(name) / is_overflow_safe_int_name(name) where the
+    // …or is_full_deopt_int(name) / is_inline_safe_int_name(name) where the
     // call site must distinguish the inline-47 tier from the full-range tier
     // (box-site discipline: full-deopt boxes overflow-safe, inline-47 boxes inline).
 }

@@ -76,11 +76,9 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
                 continue;
             };
 
-            // Conservative bounds proof: numeric `0 <= i < len` OR the symbolic
-            // `i < len(container)` guard shape (post-iter_devirt). Either proves
-            // the access in-bounds; anything else leaves the runtime check in.
-            let proven = vr.proves_index_in_bounds(*bid, container, index)
-                || vr.proves_index_lt_len_symbolically(*bid, container, index);
+            // BCE-only conservative proof: carrier facts are deliberately
+            // excluded so a full-range raw int can never elide bounds checks.
+            let proven = vr.proves_index_in_bounds_conservatively(*bid, container, index);
 
             if proven {
                 op.attrs
@@ -985,5 +983,107 @@ mod tests {
             "Index in while(i<len(lst)) must be bce_safe (symbolic-len proof)"
         );
         assert!(stats.values_changed >= 1);
+    }
+
+    #[test]
+    fn full_deopt_symbolic_len_index_not_marked_safe() {
+        let mut func =
+            TirFunction::new("full_deopt_index".into(), vec![TirType::I64], TirType::None);
+
+        let n = ValueId(0);
+        let true_val = func.fresh_value();
+        let list_1 = func.fresh_value();
+        let lst = func.fresh_value();
+        let len_val = func.fresh_value();
+        let const_1 = func.fresh_value();
+        let i_start = func.fresh_value();
+        let i_phi = func.fresh_value();
+        let cond = func.fresh_value();
+        let elem = func.fresh_value();
+        let i_next = func.fresh_value();
+        let overflow = func.fresh_value();
+
+        let entry_block = func.entry_block;
+        let header_id = func.fresh_block();
+        let body_id = func.fresh_block();
+        let exit_id = func.fresh_block();
+
+        {
+            let entry = func.blocks.get_mut(&entry_block).unwrap();
+            entry.ops = vec![
+                make_const_int(true_val, 1),
+                make_op(OpCode::BuildList, vec![true_val], vec![list_1]),
+                make_op(OpCode::Mul, vec![list_1, n], vec![lst]),
+                make_call_builtin("len", vec![lst], vec![len_val]),
+                make_const_int(const_1, 1),
+                make_const_int(i_start, 0),
+            ];
+            entry.terminator = Terminator::Branch {
+                target: header_id,
+                args: vec![i_start],
+            };
+        }
+
+        func.blocks.insert(
+            header_id,
+            TirBlock {
+                id: header_id,
+                args: vec![TirValue {
+                    id: i_phi,
+                    ty: TirType::I64,
+                }],
+                ops: vec![make_op(OpCode::Lt, vec![i_phi, len_val], vec![cond])],
+                terminator: Terminator::CondBranch {
+                    cond,
+                    then_block: body_id,
+                    then_args: vec![],
+                    else_block: exit_id,
+                    else_args: vec![],
+                },
+            },
+        );
+        func.loop_roles.insert(header_id, LoopRole::LoopHeader);
+
+        func.blocks.insert(
+            body_id,
+            TirBlock {
+                id: body_id,
+                args: vec![],
+                ops: vec![
+                    make_op(OpCode::Index, vec![lst, i_phi], vec![elem]),
+                    make_op(
+                        OpCode::CheckedAdd,
+                        vec![i_phi, const_1],
+                        vec![i_next, overflow],
+                    ),
+                ],
+                terminator: Terminator::Branch {
+                    target: header_id,
+                    args: vec![i_next],
+                },
+            },
+        );
+        func.blocks.insert(
+            exit_id,
+            TirBlock {
+                id: exit_id,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+        func.loop_roles.insert(exit_id, LoopRole::LoopEnd);
+
+        let stats = run_bce(&mut func);
+        let index_op = func.blocks[&body_id]
+            .ops
+            .iter()
+            .find(|o| o.opcode == OpCode::Index)
+            .expect("Index op must be present");
+        assert!(
+            !index_op.attrs.contains_key("bce_safe"),
+            "full-range checked accumulator under symbolic len guard must keep bounds check"
+        );
+        assert_eq!(stats.values_changed, 0);
     }
 }

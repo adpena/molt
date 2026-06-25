@@ -4653,8 +4653,8 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .unwrap_or(TirType::DynBox);
         let raw_lane = matches!(lhs_ty, TirType::I64)
             && matches!(rhs_ty, TirType::I64)
-            && self.repr_facts.is_overflow_safe_int(lhs_id)
-            && self.repr_facts.is_overflow_safe_int(rhs_id);
+            && self.repr_facts.is_raw_int_carrier(lhs_id)
+            && self.repr_facts.is_raw_int_carrier(rhs_id);
         if raw_lane {
             let lhs = self.resolve(lhs_id).into_int_value();
             let rhs = self.resolve(rhs_id).into_int_value();
@@ -4737,8 +4737,8 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .unwrap_or(TirType::DynBox);
         let raw_lane = matches!(lhs_ty, TirType::I64)
             && matches!(rhs_ty, TirType::I64)
-            && self.repr_facts.is_overflow_safe_int(lhs_id)
-            && self.repr_facts.is_overflow_safe_int(rhs_id);
+            && self.repr_facts.is_raw_int_carrier(lhs_id)
+            && self.repr_facts.is_raw_int_carrier(rhs_id);
         if raw_lane {
             let lhs = self.resolve(lhs_id).into_int_value();
             let rhs = self.resolve(rhs_id).into_int_value();
@@ -5027,23 +5027,23 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         //  - Loop vectorization with known induction variable ranges
         let nsw = has_attr(op, "no_signed_wrap");
 
-        // Overflow-safety gate (the structural fix for the LLVM int-overflow
+        // Inline-safety gate (the structural fix for the LLVM int-overflow
         // miscompile): a raw machine `add`/`sub`/`mul` may only be emitted when
-        // the plan proves the *result* is an overflow-safe exact-i64 carrier
-        // (interval-proven not to wrap a signed i64). `TirType::I64` alone is a
-        // *semantic* int — `type_refine` assigns `add(I64, I64) -> I64` with no
-        // overflow proof — so gating on the type would silently wrap and then
-        // truncate to 47 bits at box time. Names outside the overflow-safe set
+        // the plan proves the *result* fits the inline-int47 payload window.
+        // `TirType::I64` alone is a *semantic* int — `type_refine` assigns
+        // `add(I64, I64) -> I64` with no range proof — so gating on the type
+        // would silently wrap and then truncate to 47 bits at box time. Names
+        // outside the inline-safe set
         // fall through to the boxed runtime path (`molt_add`/`molt_sub`/
         // `molt_mul`), which is BigInt-correct, mirroring the native and WASM
         // backends.
-        let int_overflow_safe = self.repr_facts.is_overflow_safe_int(result_id);
+        let int_inline_safe = self.repr_facts.is_inline_safe_int(result_id);
 
         let (val, out_ty) = match (&lhs_ty, &rhs_ty, name) {
             // I64 + I64 -> I64 (direct machine instruction).
             // When `nsw` is set, use build_int_nsw_add to tell LLVM the
             // result is guaranteed not to overflow as a signed i64.
-            (TirType::I64, TirType::I64, "add") if int_overflow_safe => {
+            (TirType::I64, TirType::I64, "add") if int_inline_safe => {
                 let lhs_i = lhs.into_int_value();
                 let rhs_i = rhs.into_int_value();
                 let v = if nsw {
@@ -5054,7 +5054,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 .unwrap();
                 (v.into(), TirType::I64)
             }
-            (TirType::I64, TirType::I64, "sub") if int_overflow_safe => {
+            (TirType::I64, TirType::I64, "sub") if int_inline_safe => {
                 let lhs_i = lhs.into_int_value();
                 let rhs_i = rhs.into_int_value();
                 let v = if nsw {
@@ -5065,7 +5065,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 .unwrap();
                 (v.into(), TirType::I64)
             }
-            (TirType::I64, TirType::I64, "mul") if int_overflow_safe => {
+            (TirType::I64, TirType::I64, "mul") if int_inline_safe => {
                 let lhs_i = lhs.into_int_value();
                 let rhs_i = rhs.into_int_value();
                 let v = if nsw {
@@ -5374,19 +5374,19 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         // `shl`/`ashr` whose count is `>= 64` is LLVM poison, and a `<<` result
         // that exceeds i64 wraps then truncates at box time — the silent
         // integer miscompile. The shift raw lane is therefore admitted only when
-        // the plan proves the *result* is an overflow-safe exact-i64 carrier
+        // the plan proves the *result* is an inline-int47-safe carrier
         // (`RawI64Safe`), which the value-range seed grants for a shift ONLY when
         // its count is range-proven in `[0, 63]` AND the result fits the inline
         // window (single source of truth, shared with native/WASM). An unproven
         // shift falls through to the boxed `molt_lshift`/`molt_rshift` runtime —
         // BigInt-correct, negative-count `ValueError`-correct, huge-count
         // `OverflowError`-correct — exactly mirroring `emit_binary_arith`'s
-        // `int_overflow_safe` gate and the native backend (which boxes every
+        // `int_inline_safe` gate and the native backend (which boxes every
         // shift).
-        let shift_overflow_safe = self.repr_facts.is_overflow_safe_int(result_id);
+        let shift_inline_safe = self.repr_facts.is_inline_safe_int(result_id);
         let raw_i64_lane_ok = match name {
             "bit_and" | "bit_or" | "bit_xor" => true,
-            "lshift" | "rshift" => shift_overflow_safe,
+            "lshift" | "rshift" => shift_inline_safe,
             _ => unreachable!("emit_bitwise got non-bitwise name: {name}"),
         };
         let (val, out_ty) = match (&lhs_ty, &rhs_ty) {
@@ -5534,7 +5534,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
 
     /// Effective semantic carrier type for a block argument (phi).
     ///
-    /// The carrier is reconciled with the single `is_overflow_safe_int`
+    /// The carrier is reconciled with the single `is_inline_safe_int`
     /// representation authority (`repr_by_value`'s `RawI64Safe` view), which is
     /// derived from the value-range proof shared with native/WASM. Two
     /// directions, both keyed on that same authority so `value_types` can never
@@ -5548,7 +5548,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     ///   * **Promotion** `DynBox -> I64`: a `DynBox`-declared phi the plan DOES
     ///     prove overflow-safe is carried as a raw `I64`. This is the masked
     ///     back-edge accumulator (`s = (s << 1) & MASK`): the value-range phi
-    ///     narrowing proves `s` fits the inline window, so `is_overflow_safe_int`
+    ///     narrowing proves `s` fits the inline window, so `is_inline_safe_int`
     ///     mints `RawI64Safe` for it — but `type_refine` (which runs without that
     ///     value-range fact) left the phi `DynBox`. Without this promotion the
     ///     phi carries boxed, so the in-loop `<<`/`&` see a `DynBox` operand and
@@ -5557,16 +5557,16 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     ///     incoming edges are reconciled by `coerce_to_tir_type`, which unboxes a
     ///     boxed incoming (`molt_int_from_i64` / a boxed back-edge value) into the
     ///     raw i64 the I64 phi slot expects. The promotion is sound because
-    ///     `is_overflow_safe_int` is granted ONLY for values a value-range proof
+    ///     `is_inline_safe_int` is granted ONLY for values a value-range proof
     ///     places entirely within the inline-int47 window (so a heap BigInt can
     ///     never reach the raw slot); it is restricted to a `DynBox` declared
     ///     type so a non-integer carrier (`Str`/`F64`/container) is never
     ///     reinterpreted as i64.
     fn effective_block_arg_type(&self, id: ValueId, declared: &TirType) -> TirType {
-        let overflow_safe = self.repr_facts.is_overflow_safe_int(id);
+        let inline_safe = self.repr_facts.is_inline_safe_int(id);
         match declared {
-            TirType::I64 if !overflow_safe => TirType::DynBox,
-            TirType::DynBox if overflow_safe => TirType::I64,
+            TirType::I64 if !inline_safe => TirType::DynBox,
+            TirType::DynBox if inline_safe => TirType::I64,
             _ => declared.clone(),
         }
     }

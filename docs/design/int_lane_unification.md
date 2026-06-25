@@ -277,7 +277,7 @@ the `pow` divergence.
 Every native consumer of the cloned `int_primary_vars: &BTreeSet<String>`
 (`function_compiler.rs:1439`, derived at `:1700` from
 `representation_plan.primary_name_sets().int`) reads the int carrier from the
-single lattice via `representation_plan.is_overflow_safe_int(name)` /
+single lattice via `representation_plan.is_inline_safe_int(name)` /
 `is_full_deopt_int(name)`. `simple_backend.rs`'s `ensure_boxed_overflow_safe`
 reads full-deopt from the plan, not a passed-in set. All 43 `fc/` files +
 `function_compiler.rs` + `scalar_carriers.rs` migrate as ONE structural arc — see

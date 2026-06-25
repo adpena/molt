@@ -768,8 +768,8 @@ state_machine_opcodes = [
 
 # i64_overflow_box_dispatch_opcodes: arithmetic opcodes whose raw-i64 operands
 # cannot be lowered as unchecked machine arithmetic unless every operand and
-# result is proven inside the inline-int window. RawI64Safe is a full-width i64
-# carrier contract, not a Python-int no-overflow proof; without the stronger
+# result is proven inside the inline-int window. RawI64FullDeopt is a full-i64
+# checked carrier, not a Python-int no-overflow proof; without the stronger
 # value-range proof these ops must route to boxed runtime dispatch to preserve
 # BigInt and overflow semantics. Distinct from zero-divisor and shift-count
 # guards: those prove machine exceptional operands, while this proves overflow

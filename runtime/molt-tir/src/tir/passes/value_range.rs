@@ -517,11 +517,61 @@ impl ValueRangeResult {
         false
     }
 
+    /// BCE-only index safety query. It is strictly narrower than the raw-int
+    /// carrier proof: even when the ordinary numeric or symbolic bound proves
+    /// the access safe, the index must also fit the inline-int47 window. A
+    /// full-range checked-overflow carrier can therefore never become `bce_safe`
+    /// by sharing representation facts.
+    pub fn proves_index_in_bounds_conservatively(
+        &self,
+        bid: BlockId,
+        container: ValueId,
+        index: ValueId,
+    ) -> bool {
+        let proven = self.proves_index_in_bounds(bid, container, index)
+            || self.proves_index_lt_len_symbolically(bid, container, index);
+        proven
+            && (self.range_at(bid, index).fits_inline_int47()
+                || self.symbolic_index_bound_fits_inline_window(bid, container, index))
+    }
+
     /// CONSERVATIVELY prove `v`'s entire proven range fits the signed 47-bit
     /// inline window. Unknown range ⇒ `false`.
     pub fn fits_inline_int47(&self, v: ValueId) -> bool {
         match self.global_range.get(&self.resolve(v)) {
             Some(r) => r.fits_inline_int47(),
+            None => false,
+        }
+    }
+
+    fn symbolic_index_bound_fits_inline_window(
+        &self,
+        bid: BlockId,
+        container: ValueId,
+        index: ValueId,
+    ) -> bool {
+        let container = self.resolve(container);
+        let index = self.resolve(index);
+        let Some(&bound_val) = self.symbolic_lt_bound.get(&(bid, index)) else {
+            return false;
+        };
+        let bound_range = self.range_at(bid, bound_val);
+        if bound_range.hi <= INLINE_INT47_HI.saturating_add(1) {
+            return true;
+        }
+        let bound_val = self.resolve(bound_val);
+        if !self
+            .len_of
+            .get(&bound_val)
+            .is_some_and(|bound_container| self.resolve(*bound_container) == container)
+        {
+            return false;
+        }
+        match self.container_length.get(&container) {
+            Some(KnownLength::Constant(len)) => *len <= INLINE_INT47_HI.saturating_add(1),
+            Some(KnownLength::SameAs(len_val)) => {
+                self.range_at(bid, *len_val).hi <= INLINE_INT47_HI.saturating_add(1)
+            }
             None => false,
         }
     }

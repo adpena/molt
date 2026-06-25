@@ -46,7 +46,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::repr::Repr;
-use crate::representation_plan::raw_i64_safe_values_for;
+use crate::representation_plan::raw_i64_carrier_values_for;
 use crate::tir::analysis::{Analysis, AnalysisId};
 use crate::tir::blocks::{BlockId, Terminator, TirBlock};
 use crate::tir::function::TirFunction;
@@ -279,7 +279,7 @@ fn carrier_is_non_heap_by_type(ty: &TirType) -> bool {
 fn compute_raw_scalars(func: &TirFunction) -> HashSet<ValueId> {
     let scev = crate::tir::passes::scev::compute_scev(func);
     let vr = crate::tir::passes::value_range::compute_value_range(func, &scev);
-    let mut raw = raw_i64_safe_values_for(func, &vr);
+    let mut raw = raw_i64_carrier_values_for(func, &vr);
 
     // Add the by-type non-heap carriers (bool / float / None / never). We must visit
     // every value the function defines (block args and op results).

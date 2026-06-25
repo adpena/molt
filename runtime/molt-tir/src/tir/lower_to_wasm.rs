@@ -999,13 +999,13 @@ fn emit_lir_binary_arith(ctx: &mut LirLowerCtx, op: &LirOp, arith: ArithOp) {
     // `molt_add` on the mixed case → a hard miscompile.
     let result_repr = op.result_values[0].repr;
     match (lhs_repr, rhs_repr) {
-        // Bare machine arithmetic requires the RESULT to be a raw carrier
-        // too. `RawI64Safe` operands are FULL-RANGE i64 (CheckedAdd sums /
-        // overflow_peel accumulators) — when the result is unproven (boxed
-        // repr), a bare op would silently wrap at 2^63 AND deposit a raw
-        // word in a DynBox-typed local; such ops take the boxed runtime
-        // dispatch below instead. `boxed_dispatch` (proof-driven, set at
-        // LIR-lowering) likewise forces the runtime path.
+        // Bare machine arithmetic requires the RESULT to be a raw carrier too.
+        // Raw carriers may include full-i64 `RawI64FullDeopt` CheckedAdd/
+        // CheckedMul results. When the result is unproven (boxed repr), a bare
+        // op would silently wrap at 2^63 AND deposit a raw word in a
+        // DynBox-typed local; such ops take the boxed runtime dispatch below
+        // instead. `boxed_dispatch` (proof-driven, set at LIR-lowering)
+        // likewise forces the runtime path.
         (LirRepr::I64, LirRepr::I64) if result_repr == LirRepr::I64 && !boxed_dispatch => {
             ctx.emit_get(lhs);
             ctx.emit_get(rhs);
@@ -1081,11 +1081,11 @@ fn emit_lir_binary_arith(ctx: &mut LirLowerCtx, op: &LirOp, arith: ArithOp) {
 }
 
 /// Push operand `v` onto the WASM stack in **NaN-boxed** form, ready for a
-/// runtime helper call (`molt_add`/`molt_lt`/…). A raw-i64-repr (`RawI64Safe`)
-/// operand is boxed via the inline-int box (the same packing as the
-/// `lir.checked_overflow` boxed continuation); a `Bool1` is widened to a boxed
-/// bool; an `F64` is boxed via the runtime float-box; a `DynBox`/`Ref64` operand
-/// is already a NaN-box word and passes through unchanged.
+/// runtime helper call (`molt_add`/`molt_lt`/...). A raw-i64-repr operand is
+/// boxed through the overflow-safe path because it may be a full-i64
+/// `RawI64FullDeopt` carrier; a `Bool1` is widened to a boxed bool; an `F64` is
+/// boxed via the runtime float-box; a `DynBox`/`Ref64` operand is already a
+/// NaN-box word and passes through unchanged.
 ///
 /// This is the Phase-1 fix for `emit_lir_binary_arith`'s (and the comparison's)
 /// boxed fallthrough: before Phase 1 every int operand was `LirRepr::I64`, so the
@@ -1095,9 +1095,9 @@ fn emit_lir_binary_arith(ctx: &mut LirLowerCtx, op: &LirOp, arith: ArithOp) {
 #[cfg(feature = "wasm-backend")]
 fn emit_get_boxed_for_repr(ctx: &mut LirLowerCtx, v: ValueId) {
     match ctx.repr_of(v) {
-        // OVERFLOW-SAFE: `RawI64Safe` is a full-range i64 carrier contract
-        // (CheckedAdd sums / overflow_peel accumulators are unbounded); the
-        // unchecked inline box truncates mod 2^47.
+        // OVERFLOW-SAFE: raw-i64 carriers may include full-i64
+        // `RawI64FullDeopt` CheckedAdd/CheckedMul results; the unchecked inline
+        // box truncates mod 2^47.
         LirRepr::I64 => emit_box_i64_overflow_safe(ctx, v),
         LirRepr::Bool1 => {
             ctx.emit_get(v);
@@ -1354,11 +1354,11 @@ fn emit_box_inline_i64(ctx: &mut LirLowerCtx, src: ValueId) {
 ///
 /// This is the wasm twin of native `ensure_boxed_overflow_safe` /
 /// `box_raw_i64_value_overflow_safe` and the LLVM
-/// `box_i64_overflow_safe_with_builder`. It exists because `RawI64Safe` is a
-/// FULL-RANGE i64 contract (the overflow_peel accumulators are genuinely
-/// unbounded); the unchecked [`emit_box_inline_i64`] silently truncates mod
-/// 2^47 — the silent-integer-miscompile class — and is only sound when the
-/// value-range analysis proves the inline window.
+/// `box_i64_overflow_safe_with_builder`. It exists because raw-i64 carriers may
+/// be full-i64 `RawI64FullDeopt` checked results; the unchecked
+/// [`emit_box_inline_i64`] silently truncates mod 2^47 -- the
+/// silent-integer-miscompile class -- and is only sound when the value-range
+/// analysis proves the inline window.
 #[cfg(feature = "wasm-backend")]
 fn emit_box_i64_overflow_safe(ctx: &mut LirLowerCtx, src: ValueId) {
     // fits = (src + 2^46) <u 2^47

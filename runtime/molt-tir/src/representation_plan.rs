@@ -976,7 +976,7 @@ pub struct LlvmReprFacts {
     /// cannot classify them; the dataflow propagation is what lets the backend
     /// keep a non-overflow-safe accumulator phi boxed (`MaybeBigInt`/`DynBox`)
     /// instead of unboxing a runtime BigInt result back into a truncating raw
-    /// i64. [`Self::is_overflow_safe_int`] is the `{RawI64Safe}` view.
+    /// i64. [`Self::is_inline_safe_int`] is the `{RawI64Safe}` view.
     pub repr_by_value: HashMap<ValueId, Repr>,
 }
 
@@ -1014,13 +1014,27 @@ impl LlvmReprFacts {
         self.name_by_value.get(&id).map(String::as_str)
     }
 
-    /// Whether the value `id` is an overflow-safe exact-i64 carrier (may use raw
-    /// machine arithmetic and a raw i64 representation) — the `{RawI64Safe}` view
-    /// over `repr_by_value`.
-    pub fn is_overflow_safe_int(&self, id: ValueId) -> bool {
+    /// Whether the value `id` is an inline-int47-safe raw i64 carrier — the
+    /// `{RawI64Safe}` view over `repr_by_value`.
+    pub fn is_inline_safe_int(&self, id: ValueId) -> bool {
         self.repr_by_value
             .get(&id)
             .is_some_and(|repr| repr.is_raw_i64_safe())
+    }
+
+    /// Whether the value `id` is the full-range checked-overflow raw i64 tier.
+    pub fn is_full_deopt_int(&self, id: ValueId) -> bool {
+        self.repr_by_value
+            .get(&id)
+            .is_some_and(|repr| repr.is_raw_i64_full_deopt())
+    }
+
+    /// Whether the value `id` is any bare-i64 carrier. Box sites must still
+    /// distinguish inline-safe and full-deopt tiers.
+    pub fn is_raw_int_carrier(&self, id: ValueId) -> bool {
+        self.repr_by_value
+            .get(&id)
+            .is_some_and(|repr| repr.is_raw_i64_carrier())
     }
 
     /// Container dispatch kind for the value named by `id`, per the plan.
@@ -1035,7 +1049,7 @@ impl LlvmReprFacts {
     /// A declared `int` parameter (`TirType::I64`) is a *semantic* int with no
     /// representation proof attached; it is sound as a raw-i64 carrier only when
     /// the value-range analysis proves its entire range fits the 47-bit inline
-    /// payload (`is_overflow_safe_int`). An unproven `int` param can receive a
+    /// payload (`is_inline_safe_int`). An unproven `int` param can receive a
     /// heap BigInt and therefore MUST be carried `DynBox` (NaN-boxed) across the
     /// call boundary: the caller passes the boxed value unchanged and the callee
     /// body uses it boxed. This is the parameter-ABI twin of
@@ -1052,7 +1066,7 @@ impl LlvmReprFacts {
             .map(|(i, declared)| {
                 let proven_safe = entry_args
                     .get(i)
-                    .is_some_and(|arg| self.is_overflow_safe_int(arg.id));
+                    .is_some_and(|arg| self.is_inline_safe_int(arg.id));
                 if matches!(declared, TirType::I64) && !proven_safe {
                     TirType::DynBox
                 } else {
@@ -1149,6 +1163,10 @@ pub fn repr_by_value_for(
     for &id in &overflow_safe_values {
         repr_by_value.insert(id, Repr::RawI64Safe);
     }
+    let full_deopt_values = raw_i64_full_deopt_values_for(tir_func, &overflow_safe_values);
+    for &id in &full_deopt_values {
+        repr_by_value.insert(id, Repr::RawI64FullDeopt);
+    }
     repr_by_value
 }
 
@@ -1187,7 +1205,37 @@ pub(crate) fn raw_i64_safe_values_for(
 ) -> std::collections::HashSet<ValueId> {
     let mut seed = raw_i64_safe_value_seed(tir_func, vr);
     seed.extend(gpu_intrinsic_raw_i64_values(tir_func));
-    propagate_raw_i64_safe_values(tir_func, seed)
+    propagate_raw_i64_identity_values(tir_func, seed)
+}
+
+/// Full-range checked-overflow raw-i64 carriers. These values are not
+/// inline-box-safe; their soundness comes from the overflow flag and the boxed
+/// slow path.
+pub(crate) fn raw_i64_full_deopt_values_for(
+    tir_func: &TirFunction,
+    inline_safe_values: &std::collections::HashSet<ValueId>,
+) -> std::collections::HashSet<ValueId> {
+    let mut seed = std::collections::HashSet::new();
+    for block in tir_func.blocks.values() {
+        for op in &block.ops {
+            if matches!(op.opcode, OpCode::CheckedAdd | OpCode::CheckedMul)
+                && let Some(&result) = op.results.first()
+            {
+                seed.insert(result);
+            }
+        }
+    }
+    propagate_raw_i64_full_deopt_identity_values(tir_func, inline_safe_values, seed)
+}
+
+/// All bare-i64 carriers, independent of box-site tier.
+pub(crate) fn raw_i64_carrier_values_for(
+    tir_func: &TirFunction,
+    vr: &crate::tir::passes::value_range::ValueRangeResult,
+) -> std::collections::HashSet<ValueId> {
+    let mut raw = raw_i64_safe_values_for(tir_func, vr);
+    raw.extend(raw_i64_full_deopt_values_for(tir_func, &raw));
+    raw
 }
 
 /// Seed the raw-i64-safe set from the value-range proof: an **op-result**
@@ -1197,7 +1245,7 @@ pub(crate) fn raw_i64_safe_values_for(
 /// structurally impossible.
 ///
 /// **Block arguments (phis) are deliberately excluded from the direct seed.** A
-/// phi is raised to `RawI64Safe` only by [`propagate_raw_i64_safe_values`]'s
+/// phi is raised to `RawI64Safe` only by [`propagate_raw_i64_identity_values`]'s
 /// all-incomings-raw rule. This is a hard soundness requirement of the LIR
 /// lowering (`lower_to_lir`): a `RawI64Safe` (`I64`) phi slot must never be fed a
 /// `MaybeBigInt`/`DynBox` incoming, or the lowering would emit an unsound unbox
@@ -1217,23 +1265,8 @@ fn raw_i64_safe_value_seed(
     let mut seed = std::collections::HashSet::new();
     for block in tir_func.blocks.values() {
         for op in &block.ops {
-            // CheckedAdd's wrapping sum / CheckedMul's wrapping product
-            // (results[0]) is a structurally valid FULL-RANGE raw-i64 carrier:
-            // the hardware overflow flag — not a silent wrap — signals
-            // exhaustion, and the overflow_peel CFG gates every consumption of
-            // a wrapped value to the flag=0 branch. No interval proof is needed
-            // (or possible: the accumulator is genuinely unbounded — that is
-            // the point of the peel). Every value-keyed boxing site is
-            // overflow-safe (emit_box_i64_overflow_safe / LLVM
-            // box_i64_overflow_safe), and the 47-bit checked triple now
-            // requires an explicit value-range proof, so a full-range carrier
-            // can never reach a 47-bit-window assumption.
-            if matches!(op.opcode, OpCode::CheckedAdd | OpCode::CheckedMul) {
-                if let Some(&sum) = op.results.first() {
-                    seed.insert(sum);
-                }
-                continue;
-            }
+            // CheckedAdd/CheckedMul are full-range overflow-peel carriers.
+            // They are seeded as RawI64FullDeopt, never as RawI64Safe.
             // A `Shl`/`Shr` result is a sound raw-i64 carrier only when its
             // machine shift-count operand is proven in `[0, 63]` — the valid
             // range for a raw i64 machine shift — *in addition to* the generic
@@ -1334,9 +1367,25 @@ fn gpu_intrinsic_raw_i64_values(tir_func: &TirFunction) -> std::collections::Has
 /// subset of the values that genuinely fit i64 (each proven by value-range or a
 /// structurally-bounded GPU index), propagating across value-identity edges
 /// cannot introduce an unsound carrier.
-fn propagate_raw_i64_safe_values(
+fn propagate_raw_i64_identity_values(
     tir_func: &TirFunction,
     seed: std::collections::HashSet<ValueId>,
+) -> std::collections::HashSet<ValueId> {
+    propagate_raw_i64_identity_values_with_phi_support(tir_func, seed, None)
+}
+
+fn propagate_raw_i64_full_deopt_identity_values(
+    tir_func: &TirFunction,
+    inline_safe_values: &std::collections::HashSet<ValueId>,
+    seed: std::collections::HashSet<ValueId>,
+) -> std::collections::HashSet<ValueId> {
+    propagate_raw_i64_identity_values_with_phi_support(tir_func, seed, Some(inline_safe_values))
+}
+
+fn propagate_raw_i64_identity_values_with_phi_support(
+    tir_func: &TirFunction,
+    seed: std::collections::HashSet<ValueId>,
+    phi_support: Option<&std::collections::HashSet<ValueId>>,
 ) -> std::collections::HashSet<ValueId> {
     use std::collections::HashSet;
 
@@ -1451,7 +1500,16 @@ fn propagate_raw_i64_safe_values(
                 block_arg_incomings
                     .get(&(block, index))
                     .is_some_and(|incomings| {
-                        !incomings.is_empty() && incomings.iter().all(|src| safe.contains(src))
+                        !incomings.is_empty()
+                            && match phi_support {
+                                Some(support) => {
+                                    incomings
+                                        .iter()
+                                        .all(|src| safe.contains(src) || support.contains(src))
+                                        && incomings.iter().any(|src| safe.contains(src))
+                                }
+                                None => incomings.iter().all(|src| safe.contains(src)),
+                            }
                     })
             } else {
                 false
@@ -5789,8 +5847,16 @@ mod tests {
         }
     }
 
-    fn is_raw(map: &HashMap<ValueId, Repr>, id: ValueId) -> bool {
+    fn is_inline_safe(map: &HashMap<ValueId, Repr>, id: ValueId) -> bool {
         map.get(&id) == Some(&Repr::RawI64Safe)
+    }
+
+    fn is_full_deopt(map: &HashMap<ValueId, Repr>, id: ValueId) -> bool {
+        map.get(&id) == Some(&Repr::RawI64FullDeopt)
+    }
+
+    fn is_raw_carrier(map: &HashMap<ValueId, Repr>, id: ValueId) -> bool {
+        map.get(&id).is_some_and(|repr| repr.is_raw_i64_carrier())
     }
 
     /// PERF + SOUNDNESS: a bounded `for i in range(10)` induction variable is
@@ -5802,11 +5868,11 @@ mod tests {
         let vr = value_range_for(&func);
         let repr = repr_by_value_for(&empty_func_ir(), &func, Some(&vr));
         assert!(
-            is_raw(&repr, iv),
+            is_inline_safe(&repr, iv),
             "range(10) IV must be RawI64Safe (range [0,9] ⊂ inline-int47)"
         );
         assert!(
-            is_raw(&repr, next),
+            is_inline_safe(&repr, next),
             "the no_signed_wrap IV update must inherit RawI64Safe (propagated phi)"
         );
     }
@@ -5825,7 +5891,7 @@ mod tests {
         let vr = value_range_for(&func);
         let repr = repr_by_value_for(&empty_func_ir(), &func, Some(&vr));
         assert!(
-            !is_raw(&repr, iv),
+            !is_inline_safe(&repr, iv),
             "an IV reaching/exceeding 2^46 must stay MaybeBigInt (no trusted unbox of a possible heap BigInt)"
         );
         assert_eq!(
@@ -5942,13 +6008,16 @@ mod tests {
         let vr = value_range_for(&func);
         let repr = repr_by_value_for(&empty_func_ir(), &func, Some(&vr));
         // The counted IV is fine; the unbounded accumulator must NOT be raw.
-        assert!(is_raw(&repr, iv), "the counted IV is still proven raw");
         assert!(
-            !is_raw(&repr, total),
+            is_inline_safe(&repr, iv),
+            "the counted IV is still proven inline-safe"
+        );
+        assert!(
+            !is_raw_carrier(&repr, total),
             "the unbounded accumulator phi must stay MaybeBigInt (degree-2 recurrence → Unknown range)"
         );
         assert!(
-            !is_raw(&repr, total_next),
+            !is_raw_carrier(&repr, total_next),
             "the accumulator update must stay MaybeBigInt"
         );
     }
@@ -5975,7 +6044,7 @@ mod tests {
         let vr = value_range_for(&func);
         let repr = repr_by_value_for(&empty_func_ir(), &func, Some(&vr));
         assert!(
-            is_raw(&repr, tid),
+            is_inline_safe(&repr, tid),
             "molt_gpu_thread_id result must be pre-seeded RawI64Safe"
         );
 
@@ -5997,7 +6066,7 @@ mod tests {
         let vr2 = value_range_for(&func2);
         let repr2 = repr_by_value_for(&empty_func_ir(), &func2, Some(&vr2));
         assert!(
-            !is_raw(&repr2, r),
+            !is_raw_carrier(&repr2, r),
             "an arbitrary runtime-call result must NOT be pre-seeded raw (only bounded GPU index intrinsics are)"
         );
     }
@@ -6124,11 +6193,11 @@ mod tests {
         let vr = value_range_for(&func);
         let repr = repr_by_value_for(&empty_func_ir(), &func, Some(&vr));
         assert!(
-            is_raw(&repr, sum),
+            is_full_deopt(&repr, sum),
             "the CheckedAdd wrapping sum is the unconditional full-range seed"
         );
         assert!(
-            is_raw(&repr, acc),
+            is_full_deopt(&repr, acc),
             "the header phi must be raised: its only REACHABLE incomings are the \
              proven ConstInt init and the CheckedAdd sum; the unreachable \
              ConstNone vestige delivers no value"
@@ -6145,7 +6214,7 @@ mod tests {
         let vr = value_range_for(&func);
         let repr = repr_by_value_for(&empty_func_ir(), &func, Some(&vr));
         assert!(
-            !is_raw(&repr, acc),
+            !is_raw_carrier(&repr, acc),
             "a REACHABLE None incoming must keep the phi boxed (MaybeBigInt floor)"
         );
     }
@@ -6247,11 +6316,11 @@ mod tests {
         let vr = value_range_for(&func);
         let repr = repr_by_value_for(&empty_func_ir(), &func, Some(&vr));
         assert!(
-            is_raw(&repr, sum),
+            is_full_deopt(&repr, sum),
             "CheckedAdd's wrapping sum remains a valid raw carrier"
         );
         assert!(
-            !is_raw(&repr, heap_value),
+            !is_raw_carrier(&repr, heap_value),
             "the heap incoming itself must not be raw"
         );
         assert_eq!(
