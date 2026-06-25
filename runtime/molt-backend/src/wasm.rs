@@ -6,10 +6,11 @@ use crate::wasm_abi::{
     TypeSectionExt, canonical_static_import_type_idx,
 };
 use crate::wasm_binary::{
-    add_reloc_sections, const_expr_i32_const_padded, emit_call, emit_call_indirect, emit_i32_const,
-    emit_ref_func, emit_return_call, emit_simple_call, emit_table_index_i64,
-    encode_u32_leb128_padded, strip_unused_imports, validate_wasm_sections,
+    add_reloc_sections, emit_call, emit_call_indirect, emit_i32_const, emit_ref_func,
+    emit_return_call, emit_simple_call, emit_table_index_i64, encode_u32_leb128_padded,
+    strip_unused_imports, validate_wasm_sections,
 };
+use crate::wasm_data::{DataSegmentRef, WasmDataSegments};
 #[cfg(test)]
 use crate::wasm_dispatch::br_table_state_remap_params;
 use crate::wasm_dispatch::{
@@ -36,33 +37,15 @@ use crate::wasm_values::{
 use crate::{FunctionIR, OpIR, SimpleIR, TrampolineKind, TrampolineSpec};
 use std::borrow::Cow;
 use std::cell::Cell;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 use wasm_encoder::{
-    BlockType, Catch, CodeSection, ConstExpr, DataSection, ElementMode, ElementSection,
-    ElementSegment, Elements, Encode, EntityType, ExportKind, ExportSection, Function,
-    FunctionSection, ImportSection, Instruction, MemorySection, MemoryType, Module, RawSection,
-    RefType, TableSection, TableType, TagKind, TagSection, TagType, TypeSection, ValType,
+    BlockType, Catch, CodeSection, ConstExpr, ElementMode, ElementSection, ElementSegment,
+    Elements, Encode, EntityType, ExportKind, ExportSection, Function, FunctionSection,
+    ImportSection, Instruction, MemorySection, MemoryType, Module, RawSection, RefType,
+    TableSection, TableType, TagKind, TagSection, TagType, TypeSection, ValType,
 };
 #[cfg(test)]
 use wasmparser::{Parser, Payload, TypeRef};
-
-#[derive(Clone, Copy)]
-pub(crate) struct DataSegmentInfo {
-    pub(crate) size: u32,
-}
-
-#[derive(Clone, Copy)]
-pub(crate) struct DataRelocSite {
-    pub(crate) func_index: u32,
-    pub(crate) offset_in_func: u32,
-    pub(crate) segment_index: u32,
-}
-
-#[derive(Clone, Copy)]
-struct DataSegmentRef {
-    offset: u32,
-    index: u32,
-}
 
 /// Transparent wrapper around `BTreeMap<String, u32>` that records which
 /// import names are actually looked up during code emission.  Every
@@ -207,19 +190,13 @@ pub struct WasmBackend {
     exports: ExportSection,
     imports: ImportSection,
     memories: MemorySection,
-    data: DataSection,
     tables: TableSection,
     func_count: u32,
     // DETERMINISM: BTreeMap ensures iteration order is independent of hash seed
     // Wrapped in TrackedImportIds to record which imports are actually referenced
     // during code emission (see MOLT_WASM_IMPORT_AUDIT).
     import_ids: TrackedImportIds,
-    data_offset: u32,
-    data_segments: Vec<DataSegmentInfo>,
-    data_relocs: Vec<DataRelocSite>,
-    // Dedup cache: maps byte content to existing segment ref.
-    // HashMap is fine here — this map is only used for point lookups, never iterated.
-    data_segment_cache: HashMap<Vec<u8>, DataSegmentRef>,
+    data_segments: WasmDataSegments,
     molt_main_index: Option<u32>,
     options: WasmCompileOptions,
     /// Number of tail calls emitted via `return_call` (WASM tail calls proposal).
@@ -246,14 +223,10 @@ impl WasmBackend {
             exports: ExportSection::new(),
             imports: ImportSection::new(),
             memories: MemorySection::new(),
-            data: DataSection::new(),
             tables: TableSection::new(),
             func_count: 0,
             import_ids: TrackedImportIds::new(BTreeMap::new()),
-            data_offset: options.data_base,
-            data_segments: Vec::new(),
-            data_relocs: Vec::new(),
-            data_segment_cache: HashMap::new(),
+            data_segments: WasmDataSegments::new(options.data_base),
             molt_main_index: None,
             options,
             tail_calls_emitted: 0,
@@ -261,7 +234,7 @@ impl WasmBackend {
     }
 
     fn add_data_segment(&mut self, reloc_enabled: bool, bytes: &[u8]) -> DataSegmentRef {
-        self.add_data_segment_inner(reloc_enabled, bytes, true)
+        self.data_segments.add_segment(reloc_enabled, bytes)
     }
 
     /// Like [`add_data_segment`] but skips the dedup cache.  Use this for
@@ -270,59 +243,7 @@ impl WasmBackend {
     /// content to alias the mutable region, corrupting data when the spill
     /// buffer is written.
     fn add_data_segment_mutable(&mut self, reloc_enabled: bool, bytes: &[u8]) -> DataSegmentRef {
-        self.add_data_segment_inner(reloc_enabled, bytes, false)
-    }
-
-    fn add_data_segment_inner(
-        &mut self,
-        reloc_enabled: bool,
-        bytes: &[u8],
-        cacheable: bool,
-    ) -> DataSegmentRef {
-        // Skip empty data segments entirely — they waste a segment header
-        // (~7 bytes) in the binary for zero payload.
-        if bytes.is_empty() {
-            return DataSegmentRef {
-                offset: self.data_offset,
-                index: self.data_segments.len().saturating_sub(1) as u32,
-            };
-        }
-        if cacheable && let Some(existing) = self.data_segment_cache.get(bytes) {
-            return *existing;
-        }
-        let offset = self.data_offset;
-        let byte_len: u32 = bytes
-            .len()
-            .try_into()
-            .expect("data segment too large for WASM (>4 GiB)");
-        let index = self.data_segments.len() as u32;
-        let const_expr = if reloc_enabled {
-            const_expr_i32_const_padded(offset as i32)
-        } else {
-            ConstExpr::i32_const(offset as i32)
-        };
-        self.data.active(0, &const_expr, bytes.iter().copied());
-        // Checked arithmetic: detect overflow instead of silently wrapping,
-        // which would place subsequent segments at wrong offsets and corrupt
-        // data in shared linear memory.
-        //
-        // Size optimization: use 4-byte alignment for small segments (<=4 bytes)
-        // instead of always 8-byte aligning.  This saves 4 bytes of padding per
-        // small segment (e.g. single i32 constants, short string literals).
-        // Larger segments still get 8-byte alignment for i64 load/store perf.
-        let align_mask: u32 = if byte_len <= 4 { 3 } else { 7 };
-        self.data_offset = offset
-            .checked_add(byte_len)
-            .and_then(|v| v.checked_add(align_mask))
-            .map(|v| v & !align_mask)
-            .expect("WASM data segment offset overflow (>4 GiB total data)");
-        let info = DataSegmentInfo { size: byte_len };
-        self.data_segments.push(info);
-        let data_ref = DataSegmentRef { offset, index };
-        if cacheable {
-            self.data_segment_cache.insert(bytes.to_vec(), data_ref);
-        }
-        data_ref
+        self.data_segments.add_mutable_segment(reloc_enabled, bytes)
     }
 
     fn emit_data_ptr(
@@ -332,14 +253,8 @@ impl WasmBackend {
         func: &mut Function,
         data: DataSegmentRef,
     ) {
-        let imm_offset = func.byte_len() as u32 + 1;
-        self.data_relocs.push(DataRelocSite {
-            func_index,
-            offset_in_func: imm_offset,
-            segment_index: data.index,
-        });
-        emit_i32_const(func, reloc_enabled, data.offset as i32);
-        func.instruction(&Instruction::I64ExtendI32U);
+        self.data_segments
+            .emit_ptr(reloc_enabled, func_index, func, data);
     }
 
     /// Like [`emit_data_ptr`] but pushes an **i32** value (no i64 extension).
@@ -352,13 +267,8 @@ impl WasmBackend {
         func: &mut Function,
         data: DataSegmentRef,
     ) {
-        let imm_offset = func.byte_len() as u32 + 1;
-        self.data_relocs.push(DataRelocSite {
-            func_index,
-            offset_in_func: imm_offset,
-            segment_index: data.index,
-        });
-        emit_i32_const(func, reloc_enabled, data.offset as i32);
+        self.data_segments
+            .emit_ptr_i32(reloc_enabled, func_index, func, data);
     }
 
     // ------------------------------------------------------------------
@@ -3461,7 +3371,7 @@ impl WasmBackend {
         }
 
         let page_size: u64 = 64 * 1024;
-        let required_pages = (self.data_offset as u64).div_ceil(page_size);
+        let required_pages = (self.data_segments.offset() as u64).div_ceil(page_size);
         let floor_pages = std::env::var("MOLT_WASM_MIN_PAGES")
             .ok()
             .and_then(|val| val.parse::<u64>().ok())
@@ -3558,11 +3468,11 @@ impl WasmBackend {
             );
 
             // --- Data segment size audit ---
-            let total_data_bytes: u32 = self.data_segments.iter().map(|s| s.size).sum();
-            let dedup_hits = self.data_segment_cache.len();
+            let total_data_bytes = self.data_segments.total_data_bytes();
+            let dedup_hits = self.data_segments.dedup_entry_count();
             eprintln!(
                 "[molt-wasm-import-audit] data segments: {} segments, {} total bytes, {} dedup cache entries",
-                self.data_segments.len(),
+                self.data_segments.segment_count(),
                 total_data_bytes,
                 dedup_hits,
             );
@@ -3599,7 +3509,7 @@ impl WasmBackend {
             self.module.section(&raw_section);
         }
         self.module.section(&self.codes);
-        self.module.section(&self.data);
+        self.module.section(self.data_segments.section());
         let module_finish_start = std::time::Instant::now();
         let mut bytes = self.module.finish();
         emit_wasm_stage_audit(
@@ -3666,7 +3576,11 @@ impl WasmBackend {
         }
 
         if reloc_enabled {
-            bytes = add_reloc_sections(bytes, &self.data_segments, &self.data_relocs);
+            bytes = add_reloc_sections(
+                bytes,
+                self.data_segments.segments(),
+                self.data_segments.relocs(),
+            );
         }
         bytes
     }
