@@ -24,6 +24,7 @@ from molt.cli import backend_cache_setup as cli_backend_cache_setup
 from molt.cli import backend_compile as cli_backend_compile
 from molt.cli import build_pipeline as cli_build_pipeline
 from molt.cli import link_pipeline as cli_link_pipeline
+from molt.cli import non_native_output as cli_non_native_output
 import pytest
 from molt.cli import build_inputs as cli_build_inputs
 from molt.cli import build_results as cli_build_results
@@ -32,6 +33,8 @@ from molt.cli import frontend_pipeline as cli_frontend_pipeline
 from molt.cli import module_cache as cli_module_cache
 from molt.cli import module_graph as cli_module_graph
 from molt.cli import typecheck as cli_typecheck
+
+cli_deps = importlib.import_module("molt.cli.deps")
 from molt.frontend import MoltValue, SimpleTIRGenerator
 from molt.type_facts import Fact, FunctionFacts, ModuleFacts, TypeFacts
 from tests.cli.process_guard import (
@@ -11476,7 +11479,7 @@ def test_prepare_non_native_build_result_stages_runtime_wasm_sidecar(
     runtime_wasm.parent.mkdir(parents=True, exist_ok=True)
     runtime_wasm.write_bytes(b"\0asm\x01\0\0\0runtime")
 
-    prepared, err = cli_build_pipeline._prepare_non_native_build_result(
+    prepared, err = cli_non_native_output._prepare_non_native_build_result(
         is_rust_transpile=False,
         is_luau_transpile=False,
         is_wasm=True,
@@ -11531,7 +11534,7 @@ def _install_fake_wasm_link_runner(
             (split_dir / "molt_runtime.wasm").write_bytes(valid_wasm)
         return subprocess.CompletedProcess(command, 0, "", "")
 
-    monkeypatch.setattr(cli_build_pipeline, "_run_completed_command", fake_run)
+    monkeypatch.setattr(cli_non_native_output, "_run_completed_command", fake_run)
 
 
 def _write_split_runtime_vfs_support(molt_root: Path) -> None:
@@ -11556,7 +11559,7 @@ def test_prepare_non_native_build_result_skips_runtime_wasm_sidecar_for_linked_w
 
     _install_fake_wasm_link_runner(monkeypatch)
 
-    prepared, err = cli_build_pipeline._prepare_non_native_build_result(
+    prepared, err = cli_non_native_output._prepare_non_native_build_result(
         is_rust_transpile=False,
         is_luau_transpile=False,
         is_wasm=True,
@@ -11603,7 +11606,7 @@ def test_prepare_non_native_build_result_skips_unchanged_linked_wasm_relink(
     link_calls: list[list[str]] = []
 
     _install_fake_wasm_link_runner(monkeypatch, link_calls=link_calls)
-    monkeypatch.setattr(cli_build_pipeline, "_validate_wasm_structural", lambda path: None)
+    monkeypatch.setattr(cli_non_native_output, "_validate_wasm_structural", lambda path: None)
 
     common_kwargs = {
         "is_rust_transpile": False,
@@ -11625,7 +11628,7 @@ def test_prepare_non_native_build_result_skips_unchanged_linked_wasm_relink(
         "precompile": False,
     }
 
-    first, first_err = cli_build_pipeline._prepare_non_native_build_result(**common_kwargs)
+    first, first_err = cli_non_native_output._prepare_non_native_build_result(**common_kwargs)
     assert first_err is None
     assert first is not None
     assert len(link_calls) == 1
@@ -11644,7 +11647,7 @@ def test_prepare_non_native_build_result_skips_unchanged_linked_wasm_relink(
     assert linked_output_arg.name.endswith(".tmp")
     assert first_cmd[-3:] == ["--optimize", "--optimize-level", "Oz"]
 
-    second, second_err = cli_build_pipeline._prepare_non_native_build_result(**common_kwargs)
+    second, second_err = cli_non_native_output._prepare_non_native_build_result(**common_kwargs)
     assert second_err is None
     assert second is not None
     assert len(link_calls) == 1
@@ -11670,12 +11673,12 @@ def test_prepare_non_native_build_result_keeps_shared_runtime_canonical_for_link
 
     _install_fake_wasm_link_runner(monkeypatch)
     monkeypatch.setattr(
-        cli_build_pipeline,
+        cli_non_native_output,
         "_collect_wasm_module_import_names",
         lambda path, module_name: {"alloc", "molt_fast_list_append"},
     )
 
-    prepared, err = cli_build_pipeline._prepare_non_native_build_result(
+    prepared, err = cli_non_native_output._prepare_non_native_build_result(
         is_rust_transpile=False,
         is_luau_transpile=False,
         is_wasm=True,
@@ -11723,28 +11726,26 @@ def test_prepare_non_native_build_result_split_runtime_reuses_shared_runtime_sur
 
     _install_fake_wasm_link_runner(monkeypatch)
     monkeypatch.setattr(
-        cli_build_pipeline,
+        cli_non_native_output,
         "_collect_wasm_module_import_names",
         lambda path, module_name: {"alloc", "molt_fast_list_append"},
     )
-    monkeypatch.setattr(cli_build_pipeline, "_wasm_import_minima", lambda _path: (1, 1))
+    monkeypatch.setattr(cli_non_native_output, "_wasm_import_minima", lambda _path: (1, 1))
     monkeypatch.setattr(
-        cli_build_pipeline, "_wasm_import_function_result_kinds", lambda *args, **kwargs: {}
+        cli_non_native_output, "_wasm_import_function_result_kinds", lambda *args, **kwargs: {}
     )
     monkeypatch.setattr(
-        cli_build_pipeline, "_wasm_import_function_signatures", lambda *args, **kwargs: {}
-    )
-    monkeypatch.setattr(cli_build_pipeline, "_export_wasm_table_refs", lambda _path: None)
-    monkeypatch.setattr(
-        cli_build_pipeline, "_wasm_export_function_signatures", lambda *args, **kwargs: {}
+        cli_non_native_output, "_wasm_import_function_signatures", lambda *args, **kwargs: {}
     )
     monkeypatch.setattr(
-        cli_build_pipeline, "_effective_split_worker_table_base", lambda **kwargs: 8192
+        cli_non_native_output, "_wasm_export_function_signatures", lambda *args, **kwargs: {}
     )
-    monkeypatch.setattr(cli_build_pipeline, "_generate_split_worker_js", lambda **kwargs: "// worker")
-    monkeypatch.setattr(cli.shutil, "copy2", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        cli_non_native_output, "_effective_split_worker_table_base", lambda **kwargs: 8192
+    )
+    monkeypatch.setattr(cli_non_native_output, "_generate_split_worker_js", lambda **kwargs: "// worker")
 
-    prepared, err = cli_build_pipeline._prepare_non_native_build_result(
+    prepared, err = cli_non_native_output._prepare_non_native_build_result(
         is_rust_transpile=False,
         is_luau_transpile=False,
         is_wasm=True,
@@ -11785,36 +11786,30 @@ def test_prepare_non_native_build_result_split_runtime_does_not_export_runtime_t
     runtime_reloc_wasm = tmp_path / "runtime" / "molt_runtime_reloc.wasm"
     runtime_reloc_wasm.write_bytes(b"\0asm\x01\0\0\0reloc")
     _write_split_runtime_vfs_support(tmp_path)
-    export_ref_calls: list[Path] = []
 
     _install_fake_wasm_link_runner(monkeypatch)
     monkeypatch.setattr(
-        cli_build_pipeline,
+        cli_non_native_output,
         "_collect_wasm_module_import_names",
         lambda path, module_name: {"alloc", "molt_fast_list_append"},
     )
-    monkeypatch.setattr(cli_build_pipeline, "_wasm_import_minima", lambda _path: (1, 1))
+    monkeypatch.setattr(cli_non_native_output, "_wasm_import_minima", lambda _path: (1, 1))
     monkeypatch.setattr(
-        cli_build_pipeline, "_wasm_import_function_result_kinds", lambda *args, **kwargs: {}
+        cli_non_native_output, "_wasm_import_function_result_kinds", lambda *args, **kwargs: {}
     )
     monkeypatch.setattr(
-        cli_build_pipeline, "_wasm_import_function_signatures", lambda *args, **kwargs: {}
+        cli_non_native_output, "_wasm_import_function_signatures", lambda *args, **kwargs: {}
     )
     monkeypatch.setattr(
-        cli_build_pipeline,
-        "_export_wasm_table_refs",
-        lambda path: export_ref_calls.append(path),
+        cli_non_native_output, "_wasm_export_function_signatures", lambda *args, **kwargs: {}
     )
     monkeypatch.setattr(
-        cli_build_pipeline, "_wasm_export_function_signatures", lambda *args, **kwargs: {}
+        cli_non_native_output, "_effective_split_worker_table_base", lambda **kwargs: 8192
     )
-    monkeypatch.setattr(
-        cli_build_pipeline, "_effective_split_worker_table_base", lambda **kwargs: 8192
-    )
-    monkeypatch.setattr(cli_build_pipeline, "_generate_split_worker_js", lambda **kwargs: "// worker")
-    monkeypatch.setattr(cli.shutil, "copy2", lambda *args, **kwargs: None)
+    monkeypatch.setattr(cli_non_native_output, "_generate_split_worker_js", lambda **kwargs: "// worker")
+    assert not hasattr(cli_non_native_output, "_export_wasm_table_refs")
 
-    prepared, err = cli_build_pipeline._prepare_non_native_build_result(
+    prepared, err = cli_non_native_output._prepare_non_native_build_result(
         is_rust_transpile=False,
         is_luau_transpile=False,
         is_wasm=True,
@@ -11836,7 +11831,6 @@ def test_prepare_non_native_build_result_split_runtime_does_not_export_runtime_t
 
     assert err is None
     assert prepared is not None
-    assert export_ref_calls == []
 
 
 def test_runtime_wasm_exports_satisfy_required_surface(tmp_path: Path) -> None:
@@ -17620,7 +17614,7 @@ def test_publication_sidecar_writers_use_atomic_temp_siblings(
         is None
     )
 
-    cli_build_pipeline._generate_snapshot_header(
+    cli_non_native_output._generate_snapshot_header(
         output_wasm=wasm_path,
         target_profile="edge",
         capabilities_list=["fs.bundle.read"],
@@ -17795,12 +17789,22 @@ def test_replace_directory_tree_from_source_publishes_prepared_tree(
     (src / "new.txt").write_text("new", encoding="utf-8")
     (dest / "old.txt").write_text("old", encoding="utf-8")
 
-    cli_build_pipeline._replace_directory_tree_from_source(src, dest)
+    cli_non_native_output._replace_directory_tree_from_source(src, dest)
 
     assert not (dest / "old.txt").exists()
     assert (dest / "new.txt").read_text(encoding="utf-8") == "new"
     assert list(tmp_path.glob(".dest.*.tmp")) == []
     assert list(tmp_path.glob(".dest.*.old")) == []
+
+    wrapper_src = tmp_path / "wrapper-src"
+    wrapper_dest = tmp_path / "wrapper-dest"
+    wrapper_src.mkdir()
+    wrapper_dest.mkdir()
+    (wrapper_src / "wrapped.txt").write_text("wrapped", encoding="utf-8")
+
+    cli_deps._replace_directory_tree_from_source(wrapper_src, wrapper_dest)
+
+    assert (wrapper_dest / "wrapped.txt").read_text(encoding="utf-8") == "wrapped"
 
 
 def test_replace_directory_tree_from_source_restores_previous_tree_on_publish_failure(
@@ -17824,7 +17828,7 @@ def test_replace_directory_tree_from_source_restores_previous_tree_on_publish_fa
     monkeypatch.setattr(os, "replace", fail_temp_publish)
 
     with pytest.raises(OSError, match="publish failed"):
-        cli_build_pipeline._replace_directory_tree_from_source(src, dest)
+        cli_non_native_output._replace_directory_tree_from_source(src, dest)
 
     assert (dest / "old.txt").read_text(encoding="utf-8") == "old"
     assert not (dest / "new.txt").exists()
