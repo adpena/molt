@@ -1,9 +1,12 @@
 {
   "critical_hand_classifications": 0.0,
-  "debt_markers_total": 526.0,
+  "debt_markers_total": 524.0,
   "duplicate_authorities": 0.0,
-  "god_files": 56.0,
-  "hand_classified_matches": 34.0,
-  "handset_classifications": 19.0,
-  "max_god_file_lines": 41267.0
+  "god_file_large_regions": 45.0,
+  "god_files": 47.0,
+  "hand_classified_matches": 12.0,
+  "handset_classifications": 4.0,
+  "max_god_file_lines": 18484.0,
+  "max_god_file_structural_score": 12487.0,
+  "structural_god_files": 14.0
 }

@@ -8,13 +8,15 @@ so a new opcode that forgets a row fails to COMPILE — drift is impossible ther
 
 This tool finds the places that have NOT yet reached that bar — where a semantic
 property is still decided by a hand-written list with a silent default, where a
-file has grown into a god-object, where workaround/debt markers accumulate, and
-where two authorities classify the same thing. It answers the council's
+file has grown into a god-object, where multiple large top-level regions make a
+file a structural god-file, where workaround/debt markers accumulate, and where
+two authorities classify the same thing. It answers the council's
 structural-sweep questions #1 (duplicate semantic authorities), #2 (backend-local
 semantic guesses), and #8 (legacy paths now coverable by generated facts) with a
 RANKED BOARD, and — critically — a ``--check`` RATCHET so the numbers can only go
 down: adding a new hand-maintained semantic fallthrough, growing a god-file past
-its ceiling, or adding debt markers fails CI.
+its ceiling, adding top-level extraction-region pressure, or adding debt markers
+fails CI.
 
 This is deliberately NOT a re-check of what the compiler already enforces. The
 exhaustive generated tables are rustc-gated; auditing them would false-flag
@@ -33,6 +35,7 @@ Wire into .github/workflows/ci.yml next to gen_op_kinds.py --check.
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import re
 import sys
@@ -131,6 +134,23 @@ class Finding:
 
     def sort_key(self) -> tuple[int, float]:
         return (_SEV_ORDER.get(self.severity, 9), -self.metric)
+
+
+@dataclass(frozen=True)
+class SourceRegion:
+    kind: str
+    name: str
+    start_line: int
+    end_line: int
+
+    @property
+    def span(self) -> int:
+        return max(1, self.end_line - self.start_line + 1)
+
+
+_LARGE_SOURCE_REGION_LINES = 250
+_STRUCTURAL_GOD_MIN_LARGE_REGIONS = 3
+_STRUCTURAL_GOD_MIXED_KIND_MIN_SCORE = 500
 
 
 # --- robust Rust scanning -------------------------------------------------
@@ -312,6 +332,178 @@ def _scan_matches_macro(text: str, start: int) -> tuple[int, str] | None:
     return None
 
 
+def _line_count(text: str) -> int:
+    return text.count("\n") + 1
+
+
+def _line_of_offset(text: str, offset: int) -> int:
+    return text.count("\n", 0, offset) + 1
+
+
+def _line_start_depths(text: str) -> dict[int, int]:
+    depths = {0: 0}
+    depth = 0
+    i = 0
+    n = len(text)
+    while i < n:
+        c = text[i]
+        if c == "{":
+            depth += 1
+        elif c == "}":
+            depth = max(depth - 1, 0)
+        elif c == "\n":
+            depths[i + 1] = depth
+        i += 1
+    return depths
+
+
+def _line_start_for_offset(text: str, offset: int) -> int:
+    return text.rfind("\n", 0, offset) + 1
+
+
+_RUST_TOP_LEVEL_ITEM_RE = re.compile(
+    r"(?m)^\s*"
+    r"(?:pub(?:\([^)]*\))?\s+)?"
+    r"(?:async\s+|unsafe\s+|extern\s+\"[^\"]+\"\s+)*"
+    r"(?P<kind>fn|impl|trait|struct|enum|mod)\b"
+)
+
+
+def _rust_top_level_regions(text: str) -> list[SourceRegion]:
+    depths = _line_start_depths(text)
+    regions: list[SourceRegion] = []
+    for m in _RUST_TOP_LEVEL_ITEM_RE.finditer(text):
+        line_start = _line_start_for_offset(text, m.start())
+        if depths.get(line_start, 0) != 0:
+            continue
+        kind = m.group("kind")
+        name = _rust_region_name(text, m.end(), kind)
+        if _is_cfg_test_module(text, m.start(), kind, name):
+            continue
+        end_offset = _rust_region_end(text, m.end())
+        regions.append(
+            SourceRegion(
+                kind=kind,
+                name=name,
+                start_line=_line_of_offset(text, m.start()),
+                end_line=_line_of_offset(text, max(m.start(), end_offset - 1)),
+            )
+        )
+    return regions
+
+
+def _rust_region_name(text: str, start: int, kind: str) -> str:
+    line_end = text.find("\n", start)
+    if line_end < 0:
+        line_end = len(text)
+    tail = text[start:line_end].strip()
+    if kind == "impl":
+        return " ".join(tail.split())[:80] or "impl"
+    m = re.match(r"([A-Za-z_][A-Za-z0-9_]*)", tail)
+    return m.group(1) if m else kind
+
+
+def _is_cfg_test_module(text: str, start: int, kind: str, name: str) -> bool:
+    if kind != "mod" or name != "tests":
+        return False
+    return "#[cfg(test)]" in text[max(0, start - 300) : start]
+
+
+def _rust_region_end(text: str, start: int) -> int:
+    brace = text.find("{", start)
+    semi = text.find(";", start)
+    if semi >= 0 and (brace < 0 or semi < brace):
+        return semi + 1
+    if brace >= 0:
+        end, _ = _balanced_block(text, brace)
+        return end
+    line_end = text.find("\n", start)
+    return len(text) if line_end < 0 else line_end
+
+
+def _python_top_level_regions(text: str) -> list[SourceRegion]:
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return _python_top_level_regions_fallback(text)
+    regions: list[SourceRegion] = []
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+            end = getattr(node, "end_lineno", None) or node.lineno
+            kind = (
+                "class"
+                if isinstance(node, ast.ClassDef)
+                else "async def"
+                if isinstance(node, ast.AsyncFunctionDef)
+                else "def"
+            )
+            regions.append(
+                SourceRegion(
+                    kind=kind,
+                    name=node.name,
+                    start_line=node.lineno,
+                    end_line=end,
+                )
+            )
+    return regions
+
+
+def _python_top_level_regions_fallback(text: str) -> list[SourceRegion]:
+    starts: list[tuple[str, str, int]] = []
+    for line_no, line in enumerate(text.splitlines(), start=1):
+        m = re.match(
+            r"(?P<kind>class|async\s+def|def)\s+"
+            r"(?P<name>[A-Za-z_][A-Za-z0-9_]*)\b",
+            line,
+        )
+        if m:
+            starts.append((" ".join(m.group("kind").split()), m.group("name"), line_no))
+    regions: list[SourceRegion] = []
+    for i, (kind, name, start) in enumerate(starts):
+        end = starts[i + 1][2] - 1 if i + 1 < len(starts) else _line_count(text)
+        regions.append(SourceRegion(kind=kind, name=name, start_line=start, end_line=end))
+    return regions
+
+
+def _top_level_regions(path: Path, text: str) -> list[SourceRegion]:
+    if path.suffix == ".rs":
+        return _rust_top_level_regions(text)
+    if path.suffix == ".py":
+        return _python_top_level_regions(text)
+    return []
+
+
+def _structural_god_score(regions: list[SourceRegion]) -> int:
+    return sum(max(0, region.span - _LARGE_SOURCE_REGION_LINES) for region in regions)
+
+
+def _large_source_regions(regions: list[SourceRegion]) -> list[SourceRegion]:
+    return [region for region in regions if region.span >= _LARGE_SOURCE_REGION_LINES]
+
+
+def _is_structural_god_region_set(large_regions: list[SourceRegion]) -> bool:
+    if len(large_regions) >= _STRUCTURAL_GOD_MIN_LARGE_REGIONS:
+        return True
+    kind_count = len({region.kind for region in large_regions})
+    return (
+        len(large_regions) >= 2
+        and kind_count >= 2
+        and _structural_god_score(large_regions)
+        >= _STRUCTURAL_GOD_MIXED_KIND_MIN_SCORE
+    )
+
+
+def _region_summary(regions: list[SourceRegion], limit: int = 6) -> str:
+    ranked = sorted(regions, key=lambda region: (-region.span, region.start_line))
+    parts = [
+        f"{region.kind} {region.name} {region.span} lines"
+        for region in ranked[:limit]
+    ]
+    if len(ranked) > limit:
+        parts.append(f"{len(ranked) - limit} more")
+    return "; ".join(parts)
+
+
 def probe_semantic_fallthroughs(root: Path) -> list[Finding]:
     """Hand-maintained semantic classifications over OpCode/kind that drift
     silently: `match {.. _ => default}` and `matches!(x, OpCode::A | B | ..)`.
@@ -442,6 +634,61 @@ def probe_god_files(root: Path, ceiling: int = 4000) -> list[Finding]:
                     "(Lattner: one responsibility per file)",
                     class_retired="god-object-extension-fear",
                     metric=n,
+                )
+            )
+    return findings
+
+
+def probe_structural_god_files(
+    root: Path,
+    ceiling: int = 4000,
+    py_ceiling: int = 2500,
+) -> list[Finding]:
+    """Oversized files with multiple large top-level extraction regions."""
+    findings: list[Finding] = []
+    for suffix, lang_ceiling in ((".rs", ceiling), (".py", py_ceiling)):
+        for path in _iter_source_files(root, (suffix,)):
+            if _is_generated(path):
+                continue
+            try:
+                text = path.read_text(errors="replace")
+            except OSError:
+                continue
+            line_count = _line_count(text)
+            if line_count < lang_ceiling:
+                continue
+            large_regions = _large_source_regions(_top_level_regions(path, text))
+            if not _is_structural_god_region_set(large_regions):
+                continue
+            score = _structural_god_score(large_regions)
+            rel = path.relative_to(root).as_posix()
+            large_region_count = len(large_regions)
+            sev = (
+                "high"
+                if score >= lang_ceiling and large_region_count >= 4
+                else "medium"
+                if score >= lang_ceiling // 2 or large_region_count >= 4
+                else "low"
+            )
+            findings.append(
+                Finding(
+                    probe="structural_god_file",
+                    severity=sev,
+                    title=(
+                        f"{large_region_count} large top-level regions "
+                        f"({score} excess lines)"
+                    ),
+                    location=rel,
+                    detail=(
+                        f"{line_count} lines; "
+                        f"large_regions={_region_summary(large_regions)}"
+                    ),
+                    suggested_action=(
+                        "extract the large top-level regions into cohesive modules; "
+                        "do not add more authority to this file"
+                    ),
+                    class_retired="multi-region-god-file",
+                    metric=float(score),
                 )
             )
     return findings
@@ -651,6 +898,7 @@ def probe_registry_reconciliation(root: Path) -> list[Finding]:
 PROBES = (
     probe_semantic_fallthroughs,
     probe_god_files,
+    probe_structural_god_files,
     probe_debt_markers,
     probe_duplicate_authorities,
     probe_registry_reconciliation,
@@ -668,6 +916,11 @@ def run_all(root: Path) -> list[Finding]:
 # --- ratchet metrics (the --check gate) -----------------------------------
 
 
+def _large_region_count_from_title(title: str) -> int:
+    m = re.match(r"(\d+)\s+large top-level regions", title)
+    return int(m.group(1)) if m else 0
+
+
 def ratchet_metrics(findings: list[Finding]) -> dict[str, float]:
     """Aggregate scalars that may only improve (decrease). CI fails on regress.
 
@@ -679,6 +932,7 @@ def ratchet_metrics(findings: list[Finding]) -> dict[str, float]:
     handsets = [f for f in sem if f.title.startswith("`matches!`")]
     debt = [f for f in findings if f.probe == "debt_marker"]
     god = [f for f in findings if f.probe == "god_file"]
+    structural_god = [f for f in findings if f.probe == "structural_god_file"]
     dup = [f for f in findings if f.probe == "duplicate_authority"]
     return {
         # the hand-maintained-opcode-fact surface (match classifiers w/ silent default)
@@ -692,6 +946,13 @@ def ratchet_metrics(findings: list[Finding]) -> dict[str, float]:
         "debt_markers_total": float(sum(int(f.metric) for f in debt)),
         "god_files": float(len(god)),
         "max_god_file_lines": float(max((f.metric for f in god), default=0)),
+        "structural_god_files": float(len(structural_god)),
+        "max_god_file_structural_score": float(
+            max((f.metric for f in structural_god), default=0)
+        ),
+        "god_file_large_regions": float(
+            sum(_large_region_count_from_title(f.title) for f in structural_god)
+        ),
         "duplicate_authorities": float(len(dup)),
     }
 

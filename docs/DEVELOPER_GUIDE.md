@@ -100,10 +100,11 @@ proof once. Expand the proof radius only when the failure reveals a genuine
 cross-layer contract risk. Repeated lint/test loops are a velocity failure when
 the architecture is still mid-move.
 
-`tools/structural_audit.py --check` is the automated god-file and
-duplicate-authority ratchet, and `tools/ci_gate.py --tier 1` runs it by default.
-Use it to keep structural growth honest: split new authority into coherent
-modules/packages, do not grow monoliths for convenience, and do not repin
+`tools/structural_audit.py --check` is the automated god-file,
+structural-god-file, and duplicate-authority ratchet, and `tools/ci_gate.py
+--tier 1` runs it by default. Use it to keep structural growth honest: split new
+authority into coherent modules/packages, keep multiple large extraction regions
+out of one file, do not grow monoliths for convenience, and do not repin
 `tools/structural_audit_baseline.json` without explicit maintainer acceptance
 and a retirement plan.
 

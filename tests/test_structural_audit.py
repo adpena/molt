@@ -246,6 +246,123 @@ def test_enum_variant_extraction_handles_payloads():
     assert variants == {"Add", "Call", "Phi", "Const", "Last"}, variants
 
 
+def test_large_single_cohesive_region_is_not_structural_god_file(tmp_path: Path):
+    src = tmp_path / "runtime" / "molt-backend" / "src"
+    src.mkdir(parents=True)
+    (src / "cohesive.rs").write_text(_rust_impl("Cohesive", 420), encoding="utf-8")
+
+    findings = SA.probe_structural_god_files(tmp_path, ceiling=100)
+
+    assert findings == []
+
+
+def test_large_multi_region_rust_file_is_structural_god_file(tmp_path: Path):
+    src = tmp_path / "runtime" / "molt-backend" / "src"
+    src.mkdir(parents=True)
+    (src / "mixed.rs").write_text(
+        "\n".join(
+            [
+                _rust_impl("Alpha", 260),
+                _rust_fn("lower_alpha", 270),
+                _rust_fn("emit_alpha", 280),
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    findings = SA.probe_structural_god_files(tmp_path, ceiling=100)
+
+    assert len(findings) == 1
+    assert findings[0].probe == "structural_god_file"
+    assert findings[0].location.endswith("mixed.rs")
+    assert findings[0].metric >= 60
+    assert "3 large top-level regions" in findings[0].title
+
+
+def test_cfg_test_module_does_not_create_structural_god_file(tmp_path: Path):
+    src = tmp_path / "runtime" / "molt-backend" / "src"
+    src.mkdir(parents=True)
+    tests_body = "\n".join("    // fixture line" for _ in range(420))
+    (src / "fixtures.rs").write_text(
+        "pub fn production() {}\n"
+        "#[cfg(test)]\n"
+        "mod tests {\n"
+        f"{tests_body}\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    findings = SA.probe_structural_god_files(tmp_path, ceiling=100)
+
+    assert findings == []
+
+
+def test_python_module_regions_drive_structural_god_file(tmp_path: Path):
+    pkg = tmp_path / "src" / "molt"
+    pkg.mkdir(parents=True)
+    (pkg / "mixed.py").write_text(
+        "\n".join(
+            [
+                _python_function("alpha", 260),
+                _python_function("beta", 270),
+                _python_class("Gamma", 280),
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    findings = SA.probe_structural_god_files(
+        tmp_path,
+        ceiling=100,
+        py_ceiling=100,
+    )
+
+    assert len(findings) == 1
+    assert findings[0].location.endswith("mixed.py")
+    assert findings[0].metric == 60
+    assert "3 large top-level regions" in findings[0].title
+
+
+def test_generated_large_file_is_not_structural_god_file(tmp_path: Path):
+    src = tmp_path / "runtime" / "molt-backend" / "src"
+    src.mkdir(parents=True)
+    (src / "generated.rs").write_text(
+        "// DO NOT EDIT\n"
+        + "\n".join(
+            [
+                _rust_impl("Alpha", 260),
+                _rust_fn("lower_alpha", 270),
+                _rust_fn("emit_alpha", 280),
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    findings = SA.probe_structural_god_files(tmp_path, ceiling=100)
+
+    assert findings == []
+
+
+def test_structural_god_metrics_are_ratchet_metrics():
+    findings = [
+        SA.Finding(
+            probe="structural_god_file",
+            severity="medium",
+            title="4 large top-level regions (900 excess lines)",
+            location="runtime/example.rs",
+            detail="",
+            suggested_action="",
+            metric=900,
+        )
+    ]
+
+    metrics = SA.ratchet_metrics(findings)
+
+    assert metrics["structural_god_files"] == 1
+    assert metrics["max_god_file_structural_score"] == 900
+    assert metrics["god_file_large_regions"] == 4
+
+
 def _scan_rust_string(rust: str, rel: str) -> list:
     """Drive probe_semantic_fallthroughs over an in-memory file by writing it to
     a temp tree mirroring the expected relative path (the probe walks the FS)."""
@@ -261,6 +378,26 @@ def _scan_rust_string(rust: str, rel: str) -> list:
             for f in SA.probe_semantic_fallthroughs(root)
             if f.title.startswith("hand-classified")
         ]
+
+
+def _rust_impl(name: str, span: int) -> str:
+    body = "\n".join("    // region body" for _ in range(span - 2))
+    return f"impl {name} {{\n{body}\n}}\n"
+
+
+def _rust_fn(name: str, span: int) -> str:
+    body = "\n".join("    // region body" for _ in range(span - 2))
+    return f"fn {name}() {{\n{body}\n}}\n"
+
+
+def _python_function(name: str, span: int) -> str:
+    body = "\n".join("    value = 1" for _ in range(span - 1))
+    return f"def {name}():\n{body}\n"
+
+
+def _python_class(name: str, span: int) -> str:
+    body = "\n".join("    value = 1" for _ in range(span - 1))
+    return f"class {name}:\n{body}\n"
 
 
 if __name__ == "__main__":
