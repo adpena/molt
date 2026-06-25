@@ -1,6 +1,6 @@
 use crate::representation_plan::ScalarRepresentationPlan;
 use crate::wasm_abi::{
-    GEN_CONTROL_SIZE, POLL_TABLE_FUNCS, RELOC_TABLE_BASE_DEFAULT, RESERVED_RUNTIME_CALLABLE_COUNT,
+    GEN_CONTROL_SIZE, POLL_TABLE_FUNCS, RESERVED_RUNTIME_CALLABLE_COUNT,
     RESERVED_RUNTIME_CALLABLE_SPECS, STATIC_TYPE_COUNT, TAG_EXCEPTION_FUNC_TYPE,
     TAG_EXCEPTION_INDEX, TASK_KIND_COROUTINE, TASK_KIND_FUTURE, TASK_KIND_GENERATOR,
     TypeSectionExt, canonical_static_import_type_idx,
@@ -18,6 +18,7 @@ use crate::wasm_dispatch::{
     emit_sparse_state_remap_lookup, has_non_linear_control_flow,
 };
 use crate::wasm_import_tracking::{TrackedImportIds, selected_import_id};
+pub use crate::wasm_options::{WasmCompileOptions, WasmProfile};
 use crate::wasm_plan::{
     DEFAULT_GPU_INTRINSIC_MANIFEST_NAMES, emit_wasm_stage_audit, gpu_runtime_call_symbol,
     is_production_lir_wasm_fast_path_name, is_shared_drop_fact_marker,
@@ -195,71 +196,6 @@ fn emit_seeded_runtime_const_op(
             func.instruction(&Instruction::LocalSet(out_local));
         }
         _ => panic!("unsupported seeded runtime const op {}", op.kind),
-    }
-}
-
-/// WASM profile for import stripping (see docs/architecture/wasm-import-stripping.md §3A).
-/// `Full` registers all host imports; `Pure` omits IO, ASYNC, and TIME categories
-/// so the resulting module only depends on core runtime + arithmetic + collections.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WasmProfile {
-    Full,
-    Pure,
-    /// Scan IR to include only imports that are actually used (plus a generous core set).
-    Auto,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct WasmCompileOptions {
-    pub reloc_enabled: bool,
-    pub data_base: u32,
-    pub table_base: u32,
-    pub split_runtime_runtime_table_min: Option<u32>,
-    /// Enable native WASM exception handling (WASM 3.0 EH proposal).
-    /// Enabled by default for non-relocatable wasm output; set
-    /// `MOLT_WASM_NATIVE_EH=0` to disable explicitly.
-    pub native_eh_enabled: bool,
-    /// WASM profile for compile-time import stripping.
-    /// Gated by `MOLT_WASM_PROFILE` environment variable ("full" or "pure").
-    pub wasm_profile: WasmProfile,
-}
-
-impl Default for WasmCompileOptions {
-    fn default() -> Self {
-        Self {
-            reloc_enabled: matches!(std::env::var("MOLT_WASM_LINK").as_deref(), Ok("1")),
-            data_base: {
-                let raw = std::env::var("MOLT_WASM_DATA_BASE")
-                    .ok()
-                    .and_then(|val| val.parse::<u64>().ok())
-                    // Default: 64 MiB.  The split-runtime layout shares
-                    // linear memory between the Rust runtime WASM module
-                    // (whose data segments start at ~1 MiB and whose
-                    // dlmalloc heap grows upward from there) and the
-                    // output module.  A 1 MiB default would collide with
-                    // the runtime's data region and cause string-pointer
-                    // corruption on large module graphs.  64 MiB leaves
-                    // ample headroom for the runtime heap.
-                    .unwrap_or(64 * 1024 * 1024);
-                let aligned = (raw + 7) & !7;
-                aligned.min(u64::from(u32::MAX)) as u32
-            },
-            table_base: match std::env::var("MOLT_WASM_TABLE_BASE") {
-                Ok(value) => value.parse::<u32>().unwrap_or(RELOC_TABLE_BASE_DEFAULT),
-                Err(_) => RELOC_TABLE_BASE_DEFAULT,
-            },
-            split_runtime_runtime_table_min: std::env::var(
-                "MOLT_WASM_SPLIT_RUNTIME_RUNTIME_TABLE_MIN",
-            )
-            .ok()
-            .and_then(|value| value.parse::<u32>().ok()),
-            native_eh_enabled: !matches!(std::env::var("MOLT_WASM_NATIVE_EH").as_deref(), Ok("0")),
-            wasm_profile: match std::env::var("MOLT_WASM_PROFILE").as_deref() {
-                Ok("pure") => WasmProfile::Pure,
-                Ok("full") => WasmProfile::Full,
-                _ => WasmProfile::Auto,
-            },
-        }
     }
 }
 
