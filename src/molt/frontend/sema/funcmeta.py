@@ -18,23 +18,74 @@ deliberately does **not** live in this module.
 from __future__ import annotations
 
 import ast
+from enum import StrEnum
 from typing import Any
 
 
-def _function_contains_yield(
+class FunctionKind(StrEnum):
+    SYNC = "sync"
+    ASYNC = "async"
+    GENERATOR = "gen"
+    ASYNC_GENERATOR = "asyncgen"
+
+
+FUNCTION_KIND_VALUES = frozenset(kind.value for kind in FunctionKind)
+STATEFUL_FUNCTION_KINDS = frozenset(
+    {FunctionKind.ASYNC, FunctionKind.GENERATOR, FunctionKind.ASYNC_GENERATOR}
+)
+
+
+def normalize_function_kind(kind: object) -> FunctionKind | None:
+    if isinstance(kind, FunctionKind):
+        return kind
+    if isinstance(kind, str) and kind in FUNCTION_KIND_VALUES:
+        return FunctionKind(kind)
+    return None
+
+
+def _push_arg_annotations(stack: list[ast.AST], args: ast.arguments) -> None:
+    for arg in (
+        args.posonlyargs
+        + args.args
+        + args.kwonlyargs
+        + ([] if args.vararg is None else [args.vararg])
+        + ([] if args.kwarg is None else [args.kwarg])
+    ):
+        if arg.annotation is not None:
+            stack.append(arg.annotation)
+
+
+def expression_contains_yield(node: ast.AST) -> bool:
+    class YieldVisitor(ast.NodeVisitor):
+        def __init__(self) -> None:
+            self.found = False
+
+        def visit_Yield(self, node: ast.Yield) -> None:
+            self.found = True
+
+        def visit_YieldFrom(self, node: ast.YieldFrom) -> None:
+            self.found = True
+
+        def visit_Lambda(self, node: ast.Lambda) -> None:
+            return
+
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            return
+
+        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+            return
+
+        def visit_ClassDef(self, node: ast.ClassDef) -> None:
+            return
+
+    visitor = YieldVisitor()
+    visitor.visit(node)
+    return visitor.found
+
+
+def function_contains_yield(
     node: ast.FunctionDef | ast.AsyncFunctionDef,
 ) -> bool:
-    def push_arg_annotations(stack: list[ast.AST], args: ast.arguments) -> None:
-        for arg in (
-            args.posonlyargs
-            + args.args
-            + args.kwonlyargs
-            + ([] if args.vararg is None else [args.vararg])
-            + ([] if args.kwarg is None else [args.kwarg])
-        ):
-            if arg.annotation is not None:
-                stack.append(arg.annotation)
-
     stack: list[ast.AST] = list(node.body)
     while stack:
         current = stack.pop()
@@ -46,7 +97,7 @@ def _function_contains_yield(
             stack.extend(
                 default for default in current.args.kw_defaults if default is not None
             )
-            push_arg_annotations(stack, current.args)
+            _push_arg_annotations(stack, current.args)
             if current.returns is not None:
                 stack.append(current.returns)
             continue
@@ -59,6 +110,59 @@ def _function_contains_yield(
             continue
         stack.extend(ast.iter_child_nodes(current))
     return False
+
+
+def async_generator_contains_yield_from(node: ast.AsyncFunctionDef) -> bool:
+    stack: list[ast.AST] = list(node.body)
+    while stack:
+        current = stack.pop()
+        if isinstance(current, ast.YieldFrom):
+            return True
+        if isinstance(
+            current,
+            (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda),
+        ):
+            continue
+        stack.extend(ast.iter_child_nodes(current))
+    return False
+
+
+def async_generator_contains_return_value(node: ast.AsyncFunctionDef) -> bool:
+    stack: list[ast.AST] = list(node.body)
+    while stack:
+        current = stack.pop()
+        if isinstance(current, ast.Return) and current.value is not None:
+            return True
+        if isinstance(
+            current,
+            (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda),
+        ):
+            continue
+        stack.extend(ast.iter_child_nodes(current))
+    return False
+
+
+def signature_contains_yield(
+    *,
+    decorators: list[ast.expr],
+    args: ast.arguments,
+    returns: ast.expr | None,
+) -> bool:
+    exprs: list[ast.expr] = list(decorators)
+    exprs.extend(args.defaults)
+    exprs.extend(expr for expr in args.kw_defaults if expr is not None)
+    for arg in (
+        args.posonlyargs
+        + args.args
+        + args.kwonlyargs
+        + ([] if args.vararg is None else [args.vararg])
+        + ([] if args.kwarg is None else [args.kwarg])
+    ):
+        if arg.annotation is not None:
+            exprs.append(arg.annotation)
+    if returns is not None:
+        exprs.append(returns)
+    return any(expression_contains_yield(expr) for expr in exprs)
 
 
 def _split_function_args(
@@ -108,16 +212,20 @@ def _default_specs_from_args(args: ast.arguments) -> list[dict[str, Any]]:
     return default_specs
 
 
-def collect_module_func_kinds(node: ast.Module) -> dict[str, str]:
-    kinds: dict[str, str] = {}
+def collect_module_func_kinds(node: ast.Module) -> dict[str, FunctionKind]:
+    kinds: dict[str, FunctionKind] = {}
     for stmt in node.body:
         if isinstance(stmt, ast.AsyncFunctionDef):
-            kinds[stmt.name] = "asyncgen" if _function_contains_yield(stmt) else "async"
+            kinds[stmt.name] = (
+                FunctionKind.ASYNC_GENERATOR
+                if function_contains_yield(stmt)
+                else FunctionKind.ASYNC
+            )
         elif isinstance(stmt, ast.FunctionDef):
-            if _function_contains_yield(stmt):
-                kinds[stmt.name] = "gen"
+            if function_contains_yield(stmt):
+                kinds[stmt.name] = FunctionKind.GENERATOR
             else:
-                kinds[stmt.name] = "sync"
+                kinds[stmt.name] = FunctionKind.SYNC
     return kinds
 
 
@@ -131,9 +239,17 @@ def collect_module_func_defaults(node: ast.Module) -> dict[str, dict[str, Any]]:
         if not isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
         if isinstance(stmt, ast.AsyncFunctionDef):
-            kind = "asyncgen" if _function_contains_yield(stmt) else "async"
+            kind = (
+                FunctionKind.ASYNC_GENERATOR
+                if function_contains_yield(stmt)
+                else FunctionKind.ASYNC
+            )
         else:
-            kind = "gen" if _function_contains_yield(stmt) else "sync"
+            kind = (
+                FunctionKind.GENERATOR
+                if function_contains_yield(stmt)
+                else FunctionKind.SYNC
+            )
         has_decorators = bool(stmt.decorator_list)
         if stmt.args.vararg or stmt.args.kwarg:
             defaults[stmt.name] = {

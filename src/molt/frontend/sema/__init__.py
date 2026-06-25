@@ -21,9 +21,18 @@ import ast
 from molt.frontend.sema.classgraph import build_class_graph
 from molt.frontend.sema.constenv import collect_module_const_dicts
 from molt.frontend.sema.funcmeta import (
+    FUNCTION_KIND_VALUES,
+    STATEFUL_FUNCTION_KINDS,
+    FunctionKind,
+    async_generator_contains_return_value,
+    async_generator_contains_yield_from,
     collect_module_class_names,
     collect_module_func_defaults,
     collect_module_func_kinds,
+    expression_contains_yield,
+    function_contains_yield,
+    normalize_function_kind,
+    signature_contains_yield,
 )
 from molt.frontend.sema.result import (
     ClassGraph,
@@ -33,14 +42,23 @@ from molt.frontend.sema.result import (
 
 __all__ = [
     "ClassGraph",
+    "FUNCTION_KIND_VALUES",
     "FunctionMeta",
+    "FunctionKind",
+    "STATEFUL_FUNCTION_KINDS",
     "SemaResult",
     "analyze_module",
+    "async_generator_contains_return_value",
+    "async_generator_contains_yield_from",
     "build_class_graph",
     "collect_module_class_names",
     "collect_module_const_dicts",
     "collect_module_func_defaults",
     "collect_module_func_kinds",
+    "expression_contains_yield",
+    "function_contains_yield",
+    "normalize_function_kind",
+    "signature_contains_yield",
 ]
 
 
