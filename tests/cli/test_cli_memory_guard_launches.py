@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 import molt.cli as cli
+from molt.cli import typecheck as cli_typecheck
 
 BACKEND_EXECUTION = importlib.import_module("molt.cli.backend_execution")
 COMMAND_RUNTIME = importlib.import_module("molt.cli.command_runtime")
@@ -171,9 +172,9 @@ def test_ty_check_uses_cli_memory_guard(monkeypatch, tmp_path: Path) -> None:
         captured["kwargs"] = kwargs
         return subprocess.CompletedProcess(cmd, 0, "ok", "")
 
-    monkeypatch.setattr(cli, "_run_completed_command", fake_run)
+    monkeypatch.setattr(cli_typecheck, "_run_completed_command", fake_run)
 
-    ok, output = cli._run_ty_check(tmp_path)
+    ok, output = cli_typecheck._run_ty_check(tmp_path)
 
     assert ok is True
     assert output == "ok"

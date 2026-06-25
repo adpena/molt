@@ -23,6 +23,8 @@ from molt.cli.config_resolution import (
     STATIC_IMPORT_MODULES_ENV,
     _resolve_build_config,
 )
+from molt.cli.default_paths import _default_molt_bin
+from molt.cli import frontend_pipeline as _frontend_pipeline
 from molt.cli.external_native import (
     _parse_external_static_packages,
     _resolve_external_package_native_artifact_plan,
@@ -133,12 +135,11 @@ def _wrapper_build_cache_manifest_path(binary_path: Path) -> Path:
 def _wrapper_build_default_binary_path(
     resolved_build_entry: _ResolvedBuildEntry,
 ) -> Path:
-    cli = _cli_module()
-    output_base = cli._output_base_for_entry(
+    output_base = _frontend_pipeline._output_base_for_entry(
         resolved_build_entry.entry_module,
         resolved_build_entry.source_path,
     )
-    return cli._default_molt_bin() / f"{output_base}_molt"
+    return _default_molt_bin() / f"{output_base}_molt"
 
 
 def _wrapper_build_cache_semantic_env(env: Mapping[str, str]) -> dict[str, str]:
