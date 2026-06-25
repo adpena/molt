@@ -11,6 +11,7 @@ from molt.compiler_analysis.tir_fact_graph import summarize_tir_fact_graph
 from molt.compiler_analysis.validation import (
     check_compiler_analysis_against_closure,
     summarize_compiler_binary_image_analysis,
+    validate_binary_image_closure_diagnostics,
 )
 
 __all__ = [
@@ -22,4 +23,5 @@ __all__ = [
     "stable_payload_hash",
     "summarize_compiler_binary_image_analysis",
     "summarize_tir_fact_graph",
+    "validate_binary_image_closure_diagnostics",
 ]
