@@ -9,6 +9,7 @@ from pathlib import Path
 import molt.cli as cli
 from molt.cli import commands as cli_commands
 from molt.cli import backend_binary as cli_backend_binary
+from molt.cli import backend_cache_setup as cli_backend_cache_setup
 from molt.cli import build_pipeline as cli_build_pipeline
 from molt.cli import link_pipeline as cli_link_pipeline
 
@@ -874,7 +875,7 @@ def test_prepare_backend_setup_warms_native_runtime_with_requested_stdlib_profil
         raising=True,
     )
     monkeypatch.setattr(
-        cli_build_pipeline,
+        cli_backend_cache_setup,
         "_prepare_backend_cache_setup",
         lambda *args, **kwargs: cache_setup,
         raising=True,
