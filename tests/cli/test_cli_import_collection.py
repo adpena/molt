@@ -19,6 +19,7 @@ from typing import Any, Mapping, Sequence, cast
 
 import molt.cli as cli
 import pytest
+from molt.cli import module_cache as cli_module_cache
 from molt.cli import module_graph as cli_module_graph
 from molt.frontend import MoltValue, SimpleTIRGenerator
 from molt.type_facts import Fact, FunctionFacts, ModuleFacts, TypeFacts
@@ -4198,7 +4199,7 @@ def test_persisted_module_analysis_cache_tracks_tooling_fingerprint(
     module_path.parent.mkdir()
     module_path.write_text("def f(x=1):\n    return x\n", encoding="utf-8")
 
-    monkeypatch.setattr(cli, "_cache_tooling_fingerprint", lambda: "tool-a")
+    monkeypatch.setattr(cli_module_cache, "_cache_tooling_fingerprint", lambda: "tool-a")
     cli._write_persisted_module_analysis(
         tmp_path,
         module_path,
@@ -4217,7 +4218,7 @@ def test_persisted_module_analysis_cache_tracks_tooling_fingerprint(
         import_scan_mode="full",
     ) == ({"f": _func_metadata(params=1)}, {"f": "sync"}, ("json",))
 
-    monkeypatch.setattr(cli, "_cache_tooling_fingerprint", lambda: "tool-b")
+    monkeypatch.setattr(cli_module_cache, "_cache_tooling_fingerprint", lambda: "tool-b")
     assert (
         cli._read_persisted_module_analysis(
             tmp_path,
@@ -4238,7 +4239,7 @@ def test_persisted_module_analysis_cache_tracks_source_content(
     module_path.write_text("def f(x=1):\n    return x\n", encoding="utf-8")
     original = module_path.stat()
 
-    monkeypatch.setattr(cli, "_cache_tooling_fingerprint", lambda: "tool-a")
+    monkeypatch.setattr(cli_module_cache, "_cache_tooling_fingerprint", lambda: "tool-a")
     cli._write_persisted_module_analysis(
         tmp_path,
         module_path,
@@ -4778,17 +4779,19 @@ def test_build_state_subdir_is_cached(tmp_path: Path) -> None:
 def test_module_analysis_cache_path_uses_cached_build_state_subdir(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    cli._build_state_subdir_cached.cache_clear()
+    cli_module_cache._build_state_subdir_cached.cache_clear()
 
     calls = 0
-    original = cli._build_state_subdir_cached
+    original = cli_module_cache._build_state_subdir_cached
 
     def wrapped(build_state_root_str: str, subdir: str) -> Path:
         nonlocal calls
         calls += 1
         return original(build_state_root_str, subdir)
 
-    monkeypatch.setattr(cli, "_build_state_subdir_cached", wrapped, raising=True)
+    monkeypatch.setattr(
+        cli_module_cache, "_build_state_subdir_cached", wrapped, raising=True
+    )
 
     first = cli._module_analysis_cache_path(
         tmp_path,
@@ -4832,17 +4835,19 @@ def test_module_analysis_cache_path_uses_cached_module_key(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     module_path = tmp_path / "pkg" / "mod.py"
-    cli._resolved_module_cache_key.cache_clear()
+    cli_module_cache._resolved_module_cache_key.cache_clear()
 
     calls = 0
-    original = cli._resolved_module_cache_key
+    original = cli_module_cache._resolved_module_cache_key
 
     def wrapped(path_str: str, *parts: str) -> str:
         nonlocal calls
         calls += 1
         return original(path_str, *parts)
 
-    monkeypatch.setattr(cli, "_resolved_module_cache_key", wrapped, raising=True)
+    monkeypatch.setattr(
+        cli_module_cache, "_resolved_module_cache_key", wrapped, raising=True
+    )
 
     first = cli._module_analysis_cache_path(
         tmp_path,
@@ -6125,7 +6130,7 @@ def test_load_module_analysis_reuses_persisted_module_analysis_imports(
     def fail_import_scan(*args: object, **kwargs: object) -> tuple[str, ...] | None:
         raise AssertionError("unexpected persisted import-scan read")
 
-    monkeypatch.setattr(cli, "_read_persisted_import_scan", fail_import_scan)
+    monkeypatch.setattr(cli_module_cache, "_read_persisted_import_scan", fail_import_scan)
     monkeypatch.setattr(
         cache,
         "parse_module_ast",
@@ -6657,9 +6662,11 @@ def test_prepare_frontend_parallel_batch_reuses_precomputed_context_digest(
         context_payload_calls += 1
         return {"module": "alpha"}
 
-    monkeypatch.setattr(cli, "_module_lowering_context_payload", fake_context_payload)
     monkeypatch.setattr(
-        cli, "_module_lowering_context_digest", lambda payload: "digest"
+        cli_module_cache, "_module_lowering_context_payload", fake_context_payload
+    )
+    monkeypatch.setattr(
+        cli_module_cache, "_module_lowering_context_digest", lambda payload: "digest"
     )
 
     def fake_read(
@@ -6681,7 +6688,7 @@ def test_prepare_frontend_parallel_batch_reuses_precomputed_context_digest(
         assert target_python == cli._DEFAULT_TARGET_PYTHON_VERSION
         return {"module": module_name, "kind": "cached"}
 
-    monkeypatch.setattr(cli, "_read_persisted_module_lowering", fake_read)
+    monkeypatch.setattr(cli_module_cache, "_read_persisted_module_lowering", fake_read)
     module_graph_metadata = cli._build_module_graph_metadata(
         {"alpha": module_path},
         generated_module_source_paths={},
@@ -6995,9 +7002,9 @@ def test_module_lowering_context_payload_tracks_frontend_tooling_fingerprint(
         path_stat=os.stat_result((0, 0, 0, 0, 0, 0, 1, 1, 1, 0)),
     )
 
-    monkeypatch.setattr(cli, "_cache_tooling_fingerprint", lambda: "tool-a")
+    monkeypatch.setattr(cli_module_cache, "_cache_tooling_fingerprint", lambda: "tool-a")
     payload_a = cli._module_lowering_context_payload(**kwargs)
-    monkeypatch.setattr(cli, "_cache_tooling_fingerprint", lambda: "tool-b")
+    monkeypatch.setattr(cli_module_cache, "_cache_tooling_fingerprint", lambda: "tool-b")
     payload_b = cli._module_lowering_context_payload(**kwargs)
 
     assert payload_a is not None
@@ -7228,7 +7235,7 @@ def test_prepare_frontend_parallel_batch_precomputes_scoped_known_classes_once(
     ):
         path.write_text(source)
 
-    original = cli._scoped_known_classes
+    original = cli_module_cache._scoped_known_classes
     calls = 0
 
     def wrapped_scoped_known_classes(
@@ -7238,9 +7245,13 @@ def test_prepare_frontend_parallel_batch_precomputes_scoped_known_classes_once(
         calls += 1
         return original(*args, **kwargs)
 
-    monkeypatch.setattr(cli, "_scoped_known_classes", wrapped_scoped_known_classes)
     monkeypatch.setattr(
-        cli, "_load_cached_module_lowering_result", lambda *args, **kwargs: None
+        cli_module_cache, "_scoped_known_classes", wrapped_scoped_known_classes
+    )
+    monkeypatch.setattr(
+        cli_module_cache,
+        "_load_cached_module_lowering_result",
+        lambda *args, **kwargs: None,
     )
     module_graph_metadata = cli._build_module_graph_metadata(
         module_graph,
@@ -7634,7 +7645,7 @@ def test_module_lowering_context_payload_reuses_precomputed_scoped_inputs(
         type_facts=None,
     )
     monkeypatch.setattr(
-        cli,
+        cli_module_cache,
         "_scoped_lowering_input_view",
         lambda *args, **kwargs: (_ for _ in ()).throw(
             AssertionError("unexpected scoped lowering recompute")
@@ -7685,7 +7696,7 @@ def test_module_worker_payload_reuses_precomputed_scoped_inputs(
         type_facts=None,
     )
     monkeypatch.setattr(
-        cli,
+        cli_module_cache,
         "_scoped_lowering_input_view",
         lambda *args, **kwargs: (_ for _ in ()).throw(
             AssertionError("unexpected scoped lowering recompute")
@@ -7751,7 +7762,7 @@ def test_load_cached_module_lowering_result_reuses_precomputed_views(
     )
 
     monkeypatch.setattr(
-        cli,
+        cli_module_cache,
         "_module_lowering_context_payload",
         lambda *args, **kwargs: (_ for _ in ()).throw(
             AssertionError("unexpected context payload recompute")
