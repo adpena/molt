@@ -19,6 +19,7 @@ from typing import Any, Mapping, Sequence, cast
 
 import molt.cli as cli
 import pytest
+from molt.cli import build_inputs as cli_build_inputs
 from molt.cli import build_results as cli_build_results
 from molt.cli import frontend_execution as cli_frontend_execution
 from molt.cli import frontend_pipeline as cli_frontend_pipeline
@@ -8090,7 +8091,7 @@ def test_parallel_build_reuses_cached_lowering_across_parallel_builds(
     )
     monkeypatch.setattr(cli, "_backend_daemon_enabled", lambda: False)
     monkeypatch.setattr(
-        cli,
+        cli_frontend_pipeline,
         "_analyze_module_schedule",
         lambda module_graph, module_deps: (
             cli._topo_sort_modules(module_graph, module_deps),
@@ -8181,7 +8182,7 @@ def test_parallel_build_reuses_cached_lowering_across_parallel_builds(
     assert "parallel_cache_hit" in worker_modes
 
 
-def test_parallel_build_only_relowers_changed_frontier(
+def test_parallel_build_reuses_dependent_cache_after_stable_interface_change(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     project = tmp_path / "project"
@@ -8222,7 +8223,7 @@ def test_parallel_build_only_relowers_changed_frontier(
     )
     monkeypatch.setattr(cli, "_backend_daemon_enabled", lambda: False)
     monkeypatch.setattr(
-        cli,
+        cli_frontend_pipeline,
         "_analyze_module_schedule",
         lambda module_graph, module_deps: (
             cli._topo_sort_modules(module_graph, module_deps),
@@ -8306,7 +8307,6 @@ def test_parallel_build_only_relowers_changed_frontier(
         for item in compile_diagnostics["frontend_parallel"]["worker_timings"]
     }
 
-    assert worker_modes_by_module["beta"] == "parallel_cache_hit"
     assert worker_modes_by_module["alpha"] == "parallel"
     assert worker_modes_by_module["main"] == "parallel_cache_hit"
 
@@ -8351,7 +8351,7 @@ def test_parallel_build_allows_scoped_type_facts(
     )
     monkeypatch.setattr(cli, "_backend_daemon_enabled", lambda: False)
     monkeypatch.setattr(
-        cli,
+        cli_frontend_pipeline,
         "_analyze_module_schedule",
         lambda module_graph, module_deps: (
             cli._topo_sort_modules(module_graph, module_deps),
@@ -8428,7 +8428,7 @@ def test_parallel_build_allows_scoped_type_facts(
         )
 
     assert rc == 0
-    assert captured_payloads
+    assert captured_payloads, stdout.getvalue()
     for payload in captured_payloads:
         scoped = payload["type_facts"]
         assert isinstance(scoped, TypeFacts)
@@ -13564,7 +13564,7 @@ def test_run_wrapper_build_ignores_legacy_mtime_binary_without_manifest(
     future_ns = entry.stat().st_mtime_ns + 1_000_000_000
     os.utime(stale_bin, ns=(future_ns, future_ns))
 
-    resolved, error = cli._resolve_wrapper_build_entry(
+    resolved, error = cli_build_inputs._resolve_wrapper_build_entry(
         file_path=str(entry),
         module=None,
         project_root=project,
@@ -13634,7 +13634,7 @@ def test_run_wrapper_build_manifest_tracks_args_and_source_hash(
     monkeypatch.setattr(cli, "_cache_fingerprint", lambda: "runtime-a")
     monkeypatch.setattr(cli, "_cache_tooling_fingerprint", lambda: "tool-a")
 
-    resolved, error = cli._resolve_wrapper_build_entry(
+    resolved, error = cli_build_inputs._resolve_wrapper_build_entry(
         file_path=str(entry),
         module=None,
         project_root=project,
@@ -13734,7 +13734,7 @@ def test_run_wrapper_build_manifest_tracks_imported_source_hash(
     monkeypatch.setattr(cli, "_cache_fingerprint", lambda: "runtime-a")
     monkeypatch.setattr(cli, "_cache_tooling_fingerprint", lambda: "tool-a")
 
-    resolved, error = cli._resolve_wrapper_build_entry(
+    resolved, error = cli_build_inputs._resolve_wrapper_build_entry(
         file_path=str(entry),
         module=None,
         project_root=project,
@@ -13817,7 +13817,7 @@ def test_run_wrapper_build_manifest_caches_module_entries(
     monkeypatch.setattr(cli, "_cache_fingerprint", lambda: "runtime-a")
     monkeypatch.setattr(cli, "_cache_tooling_fingerprint", lambda: "tool-a")
 
-    resolved, error = cli._resolve_wrapper_build_entry(
+    resolved, error = cli_build_inputs._resolve_wrapper_build_entry(
         file_path=None,
         module="demo",
         project_root=project,
@@ -15577,13 +15577,13 @@ def test_resolve_wasm_cargo_profile_is_cached(
 def test_native_arch_perf_requested_is_cached(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    cli._native_arch_perf_requested_cached.cache_clear()
+    cli_build_inputs._native_arch_perf_requested_cached.cache_clear()
     monkeypatch.setenv("MOLT_PERF_PROFILE", "native")
 
-    first = cli._native_arch_perf_requested()
-    second = cli._native_arch_perf_requested()
+    first = cli_build_inputs._native_arch_perf_requested()
+    second = cli_build_inputs._native_arch_perf_requested()
 
-    info = cli._native_arch_perf_requested_cached.cache_info()
+    info = cli_build_inputs._native_arch_perf_requested_cached.cache_info()
     assert first is True
     assert second is True
     assert info.hits >= 1

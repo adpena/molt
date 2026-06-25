@@ -5,6 +5,7 @@ import pytest
 
 import molt.cli as cli
 from molt.cli import backend_ir as cli_backend_ir
+from molt.cli import build_inputs as cli_build_inputs
 
 
 def test_target_python_defaults_to_lowest_supported_project_floor(
@@ -154,7 +155,7 @@ def test_wrapper_build_entry_uses_python_version_build_arg(tmp_path: Path) -> No
     source_path = tmp_path / "main.py"
     source_path.write_text("print('ok')\n")
 
-    entry, error = cli._resolve_wrapper_build_entry(
+    entry, error = cli_build_inputs._resolve_wrapper_build_entry(
         file_path=str(source_path),
         module=None,
         project_root=tmp_path,
@@ -211,7 +212,7 @@ def test_wrapper_cache_manifest_input_changes_with_target_python(
     source_path = tmp_path / "main.py"
     source_path.write_text("print('ok')\n")
     monkeypatch.setattr(
-        cli,
+        cli_build_inputs,
         "_parse_source_for_target",
         lambda source, *, filename, target_python: ast.parse(
             source,
@@ -219,7 +220,7 @@ def test_wrapper_cache_manifest_input_changes_with_target_python(
         ),
     )
 
-    entry312, error312 = cli._resolve_wrapper_build_entry(
+    entry312, error312 = cli_build_inputs._resolve_wrapper_build_entry(
         file_path=str(source_path),
         module=None,
         project_root=tmp_path,
@@ -227,7 +228,7 @@ def test_wrapper_cache_manifest_input_changes_with_target_python(
         command="run",
         build_args=["--python-version", "3.12"],
     )
-    entry314, error314 = cli._resolve_wrapper_build_entry(
+    entry314, error314 = cli_build_inputs._resolve_wrapper_build_entry(
         file_path=str(source_path),
         module=None,
         project_root=tmp_path,

@@ -8,13 +8,14 @@ import inspect
 from typing import Any, cast
 
 import molt.cli as cli
+from molt.cli import build_inputs as cli_build_inputs
 import pytest
 
 
 def test_prepare_build_config_uses_dev_runtime_profile_for_dev_builds(
     tmp_path: Path,
 ) -> None:
-    prepared, error = cli._prepare_build_config(
+    prepared, error = cli_build_inputs._prepare_build_config(
         project_root=tmp_path,
         warnings=[],
         json_output=False,
@@ -32,7 +33,7 @@ def test_prepare_build_config_uses_dev_runtime_profile_for_dev_builds(
 def test_prepare_build_config_uses_release_runtime_profile_for_release_builds(
     tmp_path: Path,
 ) -> None:
-    prepared, error = cli._prepare_build_config(
+    prepared, error = cli_build_inputs._prepare_build_config(
         project_root=tmp_path,
         warnings=[],
         json_output=False,

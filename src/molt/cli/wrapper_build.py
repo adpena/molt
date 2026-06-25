@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
-import importlib
 import json
 import os
 import shlex
@@ -23,7 +22,9 @@ from molt.cli.config_resolution import (
     STATIC_IMPORT_MODULES_ENV,
     _resolve_build_config,
 )
+from molt.cli.cache_fingerprints import _cache_fingerprint, _cache_tooling_fingerprint
 from molt.cli.default_paths import _default_molt_bin
+from molt.cli import build_inputs as _build_inputs
 from molt.cli import frontend_pipeline as _frontend_pipeline
 from molt.cli.external_native import (
     _parse_external_static_packages,
@@ -44,6 +45,7 @@ from molt.cli.module_graph import (
     _extend_module_graph_with_static_import_modules,
     _parse_static_import_modules,
     _source_content_sha256,
+    _stdlib_allowlist,
     _stdlib_root_path,
 )
 from molt.cli.models import (
@@ -62,10 +64,6 @@ from molt.cli.target_python import (
     _parse_target_python_version,
     _resolve_target_python_version,
 )
-
-
-def _cli_module() -> Any:
-    return importlib.import_module("molt.cli")
 
 
 def _build_args_has_json_flag(args: Sequence[str]) -> bool:
@@ -105,10 +103,9 @@ def _wrapper_target_python(
             return _parse_target_python_version(build_args[index + 1])
         if arg.startswith("--python-version="):
             return _parse_target_python_version(arg.split("=", 1)[1])
-    cli = _cli_module()
     return _resolve_target_python_version(
         explicit=None,
-        build_config=_resolve_build_config(cli._load_molt_config(project_root)),
+        build_config=_resolve_build_config(_build_inputs._load_molt_config(project_root)),
         project_root=project_root,
     )
 
@@ -156,7 +153,6 @@ def _wrapper_build_dependency_fingerprints(
     project_root: Path,
     capability_config_digest: str = "",
 ) -> list[dict[str, Any]] | None:
-    cli = _cli_module()
     stdlib_root = _stdlib_root_path()
     module_roots = list(resolved_build_entry.module_roots)
     roots = list(dict.fromkeys([*module_roots, stdlib_root]))
@@ -176,7 +172,7 @@ def _wrapper_build_dependency_fingerprints(
         admitted_external_packages=admitted_packages,
         native_artifact_plan=native_plan,
     )
-    stdlib_allowlist = cli._stdlib_allowlist()
+    stdlib_allowlist = _stdlib_allowlist()
     resolution_cache = _ModuleResolutionCache()
     try:
         graph, explicit_imports = _discover_module_graph(
@@ -268,7 +264,6 @@ def _wrapper_build_cache_input(
     env: Mapping[str, str],
     project_root: Path,
 ) -> tuple[dict[str, Any], str] | None:
-    cli = _cli_module()
     source_path = resolved_build_entry.source_path
     try:
         resolved_source_path = source_path.resolve()
@@ -277,7 +272,7 @@ def _wrapper_build_cache_input(
     source_hash = _source_content_sha256(resolved_source_path)
     if source_hash is None:
         return None
-    capability_config_digest = cli._capability_config_cache_digest_from_env(env)
+    capability_config_digest = _build_inputs._capability_config_cache_digest_from_env(env)
     dependencies = _wrapper_build_dependency_fingerprints(
         resolved_build_entry=resolved_build_entry,
         project_root=project_root,
@@ -295,8 +290,8 @@ def _wrapper_build_cache_input(
         "build_args": list(build_args),
         "semantic_env": _wrapper_build_cache_semantic_env(env),
         "capability_config_digest": capability_config_digest,
-        "runtime_backend_fingerprint": cli._cache_fingerprint(),
-        "frontend_tooling_fingerprint": cli._cache_tooling_fingerprint(),
+        "runtime_backend_fingerprint": _cache_fingerprint(),
+        "frontend_tooling_fingerprint": _cache_tooling_fingerprint(),
         "python_cache_tag": sys.implementation.cache_tag,
         "target_python": _wrapper_target_python(
             build_args,
