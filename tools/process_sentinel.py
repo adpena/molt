@@ -91,6 +91,8 @@ HOST_CONTROL_PLANE_TOKENS = memory_guard.HOST_CONTROL_PLANE_TOKENS
 INSPECTION_COMMAND_TOKENS = (
     "tools/process_sentinel.py",
     "process_sentinel.py",
+    "tools/memory_guard_core/windows_snapshot.py",
+    "--molt-windows-process-snapshot-json",
     " ps -",
     "ps -",
     " rg ",
@@ -358,11 +360,14 @@ def is_molt_process(
     command = sample.command
     if is_host_control_plane_process(sample):
         return False
-    if any(_command_contains(command, token) for token in INSPECTION_COMMAND_TOKENS):
+    normalized_command = _normalized_path_text(command)
+    if any(
+        _command_contains(normalized_command, _normalized_path_text(token))
+        for token in INSPECTION_COMMAND_TOKENS
+    ):
         return False
     if _repo_scoped_command_match(command, root):
         return True
-    normalized_command = _normalized_path_text(command)
     return any(
         _command_contains(normalized_command, repo_token)
         for repo_token in _normalized_repo_tokens(root)
