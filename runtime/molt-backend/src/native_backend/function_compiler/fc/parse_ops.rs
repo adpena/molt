@@ -25,7 +25,7 @@ pub(in crate::native_backend::function_compiler) fn handle_parse_op(
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
-    int_primary_vars: &BTreeSet<String>,
+    int_carriers_plan: &ScalarRepresentationPlan,
     float_primary_vars: &BTreeSet<String>,
     bool_primary_vars: &BTreeSet<String>,
     nbc: &crate::NanBoxConsts,
@@ -43,7 +43,7 @@ pub(in crate::native_backend::function_compiler) fn handle_parse_op(
                                        sealed_blocks: &mut BTreeSet<Block>,
                                        vars: &BTreeMap<String, Variable>,
                                        name: &str,
-                                       int_primary_vars: &BTreeSet<String>,
+                                       int_carriers_plan: &ScalarRepresentationPlan,
                                        float_primary_vars: &BTreeSet<String>|
      -> Option<crate::VarValue> {
         var_get_boxed_overflow_safe_fn(
@@ -54,7 +54,7 @@ pub(in crate::native_backend::function_compiler) fn handle_parse_op(
             sealed_blocks,
             vars,
             name,
-            int_primary_vars,
+            int_carriers_plan,
             float_primary_vars,
             bool_primary_vars,
             nbc,
@@ -72,7 +72,7 @@ pub(in crate::native_backend::function_compiler) fn handle_parse_op(
                 &mut *sealed_blocks,
                 vars,
                 &format!("{}_len", arg_name),
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             ) {
                 let ptr = var_get_boxed_overflow_safe(
@@ -83,7 +83,7 @@ pub(in crate::native_backend::function_compiler) fn handle_parse_op(
                     &mut *sealed_blocks,
                     vars,
                     &format!("{}_ptr", arg_name),
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 )
                 .or_else(|| {
@@ -95,7 +95,7 @@ pub(in crate::native_backend::function_compiler) fn handle_parse_op(
                         &mut *sealed_blocks,
                         vars,
                         arg_name,
-                        int_primary_vars,
+                        int_carriers_plan,
                         float_primary_vars,
                     )
                 })
@@ -141,7 +141,7 @@ pub(in crate::native_backend::function_compiler) fn handle_parse_op(
                     &mut *sealed_blocks,
                     vars,
                     arg_name,
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 )
                 .expect("String arg not found");
@@ -172,7 +172,7 @@ pub(in crate::native_backend::function_compiler) fn handle_parse_op(
                     &mut *sealed_blocks,
                     vars,
                     arg_name,
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 )
                 .expect("String arg not found");
@@ -202,7 +202,7 @@ pub(in crate::native_backend::function_compiler) fn handle_parse_op(
                 &mut *sealed_blocks,
                 vars,
                 &format!("{}_len", arg_name),
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             ) {
                 let ptr = var_get_boxed_overflow_safe(
@@ -213,7 +213,7 @@ pub(in crate::native_backend::function_compiler) fn handle_parse_op(
                     &mut *sealed_blocks,
                     vars,
                     &format!("{}_ptr", arg_name),
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 )
                 .or_else(|| {
@@ -225,7 +225,7 @@ pub(in crate::native_backend::function_compiler) fn handle_parse_op(
                         &mut *sealed_blocks,
                         vars,
                         arg_name,
-                        int_primary_vars,
+                        int_carriers_plan,
                         float_primary_vars,
                     )
                 })
@@ -271,7 +271,7 @@ pub(in crate::native_backend::function_compiler) fn handle_parse_op(
                     &mut *sealed_blocks,
                     vars,
                     arg_name,
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 )
                 .expect("Bytes arg not found");
@@ -302,7 +302,7 @@ pub(in crate::native_backend::function_compiler) fn handle_parse_op(
                     &mut *sealed_blocks,
                     vars,
                     arg_name,
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 )
                 .expect("Bytes arg not found");
@@ -332,7 +332,7 @@ pub(in crate::native_backend::function_compiler) fn handle_parse_op(
                 &mut *sealed_blocks,
                 vars,
                 &format!("{}_len", arg_name),
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             ) {
                 let ptr = var_get_boxed_overflow_safe(
@@ -343,7 +343,7 @@ pub(in crate::native_backend::function_compiler) fn handle_parse_op(
                     &mut *sealed_blocks,
                     vars,
                     &format!("{}_ptr", arg_name),
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 )
                 .or_else(|| {
@@ -355,7 +355,7 @@ pub(in crate::native_backend::function_compiler) fn handle_parse_op(
                         &mut *sealed_blocks,
                         vars,
                         arg_name,
-                        int_primary_vars,
+                        int_carriers_plan,
                         float_primary_vars,
                     )
                 })
@@ -401,7 +401,7 @@ pub(in crate::native_backend::function_compiler) fn handle_parse_op(
                     &mut *sealed_blocks,
                     vars,
                     arg_name,
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 )
                 .expect("Bytes arg not found");
@@ -432,7 +432,7 @@ pub(in crate::native_backend::function_compiler) fn handle_parse_op(
                     &mut *sealed_blocks,
                     vars,
                     arg_name,
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 )
                 .expect("Bytes arg not found");

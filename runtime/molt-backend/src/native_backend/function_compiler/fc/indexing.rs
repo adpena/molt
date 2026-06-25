@@ -31,7 +31,7 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     scalarized_tuples: &BTreeMap<String, Vec<Value>>,
-    int_primary_vars: &BTreeSet<String>,
+    int_carriers_plan: &ScalarRepresentationPlan,
     float_primary_vars: &BTreeSet<String>,
     bool_primary_vars: &BTreeSet<String>,
     int_like_vars: &BTreeSet<String>,
@@ -49,13 +49,13 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
     let ops = func_ops;
     let var_is_int = |name: &str| {
         scalar_fast_paths_enabled
-            && (int_like_vars.contains(name) || int_primary_vars.contains(name))
+            && (int_like_vars.contains(name) || int_carriers_plan.is_raw_int_carrier_name(name))
     };
     let var_is_bool = |name: &str| scalar_fast_paths_enabled && bool_like_vars.contains(name);
     let var_is_str = |name: &str| scalar_fast_paths_enabled && str_like_vars.contains(name);
     let var_is_known_non_heap = |name: &str| {
         int_like_vars.contains(name)
-            || int_primary_vars.contains(name)
+            || int_carriers_plan.is_raw_int_carrier_name(name)
             || bool_like_vars.contains(name)
             || bool_primary_vars.contains(name)
             || float_like_vars.contains(name)
@@ -75,7 +75,7 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                                        sealed_blocks: &mut BTreeSet<Block>,
                                        vars: &BTreeMap<String, Variable>,
                                        name: &str,
-                                       int_primary_vars: &BTreeSet<String>,
+                                       int_carriers_plan: &ScalarRepresentationPlan,
                                        float_primary_vars: &BTreeSet<String>|
      -> Option<crate::VarValue> {
         var_get_boxed_overflow_safe_fn(
@@ -86,7 +86,7 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
             sealed_blocks,
             vars,
             name,
-            int_primary_vars,
+            int_carriers_plan,
             float_primary_vars,
             bool_primary_vars,
             nbc,
@@ -119,7 +119,7 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                     sealed_blocks,
                     vars,
                     &args[0],
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 )
                 .expect("Obj not found");
@@ -131,7 +131,7 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                     sealed_blocks,
                     vars,
                     &args[1],
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 )
                 .expect("Index not found");
@@ -151,7 +151,7 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                     // Falls back to the safe runtime function otherwise.
                     // Inside loops, use Variable-only shadows (phi-correct).
                     let raw_idx_lookup =
-                        int_raw_value(&mut *builder, vars, int_primary_vars, &args[1]);
+                        int_raw_value(&mut *builder, vars, int_carriers_plan, &args[1]);
                     if let Some(raw_idx) = raw_idx_lookup {
                         // Extract storage_ptr, data_ptr, len (cached across loop iterations).
                         let (data_ptr, len_val) = {
@@ -225,6 +225,10 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                             (dp, lv)
                         };
                         let bce_safe = op.bce_safe == Some(true);
+                        let out_is_raw = op
+                            .out
+                            .as_ref()
+                            .is_some_and(|out| int_carriers_plan.is_raw_int_carrier_name(out));
                         if bce_safe {
                             // BCE-proven safe: straight-line element access
                             // with no bounds check, no branch, no slow path.
@@ -236,9 +240,20 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                                 elem_addr,
                                 0,
                             );
-                            let boxed_res = box_int_value(&mut *builder, raw_result, nbc);
                             if let Some(out__) = op.out.as_ref() {
-                                def_var_named(&mut *builder, vars, out__, boxed_res);
+                                let result = if out_is_raw {
+                                    raw_result
+                                } else {
+                                    box_raw_i64_value_overflow_safe(
+                                        &mut *module,
+                                        &mut *import_ids,
+                                        &mut *builder,
+                                        import_refs,
+                                        sealed_blocks,
+                                        raw_result,
+                                    )
+                                };
+                                def_var_named(&mut *builder, vars, out__, result);
                             }
                         } else {
                             // Bounds check: 0 <= raw_idx < len.
@@ -251,8 +266,7 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                             let slow_block = builder.create_block();
                             builder.set_cold_block(slow_block);
                             let merge_block = builder.create_block();
-                            builder.append_block_param(merge_block, types::I64); // boxed result
-                            builder.append_block_param(merge_block, types::I64); // raw result (valid only on fast path)
+                            builder.append_block_param(merge_block, types::I64);
                             builder
                                 .ins()
                                 .brif(in_bounds, fast_block, &[], slow_block, &[]);
@@ -268,39 +282,45 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                                 elem_addr,
                                 0,
                             );
-                            let boxed_res = box_int_value(&mut *builder, raw_result, nbc);
-                            jump_block(&mut *builder, merge_block, &[boxed_res, raw_result]);
+                            let fast_result = if out_is_raw {
+                                raw_result
+                            } else {
+                                box_raw_i64_value_overflow_safe(
+                                    &mut *module,
+                                    &mut *import_ids,
+                                    &mut *builder,
+                                    import_refs,
+                                    sealed_blocks,
+                                    raw_result,
+                                )
+                            };
+                            jump_block(&mut *builder, merge_block, &[fast_result]);
 
-                            // Slow path: safe runtime call (handles negative index, IndexError)
+                            // Slow path: runtime call handles negative index and IndexError.
                             switch_to_block_materialized(&mut *builder, slow_block);
                             seal_block_once(&mut *builder, sealed_blocks, slow_block);
+                            let (callee_name, slow_index) = if out_is_raw {
+                                ("molt_list_int_getitem_raw_checked", raw_idx)
+                            } else {
+                                ("molt_list_int_getitem", *idx)
+                            };
                             let callee = SimpleBackend::import_func_id_split(
                                 &mut *module,
                                 &mut *import_ids,
-                                "molt_list_int_getitem",
+                                callee_name,
                                 &[types::I64, types::I64],
                                 &[types::I64],
                             );
                             let local_callee = module.declare_func_in_func(callee, builder.func);
-                            let call = builder.ins().call(local_callee, &[*obj, *idx]);
+                            let call = builder.ins().call(local_callee, &[*obj, slow_index]);
                             let slow_res = builder.inst_results(call)[0];
-                            // Unbox the runtime result to get the true raw i64.
-                            // Using a 0 sentinel here would poison downstream shadows
-                            // (e.g., lst[-1] used in a comparison would compare 0).
-                            let slow_raw = unbox_int(&mut *builder, slow_res, nbc);
-                            jump_block(&mut *builder, merge_block, &[slow_res, slow_raw]);
+                            jump_block(&mut *builder, merge_block, &[slow_res]);
 
                             // Merge
                             switch_to_block_materialized(&mut *builder, merge_block);
                             seal_block_once(&mut *builder, sealed_blocks, merge_block);
-                            let merged_boxed = builder.block_params(merge_block)[0];
-                            let merged_raw = builder.block_params(merge_block)[1];
+                            let merged = builder.block_params(merge_block)[0];
                             if let Some(out__) = op.out.as_ref() {
-                                let merged = if int_primary_vars.contains(out__.as_str()) {
-                                    merged_raw
-                                } else {
-                                    merged_boxed
-                                };
                                 def_var_named(&mut *builder, vars, out__, merged);
                             }
                         }
@@ -323,7 +343,7 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                                 &mut *builder,
                                 import_refs,
                                 vars,
-                                int_primary_vars,
+                                int_carriers_plan,
                                 bool_primary_vars,
                                 float_primary_vars,
                                 nbc,
@@ -346,7 +366,7 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                     // can branch between u64-load (regular list) and u8-load+NaN-box
                     // (list_bool) without re-loading the header.
                     let raw_idx_lookup =
-                        int_raw_value(&mut *builder, vars, int_primary_vars, &args[1]);
+                        int_raw_value(&mut *builder, vars, int_carriers_plan, &args[1]);
                     if let Some(raw_idx) = raw_idx_lookup {
                         let vec_layout = vec_u64_layout();
                         // Determine output element type for specialization.
@@ -809,7 +829,7 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                                 &mut *builder,
                                 import_refs,
                                 vars,
-                                int_primary_vars,
+                                int_carriers_plan,
                                 bool_primary_vars,
                                 float_primary_vars,
                                 nbc,
@@ -846,7 +866,7 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                             &mut *builder,
                             import_refs,
                             vars,
-                            int_primary_vars,
+                            int_carriers_plan,
                             bool_primary_vars,
                             float_primary_vars,
                             nbc,
@@ -868,7 +888,7 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                 sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .unwrap_or_else(|| panic!("Obj not found in {} op {}", func_name, op_idx));
@@ -880,7 +900,7 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                 sealed_blocks,
                 vars,
                 &args[1],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .unwrap_or_else(|| panic!("Index not found in {} op {}", func_name, op_idx));
@@ -892,7 +912,7 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                 sealed_blocks,
                 vars,
                 &args[2],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .unwrap_or_else(|| panic!("Value not found in {} op {}", func_name, op_idx));
@@ -904,8 +924,8 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                 // Inline list[int] setitem with bounds check using
                 // ListIntStorage (#[repr(C)]): [data@0, len@8, cap@16].
                 // Inside loops, use Variable-only shadows (phi-correct).
-                let raw_idx_opt = int_raw_value(&mut *builder, vars, int_primary_vars, &args[1]);
-                let raw_val_opt = int_raw_value(&mut *builder, vars, int_primary_vars, &args[2]);
+                let raw_idx_opt = int_raw_value(&mut *builder, vars, int_carriers_plan, &args[1]);
+                let raw_val_opt = int_raw_value(&mut *builder, vars, int_carriers_plan, &args[2]);
                 if let (Some(raw_idx), Some(raw_val)) = (raw_idx_opt, raw_val_opt) {
                     // Extract storage_ptr, data_ptr, len (cached).
                     let (data_ptr, len_val) = {
@@ -1051,7 +1071,7 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
             ) {
                 // Inline list setitem — handles both TYPE_ID_LIST (Vec<u64>)
                 // and TYPE_ID_LIST_BOOL (ListBoolStorage, repr(C): [data@0, len@8, cap@16]).
-                let raw_idx_opt = int_raw_value(&mut *builder, vars, int_primary_vars, &args[1]);
+                let raw_idx_opt = int_raw_value(&mut *builder, vars, int_carriers_plan, &args[1]);
                 if let Some(raw_idx) = raw_idx_opt {
                     let vec_layout = vec_u64_layout();
                     let (data_ptr, len_val, is_bool_val) = {
@@ -1396,7 +1416,7 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                     bool_primary_vars,
                     vars,
                     nbc,
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                     &args[2],
                 );
@@ -1425,7 +1445,7 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .unwrap_or_else(|| panic!("Obj not found in {} op {}", func_name, op_idx));
@@ -1437,7 +1457,7 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .unwrap_or_else(|| panic!("Index not found in {} op {}", func_name, op_idx));
@@ -1465,7 +1485,7 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Slice target not found");
@@ -1477,7 +1497,7 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Slice start not found");
@@ -1489,7 +1509,7 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[2],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Slice end not found");
@@ -1517,7 +1537,7 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Slice start not found");
@@ -1529,7 +1549,7 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Slice stop not found");
@@ -1541,7 +1561,7 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[2],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Slice step not found");

@@ -7,10 +7,10 @@ split the conflated integer carrier into a **three-tier int `Repr` lattice** and
 full-range checked accumulator used as an index can never silently skip its
 bounds check.
 
-Status: DESIGN — build-free prep. This doc is the implementable spec; the cut
-itself is build #3 of the canonicalization arc, landed on a clean `RawF64` base
-once the FLOAT-lane cut merges (its STEP 1 rename moots this doc's STEP 7 rename;
-see "Relationship to the float cut").
+Status: IMPLEMENTED THROUGH THE NATIVE AUTHORITY CUT (2026-06-25). This doc
+began as the implementable spec; current code/tests are now authority for STEPs
+1-5. The remaining frontier is STEP 6 value-keyed lowering/proof hardening plus
+any backend parity checks that expose the same representation invariant.
 
 This doc mirrors the FLOAT-lane cut's structure: dual-authority problem → the
 real structural fork → the migration steps → the binding gates. The companion
@@ -217,8 +217,9 @@ RawF64` atomically across molt-tir. That moots this doc's original STEP 7 rename
 The float cut also established the exact migration shape this cut mirrors: it
 folded the name-keyed `float_primary_vars` set into `repr_by_name` and migrated
 "all 41 `fc/` handler files + `function_compiler.rs` as one structural arc (1206
-lines)" (float doc, STEP 4). The int cut does the identical fold + migration for
-`int_primary_vars` (1353 occurrences; see the migration map).
+lines)" (float doc, STEP 4). The int cut used the same full-arc shape for the
+deleted `int_primary_vars` authority (1353 pre-migration audit occurrences; see
+the migration map).
 
 One difference in expected outcome: the float cut was classified
 PARITY-PRESERVING / TIE because the native float phi was already raw `f64`. The
@@ -261,9 +262,10 @@ assertions.
 ### STEP 3 — fold the name-keyed proof into `repr_by_name` (1 file)
 `seed_repr_by_name` (`representation_plan.rs:1586`) raises BOTH tiers into
 `repr_by_name`: `RawI64Safe` from the inline-47 proof and `RawI64FullDeopt` from
-the native overflow-peel proof (the CheckedAdd/CheckedMul carriers). Add the
-accessors `is_full_deopt_int(name)` and `int_full_deopt_carrier_names()` next to
-`int_carrier_names` (`representation_plan.rs:1669`); `int_carrier_names()` now
+the native overflow-peel proof (the CheckedAdd/CheckedMul carriers). The
+name-keyed accessors are `is_full_deopt_int_name(name)`,
+`is_inline_safe_int_name(name)`, and `is_raw_int_carrier_name(name)`;
+`int_carrier_names()` now
 returns the `RawI64Safe`-only view and a new combined accessor (or the existing
 one widened — decide by usage) covers "any raw int carrier" where the native
 backend currently means "either." Add a TEMPORARY `debug_assert!` that the union
@@ -273,28 +275,23 @@ inline-47 + checked-op carriers, so this must hold) — this catches any drift
 before any consumer migrates, exactly as the float cut's `debug_assert` caught
 the `pow` divergence.
 
-### STEP 4 — migrate ALL native consumers (atomic; see migration map)
-Every native consumer of the cloned `int_primary_vars: &BTreeSet<String>`
-(`function_compiler.rs:1439`, derived at `:1700` from
-`representation_plan.primary_name_sets().int`) reads the int carrier from the
-single lattice via `representation_plan.is_inline_safe_int(name)` /
-`is_full_deopt_int(name)`. `simple_backend.rs`'s `ensure_boxed_overflow_safe`
-reads full-deopt from the plan, not a passed-in set. All 43 `fc/` files +
-`function_compiler.rs` + `scalar_carriers.rs` migrate as ONE structural arc — see
-`docs/design/int_lane_unification_migration_map.md` for every file and count.
-Partial migration leaves two int authorities live (the CLAUDE.md asymmetry rule);
-this is the whole set. ALSO switch `bce.rs:82-83` to
-`proves_index_in_bounds_conservatively`.
+### STEP 4 — migrated ALL native consumers (atomic; see migration map)
+Every native consumer of the deleted `int_primary_vars: &BTreeSet<String>` clone
+now reads the int carrier from `ScalarRepresentationPlan` via
+`is_raw_int_carrier_name`, `is_inline_safe_int_name`, or
+`is_full_deopt_int_name`, depending on whether the site needs storage,
+inline-boxing, or checked full-i64 box-site semantics. All `fc/` files,
+`function_compiler.rs`, and `scalar_carriers.rs` moved as one structural arc; see
+`docs/design/int_lane_unification_migration_map.md` for the pre-migration audit
+and binding gate.
 
-### STEP 5 — delete the legacy seeding path (no hybrid)
-Remove the `let int_primary_vars = primary_names.int` derivation
-(`function_compiler.rs:1700`) and any field/seed that constituted the second
-int-carrier authority. `compute`-style int proofs are KEPT as the single proof
+### STEP 5 — deleted the legacy seeding path (no hybrid)
+The `let int_primary_vars = primary_names.int` derivation and native handler
+threading path are gone. `compute`-style int proofs remain the single proof
 feeding both the name-keyed raise (STEP 3) and the value-keyed seed (STEP 2).
-Remove the STEP-3 migration `debug_assert`.
 BINDING ZERO-OCCURRENCE GATE: `git grep int_primary_vars -- runtime/molt-backend`
-== 0 (no second source of truth). (The float cut's analogous gate:
-`git grep float_primary_vars -- runtime/molt-backend` == 0.)
+== 0 (no second source of truth). Historical mentions in this design doc and
+the migration map are provenance only.
 
 ### STEP 6 — value-keyed lowering consumes both tiers (3 files)
 `lower_to_lir.rs`, `lower_to_wasm.rs`, `llvm_backend/lowering.rs`: recognize
@@ -365,9 +362,9 @@ RawI64FullDeopt, mirroring the existing bce.rs negative tests
 1. *Box-site discipline on value-keyed backends* (STEP 6) — a `RawI64FullDeopt`
    value boxed via the inline-47 path would mis-encode a wrapped value. Gate 1's
    printed BigInt result diverges if this happens.
-2. *Native handler churn* (STEP 4) — 1353 `int_primary_vars` occurrences across
-   44 files. Migrate as one struct-level threading change (the migration map
-   frames it as ONE atomic change, not 41 chips), then run the native test suite.
+2. *Native handler churn* (STEP 4) — retired in the 2026-06-25 native authority
+   cut: 1353 pre-migration `int_primary_vars` occurrences across 44 files moved
+   to plan predicates as one threading change. Keep the zero-occurrence gate live.
 
 **Low:**
 1. `default_for` (no change). 2. Other-lane joins (fail-closed, no change).
@@ -388,5 +385,5 @@ exists and STEP 7 is moot), AND:
    path; Gate 1 gates it; no new loop verification is introduced.
 4. Cross-backend parity is achievable — WASM/LLVM already derive Repr from the
    value-range; adding full-deopt seeding preserves the firewall.
-5. The migration is atomic — all `int_primary_vars` consumers migrate together
-   (STEP 4 is one arc, per the migration map).
+5. The migration is atomic — all native `int_primary_vars` consumers migrated
+   together (STEP 4 is one arc, per the migration map).

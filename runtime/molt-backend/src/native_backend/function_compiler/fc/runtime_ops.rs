@@ -31,7 +31,7 @@ pub(in crate::native_backend::function_compiler) fn handle_runtime_op(
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
-    int_primary_vars: &BTreeSet<String>,
+    int_carriers_plan: &ScalarRepresentationPlan,
     float_primary_vars: &BTreeSet<String>,
     bool_primary_vars: &BTreeSet<String>,
     local_exc_pending_fast: FuncRef,
@@ -48,7 +48,7 @@ pub(in crate::native_backend::function_compiler) fn handle_runtime_op(
                                        sealed_blocks: &mut BTreeSet<Block>,
                                        vars: &BTreeMap<String, Variable>,
                                        name: &str,
-                                       int_primary_vars: &BTreeSet<String>,
+                                       int_carriers_plan: &ScalarRepresentationPlan,
                                        float_primary_vars: &BTreeSet<String>|
      -> Option<crate::VarValue> {
         var_get_boxed_overflow_safe_fn(
@@ -59,7 +59,7 @@ pub(in crate::native_backend::function_compiler) fn handle_runtime_op(
             sealed_blocks,
             vars,
             name,
-            int_primary_vars,
+            int_carriers_plan,
             float_primary_vars,
             bool_primary_vars,
             nbc,
@@ -77,7 +77,7 @@ pub(in crate::native_backend::function_compiler) fn handle_runtime_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Env key not found");
@@ -89,7 +89,7 @@ pub(in crate::native_backend::function_compiler) fn handle_runtime_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Env default not found");
@@ -131,7 +131,7 @@ pub(in crate::native_backend::function_compiler) fn handle_runtime_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("FunctionDefaultsVersion arg not found");
@@ -146,7 +146,7 @@ pub(in crate::native_backend::function_compiler) fn handle_runtime_op(
             let call = builder.ins().call(local_callee, &[*func_boxed]);
             let boxed_res = builder.inst_results(call)[0];
             if let Some(out__) = op.out.as_ref() {
-                if int_primary_vars.contains(out__) {
+                if int_carriers_plan.is_raw_int_carrier_name(out__) {
                     let raw_res = unbox_int(&mut *builder, boxed_res, nbc);
                     def_var_named(&mut *builder, vars, out__, raw_res);
                 } else {
@@ -164,7 +164,7 @@ pub(in crate::native_backend::function_compiler) fn handle_runtime_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             ) {
                 *val
@@ -198,7 +198,7 @@ pub(in crate::native_backend::function_compiler) fn handle_runtime_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("warn_stderr arg");
@@ -233,7 +233,7 @@ pub(in crate::native_backend::function_compiler) fn handle_runtime_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Task not found");
@@ -261,7 +261,7 @@ pub(in crate::native_backend::function_compiler) fn handle_runtime_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Message not found");

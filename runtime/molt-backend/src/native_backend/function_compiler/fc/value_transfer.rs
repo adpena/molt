@@ -34,7 +34,7 @@ pub(in crate::native_backend::function_compiler) fn handle_value_transfer_op(
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
-    int_primary_vars: &BTreeSet<String>,
+    int_carriers_plan: &ScalarRepresentationPlan,
     float_primary_vars: &BTreeSet<String>,
     bool_primary_vars: &BTreeSet<String>,
     block_tracked_obj: &mut BTreeMap<Block, Vec<String>>,
@@ -61,7 +61,7 @@ pub(in crate::native_backend::function_compiler) fn handle_value_transfer_op(
                                        sealed_blocks: &mut BTreeSet<Block>,
                                        vars: &BTreeMap<String, Variable>,
                                        name: &str,
-                                       int_primary_vars: &BTreeSet<String>,
+                                       int_carriers_plan: &ScalarRepresentationPlan,
                                        float_primary_vars: &BTreeSet<String>|
      -> Option<crate::VarValue> {
         var_get_boxed_overflow_safe_fn(
@@ -72,7 +72,7 @@ pub(in crate::native_backend::function_compiler) fn handle_value_transfer_op(
             sealed_blocks,
             vars,
             name,
-            int_primary_vars,
+            int_carriers_plan,
             float_primary_vars,
             bool_primary_vars,
             nbc,
@@ -94,7 +94,7 @@ pub(in crate::native_backend::function_compiler) fn handle_value_transfer_op(
                     &mut *sealed_blocks,
                     vars,
                     src_name,
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 )
                 .expect("inc_ref/borrow source not found");
@@ -119,7 +119,7 @@ pub(in crate::native_backend::function_compiler) fn handle_value_transfer_op(
                     &mut *sealed_blocks,
                     vars,
                     src_name,
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 )
                 .expect("inc_ref/borrow source not found (coalesced)");
@@ -149,7 +149,7 @@ pub(in crate::native_backend::function_compiler) fn handle_value_transfer_op(
                     &mut *sealed_blocks,
                     vars,
                     src_name,
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 )
                 .expect("dec_ref/release source not found");
@@ -195,7 +195,7 @@ pub(in crate::native_backend::function_compiler) fn handle_value_transfer_op(
                 &mut *sealed_blocks,
                 vars,
                 src_name,
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("conversion source not found");
@@ -227,7 +227,7 @@ pub(in crate::native_backend::function_compiler) fn handle_value_transfer_op(
             if let Some(out_name) = op.out.as_ref()
                 && out_name != "none"
             {
-                // The unboxed-scalar primary lanes (`int_primary_vars`,
+                // The unboxed-scalar primary lanes (`int_carriers_plan`,
                 // `bool_primary_vars`, `float_primary_vars`) each carry a RAW
                 // machine value in the destination's Cranelift Variable — raw
                 // i64, raw 0/1, raw f64 respectively (see `int_raw_value` /
@@ -252,7 +252,7 @@ pub(in crate::native_backend::function_compiler) fn handle_value_transfer_op(
                                     &mut *sealed_blocks,
                                     vars,
                                     src_name,
-                                    int_primary_vars,
+                                    int_carriers_plan,
                                     float_primary_vars,
                                 )
                                 .expect("alias source not found");
@@ -265,9 +265,9 @@ pub(in crate::native_backend::function_compiler) fn handle_value_transfer_op(
                                 )
                             });
                     def_var_named(&mut *builder, vars, out_name.clone(), raw_f64);
-                } else if int_primary_vars.contains(out_name) {
+                } else if int_carriers_plan.is_raw_int_carrier_name(out_name) {
                     // Int-primary: transfer raw i64 directly.
-                    let raw_i64 = int_raw_value(&mut *builder, vars, int_primary_vars, src_name)
+                    let raw_i64 = int_raw_value(&mut *builder, vars, int_carriers_plan, src_name)
                         .or_else(|| {
                             bool_raw_value(&mut *builder, vars, bool_primary_vars, src_name)
                         })
@@ -280,7 +280,7 @@ pub(in crate::native_backend::function_compiler) fn handle_value_transfer_op(
                                 &mut *sealed_blocks,
                                 vars,
                                 src_name,
-                                int_primary_vars,
+                                int_carriers_plan,
                                 float_primary_vars,
                             )
                             .expect("alias source not found");
@@ -290,7 +290,7 @@ pub(in crate::native_backend::function_compiler) fn handle_value_transfer_op(
                 } else if bool_primary_vars.contains(out_name) {
                     // Bool-primary: transfer raw 0/1 directly.
                     let raw_bool = bool_raw_value(&mut *builder, vars, bool_primary_vars, src_name)
-                        .or_else(|| int_raw_value(&mut *builder, vars, int_primary_vars, src_name))
+                        .or_else(|| int_raw_value(&mut *builder, vars, int_carriers_plan, src_name))
                         .unwrap_or_else(|| {
                             let boxed = var_get_boxed_overflow_safe(
                                 &mut *module,
@@ -300,7 +300,7 @@ pub(in crate::native_backend::function_compiler) fn handle_value_transfer_op(
                                 &mut *sealed_blocks,
                                 vars,
                                 src_name,
-                                int_primary_vars,
+                                int_carriers_plan,
                                 float_primary_vars,
                             )
                             .expect("alias source not found");
@@ -316,7 +316,7 @@ pub(in crate::native_backend::function_compiler) fn handle_value_transfer_op(
                         &mut *sealed_blocks,
                         vars,
                         src_name,
-                        int_primary_vars,
+                        int_carriers_plan,
                         float_primary_vars,
                     )
                     .expect("alias source not found");

@@ -41,7 +41,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
-    int_primary_vars: &BTreeSet<String>,
+    int_carriers_plan: &ScalarRepresentationPlan,
     float_primary_vars: &BTreeSet<String>,
     bool_primary_vars: &BTreeSet<String>,
     int_like_vars: &BTreeSet<String>,
@@ -86,7 +86,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                                        sealed_blocks: &mut BTreeSet<Block>,
                                        vars: &BTreeMap<String, Variable>,
                                        name: &str,
-                                       int_primary_vars: &BTreeSet<String>,
+                                       int_carriers_plan: &ScalarRepresentationPlan,
                                        float_primary_vars: &BTreeSet<String>|
      -> Option<crate::VarValue> {
         var_get_boxed_overflow_safe_fn(
@@ -97,7 +97,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
             sealed_blocks,
             vars,
             name,
-            int_primary_vars,
+            int_carriers_plan,
             float_primary_vars,
             bool_primary_vars,
             nbc,
@@ -144,7 +144,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                                 &name,
                                 None,
                                 param_name_set,
-                                int_primary_vars,
+                                int_carriers_plan,
                                 float_primary_vars,
                             ) || !mark_cleanup_root_once(
                                 alias_roots,
@@ -169,7 +169,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                                 &name,
                                 None,
                                 param_name_set,
-                                int_primary_vars,
+                                int_carriers_plan,
                                 float_primary_vars,
                             ) || !mark_cleanup_root_once(
                                 alias_roots,
@@ -194,7 +194,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                         name,
                         None,
                         param_name_set,
-                        int_primary_vars,
+                        int_carriers_plan,
                         float_primary_vars,
                     ) {
                         continue;
@@ -207,7 +207,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                         &mut *sealed_blocks,
                         vars,
                         name,
-                        int_primary_vars,
+                        int_carriers_plan,
                         float_primary_vars,
                     ) && mark_cleanup_root_once(alias_roots, &mut *already_decrefed, name)
                     {
@@ -219,7 +219,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                         name,
                         None,
                         param_name_set,
-                        int_primary_vars,
+                        int_carriers_plan,
                         float_primary_vars,
                     ) {
                         continue;
@@ -232,7 +232,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                         &mut *sealed_blocks,
                         vars,
                         name,
-                        int_primary_vars,
+                        int_carriers_plan,
                         float_primary_vars,
                     ) && mark_cleanup_root_once(alias_roots, &mut *already_decrefed, name)
                     {
@@ -260,7 +260,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                 bool_primary_vars,
                 vars,
                 nbc,
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
                 var_name,
             );
@@ -282,7 +282,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                             &name,
                             Some(&protected_return_aliases),
                             param_name_set,
-                            int_primary_vars,
+                            int_carriers_plan,
                             float_primary_vars,
                         ) || !mark_cleanup_root_once(alias_roots, &mut *already_decrefed, &name)
                         {
@@ -297,7 +297,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                                 &mut *sealed_blocks,
                                 vars,
                                 &name,
-                                int_primary_vars,
+                                int_carriers_plan,
                                 float_primary_vars,
                             )
                             .map(|v| *v)
@@ -314,7 +314,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                             &name,
                             Some(&protected_return_aliases),
                             param_name_set,
-                            int_primary_vars,
+                            int_carriers_plan,
                             float_primary_vars,
                         ) || !mark_cleanup_root_once(alias_roots, &mut *already_decrefed, &name)
                         {
@@ -329,7 +329,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                                 &mut *sealed_blocks,
                                 vars,
                                 &name,
-                                int_primary_vars,
+                                int_carriers_plan,
                                 float_primary_vars,
                             )
                             .map(|v| *v)
@@ -352,7 +352,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                     name,
                     Some(&protected_return_aliases),
                     param_name_set,
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 ) {
                     continue;
@@ -366,7 +366,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                         &mut *sealed_blocks,
                         vars,
                         name,
-                        int_primary_vars,
+                        int_carriers_plan,
                         float_primary_vars,
                     )
                     .map(|v| *v)
@@ -382,7 +382,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                     name,
                     Some(&protected_return_aliases),
                     param_name_set,
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 ) {
                     continue;
@@ -396,7 +396,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                         &mut *sealed_blocks,
                         vars,
                         name,
-                        int_primary_vars,
+                        int_carriers_plan,
                         float_primary_vars,
                     )
                     .map(|v| *v)
@@ -433,7 +433,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                             &name,
                             None,
                             param_name_set,
-                            int_primary_vars,
+                            int_carriers_plan,
                             float_primary_vars,
                         ) || !mark_cleanup_root_once(alias_roots, &mut *already_decrefed, &name)
                         {
@@ -455,7 +455,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                             &name,
                             None,
                             param_name_set,
-                            int_primary_vars,
+                            int_carriers_plan,
                             float_primary_vars,
                         ) || !mark_cleanup_root_once(alias_roots, &mut *already_decrefed, &name)
                         {
@@ -477,7 +477,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                     name,
                     None,
                     param_name_set,
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 ) {
                     continue;
@@ -493,7 +493,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                     name,
                     None,
                     param_name_set,
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 ) {
                     continue;
@@ -540,7 +540,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                             &mut *sealed_blocks,
                             vars,
                             &name,
-                            int_primary_vars,
+                            int_carriers_plan,
                             float_primary_vars,
                         )
                         .map(|v| *v)
@@ -577,7 +577,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                             &mut *sealed_blocks,
                             vars,
                             &name,
-                            int_primary_vars,
+                            int_carriers_plan,
                             float_primary_vars,
                         )
                         .map(|v| *v)
@@ -633,7 +633,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[0],
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 )
                 .expect("Cond not found");
@@ -641,12 +641,13 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                 let bit0 = builder.ins().band(*cond, one);
                 builder.ins().icmp_imm(IntCC::NotEqual, bit0, 0)
             } else if let Some(raw_shadow) =
-                int_raw_value(&mut *builder, vars, int_primary_vars, &args[0])
+                int_raw_value(&mut *builder, vars, int_carriers_plan, &args[0])
             {
                 // Proven raw i64 carrier: truthiness is `value != 0`.
                 builder.ins().icmp_imm(IntCC::NotEqual, raw_shadow, 0)
             } else if scalar_fast_paths_enabled
-                && (int_like_vars.contains(cond_name) || int_primary_vars.contains(cond_name))
+                && (int_like_vars.contains(cond_name)
+                    || int_carriers_plan.is_raw_int_carrier_name(cond_name))
             {
                 // `var_is_int` only proves Python-`int` type, which includes
                 // heap BigInts (TAG_PTR). The trusted unbox would truncate a
@@ -662,7 +663,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[0],
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 )
                 .expect("Cond not found");
@@ -680,7 +681,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[0],
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 )
                 .expect("Cond not found");
@@ -941,14 +942,14 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                 // AND destination is proven-int, transfer the raw i64 directly.
                 // This eliminates box+unbox round-trips in tight loops like
                 // `total += i; i += 1` where both sides are proven-int.
-                if int_primary_vars.contains(&args[0])
+                if int_carriers_plan.is_raw_int_carrier_name(&args[0])
                     && scalar_fast_paths_enabled
-                    && int_primary_vars.contains(name)
+                    && int_carriers_plan.is_raw_int_carrier_name(name)
                     && !slot_backed_join_slots.contains_key(name)
                 {
                     // Read raw i64 from source Variable (no boxing).
                     let raw_val =
-                        { int_raw_value(&mut *builder, vars, int_primary_vars, &args[0]) }
+                        { int_raw_value(&mut *builder, vars, int_carriers_plan, &args[0]) }
                             .unwrap_or_else(|| {
                                 // Source is raw-primary but has no shadow entry yet.
                                 // Read directly from the main Variable (which holds raw i64).
@@ -957,7 +958,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                                     .expect("store_var: raw src var not found");
                                 builder.use_var(var)
                             });
-                    // Phase 1c: int_primary_vars join slots write raw
+                    // Phase 1c: int_carriers_plan join slots write raw
                     // i64 directly to the main Variable. The
                     // loop_start demote is taught to skip them, so
                     // both the entry preheader and the back edge
@@ -973,12 +974,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                     // definition sites might produce boxed values
                     // (mixed-type stores, generic-runtime calls
                     // that return NaN-boxed results).
-                    if is_join_slot_name(name) && !int_primary_vars.contains(name) {
-                        let boxed = box_int_value(&mut *builder, raw_val, nbc);
-                        def_var_named(&mut *builder, vars, name, boxed);
-                    } else {
-                        def_var_named(&mut *builder, vars, name, raw_val);
-                    }
+                    def_var_named(&mut *builder, vars, name, raw_val);
                     // Propagate shadow to destination (both tiers).
                     // No refcount ops needed -- raw i64 is not a heap pointer.
                     return OpFlow::Continue;
@@ -1003,7 +999,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                                     &mut *sealed_blocks,
                                     vars,
                                     &args[0],
-                                    int_primary_vars,
+                                    int_carriers_plan,
                                     float_primary_vars,
                                 )
                                 .expect("store_var: float src not found");
@@ -1046,7 +1042,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                     let raw_val = if bool_primary_vars.contains(name) {
                         bool_raw_value(&mut *builder, vars, bool_primary_vars, &args[0])
                     } else {
-                        int_raw_value(&mut *builder, vars, int_primary_vars, &args[0])
+                        int_raw_value(&mut *builder, vars, int_carriers_plan, &args[0])
                     }
                     .unwrap_or_else(|| {
                         panic!(
@@ -1066,7 +1062,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[0],
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 )
                 .expect("store_var: src not found");
@@ -1125,7 +1121,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                     }
                     found
                 };
-                let store_uses_boxed_transport = !int_primary_vars.contains(name)
+                let store_uses_boxed_transport = !int_carriers_plan.is_raw_int_carrier_name(name)
                     && !bool_primary_vars.contains(name)
                     && !float_primary_vars.contains(name);
                 // RC drop-insertion substrate (design 20, R1 guard — inc
@@ -1167,7 +1163,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                     &mut *builder,
                     &mut *import_refs,
                     vars,
-                    int_primary_vars,
+                    int_carriers_plan,
                     bool_primary_vars,
                     float_primary_vars,
                     nbc,
@@ -1186,7 +1182,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[0],
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 );
             }
@@ -1215,7 +1211,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                 &mut *sealed_blocks,
                 vars,
                 missing_name,
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("delete_var: missing sentinel not found");
@@ -1227,7 +1223,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                 &mut *sealed_blocks,
                 vars,
                 old_name,
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("delete_var: old local operand not found");
@@ -1240,7 +1236,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                     &mut *builder,
                     &mut *import_refs,
                     vars,
-                    int_primary_vars,
+                    int_carriers_plan,
                     bool_primary_vars,
                     float_primary_vars,
                     nbc,
@@ -1292,7 +1288,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                                     raw_val,
                                     nbc,
                                 );
-                            } else if int_primary_vars.contains(out_name.as_str()) {
+                            } else if int_carriers_plan.is_raw_int_carrier_name(out_name.as_str()) {
                                 def_var_named(&mut *builder, vars, out_name, raw_val);
                             } else {
                                 let boxed = box_raw_i64_value_overflow_safe(
@@ -1309,7 +1305,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                                     &mut *builder,
                                     &mut *import_refs,
                                     vars,
-                                    int_primary_vars,
+                                    int_carriers_plan,
                                     bool_primary_vars,
                                     float_primary_vars,
                                     nbc,
@@ -1346,7 +1342,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                             &mut *builder,
                             &mut *import_refs,
                             vars,
-                            int_primary_vars,
+                            int_carriers_plan,
                             bool_primary_vars,
                             float_primary_vars,
                             nbc,
@@ -1359,14 +1355,14 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                 // --- Raw-primary int fast path ---
                 // When source is raw-primary and output is proven-int,
                 // transfer raw i64 directly -- no boxing, no refcount.
-                if int_primary_vars.contains(var_name.as_str())
+                if int_carriers_plan.is_raw_int_carrier_name(var_name.as_str())
                     && scalar_fast_paths_enabled
                     && op
                         .out
                         .as_ref()
-                        .is_some_and(|o| int_primary_vars.contains(o))
+                        .is_some_and(|o| int_carriers_plan.is_raw_int_carrier_name(o))
                 {
-                    let raw_val = int_raw_value(&mut *builder, vars, int_primary_vars, var_name)
+                    let raw_val = int_raw_value(&mut *builder, vars, int_carriers_plan, var_name)
                         .unwrap_or_else(|| {
                             let var = *vars
                                 .get(var_name.as_str())
@@ -1396,7 +1392,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                                     &mut *sealed_blocks,
                                     vars,
                                     var_name,
-                                    int_primary_vars,
+                                    int_carriers_plan,
                                     float_primary_vars,
                                 )
                                 .expect("load_var: float src not found");
@@ -1436,7 +1432,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                     &mut *sealed_blocks,
                     vars,
                     var_name,
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 )
                 .expect("load_var: var not found");
@@ -1447,7 +1443,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                         &mut *builder,
                         &mut *import_refs,
                         vars,
-                        int_primary_vars,
+                        int_carriers_plan,
                         bool_primary_vars,
                         float_primary_vars,
                         nbc,
@@ -1472,7 +1468,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                                     raw_val,
                                     nbc,
                                 );
-                            } else if int_primary_vars.contains(out_name.as_str()) {
+                            } else if int_carriers_plan.is_raw_int_carrier_name(out_name.as_str()) {
                                 def_var_named(&mut *builder, vars, out_name, raw_val);
                             } else {
                                 let boxed = box_raw_i64_value_overflow_safe(
@@ -1489,7 +1485,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                                     &mut *builder,
                                     &mut *import_refs,
                                     vars,
-                                    int_primary_vars,
+                                    int_carriers_plan,
                                     bool_primary_vars,
                                     float_primary_vars,
                                     nbc,
@@ -1526,7 +1522,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                             &mut *builder,
                             &mut *import_refs,
                             vars,
-                            int_primary_vars,
+                            int_carriers_plan,
                             bool_primary_vars,
                             float_primary_vars,
                             nbc,
@@ -1537,14 +1533,14 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                     return OpFlow::Continue;
                 }
                 // --- Raw-primary int fast path (args-based copy_var) ---
-                if int_primary_vars.contains(&args[0])
+                if int_carriers_plan.is_raw_int_carrier_name(&args[0])
                     && scalar_fast_paths_enabled
                     && op
                         .out
                         .as_ref()
-                        .is_some_and(|o| int_primary_vars.contains(o))
+                        .is_some_and(|o| int_carriers_plan.is_raw_int_carrier_name(o))
                 {
-                    let raw_val = int_raw_value(&mut *builder, vars, int_primary_vars, &args[0])
+                    let raw_val = int_raw_value(&mut *builder, vars, int_carriers_plan, &args[0])
                         .unwrap_or_else(|| {
                             let var = *vars.get(&args[0]).expect("copy_var: raw src var not found");
                             builder.use_var(var)
@@ -1581,7 +1577,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                     &mut *sealed_blocks,
                     vars,
                     &args[0],
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 )
                 .expect("copy_var: src not found");
@@ -1592,7 +1588,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                         &mut *builder,
                         &mut *import_refs,
                         vars,
-                        int_primary_vars,
+                        int_carriers_plan,
                         bool_primary_vars,
                         float_primary_vars,
                         nbc,

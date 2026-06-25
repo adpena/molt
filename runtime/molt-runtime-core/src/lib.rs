@@ -544,6 +544,9 @@ pub mod ffi {
         /// Raw-register list[int] getitem: raw i64 index in, raw i64 value out.
         pub fn molt_list_int_getitem_raw(list_bits: u64, raw_index: i64) -> i64;
 
+        /// Raw-register list[int] getitem with IndexError semantics.
+        pub fn molt_list_int_getitem_raw_checked(list_bits: u64, raw_index: i64) -> i64;
+
         /// Raw-register list[int] setitem: raw i64 index and value.
         pub fn molt_list_int_setitem_raw(list_bits: u64, raw_index: i64, raw_value: i64) -> u64;
 

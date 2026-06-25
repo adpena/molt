@@ -33,7 +33,7 @@ pub(in crate::native_backend::function_compiler) fn handle_future_promise_op(
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
-    int_primary_vars: &BTreeSet<String>,
+    int_carriers_plan: &ScalarRepresentationPlan,
     float_primary_vars: &BTreeSet<String>,
     bool_primary_vars: &BTreeSet<String>,
     nbc: &crate::NanBoxConsts,
@@ -51,7 +51,7 @@ pub(in crate::native_backend::function_compiler) fn handle_future_promise_op(
                                        sealed_blocks: &mut BTreeSet<Block>,
                                        vars: &BTreeMap<String, Variable>,
                                        name: &str,
-                                       int_primary_vars: &BTreeSet<String>,
+                                       int_carriers_plan: &ScalarRepresentationPlan,
                                        float_primary_vars: &BTreeSet<String>|
      -> Option<crate::VarValue> {
         var_get_boxed_overflow_safe_fn(
@@ -62,7 +62,7 @@ pub(in crate::native_backend::function_compiler) fn handle_future_promise_op(
             sealed_blocks,
             vars,
             name,
-            int_primary_vars,
+            int_carriers_plan,
             float_primary_vars,
             bool_primary_vars,
             nbc,
@@ -79,7 +79,7 @@ pub(in crate::native_backend::function_compiler) fn handle_future_promise_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Future not found");
@@ -103,7 +103,7 @@ pub(in crate::native_backend::function_compiler) fn handle_future_promise_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Future not found");
@@ -115,7 +115,7 @@ pub(in crate::native_backend::function_compiler) fn handle_future_promise_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Cancel message not found");
@@ -139,7 +139,7 @@ pub(in crate::native_backend::function_compiler) fn handle_future_promise_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Future not found");
@@ -178,7 +178,7 @@ pub(in crate::native_backend::function_compiler) fn handle_future_promise_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Promise not found");
@@ -190,7 +190,7 @@ pub(in crate::native_backend::function_compiler) fn handle_future_promise_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Result not found");
@@ -214,7 +214,7 @@ pub(in crate::native_backend::function_compiler) fn handle_future_promise_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Promise not found");
@@ -226,7 +226,7 @@ pub(in crate::native_backend::function_compiler) fn handle_future_promise_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Exception not found");
@@ -250,7 +250,7 @@ pub(in crate::native_backend::function_compiler) fn handle_future_promise_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Callable not found");
@@ -262,7 +262,7 @@ pub(in crate::native_backend::function_compiler) fn handle_future_promise_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Args not found");
@@ -274,7 +274,7 @@ pub(in crate::native_backend::function_compiler) fn handle_future_promise_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[2],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Kwargs not found");
@@ -304,7 +304,7 @@ pub(in crate::native_backend::function_compiler) fn handle_future_promise_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Task not found");
@@ -316,7 +316,7 @@ pub(in crate::native_backend::function_compiler) fn handle_future_promise_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Token not found");

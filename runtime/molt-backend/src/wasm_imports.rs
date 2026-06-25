@@ -345,6 +345,7 @@ pub(crate) const IMPORT_REGISTRY: &[(&str, u32)] = &[
     ("list_int_getitem", 3),
     ("list_int_getitem_nogil", 3),
     ("list_int_getitem_raw", 3),
+    ("list_int_getitem_raw_checked", 3),
     ("list_int_getitem_truthy", 3),
     ("list_int_len", 2),
     ("list_int_new", 3),

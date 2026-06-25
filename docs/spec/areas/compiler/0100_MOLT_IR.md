@@ -27,10 +27,11 @@ Molt IR is typed SSA with explicit control flow, ownership, and effects. It exis
 - Backend-specific shadow state or side-channel unboxed tracking is
   implementation debt and must not be treated as a stable interface.
 - Native int, bool, and float lowering have retired their raw scalar shadow
-  lanes: `int_primary_vars`, `bool_primary_vars`, and `float_primary_vars`
-  are the only raw I64/bool/F64 authorities in the current native backend.
-  Non-primary bool and float values are represented immediately in their main
-  boxed I64 variable.
+  lanes. Integer raw-carrier authority now lives in
+  `ScalarRepresentationPlan` (`is_raw_int_carrier_name`,
+  `is_inline_safe_int_name`, and `is_full_deopt_int_name`); bool and float still
+  use their static primary sets pending the same fold. Non-primary bool and
+  float values are represented immediately in their main boxed I64 variable.
 - `LirRepr::Ref64` is a runtime reference-word lane for proven reference
   values such as stack-eligible user-class allocations. It is physically an
   `i64` on WASM and native pointer-sized backends, but it is not the semantic

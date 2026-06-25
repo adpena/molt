@@ -50,7 +50,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
-    int_primary_vars: &BTreeSet<String>,
+    int_carriers_plan: &ScalarRepresentationPlan,
     float_primary_vars: &BTreeSet<String>,
     bool_primary_vars: &BTreeSet<String>,
     scalar_fast_paths_enabled: bool,
@@ -70,7 +70,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                                        sealed_blocks: &mut BTreeSet<Block>,
                                        vars: &BTreeMap<String, Variable>,
                                        name: &str,
-                                       int_primary_vars: &BTreeSet<String>,
+                                       int_carriers_plan: &ScalarRepresentationPlan,
                                        float_primary_vars: &BTreeSet<String>|
      -> Option<crate::VarValue> {
         var_get_boxed_overflow_safe_fn(
@@ -81,7 +81,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
             sealed_blocks,
             vars,
             name,
-            int_primary_vars,
+            int_carriers_plan,
             float_primary_vars,
             bool_primary_vars,
             nbc,
@@ -128,7 +128,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                     &mut *sealed_blocks,
                     vars,
                     &pair[0],
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 )
                 .expect("Dict key not found");
@@ -140,7 +140,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                     &mut *sealed_blocks,
                     vars,
                     &pair[1],
-                    int_primary_vars,
+                    int_carriers_plan,
                     float_primary_vars,
                 )
                 .expect("Dict val not found");
@@ -159,7 +159,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Dict source not found");
@@ -187,7 +187,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Dict not found");
@@ -199,7 +199,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Dict key not found");
@@ -211,7 +211,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[2],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Dict default not found");
@@ -239,7 +239,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Dict not found");
@@ -251,7 +251,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Dict key not found");
@@ -263,7 +263,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[2],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Dict increment value not found");
@@ -291,7 +291,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Dict not found");
@@ -303,7 +303,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Dict key not found");
@@ -315,7 +315,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[2],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Dict increment value not found");
@@ -343,7 +343,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Line not found");
@@ -355,7 +355,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Dict not found");
@@ -367,7 +367,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[2],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Delta not found");
@@ -395,7 +395,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Dict not found");
@@ -407,7 +407,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Line not found");
@@ -419,7 +419,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[2],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Bucket size not found");
@@ -449,7 +449,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Line not found");
@@ -461,7 +461,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Separator not found");
@@ -473,7 +473,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[2],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Dict not found");
@@ -485,7 +485,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[3],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Delta not found");
@@ -515,7 +515,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Dict not found");
@@ -527,7 +527,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Dict key not found");
@@ -539,7 +539,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[2],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Dict default not found");
@@ -551,7 +551,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[3],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Dict default flag not found");
@@ -581,7 +581,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Dict not found");
@@ -593,7 +593,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Dict key not found");
@@ -605,7 +605,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[2],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Dict default not found");
@@ -633,7 +633,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Dict not found");
@@ -645,7 +645,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Dict key not found");
@@ -673,7 +673,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Dict not found");
@@ -685,7 +685,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Dict update iterable not found");
@@ -713,7 +713,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Dict not found");
@@ -741,7 +741,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Dict not found");
@@ -769,7 +769,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Dict not found");
@@ -797,7 +797,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Dict not found");
@@ -809,7 +809,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Dict update mapping not found");
@@ -837,7 +837,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Dict not found");
@@ -865,7 +865,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Dict not found");
@@ -893,7 +893,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .expect("Dict not found");
@@ -921,7 +921,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .unwrap_or_else(|| panic!("Dict not found in {} op {}", func_name, op_idx));
@@ -933,7 +933,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .unwrap_or_else(|| panic!("Key not found in {} op {}", func_name, op_idx));
@@ -945,7 +945,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[2],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .unwrap_or_else(|| panic!("Value not found in {} op {}", func_name, op_idx));
@@ -960,8 +960,8 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
             ) {
                 // raw_int_shadow fast path for list_int dict_set.
                 // Inside loops, use Variable-only shadows (phi-correct).
-                let raw_key_opt = int_raw_value(&mut *builder, vars, int_primary_vars, &args[1]);
-                let raw_val_opt = int_raw_value(&mut *builder, vars, int_primary_vars, &args[2]);
+                let raw_key_opt = int_raw_value(&mut *builder, vars, int_carriers_plan, &args[1]);
+                let raw_val_opt = int_raw_value(&mut *builder, vars, int_carriers_plan, &args[2]);
                 if let (Some(raw_key), Some(raw_val)) = (raw_key_opt, raw_val_opt) {
                     let callee = SimpleBackend::import_func_id_split(
                         &mut *module,
@@ -1028,7 +1028,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[0],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .unwrap_or_else(|| panic!("Dict not found in {} op {}", func_name, op_idx));
@@ -1040,7 +1040,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[1],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .unwrap_or_else(|| panic!("Key not found in {} op {}", func_name, op_idx));
@@ -1052,7 +1052,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                 &mut *sealed_blocks,
                 vars,
                 &args[2],
-                int_primary_vars,
+                int_carriers_plan,
                 float_primary_vars,
             )
             .unwrap_or_else(|| panic!("Value not found in {} op {}", func_name, op_idx));
