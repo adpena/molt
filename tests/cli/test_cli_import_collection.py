@@ -30,6 +30,7 @@ from tests.cli.process_guard import (
 
 ROOT = Path(__file__).resolve().parents[2]
 ARTIFACT_STATE = importlib.import_module("molt.cli.artifact_state")
+BACKEND_CACHE = importlib.import_module("molt.cli.backend_cache")
 CACHE_FINGERPRINTS = importlib.import_module("molt.cli.cache_fingerprints")
 CACHE_KEYS = importlib.import_module("molt.cli.cache_keys")
 COMMAND_RUNTIME = importlib.import_module("molt.cli.command_runtime")
@@ -17310,7 +17311,7 @@ def test_backend_daemon_skip_output_sync_flags_uses_known_sync_state_without_rer
     def fail_read(path: Path) -> dict[str, object] | None:
         raise AssertionError(f"unexpected sync-state read: {path}")
 
-    monkeypatch.setattr(cli, "_read_artifact_sync_state", fail_read)
+    monkeypatch.setattr(BACKEND_CACHE, "_read_artifact_sync_state", fail_read)
 
     skip_module, skip_function = cli._backend_daemon_skip_output_sync_flags(
         tmp_path,
@@ -17778,7 +17779,7 @@ def test_stage_backend_output_and_caches_preserves_existing_module_cache(
     warnings: list[str] = []
 
     monkeypatch.setattr(
-        cli, "_is_valid_cached_backend_artifact", lambda path, *, is_wasm: True
+        BACKEND_CACHE, "_is_valid_cached_backend_artifact", lambda path, *, is_wasm: True
     )
 
     err = cli._stage_backend_output_and_caches(
@@ -17812,7 +17813,7 @@ def test_stage_backend_output_and_caches_preserves_existing_function_cache(
     warnings: list[str] = []
 
     monkeypatch.setattr(
-        cli, "_is_valid_cached_backend_artifact", lambda path, *, is_wasm: True
+        BACKEND_CACHE, "_is_valid_cached_backend_artifact", lambda path, *, is_wasm: True
     )
 
     err = cli._stage_backend_output_and_caches(
@@ -17905,7 +17906,7 @@ def test_stage_backend_output_and_caches_skips_state_rewrite_when_synced(
     def fail_write(*args: object, **kwargs: object) -> None:
         raise AssertionError("unexpected sync state rewrite")
 
-    monkeypatch.setattr(cli, "_write_artifact_sync_state", fail_write)
+    monkeypatch.setattr(BACKEND_CACHE, "_write_artifact_sync_state", fail_write)
 
     err = cli._stage_backend_output_and_caches(
         tmp_path,
@@ -17939,7 +17940,7 @@ def test_stage_backend_output_and_caches_uses_known_sync_state_without_reread(
     def fail_read(path: Path) -> dict[str, object] | None:
         raise AssertionError(f"unexpected sync-state read: {path}")
 
-    monkeypatch.setattr(cli, "_read_artifact_sync_state", fail_read)
+    monkeypatch.setattr(BACKEND_CACHE, "_read_artifact_sync_state", fail_read)
 
     err = cli._stage_backend_output_and_caches(
         tmp_path,
@@ -17970,7 +17971,7 @@ def test_stage_backend_output_and_caches_prefers_link_or_copy_for_output_sync(
     function_cache_path = tmp_path / "cache" / "function.o"
     warnings: list[str] = []
     link_calls: list[tuple[Path, Path]] = []
-    original_link_or_copy = cli._atomic_link_or_copy_file
+    original_link_or_copy = BACKEND_CACHE._atomic_link_or_copy_file
     original_copy = cli._atomic_copy_file
 
     def record_link_or_copy(src: Path, dst: Path) -> None:
@@ -17982,7 +17983,7 @@ def test_stage_backend_output_and_caches_prefers_link_or_copy_for_output_sync(
             raise AssertionError(f"unexpected copy {src} -> {dst}")
         original_copy(src, dst)
 
-    monkeypatch.setattr(cli, "_atomic_link_or_copy_file", record_link_or_copy)
+    monkeypatch.setattr(BACKEND_CACHE, "_atomic_link_or_copy_file", record_link_or_copy)
     monkeypatch.setattr(cli, "_atomic_copy_file", fail_copy)
 
     err = cli._stage_backend_output_and_caches(
@@ -18038,14 +18039,18 @@ def test_stage_backend_output_and_caches_warns_on_function_cache_failure(
     cache_path = tmp_path / "cache" / "module.o"
     function_cache_path = tmp_path / "cache" / "function.o"
     warnings: list[str] = []
-    original = cli._publish_immutable_backend_cache_artifact
+    original = BACKEND_CACHE._publish_immutable_backend_cache_artifact
 
     def wrapped(src: Path, dst: Path, *, is_wasm: bool, warnings: list[str]) -> Path:
         if dst == function_cache_path:
             raise OSError("link failed")
         return original(src, dst, is_wasm=is_wasm, warnings=warnings)
 
-    monkeypatch.setattr(cli, "_publish_immutable_backend_cache_artifact", wrapped)
+    monkeypatch.setattr(
+        BACKEND_CACHE,
+        "_publish_immutable_backend_cache_artifact",
+        wrapped,
+    )
 
     err = cli._stage_backend_output_and_caches(
         tmp_path,
@@ -18125,7 +18130,7 @@ def test_try_cached_backend_candidates_promoted_function_hit_marks_module_synced
     cache_path = tmp_path / "cache" / "module.o"
     warnings: list[str] = []
     monkeypatch.setattr(
-        cli, "_is_valid_cached_backend_artifact", lambda path, *, is_wasm: True
+        BACKEND_CACHE, "_is_valid_cached_backend_artifact", lambda path, *, is_wasm: True
     )
 
     ok, cache_hit_tier = cli._try_cached_backend_candidates(
@@ -18167,10 +18172,10 @@ def test_try_cached_backend_candidates_promoted_native_function_hit_marks_contex
     stdlib_object.write_bytes(b"stdlib")
     warnings: list[str] = []
     monkeypatch.setattr(
-        cli, "_is_valid_cached_backend_artifact", lambda path, *, is_wasm: True
+        BACKEND_CACHE, "_is_valid_cached_backend_artifact", lambda path, *, is_wasm: True
     )
     monkeypatch.setattr(
-        cli,
+        BACKEND_CACHE,
         "_shared_stdlib_cache_matches_key_locked",
         lambda *args, **kwargs: True,
     )
@@ -18322,7 +18327,7 @@ def test_materialize_cached_backend_artifact_prefers_link_or_copy_for_output_syn
     output_artifact = tmp_path / "dist" / "output.o"
     warnings: list[str] = []
     link_calls: list[tuple[Path, Path]] = []
-    original_link_or_copy = cli._atomic_link_or_copy_file
+    original_link_or_copy = BACKEND_CACHE._atomic_link_or_copy_file
     original_copy = cli._atomic_copy_file
 
     def record_link_or_copy(src: Path, dst: Path) -> None:
@@ -18334,7 +18339,7 @@ def test_materialize_cached_backend_artifact_prefers_link_or_copy_for_output_syn
             raise AssertionError(f"unexpected copy {src} -> {dst}")
         original_copy(src, dst)
 
-    monkeypatch.setattr(cli, "_atomic_link_or_copy_file", record_link_or_copy)
+    monkeypatch.setattr(BACKEND_CACHE, "_atomic_link_or_copy_file", record_link_or_copy)
     monkeypatch.setattr(cli, "_atomic_copy_file", fail_copy)
 
     ok = cli._materialize_cached_backend_artifact(
@@ -18378,7 +18383,7 @@ def test_materialize_cached_backend_artifact_uses_known_sync_state_without_rerea
     def fail_read(path: Path) -> dict[str, object] | None:
         raise AssertionError(f"unexpected sync-state read: {path}")
 
-    monkeypatch.setattr(cli, "_read_artifact_sync_state", fail_read)
+    monkeypatch.setattr(BACKEND_CACHE, "_read_artifact_sync_state", fail_read)
 
     ok = cli._materialize_cached_backend_artifact(
         tmp_path,
