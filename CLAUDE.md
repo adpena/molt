@@ -15,19 +15,18 @@ When you identify a structurally correct fix and feel pulled toward an "immediat
 
 If you cannot complete the structural fix in this session, **do not commit the localized hack as a placeholder**. Leave a clean baton-pass note describing the structural fix needed; the next session picks it up. Half-measures committed to main are worse than nothing committed.
 
-### Tiny entry slice, full structural rip
+### Structural aperture, full rip
 
-The bounded unit is not a tiny chip; it is a complete structural rip through one
-concrete invariant, authority cluster, or execution path, followed through every
-consumer needed to delete the old lane. Narrow the entry point only to expose
-the real structure; once exposed, widen to the whole bug class inside that
-boundary.
+The bounded unit is not a tiny chip, checkpoint, or proof-friendly slice; it is
+a complete structural rip through one concrete invariant, authority cluster, or
+execution path, followed through every consumer needed to delete the old lane.
+Narrow the entry point only to expose the real structure; once exposed, widen to
+the whole bug class inside that boundary.
 
 - "Tiny slice and rip it open" is binding operator shorthand. Tiny slice means
-  one concrete aperture into the real structure: an invariant, command family,
-  file cluster, or authority surface small enough to hold in a fragile session.
-  Rip it open means delete or unify the duplicate authority behind that aperture
-  before moving on.
+  only one concrete aperture into the real structure; it never means shrinking
+  the engineering unit. Rip it open means delete or unify the duplicate
+  authority behind that aperture before moving on.
 - The entry point may be narrow; the work may not be a chip. Do not scope
   broadly into endless planning before real structure is exposed, but once it is
   exposed, migrate the sibling authorities and consumers that define the
@@ -281,10 +280,10 @@ shrinking the engineering ambition into tiny chips. Reduce concurrency, isolate
 project-owned process scope, record evidence paths, and keep the unit of work a
 complete structural primitive that deletes or unifies a real authority.
 
-Recovery mode forces one active tiny entry slice at a time, one bounded proof
-lane, no retry storms, and no parallel proof fanout. Subagents may map or migrate
-disjoint consumers inside the slice, but they must not multiply status chatter or
-broaden cleanup scope.
+Recovery mode constrains process fanout, not engineering scope: one active
+structural arc, one bounded proof lane, no retry storms, and no parallel proof
+fanout. Subagents may map or migrate disjoint consumers inside that arc, but
+they must not multiply status chatter or broaden cleanup scope.
 
 Recovery discipline is process containment, not permission to chip away at the
 project. A valid recovery landing removes a real source of drift, avoids
