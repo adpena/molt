@@ -136,7 +136,7 @@ think of.
 
 | Role | Owns | Runs | Must not do |
 | --- | --- | --- | --- |
-| Implementer | A bounded code/doc slice | Targeted unit, cargo, or diff proof for touched behavior | Start full sweeps while code is still moving |
+| Implementer | A bounded structural code/doc arc | Targeted unit, cargo, or diff proof for touched behavior | Start full sweeps while code is still moving |
 | Reducer | One failure family or failure queue | Minimal repros, focused differential reruns, debug traces | Re-run the whole corpus to rediscover known failures |
 | Broad-sweep coordinator | One shared target root and one broad lane | Full differential, CPython regrtest, conformance, or release validation | Compete with another broad sweep on the same target root |
 | Perf custodian | One benchmark family and baseline artifact | Targeted bench, bench diff, regression triage | Mix perf claims with unrelated correctness sweeps |
@@ -244,7 +244,7 @@ Agents must be respectful of partner work.
 
 Every active multi-agent task log under `logs/agents/<task>/` should answer:
 
-- What invariant or product slice does this agent own?
+- What invariant, command family, file cluster, or product surface does this agent own?
 - Which files/directories are in scope?
 - Which proof rung is planned next?
 - Which broad proof lanes are already owned elsewhere?
@@ -254,13 +254,13 @@ Every active multi-agent task log under `logs/agents/<task>/` should answer:
 The same facts must be mirrored in `coordination.json` when they affect
 machine scheduling or proof-lane ownership.
 
-Use the micro-report format in `docs/OPERATIONS.md` for frequent updates. A
-log that has not been updated and has no running command should be treated as
-stale context, not an active lock.
+Use bounded status reports in `docs/OPERATIONS.md` for coordination, not as a
+substitute for changing code. A log that has not been updated and has no running
+command should be treated as stale context, not an active lock.
 
 ## Completion Checklist
 
-- [ ] Owned files are staged in the intended ownership slice.
+- [ ] Owned files are staged in the intended ownership arc.
 - [ ] Task log names files touched, commands run, artifacts, and residual risk.
 - [ ] Targeted proof passed or the failure is documented with a closure plan.
 - [ ] Broad proof was run by one coordinator when required.

@@ -60,6 +60,10 @@ touching code, docs, tests, benchmarks, or roadmap state.
   a subsystem has one wrong authority, rip open the full authority boundary and
   move the callers, tests, docs, and generated facts needed to make the old path
   disappear.
+- A maintainer saying "stop taking tiny slices", "rip it open", or equivalent
+  is a binding scope override. Cancel the comfort-sized plan, finish the live
+  WIP that exposes the authority boundary, and widen to the whole coherent bug
+  class before emitting another checkpoint-style landing.
 - Start from a structural aperture when the codebase, crash history, or operator
   signal says the control plane is unstable. The aperture is only the opening
   handle, not the work unit: choose one concrete invariant, command family, file
@@ -393,7 +397,7 @@ Read these first instead of rediscovering project structure:
 
 ## Git Workflow Policy (Non-Negotiable)
 - Optimize for velocity on the live codebase. Develop from current `main` by
-  default and keep local changes staged by ownership slice.
+  default and keep local changes staged by ownership arc.
 - Push directly to `main` (`origin/main`) by default when asked to publish.
 - Branches and worktrees are allowed when they accelerate non-colliding
   implementation, recovery, or swarm work. Name them clearly, keep them based on
@@ -446,7 +450,7 @@ Read these first instead of rediscovering project structure:
 - Do not stop at neat local checkpoints or convenient chips outside recovery mode.
   Only stop for a real blocker, a safety constraint, or when remote proof on
   tertiary is the next required step.
-- Do not emit tranche summaries after every small fix. Keep going until a
+- Do not emit checkpoint/status summaries after every small fix. Keep going until a
   substantial bundled burndown is complete, and prefer whole bug-class or
   authority-cluster closure over isolated issue-count reduction.
 - Operator correction is binding. If the user says the work is being sliced too
@@ -922,7 +926,7 @@ coordinator role for the shared target root. Use
 `uv run --python 3.12 python tools/agent_coordination.py scan` or
 `uv run --python 3.12 python tools/agent_coordination.py check` to inspect
 machine-readable task claims before launching broad proof work. Do not invoke
-this protocol for ordinary implementation slices; one bounded proof for the
+this protocol for ordinary structural implementation; one bounded proof for the
 owned structural arc is enough unless a failure exposes a wider contract risk.
 
 **Git discipline (non-negotiable):**
@@ -1329,7 +1333,9 @@ stubs, compatibility shims, or debt.
   lanes.
 - This project is fundamentally low-level systems work blended with powerful higher-level abstractions; bring aspirational, genius-level rigor with gritty follow-through, seek the hardest problems first, own complexity end-to-end, and lean into building the future.
 - Do not implement frontend-only workarounds or cheap hacks for runtime/compiler/backend semantics; fix the core layers so compiled binaries match CPython behavior.
-- Agents may use `gh` (GitHub CLI) and git over SSH to open/merge PRs; commit frequently with clear messages.
+- Agents may use `gh` (GitHub CLI) and git over SSH to open/merge PRs; commit
+  complete structural landings with clear messages. Do not split an authority
+  move into checkpoint commits solely to show motion.
 - Run linting/testing once after a cohesive structural change set is complete (`tools/dev.py lint`, `tools/dev.py test`, plus relevant `cargo` checks when the claim requires them); avoid repetitive cycles mid-implementation.
 - Prioritize clear, explicit communication: scope, files touched, and tests run.
 - Prefer one broad-sweep coordinator per shared target root; other agents should
