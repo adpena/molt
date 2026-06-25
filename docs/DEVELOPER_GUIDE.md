@@ -551,6 +551,13 @@ If you want to modify Molt, follow these steps:
     ```bash
     UV_NO_SYNC=1 UV_CACHE_DIR=$PWD/.uv-cache uv run --python 3.12 python3 tools/dev.py test
     ```
+    Multi-Python benchmark and measurement lanes should isolate their uv project
+    environment instead of rewriting the shared repo `.venv`:
+    ```bash
+    uv run --python 3.12 python3 tools/uv_project_env.py \
+      --python 3.14 --purpose output-startup-size -- \
+      uv run --python 3.14 python3 tools/output_startup_size_audit.py --targets native
+    ```
     You can also enable randomized order through the runner environment:
     `MOLT_PYTEST_RANDOM_ORDER=1 MOLT_PYTEST_RANDOM_SEED=<seed>`.
     If you need to install or update deps, run `uv sync` locally outside the

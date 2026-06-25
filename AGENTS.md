@@ -957,6 +957,11 @@ Build relentlessly with high productivity, velocity, and vision in the spirit an
 - If `uv run` panics in sandboxed or restricted environments, reuse the existing
   environment by setting `UV_NO_SYNC=1`. Prefer `UV_CACHE_DIR=/tmp/uv-cache` inside
   the sandbox when external volumes are blocked.
+- For multi-Python measurement or benchmark lanes (`--python 3.13`, `3.14`, or
+  future CPython versions), do not let `uv run` rewrite the shared interactive
+  `.venv`. Wrap the inner uv command with
+  `uv run --python 3.12 python tools/uv_project_env.py --python <ver> --purpose <lane> -- uv run --python <ver> ...`;
+  the wrapper sets `UV_PROJECT_ENVIRONMENT=tmp/uv-project-envs/<lane>__py<ver>`.
 - If the panic mentions `system-configuration` (macOS proxy lookup), pin explicit
   proxy envs to bypass system proxy detection, for example:
   `HTTP_PROXY=http://127.0.0.1:9 HTTPS_PROXY=http://127.0.0.1:9 ALL_PROXY=http://127.0.0.1:9 NO_PROXY=localhost,127.0.0.1`.
