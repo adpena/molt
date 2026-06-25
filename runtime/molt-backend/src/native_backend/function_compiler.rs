@@ -4253,8 +4253,8 @@ fn drain_dead_block_temps_for_suspend(
 #[cfg(all(test, feature = "native-backend"))]
 mod tests {
     use super::fc::list_index_fast_path::{
-        generic_list_int_lane_eligible, index_fallback_import_name,
-        metadata_only_structured_loop_ops, scan_loop_int_sum_reduction,
+        collect_pre_loop_defined_names, generic_list_int_lane_eligible, index_fallback_import_name,
+        metadata_only_structured_loop_ops, scan_loop_hoistable_lists, scan_loop_int_sum_reduction,
         store_index_fallback_import_name,
     };
     use super::{
@@ -7172,6 +7172,92 @@ mod tests {
         assert!(
             analysis.scalar_slot_exclusion_unsafe.contains("val"),
             "int value stored to generic list must be marked unsafe"
+        );
+    }
+
+    #[test]
+    fn scan_loop_hoistable_lists_treats_store_index_as_mutation() {
+        let flat_ops = vec![
+            list_int_new("lst"),
+            OpIR {
+                kind: "loop_start".to_string(),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "index".to_string(),
+                args: Some(vec!["lst".to_string(), "idx".to_string()]),
+                out: Some("cur".to_string()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "store_index".to_string(),
+                args: Some(vec![
+                    "lst".to_string(),
+                    "idx".to_string(),
+                    "val".to_string(),
+                ]),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "loop_end".to_string(),
+                ..OpIR::default()
+            },
+        ];
+        let flat_plan = representation_plan_for_ops(&flat_ops);
+        let flat_pre_loop_defined = collect_pre_loop_defined_names(&flat_ops, 1);
+        let (flat_hoist, generic_hoist) =
+            scan_loop_hoistable_lists(&flat_ops, 1, &flat_pre_loop_defined, &flat_plan);
+        assert!(
+            !flat_hoist.contains("lst"),
+            "store_index must invalidate flat-list hoisting"
+        );
+        assert!(
+            !generic_hoist.contains("lst"),
+            "store_index must not leak through the generic hoist set"
+        );
+
+        let generic_ops = vec![
+            OpIR {
+                kind: "loop_start".to_string(),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "index".to_string(),
+                args: Some(vec!["lst".to_string(), "idx".to_string()]),
+                out: Some("cur".to_string()),
+                container_type: Some("list".to_string()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "store_index".to_string(),
+                args: Some(vec![
+                    "lst".to_string(),
+                    "idx".to_string(),
+                    "val".to_string(),
+                ]),
+                container_type: Some("list".to_string()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "loop_end".to_string(),
+                ..OpIR::default()
+            },
+        ];
+        let generic_plan = representation_plan_for_typed_ops(
+            &["lst", "idx", "val"],
+            Some(vec!["list", "int", "int"]),
+            &generic_ops,
+        );
+        let generic_pre_loop_defined = BTreeSet::from(["lst".to_string()]);
+        let (flat_hoist, generic_hoist) =
+            scan_loop_hoistable_lists(&generic_ops, 0, &generic_pre_loop_defined, &generic_plan);
+        assert!(
+            !flat_hoist.contains("lst"),
+            "generic store_index must not enter the flat hoist set"
+        );
+        assert!(
+            !generic_hoist.contains("lst"),
+            "store_index must invalidate generic-list hoisting"
         );
     }
 

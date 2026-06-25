@@ -283,7 +283,7 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
         "list_append" => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             // Invalidate cached data_ptr/len — append may reallocate.
-            list_index_fast_paths.invalidate_list(&args[0]);
+            list_index_fast_paths.invalidate_for_list_mutation(&args[0]);
             let list = var_get_boxed_overflow_safe(
                 &mut *module,
                 &mut *import_ids,
@@ -327,7 +327,7 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
         }
         "list_pop" => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-            list_index_fast_paths.invalidate_list(&args[0]);
+            list_index_fast_paths.invalidate_for_list_mutation(&args[0]);
             let list = var_get_boxed_overflow_safe(
                 &mut *module,
                 &mut *import_ids,
@@ -368,7 +368,7 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
         }
         "list_extend" => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-            list_index_fast_paths.invalidate_list(&args[0]);
+            list_index_fast_paths.invalidate_for_list_mutation(&args[0]);
             let list = var_get_boxed_overflow_safe(
                 &mut *module,
                 &mut *import_ids,
@@ -409,7 +409,7 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
         }
         "list_insert" => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-            list_index_fast_paths.invalidate_list(&args[0]);
+            list_index_fast_paths.invalidate_for_list_mutation(&args[0]);
             let list = var_get_boxed_overflow_safe(
                 &mut *module,
                 &mut *import_ids,
@@ -463,7 +463,7 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
         "list_remove" => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             // Invalidate cached data_ptr/len — remove shifts elements and changes length.
-            list_index_fast_paths.invalidate_list(&args[0]);
+            list_index_fast_paths.invalidate_for_list_mutation(&args[0]);
             let list = var_get_boxed_overflow_safe(
                 &mut *module,
                 &mut *import_ids,
@@ -505,7 +505,7 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
         "list_clear" => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             // Invalidate cached data_ptr/len — clear empties the list.
-            list_index_fast_paths.invalidate_list(&args[0]);
+            list_index_fast_paths.invalidate_for_list_mutation(&args[0]);
             let list = var_get_boxed_overflow_safe(
                 &mut *module,
                 &mut *import_ids,
