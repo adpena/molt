@@ -43,6 +43,12 @@ The live codebase and executable Cargo metadata remain authoritative.
   parallel batch at a time, then applied and cache-written before the next batch
   is materialized. This is the current backend compile-memory response for the
   enabled off-the-shelf tinygrad runner.
+- Build-throughput measurement JSON now has one command-result authority:
+  `tools/throughput_measurement.py` owns elapsed-time normalization, timeout
+  return-code policy, bounded stdout/stderr tails, cwd capture, and optional
+  output artifact size. `tools/throughput_matrix.py` and
+  `tools/bench_backend_incremental.py` consume that schema instead of carrying
+  sibling result dataclasses.
 - The generated runtime intrinsic resolver is no longer one monolithic Rust
   source file. `runtime/molt-runtime/src/intrinsics/generated.rs` keeps the
   parser-facing `INTRINSICS` manifest table and re-exports a thin resolver, while

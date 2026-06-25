@@ -12,7 +12,6 @@ import datetime as dt
 import json
 import os
 import shutil
-import signal
 import subprocess
 import sys
 import time
@@ -28,18 +27,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from tools import harness_memory_guard  # noqa: E402
-
-
-@dataclass
-class PhaseResult:
-    phase: str
-    command: list[str]
-    cwd: str
-    returncode: int
-    elapsed_sec: float
-    timed_out: bool
-    stdout_tail: str
-    stderr_tail: str
+from tools.throughput_measurement import PhaseResult, elapsed_sec, phase_result  # noqa: E402
 
 
 @dataclass
@@ -51,12 +39,6 @@ class CaseResult:
     env_paths: dict[str, str]
     edit_marker: str
     phases: list[PhaseResult]
-
-
-def _tail(text: str, lines: int = 12) -> str:
-    if not text:
-        return ""
-    return "\n".join(text.splitlines()[-lines:])
 
 
 def _default_artifact_root() -> Path:
@@ -78,31 +60,6 @@ def _resolve_output_root(output_root: str | None) -> tuple[Path, Path]:
     )
 
 
-def _terminate_process(proc: subprocess.Popen[str]) -> None:
-    if proc.poll() is not None:
-        return
-    if os.name != "nt":
-        try:
-            os.killpg(proc.pid, signal.SIGTERM)
-        except ProcessLookupError:
-            return
-        try:
-            proc.wait(timeout=3)
-            return
-        except subprocess.TimeoutExpired:
-            try:
-                os.killpg(proc.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                return
-    else:
-        proc.terminate()
-    try:
-        proc.wait(timeout=2)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        proc.wait()
-
-
 def _run_command(
     command: list[str],
     *,
@@ -110,6 +67,7 @@ def _run_command(
     env: dict[str, str],
     timeout_sec: float,
     phase: str,
+    output_path: Path | None = None,
 ) -> PhaseResult:
     start = time.perf_counter()
     timed_out = False
@@ -133,25 +91,21 @@ def _run_command(
         stderr = result.stderr or ""
         returncode = result.returncode
         timed_out = returncode == harness_memory_guard.memory_guard.TIMEOUT_RETURN_CODE
-        elapsed = round(
-            result.elapsed_s
-            if result.elapsed_s is not None
-            else time.perf_counter() - start,
-            3,
-        )
+        elapsed = elapsed_sec(start, result.elapsed_s)
     except subprocess.TimeoutExpired:
         timed_out = True
-        elapsed = round(time.perf_counter() - start, 3)
+        elapsed = elapsed_sec(start)
         returncode = 124
-    return PhaseResult(
+    return phase_result(
         phase=phase,
         command=command,
-        cwd=str(cwd),
+        cwd=cwd,
         returncode=returncode,
-        elapsed_sec=elapsed,
+        elapsed=elapsed,
         timed_out=timed_out,
-        stdout_tail=_tail(stdout),
-        stderr_tail=_tail(stderr),
+        stdout=stdout,
+        stderr=stderr,
+        output_path=output_path,
     )
 
 
@@ -267,6 +221,7 @@ def _run_case(
             env=env,
             timeout_sec=timeout_sec,
             phase="cold",
+            output_path=output_path,
         )
     )
 
@@ -283,6 +238,7 @@ def _run_case(
             env=env,
             timeout_sec=timeout_sec,
             phase="warm",
+            output_path=output_path,
         )
     )
 
@@ -300,6 +256,7 @@ def _run_case(
             env=env,
             timeout_sec=timeout_sec,
             phase="edit",
+            output_path=output_path,
         )
     )
 

@@ -9,7 +9,7 @@ import os
 import subprocess
 import sys
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +26,11 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from tools import harness_memory_guard  # noqa: E402
+from tools.throughput_measurement import (  # noqa: E402
+    CommandResult,
+    command_result,
+    elapsed_sec,
+)
 
 
 DEFAULT_BUILD_SCRIPTS = [
@@ -41,16 +46,6 @@ DEFAULT_DIFF_SCRIPTS = [
 
 def _uv_python_executable() -> str:
     return "python"
-
-
-@dataclass
-class CommandResult:
-    command: list[str]
-    returncode: int
-    elapsed_sec: float
-    timed_out: bool
-    stdout_tail: str
-    stderr_tail: str
 
 
 def _resolved_external_root(*, fallback: Path | None = None) -> Path:
@@ -73,12 +68,6 @@ def _default_output_root() -> Path:
     return external_root / "tmp" / f"throughput_matrix_{ts}"
 
 
-def _tail(text: str, lines: int = 12) -> str:
-    if not text:
-        return ""
-    return "\n".join(text.splitlines()[-lines:])
-
-
 def _run_command(
     command: list[str],
     *,
@@ -86,6 +75,7 @@ def _run_command(
     env: dict[str, str],
     timeout_sec: float,
     progress_label: str | None = None,
+    output_path: Path | None = None,
 ) -> CommandResult:
     start = time.perf_counter()
     timed_out = False
@@ -106,24 +96,22 @@ def _run_command(
         stderr = result.stderr or ""
         returncode = result.returncode
         timed_out = returncode == harness_memory_guard.memory_guard.TIMEOUT_RETURN_CODE
-        elapsed = (
-            result.elapsed_s
-            if result.elapsed_s is not None
-            else time.perf_counter() - start
-        )
+        elapsed = elapsed_sec(start, result.elapsed_s)
     except subprocess.TimeoutExpired:
         timed_out = True
         stdout = ""
         stderr = ""
         returncode = 124
-        elapsed = time.perf_counter() - start
-    return CommandResult(
+        elapsed = elapsed_sec(start)
+    return command_result(
         command=command,
-        returncode=124 if timed_out else returncode,
-        elapsed_sec=round(elapsed, 3),
+        cwd=cwd,
+        returncode=returncode,
         timed_out=timed_out,
-        stdout_tail=_tail(stdout),
-        stderr_tail=_tail(stderr),
+        elapsed=elapsed,
+        stdout=stdout,
+        stderr=stderr,
+        output_path=output_path,
     )
 
 
@@ -218,6 +206,7 @@ def _run_build_matrix(
                 env=env,
                 timeout_sec=args.timeout_sec,
                 progress_label=f"throughput build {case_name} single",
+                output_path=out_root / "single",
             )
 
             print(f"[build] {case_name}: concurrent phase", flush=True)
@@ -248,6 +237,7 @@ def _run_build_matrix(
                         f"throughput build {case_name} concurrent "
                         f"{index + 1}/{len(args.build_scripts)}"
                     ),
+                    output_path=out_root / f"concurrent_{index}",
                 )
 
             conc_start = time.perf_counter()
