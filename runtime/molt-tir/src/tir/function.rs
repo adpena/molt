@@ -1,7 +1,9 @@
 use std::collections::HashMap;
 
 use super::blocks::{BlockId, LoopBreakKind, LoopRole, TirBlock};
-use super::op_kinds_generated::opcode_is_lowered_state_machine_body_table;
+use super::op_kinds_generated::{
+    opcode_is_exception_handler_region_table, opcode_is_lowered_state_machine_body_table,
+};
 use super::ops::AttrDict;
 use super::types::TirType;
 use super::values::ValueId;
@@ -152,17 +154,11 @@ impl TirFunction {
     ///
     /// [`has_exception_handling`]: TirFunction::has_exception_handling
     pub fn has_exception_handlers(&self) -> bool {
-        use super::ops::OpCode;
         self.blocks.values().any(|block| {
-            block.ops.iter().any(|op| {
-                matches!(
-                    op.opcode,
-                    OpCode::TryStart
-                        | OpCode::TryEnd
-                        | OpCode::StateBlockStart
-                        | OpCode::StateBlockEnd
-                )
-            })
+            block
+                .ops
+                .iter()
+                .any(|op| opcode_is_exception_handler_region_table(op.opcode))
         })
     }
 
