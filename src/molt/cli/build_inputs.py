@@ -26,7 +26,6 @@ from molt.cli.cargo_profiles import (
 )
 from molt.cli.command_runtime import _resolve_timeout_env
 from molt.cli.config_resolution import _coerce_bool, _resolve_build_config
-from molt.cli.env_paths import _molt_venv_site_packages, _vendor_roots
 from molt.cli.lockfiles import _check_lockfiles
 from molt.cli.models import (
     BuildProfile,
@@ -685,6 +684,14 @@ def _resolve_module_root_resolution(
             entry_path = Path(entry).expanduser()
             if entry_path.exists():
                 add_root(entry_path, external=True)
+    # Deferred import: env_paths and build_inputs are both reachable during
+    # molt.cli package initialization in an order where env_paths is still
+    # partially initialized when build_inputs is first imported (a true import
+    # cycle only in the molt-build order; the isolated import is fine). These
+    # leaf path-utilities are needed only at call time, so importing them here
+    # rather than at module top keeps build_inputs import-order-independent.
+    from molt.cli.env_paths import _molt_venv_site_packages, _vendor_roots
+
     for root in (project_root, cwd_root):
         if root.exists():
             add_root(root, external=False)
