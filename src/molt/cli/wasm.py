@@ -351,6 +351,280 @@ def _wasm_import_minima(path: Path) -> tuple[int | None, int | None]:
     return memory_min, table_min
 
 
+def _read_wasm_varint(data: bytes, offset: int, bits: int) -> tuple[int, int]:
+    result = 0
+    shift = 0
+    byte = 0
+    while True:
+        if offset >= len(data):
+            raise ValueError("Unexpected EOF while reading varint")
+        byte = data[offset]
+        offset += 1
+        result |= (byte & 0x7F) << shift
+        shift += 7
+        if byte & 0x80 == 0:
+            break
+        if shift > bits + 7:
+            raise ValueError("varint too large")
+    if shift < bits and (byte & 0x40):
+        result |= -1 << shift
+    return result, offset
+
+
+def _read_wasm_const_expr_i32(data: bytes, offset: int) -> tuple[int, int]:
+    if offset >= len(data):
+        raise ValueError("Unexpected EOF while reading const expr")
+    opcode = data[offset]
+    offset += 1
+    if opcode == 0x41:  # i32.const
+        value, offset = _read_wasm_varint(data, offset, 32)
+    elif opcode == 0x42:  # i64.const
+        value, offset = _read_wasm_varint(data, offset, 64)
+    else:
+        raise ValueError("Unsupported const expr opcode")
+    if offset >= len(data) or data[offset] != 0x0B:
+        raise ValueError("Invalid const expr terminator")
+    offset += 1
+    return value, offset
+
+
+def _read_wasm_table_min(path: Path) -> int | None:
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return None
+    if len(data) < 8 or data[:4] != b"\0asm" or data[4:8] != b"\x01\x00\x00\x00":
+        return None
+    offset = 8
+    try:
+        while offset < len(data):
+            section_id = data[offset]
+            offset += 1
+            size, offset = _read_wasm_varuint(data, offset)
+            end = offset + size
+            if end > len(data):
+                raise ValueError("Unexpected EOF while reading section")
+            if section_id != 2:
+                offset = end
+                continue
+            payload = data[offset:end]
+            offset = end
+            cursor = 0
+            count, cursor = _read_wasm_varuint(payload, cursor)
+            for _ in range(count):
+                module, cursor = _read_wasm_string(payload, cursor)
+                name, cursor = _read_wasm_string(payload, cursor)
+                if cursor >= len(payload):
+                    raise ValueError("Unexpected EOF while reading import")
+                kind = payload[cursor]
+                cursor += 1
+                if kind == 0:
+                    _, cursor = _read_wasm_varuint(payload, cursor)
+                elif kind == 1:
+                    if cursor >= len(payload):
+                        raise ValueError("Unexpected EOF while reading table type")
+                    cursor += 1
+                    flags, cursor = _read_wasm_varuint(payload, cursor)
+                    minimum, cursor = _read_wasm_varuint(payload, cursor)
+                    if flags & 0x1:
+                        _, cursor = _read_wasm_varuint(payload, cursor)
+                    if module == "env" and name == "__indirect_function_table":
+                        return minimum
+                elif kind == 2:
+                    flags, cursor = _read_wasm_varuint(payload, cursor)
+                    _, cursor = _read_wasm_varuint(payload, cursor)
+                    if flags & 0x1:
+                        _, cursor = _read_wasm_varuint(payload, cursor)
+                elif kind == 3:
+                    if cursor + 2 > len(payload):
+                        raise ValueError("Unexpected EOF while reading global type")
+                    cursor += 2
+                else:
+                    raise ValueError("Unknown import kind")
+    except ValueError:
+        return None
+    return None
+
+
+def _read_wasm_data_end(path: Path) -> int | None:
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return None
+    if len(data) < 8 or data[:4] != b"\0asm" or data[4:8] != b"\x01\x00\x00\x00":
+        return None
+    offset = 8
+    max_end = None
+    try:
+        while offset < len(data):
+            section_id = data[offset]
+            offset += 1
+            size, offset = _read_wasm_varuint(data, offset)
+            end = offset + size
+            if end > len(data):
+                raise ValueError("Unexpected EOF while reading section")
+            if section_id != 11:
+                offset = end
+                continue
+            payload = data[offset:end]
+            offset = end
+            cursor = 0
+            count, cursor = _read_wasm_varuint(payload, cursor)
+            for _ in range(count):
+                if cursor >= len(payload):
+                    raise ValueError("Unexpected EOF while reading data segment")
+                flags = payload[cursor]
+                cursor += 1
+                is_passive = flags & 0x1
+                has_memidx = flags & 0x2
+                if has_memidx:
+                    _, cursor = _read_wasm_varuint(payload, cursor)
+                if is_passive:
+                    size_bytes, cursor = _read_wasm_varuint(payload, cursor)
+                    cursor += size_bytes
+                    continue
+                offset_val, cursor = _read_wasm_const_expr_i32(payload, cursor)
+                size_bytes, cursor = _read_wasm_varuint(payload, cursor)
+                cursor += size_bytes
+                if offset_val < 0:
+                    continue
+                end_val = offset_val + size_bytes
+                if max_end is None or end_val > max_end:
+                    max_end = end_val
+    except ValueError:
+        return None
+    return max_end
+
+
+def _read_wasm_memory_min_bytes(path: Path) -> int | None:
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return None
+    if len(data) < 8 or data[:4] != b"\0asm" or data[4:8] != b"\x01\x00\x00\x00":
+        return None
+    offset = 8
+    memory_pages: int | None = None
+    try:
+        while offset < len(data):
+            section_id = data[offset]
+            offset += 1
+            size, offset = _read_wasm_varuint(data, offset)
+            end = offset + size
+            if end > len(data):
+                raise ValueError("Unexpected EOF while reading section")
+            payload = data[offset:end]
+            offset = end
+            cursor = 0
+            if section_id == 2:
+                count, cursor = _read_wasm_varuint(payload, cursor)
+                for _ in range(count):
+                    module, cursor = _read_wasm_string(payload, cursor)
+                    name, cursor = _read_wasm_string(payload, cursor)
+                    if cursor >= len(payload):
+                        raise ValueError("Unexpected EOF while reading import")
+                    kind = payload[cursor]
+                    cursor += 1
+                    if kind == 0:
+                        _, cursor = _read_wasm_varuint(payload, cursor)
+                    elif kind == 1:
+                        if cursor >= len(payload):
+                            raise ValueError("Unexpected EOF while reading table type")
+                        cursor += 1
+                        flags, cursor = _read_wasm_varuint(payload, cursor)
+                        _, cursor = _read_wasm_varuint(payload, cursor)
+                        if flags & 0x1:
+                            _, cursor = _read_wasm_varuint(payload, cursor)
+                    elif kind == 2:
+                        flags, cursor = _read_wasm_varuint(payload, cursor)
+                        minimum, cursor = _read_wasm_varuint(payload, cursor)
+                        if flags & 0x1:
+                            _, cursor = _read_wasm_varuint(payload, cursor)
+                        if module == "env" and name == "memory":
+                            memory_pages = max(memory_pages or 0, minimum)
+                    elif kind == 3:
+                        if cursor + 2 > len(payload):
+                            raise ValueError("Unexpected EOF while reading global type")
+                        cursor += 2
+                    else:
+                        raise ValueError("Unknown import kind")
+            elif section_id == 5:
+                count, cursor = _read_wasm_varuint(payload, cursor)
+                for _ in range(count):
+                    flags, cursor = _read_wasm_varuint(payload, cursor)
+                    minimum, cursor = _read_wasm_varuint(payload, cursor)
+                    if flags & 0x1:
+                        _, cursor = _read_wasm_varuint(payload, cursor)
+                    memory_pages = max(memory_pages or 0, minimum)
+    except ValueError:
+        return None
+    if memory_pages is None:
+        return None
+    return memory_pages * 65536
+
+
+def _collect_wasm_module_import_names(path: Path, module_name: str) -> set[str]:
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return set()
+    if len(data) < 8 or data[:4] != b"\0asm" or data[4:8] != b"\x01\x00\x00\x00":
+        return set()
+    offset = 8
+    result: set[str] = set()
+    try:
+        while offset < len(data):
+            section_id = data[offset]
+            offset += 1
+            size, offset = _read_wasm_varuint(data, offset)
+            end = offset + size
+            if end > len(data):
+                raise ValueError("Unexpected EOF while reading section")
+            payload = data[offset:end]
+            offset = end
+            if section_id != 2:
+                continue
+            cursor = 0
+            count, cursor = _read_wasm_varuint(payload, cursor)
+            for _ in range(count):
+                module, cursor = _read_wasm_string(payload, cursor)
+                name, cursor = _read_wasm_string(payload, cursor)
+                if cursor >= len(payload):
+                    raise ValueError("Unexpected EOF while reading import")
+                kind = payload[cursor]
+                cursor += 1
+                if kind == 0:
+                    _, cursor = _read_wasm_varuint(payload, cursor)
+                elif kind == 1:
+                    if cursor >= len(payload):
+                        raise ValueError("Unexpected EOF while reading table type")
+                    cursor += 1
+                    flags, cursor = _read_wasm_varuint(payload, cursor)
+                    _, cursor = _read_wasm_varuint(payload, cursor)
+                    if flags & 0x1:
+                        _, cursor = _read_wasm_varuint(payload, cursor)
+                elif kind == 2:
+                    flags, cursor = _read_wasm_varuint(payload, cursor)
+                    _, cursor = _read_wasm_varuint(payload, cursor)
+                    if flags & 0x1:
+                        _, cursor = _read_wasm_varuint(payload, cursor)
+                elif kind == 3:
+                    if cursor + 2 > len(payload):
+                        raise ValueError("Unexpected EOF while reading global type")
+                    cursor += 2
+                elif kind == 4:
+                    cursor += 1
+                    _, cursor = _read_wasm_varuint(payload, cursor)
+                else:
+                    raise ValueError(f"Unknown import kind {kind}")
+                if module == module_name:
+                    result.add(name)
+            break
+    except ValueError:
+        return set()
+    return result
+
+
 def _wasm_import_function_result_kinds(
     path: Path, *, module_name: str
 ) -> dict[str, str]:
