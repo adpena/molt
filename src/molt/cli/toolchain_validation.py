@@ -139,15 +139,44 @@ def _llvm_config_matches_major(path: Path, major: int) -> bool:
     return match is not None and int(match.group(1)) == major
 
 
+def _clang_llvm_version_detail(major: int) -> str | None:
+    clang = shutil.which("clang") or shutil.which("clang.exe")
+    if not clang:
+        return None
+    try:
+        result = subprocess.run(
+            [clang, "--version"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    first_line = (result.stdout or result.stderr).splitlines()[0:1]
+    version_text = first_line[0] if first_line else ""
+    match = re.search(r"\b(?:clang|LLVM)\s+version\s+(\d+)(?:\.|$)", version_text)
+    if match is None or int(match.group(1)) != major:
+        return None
+    return (
+        f"LLVM {major} clang is present at {clang}, but matching llvm-config was "
+        "not found; llvm-sys requires llvm-config, and the Windows LLVM installer "
+        "often omits it"
+    )
+
+
 def _llvm_backend_unavailable_message(root: Path) -> str | None:
     major, llvm_toolchain = _detect_llvm_backend_toolchain(root)
     if major is None or llvm_toolchain is not None:
         return None
     env_var = _llvm_sys_prefix_env_var(major)
     advice = "\n".join(f"  - {item}" for item in _llvm_backend_advice(major))
+    detail = _clang_llvm_version_detail(major) or "No matching llvm-config was found."
     return (
         f"LLVM backend requires LLVM {major}.1 with llvm-config. "
-        f"No matching llvm-config was found.\n"
+        f"{detail}\n"
         f"Set {env_var} to a complete LLVM prefix or put matching llvm-config on PATH.\n"
         f"Recommended actions:\n{advice}"
     )
@@ -539,14 +568,16 @@ def _build_toolchain_report(root: Path) -> _ToolchainReport:
             "no explicit LLVM backend version pin detected",
         )
     else:
+        llvm_detail = (
+            f"LLVM {llvm_major} via {llvm_toolchain}"
+            if llvm_toolchain is not None
+            else _clang_llvm_version_detail(llvm_major)
+            or f"LLVM {llvm_major} toolchain not found"
+        )
         record(
             "llvm-backend-toolchain",
             llvm_toolchain is not None,
-            (
-                f"LLVM {llvm_major} via {llvm_toolchain}"
-                if llvm_toolchain is not None
-                else f"LLVM {llvm_major} toolchain not found"
-            ),
+            llvm_detail,
             level="warning",
             advice=_llvm_backend_advice(llvm_major) if llvm_toolchain is None else None,
         )

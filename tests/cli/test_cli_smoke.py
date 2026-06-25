@@ -1671,7 +1671,7 @@ def test_cli_completion_includes_build_flags() -> None:
     assert "build audit" in script
     assert "factgraph" in script
     assert "dx" in script
-    assert "env run" in script
+    assert "env run check" in script
     assert "parity-run" in script
     assert "--emit" in script
     assert "--rebuild" in script
