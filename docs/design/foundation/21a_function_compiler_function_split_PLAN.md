@@ -6,7 +6,7 @@ the working tree (post-T1 molt-tir extraction). Move-only / zero-logic-change. -
 
 # 21a — Decompose `function_compiler` (Move #1, function-extraction)
 
-## Executive finding: premise corrected; M1.1-M1.16 now landed
+## Executive finding: premise corrected; M1.1-M1.17 now landed
 
 doc 21's original move #1 ("STRICT move-only **file** split into opcode-family
 submodules") was investigated, **REFUSED, and replaced** by the DX lane. Execution of
@@ -14,22 +14,23 @@ the replacement is in flight in the tree; M1.1 `arith`, M1.2 `compare`, M1.3
 `unary_logic`, M1.4 `funcobj`, M1.5 `coroutine`, M1.6 `calls`, M1.7 `memory`,
 M1.8 `ret_jump`, M1.9 `control_flow`, M1.10 `loops`, M1.11 full
 `indexing`, M1.12 `sequence_ops`, M1.13 residual dict mutation, M1.14
-exception control, M1.15 value transfer, and M1.16 runtime ops are landed as standalone `fc/`
+exception control, M1.15 value transfer, M1.16 runtime ops, and M1.17 const literals are landed as standalone `fc/`
 handlers. Do not undo it.
 Three load-bearing facts:
 
 1. **`function_compiler` is already a directory module, partially extracted.**
-   `runtime/molt-backend/src/native_backend/function_compiler.rs` (now **9,476 lines**,
+   `runtime/molt-backend/src/native_backend/function_compiler.rs` (now **8,778 lines**,
    down from doc 21's 39,043) declares `mod fc;` (line 10) → `function_compiler/fc/`, a
-   subtree of **39 already-extracted handler files** (`arith.rs`, `compare.rs`,
+   subtree of **42 already-extracted handler files** (`arith.rs`, `compare.rs`,
    `unary_logic.rs`, `funcobj.rs`, `coroutine.rs`, `calls.rs`, `memory.rs`, `ret_jump.rs`, `control_flow.rs`, `loops.rs`, `list_ops.rs`,
-   `dict_ops.rs`, `set_ops.rs`, `attrs.rs`, `exceptions.rs`, `text_predicates.rs` (1,716),
+   `dict_ops.rs`, `set_ops.rs`, `attrs.rs`, `exceptions.rs`, `const_literals.rs`,
+   `text_predicates.rs` (1,716),
    `text_transform.rs` (1,203), `vec_reductions.rs` (1,140), …). The dispatch now routes
    arithmetic, comparison, unary/logic, function-object, coroutine, call, memory,
    return/jump/variable-transfer, structured control-flow, loop, subscript
    read/write, sequence/iterator, complete dict mutation, exception-control,
-   value-custody transfer, and runtime shim families through `fc::<family>::handle_*`
-   handlers as well.
+   value-custody transfer, runtime shim, and constant/literal materialization
+   families through `fc::<family>::handle_*` handlers as well.
 
 2. **The file-split buys ~0 build win and was explicitly rejected.** `dx_baseline.md`
    §3.3/§4/§6 (MEASURED) proves `function_compiler.rs` is essentially ONE method,
@@ -46,30 +47,30 @@ Three load-bearing facts:
    explicit split-borrowed `&mut` params, with `OpFlow` returns replicating outer-loop
    `continue`. Arm bodies move **byte-identically**; only field-access paths change.
 
-**Move #1 = continue the function-extraction of `compile_func_inner`** (now ~3,314
-lines, lines 3125-6438, with the planned large opcode-family clusters extracted).
+**Move #1 = continue the function-extraction of `compile_func_inner`** (now ~2,670
+lines, lines 3093-5766, with the planned large opcode-family clusters extracted).
 Strictly move-only / zero-logic-change / no-API-widening.
 
 ## 1. Current structure map
 
-### 1.1 `function_compiler.rs` (9,476 lines)
+### 1.1 `function_compiler.rs` (8,778 lines)
 | Region | Lines | Contents |
 |---|---|---|
-| `mod fc;` + free helpers | 1-3011 | ~50 free helpers (`var_get_boxed_overflow_safe_base` 728, `box_raw_i64_value_overflow_safe` 668, `ensure_boxed_*`, `def_var_from_*`, `merge_rebind_*`, loop-scan helpers). The shared private helper set every handler calls. |
-| `impl SimpleBackend` open | 3012 | |
-| `compile_func()` | 3013-3124 | Thin wrapper -> `compile_func_inner`. |
-| **`compile_func_inner()`** | **3125-6438** | THE MONOLITH (~3,314 lines). Preanalysis destructure (3133-~3227, ~45 shared `let mut` locals), pre-passes (3228-4195), dispatch loop `for op_idx in 0..ops.len()` at **4196**, central `match op.kind.as_str()` at **4372**, per-op **epilogue** at **5869** (post-dispatch: dec_ref of loop-reassigned vars, drain-cleanup, deferred define). |
-| `drain_dead_block_temps_for_suspend()` | 6465-6507 | trailing helper |
-| `#[cfg(test)] mod tests` | 6510-9476 | 63 tests |
+| `mod fc;` + free helpers | 1-2980 | ~50 free helpers (`var_get_boxed_overflow_safe_base` 728, `box_raw_i64_value_overflow_safe` 668, `ensure_boxed_*`, `def_var_from_*`, `merge_rebind_*`, loop-scan helpers). The shared private helper set every handler calls. |
+| `impl SimpleBackend` open | 2980 | |
+| `compile_func()` | 2981-3092 | Thin wrapper -> `compile_func_inner`. |
+| **`compile_func_inner()`** | **3093-5766** | THE MONOLITH (~2,670 lines). Preanalysis destructure, pre-passes, literal-family prologue call, dispatch loop `for op_idx in 0..ops.len()` at **3939**, central `match op.kind.as_str()` at **4122**, and per-op epilogue/cleanup after the family dispatch. |
+| `drain_dead_block_temps_for_suspend()` | 5767-5810 | trailing helper |
+| `#[cfg(test)] mod tests` | 5812-8778 | 63 tests |
 
 ### 1.2 Dispatch + already-extracted families
-Dispatch fn `SimpleBackend::compile_func_inner` (3125); match at 4375 (~140 arms);
+Dispatch fn `SimpleBackend::compile_func_inner` (3093); match at 4122;
 epilogue follows the dispatch for any arm that fell through (did not `continue`).
 Already delegated families: vec_reductions, scalar_builtins, callargs, list_ops,
 dict_ops, set_ops, generators, indexing, sequence_ops, text_predicates, text_transform, runtime_ops, statistics,
 type_conversions, memoryview_buffer, dataclass, parse_ops, future_promise,
 object_construct, modules, class_ops, type_checks, exceptions, context_mgmt,
-exception_stack, file_io, attrs, arith, compare, unary_logic, funcobj, coroutine, calls, memory, ret_jump, control_flow, loops.
+exception_stack, file_io, attrs, const_literals, arith, compare, unary_logic, funcobj, coroutine, calls, memory, ret_jump, control_flow, loops.
 
 ### 1.3 Extracted families and residual inline shell
 Landed in `fc/`:
@@ -89,10 +90,11 @@ Landed in `fc/`:
 - `fc::exception_control::handle_exception_control_op` (`exception_control.rs`) covers `raise` and `check_exception`, including exception-pending branching, tracked cleanup drainage at exception boundaries, fallthrough sealing, and remaining cleanup-root propagation.
 - `fc::value_transfer::handle_value_transfer_op` (`value_transfer.rs`) covers `inc_ref`, `borrow`, `dec_ref`, `release`, `box`, `unbox`, `cast`, `widen`, `identity_alias`, and `binding_alias`, including alias-preserving refcount adjustment and tracked cleanup-root scrubbing for explicit release operations.
 - `fc::runtime_ops::handle_runtime_op` (`runtime_ops.rs`) covers `env_get`, `exception_pending`, `function_defaults_version`, `print`, `warn_stderr`, `print_newline`, `block_on`, and `bridge_unavailable`, including runtime state probes and side-effecting runtime helper calls that always fall through to the parent epilogue.
+- `fc::const_literals::handle_const_literal_op` (`const_literals.rs`) covers `const`, `const_bigint`, `const_bool`, `const_none`, `const_not_implemented`, `const_ellipsis`, `const_float`, `const_str`, and `const_bytes`, including inline-int range policy, const-str payload fallback, loop-entry constant pre-materialization, heap-literal prologue hoisting, data-segment interning, per-kind stack-slot maps, string-output slot exports for module ops, and `rc_skip_dec` updates for hoisted heap constants.
 
-Remaining inline families, current as of the M1.16 landing:
+Remaining inline families, current as of the M1.17 landing:
 
-No planned M1 opcode-family cluster remains inline. The residual inline opcode cluster is constant/literal materialization and hoisting, which remains tied to heap-literal prologue setup, data-segment interning, hoisted stack slots, `rc_skip_dec`, and `continue` semantics. Move it only as one fresh structural contract; do not split constant authority just to chase line count.
+No planned M1 opcode-family cluster remains inline. Constant/literal materialization and hoisting moved as one structural contract into `fc::const_literals`; `op_family::INLINE_DISPATCH_KINDS` is empty and remains only as an enforcement hook for future extracted-family routing.
 
 ### 1.4 Shared helper + shared-state sets
 - **Free helpers** (1–2983, reached via `super::*`): `var_get_boxed_overflow_safe_base`, `box_raw_i64_value_overflow_safe`, `ensure_boxed_overflow_safe`, `def_var_from_*`, `def_var_named`, `import_func_ref`, `merge_rebind_*`. Plus assoc fns `SimpleBackend::import_func_id_split`, `SimpleBackend::intern_data_segment`; shared `fc` helpers own `op_prefers_int_lane` for extracted arithmetic/unary/control-flow handlers.
@@ -159,9 +161,13 @@ op-local closures reconstructed with identical captures (template: `list_ops.rs:
   conversion-alias, identity-alias, and binding-alias custody transfer.
 - **M1.16 `fc::runtime_ops`** - landed for runtime state probes and
   side-effecting runtime helper calls that fall through to the parent epilogue.
-Stop-anywhere: M1.1-M1.16 removed the largest arithmetic/compare/unary/function-object,
+- **M1.17 `fc::const_literals`** - landed for constant/literal materialization,
+  loop-entry constant pre-materialization, heap-literal hoisting, data-segment
+  interning, stack-slot maps, module string-slot exports, and heap-literal
+  `rc_skip_dec` custody.
+Stop-anywhere: M1.1-M1.17 removed the largest arithmetic/compare/unary/function-object,
 coroutine, call, memory, ret/jump, structured control-flow, loop, subscript, and
-sequence/iterator families plus complete dict mutation, exception control, value-custody transfer, and runtime shims and converted them into separate codegen units. Future work should start
+sequence/iterator families plus complete dict mutation, exception control, value-custody transfer, runtime shims, and constant/literal materialization and converted them into separate codegen units. Future work should start
 from the next foundation routing doc or a fresh residual-inline contract rather than
 reopening these landed family moves.
 
@@ -174,12 +180,13 @@ reopening these landed family moves.
 A commit is not done until G1–G5 pass.
 
 ## 6. The win
-1. **Intra-crate codegen parallelism (the function-split win):** `compile_func_inner` is now ~3,314 lines instead of the original ~39K-line god-file center, and each extracted `handle_*_op` is its own codegen unit. The shell now holds orchestration, shared setup, residual constant materialization, and epilogue logic; the large M1 opcode families codegen independently.
+1. **Intra-crate codegen parallelism (the function-split win):** `compile_func_inner` is now ~2,670 lines instead of the original ~39K-line god-file center, and each extracted `handle_*_op` is its own codegen unit. The shell now holds orchestration, shared setup, and epilogue logic; the large M1 opcode families codegen independently.
 2. **Ownership-collision blast-radius (headline friction win, now):** the #1 god-file collision source is materially smaller. The dominant opcode families now live in independently-owned `fc/*.rs` handlers; an arith fix touches only `fc/arith.rs` (~4K) + a 1-line dispatch arm, while loop/subscript work touches `fc/loops.rs` or `fc/indexing.rs` instead of the monolith.
 
 ## Critical files
-- `runtime/molt-backend/src/native_backend/function_compiler.rs` (shell + `compile_func_inner` 3125-6438)
+- `runtime/molt-backend/src/native_backend/function_compiler.rs` (shell + `compile_func_inner` 3093-5766)
 - `runtime/molt-backend/src/native_backend/function_compiler/fc/mod.rs` (register families; `OpFlow`; shared `var_get_boxed_overflow_safe_fn`)
+- `runtime/molt-backend/src/native_backend/function_compiler/fc/const_literals.rs` (constant/literal materialization, loop-entry constants, heap-literal hoists, and string slot exports for module ops)
 - `runtime/molt-backend/src/native_backend/function_compiler/fc/runtime_ops.rs` (runtime state probes and side-effecting runtime helper calls)
 - `runtime/molt-backend/src/native_backend/function_compiler/fc/value_transfer.rs` (explicit refcount, release, conversion-alias, identity-alias, and binding-alias custody transfer)
 - `runtime/molt-backend/src/native_backend/function_compiler/fc/exception_control.rs` (exception control transfer, fallthrough sealing, tracked cleanup drainage)
