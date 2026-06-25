@@ -958,6 +958,8 @@ def _build_build_diagnostics_payload(
         ),
         "module_reasons": module_reason_map,
     }
+    if diagnostics_context.image_scope is not None:
+        payload["binary_image"] = diagnostics_context.image_scope.diagnostic_payload()
     frontend_module_timings = list(diagnostics_context.frontend_module_timings)
     if frontend_module_timings:
         payload["frontend_module_timings"] = frontend_module_timings

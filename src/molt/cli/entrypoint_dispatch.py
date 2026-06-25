@@ -230,8 +230,6 @@ def _dispatch_entrypoint_command(
             return _fail(
                 "Use a file path or --module, not both.", args.json, command="build"
             )
-        if not args.file and not args.module:
-            return _fail("Missing entry file or module.", args.json, command="build")
 
         wasm_opt_level_raw = getattr(args, "wasm_opt_level", "Oz")
         wasm_opt_level = (

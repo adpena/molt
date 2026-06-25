@@ -39,3 +39,7 @@ def test_wrapper_build_cache_uses_module_graph_core_directly() -> None:
     assert "cli._discover_module_graph" not in source
     assert "cli._extend_module_graph_with_static_import_modules" not in source
     assert "cli._parse_static_import_modules" not in source
+    assert "_discover_module_graph(" not in source
+    assert "_extend_module_graph_with_static_import_modules(" not in source
+    assert "_parse_static_import_modules(" not in source
+    assert "_prepare_entry_module_graph(" in source

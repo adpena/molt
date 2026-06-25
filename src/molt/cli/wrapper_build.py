@@ -39,14 +39,9 @@ from molt.cli.json_contract import (
     _extract_payload_text_list,
     _wrapper_build_payload_data,
 )
-from molt.cli.module_graph_discovery import (
-    _discover_module_graph,
-    _extend_module_graph_with_static_import_modules,
-    _parse_static_import_modules,
-)
-from molt.cli.module_resolution import _ModuleResolutionCache, _stdlib_root_path
+from molt.cli.module_graph import _prepare_entry_module_graph
+from molt.cli.module_resolution import _stdlib_root_path
 from molt.cli.module_source import _source_content_sha256
-from molt.cli.module_stdlib_policy import _stdlib_allowlist
 from molt.cli.models import (
     _ImportAdmissionPolicy,
     _ResolvedBuildEntry,
@@ -109,6 +104,17 @@ def _wrapper_target_python(
     )
 
 
+def _wrapper_build_target(build_args: Sequence[str]) -> str:
+    for index, arg in enumerate(build_args):
+        if arg == "--target" and index + 1 < len(build_args):
+            target = build_args[index + 1]
+            return "native" if target == "llvm" else target
+        if arg.startswith("--target="):
+            target = arg.split("=", 1)[1]
+            return "native" if target == "llvm" else target
+    return "native"
+
+
 _WRAPPER_BUILD_CACHE_SCHEMA_VERSION = 2
 _WRAPPER_BUILD_CACHE_ENV_KEYS = (
     "MOLT_CAPABILITIES",
@@ -149,67 +155,56 @@ def _wrapper_build_cache_semantic_env(env: Mapping[str, str]) -> dict[str, str]:
 def _wrapper_build_dependency_fingerprints(
     *,
     resolved_build_entry: _ResolvedBuildEntry,
+    build_args: Sequence[str],
+    env: Mapping[str, str],
     project_root: Path,
     capability_config_digest: str = "",
 ) -> list[dict[str, Any]] | None:
     stdlib_root = _stdlib_root_path()
-    module_roots = list(resolved_build_entry.module_roots)
-    roots = list(dict.fromkeys([*module_roots, stdlib_root]))
-    admitted_packages, admission_error = _parse_external_static_packages(
-        os.environ.get("MOLT_EXTERNAL_STATIC_PACKAGES", "")
-    )
-    if admission_error is not None:
-        return None
-    native_plan, native_plan_errors = _resolve_external_package_native_artifact_plan(
-        external_module_roots=resolved_build_entry.external_module_roots,
-        admitted_packages=admitted_packages,
-    )
-    if native_plan_errors or native_plan is None:
-        return None
-    import_admission_policy = _ImportAdmissionPolicy(
-        external_roots=resolved_build_entry.external_module_roots,
-        admitted_external_packages=admitted_packages,
-        native_artifact_plan=native_plan,
-    )
-    stdlib_allowlist = _stdlib_allowlist()
-    resolution_cache = _ModuleResolutionCache()
-    try:
-        graph, explicit_imports = _discover_module_graph(
-            resolved_build_entry.source_path,
-            roots,
-            module_roots,
-            stdlib_root,
-            project_root,
-            stdlib_allowlist,
-            resolver_cache=resolution_cache,
-            import_admission_policy=import_admission_policy,
-            target_python=resolved_build_entry.target_python,
-            capability_config_digest=capability_config_digest,
+    with _scoped_environ_updates(env):
+        admitted_packages, admission_error = _parse_external_static_packages(
+            os.environ.get("MOLT_EXTERNAL_STATIC_PACKAGES", "")
         )
-    except (OSError, SyntaxError, UnicodeDecodeError):
+        if admission_error is not None:
+            return None
+        native_plan, native_plan_errors = (
+            _resolve_external_package_native_artifact_plan(
+                external_module_roots=resolved_build_entry.external_module_roots,
+                admitted_packages=admitted_packages,
+            )
+        )
+        if native_plan_errors or native_plan is None:
+            return None
+        import_admission_policy = _ImportAdmissionPolicy(
+            external_roots=resolved_build_entry.external_module_roots,
+            admitted_external_packages=admitted_packages,
+            native_artifact_plan=native_plan,
+        )
+        try:
+            prepared_module_graph, prepared_module_graph_error = (
+                _prepare_entry_module_graph(
+                    source_path=resolved_build_entry.source_path,
+                    entry_module=resolved_build_entry.entry_module,
+                    module_roots=list(resolved_build_entry.module_roots),
+                    stdlib_root=stdlib_root,
+                    project_root=project_root,
+                    entry_tree=resolved_build_entry.entry_tree,
+                    diagnostics_enabled=False,
+                    module_reasons={},
+                    json_output=False,
+                    target=_wrapper_build_target(build_args),
+                    import_admission_policy=import_admission_policy,
+                    target_python=resolved_build_entry.target_python,
+                    capability_config_digest=capability_config_digest,
+                    image_scope=resolved_build_entry.image_scope,
+                )
+            )
+        except (OSError, SyntaxError, UnicodeDecodeError):
+            return None
+    if prepared_module_graph_error is not None or prepared_module_graph is None:
         return None
-    static_import_modules, static_import_error = _parse_static_import_modules(
-        os.environ.get(STATIC_IMPORT_MODULES_ENV, "")
-    )
-    if static_import_error is not None:
-        return None
-    static_import_errors = _extend_module_graph_with_static_import_modules(
-        module_graph=graph,
-        explicit_imports=explicit_imports,
-        module_names=static_import_modules,
-        roots=roots,
-        module_roots=module_roots,
-        stdlib_root=stdlib_root,
-        project_root=project_root,
-        stdlib_allowlist=stdlib_allowlist,
-        resolver_cache=resolution_cache,
-        diagnostics_enabled=False,
-        module_reasons={},
-        import_admission_policy=import_admission_policy,
-        target_python=resolved_build_entry.target_python,
-    )
-    if static_import_errors:
-        return None
+    graph = prepared_module_graph.module_graph
+    native_artifact_plan = prepared_module_graph.native_artifact_plan
     dependencies: list[dict[str, Any]] = []
     for module_name, path in sorted(graph.items()):
         try:
@@ -229,7 +224,7 @@ def _wrapper_build_dependency_fingerprints(
                 "source_sha256": source_hash,
             }
         )
-    for artifact in import_admission_policy.native_artifact_plan.artifacts:
+    for artifact in native_artifact_plan.artifacts:
         try:
             artifact_stat = artifact.path.stat()
             manifest_stat = artifact.manifest_path.stat()
@@ -274,6 +269,8 @@ def _wrapper_build_cache_input(
     capability_config_digest = _build_inputs._capability_config_cache_digest_from_env(env)
     dependencies = _wrapper_build_dependency_fingerprints(
         resolved_build_entry=resolved_build_entry,
+        build_args=build_args,
+        env=env,
         project_root=project_root,
         capability_config_digest=capability_config_digest,
     )
@@ -285,6 +282,11 @@ def _wrapper_build_cache_input(
         "source_sha256": source_hash,
         "module_sources": dependencies,
         "entry_module": resolved_build_entry.entry_module,
+        "binary_image": (
+            resolved_build_entry.image_scope.diagnostic_payload()
+            if resolved_build_entry.image_scope is not None
+            else None
+        ),
         "project_root": os.fspath(project_root.resolve()),
         "build_args": list(build_args),
         "semantic_env": _wrapper_build_cache_semantic_env(env),

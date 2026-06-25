@@ -38,6 +38,10 @@ molt build app.py --output dist/app      # Custom output path
 molt build app.py --profile cloudflare   # Platform-optimized build
 ```
 
+When no CLI file or `--module` is supplied, `molt build` can resolve the entry
+from project configuration: `[tool.molt.build] entry-file = "app.py"` or
+`entry-module = "pkg"`. CLI entry selectors override configured selectors.
+
 | Flag | Description |
 |------|-------------|
 | `--target TARGET` | Build target: `native` (default), `wasm`, `luau`, `mlir`, or a target triple (e.g. `aarch64-unknown-linux-gnu`). |
@@ -145,6 +149,11 @@ molt run --module mypackage              # Run a package
 | `--capabilities SPEC` | Capability profiles or manifest path. |
 | `--trusted / --no-trusted` | Disable capability checks. |
 | `--build-arg ARG` | Extra args passed to `molt build` (repeatable). |
+
+`molt run` wrapper-cache identity includes the resolved binary image scope,
+target Python version, static import modules, external static package/native
+artifact custody, and the discovered source closure. A cache hit is valid only
+when those facts and the output binary hash still match the manifest.
 
 #### `molt test`
 
@@ -486,9 +495,10 @@ falls back to the host process version when a target is selected.
 | `MOLT_STDLIB_PROFILE` | Default stdlib profile (`full` or `micro`). |
 | `MOLT_MODULE_ROOTS` | Colon-separated additional module search roots. |
 | `MOLT_EXTERNAL_STATIC_PACKAGES` | Comma/space-separated external package names whose transitive closure may be admitted from external roots. Direct entry imports from external roots remain bounded when unset. |
+| `MOLT_STATIC_IMPORT_MODULES` | Comma/space-separated Python module names to admit as explicit static roots in the binary image closure. |
 | `MOLT_PORTABLE` | Set to `1` for baseline ISA codegen. |
 | `MOLT_SPLIT_RUNTIME` | Set to `1` to enable split-runtime WASM by default. |
-| `MOLT_DEAD_MODULE_ELIMINATION` | Set to `1` to enable dead module elimination. |
+| `MOLT_DEAD_MODULE_ELIMINATION` | Set to `1` to narrow the import plan's compile module set to modules reachable from the entry and required support roots. |
 | `MOLT_BUILD_STATE_DIR` | Override the build state directory. |
 | `MOLT_BUILD_LOCK_TIMEOUT` | Timeout in seconds for build lock acquisition. |
 | `MOLT_SYSROOT` | Sysroot path for native linking. |

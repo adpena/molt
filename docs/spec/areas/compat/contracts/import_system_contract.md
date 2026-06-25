@@ -118,10 +118,17 @@ Modules may be:
   heuristic ownership. A reachable-empty stdlib partition still publishes a real
   parseable object plus count, key, manifest, and partition sidecars; absence of
   functions is cache content, not permission to skip cache emission.
-- Build-time graph materialization has one immutable `ImportPlan`. Entry
-  planning owns runtime-import support closure; materialization owns namespace
-  stubs, generated importer modules, known-module sets, allowlist snapshots, and
-  graph metadata before frontend lowering consumes the graph.
+- Build-time graph materialization has one immutable binary image closure plan.
+  The resolved entry scope records whether the image came from a CLI script,
+  CLI module/package, or configured project entry; the import plan classifies
+  declared roots, entry-reachable modules, runtime support, stdlib support,
+  package parents, namespace/generated modules, and external native artifacts.
+  `known_modules` is the whole admitted runtime closure, and `compile_modules`
+  is the sole authority for modules lowered into the binary. Dead-module
+  elimination may narrow `compile_modules`, but it must not mutate the known
+  closure, runtime import dispatch roots, or wrapper-cache dependency graph.
+  Wrapper build manifests must fingerprint the same closure plan rather than
+  rediscovering a parallel graph.
 - `__import__` and `importlib.import_module` share the same Rust-owned runtime
   import transaction. Source-language imports call
   `molt_importlib_import_transaction` directly with explicit
@@ -206,6 +213,16 @@ Import/bootstrap changes are expected to be covered by the existing in-tree regr
 
 - Native bootstrap/package-entry regressions: `tests/test_native_import_bootstrap_regressions.py`
 - WASM import bootstrap smoke and package-relative imports: `tests/test_wasm_importlib_smoke.py`, `tests/test_wasm_importlib_package_bootstrap.py`
+- Binary image closure authority: `tests/cli/test_cli_binary_image_closure.py`
+  covers configured entry-file/entry-module image scopes, CLI selector
+  override, ambiguous configured selectors, import-plan closure payload
+  classification, fail-closed compile modules outside the admitted closure, and
+  wrapper-cache static-import closure fingerprinting.
+- Module graph authority guards: `tests/cli/test_cli_module_graph_authority.py`
+  keeps wrapper build cache dependency fingerprints routed through
+  `_prepare_entry_module_graph` instead of direct discovery/static-import
+  rediscovery; `tests/cli/test_cli_build_inputs_authority.py` keeps entry
+  selector and binary image kind resolution in the build-input authority.
 - Differential import semantics: `tests/differential/stdlib/importlib_basic.py`, `tests/differential/stdlib/importlib_from_bootstrap_submodules.py`, `tests/differential/stdlib/importlib_import_module_basic.py`, `tests/differential/stdlib/importlib_import_module_helper_constant.py`, `tests/differential/stdlib/importlib_import_module_helper_dotted.py`, `tests/differential/stdlib/importlib_import_module_helper_submodule.py`, `tests/differential/stdlib/importlib_import_module_relative_package_typeerror.py`, `tests/differential/stdlib/importlib_relative_import_from_package.py`, `tests/differential/stdlib/importlib_runtime_state_payload_intrinsic.py`, `tests/differential/stdlib/importlib_support_bootstrap.py`
 - Focused active transaction/fromlist slice: `tests/differential/stdlib/importlib_import_module_basic.py`, `tests/differential/stdlib/importlib_import_module_helper_constant.py`, `tests/differential/stdlib/importlib_import_module_helper_submodule.py`, `tests/differential/stdlib/importlib_dunder_import_fromlist.py`; run this slice with `tests/molt_diff.py --stdlib-profile full` because the importlib discovery path intentionally pulls full-profile `zipfile`/`csv`/compression support. This is a focused regression slice for transaction/cache changes, not a replacement for the full IB2 matrix when declaring import semantics matrix-green.
 - Static package `__all__` star-child slice: `tests/cli/test_cli_import_collection.py::test_from_import_star_graph_admits_static_all_child_module`, `tests/test_native_import_star_all_regressions.py`, and `tests/differential/basic/import_star_package_all_child.py`. Keep this paired with `tests/differential/basic/import_star.py` when changing `MODULE_IMPORT_STAR`, import-scan caches, or the Rust transaction `fromlist=["*"]` path.
