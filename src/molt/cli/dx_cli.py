@@ -6,6 +6,7 @@ from pathlib import Path
 import sys
 
 from molt.dx import DX_ENV_KEYS, DxProject, dx_env_payload, render_env
+from molt.cli.toolchain_validation import _build_toolchain_report
 from molt.cli.command_runtime import _CLI_MEMORY_GUARD_PREFIX, _run_completed_command
 from molt.cli.output import emit_json as _emit_json
 from molt.cli.project_roots import _find_molt_root
@@ -47,11 +48,45 @@ def _handle_run(args: argparse.Namespace) -> int:
     return result.returncode
 
 
+def _handle_check(args: argparse.Namespace) -> int:
+    project = _dx_project_from_cwd()
+    report = _build_toolchain_report(project.root)
+    status = "ok" if not report.errors else "error"
+    payload = {
+        "kind": "molt_dx_check",
+        "status": status,
+        "checks": report.checks,
+        "warnings": report.warnings,
+        "errors": report.errors,
+        "actions": report.actions,
+        "environment": report.environment,
+        "backends": report.backends,
+        "profiles": report.profiles,
+    }
+    if args.json:
+        _emit_json(payload, json_output=True)
+    else:
+        for check in report.checks:
+            marker = "ok" if check.get("ok") else str(check.get("level", "error"))
+            sys.stdout.write(
+                f"{marker}: {check.get('name')}: {check.get('detail')}\n"
+            )
+            for advice in check.get("advice", []):
+                sys.stdout.write(f"  - {advice}\n")
+    if report.errors:
+        return 1
+    if args.strict and report.warnings:
+        return 1
+    return 0
+
+
 def handle_dx_command(args: argparse.Namespace) -> int:
     if args.dx_command == "env":
         return _handle_env(args)
     if args.dx_command == "run":
         return _handle_run(args)
+    if args.dx_command == "check":
+        return _handle_check(args)
     print("molt dx: subcommand required", file=sys.stderr)
     return 2
 
@@ -101,4 +136,18 @@ def add_dx_parser(
         ),
     )
     run_parser.add_argument("child_command", nargs=argparse.REMAINDER)
+    check_parser = dx_subparsers.add_parser(
+        "check",
+        help="Check canonical developer toolchain facts",
+        description=(
+            "Check the same cross-platform developer toolchain facts used by "
+            "setup validation, including LLVM backend llvm-config discovery."
+        ),
+    )
+    check_parser.add_argument("--json", action="store_true", help="Emit JSON output.")
+    check_parser.add_argument(
+        "--strict",
+        action="store_true",
+        help="Exit nonzero for warnings as well as errors.",
+    )
     return dx_parser
