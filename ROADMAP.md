@@ -643,7 +643,8 @@ always/type-gated/constant opcode lists.
   wrapper-cache manifests with static roots plus DME cache identity, and
   `binary_image_analysis` bridges source/AST, lowering schedule, backend
   IR/TIR-input, and artifact evidence through a SourceSite digest ledger plus
-  backend lowered-op `source_sites` coverage/digest evidence,
+  backend lowered-op `source_sites` coverage/digest evidence and
+  source-attributed allocation/ownership event digests,
   and ordinary source syntax imports now call the same transaction intrinsic
   with explicit `name`/`fromlist`/`level` payloads while bootstrap/importlib
   modules keep a private cycle-breaking `MODULE_IMPORT` boundary, and the

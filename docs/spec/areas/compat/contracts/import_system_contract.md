@@ -145,7 +145,11 @@ Modules may be:
   TIR facts. Backend IR diagnostics now carry the matching `source_sites`
   projection from the lowered op stream: attributed-op coverage, per-line
   operation counts, and a stable digest over `source_line`/column coordinates.
-  This is evidence over the compiler carrier, not a second AST parser.
+  `allocation_ownership` joins that same carrier to heap/stack allocation roots,
+  retain/release ops, heap-exposure ops, arena eligibility, and
+  finalizer-sensitive results, so memory-pressure diagnostics share the binary
+  image identity without becoming another allocation authority. This is evidence
+  over the compiler carrier, not a second AST parser.
 - `__import__` and `importlib.import_module` share the same Rust-owned runtime
   import transaction. Source-language imports call
   `molt_importlib_import_transaction` directly with explicit

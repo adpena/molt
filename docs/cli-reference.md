@@ -103,7 +103,11 @@ source without embedding raw source text. The backend IR section also reports
 `source_sites`: attributed-op coverage, line hot spots, and a stable digest over
 the actual lowered op stream's `source_line` / column carrier, so backend and
 artifact evidence can join to the same source-site authority without rewalking
-the AST.
+the AST. The same backend section includes `allocation_ownership`, a source-
+attributed event projection over heap/stack allocation roots, refcount retain/
+release ops, heap-exposure ops, arena eligibility, and finalizer-sensitive
+results; it is diagnostic evidence over existing IR/TIR facts, not a separate
+allocation classifier.
 
 </details>
 

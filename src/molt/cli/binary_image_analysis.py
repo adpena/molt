@@ -516,6 +516,174 @@ def _backend_ir_source_site_payload(
     }
 
 
+_HEAP_ALLOC_ROOT_KINDS = frozenset(
+    {
+        "alloc",
+        "alloc_class",
+        "alloc_class_static",
+        "alloc_class_trusted",
+        "object_new_bound",
+        "build_list",
+        "build_dict",
+        "build_tuple",
+        "build_set",
+        "list_new",
+        "list_int_new",
+        "list_fill_new",
+        "list_from_range",
+        "list_copy",
+        "tuple_new",
+        "tuple_from_list",
+        "dict_new",
+        "dict_from_obj",
+        "set_new",
+        "frozenset_new",
+        "alloc_task",
+        "generator_create",
+        "coro_create",
+        "class_def",
+    }
+)
+_STACK_ALLOC_ROOT_KINDS = frozenset({"stack_alloc", "object_new_bound_stack"})
+_REF_RETAIN_KINDS = frozenset({"inc_ref", "borrow"})
+_REF_RELEASE_KINDS = frozenset({"dec_ref", "release", "free", "del_boundary"})
+_HEAP_EXPOSURE_KINDS = frozenset(
+    {
+        "alloc_task",
+        "build_dict",
+        "build_list",
+        "build_set",
+        "build_slice",
+        "build_tuple",
+        "call",
+        "call_builtin",
+        "call_method",
+        "chan_recv_yield",
+        "chan_send_yield",
+        "closure_store",
+        "import",
+        "import_from",
+        "raise",
+        "state_yield",
+        "store_attr",
+        "store_index",
+    }
+)
+
+
+def _backend_ir_allocation_categories(op: Mapping[str, Any]) -> list[str]:
+    kind = op.get("kind")
+    if not isinstance(kind, str):
+        kind = "<unknown>"
+    categories: list[str] = []
+    if kind in _HEAP_ALLOC_ROOT_KINDS:
+        categories.append("heap_alloc_root")
+    if kind in _STACK_ALLOC_ROOT_KINDS:
+        categories.append("stack_alloc_root")
+    if kind in _REF_RETAIN_KINDS:
+        categories.append("ref_retain")
+    if kind in _REF_RELEASE_KINDS:
+        categories.append("ref_release")
+    if kind in _HEAP_EXPOSURE_KINDS:
+        categories.append("heap_exposure")
+    if op.get("arena_eligible") is True:
+        categories.append("arena_eligible")
+    if op.get("defines_del") is True:
+        categories.append("finalizer_sensitive")
+    return categories
+
+
+def _backend_ir_allocation_ownership_payload(
+    functions: Sequence[Any],
+) -> dict[str, Any]:
+    category_counts: Counter[str] = Counter()
+    kind_counts: Counter[str] = Counter()
+    line_counts: Counter[tuple[str, int, str]] = Counter()
+    event_records: list[dict[str, Any]] = []
+    unattributed_event_count = 0
+    for func in functions:
+        if not isinstance(func, Mapping):
+            continue
+        name = func.get("name")
+        if not isinstance(name, str):
+            name = "<unknown>"
+        source_file = func.get("source_file")
+        if not isinstance(source_file, str) or not source_file:
+            source_file = "<unknown>"
+        ops = func.get("ops")
+        if not isinstance(ops, list):
+            continue
+        for op_index, op in enumerate(ops):
+            if not isinstance(op, Mapping):
+                continue
+            categories = _backend_ir_allocation_categories(op)
+            if not categories:
+                continue
+            kind = op.get("kind")
+            if not isinstance(kind, str):
+                kind = "<unknown>"
+            site, _source = _backend_ir_op_source_site(op)
+            for category in categories:
+                category_counts[category] += 1
+                kind_counts[f"{category}:{kind}"] += 1
+                if site is None:
+                    unattributed_event_count += 1
+                    continue
+                line = int(site["line"])
+                line_counts[(source_file, line, category)] += 1
+                event_records.append(
+                    {
+                        "function": name,
+                        "op_index": op_index,
+                        "kind": kind,
+                        "category": category,
+                        "source_file": source_file,
+                        "line": line,
+                        "col": site["col"],
+                        "end_col": site["end_col"],
+                    }
+                )
+    attributed_event_count = len(event_records)
+    total_event_count = attributed_event_count + unattributed_event_count
+    source_coverage_ratio = (
+        round(attributed_event_count / total_event_count, 6)
+        if total_event_count > 0
+        else 1.0
+    )
+    top_source_lines = [
+        {
+            "source_file": source_file,
+            "line": line,
+            "category": category,
+            "events": count,
+        }
+        for (source_file, line, category), count in sorted(
+            line_counts.items(),
+            key=lambda item: (-item[1], item[0][0], item[0][1], item[0][2]),
+        )[:20]
+    ]
+    top_kinds = [
+        {"category_kind": category_kind, "events": count}
+        for category_kind, count in sorted(
+            kind_counts.items(),
+            key=lambda item: (-item[1], item[0]),
+        )[:20]
+    ]
+    return {
+        "carrier": "backend_ir_source_sites_and_ownership_kinds",
+        "event_count": total_event_count,
+        "source_attributed_event_count": attributed_event_count,
+        "unattributed_event_count": unattributed_event_count,
+        "source_coverage_ratio": source_coverage_ratio,
+        "events_by_category": {
+            name: category_counts[name] for name in sorted(category_counts)
+        },
+        "top_category_kinds": top_kinds,
+        "top_source_lines_by_events": top_source_lines,
+        "allocation_ownership_digest": _stable_payload_hash(event_records),
+    }
+
+
 def _backend_ir_binary_image_analysis_payload(ir: Mapping[str, Any]) -> dict[str, Any]:
     functions = ir.get("functions")
     if not isinstance(functions, list):
@@ -580,6 +748,7 @@ def _backend_ir_binary_image_analysis_payload(ir: Mapping[str, Any]) -> dict[str
             functions,
             op_total=sum(op_counts.values()),
         ),
+        "allocation_ownership": _backend_ir_allocation_ownership_payload(functions),
         "tir_boundary": {
             "carrier": "backend_ir_json",
             "semantic_role": "frontend-to-TIR/backend input",
