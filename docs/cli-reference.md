@@ -90,6 +90,10 @@ from project configuration: `[tool.molt.build] entry-file = "app.py"` or
 | `--respect-pythonpath / --no-respect-pythonpath` | Include PYTHONPATH entries as module roots. |
 | `--runtime-feedback PATH` | Path to runtime feedback artifact for hot-function hints. |
 
+Diagnostics JSON includes `binary_image_closure`, the same closure plan used by
+lowering and wrapper-cache manifests. `known_modules` is the full admitted
+runtime closure; `compile_modules` is the set actually lowered into the binary.
+
 </details>
 
 #### `molt factgraph`
@@ -150,10 +154,11 @@ molt run --module mypackage              # Run a package
 | `--trusted / --no-trusted` | Disable capability checks. |
 | `--build-arg ARG` | Extra args passed to `molt build` (repeatable). |
 
-`molt run` wrapper-cache identity includes the resolved binary image scope,
-target Python version, static import modules, external static package/native
-artifact custody, and the discovered source closure. A cache hit is valid only
-when those facts and the output binary hash still match the manifest.
+`molt run` wrapper-cache identity includes the resolved binary image scope, the
+full binary-image closure payload, target Python version, dead-module
+elimination mode, static import modules, external static package/native artifact
+custody, and the discovered source closure. A cache hit is valid only when those
+facts and the output binary hash still match the manifest.
 
 #### `molt test`
 
@@ -498,7 +503,7 @@ falls back to the host process version when a target is selected.
 | `MOLT_STATIC_IMPORT_MODULES` | Comma/space-separated Python module names to admit as explicit static roots in the binary image closure. |
 | `MOLT_PORTABLE` | Set to `1` for baseline ISA codegen. |
 | `MOLT_SPLIT_RUNTIME` | Set to `1` to enable split-runtime WASM by default. |
-| `MOLT_DEAD_MODULE_ELIMINATION` | Set to `1` to narrow the import plan's compile module set to modules reachable from the entry and required support roots. |
+| `MOLT_DEAD_MODULE_ELIMINATION` | Set to `1` to narrow the import plan's compile module set to modules reachable from the entry and required support roots. This is part of wrapper-cache semantic identity. |
 | `MOLT_BUILD_STATE_DIR` | Override the build state directory. |
 | `MOLT_BUILD_LOCK_TIMEOUT` | Timeout in seconds for build lock acquisition. |
 | `MOLT_SYSROOT` | Sysroot path for native linking. |

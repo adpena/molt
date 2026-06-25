@@ -39,7 +39,7 @@ from molt.cli.json_contract import (
     _extract_payload_text_list,
     _wrapper_build_payload_data,
 )
-from molt.cli.module_graph import _prepare_entry_module_graph
+from molt.cli.module_graph import _materialize_import_plan, _prepare_entry_module_graph
 from molt.cli.module_resolution import _stdlib_root_path
 from molt.cli.module_source import _source_content_sha256
 from molt.cli.models import (
@@ -123,6 +123,7 @@ _WRAPPER_BUILD_CACHE_ENV_KEYS = (
     "MOLT_HASH_SEED",
     "MOLT_HERMETIC_MODULE_ROOTS",
     "MOLT_MODULE_ROOTS",
+    "MOLT_DEAD_MODULE_ELIMINATION",
     STATIC_IMPORT_MODULES_ENV,
     "MOLT_TRUSTED",
     "PYTHONHASHSEED",
@@ -159,8 +160,9 @@ def _wrapper_build_dependency_fingerprints(
     env: Mapping[str, str],
     project_root: Path,
     capability_config_digest: str = "",
-) -> list[dict[str, Any]] | None:
+) -> tuple[list[dict[str, Any]], dict[str, Any]] | None:
     stdlib_root = _stdlib_root_path()
+    module_reasons: dict[str, set[str]] = {}
     with _scoped_environ_updates(env):
         admitted_packages, admission_error = _parse_external_static_packages(
             os.environ.get("MOLT_EXTERNAL_STATIC_PACKAGES", "")
@@ -190,7 +192,7 @@ def _wrapper_build_dependency_fingerprints(
                     project_root=project_root,
                     entry_tree=resolved_build_entry.entry_tree,
                     diagnostics_enabled=False,
-                    module_reasons={},
+                    module_reasons=module_reasons,
                     json_output=False,
                     target=_wrapper_build_target(build_args),
                     import_admission_policy=import_admission_policy,
@@ -203,8 +205,17 @@ def _wrapper_build_dependency_fingerprints(
             return None
     if prepared_module_graph_error is not None or prepared_module_graph is None:
         return None
-    graph = prepared_module_graph.module_graph
-    native_artifact_plan = prepared_module_graph.native_artifact_plan
+    import_plan = _materialize_import_plan(
+        prepared_module_graph=prepared_module_graph,
+        module_reasons=module_reasons,
+        stdlib_root=stdlib_root,
+        artifacts_root=project_root / "tmp" / "wrapper-build-closure",
+        entry_module=resolved_build_entry.entry_module,
+        diagnostics_enabled=False,
+    )
+    graph = import_plan.module_graph
+    native_artifact_plan = import_plan.native_artifact_plan
+    closure_payload = import_plan.closure_payload()
     dependencies: list[dict[str, Any]] = []
     for module_name, path in sorted(graph.items()):
         try:
@@ -248,7 +259,7 @@ def _wrapper_build_dependency_fingerprints(
                 "platform_tag": artifact.platform_tag,
             }
         )
-    return dependencies
+    return dependencies, closure_payload
 
 
 def _wrapper_build_cache_input(
@@ -267,26 +278,24 @@ def _wrapper_build_cache_input(
     if source_hash is None:
         return None
     capability_config_digest = _build_inputs._capability_config_cache_digest_from_env(env)
-    dependencies = _wrapper_build_dependency_fingerprints(
+    closure_fingerprints = _wrapper_build_dependency_fingerprints(
         resolved_build_entry=resolved_build_entry,
         build_args=build_args,
         env=env,
         project_root=project_root,
         capability_config_digest=capability_config_digest,
     )
-    if dependencies is None:
+    if closure_fingerprints is None:
         return None
+    dependencies, closure_payload = closure_fingerprints
     payload: dict[str, Any] = {
         "version": _WRAPPER_BUILD_CACHE_SCHEMA_VERSION,
         "source_path": os.fspath(resolved_source_path),
         "source_sha256": source_hash,
         "module_sources": dependencies,
         "entry_module": resolved_build_entry.entry_module,
-        "binary_image": (
-            resolved_build_entry.image_scope.diagnostic_payload()
-            if resolved_build_entry.image_scope is not None
-            else None
-        ),
+        "binary_image": closure_payload["image"],
+        "binary_image_closure": closure_payload,
         "project_root": os.fspath(project_root.resolve()),
         "build_args": list(build_args),
         "semantic_env": _wrapper_build_cache_semantic_env(env),

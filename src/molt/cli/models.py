@@ -45,6 +45,25 @@ BinaryImageKind = Literal[
     "project_entry_package",
 ]
 BinaryImageClosureMode = Literal["reachable_only"]
+BuildEntrySelectorOrigin = Literal["cli", "config", "legacy"]
+BuildEntrySelectorTarget = Literal["file", "module"]
+
+
+@dataclass(frozen=True)
+class _BuildEntrySelector:
+    origin: BuildEntrySelectorOrigin
+    target: BuildEntrySelectorTarget
+    value: str
+    source: str
+    config_key: str | None = None
+
+    @property
+    def file_path(self) -> str | None:
+        return self.value if self.target == "file" else None
+
+    @property
+    def module(self) -> str | None:
+        return self.value if self.target == "module" else None
 
 
 @dataclass(frozen=True)
@@ -181,6 +200,12 @@ class _BinaryImageScope:
         )
         if not self.root_modules:
             object.__setattr__(self, "root_modules", (self.entry_module,))
+        else:
+            object.__setattr__(
+                self,
+                "root_modules",
+                tuple(dict.fromkeys(self.root_modules)),
+            )
 
     @classmethod
     def from_entry(
@@ -214,6 +239,26 @@ class _BinaryImageScope:
             "root_modules": list(self.root_modules),
             "closure_mode": self.closure_mode,
         }
+
+    def with_root_modules(
+        self,
+        root_modules: Collection[str],
+    ) -> "_BinaryImageScope":
+        roots = tuple(dict.fromkeys(root_modules))
+        if not roots:
+            roots = (self.entry_module,)
+        if roots == self.root_modules:
+            return self
+        return _BinaryImageScope(
+            kind=self.kind,
+            selector_source=self.selector_source,
+            entry_module=self.entry_module,
+            source_path=self.source_path,
+            project_root=self.project_root,
+            module_roots=self.module_roots,
+            root_modules=roots,
+            closure_mode=self.closure_mode,
+        )
 
 
 @dataclass(frozen=True)
@@ -477,6 +522,7 @@ class _BuildDiagnosticsContext:
     diagnostics_start: float
     phase_starts: Mapping[str, float]
     image_scope: _BinaryImageScope | None
+    binary_image_closure: Mapping[str, Any] | None
     module_graph: Mapping[str, Path]
     module_reasons: Mapping[str, set[str]]
     frontend_module_timings: Sequence[dict[str, Any]]
@@ -1042,6 +1088,7 @@ class _PreparedNativeLink:
 class _PreparedBuildCallbacks:
     record_frontend_timing: Callable[..., None]
     build_diagnostics_payload: Callable[[], tuple[dict[str, Any] | None, Path | None]]
+    set_binary_image_closure_payload: Callable[[Mapping[str, Any] | None], None]
 
 
 class _ModuleLowerError(RuntimeError):

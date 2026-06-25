@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import time
 from pathlib import Path
 
 import pytest
@@ -147,13 +148,11 @@ def test_cli_entry_overrides_project_config_entry(tmp_path: Path) -> None:
 
 def test_project_config_rejects_ambiguous_entry_selectors(tmp_path: Path) -> None:
     (tmp_path / "app.py").write_text("value = 1\n")
-    _file, _module, _source, selector_error = (
-        cli_build_inputs._resolve_build_entry_selector(
-            file_path=None,
-            module=None,
-            project_root=tmp_path,
-            build_config={"entry-file": "app.py", "entry-module": "pkg"},
-        )
+    selector, selector_error = cli_build_inputs._resolve_build_entry_selector(
+        file_path=None,
+        module=None,
+        project_root=tmp_path,
+        build_config={"entry-file": "app.py", "entry-module": "pkg"},
     )
 
     resolved, error = _resolve_entry(
@@ -161,6 +160,7 @@ def test_project_config_rejects_ambiguous_entry_selectors(tmp_path: Path) -> Non
         build_config={"entry-file": "app.py", "entry-module": "pkg"},
     )
 
+    assert selector is None
     assert selector_error is not None
     assert "multiple entry selectors" in selector_error
     assert resolved is None
@@ -246,6 +246,10 @@ def test_project_config_static_import_dme_keeps_compile_scope_in_image_closure(
 
     assert narrowed_plan.image_scope.kind == "project_entry_script"
     assert narrowed_plan.image_scope.selector_source == "config:entry-file"
+    assert narrowed_plan.image_scope.diagnostic_payload()["root_modules"] == [
+        "app",
+        "pkg.runtime.ops_cpu",
+    ]
     assert {"app", "helper", "pkg.runtime.ops_cpu", "base64"}.issubset(
         narrowed_plan.compile_modules
     )
@@ -285,3 +289,92 @@ def test_wrapper_build_cache_input_uses_static_import_closure_plan(
     }
     assert {"app", "pkg.runtime.ops_cpu", "base64"}.issubset(modules)
     assert payload["binary_image"]["entry_module"] == "app"
+    closure = payload["binary_image_closure"]
+    assert closure["image"] == payload["binary_image"]
+    assert closure["image"]["root_modules"] == ["app", "pkg.runtime.ops_cpu"]
+    assert {"app", "pkg.runtime.ops_cpu", "base64"}.issubset(
+        closure["known_modules"]
+    )
+    assert closure["compile_modules"] == closure["known_modules"]
+    assert "pkg.runtime.ops_cpu" in closure["declared_root_modules"]
+
+
+def test_wrapper_build_cache_identity_tracks_dead_module_elimination(
+    tmp_path: Path,
+) -> None:
+    entry = tmp_path / "app.py"
+    entry.write_text("value = 'entry'\n")
+    resolved, error = _resolve_entry(tmp_path, file_path=str(entry))
+    assert error is None
+    assert resolved is not None
+
+    base_payload, base_key = cli_wrapper_build._wrapper_build_cache_input(
+        resolved_build_entry=resolved,
+        build_args=["--target", "native"],
+        env={},
+        project_root=tmp_path,
+    )
+    dme_payload, dme_key = cli_wrapper_build._wrapper_build_cache_input(
+        resolved_build_entry=resolved,
+        build_args=["--target", "native"],
+        env={"MOLT_DEAD_MODULE_ELIMINATION": "1"},
+        project_root=tmp_path,
+    )
+
+    assert base_payload is not None
+    assert dme_payload is not None
+    assert base_key != dme_key
+    assert "MOLT_DEAD_MODULE_ELIMINATION" not in base_payload["semantic_env"]
+    assert dme_payload["semantic_env"]["MOLT_DEAD_MODULE_ELIMINATION"] == "1"
+    assert dme_payload["binary_image_closure"]["known_modules"] == base_payload[
+        "binary_image_closure"
+    ]["known_modules"]
+
+
+def test_build_diagnostics_emits_final_binary_image_closure(
+    tmp_path: Path,
+) -> None:
+    entry = tmp_path / "app.py"
+    helper = tmp_path / "helper.py"
+    entry.write_text("import helper\nvalue = helper.VALUE\n")
+    helper.write_text("VALUE = 7\n")
+    import_plan = _materialize_plan(tmp_path, entry, "app")
+    narrowed_plan = import_plan.with_compile_modules({"app"})
+    callbacks = cli_frontend_pipeline._prepare_build_callbacks(
+        frontend_module_timings=[],
+        frontend_timing_enabled=False,
+        frontend_timing_raw="",
+        frontend_timing_threshold=0.0,
+        json_output=False,
+        diagnostics_enabled=True,
+        diagnostics_start=time.perf_counter(),
+        phase_starts={},
+        module_graph=import_plan.module_graph,
+        module_reasons={"app": {"entry_root"}, "helper": {"entry_closure"}},
+        allocation_diagnostics_enabled=False,
+        frontend_parallel_details={},
+        profile="dev",
+        midend_policy_outcomes_by_function={},
+        midend_pass_stats_by_function={},
+        backend_daemon_health=None,
+        backend_daemon_cached=None,
+        backend_daemon_cache_tier=None,
+        backend_daemon_config_digest=None,
+        diagnostics_path_spec="",
+        artifacts_root=tmp_path / "tmp" / "diagnostics",
+        image_scope=import_plan.image_scope,
+    )
+    callbacks.set_binary_image_closure_payload(narrowed_plan.closure_payload())
+
+    payload, diagnostics_path = callbacks.build_diagnostics_payload()
+
+    assert diagnostics_path is None
+    assert payload is not None
+    assert payload["binary_image"] == payload["binary_image_closure"]["image"]
+    assert payload["binary_image"]["root_modules"] == ["app"]
+    assert payload["known_module_count"] == len(import_plan.known_modules)
+    assert payload["compile_module_count"] == 1
+    assert payload["binary_image_closure"]["known_modules"] == sorted(
+        import_plan.known_modules
+    )
+    assert payload["binary_image_closure"]["compile_modules"] == ["app"]

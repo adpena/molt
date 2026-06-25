@@ -112,6 +112,8 @@ def _emit_build_diagnostics(
     phase_sec = diagnostics.get("phase_sec", {})
     total_sec = diagnostics.get("total_sec")
     module_count = diagnostics.get("module_count")
+    known_module_count = diagnostics.get("known_module_count")
+    compile_module_count = diagnostics.get("compile_module_count")
     reason_summary = diagnostics.get("module_reason_summary", {})
     midend = diagnostics.get("midend", {})
     frontend_parallel = diagnostics.get("frontend_parallel", {})
@@ -122,6 +124,10 @@ def _emit_build_diagnostics(
         print(f"- total_sec: {total_sec:.6f}", file=sys.stderr)
     if isinstance(module_count, int):
         print(f"- modules: {module_count}", file=sys.stderr)
+    if isinstance(known_module_count, int):
+        print(f"- known_modules: {known_module_count}", file=sys.stderr)
+    if isinstance(compile_module_count, int):
+        print(f"- compile_modules: {compile_module_count}", file=sys.stderr)
     if isinstance(phase_sec, dict):
         for name in sorted(phase_sec):
             value = phase_sec[name]
@@ -958,7 +964,19 @@ def _build_build_diagnostics_payload(
         ),
         "module_reasons": module_reason_map,
     }
-    if diagnostics_context.image_scope is not None:
+    closure_payload = diagnostics_context.binary_image_closure
+    if closure_payload is not None:
+        payload["binary_image_closure"] = dict(closure_payload)
+        image_payload = closure_payload.get("image")
+        if isinstance(image_payload, Mapping):
+            payload["binary_image"] = dict(image_payload)
+        known_modules = closure_payload.get("known_modules")
+        if isinstance(known_modules, list):
+            payload["known_module_count"] = len(known_modules)
+        compile_modules = closure_payload.get("compile_modules")
+        if isinstance(compile_modules, list):
+            payload["compile_module_count"] = len(compile_modules)
+    elif diagnostics_context.image_scope is not None:
         payload["binary_image"] = diagnostics_context.image_scope.diagnostic_payload()
     frontend_module_timings = list(diagnostics_context.frontend_module_timings)
     if frontend_module_timings:
