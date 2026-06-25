@@ -252,8 +252,8 @@ pub fn kind_to_opcode_table(kind: &str) -> Option<OpCode> {
         "box" | "box_from_raw_int" => Some(OpCode::BoxVal),
         "unbox" | "unbox_to_raw_int" => Some(OpCode::UnboxVal),
         "type_guard" => Some(OpCode::TypeGuard),
-        "inc_ref" => Some(OpCode::IncRef),
-        "dec_ref" => Some(OpCode::DecRef),
+        "inc_ref" | "borrow" => Some(OpCode::IncRef),
+        "dec_ref" | "release" => Some(OpCode::DecRef),
         "del_boundary" => Some(OpCode::DelBoundary),
         "build_list" => Some(OpCode::BuildList),
         "build_dict" => Some(OpCode::BuildDict),
@@ -9349,9 +9349,10 @@ pub fn opcode_result_is_conditionally_valid_only_on_edge(
 
 /// Python lifetime release-boundary fact: which operand roots an opcode
 /// explicitly releases. This is separate from operand ownership: `DecRef`
-/// consumes/releases all operands, while `DeleteVar` releases the old slot
-/// occupant at operand 1 after storing the missing sentinel. DropInsertion
-/// uses this table to avoid a pass-local `DecRef | DeleteVar` hand list.
+/// consumes/releases all operands, `DelBoundary` marks a variable lifetime
+/// boundary, and `DeleteVar` releases the old slot occupant at operand 1
+/// after storing the missing sentinel. DropInsertion and diagnostics use
+/// this table to avoid pass-local release hand lists.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ExplicitReleaseOperands {
     None,
@@ -9420,7 +9421,7 @@ pub fn opcode_explicit_release_operands_table(
         OpCode::TypeGuard => ExplicitReleaseOperands::None,
         OpCode::IncRef => ExplicitReleaseOperands::None,
         OpCode::DecRef => ExplicitReleaseOperands::All,
-        OpCode::DelBoundary => ExplicitReleaseOperands::None,
+        OpCode::DelBoundary => ExplicitReleaseOperands::All,
         OpCode::BuildList => ExplicitReleaseOperands::None,
         OpCode::BuildDict => ExplicitReleaseOperands::None,
         OpCode::BuildTuple => ExplicitReleaseOperands::None,

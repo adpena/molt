@@ -71,7 +71,7 @@ pub use self::exception_regions::{
 };
 pub use self::fact_graph::{
     FACT_GRAPH_KIND, FACT_GRAPH_SCHEMA_VERSION, FactConsumer, FactEdge, FactEntry, FactGraph,
-    FactGraphSummary, FactProducer, ValueFactNode,
+    FactGraphSummary, FactProducer, FactSourceSite, ValueFactNode,
 };
 pub use self::function::{TirFunction, TirModule};
 pub use self::lir::{LirBlock, LirFunction, LirOp, LirRepr, LirTerminator, LirValue};

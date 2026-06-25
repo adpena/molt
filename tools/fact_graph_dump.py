@@ -10,7 +10,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-FACT_GRAPH_SCHEMA_VERSION = 1
+FACT_GRAPH_SCHEMA_VERSION = 2
 FACT_GRAPH_KIND = "molt_tir_fact_graph"
 BOXED_REPRS = frozenset({"DynBox", "MaybeBigInt"})
 
@@ -43,6 +43,7 @@ def validate_graph(doc: Mapping[str, Any], *, source: str = "<graph>") -> None:
     if not isinstance(values, list):
         raise FactGraphError(f"{source}: values must be a list")
     seen_values: set[int] = set()
+    seen_event_ids: set[str] = set()
     fact_count = 0
     call_fact_count = 0
     for idx, raw_node in enumerate(values):
@@ -53,19 +54,27 @@ def validate_graph(doc: Mapping[str, Any], *, source: str = "<graph>") -> None:
         seen_values.add(value)
         producer = node.get("producer")
         if producer is not None:
-            _validate_mapping_fields(
+            parsed_producer = _validate_mapping_fields(
                 producer,
                 f"{source}.values[{idx}].producer",
                 required=("kind",),
+            )
+            _validate_source_site_field(
+                parsed_producer,
+                f"{source}.values[{idx}].producer",
             )
         consumers = node.get("consumers")
         if not isinstance(consumers, list):
             raise FactGraphError(f"{source}.values[{idx}].consumers must be a list")
         for c_idx, raw_consumer in enumerate(consumers):
-            _validate_mapping_fields(
+            consumer = _validate_mapping_fields(
                 raw_consumer,
                 f"{source}.values[{idx}].consumers[{c_idx}]",
                 required=("kind", "role"),
+            )
+            _validate_source_site_field(
+                consumer,
+                f"{source}.values[{idx}].consumers[{c_idx}]",
             )
         facts = node.get("facts")
         if not isinstance(facts, list):
@@ -77,6 +86,14 @@ def validate_graph(doc: Mapping[str, Any], *, source: str = "<graph>") -> None:
                 f"{source}.values[{idx}].facts[{f_idx}]",
                 required=("kind", "value", "confidence", "producer"),
             )
+            fact_source = f"{source}.values[{idx}].facts[{f_idx}]"
+            _validate_event_id_field(fact, fact_source)
+            _validate_source_site_field(fact, fact_source)
+            event_id = fact.get("event_id")
+            if event_id is not None:
+                if event_id in seen_event_ids:
+                    raise FactGraphError(f"{fact_source}.event_id is duplicated")
+                seen_event_ids.add(event_id)
             _list(fact.get("guards"), f"{source}.values[{idx}].facts[{f_idx}].guards")
             _list(
                 fact.get("invalidators"),
@@ -103,17 +120,35 @@ def validate_graph(doc: Mapping[str, Any], *, source: str = "<graph>") -> None:
                 )
         if not isinstance(edge.get("kind"), str) or not edge["kind"]:
             raise FactGraphError(f"{source}.edges[{idx}].kind must be a string")
-        _validate_mapping_fields(
+        consumer = _validate_mapping_fields(
             edge.get("consumer"),
             f"{source}.edges[{idx}].consumer",
             required=("kind", "role"),
         )
+        _validate_source_site_field(consumer, f"{source}.edges[{idx}].consumer")
     summary = _mapping(doc.get("summary"), f"{source}.summary")
+    source_site_value_count = sum(
+        1
+        for node in values
+        if _node_has_source_site(_mapping(node, f"{source}.values[]"))
+    )
+    allocation_ownership_fact_count = sum(
+        1
+        for node in values
+        for fact in _list(node.get("facts"), f"{source}.values[].facts")
+        if isinstance(fact, Mapping)
+        and (
+            str(fact.get("kind", "")).startswith("allocation.")
+            or str(fact.get("kind", "")).startswith("ownership.")
+        )
+    )
     expected = {
         "value_count": len(values),
         "fact_count": fact_count,
         "edge_count": len(edges),
         "call_fact_count": call_fact_count,
+        "source_site_value_count": source_site_value_count,
+        "allocation_ownership_fact_count": allocation_ownership_fact_count,
     }
     for key, expected_value in expected.items():
         actual = _int(summary.get(key), f"{source}.summary.{key}")
@@ -176,6 +211,57 @@ def producer_label_for(producer: Mapping[str, Any]) -> str:
     return str(kind)
 
 
+def _node_has_source_site(node: Mapping[str, Any]) -> bool:
+    producer = node.get("producer")
+    if isinstance(producer, Mapping) and isinstance(
+        producer.get("source_site"), Mapping
+    ):
+        return True
+    consumers = node.get("consumers")
+    if isinstance(consumers, list) and any(
+        isinstance(consumer, Mapping)
+        and isinstance(consumer.get("source_site"), Mapping)
+        for consumer in consumers
+    ):
+        return True
+    facts = node.get("facts")
+    if isinstance(facts, list) and any(
+        isinstance(fact, Mapping) and isinstance(fact.get("source_site"), Mapping)
+        for fact in facts
+    ):
+        return True
+    return False
+
+
+def _validate_source_site_field(mapping: Mapping[str, Any], source: str) -> None:
+    if "source_site" not in mapping:
+        raise FactGraphError(f"{source}.source_site is required")
+    _validate_source_site(
+        mapping.get("source_site"), f"{source}.source_site", required=False
+    )
+
+
+def _validate_source_site(value: Any, source: str, *, required: bool) -> None:
+    if value is None and not required:
+        return
+    site = _mapping(value, source)
+    _positive_int(site.get("line"), f"{source}.line")
+    col = site.get("col")
+    if col is not None:
+        _int(col, f"{source}.col")
+    end_col = site.get("end_col")
+    if end_col is not None:
+        _int(end_col, f"{source}.end_col")
+
+
+def _validate_event_id_field(mapping: Mapping[str, Any], source: str) -> None:
+    if "event_id" not in mapping:
+        raise FactGraphError(f"{source}.event_id is required")
+    event_id = mapping.get("event_id")
+    if event_id is not None and (not isinstance(event_id, str) or not event_id):
+        raise FactGraphError(f"{source}.event_id must be null or a non-empty string")
+
+
 def _validate_mapping_fields(
     value: Any, source: str, *, required: tuple[str, ...]
 ) -> Mapping[str, Any]:
@@ -203,6 +289,13 @@ def _int(value: Any, source: str) -> int:
     if not isinstance(value, int) or isinstance(value, bool) or value < 0:
         raise FactGraphError(f"{source} must be a non-negative integer")
     return value
+
+
+def _positive_int(value: Any, source: str) -> int:
+    parsed = _int(value, source)
+    if parsed <= 0:
+        raise FactGraphError(f"{source} must be a positive integer")
+    return parsed
 
 
 def main(argv: list[str] | None = None) -> int:

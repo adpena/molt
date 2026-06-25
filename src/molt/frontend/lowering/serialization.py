@@ -25,6 +25,7 @@ from molt.frontend._types import (
     _INLINE_INT_MIN,
     _next_ic_index,
 )
+from molt.frontend.lowering.op_kinds_generated import canonical_kind
 
 if TYPE_CHECKING:
     from molt.frontend._protocol import _GeneratorProtocol
@@ -4444,6 +4445,13 @@ class SerializationMixin(_MixinBase):
                 continue
             if active_source_line is not None:
                 entry.setdefault("source_line", active_source_line)
+
+        for entry in json_ops:
+            if not isinstance(entry, dict):
+                continue
+            kind = entry.get("kind")
+            if isinstance(kind, str):
+                entry["kind"] = canonical_kind(kind)
 
         json_ops = self._scalarize_string_split_fields_json(json_ops)
         json_ops = self._fuse_string_split_field_consumers_json(json_ops)

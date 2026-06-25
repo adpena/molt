@@ -16,12 +16,17 @@ use super::call_facts::{
     CallFacts, CallFactsTable, CallTargetFact, FactValue, InlineEligibility, InlineWhyNot,
 };
 use super::function::TirFunction;
-use super::ops::TirOp;
+use super::op_kinds_generated::{
+    ExplicitReleaseOperands, RefcountBalanceRole, opcode_explicit_release_operands_table,
+    opcode_is_escape_alloc_site_table, opcode_is_refcount_heap_exposure_table,
+    opcode_refcount_balance_role_table,
+};
+use super::ops::{AttrValue, OpCode, TirOp};
 use super::types::TirType;
 use super::values::ValueId;
 use crate::repr::Repr;
 
-pub const FACT_GRAPH_SCHEMA_VERSION: u32 = 1;
+pub const FACT_GRAPH_SCHEMA_VERSION: u32 = 2;
 pub const FACT_GRAPH_KIND: &str = "molt_tir_fact_graph";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -50,6 +55,7 @@ pub struct FactProducer {
     pub opcode: Option<String>,
     pub result_index: Option<usize>,
     pub param_index: Option<usize>,
+    pub source_site: Option<FactSourceSite>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -60,6 +66,7 @@ pub struct FactConsumer {
     pub opcode: Option<String>,
     pub operand_index: Option<usize>,
     pub role: String,
+    pub source_site: Option<FactSourceSite>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -68,6 +75,8 @@ pub struct FactEntry {
     pub value: String,
     pub confidence: String,
     pub producer: String,
+    pub event_id: Option<String>,
+    pub source_site: Option<FactSourceSite>,
     pub guards: Vec<String>,
     pub invalidators: Vec<String>,
     pub backend_lowering_status: String,
@@ -89,6 +98,15 @@ pub struct FactGraphSummary {
     pub fact_count: usize,
     pub edge_count: usize,
     pub call_fact_count: usize,
+    pub source_site_value_count: usize,
+    pub allocation_ownership_fact_count: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct FactSourceSite {
+    pub line: u32,
+    pub col: Option<u32>,
+    pub end_col: Option<u32>,
 }
 
 #[derive(Default)]
@@ -132,6 +150,7 @@ impl FactGraph {
                     opcode: None,
                     result_index: None,
                     param_index: (kind == "parameter").then_some(arg_index),
+                    source_site: None,
                 };
                 ensure_node(&mut nodes, arg.id)
                     .producer
@@ -141,6 +160,7 @@ impl FactGraph {
 
             for (op_index, op) in block.ops.iter().enumerate() {
                 add_op_consumers(&mut nodes, &mut edges, block_id, op_index, op);
+                add_op_ownership_facts(&mut nodes, &func.name, block_id, op_index, op);
                 for (result_index, result) in op.results.iter().copied().enumerate() {
                     let producer = FactProducer {
                         kind: "op_result".to_string(),
@@ -149,15 +169,39 @@ impl FactGraph {
                         opcode: Some(format!("{:?}", op.opcode)),
                         result_index: Some(result_index),
                         param_index: None,
+                        source_site: fact_source_site(op),
                     };
                     ensure_node(&mut nodes, result).producer = Some(producer);
                     if let Some(ty) = func.value_types.get(&result) {
                         add_value_type_facts(&mut nodes, result, ty, "function.value_types");
                     }
+                    add_result_ownership_facts(
+                        &mut nodes,
+                        &func.name,
+                        block_id,
+                        op_index,
+                        result_index,
+                        result,
+                        op,
+                    );
                     if result_index == 0
                         && let Some(facts) = call_facts.get(result)
                     {
-                        add_call_facts(&mut nodes, result, facts, call_fact_source);
+                        let event_prefix = op_event_prefix(
+                            &func.name,
+                            block_id,
+                            op_index,
+                            op,
+                            &format!("result{result_index}"),
+                        );
+                        add_call_facts(
+                            &mut nodes,
+                            result,
+                            facts,
+                            call_fact_source,
+                            fact_source_site(op),
+                            &event_prefix,
+                        );
                     }
                 }
             }
@@ -184,6 +228,24 @@ impl FactGraph {
             .flat_map(|v| &v.facts)
             .filter(|f| f.kind.starts_with("call."))
             .count();
+        let source_site_value_count = values
+            .iter()
+            .filter(|v| {
+                v.producer
+                    .as_ref()
+                    .and_then(|producer| producer.source_site)
+                    .is_some()
+                    || v.consumers
+                        .iter()
+                        .any(|consumer| consumer.source_site.is_some())
+                    || v.facts.iter().any(|fact| fact.source_site.is_some())
+            })
+            .count();
+        let allocation_ownership_fact_count = values
+            .iter()
+            .flat_map(|v| &v.facts)
+            .filter(|f| f.kind.starts_with("allocation.") || f.kind.starts_with("ownership."))
+            .count();
         let edge_count = edges.len();
         let value_count = values.len();
         FactGraph {
@@ -197,6 +259,8 @@ impl FactGraph {
                 fact_count,
                 edge_count,
                 call_fact_count,
+                source_site_value_count,
+                allocation_ownership_fact_count,
             },
         }
     }
@@ -222,6 +286,31 @@ fn ensure_node(nodes: &mut BTreeMap<u32, NodeBuilder>, value: ValueId) -> &mut N
     nodes.entry(value.0).or_default()
 }
 
+fn fact_source_site(op: &TirOp) -> Option<FactSourceSite> {
+    op.source_site().map(|site| FactSourceSite {
+        line: site.line,
+        col: site.col,
+        end_col: site.end_col,
+    })
+}
+
+fn op_event_prefix(
+    function_name: &str,
+    block_id: BlockId,
+    op_index: usize,
+    op: &TirOp,
+    subject: &str,
+) -> String {
+    format!(
+        "{function_name}:bb{}:op{}:{:?}:{subject}",
+        block_id.0, op_index, op.opcode
+    )
+}
+
+fn fact_event_id(event_prefix: &str, kind: &str) -> String {
+    format!("{event_prefix}:{kind}")
+}
+
 fn add_value_type_facts(
     nodes: &mut BTreeMap<u32, NodeBuilder>,
     value: ValueId,
@@ -234,6 +323,8 @@ fn add_value_type_facts(
         value: format!("{ty:?}"),
         confidence: "proven".to_string(),
         producer: producer.to_string(),
+        event_id: None,
+        source_site: None,
         guards: Vec::new(),
         invalidators: vec!["value_types".to_string(), "ops".to_string()],
         backend_lowering_status: "type-guides-representation".to_string(),
@@ -245,6 +336,8 @@ fn add_value_type_facts(
         value: format!("{:?}", Repr::default_for(ty)),
         confidence: "proven_floor".to_string(),
         producer: "Repr::default_for(TirType)".to_string(),
+        event_id: None,
+        source_site: None,
         guards: Vec::new(),
         invalidators: vec!["value_types".to_string(), "repr_lattice".to_string()],
         backend_lowering_status: "conservative-carrier-floor".to_string(),
@@ -269,6 +362,7 @@ fn add_op_consumers(
             opcode: Some(format!("{:?}", op.opcode)),
             operand_index: Some(operand_index),
             role: format!("operand[{operand_index}]"),
+            source_site: fact_source_site(op),
         };
         ensure_node(nodes, operand).consumers.push(consumer.clone());
         for result in &op.results {
@@ -280,6 +374,207 @@ fn add_op_consumers(
             });
         }
     }
+}
+
+fn add_result_ownership_facts(
+    nodes: &mut BTreeMap<u32, NodeBuilder>,
+    function_name: &str,
+    block_id: BlockId,
+    op_index: usize,
+    result_index: usize,
+    result: ValueId,
+    op: &TirOp,
+) {
+    let source_site = fact_source_site(op);
+    let event_prefix = op_event_prefix(
+        function_name,
+        block_id,
+        op_index,
+        op,
+        &format!("result{result_index}"),
+    );
+    if opcode_is_escape_alloc_site_table(op.opcode) {
+        add_allocation_fact(
+            nodes,
+            result,
+            "allocation.heap_root",
+            "escape_alloc_site",
+            fact_event_id(&event_prefix, "allocation.heap_root"),
+            source_site,
+            "op_kinds.escape_alloc_site_opcodes",
+            "fresh heap roots drive escape analysis and stack promotion",
+        );
+    }
+    if matches!(op.opcode, OpCode::StackAlloc | OpCode::ObjectNewBoundStack) {
+        add_allocation_fact(
+            nodes,
+            result,
+            "allocation.stack_root",
+            "stack_alloc_site",
+            fact_event_id(&event_prefix, "allocation.stack_root"),
+            source_site,
+            "op_kind + escape_analysis stack promotion",
+            "stack roots remove heap allocation and refcount traffic",
+        );
+    }
+    if matches!(op.attrs.get("arena_eligible"), Some(AttrValue::Bool(true))) {
+        add_allocation_fact(
+            nodes,
+            result,
+            "allocation.arena_eligible",
+            "true",
+            fact_event_id(&event_prefix, "allocation.arena_eligible"),
+            source_site,
+            "escape_analysis",
+            "arena placement amortizes allocation/free overhead",
+        );
+    }
+    if matches!(op.attrs.get("defines_del"), Some(AttrValue::Bool(true))) {
+        add_allocation_fact(
+            nodes,
+            result,
+            "ownership.finalizer_sensitive",
+            "true",
+            fact_event_id(&event_prefix, "ownership.finalizer_sensitive"),
+            source_site,
+            "frontend class MRO + escape_analysis",
+            "finalizer-sensitive roots constrain stack promotion and drop order",
+        );
+    }
+}
+
+fn add_op_ownership_facts(
+    nodes: &mut BTreeMap<u32, NodeBuilder>,
+    function_name: &str,
+    block_id: BlockId,
+    op_index: usize,
+    op: &TirOp,
+) {
+    let source_site = fact_source_site(op);
+    let balance = opcode_refcount_balance_role_table(op.opcode);
+    if balance.is_refcount_balance() {
+        let value = match balance {
+            RefcountBalanceRole::Increment => "increment",
+            RefcountBalanceRole::Decrement => "decrement",
+            RefcountBalanceRole::NotRefcountBalance => unreachable!(),
+        };
+        for (operand_index, operand) in op.operands.iter().copied().enumerate() {
+            let event_prefix = op_event_prefix(
+                function_name,
+                block_id,
+                op_index,
+                op,
+                &format!("operand{operand_index}"),
+            );
+            add_allocation_fact(
+                nodes,
+                operand,
+                "ownership.refcount_balance",
+                value,
+                fact_event_id(&event_prefix, "ownership.refcount_balance"),
+                source_site,
+                "op_kinds.refcount_balance_*_opcodes",
+                "refcount balance events explain retained and released ownership",
+            );
+        }
+    }
+
+    if opcode_is_refcount_heap_exposure_table(op.opcode) {
+        for (operand_index, operand) in op.operands.iter().copied().enumerate() {
+            let event_prefix = op_event_prefix(
+                function_name,
+                block_id,
+                op_index,
+                op,
+                &format!("operand{operand_index}"),
+            );
+            add_allocation_fact(
+                nodes,
+                operand,
+                "ownership.heap_exposure",
+                "true",
+                fact_event_id(&event_prefix, "ownership.heap_exposure"),
+                source_site,
+                "op_kinds.refcount_heap_exposure_opcodes",
+                "heap exposure blocks deferred RC elimination and stack-only assumptions",
+            );
+        }
+    }
+
+    match opcode_explicit_release_operands_table(op.opcode, op.operands.len()) {
+        ExplicitReleaseOperands::None => {}
+        ExplicitReleaseOperands::All => {
+            for (operand_index, operand) in op.operands.iter().copied().enumerate() {
+                let event_prefix = op_event_prefix(
+                    function_name,
+                    block_id,
+                    op_index,
+                    op,
+                    &format!("operand{operand_index}"),
+                );
+                add_allocation_fact(
+                    nodes,
+                    operand,
+                    "ownership.explicit_release",
+                    format!("operand[{operand_index}]"),
+                    fact_event_id(&event_prefix, "ownership.explicit_release"),
+                    source_site,
+                    "op_kinds.explicit_release_operands",
+                    "explicit releases are terminal ownership events",
+                );
+            }
+        }
+        ExplicitReleaseOperands::One(index) => {
+            if let Some(operand) = op.operands.get(index) {
+                let event_prefix = op_event_prefix(
+                    function_name,
+                    block_id,
+                    op_index,
+                    op,
+                    &format!("operand{index}"),
+                );
+                add_allocation_fact(
+                    nodes,
+                    *operand,
+                    "ownership.explicit_release",
+                    format!("operand[{index}]"),
+                    fact_event_id(&event_prefix, "ownership.explicit_release"),
+                    source_site,
+                    "op_kinds.explicit_release_operands",
+                    "explicit releases are terminal ownership events",
+                );
+            }
+        }
+    }
+}
+
+fn add_allocation_fact(
+    nodes: &mut BTreeMap<u32, NodeBuilder>,
+    value: ValueId,
+    kind: &str,
+    value_text: impl Into<String>,
+    event_id: String,
+    source_site: Option<FactSourceSite>,
+    producer: &str,
+    perf_relevance: &str,
+) {
+    ensure_node(nodes, value).facts.push(FactEntry {
+        kind: kind.to_string(),
+        value: value_text.into(),
+        confidence: "proven".to_string(),
+        producer: producer.to_string(),
+        event_id: Some(event_id),
+        source_site,
+        guards: Vec::new(),
+        invalidators: vec![
+            "op_kinds.toml".to_string(),
+            "ops".to_string(),
+            "ownership_lattice".to_string(),
+        ],
+        backend_lowering_status: "diagnostic-projection-of-existing-tir-facts".to_string(),
+        test_coverage: "fact_graph allocation/source-site tests".to_string(),
+        perf_relevance: perf_relevance.to_string(),
+    });
 }
 
 fn add_terminator_consumers(
@@ -296,6 +591,7 @@ fn add_terminator_consumers(
             opcode: None,
             operand_index: None,
             role,
+            source_site: None,
         };
         ensure_node(nodes, value).consumers.push(consumer.clone());
         edges.push(FactEdge {
@@ -374,6 +670,8 @@ fn add_call_facts(
     value: ValueId,
     facts: &CallFacts,
     producer: &str,
+    source_site: Option<FactSourceSite>,
+    event_prefix: &str,
 ) {
     let node = ensure_node(nodes, value);
     node.facts.push(call_fact_entry(
@@ -381,6 +679,8 @@ fn add_call_facts(
         call_target_value(&facts.target),
         call_target_confidence(&facts.target),
         producer,
+        source_site,
+        event_prefix,
         "direct target enables devirtualized calls and removes generic helper traffic",
     ));
     node.facts.push(call_fact_entry(
@@ -395,6 +695,8 @@ fn add_call_facts(
             "unknown"
         },
         producer,
+        source_site,
+        event_prefix,
         "typed returns keep call results out of DynBox lanes",
     ));
     node.facts.push(call_fact_entry(
@@ -402,6 +704,8 @@ fn add_call_facts(
         fact_value_string(facts.leaf),
         fact_value_confidence(facts.leaf),
         producer,
+        source_site,
+        event_prefix,
         "leaf calls unlock frame and spill elision",
     ));
     node.facts.push(call_fact_entry(
@@ -409,6 +713,8 @@ fn add_call_facts(
         fact_value_string(facts.no_throw),
         fact_value_confidence(facts.no_throw),
         producer,
+        source_site,
+        event_prefix,
         "no-throw calls remove exception-region churn on normal edges",
     ));
     node.facts.push(call_fact_entry(
@@ -416,6 +722,8 @@ fn add_call_facts(
         fact_value_string(facts.no_alloc),
         fact_value_confidence(facts.no_alloc),
         producer,
+        source_site,
+        event_prefix,
         "no-alloc calls allow borrowed args and RC elision across calls",
     ));
     node.facts.push(call_fact_entry(
@@ -423,6 +731,8 @@ fn add_call_facts(
         inline_eligibility_value(facts.inlinable),
         inline_eligibility_confidence(facts.inlinable),
         producer,
+        source_site,
+        event_prefix,
         "inline eligibility records why a call stayed generic",
     ));
 }
@@ -432,6 +742,8 @@ fn call_fact_entry(
     value: String,
     confidence: &str,
     producer: &str,
+    source_site: Option<FactSourceSite>,
+    event_prefix: &str,
     perf_relevance: &str,
 ) -> FactEntry {
     FactEntry {
@@ -439,6 +751,8 @@ fn call_fact_entry(
         value,
         confidence: confidence.to_string(),
         producer: producer.to_string(),
+        event_id: Some(fact_event_id(event_prefix, kind)),
+        source_site,
         guards: Vec::new(),
         invalidators: vec![
             "AnalysisId::CallFacts:cfg_sensitive".to_string(),
@@ -513,18 +827,30 @@ fn inline_why_not(reason: InlineWhyNot) -> &'static str {
 
 fn dedupe_facts(mut facts: Vec<FactEntry>) -> Vec<FactEntry> {
     facts.sort_by(|a, b| {
-        (&a.kind, &a.value, &a.confidence, &a.producer).cmp(&(
-            &b.kind,
-            &b.value,
-            &b.confidence,
-            &b.producer,
-        ))
+        (
+            &a.kind,
+            &a.value,
+            &a.confidence,
+            &a.producer,
+            &a.event_id,
+            a.source_site,
+        )
+            .cmp(&(
+                &b.kind,
+                &b.value,
+                &b.confidence,
+                &b.producer,
+                &b.event_id,
+                b.source_site,
+            ))
     });
     facts.dedup_by(|a, b| {
         a.kind == b.kind
             && a.value == b.value
             && a.confidence == b.confidence
             && a.producer == b.producer
+            && a.event_id == b.event_id
+            && a.source_site == b.source_site
     });
     facts
 }
@@ -556,7 +882,7 @@ fn dedupe_consumers(mut consumers: Vec<FactConsumer>) -> Vec<FactConsumer> {
 mod tests {
     use super::*;
     use crate::tir::blocks::{BlockId, TirBlock};
-    use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode};
+    use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, SourceSite};
     use crate::tir::values::TirValue;
 
     fn op(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
@@ -657,6 +983,74 @@ mod tests {
                 .any(|f| f.kind == "call.typed_return" && f.value == "MaybeBigInt")
         );
         assert_eq!(graph.summary.call_fact_count, 6);
+    }
+
+    #[test]
+    fn graph_records_sourced_allocation_and_ownership_events() {
+        let mut func = TirFunction::new("own".into(), vec![], TirType::None);
+        let root = func.fresh_value();
+        func.value_types.insert(root, TirType::DynBox);
+        let mut alloc = op(OpCode::Alloc, vec![], vec![root]);
+        alloc.set_source_site(SourceSite {
+            line: 11,
+            col: Some(4),
+            end_col: Some(14),
+        });
+        let mut release = op(OpCode::DecRef, vec![root], vec![]);
+        release.set_source_site(SourceSite {
+            line: 12,
+            col: Some(8),
+            end_col: Some(15),
+        });
+        let block = func.blocks.get_mut(&func.entry_block).unwrap();
+        block.ops.push(alloc);
+        block.ops.push(release);
+        block.terminator = Terminator::Return { values: Vec::new() };
+
+        let graph = FactGraph::build_local(&func);
+        let node = graph.values.iter().find(|n| n.value == root.0).unwrap();
+        assert_eq!(
+            node.producer.as_ref().unwrap().source_site,
+            Some(FactSourceSite {
+                line: 11,
+                col: Some(4),
+                end_col: Some(14),
+            })
+        );
+        assert!(
+            node.consumers
+                .iter()
+                .any(|c| c.opcode.as_deref() == Some("DecRef")
+                    && c.source_site
+                        == Some(FactSourceSite {
+                            line: 12,
+                            col: Some(8),
+                            end_col: Some(15),
+                        }))
+        );
+        assert!(node.facts.iter().any(|f| {
+            f.kind == "allocation.heap_root"
+                && f.event_id.as_deref() == Some("own:bb0:op0:Alloc:result0:allocation.heap_root")
+                && f.source_site
+                    == Some(FactSourceSite {
+                        line: 11,
+                        col: Some(4),
+                        end_col: Some(14),
+                    })
+        }));
+        assert!(node.facts.iter().any(|f| {
+            f.kind == "ownership.explicit_release"
+                && f.event_id.as_deref()
+                    == Some("own:bb0:op1:DecRef:operand0:ownership.explicit_release")
+                && f.source_site
+                    == Some(FactSourceSite {
+                        line: 12,
+                        col: Some(8),
+                        end_col: Some(15),
+                    })
+        }));
+        assert_eq!(graph.summary.source_site_value_count, 1);
+        assert_eq!(graph.summary.allocation_ownership_fact_count, 3);
     }
 
     #[test]

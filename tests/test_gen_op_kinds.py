@@ -448,7 +448,7 @@ def test_explicit_release_operand_contract_covers_python_release_ops() -> None:
         row["opcode"]: row["operand"]
         for row in data.get("explicit_release_operand", [])
     }
-    assert release_rows == {"DecRef": "all", "DeleteVar": 1}
+    assert release_rows == {"DecRef": "all", "DeleteVar": 1, "DelBoundary": "all"}
 
     rendered = gen.render_rs(data)
     selected_block = rendered.split(
@@ -627,7 +627,9 @@ def test_effects_rs_delegates_to_generated_tables() -> None:
         "OpcodePurity",
         "opcode_purity_table",
     ):
-        assert stale not in effects, f"effects.rs still carries stale effect lane {stale}"
+        assert stale not in effects, (
+            f"effects.rs still carries stale effect lane {stale}"
+        )
 
     # The generated may_throw / side_effecting tables embed the table's booleans.
     all_opcodes_block = rendered.split("pub const ALL_OPCODES")[1].split(
@@ -787,7 +789,9 @@ def test_call_roles_delegate_to_generated_tables() -> None:
         "copy_original_kind": "CopyOriginalKind",
     }
     for opcode, role in expected_roles.items():
-        assert f"OpCode::{opcode} => CallOpcodeRole::{role_variant[role]}," in role_block
+        assert (
+            f"OpCode::{opcode} => CallOpcodeRole::{role_variant[role]}," in role_block
+        )
     assert "OpCode::AllocTask => CallOpcodeRole::NotCall," in role_block
 
     kind_block = rendered.split("fn simpleir_kind_is_call_graph_user_call")[1].split(
@@ -918,20 +922,25 @@ def test_ssa_attr_transport_delegates_to_generated_tables() -> None:
     mapper_block = rendered.split("fn kind_to_opcode_table", maxsplit=1)[1].split(
         "fn opcode_ssa_s_value_attr_key_table", maxsplit=1
     )[0]
-    assert '"copy" | "store_var" | "load_var" | "copy_var" => Some(OpCode::Copy)' in mapper_block
+    assert (
+        '"copy" | "store_var" | "load_var" | "copy_var" => Some(OpCode::Copy)'
+        in mapper_block
+    )
 
     production = ssa.split("#[cfg(test)]", maxsplit=1)[0]
     assert "opcode_ssa_s_value_attr_key_table(opcode)" in production
-    assert "simpleir_kind_preserves_original_kind_for_ssa(op.kind.as_str())" in production
+    assert (
+        "simpleir_kind_preserves_original_kind_for_ssa(op.kind.as_str())" in production
+    )
     assert "kind_to_opcode_table(op.kind.as_str()).is_some()" in production
     for stale in (
         "match opcode {\n                OpCode::Import",
         "OpCode::ImportFrom\n                | OpCode::LoadAttr",
-        "OpCode::Call && op.kind != \"call\"",
+        'OpCode::Call && op.kind != "call"',
         "OpCode::CallBuiltin && !matches!",
         "OpCode::LoadAttr\n                | OpCode::StoreAttr",
-        "\"get_attr\" | \"set_attr\" | \"index\"",
-        "!matches!(op.kind.as_str(), \"copy\" | \"load_var\" | \"copy_var\")",
+        '"get_attr" | "set_attr" | "index"',
+        '!matches!(op.kind.as_str(), "copy" | "load_var" | "copy_var")',
     ):
         assert stale not in production
 
@@ -969,7 +978,9 @@ def test_ssa_attr_transport_validation_rejects_drift() -> None:
     unknown_kind = json.loads(json.dumps(data))
     unknown_kind["ssa_original_kind_preserving_kinds"].append("not_a_kind")
     try:
-        gen._validate_ssa_attr_transport(unknown_kind, opcodes, mapper_opcode_by_spelling)
+        gen._validate_ssa_attr_transport(
+            unknown_kind, opcodes, mapper_opcode_by_spelling
+        )
     except gen.OpKindTableError as exc:
         assert "not a known mapper spelling" in str(exc)
     else:
@@ -978,7 +989,9 @@ def test_ssa_attr_transport_validation_rejects_drift() -> None:
     forbidden_copy = json.loads(json.dumps(data))
     forbidden_copy["ssa_original_kind_preserving_kinds"].append("load_var")
     try:
-        gen._validate_ssa_attr_transport(forbidden_copy, opcodes, mapper_opcode_by_spelling)
+        gen._validate_ssa_attr_transport(
+            forbidden_copy, opcodes, mapper_opcode_by_spelling
+        )
     except gen.OpKindTableError as exc:
         assert "only store_var may preserve for OpCode::Copy" in str(exc)
     else:
@@ -987,7 +1000,9 @@ def test_ssa_attr_transport_validation_rejects_drift() -> None:
     wrong_opcode = json.loads(json.dumps(data))
     wrong_opcode["ssa_original_kind_preserving_kinds"].append("add")
     try:
-        gen._validate_ssa_attr_transport(wrong_opcode, opcodes, mapper_opcode_by_spelling)
+        gen._validate_ssa_attr_transport(
+            wrong_opcode, opcodes, mapper_opcode_by_spelling
+        )
     except gen.OpKindTableError as exc:
         assert "not an SSA original-kind transport opcode" in str(exc)
     else:
@@ -999,9 +1014,9 @@ def test_fuzz_tir_passes_uses_generated_opcode_shapes() -> None:
     gen = _gen()
     data = gen.load_table()
     rendered = gen.render_rs(data)
-    fuzz = (ROOT / "runtime/molt-backend/fuzz/fuzz_targets/fuzz_tir_passes.rs").read_text(
-        encoding="utf-8"
-    )
+    fuzz = (
+        ROOT / "runtime/molt-backend/fuzz/fuzz_targets/fuzz_tir_passes.rs"
+    ).read_text(encoding="utf-8")
 
     expected = {
         "Add": {"operands": 2, "attr_payload": "none"},
@@ -1255,9 +1270,12 @@ def test_operand_independent_result_types_delegate_to_generated_table() -> None:
     strength_reduction_production = strength_reduction.split(
         "#[cfg(test)]", maxsplit=1
     )[0]
-    assert "match op.opcode" not in strength_reduction_production.split(
-        "// Phase 2: Scan all blocks and rewrite eligible ops.", maxsplit=1
-    )[0]
+    assert (
+        "match op.opcode"
+        not in strength_reduction_production.split(
+            "// Phase 2: Scan all blocks and rewrite eligible ops.", maxsplit=1
+        )[0]
+    )
     assert "OpCode::ConstFloat =>" not in strength_reduction_production
     assert "OpCode::ConstBool =>" not in strength_reduction_production
 
@@ -1366,7 +1384,10 @@ def test_type_refine_result_type_rules_delegate_to_generated_tables() -> None:
     assert "match opcode {" not in infer_body
     assert "OpCode::Add | OpCode::InplaceAdd" not in infer_body
     assert "OpCode::Copy =>" not in infer_body
-    assert "TypeRefineOperandTypeRule::Copy => operand_types.first().cloned()" in infer_body
+    assert (
+        "TypeRefineOperandTypeRule::Copy => operand_types.first().cloned()"
+        in infer_body
+    )
 
 
 def test_type_refine_result_type_rule_validation_rejects_drift() -> None:
@@ -1407,9 +1428,9 @@ def test_type_refine_result_type_rule_validation_rejects_drift() -> None:
         raise AssertionError("duplicate type-refine attr rule was accepted")
 
     unknown_attr_opcode = json.loads(json.dumps(data))
-    unknown_attr_opcode["type_refine_attr_result_type_rules"][0][
-        "opcode"
-    ] = "AlmostCall"
+    unknown_attr_opcode["type_refine_attr_result_type_rules"][0]["opcode"] = (
+        "AlmostCall"
+    )
     try:
         gen._validate_opcode_rule_rows(
             unknown_attr_opcode,
@@ -1496,12 +1517,12 @@ def test_sccp_constant_rules_delegate_to_generated_tables() -> None:
     }
     assert "pub enum SccpConstantSeedRule" in rendered
     assert "pub enum SccpConstantEvalRule" in rendered
-    seed_block = rendered.split(
-        "fn opcode_sccp_constant_seed_rule_table", maxsplit=1
-    )[1].split("pub enum SccpConstantEvalRule", maxsplit=1)[0]
-    eval_block = rendered.split(
-        "fn opcode_sccp_constant_eval_rule_table", maxsplit=1
-    )[1].split("pub enum GvnNumberingRole", maxsplit=1)[0]
+    seed_block = rendered.split("fn opcode_sccp_constant_seed_rule_table", maxsplit=1)[
+        1
+    ].split("pub enum SccpConstantEvalRule", maxsplit=1)[0]
+    eval_block = rendered.split("fn opcode_sccp_constant_eval_rule_table", maxsplit=1)[
+        1
+    ].split("pub enum GvnNumberingRole", maxsplit=1)[0]
     for opcode, rule in expected_seed_rows.items():
         expected = f"SccpConstantSeedRule::{seed_variant[rule]}"
         assert f"OpCode::{opcode} => {expected}," in seed_block
@@ -1588,9 +1609,9 @@ def test_value_range_rules_delegate_to_generated_tables() -> None:
     gen = _gen()
     data = gen.load_table()
     rendered = gen.render_rs(data)
-    value_range = (
-        ROOT / "runtime/molt-tir/src/tir/passes/value_range.rs"
-    ).read_text(encoding="utf-8")
+    value_range = (ROOT / "runtime/molt-tir/src/tir/passes/value_range.rs").read_text(
+        encoding="utf-8"
+    )
 
     expected_transfer_rows = {
         "Add": "add",
@@ -1634,8 +1655,7 @@ def test_value_range_rules_delegate_to_generated_tables() -> None:
         row["opcode"]: row["rule"] for row in data["value_range_cond_narrow_rules"]
     } == expected_cond_narrow_rows
     assert {
-        row["opcode"]: row["rule"]
-        for row in data["value_range_container_length_rules"]
+        row["opcode"]: row["rule"] for row in data["value_range_container_length_rules"]
     } == expected_container_length_rows
 
     variant = {
@@ -1692,16 +1712,18 @@ def test_value_range_rules_delegate_to_generated_tables() -> None:
         assert f"OpCode::{opcode} => ValueRangeConstFoldRule::None," in fold_block
         assert f"OpCode::{opcode} => ValueRangeCondNarrowRule::None," in narrow_block
     for opcode in ("Div", "FloorDiv", "ConstInt", "Lt"):
-        assert f"OpCode::{opcode} => ValueRangeContainerLengthRule::None," in length_block
+        assert (
+            f"OpCode::{opcode} => ValueRangeContainerLengthRule::None," in length_block
+        )
 
     production = value_range.split("#[cfg(test)]", maxsplit=1)[0]
     assert "opcode_value_range_transfer_rule_table(op.opcode)" in production
     assert "opcode_value_range_const_fold_rule_table(op.opcode)" in production
     assert "opcode_value_range_cond_narrow_rule_table(*opcode)" in production
     assert "opcode_value_range_container_length_rule_table(op.opcode)" in production
-    transfer_body = production.split("fn transfer_op_range", maxsplit=1)[
-        1
-    ].split("/// Collect `ConstInt` values", maxsplit=1)[0]
+    transfer_body = production.split("fn transfer_op_range", maxsplit=1)[1].split(
+        "/// Collect `ConstInt` values", maxsplit=1
+    )[0]
     assert "match op.opcode {" not in transfer_body
     assert "OpCode::Add if op.operands.len() == 2" not in transfer_body
     fold_loop = production.split("let mut changed = true;", maxsplit=1)[1].split(
@@ -1710,17 +1732,17 @@ def test_value_range_rules_delegate_to_generated_tables() -> None:
     assert "matches!(" not in fold_loop
     assert "match op.opcode {" not in fold_loop
     assert "ValueRangeConstFoldRule::BitAnd => Some(a & b)" in fold_loop
-    guard_body = production.split("fn narrow_from_header_guards", maxsplit=1)[
-        1
-    ].split("/// Meet `range`", maxsplit=1)[0]
+    guard_body = production.split("fn narrow_from_header_guards", maxsplit=1)[1].split(
+        "/// Meet `range`", maxsplit=1
+    )[0]
     assert "match opcode" not in guard_body
     assert "OpCode::Lt" not in guard_body
     assert "OpCode::Le" not in guard_body
     assert "ValueRangeCondNarrowRule::LtUpperExclusive" in guard_body
     assert "ValueRangeCondNarrowRule::LeUpperInclusive" in guard_body
-    length_body = production.split(
-        "// Second pass: container lengths", maxsplit=1
-    )[1].split("/// Build header", maxsplit=1)[0]
+    length_body = production.split("// Second pass: container lengths", maxsplit=1)[
+        1
+    ].split("/// Build header", maxsplit=1)[0]
     assert "match op.opcode" not in length_body
     assert "OpCode::BuildList" not in length_body
     assert "OpCode::BuildTuple" not in length_body
@@ -1736,9 +1758,9 @@ def test_range_devirt_roles_delegate_to_generated_table() -> None:
     gen = _gen()
     data = gen.load_table()
     rendered = gen.render_rs(data)
-    range_devirt = (
-        ROOT / "runtime/molt-tir/src/tir/passes/range_devirt.rs"
-    ).read_text(encoding="utf-8")
+    range_devirt = (ROOT / "runtime/molt-tir/src/tir/passes/range_devirt.rs").read_text(
+        encoding="utf-8"
+    )
 
     expected_rows = [
         {"opcode": "CallBuiltin", "role": "range_call_candidate"},
@@ -1775,9 +1797,9 @@ def test_vectorize_opcode_facts_delegate_to_generated_table() -> None:
     gen = _gen()
     data = gen.load_table()
     rendered = gen.render_rs(data)
-    vectorize = (
-        ROOT / "runtime/molt-tir/src/tir/passes/vectorize.rs"
-    ).read_text(encoding="utf-8")
+    vectorize = (ROOT / "runtime/molt-tir/src/tir/passes/vectorize.rs").read_text(
+        encoding="utf-8"
+    )
 
     expected_rows = {
         "Add": {"body": "scalar_arithmetic", "reduction": "sum"},
@@ -2021,7 +2043,9 @@ def test_lir_verify_rules_delegate_to_generated_table() -> None:
         "Mul": "checked_i64_arithmetic",
         "CallBuiltin": "truthy_materialization",
     }
-    assert {row["opcode"]: row["rule"] for row in data["lir_verify_rules"]} == expected_rows
+    assert {
+        row["opcode"]: row["rule"] for row in data["lir_verify_rules"]
+    } == expected_rows
 
     variant = {
         "box_value": "BoxValue",
@@ -2175,7 +2199,9 @@ def test_value_range_rule_validation_rejects_drift() -> None:
 
     duplicate_cond_narrow = json.loads(json.dumps(data))
     duplicate_cond_narrow["value_range_cond_narrow_rules"].append(
-        json.loads(json.dumps(duplicate_cond_narrow["value_range_cond_narrow_rules"][0]))
+        json.loads(
+            json.dumps(duplicate_cond_narrow["value_range_cond_narrow_rules"][0])
+        )
     )
     try:
         gen._validate_opcode_rule_rows(
@@ -2193,9 +2219,9 @@ def test_value_range_rule_validation_rejects_drift() -> None:
         )
 
     unknown_cond_narrow_opcode = json.loads(json.dumps(data))
-    unknown_cond_narrow_opcode["value_range_cond_narrow_rules"][0][
-        "opcode"
-    ] = "NarrowMaybe"
+    unknown_cond_narrow_opcode["value_range_cond_narrow_rules"][0]["opcode"] = (
+        "NarrowMaybe"
+    )
     try:
         gen._validate_opcode_rule_rows(
             unknown_cond_narrow_opcode,
@@ -2212,9 +2238,7 @@ def test_value_range_rule_validation_rejects_drift() -> None:
         )
 
     bad_container_length = json.loads(json.dumps(data))
-    bad_container_length["value_range_container_length_rules"][0][
-        "rule"
-    ] = "maybe_len"
+    bad_container_length["value_range_container_length_rules"][0]["rule"] = "maybe_len"
     try:
         gen._validate_opcode_rule_rows(
             bad_container_length,
@@ -2231,7 +2255,9 @@ def test_value_range_rule_validation_rejects_drift() -> None:
     duplicate_container_length = json.loads(json.dumps(data))
     duplicate_container_length["value_range_container_length_rules"].append(
         json.loads(
-            json.dumps(duplicate_container_length["value_range_container_length_rules"][0])
+            json.dumps(
+                duplicate_container_length["value_range_container_length_rules"][0]
+            )
         )
     )
     try:
@@ -2245,9 +2271,7 @@ def test_value_range_rule_validation_rejects_drift() -> None:
     except gen.OpKindTableError as exc:
         assert "duplicate value_range_container_length_rules opcode" in str(exc)
     else:
-        raise AssertionError(
-            "duplicate value-range container-length rule was accepted"
-        )
+        raise AssertionError("duplicate value-range container-length rule was accepted")
 
     unknown_container_length_opcode = json.loads(json.dumps(data))
     unknown_container_length_opcode["value_range_container_length_rules"][0][
@@ -2264,9 +2288,7 @@ def test_value_range_rule_validation_rejects_drift() -> None:
     except gen.OpKindTableError as exc:
         assert "opcode 'LengthMaybe' is not a known OpCode" in str(exc)
     else:
-        raise AssertionError(
-            "unknown value-range container-length opcode was accepted"
-        )
+        raise AssertionError("unknown value-range container-length opcode was accepted")
 
 
 def test_range_devirt_role_validation_rejects_drift() -> None:
@@ -2835,9 +2857,9 @@ def test_polyhedral_opcodes_delegate_to_generated_tables() -> None:
     assert set(data["polyhedral_affine_body_opcodes"]) == affine_body
     assert "Copy" not in affine_body
 
-    header_block = rendered.split("fn opcode_is_polyhedral_loop_header_table")[
-        1
-    ].split("fn opcode_is_polyhedral_affine_body_table")[0]
+    header_block = rendered.split("fn opcode_is_polyhedral_loop_header_table")[1].split(
+        "fn opcode_is_polyhedral_affine_body_table"
+    )[0]
     affine_block = rendered.split("fn opcode_is_polyhedral_affine_body_table")[1].split(
         "fn opcode_is_refcount_heap_exposure_table"
     )[0]
@@ -2900,9 +2922,9 @@ def test_generator_fusion_poll_roles_delegate_to_generated_table() -> None:
         else:
             role = "GeneratorFusionPollRole::Neutral"
         assert f"OpCode::{row['name']} => {role}," in table_block
-    iter_use_block = rendered.split(
-        "fn opcode_generator_fusion_iter_use_role_table"
-    )[1].split("fn opcode_is_state_machine_table")[0]
+    iter_use_block = rendered.split("fn opcode_generator_fusion_iter_use_role_table")[
+        1
+    ].split("fn opcode_is_state_machine_table")[0]
     assert "OpCode::IterNext => GeneratorFusionIterUseRole::NextUse," in iter_use_block
     assert "OpCode::Is => GeneratorFusionIterUseRole::NoneGuard," in iter_use_block
     assert "OpCode::Add => GeneratorFusionIterUseRole::None," in iter_use_block
@@ -3028,9 +3050,9 @@ def test_drop_insertion_suspension_points_delegate_to_generated_table() -> None:
     assert expected < set(data["state_machine_opcodes"])
     assert {"AllocTask", "StateSwitch", "StateTransition"}.isdisjoint(expected)
 
-    table_block = rendered.split(
-        "fn opcode_is_drop_insertion_suspension_point_table"
-    )[1].split("fn opcode_is_drop_insertion_return_deferral_barrier_table")[0]
+    table_block = rendered.split("fn opcode_is_drop_insertion_suspension_point_table")[
+        1
+    ].split("fn opcode_is_drop_insertion_return_deferral_barrier_table")[0]
     for row in data["opcode"]:
         expected_bool = "true" if row["name"] in expected else "false"
         assert f"OpCode::{row['name']} => {expected_bool}," in table_block
@@ -3401,9 +3423,9 @@ def test_llvm_boxed_runtime_inplace_dispatch_delegates_to_generated_table() -> N
     expected = {"InplaceAdd", "InplaceSub", "InplaceMul"}
     assert set(data["boxed_runtime_inplace_dispatch_opcodes"]) == expected
 
-    table_block = rendered.split(
-        "fn opcode_uses_boxed_runtime_inplace_dispatch_table"
-    )[1].split("fn opcode_requires_i64_zero_divisor_guard_table")[0]
+    table_block = rendered.split("fn opcode_uses_boxed_runtime_inplace_dispatch_table")[
+        1
+    ].split("fn opcode_requires_i64_zero_divisor_guard_table")[0]
     for row in data["opcode"]:
         expected_bool = "true" if row["name"] in expected else "false"
         assert f"OpCode::{row['name']} => {expected_bool}," in table_block
@@ -3539,8 +3561,7 @@ def test_exception_label_opcode_facts_delegate_to_generated_tables() -> None:
     assert "OpCode::TryStart => ExceptionRegionNestingRole::Enter," in nesting_block
     assert "OpCode::TryEnd => ExceptionRegionNestingRole::Exit," in nesting_block
     assert (
-        "OpCode::CheckException => ExceptionRegionNestingRole::None,"
-        in nesting_block
+        "OpCode::CheckException => ExceptionRegionNestingRole::None," in nesting_block
     )
 
     assert "opcode_has_exception_label_attr_table" in sources["inliner"]
@@ -4200,6 +4221,39 @@ def test_frontend_check_exception_skip_kinds_match_table() -> None:
                     f"{row['kind']}: opcode {row['opcode']} is may_throw but not "
                     "flagged control_flow — skipping it would drop the exception edge"
                 )
+
+
+def test_generated_python_canonicalizes_rc_aliases_for_analysis() -> None:
+    py = _load_generated_py()
+
+    assert py.canonical_kind("borrow") == "inc_ref"
+    assert py.canonical_kind("release") == "dec_ref"
+    assert "inc_ref" in py.BINARY_IMAGE_REF_RETAIN_KINDS
+    assert "dec_ref" in py.BINARY_IMAGE_REF_RELEASE_KINDS
+    assert "borrow" not in py.BINARY_IMAGE_REF_RETAIN_KINDS
+    assert "release" not in py.BINARY_IMAGE_REF_RELEASE_KINDS
+    assert py.canonical_kind("borrow") in py.BINARY_IMAGE_REF_RETAIN_KINDS
+    assert py.canonical_kind("release") in py.BINARY_IMAGE_REF_RELEASE_KINDS
+    assert "alloc" in py.BINARY_IMAGE_HEAP_ALLOC_ROOT_KINDS
+    assert "list_new" in py.BINARY_IMAGE_HEAP_ALLOC_ROOT_KINDS
+    assert "del_boundary" in py.BINARY_IMAGE_REF_RELEASE_KINDS
+
+
+def test_binary_image_analysis_consumes_generated_allocation_sets() -> None:
+    analyzer = (ROOT / "src/molt/cli/binary_image_analysis.py").read_text(
+        encoding="utf-8"
+    )
+
+    for generated_name in (
+        "BINARY_IMAGE_HEAP_ALLOC_ROOT_KINDS",
+        "BINARY_IMAGE_STACK_ALLOC_ROOT_KINDS",
+        "BINARY_IMAGE_REF_RETAIN_KINDS",
+        "BINARY_IMAGE_REF_RELEASE_KINDS",
+        "BINARY_IMAGE_HEAP_EXPOSURE_KINDS",
+    ):
+        assert f"op_kind_facts.{generated_name}" in analyzer
+        private_name = f"_{generated_name.removeprefix('BINARY_IMAGE_')}"
+        assert not re.search(rf"(?m)^{private_name}\s*=", analyzer)
 
 
 def test_binary_op_maps_match_table_and_are_exhaustive() -> None:

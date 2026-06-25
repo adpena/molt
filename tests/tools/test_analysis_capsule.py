@@ -133,7 +133,10 @@ def _build_diagnostics() -> dict[str, object]:
                         "ref_release": 1,
                     },
                     "top_category_kinds": [
-                        {"category_kind": "heap_alloc_root:object_new_bound", "events": 1}
+                        {
+                            "category_kind": "heap_alloc_root:object_new_bound",
+                            "events": 1,
+                        }
                     ],
                     "top_source_lines_by_events": [
                         {
@@ -194,13 +197,20 @@ def _build_diagnostics() -> dict[str, object]:
 
 def _fact_graph() -> dict[str, object]:
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "kind": "molt_tir_fact_graph",
         "function": "app::main",
         "values": [
             {
                 "value": 0,
-                "producer": {"kind": "param"},
+                "producer": {
+                    "kind": "op_result",
+                    "block": 0,
+                    "op_index": 0,
+                    "opcode": "Alloc",
+                    "result_index": 0,
+                    "source_site": {"line": 3, "col": 4, "end_col": 10},
+                },
                 "consumers": [],
                 "facts": [
                     {
@@ -208,18 +218,32 @@ def _fact_graph() -> dict[str, object]:
                         "value": "RawI64",
                         "confidence": "proven",
                         "producer": "type_refine",
+                        "event_id": None,
+                        "source_site": None,
                         "guards": [],
                         "invalidators": [],
-                    }
+                    },
+                    {
+                        "kind": "allocation.heap_root",
+                        "value": "escape_alloc_site",
+                        "confidence": "proven",
+                        "producer": "op_kinds.escape_alloc_site_opcodes",
+                        "event_id": "app::main:bb0:op0:Alloc:result0:allocation.heap_root",
+                        "source_site": {"line": 3, "col": 4, "end_col": 10},
+                        "guards": [],
+                        "invalidators": ["op_kinds.toml"],
+                    },
                 ],
             }
         ],
         "edges": [],
         "summary": {
             "value_count": 1,
-            "fact_count": 1,
+            "fact_count": 2,
             "edge_count": 0,
             "call_fact_count": 0,
+            "source_site_value_count": 1,
+            "allocation_ownership_fact_count": 1,
         },
     }
 
@@ -259,9 +283,7 @@ def test_build_capsule_bridges_frontend_tir_allocation_and_binary() -> None:
         == 90
     )
     assert (
-        capsule["compiler_binary_image_analysis"]["source_sites"][
-            "attributed_op_count"
-        ]
+        capsule["compiler_binary_image_analysis"]["source_sites"]["attributed_op_count"]
         == 3
     )
     assert (
@@ -271,9 +293,7 @@ def test_build_capsule_bridges_frontend_tir_allocation_and_binary() -> None:
         == "app.py"
     )
     assert (
-        capsule["compiler_binary_image_analysis"]["allocation_ownership"][
-            "event_count"
-        ]
+        capsule["compiler_binary_image_analysis"]["allocation_ownership"]["event_count"]
         == 4
     )
     assert (
@@ -282,7 +302,11 @@ def test_build_capsule_bridges_frontend_tir_allocation_and_binary() -> None:
         ]["heap_alloc_root"]
         == 1
     )
-    assert capsule["ir_tir"]["tir_fact_graphs"][0]["fact_count"] == 1
+    assert capsule["ir_tir"]["tir_fact_graphs"][0]["fact_count"] == 2
+    assert capsule["ir_tir"]["tir_fact_graphs"][0]["source_site_value_count"] == 1
+    assert (
+        capsule["ir_tir"]["tir_fact_graphs"][0]["allocation_ownership_fact_count"] == 1
+    )
     assert capsule["allocation"]["peak_bytes"] == 240
     assert capsule["binary"]["size"]["total_bytes"] == 128
 

@@ -1825,6 +1825,10 @@ operand = "all"
 opcode = "DeleteVar"
 operand = 1
 
+[[explicit_release_operand]]
+opcode = "DelBoundary"
+operand = "all"
+
 # ===========================================================================
 # Per-OpCode effect classification (EXHAUSTIVE over the OpCode enum).
 #
@@ -3185,12 +3189,12 @@ mapper_opcode = "TypeGuard"
 
 [[kind]]
 canonical = "inc_ref"
-aliases = []
+aliases = ["borrow"]
 mapper_opcode = "IncRef"
 
 [[kind]]
 canonical = "dec_ref"
-aliases = []
+aliases = ["release"]
 mapper_opcode = "DecRef"
 
 [[kind]]

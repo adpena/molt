@@ -293,9 +293,7 @@ def test_wrapper_build_cache_input_uses_static_import_closure_plan(
     closure = payload["binary_image_closure"]
     assert closure["image"] == payload["binary_image"]
     assert closure["image"]["root_modules"] == ["app", "pkg.runtime.ops_cpu"]
-    assert {"app", "pkg.runtime.ops_cpu", "base64"}.issubset(
-        closure["known_modules"]
-    )
+    assert {"app", "pkg.runtime.ops_cpu", "base64"}.issubset(closure["known_modules"])
     assert closure["compile_modules"] == closure["known_modules"]
     assert "pkg.runtime.ops_cpu" in closure["declared_root_modules"]
 
@@ -327,9 +325,10 @@ def test_wrapper_build_cache_identity_tracks_dead_module_elimination(
     assert base_key != dme_key
     assert "MOLT_DEAD_MODULE_ELIMINATION" not in base_payload["semantic_env"]
     assert dme_payload["semantic_env"]["MOLT_DEAD_MODULE_ELIMINATION"] == "1"
-    assert dme_payload["binary_image_closure"]["known_modules"] == base_payload[
-        "binary_image_closure"
-    ]["known_modules"]
+    assert (
+        dme_payload["binary_image_closure"]["known_modules"]
+        == base_payload["binary_image_closure"]["known_modules"]
+    )
 
 
 def test_build_diagnostics_emits_final_binary_image_closure(
@@ -383,9 +382,12 @@ def test_build_diagnostics_emits_final_binary_image_closure(
         import_plan.known_modules
     )
     assert payload["binary_image_closure"]["compile_modules"] == ["app"]
-    assert payload["binary_image_analysis"]["frontend"]["source_ast"][
-        "compile_module_count"
-    ] == 1
+    assert (
+        payload["binary_image_analysis"]["frontend"]["source_ast"][
+            "compile_module_count"
+        ]
+        == 1
+    )
 
 
 def test_frontend_binary_image_analysis_bridges_ast_schedule_and_lowering(
@@ -463,8 +465,8 @@ def test_backend_ir_and_artifact_analysis_attach_to_same_contract(
                             "defines_del": True,
                         },
                         {"kind": "stack_alloc", "source_line": 5},
-                        {"kind": "inc_ref", "source_line": 6},
-                        {"kind": "dec_ref", "source_line": 7},
+                        {"kind": "borrow", "source_line": 6},
+                        {"kind": "release", "source_line": 7},
                     ],
                 }
             ]
@@ -499,14 +501,15 @@ def test_backend_ir_and_artifact_analysis_attach_to_same_contract(
     analysis_payload = diagnostics["binary_image_analysis"]
     assert analysis_payload["backend_ir"]["backend_ir"]["function_count"] == 1
     assert analysis_payload["backend_ir"]["backend_ir"]["op_count"] == 6
-    assert (
-        analysis_payload["backend_ir"]["source_sites"]["attributed_op_count"] == 6
-    )
+    assert analysis_payload["backend_ir"]["source_sites"]["attributed_op_count"] == 6
     assert analysis_payload["backend_ir"]["source_sites"]["coverage_ratio"] == 1.0
     assert analysis_payload["backend_ir"]["source_sites"]["source_site_digest"]
-    assert analysis_payload["backend_ir"]["source_sites"]["top_source_lines_by_ops"][
-        0
-    ]["source_file"] == "app.py"
+    assert (
+        analysis_payload["backend_ir"]["source_sites"]["top_source_lines_by_ops"][0][
+            "source_file"
+        ]
+        == "app.py"
+    )
     allocation = analysis_payload["backend_ir"]["allocation_ownership"]
     assert allocation["source_coverage_ratio"] == 1.0
     assert allocation["events_by_category"]["heap_alloc_root"] == 1
