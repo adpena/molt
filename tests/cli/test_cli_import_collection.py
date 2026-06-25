@@ -33,11 +33,13 @@ from molt.cli import build_results as cli_build_results
 from molt.cli import frontend_execution as cli_frontend_execution
 from molt.cli import frontend_pipeline as cli_frontend_pipeline
 from molt.cli import module_cache as cli_module_cache
+from molt.cli import module_dependencies as cli_module_dependencies
 from molt.cli import module_graph as cli_module_graph
 from molt.cli import module_graph_cache as cli_module_graph_cache
 from molt.cli import module_import_scanner as cli_module_import_scanner
 from molt.cli import module_resolution as cli_module_resolution
 from molt.cli import module_source as cli_module_source
+from molt.cli import module_stdlib_policy as cli_module_stdlib_policy
 from molt.cli import typecheck as cli_typecheck
 
 cli_deps = importlib.import_module("molt.cli.deps")
@@ -1468,7 +1470,7 @@ def test_dead_module_elimination_keeps_runtime_dispatch_roots() -> None:
     module_order = ["importlib", "importlib.machinery", "json", "demo"]
     module_layers = [["importlib", "importlib.machinery", "json"], ["demo"]]
 
-    filtered_order, filtered_layers, eliminated = cli._apply_dead_module_elimination(
+    filtered_order, filtered_layers, eliminated = cli_module_dependencies._apply_dead_module_elimination(
         module_order,
         module_layers,
         entry_module="demo",
@@ -1651,7 +1653,7 @@ def test_find_molt_root_is_cached(
 def test_stdlib_allowlist_is_cached(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    cli._stdlib_allowlist_cached.cache_clear()
+    cli_module_stdlib_policy._stdlib_allowlist_cached.cache_clear()
     spec_path = (
         tmp_path / "docs/spec/areas/compat/surfaces/stdlib/stdlib_surface_matrix.md"
     )
@@ -1659,14 +1661,14 @@ def test_stdlib_allowlist_is_cached(
     spec_path.write_text("| Module |\n| --- |\n| json / pathlib |\n")
     monkeypatch.setenv("MOLT_PROJECT_ROOT", str(tmp_path))
     monkeypatch.chdir(tmp_path)
-    first = cli._stdlib_allowlist()
-    second = cli._stdlib_allowlist()
-    info = cli._stdlib_allowlist_cached.cache_info()
+    first = cli_module_stdlib_policy._stdlib_allowlist()
+    second = cli_module_stdlib_policy._stdlib_allowlist()
+    info = cli_module_stdlib_policy._stdlib_allowlist_cached.cache_info()
     assert {"json", "pathlib"} <= first
     assert second == first
     assert info.hits >= 1
     assert info.currsize >= 1
-    cli._stdlib_allowlist_cached.cache_clear()
+    cli_module_stdlib_policy._stdlib_allowlist_cached.cache_clear()
 
 
 def test_respect_pythonpath_keeps_repo_src_internal(
@@ -1767,7 +1769,7 @@ def _discover_with_core_modules(entry: Path) -> dict[str, Path]:
     stdlib_root = cli_module_resolution._stdlib_root_path()
     module_roots = [ROOT.resolve(), (ROOT / "src").resolve(), entry.parent.resolve()]
     roots = module_roots + [stdlib_root]
-    stdlib_allowlist = cli._stdlib_allowlist()
+    stdlib_allowlist = cli_module_stdlib_policy._stdlib_allowlist()
     module_graph, _ = cli._discover_module_graph(
         entry,
         roots,
@@ -1779,7 +1781,7 @@ def _discover_with_core_modules(entry: Path) -> dict[str, Path]:
         stub_parents=cli.STUB_PARENT_MODULES,
     )
     cli._collect_package_parents(module_graph, roots, stdlib_root, stdlib_allowlist)
-    cli._ensure_core_stdlib_modules(module_graph, stdlib_root)
+    cli_module_stdlib_policy._ensure_core_stdlib_modules(module_graph, stdlib_root)
     core_paths = [
         path
         for name in (
@@ -1830,7 +1832,7 @@ def test_external_root_direct_import_does_not_admit_transitive_children(
         module_roots,
         stdlib_root,
         project,
-        cli._stdlib_allowlist(),
+        cli_module_stdlib_policy._stdlib_allowlist(),
         import_admission_policy=policy,
     )
 
@@ -1864,7 +1866,7 @@ def test_external_static_package_admission_closes_transitive_children(
         module_roots,
         stdlib_root,
         project,
-        cli._stdlib_allowlist(),
+        cli_module_stdlib_policy._stdlib_allowlist(),
         import_admission_policy=policy,
     )
 
@@ -1938,7 +1940,7 @@ def test_from_import_graph_does_not_admit_case_mismatched_attribute_child(
         module_roots,
         stdlib_root,
         project,
-        cli._stdlib_allowlist(),
+        cli_module_stdlib_policy._stdlib_allowlist(),
         skip_modules=cli.STUB_MODULES,
         stub_parents=cli.STUB_PARENT_MODULES,
     )
@@ -1966,7 +1968,7 @@ def test_from_import_star_graph_admits_static_all_child_module(
     stdlib_root = cli_module_resolution._stdlib_root_path()
     module_roots = [project.resolve(), site.resolve()]
     roots = [*module_roots, stdlib_root]
-    stdlib_allowlist = cli._stdlib_allowlist()
+    stdlib_allowlist = cli_module_stdlib_policy._stdlib_allowlist()
     cache = cli_module_resolution._ModuleResolutionCache()
     graph, explicit_imports = cli._discover_module_graph(
         entry,
@@ -2668,7 +2670,7 @@ def test_discover_module_graph_includes_importlib_from_alias_target(
         module_roots,
         stdlib_root,
         tmp_path,
-        cli._stdlib_allowlist(),
+        cli_module_stdlib_policy._stdlib_allowlist(),
         skip_modules=cli.STUB_MODULES,
         stub_parents=cli.STUB_PARENT_MODULES,
     )
@@ -3675,7 +3677,7 @@ def test_shared_module_resolution_cache_reduces_repeated_resolution(
     stdlib_root = cli_module_resolution._stdlib_root_path()
     module_roots = [tmp_path.resolve()]
     roots = module_roots + [stdlib_root]
-    stdlib_allowlist = cli._stdlib_allowlist()
+    stdlib_allowlist = cli_module_stdlib_policy._stdlib_allowlist()
 
     resolve_calls = 0
     original = cli_module_resolution._resolve_module_path_parts
@@ -3761,7 +3763,7 @@ def test_shared_module_resolution_cache_reuses_source_and_ast_across_passes(
     stdlib_root = cli_module_resolution._stdlib_root_path()
     module_roots = [tmp_path.resolve()]
     roots = module_roots + [stdlib_root]
-    stdlib_allowlist = cli._stdlib_allowlist()
+    stdlib_allowlist = cli_module_stdlib_policy._stdlib_allowlist()
 
     read_calls = 0
     parse_calls = 0
@@ -3919,7 +3921,7 @@ def test_shared_module_resolution_cache_reuses_import_scans(
     stdlib_root = cli_module_resolution._stdlib_root_path()
     module_roots = [tmp_path.resolve()]
     roots = module_roots + [stdlib_root]
-    stdlib_allowlist = cli._stdlib_allowlist()
+    stdlib_allowlist = cli_module_stdlib_policy._stdlib_allowlist()
 
     collect_calls = 0
     original_collect = cli_module_import_scanner._collect_imports
@@ -3991,7 +3993,7 @@ def test_discover_module_graph_reuses_persisted_import_scan_cache(
     stdlib_root = cli_module_resolution._stdlib_root_path()
     module_roots = [tmp_path.resolve()]
     roots = module_roots + [stdlib_root]
-    stdlib_allowlist = cli._stdlib_allowlist()
+    stdlib_allowlist = cli_module_stdlib_policy._stdlib_allowlist()
 
     graph, explicit_imports = cli._discover_module_graph(
         entry,
@@ -4354,7 +4356,7 @@ def test_discover_module_graph_skips_persisted_caches_when_disabled(
     stdlib_root = cli_module_resolution._stdlib_root_path()
     module_roots = [tmp_path.resolve()]
     roots = module_roots + [stdlib_root]
-    stdlib_allowlist = cli._stdlib_allowlist()
+    stdlib_allowlist = cli_module_stdlib_policy._stdlib_allowlist()
 
     graph, explicit_imports = cli._discover_module_graph(
         entry,
@@ -4413,7 +4415,7 @@ def test_discover_module_graph_reuses_persisted_graph_cache(
     stdlib_root = cli_module_resolution._stdlib_root_path()
     module_roots = [tmp_path.resolve()]
     roots = module_roots + [stdlib_root]
-    stdlib_allowlist = cli._stdlib_allowlist()
+    stdlib_allowlist = cli_module_stdlib_policy._stdlib_allowlist()
 
     graph, explicit_imports = cli._discover_module_graph(
         entry,
@@ -4441,7 +4443,7 @@ def test_discover_module_graph_reuses_precomputed_entry_imports(
     stdlib_root = cli_module_resolution._stdlib_root_path()
     module_roots = [tmp_path.resolve()]
     roots = module_roots + [stdlib_root]
-    stdlib_allowlist = cli._stdlib_allowlist()
+    stdlib_allowlist = cli_module_stdlib_policy._stdlib_allowlist()
     cache = cli_module_resolution._ModuleResolutionCache()
     reads: list[Path] = []
     original_read = cache.read_module_source
@@ -4524,7 +4526,7 @@ def test_discover_module_graph_from_paths_deduplicates_repeated_import_names(
     module_roots = [tmp_path.resolve()]
     roots = module_roots + [stdlib_root]
     expand_calls = 0
-    original_expand = cli_module_graph._expand_module_chain_cached
+    original_expand = cli_module_dependencies._expand_module_chain_cached
 
     def wrapped_expand(name: str):
         nonlocal expand_calls
@@ -4532,7 +4534,11 @@ def test_discover_module_graph_from_paths_deduplicates_repeated_import_names(
             expand_calls += 1
         return original_expand(name)
 
-    monkeypatch.setattr(cli_module_graph, "_expand_module_chain_cached", wrapped_expand)
+    monkeypatch.setattr(
+        cli_module_dependencies,
+        "_expand_module_chain_cached",
+        wrapped_expand,
+    )
 
     graph, explicit_imports = cli_module_graph._discover_module_graph_from_paths(
         [first, second],
@@ -4609,7 +4615,7 @@ def test_discover_module_graph_reuses_persisted_paths_for_unchanged_modules(
     stdlib_root = cli_module_resolution._stdlib_root_path()
     module_roots = [tmp_path.resolve()]
     roots = module_roots + [stdlib_root]
-    stdlib_allowlist = cli._stdlib_allowlist()
+    stdlib_allowlist = cli_module_stdlib_policy._stdlib_allowlist()
 
     graph, explicit_imports = cli._discover_module_graph(
         entry,
@@ -4678,7 +4684,7 @@ def test_discover_module_graph_prunes_removed_persisted_dependency(
     stdlib_root = cli_module_resolution._stdlib_root_path()
     module_roots = [tmp_path.resolve()]
     roots = module_roots + [stdlib_root]
-    stdlib_allowlist = cli._stdlib_allowlist()
+    stdlib_allowlist = cli_module_stdlib_policy._stdlib_allowlist()
 
     graph, _ = cli._discover_module_graph(
         entry,
@@ -6897,7 +6903,7 @@ def test_dependent_module_closure_tracks_reverse_frontier() -> None:
         "leaf": set(),
     }
 
-    closure = cli._dependent_module_closure(
+    closure = cli_module_dependencies._dependent_module_closure(
         {"leaf"},
         module_deps,
         {"main", "alpha", "beta", "leaf"},
@@ -6914,7 +6920,7 @@ def test_reverse_module_dependencies_maps_dependents_once() -> None:
         "leaf": set(),
     }
 
-    reverse = cli._reverse_module_dependencies(
+    reverse = cli_module_dependencies._reverse_module_dependencies(
         module_deps,
         {"main", "alpha", "beta", "leaf"},
     )
@@ -6932,12 +6938,12 @@ def test_dependent_module_closure_reuses_precomputed_reverse_frontier() -> None:
         "beta": set(),
         "leaf": set(),
     }
-    reverse = cli._reverse_module_dependencies(
+    reverse = cli_module_dependencies._reverse_module_dependencies(
         module_deps,
         {"main", "alpha", "beta", "leaf"},
     )
 
-    closure = cli._dependent_module_closure(
+    closure = cli_module_dependencies._dependent_module_closure(
         {"leaf"},
         module_deps,
         {"main", "alpha", "beta", "leaf"},
@@ -6955,7 +6961,7 @@ def test_module_dependency_closure_tracks_forward_dependencies() -> None:
         "leaf": set(),
     }
 
-    closure = cli._module_dependency_closure("main", module_deps)
+    closure = cli_module_dependencies._module_dependency_closure("main", module_deps)
 
     assert closure == {"main", "alpha", "beta", "leaf"}
 
@@ -6968,7 +6974,7 @@ def test_module_dependency_closures_reuse_topological_order_when_acyclic() -> No
         "leaf": set(),
     }
 
-    closures = cli._module_dependency_closures(
+    closures = cli_module_dependencies._module_dependency_closures(
         module_deps,
         {"main", "alpha", "beta", "leaf"},
         module_order=["leaf", "alpha", "beta", "main"],
@@ -6987,7 +6993,7 @@ def test_module_dependency_closures_fallback_on_back_edges() -> None:
         "b": {"a"},
     }
 
-    closures = cli._module_dependency_closures(
+    closures = cli_module_dependencies._module_dependency_closures(
         module_deps,
         {"a", "b"},
         module_order=["a", "b"],
@@ -7006,7 +7012,7 @@ def test_module_dependencies_from_imports_resolves_direct_graph_edges() -> None:
         "warnings": Path("/tmp/warnings.py"),
     }
 
-    deps = cli._module_dependencies_from_imports(
+    deps = cli_module_dependencies._module_dependencies_from_imports(
         "main",
         module_graph,
         ["alpha.helper", "beta", "molt.stdlib.warnings"],
@@ -8148,16 +8154,16 @@ def test_parallel_build_reuses_cached_lowering_across_parallel_builds(
         cli_frontend_pipeline,
         "_analyze_module_schedule",
         lambda module_graph, module_deps: (
-            cli._topo_sort_modules(module_graph, module_deps),
-            cli._reverse_module_dependencies(module_deps, module_graph),
+            cli_module_dependencies._topo_sort_modules(module_graph, module_deps),
+            cli_module_dependencies._reverse_module_dependencies(module_deps, module_graph),
             False,
-            cli._module_dependency_layers(
-                cli._topo_sort_modules(module_graph, module_deps), module_deps
+            cli_module_dependencies._module_dependency_layers(
+                cli_module_dependencies._topo_sort_modules(module_graph, module_deps), module_deps
             ),
-            cli._module_dependency_closures(
+            cli_module_dependencies._module_dependency_closures(
                 module_deps,
                 module_graph,
-                module_order=cli._topo_sort_modules(module_graph, module_deps),
+                module_order=cli_module_dependencies._topo_sort_modules(module_graph, module_deps),
                 has_back_edges=False,
             ),
         ),
@@ -8280,16 +8286,16 @@ def test_parallel_build_reuses_dependent_cache_after_stable_interface_change(
         cli_frontend_pipeline,
         "_analyze_module_schedule",
         lambda module_graph, module_deps: (
-            cli._topo_sort_modules(module_graph, module_deps),
-            cli._reverse_module_dependencies(module_deps, module_graph),
+            cli_module_dependencies._topo_sort_modules(module_graph, module_deps),
+            cli_module_dependencies._reverse_module_dependencies(module_deps, module_graph),
             False,
-            cli._module_dependency_layers(
-                cli._topo_sort_modules(module_graph, module_deps), module_deps
+            cli_module_dependencies._module_dependency_layers(
+                cli_module_dependencies._topo_sort_modules(module_graph, module_deps), module_deps
             ),
-            cli._module_dependency_closures(
+            cli_module_dependencies._module_dependency_closures(
                 module_deps,
                 module_graph,
-                module_order=cli._topo_sort_modules(module_graph, module_deps),
+                module_order=cli_module_dependencies._topo_sort_modules(module_graph, module_deps),
                 has_back_edges=False,
             ),
         ),
@@ -8408,16 +8414,16 @@ def test_parallel_build_allows_scoped_type_facts(
         cli_frontend_pipeline,
         "_analyze_module_schedule",
         lambda module_graph, module_deps: (
-            cli._topo_sort_modules(module_graph, module_deps),
-            cli._reverse_module_dependencies(module_deps, module_graph),
+            cli_module_dependencies._topo_sort_modules(module_graph, module_deps),
+            cli_module_dependencies._reverse_module_dependencies(module_deps, module_graph),
             False,
-            cli._module_dependency_layers(
-                cli._topo_sort_modules(module_graph, module_deps), module_deps
+            cli_module_dependencies._module_dependency_layers(
+                cli_module_dependencies._topo_sort_modules(module_graph, module_deps), module_deps
             ),
-            cli._module_dependency_closures(
+            cli_module_dependencies._module_dependency_closures(
                 module_deps,
                 module_graph,
-                module_order=cli._topo_sort_modules(module_graph, module_deps),
+                module_order=cli_module_dependencies._topo_sort_modules(module_graph, module_deps),
                 has_back_edges=False,
             ),
         ),
@@ -8749,7 +8755,7 @@ def test_prepare_frontend_analysis_uses_path_backed_source_catalog(
         module_resolution_cache=resolution_cache,
         roots=[tmp_path],
         stdlib_root=cli_module_resolution._stdlib_root_path(),
-        stdlib_allowlist=cli._stdlib_allowlist(),
+        stdlib_allowlist=cli_module_stdlib_policy._stdlib_allowlist(),
         project_root=tmp_path,
         entry_module="main",
         json_output=False,
@@ -8896,7 +8902,7 @@ def test_spawn_entry_override_not_required_for_plain_script(tmp_path: Path) -> N
     stdlib_root = cli_module_resolution._stdlib_root_path()
     module_roots = [ROOT.resolve(), (ROOT / "src").resolve(), entry.parent.resolve()]
     roots = module_roots + [stdlib_root]
-    stdlib_allowlist = cli._stdlib_allowlist()
+    stdlib_allowlist = cli_module_stdlib_policy._stdlib_allowlist()
     module_graph, explicit_imports = cli._discover_module_graph(
         entry,
         roots,
@@ -8908,7 +8914,7 @@ def test_spawn_entry_override_not_required_for_plain_script(tmp_path: Path) -> N
         stub_parents=cli.STUB_PARENT_MODULES,
     )
     cli._collect_package_parents(module_graph, roots, stdlib_root, stdlib_allowlist)
-    cli._ensure_core_stdlib_modules(module_graph, stdlib_root)
+    cli_module_stdlib_policy._ensure_core_stdlib_modules(module_graph, stdlib_root)
     core_paths = [
         path
         for name in (
@@ -8944,7 +8950,7 @@ def test_spawn_entry_override_required_for_multiprocessing(tmp_path: Path) -> No
     stdlib_root = cli_module_resolution._stdlib_root_path()
     module_roots = [ROOT.resolve(), (ROOT / "src").resolve(), entry.parent.resolve()]
     roots = module_roots + [stdlib_root]
-    stdlib_allowlist = cli._stdlib_allowlist()
+    stdlib_allowlist = cli_module_stdlib_policy._stdlib_allowlist()
     module_graph, explicit_imports = cli._discover_module_graph(
         entry,
         roots,
@@ -9160,7 +9166,7 @@ def test_module_dependency_layers_preserve_topological_determinism() -> None:
         "d": {"b", "c"},
         "e": {"b"},
     }
-    layers = cli._module_dependency_layers(order, deps)
+    layers = cli_module_dependencies._module_dependency_layers(order, deps)
     assert layers == [["a"], ["b", "c"], ["d", "e"]]
 
 
@@ -9181,7 +9187,7 @@ def test_analyze_module_schedule_reuses_reverse_edges_and_layers() -> None:
     }
 
     order, reverse_deps, has_back_edges, layers, closures = (
-        cli._analyze_module_schedule(
+        cli_module_dependencies._analyze_module_schedule(
             module_graph,
             deps,
         )
@@ -9255,7 +9261,7 @@ def test_build_frontend_module_costs_precomputes_source_and_dep_costs() -> None:
 
 
 def test_build_stdlib_like_module_flags_precomputes_classification() -> None:
-    flags = cli._build_stdlib_like_module_flags(
+    flags = cli_module_stdlib_policy._build_stdlib_like_module_flags(
         {
             "warnings": cli_module_resolution._stdlib_root_path() / "warnings.py",
             "pkg.mod": Path("/tmp/pkg/mod.py"),
@@ -9267,7 +9273,7 @@ def test_build_stdlib_like_module_flags_precomputes_classification() -> None:
 
 def test_build_stdlib_like_module_flags_marks_runtime_shipped_modules() -> None:
     package_root = cli_module_resolution._stdlib_root_path().parent
-    flags = cli._build_stdlib_like_module_flags(
+    flags = cli_module_stdlib_policy._build_stdlib_like_module_flags(
         {
             "molt.gpu.tensor": package_root / "gpu" / "tensor.py",
             "molt.lib.turtle_roblox": package_root / "lib" / "turtle_roblox.py",
@@ -9321,7 +9327,7 @@ def test_augment_module_graph_does_not_add_entry_alias_as_second_module(
         stdlib_root=stdlib_root,
         roots=[project_root, examples_dir, stdlib_root],
         project_root=project_root,
-        stdlib_allowlist=cli._stdlib_allowlist(),
+        stdlib_allowlist=cli_module_stdlib_policy._stdlib_allowlist(),
         entry_imports=(),
         module_resolution_cache=cli_module_resolution._ModuleResolutionCache(),
         module_graph=module_graph,
@@ -9437,8 +9443,8 @@ def test_choose_frontend_parallel_layer_workers_uses_precomputed_costs_and_flags
 
 def test_module_order_has_back_edges_detects_cycles() -> None:
     order = ["a", "b"]
-    assert cli._module_order_has_back_edges(order, {"a": {"b"}, "b": {"a"}})
-    assert not cli._module_order_has_back_edges(order, {"a": set(), "b": {"a"}})
+    assert cli_module_dependencies._module_order_has_back_edges(order, {"a": {"b"}, "b": {"a"}})
+    assert not cli_module_dependencies._module_order_has_back_edges(order, {"a": set(), "b": {"a"}})
 
 
 def test_analyze_module_schedule_marks_cycles_and_appends_remaining() -> None:
@@ -9449,7 +9455,7 @@ def test_analyze_module_schedule_marks_cycles_and_appends_remaining() -> None:
     deps = {"a": {"b"}, "b": {"a"}}
 
     order, reverse_deps, has_back_edges, layers, closures = (
-        cli._analyze_module_schedule(
+        cli_module_dependencies._analyze_module_schedule(
             module_graph,
             deps,
         )
@@ -9832,9 +9838,9 @@ def test_module_name_from_path_outside_module_roots_uses_stem(tmp_path: Path) ->
 
 
 def test_expand_module_chain_ignores_invalid_module_names() -> None:
-    assert cli._expand_module_chain("pkg.sub") == ["pkg", "pkg.sub"]
-    assert cli._expand_module_chain("") == []
-    assert cli._expand_module_chain("/.Volumes.bad.mod") == []
+    assert cli_module_dependencies._expand_module_chain("pkg.sub") == ["pkg", "pkg.sub"]
+    assert cli_module_dependencies._expand_module_chain("") == []
+    assert cli_module_dependencies._expand_module_chain("/.Volumes.bad.mod") == []
 
 
 def test_extract_runtime_feedback_hot_functions_sorts_and_dedupes() -> None:
