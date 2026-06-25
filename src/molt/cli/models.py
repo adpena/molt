@@ -28,8 +28,8 @@ if TYPE_CHECKING:
     from molt.cli.module_graph import (
         ModuleSyntaxErrorInfo,
         _ModuleResolutionCache,
-        _ModuleSourceCatalog,
     )
+    from molt.cli.module_source import _ModuleSourceCatalog
 
 ParseCodec = Literal["msgpack", "cbor", "json"]
 TypeHintPolicy = Literal["ignore", "trust", "check"]

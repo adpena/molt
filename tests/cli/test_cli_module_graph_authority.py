@@ -7,14 +7,10 @@ from molt.cli import module_graph
 from molt.cli import wrapper_build
 
 _MODULE_GRAPH_CORE_NAMES = (
-    "_ModuleSourceCatalog",
     "_ModuleResolutionCache",
     "ModuleSyntaxErrorInfo",
     "_build_module_graph_metadata",
-    "_build_module_source_catalog",
     "_collect_package_parents",
-    "_source_content_sha256",
-    "_source_content_sha256_cached",
     "_resolve_module_path",
     "_resolve_module_path_parts",
     "_collect_imports",
@@ -42,21 +38,16 @@ _MODULE_GRAPH_CORE_NAMES = (
     "_read_persisted_import_scan",
     "_read_persisted_module_graph",
     "_tree_uses_runtime_import_protocol",
-    "_read_module_source",
     "_stdlib_root_path",
     "_write_persisted_import_scan",
     "_write_persisted_module_graph",
 )
 
 _MODULE_GRAPH_CORE_DEFINITIONS = (
-    "class _ModuleSourceCatalog",
     "class _ModuleResolutionCache",
     "class ModuleSyntaxErrorInfo",
     "def _build_module_graph_metadata(",
-    "def _build_module_source_catalog(",
     "def _collect_package_parents(",
-    "def _source_content_sha256(",
-    "def _source_content_sha256_cached(",
     "def _resolve_module_path(",
     "def _resolve_module_path_parts(",
     "def _collect_imports(",
@@ -85,12 +76,10 @@ _MODULE_GRAPH_CORE_DEFINITIONS = (
     "def _read_persisted_import_scan(",
     "def _read_persisted_module_graph(",
     "def _tree_uses_runtime_import_protocol(",
-    "def _read_module_source(",
     "def _stdlib_root_path(",
     "def _write_persisted_import_scan(",
     "def _write_persisted_module_graph(",
 )
-
 
 def test_cli_module_graph_core_authority_is_single_home() -> None:
     for name in _MODULE_GRAPH_CORE_NAMES:
