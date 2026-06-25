@@ -16,9 +16,14 @@ from tests.native_process_guard import run_native_test_process
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+TOOLS_ROOT = REPO_ROOT / "tools"
 TOOL_PATH = REPO_ROOT / "tools" / "bench_friends.py"
 ADAPTER_PATH = REPO_ROOT / "tools" / "tinygrad_off_shelf_adapter.py"
 NUMPY_ADAPTER_PATH = REPO_ROOT / "tools" / "numpy_off_shelf_adapter.py"
+if str(TOOLS_ROOT) not in sys.path:
+    sys.path.insert(0, str(TOOLS_ROOT))
+
+import perf_authority  # noqa: E402
 
 
 def _load_tool_module():
@@ -197,7 +202,9 @@ def test_base_run_env_preserves_windows_toolchain_roots(
     monkeypatch.setenv("ProgramFiles(x86)", r"C:\Program Files (x86)")
     monkeypatch.setenv("ProgramFiles", r"C:\Program Files")
     monkeypatch.setenv("ProgramW6432", r"C:\Program Files")
-    monkeypatch.setenv("CommonProgramFiles(x86)", r"C:\Program Files (x86)\Common Files")
+    monkeypatch.setenv(
+        "CommonProgramFiles(x86)", r"C:\Program Files (x86)\Common Files"
+    )
     monkeypatch.setenv("CommonProgramFiles", r"C:\Program Files\Common Files")
     monkeypatch.setenv("CommonProgramW6432", r"C:\Program Files\Common Files")
     monkeypatch.setenv("ProgramData", r"C:\ProgramData")
@@ -1121,6 +1128,56 @@ def test_bench_friends_non_workload_runner_excluded_from_speed_metrics() -> None
     assert metrics["molt_vs_numpy_speedup"] is None
     assert "numpy_kernel_median_s" not in metrics
     assert metrics["molt_kernel_median_s"] == 0.10
+
+
+def test_bench_friends_suite_metrics_serializes_ratio_directions() -> None:
+    module = _load_tool_module()
+    runners = {
+        "cpython": module.RunnerResult(
+            name="cpython",
+            role="workload",
+            status="ok",
+            run_samples_s=[0.40],
+            run_median_s=0.40,
+            structured_median_s={"kernel": 0.50},
+        ),
+        "molt": module.RunnerResult(
+            name="molt",
+            role="workload",
+            status="ok",
+            run_samples_s=[0.20],
+            run_median_s=0.20,
+            structured_median_s={"kernel": 0.25},
+        ),
+        "friend": module.RunnerResult(
+            name="friend",
+            role="workload",
+            status="ok",
+            run_samples_s=[0.10],
+            run_median_s=0.10,
+            structured_median_s={"kernel": 0.125},
+        ),
+    }
+
+    metrics = module._suite_metrics(runners)
+
+    assert metrics["molt_speedup"] == pytest.approx(2.0)
+    assert metrics["molt_cpython_ratio"] == pytest.approx(0.5)
+    assert metrics["friend_vs_molt_speedup"] == pytest.approx(2.0)
+    directions = metrics["ratio_directions"]
+    assert directions["molt_speedup"] == perf_authority.RatioDirection.SPEEDUP.value
+    assert (
+        directions["molt_cpython_ratio"]
+        == perf_authority.RatioDirection.MOLT_OVER_BASELINE.value
+    )
+    assert (
+        directions["molt_vs_cpython_kernel_speedup"]
+        == perf_authority.RatioDirection.SPEEDUP.value
+    )
+    assert (
+        directions["molt_vs_friend_kernel_speedup"]
+        == perf_authority.RatioDirection.SPEEDUP.value
+    )
 
 
 def test_bench_friends_suite_root_override_and_structured_json_metrics(

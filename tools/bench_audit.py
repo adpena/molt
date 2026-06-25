@@ -31,6 +31,7 @@ REPO_ROOT = Path(__file__).parent.parent.resolve()
 # Import bench.py helpers directly
 sys.path.insert(0, str(REPO_ROOT / "tools"))
 import harness_memory_guard  # noqa: E402
+import perf_authority  # noqa: E402
 
 try:
     import bench as _bench
@@ -279,9 +280,11 @@ def audit_benchmarks(
         )
 
         # --- Speedup ---
-        speedup: Optional[float] = None
-        if molt_s is not None and cpython_s is not None and molt_s > 0:
-            speedup = cpython_s / molt_s
+        speedup = perf_authority.signed_ratio_value(
+            cpython_s,
+            molt_s,
+            direction=perf_authority.RatioDirection.SPEEDUP,
+        )
 
         if skip_molt and cpython_s is not None:
             classification = "Skipped"
@@ -358,6 +361,9 @@ def _to_json_record(r: BenchResult) -> dict:
         "molt_s": round(r.molt_s, 6) if r.molt_s is not None else None,
         "cpython_s": round(r.cpython_s, 6) if r.cpython_s is not None else None,
         "speedup": round(r.speedup, 4) if r.speedup is not None else None,
+        "ratio_directions": {
+            "speedup": perf_authority.RatioDirection.SPEEDUP.value,
+        },
         "class": r.classification,
     }
     if r.molt_build_s is not None:
