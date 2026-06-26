@@ -379,6 +379,8 @@ stdlib:
   ipaddress:
     tests:
       - tests/differential/stdlib/ipaddress_basic.py
+      - tests/differential/stdlib/ipaddress_int_constructor.py
+      - tests/differential/stdlib/ipaddress_special_registry.py
   json:
     tests:
       - tests/differential/stdlib/stdlib_json_basic.py
