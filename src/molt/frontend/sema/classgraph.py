@@ -2,9 +2,9 @@
 
 Free functions over ``ast.Module`` and immutable class tables — the
 ``cfg_analysis.py`` house shape.  The static base graph, C3/static-MRO
-linearization, reachability, and zero-arg ``super()`` fold soundness predicate
-are computed outside the lowering generator and are unit-testable on bare facts
-(the doc 44 §5.5 testability win).
+linearization, reachability, class-body block-exec decisions, and zero-arg
+``super()`` fold soundness facts are computed outside the lowering generator
+and are unit-testable on bare facts (the doc 44 §5.5 testability win).
 """
 
 from __future__ import annotations
@@ -140,10 +140,12 @@ def _is_inert_class_expr(node: ast.Expr) -> bool:
     )
 
 
-def _class_member_facts_are_opaque(node: ast.ClassDef) -> bool:
+def _class_member_facts_are_opaque(
+    node: ast.ClassDef, *, body_needs_block: bool
+) -> bool:
     if node.decorator_list or node.keywords:
         return True
-    if class_body_needs_block_exec(node.body):
+    if body_needs_block:
         return True
     for item in node.body:
         if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -160,6 +162,7 @@ def build_class_facts(node: ast.Module) -> ClassFacts:
     attr_names_by_class: dict[str, frozenset[str]] = {}
     counts: dict[str, int] = {}
     opaque: set[str] = set()
+    block_exec_nodes: set[int] = set()
 
     def target_names(target: ast.AST) -> list[str]:
         if isinstance(target, ast.Name):
@@ -186,7 +189,10 @@ def build_class_facts(node: ast.Module) -> ClassFacts:
         if not isinstance(stmt, ast.ClassDef):
             continue
         counts[stmt.name] = counts.get(stmt.name, 0) + 1
-        if _class_member_facts_are_opaque(stmt):
+        body_needs_block = class_body_needs_block_exec(stmt.body)
+        if body_needs_block:
+            block_exec_nodes.add(id(stmt))
+        if _class_member_facts_are_opaque(stmt, body_needs_block=body_needs_block):
             opaque.add(stmt.name)
         members: dict[str, str] = {}
         for item in stmt.body:
@@ -234,6 +240,7 @@ def build_class_facts(node: ast.Module) -> ClassFacts:
         attr_names_by_class=attr_names_by_class,
         opaque_member_class_names=frozenset(opaque),
         ambiguous_class_names=ambiguous,
+        block_exec_class_nodes=frozenset(block_exec_nodes),
         super_fold_sound_methods_by_class={},
     )
 

@@ -39,7 +39,6 @@ from molt.frontend.sema import (
     async_generator_contains_return_value,
     async_generator_contains_yield_from,
     c3_merge,
-    class_body_needs_block_exec,
     function_contains_yield,
     signature_contains_yield,
     stateful_function_frame_plan,
@@ -781,7 +780,8 @@ class ClassDefVisitorMixin(_MixinBase):
         # ``f_locals``).  Forcing ``dynamic_build`` gives that body a heap-backed
         # namespace mapping which is the loop-carried-correct store for its
         # names; the straight-line static fast path is untouched.  (P0 #50.)
-        body_needs_block = class_body_needs_block_exec(node.body)
+        assert self._sema is not None, "module sema must be populated before lowering"
+        body_needs_block = id(node) in self._sema.class_facts.block_exec_class_nodes
         if body_needs_block:
             dynamic_build = True
         if not has_explicit_bases:
