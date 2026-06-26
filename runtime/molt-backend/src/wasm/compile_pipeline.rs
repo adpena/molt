@@ -1,3 +1,4 @@
+use super::context::CompileFuncContext;
 use super::*;
 
 impl WasmBackend {
