@@ -7,7 +7,7 @@ from molt.frontend import MoltOp, MoltValue, SimpleTIRGenerator, compile_to_tir
 
 def _map_single(op: MoltOp) -> dict:
     gen = SimpleTIRGenerator()
-    return gen.map_ops_to_json([op])[0]
+    return gen.map_ops_to_json([op], run_midend=False)[0]
 
 
 def test_call_indirect_lowers_to_call_indirect_lane() -> None:
