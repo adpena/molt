@@ -20,7 +20,7 @@
 
 ## 0. Scope, non-goals, and what F1 already proved
 
-**In scope.** The decomposition of `SimpleTIRGenerator` into named phases with explicit data contracts; the rule that makes scope-divergent lowering structurally impossible; the extension of the *already-landed* op-kind registry (`tools/gen_op_kinds.py`, doc 25) to absorb three hand-kept frontend tables; the phasing that lands move-only structure before any semantic change and dissolves the mixin shims by the end.
+**In scope.** The decomposition of `SimpleTIRGenerator` into named phases with explicit data contracts; the rule that makes scope-divergent lowering structurally impossible; the extension of the *already-landed* op-kind registry (`tools/gen_op_kinds.py`, doc 25) to absorb hand-kept frontend tables/effect oracles; the phasing that lands move-only structure before any semantic change and dissolves the mixin shims by the end.
 
 **Out of scope (covered elsewhere, cross-referenced only).** The per-construct *semantic* gaps (metaclass `__prepare__`, `__slots__` layout, `__index__` coercion, match-as-CFG) are doc 30's portfolio and its commissioned docs (#40–#42); F2 makes those fixes *land in one place* but does not re-specify them. The op_kinds.toml *schema* is doc 25; F2 extends its **output**, not its design. Generator/coroutine lowering is doc 26.
 
@@ -142,9 +142,9 @@ A construct lowered by `if scope == module: ... else: ...` inside one function i
 
 ## 3. The registry extension (the ODS move) — and the HEAD surprise
 
-**The brief assumed the registry generator does not yet emit a Python file. It does, at HEAD.** `tools/gen_op_kinds.py:50` already renders `src/molt/frontend/lowering/op_kinds_generated.py`, and `op_kinds.toml` already carries the `may_throw` column (`op_kinds.toml:140`, 38 `may_throw=true` rows). Today that generated Python file exports `MAPPER_CANONICAL_KINDS` + `canonical_kind()` (`op_kinds_generated.py:165/272`) — the wire-spelling vocabulary. The F2 move is therefore **not "build a generator"** — it is **"extend the existing generator's Python render to absorb the three hand-kept frontend tables, then delete them."** This is a sharper, lower-risk move than the brief anticipated.
+**The brief assumed the registry generator does not yet emit a Python file. It does, at HEAD.** `tools/gen_op_kinds.py:50` already renders `src/molt/frontend/lowering/op_kinds_generated.py`, and `op_kinds.toml` already carries the `may_throw` column (`op_kinds.toml:140`, 38 `may_throw=true` rows). Today that generated Python file exports `MAPPER_CANONICAL_KINDS` + `canonical_kind()` (`op_kinds_generated.py:165/272`) — the wire-spelling vocabulary. The F2 move is therefore **not "build a generator"** — it is **"extend the existing generator's Python render to absorb hand-kept frontend tables/effect oracles, then delete them."** This is a sharper, lower-risk move than the brief anticipated.
 
-### 3.1 The three hand-kept frontend tables that must become generated
+### 3.1 The hand-kept frontend tables that must become generated
 
 1. **`_RAISING_OP_KINDS`** (`__init__.py:1169-1229`, 60 entries, UPPERCASE MoltOp kinds). This is a hand-maintained copy of the `may_throw` knowledge the backend's `opcode_may_throw` already derives from `op_kinds.toml` (38 `may_throw=true` rows). **Two copies of one fact** — doc 25's exact bug class (#1, the `matches!`-default-false / ModuleImportFrom lesson). It is consumed at `emit()` (`__init__.py:1235`) solely to attach `_expr_col` to raising ops for traceback carets. **Generate `RAISING_KIND_NAMES`** from the `may_throw` column (mapped MoltOp-kind ↔ JSON-kind via the table's existing alias data) and import it.
 
@@ -152,14 +152,16 @@ A construct lowered by `if scope == module: ... else: ...` inside one function i
 
 3. **`_augassign_op_kind`** (`__init__.py:13924-13959`, a 13-arm `isinstance(op, ast.X)` → `"INPLACE_X"` chain). This is the AST-operator → kind map that doc 25 §1 flagged as drift-prone (the historical `floordiv`/`floor_div` schism, bug #5; and the augassign-inplace-dunder gap that was a live correctness bug fixed days ago in `1c15a8353`). The map `{ast.Add: "INPLACE_ADD", ...}` is pure registry data. **Add an `augassign_kind` column** (or a `binop_ast → kind` mapping section) to `op_kinds.toml` and generate the dict; `visit_AugAssign` imports it. The sibling `visit_BinOp` op-selection chain (`__init__.py:10723-10736`, `ast.LShift → "LSHIFT"` etc.) is the same shape and folds into the same generated map.
 
+4. **The midend optimizer effect oracle** (`frontend/lowering/midend_optimization.py::_op_effect_class`). This is the pre-serialization sibling of backend `OpEffects`: it decides CSE/LICM/DCE barriers over UPPERCASE `MoltOp.kind` names before JSON serialization. It must be generated from `[[kind]]`, opcode `may_throw`/`side_effecting`/`purity`, `[[simpleir_control_kind]]`, `[[frontend_raising_kind]]`, and explicit `[[frontend_effect_kind]]` overrides so a frontend optimizer barrier cannot drift from the TIR registry.
+
 ### 3.2 Mechanism (extends doc 25 §5, does not replace it)
 
 - **One table:** `op_kinds.toml` gains two columns on the relevant rows — `ast_binop` (the `ast.operator` subclass name this kind is the binary form of) and `ast_augassign` (the inplace form). The `may_throw` column already exists.
-- **One generator:** `tools/gen_op_kinds.py` (already renders `op_kinds_generated.py`) additionally emits, into that same file: `RAISING_KIND_NAMES: frozenset[str]`, `CHECK_EXCEPTION_SKIP_KINDS: frozenset[str]`, `AUGASSIGN_OP_KIND: dict[str, str]` (keyed by `ast.operator.__name__`), `BINOP_OP_KIND: dict[str, str]`.
+- **One generator:** `tools/gen_op_kinds.py` (already renders `op_kinds_generated.py`) additionally emits, into that same file: `RAISING_KIND_NAMES: frozenset[str]`, `CHECK_EXCEPTION_SKIP_KINDS: frozenset[str]`, `FRONTEND_EFFECT_CLASS: dict[str, str]` plus effect-class sets, `AUGASSIGN_OP_KIND: dict[str, str]` (keyed by `ast.operator.__name__`), and `BINOP_OP_KIND: dict[str, str]`.
 - **One sync test:** `tests/test_gen_op_kinds.py` (already exists per doc 25 §5/§6) re-renders in memory and asserts byte-identity → drift becomes a test failure.
 - **Three deletions:** `__init__.py:1169-1229`, `:1258-1338`, `:13924-13959` are replaced by imports from `op_kinds_generated`. The `visit_BinOp` chain (`:10723-10736`) keeps its *type-hint* logic but reads the kind string from `BINOP_OP_KIND`.
 
-This is the **MLIR ODS principle** applied to the last three hand-kept frontend tables: the op definition is the single source; the verifier (backend `opcode_may_throw`), the builder (frontend kind selection), and now the frontend's *derived sets* are all generated from it. The wire vocabulary (`MAPPER_CANONICAL_KINDS`) is already generated; F2 closes the loop on the *effect* and *construction* vocabularies.
+This is the **MLIR ODS principle** applied to the last hand-kept frontend tables: the op definition is the single source; the verifier (backend `opcode_may_throw`), the builder (frontend kind selection), and now the frontend's optimizer *effect* and *construction* vocabularies are all generated from it. The wire vocabulary (`MAPPER_CANONICAL_KINDS`) is already generated; F2 closes the loop on the *effect* and *construction* vocabularies.
 
 ### 3.3 The visitor-dispatch surface (refused as a generation target)
 
@@ -171,11 +173,11 @@ The brief asks whether "the visitor dispatch surface" should be generated. **Ref
 
 The unit of work is the complete structural change (CLAUDE.md). F2 is a multi-week arc; the phases below are each a **complete structural piece** (not a partial fix toward the next), so intermediate commits are honest. Every phase carries a differential gate (`tests/differential/basic/` byte-identical on native + LLVM) and the registry sync test where it touches tables.
 
-### F2a — Registry absorption of the three hand-kept tables (THIS WEEK; collision-free)
+### F2a — Registry absorption of hand-kept frontend tables (THIS WEEK; collision-free)
 
-**Scope.** §3: add the `ast_binop`/`ast_augassign` columns to `op_kinds.toml`; extend `gen_op_kinds.py` to emit `RAISING_KIND_NAMES`/`CHECK_EXCEPTION_SKIP_KINDS`/`AUGASSIGN_OP_KIND`/`BINOP_OP_KIND` into `op_kinds_generated.py`; delete the three hand lists (`__init__.py:1169`, `:1258`, `:13924`) and the `visit_BinOp` kind-literals (`:10723`), replacing with imports.
+**Scope.** §3: add the `ast_binop`/`ast_augassign` columns and frontend effect rows to `op_kinds.toml`; extend `gen_op_kinds.py` to emit `RAISING_KIND_NAMES`/`CHECK_EXCEPTION_SKIP_KINDS`/`FRONTEND_EFFECT_CLASS`/`AUGASSIGN_OP_KIND`/`BINOP_OP_KIND` into `op_kinds_generated.py`; delete the hand lists (`__init__.py:1169`, `:1258`, `:13924`, and `midend_optimization.py::_op_effect_class`'s local sets) and the `visit_BinOp` kind-literals (`:10723`), replacing with imports.
 **Why it lands this week without colliding with in-flight arcs.** The in-flight frontend work is **`prepfix`** (metaclass `__prepare__`, live-uncommitted in `visitors/calls.py` per `git status`, and `visitors/classes.py`) and **`cfoldfix`** (const-fold paths). F2a touches *neither*: it edits `op_kinds.toml`, `gen_op_kinds.py`, `op_kinds_generated.py`, and three *disjoint* line ranges of `__init__.py` (the table definitions at 1169/1258/13924/10723 — none of which `prepfix` or `cfoldfix` touch, since those live in `classes.py`/`calls.py` and the SCCP/fold paths respectively). It is the M1 move "lift a hand table into the generator" — the exact, low-risk shape of `34e3bddbf`/`fe1454a03`.
-**LoC/risk.** ~120 LoC moved/generated, ~150 deleted. **Risk: LOW** (byte-identical generated output is mechanically verifiable; the sync test is the gate). **Deletes:** the three hand tables — the first concrete dead-code removal of F2.
+**LoC/risk.** Generated-table expansion plus local-table deletion. **Risk: LOW** (byte-identical generated output is mechanically verifiable; the sync test is the gate). **Deletes:** the hand frontend registry/effect tables — concrete dead-code removal of F2.
 **Gate.** `tests/test_gen_op_kinds.py` byte-identity + full differential corpus byte-identical (the generated sets must be supersets-equal to the hand sets; a diff *is* a latent drift the move surfaces).
 **Audit-tool implication.** `tools/audit_op_kinds.py` parses `serialization.py` for the wire vocabulary; F2a does not touch `serialization.py`, so the audit is unaffected. (It *gains* coverage: the raising/augassign tables move under the same generator the audit already cross-checks.)
 

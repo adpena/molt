@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import re
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -36,7 +37,11 @@ ROOT = _find_repo_root()
 NANBOX_LEAN = ROOT / "formal" / "lean" / "MoltTIR" / "Runtime" / "NanBox.lean"
 SYNTAX_LEAN = ROOT / "formal" / "lean" / "MoltTIR" / "Syntax.lean"
 OBJ_MODEL_RS = ROOT / "runtime" / "molt-obj-model" / "src" / "lib.rs"
-FRONTEND_PY = ROOT / "src" / "molt" / "frontend" / "__init__.py"
+SRC = ROOT / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
+
+from molt.frontend.lowering.op_kinds_generated import FRONTEND_EFFECT_CLASS  # noqa: E402
 
 
 # ── Parsing helpers ──────────────────────────────────────────────────
@@ -225,24 +230,14 @@ def lean_syntax_text() -> str:
 
 
 @pytest.fixture(scope="module")
-def python_frontend_text() -> str:
-    return _read(FRONTEND_PY)
-
-
-def _parse_python_op_kinds(text: str) -> set[str]:
-    """Extract all op kinds from Python frontend `"kind": "..."` patterns."""
-    kinds: set[str] = set()
-    for m in re.finditer(r'"kind":\s*"(\w+)"', text):
-        kinds.add(m.group(1))
-    return kinds
+def python_effect_ops() -> set[str]:
+    return set(FRONTEND_EFFECT_CLASS)
 
 
 def _lean_binop_python_name(name: str) -> str | None:
     normalized = name.rstrip("_")
     if normalized in {"and", "or"}:
         return normalized.upper()
-    if normalized in {"is_not", "in", "not_in"}:
-        return None
     return normalized.upper()
 
 
@@ -254,22 +249,16 @@ class TestBinOpAlignment:
         assert len(variants) > 0, "No BinOp variants found in Lean Syntax"
 
     def test_binop_variants_in_python(
-        self, lean_syntax_text: str, python_frontend_text: str
+        self, lean_syntax_text: str, python_effect_ops: set[str]
     ) -> None:
         lean_binops = _parse_lean_inductive_variants(lean_syntax_text, "BinOp")
-        python_ops = _parse_python_op_kinds(python_frontend_text)
-
-        # Also check effect class listings which use uppercase op names
-        python_effect_ops: set[str] = set()
-        for m in re.finditer(r'"([A-Z_]+)"', python_frontend_text):
-            python_effect_ops.add(m.group(1))
 
         missing = []
         for v in lean_binops:
             upper = _lean_binop_python_name(v)
             if upper is None:
                 continue
-            if v not in python_ops and upper not in python_effect_ops:
+            if upper not in python_effect_ops:
                 missing.append(v)
         assert not missing, f"Lean BinOp variants not found in Python: {missing}"
 
@@ -282,23 +271,17 @@ class TestUnOpAlignment:
         assert len(variants) > 0, "No UnOp variants found in Lean Syntax"
 
     def test_unop_variants_in_python(
-        self, lean_syntax_text: str, python_frontend_text: str
+        self, lean_syntax_text: str, python_effect_ops: set[str]
     ) -> None:
         lean_unops = _parse_lean_inductive_variants(lean_syntax_text, "UnOp")
-        python_ops = _parse_python_op_kinds(python_frontend_text)
 
-        python_effect_ops: set[str] = set()
-        for m in re.finditer(r'"([A-Z_]+)"', python_frontend_text):
-            python_effect_ops.add(m.group(1))
-
-        # NEG is modeled in Lean but Python inlines it (e.g. SUB from 0)
         # GUARD is a Lean-side type-narrowing primitive not yet surfaced in Python
-        acceptable_gaps = {"neg", "invert", "guard"}
+        acceptable_gaps = {"invert", "guard"}
         missing = []
         for v in lean_unops:
             if v in acceptable_gaps:
                 continue
-            if v not in python_ops and v.upper() not in python_effect_ops:
+            if v.upper() not in python_effect_ops:
                 missing.append(v)
         assert not missing, f"Lean UnOp variants not found in Python: {missing}"
 
