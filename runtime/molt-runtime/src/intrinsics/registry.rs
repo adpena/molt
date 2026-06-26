@@ -878,6 +878,17 @@ mod tests {
         assert!(resolve_symbol("molt_http_client_execute").is_none());
     }
 
+    #[cfg(not(feature = "stdlib_regex"))]
+    #[test]
+    fn regex_engine_intrinsics_do_not_resolve_when_stdlib_regex_is_disabled() {
+        assert!(resolve_symbol("molt_re_literal_advance").is_some());
+        assert!(resolve_symbol("molt_re_charclass_advance").is_some());
+
+        assert!(resolve_symbol("molt_re_compile").is_none());
+        assert!(resolve_symbol("molt_re_execute").is_none());
+        assert!(resolve_symbol("molt_re_match_group").is_none());
+    }
+
     /// Intrinsic names are the linker symbols the runtime resolves. Keeping this
     /// invariant global prevents a second name-remapping authority from creeping
     /// back into backend manifest generation.
