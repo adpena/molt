@@ -100,6 +100,10 @@ EXPECTED_MIXINS = [
     "CallVisitorMixin",
     "CallNamedDispatchMixin",
     "CallNamedBuiltinDispatchMixin",
+    "CallNamedBuiltinScalarDispatchMixin",
+    "CallNamedBuiltinIterDispatchMixin",
+    "CallNamedBuiltinConstructorDispatchMixin",
+    "CallNamedBuiltinFallbackDispatchMixin",
     "CallImportedAttributeDispatchMixin",
     "CallAttributeDispatchMixin",
     "CallRuntimeHelperMixin",
@@ -381,6 +385,10 @@ def test_mixin_modules_import_standalone() -> None:
         "molt.frontend.visitors.pattern_match",
         "molt.frontend.visitors.call_defaults",
         "molt.frontend.visitors.call_dispatch_attribute",
+        "molt.frontend.visitors.call_dispatch_builtin_constructors",
+        "molt.frontend.visitors.call_dispatch_builtin_fallback",
+        "molt.frontend.visitors.call_dispatch_builtin_iter",
+        "molt.frontend.visitors.call_dispatch_builtin_scalar",
         "molt.frontend.visitors.call_dispatch_common",
         "molt.frontend.visitors.call_dispatch_imported",
         "molt.frontend.visitors.call_dispatch_named",
@@ -406,13 +414,13 @@ def test_reducer_call_lowering_stays_out_of_call_dispatcher() -> None:
     calls_src = (
         ROOT / "src" / "molt" / "frontend" / "visitors" / "calls.py"
     ).read_text(encoding="utf-8")
-    named_builtins_src = (
+    named_builtin_iter_src = (
         ROOT
         / "src"
         / "molt"
         / "frontend"
         / "visitors"
-        / "call_dispatch_named_builtins.py"
+        / "call_dispatch_builtin_iter.py"
     ).read_text(encoding="utf-8")
     reductions_src = (
         ROOT / "src" / "molt" / "frontend" / "visitors" / "call_reductions.py"
@@ -425,10 +433,13 @@ def test_reducer_call_lowering_stays_out_of_call_dispatcher() -> None:
     assert "def _emit_sum_call" not in calls_src
     assert "def _emit_any_all_call" not in calls_src
     assert "def _try_emit_inline_sum_genexpr" not in calls_src
-    assert "return self._emit_sum_call(func_id, node, needs_bind)" in named_builtins_src
+    assert (
+        "return self._emit_sum_call(func_id, node, needs_bind)"
+        in named_builtin_iter_src
+    )
     assert (
         "return self._emit_any_all_call(func_id, node, needs_bind)"
-        in named_builtins_src
+        in named_builtin_iter_src
     )
 
 
