@@ -1,5 +1,7 @@
 use crate::PyToken;
 use crate::audit::{AuditArgs, audit_capability_decision};
+#[cfg(target_arch = "wasm32")]
+use crate::libc_compat as libc;
 use molt_obj_model::MoltObject;
 use std::path::PathBuf;
 use std::sync::OnceLock;
