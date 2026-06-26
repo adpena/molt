@@ -632,6 +632,7 @@ pub(crate) fn py_numeric_hash(numerator: &BigInt, denominator: &BigInt) -> i64 {
 /// modular hash into an allocation bomb. CPython hashes Decimals by modular
 /// exponentiation, so this path reduces the signed coefficient once and scales
 /// by `10**exp10 mod _PyHASH_MODULUS`.
+#[cfg(any(feature = "stdlib_serial", test))]
 pub(crate) fn py_decimal_hash(coefficient: &BigInt, exp10: i64) -> i64 {
     let coeff_mod = bigint_abs_mod_modulus(coefficient);
     let scale_mod = pow_mod_mersenne(10, exp10.unsigned_abs());

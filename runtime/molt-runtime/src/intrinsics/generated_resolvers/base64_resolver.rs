@@ -3,74 +3,92 @@
 #[cold]
 pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
     match symbol {
+        #[cfg(feature = "stdlib_serial")]
         "molt_base64_b64encode" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_base64_b64encode",
             crate::molt_base64_b64encode as *const (),
         )),
+        #[cfg(feature = "stdlib_serial")]
         "molt_base64_b64decode" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_base64_b64decode",
             crate::molt_base64_b64decode as *const (),
         )),
+        #[cfg(feature = "stdlib_serial")]
         "molt_base64_standard_b64encode" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_base64_standard_b64encode",
             crate::molt_base64_standard_b64encode as *const (),
         )),
+        #[cfg(feature = "stdlib_serial")]
         "molt_base64_standard_b64decode" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_base64_standard_b64decode",
             crate::molt_base64_standard_b64decode as *const (),
         )),
+        #[cfg(feature = "stdlib_serial")]
         "molt_base64_urlsafe_b64encode" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_base64_urlsafe_b64encode",
             crate::molt_base64_urlsafe_b64encode as *const (),
         )),
+        #[cfg(feature = "stdlib_serial")]
         "molt_base64_urlsafe_b64decode" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_base64_urlsafe_b64decode",
             crate::molt_base64_urlsafe_b64decode as *const (),
         )),
+        #[cfg(feature = "stdlib_serial")]
         "molt_base64_b32encode" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_base64_b32encode",
             crate::molt_base64_b32encode as *const (),
         )),
+        #[cfg(feature = "stdlib_serial")]
         "molt_base64_b32decode" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_base64_b32decode",
             crate::molt_base64_b32decode as *const (),
         )),
+        #[cfg(feature = "stdlib_serial")]
         "molt_base64_b32hexencode" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_base64_b32hexencode",
             crate::molt_base64_b32hexencode as *const (),
         )),
+        #[cfg(feature = "stdlib_serial")]
         "molt_base64_b32hexdecode" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_base64_b32hexdecode",
             crate::molt_base64_b32hexdecode as *const (),
         )),
+        #[cfg(feature = "stdlib_serial")]
         "molt_base64_b16encode" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_base64_b16encode",
             crate::molt_base64_b16encode as *const (),
         )),
+        #[cfg(feature = "stdlib_serial")]
         "molt_base64_b16decode" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_base64_b16decode",
             crate::molt_base64_b16decode as *const (),
         )),
+        #[cfg(feature = "stdlib_serial")]
         "molt_base64_a85encode" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_base64_a85encode",
             crate::molt_base64_a85encode as *const (),
         )),
+        #[cfg(feature = "stdlib_serial")]
         "molt_base64_a85decode" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_base64_a85decode",
             crate::molt_base64_a85decode as *const (),
         )),
+        #[cfg(feature = "stdlib_serial")]
         "molt_base64_b85encode" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_base64_b85encode",
             crate::molt_base64_b85encode as *const (),
         )),
+        #[cfg(feature = "stdlib_serial")]
         "molt_base64_b85decode" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_base64_b85decode",
             crate::molt_base64_b85decode as *const (),
         )),
+        #[cfg(feature = "stdlib_serial")]
         "molt_base64_encodebytes" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_base64_encodebytes",
             crate::molt_base64_encodebytes as *const (),
         )),
+        #[cfg(feature = "stdlib_serial")]
         "molt_base64_decodebytes" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_base64_decodebytes",
             crate::molt_base64_decodebytes as *const (),

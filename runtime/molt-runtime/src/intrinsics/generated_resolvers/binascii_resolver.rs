@@ -3,42 +3,52 @@
 #[cold]
 pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
     match symbol {
+        #[cfg(feature = "stdlib_serial")]
         "molt_binascii_a2b_base64" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_binascii_a2b_base64",
             crate::molt_binascii_a2b_base64 as *const (),
         )),
+        #[cfg(feature = "stdlib_serial")]
         "molt_binascii_b2a_base64" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_binascii_b2a_base64",
             crate::molt_binascii_b2a_base64 as *const (),
         )),
+        #[cfg(feature = "stdlib_serial")]
         "molt_binascii_a2b_hex" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_binascii_a2b_hex",
             crate::molt_binascii_a2b_hex as *const (),
         )),
+        #[cfg(feature = "stdlib_serial")]
         "molt_binascii_b2a_hex" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_binascii_b2a_hex",
             crate::molt_binascii_b2a_hex as *const (),
         )),
+        #[cfg(feature = "stdlib_serial")]
         "molt_binascii_a2b_qp" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_binascii_a2b_qp",
             crate::molt_binascii_a2b_qp as *const (),
         )),
+        #[cfg(feature = "stdlib_serial")]
         "molt_binascii_b2a_qp" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_binascii_b2a_qp",
             crate::molt_binascii_b2a_qp as *const (),
         )),
+        #[cfg(feature = "stdlib_serial")]
         "molt_binascii_a2b_uu" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_binascii_a2b_uu",
             crate::molt_binascii_a2b_uu as *const (),
         )),
+        #[cfg(feature = "stdlib_serial")]
         "molt_binascii_b2a_uu" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_binascii_b2a_uu",
             crate::molt_binascii_b2a_uu as *const (),
         )),
+        #[cfg(feature = "stdlib_serial")]
         "molt_binascii_crc32" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_binascii_crc32",
             crate::molt_binascii_crc32 as *const (),
         )),
+        #[cfg(feature = "stdlib_serial")]
         "molt_binascii_crc_hqx" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_binascii_crc_hqx",
             crate::molt_binascii_crc_hqx as *const (),

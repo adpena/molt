@@ -9,10 +9,7 @@ const OPCODE_METADATA_PAYLOAD_314_JSON: &str =
     include_str!("../intrinsics/data/opcode_metadata_payload_314.json");
 const TOKEN_PAYLOAD_312_JSON: &str = include_str!("../intrinsics/data/token_payload_312.json");
 
-#[cfg(not(feature = "stdlib_serial"))]
-use super::functions_email::email_quopri_alloc_str;
-#[cfg(feature = "stdlib_serial")]
-fn email_quopri_alloc_str(_py: &crate::PyToken<'_>, value: &str) -> u64 {
+fn alloc_runtime_payload_str(_py: &crate::PyToken<'_>, value: &str) -> u64 {
     let ptr = crate::alloc_string(_py, value.as_bytes());
     if ptr.is_null() {
         MoltObject::none().bits()
@@ -2145,13 +2142,15 @@ fn token_payload_json_value_to_bits(
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_opcode_payload_312_json() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        email_quopri_alloc_str(_py, OPCODE_PAYLOAD_312_JSON)
+        alloc_runtime_payload_str(_py, OPCODE_PAYLOAD_312_JSON)
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_token_payload_312_json() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { email_quopri_alloc_str(_py, TOKEN_PAYLOAD_312_JSON) })
+    crate::with_gil_entry_nopanic!(_py, {
+        alloc_runtime_payload_str(_py, TOKEN_PAYLOAD_312_JSON)
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -2174,7 +2173,7 @@ pub extern "C" fn molt_token_payload_312() -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_opcode_metadata_payload_314_json() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        email_quopri_alloc_str(_py, OPCODE_METADATA_PAYLOAD_314_JSON)
+        alloc_runtime_payload_str(_py, OPCODE_METADATA_PAYLOAD_314_JSON)
     })
 }
 

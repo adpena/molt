@@ -12,8 +12,8 @@ Product board for the molt structural sweep — the first instrument of the Molt
 | hand_classified_matches | 0 |
 | critical_hand_classifications | 0 |
 | handset_classifications | 0 |
-| debt_markers_total | 517 |
-| god_files | 17 |
+| debt_markers_total | 513 |
+| god_files | 16 |
 | max_god_file_lines | 7188 |
 | structural_god_files | 2 |
 | max_god_file_structural_score | 1383 |
@@ -27,8 +27,7 @@ Product board for the molt structural sweep — the first instrument of the Molt
 | sev | risk class | where | what |
 | --- | --- | --- | --- |
 | medium | god_file | `src/molt/stdlib/asyncio/__init__.py` | 7188 lines (ceiling 2500) |
-| medium | god_file | `runtime/molt-runtime/src/builtins/types.rs` | 6512 lines (ceiling 4000) |
-| medium | god_file | `runtime/molt-runtime/src/builtins/functions.rs` | 6249 lines (ceiling 4000) |
+| medium | god_file | `runtime/molt-runtime/src/builtins/functions.rs` | 6248 lines (ceiling 4000) |
 | medium | god_file | `runtime/molt-runtime/src/builtins/exceptions.rs` | 6181 lines (ceiling 4000) |
 | medium | god_file | `runtime/molt-runtime/src/builtins/modules.rs` | 6019 lines (ceiling 4000) |
 | medium | debt_marker | `tools/linear_seed_backlog.py` | 21 debt/workaround markers |
@@ -41,6 +40,7 @@ Product board for the molt structural sweep — the first instrument of the Molt
 | low | god_file | `runtime/molt-runtime/src/object/ops_encoding.rs` | 5542 lines (ceiling 4000) |
 | low | god_file | `runtime/molt-wasm-host/src/main.rs` | 5133 lines (ceiling 4000) |
 | low | god_file | `runtime/molt-runtime/src/object/ops_string.rs` | 5026 lines (ceiling 4000) |
+| low | god_file | `runtime/molt-backend/src/rust.rs` | 4895 lines (ceiling 4000) |
 
 ## TOP DELETION CANDIDATES (0) — replace, don't just delete
 
@@ -57,13 +57,12 @@ Product board for the molt structural sweep — the first instrument of the Molt
 
 ## Full findings by probe
 
-### god_file (17)
+### god_file (16)
 
 | sev | what | where | action |
 | --- | --- | --- | --- |
 | medium | 7188 lines (ceiling 2500) | `src/molt/stdlib/asyncio/__init__.py` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
-| medium | 6512 lines (ceiling 4000) | `runtime/molt-runtime/src/builtins/types.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
-| medium | 6249 lines (ceiling 4000) | `runtime/molt-runtime/src/builtins/functions.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
+| medium | 6248 lines (ceiling 4000) | `runtime/molt-runtime/src/builtins/functions.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | medium | 6181 lines (ceiling 4000) | `runtime/molt-runtime/src/builtins/exceptions.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | medium | 6019 lines (ceiling 4000) | `runtime/molt-runtime/src/builtins/modules.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | low | 5982 lines (ceiling 4000) | `runtime/molt-worker/src/main.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
@@ -79,7 +78,7 @@ Product board for the molt structural sweep — the first instrument of the Molt
 | low | 4002 lines (ceiling 4000) | `runtime/molt-backend/src/native_backend/function_compiler/fc/arith.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | low | 3594 lines (ceiling 2500) | `tools/memory_guard.py` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 
-### debt_marker (397)
+### debt_marker (395)
 
 | sev | what | where | action |
 | --- | --- | --- | --- |
@@ -96,7 +95,7 @@ Product board for the molt structural sweep — the first instrument of the Molt
 | low | 4 debt/workaround markers | `runtime/molt-backend-mlir/src/tir_to_mlir.rs` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 4 debt/workaround markers | `src/molt/stdlib/xml/etree/ElementPath.py` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 4 debt/workaround markers | `src/molt/stdlib/xml/etree/ElementTree.py` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
-| low | 3 debt/workaround markers | `runtime/molt-runtime/src/builtins/types.rs` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
+| low | 3 debt/workaround markers | `runtime/molt-runtime/src/builtins/types/class_construction.rs` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 2 debt/workaround markers | `runtime/molt-tir/src/passes/method_fusion.rs` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 2 debt/workaround markers | `runtime/molt-tir/src/tir/passes/ownership_lattice_min.rs` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 2 debt/workaround markers | `runtime/molt-tir/src/tir/passes/refcount_elim.rs` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
@@ -105,8 +104,6 @@ Product board for the molt structural sweep — the first instrument of the Molt
 | low | 2 debt/workaround markers | `runtime/molt-runtime-serial/src/csv.rs` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 2 debt/workaround markers | `runtime/molt-runtime-regex/src/regex/matcher.rs` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 2 debt/workaround markers | `runtime/molt-runtime-logging/src/logging_ext.rs` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
-| low | 2 debt/workaround markers | `runtime/molt-runtime/src/builtins/binascii.rs` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
-| low | 2 debt/workaround markers | `runtime/molt-runtime/src/builtins/csv.rs` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 2 debt/workaround markers | `runtime/molt-runtime/src/builtins/functions_stat.rs` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 2 debt/workaround markers | `runtime/molt-runtime/src/builtins/io_path_utils.rs` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 2 debt/workaround markers | `runtime/molt-runtime/src/object/builders.rs` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
@@ -123,7 +120,9 @@ Product board for the molt structural sweep — the first instrument of the Molt
 | low | 1 debt/workaround markers | `runtime/molt-tir/src/tir/bolt.rs` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 1 debt/workaround markers | `runtime/molt-tir/src/tir/call_facts.rs` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 1 debt/workaround markers | `runtime/molt-tir/src/tir/deopt.rs` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
-| … | _357 more_ | | run `--json` for full list |
+| low | 1 debt/workaround markers | `runtime/molt-tir/src/tir/drop_phase.rs` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
+| low | 1 debt/workaround markers | `runtime/molt-tir/src/tir/pass_manager.rs` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
+| … | _355 more_ | | run `--json` for full list |
 
 ### structural_god_file (2)
 

@@ -99,11 +99,14 @@ def test_ast_feature_is_link_affecting() -> None:
     assert "stdlib_ast" in LINK_AFFECTING_FEATURES
 
 
+def test_serial_feature_is_link_affecting() -> None:
+    assert "stdlib_serial" in LINK_AFFECTING_FEATURES
+
+
 def test_empty_cargo_group_features_are_not_link_affecting() -> None:
     # Empty `[]` Cargo groups gate only resolver arms; their symbols are always
     # defined, so they must stay out of the link-affecting set.
     for feature in (
-        "stdlib_email",
         "stdlib_logging",
         "stdlib_concurrent",
         "stdlib_dbm",
