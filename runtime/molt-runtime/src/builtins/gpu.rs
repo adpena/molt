@@ -1,5 +1,6 @@
 #![allow(clippy::needless_range_loop, clippy::too_many_arguments)]
 
+use super::gpu_backend::{GpuBackend, requested_gpu_backend};
 use crate::{
     MoltObject, PyToken, TYPE_ID_BYTEARRAY, TYPE_ID_BYTES, TYPE_ID_LIST, TYPE_ID_TUPLE,
     TYPE_ID_TYPE, alloc_bytearray, alloc_bytes, alloc_tuple, attr_name_bits_from_bytes, bytes_data,
@@ -118,12 +119,6 @@ fn trace_gpu_thread_id_enabled() -> bool {
 fn trace_gpu_backend_enabled() -> bool {
     static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ENABLED.get_or_init(|| std::env::var("MOLT_TRACE_GPU_BACKEND").as_deref() == Ok("1"))
-}
-
-fn requested_gpu_backend() -> Option<String> {
-    let raw = std::env::var("MOLT_GPU_BACKEND").ok()?;
-    let name = raw.trim().to_ascii_lowercase();
-    if name.is_empty() { None } else { Some(name) }
 }
 
 fn decode_f16_to_f32_bits(bits: u16) -> u32 {
@@ -1751,7 +1746,7 @@ fn try_dispatch_metal_kernel(
     threads: i64,
     builder_bits: u64,
 ) -> Result<Option<u64>, u64> {
-    if requested_gpu_backend().as_deref() != Some("metal") {
+    if requested_gpu_backend() != Some(GpuBackend::Metal) {
         return Ok(None);
     }
     if trace_gpu_backend_enabled() {
@@ -1870,7 +1865,7 @@ fn try_dispatch_metal_kernel(
     _threads: i64,
     _builder_bits: u64,
 ) -> Result<Option<u64>, u64> {
-    if requested_gpu_backend().as_deref() == Some("metal") {
+    if requested_gpu_backend() == Some(GpuBackend::Metal) {
         return Err(raise_exception::<_>(
             _py,
             "RuntimeError",
@@ -1888,7 +1883,7 @@ fn try_dispatch_webgpu_kernel(
     threads: i64,
     builder_bits: u64,
 ) -> Result<Option<u64>, u64> {
-    if requested_gpu_backend().as_deref() != Some("webgpu") {
+    if requested_gpu_backend() != Some(GpuBackend::WebGpu) {
         return Ok(None);
     }
     if trace_gpu_backend_enabled() {
@@ -2007,7 +2002,7 @@ fn try_dispatch_webgpu_kernel(
     threads: i64,
     builder_bits: u64,
 ) -> Result<Option<u64>, u64> {
-    if requested_gpu_backend().as_deref() != Some("webgpu") {
+    if requested_gpu_backend() != Some(GpuBackend::WebGpu) {
         return Ok(None);
     }
     if trace_gpu_backend_enabled() {
@@ -2144,7 +2139,7 @@ fn try_dispatch_webgpu_kernel(
     _threads: i64,
     _builder_bits: u64,
 ) -> Result<Option<u64>, u64> {
-    if requested_gpu_backend().as_deref() == Some("webgpu") {
+    if requested_gpu_backend() == Some(GpuBackend::WebGpu) {
         return Err(raise_exception::<u64>(
             _py,
             "RuntimeError",
@@ -6595,7 +6590,7 @@ pub extern "C" fn molt_gpu_tensor__tensor_scaled_dot_product_attention(
         }
 
         #[cfg(target_arch = "wasm32")]
-        if requested_gpu_backend().as_deref() == Some("webgpu") {
+        if requested_gpu_backend() == Some(GpuBackend::WebGpu) {
             let browser_result: Result<u64, u64> = (|| {
                 let q_bytes =
                     bytes_like_view_to_webgpu_bytes(q.buffer.data_view, ScalarFormat::F32)
@@ -6917,7 +6912,7 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
         }
 
         #[cfg(not(feature = "molt_gpu_cuda"))]
-        if requested_gpu_backend().as_deref() == Some("cuda") {
+        if requested_gpu_backend() == Some(GpuBackend::Cuda) {
             return raise_exception::<_>(
                 _py,
                 "RuntimeError",
@@ -6925,7 +6920,7 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
             );
         }
         #[cfg(feature = "molt_gpu_cuda")]
-        if requested_gpu_backend().as_deref() == Some("cuda") {
+        if requested_gpu_backend() == Some(GpuBackend::Cuda) {
             return raise_exception::<_>(
                 _py,
                 "RuntimeError",
@@ -6933,7 +6928,7 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
             );
         }
         #[cfg(not(feature = "molt_gpu_hip"))]
-        if requested_gpu_backend().as_deref() == Some("hip") {
+        if requested_gpu_backend() == Some(GpuBackend::Hip) {
             return raise_exception::<_>(
                 _py,
                 "RuntimeError",
@@ -6941,7 +6936,7 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
             );
         }
         #[cfg(feature = "molt_gpu_hip")]
-        if requested_gpu_backend().as_deref() == Some("hip") {
+        if requested_gpu_backend() == Some(GpuBackend::Hip) {
             return raise_exception::<_>(
                 _py,
                 "RuntimeError",
@@ -7270,7 +7265,7 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
             && runtime_value_bits != missing
         {
             #[cfg(all(not(target_arch = "wasm32"), feature = "molt_gpu_webgpu"))]
-            if requested_gpu_backend().as_deref() == Some("webgpu")
+            if requested_gpu_backend() == Some(GpuBackend::WebGpu)
                 && runtime_mse_signs_bits != missing
                 && runtime_qjl_signs_bits != missing
             {
@@ -7597,7 +7592,7 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
             }
 
             #[cfg(all(target_os = "macos", feature = "molt_gpu_metal"))]
-            if requested_gpu_backend().as_deref() == Some("metal")
+            if requested_gpu_backend() == Some(GpuBackend::Metal)
                 && runtime_mse_signs_bits != missing
                 && runtime_qjl_signs_bits != missing
             {
@@ -7902,7 +7897,7 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
             }
 
             #[cfg(target_arch = "wasm32")]
-            if requested_gpu_backend().as_deref() == Some("webgpu")
+            if requested_gpu_backend() == Some(GpuBackend::WebGpu)
                 && runtime_mse_signs_bits != missing
                 && runtime_qjl_signs_bits != missing
             {
@@ -9172,7 +9167,7 @@ pub extern "C" fn molt_gpu_linear_contiguous(
         }
 
         #[cfg(target_arch = "wasm32")]
-        if requested_gpu_backend().as_deref() == Some("webgpu") {
+        if requested_gpu_backend() == Some(GpuBackend::WebGpu) {
             let browser_result: Result<u64, u64> = (|| {
                 let element_ty = webgpu_linear_element_type(x_format, weight_format, out_format)
                     .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
@@ -9358,7 +9353,7 @@ pub extern "C" fn molt_gpu_linear_split_last_dim_contiguous(
         }
 
         #[cfg(target_arch = "wasm32")]
-        if requested_gpu_backend().as_deref() == Some("webgpu") {
+        if requested_gpu_backend() == Some(GpuBackend::WebGpu) {
             let browser_result: Result<u64, u64> = (|| {
                 let element_ty = webgpu_linear_element_type(x_format, weight_format, out_format)
                     .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
@@ -9598,7 +9593,7 @@ pub extern "C" fn molt_gpu_linear_squared_relu_gate_interleaved_contiguous(
         };
 
         #[cfg(target_arch = "wasm32")]
-        if requested_gpu_backend().as_deref() == Some("webgpu") {
+        if requested_gpu_backend() == Some(GpuBackend::WebGpu) {
             let browser_result: Result<u64, u64> = (|| {
                 if x_format == ScalarFormat::I64
                     || weight_format == ScalarFormat::I64
