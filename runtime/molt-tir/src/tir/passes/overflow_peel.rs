@@ -77,6 +77,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::tir::blocks::{BlockId, Terminator, TirBlock};
 use crate::tir::function::TirFunction;
+use crate::tir::op_kinds_generated::opcode_is_state_machine_table;
 use crate::tir::ops::{AttrDict, Dialect, OpCode, TirOp};
 use crate::tir::types::TirType;
 use crate::tir::values::{TirValue, ValueId};
@@ -149,19 +150,9 @@ pub fn run(func: &mut TirFunction, _am: &mut crate::tir::analysis::AnalysisManag
     let function_refusal = if func.has_exception_handlers() {
         Some(Refusal::HasExceptionHandlers)
     } else if func.blocks.values().any(|b| {
-        b.ops.iter().any(|op| {
-            matches!(
-                op.opcode,
-                OpCode::StateSwitch
-                    | OpCode::StateTransition
-                    | OpCode::StateYield
-                    | OpCode::Yield
-                    | OpCode::YieldFrom
-                    | OpCode::ChanSendYield
-                    | OpCode::ChanRecvYield
-                    | OpCode::AllocTask
-            )
-        })
+        b.ops
+            .iter()
+            .any(|op| opcode_is_state_machine_table(op.opcode))
     }) {
         Some(Refusal::Stateful)
     } else {

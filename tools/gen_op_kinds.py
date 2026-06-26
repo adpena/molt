@@ -284,6 +284,26 @@ _MODULE_SLOT_ACCESS_ROLES = {
     "keyed_attr": "KeyedAttr",
     "wildcard_module_dict": "WildcardModuleDict",
 }
+_TIR_VERIFY_ATTR_RULES = {
+    "call_callee": "CallCallee",
+    "call_method": "CallMethod",
+    "positive_payload_bytes": "PositivePayloadBytes",
+}
+_SROA_CONST_IMMEDIATE_RULES = {
+    "always_immediate": "AlwaysImmediate",
+    "inline_int_if_range": "InlineIntIfRange",
+}
+_STRENGTH_REDUCTION_RULES = {
+    "mul_by_two": "MulByTwo",
+    "pow_square": "PowSquare",
+    "power_two_floor_div": "PowerTwoFloorDiv",
+    "power_two_mod": "PowerTwoMod",
+}
+_SCEV_EXPR_RULES = {
+    "add": "Add",
+    "sub": "Sub",
+    "mul": "Mul",
+}
 _CALL_OPCODE_ROLES = {
     "not_call": "NotCall",
     "user_call": "UserCall",
@@ -688,6 +708,34 @@ def load_table() -> dict:
     _validate_counted_loop_comparison_roles(data, seen_opcodes)
     _validate_module_concurrency_marker_source_roles(data, seen_opcodes)
     _validate_module_slot_access_roles(data, seen_opcodes)
+    _validate_opcode_rule_rows(
+        data,
+        "tir_verify_attr_rules",
+        seen_opcodes,
+        _TIR_VERIFY_ATTR_RULES,
+        "TIR verifier attr rule",
+    )
+    _validate_opcode_rule_rows(
+        data,
+        "sroa_const_immediate_rules",
+        seen_opcodes,
+        _SROA_CONST_IMMEDIATE_RULES,
+        "SROA const-immediate rule",
+    )
+    _validate_opcode_rule_rows(
+        data,
+        "strength_reduction_rules",
+        seen_opcodes,
+        _STRENGTH_REDUCTION_RULES,
+        "strength-reduction rule",
+    )
+    _validate_opcode_rule_rows(
+        data,
+        "scev_expr_rules",
+        seen_opcodes,
+        _SCEV_EXPR_RULES,
+        "SCEV expression rule",
+    )
     _validate_exception_region_nesting_roles(data, seen_opcodes)
     _validate_call_opcode_roles(data, seen_opcodes)
     _validate_pass_delta_opcode_facts(data)
@@ -2759,6 +2807,8 @@ def _render_rs_unformatted(data: dict) -> str:
 
     out.append(_render_module_slot_promotion_roles(opcodes, data))
     out.append("\n")
+    out.append(_render_residual_tir_semantic_roles(opcodes, data))
+    out.append("\n")
 
     exception_handling_opcodes = list(data.get("exception_handling_opcodes", []))
     out.append(
@@ -4202,6 +4252,112 @@ def _render_module_slot_promotion_roles(opcodes: list[dict], data: dict) -> str:
         lines.append(f"        OpCode::{name} => {variant},\n")
     lines.append("    }\n}\n")
     return "".join(lines)
+
+
+def _render_simple_opcode_rule_table(
+    opcodes: list[dict],
+    data: dict,
+    *,
+    table_key: str,
+    enum_name: str,
+    fn_name: str,
+    variants: dict[str, str],
+    docs: list[str],
+) -> str:
+    rule_by_opcode = {row["opcode"]: row["rule"] for row in data.get(table_key, [])}
+    lines: list[str] = []
+    for doc in docs:
+        lines.append(f"/// {doc}\n")
+    lines.extend(
+        [
+            "#[derive(Clone, Copy, Debug, PartialEq, Eq)]\n",
+            f"pub enum {enum_name} {{\n",
+            "    None,\n",
+        ]
+    )
+    for variant in sorted(variants.values()):
+        lines.append(f"    {variant},\n")
+    lines.extend(
+        [
+            "}\n\n",
+            f"/// {enum_name} by opcode. EXHAUSTIVE over OpCode so a new opcode\n",
+            "/// cannot silently enter or miss this consumer through pass-local\n",
+            "/// wildcard/default logic.\n",
+            "#[inline]\n",
+            f"pub fn {fn_name}(opcode: OpCode) -> {enum_name} {{\n",
+            "    match opcode {\n",
+        ]
+    )
+    for row in opcodes:
+        name = row["name"]
+        rule = rule_by_opcode.get(name)
+        variant = (
+            f"{enum_name}::{variants[rule]}" if rule is not None else f"{enum_name}::None"
+        )
+        lines.append(f"        OpCode::{name} => {variant},\n")
+    lines.append("    }\n}\n")
+    return "".join(lines)
+
+
+def _render_residual_tir_semantic_roles(opcodes: list[dict], data: dict) -> str:
+    parts = [
+        _render_simple_opcode_rule_table(
+            opcodes,
+            data,
+            table_key="tir_verify_attr_rules",
+            enum_name="TirVerifyAttrRule",
+            fn_name="opcode_tir_verify_attr_rule_table",
+            variants=_TIR_VERIFY_ATTR_RULES,
+            docs=[
+                "Required op-level attr/operand validation role for verify.rs.",
+                "Opcode membership lives in op_kinds.toml; verify.rs owns",
+                "diagnostic text and payload value checks.",
+            ],
+        ),
+        "\n",
+        _render_simple_opcode_rule_table(
+            opcodes,
+            data,
+            table_key="sroa_const_immediate_rules",
+            enum_name="SroaConstImmediateRule",
+            fn_name="opcode_sroa_const_immediate_rule_table",
+            variants=_SROA_CONST_IMMEDIATE_RULES,
+            docs=[
+                "SROA constant-immediate recognition role. Opcode membership",
+                "lives in op_kinds.toml; sroa.rs owns range proof for",
+                "inline integer immediates.",
+            ],
+        ),
+        "\n",
+        _render_simple_opcode_rule_table(
+            opcodes,
+            data,
+            table_key="strength_reduction_rules",
+            enum_name="StrengthReductionRule",
+            fn_name="opcode_strength_reduction_rule_table",
+            variants=_STRENGTH_REDUCTION_RULES,
+            docs=[
+                "Strength-reduction rewrite role. Opcode membership lives in",
+                "op_kinds.toml; strength_reduction.rs owns constant/type proof",
+                "and replacement construction.",
+            ],
+        ),
+        "\n",
+        _render_simple_opcode_rule_table(
+            opcodes,
+            data,
+            table_key="scev_expr_rules",
+            enum_name="ScevExprRule",
+            fn_name="opcode_scev_expr_rule_table",
+            variants=_SCEV_EXPR_RULES,
+            docs=[
+                "SCEV affine-expression construction role. Opcode membership",
+                "lives in op_kinds.toml; scev.rs owns arity checks and lattice",
+                "folding.",
+            ],
+        ),
+    ]
+    return "".join(parts)
 
 
 def _render_pass_delta_opcode_facts(opcodes: list[dict], data: dict) -> str:
