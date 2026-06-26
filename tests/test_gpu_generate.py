@@ -61,13 +61,26 @@ def _dflash_adapter_spec(
     create_runtime,
     priority: int = 0,
 ):
-    from molt.gpu.dflash import DFlashAdapterSpec
+    from molt.gpu.dflash import DFlashAdapterMetadata, DFlashAdapterSpec
 
     return DFlashAdapterSpec(
         name=name,
         target_model_id=f"test://target/{name}",
         draft_model_id=f"test://draft/{name}",
         provenance="test-only synthetic DFlash adapter fixture",
+        metadata=DFlashAdapterMetadata(
+            algorithm_family="base_dflash",
+            adapter_version=f"test://adapter-version/{name}",
+            tokenizer_id=f"test://tokenizer/{name}",
+            mask_token_id=0,
+            target_layer_ids=[0, 2],
+            target_feature_schema="test:hidden_states[batch,seq,hidden]",
+            kv_schema="test:kv[layer,batch,heads,seq,dim]",
+            target_conditioning_path="kv_injection_each_draft_layer",
+            max_block_size=4,
+            uses_non_causal_draft_attention=True,
+            injects_target_context_each_layer=True,
+        ),
         supports=supports,
         create_runtime=create_runtime,
         priority=priority,
@@ -75,7 +88,7 @@ def _dflash_adapter_spec(
 
 
 def test_speculative_decode_greedy_accepts_full_block_and_commits_extra_token():
-    from molt.gpu.generate import speculative_decode_greedy
+    from molt.gpu.speculative import speculative_decode_greedy
 
     def draft_block(prefix_tokens, block_size):
         assert prefix_tokens == [0]
@@ -105,7 +118,7 @@ def test_speculative_decode_greedy_accepts_full_block_and_commits_extra_token():
 
 
 def test_speculative_decode_greedy_commits_target_token_on_first_mismatch():
-    from molt.gpu.generate import speculative_decode_greedy
+    from molt.gpu.speculative import speculative_decode_greedy
 
     def draft_block(prefix_tokens, block_size):
         if prefix_tokens == [0]:
@@ -143,7 +156,7 @@ def test_speculative_decode_greedy_commits_target_token_on_first_mismatch():
 
 
 def test_speculative_decode_greedy_stops_when_target_emits_eos():
-    from molt.gpu.generate import speculative_decode_greedy
+    from molt.gpu.speculative import speculative_decode_greedy
 
     def draft_block(prefix_tokens, block_size):
         assert prefix_tokens == [0]
@@ -177,7 +190,8 @@ def test_greedy_decode_routes_through_speculative_engine_when_callbacks_present(
     monkeypatch,
 ):
     import molt.gpu.generate as generate_mod
-    from molt.gpu.generate import SpeculativeDecodeResult, greedy_decode
+    from molt.gpu.generate import greedy_decode
+    from molt.gpu.speculative import SpeculativeDecodeResult
 
     seen = {}
 
@@ -207,7 +221,9 @@ def test_greedy_decode_routes_through_speculative_engine_when_callbacks_present(
     def verify_block(prefix_tokens, drafted_tokens):
         return [7, 8]
 
-    monkeypatch.setattr(generate_mod, "speculative_decode_greedy", fake_speculative)
+    monkeypatch.setattr(
+        generate_mod._speculative, "speculative_decode_greedy", fake_speculative
+    )
 
     out = greedy_decode(
         UnusedModel(),
@@ -231,7 +247,7 @@ def test_greedy_decode_routes_through_speculative_engine_when_callbacks_present(
 
 
 def test_speculative_decode_greedy_rejects_invalid_callback_contracts():
-    from molt.gpu.generate import speculative_decode_greedy
+    from molt.gpu.speculative import speculative_decode_greedy
 
     def draft_empty(_prefix_tokens, _block_size):
         return []
@@ -281,7 +297,7 @@ def test_speculative_decode_greedy_compiles_in_native_molt(tmp_path: Path) -> No
     root = Path(__file__).resolve().parents[1]
     probe = tmp_path / "gpu_speculative_decode_native.py"
     probe.write_text(
-        "from molt.gpu.generate import speculative_decode_greedy\n"
+        "from molt.gpu.speculative import speculative_decode_greedy\n"
         "\n"
         "def draft_block(prefix_tokens, block_size):\n"
         "    if prefix_tokens == [0]:\n"
@@ -333,14 +349,14 @@ def test_speculative_decode_greedy_compiles_in_native_molt(tmp_path: Path) -> No
 
 
 def test_conditioned_speculative_decode_propagates_target_conditioning():
-    from molt.gpu.dflash import (
+    from molt.gpu.speculative import (
         SpeculativeConditioning,
         SpeculativeDraftRequest,
         SpeculativeDraftResult,
         SpeculativeVerifyRequest,
         SpeculativeVerifyResult,
     )
-    from molt.gpu.generate import (
+    from molt.gpu.speculative import (
         speculative_decode_greedy_conditioned,
     )
 
@@ -449,7 +465,8 @@ def test_dflash_conditioning_requires_target_payloads():
 
 
 def test_dflash_runtime_requires_target_conditioned_initial_payload():
-    from molt.gpu.dflash import DFlashRuntime, SpeculativeConditioning
+    from molt.gpu.dflash import DFlashRuntime
+    from molt.gpu.speculative import SpeculativeConditioning
 
     try:
         DFlashRuntime(
@@ -467,12 +484,12 @@ def test_dflash_runtime_requires_target_conditioned_initial_payload():
 
 
 def test_conditioned_decode_rejects_invalid_dflash_conditioning_refresh():
-    from molt.gpu.dflash import (
+    from molt.gpu.speculative import (
         SpeculativeConditioning,
         SpeculativeDraftResult,
         SpeculativeVerifyResult,
     )
-    from molt.gpu.generate import speculative_decode_greedy_conditioned
+    from molt.gpu.speculative import speculative_decode_greedy_conditioned
 
     def draft_step(_request):
         return SpeculativeDraftResult([1])
@@ -534,13 +551,11 @@ def test_conditioned_speculative_decode_compiles_in_native_molt(tmp_path: Path) 
     root = Path(__file__).resolve().parents[1]
     probe = tmp_path / "gpu_speculative_conditioned_native.py"
     probe.write_text(
-        "from molt.gpu.dflash import (\n"
+        "from molt.gpu.speculative import speculative_decode_greedy_conditioned\n"
+        "from molt.gpu.speculative import (\n"
         "    SpeculativeConditioning,\n"
         "    SpeculativeDraftResult,\n"
         "    SpeculativeVerifyResult,\n"
-        ")\n"
-        "from molt.gpu.generate import (\n"
-        "    speculative_decode_greedy_conditioned,\n"
         ")\n"
         "\n"
         "def draft_step(request):\n"
@@ -602,12 +617,10 @@ def test_greedy_decode_uses_registered_dflash_adapter_by_default_on_gpu_backend(
 ):
     from molt.gpu.dflash import (
         DFlashRuntime,
-        DFlashAdapterSpec,
-        SpeculativeDraftResult,
-        SpeculativeVerifyResult,
         register_dflash_adapter,
     )
     from molt.gpu.generate import greedy_decode
+    from molt.gpu.speculative import SpeculativeDraftResult, SpeculativeVerifyResult
 
     def supports(context):
         return (
@@ -670,14 +683,12 @@ def test_greedy_decode_dflash_adapter_refreshes_target_conditioning_after_reject
     monkeypatch,
 ):
     from molt.gpu.dflash import (
-        DFlashAdapterSpec,
         DFlashConditioning,
         DFlashRuntime,
-        SpeculativeDraftResult,
-        SpeculativeVerifyResult,
         register_dflash_adapter,
     )
     from molt.gpu.generate import greedy_decode
+    from molt.gpu.speculative import SpeculativeDraftResult, SpeculativeVerifyResult
 
     events = []
 
@@ -822,7 +833,7 @@ def test_greedy_decode_dflash_adapter_refreshes_target_conditioning_after_reject
 def test_greedy_decode_fails_closed_when_registered_dflash_adapter_has_no_trained_drafter(
     monkeypatch,
 ):
-    from molt.gpu.dflash import DFlashAdapterSpec, register_dflash_adapter
+    from molt.gpu.dflash import register_dflash_adapter
     from molt.gpu.generate import greedy_decode
 
     def create_runtime(_context):
@@ -852,13 +863,11 @@ def test_greedy_decode_fails_closed_when_registered_dflash_adapter_has_no_traine
 
 def test_greedy_decode_chooses_highest_priority_matching_dflash_adapter(monkeypatch):
     from molt.gpu.dflash import (
-        DFlashAdapterSpec,
         DFlashRuntime,
-        SpeculativeDraftResult,
-        SpeculativeVerifyResult,
         register_dflash_adapter,
     )
     from molt.gpu.generate import greedy_decode
+    from molt.gpu.speculative import SpeculativeDraftResult, SpeculativeVerifyResult
 
     def low_supports(context):
         return context.backend == "webgpu"
@@ -913,7 +922,7 @@ def test_greedy_decode_chooses_highest_priority_matching_dflash_adapter(monkeypa
 def test_greedy_decode_raises_when_top_priority_dflash_adapters_are_ambiguous(
     monkeypatch,
 ):
-    from molt.gpu.dflash import DFlashAdapterSpec, register_dflash_adapter
+    from molt.gpu.dflash import register_dflash_adapter
     from molt.gpu.generate import greedy_decode
 
     def supports(context):
@@ -954,7 +963,7 @@ def test_greedy_decode_raises_when_top_priority_dflash_adapters_are_ambiguous(
 
 
 def test_greedy_decode_skips_dflash_default_without_supported_gpu_backend(monkeypatch):
-    from molt.gpu.dflash import DFlashAdapterSpec, register_dflash_adapter
+    from molt.gpu.dflash import register_dflash_adapter
     from molt.gpu.generate import greedy_decode
     from molt.gpu.tensor import Tensor
 
@@ -1025,7 +1034,7 @@ def test_greedy_decode_allows_plain_decode_when_dflash_preference_disabled(monke
 
 
 def test_register_dflash_adapter_rejects_duplicate_names():
-    from molt.gpu.dflash import DFlashAdapterSpec, register_dflash_adapter
+    from molt.gpu.dflash import register_dflash_adapter
 
     spec = _dflash_adapter_spec(
         name="duplicate-test-adapter",
@@ -1043,7 +1052,6 @@ def test_register_dflash_adapter_rejects_duplicate_names():
 
 def test_dflash_adapter_registry_snapshot_restore_isolates_mutation():
     from molt.gpu.dflash import (
-        DFlashAdapterSpec,
         clear_dflash_adapters,
         get_dflash_adapter,
         list_dflash_adapters,
@@ -1074,13 +1082,11 @@ def test_dflash_adapter_registry_snapshot_restore_isolates_mutation():
 
 def test_greedy_decode_accepts_explicit_dflash_adapter_override(monkeypatch):
     from molt.gpu.dflash import (
-        DFlashAdapterSpec,
         DFlashRuntime,
-        SpeculativeDraftResult,
-        SpeculativeVerifyResult,
         register_dflash_adapter,
     )
     from molt.gpu.generate import greedy_decode
+    from molt.gpu.speculative import SpeculativeDraftResult, SpeculativeVerifyResult
 
     def supports(context):
         return context.backend == "webgpu"
@@ -1190,7 +1196,7 @@ def test_greedy_decode_raises_for_missing_model_declared_dflash_adapter(monkeypa
 
 
 def test_greedy_decode_rejects_non_boolean_dflash_supports_result(monkeypatch):
-    from molt.gpu.dflash import DFlashAdapterSpec, register_dflash_adapter
+    from molt.gpu.dflash import register_dflash_adapter
     from molt.gpu.generate import greedy_decode
 
     def supports(_context):
@@ -1225,7 +1231,7 @@ def test_greedy_decode_rejects_non_boolean_dflash_supports_result(monkeypatch):
 
 
 def test_greedy_decode_rejects_invalid_dflash_runtime_type(monkeypatch):
-    from molt.gpu.dflash import DFlashAdapterSpec, register_dflash_adapter
+    from molt.gpu.dflash import register_dflash_adapter
     from molt.gpu.generate import greedy_decode
 
     def supports(_context):
@@ -1259,15 +1265,35 @@ def test_greedy_decode_rejects_invalid_dflash_runtime_type(monkeypatch):
 def test_dflash_namespace_does_not_export_generic_speculative_helpers():
     import molt.gpu.dflash as dflash
 
-    assert "speculative_decode_greedy" not in dflash.__all__
-    assert "speculative_decode_greedy_conditioned" not in dflash.__all__
-    assert not hasattr(dflash, "speculative_decode_greedy")
-    assert not hasattr(dflash, "speculative_decode_greedy_conditioned")
+    generic_names = (
+        "SpeculativeConditioning",
+        "SpeculativeDraftRequest",
+        "SpeculativeDraftResult",
+        "SpeculativeVerifyRequest",
+        "SpeculativeVerifyResult",
+        "speculative_decode_greedy",
+        "speculative_decode_greedy_conditioned",
+    )
+    for name in generic_names:
+        assert name not in dflash.__all__
+        assert not hasattr(dflash, name)
+
+
+def test_generate_namespace_does_not_export_generic_speculative_helpers():
+    import molt.gpu.generate as generate
+
+    generic_names = (
+        "SpeculativeDecodeResult",
+        "speculative_decode_greedy",
+        "speculative_decode_greedy_conditioned",
+    )
+    for name in generic_names:
+        assert name not in generate.__all__
+        assert not hasattr(generate, name)
 
 
 def test_build_dflash_runtime_constructs_runtime_from_explicit_adapter():
     from molt.gpu.dflash import (
-        DFlashAdapterSpec,
         DFlashRuntime,
         build_dflash_runtime,
         register_dflash_adapter,
@@ -1330,7 +1356,6 @@ def test_build_dflash_runtime_raises_for_missing_explicit_adapter():
 
 def test_build_dflash_runtime_passes_adapter_payload_into_context():
     from molt.gpu.dflash import (
-        DFlashAdapterSpec,
         DFlashRuntime,
         build_dflash_runtime,
         register_dflash_adapter,
@@ -1378,7 +1403,7 @@ def test_build_dflash_runtime_passes_adapter_payload_into_context():
 
 
 def test_speculative_conditioning_carries_multimodal_payload_fields():
-    from molt.gpu.dflash import SpeculativeConditioning
+    from molt.gpu.speculative import SpeculativeConditioning
 
     conditioning = SpeculativeConditioning(
         target_features={"hidden": [1, 2]},

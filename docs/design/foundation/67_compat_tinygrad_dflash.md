@@ -97,20 +97,23 @@ The current state, verified against the tree on 2026-06-23:
   `lazy.py`, `realize.py`, `nn/`, plus higher-level ML modules (`flash_attention.py`,
   `eagle.py`, `kv_cache.py`, `tree_attention.py`, `turbo_quant.py`, `speculative.py`,
   `onnx_interpreter.py`, `paddleocr*.py`, `whisper_demo.py`, examples).
-- **The DFlash adapter contract trio** `src/molt/gpu/dflash/{contracts,adapters,runtime}.py`
-  + `__init__.py`. This is **already well-architected and fail-closed**:
-  - `contracts.py:39` `DFlashConditioning(SpeculativeConditioning)` **requires**
+- **The DFlash adapter contract pair** `src/molt/gpu/dflash/{contracts,adapters}.py`
+  + `__init__.py`, backed by generic speculative protocol primitives in
+  `src/molt/gpu/speculative.py`. This is **already well-architected and fail-closed**:
+  - `DFlashConditioning(SpeculativeConditioning)` **requires**
     `target_features`, `target_kv`, `position_ids`, `last_verified_token` (raises
-    `ValueError`/`TypeError` otherwise). `require_dflash_conditioning` (`:77`) enforces
-    the same at every boundary. `DFlashRuntime` (`:142`) requires callable
+    `ValueError`/`TypeError` otherwise). `require_dflash_conditioning` enforces
+    the same at every boundary. `DFlashRuntime` requires callable
     `draft_step`/`verify_step` + a validated `DFlashConditioning`.
   - `adapters.py` is a typed registry (`DFlashAdapterSpec`, `register/resolve/
     build_dflash_runtime`) — model-specific adapters register; absence resolves to
     `None`/`LookupError`, never a generic fallback.
-  - `runtime.py` has `speculative_decode_greedy_conditioned` (`:143`) which
-    **re-validates `DFlashConditioning` on every refreshed conditioning** when the
-    initial conditioning is DFlash (`:209-215`) — verifier/drafter separation with
-    target-owned conditioning is wired in.
+  - `src/molt/gpu/speculative.py` has `speculative_decode_greedy_conditioned`,
+    while `DFlashConditioning.validate_refresh_conditioning` makes that neutral
+    loop **re-validate `DFlashConditioning` on every refreshed conditioning** when
+    the initial conditioning is DFlash; verifier/drafter separation with
+    target-owned conditioning is wired in without keeping generic loops under the
+    DFlash package.
 - **The fail-closed alias** `src/molt/stdlib/tinygrad/dflash.py` raises `ImportError`
   pointing at `molt.gpu.dflash` (paper-faithful) vs `tinygrad.speculative` (generic) —
   exactly the no-mislabel guard the constitution demands.
@@ -509,8 +512,8 @@ immutable, in-tree* references the later phases derive from.
 **Goal:** `molt.gpu.dflash` provably *is* DFlash or raises.
 - 5a. Implement the DFlash drafter forward pass + KV injection (`F1`/`F2`/`F4`) as a
   composition of the 3.1 primitives (per spec §4.1: linear=`dot`, attention=`sdpa`,
-  RMSNorm/softmax/RoPE composed) inside `src/molt/gpu/dflash/runtime.py` (or a new
-  `drafter.py`), consuming `DFlashConditioning.target_features`/`target_kv`/
+  RMSNorm/softmax/RoPE composed) inside `src/molt/gpu/dflash/drafter.py`,
+  consuming `DFlashConditioning.target_features`/`target_kv`/
   `position_ids`/`last_verified_token`. The conditioning *plumbing already exists*
   (contracts.py); this adds the *consumption*.
 - 5b. Build the `tests/gpu/dflash/reference/` tiny model (3.5.3) and

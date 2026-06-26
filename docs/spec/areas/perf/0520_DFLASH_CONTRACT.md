@@ -164,8 +164,11 @@ routing, not the core identity:
 ## Current Scope
 
 The current Molt implementation provides the adapter/runtime contract in
-`src/molt/gpu/dflash/`. `DFlashAdapterSpec` now requires typed
-`DFlashAdapterMetadata`, which makes the serving/training identity non-optional:
+`src/molt/gpu/dflash/`. Generic lossless speculative protocol and decode-loop
+primitives live in `src/molt/gpu/speculative.py`; DFlash specializes them only
+through typed conditioning, runtime, and adapter identity. `DFlashAdapterSpec`
+now requires typed `DFlashAdapterMetadata`, which makes the serving/training
+identity non-optional:
 algorithm family/version, tokenizer id, mask token id, target layer ids,
 target-feature schema, KV schema, target-conditioning path, maximum block size,
 non-causal draft attention, and per-layer target-context injection. A loose
@@ -173,7 +176,8 @@ metadata dict, single-token-only adapter, causal/autoregressive-only adapter, or
 adapter that does not inject target context into every draft layer is rejected
 before registration.
 
-Generic speculative-decoding helpers live under
-`src/molt/stdlib/tinygrad/speculative.py`. The `tinygrad.dflash` import path
-fails closed with an explicit error so generic helpers cannot be mistaken for
-paper-faithful DFlash.
+Generic speculative-decoding helpers live under `src/molt/gpu/speculative.py`
+and `src/molt/stdlib/tinygrad/speculative.py`. The `molt.gpu.dflash` namespace
+does not export generic speculative helpers, and the `tinygrad.dflash` import
+path fails closed with an explicit error so generic helpers cannot be mistaken
+for paper-faithful DFlash.
