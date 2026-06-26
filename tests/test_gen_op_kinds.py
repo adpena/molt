@@ -4489,6 +4489,72 @@ def test_frontend_check_exception_skip_kinds_match_table() -> None:
                 )
 
 
+def test_frontend_effect_classes_match_generated_authority() -> None:
+    """The frontend optimizer effect map is generated from op_kinds.toml, not
+    from a hand-kept Python set in the optimizer."""
+    gen = _gen()
+    data = gen.load_table()
+    py = _load_generated_py()
+
+    expected = gen._frontend_effect_class_map(data)
+    assert py.FRONTEND_EFFECT_CLASS == expected
+    assert py.FRONTEND_EFFECT_PURE_KINDS == {
+        kind for kind, effect in expected.items() if effect == "pure"
+    }
+    assert py.FRONTEND_EFFECT_READS_HEAP_KINDS == {
+        kind for kind, effect in expected.items() if effect == "reads_heap"
+    }
+    assert py.FRONTEND_EFFECT_WRITES_HEAP_KINDS == {
+        kind for kind, effect in expected.items() if effect == "writes_heap"
+    }
+    assert py.FRONTEND_EFFECT_CONTROL_KINDS == {
+        kind for kind, effect in expected.items() if effect == "control"
+    }
+
+
+def test_frontend_effect_classes_pin_pre_specialization_barriers() -> None:
+    py = _load_generated_py()
+
+    for kind in {
+        "ADD",
+        "SUB",
+        "MUL",
+        "EQ",
+        "NE",
+        "LT",
+        "LE",
+        "GT",
+        "GE",
+        "INDEX",
+        "GET_ATTR",
+        "MODULE_GET_ATTR",
+        "CONST_STR",
+    }:
+        assert py.FRONTEND_EFFECT_CLASS[kind] == "writes_heap"
+        assert kind not in py.FRONTEND_EFFECT_PURE_KINDS
+        assert kind not in py.FRONTEND_EFFECT_READS_HEAP_KINDS
+
+    assert py.FRONTEND_EFFECT_CLASS["LOAD_VAR"] == "reads_heap"
+    assert py.FRONTEND_EFFECT_CLASS["STORE_VAR"] == "writes_heap"
+    assert py.FRONTEND_EFFECT_CLASS["PHI"] == "pure"
+    assert py.FRONTEND_EFFECT_CLASS["EXCEPTION_MATCH_BUILTIN"] == "reads_heap"
+    assert py.FRONTEND_EFFECT_CLASS["STATE_TRANSITION"] == "control"
+    assert py.FRONTEND_EFFECT_CLASS["GUARD_TAG"] == "control"
+
+
+def test_midend_effect_oracle_consumes_generated_authority_only() -> None:
+    source = (
+        ROOT / "src/molt/frontend/lowering/midend_optimization.py"
+    ).read_text(encoding="utf-8")
+    method = source.split("def _op_effect_class", 1)[1].split(
+        "def _is_pure_op_for_global_cse", 1
+    )[0]
+
+    assert 'FRONTEND_EFFECT_CLASS.get(op_kind, "unknown")' in method
+    assert "op_kind in {" not in method
+    assert ".startswith(" not in method
+
+
 def test_generated_python_canonicalizes_rc_aliases_for_analysis() -> None:
     py = _load_generated_py()
 
@@ -4571,6 +4637,15 @@ def test_render_detects_frontend_table_mutation() -> None:
     mutated["frontend_raising_kind"].append({"kind": "ZZZ_SYNTH", "reason": "test"})
     assert gen.render_py(mutated) != rendered, (
         "appending a frontend_raising_kind row did not change the Python render"
+    )
+
+    mutated_effect = json.loads(json.dumps(data))
+    for row in mutated_effect["frontend_effect_kind"]:
+        if row["kind"] == "LOAD_VAR":
+            row["effect"] = "writes_heap"
+            break
+    assert gen.render_py(mutated_effect) != rendered, (
+        "mutating a frontend_effect_kind row did not change the Python render"
     )
 
     mutated2 = json.loads(json.dumps(data))

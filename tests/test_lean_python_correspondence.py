@@ -1,8 +1,8 @@
 """Tests verifying Lean <-> Python alignment.
 
-Parses actual source files (no hardcoded values) and asserts that
-effect classifications, pure op sets, and compiler pass names are
-consistent across the Lean formalization and the Python frontend.
+Parses actual source files (no hardcoded values) and asserts that generated
+frontend effect classifications and compiler pass names stay consistent with
+the Lean formalization and the Python frontend.
 
 Run:
     uv run pytest tests/test_lean_python_correspondence.py -q
@@ -34,7 +34,9 @@ def _find_repo_root() -> Path:
 
 ROOT = _find_repo_root()
 SYNTAX_LEAN = ROOT / "formal" / "lean" / "MoltTIR" / "Syntax.lean"
-FRONTEND_PY = ROOT / "src" / "molt" / "frontend" / "__init__.py"
+FRONTEND_MIDEND_PY = (
+    ROOT / "src" / "molt" / "frontend" / "lowering" / "midend_optimization.py"
+)
 LEAN_PASSES_DIR = ROOT / "formal" / "lean" / "MoltTIR" / "Passes"
 
 
@@ -48,42 +50,17 @@ def _read(path: Path) -> str:
 # ── Python effect classification parsing ─────────────────────────────
 
 
-def _parse_python_effect_classes(text: str) -> dict[str, set[str]]:
-    """Extract effect class -> set of op kinds from _op_effect_class method.
+def _generated_python_effect_classes() -> dict[str, set[str]]:
+    from molt.frontend.lowering.op_kinds_generated import FRONTEND_EFFECT_CLASS
 
-    Parses the Python source to find the sets of op kinds assigned to each
-    effect class (pure, reads_heap, writes_heap, control).
-    """
     classes: dict[str, set[str]] = {
         "pure": set(),
         "reads_heap": set(),
         "writes_heap": set(),
         "control": set(),
     }
-
-    # Find the _op_effect_class method body
-    m = re.search(r"def _op_effect_class\(self, op_kind: str\) -> str:", text)
-    if not m:
-        return classes
-
-    method_body = text[m.end() :]
-    # Find next def at same or lesser indentation to bound the method
-    end_match = re.search(r"\n    def ", method_body)
-    if end_match:
-        method_body = method_body[: end_match.start()]
-
-    # Parse each `if op_kind in { ... }: return "class"` block
-    # We look for patterns: set literal followed by return statement
-    for block_match in re.finditer(
-        r'if\s+op_kind\s+in\s+\{([^}]+)\}:\s*\n\s*return\s+"(\w+)"',
-        method_body,
-    ):
-        ops_str = block_match.group(1)
-        effect_class = block_match.group(2)
-        if effect_class in classes:
-            for op_match in re.finditer(r'"(\w+)"', ops_str):
-                classes[effect_class].add(op_match.group(1))
-
+    for kind, effect in FRONTEND_EFFECT_CLASS.items():
+        classes[effect].add(kind)
     return classes
 
 
@@ -125,16 +102,12 @@ def _lean_binop_python_name(name: str) -> str | None:
     }
     if normalized in direct_map:
         return direct_map[normalized]
-    # These Lean binops are lowered compositionally in the Python frontend
-    # rather than emitted as a single pure op kind.
-    if normalized in {"is_not", "in", "not_in"}:
-        return None
     return normalized.upper()
 
 
 def _lean_unop_python_name(name: str) -> str | None:
     normalized = name[:-1] if name.endswith("_") else name
-    if normalized in {"invert", "neg", "guard", "pos"}:
+    if normalized in {"invert", "guard"}:
         return None
     return normalized.upper()
 
@@ -144,7 +117,7 @@ def _lean_unop_python_name(name: str) -> str | None:
 
 @pytest.fixture(scope="module")
 def python_effect_classes() -> dict[str, set[str]]:
-    return _parse_python_effect_classes(_read(FRONTEND_PY))
+    return _generated_python_effect_classes()
 
 
 @pytest.fixture(scope="module")
@@ -159,28 +132,28 @@ class TestEffectClassification:
         self, python_effect_classes: dict[str, set[str]]
     ) -> None:
         assert len(python_effect_classes["pure"]) > 0, (
-            "No pure ops found in _op_effect_class"
+            "No pure ops found in FRONTEND_EFFECT_CLASS"
         )
 
     def test_reads_heap_nonempty(
         self, python_effect_classes: dict[str, set[str]]
     ) -> None:
         assert len(python_effect_classes["reads_heap"]) > 0, (
-            "No reads_heap ops found in _op_effect_class"
+            "No reads_heap ops found in FRONTEND_EFFECT_CLASS"
         )
 
     def test_writes_heap_nonempty(
         self, python_effect_classes: dict[str, set[str]]
     ) -> None:
         assert len(python_effect_classes["writes_heap"]) > 0, (
-            "No writes_heap ops found in _op_effect_class"
+            "No writes_heap ops found in FRONTEND_EFFECT_CLASS"
         )
 
     def test_control_ops_nonempty(
         self, python_effect_classes: dict[str, set[str]]
     ) -> None:
         assert len(python_effect_classes["control"]) > 0, (
-            "No control ops found in _op_effect_class"
+            "No control ops found in FRONTEND_EFFECT_CLASS"
         )
 
     def test_no_overlap_pure_writes(
@@ -196,61 +169,82 @@ class TestEffectClassification:
         assert not overlap, f"Ops classified as both pure and reads_heap: {overlap}"
 
 
-class TestPureOpAlignment:
-    """Lean BinOp/UnOp arithmetic/comparison ops should be in Python's pure set."""
+class TestFrontendEffectAlignment:
+    """Lean BinOp/UnOp names should have frontend pre-specialization effects."""
 
-    def test_lean_binops_are_pure_in_python(
+    def test_lean_binops_have_frontend_effects(
         self,
         lean_syntax_text: str,
         python_effect_classes: dict[str, set[str]],
     ) -> None:
-        """Lean BinOp variants (arithmetic + comparison) should map to pure Python ops."""
+        """Lean BinOp variants map to generated frontend effect classes."""
         lean_binops = _parse_lean_inductive_variants(lean_syntax_text, "BinOp")
-        pure_ops = python_effect_classes["pure"]
+        effect_ops = set().union(*python_effect_classes.values())
 
-        # These are the Lean BinOp names that should be in the Python pure set
-        # (uppercase in Python)
         for op in lean_binops:
             upper = _lean_binop_python_name(op)
             if upper is None:
                 continue
-            # Some ops may not be in the Python IR (e.g. bitwise handled differently)
-            if upper in pure_ops:
-                continue
-            # The op might use a different name mapping; these are acceptable gaps
-            # where the Python IR doesn't have a direct 1:1 for bitwise/advanced ops
-            acceptable_gaps = {
-                "BIT_AND",
-                "BIT_OR",
-                "BIT_XOR",
-                "LSHIFT",
-                "RSHIFT",
-                "DIV",
-                "FLOORDIV",
-                "POW",
-                "MOD",
-            }
-            if upper in acceptable_gaps:
-                continue
-            assert upper in pure_ops, (
-                f"Lean BinOp.{op} (Python: {upper}) not in Python pure ops"
+            assert upper in effect_ops, (
+                f"Lean BinOp.{op} (Python: {upper}) has no frontend effect class"
             )
 
-    def test_lean_unops_are_pure_in_python(
+    def test_pre_specialization_raising_binops_are_barriers(
         self,
         lean_syntax_text: str,
         python_effect_classes: dict[str, set[str]],
     ) -> None:
-        """Lean UnOp variants should map to pure Python ops."""
+        """Typed Lean arithmetic/comparisons are pure, but frontend ops may raise."""
+        lean_binops = set(_parse_lean_inductive_variants(lean_syntax_text, "BinOp"))
+        barrier_ops = {
+            "add",
+            "sub",
+            "mul",
+            "div",
+            "floordiv",
+            "mod",
+            "pow",
+            "eq",
+            "ne",
+            "lt",
+            "le",
+            "gt",
+            "ge",
+            "bit_and",
+            "bit_or",
+            "bit_xor",
+            "lshift",
+            "rshift",
+            "in",
+            "not_in",
+        }
+        for op in barrier_ops & lean_binops:
+            upper = _lean_binop_python_name(op)
+            assert upper is not None
+            assert upper in python_effect_classes["writes_heap"], (
+                f"Lean BinOp.{op} frontend op {upper} must be a may-raise barrier"
+            )
+
+    def test_frontend_boolean_and_unops_stay_pure(
+        self,
+        lean_syntax_text: str,
+        python_effect_classes: dict[str, set[str]],
+    ) -> None:
+        lean_binops = set(_parse_lean_inductive_variants(lean_syntax_text, "BinOp"))
         lean_unops = _parse_lean_inductive_variants(lean_syntax_text, "UnOp")
         pure_ops = python_effect_classes["pure"]
 
+        for op in {"and", "or", "is", "is_not"} & lean_binops:
+            upper = _lean_binop_python_name(op)
+            assert upper in pure_ops, (
+                f"Lean BinOp.{op} (Python: {upper}) not in frontend pure ops"
+            )
         for op in lean_unops:
             upper = _lean_unop_python_name(op)
             if upper is None:
                 continue
             assert upper in pure_ops, (
-                f"Lean UnOp.{op} (Python: {upper}) not in Python pure ops"
+                f"Lean UnOp.{op} (Python: {upper}) not in frontend pure ops"
             )
 
 
@@ -292,7 +286,7 @@ class TestCompilerPassCorrespondence:
 
     def test_python_mentions_pass_concepts(self) -> None:
         """Python frontend should reference the same pass concepts as Lean."""
-        py_text = _read(FRONTEND_PY)
+        py_text = _read(FRONTEND_MIDEND_PY)
 
         # These are the Python-side method/concept names that correspond
         # to the Lean passes
