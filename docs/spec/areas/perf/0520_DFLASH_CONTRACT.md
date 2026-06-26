@@ -95,9 +95,11 @@ or no DFlash-capable backend is selected.
 The DFlash-capable backend vocabulary is the code-exported
 `molt.gpu.dflash.DFLASH_SUPPORTED_BACKENDS`: currently `metal` and `webgpu`.
 Backend identity is normalized by `molt.gpu.backend_config` before
-`DFlashSelectionContext` or tensor intrinsic routing consumes it; arbitrary
-non-empty backend strings such as `native` or misspellings are not capability
-and cannot resolve a DFlash adapter.
+`DFlashSelectionContext` or tensor intrinsic routing consumes it; the Rust
+runtime mirrors the same trim/lowercase vocabulary as a closed `GpuBackend`
+enum before dispatching Metal/WebGPU/CUDA/HIP paths. Arbitrary non-empty backend
+strings such as `native` or misspellings are not capability and cannot resolve a
+DFlash adapter.
 
 `DFlashAdapterMetadata.algorithm_family` is constrained to the explicit
 vocabulary exported by `molt.gpu.dflash.DFLASH_ALGORITHM_FAMILIES`:

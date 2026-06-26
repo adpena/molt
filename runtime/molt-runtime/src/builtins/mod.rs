@@ -68,6 +68,7 @@ pub(crate) mod functions_textwrap;
 pub(crate) mod functions_zipfile;
 pub(crate) mod functools;
 pub(crate) mod gpu;
+pub(crate) mod gpu_backend;
 #[cfg(feature = "molt_gpu_primitives")]
 pub(crate) mod gpu_primitives;
 pub(crate) mod graphlib;
