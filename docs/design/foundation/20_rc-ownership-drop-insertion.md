@@ -793,5 +793,5 @@ The TIR inliner (E1) activates via `run_module_pipeline`, which is currently tes
 - SimpleIR DecRef round-trip (already wired): `runtime/molt-tir/src/tir/lower_to_simple.rs:1903`
 - loop_reassign_old_val guard (Phase 3 modification): `runtime/molt-backend/src/native_backend/function_compiler.rs:3577-3628`
 - emit_dec_ref_obj (Cranelift inline tag-check, already correct): `runtime/molt-backend/src/native_backend/simple_backend.rs:1076-1103`
-- Repr lattice (filter raw scalars): `runtime/molt-backend/src/representation_plan.rs:78-133`
+- Repr lattice (filter raw scalars): `runtime/molt-tir/src/representation_plan.rs:78-133`
 - reuse_analysis (Perceus, follow-up optimization): `runtime/molt-tir/src/tir/passes/reuse_analysis.rs`

@@ -813,7 +813,7 @@ hide in *this* design and which gate catches it. Plus new risks rung 2 introduce
 - Reuse runtime ABI (exists; design-20 §10.3 was stale): `runtime/molt-runtime/src/object/builders.rs` (`molt_reuse_token` :46, unique check :70, immortal :59, arena :64; `molt_reuse_alloc` :93, size check :108, payload zero :117)
 - Size classes / allocator: `runtime/molt-runtime/src/object/mod.rs` (`size_class_for` :768; `total_size_from_header_fields` :731; `HEADER_FLAG_IMMORTAL` :444; alloc births :1155,:1228; dealloc zero-transition :1812, finalizer near :1883)
 - Pipeline + gates: `runtime/molt-tir/src/tir/pass_manager.rs` (`target_uses_tir_drop_insertion` :67; `reuse_analysis` slot :351; `refcount_elim` :348; `drop_insertion` :455; `refcount_elim_post` :465; pinned pass-name list :682-701)
-- Repr lattice (the Raw filter source): `runtime/molt-backend/src/representation_plan.rs`
+- Repr lattice (the Raw filter source): `runtime/molt-tir/src/representation_plan.rs`
 - Registry (signature home): `docs/design/foundation/25_op_kind_registry.md`; `runtime/molt-tir/src/tir/op_kinds.toml`; `tools/audit_op_kinds.py`
 - Rung 1 design: `docs/design/foundation/20_rc-ownership-drop-insertion.md` (the seven Findings #1–#4 in §4.1)
 
