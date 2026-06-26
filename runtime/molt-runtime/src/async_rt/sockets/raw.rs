@@ -2,7 +2,7 @@
 // Owns OS fd/socket casts, socket2 borrowing, raw connect/listen/error shims, and Windows loopback pairs.
 
 #[cfg(molt_has_net_io)]
-use super::SocketFd;
+use super::state::SocketFd;
 #[cfg(molt_has_net_io)]
 use socket2::{SockAddr, SockAddrStorage, SockRef, Socket};
 #[cfg(all(molt_has_net_io, unix))]
