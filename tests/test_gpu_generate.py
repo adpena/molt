@@ -764,6 +764,7 @@ def test_greedy_decode_uses_registered_dflash_adapter_by_default_on_gpu_backend(
         max_new_tokens=2,
         eos_token_id=11,
         block_size=4,
+        **_dflash_identity_kwargs(),
     )
 
     assert out == [0, 1, 2]
@@ -909,7 +910,13 @@ def test_greedy_decode_dflash_adapter_refreshes_target_conditioning_after_reject
         )
     )
 
-    out = greedy_decode(FakeModel(), [0], max_new_tokens=4, block_size=2)
+    out = greedy_decode(
+        FakeModel(),
+        [0],
+        max_new_tokens=4,
+        block_size=2,
+        **_dflash_identity_kwargs(),
+    )
 
     assert out == [0, 1, 2, 3, 4]
     assert [(event[0], event[1], event[-1]["tag"]) for event in events] == [
@@ -930,8 +937,6 @@ def test_greedy_decode_fails_closed_when_registered_dflash_adapter_has_no_traine
         raise AssertionError("unsupported trained drafter must not be created")
 
     class FakeModel:
-        dflash_adapter = "trained-drafter-only"
-
         def __call__(self, _tokens):
             raise AssertionError("plain greedy model path should not execute")
 
@@ -945,7 +950,14 @@ def test_greedy_decode_fails_closed_when_registered_dflash_adapter_has_no_traine
     )
 
     try:
-        greedy_decode(FakeModel(), [0], max_new_tokens=1)
+        greedy_decode(
+            FakeModel(),
+            [0],
+            max_new_tokens=1,
+            dflash_adapter="trained-drafter-only",
+            block_size=4,
+            **_dflash_identity_kwargs(),
+        )
         raise AssertionError("expected unavailable trained drafter failure")
     except LookupError as exc:
         assert "trained-drafter-only" in str(exc)
@@ -1004,7 +1016,13 @@ def test_greedy_decode_chooses_highest_priority_matching_dflash_adapter(monkeypa
         )
     )
 
-    out = greedy_decode(FakeModel(), [0], max_new_tokens=2)
+    out = greedy_decode(
+        FakeModel(),
+        [0],
+        max_new_tokens=2,
+        block_size=4,
+        **_dflash_identity_kwargs(),
+    )
 
     assert out == [0, 1, 2]
 
@@ -1044,7 +1062,13 @@ def test_greedy_decode_raises_when_top_priority_dflash_adapters_are_ambiguous(
     )
 
     try:
-        greedy_decode(FakeModel(), [0], max_new_tokens=1)
+        greedy_decode(
+            FakeModel(),
+            [0],
+            max_new_tokens=1,
+            block_size=4,
+            **_dflash_identity_kwargs(),
+        )
         raise AssertionError("expected ambiguous dflash adapter failure")
     except ValueError as exc:
         assert "multiple dflash adapters match" in str(exc)
@@ -1102,7 +1126,13 @@ def test_greedy_decode_raises_when_gpu_backend_has_no_dflash_adapter(monkeypatch
     clear_dflash_adapters()
 
     try:
-        greedy_decode(FakeModel(), [0], max_new_tokens=1)
+        greedy_decode(
+            FakeModel(),
+            [0],
+            max_new_tokens=1,
+            block_size=4,
+            **_dflash_identity_kwargs(),
+        )
         raise AssertionError("expected missing dflash adapter failure")
     except LookupError as exc:
         assert "no dflash adapter is available" in str(exc)
@@ -1219,6 +1249,8 @@ def test_greedy_decode_accepts_explicit_dflash_adapter_override(monkeypatch):
         max_new_tokens=2,
         eos_token_id=11,
         dflash_adapter="explicit-adapter",
+        block_size=4,
+        **_dflash_identity_kwargs(),
     )
 
     assert out == [0, 1, 2]
@@ -1239,6 +1271,8 @@ def test_greedy_decode_raises_for_missing_explicit_dflash_adapter(monkeypatch):
             [0],
             max_new_tokens=1,
             dflash_adapter="missing-drafter",
+            block_size=4,
+            **_dflash_identity_kwargs(),
         )
         raise AssertionError("expected missing dflash adapter failure")
     except LookupError as exc:
@@ -1260,6 +1294,7 @@ def test_greedy_decode_raises_for_explicit_dflash_adapter_without_backend(monkey
             [0],
             max_new_tokens=1,
             dflash_adapter="requires-backend",
+            **_dflash_identity_kwargs(),
         )
         raise AssertionError("expected explicit DFlash request to fail closed")
     except LookupError as exc:
@@ -1267,12 +1302,10 @@ def test_greedy_decode_raises_for_explicit_dflash_adapter_without_backend(monkey
         assert "backend" in str(exc).lower()
 
 
-def test_greedy_decode_raises_for_missing_model_declared_dflash_adapter(monkeypatch):
+def test_greedy_decode_requires_explicit_dflash_identity_on_gpu_backend(monkeypatch):
     from molt.gpu.generate import greedy_decode
 
     class FakeModel:
-        dflash_adapter = "missing-model-drafter"
-
         def __call__(self, _tokens):
             raise AssertionError("plain greedy fallback must not run")
 
@@ -1280,9 +1313,30 @@ def test_greedy_decode_raises_for_missing_model_declared_dflash_adapter(monkeypa
 
     try:
         greedy_decode(FakeModel(), [0], max_new_tokens=1)
-        raise AssertionError("expected missing model dflash adapter failure")
+        raise AssertionError("expected missing explicit DFlash identity failure")
+    except TypeError as exc:
+        assert "target_model_id" in str(exc)
+
+
+def test_greedy_decode_ignores_model_declared_dflash_adapter(monkeypatch):
+    from molt.gpu.generate import greedy_decode
+
+    class FakeModel:
+        dflash_adapter = "missing-model-drafter"
+        dflash_target_model_id = _DFLASH_TEST_TARGET_MODEL_ID
+        dflash_tokenizer_id = _DFLASH_TEST_TOKENIZER_ID
+
+        def __call__(self, _tokens):
+            raise AssertionError("plain greedy fallback must not run")
+
+    monkeypatch.setenv("MOLT_GPU_BACKEND", "webgpu")
+
+    try:
+        greedy_decode(FakeModel(), [0], max_new_tokens=1, **_dflash_identity_kwargs())
+        raise AssertionError("expected missing dflash adapter failure")
     except LookupError as exc:
-        assert "missing-model-drafter" in str(exc)
+        assert "no dflash adapter is available" in str(exc)
+        assert "missing-model-drafter" not in str(exc)
 
 
 def test_greedy_decode_rejects_non_boolean_dflash_supports_result(monkeypatch):
@@ -1298,8 +1352,6 @@ def test_greedy_decode_rejects_non_boolean_dflash_supports_result(monkeypatch):
         )
 
     class FakeModel:
-        dflash_adapter = "bad-supports"
-
         def __call__(self, _tokens):
             raise AssertionError("plain greedy model path should not execute")
 
@@ -1313,7 +1365,14 @@ def test_greedy_decode_rejects_non_boolean_dflash_supports_result(monkeypatch):
     )
 
     try:
-        greedy_decode(FakeModel(), [0], max_new_tokens=1)
+        greedy_decode(
+            FakeModel(),
+            [0],
+            max_new_tokens=1,
+            dflash_adapter="bad-supports",
+            block_size=4,
+            **_dflash_identity_kwargs(),
+        )
         raise AssertionError("expected boolean supports contract failure")
     except TypeError as exc:
         assert "supports" in str(exc)
@@ -1331,8 +1390,6 @@ def test_greedy_decode_rejects_invalid_dflash_runtime_type(monkeypatch):
         return object()
 
     class FakeModel:
-        dflash_adapter = "bad-runtime"
-
         def __call__(self, _tokens):
             raise AssertionError("plain greedy model path should not execute")
 
@@ -1346,7 +1403,14 @@ def test_greedy_decode_rejects_invalid_dflash_runtime_type(monkeypatch):
     )
 
     try:
-        greedy_decode(FakeModel(), [0], max_new_tokens=1)
+        greedy_decode(
+            FakeModel(),
+            [0],
+            max_new_tokens=1,
+            dflash_adapter="bad-runtime",
+            block_size=4,
+            **_dflash_identity_kwargs(),
+        )
         raise AssertionError("expected invalid runtime type failure")
     except TypeError as exc:
         assert "DFlashRuntime" in str(exc)
@@ -1420,6 +1484,7 @@ def test_build_dflash_runtime_constructs_runtime_from_explicit_adapter():
         dflash_adapter="builder-adapter",
         max_new_tokens=8,
         block_size=4,
+        **_dflash_builder_identity_kwargs(),
     )
 
     assert isinstance(runtime, DFlashRuntime)
@@ -1438,6 +1503,8 @@ def test_build_dflash_runtime_raises_for_missing_explicit_adapter():
             [0],
             backend="webgpu",
             dflash_adapter="missing-adapter",
+            block_size=4,
+            **_dflash_builder_identity_kwargs(),
         )
         raise AssertionError("expected missing explicit adapter failure")
     except LookupError as exc:
@@ -1482,7 +1549,9 @@ def test_build_dflash_runtime_passes_adapter_payload_into_context():
         [0],
         backend="webgpu",
         dflash_adapter="payload-adapter",
+        block_size=4,
         adapter_payload={"patch_features": "patches"},
+        **_dflash_builder_identity_kwargs(),
     )
 
     assert isinstance(runtime, DFlashRuntime)
