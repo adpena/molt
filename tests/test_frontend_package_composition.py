@@ -73,6 +73,7 @@ EXPECTED_MIXINS = [
     "FunctionLifecycleMixin",
     "FunctionMetadataMixin",
     "ModuleLifecycleMixin",
+    "ImportLoweringMixin",
     "SymbolNamingMixin",
     "AttributeAccessMixin",
     "ClassResolutionMixin",
@@ -228,6 +229,14 @@ def test_moved_methods_resolve_on_class() -> None:
     assert hasattr(SimpleTIRGenerator, "visit_AugAssign")
     assert hasattr(SimpleTIRGenerator, "visit_For")
     assert hasattr(SimpleTIRGenerator, "visit_TryStar")
+    # import lowering
+    assert hasattr(SimpleTIRGenerator, "_resolve_relative_import")
+    assert hasattr(SimpleTIRGenerator, "_should_attempt_runtime_module_import")
+    assert hasattr(SimpleTIRGenerator, "_emit_import_transaction")
+    assert hasattr(SimpleTIRGenerator, "_emit_module_load")
+    assert hasattr(SimpleTIRGenerator, "_emit_module_import_from_value")
+    assert hasattr(SimpleTIRGenerator, "_emit_import_guard")
+    assert hasattr(SimpleTIRGenerator, "_source_imports_use_transaction")
     # analysis helpers
     assert hasattr(SimpleTIRGenerator, "_collect_assigned_names")
     assert hasattr(SimpleTIRGenerator, "_collect_free_vars")
@@ -247,6 +256,7 @@ def test_mixin_modules_import_standalone() -> None:
         "molt.frontend.lowering.emission_core",
         "molt.frontend.lowering.function_lifecycle",
         "molt.frontend.lowering.function_metadata",
+        "molt.frontend.lowering.import_lowering",
         "molt.frontend.lowering.local_bindings",
         "molt.frontend.lowering.loop_lowering",
         "molt.frontend.lowering.midend_optimization",
