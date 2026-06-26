@@ -9,6 +9,7 @@ import math
 import os
 from .dflash import (
     DFlashSelectionContext,
+    has_dflash_backend,
     resolve_dflash_runtime,
 )
 from . import speculative as _speculative
@@ -26,10 +27,6 @@ def _requested_gpu_backend() -> str | None:
         return None
     backend = backend.strip().lower()
     return backend or None
-
-
-def _has_dflash_backend(backend: str | None) -> bool:
-    return backend is not None and backend.strip() != ""
 
 
 def _dflash_missing_message(adapter_name: str | None = None) -> str:
@@ -55,12 +52,12 @@ def _resolve_default_dflash_runtime(
     backend = _requested_gpu_backend()
     if dflash_adapter is not None and not isinstance(dflash_adapter, str):
         raise TypeError("dflash adapter name must be a string when set")
-    if dflash_adapter is not None and not _has_dflash_backend(backend):
+    if dflash_adapter is not None and not has_dflash_backend(backend):
         raise LookupError(
             f"dflash adapter '{dflash_adapter}' requires an explicit GPU backend; "
             "set MOLT_GPU_BACKEND"
         )
-    if not _has_dflash_backend(backend):
+    if not has_dflash_backend(backend):
         return None
     context = DFlashSelectionContext(
         model=model,
@@ -134,7 +131,7 @@ def greedy_decode(
                 eos_token_id=eos_token_id,
             )
             return speculative.tokens
-        if _has_dflash_backend(backend):
+        if has_dflash_backend(backend):
             raise LookupError(_dflash_missing_message())
 
     tokens = list(prompt_tokens)
