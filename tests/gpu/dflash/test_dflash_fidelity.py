@@ -499,6 +499,34 @@ def test_generic_adapter_returning_non_runtime_raises_typeerror():
         )
 
 
+def test_adapter_runtime_block_size_cannot_exceed_checkpoint_metadata():
+    def _supports(_context) -> bool:
+        return True
+
+    def _create_runtime(_context):
+        return DFlashRuntime(
+            draft_step=lambda _request: None,
+            verify_step=lambda _request: None,
+            initial_conditioning=_valid_conditioning(),
+            block_size=8,
+        )
+
+    spec = _adapter_spec(
+        name="oversized-runtime",
+        supports=_supports,
+        create_runtime=_create_runtime,
+    )
+    register_dflash_adapter(spec)
+
+    with pytest.raises(
+        ValueError,
+        match="dflash runtime block_size exceeds adapter metadata max_block_size",
+    ):
+        resolve_dflash_runtime(
+            _ctx("oversized-runtime"), preferred_name="oversized-runtime"
+        )
+
+
 def test_selection_context_requires_explicit_dflash_identity():
     with pytest.raises(TypeError, match="target_model_id must be a string"):
         DFlashSelectionContext(
