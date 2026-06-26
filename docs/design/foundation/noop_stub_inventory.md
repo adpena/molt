@@ -4,6 +4,17 @@ Generated from stub-sweep workflow `wja8h01o7` (8 parallel clusters + triage cri
 
 Operator directive (2026-06-25): zero fakes, zero no-op stubs; molt's object model, ops, memory model, and all management must be **world-class**. This file is the live delete-the-crap / make-world-class work queue. NOTE: the sweep read only a MINORITY of the runtime — see 'Completeness gaps' for the second-pass scope.
 
+## ✅ Resolved (landed on main)
+
+- **decimal Emin/Emax P0** — commit `2c3935ddb`. Root-cause discovery: the named `decimal_without_mpdec.rs`
+  is NOT the shipping authority — `molt-runtime-serial/src/decimal.rs` is (stdlib_serial is default-on),
+  plus a third `with_mpdec` copy. All three fixed in lockstep: added `Emin`/`Emax`/`clamp` to
+  `DecimalContextHandle`, ported CPython 3.12 `_fix`, re-derived every exponent-sensitive method from the
+  real bounds (is_normal/is_subnormal/number_class/next_plus/next_minus/quantize/scaleb/normalize/fma),
+  split to_integral_value vs to_integral_exact. Verified: 6 new differential tests byte-for-byte vs
+  CPython (independently reproduced, full profile) + 14 pre-existing + 11 unit tests. Also fixed the
+  recurring Windows cp1252 bug in `gen_intrinsics.py`. (The `Fraction.__hash__` P0 below is in flight.)
+
 ## P0 — silent-wrong-answer / permanent-leak (fix first)
 
 ### `molt_gc_collect` — `runtime/molt-runtime/src/object/ops.rs:1810`
