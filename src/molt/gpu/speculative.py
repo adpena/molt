@@ -150,6 +150,13 @@ def _normalize_optional_token_id(value, field_name: str) -> int | None:
     return _normalize_token_id(value, f"{field_name} must be an integer token id")
 
 
+def _normalize_non_negative_token_id(value, field_name: str) -> int:
+    token = _normalize_token_id(value, f"{field_name} must be an integer token id")
+    if token < 0:
+        raise ValueError(f"{field_name} must be non-negative")
+    return token
+
+
 def _require_non_negative_int(value, field_name: str) -> int:
     if isinstance(value, bool):
         raise TypeError(f"{field_name} must be a non-negative integer")

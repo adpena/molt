@@ -157,6 +157,13 @@ def test_conditioning_nonintegral_last_verified_token_raises_typeerror():
         DFlashConditioning(**kwargs)
 
 
+def test_conditioning_negative_last_verified_token_raises_valueerror():
+    kwargs = _valid_conditioning_kwargs()
+    kwargs["last_verified_token"] = -1
+    with pytest.raises(ValueError, match="last_verified_token must be non-negative"):
+        DFlashConditioning(**kwargs)
+
+
 def test_valid_conditioning_constructs_and_normalizes():
     # Positive control: the valid kwargs really do build, so the negative tests
     # above isolate the single mutated field rather than a broken baseline.
@@ -405,6 +412,12 @@ def test_adapter_spec_requires_model_pair_provenance(
             True,
             TypeError,
             "dflash adapter mask_token_id must be an integer token id",
+        ),
+        (
+            "mask_token_id",
+            -1,
+            ValueError,
+            "dflash adapter mask_token_id must be non-negative",
         ),
         (
             "target_layer_ids",
