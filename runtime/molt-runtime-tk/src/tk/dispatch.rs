@@ -57,7 +57,7 @@ pub(super) fn handle_source_command(py: &PyToken, handle: i64, args: &[u64]) -> 
     Ok(last_out)
 }
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 pub(super) fn run_tcl_rename_and_sync_callbacks(
     py: &PyToken,
     handle: i64,
@@ -94,7 +94,7 @@ pub(super) fn run_tcl_rename_and_sync_callbacks(
     Ok(out)
 }
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 pub(super) fn run_tcl_after_and_sync_callbacks(
     py: &PyToken,
     handle: i64,
@@ -135,7 +135,7 @@ pub(super) fn run_tcl_after_and_sync_callbacks(
 /// After such a command, `::__molt_pending_callbacks` must be drained so the
 /// Python-side callbacks actually run, matching CPython where the event loop
 /// invokes the command directly.
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 pub(super) fn is_event_pumping_command(command: &str) -> bool {
     matches!(command, "update" | "tkwait" | "vwait" | "grab")
 }
@@ -144,7 +144,7 @@ pub(super) fn is_event_pumping_command(command: &str) -> bool {
 /// dispatch any pending Python callbacks it queued. Draining loops because a
 /// dispatched callback may itself schedule further idle work that the same
 /// `update` already executed (and thus already enqueued).
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 pub(super) fn run_tcl_command_and_drain_callbacks(
     py: &PyToken,
     handle: i64,
@@ -165,10 +165,10 @@ pub(super) fn run_tcl_command_and_drain_callbacks(
     Ok(out)
 }
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 pub(super) const MAX_PENDING_CALLBACK_DRAIN_ROUNDS: usize = 1024;
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 pub(super) fn native_loadtk_command(py: &PyToken, handle: i64, args: &[u64]) -> Result<u64, u64> {
     if args.len() != 1 {
         return Err(raise_tcl_for_handle(
@@ -249,7 +249,7 @@ pub(super) fn handle_tk_popup_command(py: &PyToken, handle: i64, args: &[u64]) -
 /// handler, and (otherwise) the interpreter context for a direct Tcl eval. This
 /// replaces the prior 3 separate lock acquisitions (lookup_bound_callback +
 /// invoke_filehandler_command's lock + run_tcl_command's Phase-2 lock).
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 pub(super) enum NativeDispatch {
     Callback(u64),
     FileHandler,
@@ -260,7 +260,7 @@ pub(super) enum NativeDispatch {
     },
 }
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 pub(super) fn resolve_native_dispatch(
     py: &PyToken,
     handle: i64,
@@ -298,7 +298,7 @@ pub(super) fn tk_call_dispatch(py: &PyToken, handle: i64, args: &[u64]) -> Resul
     }
     let command = get_string_arg(py, handle, args[0], "command name")?;
 
-    #[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+    #[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
     {
         // Commands with their own callback-sync semantics keep their dedicated
         // paths (they re-lock as needed; they are not on the hot per-call path).
@@ -346,7 +346,7 @@ pub(super) fn tk_call_dispatch(py: &PyToken, handle: i64, args: &[u64]) -> Resul
         run_tcl_command(py, handle, args)
     }
 
-    #[cfg(any(target_arch = "wasm32", not(feature = "tk")))]
+    #[cfg(any(target_arch = "wasm32", not(feature = "native-tcl")))]
     if let Some(callback_bits) = lookup_bound_callback(py, handle, &command)? {
         let out_bits = invoke_callback(py, callback_bits, &args[1..]);
         dec_ref_bits(py, callback_bits);
@@ -360,12 +360,12 @@ pub(super) fn tk_call_dispatch(py: &PyToken, handle: i64, args: &[u64]) -> Resul
         clear_last_error(handle);
         return Ok(out_bits);
     }
-    #[cfg(any(target_arch = "wasm32", not(feature = "tk")))]
+    #[cfg(any(target_arch = "wasm32", not(feature = "native-tcl")))]
     if let Some(out_bits) = invoke_filehandler_command(py, handle, &command)? {
         return Ok(out_bits);
     }
 
-    #[cfg(any(target_arch = "wasm32", not(feature = "tk")))]
+    #[cfg(any(target_arch = "wasm32", not(feature = "native-tcl")))]
     {
         match command.as_str() {
             "tk_messageBox" | "tk_getOpenFile" | "tk_getSaveFile" | "tk_chooseDirectory"

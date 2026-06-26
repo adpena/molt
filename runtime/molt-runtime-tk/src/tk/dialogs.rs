@@ -529,7 +529,7 @@ pub(super) fn raise_unsupported_filedialog_command(
     )
 }
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 pub(super) fn ensure_native_tk_loaded_for_commondialog(
     py: &PyToken,
     handle: i64,
@@ -559,7 +559,7 @@ pub(super) fn ensure_native_tk_loaded_for_commondialog(
     }
 }
 
-#[cfg(any(target_arch = "wasm32", not(feature = "tk")))]
+#[cfg(any(target_arch = "wasm32", not(feature = "native-tcl")))]
 pub(super) fn ensure_native_tk_loaded_for_commondialog(
     _py: &PyToken,
     _handle: i64,
@@ -638,7 +638,7 @@ pub(super) fn parse_simpledialog_f64(text: &str) -> Option<f64> {
     text.trim().parse::<f64>().ok()
 }
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 pub(super) fn app_interp_eval_list(
     py: &PyToken,
     app: &mut TkAppState,
@@ -657,7 +657,7 @@ pub(super) fn app_interp_eval_list(
     eval_result.map_err(|err| app_tcl_error_locked(py, app, format!("tk command failed: {err}")))
 }
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 pub(super) fn cleanup_native_simpledialog(
     py: &PyToken,
     app: &mut TkAppState,
@@ -681,7 +681,7 @@ pub(super) fn cleanup_native_simpledialog(
     let _ = app_interp_eval_list(py, app, vec!["unset".to_string(), state_var.to_string()]);
 }
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 pub(super) fn tk_dispatch_string_command(
     py: &PyToken,
     handle: i64,

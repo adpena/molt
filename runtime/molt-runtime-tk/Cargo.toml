@@ -12,5 +12,6 @@ libloading = { version = "0.9", optional = true }
 libc = "0.2"
 
 [features]
-default = ["tk"]
-tk = ["dep:libloading"]
+default = ["tk", "native-tcl"]
+tk = []
+native-tcl = ["tk", "dep:libloading"]

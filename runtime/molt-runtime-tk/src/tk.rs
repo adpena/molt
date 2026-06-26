@@ -7,12 +7,12 @@ use crate::bridge::{
     string_obj_to_owned, to_f64, to_i64,
 };
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 use libloading::Library;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 use std::{
     ffi::{CStr, CString, c_char, c_int, c_void},
     path::{Path, PathBuf},
@@ -30,7 +30,7 @@ mod intrinsics;
 mod native;
 mod parsing;
 mod state;
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 mod tcl;
 mod ttk;
 mod widget_create;
@@ -45,8 +45,11 @@ use generic_widgets::*;
 use native::*;
 use parsing::*;
 use state::*;
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 use tcl::*;
 use ttk::*;
+use widget_create::*;
+use window_commands::*;
 
 pub use intrinsics::*;
 
