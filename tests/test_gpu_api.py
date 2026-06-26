@@ -300,6 +300,28 @@ def test_kernel_simulation_restores_thread_id_after_kernel_error(monkeypatch):
 # ── Tensor ───────────────────────────────────────────────────────────────────
 
 
+def test_kernel_simulation_propagates_out_of_bounds_index(monkeypatch):
+    import molt.gpu as gpu
+
+    original_thread_id = gpu.thread_id
+    monkeypatch.setattr(gpu, "_MOLT_GPU_KERNEL_LAUNCH", None)
+    monkeypatch.setattr(gpu._molt_intrinsics, "load_intrinsic", lambda _name: None)
+    monkeypatch.setattr(gpu._molt_intrinsics, "runtime_active", lambda: False)
+
+    @gpu.kernel
+    def unguarded_write(out):
+        out[gpu.thread_id()] = 1.0
+
+    out = gpu.alloc(1, float)
+
+    with pytest.raises(IndexError, match=r"Buffer index 1 out of range"):
+        unguarded_write[1, 2](out)
+
+    assert gpu.thread_id is original_thread_id
+    assert gpu.thread_id() == 0
+    assert gpu.from_device(out) == [1.0]
+
+
 def test_tensor_create_and_shape():
     from molt.gpu.tensor import Tensor
 

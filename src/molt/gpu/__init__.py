@@ -245,9 +245,10 @@ class _KernelLauncher:
 
         In interpreted mode, and in compiled lanes that have not yet routed the
         kernel through a real GPU backend, this runs the kernel function
-        sequentially for each logical thread ID. When a real compiled GPU
-        lowering path is active, the compiler/runtime may replace this with
-        backend dispatch via the GPU pipeline.
+        sequentially for each logical thread ID. Kernel bodies must encode their
+        own bounds guards; the launcher never swallows indexing failures. When a
+        real compiled GPU lowering path is active, the compiler/runtime may
+        replace this with backend dispatch via the GPU pipeline.
         """
         grid = self._grid or 256
         threads = self._threads or 256
@@ -271,10 +272,7 @@ class _KernelLauncher:
             for tid in range(total_threads):
                 # Monkey-patch thread_id to return current tid
                 gpu_module.thread_id = cast(Any, lambda _tid=tid: _tid)
-                try:
-                    self._func(*args)
-                except IndexError:
-                    pass  # Thread ID out of bounds — expected for guard patterns
+                self._func(*args)
         finally:
             gpu_module.thread_id = original_thread_id
 
@@ -290,8 +288,9 @@ def kernel(func):
                 b[tid] = a[tid] * 2.0
 
     This marks the function as GPU-kernel-shaped. Interpreted execution runs
-    sequentially. Compiled execution must preserve that sequential fallback
-    until a real backend dispatch path is active for the target/backend lane.
+    sequentially and preserves normal Python exceptions. Compiled execution must
+    preserve that sequential fallback until a real backend dispatch path is
+    active for the target/backend lane.
     """
     setattr(func, "__molt_gpu_kernel__", True)
     return _KernelLauncher(func)
