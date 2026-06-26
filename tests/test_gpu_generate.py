@@ -97,6 +97,7 @@ def _dflash_adapter_spec(
             target_feature_schema="test:hidden_states[batch,seq,hidden]",
             kv_schema="test:kv[layer,batch,heads,seq,dim]",
             target_conditioning_path="kv_injection_each_draft_layer",
+            draft_output_contract="block_sequence",
             max_block_size=4,
             uses_non_causal_draft_attention=True,
             injects_target_context_each_layer=True,
@@ -625,6 +626,7 @@ def test_dflash_runtime_requires_target_conditioned_initial_payload():
                 target_kv="kv",
                 position_ids=[0],
             ),
+            draft_output_contract="block_sequence",
         )
         raise AssertionError("expected DFlashConditioning failure")
     except TypeError as exc:
@@ -798,6 +800,7 @@ def test_greedy_decode_uses_registered_dflash_adapter_by_default_on_gpu_backend(
             draft_step=draft_step,
             verify_step=verify_step,
             initial_conditioning=_dflash_conditioning("prefill", token=0),
+            draft_output_contract="block_sequence",
             block_size=2,
         )
 
@@ -950,6 +953,7 @@ def test_greedy_decode_dflash_adapter_refreshes_target_conditioning_after_reject
             draft_step=draft_step,
             verify_step=verify_step,
             initial_conditioning=initial_conditioning,
+            draft_output_contract="block_sequence",
             block_size=2,
         )
 
@@ -1050,6 +1054,7 @@ def test_greedy_decode_chooses_highest_priority_matching_dflash_adapter(monkeypa
             verify_step=verify_step,
             block_size=2,
             initial_conditioning=_dflash_conditioning("priority", token=0),
+            draft_output_contract="block_sequence",
         )
 
     class FakeModel:
@@ -1283,6 +1288,7 @@ def test_greedy_decode_accepts_explicit_dflash_adapter_override(monkeypatch):
             draft_step=draft_step,
             verify_step=verify_step,
             initial_conditioning=_dflash_conditioning("prefill", token=0),
+            draft_output_contract="block_sequence",
             block_size=2,
         )
 
@@ -1522,6 +1528,7 @@ def test_build_dflash_runtime_constructs_runtime_from_explicit_adapter():
             verify_step=lambda _request: None,
             block_size=4,
             initial_conditioning=_dflash_conditioning("builder", token=0),
+            draft_output_contract="block_sequence",
         )
 
     class FakeModel:
@@ -1589,6 +1596,7 @@ def test_build_dflash_runtime_passes_adapter_payload_into_context():
             verify_step=lambda _request: None,
             block_size=2,
             initial_conditioning=_dflash_conditioning("payload", token=0),
+            draft_output_contract="block_sequence",
         )
 
     class FakeModel:

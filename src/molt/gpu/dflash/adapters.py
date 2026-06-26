@@ -9,19 +9,22 @@ cannot enter the DFlash namespace.
 
 from __future__ import annotations
 
-from .contracts import DFlashRuntime, DFlashSelectionContext
+from .contracts import (
+    DFlashRuntime,
+    DFlashSelectionContext,
+    require_dflash_draft_output_contract,
+)
 
 
 _DFLASH_ADAPTERS = {}
-DFLASH_ALGORITHM_FAMILIES = frozenset(
-    {
-        "base_dflash",
-        "dflash_v2",
-        "ddtree",
-        "dflare",
-        "dual_diffusion_draft",
-    }
-)
+DFLASH_ALGORITHM_DRAFT_OUTPUT_CONTRACTS = {
+    "base_dflash": frozenset({"block_sequence"}),
+    "dflash_v2": frozenset({"block_sequence"}),
+    "dflare": frozenset({"block_sequence"}),
+    "dual_diffusion_draft": frozenset({"block_sequence"}),
+    "ddtree": frozenset({"per_position_marginals"}),
+}
+DFLASH_ALGORITHM_FAMILIES = frozenset(DFLASH_ALGORITHM_DRAFT_OUTPUT_CONTRACTS)
 
 
 def _require_non_empty_string(value, field_name: str) -> str:
@@ -114,6 +117,7 @@ class DFlashAdapterMetadata:
         target_feature_schema: str,
         kv_schema: str,
         target_conditioning_path: str,
+        draft_output_contract: str,
         max_block_size: int,
         uses_non_causal_draft_attention: bool,
         injects_target_context_each_layer: bool,
@@ -132,6 +136,19 @@ class DFlashAdapterMetadata:
         self.target_conditioning_path = _require_non_empty_string(
             target_conditioning_path, "target_conditioning_path"
         )
+        self.draft_output_contract = require_dflash_draft_output_contract(
+            draft_output_contract,
+            "dflash adapter draft_output_contract",
+        )
+        allowed_output_contracts = DFLASH_ALGORITHM_DRAFT_OUTPUT_CONTRACTS[
+            self.algorithm_family
+        ]
+        if self.draft_output_contract not in allowed_output_contracts:
+            allowed = ", ".join(sorted(allowed_output_contracts))
+            raise ValueError(
+                "dflash adapter draft_output_contract is incompatible with "
+                f"algorithm_family {self.algorithm_family}: {allowed}"
+            )
         self.max_block_size = _require_positive_int(max_block_size, "max_block_size")
         if self.max_block_size == 1:
             raise ValueError(
@@ -303,6 +320,10 @@ def resolve_dflash_runtime(context, preferred_name: str | None = None):
     if effective_block_size > adapter.metadata.max_block_size:
         raise ValueError(
             "dflash runtime block_size exceeds adapter metadata max_block_size"
+        )
+    if runtime.draft_output_contract != adapter.metadata.draft_output_contract:
+        raise ValueError(
+            "dflash runtime draft_output_contract does not match adapter metadata"
         )
     return runtime
 
