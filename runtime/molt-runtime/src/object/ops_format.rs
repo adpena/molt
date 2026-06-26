@@ -7,7 +7,7 @@ use num_bigint::BigInt;
 use num_traits::{Signed, ToPrimitive};
 use std::borrow::Cow;
 
-use super::ops::range_components_bigint;
+use super::ops::{range_components_bigint, unicode_printable_table};
 use super::ops_string::wtf8_from_bytes;
 
 #[unsafe(no_mangle)]
@@ -1297,7 +1297,7 @@ pub(crate) fn format_obj(_py: &PyToken<'_>, obj: MoltObject) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::format_obj_str;
+    use super::{format_obj_str, format_string_repr_bytes};
     use crate::builtins::attr::attr_name_bits_from_bytes;
     use crate::{
         alloc_module_obj, alloc_string, dict_set_in_place, module_dict_bits, obj_from_bits,
@@ -1329,6 +1329,18 @@ mod tests {
             let rendered = format_obj_str(_py, obj_from_bits(module_bits));
             assert_eq!(rendered, "<module 'pathlib' from '/tmp/pathlib.py'>");
         });
+    }
+
+    #[test]
+    fn string_repr_uses_generated_unicode_printability_table() {
+        assert_eq!(format_string_repr_bytes("\u{00a0}".as_bytes()), "'\\xa0'");
+        assert_eq!(format_string_repr_bytes("\u{200b}".as_bytes()), "'\\u200b'");
+        assert_eq!(format_string_repr_bytes("\u{e000}".as_bytes()), "'\\ue000'");
+        assert_eq!(format_string_repr_bytes("\u{0378}".as_bytes()), "'\\u0378'");
+        assert_eq!(
+            format_string_repr_bytes("\u{00e9}".as_bytes()),
+            "'\u{00e9}'"
+        );
     }
 }
 
@@ -1418,36 +1430,9 @@ pub(crate) fn format_string_repr_bytes(bytes: &[u8]) -> String {
 }
 
 /// CPython-compatible printability test for repr escaping.
-/// Returns false for: control characters (Cc), format characters (Cf),
-/// surrogates (Cs), private use (Co), unassigned (Cn), line/paragraph
-/// separators (Zl/Zp U+2028/U+2029), and non-breaking spaces (U+00A0,
-/// U+1680, U+2000-U+200A, U+202F, U+205F, U+3000).
+/// Keep repr() and str.isprintable() on the same generated table authority.
 fn is_printable_for_repr(ch: char) -> bool {
-    // Fast path: ASCII printable (0x20-0x7E)
-    let code = ch as u32;
-    if (0x20..=0x7E).contains(&code) {
-        return true;
-    }
-    // Control characters (C0, DEL, C1)
-    if ch.is_control() {
-        return false;
-    }
-    // Unicode category Zl (line separator) and Zp (paragraph separator)
-    if code == 0x2028 || code == 0x2029 {
-        return false;
-    }
-    // Surrogates (shouldn't appear in valid Rust chars, but be safe)
-    if (0xD800..=0xDFFF).contains(&code) {
-        return false;
-    }
-    // Non-characters
-    if (0xFDD0..=0xFDEF).contains(&code) || (code & 0xFFFE) == 0xFFFE {
-        return false;
-    }
-    // Use Rust's built-in alphanumeric/whitespace as approximation,
-    // but also allow symbols and punctuation — anything with a visible glyph.
-    // The key exclusions are the ones above (control, Zl, Zp, surrogates).
-    true
+    unicode_printable_table::is_printable(ch as u32)
 }
 
 #[allow(dead_code)]
