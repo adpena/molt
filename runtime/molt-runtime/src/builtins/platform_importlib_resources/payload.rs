@@ -472,3 +472,164 @@ pub(super) fn importlib_validate_resource_name_text(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(feature = "stdlib_archive")]
+    use std::io::Write;
+
+    fn bootstrap_module_file() -> String {
+        if super::super::super::sys_platform_str().starts_with("win") {
+            "C:\\repo\\src\\molt\\stdlib\\sys.py".to_string()
+        } else {
+            "/repo/src/molt/stdlib/sys.py".to_string()
+        }
+    }
+
+    #[test]
+    fn importlib_resources_path_payload_reports_entries_and_init_marker() {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let tmp = std::env::temp_dir().join(format!(
+            "molt_importlib_resources_payload_{}_{}",
+            std::process::id(),
+            stamp
+        ));
+        std::fs::create_dir_all(&tmp).expect("create temp dir");
+        std::fs::write(tmp.join("__init__.py"), "x = 1\n").expect("write __init__.py");
+        std::fs::write(tmp.join("data.txt"), "payload\n").expect("write data.txt");
+
+        let payload = importlib_resources_path_payload(&tmp.to_string_lossy());
+        assert!(payload.exists);
+        assert!(payload.is_dir);
+        assert!(!payload.is_file);
+        assert!(payload.has_init_py);
+        assert!(!payload.is_archive_member);
+        assert!(payload.entries.iter().any(|entry| entry == "__init__.py"));
+        assert!(payload.entries.iter().any(|entry| entry == "data.txt"));
+
+        std::fs::remove_dir_all(&tmp).expect("cleanup temp dir");
+    }
+
+    #[cfg(feature = "stdlib_archive")]
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn importlib_resources_zip_payload_reports_entries_and_init_marker() {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let tmp = std::env::temp_dir().join(format!(
+            "molt_importlib_resources_zip_payload_{}_{}",
+            std::process::id(),
+            stamp
+        ));
+        std::fs::create_dir_all(&tmp).expect("create temp dir");
+        let archive = tmp.join("resources.zip");
+        let file = std::fs::File::create(&archive).expect("create zip file");
+        let mut writer = zip::ZipWriter::new(file);
+        let options: zip::write::SimpleFileOptions = zip::write::FileOptions::default();
+        writer
+            .start_file("pkg/__init__.py", options)
+            .expect("start __init__.py");
+        writer
+            .write_all(b"x = 1\n")
+            .expect("write __init__.py in zip");
+        writer
+            .start_file("pkg/data.txt", options)
+            .expect("start data.txt");
+        writer
+            .write_all(b"payload\n")
+            .expect("write data.txt in zip");
+        writer.finish().expect("finish zip archive");
+
+        let archive_text = archive.to_string_lossy().into_owned();
+        let package_root = format!("{archive_text}/pkg");
+        let package_payload = importlib_resources_path_payload(&package_root);
+        assert!(package_payload.exists);
+        assert!(package_payload.is_dir);
+        assert!(!package_payload.is_file);
+        assert!(package_payload.has_init_py);
+        assert!(package_payload.is_archive_member);
+        assert!(
+            package_payload
+                .entries
+                .iter()
+                .any(|entry| entry == "__init__.py")
+        );
+        assert!(
+            package_payload
+                .entries
+                .iter()
+                .any(|entry| entry == "data.txt")
+        );
+
+        let file_payload = importlib_resources_path_payload(&format!("{package_root}/data.txt"));
+        assert!(file_payload.exists);
+        assert!(file_payload.is_file);
+        assert!(!file_payload.is_dir);
+        assert!(!file_payload.has_init_py);
+        assert!(file_payload.is_archive_member);
+
+        let package_meta = importlib_resources_package_payload(
+            "pkg",
+            std::slice::from_ref(&archive_text),
+            Some(bootstrap_module_file()),
+        );
+        assert!(package_meta.has_regular_package);
+        assert!(
+            package_meta
+                .roots
+                .iter()
+                .any(|entry| entry == &package_root)
+        );
+        assert!(
+            package_meta
+                .init_file
+                .as_deref()
+                .is_some_and(|entry| entry.ends_with("resources.zip/pkg/__init__.py"))
+        );
+
+        std::fs::remove_dir_all(&tmp).expect("cleanup temp dir");
+    }
+
+    #[cfg(feature = "stdlib_archive")]
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn importlib_resources_whl_payload_reports_archive_member_flag() {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let tmp = std::env::temp_dir().join(format!(
+            "molt_importlib_resources_whl_payload_{}_{}",
+            std::process::id(),
+            stamp
+        ));
+        std::fs::create_dir_all(&tmp).expect("create temp dir");
+        let archive = tmp.join("resources.whl");
+        let file = std::fs::File::create(&archive).expect("create whl file");
+        let mut writer = zip::ZipWriter::new(file);
+        let options: zip::write::SimpleFileOptions = zip::write::FileOptions::default();
+        writer
+            .start_file("pkg/data.txt", options)
+            .expect("start data.txt");
+        writer
+            .write_all(b"payload\n")
+            .expect("write data.txt in whl");
+        writer.finish().expect("finish whl archive");
+
+        let archive_text = archive.to_string_lossy().into_owned();
+        let file_payload =
+            importlib_resources_path_payload(&format!("{archive_text}/pkg/data.txt"));
+        assert!(file_payload.exists);
+        assert!(file_payload.is_file);
+        assert!(file_payload.is_archive_member);
+
+        std::fs::remove_dir_all(&tmp).expect("cleanup temp dir");
+    }
+}
