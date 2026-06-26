@@ -198,6 +198,17 @@
 #   - module_slot_access_roles - opcode-role facts consumed by
 #                  module_slot_promotion.rs for keyed module ATTR access vs
 #                  wildcard module-dict access; the pass owns root/name proof.
+#   - tir_verify_attr_rules - opcode-role facts consumed by verify.rs for
+#                  required attr/operand payload checks; the verifier owns
+#                  diagnostics and payload value validation.
+#   - sroa_const_immediate_rules - opcode-role facts consumed by sroa.rs for
+#                  immediate constant recognition; SROA owns range proof.
+#   - strength_reduction_rules - opcode-role facts consumed by
+#                  strength_reduction.rs; the pass owns constant/type proof and
+#                  the concrete replacement shape.
+#   - scev_expr_rules - opcode-role facts consumed by scev.rs for affine
+#                  expression construction; SCEV owns operand arity and lattice
+#                  folding.
 #   - exception_handling_opcodes - opcode-only function flag source for
 #                  `TirFunction::has_exception_handling`, including observation
 #                  edges and real handler/state regions.
@@ -802,6 +813,33 @@ module_slot_access_roles = [
     { opcode = "ModuleGetGlobal", role = "wildcard_module_dict" },
     { opcode = "ModuleDelGlobal", role = "wildcard_module_dict" },
     { opcode = "ModuleDelGlobalIfPresent", role = "wildcard_module_dict" },
+]
+
+tir_verify_attr_rules = [
+    { opcode = "Call", rule = "call_callee" },
+    { opcode = "CallBuiltin", rule = "call_callee" },
+    { opcode = "CallMethod", rule = "call_method" },
+    { opcode = "ObjectNewBoundStack", rule = "positive_payload_bytes" },
+]
+
+sroa_const_immediate_rules = [
+    { opcode = "ConstNone", rule = "always_immediate" },
+    { opcode = "ConstBool", rule = "always_immediate" },
+    { opcode = "ConstFloat", rule = "always_immediate" },
+    { opcode = "ConstInt", rule = "inline_int_if_range" },
+]
+
+strength_reduction_rules = [
+    { opcode = "Mul", rule = "mul_by_two" },
+    { opcode = "Pow", rule = "pow_square" },
+    { opcode = "FloorDiv", rule = "power_two_floor_div" },
+    { opcode = "Mod", rule = "power_two_mod" },
+]
+
+scev_expr_rules = [
+    { opcode = "Add", rule = "add" },
+    { opcode = "Sub", rule = "sub" },
+    { opcode = "Mul", rule = "mul" },
 ]
 
 exception_handling_opcodes = [

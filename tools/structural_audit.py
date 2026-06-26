@@ -542,7 +542,7 @@ def probe_semantic_fallthroughs(root: Path) -> list[Finding]:
             opcode_arms = len(set(_OPCODE_ARM_RE.findall(block)))
             if opcode_arms < 2:
                 continue
-            if not (_KIND_SCRUTINEE_RE.search(scrutinee) or opcode_arms >= 3):
+            if not _KIND_SCRUTINEE_RE.search(scrutinee):
                 continue
             wildcard_start = _top_level_wildcard_arm_start(block)
             if wildcard_start is None:

@@ -8,7 +8,10 @@ use std::collections::HashMap;
 
 use super::PassStats;
 use crate::tir::function::TirFunction;
-use crate::tir::op_kinds_generated::opcode_operand_independent_result_tir_type;
+use crate::tir::op_kinds_generated::{
+    StrengthReductionRule, opcode_operand_independent_result_tir_type,
+    opcode_strength_reduction_rule_table,
+};
 use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
 use crate::tir::types::TirType;
 use crate::tir::values::ValueId;
@@ -53,9 +56,15 @@ pub fn run(func: &mut TirFunction) -> PassStats {
     // Phase 2: Scan all blocks and rewrite eligible ops.
     let block_ids: Vec<_> = func.blocks.keys().copied().collect();
     for bid in block_ids {
-        let block = func.blocks.get_mut(&bid).unwrap();
-        for op in &mut block.ops {
+        let old_ops = {
+            let block = func.blocks.get_mut(&bid).unwrap();
+            std::mem::take(&mut block.ops)
+        };
+        let mut new_ops = Vec::with_capacity(old_ops.len());
+
+        for op in old_ops {
             if op.results.is_empty() || op.operands.len() < 2 {
+                new_ops.push(op);
                 continue;
             }
 
@@ -67,45 +76,63 @@ pub fn run(func: &mut TirFunction) -> PassStats {
             // Only reduce I64 operations. Check that operands are I64-typed.
             // We use a heuristic: if the constant operand is from ConstInt, it's I64.
             // For the non-constant operand, check our type map.
-            match op.opcode {
-                OpCode::Mul => {
-                    // x * 2 => x + x  (special case for exactly 2)
-                    // x * 2^k => x << k
-                    // Also handle 2 * x (commutative).
-                    if let Some(mut rewrite) =
-                        try_mul_reduce(lhs, rhs, &const_map, &type_map, &mut stats)
-                    {
-                        rewrite.results = results;
-                        rewrite.inherit_source_from(&old);
-                        *op = rewrite;
-                    }
+            let rewrite = match opcode_strength_reduction_rule_table(op.opcode) {
+                StrengthReductionRule::MulByTwo => {
+                    try_mul_reduce(lhs, rhs, &const_map, &type_map, &mut stats)
                 }
-                OpCode::Pow => {
-                    // x ** 2 => x * x
-                    if let Some(&exp) = const_map.get(&rhs)
-                        && exp == 2
-                        && is_i64(&lhs, &type_map)
-                    {
-                        op.opcode = OpCode::Mul;
-                        op.operands = vec![lhs, lhs];
-                        stats.values_changed += 1;
-                    }
+                StrengthReductionRule::PowSquare => {
+                    try_pow_square_reduce(lhs, rhs, &const_map, &type_map, &mut stats)
                 }
-                OpCode::FloorDiv => {
-                    // x // 2^k => x >> k — deferred to Phase 3 (requires inserting
-                    // a new ConstInt op for the shift amount, which needs an op
-                    // insertion API not yet available).
-                }
-                OpCode::Mod => {
-                    // x % 2^k => x & (2^k - 1) — same complexity issue as FloorDiv.
-                    // Deferred to Phase 3.
-                }
-                _ => {}
+                StrengthReductionRule::PowerTwoFloorDiv => try_power_two_rhs_reduce(
+                    lhs,
+                    const_map.get(&rhs).copied(),
+                    is_i64(&lhs, &type_map),
+                    OpCode::Shr,
+                    |divisor| positive_power_of_two_shift(divisor),
+                    &old,
+                    func,
+                    &mut const_map,
+                    &mut type_map,
+                    &mut stats,
+                ),
+                StrengthReductionRule::PowerTwoMod => try_power_two_rhs_reduce(
+                    lhs,
+                    const_map.get(&rhs).copied(),
+                    is_i64(&lhs, &type_map),
+                    OpCode::BitAnd,
+                    |divisor| {
+                        positive_power_of_two_shift(divisor)?;
+                        Some(divisor - 1)
+                    },
+                    &old,
+                    func,
+                    &mut const_map,
+                    &mut type_map,
+                    &mut stats,
+                ),
+                StrengthReductionRule::None => None,
+            };
+
+            if let Some(mut rewrite) = rewrite {
+                rewrite.replacement.results = results;
+                rewrite.replacement.inherit_source_from(&old);
+                new_ops.extend(rewrite.prefix.drain(..));
+                new_ops.push(rewrite.replacement);
+            } else {
+                new_ops.push(op);
             }
         }
+
+        let block = func.blocks.get_mut(&bid).unwrap();
+        block.ops = new_ops;
     }
 
     stats
+}
+
+struct StrengthRewrite {
+    prefix: Vec<TirOp>,
+    replacement: TirOp,
 }
 
 /// Attempt to reduce a Mul operation. Returns a replacement TirOp if applicable.
@@ -115,7 +142,7 @@ fn try_mul_reduce(
     const_map: &HashMap<ValueId, i64>,
     type_map: &HashMap<ValueId, TirType>,
     stats: &mut PassStats,
-) -> Option<TirOp> {
+) -> Option<StrengthRewrite> {
     // Try rhs as constant first, then lhs (commutative).
     let (var_operand, const_val) = if let Some(&v) = const_map.get(&rhs) {
         if !is_i64(&lhs, type_map) {
@@ -131,51 +158,107 @@ fn try_mul_reduce(
         return None;
     };
 
-    if const_val <= 0 {
-        return None;
-    }
-
     if const_val == 2 {
         // x * 2 => x + x
         stats.values_changed += 1;
-        return Some(TirOp {
-            dialect: Dialect::Molt,
-            opcode: OpCode::Add,
-            operands: vec![var_operand, var_operand],
-            results: vec![], // caller patches results
-            attrs: AttrDict::new(),
-            source_span: None,
+        return Some(StrengthRewrite {
+            prefix: Vec::new(),
+            replacement: TirOp {
+                dialect: Dialect::Molt,
+                opcode: OpCode::Add,
+                operands: vec![var_operand, var_operand],
+                results: vec![], // caller patches results
+                attrs: AttrDict::new(),
+                source_span: None,
+            },
         });
     }
 
-    if (const_val as u64).is_power_of_two() {
-        let k = const_val.trailing_zeros() as i64;
-        // x * 2^k => x << k
-        // We need a ConstInt(k) as the shift operand. We reuse the existing
-        // constant ValueId (rhs or lhs) but we need to change its value from
-        // 2^k to k. That would corrupt other uses.
-        //
-        // For Phase 2: we create the Shl op pointing to the same const operand.
-        // The caller's SCCP pass (or a later cleanup) will handle the const value.
-        // Actually, let's use `rhs` (the const operand) directly — but its value
-        // is 2^k, not k. We need a new ValueId with value k.
-        //
-        // Since we can't easily insert a new op here, we use a simpler strategy:
-        // return a Shl with the const operand, and note that the const value
-        // needs to be k. We'll do a post-pass fixup.
-        //
-        // Even simpler: for the shift reduction, we store the shift amount as an
-        // attribute on the Shl op itself, and the backend can read it from there.
-        // But that's non-standard for the TIR.
-        //
-        // Practical approach: don't reduce x * (2^k) for k > 1 in this phase.
-        // Only reduce x * 2 => x + x and x ** 2 => x * x.
-        // We'll add Shl reduction in Phase 3 when we have a proper op insertion API.
-        let _ = k;
+    None
+}
+
+fn try_pow_square_reduce(
+    lhs: ValueId,
+    rhs: ValueId,
+    const_map: &HashMap<ValueId, i64>,
+    type_map: &HashMap<ValueId, TirType>,
+    stats: &mut PassStats,
+) -> Option<StrengthRewrite> {
+    if let Some(&exp) = const_map.get(&rhs)
+        && exp == 2
+        && is_i64(&lhs, type_map)
+    {
+        stats.values_changed += 1;
+        return Some(StrengthRewrite {
+            prefix: Vec::new(),
+            replacement: TirOp {
+                dialect: Dialect::Molt,
+                opcode: OpCode::Mul,
+                operands: vec![lhs, lhs],
+                results: vec![],
+                attrs: AttrDict::new(),
+                source_span: None,
+            },
+        });
+    }
+    None
+}
+
+fn try_power_two_rhs_reduce(
+    lhs: ValueId,
+    rhs_const: Option<i64>,
+    lhs_is_i64: bool,
+    replacement_opcode: OpCode,
+    derived_const: impl FnOnce(i64) -> Option<i64>,
+    source: &TirOp,
+    func: &mut TirFunction,
+    const_map_mut: &mut HashMap<ValueId, i64>,
+    type_map_mut: &mut HashMap<ValueId, TirType>,
+    stats: &mut PassStats,
+) -> Option<StrengthRewrite> {
+    let divisor = rhs_const?;
+    let const_value = derived_const(divisor)?;
+    if !lhs_is_i64 {
         return None;
     }
+    let const_id = func.fresh_value();
+    const_map_mut.insert(const_id, const_value);
+    type_map_mut.insert(const_id, TirType::I64);
+    stats.values_changed += 1;
+    let mut const_op = const_int_op(const_id, const_value);
+    const_op.inherit_source_from(source);
+    Some(StrengthRewrite {
+        prefix: vec![const_op],
+        replacement: TirOp {
+            dialect: Dialect::Molt,
+            opcode: replacement_opcode,
+            operands: vec![lhs, const_id],
+            results: vec![], // caller patches results
+            attrs: AttrDict::new(),
+            source_span: None,
+        },
+    })
+}
 
-    None
+fn positive_power_of_two_shift(value: i64) -> Option<i64> {
+    if value > 0 && (value as u64).is_power_of_two() {
+        Some(value.trailing_zeros() as i64)
+    } else {
+        None
+    }
+}
+
+fn const_int_op(result: ValueId, value: i64) -> TirOp {
+    let mut attrs = AttrDict::new();
+    attrs.insert("value".into(), AttrValue::Int(value));
+    TirOp {
+        dialect: Dialect::Molt,
+        opcode: OpCode::ConstInt,
+        operands: vec![],
+        results: vec![result],
+        attrs,
+        source_span: None,
+    }
 }
 
 /// Check if a ValueId is known to have type I64.
@@ -280,12 +363,36 @@ mod tests {
     }
 
     #[test]
-    fn mul_by_8_unchanged_phase2() {
-        // x * 8 — ideally x << 3, but deferred to Phase 3 (no op insertion API).
-        // For Phase 2, this remains a Mul.
+    fn mul_by_8_stays_mul_without_range_proof() {
+        // Shl is not an overflow-custody replacement for Mul unless a separate
+        // range proof exists, so the semantics-preserving reduction remains
+        // limited to x * 2 => x + x.
         let ops = vec![make_const_int(1, 8), make_binop(OpCode::Mul, 2, 0, 1)];
         let result = run_sr(ops, 3);
-        // Phase 2 doesn't reduce x * 8 yet.
         assert_eq!(result[1].opcode, OpCode::Mul);
+    }
+
+    #[test]
+    fn floordiv_by_power_two_becomes_shift_with_fresh_const() {
+        let ops = vec![make_const_int(1, 8), make_binop(OpCode::FloorDiv, 2, 0, 1)];
+        let result = run_sr(ops, 3);
+        assert_eq!(result.len(), 3);
+        assert_eq!(result[1].opcode, OpCode::ConstInt);
+        assert_eq!(result[1].attrs.get("value"), Some(&AttrValue::Int(3)));
+        assert_eq!(result[2].opcode, OpCode::Shr);
+        assert_eq!(result[2].operands, vec![ValueId(0), result[1].results[0]]);
+        assert_eq!(result[2].results, vec![ValueId(2)]);
+    }
+
+    #[test]
+    fn mod_by_power_two_becomes_bitand_with_fresh_mask() {
+        let ops = vec![make_const_int(1, 8), make_binop(OpCode::Mod, 2, 0, 1)];
+        let result = run_sr(ops, 3);
+        assert_eq!(result.len(), 3);
+        assert_eq!(result[1].opcode, OpCode::ConstInt);
+        assert_eq!(result[1].attrs.get("value"), Some(&AttrValue::Int(7)));
+        assert_eq!(result[2].opcode, OpCode::BitAnd);
+        assert_eq!(result[2].operands, vec![ValueId(0), result[1].results[0]]);
+        assert_eq!(result[2].results, vec![ValueId(2)]);
     }
 }

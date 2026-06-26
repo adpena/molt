@@ -210,6 +210,22 @@ def test_generated_opcode_table_role_match_is_not_flagged():
     assert findings == [], f"generated role match wrongly flagged: {findings}"
 
 
+def test_type_to_opcode_constructor_match_is_not_flagged():
+    """A non-opcode scrutinee that constructs opcodes is not an opcode classifier."""
+    rust = (
+        "fn placeholder(ty: &TirType) -> OpCode {\n"
+        "    match ty {\n"
+        "        TirType::I64 => OpCode::ConstInt,\n"
+        "        TirType::Bool => OpCode::ConstBool,\n"
+        "        TirType::F64 => OpCode::ConstFloat,\n"
+        "        _ => OpCode::ConstNone,\n"
+        "    }\n"
+        "}\n"
+    )
+    findings = _scan_rust_string(rust, "tir/ops.rs")
+    assert findings == [], f"type-to-opcode constructor wrongly flagged: {findings}"
+
+
 def test_exhaustive_match_is_not_flagged():
     """A match with NO wildcard is rustc-gated and must not be flagged."""
     rust = (

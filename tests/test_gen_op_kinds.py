@@ -3279,6 +3279,104 @@ def test_module_slot_promotion_roles_delegate_to_generated_tables() -> None:
     assert "matches!(op.opcode, OpCode::ModuleGetAttr" not in production
 
 
+def test_residual_tir_semantic_roles_delegate_to_generated_tables() -> None:
+    """Residual TIR semantic opcode roles belong to the op-kind registry."""
+    gen = _gen()
+    data = gen.load_table()
+    rendered = gen.render_rs(data)
+
+    overflow_peel = (
+        ROOT / "runtime/molt-tir/src/tir/passes/overflow_peel.rs"
+    ).read_text(encoding="utf-8")
+    verify = (ROOT / "runtime/molt-tir/src/tir/verify.rs").read_text(
+        encoding="utf-8"
+    )
+    sroa = (ROOT / "runtime/molt-tir/src/tir/passes/sroa.rs").read_text(
+        encoding="utf-8"
+    )
+    strength = (
+        ROOT / "runtime/molt-tir/src/tir/passes/strength_reduction.rs"
+    ).read_text(encoding="utf-8")
+    scev = (ROOT / "runtime/molt-tir/src/tir/passes/scev.rs").read_text(
+        encoding="utf-8"
+    )
+
+    assert data["tir_verify_attr_rules"] == [
+        {"opcode": "Call", "rule": "call_callee"},
+        {"opcode": "CallBuiltin", "rule": "call_callee"},
+        {"opcode": "CallMethod", "rule": "call_method"},
+        {"opcode": "ObjectNewBoundStack", "rule": "positive_payload_bytes"},
+    ]
+    assert data["sroa_const_immediate_rules"] == [
+        {"opcode": "ConstNone", "rule": "always_immediate"},
+        {"opcode": "ConstBool", "rule": "always_immediate"},
+        {"opcode": "ConstFloat", "rule": "always_immediate"},
+        {"opcode": "ConstInt", "rule": "inline_int_if_range"},
+    ]
+    assert data["strength_reduction_rules"] == [
+        {"opcode": "Mul", "rule": "mul_by_two"},
+        {"opcode": "Pow", "rule": "pow_square"},
+        {"opcode": "FloorDiv", "rule": "power_two_floor_div"},
+        {"opcode": "Mod", "rule": "power_two_mod"},
+    ]
+    assert data["scev_expr_rules"] == [
+        {"opcode": "Add", "rule": "add"},
+        {"opcode": "Sub", "rule": "sub"},
+        {"opcode": "Mul", "rule": "mul"},
+    ]
+
+    for enum_name, fn_name in (
+        ("TirVerifyAttrRule", "opcode_tir_verify_attr_rule_table"),
+        ("SroaConstImmediateRule", "opcode_sroa_const_immediate_rule_table"),
+        ("StrengthReductionRule", "opcode_strength_reduction_rule_table"),
+        ("ScevExprRule", "opcode_scev_expr_rule_table"),
+    ):
+        assert _rust_pub_decl(rendered, "enum", enum_name)
+        assert _rust_pub_fn(rendered, fn_name)
+
+    rendered_expectations = {
+        "OpCode::Call => TirVerifyAttrRule::CallCallee": rendered,
+        "OpCode::ObjectNewBoundStack => TirVerifyAttrRule::PositivePayloadBytes": rendered,
+        "OpCode::ConstNone => SroaConstImmediateRule::AlwaysImmediate": rendered,
+        "OpCode::ConstInt => SroaConstImmediateRule::InlineIntIfRange": rendered,
+        "OpCode::FloorDiv => StrengthReductionRule::PowerTwoFloorDiv": rendered,
+        "OpCode::Mod => StrengthReductionRule::PowerTwoMod": rendered,
+        "OpCode::Add => ScevExprRule::Add": rendered,
+        "OpCode::Sub => ScevExprRule::Sub": rendered,
+        "OpCode::ModuleCacheGet => ScevExprRule::None": rendered,
+    }
+    for needle, haystack in rendered_expectations.items():
+        assert needle in haystack
+
+    overflow_production = overflow_peel.split("#[cfg(test)]", maxsplit=1)[0]
+    assert "opcode_is_state_machine_table" in overflow_production
+    assert "OpCode::StateSwitch" not in overflow_production
+    assert "matches!(\n                op.opcode" not in overflow_production
+
+    verify_body = _rust_fn_body(verify, "fn verify_op_attributes(")
+    assert "opcode_tir_verify_attr_rule_table(op.opcode)" in verify_body
+    assert "OpCode::Call | OpCode::CallBuiltin" not in verify_body
+    assert "OpCode::ObjectNewBoundStack" not in verify_body
+
+    sroa_body = _rust_fn_body(sroa, "fn collect_const_immediates(")
+    assert "opcode_sroa_const_immediate_rule_table(op.opcode)" in sroa_body
+    assert "OpCode::ConstNone | OpCode::ConstBool | OpCode::ConstFloat" not in sroa_body
+    assert "OpCode::ConstInt if" not in sroa_body
+
+    strength_production = strength.split("#[cfg(test)]", maxsplit=1)[0]
+    assert "opcode_strength_reduction_rule_table(op.opcode)" in strength_production
+    assert "match op.opcode" not in strength_production
+    assert "PowerTwoFloorDiv" in strength_production
+    assert "PowerTwoMod" in strength_production
+    assert "Phase 3" not in strength_production
+
+    scev_body = _rust_fn_body(scev, "fn scev_of_op(")
+    assert "opcode_scev_expr_rule_table(opcode)" in scev_body
+    assert "OpCode::Add if" not in scev_body
+    assert "OpCode::Sub if" not in scev_body
+    assert "OpCode::Mul if" not in scev_body
+
+
 def test_refcount_heap_exposure_delegates_to_generated_table() -> None:
     """Deferred-RC heap exposure has one opcode authority."""
     gen = _gen()
