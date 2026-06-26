@@ -143,11 +143,7 @@ def test_alloc_zeros():
 
 
 def test_kernel_simulation():
-    """Kernel decorator + simulated sequential execution.
-
-    IMPORTANT: kernel body must use gpu.thread_id() (module-qualified),
-    NOT bare thread_id(), because the simulation monkey-patches the module attr.
-    """
+    """Kernel decorator + simulated sequential execution."""
     import molt.gpu as gpu
 
     @gpu.kernel
@@ -179,6 +175,37 @@ def test_kernel_scalar_multiply():
     scale[1, 3](a, out, 3.0, 3)
     result = gpu.from_device(out)
     assert result == [6.0, 12.0, 18.0], f"Got {result}"
+
+
+def test_kernel_simulation_exposes_launch_geometry(monkeypatch):
+    import molt.gpu as gpu
+    from molt.gpu import thread_id as imported_thread_id
+
+    monkeypatch.setattr(gpu, "_MOLT_GPU_KERNEL_LAUNCH", None)
+    monkeypatch.setattr(gpu._molt_intrinsics, "load_intrinsic", lambda _name: None)
+    monkeypatch.setattr(gpu._molt_intrinsics, "runtime_active", lambda: False)
+
+    @gpu.kernel
+    def capture(tids, block_ids, block_dims, grid_dims, n):
+        tid = imported_thread_id()
+        if tid < n:
+            tids[tid] = tid
+            block_ids[tid] = gpu.block_id()
+            block_dims[tid] = gpu.block_dim()
+            grid_dims[tid] = gpu.grid_dim()
+
+    n = 6
+    tids = gpu.alloc(n, int)
+    block_ids = gpu.alloc(n, int)
+    block_dims = gpu.alloc(n, int)
+    grid_dims = gpu.alloc(n, int)
+
+    capture[2, 3](tids, block_ids, block_dims, grid_dims, n)
+
+    assert gpu.from_device(tids) == [0, 1, 2, 3, 4, 5]
+    assert gpu.from_device(block_ids) == [0, 0, 0, 1, 1, 1]
+    assert gpu.from_device(block_dims) == [3, 3, 3, 3, 3, 3]
+    assert gpu.from_device(grid_dims) == [2, 2, 2, 2, 2, 2]
 
 
 def test_kernel_launcher_uses_backend_intrinsic_when_available(monkeypatch):
@@ -357,6 +384,9 @@ def test_kernel_simulation_restores_thread_id_after_kernel_error(monkeypatch):
     import molt.gpu as gpu
 
     original_thread_id = gpu.thread_id
+    original_block_id = gpu.block_id
+    original_block_dim = gpu.block_dim
+    original_grid_dim = gpu.grid_dim
     monkeypatch.setattr(gpu, "_MOLT_GPU_KERNEL_LAUNCH", None)
     monkeypatch.setattr(gpu._molt_intrinsics, "load_intrinsic", lambda _name: None)
     monkeypatch.setattr(gpu._molt_intrinsics, "runtime_active", lambda: False)
@@ -364,13 +394,22 @@ def test_kernel_simulation_restores_thread_id_after_kernel_error(monkeypatch):
     @gpu.kernel
     def explode():
         assert gpu.thread_id() == 0
+        assert gpu.block_id() == 0
+        assert gpu.block_dim() == 2
+        assert gpu.grid_dim() == 1
         raise RuntimeError("boom")
 
     with pytest.raises(RuntimeError, match="boom"):
-        explode[1, 1]()
+        explode[1, 2]()
 
     assert gpu.thread_id is original_thread_id
+    assert gpu.block_id is original_block_id
+    assert gpu.block_dim is original_block_dim
+    assert gpu.grid_dim is original_grid_dim
     assert gpu.thread_id() == 0
+    assert gpu.block_id() == 0
+    assert gpu.block_dim() == 1
+    assert gpu.grid_dim() == 1
 
 
 # ── Tensor ───────────────────────────────────────────────────────────────────
@@ -380,6 +419,9 @@ def test_kernel_simulation_propagates_out_of_bounds_index(monkeypatch):
     import molt.gpu as gpu
 
     original_thread_id = gpu.thread_id
+    original_block_id = gpu.block_id
+    original_block_dim = gpu.block_dim
+    original_grid_dim = gpu.grid_dim
     monkeypatch.setattr(gpu, "_MOLT_GPU_KERNEL_LAUNCH", None)
     monkeypatch.setattr(gpu._molt_intrinsics, "load_intrinsic", lambda _name: None)
     monkeypatch.setattr(gpu._molt_intrinsics, "runtime_active", lambda: False)
@@ -394,7 +436,13 @@ def test_kernel_simulation_propagates_out_of_bounds_index(monkeypatch):
         unguarded_write[1, 2](out)
 
     assert gpu.thread_id is original_thread_id
+    assert gpu.block_id is original_block_id
+    assert gpu.block_dim is original_block_dim
+    assert gpu.grid_dim is original_grid_dim
     assert gpu.thread_id() == 0
+    assert gpu.block_id() == 0
+    assert gpu.block_dim() == 1
+    assert gpu.grid_dim() == 1
     assert gpu.from_device(out) == [1.0]
 
 

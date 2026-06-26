@@ -26,15 +26,6 @@ import array
 import operator
 import _intrinsics as _molt_intrinsics
 
-TYPE_CHECKING = False
-if TYPE_CHECKING:
-    from typing import Any, cast
-else:
-    Any = object()
-
-    def cast(_tp, value):
-        return value
-
 
 def _default_format_char(element_type: type) -> str:
     return "d" if element_type is float else "q"
@@ -216,6 +207,12 @@ def alloc(size: int, dtype: type = float, *, format_char: str | None = None) -> 
     return Buffer(bytearray(size * elem_size), dtype, size, format_char=resolved_format)
 
 
+_MOLT_GPU_THREAD_ID = 0
+_MOLT_GPU_BLOCK_ID = 0
+_MOLT_GPU_BLOCK_DIM = 1
+_MOLT_GPU_GRID_DIM = 1
+
+
 def thread_id() -> int:
     """Get the current GPU thread ID.
 
@@ -227,25 +224,24 @@ def thread_id() -> int:
     - HIP: hipBlockIdx_x * hipBlockDim_x + hipThreadIdx_x
 
     Until that lowering path is active, interpreted and compiled sequential
-    launcher fallback both treat it as a normal Python function so the launcher
-    can override it at runtime for correctness.
+    launcher fallback both read the same canonical launch geometry state.
     """
-    return 0
+    return _MOLT_GPU_THREAD_ID
 
 
 def block_id() -> int:
-    """Get the current GPU block/workgroup ID. Compile-time intrinsic."""
-    return 0
+    """Get the current GPU block/workgroup ID."""
+    return _MOLT_GPU_BLOCK_ID
 
 
 def block_dim() -> int:
-    """Get the GPU block/workgroup size. Compile-time intrinsic."""
-    return 1
+    """Get the GPU block/workgroup size."""
+    return _MOLT_GPU_BLOCK_DIM
 
 
 def grid_dim() -> int:
-    """Get the GPU grid dimension. Compile-time intrinsic."""
-    return 1
+    """Get the GPU grid dimension."""
+    return _MOLT_GPU_GRID_DIM
 
 
 def barrier():
@@ -288,20 +284,33 @@ class _KernelLauncher:
         ):
             return backend_launch(self._func, grid, threads, args)
 
-        total_threads = grid * threads if isinstance(grid, int) else grid
+        total_threads = grid * threads
 
-        # Interpreted fallback: simulate GPU execution sequentially
-        import molt.gpu as gpu_module
+        global _MOLT_GPU_THREAD_ID
+        global _MOLT_GPU_BLOCK_ID
+        global _MOLT_GPU_BLOCK_DIM
+        global _MOLT_GPU_GRID_DIM
 
-        original_thread_id = gpu_module.thread_id
-
+        original_launch_geometry = (
+            _MOLT_GPU_THREAD_ID,
+            _MOLT_GPU_BLOCK_ID,
+            _MOLT_GPU_BLOCK_DIM,
+            _MOLT_GPU_GRID_DIM,
+        )
         try:
+            _MOLT_GPU_BLOCK_DIM = threads
+            _MOLT_GPU_GRID_DIM = grid
             for tid in range(total_threads):
-                # Monkey-patch thread_id to return current tid
-                gpu_module.thread_id = cast(Any, lambda _tid=tid: _tid)
+                _MOLT_GPU_THREAD_ID = tid
+                _MOLT_GPU_BLOCK_ID = tid // threads
                 self._func(*args)
         finally:
-            gpu_module.thread_id = original_thread_id
+            (
+                _MOLT_GPU_THREAD_ID,
+                _MOLT_GPU_BLOCK_ID,
+                _MOLT_GPU_BLOCK_DIM,
+                _MOLT_GPU_GRID_DIM,
+            ) = original_launch_geometry
 
 
 def kernel(func):
