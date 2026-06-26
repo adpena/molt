@@ -12,12 +12,12 @@ Product board for the molt structural sweep — the first instrument of the Molt
 | hand_classified_matches | 0 |
 | critical_hand_classifications | 0 |
 | handset_classifications | 0 |
-| debt_markers_total | 520 |
-| god_files | 25 |
+| debt_markers_total | 519 |
+| god_files | 24 |
 | max_god_file_lines | 7230 |
-| structural_god_files | 6 |
+| structural_god_files | 5 |
 | max_god_file_structural_score | 1383 |
-| god_file_large_regions | 18 |
+| god_file_large_regions | 14 |
 | native_scalar_plan_authority_violations | 0 |
 | repr_name_scalar_authority_violations | 0 |
 | duplicate_authorities | 0 |
@@ -33,7 +33,6 @@ Product board for the molt structural sweep — the first instrument of the Molt
 | medium | god_file | `runtime/molt-runtime/src/builtins/types.rs` | 6512 lines (ceiling 4000) |
 | medium | god_file | `runtime/molt-runtime/src/builtins/functions.rs` | 6249 lines (ceiling 4000) |
 | medium | god_file | `runtime/molt-runtime/src/builtins/modules.rs` | 6019 lines (ceiling 4000) |
-| medium | structural_god_file | `runtime/molt-runtime/src/object/ops_builtins.rs` | 4 large top-level regions (432 excess lines) |
 | medium | debt_marker | `tools/linear_seed_backlog.py` | 21 debt/workaround markers |
 | medium | debt_marker | `tools/structural_audit.py` | 20 debt/workaround markers |
 | medium | debt_marker | `src/molt/stdlib/tempfile.py` | 16 debt/workaround markers |
@@ -41,6 +40,7 @@ Product board for the molt structural sweep — the first instrument of the Molt
 | low | god_file | `runtime/molt-runtime/src/builtins/platform.rs` | 5934 lines (ceiling 4000) |
 | low | god_file | `runtime/molt-runtime/src/async_rt/generators_async.rs` | 5879 lines (ceiling 4000) |
 | low | god_file | `runtime/molt-runtime/src/object/ops_sys.rs` | 5741 lines (ceiling 4000) |
+| low | god_file | `runtime/molt-runtime-regex/src/regex.rs` | 5709 lines (ceiling 4000) |
 
 ## TOP DELETION CANDIDATES (0) — replace, don't just delete
 
@@ -57,7 +57,7 @@ Product board for the molt structural sweep — the first instrument of the Molt
 
 ## Full findings by probe
 
-### god_file (25)
+### god_file (24)
 
 | sev | what | where | action |
 | --- | --- | --- | --- |
@@ -80,25 +80,13 @@ Product board for the molt structural sweep — the first instrument of the Molt
 | low | 5026 lines (ceiling 4000) | `runtime/molt-runtime/src/object/ops_string.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | low | 4895 lines (ceiling 4000) | `runtime/molt-backend/src/rust.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | low | 4817 lines (ceiling 4000) | `runtime/molt-runtime/src/object/ops_bytes.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
-| low | 4459 lines (ceiling 4000) | `runtime/molt-runtime/src/object/ops_builtins.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | low | 4446 lines (ceiling 4000) | `runtime/molt-runtime/src/object/ops_arith.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | low | 4350 lines (ceiling 4000) | `runtime/molt-runtime/src/builtins/functions_pickle.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | low | 4112 lines (ceiling 4000) | `runtime/molt-runtime/src/async_rt/scheduler.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | low | 4002 lines (ceiling 4000) | `runtime/molt-backend/src/native_backend/function_compiler/fc/arith.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | low | 3594 lines (ceiling 2500) | `tools/memory_guard.py` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 
-### structural_god_file (6)
-
-| sev | what | where | action |
-| --- | --- | --- | --- |
-| medium | 4 large top-level regions (432 excess lines) | `runtime/molt-runtime/src/object/ops_builtins.rs` | extract the large top-level regions into cohesive modules; do not add more autho |
-| low | 3 large top-level regions (1383 excess lines) | `runtime/molt-wasm-host/src/main.rs` | extract the large top-level regions into cohesive modules; do not add more autho |
-| low | 3 large top-level regions (1028 excess lines) | `runtime/molt-runtime/src/call/bind.rs` | extract the large top-level regions into cohesive modules; do not add more autho |
-| low | 3 large top-level regions (737 excess lines) | `runtime/molt-runtime/src/builtins/functions_pickle.rs` | extract the large top-level regions into cohesive modules; do not add more autho |
-| low | 3 large top-level regions (606 excess lines) | `tools/memory_guard.py` | extract the large top-level regions into cohesive modules; do not add more autho |
-| low | 2 large top-level regions (501 excess lines) | `runtime/molt-runtime/src/async_rt/scheduler.rs` | extract the large top-level regions into cohesive modules; do not add more autho |
-
-### debt_marker (399)
+### debt_marker (398)
 
 | sev | what | where | action |
 | --- | --- | --- | --- |
@@ -142,7 +130,17 @@ Product board for the molt structural sweep — the first instrument of the Molt
 | low | 2 debt/workaround markers | `src/molt/stdlib/test/support/import_helper.py` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 1 debt/workaround markers | `runtime/molt-tir/src/tir/bolt.rs` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 1 debt/workaround markers | `runtime/molt-tir/src/tir/call_facts.rs` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
-| … | _359 more_ | | run `--json` for full list |
+| … | _358 more_ | | run `--json` for full list |
+
+### structural_god_file (5)
+
+| sev | what | where | action |
+| --- | --- | --- | --- |
+| low | 3 large top-level regions (1383 excess lines) | `runtime/molt-wasm-host/src/main.rs` | extract the large top-level regions into cohesive modules; do not add more autho |
+| low | 3 large top-level regions (1028 excess lines) | `runtime/molt-runtime/src/call/bind.rs` | extract the large top-level regions into cohesive modules; do not add more autho |
+| low | 3 large top-level regions (737 excess lines) | `runtime/molt-runtime/src/builtins/functions_pickle.rs` | extract the large top-level regions into cohesive modules; do not add more autho |
+| low | 3 large top-level regions (606 excess lines) | `tools/memory_guard.py` | extract the large top-level regions into cohesive modules; do not add more autho |
+| low | 2 large top-level regions (501 excess lines) | `runtime/molt-runtime/src/async_rt/scheduler.rs` | extract the large top-level regions into cohesive modules; do not add more autho |
 
 ### registry_reconciliation (1)
 
