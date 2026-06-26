@@ -197,6 +197,9 @@ def test_moved_methods_resolve_on_class() -> None:
     assert hasattr(SimpleTIRGenerator, "_serialize_object_attr_op")
     assert hasattr(SimpleTIRGenerator, "_serialize_collection_op")
     assert hasattr(SimpleTIRGenerator, "_serialize_loop_string_async_op")
+    assert hasattr(SimpleTIRGenerator, "_serialization_field_offset")
+    assert hasattr(SimpleTIRGenerator, "_serialization_control_value")
+    assert hasattr(SimpleTIRGenerator, "_serialization_carry_bound_local")
     assert hasattr(SimpleTIRGenerator, "_scalarize_string_split_fields_json")
     # compile warnings
     assert hasattr(SimpleTIRGenerator, "_prescan_compile_warnings")

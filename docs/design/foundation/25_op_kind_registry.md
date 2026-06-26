@@ -12,11 +12,11 @@
 
 A `MoltOp` produced by the frontend visitors is serialized to a JSON op whose `"kind"` string is the **wire contract** between the Python frontend and the Rust backend. Five independent components must agree on that vocabulary, and each keeps its **own private copy** of the table:
 
-1. **Frontend emitter** — `src/molt/frontend/lowering/serialization.py`, the giant `map_ops_to_json` if/elif chain (line 396). Emits the JSON `"kind"` string (lowercase). **This is the authoritative wire vocabulary** (see §3).
+1. **Frontend emitter** — `src/molt/frontend/lowering/serialization.py` plus the extracted `serialization_*_ops.py` handler modules. `map_ops_to_json` dispatches to the handlers, which emit the JSON `"kind"` string (lowercase). **This is the authoritative wire vocabulary** (see §3).
 2. **TIR SSA mapper** — `kind_to_opcode` in `runtime/molt-tir/src/tir/ssa.rs:1902`, backed by `op_kinds_generated.rs:20`. Maps a kind string → `OpCode`. Unknown kinds deliberately fall back to `OpCode::Copy`, stashing the spelling in `_original_kind`, as the runtime backstop behind the generated registry.
-3. **LLVM lowering** — `lower_preserved_simpleir_op` (`runtime/molt-backend/src/llvm_backend/lowering.rs:6837`) dedicated arms + the ABI-exact `molt_<kind>` runtime fallback `try_lower_preserved_runtime_call` (lowering.rs:10426), guarded by a **terminal fail-loud** state (lowering.rs:2410-2502).
+3. **LLVM lowering** — `lower_preserved_simpleir_op` (`runtime/molt-backend/src/llvm_backend/lowering/preserved_ops.rs`) dedicated arms + the ABI-exact `molt_<kind>` runtime fallback `try_lower_preserved_runtime_call` (`lowering/runtime_helpers.rs`), guarded by a **terminal fail-loud** state in `lowering/op_dispatch.rs`.
 4. **RC/alias classifier** — `classify_copy_kind` / `copy_kind_mints_fresh_owned_ref` / `copy_kind_is_explicit_no_heap_move` in `runtime/molt-tir/src/tir/passes/alias_analysis.rs:535/496/645`. **Its `_ => CopyLowering::TransparentAlias` default (alias_analysis.rs:564) is the UAF-escalation precondition.**
-5. **Native + WASM SimpleIR dispatch** — `function_compiler.rs` / `wasm.rs`, reached via the `lower_to_simple` `_original_kind` restoration (`runtime/molt-tir/src/tir/lower_to_simple.rs:1547`).
+5. **Native + WASM SimpleIR dispatch** — extracted native `function_compiler/fc/*` handler slices plus the WASM facade/child modules, reached via the `lower_to_simple` `_original_kind` restoration (`runtime/molt-tir/src/tir/lower_to_simple/op_lowering.rs`).
 
 The proven failures:
 
@@ -34,7 +34,7 @@ The structural cause is identical in every case: **N copies of one table, no com
 
 `tools/audit_op_kinds.py` extracts each component's table **directly from source** (never hand-copied) and prints the drift matrix. Extraction methods:
 
-- **Frontend (Python):** `ast`-based. 416 constant `"kind": "literal"` dict-value literals + 4 computed sites resolved structurally:
+- **Frontend (Python):** `ast`-based over `serialization.py` and extracted `serialization_*_ops.py` handler modules. Constant `"kind": "literal"` dict-value literals plus computed sites are resolved structurally:
   - `serialization.py:635` `op.kind.lower()` under `op.kind in ("ADD","SUB","MUL")` → `{add,sub,mul}`.
   - `serialization.py:647` `op.kind.lower()` under `("INPLACE_ADD","INPLACE_SUB","INPLACE_MUL")` → `{inplace_add,inplace_sub,inplace_mul}`.
   - `serialization.py:2419` `{"BOX":"box","UNBOX":"unbox","CAST":"cast","WIDEN":"widen"}[op.kind]` → `{box,unbox,cast,widen}`.
@@ -43,7 +43,7 @@ The structural cause is identical in every case: **N copies of one table, no com
   **Total: 431 emitted JSON kinds** (416 literals + 15 spellings from the 4 computed sites).
 - **Rust `match` arms** (`kind_to_opcode`, `lower_preserved_simpleir_op`, `classify_copy_kind`): a line-anchored brace/comment-aware state machine. It locates `fn NAME`, finds `match X {`, brace-matches the body, then collects the string literals of every **top-level** arm pattern (left of `=>`), skipping `//`+`/* */` comments and `"strings"`, and skipping each arm body whether `{}`-block or comma-terminated. **Validated against floordiv/floor_div/matmul + `index` (a `{}`-block arm following another `{}`-block arm).** Failure modes (each absent in the parsed functions, asserted/documented): a `=>` inside a pattern literal (impossible — kinds are identifiers); raw strings `r"…"` in a pattern (asserted absent via `(?<![A-Za-z0-9_])r#*"`); macro-generated arms (none); nested `match` in a body (handled by the balanced-brace skip).
 - **`matches!(…)` arms** (`copy_kind_mints_fresh_owned_ref`, `copy_kind_is_inert_marker`, `copy_kind_is_explicit_transparent_alias`, `copy_kind_is_explicit_no_heap_move`): balanced-paren extraction of the macro body's literals + `.starts_with("PREFIX")` prefix rules.
-- **LLVM `VEC_REDUCTION_OPS`** (lowering.rs:415): the 24-entry `(kind, arity)` table — real LLVM coverage the arm-extractor misses because `vec_reduction_runtime_symbol(kind)` runs **before** the `match`.
+- **LLVM `VEC_REDUCTION_OPS`** (`llvm_backend/lowering.rs`): the 24-entry `(kind, arity)` table — real LLVM coverage the arm-extractor misses because `vec_reduction_runtime_symbol(kind)` runs **before** the `match`.
 - **Runtime extern ABI surface:** all `pub (unsafe)? extern "C" fn molt_*` across `runtime/molt-runtime/src` (3531 symbols). LLVM fallback coverage is counted only when the parsed ABI is one the fallback can emit: boxed integer parameters plus boxed integer return for the generic path, or an explicit void-return entry in `PRESERVED_VOID_RUNTIME_OPS` whose table arity exactly matches boxed extern parameters.
 - **Structural/pre-SSA consumed kinds** (not routed through `kind_to_opcode`): **owned** by `[[simpleir_control_kind]]`, generating `tir::is_structural`, CFG block-boundary helpers, and `lower_from_simple` pre-SSA membership. (Drift-proof: a new structural/pre-SSA/SSA-only kind must be classified in the registry before generated consumers or the audit accept it.)
 - **Native/WASM SimpleIR arm presence** (advisory): native coverage now unions the extracted `function_compiler/fc/*::HANDLED_KINDS` op-family authorities (plus inline dispatch slices) with the legacy textual `function_compiler.rs` arm scan, so decomposition does not hide real native handlers from the audit. WASM still uses a textual scan for arm-shaped `"a" | "b" … =>` tokens (every OR-alternative captured). **Advisory only** — textual scans can over-/under-count (guards, bindings, unrelated helper arms); never a sole basis for a disposition.
@@ -317,10 +317,10 @@ The unit of work is the complete structural change (per CLAUDE.md). Phase 2 is O
 
 - `src/molt/frontend/lowering/serialization.py:672` (`floordiv` emission), :267 (`copy_var` fusion), :2330 (BOX/UNBOX/CAST/WIDEN).
 - `runtime/molt-tir/src/tir/ssa.rs:1902` (`kind_to_opcode` generated-table entry point), `runtime/molt-tir/src/tir/op_kinds_generated.rs:20` (`kind_to_opcode_table`), :29 (`floordiv`/`floor_div` alias arm).
-- `runtime/molt-tir/src/tir/lower_to_simple.rs:1547` (`_original_kind` restoration), :1644 (`OpCode::FloorDiv => "floordiv"`).
+- `runtime/molt-tir/src/tir/lower_to_simple/op_lowering.rs` (`_original_kind` restoration and `OpCode::FloorDiv => "floordiv"` lowering).
 - `runtime/molt-tir/src/tir/op_kinds.toml` (`[[simpleir_control_kind]]`) for structural, CFG-boundary, pre-SSA, and SSA-only SimpleIR kinds.
 - `runtime/molt-tir/src/tir/lower_from_simple.rs` (`rewrite_loop_index_to_store_load`) for the actual loop-index pre-SSA rewrite implementation.
-- `runtime/molt-backend/src/llvm_backend/lowering.rs:6837` (`lower_preserved_simpleir_op`), :10426 (`try_lower_preserved_runtime_call`), :2410-2502 (fail-loud gate), :415 (`VEC_REDUCTION_OPS`), :10325 (`floordiv` arm).
+- `runtime/molt-backend/src/llvm_backend/lowering/preserved_ops.rs` (`lower_preserved_simpleir_op`), `runtime/molt-backend/src/llvm_backend/lowering/runtime_helpers.rs` (`try_lower_preserved_runtime_call`), `runtime/molt-backend/src/llvm_backend/lowering/op_dispatch.rs` (fail-loud gate), and `runtime/molt-backend/src/llvm_backend/lowering.rs` (`VEC_REDUCTION_OPS`).
 - `runtime/molt-tir/src/tir/passes/alias_analysis.rs:496` (`copy_kind_mints_fresh_owned_ref`), :535 (`classify_copy_kind`), :564 (`_ => TransparentAlias`), :645 (`copy_kind_is_explicit_no_heap_move`).
 - `runtime/molt-tir/src/tir/passes/effects.rs` (`opcode_may_throw` / `is_side_effecting` / `opcode_effects` delegate to the generated effect oracle).
 - `src/molt/frontend/lowering/op_kinds_generated.py` (`FRONTEND_EFFECT_CLASS` and the `FRONTEND_EFFECT_*_KINDS` sets) plus `src/molt/frontend/lowering/midend_canonicalization.py` (`_op_effect_class`) for pre-serialization frontend DCE/CSE/LICM effect authority. `midend_optimization.py` is only the composed MRO entrypoint.
