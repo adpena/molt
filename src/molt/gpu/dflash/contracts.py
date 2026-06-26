@@ -16,7 +16,11 @@ DFlash.
 
 from __future__ import annotations
 
-from ..speculative import SpeculativeConditioning
+from ..speculative import (
+    SpeculativeConditioning,
+    _normalize_optional_token_id,
+    _normalize_token_sequence,
+)
 
 
 DFLASH_DRAFT_OUTPUT_CONTRACTS = frozenset(
@@ -189,8 +193,15 @@ class DFlashSelectionContext:
     ) -> None:
         self.model = model
         self.backend = backend
-        self.prompt_tokens = list(prompt_tokens)
-        self.eos_token_id = eos_token_id
+        self.prompt_tokens = _normalize_token_sequence(
+            prompt_tokens,
+            "prompt_tokens",
+            relation="contain",
+        )
+        self.eos_token_id = _normalize_optional_token_id(
+            eos_token_id,
+            "eos_token_id",
+        )
         self.max_new_tokens = _non_negative_int(max_new_tokens, "max_new_tokens")
         self.block_size = _positive_int(block_size, "block_size")
         self.target_model_id = _required_non_empty_string(
