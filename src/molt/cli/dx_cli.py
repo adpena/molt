@@ -6,7 +6,11 @@ from pathlib import Path
 import sys
 
 from molt.dx import DX_ENV_KEYS, DxProject, dx_env_payload, render_env
-from molt.cli.toolchain_validation import _build_toolchain_report
+from molt.cli.setup_readiness import (
+    _build_toolchain_report,
+    _toolchain_report_data,
+    _toolchain_report_status,
+)
 from molt.cli.command_runtime import _CLI_MEMORY_GUARD_PREFIX, _run_completed_command
 from molt.cli.output import emit_json as _emit_json
 from molt.cli.project_roots import _find_molt_root
@@ -51,26 +55,19 @@ def _handle_run(args: argparse.Namespace) -> int:
 def _handle_check(args: argparse.Namespace) -> int:
     project = _dx_project_from_cwd()
     report = _build_toolchain_report(project.root)
-    status = "ok" if not report.errors else "error"
     payload = {
         "kind": "molt_dx_check",
-        "status": status,
-        "checks": report.checks,
+        "status": _toolchain_report_status(report),
+        **_toolchain_report_data(report),
         "warnings": report.warnings,
         "errors": report.errors,
-        "actions": report.actions,
-        "environment": report.environment,
-        "backends": report.backends,
-        "profiles": report.profiles,
     }
     if args.json:
         _emit_json(payload, json_output=True)
     else:
         for check in report.checks:
             marker = "ok" if check.get("ok") else str(check.get("level", "error"))
-            sys.stdout.write(
-                f"{marker}: {check.get('name')}: {check.get('detail')}\n"
-            )
+            sys.stdout.write(f"{marker}: {check.get('name')}: {check.get('detail')}\n")
             for advice in check.get("advice", []):
                 sys.stdout.write(f"  - {advice}\n")
     if report.errors:

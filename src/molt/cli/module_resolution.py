@@ -14,7 +14,7 @@ from molt.cli.target_python import (
     _DEFAULT_TARGET_PYTHON_VERSION,
     _parse_source_for_target,
 )
-from molt.cli.toolchain_validation import _is_path_within
+from molt.cli.setup_readiness import _is_path_within
 
 
 def _module_name_from_path(path: Path, roots: list[Path], stdlib_root: Path) -> str:
