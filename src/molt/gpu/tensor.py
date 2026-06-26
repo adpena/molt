@@ -17,10 +17,10 @@ from __future__ import annotations
 
 import math
 import operator
-import os
 import _intrinsics as _molt_intrinsics
 from builtins import float as _float
 from . import Buffer, alloc, from_device
+from .backend_config import is_gpu_device_backend, requested_gpu_backend
 from .tensor_movement import tensor_contiguous, tensor_flip, tensor_pad, tensor_shrink
 from .tensor_creation import (
     _flatten_nested,
@@ -60,14 +60,6 @@ def _runtime_intrinsics_active() -> bool:
     return False
 
 
-def _requested_gpu_backend() -> str | None:
-    backend = os.environ.get("MOLT_GPU_BACKEND")
-    if backend is None:
-        return None
-    backend = backend.strip()
-    return backend or None
-
-
 _UNRESOLVED = object()
 _MOLT_GPU_BUFFER_TO_LIST = _UNRESOLVED
 _MOLT_GPU_TENSOR_FROM_BUFFER = _UNRESOLVED
@@ -100,7 +92,7 @@ def _resolve_optional_intrinsic(cache_name: str, intrinsic_name: str):
         try:
             intrinsic = loader(intrinsic_name)
         except RuntimeError as exc:
-            if _requested_gpu_backend() is not None and _runtime_intrinsics_active():
+            if requested_gpu_backend() is not None and _runtime_intrinsics_active():
                 raise RuntimeError(f"intrinsic unavailable: {intrinsic_name}") from exc
         else:
             if intrinsic is not None:
@@ -112,14 +104,14 @@ def _resolve_optional_intrinsic(cache_name: str, intrinsic_name: str):
         try:
             intrinsic = require(intrinsic_name)
         except RuntimeError as exc:
-            if _requested_gpu_backend() is not None and _runtime_intrinsics_active():
+            if requested_gpu_backend() is not None and _runtime_intrinsics_active():
                 raise RuntimeError(f"intrinsic unavailable: {intrinsic_name}") from exc
         else:
             if intrinsic is not None:
                 globals()[cache_name] = intrinsic
                 return intrinsic
 
-    if _requested_gpu_backend() is not None and _runtime_intrinsics_active():
+    if requested_gpu_backend() is not None and _runtime_intrinsics_active():
         raise RuntimeError(f"intrinsic unavailable: {intrinsic_name}")
     return None
 
@@ -2358,7 +2350,7 @@ def tensor_scaled_dot_product_attention(
     ):
         return cache.attention(q, scale=scale, mask=mask)
 
-    if _requested_gpu_backend() in {"webgpu", "metal"}:
+    if is_gpu_device_backend(requested_gpu_backend()):
         intrinsic = _resolve_optional_intrinsic(
             "_MOLT_GPU_TENSOR_SCALED_DOT_PRODUCT_ATTENTION",
             "molt_gpu_tensor__tensor_scaled_dot_product_attention",

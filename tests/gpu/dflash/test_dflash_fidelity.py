@@ -45,12 +45,17 @@ from molt.gpu.dflash import (
     build_dflash_runtime,
     clear_dflash_adapters,
     has_dflash_backend,
-    normalize_dflash_backend,
     register_dflash_adapter,
     require_dflash_conditioning,
     resolve_dflash_runtime,
     snapshot_dflash_adapters,
     restore_dflash_adapters,
+)
+from molt.gpu.backend_config import (
+    GPU_DEVICE_BACKENDS,
+    is_gpu_device_backend,
+    normalize_gpu_backend,
+    requested_gpu_backend,
 )
 from molt.gpu.dflash.contracts import DFlashSelectionContext as _CtxAlias  # noqa: F401
 from molt.gpu.speculative import SpeculativeConditioning
@@ -311,17 +316,20 @@ def _ctx(name: str = "synthetic", backend: str = "webgpu") -> DFlashSelectionCon
 
 
 def test_dflash_backend_capability_is_explicit_and_normalized():
-    assert DFLASH_SUPPORTED_BACKENDS == frozenset({"metal", "webgpu"})
-    assert normalize_dflash_backend("  WEBGPU ") == "webgpu"
-    assert normalize_dflash_backend("  ") is None
+    assert GPU_DEVICE_BACKENDS == frozenset({"metal", "webgpu"})
+    assert DFLASH_SUPPORTED_BACKENDS is GPU_DEVICE_BACKENDS
+    assert normalize_gpu_backend("  WEBGPU ") == "webgpu"
+    assert normalize_gpu_backend("  ") is None
+    assert requested_gpu_backend({"MOLT_GPU_BACKEND": "  METAL "}) == "metal"
+    assert is_gpu_device_backend("WEBGPU") is True
     assert has_dflash_backend("webgpu") is True
     assert has_dflash_backend("metal") is True
     assert has_dflash_backend("native") is False
     assert has_dflash_backend("cuda") is False
     assert has_dflash_backend(None) is False
 
-    with pytest.raises(TypeError, match="backend must be a string when set"):
-        normalize_dflash_backend(object())
+    with pytest.raises(TypeError, match="gpu backend must be a string when set"):
+        normalize_gpu_backend(object())
 
     assert _ctx(backend="  METAL ").backend == "metal"
 

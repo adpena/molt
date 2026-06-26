@@ -6,13 +6,13 @@ temperature-controlled generation, and lossless block-speculative decoding.
 """
 
 import math
-import os
+from .backend_config import requested_gpu_backend
 from .dflash import (
     DFlashSelectionContext,
-    dflash_backend_requirement_message,
     has_dflash_backend,
     resolve_dflash_runtime,
 )
+from .dflash.contracts import dflash_backend_requirement_message
 from . import speculative as _speculative
 
 __all__ = [
@@ -20,14 +20,6 @@ __all__ = [
     "top_k_sample",
     "top_p_sample",
 ]
-
-
-def _requested_gpu_backend() -> str | None:
-    backend = os.environ.get("MOLT_GPU_BACKEND")
-    if backend is None:
-        return None
-    backend = backend.strip().lower()
-    return backend or None
 
 
 def _dflash_missing_message(adapter_name: str | None = None) -> str:
@@ -50,7 +42,7 @@ def _resolve_default_dflash_runtime(
     block_size: int,
     eos_token_id,
 ):
-    backend = _requested_gpu_backend()
+    backend = requested_gpu_backend()
     if dflash_adapter is not None and not isinstance(dflash_adapter, str):
         raise TypeError("dflash adapter name must be a string when set")
     if dflash_adapter is not None and not has_dflash_backend(backend):
@@ -107,7 +99,7 @@ def greedy_decode(
         return speculative.tokens
 
     if prefer_dflash:
-        backend = _requested_gpu_backend()
+        backend = requested_gpu_backend()
         runtime = _resolve_default_dflash_runtime(
             model,
             prompt_tokens,
