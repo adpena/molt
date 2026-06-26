@@ -1,6 +1,7 @@
 use super::context::CompileFuncContext;
 use super::op_loop::{ControlKind, WasmFunctionEmitContext};
 use super::*;
+use crate::wasm_plan::is_production_lir_wasm_fast_path_name;
 
 fn emit_seeded_runtime_const_op(
     this: &mut WasmBackend,

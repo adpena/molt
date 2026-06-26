@@ -25,14 +25,14 @@ mod compile_pipeline;
 mod context;
 mod data_segments;
 mod function_emitter;
+mod module_abi;
 mod op_loop;
 mod tir_pipeline;
 mod trampoline_analysis;
 mod trampolines;
 use crate::wasm_plan::{
     DEFAULT_GPU_INTRINSIC_MANIFEST_NAMES, detect_multi_return_candidates, emit_wasm_stage_audit,
-    gpu_runtime_call_symbol, is_production_lir_wasm_fast_path_name, is_shared_drop_fact_marker,
-    prepare_lir_wasm_fast_output, simple_ir_stage_shape, tir_module_stage_shape,
+    gpu_runtime_call_symbol, is_shared_drop_fact_marker, simple_ir_stage_shape,
     wasm_scalar_integer_fast_path_for_op, wasm_scalar_truthiness_fast_path_for_name,
     wasm_specialized_container_import,
 };

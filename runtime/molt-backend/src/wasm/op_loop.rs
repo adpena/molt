@@ -195,7 +195,6 @@ impl<'a, 'ctx> WasmFunctionEmitContext<'a, 'ctx> {
             }
 
             let mut call_op_context = CallOpContext {
-                backend,
                 func_ir,
                 ctx,
                 func_map,
@@ -216,6 +215,8 @@ impl<'a, 'ctx> WasmFunctionEmitContext<'a, 'ctx> {
                 tail_call_count,
                 ops,
                 last_use_local: &last_use_local,
+                rc_skip_inc: &rc_skip_inc,
+                rc_skip_dec: &rc_skip_dec,
                 rel_idx,
                 op_idx,
                 try_stack_is_empty: try_stack.is_empty(),
