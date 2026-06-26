@@ -20,22 +20,29 @@ use std::{
     thread::{self, ThreadId},
 };
 
+mod app_commands;
 mod args;
 mod callbacks;
 mod commands;
 mod dialogs;
 mod dispatch;
+mod focus_commands;
 mod generic_widgets;
+mod geometry_commands;
+mod grab_commands;
 mod intrinsics;
 mod native;
 mod parsing;
 mod resources;
+mod selection_commands;
 mod state;
 #[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 mod tcl;
+mod tix_commands;
 mod ttk;
 mod widget_create;
-mod window_commands;
+mod winfo_commands;
+mod wm_commands;
 
 use args::*;
 use callbacks::*;
