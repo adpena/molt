@@ -484,11 +484,13 @@ pub(crate) use crate::builtins::frames::{
     traceback_payload_end_col, traceback_payload_line, traceback_payload_next_bits,
 };
 pub use crate::builtins::functions::*;
+pub use crate::builtins::functions_fnmatch::*;
 #[cfg(not(feature = "stdlib_http"))]
 pub use crate::builtins::functions_logging::*;
 pub use crate::builtins::functions_pickle::*;
 pub use crate::builtins::functions_re::*;
 pub use crate::builtins::functions_stat::*;
+pub use crate::builtins::functions_textwrap::*;
 pub use crate::builtins::functools::*;
 pub use crate::builtins::graphlib::*;
 #[cfg(feature = "stdlib_compression")]
