@@ -256,16 +256,16 @@ def barrier():
 class _KernelLauncher:
     """Wraps a GPU kernel function for launch configuration."""
 
-    def __init__(self, func):
+    def __init__(self, func, *, grid: int = 256, threads: int = 256):
         self._func = func
         self._name = func.__name__
-        self._grid = None
-        self._threads = None
+        self._grid = grid
+        self._threads = threads
 
     def __getitem__(self, config):
         """Configure launch: kernel[grid, threads] or kernel[total_threads]"""
-        self._grid, self._threads = _normalize_launch_config(config)
-        return self
+        grid, threads = _normalize_launch_config(config)
+        return _KernelLauncher(self._func, grid=grid, threads=threads)
 
     def __call__(self, *args):
         """Launch the kernel with the given arguments.
@@ -277,8 +277,8 @@ class _KernelLauncher:
         real compiled GPU lowering path is active, the compiler/runtime may
         replace this with backend dispatch via the GPU pipeline.
         """
-        grid = self._grid or 256
-        threads = self._threads or 256
+        grid = self._grid
+        threads = self._threads
         backend_launch = _resolve_optional_intrinsic(
             "molt_gpu_kernel_launch",
             "_MOLT_GPU_KERNEL_LAUNCH",
