@@ -1,36 +1,8 @@
 use super::*;
 
 impl LuauBackend {
-    pub(super) fn emit_collection_op(&mut self, op: &OpIR) -> bool {
+    pub(super) fn emit_map_set_op(&mut self, op: &OpIR) -> bool {
         match op.kind.as_str() {
-            // ================================================================
-            // Collection construction
-            // ================================================================
-            "tuple_new" | "tuple_from_list" => {
-                let out = self.out_var(op);
-                if let Some(ref out_name) = op.out {
-                    self.tuple_vars.insert(out_name.clone());
-                }
-                let items = op
-                    .args
-                    .as_deref()
-                    .unwrap_or(&[])
-                    .iter()
-                    .map(|a| sanitize_ident(a))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                self.emit_line(&format!("local {out} = {{{items}}}"));
-            }
-            "unpack_sequence" => {
-                let args = op.args.as_deref().unwrap_or(&[]);
-                if args.len() >= 2 {
-                    let src = sanitize_ident(&args[0]);
-                    for (i, out_name) in args[1..].iter().enumerate() {
-                        let out = sanitize_ident(out_name);
-                        self.emit_line(&format!("local {out} = {src}[{}]", i + 1));
-                    }
-                }
-            }
             "build_dict" | "dict_new" => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
@@ -63,10 +35,6 @@ impl LuauBackend {
                     self.emit_line(&format!("local {out} = {{{entries}}}"));
                 }
             }
-
-            // ================================================================
-            // Dict operations
-            // ================================================================
             "dict_clear" | "set_clear" => {
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(tbl) = args.first() {
@@ -194,10 +162,36 @@ impl LuauBackend {
                     ));
                 }
             }
-
-            // ================================================================
-            // Set operations
-            // ================================================================
+            "dict_keys" => {
+                let out = self.out_var(op);
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if let Some(d) = args.first() {
+                    self.emit_line(&format!(
+                        "local {out} = molt_dict_keys({})",
+                        sanitize_ident(d)
+                    ));
+                }
+            }
+            "dict_values" => {
+                let out = self.out_var(op);
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if let Some(d) = args.first() {
+                    self.emit_line(&format!(
+                        "local {out} = molt_dict_values({})",
+                        sanitize_ident(d)
+                    ));
+                }
+            }
+            "dict_items" => {
+                let out = self.out_var(op);
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if let Some(d) = args.first() {
+                    self.emit_line(&format!(
+                        "local {out} = molt_dict_items({})",
+                        sanitize_ident(d)
+                    ));
+                }
+            }
             "set_add" | "set_add_probe" | "frozenset_add" => {
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 2 {
