@@ -1462,6 +1462,8 @@ tests/differential/stdlib/io_textiowrapper_write_newline_none.py
 tests/differential/stdlib/io_unsupported_operation.py
 tests/differential/stdlib/io_xmlcharrefreplace.py
 tests/differential/stdlib/ipaddress_basic.py
+tests/differential/stdlib/ipaddress_int_constructor.py
+tests/differential/stdlib/ipaddress_special_registry.py
 tests/differential/stdlib/itertools_accumulate_basic.py
 tests/differential/stdlib/itertools_accumulate_edge_cases.py
 tests/differential/stdlib/itertools_accumulate_error_cases.py

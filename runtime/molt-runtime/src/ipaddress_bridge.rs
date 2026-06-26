@@ -111,6 +111,37 @@ pub extern "C" fn __molt_ipaddr_to_i64(bits: u64, out: *mut i64) -> i32 {
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn __molt_ipaddr_to_bigint(
+    bits: u64,
+    out_sign: *mut i32,
+    out_ptr: *mut *const u8,
+    out_len: *mut usize,
+) -> i32 {
+    use num_bigint::Sign;
+    let obj = obj_from_bits(bits);
+    match crate::builtins::numbers::to_bigint(obj) {
+        Some(value) => {
+            let (sign, bytes) = value.to_bytes_be();
+            let sign_i32 = match sign {
+                Sign::Minus => -1i32,
+                Sign::NoSign => 0i32,
+                Sign::Plus => 1i32,
+            };
+            let boxed = bytes.into_boxed_slice();
+            let ok = crate::bridge_buffer::export_u8_box(boxed, out_ptr, out_len);
+            if ok == 0 {
+                return 0;
+            }
+            unsafe {
+                *out_sign = sign_i32;
+            }
+            1
+        }
+        None => 0,
+    }
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn __molt_ipaddr_int_bits_from_i64(val: i64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, { int_bits_from_i64(_py, val) })
 }

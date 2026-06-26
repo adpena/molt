@@ -6,11 +6,11 @@
 use crate::bridge::{
     alloc_bytes, alloc_list, alloc_string, dec_ref_bits, int_bits_from_bigint, int_bits_from_i64,
     opaque_handle_bits, opaque_handle_ptr_from_bits, raise_exception, release_ptr,
-    string_obj_to_owned, to_i64,
+    string_obj_to_owned, to_bigint,
 };
 use molt_obj_model::MoltObject;
 use molt_runtime_core::prelude::*;
-use num_bigint::BigInt;
+use num_bigint::{BigInt, Sign};
 use std::net::{Ipv4Addr, Ipv6Addr};
 
 // ---------------------------------------------------------------------------
@@ -34,24 +34,103 @@ struct Ipv4NetworkHandle {
 }
 
 // ---------------------------------------------------------------------------
-// Private address ranges for IPv4 classification
+// IANA special-purpose address registries (CPython 3.12 parity)
+//
+// `is_private` / `is_global` encode the full iana-ipv4-special-registry and
+// iana-ipv6-special-registry exactly as CPython's `ipaddress` module does (see
+// CPython Lib/ipaddress.py `_IPv4Constants` / `_IPv6Constants` and the
+// `is_private` / `is_global` address properties).  Each entry is a network
+// `(base, prefix_len)` where `base` is the network address as a host-order
+// integer.  An address is "in" the network iff its high `prefix_len` bits equal
+// `base`'s high `prefix_len` bits.
+// ---------------------------------------------------------------------------
+
+const V4_PRIVATE_NETWORKS: &[(u32, u8)] = &[
+    (0x00000000, 8),  // 0.0.0.0/8
+    (0x0A000000, 8),  // 10.0.0.0/8
+    (0x7F000000, 8),  // 127.0.0.0/8
+    (0xA9FE0000, 16), // 169.254.0.0/16
+    (0xAC100000, 12), // 172.16.0.0/12
+    (0xC0000000, 24), // 192.0.0.0/24
+    (0xC00000AA, 31), // 192.0.0.170/31
+    (0xC0000200, 24), // 192.0.2.0/24
+    (0xC0A80000, 16), // 192.168.0.0/16
+    (0xC6120000, 15), // 198.18.0.0/15
+    (0xC6336400, 24), // 198.51.100.0/24
+    (0xCB007100, 24), // 203.0.113.0/24
+    (0xF0000000, 4),  // 240.0.0.0/4
+    (0xFFFFFFFF, 32), // 255.255.255.255/32
+];
+
+const V4_PRIVATE_NETWORK_EXCEPTIONS: &[(u32, u8)] = &[
+    (0xC0000009, 32), // 192.0.0.9/32
+    (0xC000000A, 32), // 192.0.0.10/32
+];
+
+// 100.64.0.0/10 — globally unreachable but not "private" (both flags False).
+const V4_PUBLIC_NETWORK: (u32, u8) = (0x64400000, 10);
+
+const V6_PRIVATE_NETWORKS: &[(u128, u8)] = &[
+    (0x0000_0000_0000_0000_0000_0000_0000_0001, 128), // ::1/128
+    (0x0000_0000_0000_0000_0000_0000_0000_0000, 128), // ::/128
+    (0x0000_0000_0000_0000_0000_FFFF_0000_0000, 96),  // ::ffff:0.0.0.0/96
+    (0x0064_FF9B_0001_0000_0000_0000_0000_0000, 48),  // 64:ff9b:1::/48
+    (0x0100_0000_0000_0000_0000_0000_0000_0000, 64),  // 100::/64
+    (0x2001_0000_0000_0000_0000_0000_0000_0000, 23),  // 2001::/23
+    (0x2001_0DB8_0000_0000_0000_0000_0000_0000, 32),  // 2001:db8::/32
+    (0x2002_0000_0000_0000_0000_0000_0000_0000, 16),  // 2002::/16
+    (0x3FFF_0000_0000_0000_0000_0000_0000_0000, 20),  // 3fff::/20
+    (0xFC00_0000_0000_0000_0000_0000_0000_0000, 7),   // fc00::/7
+    (0xFE80_0000_0000_0000_0000_0000_0000_0000, 10),  // fe80::/10
+];
+
+const V6_PRIVATE_NETWORK_EXCEPTIONS: &[(u128, u8)] = &[
+    (0x2001_0001_0000_0000_0000_0000_0000_0001, 128), // 2001:1::1/128
+    (0x2001_0001_0000_0000_0000_0000_0000_0002, 128), // 2001:1::2/128
+    (0x2001_0003_0000_0000_0000_0000_0000_0000, 32),  // 2001:3::/32
+    (0x2001_0004_0112_0000_0000_0000_0000_0000, 48),  // 2001:4:112::/48
+    (0x2001_0020_0000_0000_0000_0000_0000_0000, 28),  // 2001:20::/28
+    (0x2001_0030_0000_0000_0000_0000_0000_0000, 28),  // 2001:30::/28
+];
+
+#[inline]
+fn v4_in_network(addr_int: u32, base: u32, prefix_len: u8) -> bool {
+    debug_assert!(prefix_len <= 32);
+    if prefix_len == 0 {
+        return true;
+    }
+    if prefix_len >= 32 {
+        return addr_int == base;
+    }
+    let shift = 32 - prefix_len as u32;
+    (addr_int >> shift) == (base >> shift)
+}
+
+#[inline]
+fn v6_in_network(addr_int: u128, base: u128, prefix_len: u8) -> bool {
+    debug_assert!(prefix_len <= 128);
+    if prefix_len == 0 {
+        return true;
+    }
+    if prefix_len >= 128 {
+        return addr_int == base;
+    }
+    let shift = 128 - prefix_len as u32;
+    (addr_int >> shift) == (base >> shift)
+}
+
+// ---------------------------------------------------------------------------
+// IPv4 classification
 // ---------------------------------------------------------------------------
 
 fn ipv4_is_private(addr: Ipv4Addr) -> bool {
-    let o = addr.octets();
-    // 10.0.0.0/8
-    if o[0] == 10 {
-        return true;
-    }
-    // 172.16.0.0/12
-    if o[0] == 172 && (16..=31).contains(&o[1]) {
-        return true;
-    }
-    // 192.168.0.0/16
-    if o[0] == 192 && o[1] == 168 {
-        return true;
-    }
-    false
+    let a = u32::from(addr);
+    V4_PRIVATE_NETWORKS
+        .iter()
+        .any(|&(base, prefix)| v4_in_network(a, base, prefix))
+        && V4_PRIVATE_NETWORK_EXCEPTIONS
+            .iter()
+            .all(|&(base, prefix)| !v4_in_network(a, base, prefix))
 }
 
 fn ipv4_is_loopback(addr: Ipv4Addr) -> bool {
@@ -75,44 +154,65 @@ fn ipv4_is_link_local(addr: Ipv4Addr) -> bool {
 }
 
 fn ipv4_is_global(addr: Ipv4Addr) -> bool {
-    !ipv4_is_private(addr)
-        && !ipv4_is_loopback(addr)
-        && !ipv4_is_multicast(addr)
-        && !ipv4_is_reserved(addr)
-        && !ipv4_is_link_local(addr)
-        && addr != Ipv4Addr::BROADCAST
-        && addr != Ipv4Addr::UNSPECIFIED
+    let a = u32::from(addr);
+    !v4_in_network(a, V4_PUBLIC_NETWORK.0, V4_PUBLIC_NETWORK.1) && !ipv4_is_private(addr)
 }
 
 // ---------------------------------------------------------------------------
-// Private address ranges for IPv6 classification
+// IPv6 classification
 // ---------------------------------------------------------------------------
 
+/// Return the embedded IPv4 address when `addr` is an IPv4-mapped IPv6 address
+/// (`::ffff:0:0/96`), exactly as CPython's `IPv6Address.ipv4_mapped`.  For such
+/// addresses `is_private` / `is_global` delegate to the mapped IPv4 semantics.
+fn ipv6_ipv4_mapped(addr: Ipv6Addr) -> Option<Ipv4Addr> {
+    let v = u128::from(addr);
+    if (v >> 32) != 0xFFFF {
+        return None;
+    }
+    Some(Ipv4Addr::from((v & 0xFFFF_FFFF) as u32))
+}
+
 fn ipv6_is_loopback(addr: Ipv6Addr) -> bool {
-    addr == Ipv6Addr::LOCALHOST
+    if let Some(mapped) = ipv6_ipv4_mapped(addr) {
+        return ipv4_is_loopback(mapped);
+    }
+    u128::from(addr) == 1
 }
 
 fn ipv6_is_multicast(addr: Ipv6Addr) -> bool {
+    if let Some(mapped) = ipv6_ipv4_mapped(addr) {
+        return ipv4_is_multicast(mapped);
+    }
     addr.segments()[0] & 0xFF00 == 0xFF00
 }
 
 fn ipv6_is_link_local(addr: Ipv6Addr) -> bool {
+    if let Some(mapped) = ipv6_ipv4_mapped(addr) {
+        return ipv4_is_link_local(mapped);
+    }
     let seg = addr.segments();
     seg[0] & 0xFFC0 == 0xFE80
 }
 
 fn ipv6_is_private(addr: Ipv6Addr) -> bool {
-    let seg = addr.segments();
-    // fc00::/7
-    seg[0] & 0xFE00 == 0xFC00
+    if let Some(mapped) = ipv6_ipv4_mapped(addr) {
+        return ipv4_is_private(mapped);
+    }
+    let a = u128::from(addr);
+    V6_PRIVATE_NETWORKS
+        .iter()
+        .any(|&(base, prefix)| v6_in_network(a, base, prefix))
+        && V6_PRIVATE_NETWORK_EXCEPTIONS
+            .iter()
+            .all(|&(base, prefix)| !v6_in_network(a, base, prefix))
 }
 
 fn ipv6_is_global(addr: Ipv6Addr) -> bool {
-    !ipv6_is_loopback(addr)
-        && !ipv6_is_multicast(addr)
-        && !ipv6_is_link_local(addr)
-        && !ipv6_is_private(addr)
-        && addr != Ipv6Addr::UNSPECIFIED
+    if let Some(mapped) = ipv6_ipv4_mapped(addr) {
+        return ipv4_is_global(mapped);
+    }
+    !ipv6_is_private(addr)
 }
 
 // ---------------------------------------------------------------------------
@@ -189,7 +289,32 @@ fn ipv4_network_bits(handle: Ipv4NetworkHandle) -> u64 {
     opaque_handle_bits(Box::into_raw(Box::new(handle)) as *mut u8)
 }
 
+/// Convert a non-negative `BigInt` that fits in `N` bytes into a fixed-width
+/// big-endian byte array (the packed network-order representation an IP address
+/// expects).  Returns `None` when the value is negative or wider than `N` bytes,
+/// i.e. outside `0..=2**(8*N)-1`.
+fn bigint_to_fixed_be<const N: usize>(value: &BigInt) -> Option<[u8; N]> {
+    let (sign, mag) = value.to_bytes_be();
+    match sign {
+        // Zero produces a single 0x00 magnitude byte from `to_bytes_be`; it fits.
+        Sign::Minus => return None,
+        Sign::NoSign | Sign::Plus => {}
+    }
+    if mag.len() > N {
+        return None;
+    }
+    let mut out = [0u8; N];
+    // Right-align the magnitude bytes (big-endian, zero-padded on the left).
+    out[N - mag.len()..].copy_from_slice(&mag);
+    Some(out)
+}
+
 // Parse address from string or integer bits.
+//
+// The integer path reads the full-precision value via `to_bigint` (NOT `to_i64`,
+// which clamps to the i64 range and would reject every IPv6 integer >= 2**63),
+// then range-checks `0 <= n < 2**(width)` exactly like CPython's
+// `AddressValueError` for out-of-range integers.
 fn parse_ipv4_from_bits(_py: &CoreGilToken, addr_bits: u64) -> Result<Ipv4Addr, u64> {
     let obj = obj_from_bits(addr_bits);
     if let Some(s) = string_obj_to_owned(obj) {
@@ -197,15 +322,15 @@ fn parse_ipv4_from_bits(_py: &CoreGilToken, addr_bits: u64) -> Result<Ipv4Addr, 
             .parse::<Ipv4Addr>()
             .map_err(|_| raise_exception::<u64>(_py, "ValueError", "invalid IPv4 address"));
     }
-    if let Some(v) = to_i64(obj) {
-        if !(0..=0xFFFF_FFFFi64).contains(&v) {
+    if let Some(v) = to_bigint(obj) {
+        let Some(octets) = bigint_to_fixed_be::<4>(&v) else {
             return Err(raise_exception::<u64>(
                 _py,
                 "ValueError",
                 "IPv4 address must be in range 0-4294967295",
             ));
-        }
-        return Ok(Ipv4Addr::from(v as u32));
+        };
+        return Ok(Ipv4Addr::from(octets));
     }
     Err(raise_exception::<u64>(
         _py,
@@ -221,15 +346,14 @@ fn parse_ipv6_from_bits(_py: &CoreGilToken, addr_bits: u64) -> Result<Ipv6Addr, 
             .parse::<Ipv6Addr>()
             .map_err(|_| raise_exception::<u64>(_py, "ValueError", "invalid IPv6 address"));
     }
-    if let Some(v) = to_i64(obj) {
-        if v < 0 {
+    if let Some(v) = to_bigint(obj) {
+        let Some(octets) = bigint_to_fixed_be::<16>(&v) else {
             return Err(raise_exception::<u64>(
                 _py,
                 "ValueError",
-                "IPv6 address must be non-negative",
+                "IPv6 address must be in range 0-340282366920938463463374607431768211455",
             ));
-        }
-        let octets = (v as u128).to_be_bytes();
+        };
         return Ok(Ipv6Addr::from(octets));
     }
     Err(raise_exception::<u64>(
@@ -678,4 +802,148 @@ pub extern "C" fn molt_ipaddress_v4_network_drop(handle_bits: u64) -> u64 {
         }
         MoltObject::none().bits()
     })
+}
+
+#[cfg(test)]
+mod tests {
+    //! Classification / parsing parity against CPython 3.12 `ipaddress`.
+    //!
+    //! Expected values were captured directly from CPython 3.12.13's
+    //! `IPv4Address`/`IPv6Address` `is_private` / `is_global` properties.
+    use super::*;
+    use std::str::FromStr;
+
+    fn v4(s: &str) -> Ipv4Addr {
+        Ipv4Addr::from_str(s).unwrap()
+    }
+    fn v6(s: &str) -> Ipv6Addr {
+        Ipv6Addr::from_str(s).unwrap()
+    }
+
+    #[test]
+    fn v4_private_global_matches_cpython() {
+        // (addr, is_private, is_global) — from CPython 3.12.13.
+        let cases: &[(&str, bool, bool)] = &[
+            ("0.0.0.0", true, false),
+            ("10.0.0.1", true, false),
+            ("100.64.0.1", false, false), // 100.64/10: both False (CGNAT)
+            ("127.0.0.1", true, false),
+            ("169.254.0.1", true, false),
+            ("172.16.0.1", true, false),
+            ("192.0.0.1", true, false),
+            ("192.0.0.9", false, true), // exception inside 192.0.0.0/24
+            ("192.0.0.10", false, true), // exception inside 192.0.0.0/24
+            ("192.0.0.170", true, false),
+            ("192.0.2.1", true, false),
+            ("192.168.0.1", true, false),
+            ("198.18.0.1", true, false),
+            ("198.51.100.1", true, false),
+            ("203.0.113.1", true, false),
+            ("240.0.0.1", true, false),
+            ("255.255.255.255", true, false),
+            ("8.8.8.8", false, true),
+            ("1.1.1.1", false, true),
+        ];
+        for &(s, priv_, glob) in cases {
+            let a = v4(s);
+            assert_eq!(ipv4_is_private(a), priv_, "is_private({s})");
+            assert_eq!(ipv4_is_global(a), glob, "is_global({s})");
+        }
+    }
+
+    #[test]
+    fn v6_private_global_matches_cpython() {
+        let cases: &[(&str, bool, bool)] = &[
+            ("::", true, false),
+            ("::1", true, false),
+            ("2001:db8::1", true, false),
+            ("fc00::1", true, false),
+            ("fe80::1", true, false),
+            ("ff00::1", false, true),
+            ("2002::1", true, false),
+            ("100::1", true, false),
+            ("64:ff9b:1::1", true, false),
+            ("2001::1", true, false),
+            ("2001:1::1", false, true), // exception inside 2001::/23
+            ("2001:db8::", true, false),
+            ("3fff::1", true, false),
+            ("8000::", false, true), // upper-half address (>= 2**127)
+            ("ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff", false, true),
+            // IPv4-mapped: delegates to the embedded IPv4 semantics.
+            ("::ffff:192.168.1.1", true, false),
+            ("::ffff:8.8.8.8", false, true),
+        ];
+        for &(s, priv_, glob) in cases {
+            let a = v6(s);
+            assert_eq!(ipv6_is_private(a), priv_, "is_private({s})");
+            assert_eq!(ipv6_is_global(a), glob, "is_global({s})");
+        }
+    }
+
+    #[test]
+    fn bigint_to_fixed_be_v6_round_trip() {
+        // 2**127 -> 0x8000...0000
+        let n = BigInt::from(1u8) << 127;
+        let octets = bigint_to_fixed_be::<16>(&n).expect("2**127 fits in 16 bytes");
+        assert_eq!(Ipv6Addr::from(octets), v6("8000::"));
+        assert_eq!(u128::from(Ipv6Addr::from(octets)), 1u128 << 127);
+
+        // 2**128 - 1 -> all ones.
+        let max = (BigInt::from(1u8) << 128) - 1;
+        let octets = bigint_to_fixed_be::<16>(&max).expect("2**128-1 fits");
+        assert_eq!(u128::from(Ipv6Addr::from(octets)), u128::MAX);
+
+        // Zero.
+        let zero = BigInt::from(0u8);
+        assert_eq!(bigint_to_fixed_be::<16>(&zero), Some([0u8; 16]));
+    }
+
+    #[test]
+    fn bigint_to_fixed_be_rejects_out_of_range() {
+        // 2**128 is one past the max -> 17 magnitude bytes -> None.
+        let over = BigInt::from(1u8) << 128;
+        assert_eq!(bigint_to_fixed_be::<16>(&over), None);
+        // Negative -> None.
+        let neg = BigInt::from(-1i8);
+        assert_eq!(bigint_to_fixed_be::<16>(&neg), None);
+        assert_eq!(bigint_to_fixed_be::<4>(&neg), None);
+        // IPv4: 2**32 is one past the max -> None.
+        let v4_over = BigInt::from(1u64 << 32);
+        assert_eq!(bigint_to_fixed_be::<4>(&v4_over), None);
+        // IPv4: 2**32 - 1 fits.
+        let v4_max = BigInt::from((1u64 << 32) - 1);
+        assert_eq!(
+            bigint_to_fixed_be::<4>(&v4_max).map(Ipv4Addr::from),
+            Some(v4("255.255.255.255"))
+        );
+    }
+
+    #[test]
+    fn in_network_boundaries() {
+        // /31 boundary: 192.0.0.170/31 covers .170 and .171 only.
+        assert!(v4_in_network(u32::from(v4("192.0.0.170")), 0xC00000AA, 31));
+        assert!(v4_in_network(u32::from(v4("192.0.0.171")), 0xC00000AA, 31));
+        assert!(!v4_in_network(u32::from(v4("192.0.0.172")), 0xC00000AA, 31));
+        assert!(!v4_in_network(u32::from(v4("192.0.0.169")), 0xC00000AA, 31));
+        // prefix 0 matches everything; prefix 32 is exact.
+        assert!(v4_in_network(0x12345678, 0, 0));
+        assert!(v4_in_network(0xFFFFFFFF, 0xFFFFFFFF, 32));
+        assert!(!v4_in_network(0xFFFFFFFE, 0xFFFFFFFF, 32));
+        // v6 /7 fc00::/7 covers fc00:: and fd00:: but not fe00::.
+        assert!(v6_in_network(
+            u128::from(v6("fc00::1")),
+            0xFC00_0000_0000_0000_0000_0000_0000_0000,
+            7
+        ));
+        assert!(v6_in_network(
+            u128::from(v6("fd00::1")),
+            0xFC00_0000_0000_0000_0000_0000_0000_0000,
+            7
+        ));
+        assert!(!v6_in_network(
+            u128::from(v6("fe00::1")),
+            0xFC00_0000_0000_0000_0000_0000_0000_0000,
+            7
+        ));
+    }
 }
