@@ -46,38 +46,38 @@ def _resolve_default_dflash_runtime(
     prompt_tokens,
     *,
     dflash_adapter: str | None = None,
+    dflash_target_model_id: str | None = None,
+    dflash_tokenizer_id: str | None = None,
     max_new_tokens: int,
     block_size: int,
     eos_token_id,
 ):
+    backend = _requested_gpu_backend()
+    if dflash_adapter is not None and not isinstance(dflash_adapter, str):
+        raise TypeError("dflash adapter name must be a string when set")
+    if dflash_adapter is not None and not _has_dflash_backend(backend):
+        raise LookupError(
+            f"dflash adapter '{dflash_adapter}' requires an explicit GPU backend; "
+            "set MOLT_GPU_BACKEND"
+        )
+    if not _has_dflash_backend(backend):
+        return None
     context = DFlashSelectionContext(
         model=model,
-        backend=_requested_gpu_backend(),
+        backend=backend,
         prompt_tokens=prompt_tokens,
         eos_token_id=eos_token_id,
         max_new_tokens=max_new_tokens,
         block_size=block_size,
+        target_model_id=dflash_target_model_id,
+        tokenizer_id=dflash_tokenizer_id,
     )
-    preferred_name = dflash_adapter
-    if preferred_name is None:
-        preferred_name = getattr(model, "dflash_adapter", None)
-    if preferred_name is not None and not isinstance(preferred_name, str):
-        raise TypeError("dflash adapter name must be a string when set")
-    if preferred_name is not None and not _has_dflash_backend(context.backend):
-        raise LookupError(
-            f"dflash adapter '{preferred_name}' requires an explicit GPU backend; "
-            "set MOLT_GPU_BACKEND"
-        )
     runtime = resolve_dflash_runtime(
         context,
-        preferred_name=preferred_name,
+        preferred_name=dflash_adapter,
     )
-    if (
-        runtime is None
-        and preferred_name is not None
-        and _has_dflash_backend(context.backend)
-    ):
-        raise LookupError(_dflash_missing_message(preferred_name))
+    if runtime is None and dflash_adapter is not None:
+        raise LookupError(_dflash_missing_message(dflash_adapter))
     return runtime
 
 
@@ -92,6 +92,8 @@ def greedy_decode(
     block_size=16,
     prefer_dflash: bool = True,
     dflash_adapter: str | None = None,
+    dflash_target_model_id: str | None = None,
+    dflash_tokenizer_id: str | None = None,
 ):
     """Generate text by always picking the highest-probability token."""
     if draft_block is not None or verify_block is not None:
@@ -115,6 +117,8 @@ def greedy_decode(
             model,
             prompt_tokens,
             dflash_adapter=dflash_adapter,
+            dflash_target_model_id=dflash_target_model_id,
+            dflash_tokenizer_id=dflash_tokenizer_id,
             max_new_tokens=max_new_tokens,
             block_size=block_size,
             eos_token_id=eos_token_id,

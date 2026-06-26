@@ -92,13 +92,18 @@ The runtime must fail closed when a DFlash-capable backend is requested and no
 adapter resolves. Plain greedy fallback is only allowed when DFlash is disabled
 or no DFlash-capable backend is selected.
 
-DDTree, DFlare, SGLang Spec V2, vLLM Speculators, TensorRT-LLM DFlash, and
-future serving-engine integrations are versioned DFlash-family routes. They may
-extend the selection tree, scheduler overlap, layer-wise target fusion, or
-hardware execution plan, but they must not relax the core DFlash identity above.
-If an implementation uses DDTree or DFlare semantics, the adapter/version must
-say so explicitly; plain `DFlash` still means target-conditioned block-diffusion
-drafting with verifier-owned lossless acceptance.
+`DFlashAdapterMetadata.algorithm_family` is constrained to the explicit
+vocabulary exported by `molt.gpu.dflash.DFLASH_ALGORITHM_FAMILIES`:
+`base_dflash`, `dflash_v2`, `ddtree`, `dflare`, and
+`dual_diffusion_draft`. Serving-engine integrations such as SGLang Spec V2,
+vLLM Speculators, and TensorRT-LLM DFlash belong in adapter version/provenance
+unless they introduce a new DFlash-family algorithm token in code, tests, and
+this contract. These routes may extend the selection tree, scheduler overlap,
+layer-wise target fusion, or hardware execution plan, but they must not relax
+the core DFlash identity above. If an implementation uses DDTree, DFlare, or a
+dual-draft extension, the adapter family/version must say so explicitly; plain
+`DFlash` still means target-conditioned block-diffusion drafting with
+verifier-owned lossless acceptance.
 
 ## 2026-06 Research Refresh
 
@@ -175,9 +180,9 @@ non-optional:
 algorithm family/version, tokenizer id, mask token id, target layer ids,
 target-feature schema, KV schema, target-conditioning path, maximum block size,
 non-causal draft attention, and per-layer target-context injection. A loose
-metadata dict, single-token-only adapter, causal/autoregressive-only adapter, or
-adapter that does not inject target context into every draft layer is rejected
-before registration.
+metadata dict, non-DFlash `algorithm_family`, single-token-only adapter,
+causal/autoregressive-only adapter, or adapter that does not inject target
+context into every draft layer is rejected before registration.
 
 Generic speculative-decoding helpers live under `src/molt/gpu/speculative.py`
 and `src/molt/stdlib/tinygrad/speculative.py`. The `molt.gpu.dflash` namespace

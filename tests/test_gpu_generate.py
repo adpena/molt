@@ -54,24 +54,44 @@ def _dflash_conditioning(tag="prefill", token=0):
     )
 
 
+_DFLASH_TEST_TARGET_MODEL_ID = "test://target/fake-model"
+_DFLASH_TEST_TOKENIZER_ID = "test://tokenizer/fake-model"
+
+
+def _dflash_identity_kwargs() -> dict[str, str]:
+    return {
+        "dflash_target_model_id": _DFLASH_TEST_TARGET_MODEL_ID,
+        "dflash_tokenizer_id": _DFLASH_TEST_TOKENIZER_ID,
+    }
+
+
+def _dflash_builder_identity_kwargs() -> dict[str, str]:
+    return {
+        "target_model_id": _DFLASH_TEST_TARGET_MODEL_ID,
+        "tokenizer_id": _DFLASH_TEST_TOKENIZER_ID,
+    }
+
+
 def _dflash_adapter_spec(
     *,
     name: str,
     supports,
     create_runtime,
     priority: int = 0,
+    target_model_id: str = _DFLASH_TEST_TARGET_MODEL_ID,
+    tokenizer_id: str = _DFLASH_TEST_TOKENIZER_ID,
 ):
     from molt.gpu.dflash import DFlashAdapterMetadata, DFlashAdapterSpec
 
     return DFlashAdapterSpec(
         name=name,
-        target_model_id=f"test://target/{name}",
+        target_model_id=target_model_id,
         draft_model_id=f"test://draft/{name}",
         provenance="test-only synthetic DFlash adapter fixture",
         metadata=DFlashAdapterMetadata(
             algorithm_family="base_dflash",
             adapter_version=f"test://adapter-version/{name}",
-            tokenizer_id=f"test://tokenizer/{name}",
+            tokenizer_id=tokenizer_id,
             mask_token_id=0,
             target_layer_ids=[0, 2],
             target_feature_schema="test:hidden_states[batch,seq,hidden]",
@@ -720,7 +740,7 @@ def test_greedy_decode_uses_registered_dflash_adapter_by_default_on_gpu_backend(
             draft_step=draft_step,
             verify_step=verify_step,
             initial_conditioning=_dflash_conditioning("prefill", token=0),
-            block_size=1,
+            block_size=2,
         )
 
     class FakeModel:
@@ -958,7 +978,7 @@ def test_greedy_decode_chooses_highest_priority_matching_dflash_adapter(monkeypa
         return DFlashRuntime(
             draft_step=draft_step,
             verify_step=verify_step,
-            block_size=1,
+            block_size=2,
             initial_conditioning=_dflash_conditioning("priority", token=0),
         )
 
@@ -1175,7 +1195,7 @@ def test_greedy_decode_accepts_explicit_dflash_adapter_override(monkeypatch):
             draft_step=draft_step,
             verify_step=verify_step,
             initial_conditioning=_dflash_conditioning("prefill", token=0),
-            block_size=1,
+            block_size=2,
         )
 
     class FakeModel:

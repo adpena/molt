@@ -33,6 +33,7 @@ from pathlib import Path
 import pytest
 
 from molt.gpu.dflash import (
+    DFLASH_ALGORITHM_FAMILIES,
     DFlashAdapterMetadata,
     DFlashAdapterSpec,
     DFlashConditioning,
@@ -245,7 +246,7 @@ def test_runtime_with_valid_inputs_constructs():
 # registry. SPEC.md F6.
 
 
-def _ctx(backend: str = "native") -> DFlashSelectionContext:
+def _ctx(name: str = "synthetic", backend: str = "native") -> DFlashSelectionContext:
     return DFlashSelectionContext(
         model=object(),
         backend=backend,
@@ -253,6 +254,8 @@ def _ctx(backend: str = "native") -> DFlashSelectionContext:
         eos_token_id=None,
         max_new_tokens=8,
         block_size=4,
+        target_model_id=f"test://target/{name}",
+        tokenizer_id=f"test://tokenizer/{name}",
     )
 
 
@@ -414,6 +417,45 @@ def test_adapter_metadata_requires_dflash_identity_fields(
         DFlashAdapterMetadata(**kwargs)
 
 
+def test_adapter_metadata_rejects_non_dflash_algorithm_family():
+    kwargs = {
+        "algorithm_family": "eagle",
+        "adapter_version": "test://adapter-version/wrong-family",
+        "tokenizer_id": "test://tokenizer/wrong-family",
+        "mask_token_id": 0,
+        "target_layer_ids": [0, 2],
+        "target_feature_schema": "test:hidden_states[batch,seq,hidden]",
+        "kv_schema": "test:kv[layer,batch,heads,seq,dim]",
+        "target_conditioning_path": "kv_injection_each_draft_layer",
+        "max_block_size": 4,
+        "uses_non_causal_draft_attention": True,
+        "injects_target_context_each_layer": True,
+    }
+    with pytest.raises(
+        ValueError,
+        match="dflash adapter algorithm_family must be a DFlash-family value",
+    ):
+        DFlashAdapterMetadata(**kwargs)
+
+
+@pytest.mark.parametrize("family", sorted(DFLASH_ALGORITHM_FAMILIES))
+def test_adapter_metadata_accepts_declared_dflash_algorithm_families(family):
+    metadata = DFlashAdapterMetadata(
+        algorithm_family=family.upper(),
+        adapter_version=f"test://adapter-version/{family}",
+        tokenizer_id=f"test://tokenizer/{family}",
+        mask_token_id=0,
+        target_layer_ids=[0, 2],
+        target_feature_schema="test:hidden_states[batch,seq,hidden]",
+        kv_schema="test:kv[layer,batch,heads,seq,dim]",
+        target_conditioning_path="kv_injection_each_draft_layer",
+        max_block_size=4,
+        uses_non_causal_draft_attention=True,
+        injects_target_context_each_layer=True,
+    )
+    assert metadata.algorithm_family == family
+
+
 def test_adapter_spec_requires_typed_metadata():
     with pytest.raises(
         TypeError, match="dflash adapter metadata must be DFlashAdapterMetadata"
@@ -452,7 +494,87 @@ def test_generic_adapter_returning_non_runtime_raises_typeerror():
     with pytest.raises(
         TypeError, match="dflash adapter create_runtime\\(\\) must return DFlashRuntime"
     ):
-        resolve_dflash_runtime(_ctx(), preferred_name="generic_mislabel")
+        resolve_dflash_runtime(
+            _ctx("generic_mislabel"), preferred_name="generic_mislabel"
+        )
+
+
+def test_selection_context_requires_explicit_dflash_identity():
+    with pytest.raises(TypeError, match="target_model_id must be a string"):
+        DFlashSelectionContext(
+            model=object(),
+            backend="native",
+            prompt_tokens=[1, 2, 3],
+            eos_token_id=None,
+            max_new_tokens=8,
+            block_size=4,
+            target_model_id=None,
+            tokenizer_id="test://tokenizer/requires-identity",
+        )
+
+    with pytest.raises(ValueError, match="tokenizer_id must be non-empty"):
+        DFlashSelectionContext(
+            model=object(),
+            backend="native",
+            prompt_tokens=[1, 2, 3],
+            eos_token_id=None,
+            max_new_tokens=8,
+            block_size=4,
+            target_model_id="test://target/requires-identity",
+            tokenizer_id=" ",
+        )
+
+
+def test_adapter_supports_not_called_for_target_tokenizer_mismatch():
+    called = False
+
+    def _supports(_context) -> bool:
+        nonlocal called
+        called = True
+        return True
+
+    spec = _adapter_spec(
+        name="identity-mismatch",
+        supports=_supports,
+        create_runtime=lambda _context: object(),
+    )
+    register_dflash_adapter(spec)
+
+    context = DFlashSelectionContext(
+        model=object(),
+        backend="native",
+        prompt_tokens=[1, 2, 3],
+        eos_token_id=None,
+        max_new_tokens=8,
+        block_size=4,
+        target_model_id="test://target/other-model",
+        tokenizer_id="test://tokenizer/identity-mismatch",
+    )
+
+    assert resolve_dflash_runtime(context, preferred_name="identity-mismatch") is None
+    assert called is False
+
+
+def test_legacy_model_identity_attribute_names_do_not_enable_dflash_resolution():
+    class LegacyIdentityModel:
+        dflash_target_model_id = "test://target/legacy-identity"
+        dflash_tokenizer_id = "test://tokenizer/legacy-identity"
+        target_model_id = "test://target/legacy-identity"
+        model_id = "test://target/legacy-identity"
+        name_or_path = "test://target/legacy-identity"
+        tokenizer_id = "test://tokenizer/legacy-identity"
+
+    with pytest.raises(TypeError, match="target_model_id must be a string"):
+        DFlashSelectionContext(
+            model=LegacyIdentityModel(),
+            backend="native",
+            prompt_tokens=[1, 2, 3],
+            eos_token_id=None,
+            max_new_tokens=8,
+            block_size=4,
+            target_model_id=None,
+            tokenizer_id="test://tokenizer/legacy-identity",
+        )
 
 
 def test_named_unavailable_adapter_raises_lookuperror():
@@ -467,6 +589,8 @@ def test_named_unavailable_adapter_raises_lookuperror():
             prompt_tokens=[1, 2, 3],
             backend="native",
             dflash_adapter="no_such_adapter",
+            target_model_id="test://target/no_such_adapter",
+            tokenizer_id="test://tokenizer/no_such_adapter",
         )
 
 
@@ -497,6 +621,8 @@ def test_unsupported_adapter_under_dflash_name_does_not_resolve():
             prompt_tokens=[1, 2, 3],
             backend="native",
             dflash_adapter="unsupported_adapter",
+            target_model_id="test://target/unsupported_adapter",
+            tokenizer_id="test://tokenizer/unsupported_adapter",
         )
 
 
@@ -507,6 +633,8 @@ def test_no_adapter_no_name_returns_none_not_generic_runtime():
         model=object(),
         prompt_tokens=[1, 2, 3],
         backend="native",
+        target_model_id="test://target/no-default",
+        tokenizer_id="test://tokenizer/no-default",
     )
     assert result is None
 

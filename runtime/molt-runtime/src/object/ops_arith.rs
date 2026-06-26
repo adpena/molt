@@ -2825,17 +2825,19 @@ pub extern "C" fn molt_round(val_bits: u64, ndigits_bits: u64, has_ndigits_bits:
             && let Some(i) = to_i64(val)
         {
             if !has_ndigits {
-                return MoltObject::from_int(i).bits();
+                // Full-range boxing — `from_int` truncates a fit-i64 BigInt
+                // (e.g. round(2**60)) or exact-integer float >= 2**46.
+                return int_bits_from_i64(_py, i);
             }
             let ndigits_obj = obj_from_bits(ndigits_bits);
             if ndigits_obj.is_none() {
-                return MoltObject::from_int(i).bits();
+                return int_bits_from_i64(_py, i);
             }
             let Some(ndigits) = to_i64(ndigits_obj) else {
                 return raise_exception::<_>(_py, "TypeError", "round() ndigits must be int");
             };
             if ndigits >= 0 {
-                return MoltObject::from_int(i).bits();
+                return int_bits_from_i64(_py, i);
             }
             let exp = (-ndigits) as u32;
             if exp > 38 {
@@ -2844,7 +2846,7 @@ pub extern "C" fn molt_round(val_bits: u64, ndigits_bits: u64, has_ndigits_bits:
             let pow = 10_i128.pow(exp);
             let value = i as i128;
             if pow == 0 {
-                return MoltObject::from_int(i).bits();
+                return int_bits_from_i64(_py, i);
             }
             let div = value / pow;
             let rem = value % pow;
@@ -2917,11 +2919,19 @@ pub extern "C" fn molt_round(val_bits: u64, ndigits_bits: u64, has_ndigits_bits:
 pub extern "C" fn molt_trunc(val_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let val = obj_from_bits(val_bits);
-        if let Some(i) = to_i64(val) {
-            return MoltObject::from_int(i).bits();
-        }
+        // A bare heap BigInt is already an exact int; return it unchanged
+        // (retaining the owned alias) BEFORE the `to_i64` fast path so a
+        // fit-i64 BigInt whose magnitude exceeds the 47-bit inline window is
+        // not re-boxed through the truncating inline `from_int`.
         if bigint_ptr_from_bits(val_bits).is_some() {
+            inc_ref_bits(_py, val_bits);
             return val_bits;
+        }
+        if let Some(i) = to_i64(val) {
+            // Full-range boxing — never inline-only `from_int`, which would
+            // silently truncate exact-integer floats or i64 magnitudes
+            // >= 2**46 (mod 2**47).
+            return int_bits_from_i64(_py, i);
         }
         if let Some(f) = to_f64(val) {
             if f.is_nan() {
@@ -3806,7 +3816,9 @@ pub extern "C" fn molt_pos(val: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(val);
         if let Some(i) = to_i64(obj) {
-            return MoltObject::from_int(i).bits();
+            // Full-range boxing — `from_int` would silently truncate a fit-i64
+            // BigInt or exact-integer float with magnitude >= 2**46.
+            return int_bits_from_i64(_py, i);
         }
         if let Some(big) = to_bigint(obj) {
             if let Some(i) = bigint_to_inline(&big) {
