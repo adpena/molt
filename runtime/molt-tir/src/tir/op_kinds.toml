@@ -192,6 +192,10 @@
 #                  that belong to generator/async/coroutine state machines and
 #                  therefore cannot be linearly spliced by the TIR function
 #                  inliner or module-slot promotion.
+#   - overflow_peel_guard_compare_opcodes /
+#                  overflow_peel_body_pure_opcodes - opcode-only legality facts
+#                  consumed by overflow_peel.rs. The pass owns CFG/SSA/result
+#                  checks; the registry owns the closed guard/body membership.
 #   - module_concurrency_marker_source_roles - opcode-role facts consumed by
 #                  module_slot_promotion.rs when scanning for threading
 #                  reachability; the pass owns string policy and attr values.
@@ -798,6 +802,22 @@ state_machine_opcodes = [
     "StateYield",
     "Yield",
     "YieldFrom",
+]
+
+overflow_peel_guard_compare_opcodes = [
+    "Eq",
+    "Ge",
+    "Gt",
+    "Le",
+    "Lt",
+    "Ne",
+]
+
+overflow_peel_body_pure_opcodes = [
+    "Add",
+    "ConstInt",
+    "Copy",
+    "Mul",
 ]
 
 module_concurrency_marker_source_roles = [
