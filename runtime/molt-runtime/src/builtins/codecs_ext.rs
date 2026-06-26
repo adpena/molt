@@ -18,8 +18,8 @@
 // static analysis prevents dynamic callsite lowering); instead we store them
 // and surface them to the Python wrapper via `molt_codecs_lookup_error`.
 
-use crate::DecodeFailure as OpsDecodeFailure;
 use crate::object::ops::{DecodeTextError as OpsDecodeTextError, EncodeError as OpsEncodeError};
+use crate::object::ops_encoding::DecodeFailure as OpsDecodeFailure;
 use crate::*;
 use std::cell::RefCell;
 use std::collections::HashMap;

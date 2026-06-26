@@ -5,6 +5,7 @@ use crate::builtins::exceptions::{
 use crate::call::type_policy::{
     InitArgPolicy, resolved_constructor_init_policy, resolved_new_is_default_object_new,
 };
+use crate::object::ops_encoding::DecodeFailure;
 use crate::*;
 use std::borrow::Cow;
 
