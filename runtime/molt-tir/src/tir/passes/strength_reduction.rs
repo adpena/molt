@@ -222,6 +222,7 @@ fn try_power_two_rhs_reduce(
         return None;
     }
     let const_id = func.fresh_value();
+    func.value_types.insert(const_id, TirType::I64);
     const_map_mut.insert(const_id, const_value);
     type_map_mut.insert(const_id, TirType::I64);
     stats.values_changed += 1;
@@ -313,7 +314,7 @@ mod tests {
     }
 
     /// Helper: create a function with one I64 param and given ops, run strength reduction.
-    fn run_sr(ops: Vec<TirOp>, next_value: u32) -> Vec<TirOp> {
+    fn run_sr(ops: Vec<TirOp>, next_value: u32) -> TirFunction {
         let mut func = TirFunction::new("test".into(), vec![TirType::I64], TirType::I64);
         {
             let entry = func.blocks.get_mut(&func.entry_block).unwrap();
@@ -322,14 +323,19 @@ mod tests {
         }
         func.next_value = next_value;
         run(&mut func);
-        func.blocks[&func.entry_block].ops.clone()
+        func
+    }
+
+    fn entry_ops(func: &TirFunction) -> &[TirOp] {
+        &func.blocks[&func.entry_block].ops
     }
 
     #[test]
     fn mul_by_2_becomes_add() {
         // param x = ValueId(0), const 2 = ValueId(1), x * 2 = ValueId(2)
         let ops = vec![make_const_int(1, 2), make_binop(OpCode::Mul, 2, 0, 1)];
-        let result = run_sr(ops, 3);
+        let func = run_sr(ops, 3);
+        let result = entry_ops(&func);
         assert_eq!(result[1].opcode, OpCode::Add);
         assert_eq!(result[1].operands, vec![ValueId(0), ValueId(0)]);
     }
@@ -338,7 +344,8 @@ mod tests {
     fn pow_2_becomes_mul() {
         // param x = ValueId(0), const 2 = ValueId(1), x ** 2 = ValueId(2)
         let ops = vec![make_const_int(1, 2), make_binop(OpCode::Pow, 2, 0, 1)];
-        let result = run_sr(ops, 3);
+        let func = run_sr(ops, 3);
+        let result = entry_ops(&func);
         assert_eq!(result[1].opcode, OpCode::Mul);
         assert_eq!(result[1].operands, vec![ValueId(0), ValueId(0)]);
     }
@@ -347,7 +354,8 @@ mod tests {
     fn mul_by_3_unchanged() {
         // 3 is not a power of 2 — should not be rewritten.
         let ops = vec![make_const_int(1, 3), make_binop(OpCode::Mul, 2, 0, 1)];
-        let result = run_sr(ops, 3);
+        let func = run_sr(ops, 3);
+        let result = entry_ops(&func);
         assert_eq!(result[1].opcode, OpCode::Mul);
         // Operands unchanged.
         assert_eq!(result[1].operands, vec![ValueId(0), ValueId(1)]);
@@ -357,7 +365,8 @@ mod tests {
     fn mul_float_unchanged() {
         // x * 2.0 where x is I64 param but 2.0 is F64 — should not reduce.
         let ops = vec![make_const_float(1, 2.0), make_binop(OpCode::Mul, 2, 0, 1)];
-        let result = run_sr(ops, 3);
+        let func = run_sr(ops, 3);
+        let result = entry_ops(&func);
         // The Mul should remain because rhs is F64, not I64.
         assert_eq!(result[1].opcode, OpCode::Mul);
     }
@@ -368,31 +377,38 @@ mod tests {
         // range proof exists, so the semantics-preserving reduction remains
         // limited to x * 2 => x + x.
         let ops = vec![make_const_int(1, 8), make_binop(OpCode::Mul, 2, 0, 1)];
-        let result = run_sr(ops, 3);
+        let func = run_sr(ops, 3);
+        let result = entry_ops(&func);
         assert_eq!(result[1].opcode, OpCode::Mul);
     }
 
     #[test]
     fn floordiv_by_power_two_becomes_shift_with_fresh_const() {
         let ops = vec![make_const_int(1, 8), make_binop(OpCode::FloorDiv, 2, 0, 1)];
-        let result = run_sr(ops, 3);
+        let func = run_sr(ops, 3);
+        let result = entry_ops(&func);
         assert_eq!(result.len(), 3);
         assert_eq!(result[1].opcode, OpCode::ConstInt);
         assert_eq!(result[1].attrs.get("value"), Some(&AttrValue::Int(3)));
+        let fresh_const = result[1].results[0];
+        assert_eq!(func.value_types.get(&fresh_const), Some(&TirType::I64));
         assert_eq!(result[2].opcode, OpCode::Shr);
-        assert_eq!(result[2].operands, vec![ValueId(0), result[1].results[0]]);
+        assert_eq!(result[2].operands, vec![ValueId(0), fresh_const]);
         assert_eq!(result[2].results, vec![ValueId(2)]);
     }
 
     #[test]
     fn mod_by_power_two_becomes_bitand_with_fresh_mask() {
         let ops = vec![make_const_int(1, 8), make_binop(OpCode::Mod, 2, 0, 1)];
-        let result = run_sr(ops, 3);
+        let func = run_sr(ops, 3);
+        let result = entry_ops(&func);
         assert_eq!(result.len(), 3);
         assert_eq!(result[1].opcode, OpCode::ConstInt);
         assert_eq!(result[1].attrs.get("value"), Some(&AttrValue::Int(7)));
+        let fresh_const = result[1].results[0];
+        assert_eq!(func.value_types.get(&fresh_const), Some(&TirType::I64));
         assert_eq!(result[2].opcode, OpCode::BitAnd);
-        assert_eq!(result[2].operands, vec![ValueId(0), result[1].results[0]]);
+        assert_eq!(result[2].operands, vec![ValueId(0), fresh_const]);
         assert_eq!(result[2].results, vec![ValueId(2)]);
     }
 }
