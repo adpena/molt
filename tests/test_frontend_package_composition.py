@@ -227,6 +227,10 @@ def test_moved_methods_resolve_on_class() -> None:
     assert hasattr(SimpleTIRGenerator, "visit_ImportFrom")
     assert hasattr(SimpleTIRGenerator, "visit_Assign")
     assert hasattr(SimpleTIRGenerator, "visit_AugAssign")
+    assert hasattr(SimpleTIRGenerator, "_emit_assign_target")
+    assert hasattr(SimpleTIRGenerator, "_emit_unpack_assign")
+    assert hasattr(SimpleTIRGenerator, "_emit_delete_name")
+    assert hasattr(SimpleTIRGenerator, "_augassign_op_kind")
     assert hasattr(SimpleTIRGenerator, "visit_For")
     assert hasattr(SimpleTIRGenerator, "visit_TryStar")
     # import lowering
