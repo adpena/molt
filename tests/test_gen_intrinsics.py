@@ -70,7 +70,7 @@ def test_ssl_intrinsic_abi_is_not_profile_gated() -> None:
     for symbol in ssl_symbols:
         assert module._feature_gate_for_symbol(symbol) is None
 
-    assert module._feature_gate_for_symbol("molt_http_client_execute") == "stdlib_net"
+    assert module._feature_gate_for_symbol("molt_http_client_execute") == "stdlib_http"
     assert module._feature_gate_for_symbol("molt_html_escape") == "stdlib_text"
     assert module._feature_gate_for_symbol("molt_unicodedata_category") == "stdlib_text"
     assert (

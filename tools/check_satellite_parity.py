@@ -79,10 +79,6 @@ INTREE_DIR = RUNTIME / "molt-runtime" / "src"
 # against the on-disk crates. Leaf-owned modules with no in-tree fallback are
 # deliberately absent; adding them back would reintroduce a second authority.
 PAIRS: dict[str, tuple[str, str]] = {
-    "functions_http": (
-        "builtins/functions_http.rs",
-        "molt-runtime-http/src/functions_http.rs",
-    ),
     "functions_logging": (
         "builtins/functions_logging.rs",
         "molt-runtime-http/src/functions_logging.rs",
@@ -97,36 +93,9 @@ PAIRS: dict[str, tuple[str, str]] = {
     "random_mod": ("builtins/random_mod.rs", "molt-runtime-math/src/random_mod.rs"),
     "os_ext": ("builtins/os_ext.rs", "molt-runtime-path/src/os_ext.rs"),
     "pathlib": ("builtins/pathlib.rs", "molt-runtime-path/src/pathlib.rs"),
-    "regex": ("builtins/regex.rs", "molt-runtime-regex/src/regex.rs"),
-    "base64_mod": ("builtins/base64_mod.rs", "molt-runtime-serial/src/base64_mod.rs"),
-    "binascii": ("builtins/binascii.rs", "molt-runtime-serial/src/binascii.rs"),
-    "configparser": (
-        "builtins/configparser.rs",
-        "molt-runtime-serial/src/configparser.rs",
-    ),
-    "csv": ("builtins/csv.rs", "molt-runtime-serial/src/csv.rs"),
-    "datetime": ("builtins/datetime.rs", "molt-runtime-serial/src/datetime.rs"),
-    "decimal": ("builtins/decimal.rs", "molt-runtime-serial/src/decimal.rs"),
-    "structs": ("builtins/structs.rs", "molt-runtime-serial/src/structs.rs"),
-    "functions_zipfile": (
-        "builtins/functions_zipfile.rs",
-        "molt-runtime-serial/src/zipfile.rs",
-    ),
-    "functions_email": (
-        "builtins/functions_email.rs",
-        "molt-runtime-serial/src/email.rs",
-    ),
     "xml_etree": ("builtins/xml_etree.rs", "molt-runtime-xml/src/xml_etree.rs"),
     "xml_sax": ("builtins/xml_sax.rs", "molt-runtime-xml/src/xml_sax.rs"),
 }
-
-# decimal is architecturally different on the in-tree side: the in-tree
-# `builtins/decimal.rs` is a 13-line dispatcher to decimal_with_mpdec.rs /
-# decimal_without_mpdec.rs, whereas the satellite is a single self-contained
-# file. A line-multiset residual is meaningless for that shape, so the guard
-# compares the satellite against the in-tree `decimal_without_mpdec.rs`
-# implementation file instead of the dispatcher stub.
-DECIMAL_INTREE_IMPL = "builtins/decimal_without_mpdec.rs"
 
 # --- access-layer normalization (must stay byte-for-byte in sync with the
 #     reconciliation audit normalizer; this is the committed source of truth) ---
@@ -296,8 +265,6 @@ def normalize(path: Path) -> list[str]:
 
 def _intree_path(name: str) -> Path:
     intree_rel, _sat_rel = PAIRS[name]
-    if name == "decimal":
-        return INTREE_DIR / DECIMAL_INTREE_IMPL
     return INTREE_DIR / intree_rel
 
 

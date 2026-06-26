@@ -3,10 +3,12 @@
 #[cold]
 pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
     match symbol {
+        #[cfg(feature = "stdlib_archive")]
         "molt_imghdr_test" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_imghdr_test",
             crate::molt_imghdr_test as *const (),
         )),
+        #[cfg(feature = "stdlib_archive")]
         "molt_imghdr_what" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_imghdr_what",
             crate::molt_imghdr_what as *const (),

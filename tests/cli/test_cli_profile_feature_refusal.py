@@ -233,7 +233,6 @@ def test_empty_cargo_group_features_are_resolver_only() -> None:
     # may be classified link-affecting (doing so re-creates the false-positive
     # class this distinction exists to prevent).
     resolver_only = {
-        "stdlib_email",
         "stdlib_logging",
         "stdlib_concurrent",
         "stdlib_dbm",
@@ -242,6 +241,22 @@ def test_empty_cargo_group_features_are_resolver_only() -> None:
         "stdlib_select",
     }
     assert resolver_only.isdisjoint(LINK_AFFECTING_FEATURES)
+
+
+def test_base64_module_requires_stdlib_serial_gate() -> None:
+    gap = cli_module_stdlib_policy._profile_feature_gap_for_module(
+        STDLIB_ROOT / "base64.py", _micro_features()
+    )
+    assert set(gap) == {"stdlib_serial"}
+    assert any(sym.startswith("molt_base64_") for sym in gap["stdlib_serial"])
+
+
+def test_email_module_requires_stdlib_email_gate() -> None:
+    gap = cli_module_stdlib_policy._profile_feature_gap_for_module(
+        STDLIB_ROOT / "email" / "message.py", _micro_features()
+    )
+    assert set(gap) == {"stdlib_email"}
+    assert any(sym.startswith("molt_email_") for sym in gap["stdlib_email"])
 
 
 # --- the enforcement pass --------------------------------------------------
