@@ -1,3 +1,4 @@
+use super::projection::dataclasses_fields_dict_bits;
 use super::*;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -35,7 +36,7 @@ fn dc_fields_ordered(_py: &PyToken<'_>, self_bits: u64) -> Option<Vec<(u64, u64)
     Some(result)
 }
 
-pub(super) fn dc_getattr_default_bits(
+pub(in crate::builtins::types::dataclasses) fn dc_getattr_default_bits(
     _py: &PyToken<'_>,
     obj_bits: u64,
     attr: &[u8],
