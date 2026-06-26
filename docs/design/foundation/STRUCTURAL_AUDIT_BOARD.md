@@ -13,11 +13,11 @@ Product board for the molt structural sweep — the first instrument of the Molt
 | critical_hand_classifications | 0 |
 | handset_classifications | 0 |
 | debt_markers_total | 521 |
-| god_files | 33 |
-| max_god_file_lines | 11816 |
+| god_files | 31 |
+| max_god_file_lines | 11811 |
 | structural_god_files | 8 |
 | max_god_file_structural_score | 2811 |
-| god_file_large_regions | 26 |
+| god_file_large_regions | 25 |
 | native_scalar_plan_authority_violations | 0 |
 | repr_name_scalar_authority_violations | 0 |
 | duplicate_authorities | 0 |
@@ -26,21 +26,21 @@ Product board for the molt structural sweep — the first instrument of the Molt
 
 | sev | risk class | where | what |
 | --- | --- | --- | --- |
-| medium | god_file | `runtime/molt-runtime/src/builtins/gpu.rs` | 11816 lines (ceiling 4000) |
+| medium | god_file | `runtime/molt-runtime/src/builtins/gpu.rs` | 11811 lines (ceiling 4000) |
 | medium | god_file | `runtime/molt-runtime/src/builtins/platform_importlib_ffi.rs` | 8737 lines (ceiling 4000) |
 | medium | god_file | `runtime/molt-runtime-http/src/functions_http.rs` | 7524 lines (ceiling 4000) |
 | medium | god_file | `runtime/molt-runtime/src/builtins/platform.rs` | 7473 lines (ceiling 4000) |
 | medium | god_file | `runtime/molt-runtime/src/builtins/functions_http.rs` | 7329 lines (ceiling 4000) |
 | medium | god_file | `runtime/molt-runtime/src/builtins/exceptions.rs` | 7230 lines (ceiling 4000) |
 | medium | god_file | `src/molt/stdlib/asyncio/__init__.py` | 7188 lines (ceiling 2500) |
-| medium | god_file | `runtime/molt-runtime/src/call/bind.rs` | 7120 lines (ceiling 4000) |
 | medium | god_file | `runtime/molt-runtime/src/builtins/io.rs` | 6838 lines (ceiling 4000) |
 | medium | god_file | `runtime/molt-runtime/src/async_rt/sockets.rs` | 6676 lines (ceiling 4000) |
 | medium | god_file | `runtime/molt-runtime/src/builtins/types.rs` | 6512 lines (ceiling 4000) |
 | medium | god_file | `runtime/molt-runtime/src/builtins/functions.rs` | 6249 lines (ceiling 4000) |
 | medium | god_file | `tools/gen_op_kinds.py` | 6209 lines (ceiling 2500) |
 | medium | god_file | `runtime/molt-runtime/src/builtins/modules.rs` | 6019 lines (ceiling 4000) |
-| medium | god_file | `src/molt/frontend/visitors/classes.py` | 3988 lines (ceiling 2500) |
+| medium | structural_god_file | `runtime/molt-runtime/src/builtins/attributes.rs` | 4 large top-level regions (2811 excess lines) |
+| medium | structural_god_file | `runtime/molt-runtime/src/object/ops_builtins.rs` | 4 large top-level regions (432 excess lines) |
 
 ## TOP DELETION CANDIDATES (0) — replace, don't just delete
 
@@ -57,25 +57,23 @@ Product board for the molt structural sweep — the first instrument of the Molt
 
 ## Full findings by probe
 
-### god_file (33)
+### god_file (31)
 
 | sev | what | where | action |
 | --- | --- | --- | --- |
-| medium | 11816 lines (ceiling 4000) | `runtime/molt-runtime/src/builtins/gpu.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
+| medium | 11811 lines (ceiling 4000) | `runtime/molt-runtime/src/builtins/gpu.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | medium | 8737 lines (ceiling 4000) | `runtime/molt-runtime/src/builtins/platform_importlib_ffi.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | medium | 7524 lines (ceiling 4000) | `runtime/molt-runtime-http/src/functions_http.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | medium | 7473 lines (ceiling 4000) | `runtime/molt-runtime/src/builtins/platform.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | medium | 7329 lines (ceiling 4000) | `runtime/molt-runtime/src/builtins/functions_http.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | medium | 7230 lines (ceiling 4000) | `runtime/molt-runtime/src/builtins/exceptions.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | medium | 7188 lines (ceiling 2500) | `src/molt/stdlib/asyncio/__init__.py` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
-| medium | 7120 lines (ceiling 4000) | `runtime/molt-runtime/src/call/bind.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | medium | 6838 lines (ceiling 4000) | `runtime/molt-runtime/src/builtins/io.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | medium | 6676 lines (ceiling 4000) | `runtime/molt-runtime/src/async_rt/sockets.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | medium | 6512 lines (ceiling 4000) | `runtime/molt-runtime/src/builtins/types.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | medium | 6249 lines (ceiling 4000) | `runtime/molt-runtime/src/builtins/functions.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | medium | 6209 lines (ceiling 2500) | `tools/gen_op_kinds.py` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | medium | 6019 lines (ceiling 4000) | `runtime/molt-runtime/src/builtins/modules.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
-| medium | 3988 lines (ceiling 2500) | `src/molt/frontend/visitors/classes.py` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | low | 5982 lines (ceiling 4000) | `runtime/molt-worker/src/main.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | low | 5900 lines (ceiling 4000) | `runtime/molt-runtime/src/builtins/attributes.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | low | 5879 lines (ceiling 4000) | `runtime/molt-runtime/src/async_rt/generators_async.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
@@ -83,10 +81,10 @@ Product board for the molt structural sweep — the first instrument of the Molt
 | low | 5709 lines (ceiling 4000) | `runtime/molt-runtime-regex/src/regex.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | low | 5709 lines (ceiling 4000) | `runtime/molt-runtime/src/builtins/regex.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | low | 5528 lines (ceiling 4000) | `runtime/molt-runtime/src/object/ops_encoding.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
+| low | 5281 lines (ceiling 4000) | `runtime/molt-runtime/src/call/bind.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | low | 5162 lines (ceiling 4000) | `runtime/molt-runtime/src/object/ops_builtins.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | low | 5133 lines (ceiling 4000) | `runtime/molt-wasm-host/src/main.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | low | 5026 lines (ceiling 4000) | `runtime/molt-runtime/src/object/ops_string.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
-| low | 4914 lines (ceiling 4000) | `runtime/molt-tir/src/representation_plan.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | low | 4895 lines (ceiling 4000) | `runtime/molt-backend/src/rust.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | low | 4817 lines (ceiling 4000) | `runtime/molt-runtime/src/object/ops_bytes.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | low | 4446 lines (ceiling 4000) | `runtime/molt-runtime/src/object/ops_arith.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
@@ -100,9 +98,9 @@ Product board for the molt structural sweep — the first instrument of the Molt
 | sev | what | where | action |
 | --- | --- | --- | --- |
 | medium | 4 large top-level regions (2811 excess lines) | `runtime/molt-runtime/src/builtins/attributes.rs` | extract the large top-level regions into cohesive modules; do not add more autho |
-| medium | 4 large top-level regions (1175 excess lines) | `runtime/molt-runtime/src/call/bind.rs` | extract the large top-level regions into cohesive modules; do not add more autho |
 | medium | 4 large top-level regions (432 excess lines) | `runtime/molt-runtime/src/object/ops_builtins.rs` | extract the large top-level regions into cohesive modules; do not add more autho |
 | low | 3 large top-level regions (1383 excess lines) | `runtime/molt-wasm-host/src/main.rs` | extract the large top-level regions into cohesive modules; do not add more autho |
+| low | 3 large top-level regions (1028 excess lines) | `runtime/molt-runtime/src/call/bind.rs` | extract the large top-level regions into cohesive modules; do not add more autho |
 | low | 3 large top-level regions (737 excess lines) | `runtime/molt-runtime/src/builtins/functions_pickle.rs` | extract the large top-level regions into cohesive modules; do not add more autho |
 | low | 3 large top-level regions (606 excess lines) | `tools/memory_guard.py` | extract the large top-level regions into cohesive modules; do not add more autho |
 | low | 3 large top-level regions (568 excess lines) | `tools/gen_op_kinds.py` | extract the large top-level regions into cohesive modules; do not add more autho |
