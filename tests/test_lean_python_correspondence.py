@@ -34,8 +34,12 @@ def _find_repo_root() -> Path:
 
 ROOT = _find_repo_root()
 SYNTAX_LEAN = ROOT / "formal" / "lean" / "MoltTIR" / "Syntax.lean"
-FRONTEND_MIDEND_PY = (
-    ROOT / "src" / "molt" / "frontend" / "lowering" / "midend_optimization.py"
+FRONTEND_MIDEND_PY_FILES = (
+    ROOT / "src" / "molt" / "frontend" / "lowering" / "midend_canonicalization.py",
+    ROOT / "src" / "molt" / "frontend" / "lowering" / "midend_cfg.py",
+    ROOT / "src" / "molt" / "frontend" / "lowering" / "midend_dataflow.py",
+    ROOT / "src" / "molt" / "frontend" / "lowering" / "midend_pipeline.py",
+    ROOT / "src" / "molt" / "frontend" / "lowering" / "midend_policy.py",
 )
 LEAN_PASSES_DIR = ROOT / "formal" / "lean" / "MoltTIR" / "Passes"
 
@@ -45,6 +49,10 @@ def _read(path: Path) -> str:
         return path.read_text(errors="replace")
     pytest.skip(f"Source file not found: {path}")
     return ""
+
+
+def _read_all(paths: tuple[Path, ...]) -> str:
+    return "\n".join(_read(path) for path in paths)
 
 
 # ── Python effect classification parsing ─────────────────────────────
@@ -286,7 +294,7 @@ class TestCompilerPassCorrespondence:
 
     def test_python_mentions_pass_concepts(self) -> None:
         """Python frontend should reference the same pass concepts as Lean."""
-        py_text = _read(FRONTEND_MIDEND_PY)
+        py_text = _read_all(FRONTEND_MIDEND_PY_FILES)
 
         # These are the Python-side method/concept names that correspond
         # to the Lean passes

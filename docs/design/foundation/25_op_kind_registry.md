@@ -323,7 +323,7 @@ The unit of work is the complete structural change (per CLAUDE.md). Phase 2 is O
 - `runtime/molt-backend/src/llvm_backend/lowering.rs:6837` (`lower_preserved_simpleir_op`), :10426 (`try_lower_preserved_runtime_call`), :2410-2502 (fail-loud gate), :415 (`VEC_REDUCTION_OPS`), :10325 (`floordiv` arm).
 - `runtime/molt-tir/src/tir/passes/alias_analysis.rs:496` (`copy_kind_mints_fresh_owned_ref`), :535 (`classify_copy_kind`), :564 (`_ => TransparentAlias`), :645 (`copy_kind_is_explicit_no_heap_move`).
 - `runtime/molt-tir/src/tir/passes/effects.rs` (`opcode_may_throw` / `is_side_effecting` / `opcode_effects` delegate to the generated effect oracle).
-- `src/molt/frontend/lowering/op_kinds_generated.py` (`FRONTEND_EFFECT_CLASS` and the `FRONTEND_EFFECT_*_KINDS` sets) plus `src/molt/frontend/lowering/midend_optimization.py` (`_op_effect_class`) for pre-serialization frontend DCE/CSE/LICM effect authority.
+- `src/molt/frontend/lowering/op_kinds_generated.py` (`FRONTEND_EFFECT_CLASS` and the `FRONTEND_EFFECT_*_KINDS` sets) plus `src/molt/frontend/lowering/midend_canonicalization.py` (`_op_effect_class`) for pre-serialization frontend DCE/CSE/LICM effect authority. `midend_optimization.py` is only the composed MRO entrypoint.
 - `runtime/molt-tir/src/tir/mod.rs` (`is_structural`), `runtime/molt-tir/src/tir/cfg.rs` (terminator/leader/ender/cond-branch), and `runtime/molt-tir/src/tir/lower_from_simple.rs` consume generated SimpleIR control-kind tables.
 - Precedents: `tools/gen_intrinsics.py` + `tests/test_gen_intrinsics.py` (the generator + sync-test pattern); `tools/stdlib_full_coverage_manifest.py` (the manifest-table pattern); `tools/audit_op_kinds.py` (this task's check-mode tool).
 

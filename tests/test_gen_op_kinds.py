@@ -4544,7 +4544,7 @@ def test_frontend_effect_classes_pin_pre_specialization_barriers() -> None:
 
 def test_midend_effect_oracle_consumes_generated_authority_only() -> None:
     source = (
-        ROOT / "src/molt/frontend/lowering/midend_optimization.py"
+        ROOT / "src/molt/frontend/lowering/midend_canonicalization.py"
     ).read_text(encoding="utf-8")
     method = source.split("def _op_effect_class", 1)[1].split(
         "def _is_pure_op_for_global_cse", 1
