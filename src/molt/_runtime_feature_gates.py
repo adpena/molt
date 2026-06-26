@@ -53,6 +53,18 @@ RUNTIME_FEATURE_GATES: tuple[tuple[str, str], ...] = (
     # serialization: cbor, msgpack
     ("molt_cbor_", "stdlib_serialization"),
     ("molt_msgpack_", "stdlib_serialization"),
+    # serial crate: binary codecs, configparser, datetime, and struct helpers
+    # live only in molt-runtime-serial. Disabled profiles must refuse these
+    # imports loudly instead of falling through to deleted in-core copies.
+    ("molt_base64_", "stdlib_serial"),
+    ("molt_binascii_", "stdlib_serial"),
+    ("molt_configparser_", "stdlib_serial"),
+    ("molt_datetime_", "stdlib_serial"),
+    ("molt_date_", "stdlib_serial"),
+    ("molt_timedelta_", "stdlib_serial"),
+    ("molt_timezone_", "stdlib_serial"),
+    ("molt_struct_", "stdlib_serial"),
+    ("molt_uu_codec", "stdlib_serial"),
     # ast
     ("molt_ast_", "stdlib_ast"),
     # collections + argparse live in the extracted collections crate.
@@ -70,6 +82,7 @@ RUNTIME_FEATURE_GATES: tuple[tuple[str, str], ...] = (
     ("molt_tempfile_", "stdlib_fs_extra"),
     # archive: zipfile
     ("molt_zipfile_", "stdlib_archive"),
+    ("molt_imghdr_", "stdlib_archive"),
     # tk: tkinter GUI bindings
     ("molt_tk_", "stdlib_tk"),
     # stringprep: RFC 3454 table helpers live in the extracted leaf crate.
@@ -115,6 +128,7 @@ RUNTIME_FEATURE_GATES: tuple[tuple[str, str], ...] = (
     ("molt_pipe_transport_", "stdlib_asyncio"),
     # email
     ("molt_email_", "stdlib_email"),
+    ("molt_quopri_", "stdlib_email"),
     # decimal
     ("molt_decimal_", "stdlib_decimal"),
     # logging core lives behind stdlib_logging; stateful LogRecord/Logger/etc.
@@ -181,7 +195,7 @@ def feature_gate_for_symbol(symbol: str) -> str | None:
 # feature is off).
 #
 # The COMPLEMENT — features defined as an empty `[]` group in Cargo.toml
-# (``stdlib_email``, ``stdlib_logging``, ``stdlib_concurrent``, ``stdlib_dbm``,
+# (``stdlib_logging``, ``stdlib_concurrent``, ``stdlib_dbm``,
 # ``stdlib_importlib_extra``, ``stdlib_signal``, ``stdlib_select``) — gate only
 # the per-app *resolver arm* in ``generated.rs``. Their
 # ``#[unsafe(no_mangle)]`` functions are compiled into the core runtime
@@ -209,11 +223,13 @@ LINK_AFFECTING_FEATURES: frozenset[str] = frozenset(
         "stdlib_crypto",
         "stdlib_csv",
         "stdlib_decimal",
+        "stdlib_email",
         "stdlib_fs_extra",
         "stdlib_http",
         "stdlib_logging_ext",
         "stdlib_net",
         "stdlib_regex",
+        "stdlib_serial",
         "stdlib_serialization",
         "stdlib_stringprep",
         "stdlib_text",

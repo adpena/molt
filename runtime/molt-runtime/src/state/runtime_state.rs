@@ -19,11 +19,7 @@ use crate::builtins::asyncio_core::AsyncioCoreState;
 use crate::builtins::asyncio_queue::AsyncioQueueRuntimeState;
 use crate::builtins::attributes::AttributesRuntimeState;
 use crate::builtins::concurrent::ConcurrentRuntimeState;
-#[cfg(not(feature = "stdlib_serial"))]
-use crate::builtins::configparser::ConfigParserRuntimeState;
 use crate::builtins::copy_mod::CopyMemoRuntimeState;
-#[cfg(not(feature = "stdlib_serial"))]
-use crate::builtins::csv::CsvRuntimeState;
 use crate::builtins::exceptions::ExceptionsRuntimeState;
 use crate::builtins::functools::FunctoolsRuntimeState;
 use crate::builtins::io::IoRuntimeState;
@@ -336,10 +332,6 @@ pub(crate) struct RuntimeState {
     pub(crate) types: TypesRuntimeState,
     #[cfg(not(feature = "stdlib_itertools"))]
     pub(crate) itertools: ItertoolsRuntimeState,
-    #[cfg(not(feature = "stdlib_serial"))]
-    pub(crate) configparser: Mutex<ConfigParserRuntimeState>,
-    #[cfg(not(feature = "stdlib_serial"))]
-    pub(crate) csv: Mutex<CsvRuntimeState>,
     #[cfg(not(feature = "stdlib_math"))]
     pub(crate) random: Mutex<RandomRuntimeState>,
     pub(crate) sys_ext: SysRuntimeState,
@@ -451,10 +443,6 @@ impl RuntimeState {
             types: TypesRuntimeState::new(),
             #[cfg(not(feature = "stdlib_itertools"))]
             itertools: ItertoolsRuntimeState::new(),
-            #[cfg(not(feature = "stdlib_serial"))]
-            configparser: Mutex::new(ConfigParserRuntimeState::new()),
-            #[cfg(not(feature = "stdlib_serial"))]
-            csv: Mutex::new(CsvRuntimeState::new()),
             #[cfg(not(feature = "stdlib_math"))]
             random: Mutex::new(RandomRuntimeState::new()),
             sys_ext: SysRuntimeState::new(),

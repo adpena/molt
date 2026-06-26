@@ -3,26 +3,32 @@
 #[cold]
 pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
     match symbol {
+        #[cfg(feature = "stdlib_email")]
         "molt_quopri_encode" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_quopri_encode",
             crate::molt_quopri_encode as *const (),
         )),
+        #[cfg(feature = "stdlib_email")]
         "molt_quopri_decode" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_quopri_decode",
             crate::molt_quopri_decode as *const (),
         )),
+        #[cfg(feature = "stdlib_email")]
         "molt_quopri_needs_quoting" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_quopri_needs_quoting",
             crate::molt_quopri_needs_quoting as *const (),
         )),
+        #[cfg(feature = "stdlib_email")]
         "molt_quopri_quote" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_quopri_quote",
             crate::molt_quopri_quote as *const (),
         )),
+        #[cfg(feature = "stdlib_email")]
         "molt_quopri_ishex" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_quopri_ishex",
             crate::molt_quopri_ishex as *const (),
         )),
+        #[cfg(feature = "stdlib_email")]
         "molt_quopri_unhex" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_quopri_unhex",
             crate::molt_quopri_unhex as *const (),

@@ -398,10 +398,6 @@ pub(crate) use crate::builtins::attr::{
     property_no_setter, raise_attr_name_type_error, setattr_no_attr_error_with_obj,
 };
 pub use crate::builtins::attributes::*;
-#[cfg(not(feature = "stdlib_serial"))]
-pub use crate::builtins::base64_mod::*;
-#[cfg(not(feature = "stdlib_serial"))]
-pub use crate::builtins::binascii::*;
 #[cfg(feature = "stdlib_compression")]
 pub use crate::builtins::bz2::*;
 pub use crate::builtins::callable::*;
@@ -418,8 +414,6 @@ pub use crate::builtins::colorsys::*;
 #[cfg(feature = "stdlib_compression")]
 pub use crate::builtins::compression_common::*;
 pub use crate::builtins::concurrent::*;
-#[cfg(not(feature = "stdlib_serial"))]
-pub use crate::builtins::configparser::*;
 pub(crate) use crate::builtins::containers::{
     dict_hashes, dict_hashes_ptr, dict_len, dict_method_bits, dict_order, dict_order_ptr,
     dict_table, dict_table_ptr, dict_view_as_set_bits, dict_view_dict_bits, dict_view_entry,
@@ -442,13 +436,7 @@ pub(crate) use crate::builtins::contextlib::{
     contextlib_asyncgen_enter_task_drop, contextlib_asyncgen_exit_task_drop,
 };
 pub use crate::builtins::copy_mod::*;
-#[cfg(not(feature = "stdlib_serial"))]
-pub use crate::builtins::csv::*;
-#[cfg(not(feature = "stdlib_serial"))]
-pub use crate::builtins::datetime::*;
 pub use crate::builtins::dbm_dumb::*;
-#[cfg(not(feature = "stdlib_serial"))]
-pub use crate::builtins::decimal::*;
 #[cfg(not(feature = "stdlib_difflib"))]
 pub use crate::builtins::difflib::*;
 pub use crate::builtins::enum_ext::*;
@@ -496,15 +484,11 @@ pub(crate) use crate::builtins::frames::{
     traceback_payload_end_col, traceback_payload_line, traceback_payload_next_bits,
 };
 pub use crate::builtins::functions::*;
-#[cfg(not(feature = "stdlib_serial"))]
-pub use crate::builtins::functions_email::*;
 #[cfg(not(feature = "stdlib_http"))]
 pub use crate::builtins::functions_logging::*;
 pub use crate::builtins::functions_pickle::*;
 pub use crate::builtins::functions_re::*;
 pub use crate::builtins::functions_stat::*;
-#[cfg(not(feature = "stdlib_serial"))]
-pub use crate::builtins::functions_zipfile::*;
 pub use crate::builtins::functools::*;
 pub use crate::builtins::graphlib::*;
 #[cfg(feature = "stdlib_compression")]
@@ -568,8 +552,6 @@ pub(crate) use crate::builtins::strings::{
     split_bytes_whitespace_to_list_maxsplit, split_string_bytes_to_list_maxsplit,
     split_string_whitespace_to_list_maxsplit, splitlines_bytes_to_list, splitlines_string_to_list,
 };
-#[cfg(not(feature = "stdlib_serial"))]
-pub use crate::builtins::structs::*;
 pub use crate::builtins::subprocess_ext::*;
 pub use crate::builtins::sys_ext::*;
 #[cfg(feature = "stdlib_compression")]
@@ -724,11 +706,7 @@ pub(crate) use crate::object::{
 pub use crate::object::{
     MoltHeader, bump_type_version, global_type_version, molt_dec_ref, molt_inc_ref,
 };
-#[cfg(any(
-    not(feature = "stdlib_ipaddress"),
-    not(feature = "stdlib_math"),
-    not(feature = "stdlib_serial")
-))]
+#[cfg(any(not(feature = "stdlib_ipaddress"), not(feature = "stdlib_math")))]
 pub(crate) use crate::provenance::opaque_handle_ptr_from_bits;
 #[allow(unused_imports)]
 pub(crate) use crate::provenance::{
@@ -790,13 +768,13 @@ pub use molt_runtime_serial::configparser::*;
 pub use molt_runtime_serial::csv::*;
 #[cfg(feature = "stdlib_serial")]
 pub use molt_runtime_serial::datetime::*;
-#[cfg(feature = "stdlib_serial")]
+#[cfg(feature = "stdlib_decimal")]
 pub use molt_runtime_serial::decimal::*;
-#[cfg(feature = "stdlib_serial")]
+#[cfg(feature = "stdlib_email")]
 pub use molt_runtime_serial::email::*;
 #[cfg(feature = "stdlib_serial")]
 pub use molt_runtime_serial::structs::*;
-#[cfg(feature = "stdlib_serial")]
+#[cfg(feature = "stdlib_archive")]
 pub use molt_runtime_serial::zipfile::*;
 #[cfg(feature = "stdlib_stringprep")]
 pub use molt_runtime_stringprep::stringprep::*;

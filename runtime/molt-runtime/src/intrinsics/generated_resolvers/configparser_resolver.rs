@@ -3,100 +3,124 @@
 #[cold]
 pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
     match symbol {
+        #[cfg(feature = "stdlib_serial")]
         "molt_configparser_add_section" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_configparser_add_section",
             crate::molt_configparser_add_section as *const (),
         )),
+        #[cfg(feature = "stdlib_serial")]
         "molt_configparser_drop" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_configparser_drop",
             crate::molt_configparser_drop as *const (),
         )),
+        #[cfg(feature = "stdlib_serial")]
         "molt_configparser_get" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_configparser_get",
             crate::molt_configparser_get as *const (),
         )),
+        #[cfg(feature = "stdlib_serial")]
         "molt_configparser_getboolean" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_configparser_getboolean",
             crate::molt_configparser_getboolean as *const (),
         )),
+        #[cfg(feature = "stdlib_serial")]
         "molt_configparser_getfloat" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_configparser_getfloat",
             crate::molt_configparser_getfloat as *const (),
         )),
+        #[cfg(feature = "stdlib_serial")]
         "molt_configparser_getint" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_configparser_getint",
             crate::molt_configparser_getint as *const (),
         )),
+        #[cfg(feature = "stdlib_serial")]
         "molt_configparser_has_option" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_configparser_has_option",
             crate::molt_configparser_has_option as *const (),
         )),
+        #[cfg(feature = "stdlib_serial")]
         "molt_configparser_has_section" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_configparser_has_section",
             crate::molt_configparser_has_section as *const (),
         )),
+        #[cfg(feature = "stdlib_serial")]
         "molt_configparser_items" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_configparser_items",
             crate::molt_configparser_items as *const (),
         )),
+        #[cfg(feature = "stdlib_serial")]
         "molt_configparser_new" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_configparser_new",
             crate::molt_configparser_new as *const (),
         )),
+        #[cfg(feature = "stdlib_serial")]
         "molt_configparser_options" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_configparser_options",
             crate::molt_configparser_options as *const (),
         )),
+        #[cfg(feature = "stdlib_serial")]
         "molt_configparser_read" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_configparser_read",
             crate::molt_configparser_read as *const (),
         )),
+        #[cfg(feature = "stdlib_serial")]
         "molt_configparser_read_string" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_configparser_read_string",
             crate::molt_configparser_read_string as *const (),
         )),
+        #[cfg(feature = "stdlib_serial")]
         "molt_configparser_remove_option" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_configparser_remove_option",
             crate::molt_configparser_remove_option as *const (),
         )),
+        #[cfg(feature = "stdlib_serial")]
         "molt_configparser_remove_section" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_configparser_remove_section",
             crate::molt_configparser_remove_section as *const (),
         )),
+        #[cfg(feature = "stdlib_serial")]
         "molt_configparser_sections" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_configparser_sections",
             crate::molt_configparser_sections as *const (),
         )),
+        #[cfg(feature = "stdlib_serial")]
         "molt_configparser_set" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_configparser_set",
             crate::molt_configparser_set as *const (),
         )),
+        #[cfg(feature = "stdlib_serial")]
         "molt_configparser_write" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_configparser_write",
             crate::molt_configparser_write as *const (),
         )),
+        #[cfg(feature = "stdlib_serial")]
         "molt_configparser_defaults" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_configparser_defaults",
             crate::molt_configparser_defaults as *const (),
         )),
+        #[cfg(feature = "stdlib_serial")]
         "molt_configparser_get_raw" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_configparser_get_raw",
             crate::molt_configparser_get_raw as *const (),
         )),
+        #[cfg(feature = "stdlib_serial")]
         "molt_configparser_interpolate_basic" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_configparser_interpolate_basic",
             crate::molt_configparser_interpolate_basic as *const (),
         )),
+        #[cfg(feature = "stdlib_serial")]
         "molt_configparser_interpolate_extended" => {
             Some(crate::builtins::functions::runtime_fn_addr(
                 "crate::molt_configparser_interpolate_extended",
                 crate::molt_configparser_interpolate_extended as *const (),
             ))
         }
+        #[cfg(feature = "stdlib_serial")]
         "molt_configparser_read_file" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_configparser_read_file",
             crate::molt_configparser_read_file as *const (),
         )),
+        #[cfg(feature = "stdlib_serial")]
         "molt_configparser_write_string" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_configparser_write_string",
             crate::molt_configparser_write_string as *const (),

@@ -3,10 +3,12 @@
 #[cold]
 pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
     match symbol {
+        #[cfg(feature = "stdlib_serial")]
         "molt_uu_codec_encode" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_uu_codec_encode",
             crate::molt_uu_codec_encode as *const (),
         )),
+        #[cfg(feature = "stdlib_serial")]
         "molt_uu_codec_decode" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_uu_codec_decode",
             crate::molt_uu_codec_decode as *const (),
