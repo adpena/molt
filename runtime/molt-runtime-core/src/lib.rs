@@ -539,7 +539,7 @@ pub mod ffi {
 
         /// GIL-free list[int] setitem (NaN-boxed interface).
         pub fn molt_list_int_setitem_nogil(list_bits: u64, index_bits: u64, value_bits: u64)
-        -> u64;
+            -> u64;
 
         /// Raw-register list[int] getitem: raw i64 index in, raw i64 value out.
         pub fn molt_list_int_getitem_raw(list_bits: u64, raw_index: i64) -> i64;
@@ -939,16 +939,16 @@ pub unsafe fn bridge_owned_u64_to_vec(ptr: *const u64, len: usize) -> Vec<u64> {
 /// Provides type IDs, object model types, the GIL token, convenience
 /// helpers, and safe wrappers over the runtime FFI.
 pub mod prelude {
-    pub use crate::HashContextCode;
     pub use crate::type_ids::*;
     pub use crate::with_core_gil;
     pub use crate::with_gil_entry;
     pub use crate::with_gil_entry_body;
+    pub use crate::HashContextCode;
     pub use crate::{
-        CoreGilGuard, CoreGilToken, GilReleaseGuard, MoltObject, PyToken, bits_from_ptr,
-        bridge_owned_u8_buffer, bridge_owned_u8_to_string_lossy, bridge_owned_u8_to_vec,
-        bridge_owned_u64_buffer, bridge_owned_u64_to_vec, obj_from_bits, opaque_handle_bits,
-        opaque_handle_ptr_from_bits, ptr_from_bits,
+        bits_from_ptr, bridge_owned_u64_buffer, bridge_owned_u64_to_vec, bridge_owned_u8_buffer,
+        bridge_owned_u8_to_string_lossy, bridge_owned_u8_to_vec, obj_from_bits, opaque_handle_bits,
+        opaque_handle_ptr_from_bits, ptr_from_bits, CoreGilGuard, CoreGilToken, GilReleaseGuard,
+        MoltObject, PyToken,
     };
 
     // Safe runtime wrappers
