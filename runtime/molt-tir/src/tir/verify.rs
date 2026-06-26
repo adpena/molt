@@ -9,8 +9,10 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use super::blocks::{BlockId, Terminator};
 use super::dominators::{self, CfgEdgePolicy};
 use super::function::TirFunction;
-use super::op_kinds_generated::opcode_fixed_result_count_table;
-use super::ops::{AttrValue, OpCode};
+use super::op_kinds_generated::{
+    TirVerifyAttrRule, opcode_fixed_result_count_table, opcode_tir_verify_attr_rule_table,
+};
+use super::ops::AttrValue;
 use super::values::ValueId;
 
 // ---------------------------------------------------------------------------
@@ -195,8 +197,8 @@ fn verify_op_attributes(func: &TirFunction, errors: &mut Vec<VerifyError>) {
             // SimpleIR may produce placeholder constants (e.g. `const` with
             // no value) that are later consumed by type refinement. These
             // ops are structurally valid even without their value attribute.
-            match op.opcode {
-                OpCode::Call | OpCode::CallBuiltin
+            match opcode_tir_verify_attr_rule_table(op.opcode) {
+                TirVerifyAttrRule::CallCallee
                     if !op.attrs.contains_key("callee")
                         && !op.attrs.contains_key("s_value")
                         && op.operands.is_empty() =>
@@ -209,7 +211,7 @@ fn verify_op_attributes(func: &TirFunction, errors: &mut Vec<VerifyError>) {
                         format!("{:?} op has no callee (attr or operand)", op.opcode),
                     ));
                 }
-                OpCode::CallMethod
+                TirVerifyAttrRule::CallMethod
                     if !op.attrs.contains_key("method")
                         && !op.attrs.contains_key("callee")
                         && !op.attrs.contains_key("s_value")
@@ -221,7 +223,7 @@ fn verify_op_attributes(func: &TirFunction, errors: &mut Vec<VerifyError>) {
                         "CallMethod op has no method (attr or operand)",
                     ));
                 }
-                OpCode::ObjectNewBoundStack => match op.attrs.get("value") {
+                TirVerifyAttrRule::PositivePayloadBytes => match op.attrs.get("value") {
                     Some(AttrValue::Int(value)) if *value > 0 => {}
                     _ => errors.push(VerifyError::op(
                         *bid,

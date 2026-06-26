@@ -60,6 +60,7 @@ use crate::tir::analysis::{Analysis, AnalysisId};
 use crate::tir::blocks::{BlockId, LoopRole, Terminator};
 use crate::tir::dominators;
 use crate::tir::function::TirFunction;
+use crate::tir::op_kinds_generated::{ScevExprRule, opcode_scev_expr_rule_table};
 use crate::tir::ops::{AttrValue, OpCode};
 use crate::tir::values::ValueId;
 
@@ -601,18 +602,18 @@ impl<'a> ScevBuilder<'a> {
 
     /// SCEV of an op-defined value (affine combinations of invariants only).
     fn scev_of_op(&mut self, _v: ValueId, opcode: OpCode, operands: &[ValueId]) -> ScevExpr {
-        match opcode {
-            OpCode::Add if operands.len() == 2 => {
+        match opcode_scev_expr_rule_table(opcode) {
+            ScevExprRule::Add if operands.len() == 2 => {
                 let a = self.scev(operands[0]);
                 let b = self.scev(operands[1]);
                 fold_add(a, b)
             }
-            OpCode::Sub if operands.len() == 2 => {
+            ScevExprRule::Sub if operands.len() == 2 => {
                 let a = self.scev(operands[0]);
                 let b = self.scev(operands[1]);
                 fold_sub(a, b)
             }
-            OpCode::Mul if operands.len() == 2 => {
+            ScevExprRule::Mul if operands.len() == 2 => {
                 let a = self.scev(operands[0]);
                 let b = self.scev(operands[1]);
                 fold_mul(a, b)

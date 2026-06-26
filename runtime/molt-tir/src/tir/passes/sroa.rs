@@ -122,6 +122,9 @@ use super::value_range::{ValueRange, ValueRangeResult};
 use crate::tir::analysis::AnalysisManager;
 use crate::tir::blocks::{BlockId, Terminator};
 use crate::tir::function::TirFunction;
+use crate::tir::op_kinds_generated::{
+    SroaConstImmediateRule, opcode_sroa_const_immediate_rule_table,
+};
 use crate::tir::ops::{AttrValue, OpCode, TirOp};
 use crate::tir::types::TirType;
 use crate::tir::values::ValueId;
@@ -199,13 +202,13 @@ fn collect_const_immediates(func: &TirFunction, ranges: &ValueRangeResult) -> Ha
             let Some(&result) = op.results.first() else {
                 continue;
             };
-            match op.opcode {
-                OpCode::ConstNone | OpCode::ConstBool | OpCode::ConstFloat => {
+            match opcode_sroa_const_immediate_rule_table(op.opcode) {
+                SroaConstImmediateRule::AlwaysImmediate => {
                     set.insert(result);
                 }
                 // A literal int is an inline immediate only when it fits the
                 // window; a `ConstInt` of `1 << 60` lowers to a heap BigInt.
-                OpCode::ConstInt if ranges.fits_inline_int47(result) => {
+                SroaConstImmediateRule::InlineIntIfRange if ranges.fits_inline_int47(result) => {
                     set.insert(result);
                 }
                 _ => {}
