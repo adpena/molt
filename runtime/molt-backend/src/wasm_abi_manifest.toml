@@ -2,6 +2,142 @@
 # Generated consumers are produced by tools/gen_wasm_abi.py.
 # Edit this file, then run: python tools/gen_wasm_abi.py
 
+[table_layout]
+legacy_table_base = 256
+
+[[reserved_runtime_callable]]
+index = 0
+runtime_name = "molt_type_call"
+import_name = "type_call"
+callable_arity = 1
+
+[[reserved_runtime_callable]]
+index = 1
+runtime_name = "molt_type_new"
+import_name = "type_new"
+callable_arity = 5
+
+[[reserved_runtime_callable]]
+index = 2
+runtime_name = "molt_type_init"
+import_name = "type_init"
+callable_arity = 5
+
+[[reserved_runtime_callable]]
+index = 3
+runtime_name = "molt_object_new_bound"
+import_name = "object_new_bound"
+callable_arity = 1
+
+[[reserved_runtime_callable]]
+index = 4
+runtime_name = "molt_object_init"
+import_name = "object_init"
+callable_arity = 1
+
+[[reserved_runtime_callable]]
+index = 5
+runtime_name = "molt_object_init_subclass"
+import_name = "object_init_subclass"
+callable_arity = 1
+
+[[reserved_runtime_callable]]
+index = 6
+runtime_name = "molt_exception_new_bound"
+import_name = "exception_new_bound"
+callable_arity = 2
+
+[[reserved_runtime_callable]]
+index = 7
+runtime_name = "molt_exception_init"
+import_name = "exception_init"
+callable_arity = 2
+
+[[reserved_runtime_callable]]
+index = 8
+runtime_name = "molt_exceptiongroup_init"
+import_name = "exceptiongroup_init"
+callable_arity = 2
+
+[[reserved_runtime_callable]]
+index = 9
+runtime_name = "molt_types_mappingproxy_new"
+import_name = "types_mappingproxy_new"
+callable_arity = 2
+
+[[reserved_runtime_callable]]
+index = 10
+runtime_name = "molt_types_mappingproxy_init"
+import_name = "types_mappingproxy_init"
+callable_arity = 2
+
+[[reserved_runtime_callable]]
+index = 11
+runtime_name = "molt_types_method_new"
+import_name = "types_method_new"
+callable_arity = 3
+
+[[reserved_runtime_callable]]
+index = 12
+runtime_name = "molt_types_method_init"
+import_name = "types_method_init"
+callable_arity = 3
+
+[[reserved_runtime_callable]]
+index = 13
+runtime_name = "molt_types_simplenamespace_init"
+import_name = "types_simplenamespace_init"
+callable_arity = 3
+
+[[reserved_runtime_callable]]
+index = 14
+runtime_name = "molt_types_capsule_new"
+import_name = "types_capsule_new"
+callable_arity = 1
+
+[[reserved_runtime_callable]]
+index = 15
+runtime_name = "molt_types_cell_new"
+import_name = "types_cell_new"
+callable_arity = 1
+
+[[reserved_runtime_callable]]
+index = 16
+runtime_name = "molt_types_dynamic_class_attr_init"
+import_name = "types_dynamic_class_attr_init"
+callable_arity = 3
+
+[[reserved_runtime_callable]]
+index = 17
+runtime_name = "molt_types_coroutine"
+import_name = "types_coroutine"
+callable_arity = 1
+
+[[reserved_runtime_callable]]
+index = 18
+runtime_name = "molt_types_get_original_bases"
+import_name = "types_get_original_bases"
+callable_arity = 1
+
+[[reserved_runtime_callable]]
+index = 19
+runtime_name = "molt_types_prepare_class"
+import_name = "types_prepare_class"
+callable_arity = 2
+
+[[reserved_runtime_callable]]
+index = 20
+runtime_name = "molt_types_resolve_bases"
+import_name = "types_resolve_bases"
+callable_arity = 2
+
+[[reserved_runtime_callable]]
+index = 21
+runtime_name = "molt_types_new_class"
+import_name = "types_new_class"
+callable_arity = 2
+
+
 [[import]]
 name = "alloc"
 type = 2
@@ -963,6 +1099,7 @@ type = 0
 [[import]]
 name = "promise_poll"
 type = 2
+poll_table_slot = 4
 
 [[import]]
 name = "promise_set_exception"
@@ -1585,6 +1722,7 @@ callable_arity = 2
 [[import]]
 name = "anext_default_poll"
 type = 2
+poll_table_slot = 2
 
 [[import]]
 name = "any_builtin"
@@ -2027,6 +2165,7 @@ type = 3
 [[import]]
 name = "async_sleep_poll"
 type = 2
+poll_table_slot = 1
 
 [[import]]
 name = "asyncgen_hooks_get"
@@ -2057,6 +2196,7 @@ type = 2
 [[import]]
 name = "asyncgen_poll"
 type = 2
+poll_table_slot = 3
 
 [[import]]
 name = "asyncgen_shutdown"
@@ -2067,82 +2207,102 @@ callable_arity = 0
 [[import]]
 name = "asyncio_fd_watcher_poll"
 type = 2
+poll_table_slot = 26
 
 [[import]]
 name = "asyncio_gather_poll"
 type = 2
+poll_table_slot = 11
 
 [[import]]
 name = "asyncio_ready_runner_poll"
 type = 2
+poll_table_slot = 28
 
 [[import]]
 name = "asyncio_server_accept_loop_poll"
 type = 2
+poll_table_slot = 27
 
 [[import]]
 name = "asyncio_sock_accept_poll"
 type = 2
+poll_table_slot = 19
 
 [[import]]
 name = "asyncio_sock_connect_poll"
 type = 2
+poll_table_slot = 18
 
 [[import]]
 name = "asyncio_sock_recv_into_poll"
 type = 2
+poll_table_slot = 20
 
 [[import]]
 name = "asyncio_sock_recv_poll"
 type = 2
+poll_table_slot = 17
 
 [[import]]
 name = "asyncio_sock_recvfrom_into_poll"
 type = 2
+poll_table_slot = 23
 
 [[import]]
 name = "asyncio_sock_recvfrom_poll"
 type = 2
+poll_table_slot = 22
 
 [[import]]
 name = "asyncio_sock_sendall_poll"
 type = 2
+poll_table_slot = 21
 
 [[import]]
 name = "asyncio_sock_sendto_poll"
 type = 2
+poll_table_slot = 24
 
 [[import]]
 name = "asyncio_socket_reader_read_poll"
 type = 2
+poll_table_slot = 12
 
 [[import]]
 name = "asyncio_socket_reader_readline_poll"
 type = 2
+poll_table_slot = 13
 
 [[import]]
 name = "asyncio_stream_reader_read_poll"
 type = 2
+poll_table_slot = 14
 
 [[import]]
 name = "asyncio_stream_reader_readline_poll"
 type = 2
+poll_table_slot = 15
 
 [[import]]
 name = "asyncio_stream_send_all_poll"
 type = 2
+poll_table_slot = 16
 
 [[import]]
 name = "asyncio_timer_handle_poll"
 type = 2
+poll_table_slot = 25
 
 [[import]]
 name = "asyncio_wait_for_poll"
 type = 2
+poll_table_slot = 9
 
 [[import]]
 name = "asyncio_wait_poll"
 type = 2
+poll_table_slot = 10
 
 [[import]]
 name = "buffer2d_get"
@@ -2311,18 +2471,22 @@ type = 0
 [[import]]
 name = "contextlib_async_exitstack_enter_context_poll"
 type = 2
+poll_table_slot = 32
 
 [[import]]
 name = "contextlib_async_exitstack_exit_poll"
 type = 2
+poll_table_slot = 31
 
 [[import]]
 name = "contextlib_asyncgen_enter_poll"
 type = 2
+poll_table_slot = 29
 
 [[import]]
 name = "contextlib_asyncgen_exit_poll"
 type = 2
+poll_table_slot = 30
 
 [[import]]
 name = "importlib_bootstrap_payload"
@@ -2767,6 +2931,7 @@ type = 3
 [[import]]
 name = "io_wait"
 type = 2
+poll_table_slot = 5
 
 [[import]]
 name = "stream_clone"
@@ -3859,6 +4024,7 @@ callable_arity = 1
 [[import]]
 name = "process_poll"
 type = 2
+poll_table_slot = 7
 
 [[import]]
 name = "process_returncode"
@@ -3945,6 +4111,7 @@ callable_arity = 1
 [[import]]
 name = "thread_poll"
 type = 2
+poll_table_slot = 6
 
 [[import]]
 name = "thread_spawn"
@@ -4105,6 +4272,7 @@ callable_arity = 2
 [[import]]
 name = "ws_wait"
 type = 2
+poll_table_slot = 8
 
 [[import]]
 name = "ws_wait_new"

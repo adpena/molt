@@ -848,7 +848,6 @@ from molt.cli.wasm import (
     _read_wasm_memory_min_bytes,
     _read_wasm_ref_func_expr,
     _read_wasm_table_min,
-    _reserved_wasm_runtime_callable_count,
     _skip_wasm_init_expr,
     _generate_split_worker_js,
     _generate_split_wrangler_jsonc,

@@ -7,8 +7,10 @@ pub(crate) const BIND_KIND_OPEN: i64 = 1;
 pub(crate) const BIND_KIND_CAPI_METHOD: i64 = 2;
 pub(crate) const BIND_KIND_PACKED_BUILTIN: i64 = 3;
 
-#[allow(dead_code)]
-pub(crate) const WASM_TABLE_BASE_FALLBACK: u64 = 256;
+include!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../wasm_table_layout.inc"
+));
 
 #[cfg(target_arch = "wasm32")]
 static WASM_TABLE_BASE_RUNTIME: AtomicU64 = AtomicU64::new(WASM_TABLE_BASE_FALLBACK);
