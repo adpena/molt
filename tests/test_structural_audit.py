@@ -137,6 +137,47 @@ def test_format_board_uses_root_specific_tooling_gaps(tmp_path: Path):
     assert "perf_causality.py (not built)" not in board
 
 
+def test_debt_probe_ignores_domain_temporary_and_tool_regex_strings(tmp_path: Path):
+    pkg = tmp_path / "src" / "molt"
+    pkg.mkdir(parents=True)
+    (pkg / "tempfile.py").write_text(
+        '"""Return a temporary file name."""\n'
+        "TODO_RE = r'TODO(owner): parser contract, not a live debt marker'\n"
+        "# Default prefix for temporary file/directory names.\n",
+        encoding="utf-8",
+    )
+
+    findings = SA.probe_debt_markers(tmp_path)
+
+    assert findings == []
+
+
+def test_debt_probe_counts_comments_and_rust_macros(tmp_path: Path):
+    pkg = tmp_path / "src" / "molt"
+    pkg.mkdir(parents=True)
+    (pkg / "feature.py").write_text(
+        "# TODO(compiler): route through generated facts\n"
+        "TEXT = 'TODO in a user-facing string is not a marker'\n",
+        encoding="utf-8",
+    )
+    rust = tmp_path / "runtime" / "molt-runtime" / "src"
+    rust.mkdir(parents=True)
+    (rust / "lib.rs").write_text(
+        'const TEXT: &str = "todo!(not code)";\n'
+        "pub fn missing() { todo!(\"real implementation\"); }\n",
+        encoding="utf-8",
+    )
+
+    findings = SA.probe_debt_markers(tmp_path)
+    metrics = SA.ratchet_metrics(findings)
+
+    assert metrics["debt_markers_total"] == 2
+    assert {finding.location for finding in findings} == {
+        "runtime/molt-runtime/src/lib.rs:2",
+        "src/molt/feature.py:1",
+    }
+
+
 # --- 2. robustness of the scanning helpers --------------------------------
 
 
