@@ -35,6 +35,7 @@ mod helpers;
 mod op_attributes;
 mod op_calls;
 mod op_collections;
+mod op_container_access;
 mod op_control;
 mod op_emitter;
 mod op_lists;
