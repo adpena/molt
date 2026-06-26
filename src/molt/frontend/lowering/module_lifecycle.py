@@ -31,6 +31,128 @@ else:
 
 
 class ModuleLifecycleMixin(_MixinBase):
+    def _init_module_lifecycle_state(
+        self,
+        *,
+        source_path: str | None,
+        module_name: str | None,
+        module_spec_name: str | None,
+        module_is_namespace: bool,
+        entry_module: str | None,
+        module_chunking: bool,
+        module_chunk_max_ops: int,
+        known_modules: set[str] | None,
+        stdlib_allowlist: set[str] | None,
+    ) -> None:
+        self.module_name = module_name or "__main__"
+        self.module_spec_name = module_spec_name or self.module_name
+        self.entry_module = entry_module
+        self.module_prefix = f"{self._sanitize_module_name(self.module_name)}__"
+        self.known_modules = set(known_modules or [])
+        self.stdlib_allowlist = set(stdlib_allowlist or [])
+        self.module_frame_emitted = False
+        self.module_chunking = module_chunking
+        self.module_chunk_max_ops = module_chunk_max_ops
+        self.module_stmt_offsets: list[int] = []
+        self.module_chunk_counter = 0
+        self.module_chunk_symbols: list[str] = []
+        self.module_frame_entered = False
+        self.module_frame_exited = False
+        self.module_frame_code_id: int | None = None
+        self.module_obj: MoltValue | None = None
+        self.source_path = source_path
+        self.module_is_package = False
+        self.module_is_namespace = module_is_namespace
+        if source_path:
+            normalized_path = source_path.replace("\\", "/")
+            if normalized_path.endswith("/__init__.py") or normalized_path.endswith(
+                "/__init__.pyi"
+            ):
+                self.module_is_package = True
+        if self.module_is_namespace:
+            self.module_is_package = True
+        self.module_package_override: str | None = None
+        self.module_package_override_set = False
+        self.module_spec_override: str | None = None
+        self.module_spec_override_set = False
+        self.module_spec_override_is_package: bool | None = None
+
+    def _emit_initial_module_object(self) -> None:
+        module_val: MoltValue | None = None
+        if self.module_name:
+            is_real_entry_module = (
+                self.entry_module
+                and self.module_name == self.entry_module
+                and self.module_name != "__main__"
+            )
+            entry_spawn_override_enabled = (
+                is_real_entry_module and "multiprocessing.spawn" in self.known_modules
+            )
+            name_val = MoltValue(self.next_var(), type_hint="str")
+            self.emit(
+                MoltOp(kind="CONST_STR", args=[self.module_name], result=name_val)
+            )
+            module_val = MoltValue(self.next_var(), type_hint="module")
+            self.emit(MoltOp(kind="MODULE_NEW", args=[name_val], result=module_val))
+            self.emit(
+                MoltOp(
+                    kind="MODULE_CACHE_SET",
+                    args=[name_val, module_val],
+                    result=MoltValue("none"),
+                )
+            )
+            if entry_spawn_override_enabled:
+                spawn_key = MoltValue(self.next_var(), type_hint="str")
+                self.emit(
+                    MoltOp(kind="CONST_STR", args=["MOLT_MP_SPAWN"], result=spawn_key)
+                )
+                spawn_default = MoltValue(self.next_var(), type_hint="str")
+                self.emit(MoltOp(kind="CONST_STR", args=[""], result=spawn_default))
+                spawn_value = MoltValue(self.next_var(), type_hint="str")
+                self.emit(
+                    MoltOp(
+                        kind="ENV_GET",
+                        args=[spawn_key, spawn_default],
+                        result=spawn_value,
+                    )
+                )
+                spawn_expected = MoltValue(self.next_var(), type_hint="str")
+                self.emit(MoltOp(kind="CONST_STR", args=["1"], result=spawn_expected))
+                spawn_eq = MoltValue(self.next_var(), type_hint="bool")
+                self.emit(
+                    MoltOp(
+                        kind="STRING_EQ",
+                        args=[spawn_value, spawn_expected],
+                        result=spawn_eq,
+                    )
+                )
+                spawn_not = MoltValue(self.next_var(), type_hint="bool")
+                self.emit(MoltOp(kind="NOT", args=[spawn_eq], result=spawn_not))
+                self.emit(MoltOp(kind="IF", args=[spawn_not], result=MoltValue("none")))
+            if is_real_entry_module:
+                main_name = MoltValue(self.next_var(), type_hint="str")
+                self.emit(MoltOp(kind="CONST_STR", args=["__main__"], result=main_name))
+                self.emit(
+                    MoltOp(
+                        kind="MODULE_CACHE_SET",
+                        args=[main_name, module_val],
+                        result=MoltValue("none"),
+                    )
+                )
+                name_attr = MoltValue(self.next_var(), type_hint="str")
+                self.emit(MoltOp(kind="CONST_STR", args=["__name__"], result=name_attr))
+                self.emit(
+                    MoltOp(
+                        kind="MODULE_SET_ATTR",
+                        args=[module_val, name_attr, main_name],
+                        result=MoltValue("none"),
+                    )
+                )
+                if entry_spawn_override_enabled:
+                    self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
+        self.module_obj = module_val
+        self._emit_module_metadata()
+
     def _emit_module_metadata(self) -> None:
         if self.module_obj is None:
             return
