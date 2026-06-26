@@ -19,8 +19,10 @@ from __future__ import annotations
 import ast
 
 from molt.frontend.sema.classgraph import (
+    build_class_facts,
     build_class_graph,
     c3_merge,
+    class_body_needs_block_exec,
     reachable_base_names,
     static_class_bases,
     static_method_owner_after,
@@ -52,6 +54,7 @@ from molt.frontend.sema.funcmeta import (
     stateful_function_task_kind,
 )
 from molt.frontend.sema.result import (
+    ClassFacts,
     ClassGraph,
     FunctionMeta,
     SemaResult,
@@ -59,6 +62,7 @@ from molt.frontend.sema.result import (
 
 __all__ = [
     "ClassGraph",
+    "ClassFacts",
     "FUNCTION_KIND_VALUES",
     "FunctionMeta",
     "FunctionKind",
@@ -70,8 +74,10 @@ __all__ = [
     "analyze_module",
     "async_generator_contains_return_value",
     "async_generator_contains_yield_from",
+    "build_class_facts",
     "build_class_graph",
     "c3_merge",
+    "class_body_needs_block_exec",
     "collect_module_class_names",
     "collect_module_const_dicts",
     "collect_module_func_defaults",
@@ -103,6 +109,7 @@ def analyze_module(node: ast.Module) -> SemaResult:
     """
     return SemaResult(
         class_graph=build_class_graph(node),
+        class_facts=build_class_facts(node),
         const_dicts=collect_module_const_dicts(node),
         function_meta=FunctionMeta(
             declared_funcs=collect_module_func_kinds(node),
