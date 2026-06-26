@@ -399,3 +399,219 @@ def test_wasm_micro_includes_crypto_so_hashlib_is_allowed() -> None:
     rc, message = _run_pass([("hashlib", STDLIB_ROOT / "hashlib.py")], "micro", "wasm")
     assert rc is None
     assert message is None
+
+
+# --- Phase 0: profile feature sets read the Cargo ladder, not a Python mirror -
+#
+# ``runtime_features.profile_link_features`` resolves "what link-affecting +
+# builtin features does profile P provide" by transitively expanding the Cargo
+# ``[features]`` chain (micro -> stdlib_micro ... full -> stdlib_full), replacing
+# the hand-maintained ``_ALL_DOMAIN_FEATURES`` flat list that DRIFTED from the
+# Cargo chain.  The old mirror omitted ``stdlib_regex``/``stdlib_itertools``/
+# ``stdlib_path``/``stdlib_difflib``/``stdlib_xml``/``stdlib_ipaddress`` — all of
+# which ``stdlib_full`` transitively links — so the Python "full" model could not
+# even name the features its own archive builds.  These guards turn that
+# "Python model drifts from Cargo ladder" class into a CI failure.
+
+# The six dep-backed leaf-crate stdlib features the old ``_ALL_DOMAIN_FEATURES``
+# mirror omitted but the Cargo ``stdlib_full`` chain transitively links.
+_PREVIOUSLY_DRIFTED_FULL_FEATURES = frozenset(
+    {
+        "stdlib_regex",
+        "stdlib_itertools",
+        "stdlib_path",
+        "stdlib_difflib",
+        "stdlib_xml",
+        "stdlib_ipaddress",
+    }
+)
+
+
+def _cargo_feature_graph() -> dict[str, list[str]]:
+    cargo = tomllib.loads(
+        (MOLT_ROOT / "runtime" / "molt-runtime" / "Cargo.toml").read_text()
+    )
+    return {
+        name: list(entries)
+        for name, entries in cargo["features"].items()
+        if isinstance(entries, list)
+    }
+
+
+def _independent_cargo_expansion(seed: str) -> frozenset[str]:
+    """Transitive feature-name closure of *seed*, recomputed from scratch.
+
+    Deliberately a second, independent implementation of the expansion so the
+    agreement test cross-checks ``profile_link_features`` against the raw
+    Cargo.toml rather than against the same code under test.
+    """
+    graph = _cargo_feature_graph()
+    reached: set[str] = set()
+    stack = [seed]
+    while stack:
+        current = stack.pop()
+        if current in reached:
+            continue
+        reached.add(current)
+        for entry in graph.get(current, []):
+            if entry.startswith("dep:") or "/" in entry:
+                continue
+            stack.append(entry)
+    reached.discard(seed)
+    return frozenset(reached)
+
+
+_LADDER_PROFILE_TO_CARGO = {
+    "micro": "stdlib_micro",
+    "edge": "stdlib_edge",
+    "standard": "stdlib_standard",
+    "server": "stdlib_server",
+    "full": "stdlib_full",
+}
+
+
+def test_profile_link_features_full_includes_dep_backed_leaf_features() -> None:
+    # The headline Phase-0 assertion: the Cargo-derived "full" feature set names
+    # every dep-backed leaf-crate stdlib feature the old mirror dropped.
+    full = RUNTIME_FEATURES.profile_link_features("full", target_triple=None)
+    assert _PREVIOUSLY_DRIFTED_FULL_FEATURES <= full, (
+        "profile_link_features('full') is missing Cargo-linked features: "
+        f"{sorted(_PREVIOUSLY_DRIFTED_FULL_FEATURES - full)}"
+    )
+
+
+def test_profile_link_features_matches_cargo_chain_for_every_ladder_tier() -> None:
+    # The anti-drift gate: for EVERY ladder tier, the function's expansion must
+    # equal the transitive Cargo chain recomputed independently from Cargo.toml.
+    # A future Cargo edit that desyncs the Python view fails here.
+    for profile, cargo_feature in _LADDER_PROFILE_TO_CARGO.items():
+        derived = RUNTIME_FEATURES.profile_link_features(profile, target_triple=None)
+        expected = _independent_cargo_expansion(cargo_feature)
+        assert derived == expected, (
+            f"profile_link_features({profile!r}) diverged from Cargo "
+            f"{cargo_feature!r} chain: "
+            f"only-in-derived={sorted(derived - expected)} "
+            f"only-in-cargo={sorted(expected - derived)}"
+        )
+
+
+def test_profile_link_features_rejects_unknown_profile() -> None:
+    # Fail loudly (not silently fall back) on a profile that has no ladder tier.
+    import pytest
+
+    with pytest.raises(ValueError):
+        RUNTIME_FEATURES.profile_link_features("nonsense", target_triple=None)
+
+
+def test_full_features_superset_includes_previously_drifted_features() -> None:
+    # The composed builtin-feature set the gate/runtime_build consume must also
+    # carry the previously-drifted features (not just the raw ladder helper).
+    assert _PREVIOUSLY_DRIFTED_FULL_FEATURES <= _full_features()
+
+
+def test_native_feature_sets_unchanged_after_cargo_migration() -> None:
+    # No-regression (migration-safety invariant §6: Phase 0 only WIDENS what full
+    # accepts; it never narrows micro and never drops a feature full already had).
+    # micro/native is byte-identical to the documented pre-migration set, and
+    # full/native is a strict SUPERSET of the documented pre-migration full set.
+    builtin = {
+        "builtin_set",
+        "builtin_memoryview",
+        "builtin_complex",
+        "builtin_contextvars",
+        "builtin_fcntl",
+    }
+    micro_base = {
+        "stdlib_asyncio",
+        "stdlib_collections",
+        "stdlib_fs_extra",
+        "stdlib_logging",
+        "stdlib_logging_ext",
+    }
+    old_domain = {
+        "stdlib_tk",
+        "stdlib_net",
+        "stdlib_asyncio",
+        "stdlib_email",
+        "stdlib_decimal",
+        "stdlib_logging",
+        "stdlib_logging_ext",
+        "stdlib_concurrent",
+        "stdlib_dbm",
+        "stdlib_importlib_extra",
+        "stdlib_csv",
+        "stdlib_signal",
+        "stdlib_select",
+        "stdlib_text",
+        "stdlib_zoneinfo",
+        "stdlib_crypto",
+        "stdlib_compression",
+        "stdlib_math",
+        "stdlib_serialization",
+        "stdlib_serial",
+        "stdlib_archive",
+        "stdlib_ast",
+        "stdlib_unicode_names",
+        "stdlib_stringprep",
+        "stdlib_fs_extra",
+        "sqlite",
+        "molt_gpu_primitives",
+    }
+    assert _micro_features() == builtin | micro_base
+    old_full = builtin | old_domain | micro_base
+    assert old_full <= _full_features()
+
+
+def test_wasm_feature_surface_unchanged_after_cargo_migration() -> None:
+    # Phase 0b: the WASM availability surface is preserved verbatim (the native
+    # ladder migrated to Cargo, the WASM path did not, to avoid narrowing the
+    # WASM-micro surface and wrongly refusing working WASM builds).
+    def wasm(profile: str) -> frozenset[str]:
+        return frozenset(
+            RUNTIME_FEATURES._runtime_builtin_features_for_profile(
+                profile, target_triple="wasm32-wasip1"
+            )
+        )
+
+    builtin = {
+        "builtin_set",
+        "builtin_memoryview",
+        "builtin_complex",
+        "builtin_contextvars",
+        "builtin_fcntl",
+    }
+    micro_base = {
+        "stdlib_asyncio",
+        "stdlib_collections",
+        "stdlib_fs_extra",
+        "stdlib_logging",
+        "stdlib_logging_ext",
+    }
+    wasm_excluded = {
+        "stdlib_tk",
+        "stdlib_net",
+        "stdlib_ast",
+        "stdlib_unicode_names",
+        "sqlite",
+    }
+    old_domain = set(RUNTIME_FEATURES._WASM_DOMAIN_AVAILABILITY_FEATURES)
+    expected_wasm_micro = (builtin | old_domain | micro_base) - wasm_excluded
+    assert wasm("micro") == expected_wasm_micro
+    assert wasm("full") == set(RUNTIME_FEATURES._WASM_RUNTIME_FULL_FEATURES)
+
+
+def test_full_build_refusing_genuinely_gated_module_names_truthful_feature() -> None:
+    # The truthful-message property the drift used to break: `ast` (genuinely
+    # link-affecting via stdlib_ast) is refused on micro and the remedy it points
+    # to — full — now genuinely provides stdlib_ast (the Cargo-derived full set
+    # contains it), so the "rebuild with --stdlib-profile full" message is no
+    # longer a lie.
+    assert "stdlib_ast" in _full_features()
+    rc, message = _run_pass([("ast", STDLIB_ROOT / "ast.py")], "micro", "native")
+    assert rc is not None and rc != 0
+    assert message is not None
+    assert "stdlib_ast" in message
+    assert "--stdlib-profile full" in message
+    # And the remedy actually works: ast builds on full.
+    rc_full, _ = _run_pass([("ast", STDLIB_ROOT / "ast.py")], "full", "native")
+    assert rc_full is None
