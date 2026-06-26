@@ -965,6 +965,59 @@ pub extern "C" fn molt_decimal_to_float(value_bits: u64) -> u64 {
     })
 }
 
+/// `Decimal.__hash__` for FINITE and INFINITE values, routed through the shared
+/// numeric hash authority so a Decimal hashes equal to a numerically-equal
+/// int/float/Fraction (`Lib/_pydecimal.py::Decimal.__hash__`). NaN handling
+/// (sNaN -> TypeError; qNaN -> identity) stays in the Python shim, which guards
+/// this call. The value is recovered from the canonical scientific string via
+/// the same `parse_decimal_tuple` used by `as_tuple`, so this backend agrees
+/// digit-for-digit with the pure-Rust backend.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_decimal_hash(value_bits: u64) -> u64 {
+    use num_bigint::BigInt;
+    crate::with_gil_entry_nopanic!(_py, {
+        let Some(handle) = decimal_handle_from_bits(value_bits) else {
+            return raise_exception::<u64>(_py, "TypeError", "invalid decimal handle");
+        };
+        let ctx_ptr = ensure_current_context();
+        let capitals = unsafe { (*ctx_ptr).capitals };
+        let text = match decimal_to_string(_py, handle, capitals) {
+            Ok(val) => val,
+            Err(bits) => return bits,
+        };
+        let (sign, digits, exponent) = parse_decimal_tuple(&text);
+        let hash = match exponent {
+            DecimalExponent::Inf => {
+                if sign == 1 {
+                    -crate::object::ops_hash::PY_HASH_INF
+                } else {
+                    crate::object::ops_hash::PY_HASH_INF
+                }
+            }
+            DecimalExponent::Int(exp) => {
+                // Reconstruct the integer coefficient from its decimal digits.
+                let mut coeff = BigInt::from(0u8);
+                let ten = BigInt::from(10u8);
+                for d in &digits {
+                    coeff = &coeff * &ten + BigInt::from(*d);
+                }
+                if sign == 1 {
+                    coeff = -coeff;
+                }
+                crate::object::ops_hash::py_decimal_hash(&coeff, exp)
+            }
+            DecimalExponent::Nan | DecimalExponent::Snan => {
+                // Defensive: the Python shim guards NaN before calling
+                // (sNaN -> TypeError; qNaN -> object.__hash__). Reaching here
+                // means the contract was violated; raise rather than fabricate a
+                // numeric hash for a non-numeric value.
+                return raise_exception::<u64>(_py, "TypeError", "Cannot hash a NaN value.");
+            }
+        };
+        int_bits_from_i64(_py, hash)
+    })
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_decimal_div(ctx_bits: u64, a_bits: u64, b_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {

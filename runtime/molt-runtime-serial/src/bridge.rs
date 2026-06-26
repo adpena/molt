@@ -6,8 +6,9 @@
 use molt_runtime_core::prelude::*;
 pub use molt_runtime_core::prelude::{opaque_handle_bits, opaque_handle_ptr_from_bits};
 use molt_runtime_core::{
-    HashContextCode, RuntimeExtensionStateClear, RuntimeExtensionStateDrop,
-    RuntimeExtensionStateInit, RuntimeVtable,
+    HashContextCode, RUNTIME_VTABLE_ABI_MAGIC, RUNTIME_VTABLE_ABI_VERSION,
+    RuntimeExtensionStateClear, RuntimeExtensionStateDrop, RuntimeExtensionStateInit,
+    RuntimeVtable, RuntimeVtableHeader,
 };
 use std::borrow::Cow;
 use std::sync::OnceLock;
@@ -22,10 +23,28 @@ pub fn init_vtable() {
         fn __molt_serial_get_vtable() -> *const RuntimeVtable;
     }
     let ptr = unsafe { __molt_serial_get_vtable() };
-    if !ptr.is_null() {
-        let vtable = unsafe { &*ptr };
-        let _ = VTABLE.set(vtable);
+    if ptr.is_null() {
+        panic!("molt-runtime-serial: runtime vtable pointer is null");
     }
+    let header = unsafe { &*(ptr as *const RuntimeVtableHeader) };
+    let expected_size = std::mem::size_of::<RuntimeVtable>();
+    if header.abi_magic != RUNTIME_VTABLE_ABI_MAGIC
+        || header.abi_version != RUNTIME_VTABLE_ABI_VERSION
+        || header.abi_size != expected_size
+    {
+        panic!(
+            "molt-runtime-serial: incompatible runtime vtable ABI: \
+             got magic=0x{magic:016x} version={version} size={size}; \
+             expected magic=0x{expected_magic:016x} version={expected_version} size={expected_size}",
+            magic = header.abi_magic,
+            version = header.abi_version,
+            size = header.abi_size,
+            expected_magic = RUNTIME_VTABLE_ABI_MAGIC,
+            expected_version = RUNTIME_VTABLE_ABI_VERSION,
+        );
+    }
+    let vtable = unsafe { &*ptr };
+    let _ = VTABLE.set(vtable);
 }
 
 /// Get the vtable reference. Panics if not initialized.
@@ -34,7 +53,7 @@ fn vt() -> &'static RuntimeVtable {
     VTABLE
         .get()
         .copied()
-        .expect("molt-runtime-serial: vtable not initialized — call bridge::init_vtable() first")
+        .expect("molt-runtime-serial: vtable not initialized - call bridge::init_vtable() first")
 }
 
 // ---------------------------------------------------------------------------
@@ -338,6 +357,61 @@ pub fn int_bits_from_bigint(_py: &PyToken, value: num_bigint::BigInt) -> u64 {
 pub fn bigint_ptr_from_bits(bits: u64) -> Option<*mut u8> {
     let ptr = unsafe { (vt().bigint_ptr_from_bits)(bits) };
     if ptr.is_null() { None } else { Some(ptr) }
+}
+
+/// CPython's exact modular numeric hash over a rational `numerator/denominator`,
+/// computed by the single shared `object::ops_hash::py_numeric_hash` authority
+/// in molt-runtime (reached via the vtable). `denominator` must be positive.
+pub fn py_numeric_hash(numerator: &num_bigint::BigInt, denominator: &num_bigint::BigInt) -> i64 {
+    use num_bigint::Sign;
+    let encode = |sign: Sign| -> i32 {
+        match sign {
+            Sign::Minus => -1i32,
+            Sign::NoSign => 0i32,
+            Sign::Plus => 1i32,
+        }
+    };
+    let (num_sign, num_bytes) = numerator.to_bytes_be();
+    let (den_sign, den_bytes) = denominator.to_bytes_be();
+    // `num_bytes`/`den_bytes` are owned here and outlive the call.
+    unsafe {
+        (vt().py_numeric_hash)(
+            encode(num_sign),
+            num_bytes.as_ptr(),
+            num_bytes.len(),
+            encode(den_sign),
+            den_bytes.as_ptr(),
+            den_bytes.len(),
+        )
+    }
+}
+
+/// CPython's finite `Decimal.__hash__` for `coefficient * 10**exp10`, computed
+/// by the runtime's modular Decimal hash authority without materializing powers
+/// of ten.
+pub fn py_decimal_hash(coefficient: &num_bigint::BigInt, exp10: i64) -> i64 {
+    use num_bigint::Sign;
+    let encode = |sign: Sign| -> i32 {
+        match sign {
+            Sign::Minus => -1i32,
+            Sign::NoSign => 0i32,
+            Sign::Plus => 1i32,
+        }
+    };
+    let (coeff_sign, coeff_bytes) = coefficient.to_bytes_be();
+    unsafe {
+        (vt().py_decimal_hash)(
+            encode(coeff_sign),
+            coeff_bytes.as_ptr(),
+            coeff_bytes.len(),
+            exp10,
+        )
+    }
+}
+
+/// CPython `_PyHASH_INF`, shared with the in-tree runtime hash authority.
+pub fn py_hash_inf() -> i64 {
+    unsafe { (vt().py_hash_inf)() }
 }
 
 /// Read the BigInt stored at a raw pointer. The bridge serializes it.
