@@ -831,7 +831,7 @@ mod tests {
             ("169.254.0.1", true, false),
             ("172.16.0.1", true, false),
             ("192.0.0.1", true, false),
-            ("192.0.0.9", false, true), // exception inside 192.0.0.0/24
+            ("192.0.0.9", false, true),  // exception inside 192.0.0.0/24
             ("192.0.0.10", false, true), // exception inside 192.0.0.0/24
             ("192.0.0.170", true, false),
             ("192.0.2.1", true, false),
