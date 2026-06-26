@@ -121,6 +121,7 @@ EXPECTED_MIXINS = [
     "CallMethodDispatchMixin",
     "CallModuleDispatchMixin",
     "CallDefaultsMixin",
+    "ClassMethodCompilationMixin",
     "ClassDefVisitorMixin",
     "ComprehensionMixin",
     "ExpressionVisitorMixin",
@@ -264,6 +265,12 @@ def test_moved_methods_resolve_on_class() -> None:
     assert hasattr(SimpleTIRGenerator, "_emit_class_method_func")
     assert hasattr(SimpleTIRGenerator, "_class_mro_names")
     assert hasattr(SimpleTIRGenerator, "_resolve_method_info")
+    # class method compilation
+    assert hasattr(SimpleTIRGenerator, "_compile_class_method")
+    assert hasattr(SimpleTIRGenerator, "_compile_class_generator_method")
+    assert hasattr(SimpleTIRGenerator, "_compile_class_async_method")
+    assert hasattr(SimpleTIRGenerator, "_method_inline_closure_ok")
+    assert hasattr(SimpleTIRGenerator, "_extract_inline_init_assigns")
     for deleted_classgraph_bridge in (
         "_c3_merge",
         "_static_class_bases",
@@ -434,6 +441,7 @@ def test_mixin_modules_import_standalone() -> None:
         "molt.frontend.visitors.call_reductions",
         "molt.frontend.visitors.call_runtime_helpers",
         "molt.frontend.visitors.calls",
+        "molt.frontend.visitors.class_method_compilation",
         "molt.frontend.visitors.classes",
         "molt.frontend.visitors.comprehensions",
         "molt.frontend.visitors.expressions",

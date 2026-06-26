@@ -564,6 +564,18 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _compare_int_truth(self, op_kind: str, lhs: int, rhs: int) -> bool | None: ...
 
+    def _compile_class_async_method(
+        self, class_node: ast.ClassDef, item: ast.AsyncFunctionDef
+    ) -> MethodInfo: ...
+
+    def _compile_class_generator_method(
+        self, class_node: ast.ClassDef, item: ast.FunctionDef
+    ) -> MethodInfo: ...
+
+    def _compile_class_method(
+        self, class_node: ast.ClassDef, item: ast.FunctionDef
+    ) -> MethodInfo: ...
+
     def _comprehension_requires_async(
         self, generators: list[ast.comprehension], exprs: list[ast.AST | None]
     ) -> bool: ...
