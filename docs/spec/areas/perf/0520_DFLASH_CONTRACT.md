@@ -166,9 +166,12 @@ routing, not the core identity:
 The current Molt implementation provides the adapter/runtime contract in
 `src/molt/gpu/dflash/`. Generic lossless speculative protocol and decode-loop
 primitives live in `src/molt/gpu/speculative.py`; DFlash specializes them only
-through typed conditioning, runtime, and adapter identity. `DFlashAdapterSpec`
-now requires typed `DFlashAdapterMetadata`, which makes the serving/training
-identity non-optional:
+through typed conditioning, runtime, and adapter identity. The neutral loop
+requires `SpeculativeConditioning`, `SpeculativeDraftResult`, and
+`SpeculativeVerifyResult` at its conditioned boundary, so loose drafter/verifier
+objects cannot enter the DFlash transport path. `DFlashAdapterSpec` now requires
+typed `DFlashAdapterMetadata`, which makes the serving/training identity
+non-optional:
 algorithm family/version, tokenizer id, mask token id, target layer ids,
 target-feature schema, KV schema, target-conditioning path, maximum block size,
 non-causal draft attention, and per-layer target-context injection. A loose

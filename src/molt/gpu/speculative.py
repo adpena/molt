@@ -40,6 +40,8 @@ class SpeculativeConditioning:
 
     def validate_refresh_conditioning(self, conditioning, source_name: str):
         """Validate refreshed verifier-owned conditioning for this decode loop."""
+        if not isinstance(conditioning, SpeculativeConditioning):
+            raise TypeError(f"{source_name} must be SpeculativeConditioning")
         return conditioning
 
 
@@ -132,6 +134,24 @@ def _normalize_token_sequence(values, source_name):
             raise TypeError(f"{source_name} must return integer token ids")
         out.append(token)
     return out
+
+
+def _require_conditioning(conditioning, source_name: str) -> SpeculativeConditioning:
+    if not isinstance(conditioning, SpeculativeConditioning):
+        raise TypeError(f"{source_name} must be SpeculativeConditioning")
+    return conditioning
+
+
+def _require_draft_result(result, source_name: str) -> SpeculativeDraftResult:
+    if not isinstance(result, SpeculativeDraftResult):
+        raise TypeError(f"{source_name} must return SpeculativeDraftResult")
+    return result
+
+
+def _require_verify_result(result, source_name: str) -> SpeculativeVerifyResult:
+    if not isinstance(result, SpeculativeVerifyResult):
+        raise TypeError(f"{source_name} must return SpeculativeVerifyResult")
+    return result
 
 
 def speculative_decode_greedy(
@@ -247,10 +267,13 @@ def speculative_decode_greedy_conditioned(
     target_total = 0
     verify_calls = 0
     step_index = 0
-    conditioning = initial_conditioning or SpeculativeConditioning()
-    refresh_validator = getattr(conditioning, "validate_refresh_conditioning", None)
-    if callable(refresh_validator):
-        conditioning = refresh_validator(conditioning, "initial_conditioning")
+    conditioning = (
+        SpeculativeConditioning()
+        if initial_conditioning is None
+        else _require_conditioning(initial_conditioning, "initial_conditioning")
+    )
+    refresh_validator = conditioning.validate_refresh_conditioning
+    conditioning = refresh_validator(conditioning, "initial_conditioning")
 
     while len(emitted) < max_new_tokens:
         remaining = max_new_tokens - len(emitted)
@@ -262,7 +285,10 @@ def speculative_decode_greedy_conditioned(
             conditioning,
             step_index=step_index,
         )
-        draft_result = draft_step(draft_request)
+        draft_result = _require_draft_result(
+            draft_step(draft_request),
+            "draft_step",
+        )
         drafted = _normalize_token_sequence(
             draft_result.draft_tokens,
             "draft_step",
@@ -279,7 +305,10 @@ def speculative_decode_greedy_conditioned(
             conditioning,
             step_index=step_index,
         )
-        verify_result = verify_step(verify_request)
+        verify_result = _require_verify_result(
+            verify_step(verify_request),
+            "verify_step",
+        )
         verified = _normalize_token_sequence(
             verify_result.verified_tokens,
             "verify_step",
@@ -290,13 +319,10 @@ def speculative_decode_greedy_conditioned(
                 "verify_step must return len(draft_tokens) + 1 target tokens"
             )
         if verify_result.conditioning is not None:
-            if callable(refresh_validator):
-                conditioning = refresh_validator(
-                    verify_result.conditioning,
-                    "verify_result.conditioning",
-                )
-            else:
-                conditioning = verify_result.conditioning
+            conditioning = refresh_validator(
+                verify_result.conditioning,
+                "verify_result.conditioning",
+            )
 
         mismatch = False
         for idx, draft_token in enumerate(drafted):

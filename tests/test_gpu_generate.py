@@ -427,6 +427,76 @@ def test_conditioned_speculative_decode_propagates_target_conditioning():
     ]
 
 
+def test_conditioned_speculative_decode_rejects_loose_transport_contracts():
+    from molt.gpu.speculative import (
+        SpeculativeConditioning,
+        SpeculativeDraftResult,
+        SpeculativeVerifyResult,
+        speculative_decode_greedy_conditioned,
+    )
+
+    def valid_draft(_request):
+        return SpeculativeDraftResult([1])
+
+    def valid_verify(_request):
+        return SpeculativeVerifyResult([1, 2])
+
+    try:
+        speculative_decode_greedy_conditioned(
+            valid_verify,
+            valid_draft,
+            [0],
+            initial_conditioning=object(),
+            max_new_tokens=1,
+            block_size=1,
+        )
+        raise AssertionError("expected initial conditioning type failure")
+    except TypeError as exc:
+        assert "initial_conditioning must be SpeculativeConditioning" in str(exc)
+
+    try:
+        speculative_decode_greedy_conditioned(
+            valid_verify,
+            lambda _request: [1],
+            [0],
+            initial_conditioning=SpeculativeConditioning(),
+            max_new_tokens=1,
+            block_size=1,
+        )
+        raise AssertionError("expected draft result type failure")
+    except TypeError as exc:
+        assert "draft_step must return SpeculativeDraftResult" in str(exc)
+
+    try:
+        speculative_decode_greedy_conditioned(
+            verify_step=lambda _request: [1, 2],
+            draft_step=valid_draft,
+            prompt_tokens=[0],
+            initial_conditioning=SpeculativeConditioning(),
+            max_new_tokens=1,
+            block_size=1,
+        )
+        raise AssertionError("expected verify result type failure")
+    except TypeError as exc:
+        assert "verify_step must return SpeculativeVerifyResult" in str(exc)
+
+    def verify_with_loose_refresh(_request):
+        return SpeculativeVerifyResult([1, 2], conditioning=object())
+
+    try:
+        speculative_decode_greedy_conditioned(
+            verify_with_loose_refresh,
+            valid_draft,
+            [0],
+            initial_conditioning=SpeculativeConditioning(),
+            max_new_tokens=1,
+            block_size=1,
+        )
+        raise AssertionError("expected refreshed conditioning type failure")
+    except TypeError as exc:
+        assert "verify_result.conditioning must be SpeculativeConditioning" in str(exc)
+
+
 def test_dflash_conditioning_requires_target_payloads():
     from molt.gpu.dflash import DFlashConditioning
 
