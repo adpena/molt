@@ -70,6 +70,7 @@ EXPECTED_MIXINS = [
     "SerializationMixin",
     "OwnershipLoweringMixin",
     "StringFormattingMixin",
+    "RuntimeReferenceMixin",
     "CompileWarningMixin",
     "EmissionCoreMixin",
     "ExceptionLoweringMixin",
@@ -256,6 +257,12 @@ def test_moved_methods_resolve_on_class() -> None:
     assert hasattr(SimpleTIRGenerator, "_emit_format_tokens")
     assert hasattr(SimpleTIRGenerator, "_emit_format_spec_value")
     assert hasattr(SimpleTIRGenerator, "_emit_template_interpolation")
+    # runtime and intrinsic references
+    assert hasattr(SimpleTIRGenerator, "_emit_const_value")
+    assert hasattr(SimpleTIRGenerator, "_emit_runtime_function")
+    assert hasattr(SimpleTIRGenerator, "_emit_intrinsic_function")
+    assert hasattr(SimpleTIRGenerator, "_maybe_record_local_intrinsic_wrapper")
+    assert hasattr(SimpleTIRGenerator, "_name_resolves_to_builtin")
     # import lowering
     assert hasattr(SimpleTIRGenerator, "_resolve_relative_import")
     assert hasattr(SimpleTIRGenerator, "_should_attempt_runtime_module_import")
