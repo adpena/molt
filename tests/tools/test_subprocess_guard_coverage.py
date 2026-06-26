@@ -32,6 +32,8 @@ def test_current_repo_subprocess_guard_coverage_is_clean() -> None:
     assert audit.stale_allowlist == ()
     assert audit.expanded_allowlist == ()
     assert REPO_ROOT / "src" / "molt" / "repl.py" in module.DEFAULT_TARGETS
+    assert REPO_ROOT / "src" / "molt_accel" in module.DEFAULT_TARGETS
+    assert REPO_ROOT / "packaging" in module.DEFAULT_TARGETS
 
 
 def test_copied_default_targets_still_scan_guard_text_files() -> None:
@@ -78,6 +80,25 @@ def test_unclassified_os_kill_call_fails(tmp_path: Path) -> None:
     assert audit.unexpected[0].path == "bad_kill.py"
     assert audit.unexpected[0].qualname == "terminate"
     assert audit.unexpected[0].method == "os.kill"
+
+
+def test_unclassified_process_object_signal_fails(tmp_path: Path) -> None:
+    module = _load_audit_tool()
+    source = tmp_path / "bad_process_signal.py"
+    source.write_text(
+        "def close(proc):\n"
+        "    proc.terminate()\n"
+        "    proc.kill()\n",
+        encoding="utf-8",
+    )
+
+    audit = module.audit_paths([source], root=tmp_path, allowlist=())
+
+    assert not audit.ok
+    assert [item.method for item in audit.unexpected] == [
+        "process.terminate",
+        "process.kill",
+    ]
 
 
 def test_unclassified_shell_pkill_string_fails(tmp_path: Path) -> None:
