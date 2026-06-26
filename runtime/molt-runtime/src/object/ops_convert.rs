@@ -1625,11 +1625,22 @@ pub extern "C" fn molt_int_from_obj(val_bits: u64, base_bits: u64, has_base_bits
                 );
                 return raise_exception::<_>(_py, "TypeError", &msg);
             }
-            if let Some(i) = to_i64(obj) {
-                return MoltObject::from_int(i).bits();
-            }
+            // A bare heap BigInt is already an exact `int`; return it unchanged
+            // (preserving the object). Checked BEFORE the `to_i64` fast path so a
+            // BigInt whose magnitude fits in i64 but exceeds the 47-bit inline
+            // window is NOT re-boxed through the inline path (which truncates).
+            // Int *subclasses* are not bare BigInts here, so they still fall
+            // through to the value-extracting path below that strips to base int.
+            // `int()` returns an OWNED reference, so retain the aliased object.
             if bigint_ptr_from_bits(val_bits).is_some() {
+                inc_ref_bits(_py, val_bits);
                 return val_bits;
+            }
+            if let Some(i) = to_i64(obj) {
+                // Full-range boxing (inline for small magnitudes, heap BigInt
+                // for |i| >= 2**46) — never the inline-only `from_int`, which
+                // would silently truncate values in [2**46, 2**63).
+                return int_bits_from_i64(_py, i);
             }
             if let Some(f) = to_f64(obj) {
                 if f.is_nan() {
@@ -1705,11 +1716,15 @@ pub extern "C" fn molt_int_from_obj(val_bits: u64, base_bits: u64, has_base_bits
                         let res_bits = call_callable0(_py, call_bits);
                         dec_ref_bits(_py, call_bits);
                         let res_obj = obj_from_bits(res_bits);
-                        if let Some(i) = to_i64(res_obj) {
-                            return MoltObject::from_int(i).bits();
-                        }
+                        // Bare BigInt result: return as-is, BEFORE the to_i64
+                        // path, so a fit-i64 BigInt is not re-boxed through the
+                        // truncating inline path.
                         if bigint_ptr_from_bits(res_bits).is_some() {
                             return res_bits;
+                        }
+                        if let Some(i) = to_i64(res_obj) {
+                            // Full-range boxing, never inline-only `from_int`.
+                            return int_bits_from_i64(_py, i);
                         }
                         let res_type = class_name_for_error(type_of_bits(_py, res_bits));
                         if res_obj.as_ptr().is_some() {
@@ -1732,11 +1747,15 @@ pub extern "C" fn molt_int_from_obj(val_bits: u64, base_bits: u64, has_base_bits
                         let res_bits = call_callable0(_py, call_bits);
                         dec_ref_bits(_py, call_bits);
                         let res_obj = obj_from_bits(res_bits);
-                        if let Some(i) = to_i64(res_obj) {
-                            return MoltObject::from_int(i).bits();
-                        }
+                        // Bare BigInt result: return as-is, BEFORE the to_i64
+                        // path, so a fit-i64 BigInt is not re-boxed through the
+                        // truncating inline path.
                         if bigint_ptr_from_bits(res_bits).is_some() {
                             return res_bits;
+                        }
+                        if let Some(i) = to_i64(res_obj) {
+                            // Full-range boxing, never inline-only `from_int`.
+                            return int_bits_from_i64(_py, i);
                         }
                         let res_type = class_name_for_error(type_of_bits(_py, res_bits));
                         if res_obj.as_ptr().is_some() {

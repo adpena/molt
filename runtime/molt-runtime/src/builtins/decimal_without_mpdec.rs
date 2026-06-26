@@ -2274,6 +2274,49 @@ pub extern "C" fn molt_decimal_is_signed(a_bits: u64) -> u64 {
     })
 }
 
+/// `Decimal.__hash__` for FINITE and INFINITE values, routed through the shared
+/// numeric hash authority so a Decimal hashes equal to a numerically-equal
+/// int/float/Fraction (`Lib/_pydecimal.py::Decimal.__hash__`). NaN handling
+/// (sNaN -> TypeError; qNaN -> identity) stays in the Python shim, which guards
+/// this call; a NaN handle reaching here is hashed by identity as a defensive
+/// fallback rather than producing a wrong numeric value.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_decimal_hash(a_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        let Some(a) = decimal_handle_from_bits(a_bits) else {
+            return raise_exception::<u64>(_py, "TypeError", "expected Decimal handle");
+        };
+        let hash = match a.special {
+            DecimalSpecial::Infinity => {
+                if a.sign {
+                    -crate::object::ops_hash::PY_HASH_INF
+                } else {
+                    crate::object::ops_hash::PY_HASH_INF
+                }
+            }
+            DecimalSpecial::Finite => {
+                // value = (-1)^sign * coeff * 10^exp. Hash with the shared
+                // modular Decimal authority so huge exponents never allocate
+                // `10**abs(exp)`.
+                let signed_coeff = if a.sign {
+                    -a.coeff.clone()
+                } else {
+                    a.coeff.clone()
+                };
+                crate::object::ops_hash::py_decimal_hash(&signed_coeff, a.exp)
+            }
+            DecimalSpecial::Nan | DecimalSpecial::SNan => {
+                // Defensive: the Python shim guards NaN before calling
+                // (sNaN -> TypeError; qNaN -> object.__hash__). Reaching here
+                // means the contract was violated; raise rather than fabricate a
+                // numeric hash for a non-numeric value.
+                return raise_exception::<u64>(_py, "TypeError", "Cannot hash a NaN value.");
+            }
+        };
+        int_bits_from_i64(_py, hash)
+    })
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_decimal_is_normal(ctx_bits: u64, a_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
@@ -2592,7 +2635,12 @@ fn prec_nines(ctx: &DecimalContextHandle, sign: bool) -> DecimalHandle {
 /// round the value toward +/-Infinity under a flag-suppressed copy of the
 /// context; if that rounding changes the numeric value, it IS the neighbour;
 /// otherwise step by one unit in the last place, `1 * 10**(Etiny - 1)`.
-fn decimal_next(_py: &PyToken<'_>, ctx: &DecimalContextHandle, a: &DecimalHandle, toward_pos: bool) -> u64 {
+fn decimal_next(
+    _py: &PyToken<'_>,
+    ctx: &DecimalContextHandle,
+    a: &DecimalHandle,
+    toward_pos: bool,
+) -> u64 {
     // Infinity handling.
     if a.special == DecimalSpecial::Infinity {
         if a.sign != toward_pos {
@@ -3021,7 +3069,10 @@ mod tests {
         let c = default_context();
         let d = fin(false, "1", -100);
         assert_eq!(adjusted(&d), -100);
-        assert!(c.emin <= adjusted(&d), "1e-100 must be normal at default Emin");
+        assert!(
+            c.emin <= adjusted(&d),
+            "1e-100 must be normal at default Emin"
+        );
         assert!(!(adjusted(&d) < c.emin), "1e-100 must NOT be subnormal");
     }
 

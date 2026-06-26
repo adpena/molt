@@ -239,6 +239,11 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             crate::molt_decimal_from_float as *const (),
         )),
         #[cfg(feature = "stdlib_decimal")]
+        "molt_decimal_hash" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_decimal_hash",
+            crate::molt_decimal_hash as *const (),
+        )),
+        #[cfg(feature = "stdlib_decimal")]
         "molt_decimal_is_finite" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_decimal_is_finite",
             crate::molt_decimal_is_finite as *const (),

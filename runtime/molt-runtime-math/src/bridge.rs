@@ -260,6 +260,14 @@ unsafe extern "C" {
     ) -> i32;
     fn __molt_math_int_bits_from_i64(val: i64) -> u64;
     fn __molt_math_int_bits_from_bigint(sign: i32, data_ptr: *const u8, data_len: usize) -> u64;
+    fn __molt_math_py_numeric_hash(
+        num_sign: i32,
+        num_ptr: *const u8,
+        num_len: usize,
+        den_sign: i32,
+        den_ptr: *const u8,
+        den_len: usize,
+    ) -> i64;
     fn __molt_math_bigint_ptr_from_bits(bits: u64) -> *mut u8;
     fn __molt_math_bigint_ref(
         ptr: *mut u8,
@@ -333,6 +341,33 @@ pub fn int_bits_from_bigint(_py: &PyToken, value: num_bigint::BigInt) -> u64 {
         Sign::Plus => 1i32,
     };
     unsafe { __molt_math_int_bits_from_bigint(sign_i32, bytes.as_ptr(), bytes.len()) }
+}
+
+/// CPython's exact modular numeric hash over a rational `numerator/denominator`,
+/// computed by the single shared `object::ops_hash::py_numeric_hash` authority
+/// in molt-runtime. `denominator` must be positive.
+pub fn py_numeric_hash(numerator: &num_bigint::BigInt, denominator: &num_bigint::BigInt) -> i64 {
+    use num_bigint::Sign;
+    let encode = |sign: Sign| -> i32 {
+        match sign {
+            Sign::Minus => -1i32,
+            Sign::NoSign => 0i32,
+            Sign::Plus => 1i32,
+        }
+    };
+    let (num_sign, num_bytes) = numerator.to_bytes_be();
+    let (den_sign, den_bytes) = denominator.to_bytes_be();
+    // `num_bytes`/`den_bytes` are owned here and outlive the call.
+    unsafe {
+        __molt_math_py_numeric_hash(
+            encode(num_sign),
+            num_bytes.as_ptr(),
+            num_bytes.len(),
+            encode(den_sign),
+            den_bytes.as_ptr(),
+            den_bytes.len(),
+        )
+    }
 }
 
 pub fn bigint_ptr_from_bits(bits: u64) -> Option<*mut u8> {

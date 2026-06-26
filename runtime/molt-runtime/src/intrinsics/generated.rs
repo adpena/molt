@@ -10151,6 +10151,12 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         defaults: &[],
     },
     IntrinsicSpec {
+        name: "molt_decimal_hash",
+        symbol: "molt_decimal_hash",
+        arity: 1,
+        defaults: &[],
+    },
+    IntrinsicSpec {
         name: "molt_decimal_is_finite",
         symbol: "molt_decimal_is_finite",
         arity: 1,
