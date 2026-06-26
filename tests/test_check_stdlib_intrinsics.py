@@ -311,6 +311,75 @@ def test_zero_non_intrinsic_gate_rejects_probe_only_module(
     assert "probe_mod" in out
 
 
+def test_same_package_intrinsic_wrapper_is_not_python_only_in_audit(
+    tmp_path: Path, monkeypatch
+) -> None:
+    module = _load_gate_module()
+    stdlib_root = tmp_path / "stdlib"
+    package = stdlib_root / "pkg"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text(
+        "from _intrinsics import require_intrinsic as _require_intrinsic\n"
+        '_WIDGET_BIND = _require_intrinsic("molt_tk_widget_bind_callback_register")\n',
+        encoding="utf-8",
+    )
+    (package / "widgets.py").write_text(
+        "from . import _WIDGET_BIND\nclass Widget:\n    pass\n",
+        encoding="utf-8",
+    )
+    audit_doc = tmp_path / "audit.md"
+
+    _configure_required_top_level(module, monkeypatch, stdlib_root)
+    monkeypatch.setattr(module, "STDLIB_ROOT", stdlib_root)
+    monkeypatch.setattr(module, "AUDIT_DOC", audit_doc)
+    monkeypatch.setattr(sys, "argv", ["check_stdlib_intrinsics.py", "--update-doc"])
+
+    assert module.main() == 0
+    audit_text = audit_doc.read_text(encoding="utf-8")
+    assert (
+        "### Intrinsic-backed modules (partial lowering pending)\n- `pkg`" in audit_text
+    )
+    assert "- `pkg.widgets`" in audit_text
+    assert "### Python-only modules (intrinsic missing)\n" in audit_text
+    assert (
+        "### Python-only modules (intrinsic missing)\n- `pkg.widgets`" not in audit_text
+    )
+
+
+def test_private_support_fragment_loaded_by_intrinsic_owner_is_not_python_only_in_audit(
+    tmp_path: Path, monkeypatch
+) -> None:
+    module = _load_gate_module()
+    stdlib_root = tmp_path / "stdlib"
+    stdlib_root.mkdir()
+    (stdlib_root / "_pyio.py").write_text(
+        "from _intrinsics import require_intrinsic as _require_intrinsic\n"
+        '_READY = _require_intrinsic("molt_import_smoke_runtime_ready")\n'
+        "def _load_text_io_classes():\n"
+        "    import _pyio_text as text_module\n"
+        "    return text_module\n",
+        encoding="utf-8",
+    )
+    (stdlib_root / "_pyio_text.py").write_text(
+        "class TextIOBase:\n    pass\n",
+        encoding="utf-8",
+    )
+    audit_doc = tmp_path / "audit.md"
+
+    _configure_required_top_level(module, monkeypatch, stdlib_root)
+    monkeypatch.setattr(module, "STDLIB_ROOT", stdlib_root)
+    monkeypatch.setattr(module, "AUDIT_DOC", audit_doc)
+    monkeypatch.setattr(sys, "argv", ["check_stdlib_intrinsics.py", "--update-doc"])
+
+    assert module.main() == 0
+    audit_text = audit_doc.read_text(encoding="utf-8")
+    assert "### Intrinsic-owned private support fragments\n- `_pyio_text`" in audit_text
+    assert "- `_pyio_text`" in audit_text
+    assert (
+        "### Python-only modules (intrinsic missing)\n- `_pyio_text`" not in audit_text
+    )
+
+
 def test_fail_closed_import_policy_gate_is_allowed(tmp_path: Path, monkeypatch) -> None:
     module = _load_gate_module()
     stdlib_root = tmp_path / "stdlib"

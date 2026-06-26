@@ -7,12 +7,32 @@ import io
 import json
 import re
 import runpy
+import sys
 import tokenize
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+SRC_ROOT = ROOT / "src"
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
+
+from molt.stdlib_intrinsic_policy import (  # noqa: E402
+    INTRINSIC_CALL_NAMES,
+    LAZY_INTRINSIC_CALL_NAMES,
+    STATUS_INTRINSIC,
+    STATUS_INTRINSIC_PARTIAL,
+    STATUS_INTRINSIC_SUPPORT,
+    STATUS_POLICY_GATE,
+    STATUS_PROBE_ONLY,
+    STATUS_PYTHON_ONLY,
+    STDLIB_PROBE_INTRINSIC,
+    classify_stdlib_module_statuses,
+    intrinsic_names_from_source,
+    is_fail_closed_import_policy_gate,
+)
+
 STDLIB_ROOT = ROOT / "src" / "molt" / "stdlib"
 MANIFEST = ROOT / "runtime" / "molt-runtime" / "src" / "intrinsics" / "manifest.pyi"
 AUDIT_DOC = (
@@ -29,15 +49,7 @@ STDLIB_UNION_BASELINE = ROOT / "tools" / "stdlib_module_union.py"
 INTRINSIC_PARTIAL_RATCHET = ROOT / "tools" / "stdlib_intrinsics_ratchet.json"
 STDLIB_FULL_COVERAGE_MANIFEST = ROOT / "tools" / "stdlib_full_coverage_manifest.py"
 
-TEXT_TOKENS = (
-    "load_intrinsic",
-    "require_intrinsic",
-    "require_optional_intrinsic",
-    "_intrinsic_load",
-    "_require_intrinsic",
-    "_intrinsics_require",
-    "_intrinsic_require",
-)
+TEXT_TOKENS = tuple(sorted(INTRINSIC_CALL_NAMES | LAZY_INTRINSIC_CALL_NAMES))
 
 INTRINSICS_IMPORT_RE = re.compile(
     r"^\s*from\s+(\.+)?_intrinsics\s+import\s+|"
@@ -54,15 +66,7 @@ FORBIDDEN_MOLT_INTRINSICS_RE = re.compile(
     re.MULTILINE,
 )
 
-INTRINSIC_NAME_RE = re.compile(r"['\"](molt_[a-zA-Z0-9_]+)['\"]")
 MANIFEST_INTRINSIC_RE = re.compile(r"^def\s+(molt_[a-zA-Z0-9_]+)\(")
-
-PROBE_INTRINSIC = "molt_stdlib_probe"
-STATUS_INTRINSIC = "intrinsic-backed"
-STATUS_INTRINSIC_PARTIAL = "intrinsic-partial"
-STATUS_POLICY_GATE = "policy-gate"
-STATUS_PROBE_ONLY = "probe-only"
-STATUS_PYTHON_ONLY = "python-only"
 
 STDLIB_PROGRESS_MARKER_RE = re.compile(
     r"(?:TODO|STDLIB_GAP)\(stdlib[^,]*,[^)]*status:(?:missing|partial|planned|divergent)\)"
@@ -154,17 +158,6 @@ CRITICAL_STRICT_IMPORT_ROOTS: tuple[str, ...] = (
     "sys",
     "os",
 )
-INTRINSIC_CALL_NAMES = {
-    "load_intrinsic",
-    "require_intrinsic",
-    "require_optional_intrinsic",
-    "_load_intrinsic",
-    "_intrinsic_load",
-    "_intrinsics_require",
-    "_intrinsic_require",
-    "_require_intrinsic",
-    "_require_callable_intrinsic",
-}
 STRICT_OPTIONAL_INTRINSIC_CALL_NAMES = {
     "load_intrinsic",
     "_load_intrinsic",
@@ -190,7 +183,11 @@ class ModuleAudit:
 
 
 def _is_intrinsic_implemented(status: str) -> bool:
-    return status in {STATUS_INTRINSIC, STATUS_INTRINSIC_PARTIAL}
+    return status in {
+        STATUS_INTRINSIC,
+        STATUS_INTRINSIC_PARTIAL,
+        STATUS_INTRINSIC_SUPPORT,
+    }
 
 
 def _display_path(path: Path) -> str:
@@ -342,58 +339,6 @@ def _call_name(node: ast.expr) -> str | None:
     if isinstance(node, ast.Attribute):
         return node.attr
     return None
-
-
-def _extract_intrinsic_names(text: str) -> tuple[str, ...]:
-    try:
-        tree = ast.parse(text)
-    except SyntaxError:
-        return tuple(sorted(set(INTRINSIC_NAME_RE.findall(text))))
-
-    names: set[str] = set()
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
-            continue
-        call_name = _call_name(node.func)
-        if call_name not in INTRINSIC_CALL_NAMES:
-            continue
-        if not node.args:
-            continue
-        first = node.args[0]
-        if isinstance(first, ast.Constant) and isinstance(first.value, str):
-            value = first.value
-            if value.startswith("molt_"):
-                names.add(value)
-    return tuple(sorted(names))
-
-
-def _is_fail_closed_import_policy_gate(text: str) -> bool:
-    try:
-        tree = ast.parse(text)
-    except SyntaxError:
-        return False
-    body = list(tree.body)
-    if (
-        body
-        and isinstance(body[0], ast.Expr)
-        and isinstance(body[0].value, ast.Constant)
-        and isinstance(body[0].value.value, str)
-    ):
-        body = body[1:]
-    while (
-        body and isinstance(body[0], ast.ImportFrom) and body[0].module == "__future__"
-    ):
-        body = body[1:]
-    if len(body) != 1 or not isinstance(body[0], ast.Raise):
-        return False
-    exc = body[0].exc
-    if isinstance(exc, ast.Call):
-        exc = exc.func
-    if isinstance(exc, ast.Name):
-        return exc.id == "ImportError"
-    if isinstance(exc, ast.Attribute):
-        return exc.attr == "ImportError"
-    return False
 
 
 def _exception_type_names(exc: ast.expr | None) -> set[str]:
@@ -666,7 +611,7 @@ def _load_full_coverage_required_intrinsics(
                 "stdlib full-coverage manifest is invalid: "
                 "required intrinsic names must start with `molt_`"
             )
-        if PROBE_INTRINSIC in intrinsic_names:
+        if STDLIB_PROBE_INTRINSIC in intrinsic_names:
             raise RuntimeError(
                 "stdlib full-coverage manifest is invalid: "
                 "`molt_stdlib_probe` cannot satisfy full coverage contracts"
@@ -845,17 +790,17 @@ def _scan_file(path: Path) -> tuple[list[str], tuple[str, ...], str, bool]:
         ):
             errors.append("Intrinsic loader usage requires importing from _intrinsics.")
 
-    intrinsic_names = _extract_intrinsic_names(text)
+    intrinsic_names = tuple(sorted(intrinsic_names_from_source(text)))
     has_stdlib_progress_marker = bool(STDLIB_PROGRESS_MARKER_RE.search(text))
     if is_registry_file:
         status = STATUS_INTRINSIC
     elif not intrinsic_names:
         status = (
             STATUS_POLICY_GATE
-            if _is_fail_closed_import_policy_gate(text)
+            if is_fail_closed_import_policy_gate(text)
             else STATUS_PYTHON_ONLY
         )
-    elif set(intrinsic_names) == {PROBE_INTRINSIC}:
+    elif set(intrinsic_names) == {STDLIB_PROBE_INTRINSIC}:
         status = STATUS_PROBE_ONLY
     else:
         status = STATUS_INTRINSIC
@@ -879,6 +824,9 @@ def _build_audit_doc(audits: list[ModuleAudit]) -> str:
     intrinsic_partial = sorted(
         a.module for a in audits if a.status == STATUS_INTRINSIC_PARTIAL
     )
+    intrinsic_support = sorted(
+        a.module for a in audits if a.status == STATUS_INTRINSIC_SUPPORT
+    )
     policy_gate = sorted(a.module for a in audits if a.status == STATUS_POLICY_GATE)
     probe_only = sorted(a.module for a in audits if a.status == STATUS_PROBE_ONLY)
     python_only = sorted(a.module for a in audits if a.status == STATUS_PYTHON_ONLY)
@@ -900,6 +848,7 @@ def _build_audit_doc(audits: list[ModuleAudit]) -> str:
         f"- Total audited modules: `{total_modules}`",
         f"- `intrinsic-backed`: `{len(intrinsic)}`",
         f"- `intrinsic-partial`: `{len(intrinsic_partial)}`",
+        f"- `intrinsic-support`: `{len(intrinsic_support)}`",
         f"- `policy-gate`: `{len(policy_gate)}`",
         f"- `probe-only`: `{len(probe_only)}`",
         f"- `python-only`: `{len(python_only)}`",
@@ -925,6 +874,8 @@ def _build_audit_doc(audits: list[ModuleAudit]) -> str:
     lines.extend(f"- `{name}`" for name in intrinsic)
     lines.extend(["", "### Intrinsic-backed modules (partial lowering pending)"])
     lines.extend(f"- `{name}`" for name in intrinsic_partial)
+    lines.extend(["", "### Intrinsic-owned private support fragments"])
+    lines.extend(f"- `{name}`" for name in intrinsic_support)
     lines.extend(["", "### Fail-closed policy-gate modules"])
     lines.extend(f"- `{name}`" for name in policy_gate)
     lines.extend(["", "### Probe-only modules (thin wrappers + policy gate only)"])
@@ -936,16 +887,16 @@ def _build_audit_doc(audits: list[ModuleAudit]) -> str:
             "",
             "## Core Lane Gate",
             "- Required lane: `tests/differential/basic/CORE_TESTS.txt` (import closure).",
-            "- Gate rule: core-lane imports must be intrinsic-implemented (`intrinsic-backed` or `intrinsic-partial`) or an explicitly allowlisted fail-closed `policy-gate`, with zero `probe-only` and zero `python-only` modules.",
+            "- Gate rule: core-lane imports must be intrinsic-implemented (`intrinsic-backed`, `intrinsic-partial`, or `intrinsic-support`) or an explicitly allowlisted fail-closed `policy-gate`, with zero `probe-only` and zero `python-only` modules.",
             "- Enforced by: `python3 tools/check_core_lane_lowering.py`.",
             "",
             "## Bootstrap Gate",
             "- Strict roots: "
             + ", ".join(f"`{name}`" for name in BOOTSTRAP_STRICT_ROOTS),
-            "- Gate rule: when strict roots are present, each strict root and its full transitive stdlib import closure must be intrinsic-implemented (`intrinsic-backed` or `intrinsic-partial`); fail-closed `policy-gate` modules are not intrinsic implementations.",
+            "- Gate rule: when strict roots are present, each strict root and its full transitive stdlib import closure must be intrinsic-implemented (`intrinsic-backed`, `intrinsic-partial`, or `intrinsic-support`); fail-closed `policy-gate` modules are not intrinsic implementations.",
             "- Required modules: "
             + ", ".join(f"`{name}`" for name in sorted(BOOTSTRAP_MODULES)),
-            "- Gate rule: required bootstrap modules that are present must be intrinsic-implemented (`intrinsic-backed` or `intrinsic-partial`); fail-closed `policy-gate` modules are not bootstrap support.",
+            "- Gate rule: required bootstrap modules that are present must be intrinsic-implemented (`intrinsic-backed`, `intrinsic-partial`, or `intrinsic-support`); fail-closed `policy-gate` modules are not bootstrap support.",
             "",
             "## Critical Strict-Import Gate",
             "- Optional strict mode: `python3 tools/check_stdlib_intrinsics.py --critical-allowlist`.",
@@ -979,6 +930,7 @@ def _build_audit_doc(audits: list[ModuleAudit]) -> str:
             "",
             "## Full-Coverage Attestation Rule",
             "- Global rule: any module/submodule not explicitly attested as full CPython 3.12+ API/PEP coverage is classified as `intrinsic-partial`.",
+            "- Private `intrinsic-support` fragments are owned implementation fragments of an intrinsic-backed module and are excluded from public full-coverage attestation units.",
             "- Attestation source: `tools/stdlib_full_coverage_manifest.py` (`STDLIB_FULLY_COVERED_MODULES`).",
             "- Full-coverage intrinsic contract source: `tools/stdlib_full_coverage_manifest.py` (`STDLIB_REQUIRED_INTRINSICS_BY_MODULE`).",
             "- Gate rule: each attested full-coverage module must stay `intrinsic-backed`, declare its required intrinsic set, and wire every declared intrinsic in-module.",
@@ -1118,6 +1070,7 @@ def main() -> int:
     top_level_packages: dict[str, Path] = {}
     module_files: dict[str, Path] = {}
     module_packages: dict[str, Path] = {}
+    progress_marker_modules: set[str] = set()
 
     for path in sorted(STDLIB_ROOT.rglob("*.py")):
         if path.name.startswith("."):
@@ -1125,10 +1078,8 @@ def main() -> int:
         errors, intrinsic_names, status, has_stdlib_progress_marker = _scan_file(path)
         errors.extend(_scan_host_fallback_module_patterns(path))
         module = _module_name(path)
-        if status == STATUS_INTRINSIC and has_stdlib_progress_marker:
-            status = STATUS_INTRINSIC_PARTIAL
-        if status == STATUS_INTRINSIC and module not in fully_covered_modules:
-            status = STATUS_INTRINSIC_PARTIAL
+        if has_stdlib_progress_marker:
+            progress_marker_modules.add(module)
         if errors:
             failures.append((path, errors))
         for name in intrinsic_names:
@@ -1154,6 +1105,26 @@ def main() -> int:
                 status=status,
             )
         )
+
+    module_paths = {audit.module: audit.path for audit in audits}
+    closed_statuses = classify_stdlib_module_statuses(module_paths)
+    audits = [
+        ModuleAudit(
+            module=audit.module,
+            path=audit.path,
+            intrinsic_names=audit.intrinsic_names,
+            status=(
+                STATUS_INTRINSIC_PARTIAL
+                if closed_statuses.get(audit.module, audit.status) == STATUS_INTRINSIC
+                and (
+                    audit.module in progress_marker_modules
+                    or audit.module not in fully_covered_modules
+                )
+                else closed_statuses.get(audit.module, audit.status)
+            ),
+        )
+        for audit in audits
+    ]
 
     bootstrap_failures = [
         audit.module
@@ -1293,7 +1264,7 @@ def main() -> int:
     for audit in sorted(audits, key=lambda item: item.module):
         if audit.module not in INTRINSIC_PASS_FALLBACK_STRICT_MODULES:
             continue
-        if audit.status not in {STATUS_INTRINSIC, STATUS_INTRINSIC_PARTIAL}:
+        if not _is_intrinsic_implemented(audit.status):
             continue
         if audit.module.startswith(INTRINSIC_RUNTIME_FALLBACK_EXEMPT_PREFIXES):
             continue
@@ -1597,6 +1568,7 @@ def main() -> int:
         status_counts = {
             STATUS_INTRINSIC: 0,
             STATUS_INTRINSIC_PARTIAL: 0,
+            STATUS_INTRINSIC_SUPPORT: 0,
             STATUS_POLICY_GATE: 0,
             STATUS_PROBE_ONLY: 0,
             STATUS_PYTHON_ONLY: 0,
@@ -1661,6 +1633,11 @@ def main() -> int:
             "submodule_collisions": list(submodule_collisions),
             "probe_only_modules": list(probe_only_modules),
             "intrinsic_partial_modules": list(intrinsic_partial_modules),
+            "intrinsic_support_modules": [
+                audit.module
+                for audit in sorted(audits, key=lambda item: item.module)
+                if audit.status == STATUS_INTRINSIC_SUPPORT
+            ],
             "intrinsic_partial_budget": intrinsic_partial_budget,
             "fully_covered_modules": sorted(fully_covered_modules),
             "full_coverage_required_intrinsics": {

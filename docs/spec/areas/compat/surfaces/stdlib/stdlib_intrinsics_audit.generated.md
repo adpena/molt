@@ -9,9 +9,10 @@
 - Modules without intrinsic usage are forbidden in compiled builds and must raise immediately until fully lowered.
 
 ## Progress Summary (Generated)
-- Total audited modules: `916`
+- Total audited modules: `920`
 - `intrinsic-backed`: `41`
-- `intrinsic-partial`: `874`
+- `intrinsic-partial`: `875`
+- `intrinsic-support`: `3`
 - `policy-gate`: `1`
 - `probe-only`: `0`
 - `python-only`: `0`
@@ -872,6 +873,7 @@
 - `tkinter.simpledialog`
 - `tkinter.tix`
 - `tkinter.ttk`
+- `tkinter.widgets`
 - `token`
 - `tokenize`
 - `tomllib`
@@ -980,6 +982,11 @@
 - `zoneinfo._tzpath`
 - `zoneinfo._zoneinfo`
 
+### Intrinsic-owned private support fragments
+- `_pyio_text`
+- `unittest._mock_autospec`
+- `unittest._mock_patch`
+
 ### Fail-closed policy-gate modules
 - `tinygrad.dflash`
 
@@ -989,14 +996,14 @@
 
 ## Core Lane Gate
 - Required lane: `tests/differential/basic/CORE_TESTS.txt` (import closure).
-- Gate rule: core-lane imports must be intrinsic-implemented (`intrinsic-backed` or `intrinsic-partial`) or an explicitly allowlisted fail-closed `policy-gate`, with zero `probe-only` and zero `python-only` modules.
+- Gate rule: core-lane imports must be intrinsic-implemented (`intrinsic-backed`, `intrinsic-partial`, or `intrinsic-support`) or an explicitly allowlisted fail-closed `policy-gate`, with zero `probe-only` and zero `python-only` modules.
 - Enforced by: `python3 tools/check_core_lane_lowering.py`.
 
 ## Bootstrap Gate
 - Strict roots: `builtins`, `sys`, `types`, `importlib`, `importlib.machinery`, `importlib.util`
-- Gate rule: when strict roots are present, each strict root and its full transitive stdlib import closure must be intrinsic-implemented (`intrinsic-backed` or `intrinsic-partial`); fail-closed `policy-gate` modules are not intrinsic implementations.
+- Gate rule: when strict roots are present, each strict root and its full transitive stdlib import closure must be intrinsic-implemented (`intrinsic-backed`, `intrinsic-partial`, or `intrinsic-support`); fail-closed `policy-gate` modules are not intrinsic implementations.
 - Required modules: `__future__`, `_abc`, `_collections_abc`, `_weakrefset`, `abc`, `collections.abc`, `copy`, `copyreg`, `dataclasses`, `keyword`, `linecache`, `re`, `reprlib`, `types`, `typing`, `warnings`, `weakref`
-- Gate rule: required bootstrap modules that are present must be intrinsic-implemented (`intrinsic-backed` or `intrinsic-partial`); fail-closed `policy-gate` modules are not bootstrap support.
+- Gate rule: required bootstrap modules that are present must be intrinsic-implemented (`intrinsic-backed`, `intrinsic-partial`, or `intrinsic-support`); fail-closed `policy-gate` modules are not bootstrap support.
 
 ## Critical Strict-Import Gate
 - Optional strict mode: `python3 tools/check_stdlib_intrinsics.py --critical-allowlist`.
@@ -1028,6 +1035,7 @@
 
 ## Full-Coverage Attestation Rule
 - Global rule: any module/submodule not explicitly attested as full CPython 3.12+ API/PEP coverage is classified as `intrinsic-partial`.
+- Private `intrinsic-support` fragments are owned implementation fragments of an intrinsic-backed module and are excluded from public full-coverage attestation units.
 - Attestation source: `tools/stdlib_full_coverage_manifest.py` (`STDLIB_FULLY_COVERED_MODULES`).
 - Full-coverage intrinsic contract source: `tools/stdlib_full_coverage_manifest.py` (`STDLIB_REQUIRED_INTRINSICS_BY_MODULE`).
 - Gate rule: each attested full-coverage module must stay `intrinsic-backed`, declare its required intrinsic set, and wire every declared intrinsic in-module.
