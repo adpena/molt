@@ -244,6 +244,54 @@ def test_kernel_launcher_resolves_backend_intrinsic_lazily(monkeypatch):
     assert gpu.from_device(c) == [0.0]
 
 
+def test_kernel_launcher_normalizes_single_int_and_dict_configs(monkeypatch):
+    import molt.gpu as gpu
+
+    calls = []
+
+    @gpu.kernel
+    def noop():
+        raise AssertionError("backend launch should own execution")
+
+    def fake_launch(func, grid, threads, args):
+        calls.append((func.__name__, grid, threads, len(args)))
+
+    monkeypatch.setattr(gpu, "_MOLT_GPU_KERNEL_LAUNCH", fake_launch)
+
+    noop[7]()
+    noop[{"grid": 3, "threads": 5}]()
+    noop[{"threads": 11}]()
+
+    assert calls == [
+        ("noop", 7, 256, 0),
+        ("noop", 3, 5, 0),
+        ("noop", 256, 11, 0),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("config", "exc_type", "message"),
+    (
+        (True, TypeError, "GPU launch grid must be a positive integer"),
+        (0, ValueError, "GPU launch grid must be positive"),
+        ((1, 2, 3), ValueError, "GPU launch tuple config must contain"),
+        ({}, ValueError, "GPU launch config dict must set grid or threads"),
+        ({"grid": 1.0}, TypeError, "GPU launch grid must be a positive integer"),
+        ({"blocks": 1}, ValueError, "unknown GPU launch config field"),
+        ({"grid": 1, "threads": False}, TypeError, "GPU launch threads"),
+    ),
+)
+def test_kernel_launcher_rejects_invalid_launch_configs(config, exc_type, message):
+    import molt.gpu as gpu
+
+    @gpu.kernel
+    def noop():
+        raise AssertionError("invalid launch config must fail before execution")
+
+    with pytest.raises(exc_type, match=message):
+        noop[config]
+
+
 def test_kernel_launcher_runtime_active_missing_intrinsic_uses_interpreter(monkeypatch):
     import molt.gpu as gpu
 
