@@ -68,6 +68,7 @@ EXPECTED_MIXINS = [
     "LocalBindingMixin",
     "MidendOptimizationMixin",
     "SerializationMixin",
+    "OwnershipLoweringMixin",
     "CompileWarningMixin",
     "EmissionCoreMixin",
     "ExceptionLoweringMixin",
@@ -241,6 +242,13 @@ def test_moved_methods_resolve_on_class() -> None:
     assert hasattr(SimpleTIRGenerator, "_emit_raise_if_pending")
     assert hasattr(SimpleTIRGenerator, "_emit_control_flow_scope_unwind")
     assert hasattr(SimpleTIRGenerator, "_emit_sync_try_except_split")
+    # ownership and serialization finalization
+    assert hasattr(SimpleTIRGenerator, "_emit_inc_ref")
+    assert hasattr(SimpleTIRGenerator, "_emit_drop_owned_value")
+    assert hasattr(SimpleTIRGenerator, "_analyze_borrowing")
+    assert hasattr(SimpleTIRGenerator, "_finalize_code_ids")
+    assert hasattr(SimpleTIRGenerator, "_ensure_code_slots_init")
+    assert hasattr(SimpleTIRGenerator, "to_json")
     # import lowering
     assert hasattr(SimpleTIRGenerator, "_resolve_relative_import")
     assert hasattr(SimpleTIRGenerator, "_should_attempt_runtime_module_import")
@@ -274,6 +282,7 @@ def test_mixin_modules_import_standalone() -> None:
         "molt.frontend.lowering.loop_lowering",
         "molt.frontend.lowering.midend_optimization",
         "molt.frontend.lowering.module_lifecycle",
+        "molt.frontend.lowering.ownership_lowering",
         "molt.frontend.lowering.serialization",
         "molt.frontend.lowering.symbol_naming",
         "molt.frontend.lowering.type_annotations",
