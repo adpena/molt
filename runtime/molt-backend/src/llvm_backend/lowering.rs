@@ -45,6 +45,8 @@ use crate::tir::values::ValueId;
 #[cfg(feature = "llvm")]
 mod call_lowering;
 #[cfg(feature = "llvm")]
+mod constant_ops;
+#[cfg(feature = "llvm")]
 mod numeric_ops;
 #[cfg(feature = "llvm")]
 mod op_dispatch;
