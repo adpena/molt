@@ -20,6 +20,8 @@ DEFAULT_TARGETS = (
     REPO_ROOT / "src" / "molt" / "cli",
     REPO_ROOT / "src" / "molt" / "process_guard.py",
     REPO_ROOT / "src" / "molt" / "repl.py",
+    REPO_ROOT / "src" / "molt_accel",
+    REPO_ROOT / "packaging",
 )
 DEFAULT_TEXT_TARGETS = (
     REPO_ROOT / "Makefile",
@@ -43,6 +45,7 @@ SUBPROCESS_METHODS = frozenset(
     }
 )
 OS_SIGNAL_METHODS = frozenset({"kill", "killpg"})
+PROCESS_OBJECT_SIGNAL_METHODS = frozenset({"kill", "terminate"})
 SHELL_KILL_PATTERNS = (
     "Stop-Process",
     "kill -9",
@@ -115,6 +118,20 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
         "process-group kwargs, force-close custody, and a repo sentinel",
     ),
     AllowedRawSubprocessUse(
+        "tools/batch_compile_client.py",
+        "BatchCompileServerClient.force_close",
+        "process.terminate",
+        "interactive batch-build server fallback closes only the owned direct "
+        "child when no guard force-close hook is available",
+    ),
+    AllowedRawSubprocessUse(
+        "tools/batch_compile_client.py",
+        "BatchCompileServerClient.force_close",
+        "process.kill",
+        "interactive batch-build server fallback escalates only the owned direct "
+        "child after terminate timeout when no guard force-close hook is available",
+    ),
+    AllowedRawSubprocessUse(
         "tools/bench.py",
         "_git_rev",
         "run",
@@ -141,6 +158,22 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
         "default, mirrors child streams live, writes only timing/byte-count "
         "metadata under canonical artifact roots, and force-closes the direct "
         "child on interruption",
+    ),
+    AllowedRawSubprocessUse(
+        "tools/agent_coordination.py",
+        "run_codex_stall_diagnostic",
+        "process.terminate",
+        "interactive Codex stall diagnostic closes only its direct launched child "
+        "on KeyboardInterrupt; the launched command is tools/memory_guard.py by "
+        "default and no name/process-group sweep is performed",
+    ),
+    AllowedRawSubprocessUse(
+        "tools/agent_coordination.py",
+        "run_codex_stall_diagnostic",
+        "process.kill",
+        "interactive Codex stall diagnostic escalates only the same direct "
+        "launched child after terminate timeout; no Codex/Claude name sweep is "
+        "performed",
     ),
     AllowedRawSubprocessUse(
         "tools/agent_coordination.py",
@@ -364,6 +397,13 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
     ),
     AllowedRawSubprocessUse(
         "tools/perf_calibration.py",
+        "run_and_measure",
+        "process.kill",
+        "calibration workload timeout cleanup kills only the owned benchmark "
+        "child spawned by the same function",
+    ),
+    AllowedRawSubprocessUse(
+        "tools/perf_calibration.py",
         "_competing_build_count",
         "run",
         "bounded tasklist/ps metadata probes for benchmark-noise reporting",
@@ -551,6 +591,34 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
         "run",
         "bounded vswhere metadata probe for explicit Windows toolchain validation",
     ),
+    AllowedRawSubprocessUse(
+        "src/molt_accel/client.py",
+        "MoltClient._ensure_process",
+        "Popen",
+        "stdio accelerator client starts only its configured worker command as a "
+        "direct child and owns that child through MoltClient.close",
+    ),
+    AllowedRawSubprocessUse(
+        "src/molt_accel/client.py",
+        "MoltClient._close_locked",
+        "process.terminate",
+        "stdio accelerator client closes only its owned direct worker child; no "
+        "name, ancestor, or process-group cleanup is performed",
+    ),
+    AllowedRawSubprocessUse(
+        "src/molt_accel/client.py",
+        "MoltClient._close_locked",
+        "process.kill",
+        "stdio accelerator client escalates only its owned direct worker child "
+        "after terminate timeout",
+    ),
+    AllowedRawSubprocessUse(
+        "packaging/bootstrap.py",
+        "_install_wheel",
+        "check_call",
+        "explicit packaging bootstrap installs the already-built wheel into the "
+        "repo-local bootstrap venv",
+    ),
 )
 
 
@@ -634,7 +702,10 @@ class _SubprocessVisitor(ast.NodeVisitor):
         method = self._subprocess_method(node)
         if method is not None:
             return method
-        return self._os_signal_method(node)
+        method = self._os_signal_method(node)
+        if method is not None:
+            return method
+        return self._process_object_signal_method(node)
 
     def _subprocess_method(self, node: ast.expr) -> str | None:
         if (
@@ -660,6 +731,14 @@ class _SubprocessVisitor(ast.NodeVisitor):
             method = self.direct_os_imports.get(node.id)
             if method is not None:
                 return f"os.{method}"
+        return None
+
+    def _process_object_signal_method(self, node: ast.expr) -> str | None:
+        if (
+            isinstance(node, ast.Attribute)
+            and node.attr in PROCESS_OBJECT_SIGNAL_METHODS
+        ):
+            return f"process.{node.attr}"
         return None
 
 
