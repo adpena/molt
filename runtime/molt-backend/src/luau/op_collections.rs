@@ -1,6 +1,96 @@
 use super::*;
 
 impl LuauBackend {
+    pub(super) fn emit_typed_list_method_call(&mut self, op: &OpIR) -> bool {
+        if op.kind != "call_method" {
+            return false;
+        }
+        let args = op.args.as_deref().unwrap_or(&[]);
+        let Some(list_raw) = args.first() else {
+            return false;
+        };
+        if !self.plan_knows_list(list_raw) {
+            return false;
+        }
+
+        let list = sanitize_ident(list_raw);
+        match op.s_value.as_deref().unwrap_or("unknown") {
+            "append" => {
+                if let Some(val) = args.get(1) {
+                    let val = sanitize_ident(val);
+                    self.emit_list_append_raw(&list, &val);
+                }
+            }
+            "pop" => {
+                let idx = args.get(1).map(|value| sanitize_ident(value));
+                if let Some(ref out_name) = op.out {
+                    let out = sanitize_ident(out_name);
+                    self.emit_list_pop(&list, idx.as_deref(), Some(&out));
+                } else {
+                    self.emit_list_pop(&list, idx.as_deref(), None);
+                }
+            }
+            "insert" => {
+                if args.len() >= 3 {
+                    let idx = sanitize_ident(&args[1]);
+                    let val = sanitize_ident(&args[2]);
+                    self.emit_list_insert(&list, &idx, &val);
+                }
+            }
+            "remove" => {
+                if let Some(val) = args.get(1) {
+                    let val = sanitize_ident(val);
+                    self.emit_list_remove_value(&list, &val);
+                }
+            }
+            "sort" => {
+                self.emit_line(&format!("table.sort({list})"));
+            }
+            "reverse" => {
+                self.emit_list_reverse_in_place(&list);
+            }
+            "clear" => {
+                self.emit_list_clear(&list);
+            }
+            "copy" => {
+                if let Some(ref out_name) = op.out {
+                    let out = sanitize_ident(out_name);
+                    self.emit_list_copy_into(&out, &list);
+                }
+            }
+            "extend" => {
+                if let Some(other) = args.get(1) {
+                    let other = sanitize_ident(other);
+                    self.emit_list_extend_raw(&list, &other);
+                }
+            }
+            "count" => {
+                if let (Some(out_name), Some(val)) = (&op.out, args.get(1)) {
+                    let out = sanitize_ident(out_name);
+                    let val = sanitize_ident(val);
+                    self.emit_list_count_into(&out, &list, &val);
+                }
+            }
+            "index" => {
+                if args.len() >= 4 {
+                    let out = self.out_var(op);
+                    let val = sanitize_ident(&args[1]);
+                    let start = sanitize_ident(&args[2]);
+                    let stop = sanitize_ident(&args[3]);
+                    self.emit_list_index_range_into(&out, &list, &val, &start, &stop);
+                } else if let Some(val) = args.get(1) {
+                    let out = self.out_var(op);
+                    let val = sanitize_ident(val);
+                    self.emit_list_index_into(&out, &list, &val);
+                }
+            }
+            _ => {
+                self.emit_luau_list_method_fallback(op, &list, args);
+            }
+        }
+        true
+    }
+
     pub(super) fn emit_collection_op(&mut self, op: &OpIR) -> bool {
         match op.kind.as_str() {
             // ================================================================
@@ -130,9 +220,7 @@ impl LuauBackend {
                 if args.len() >= 2 {
                     let list = sanitize_ident(&args[0]);
                     let val = sanitize_ident(&args[1]);
-                    // rawset bypasses metamethods — safe for plain list tables
-                    // and avoids __newindex overhead in Luau's native codegen.
-                    self.emit_line(&format!("rawset({list}, #{list} + 1, {val})"));
+                    self.emit_list_append_raw(&list, &val);
                 }
             }
             "list_pop" => {
@@ -153,9 +241,7 @@ impl LuauBackend {
                 if args.len() >= 2 {
                     let list = sanitize_ident(&args[0]);
                     let other = sanitize_ident(&args[1]);
-                    self.emit_line(&format!(
-                        "table.move({other}, 1, #{other}, #{list} + 1, {list})"
-                    ));
+                    self.emit_list_extend_raw(&list, &other);
                 }
             }
             "list_insert" => {
@@ -172,36 +258,27 @@ impl LuauBackend {
                 if args.len() >= 2 {
                     let list = sanitize_ident(&args[0]);
                     let val = sanitize_ident(&args[1]);
-                    // Use numeric for-loop with a found flag. Python list.remove(x)
-                    // raises ValueError when x is not in the list.
-                    self.emit_line(&format!(
-                        "do local __found = false; for __i = 1, #{list} do if {list}[__i] == {val} then table.remove({list}, __i); __found = true; break end end; if not __found then error(\"ValueError: list.remove(x): x not in list\") end end"
-                    ));
+                    self.emit_list_remove_value(&list, &val);
                 }
             }
             "list_clear" | "dict_clear" | "set_clear" => {
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(tbl) = args.first() {
-                    self.emit_line(&format!("table.clear({})", sanitize_ident(tbl)));
+                    self.emit_list_clear(&sanitize_ident(tbl));
                 }
             }
             "list_copy" | "dict_copy" => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(src) = args.first() {
-                    self.emit_line(&format!(
-                        "local {out} = table.clone({})",
-                        sanitize_ident(src)
-                    ));
+                    self.emit_list_copy_into(&out, &sanitize_ident(src));
                 }
             }
             "list_reverse" => {
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(list) = args.first() {
                     let list = sanitize_ident(list);
-                    self.emit_line(&format!(
-                        "do local __n = #{list}; for __i = 1, math_floor(__n / 2) do {list}[__i], {list}[__n - __i + 1] = {list}[__n - __i + 1], {list}[__i] end end"
-                    ));
+                    self.emit_list_reverse_in_place(&list);
                 }
             }
             "list_count" => {
@@ -210,9 +287,7 @@ impl LuauBackend {
                 if args.len() >= 2 {
                     let list = sanitize_ident(&args[0]);
                     let val = sanitize_ident(&args[1]);
-                    self.emit_line(&format!(
-                        "local {out} = 0; for _, __v in ipairs({list}) do if __v == {val} then {out} = {out} + 1 end end"
-                    ));
+                    self.emit_list_count_into(&out, &list, &val);
                 }
             }
             "list_index" | "list_index_range" => {
@@ -224,13 +299,9 @@ impl LuauBackend {
                     if args.len() >= 4 {
                         let start = sanitize_ident(&args[2]);
                         let stop = sanitize_ident(&args[3]);
-                        self.emit_line(&format!(
-                            "local {out} = -1; do local __n = #{list}; local __start = if {start} < 0 then __n + {start} else {start}; if __start < 0 then __start = 0 end; if __start > __n then __start = __n end; local __stop = if {stop} < 0 then __n + {stop} else {stop}; if __stop < 0 then __stop = 0 end; if __stop > __n then __stop = __n end; local __found = false; for __i = __start + 1, __stop do if {list}[__i] == {val} then {out} = __i - 1; __found = true; break end end; if not __found then error(\"ValueError: \" .. tostring({val}) .. \" is not in list\") end end"
-                        ));
+                        self.emit_list_index_range_into(&out, &list, &val, &start, &stop);
                     } else {
-                        self.emit_line(&format!(
-                            "local {out} = -1; do local __found = false; for __i, __v in ipairs({list}) do if __v == {val} then {out} = __i - 1; __found = true; break end end; if not __found then error(\"ValueError: \" .. tostring({val}) .. \" is not in list\") end end"
-                        ));
+                        self.emit_list_index_into(&out, &list, &val);
                     }
                 }
             }
@@ -626,5 +697,78 @@ impl LuauBackend {
             _ => return false,
         }
         true
+    }
+
+    fn emit_list_append_raw(&mut self, list: &str, val: &str) {
+        // rawset bypasses metamethods for plain list tables and avoids
+        // __newindex overhead in Luau's native codegen.
+        self.emit_line(&format!("rawset({list}, #{list} + 1, {val})"));
+    }
+
+    fn emit_list_extend_raw(&mut self, list: &str, other: &str) {
+        self.emit_line(&format!(
+            "table.move({other}, 1, #{other}, #{list} + 1, {list})"
+        ));
+    }
+
+    fn emit_list_remove_value(&mut self, list: &str, val: &str) {
+        self.emit_line(&format!(
+            "do local __found = false; for __i = 1, #{list} do if {list}[__i] == {val} then table.remove({list}, __i); __found = true; break end end; if not __found then error(\"ValueError: list.remove(x): x not in list\") end end"
+        ));
+    }
+
+    fn emit_list_clear(&mut self, list: &str) {
+        self.emit_line(&format!("table.clear({list})"));
+    }
+
+    fn emit_list_copy_into(&mut self, out: &str, list: &str) {
+        self.emit_line(&format!("local {out} = table.clone({list})"));
+    }
+
+    fn emit_list_reverse_in_place(&mut self, list: &str) {
+        self.emit_line(&format!(
+            "do local __n = #{list}; for __i = 1, math_floor(__n / 2) do {list}[__i], {list}[__n - __i + 1] = {list}[__n - __i + 1], {list}[__i] end end"
+        ));
+    }
+
+    fn emit_list_count_into(&mut self, out: &str, list: &str, val: &str) {
+        self.emit_line(&format!(
+            "local {out} = 0; for _, __v in ipairs({list}) do if __v == {val} then {out} = {out} + 1 end end"
+        ));
+    }
+
+    fn emit_list_index_into(&mut self, out: &str, list: &str, val: &str) {
+        self.emit_line(&format!(
+            "local {out} = -1; do local __found = false; for __i, __v in ipairs({list}) do if __v == {val} then {out} = __i - 1; __found = true; break end end; if not __found then error(\"ValueError: \" .. tostring({val}) .. \" is not in list\") end end"
+        ));
+    }
+
+    fn emit_list_index_range_into(
+        &mut self,
+        out: &str,
+        list: &str,
+        val: &str,
+        start: &str,
+        stop: &str,
+    ) {
+        self.emit_line(&format!(
+            "local {out} = -1; do local __n = #{list}; local __start = if {start} < 0 then __n + {start} else {start}; if __start < 0 then __start = 0 end; if __start > __n then __start = __n end; local __stop = if {stop} < 0 then __n + {stop} else {stop}; if __stop < 0 then __stop = 0 end; if __stop > __n then __stop = __n end; local __found = false; for __i = __start + 1, __stop do if {list}[__i] == {val} then {out} = __i - 1; __found = true; break end end; if not __found then error(\"ValueError: \" .. tostring({val}) .. \" is not in list\") end end"
+        ));
+    }
+
+    fn emit_luau_list_method_fallback(&mut self, op: &OpIR, list: &str, args: &[String]) {
+        let method_name = op.s_value.as_deref().unwrap_or("unknown");
+        let method = sanitize_ident(method_name);
+        let call_args = args[1..]
+            .iter()
+            .map(|arg| sanitize_ident(arg))
+            .collect::<Vec<_>>()
+            .join(", ");
+        if let Some(ref out_name) = op.out {
+            let out = sanitize_ident(out_name);
+            self.emit_line(&format!("local {out} = {list}:{method}({call_args})"));
+        } else {
+            self.emit_line(&format!("{list}:{method}({call_args})"));
+        }
     }
 }
