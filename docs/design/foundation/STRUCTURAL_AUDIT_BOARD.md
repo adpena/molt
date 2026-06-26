@@ -77,11 +77,11 @@ Product board for the molt structural sweep — the first instrument of the Molt
 | low | 5709 lines (ceiling 4000) | `runtime/molt-runtime/src/builtins/regex.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | low | 5528 lines (ceiling 4000) | `runtime/molt-runtime/src/object/ops_encoding.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | low | 5281 lines (ceiling 4000) | `runtime/molt-runtime/src/call/bind.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
-| low | 5162 lines (ceiling 4000) | `runtime/molt-runtime/src/object/ops_builtins.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | low | 5133 lines (ceiling 4000) | `runtime/molt-wasm-host/src/main.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | low | 5026 lines (ceiling 4000) | `runtime/molt-runtime/src/object/ops_string.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | low | 4895 lines (ceiling 4000) | `runtime/molt-backend/src/rust.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | low | 4817 lines (ceiling 4000) | `runtime/molt-runtime/src/object/ops_bytes.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
+| low | 4459 lines (ceiling 4000) | `runtime/molt-runtime/src/object/ops_builtins.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | low | 4446 lines (ceiling 4000) | `runtime/molt-runtime/src/object/ops_arith.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | low | 4350 lines (ceiling 4000) | `runtime/molt-runtime/src/builtins/functions_pickle.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | low | 4112 lines (ceiling 4000) | `runtime/molt-runtime/src/async_rt/scheduler.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
