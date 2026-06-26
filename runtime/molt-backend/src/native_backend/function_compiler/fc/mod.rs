@@ -76,6 +76,7 @@ pub(in crate::native_backend::function_compiler) fn op_prefers_int_lane(
 }
 
 pub(in crate::native_backend::function_compiler) mod arith;
+pub(in crate::native_backend::function_compiler) mod arith_division;
 pub(in crate::native_backend::function_compiler) mod attrs;
 pub(in crate::native_backend::function_compiler) mod callargs;
 pub(in crate::native_backend::function_compiler) mod calls;

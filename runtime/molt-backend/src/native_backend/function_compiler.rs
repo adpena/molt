@@ -1162,6 +1162,27 @@ impl SimpleBackend {
                         fc::OpFlow::Proceed => {}
                     }
                 }
+                // Division/modulo/power/rounding arithmetic family extracted
+                // from fc::arith so quotient/remainder codegen is its own
+                // function-level rustc codegen unit and kind authority.
+                _ if op_family == Some(fc::NativeOpFamily::ArithDivision) => {
+                    let __flow = fc::arith_division::handle_arith_division_op(
+                        &op,
+                        &mut self.module,
+                        &mut self.import_ids,
+                        &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &vars,
+                        representation_plan,
+                        scalar_fast_paths_enabled,
+                        &nbc,
+                    );
+                    match __flow {
+                        fc::OpFlow::Continue => continue,
+                        fc::OpFlow::Proceed => {}
+                    }
+                }
                 // handle_sequence_op family - extracted to fc::sequence_ops (M1)
                 _ if op_family == Some(fc::NativeOpFamily::Sequence) => {
                     let __flow = fc::sequence_ops::handle_sequence_op(
