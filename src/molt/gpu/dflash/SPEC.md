@@ -276,6 +276,7 @@ typed error, by `tests/gpu/dflash/test_dflash_fidelity.py`:
 | invalid `position_ids` | `DFlashConditioning(position_ids=[0, 1.5], …)` | `TypeError("position_ids must contain non-negative integer positions")` | `DFlashConditioning` |
 | non-integer `last_verified_token` (bool) | `DFlashConditioning(last_verified_token=True, …)` | `TypeError("last_verified_token must be an integer token id")` | `DFlashConditioning` |
 | non-integral `last_verified_token` | `DFlashConditioning(last_verified_token=1.5, …)` | `TypeError("last_verified_token must be an integer token id")` | `DFlashConditioning` |
+| negative `last_verified_token` | `DFlashConditioning(last_verified_token=-1, …)` | `ValueError("last_verified_token must be non-negative")` | `DFlashConditioning` |
 | generic conditioning at boundary | `require_dflash_conditioning(SpeculativeConditioning(...))` | `TypeError("… must be DFlashConditioning")` | `require_dflash_conditioning` |
 | non-callable `draft_step` | `DFlashRuntime(draft_step=object(), …)` | `TypeError("DFlashRuntime draft_step must be callable")` | `DFlashRuntime` |
 | non-callable `verify_step` | `DFlashRuntime(verify_step=object(), …)` | `TypeError("DFlashRuntime verify_step must be callable")` | `DFlashRuntime` |
@@ -288,6 +289,7 @@ typed error, by `tests/gpu/dflash/test_dflash_fidelity.py`:
 | non-DFlash algorithm family | `DFlashAdapterMetadata(algorithm_family="eagle", …)` | `ValueError("dflash adapter algorithm_family must be a DFlash-family value: …")` | `adapters.py` |
 | missing adapter tokenizer | `DFlashAdapterMetadata(tokenizer_id="", …)` | `ValueError("dflash adapter tokenizer_id must be non-empty")` | `adapters.py` |
 | invalid adapter mask token | `DFlashAdapterMetadata(mask_token_id=True, …)` | `TypeError("dflash adapter mask_token_id must be an integer token id")` | `adapters.py` |
+| negative adapter mask token | `DFlashAdapterMetadata(mask_token_id=-1, …)` | `ValueError("dflash adapter mask_token_id must be non-negative")` | `adapters.py` |
 | missing target layer IDs | `DFlashAdapterMetadata(target_layer_ids=[], …)` | `ValueError("dflash adapter target_layer_ids must be non-empty")` | `adapters.py` |
 | missing hidden-state schema | `DFlashAdapterMetadata(target_feature_schema=" ", …)` | `ValueError("dflash adapter target_feature_schema must be non-empty")` | `adapters.py` |
 | missing KV schema | `DFlashAdapterMetadata(kv_schema=None, …)` | `TypeError("dflash adapter kv_schema must be a string")` | `adapters.py` |

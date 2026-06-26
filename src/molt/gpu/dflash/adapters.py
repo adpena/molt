@@ -9,6 +9,7 @@ cannot enter the DFlash namespace.
 
 from __future__ import annotations
 
+from ..speculative import _normalize_non_negative_token_id
 from .contracts import (
     DFlashRuntime,
     DFlashSelectionContext,
@@ -52,17 +53,6 @@ def _require_bool_true(value, field_name: str) -> bool:
     if not value:
         raise ValueError(f"dflash adapter {field_name} must be true")
     return value
-
-
-def _require_token_id(value, field_name: str) -> int:
-    if isinstance(value, bool):
-        raise TypeError(f"dflash adapter {field_name} must be an integer token id")
-    token = int(value)
-    if token != value:
-        raise TypeError(f"dflash adapter {field_name} must be an integer token id")
-    if token < 0:
-        raise ValueError(f"dflash adapter {field_name} must be non-negative")
-    return token
 
 
 def _require_positive_int(value, field_name: str) -> int:
@@ -127,7 +117,10 @@ class DFlashAdapterMetadata:
             adapter_version, "adapter_version"
         )
         self.tokenizer_id = _require_non_empty_string(tokenizer_id, "tokenizer_id")
-        self.mask_token_id = _require_token_id(mask_token_id, "mask_token_id")
+        self.mask_token_id = _normalize_non_negative_token_id(
+            mask_token_id,
+            "dflash adapter mask_token_id",
+        )
         self.target_layer_ids = _require_layer_ids(target_layer_ids)
         self.target_feature_schema = _require_non_empty_string(
             target_feature_schema, "target_feature_schema"

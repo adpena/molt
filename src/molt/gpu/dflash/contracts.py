@@ -18,8 +18,8 @@ from __future__ import annotations
 
 from ..speculative import (
     SpeculativeConditioning,
+    _normalize_non_negative_token_id,
     _normalize_optional_token_id,
-    _normalize_token_id,
     _normalize_token_sequence,
 )
 
@@ -119,9 +119,9 @@ class DFlashConditioning(SpeculativeConditioning):
         if position_ids is None:
             raise ValueError("DFlashConditioning requires position_ids")
         position_ids = _normalize_position_ids(position_ids)
-        token = _normalize_token_id(
+        token = _normalize_non_negative_token_id(
             last_verified_token,
-            "last_verified_token must be an integer token id",
+            "last_verified_token",
         )
         super().__init__(
             target_features=target_features,
