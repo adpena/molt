@@ -19,7 +19,6 @@ _MOLT_IMPORT_SMOKE_RUNTIME_READY()
 del _MOLT_IMPORT_SMOKE_RUNTIME_READY
 
 
-import re
 import decimal
 import _decimal as _required_decimal_backend
 
@@ -194,11 +193,25 @@ def int_from_string(s):
 def str_to_int(s):
     """Asymptotically fast version of decimal string to 'int' conversion."""
     # FIXME: this doesn't support the full syntax that int() supports.
-    m = re.match(r"\s*([+-]?)([0-9_]+)\s*", s)
-    if not m:
+    # Plain prefix scan equivalent to re.match(r"\s*([+-]?)([0-9_]+)\s*", s):
+    # leading whitespace, an optional sign, then one or more ASCII digits /
+    # underscores. Avoids pulling the regex engine (stdlib_regex) into the
+    # import graph of every program that can reach _pylong via int<->str.
+    i, n = 0, len(s)
+    while i < n and s[i].isspace():
+        i += 1
+    sign = ""
+    if i < n and (s[i] == "+" or s[i] == "-"):
+        sign = s[i]
+        i += 1
+    start = i
+    while i < n and ("0" <= s[i] <= "9" or s[i] == "_"):
+        i += 1
+    digits = s[start:i]
+    if not digits:
         raise ValueError("invalid literal for int() with base 10")
-    v = int_from_string(m.group(2))
-    if m.group(1) == "-":
+    v = int_from_string(digits)
+    if sign == "-":
         v = -v
     return v
 
