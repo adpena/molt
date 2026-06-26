@@ -241,9 +241,10 @@ here so the algorithm cannot be declared done without satisfying it.
   attributes, including same-named DFlash-looking attributes, `model_id`,
   `target_model_id`, `name_or_path`, or ordinary `tokenizer_id`, are not
   DFlash custody and do not enable adapter resolution or adapter-name selection.
-  Backend identity is normalized by the DFlash context contract and must be one
-  of the explicit `DFLASH_SUPPORTED_BACKENDS` (`metal`, `webgpu`) before any
-  adapter can resolve; arbitrary non-empty backend strings are not capability.
+  Backend identity is normalized by `molt.gpu.backend_config` and stored on the
+  DFlash context contract. It must be one of the explicit
+  `DFLASH_SUPPORTED_BACKENDS` (`metal`, `webgpu`) before any adapter can
+  resolve; arbitrary non-empty backend strings are not capability.
   Adapter-specific `supports()` callbacks run only after the canonical
   metadata/context match succeeds.
 - **Checkable assertion (today):** `DFlashAdapterSpec` validates non-empty

@@ -812,7 +812,7 @@ def test_tensor_scaled_dot_product_attention_uses_intrinsic_when_available(
         "_MOLT_GPU_TENSOR_SCALED_DOT_PRODUCT_ATTENTION",
         fake_intrinsic,
     )
-    monkeypatch.setenv("MOLT_GPU_BACKEND", "webgpu")
+    monkeypatch.setenv("MOLT_GPU_BACKEND", " WEBGPU ")
 
     q = Tensor([1.0, 0.0, 0.0, 1.0], shape=(1, 1, 2, 2), dtype=float)
     k = Tensor([1.0, 0.0, 0.0, 1.0], shape=(1, 1, 2, 2), dtype=float)
