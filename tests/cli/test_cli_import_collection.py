@@ -17228,6 +17228,38 @@ def test_backend_daemon_stale_check_tracks_active_runtime_profiles(
     assert cli._backend_daemon_binary_is_newer(backend_bin, pid_path)
 
 
+def test_backend_daemon_stale_check_tracks_extracted_runtime_crates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_root = tmp_path
+    target_root = project_root / "target"
+    (project_root / "Cargo.toml").write_text("[workspace]\n", encoding="utf-8")
+    backend_bin = target_root / "dev-fast" / "molt-backend"
+    runtime_lib = (
+        target_root / "release-output" / cli._runtime_lib_archive_name("micro", None)
+    )
+    pid_path = target_root / ".molt_state" / "backend_daemon" / "molt-backend.pid"
+    extracted_runtime_src = (
+        project_root / "runtime" / "molt-runtime-math" / "src" / "fractions.rs"
+    )
+    for path in (backend_bin, runtime_lib, pid_path, extracted_runtime_src):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"x")
+
+    monkeypatch.delenv("MOLT_SESSION_ID", raising=False)
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(target_root))
+
+    old = 1_700_000_000.0
+    pid_time = old + 5.0
+    current = old + 10.0
+    os.utime(backend_bin, (old, old))
+    os.utime(runtime_lib, (old, old))
+    os.utime(pid_path, (pid_time, pid_time))
+    os.utime(extracted_runtime_src, (current, current))
+
+    assert cli._backend_daemon_binary_is_newer(backend_bin, pid_path)
+
+
 def test_backend_daemon_stale_check_tracks_target_specific_runtime_alias(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

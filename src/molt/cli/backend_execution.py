@@ -790,17 +790,29 @@ def _backend_daemon_binary_is_newer(
                 return True
         except OSError:
             pass
-        # Check backend Rust source files — cargo's incremental compilation
-        # may NOT update the binary mtime when it determines the output is
-        # equivalent (content hash match).  But if any .rs source in the
-        # backend crate is newer than the daemon PID, the daemon may be
-        # stale.  This is a defence-in-depth check that catches the case
-        # where the developer edits backend source, runs cargo build (which
-        # skips the link step due to hash match), and expects the daemon to
-        # pick up the change.
-        backend_src = candidate / "runtime" / "molt-backend" / "src"
-        runtime_src = candidate / "runtime" / "molt-runtime" / "src"
-        for src_dir in (backend_src, runtime_src):
+        # Check backend AND runtime Rust source files — cargo's incremental
+        # compilation may NOT update the binary mtime when it determines the
+        # output is equivalent (content hash match).  But if any .rs source in
+        # the backend or runtime crate tree is newer than the daemon PID, the
+        # daemon may be stale. This catches source edits followed by a cargo
+        # build that skips the final link step due to an equivalent output hash.
+        #
+        # The runtime is split across the main `molt-runtime` crate and extracted
+        # subcrates (`molt-runtime-math`, `molt-runtime-serial`, ...). An edit to
+        # any of them can change the linkable runtime behavior, so all runtime
+        # crates participate in daemon staleness.
+        runtime_root = candidate / "runtime"
+        src_dirs = [candidate / "runtime" / "molt-backend" / "src"]
+        try:
+            if runtime_root.is_dir():
+                src_dirs.extend(
+                    crate_dir / "src"
+                    for crate_dir in sorted(runtime_root.glob("molt-runtime*"))
+                    if (crate_dir / "src").is_dir()
+                )
+        except OSError:
+            pass
+        for src_dir in src_dirs:
             try:
                 if not src_dir.is_dir():
                     continue
