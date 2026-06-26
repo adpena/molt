@@ -42,10 +42,14 @@ mod op_lists;
 mod op_maps;
 mod op_objects;
 mod op_runtime_surface;
+mod op_scalar_builtins;
+mod op_scalar_exprs;
+mod op_scalar_kernels;
 mod op_scalars;
 mod op_sets;
 mod op_strings;
 mod op_tuples;
+mod op_values;
 
 /// Transpiles Molt `SimpleIR` into Luau source text.
 pub struct LuauBackend {
