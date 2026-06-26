@@ -165,7 +165,7 @@ Before the per-family scorecards, the evidence base establishes the following ar
 
 #### 2c. Bound methods / fuse_method_dispatch
 
-**UPSTREAM.** `call_method` with `fused_method_dispatch` attribute on the op. The zero-arg `super()` fold now asks `frontend.sema.classgraph.super_fold_is_sound` over sema-owned static class-graph/C3/reachability/local class-member facts plus explicit imported-class metadata: restricted to entry-module, guards against MRO diamonds, non-method class-attribute interposition, and dynamic/decorated class-member surfaces. `CallMethod` is a first-class TIR opcode.
+**UPSTREAM.** `call_method` with `fused_method_dispatch` attribute on the op. The zero-arg `super()` fold now reads `ClassFacts.super_fold_sound_methods_by_class`, precomputed from sema-owned static class-graph/C3/reachability/local class-member facts plus explicit imported-class metadata: restricted to entry-module, guards against MRO diamonds, non-method class-attribute interposition, and dynamic/decorated class-member surfaces. `CallMethod` is a first-class TIR opcode.
 
 **Score.** IMPORTANCE=3, GAP=1.
 
@@ -195,7 +195,7 @@ Before the per-family scorecards, the evidence base establishes the following ar
 
 #### 3b. MRO/super
 
-**UPSTREAM.** Runtime class metadata still uses `_class_mro_names` in the class-resolution mixin. Static class facts used by the fold live in `frontend.sema.classgraph`: `ClassFacts`, `c3_merge`, `static_class_bases`, `static_mro_names`, `reachable_base_names`, `static_method_owner_after`, and `super_fold_is_sound`. Static C3 linearization and member-owner resolution are computed for fold eligibility and fail closed on opaque, ambiguous, cyclic, unknown bases, non-method class-attribute interposition, or dynamic/decorated class-member surfaces; the runtime remains authoritative for dynamic class construction.
+**UPSTREAM.** Runtime class metadata still uses `_class_mro_names` in the class-resolution mixin. Static class facts used by the fold live in `frontend.sema.classgraph`: `ClassFacts`, `c3_merge`, `static_class_bases`, `static_mro_names`, `reachable_base_names`, `static_method_owner_after`, `super_fold_is_sound`, and `class_facts_with_super_fold_sound_methods`. Static C3 linearization and member-owner resolution are computed once for fold eligibility and fail closed on opaque, ambiguous, cyclic, unknown bases, non-method class-attribute interposition, or dynamic/decorated class-member surfaces; the runtime remains authoritative for dynamic class construction.
 
 **Score.** IMPORTANCE=3, GAP=1. Static MRO is conservatively correct (runtime is authoritative). Super fold is correctly guarded.
 
