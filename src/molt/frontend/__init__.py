@@ -106,8 +106,9 @@ from molt.frontend._types import (
 
 # Bind/Sema phase (doc 44 §F2b): free functions over the immutable ast.Module
 # computing the SemaResult — immutable semantic facts (static class graph,
-# local class-member facts, const environment, top-level function metadata) —
-# once, pre-walk, in the cfg_analysis.py house shape. F2b is additive:
+# local class-member facts, class-body block-exec requirements, const
+# environment, top-level function metadata) — once, pre-walk, in the
+# cfg_analysis.py house shape. F2b is additive:
 # visit_Module populates the existing pre-walk state dicts FROM SemaResult (the
 # _populate_sema_state shim) so the walk is byte-identical; F2c rewires the
 # read-sites onto SemaResult and deletes the mutable god-object dicts.

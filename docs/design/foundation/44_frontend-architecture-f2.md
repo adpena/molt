@@ -10,9 +10,9 @@
 
 # Frontend Architecture — the F2 Decomposition & Separation-of-Concerns End-State
 
-**Status:** Design doc plus live F2 routing note. F1 (move-only mixin split) is landed and has expanded beyond the original four-mixin snapshot into the current local-binding, midend-optimization, serialization, analysis, visitor, async/generator, and statement-family mixin shell. F2 is the semantic decomposition that F1 deliberately deferred. F2b has begun: `frontend.sema.funcmeta` now owns `FunctionKind`, canonical function-kind normalization, yield/signature classification, and async-generator legality predicates consumed by lowering; `frontend.sema.classgraph` now owns static class-graph construction, local class-member facts with dynamic/decorated-member opacity, C3/static-MRO/reachability facts, and the zero-arg `super()` fold soundness predicate consumed by lowering. This doc remains the program spec for the unfinished end-state: phase separation, single-authority facts, registry extension, explicit lowering contexts, and dissolution of the mixin-over-god-object shims.
+**Status:** Design doc plus live F2 routing note. F1 (move-only mixin split) is landed and has expanded beyond the original four-mixin snapshot into the current local-binding, midend-optimization, serialization, analysis, visitor, async/generator, and statement-family mixin shell. F2 is the semantic decomposition that F1 deliberately deferred. F2b has begun: `frontend.sema.funcmeta` now owns `FunctionKind`, canonical function-kind normalization, yield/signature classification, and async-generator legality predicates consumed by lowering; `frontend.sema.classgraph` now owns static class-graph construction, local class-member facts with dynamic/decorated-member opacity, C3/static-MRO/reachability facts, class-body block-exec facts, and precomputed zero-arg `super()` fold soundness method sets consumed by lowering. This doc remains the program spec for the unfinished end-state: phase separation, single-authority facts, registry extension, explicit lowering contexts, and dissolution of the mixin-over-god-object shims.
 
-**Date:** 2026-06-06. Every file:line anchor verified against HEAD `dc6965d8d`. Current-code note, 2026-06-26: F1 plus the first F2 authority cuts have reduced `src/molt/frontend/__init__.py` to a 302-line facade shell, not the final F2d facade. Function-shape spelling and suspension classifiers now have one semantic home in `frontend.sema.funcmeta`; static class graph, local class-member facts with fail-closed opacity, C3/static-MRO/reachability, and the zero-arg `super()` fold soundness predicate now live in `frontend.sema.classgraph`, and call/class lowering consume those facts through explicit sema inputs. The generator is still one shared-state lowering shell, so the F2 target below remains the required end-state: data contracts and phase separation, not permanent mixins over the god object.
+**Date:** 2026-06-06. Every file:line anchor verified against HEAD `dc6965d8d`. Current-code note, 2026-06-26: F1 plus the first F2 authority cuts have reduced `src/molt/frontend/__init__.py` to a 302-line facade shell, not the final F2d facade. Function-shape spelling and suspension classifiers now have one semantic home in `frontend.sema.funcmeta`; static class graph, local class-member facts with fail-closed opacity, C3/static-MRO/reachability, class-body block-exec facts, and precomputed zero-arg `super()` fold method sets now live in `frontend.sema.classgraph`, and call/class lowering consume those facts through explicit sema inputs. The generator is still one shared-state lowering shell, so the F2 target below remains the required end-state: data contracts and phase separation, not permanent mixins over the god object.
 
 **The verdict this engineers against** (supervisor, "engineered like Chris Lattner would?"): **NO, today.** At the original audit, `src/molt/frontend/__init__.py` was 27,071 lines, one class `SimpleTIRGenerator` with 538 `def`s (`__init__.py:211`), assembled from four MRO-mixins (`SerializationMixin, PatternMatchMixin, CallVisitorMixin, ClassDefVisitorMixin, ast.NodeVisitor` — `__init__.py:211-217`) that shared its ~150 mutable instance fields. Current F1 has moved more families out of the file, including `LocalBindingMixin` and `MidendOptimizationMixin`, and the first F2 sema cuts have removed the duplicate function-shape and static-class-graph authorities. The architectural defect remains: scope binding, IC index allocation, exception-edge insertion, const handling, augassign-kind selection, and emitted class metadata are still partly recomputed or supplied during the lowering walk behind one shared generator state. The cost is measured below in §6.
 
@@ -44,8 +44,9 @@ ast.Module
    ▼  BIND / SEMA      frontend/sema/                       ── ANNOTATES, never emits
    │     • ScopeTable        : per-scope symbol kind (local/cell/free/global), the
    │                           closure-cell index map, comp-scope isolation set
-   │     • ClassGraph        : static bases, C3 linearization, super-fold-soundness
-   │                           predicate result, descriptor/slot facts
+   │     • ClassGraph        : static bases, C3 linearization, reachability
+   │     • ClassFacts        : class-body block-exec ids, super-fold-sound
+   │                           methods, descriptor/slot facts
    │     • ConstEnv          : statically-known module dicts, const-int facts
    │     • Legality          : compile-time warnings (~bool, finally-flow), the
    │                           refuse-to-fold-a-raising-const decision
@@ -82,7 +83,7 @@ The phase boundaries are only real if the contract between them is **data, not a
 @dataclass(frozen=True)
 class SemaResult:
     scopes:      dict[int, ScopeInfo]      # keyed by AST-node id (FunctionDef/Lambda/Module/comp)
-    classes:     dict[str, ClassFacts]     # static bases, C3 MRO, super-fold-sound methods, slots, fields
+    classes:     dict[str, ClassFacts]     # block-exec class ids, super-fold-sound methods, slots, fields
     const_env:   ConstEnv                  # module const dicts, const-int facts, refused-fold node ids
     legality:    LegalityReport            # deferred warnings, finally-flow violations
 ```
@@ -222,7 +223,7 @@ Scale: IMPORTANCE 1–3 (how load-bearing for a world-class AOT frontend), GAP 0
 
 ### 5.1 Phase separation — IMPORTANCE 3, GAP 3
 
-The phase boundary is now partially real but incomplete. Parse is external (ast), and `frontend.sema` now owns module class-graph construction, local class-member facts, C3/static-MRO/reachability facts, const-env collection, function-shape facts, the zero-arg `super()` fold soundness predicate, and the precomputed `ClassFacts.super_fold_sound_methods_by_class` table consumed by call lowering. The remaining gap is that Lower still reads shimmed god-object dicts in many other places. The only fully clean separation in the package remains `cfg_analysis.py` — and it operates on the *already-emitted* op stream, i.e. it is a *post-Lower* analysis, not a *pre-Lower* Sema. **Gap remains high:** the architecture has a Sema phase, but most of Lower is not yet a thin consumer of immutable ClassFacts/ScopeInfo.
+The phase boundary is now partially real but incomplete. Parse is external (ast), and `frontend.sema` now owns module class-graph construction, local class-member facts, C3/static-MRO/reachability facts, const-env collection, function-shape facts, class-body block-exec facts, the zero-arg `super()` fold soundness predicate, and the precomputed `ClassFacts.super_fold_sound_methods_by_class` table consumed by call lowering. The remaining gap is that Lower still reads shimmed god-object dicts in many other places. The only fully clean separation in the package remains `cfg_analysis.py` — and it operates on the *already-emitted* op stream, i.e. it is a *post-Lower* analysis, not a *pre-Lower* Sema. **Gap remains high:** the architecture has a Sema phase, but most of Lower is not yet a thin consumer of immutable ClassFacts/ScopeInfo.
 
 ### 5.2 Single authority per construct — IMPORTANCE 3, GAP 3
 
@@ -238,7 +239,7 @@ The defining smell. **88 `molt_main` scope-forks** (§2.1) + the async/sync fork
 
 ### 5.5 Testability in isolation — IMPORTANCE 3, GAP 3
 
-Semantic isolation is now real for the first F2 facts, but still thin. The class graph, local class-member facts, C3/static-MRO/reachability facts, and zero-arg `super()` fold predicate are unit-testable through `frontend.sema.classgraph`, and function-shape facts are unit-testable through `frontend.sema.funcmeta`; scope binding still requires full lowering or generator construction. The old outlier remains `cfg_analysis.py` (free functions over an `OpLike` Protocol — `cfg_analysis.py:7/44`) plus `gen_op_kinds.py`'s generated output. Sema-as-free-functions (F2b) is the path that makes scope binding unit-testable on a bare AST next. **Gap remains high:** the architecture has isolated sema islands, but not a complete pre-lower semantic contract.
+Semantic isolation is now real for the first F2 facts, but still thin. The class graph, local class-member facts, class-body block-exec facts, C3/static-MRO/reachability facts, zero-arg `super()` fold predicate, and precomputed super-fold method table are unit-testable through `frontend.sema.classgraph`, and function-shape facts are unit-testable through `frontend.sema.funcmeta`; scope binding still requires full lowering or generator construction. The old outlier remains `cfg_analysis.py` (free functions over an `OpLike` Protocol — `cfg_analysis.py:7/44`) plus `gen_op_kinds.py`'s generated output. Sema-as-free-functions (F2b) is the path that makes scope binding unit-testable on a bare AST next. **Gap remains high:** the architecture has isolated sema islands, but not a complete pre-lower semantic contract.
 
 ### 5.6 IR contract explicitness — IMPORTANCE 3, GAP 2
 
@@ -288,7 +289,7 @@ The *cross-process* contract (the JSON wire kind) is explicit and now registry-g
 - `src/molt/frontend/_types.py` — `MoltValue`/`MoltOp` (`:67/73`), `_next_ic_index` + module-global `_ic_counter` (`:43/47`).
 - `src/molt/frontend/_protocol.py` — `_GeneratorProtocol` (`:54`), the 817-declaration coupling surface (deleted in F2d).
 - `src/molt/frontend/cfg_analysis.py` — the end-state shape that already exists (`:7/12/44`).
-- `src/molt/frontend/sema/classgraph.py` — static class graph, local class-member facts, C3/static-MRO/reachability facts, the zero-arg `super()` fold soundness predicate, and the precomputed fold-sound method-set builder.
+- `src/molt/frontend/sema/classgraph.py` — static class graph, local class-member facts, class-body block-exec facts, C3/static-MRO/reachability facts, the zero-arg `super()` fold soundness predicate, and the precomputed fold-sound method-set builder.
 - `src/molt/frontend/visitors/calls.py` — call lowering consumes `ClassFacts.super_fold_sound_methods_by_class`; still owns the large `visit_Call` dispatch body.
 - `src/molt/frontend/visitors/classes.py` — class lowering, `__prepare__` gap (no `__prepare__` emission; `:574-755`).
 - `src/molt/frontend/visitors/pattern_match.py` — match lowering.

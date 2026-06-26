@@ -116,6 +116,7 @@ def _class_facts(
         },
         opaque_member_class_names=frozenset(opaque or set()),
         ambiguous_class_names=frozenset(ambiguous or set()),
+        block_exec_class_nodes=frozenset(),
         super_fold_sound_methods_by_class={},
     )
 
@@ -135,6 +136,7 @@ def test_class_facts_collect_methods_and_attr_blockers() -> None:
     assert facts.method_names_by_class == {"C": frozenset({"f", "g"})}
     assert facts.attr_names_by_class == {"C": frozenset({"x", "y"})}
     assert facts.opaque_member_class_names == frozenset()
+    assert facts.block_exec_class_nodes == frozenset()
     assert facts.super_fold_sound_methods_by_class == {}
     assert facts.ambiguous_class_names == frozenset()
 
@@ -184,15 +186,25 @@ def test_class_facts_mark_dynamic_or_decorated_member_surfaces_opaque() -> None:
 
 
 def test_class_body_needs_block_exec_tracks_non_straight_line_bodies() -> None:
-    simple = ast.parse("class C:\n    x = 1\n    def f(self): pass\n").body[0]
-    looped = ast.parse("class C:\n    for i in range(2):\n        x = i\n").body[0]
-    destructured = ast.parse("class C:\n    a, b = pair\n").body[0]
+    mod = ast.parse(
+        "class Simple:\n"
+        "    x = 1\n"
+        "    def f(self): pass\n"
+        "class Looped:\n"
+        "    for i in range(2):\n"
+        "        x = i\n"
+        "class Destructured:\n"
+        "    a, b = pair\n"
+    )
+    simple, looped, destructured = mod.body
     assert isinstance(simple, ast.ClassDef)
     assert isinstance(looped, ast.ClassDef)
     assert isinstance(destructured, ast.ClassDef)
     assert not class_body_needs_block_exec(simple.body)
     assert class_body_needs_block_exec(looped.body)
     assert class_body_needs_block_exec(destructured.body)
+    facts = build_class_facts(mod)
+    assert facts.block_exec_class_nodes == frozenset({id(looped), id(destructured)})
 
 
 def test_static_method_owner_after_fails_closed_on_unknown_owner() -> None:
@@ -652,6 +664,7 @@ def test_analyze_module_aggregates_all_families() -> None:
     assert r.class_facts.method_names_by_class == {"A": frozenset({"m"})}
     assert r.class_facts.attr_names_by_class == {"A": frozenset({"k"})}
     assert r.class_facts.opaque_member_class_names == frozenset()
+    assert r.class_facts.block_exec_class_nodes == frozenset()
     assert r.class_facts.super_fold_sound_methods_by_class == {}
     assert r.function_meta.defaults["f"]["params"] == 2
 
@@ -700,6 +713,7 @@ def test_populate_sema_state_fills_god_object_dicts_from_result() -> None:
     assert not hasattr(gen, "module_class_bases")
     assert not hasattr(gen, "module_subclassed_names")
     assert gen._sema.class_facts.method_names_by_class == {"A": frozenset({"m"})}
+    assert gen._sema.class_facts.block_exec_class_nodes == frozenset()
     assert gen._sema.class_facts.super_fold_sound_methods_by_class == {
         "A": frozenset()
     }
