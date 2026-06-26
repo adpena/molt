@@ -126,6 +126,12 @@ pub unsafe fn release_ptr(ptr: *mut u8) {
 
 unsafe extern "C" {
     fn __molt_ipaddr_to_i64(bits: u64, out: *mut i64) -> i32;
+    fn __molt_ipaddr_to_bigint(
+        bits: u64,
+        out_sign: *mut i32,
+        out_ptr: *mut *const u8,
+        out_len: *mut usize,
+    ) -> i32;
     fn __molt_ipaddr_int_bits_from_i64(val: i64) -> u64;
     fn __molt_ipaddr_int_bits_from_bigint(sign: i32, bytes_ptr: *const u8, bytes_len: usize)
     -> u64;
@@ -135,6 +141,33 @@ pub fn to_i64(obj: MoltObject) -> Option<i64> {
     let mut out: i64 = 0;
     let ok = unsafe { __molt_ipaddr_to_i64(obj.bits(), &mut out) };
     if ok != 0 { Some(out) } else { None }
+}
+
+/// Read an arbitrary Python int object as a full-precision `BigInt`.
+///
+/// Unlike [`to_i64`], this does not clamp to the `i64` range, so it can
+/// faithfully represent the entire `0..2**128` IPv6 address space (and any
+/// out-of-range value, which the caller range-checks).  Returns `None` when the
+/// object is not an integer.
+pub fn to_bigint(obj: MoltObject) -> Option<BigInt> {
+    let mut out_sign: i32 = 0;
+    let mut out_ptr: *const u8 = std::ptr::null();
+    let mut out_len: usize = 0;
+    let ok =
+        unsafe { __molt_ipaddr_to_bigint(obj.bits(), &mut out_sign, &mut out_ptr, &mut out_len) };
+    if ok == 0 {
+        return None;
+    }
+    let sign = match out_sign {
+        -1 => Sign::Minus,
+        0 => Sign::NoSign,
+        _ => Sign::Plus,
+    };
+    if out_len == 0 {
+        return Some(BigInt::from(0));
+    }
+    let bytes = unsafe { bridge_owned_u8_buffer(out_ptr, out_len) };
+    Some(BigInt::from_bytes_be(sign, &bytes))
 }
 
 pub fn int_bits_from_i64(_py: &CoreGilToken, val: i64) -> u64 {
