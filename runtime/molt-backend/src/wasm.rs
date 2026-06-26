@@ -25,6 +25,7 @@ mod compile_pipeline;
 mod context;
 mod data_segments;
 mod function_emitter;
+mod local_layout;
 mod module_abi;
 mod op_loop;
 mod tir_pipeline;
