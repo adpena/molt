@@ -1,12 +1,13 @@
 use std::iter::ExactSizeIterator;
 use wasm_encoder::{TypeSection, ValType};
 
+pub(crate) use crate::wasm_abi_generated::{RUNTIME_CALLABLE_IMPORTS, RuntimeCallableResult};
+
 pub(crate) const GEN_CONTROL_SIZE: i32 = 48;
 pub(crate) const TASK_KIND_FUTURE: i64 = 0;
 pub(crate) const TASK_KIND_GENERATOR: i64 = 1;
 pub(crate) const TASK_KIND_COROUTINE: i64 = 2;
 pub(crate) const RELOC_TABLE_BASE_DEFAULT: u32 = 4096;
-pub(crate) const SIMPLE_I64_ARITY5_RET_I64_TYPE: u32 = 12;
 
 /// Poll/async function names that occupy the prefix slots of the indirect
 /// function table (right after the sentinel slot at index 0).  Defined once
@@ -241,18 +242,6 @@ pub(crate) fn emit_static_type_section(types: &mut TypeSection) {
 }
 
 // Constant folding pass is now shared via crate::fold_constants in passes.rs.
-
-pub(crate) fn canonical_static_import_type_idx(name: &str, registry_type_idx: u32) -> u32 {
-    match name {
-        // The runtime import transaction ABI is the five-carrier importlib
-        // primitive `(name, globals, locals, fromlist, level) -> object`. The
-        // runtime-callable wrapper generator uses the same arity authority, so
-        // the imported function type must match or the fifth local remains on
-        // the wrapper stack after `call`.
-        "importlib_import_transaction" => SIMPLE_I64_ARITY5_RET_I64_TYPE,
-        _ => registry_type_idx,
-    }
-}
 
 #[cfg(test)]
 mod tests {

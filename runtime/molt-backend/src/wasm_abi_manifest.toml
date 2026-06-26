@@ -65,6 +65,8 @@ type = 2
 [[import]]
 name = "module_cache_set"
 type = 3
+runtime_name = "molt_module_cache_set"
+callable_arity = 2
 
 [[import]]
 name = "module_del_global"
@@ -93,6 +95,8 @@ type = 3
 [[import]]
 name = "module_import"
 type = 2
+runtime_name = "molt_module_import"
+callable_arity = 1
 
 [[import]]
 name = "module_import_star"
@@ -101,6 +105,8 @@ type = 3
 [[import]]
 name = "module_new"
 type = 2
+runtime_name = "molt_module_new"
+callable_arity = 1
 
 [[import]]
 name = "module_set_attr"
@@ -109,14 +115,20 @@ type = 5
 [[import]]
 name = "exception_active"
 type = 0
+runtime_name = "molt_exception_active"
+callable_arity = 0
 
 [[import]]
 name = "exception_current"
 type = 0
+runtime_name = "molt_exception_current"
+callable_arity = 0
 
 [[import]]
 name = "exception_enter_handler"
 type = 1
+runtime_name = "molt_exception_enter_handler"
+callable_arity = 1
 
 [[import]]
 name = "exception_class"
@@ -137,10 +149,14 @@ type = 2
 [[import]]
 name = "exception_last"
 type = 0
+runtime_name = "molt_exception_last"
+callable_arity = 0
 
 [[import]]
 name = "exception_last_pending"
 type = 0
+runtime_name = "molt_exception_last_pending"
+callable_arity = 0
 
 [[import]]
 name = "exception_match_builtin"
@@ -205,10 +221,14 @@ type = 0
 [[import]]
 name = "exceptiongroup_combine"
 type = 2
+runtime_name = "molt_exceptiongroup_combine"
+callable_arity = 1
 
 [[import]]
 name = "exceptiongroup_match"
 type = 3
+runtime_name = "molt_exceptiongroup_match"
+callable_arity = 2
 
 [[import]]
 name = "raise"
@@ -221,6 +241,8 @@ type = 2
 [[import]]
 name = "class_apply_set_name"
 type = 2
+runtime_name = "molt_class_apply_set_name"
+callable_arity = 1
 
 [[import]]
 name = "class_layout_version"
@@ -229,14 +251,20 @@ type = 2
 [[import]]
 name = "class_merge_layout"
 type = 5
+runtime_name = "molt_class_merge_layout"
+callable_arity = 3
 
 [[import]]
 name = "class_new"
 type = 2
+runtime_name = "molt_class_new"
+callable_arity = 1
 
 [[import]]
 name = "class_set_base"
 type = 3
+runtime_name = "molt_class_set_base"
+callable_arity = 2
 
 [[import]]
 name = "class_set_layout_version"
@@ -249,10 +277,14 @@ type = 2
 [[import]]
 name = "isinstance"
 type = 3
+runtime_name = "molt_isinstance"
+callable_arity = 2
 
 [[import]]
 name = "issubclass"
 type = 3
+runtime_name = "molt_issubclass"
+callable_arity = 2
 
 [[import]]
 name = "object_field_get"
@@ -305,6 +337,8 @@ type = 2
 [[import]]
 name = "super_builtin"
 type = 3
+runtime_name = "molt_super_builtin"
+callable_arity = 2
 
 [[import]]
 name = "super_new"
@@ -369,10 +403,14 @@ type = 7
 [[import]]
 name = "function_set_builtin"
 type = 2
+runtime_name = "molt_function_set_builtin"
+callable_arity = 1
 
 [[import]]
 name = "function_set_defaults"
 type = 5
+runtime_name = "molt_function_set_defaults"
+callable_arity = 3
 
 [[import]]
 name = "is_bound_method"
@@ -389,14 +427,20 @@ type = 2
 [[import]]
 name = "capabilities_has"
 type = 2
+runtime_name = "molt_capabilities_has"
+callable_arity = 1
 
 [[import]]
 name = "capabilities_require"
 type = 2
+runtime_name = "molt_capabilities_require"
+callable_arity = 1
 
 [[import]]
 name = "capabilities_trusted"
 type = 0
+runtime_name = "molt_capabilities_trusted"
+callable_arity = 0
 
 [[import]]
 name = "call_arity_error"
@@ -541,6 +585,8 @@ type = 40
 [[import]]
 name = "abs_builtin"
 type = 2
+runtime_name = "molt_abs_builtin"
+callable_arity = 1
 
 [[import]]
 name = "add"
@@ -577,6 +623,8 @@ type = 3
 [[import]]
 name = "divmod_builtin"
 type = 3
+runtime_name = "molt_divmod_builtin"
+callable_arity = 2
 
 [[import]]
 name = "floordiv"
@@ -721,6 +769,8 @@ type = 0
 [[import]]
 name = "missing"
 type = 0
+runtime_name = "molt_missing"
+callable_arity = 0
 
 [[import]]
 name = "not_implemented"
@@ -729,6 +779,8 @@ type = 0
 [[import]]
 name = "pending"
 type = 0
+runtime_name = "molt_pending"
+callable_arity = 0
 
 [[import]]
 name = "is_callable"
@@ -793,6 +845,8 @@ type = 3
 [[import]]
 name = "code_new"
 type = 35
+runtime_name = "molt_code_new"
+callable_arity = 9
 
 [[import]]
 name = "code_slot_set"
@@ -809,14 +863,20 @@ type = 2
 [[import]]
 name = "trace_enter_slot"
 type = 2
+runtime_name = "molt_trace_enter_slot"
+callable_arity = 1
 
 [[import]]
 name = "trace_exit"
 type = 0
+runtime_name = "molt_trace_exit"
+callable_arity = 0
 
 [[import]]
 name = "trace_set_line"
 type = 2
+runtime_name = "molt_trace_set_line"
+callable_arity = 1
 
 [[import]]
 name = "runtime_init"
@@ -829,10 +889,14 @@ type = 0
 [[import]]
 name = "sys_set_version_info"
 type = 29
+runtime_name = "molt_sys_set_version_info"
+callable_arity = 6
 
 [[import]]
 name = "print_builtin"
 type = 12
+runtime_name = "molt_print_builtin"
+callable_arity = 5
 
 [[import]]
 name = "print_newline"
@@ -845,6 +909,8 @@ type = 1
 [[import]]
 name = "gen_locals"
 type = 2
+runtime_name = "molt_gen_locals"
+callable_arity = 1
 
 [[import]]
 name = "gen_locals_register"
@@ -853,14 +919,26 @@ type = 5
 [[import]]
 name = "future_cancel"
 type = 2
+runtime_name = "molt_future_cancel"
+callable_arity = 1
 
 [[import]]
 name = "future_cancel_clear"
 type = 2
+runtime_name = "molt_future_cancel_clear"
+callable_arity = 1
 
 [[import]]
 name = "future_cancel_msg"
 type = 3
+runtime_name = "molt_future_cancel_msg"
+callable_arity = 2
+
+[[import]]
+name = "future_features"
+type = 0
+runtime_name = "molt_future_features"
+callable_arity = 0
 
 [[import]]
 name = "future_poll"
@@ -897,6 +975,8 @@ type = 3
 [[import]]
 name = "block_on"
 type = 2
+runtime_name = "molt_block_on"
+callable_arity = 1
 
 [[import]]
 name = "sleep_register"
@@ -933,6 +1013,8 @@ type = 23
 [[import]]
 name = "del_attr_name"
 type = 3
+runtime_name = "molt_del_attr_name"
+callable_arity = 2
 
 [[import]]
 name = "del_attr_object"
@@ -973,10 +1055,14 @@ type = 18
 [[import]]
 name = "getattr_builtin"
 type = 5
+runtime_name = "molt_getattr_builtin"
+callable_arity = 3
 
 [[import]]
 name = "has_attr_name"
 type = 3
+runtime_name = "molt_has_attr_name"
+callable_arity = 2
 
 [[import]]
 name = "set_attr_generic"
@@ -985,6 +1071,8 @@ type = 24
 [[import]]
 name = "set_attr_name"
 type = 5
+runtime_name = "molt_set_attr_name"
+callable_arity = 3
 
 [[import]]
 name = "set_attr_object"
@@ -1089,10 +1177,14 @@ type = 5
 [[import]]
 name = "enumerate_builtin"
 type = 3
+runtime_name = "molt_enumerate_builtin"
+callable_arity = 2
 
 [[import]]
 name = "filter_builtin"
 type = 3
+runtime_name = "molt_filter_builtin"
+callable_arity = 2
 
 [[import]]
 name = "frozenset_add"
@@ -1113,6 +1205,8 @@ type = 2
 [[import]]
 name = "iter"
 type = 2
+runtime_name = "molt_iter_checked"
+callable_arity = 1
 
 [[import]]
 name = "iter_next"
@@ -1121,30 +1215,44 @@ type = 2
 [[import]]
 name = "iter_sentinel"
 type = 3
+runtime_name = "molt_iter_sentinel"
+callable_arity = 2
 
 [[import]]
 name = "len"
 type = 2
+runtime_name = "molt_len"
+callable_arity = 1
 
 [[import]]
 name = "len_dict"
 type = 2
+runtime_name = "molt_len_dict"
+callable_arity = 1
 
 [[import]]
 name = "len_list"
 type = 2
+runtime_name = "molt_len_list"
+callable_arity = 1
 
 [[import]]
 name = "len_set"
 type = 2
+runtime_name = "molt_len_set"
+callable_arity = 1
 
 [[import]]
 name = "len_str"
 type = 2
+runtime_name = "molt_len_str"
+callable_arity = 1
 
 [[import]]
 name = "len_tuple"
 type = 2
+runtime_name = "molt_len_tuple"
+callable_arity = 1
 
 [[import]]
 name = "list_append"
@@ -1261,6 +1369,8 @@ type = 5
 [[import]]
 name = "map_builtin"
 type = 3
+runtime_name = "molt_map_builtin"
+callable_arity = 2
 
 [[import]]
 name = "range_new"
@@ -1269,6 +1379,8 @@ type = 5
 [[import]]
 name = "reversed_builtin"
 type = 2
+runtime_name = "molt_reversed_builtin"
+callable_arity = 1
 
 [[import]]
 name = "set_add"
@@ -1299,6 +1411,18 @@ name = "set_new"
 type = 2
 
 [[import]]
+name = "site_help0"
+type = 0
+runtime_name = "molt_site_help0"
+callable_arity = 0
+
+[[import]]
+name = "site_help1"
+type = 2
+runtime_name = "molt_site_help1"
+callable_arity = 1
+
+[[import]]
 name = "set_pop"
 type = 2
 
@@ -1325,6 +1449,8 @@ type = 5
 [[import]]
 name = "sorted_builtin"
 type = 5
+runtime_name = "molt_sorted_builtin"
+callable_arity = 3
 
 [[import]]
 name = "store_index"
@@ -1353,10 +1479,14 @@ type = 3
 [[import]]
 name = "zip_builtin"
 type = 3
+runtime_name = "molt_zip_builtin"
+callable_arity = 2
 
 [[import]]
 name = "ascii_from_obj"
 type = 2
+runtime_name = "molt_ascii_from_obj"
+callable_arity = 1
 
 [[import]]
 name = "bigint_from_str"
@@ -1365,14 +1495,20 @@ type = 16
 [[import]]
 name = "bin_builtin"
 type = 2
+runtime_name = "molt_bin_builtin"
+callable_arity = 1
 
 [[import]]
 name = "callable_builtin"
 type = 2
+runtime_name = "molt_callable_builtin"
+callable_arity = 1
 
 [[import]]
 name = "chr"
 type = 2
+runtime_name = "molt_chr"
+callable_arity = 1
 
 [[import]]
 name = "complex_from_obj"
@@ -1385,10 +1521,14 @@ type = 2
 [[import]]
 name = "format_builtin"
 type = 3
+runtime_name = "molt_format_builtin"
+callable_arity = 2
 
 [[import]]
 name = "hex_builtin"
 type = 2
+runtime_name = "molt_hex_builtin"
+callable_arity = 1
 
 [[import]]
 name = "int_from_obj"
@@ -1401,14 +1541,20 @@ type = 5
 [[import]]
 name = "oct_builtin"
 type = 2
+runtime_name = "molt_oct_builtin"
+callable_arity = 1
 
 [[import]]
 name = "ord"
 type = 2
+runtime_name = "molt_ord"
+callable_arity = 1
 
 [[import]]
 name = "ord_at"
 type = 3
+runtime_name = "molt_ord_at"
+callable_arity = 2
 
 [[import]]
 name = "str_from_obj"
@@ -1417,10 +1563,14 @@ type = 2
 [[import]]
 name = "aiter"
 type = 2
+runtime_name = "molt_aiter"
+callable_arity = 1
 
 [[import]]
 name = "all_builtin"
 type = 2
+runtime_name = "molt_all_builtin"
+callable_arity = 1
 
 [[import]]
 name = "anext"
@@ -1429,6 +1579,8 @@ type = 2
 [[import]]
 name = "anext_builtin"
 type = 3
+runtime_name = "molt_anext_builtin"
+callable_arity = 2
 
 [[import]]
 name = "anext_default_poll"
@@ -1437,74 +1589,110 @@ type = 2
 [[import]]
 name = "any_builtin"
 type = 2
+runtime_name = "molt_any_builtin"
+callable_arity = 1
 
 [[import]]
 name = "compile_builtin"
 type = 9
+runtime_name = "molt_compile_builtin"
+callable_arity = 6
 
 [[import]]
 name = "dir_builtin"
 type = 2
+runtime_name = "molt_dir_builtin"
+callable_arity = 1
 
 [[import]]
 name = "env_get"
 type = 3
+runtime_name = "molt_env_get"
+callable_arity = 2
 
 [[import]]
 name = "env_snapshot"
 type = 0
+runtime_name = "molt_env_snapshot"
+callable_arity = 0
 
 [[import]]
 name = "errno_constants"
 type = 0
+runtime_name = "molt_errno_constants"
+callable_arity = 0
 
 [[import]]
 name = "getargv"
 type = 0
+runtime_name = "molt_getargv"
+callable_arity = 0
 
 [[import]]
 name = "getcwd"
 type = 0
+runtime_name = "molt_getcwd"
+callable_arity = 0
 
 [[import]]
 name = "getframe"
 type = 2
+runtime_name = "molt_getframe"
+callable_arity = 1
 
 [[import]]
 name = "getpid"
 type = 0
+runtime_name = "molt_getpid"
+callable_arity = 0
 
 [[import]]
 name = "getrecursionlimit"
 type = 0
+runtime_name = "molt_getrecursionlimit"
+callable_arity = 0
 
 [[import]]
 name = "hash_builtin"
 type = 2
+runtime_name = "molt_hash_builtin"
+callable_arity = 1
 
 [[import]]
 name = "id"
 type = 2
+runtime_name = "molt_id"
+callable_arity = 1
 
 [[import]]
 name = "max_builtin"
 type = 5
+runtime_name = "molt_max_builtin"
+callable_arity = 3
 
 [[import]]
 name = "min_builtin"
 type = 5
+runtime_name = "molt_min_builtin"
+callable_arity = 3
 
 [[import]]
 name = "next_builtin"
 type = 3
+runtime_name = "molt_next_builtin"
+callable_arity = 2
 
 [[import]]
 name = "open_builtin"
 type = 28
+runtime_name = "molt_open_builtin"
+callable_arity = 8
 
 [[import]]
 name = "repr_builtin"
 type = 2
+runtime_name = "molt_repr_builtin"
+callable_arity = 1
 
 [[import]]
 name = "repr_from_obj"
@@ -1513,18 +1701,26 @@ type = 2
 [[import]]
 name = "round_builtin"
 type = 3
+runtime_name = "molt_round_builtin"
+callable_arity = 2
 
 [[import]]
 name = "setrecursionlimit"
 type = 2
+runtime_name = "molt_setrecursionlimit"
+callable_arity = 1
 
 [[import]]
 name = "sum_builtin"
 type = 3
+runtime_name = "molt_sum_builtin"
+callable_arity = 2
 
 [[import]]
 name = "vars_builtin"
 type = 2
+runtime_name = "molt_vars_builtin"
+callable_arity = 1
 
 [[import]]
 name = "memoryview_cast"
@@ -1541,18 +1737,26 @@ type = 2
 [[import]]
 name = "sys_abiflags"
 type = 0
+runtime_name = "molt_sys_abiflags"
+callable_arity = 0
 
 [[import]]
 name = "sys_api_version"
 type = 0
+runtime_name = "molt_sys_api_version"
+callable_arity = 0
 
 [[import]]
 name = "sys_executable"
 type = 0
+runtime_name = "molt_sys_executable"
+callable_arity = 0
 
 [[import]]
 name = "sys_hexversion"
 type = 0
+runtime_name = "molt_sys_hexversion"
+callable_arity = 0
 
 [[import]]
 name = "sys_implementation_payload"
@@ -1561,26 +1765,38 @@ type = 0
 [[import]]
 name = "sys_platform"
 type = 0
+runtime_name = "molt_sys_platform"
+callable_arity = 0
 
 [[import]]
 name = "sys_stderr"
 type = 0
+runtime_name = "molt_sys_stderr"
+callable_arity = 0
 
 [[import]]
 name = "sys_stdin"
 type = 0
+runtime_name = "molt_sys_stdin"
+callable_arity = 0
 
 [[import]]
 name = "sys_stdout"
 type = 0
+runtime_name = "molt_sys_stdout"
+callable_arity = 0
 
 [[import]]
 name = "sys_version"
 type = 0
+runtime_name = "molt_sys_version"
+callable_arity = 0
 
 [[import]]
 name = "sys_version_info"
 type = 0
+runtime_name = "molt_sys_version_info"
+callable_arity = 0
 
 [[import]]
 name = "dataclass_get"
@@ -1605,30 +1821,44 @@ type = 2
 [[import]]
 name = "chan_new"
 type = 2
+runtime_name = "molt_chan_new"
+callable_arity = 1
 
 [[import]]
 name = "chan_recv"
 type = 2
+runtime_name = "molt_chan_recv"
+callable_arity = 1
 
 [[import]]
 name = "chan_recv_blocking"
 type = 2
+runtime_name = "molt_chan_recv_blocking"
+callable_arity = 1
 
 [[import]]
 name = "chan_send"
 type = 3
+runtime_name = "molt_chan_send"
+callable_arity = 2
 
 [[import]]
 name = "chan_send_blocking"
 type = 3
+runtime_name = "molt_chan_send_blocking"
+callable_arity = 2
 
 [[import]]
 name = "chan_try_recv"
 type = 2
+runtime_name = "molt_chan_try_recv"
+callable_arity = 1
 
 [[import]]
 name = "chan_try_send"
 type = 3
+runtime_name = "molt_chan_try_send"
+callable_arity = 2
 
 [[import]]
 name = "cbor_parse_scalar"
@@ -1745,22 +1975,32 @@ type = 3
 [[import]]
 name = "heapq_heapify"
 type = 2
+runtime_name = "molt_heapq_heapify"
+callable_arity = 1
 
 [[import]]
 name = "heapq_heappop"
 type = 2
+runtime_name = "molt_heapq_heappop"
+callable_arity = 1
 
 [[import]]
 name = "heapq_heappush"
 type = 3
+runtime_name = "molt_heapq_heappush"
+callable_arity = 2
 
 [[import]]
 name = "heapq_heappushpop"
 type = 3
+runtime_name = "molt_heapq_heappushpop"
+callable_arity = 2
 
 [[import]]
 name = "heapq_heapreplace"
 type = 3
+runtime_name = "molt_heapq_heapreplace"
+callable_arity = 2
 
 [[import]]
 name = "statistics_mean_slice"
@@ -1777,6 +2017,8 @@ type = 5
 [[import]]
 name = "io_wait_new"
 type = 5
+runtime_name = "molt_io_wait_new"
+callable_arity = 3
 
 [[import]]
 name = "async_sleep"
@@ -1789,14 +2031,20 @@ type = 2
 [[import]]
 name = "asyncgen_hooks_get"
 type = 0
+runtime_name = "molt_asyncgen_hooks_get"
+callable_arity = 0
 
 [[import]]
 name = "asyncgen_hooks_set"
 type = 3
+runtime_name = "molt_asyncgen_hooks_set"
+callable_arity = 2
 
 [[import]]
 name = "asyncgen_locals"
 type = 2
+runtime_name = "molt_asyncgen_locals"
+callable_arity = 1
 
 [[import]]
 name = "asyncgen_locals_register"
@@ -1813,6 +2061,8 @@ type = 2
 [[import]]
 name = "asyncgen_shutdown"
 type = 0
+runtime_name = "molt_asyncgen_shutdown"
+callable_arity = 0
 
 [[import]]
 name = "asyncio_fd_watcher_poll"
@@ -2089,6 +2339,8 @@ type = 5
 [[import]]
 name = "importlib_decode_source"
 type = 2
+runtime_name = "molt_importlib_decode_source"
+callable_arity = 1
 
 [[import]]
 name = "importlib_ensure_default_meta_path"
@@ -2121,6 +2373,8 @@ type = 2
 [[import]]
 name = "importlib_find_in_path"
 type = 3
+runtime_name = "molt_importlib_find_in_path"
+callable_arity = 2
 
 [[import]]
 name = "importlib_find_in_path_package_context"
@@ -2129,6 +2383,8 @@ type = 3
 [[import]]
 name = "importlib_find_spec"
 type = 28
+runtime_name = "molt_importlib_find_spec"
+callable_arity = 8
 
 [[import]]
 name = "importlib_find_spec_orchestrate"
@@ -2144,7 +2400,9 @@ type = 3
 
 [[import]]
 name = "importlib_import_transaction"
-type = 7
+type = 12
+runtime_name = "molt_importlib_import_transaction"
+callable_arity = 5
 
 [[import]]
 name = "importlib_import_optional"
@@ -2229,14 +2487,20 @@ type = 5
 [[import]]
 name = "importlib_read_file"
 type = 2
+runtime_name = "molt_importlib_read_file"
+callable_arity = 1
 
 [[import]]
 name = "importlib_reload"
 type = 7
+runtime_name = "molt_importlib_reload"
+callable_arity = 4
 
 [[import]]
 name = "importlib_resolve_name"
 type = 3
+runtime_name = "molt_importlib_resolve_name"
+callable_arity = 2
 
 [[import]]
 name = "importlib_resources_as_file_enter"
@@ -2389,6 +2653,8 @@ type = 2
 [[import]]
 name = "importlib_source_hash"
 type = 2
+runtime_name = "molt_importlib_source_hash"
+callable_arity = 1
 
 [[import]]
 name = "importlib_sourceless_loader_payload"
@@ -2505,22 +2771,34 @@ type = 2
 [[import]]
 name = "stream_clone"
 type = 2
+runtime_name = "molt_stream_clone"
+callable_arity = 1
 
 [[import]]
 name = "stream_close"
 type = 1
+runtime_name = "molt_stream_close"
+callable_arity = 1
+callable_result = "void"
 
 [[import]]
 name = "stream_drop"
 type = 1
+runtime_name = "molt_stream_drop"
+callable_arity = 1
+callable_result = "void"
 
 [[import]]
 name = "stream_new"
 type = 2
+runtime_name = "molt_stream_new"
+callable_arity = 1
 
 [[import]]
 name = "stream_recv"
 type = 2
+runtime_name = "molt_stream_recv"
+callable_arity = 1
 
 [[import]]
 name = "stream_send"
@@ -2529,6 +2807,8 @@ type = 18
 [[import]]
 name = "stream_send_obj"
 type = 3
+runtime_name = "molt_stream_send_obj"
+callable_arity = 2
 
 [[import]]
 name = "json_parse_scalar"
@@ -2541,558 +2821,837 @@ type = 2
 [[import]]
 name = "lock_acquire"
 type = 5
+runtime_name = "molt_lock_acquire"
+callable_arity = 3
 
 [[import]]
 name = "lock_drop"
 type = 2
+runtime_name = "molt_lock_drop"
+callable_arity = 1
 
 [[import]]
 name = "lock_locked"
 type = 2
+runtime_name = "molt_lock_locked"
+callable_arity = 1
 
 [[import]]
 name = "lock_new"
 type = 0
+runtime_name = "molt_lock_new"
+callable_arity = 0
 
 [[import]]
 name = "lock_release"
 type = 2
+runtime_name = "molt_lock_release"
+callable_arity = 1
 
 [[import]]
 name = "rlock_acquire"
 type = 5
+runtime_name = "molt_rlock_acquire"
+callable_arity = 3
 
 [[import]]
 name = "rlock_drop"
 type = 2
+runtime_name = "molt_rlock_drop"
+callable_arity = 1
 
 [[import]]
 name = "rlock_locked"
 type = 2
+runtime_name = "molt_rlock_locked"
+callable_arity = 1
 
 [[import]]
 name = "rlock_new"
 type = 0
+runtime_name = "molt_rlock_new"
+callable_arity = 0
 
 [[import]]
 name = "rlock_release"
 type = 2
+runtime_name = "molt_rlock_release"
+callable_arity = 1
 
 [[import]]
 name = "math_acos"
 type = 2
+runtime_name = "molt_math_acos"
+callable_arity = 1
 
 [[import]]
 name = "math_cos"
 type = 2
+runtime_name = "molt_math_cos"
+callable_arity = 1
 
 [[import]]
 name = "math_exp"
 type = 2
+runtime_name = "molt_math_exp"
+callable_arity = 1
 
 [[import]]
 name = "math_lgamma"
 type = 2
+runtime_name = "molt_math_lgamma"
+callable_arity = 1
 
 [[import]]
 name = "math_log"
 type = 2
+runtime_name = "molt_math_log"
+callable_arity = 1
 
 [[import]]
 name = "math_log2"
 type = 2
+runtime_name = "molt_math_log2"
+callable_arity = 1
 
 [[import]]
 name = "math_sin"
 type = 2
+runtime_name = "molt_math_sin"
+callable_arity = 1
 
 [[import]]
 name = "os_access"
 type = 3
+runtime_name = "molt_os_access"
+callable_arity = 2
 
 [[import]]
 name = "os_altsep"
 type = 0
+runtime_name = "molt_os_altsep"
+callable_arity = 0
 
 [[import]]
 name = "os_chdir"
 type = 2
+runtime_name = "molt_os_chdir"
+callable_arity = 1
 
 [[import]]
 name = "os_chmod"
 type = 3
+runtime_name = "molt_os_chmod"
+callable_arity = 2
 
 [[import]]
 name = "os_close"
 type = 2
+runtime_name = "molt_os_close"
+callable_arity = 1
 
 [[import]]
 name = "os_cpu_count"
 type = 0
+runtime_name = "molt_os_cpu_count"
+callable_arity = 0
 
 [[import]]
 name = "os_curdir"
 type = 0
+runtime_name = "molt_os_curdir"
+callable_arity = 0
 
 [[import]]
 name = "os_devnull"
 type = 0
+runtime_name = "molt_os_devnull"
+callable_arity = 0
 
 [[import]]
 name = "os_dup"
 type = 2
+runtime_name = "molt_os_dup"
+callable_arity = 1
 
 [[import]]
 name = "os_dup2"
 type = 3
+runtime_name = "molt_os_dup2"
+callable_arity = 2
 
 [[import]]
 name = "os_extsep"
 type = 0
+runtime_name = "molt_os_extsep"
+callable_arity = 0
 
 [[import]]
 name = "os_fdopen"
 type = 5
+runtime_name = "molt_os_fdopen"
+callable_arity = 3
 
 [[import]]
 name = "os_fsencode"
 type = 2
+runtime_name = "molt_os_fsencode"
+callable_arity = 1
 
 [[import]]
 name = "os_fspath"
 type = 2
+runtime_name = "molt_os_fspath"
+callable_arity = 1
 
 [[import]]
 name = "os_fstat"
 type = 2
+runtime_name = "molt_os_fstat"
+callable_arity = 1
 
 [[import]]
 name = "os_ftruncate"
 type = 3
+runtime_name = "molt_os_ftruncate"
+callable_arity = 2
 
 [[import]]
 name = "os_get_inheritable"
 type = 2
+runtime_name = "molt_os_get_inheritable"
+callable_arity = 1
 
 [[import]]
 name = "os_get_terminal_size"
 type = 2
+runtime_name = "molt_os_get_terminal_size"
+callable_arity = 1
 
 [[import]]
 name = "os_getcwd"
 type = 0
+runtime_name = "molt_os_getcwd"
+callable_arity = 0
 
 [[import]]
 name = "os_getegid"
 type = 0
+runtime_name = "molt_os_getegid"
+callable_arity = 0
 
 [[import]]
 name = "os_geteuid"
 type = 0
+runtime_name = "molt_os_geteuid"
+callable_arity = 0
 
 [[import]]
 name = "os_getgid"
 type = 0
+runtime_name = "molt_os_getgid"
+callable_arity = 0
 
 [[import]]
 name = "os_getloadavg"
 type = 0
+runtime_name = "molt_os_getloadavg"
+callable_arity = 0
 
 [[import]]
 name = "os_getlogin"
 type = 0
+runtime_name = "molt_os_getlogin"
+callable_arity = 0
 
 [[import]]
 name = "os_getpgrp"
 type = 0
+runtime_name = "molt_os_getpgrp"
+callable_arity = 0
 
 [[import]]
 name = "os_getpid"
 type = 0
+runtime_name = "molt_os_getpid"
+callable_arity = 0
 
 [[import]]
 name = "os_getppid"
 type = 0
+runtime_name = "molt_os_getppid"
+callable_arity = 0
 
 [[import]]
 name = "os_getuid"
 type = 0
+runtime_name = "molt_os_getuid"
+callable_arity = 0
 
 [[import]]
 name = "os_isatty"
 type = 2
+runtime_name = "molt_os_isatty"
+callable_arity = 1
 
 [[import]]
 name = "os_kill"
 type = 3
+runtime_name = "molt_os_kill"
+callable_arity = 2
 
 [[import]]
 name = "os_linesep"
 type = 0
+runtime_name = "molt_os_linesep"
+callable_arity = 0
 
 [[import]]
 name = "os_link"
 type = 3
+runtime_name = "molt_os_link"
+callable_arity = 2
 
 [[import]]
 name = "os_listdir"
 type = 2
+runtime_name = "molt_os_listdir"
+callable_arity = 1
 
 [[import]]
 name = "os_lseek"
 type = 5
+runtime_name = "molt_os_lseek"
+callable_arity = 3
 
 [[import]]
 name = "os_lstat"
 type = 2
+runtime_name = "molt_os_lstat"
+callable_arity = 1
 
 [[import]]
 name = "os_mkdir"
 type = 3
+runtime_name = "molt_os_mkdir"
+callable_arity = 2
 
 [[import]]
 name = "os_name"
 type = 0
+runtime_name = "molt_os_name"
+callable_arity = 0
 
 [[import]]
 name = "os_open"
 type = 5
+runtime_name = "molt_os_open"
+callable_arity = 3
 
 [[import]]
 name = "os_open_flags"
 type = 0
+runtime_name = "molt_os_open_flags"
+callable_arity = 0
 
 [[import]]
 name = "os_pardir"
 type = 0
+runtime_name = "molt_os_pardir"
+callable_arity = 0
 
 [[import]]
 name = "os_path_commonpath"
 type = 2
+runtime_name = "molt_os_path_commonpath"
+callable_arity = 1
 
 [[import]]
 name = "os_path_commonprefix"
 type = 2
+runtime_name = "molt_os_path_commonprefix"
+callable_arity = 1
 
 [[import]]
 name = "os_path_getatime"
 type = 2
+runtime_name = "molt_os_path_getatime"
+callable_arity = 1
 
 [[import]]
 name = "os_path_getctime"
 type = 2
+runtime_name = "molt_os_path_getctime"
+callable_arity = 1
 
 [[import]]
 name = "os_path_getmtime"
 type = 2
+runtime_name = "molt_os_path_getmtime"
+callable_arity = 1
 
 [[import]]
 name = "os_path_getsize"
 type = 2
+runtime_name = "molt_os_path_getsize"
+callable_arity = 1
 
 [[import]]
 name = "os_path_realpath"
 type = 2
+runtime_name = "molt_os_path_realpath"
+callable_arity = 1
 
 [[import]]
 name = "os_path_samefile"
 type = 3
+runtime_name = "molt_os_path_samefile"
+callable_arity = 2
 
 [[import]]
 name = "os_pathsep"
 type = 0
+runtime_name = "molt_os_pathsep"
+callable_arity = 0
 
 [[import]]
 name = "os_pipe"
 type = 0
+runtime_name = "molt_os_pipe"
+callable_arity = 0
 
 [[import]]
 name = "os_read"
 type = 3
+runtime_name = "molt_os_read"
+callable_arity = 2
 
 [[import]]
 name = "os_readlink"
 type = 2
+runtime_name = "molt_os_readlink"
+callable_arity = 1
 
 [[import]]
 name = "os_removedirs"
 type = 2
+runtime_name = "molt_os_removedirs"
+callable_arity = 1
 
 [[import]]
 name = "os_rename"
 type = 3
+runtime_name = "molt_os_rename"
+callable_arity = 2
 
 [[import]]
 name = "os_replace"
 type = 3
+runtime_name = "molt_os_replace"
+callable_arity = 2
 
 [[import]]
 name = "os_rmdir"
 type = 2
+runtime_name = "molt_os_rmdir"
+callable_arity = 1
 
 [[import]]
 name = "os_scandir"
 type = 2
+runtime_name = "molt_os_scandir"
+callable_arity = 1
 
 [[import]]
 name = "os_sendfile"
 type = 7
+runtime_name = "molt_os_sendfile"
+callable_arity = 4
 
 [[import]]
 name = "os_sep"
 type = 0
+runtime_name = "molt_os_sep"
+callable_arity = 0
 
 [[import]]
 name = "os_set_inheritable"
 type = 3
+runtime_name = "molt_os_set_inheritable"
+callable_arity = 2
 
 [[import]]
 name = "os_setpgrp"
 type = 0
+runtime_name = "molt_os_setpgrp"
+callable_arity = 0
 
 [[import]]
 name = "os_setsid"
 type = 0
+runtime_name = "molt_os_setsid"
+callable_arity = 0
 
 [[import]]
 name = "os_stat"
 type = 2
+runtime_name = "molt_os_stat"
+callable_arity = 1
 
 [[import]]
 name = "os_symlink"
 type = 3
+runtime_name = "molt_os_symlink"
+callable_arity = 2
 
 [[import]]
 name = "os_sysconf"
 type = 2
+runtime_name = "molt_os_sysconf"
+callable_arity = 1
 
 [[import]]
 name = "os_sysconf_names"
 type = 0
+runtime_name = "molt_os_sysconf_names"
+callable_arity = 0
 
 [[import]]
 name = "os_truncate"
 type = 3
+runtime_name = "molt_os_truncate"
+callable_arity = 2
 
 [[import]]
 name = "os_umask"
 type = 2
+runtime_name = "molt_os_umask"
+callable_arity = 1
 
 [[import]]
 name = "os_uname"
 type = 0
+runtime_name = "molt_os_uname"
+callable_arity = 0
 
 [[import]]
 name = "os_urandom"
 type = 2
+runtime_name = "molt_os_urandom"
+callable_arity = 1
 
 [[import]]
 name = "os_utime"
 type = 5
+runtime_name = "molt_os_utime"
+callable_arity = 3
 
 [[import]]
 name = "os_waitpid"
 type = 3
+runtime_name = "molt_os_waitpid"
+callable_arity = 2
 
 [[import]]
 name = "os_walk"
 type = 5
+runtime_name = "molt_os_walk"
+callable_arity = 3
 
 [[import]]
 name = "os_wexitstatus"
 type = 2
+runtime_name = "molt_os_wexitstatus"
+callable_arity = 1
 
 [[import]]
 name = "os_wifexited"
 type = 2
+runtime_name = "molt_os_wifexited"
+callable_arity = 1
 
 [[import]]
 name = "os_wifsignaled"
 type = 2
+runtime_name = "molt_os_wifsignaled"
+callable_arity = 1
 
 [[import]]
 name = "os_wifstopped"
 type = 2
+runtime_name = "molt_os_wifstopped"
+callable_arity = 1
 
 [[import]]
 name = "os_write"
 type = 3
+runtime_name = "molt_os_write"
+callable_arity = 2
 
 [[import]]
 name = "os_wstopsig"
 type = 2
+runtime_name = "molt_os_wstopsig"
+callable_arity = 1
 
 [[import]]
 name = "os_wtermsig"
 type = 2
+runtime_name = "molt_os_wtermsig"
+callable_arity = 1
 
 [[import]]
 name = "path_chmod"
 type = 3
+runtime_name = "molt_path_chmod"
+callable_arity = 2
 
 [[import]]
 name = "path_exists"
 type = 2
+runtime_name = "molt_path_exists"
+callable_arity = 1
 
 [[import]]
 name = "path_listdir"
 type = 2
+runtime_name = "molt_path_listdir"
+callable_arity = 1
 
 [[import]]
 name = "path_mkdir"
 type = 3
+runtime_name = "molt_path_mkdir"
+callable_arity = 2
 
 [[import]]
 name = "path_rmdir"
 type = 2
+runtime_name = "molt_path_rmdir"
+callable_arity = 1
 
 [[import]]
 name = "path_unlink"
 type = 2
+runtime_name = "molt_path_unlink"
+callable_arity = 1
 
 [[import]]
 name = "socket_accept"
 type = 2
+runtime_name = "molt_socket_accept"
+callable_arity = 1
 
 [[import]]
 name = "socket_bind"
 type = 3
+runtime_name = "molt_socket_bind"
+callable_arity = 2
 
 [[import]]
 name = "socket_clone"
 type = 2
+runtime_name = "molt_socket_clone"
+callable_arity = 1
 
 [[import]]
 name = "socket_close"
 type = 2
+runtime_name = "molt_socket_close"
+callable_arity = 1
 
 [[import]]
 name = "socket_connect"
 type = 3
+runtime_name = "molt_socket_connect"
+callable_arity = 2
 
 [[import]]
 name = "socket_connect_ex"
 type = 3
+runtime_name = "molt_socket_connect_ex"
+callable_arity = 2
 
 [[import]]
 name = "socket_constants"
 type = 0
+runtime_name = "molt_socket_constants"
+callable_arity = 0
 
 [[import]]
 name = "socket_detach"
 type = 2
+runtime_name = "molt_socket_detach"
+callable_arity = 1
 
 [[import]]
 name = "socket_drop"
 type = 1
+runtime_name = "molt_socket_drop"
+callable_arity = 1
+callable_result = "void"
 
 [[import]]
 name = "socket_fileno"
 type = 2
+runtime_name = "molt_socket_fileno"
+callable_arity = 1
 
 [[import]]
 name = "socket_getaddrinfo"
 type = 9
+runtime_name = "molt_socket_getaddrinfo"
+callable_arity = 6
 
 [[import]]
 name = "socket_getblocking"
 type = 2
+runtime_name = "molt_socket_getblocking"
+callable_arity = 1
 
 [[import]]
 name = "socket_gethostname"
 type = 0
+runtime_name = "molt_socket_gethostname"
+callable_arity = 0
 
 [[import]]
 name = "socket_getnameinfo"
 type = 3
+runtime_name = "molt_socket_getnameinfo"
+callable_arity = 2
 
 [[import]]
 name = "socket_getpeername"
 type = 2
+runtime_name = "molt_socket_getpeername"
+callable_arity = 1
 
 [[import]]
 name = "socket_getservbyname"
 type = 3
+runtime_name = "molt_socket_getservbyname"
+callable_arity = 2
 
 [[import]]
 name = "socket_getservbyport"
 type = 3
+runtime_name = "molt_socket_getservbyport"
+callable_arity = 2
 
 [[import]]
 name = "socket_getsockname"
 type = 2
+runtime_name = "molt_socket_getsockname"
+callable_arity = 1
 
 [[import]]
 name = "socket_getsockopt"
 type = 7
+runtime_name = "molt_socket_getsockopt"
+callable_arity = 4
 
 [[import]]
 name = "socket_gettimeout"
 type = 2
+runtime_name = "molt_socket_gettimeout"
+callable_arity = 1
 
 [[import]]
 name = "socket_has_ipv6"
 type = 0
+runtime_name = "molt_socket_has_ipv6"
+callable_arity = 0
 
 [[import]]
 name = "socket_inet_ntop"
 type = 3
+runtime_name = "molt_socket_inet_ntop"
+callable_arity = 2
 
 [[import]]
 name = "socket_inet_pton"
 type = 3
+runtime_name = "molt_socket_inet_pton"
+callable_arity = 2
 
 [[import]]
 name = "socket_listen"
 type = 3
+runtime_name = "molt_socket_listen"
+callable_arity = 2
 
 [[import]]
 name = "socket_new"
 type = 7
+runtime_name = "molt_socket_new"
+callable_arity = 4
 
 [[import]]
 name = "socket_recv"
 type = 5
+runtime_name = "molt_socket_recv"
+callable_arity = 3
 
 [[import]]
 name = "socket_recv_into"
 type = 7
+runtime_name = "molt_socket_recv_into"
+callable_arity = 4
 
 [[import]]
 name = "socket_recvfrom"
 type = 5
+runtime_name = "molt_socket_recvfrom"
+callable_arity = 3
 
 [[import]]
 name = "socket_send"
 type = 5
+runtime_name = "molt_socket_send"
+callable_arity = 3
 
 [[import]]
 name = "socket_sendall"
 type = 5
+runtime_name = "molt_socket_sendall"
+callable_arity = 3
 
 [[import]]
 name = "socket_sendto"
 type = 7
+runtime_name = "molt_socket_sendto"
+callable_arity = 4
 
 [[import]]
 name = "socket_setblocking"
 type = 3
+runtime_name = "molt_socket_setblocking"
+callable_arity = 2
 
 [[import]]
 name = "socket_setsockopt"
 type = 7
+runtime_name = "molt_socket_setsockopt"
+callable_arity = 4
 
 [[import]]
 name = "socket_settimeout"
 type = 3
+runtime_name = "molt_socket_settimeout"
+callable_arity = 2
 
 [[import]]
 name = "socket_shutdown"
 type = 3
+runtime_name = "molt_socket_shutdown"
+callable_arity = 2
 
 [[import]]
 name = "socketpair"
 type = 5
+runtime_name = "molt_socketpair"
+callable_arity = 3
 
 [[import]]
 name = "db_exec"
@@ -3245,38 +3804,57 @@ type = 2
 [[import]]
 name = "struct_calcsize"
 type = 2
+runtime_name = "molt_struct_calcsize"
+callable_arity = 1
 
 [[import]]
 name = "struct_iter_unpack"
 type = 3
+runtime_name = "molt_struct_iter_unpack"
+callable_arity = 2
 
 [[import]]
 name = "struct_pack"
 type = 3
+runtime_name = "molt_struct_pack"
+callable_arity = 2
 
 [[import]]
 name = "struct_pack_into"
 type = 5
+runtime_name = "molt_struct_pack_into"
+callable_arity = 3
 
 [[import]]
 name = "struct_unpack"
 type = 3
+runtime_name = "molt_struct_unpack"
+callable_arity = 2
 
 [[import]]
 name = "struct_unpack_from"
 type = 5
+runtime_name = "molt_struct_unpack_from"
+callable_arity = 3
 
 [[import]]
 name = "process_drop"
 type = 1
+runtime_name = "molt_process_drop"
+callable_arity = 1
+callable_result = "void"
 
 [[import]]
 name = "process_kill"
 type = 2
+runtime_name = "molt_process_kill"
+callable_arity = 1
 
 [[import]]
 name = "process_pid"
 type = 2
+runtime_name = "molt_process_pid"
+callable_arity = 1
 
 [[import]]
 name = "process_poll"
@@ -3285,34 +3863,50 @@ type = 2
 [[import]]
 name = "process_returncode"
 type = 2
+runtime_name = "molt_process_returncode"
+callable_arity = 1
 
 [[import]]
 name = "process_spawn"
 type = 9
+runtime_name = "molt_process_spawn"
+callable_arity = 6
 
 [[import]]
 name = "process_stderr"
 type = 2
+runtime_name = "molt_process_stderr"
+callable_arity = 1
 
 [[import]]
 name = "process_stdin"
 type = 2
+runtime_name = "molt_process_stdin"
+callable_arity = 1
 
 [[import]]
 name = "process_stdout"
 type = 2
+runtime_name = "molt_process_stdout"
+callable_arity = 1
 
 [[import]]
 name = "process_terminate"
 type = 2
+runtime_name = "molt_process_terminate"
+callable_arity = 1
 
 [[import]]
 name = "process_wait_future"
 type = 2
+runtime_name = "molt_process_wait_future"
+callable_arity = 1
 
 [[import]]
 name = "thread_current_ident"
 type = 0
+runtime_name = "molt_thread_current_ident"
+callable_arity = 0
 
 [[import]]
 name = "thread_current_native_id"
@@ -3321,22 +3915,32 @@ type = 0
 [[import]]
 name = "thread_drop"
 type = 2
+runtime_name = "molt_thread_drop"
+callable_arity = 1
 
 [[import]]
 name = "thread_ident"
 type = 2
+runtime_name = "molt_thread_ident"
+callable_arity = 1
 
 [[import]]
 name = "thread_is_alive"
 type = 2
+runtime_name = "molt_thread_is_alive"
+callable_arity = 1
 
 [[import]]
 name = "thread_join"
 type = 3
+runtime_name = "molt_thread_join"
+callable_arity = 2
 
 [[import]]
 name = "thread_native_id"
 type = 2
+runtime_name = "molt_thread_native_id"
+callable_arity = 1
 
 [[import]]
 name = "thread_poll"
@@ -3345,6 +3949,8 @@ type = 2
 [[import]]
 name = "thread_spawn"
 type = 2
+runtime_name = "molt_thread_spawn"
+callable_arity = 1
 
 [[import]]
 name = "thread_submit"
@@ -3353,70 +3959,105 @@ type = 5
 [[import]]
 name = "time_gmtime"
 type = 2
+runtime_name = "molt_time_gmtime"
+callable_arity = 1
 
 [[import]]
 name = "time_localtime"
 type = 2
+runtime_name = "molt_time_localtime"
+callable_arity = 1
 
 [[import]]
 name = "time_monotonic"
 type = 0
+runtime_name = "molt_time_monotonic"
+callable_arity = 0
 
 [[import]]
 name = "time_monotonic_ns"
 type = 0
+runtime_name = "molt_time_monotonic_ns"
+callable_arity = 0
 
 [[import]]
 name = "time_perf_counter"
 type = 0
+runtime_name = "molt_time_perf_counter"
+callable_arity = 0
 
 [[import]]
 name = "time_perf_counter_ns"
 type = 0
+runtime_name = "molt_time_perf_counter_ns"
+callable_arity = 0
 
 [[import]]
 name = "time_process_time"
 type = 0
+runtime_name = "molt_time_process_time"
+callable_arity = 0
 
 [[import]]
 name = "time_process_time_ns"
 type = 0
+runtime_name = "molt_time_process_time_ns"
+callable_arity = 0
 
 [[import]]
 name = "time_strftime"
 type = 3
+runtime_name = "molt_time_strftime"
+callable_arity = 2
 
 [[import]]
 name = "time_time"
 type = 0
+runtime_name = "molt_time_time"
+callable_arity = 0
 
 [[import]]
 name = "time_time_ns"
 type = 0
+runtime_name = "molt_time_time_ns"
+callable_arity = 0
 
 [[import]]
 name = "time_timezone"
 type = 0
+runtime_name = "molt_time_timezone"
+callable_arity = 0
 
 [[import]]
 name = "time_tzname"
 type = 0
+runtime_name = "molt_time_tzname"
+callable_arity = 0
 
 [[import]]
 name = "weakref_drop"
 type = 2
+runtime_name = "molt_weakref_drop"
+callable_arity = 1
 
 [[import]]
 name = "weakref_get"
 type = 2
+runtime_name = "molt_weakref_get"
+callable_arity = 1
 
 [[import]]
 name = "weakref_register"
 type = 5
+runtime_name = "molt_weakref_register"
+callable_arity = 3
 
 [[import]]
 name = "ws_close"
 type = 1
+runtime_name = "molt_ws_close"
+callable_arity = 1
+callable_result = "void"
 
 [[import]]
 name = "ws_connect"
@@ -3425,10 +4066,15 @@ type = 19
 [[import]]
 name = "ws_connect_obj"
 type = 2
+runtime_name = "molt_ws_connect_obj"
+callable_arity = 1
 
 [[import]]
 name = "ws_drop"
 type = 1
+runtime_name = "molt_ws_drop"
+callable_arity = 1
+callable_result = "void"
 
 [[import]]
 name = "ws_pair"
@@ -3437,10 +4083,14 @@ type = 20
 [[import]]
 name = "ws_pair_obj"
 type = 2
+runtime_name = "molt_ws_pair_obj"
+callable_arity = 1
 
 [[import]]
 name = "ws_recv"
 type = 2
+runtime_name = "molt_ws_recv"
+callable_arity = 1
 
 [[import]]
 name = "ws_send"
@@ -3449,6 +4099,8 @@ type = 18
 [[import]]
 name = "ws_send_obj"
 type = 3
+runtime_name = "molt_ws_send_obj"
+callable_arity = 2
 
 [[import]]
 name = "ws_wait"
@@ -3457,6 +4109,8 @@ type = 2
 [[import]]
 name = "ws_wait_new"
 type = 5
+runtime_name = "molt_ws_wait_new"
+callable_arity = 3
 
 # Import-name prefixes omitted by the backend Pure profile.
 # These apply to molt_runtime imports, not WASI/env host imports.

@@ -45,3 +45,25 @@ def test_wasm_abi_manifest_owns_pure_profile_prefixes() -> None:
     rendered_rs = gen.render_rs(data)
     assert "pure_profile_skips_import" in rendered_rs
     assert "PURE_PROFILE_SKIP_PREFIXES" in rendered_rs
+
+
+def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
+    gen = _load_gen_wasm_abi()
+    data = gen.load_manifest()
+    imports = {entry["name"]: entry for entry in data["import"]}
+
+    assert imports["importlib_import_transaction"]["type"] == 12
+    assert imports["importlib_import_transaction"]["runtime_name"] == (
+        "molt_importlib_import_transaction"
+    )
+    assert imports["importlib_import_transaction"]["callable_arity"] == 5
+
+    assert imports["socket_drop"]["callable_result"] == "void"
+    assert imports["stream_close"]["callable_result"] == "void"
+    assert imports["future_features"]["runtime_name"] == "molt_future_features"
+    assert imports["site_help0"]["callable_arity"] == 0
+    assert imports["site_help1"]["callable_arity"] == 1
+
+    rendered_rs = gen.render_rs(data)
+    assert "RUNTIME_CALLABLE_IMPORTS" in rendered_rs
+    assert "RuntimeCallableResult::Void" in rendered_rs
