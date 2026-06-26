@@ -677,6 +677,8 @@ def test_verify_result_arity_delegates_to_generated_table() -> None:
     assert variable == {
         "Call",
         "CallMethod",
+        "CallMethodIc",
+        "CallSuperMethodIc",
         "CallBuiltin",
         "CheckException",
         "Copy",
@@ -723,6 +725,10 @@ def test_verify_result_arity_delegates_to_generated_table() -> None:
         "WarnStderr": "zero",
         "Deopt": "zero",
         "Call": "variable",
+        "CallMethod": "variable",
+        "CallMethodIc": "variable",
+        "CallSuperMethodIc": "variable",
+        "CallBuiltin": "variable",
         "CheckException": "variable",
     }
     for opcode, arity in expected_fixed_or_variable.items():
@@ -760,6 +766,8 @@ def test_call_roles_delegate_to_generated_tables() -> None:
     expected_roles = {
         "Call": "user_call",
         "CallMethod": "dynamic_method",
+        "CallMethodIc": "dynamic_method",
+        "CallSuperMethodIc": "dynamic_method",
         "CallBuiltin": "runtime_builtin",
         "Copy": "copy_original_kind",
     }
@@ -856,6 +864,8 @@ def test_ssa_attr_transport_delegates_to_generated_tables() -> None:
         "DelAttr": "name",
         "CallBuiltin": "name",
         "CallMethod": "method",
+        "CallMethodIc": "method",
+        "CallSuperMethodIc": "method",
     }
     assert {
         row["opcode"]: row["attr"] for row in data["ssa_s_value_attr_keys"]
@@ -916,7 +926,15 @@ def test_ssa_attr_transport_delegates_to_generated_tables() -> None:
     )[1].split("fn copy_kind_mints_fresh_owned_ref_table", maxsplit=1)[0]
     for kind in expected_original_kind:
         assert f'"{kind}"' in preserve_block
-    for kind in ("copy", "load_var", "copy_var", "call", "call_builtin"):
+    for kind in (
+        "copy",
+        "load_var",
+        "copy_var",
+        "call",
+        "call_builtin",
+        "call_method_ic",
+        "call_super_method_ic",
+    ):
         assert f'"{kind}"' not in preserve_block
 
     mapper_block = rendered.split("fn kind_to_opcode_table", maxsplit=1)[1].split(
@@ -1294,6 +1312,8 @@ def test_type_refine_result_type_rules_delegate_to_generated_tables() -> None:
         "ObjectNewBoundStack": "object_type_hint",
         "Call": "call_return_type",
         "CallMethod": "call_return_type",
+        "CallMethodIc": "call_return_type",
+        "CallSuperMethodIc": "call_return_type",
         "CallBuiltin": "call_builtin_return_type",
         "TypeGuard": "type_guard",
         "Copy": "copy_original_kind",
@@ -2677,6 +2697,8 @@ def test_alias_barrier_predicates_delegate_to_generated_tables() -> None:
         "Call",
         "CallBuiltin",
         "CallMethod",
+        "CallMethodIc",
+        "CallSuperMethodIc",
         "ChanRecvYield",
         "ChanSendYield",
         "CheckException",
@@ -2694,6 +2716,8 @@ def test_alias_barrier_predicates_delegate_to_generated_tables() -> None:
         "Call",
         "CallBuiltin",
         "CallMethod",
+        "CallMethodIc",
+        "CallSuperMethodIc",
         "ChanRecvYield",
         "ChanSendYield",
         "ClosureStore",
@@ -2769,6 +2793,8 @@ def test_deforestation_fusion_barriers_delegate_to_generated_table() -> None:
         "Call",
         "CallBuiltin",
         "CallMethod",
+        "CallMethodIc",
+        "CallSuperMethodIc",
         "ChanRecvYield",
         "ChanSendYield",
         "ClosureLoad",
@@ -3305,6 +3331,8 @@ def test_residual_tir_semantic_roles_delegate_to_generated_tables() -> None:
         {"opcode": "Call", "rule": "call_callee"},
         {"opcode": "CallBuiltin", "rule": "call_callee"},
         {"opcode": "CallMethod", "rule": "call_method"},
+        {"opcode": "CallMethodIc", "rule": "call_method"},
+        {"opcode": "CallSuperMethodIc", "rule": "call_method"},
         {"opcode": "ObjectNewBoundStack", "rule": "positive_payload_bytes"},
     ]
     assert data["sroa_const_immediate_rules"] == [
@@ -3396,6 +3424,8 @@ def test_refcount_heap_exposure_delegates_to_generated_table() -> None:
         "Call",
         "CallBuiltin",
         "CallMethod",
+        "CallMethodIc",
+        "CallSuperMethodIc",
         "ChanRecvYield",
         "ChanSendYield",
         "ClosureStore",
@@ -3857,6 +3887,8 @@ def test_alias_slot_observation_delegates_to_generated_table() -> None:
         "Call",
         "CallBuiltin",
         "CallMethod",
+        "CallMethodIc",
+        "CallSuperMethodIc",
         "Index",
         "LoadAttr",
         "Raise",

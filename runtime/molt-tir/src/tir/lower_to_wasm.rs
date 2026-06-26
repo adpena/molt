@@ -828,6 +828,8 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
         }
         OpCode::Call
         | OpCode::CallMethod
+        | OpCode::CallMethodIc
+        | OpCode::CallSuperMethodIc
         | OpCode::CallBuiltin
         | OpCode::OrdAt
         | OpCode::BuildList

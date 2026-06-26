@@ -3374,12 +3374,9 @@ impl SimpleBackend {
             // BEFORE lifting to TIR. Unlike the Cranelift path (which fuses the
             // post-roundtrip SimpleIR immediately before `compile_func`), the
             // LLVM path lowers directly from the per-function-optimized TIR, so
-            // the IC ops must enter the TIR roundtrip as preserved `Copy` ops
-            // (`_original_kind`), which `lower_preserved_simpleir_op` lowers. The
-            // TIR effects oracle treats a `Copy` carrying `_original_kind` as
-            // observably-effecting (effects.rs `op_has_observable_effect_when_dead`),
-            // so the per-function pipeline below preserves them. Built from the
-            // same fused `func` as `function_repr_facts`, keeping the SimpleIR /
+            // the IC ops enter the TIR roundtrip as first-class TIR opcodes
+            // and lower through dedicated LLVM opcode arms. Built from the same
+            // fused `func` as `function_repr_facts`, keeping the SimpleIR /
             // TIR pair aligned. Extern (declaration-only) functions have empty
             // bodies — nothing to fuse.
             for func in &mut ir.functions {
@@ -3747,9 +3744,10 @@ impl SimpleBackend {
             // Fuse `obj.method(args)` (get_attr_generic_ptr + callargs +
             // call_bind) into a single allocation-free `call_method_ic` op
             // (CPython LOAD_METHOD/CALL_METHOD optimisation).  Run as the LAST
-            // transformation before codegen: `call_method_ic` is a backend-only
-            // op with no TIR opcode, so it must not re-enter the TIR roundtrip
-            // or the whole-program leaf/alias analyses (all already complete).
+            // transformation before codegen. TIR has first-class IC opcodes, but
+            // this backend consumes the final SimpleIR stream, so the fused ops
+            // must not re-enter the TIR roundtrip or the whole-program leaf/alias
+            // analyses (all already complete).
             fuse_method_dispatch(&mut func_ir);
             let func_start = std::time::Instant::now();
             self.compile_func(

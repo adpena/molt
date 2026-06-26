@@ -10,8 +10,9 @@
 //! exists because the compiler **cannot carry the proof needed to remove it**.
 //!
 //! This module is the IR primitive that stops the discarding. A [`CallFacts`]
-//! record is attached to every call-bearing op (`Call` / `CallMethod` /
-//! `CallBuiltin`), keyed by the op's result [`ValueId`] in a per-function
+//! record is attached to every opcode whose generated [`CallOpcodeRole`] records
+//! facts (`Call`, dynamic-method opcodes, and runtime builtins), keyed by the
+//! op's result [`ValueId`] in a per-function
 //! [`CallFactsTable`]. Each field is a [`FactValue`] — a confidence lattice, not a
 //! bare bool — so the compiler distinguishes *proven* from *unknown* and **never
 //! silently assumes** (doc 47 §1, §7).
@@ -424,9 +425,9 @@ impl CallFactsTable {
 // Per-call-site analysis
 // ───────────────────────────────────────────────────────────────────────────
 
-/// The result `ValueId` of a call-bearing op (`Call` / `CallMethod` /
-/// `CallBuiltin`), if it is a call op that produces a value. Returns `None` for
-/// non-call ops and for a (rare) result-less call. The key the side-table uses.
+/// The result `ValueId` of a call-bearing op whose generated [`CallOpcodeRole`]
+/// records facts, if it produces a value. Returns `None` for non-call ops and
+/// for a (rare) result-less call. The key the side-table uses.
 fn call_op_result(op: &TirOp) -> Option<ValueId> {
     if !call_role_records_facts(opcode_call_role_table(op.opcode)) {
         return None;
@@ -491,7 +492,7 @@ fn builtin_is_no_throw(name: &str) -> bool {
 
 /// The typed call target for a `Call` op, resolved against the module's defined
 /// function set. `StaticDirect` iff the `Call`'s `s_value` names a defined,
-/// non-gpu-runtime function; else `Opaque`. `CallMethod` (dynamic dispatch) and
+/// non-gpu-runtime function; else `Opaque`. Dynamic-method opcodes and
 /// `CallBuiltin` (runtime helper) are always `Opaque`. This mirrors
 /// `call_graph::classify_call_op` exactly — same `s_value`/defined predicate, same
 /// gpu-runtime carve-out — but returns the *typed* fact rather than a `CallEdge`.
