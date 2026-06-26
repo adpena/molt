@@ -46,14 +46,24 @@ use crate::bridge::{
 
 #[path = "regex/common.rs"]
 mod common;
-#[path = "regex/compiler.rs"]
-mod compiler;
-#[path = "regex/engine.rs"]
-mod engine;
+#[path = "regex/compile_api.rs"]
+mod compile_api;
+#[path = "regex/execute.rs"]
+mod execute;
+#[path = "regex/execute_api.rs"]
+mod execute_api;
+#[path = "regex/ir.rs"]
+mod ir;
 #[path = "regex/lookaround.rs"]
 mod lookaround;
 #[path = "regex/match_api.rs"]
 mod match_api;
+#[path = "regex/matcher.rs"]
+mod matcher;
+#[path = "regex/parser.rs"]
+mod parser;
+#[path = "regex/registry.rs"]
+mod registry;
 #[path = "regex/substitution.rs"]
 mod substitution;
 #[cfg(test)]
@@ -65,20 +75,30 @@ mod verbose_backref;
 #[allow(unused_imports)]
 use common::*;
 #[allow(unused_imports)]
-use compiler::*;
+use compile_api::*;
 #[allow(unused_imports)]
-use engine::*;
+use execute::*;
+#[allow(unused_imports)]
+use execute_api::*;
+#[allow(unused_imports)]
+use ir::*;
 #[allow(unused_imports)]
 use lookaround::*;
 #[allow(unused_imports)]
 use match_api::*;
 #[allow(unused_imports)]
+use matcher::*;
+#[allow(unused_imports)]
+use parser::*;
+#[allow(unused_imports)]
+use registry::*;
+#[allow(unused_imports)]
 use substitution::*;
 #[allow(unused_imports)]
 use verbose_backref::*;
 
-pub use compiler::{molt_re_compile, molt_re_pattern_info};
-pub use engine::{molt_re_execute, molt_re_finditer_collect};
+pub use compile_api::{molt_re_compile, molt_re_pattern_info};
+pub use execute_api::{molt_re_execute, molt_re_finditer_collect};
 pub use lookaround::{
     molt_re_negative_lookahead, molt_re_negative_lookbehind, molt_re_positive_lookahead,
     molt_re_positive_lookbehind,
