@@ -31,7 +31,6 @@ Product board for the molt structural sweep — the first instrument of the Molt
 | medium | god_file | `runtime/molt-runtime/src/builtins/types.rs` | 6512 lines (ceiling 4000) |
 | medium | god_file | `runtime/molt-runtime/src/builtins/functions.rs` | 6249 lines (ceiling 4000) |
 | medium | god_file | `runtime/molt-runtime/src/builtins/exceptions.rs` | 6181 lines (ceiling 4000) |
-| medium | god_file | `runtime/molt-runtime/src/async_rt/sockets.rs` | 6136 lines (ceiling 4000) |
 | medium | god_file | `runtime/molt-runtime/src/builtins/modules.rs` | 6019 lines (ceiling 4000) |
 | medium | debt_marker | `tools/linear_seed_backlog.py` | 21 debt/workaround markers |
 | medium | debt_marker | `tools/structural_audit.py` | 20 debt/workaround markers |
@@ -39,6 +38,7 @@ Product board for the molt structural sweep — the first instrument of the Molt
 | low | god_file | `runtime/molt-worker/src/main.rs` | 5982 lines (ceiling 4000) |
 | low | god_file | `runtime/molt-runtime/src/builtins/platform.rs` | 5934 lines (ceiling 4000) |
 | low | god_file | `runtime/molt-runtime/src/async_rt/generators_async.rs` | 5879 lines (ceiling 4000) |
+| low | god_file | `runtime/molt-runtime/src/async_rt/sockets.rs` | 5780 lines (ceiling 4000) |
 | low | god_file | `runtime/molt-runtime/src/object/ops_sys.rs` | 5741 lines (ceiling 4000) |
 | low | god_file | `runtime/molt-runtime/src/object/ops_encoding.rs` | 5528 lines (ceiling 4000) |
 
@@ -66,11 +66,11 @@ Product board for the molt structural sweep — the first instrument of the Molt
 | medium | 6512 lines (ceiling 4000) | `runtime/molt-runtime/src/builtins/types.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | medium | 6249 lines (ceiling 4000) | `runtime/molt-runtime/src/builtins/functions.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | medium | 6181 lines (ceiling 4000) | `runtime/molt-runtime/src/builtins/exceptions.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
-| medium | 6136 lines (ceiling 4000) | `runtime/molt-runtime/src/async_rt/sockets.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | medium | 6019 lines (ceiling 4000) | `runtime/molt-runtime/src/builtins/modules.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | low | 5982 lines (ceiling 4000) | `runtime/molt-worker/src/main.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | low | 5934 lines (ceiling 4000) | `runtime/molt-runtime/src/builtins/platform.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | low | 5879 lines (ceiling 4000) | `runtime/molt-runtime/src/async_rt/generators_async.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
+| low | 5780 lines (ceiling 4000) | `runtime/molt-runtime/src/async_rt/sockets.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | low | 5741 lines (ceiling 4000) | `runtime/molt-runtime/src/object/ops_sys.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | low | 5528 lines (ceiling 4000) | `runtime/molt-runtime/src/object/ops_encoding.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | low | 5281 lines (ceiling 4000) | `runtime/molt-runtime/src/call/bind.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
@@ -108,7 +108,7 @@ Product board for the molt structural sweep — the first instrument of the Molt
 | low | 2 debt/workaround markers | `runtime/molt-tier/src/lib.rs` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 2 debt/workaround markers | `runtime/molt-runtime-serial/src/binascii.rs` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 2 debt/workaround markers | `runtime/molt-runtime-serial/src/csv.rs` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
-| low | 2 debt/workaround markers | `runtime/molt-runtime-regex/src/regex/engine.rs` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
+| low | 2 debt/workaround markers | `runtime/molt-runtime-regex/src/regex/matcher.rs` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 2 debt/workaround markers | `runtime/molt-runtime-logging/src/logging_ext.rs` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 2 debt/workaround markers | `runtime/molt-runtime/src/builtins/binascii.rs` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 2 debt/workaround markers | `runtime/molt-runtime/src/builtins/csv.rs` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
