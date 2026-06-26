@@ -47,6 +47,7 @@ def _build_env() -> dict[str, str]:
     env["MOLT_BACKEND_DAEMON_SOCKET_DIR"] = "/tmp/molt_backend_sockets"
     env["MOLT_BACKEND_DAEMON"] = "0"
     env["MOLT_USE_SCCACHE"] = "0"
+    env["MOLT_STDLIB_PROFILE"] = "full"
     return env
 
 
