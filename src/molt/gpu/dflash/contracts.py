@@ -19,6 +19,14 @@ from __future__ import annotations
 from ..speculative import SpeculativeConditioning
 
 
+DFLASH_DRAFT_OUTPUT_CONTRACTS = frozenset(
+    {
+        "block_sequence",
+        "per_position_marginals",
+    }
+)
+
+
 def _required_non_empty_string(value, field_name: str) -> str:
     if not isinstance(value, str):
         raise TypeError(f"{field_name} must be a string")
@@ -54,6 +62,16 @@ def _optional_positive_int(value, field_name: str) -> int | None:
     if value is None:
         return None
     return _positive_int(value, field_name)
+
+
+def require_dflash_draft_output_contract(value, field_name: str) -> str:
+    contract = _required_non_empty_string(value, field_name).strip().lower()
+    if contract not in DFLASH_DRAFT_OUTPUT_CONTRACTS:
+        allowed = ", ".join(sorted(DFLASH_DRAFT_OUTPUT_CONTRACTS))
+        raise ValueError(
+            f"{field_name} must be a DFlash draft output contract: {allowed}"
+        )
+    return contract
 
 
 class DFlashConditioning(SpeculativeConditioning):
@@ -120,6 +138,7 @@ class DFlashRuntime:
         draft_step,
         verify_step,
         initial_conditioning: DFlashConditioning,
+        draft_output_contract: str,
         block_size: int | None = None,
     ) -> None:
         if not callable(draft_step):
@@ -136,9 +155,19 @@ class DFlashRuntime:
         )
         if runtime_block_size == 1:
             raise ValueError("DFlashRuntime block_size must support block drafting")
+        runtime_draft_output_contract = require_dflash_draft_output_contract(
+            draft_output_contract,
+            "DFlashRuntime draft_output_contract",
+        )
+        if runtime_draft_output_contract != "block_sequence":
+            raise ValueError(
+                "DFlashRuntime draft_output_contract must be block_sequence for "
+                "the linear verifier runtime"
+            )
         self.draft_step = draft_step
         self.verify_step = verify_step
         self.initial_conditioning = initial_conditioning
+        self.draft_output_contract = runtime_draft_output_contract
         self.block_size = runtime_block_size
 
 

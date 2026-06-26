@@ -213,8 +213,8 @@ source-of-truth set now includes:
   DFlash running through SGLang's Spec V2 engine and Qwen3.5-397B-A17B draft
   checkpoints, with block-size and draft-attention backend controls. Molt must model
   DFlash serving metadata as part of the algorithmic contract: block size, draft
-  attention backend, target feature/KV injection, and accepted-token synchronization
-  are semantic inputs, not tuning afterthoughts.
+  output contract, draft attention backend, target feature/KV injection, and
+  accepted-token synchronization are semantic inputs, not tuning afterthoughts.
 - **TPU/vLLM state custody.** Google's 2026 TPU writeup identifies DFlash-specific
   runtime state that generic speculative decoders do not need: dual KV/cache paths,
   target hidden-feature context buffers, consumed-feature counters, draft KV
@@ -232,9 +232,9 @@ source-of-truth set now includes:
 
 Implementation consequence: the first executable DFlash gate must validate the
 contract shape before numerical speed claims: `(target model, trained drafter,
-conditioning fields, KV/feature injection state, verifier ownership, block/tree mode,
-accepted-token synchronization)`. Throughput evidence is invalid until that shape gate
-passes.
+conditioning fields, KV/feature injection state, verifier ownership,
+draft_output_contract, accepted-token synchronization)`. Throughput evidence is invalid
+until that shape gate passes.
 
 ---
 
@@ -391,7 +391,12 @@ fidelity is claimed without an executable check against the paper algorithm" (§
      reference target run.
    - `F6 trained_drafter_required`: a DFlash runtime cannot be built from an untrained /
      absent drafter; `F6` is the typed fail-closed state.
-2. **`tests/gpu/dflash/test_dflash_fidelity.py`** — one test per `F1..F6`, plus the
+   - `F7 adapter_identity_metadata`: every adapter declares target/draft identity,
+     checkpoint schema, and `draft_output_contract`; the
+     `DFLASH_ALGORITHM_DRAFT_OUTPUT_CONTRACTS` matrix rejects algorithm/output-shape
+     mismatches, and the resolver rejects a runtime whose output contract disagrees
+     with adapter metadata.
+2. **`tests/gpu/dflash/test_dflash_fidelity.py`** — one test per `F1..F7`, plus the
    **fail-closed corpus**: attempts to (a) build a `DFlashRuntime` with `None`
    conditioning fields, (b) register a generic (non-target-conditioned) adapter and
    resolve it under the DFlash name, (c) import `tinygrad.dflash` — each must raise the
@@ -435,7 +440,7 @@ immutable, in-tree* references the later phases derive from.
   snapshot, and the upgrade protocol (bump pin → regenerate all `gpu_*_contract` facts →
   re-run diff oracle → land as one change). This *is* the canonicalization doc's "exact
   upstream revision used for verification," promoted from a sentence to a pinned fact.
-- 0b. Add `src/molt/gpu/dflash/SPEC.md` (3.5.1) transcribing `F1..F6` from the paper +
+- 0b. Add `src/molt/gpu/dflash/SPEC.md` (3.5.1) transcribing `F1..F7` from the paper +
   project page, with citation lines.
 - **Gate:** docs lint + a `tools/check_tinygrad_pin.py` that asserts the off-the-shelf
   `pyproject.toml` version equals the pinned string (so a silent dependency bump fails).
@@ -517,7 +522,7 @@ immutable, in-tree* references the later phases derive from.
   `position_ids`/`last_verified_token`. The conditioning *plumbing already exists*
   (contracts.py); this adds the *consumption*.
 - 5b. Build the `tests/gpu/dflash/reference/` tiny model (3.5.3) and
-  `test_dflash_fidelity.py` covering `F1..F6` + the fail-closed corpus. Wire `F5`
+  `test_dflash_fidelity.py` covering `F1..F7` + the fail-closed corpus. Wire `F5`
   losslessness against a reference greedy target decode.
 - 5c. Verify the fail-closed paths end-to-end: `tinygrad.dflash` import raises; generic
   adapter under DFlash name raises; missing trained drafter raises `F6`. (These guards
@@ -595,7 +600,7 @@ Per-phase gates are listed inline in §4; the cross-cutting discipline:
   to hide a real divergence** — a widened ULP must cite the libm difference.
 - **Parity oracle (API):** generated-contract `--check` (3.2) + signature execution.
 - **Parity oracle (error semantics):** identical exception *type* across pin vs molt.
-- **DFlash fidelity oracle:** the reference model run + `F1..F6` named obligations
+- **DFlash fidelity oracle:** the reference model run + `F1..F7` named obligations
   (§3.5); fail-closed corpus exercises every typed refusal.
 - **Drift gates (the fact-plane `--check` family):** `gen_gpu_op_contract.py --check`,
   `gen_tinygrad_api_contract.py --check`, `structural_audit.py --check` (ML-authority
@@ -609,7 +614,7 @@ Per-phase gates are listed inline in §4; the cross-cutting discipline:
   runs) goes through `tools/safe_run.py --rss-mb … --timeout …` (CLAUDE.md
   non-negotiable). The DFlash reference must be sized to run well under the cap.
 - **Landing report format (Council):** "tests green; parity oracle green (N corpus
-  programs × M targets, 0 RED); DFlash F1–F6 green; perf matrix green, 0 CPython-reds, 0
+  programs × M targets, 0 RED); DFlash F1–F7 green; perf matrix green, 0 CPython-reds, 0
   regressions; drift gates green."
 
 ---
@@ -671,7 +676,7 @@ Per-phase gates are listed inline in §4; the cross-cutting discipline:
 |---|---|---|---|
 | R1 | Upstream tinygrad bumps (0.13.0 → next) and the hand-curated primitive set silently rots (the §1.2.1 failure, recurring) | Edit the prose "26 ops" by hand each bump | **`gpu_op_contract` is generated from the pin (3.1); `check_tinygrad_pin.py` fails the build on an un-regenerated bump.** Drift becomes a red gate, not a latent bug. |
 | R2 | Float ops differ in the last ULP between molt's renderer libm and the host libm, tempting a blanket tolerance | Widen ULP globally until green | **Per-op ULP budget pinned with its libm justification (§5); bit-exact required for everything upstream renders as identical C.** A widened tolerance must cite the difference; unexplained divergence stays RED. |
-| R3 | DFlash is *expensive* to verify; temptation to ship the adapter contract as "DFlash support" without the algorithm (the current state) | Call the contract layer "done" | **`dflash_fidelity` requires `F1..F6` executable proof against a reference model (3.5); the contract layer alone cannot satisfy the gate.** No algorithm ⇒ no DFlash claim. |
+| R3 | DFlash is *expensive* to verify; temptation to ship the adapter contract as "DFlash support" without the algorithm (the current state) | Call the contract layer "done" | **`dflash_fidelity` requires `F1..F7` executable proof against a reference model (3.5); the contract layer alone cannot satisfy the gate.** No algorithm ⇒ no DFlash claim. |
 | R4 | A real production model lacks a trained DFlash drafter; pressure to "approximate" it | Wire a generic drafter behind the DFlash name | **`F6 trained_drafter_required` is a typed fail-closed state (already structurally enforced by `contracts.py`, now *gated* by 5c); the production path raises, the reference model is the only DFlash claimant.** Literal CLAUDE.md mandate. |
 | R5 | `molt.gpu` re-implements a tinygrad behavior for a "quick" perf win, forking semantics | "Just for the hot path" duplicate impl | **`gpu_substrate_authority` (3.4) fails `structural_audit.py --check` on any `delegates_to` symbol with an independent impl.** Perf wins go *into* the tinygrad-owned path (or into the substrate below it), never beside it. |
 | R6 | Phase 6 god-file deletion regresses a behavior only that file had | Keep the legacy file "just in case" (two authorities — the current state) | **The Phase-2 diff oracle is the equivalence gate for the migration (§4.6); deletion is allowed only when the oracle proves preservation.** This is the doc-21 "replace, don't just delete" rule. |
