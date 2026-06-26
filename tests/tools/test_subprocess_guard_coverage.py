@@ -87,6 +87,28 @@ def test_unclassified_shell_pkill_string_fails(tmp_path: Path) -> None:
     assert audit.unexpected[0].method == "shell.kill"
 
 
+def test_unclassified_makefile_pkill_fails(tmp_path: Path) -> None:
+    module = _load_audit_tool()
+    source = tmp_path / "Makefile.pgo"
+    source.write_text(
+        'train:\n\tpkill -9 -f "molt-backend"\n',
+        encoding="utf-8",
+    )
+
+    audit = module.audit_paths(
+        [],
+        root=tmp_path,
+        allowlist=(),
+        text_paths=[source],
+    )
+
+    assert not audit.ok
+    assert len(audit.unexpected) == 1
+    assert audit.unexpected[0].path == "Makefile.pgo"
+    assert audit.unexpected[0].qualname == "<text>"
+    assert audit.unexpected[0].method == "shell.kill"
+
+
 def test_stale_allowlist_entry_fails(tmp_path: Path) -> None:
     module = _load_audit_tool()
     source = tmp_path / "clean.py"

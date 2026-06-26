@@ -1,39 +1,10 @@
 #!/usr/bin/env python3
-"""safe_run.py — run a command (especially a molt-compiled binary) under HARD
-wall-time AND resident-memory (RSS) caps, killing the whole process group
-cleanly *before* a runaway loop can OOM the host or hang the session.
+"""Compatibility CLI for direct binary runs under shared Molt custody.
 
-This exists because raw compiled binaries carry no memory guard of their own,
-and the harness memory guard only wraps `molt run`/`molt test`/`molt build` —
-NOT bare `./binary` execution. Any time you bisect, profile, or smoke-test a
-compiled binary directly (or run anything that might infinite-loop / allocate
-unboundedly), route it through this wrapper.
-
-Usage:
-    python3 tools/safe_run.py [options] -- CMD [ARGS...]
-    python3 tools/safe_run.py [options] CMD [ARGS...]     # `--` optional
-
-Options:
-    --rss-mb N      kill if the process-group RSS exceeds N MiB   (default 2048)
-    --timeout S     kill if wall-clock exceeds S seconds          (default 30)
-    --poll S        RSS/timeout poll interval in seconds          (default 0.2)
-    --label TEXT    label for the SAFE_RUN status line            (default cmd[0])
-    --quiet         suppress the SAFE_RUN status line on success
-    --json          emit a one-line JSON status to stderr (for tooling)
-
-Behaviour:
-    * The command runs in its own session/process-group; on a violation the
-      ENTIRE group gets SIGKILL (so children/daemons die too).
-    * stdout/stderr are inherited (live), so partial output is preserved up to
-      the kill — exactly what bisecting needs.
-    * A status line is written to STDERR (never stdout) so piping the command's
-      stdout stays clean.
-
-Exit codes:
-    0..127   the child's own exit code (forwarded) when it exits on its own
-    124      TIMEOUT  — killed for exceeding --timeout
-    137      OOM      — killed for exceeding --rss-mb (128 + SIGKILL)
-    125      could not start the command
+Historically this script owned its own process group, RSS sampler, and signal
+teardown. That made it a parallel process-custody authority.
+It now preserves the old command-line shape while delegating all execution,
+sampling, timeout, and termination to tools/memory_guard.py.
 """
 
 from __future__ import annotations
@@ -41,7 +12,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import signal
+from pathlib import Path
 import subprocess
 import sys
 import time
@@ -49,6 +20,10 @@ import time
 EXIT_TIMEOUT = 124
 EXIT_OOM = 137
 EXIT_SPAWN = 125
+
+ROOT = Path(__file__).resolve().parents[1]
+MEMORY_GUARD = ROOT / "tools" / "memory_guard.py"
+SUMMARY_ROOT = ROOT / "tmp" / "safe_run"
 
 
 def _parse_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
@@ -94,38 +69,63 @@ def _parse_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
     return ns, cmd
 
 
-def _group_rss_kib(pgid: int) -> int:
-    """Sum RSS (KiB) of every process in the given process group via `ps`.
+def _summary_path(label: str) -> Path:
+    safe = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in label)
+    SUMMARY_ROOT.mkdir(parents=True, exist_ok=True)
+    return SUMMARY_ROOT / f"{os.getpid()}-{safe}.summary.json"
 
-    Dependency-free and works on macOS + Linux. Returns 0 if `ps` reports
-    nothing (e.g. the group already exited)."""
+
+def _load_summary(path: Path) -> dict[str, object]:
     try:
-        out = subprocess.run(
-            ["ps", "-o", "rss=", "-g", str(pgid)],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        ).stdout
-    except Exception:
-        return 0
-    total = 0
-    for line in out.split():
-        try:
-            total += int(line)
-        except ValueError:
-            pass
-    return total
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
 
 
-def _kill_group(pgid: int) -> None:
-    for sig in (signal.SIGTERM, signal.SIGKILL):
-        try:
-            os.killpg(pgid, sig)
-        except ProcessLookupError:
-            return
-        except Exception:
-            pass
-        time.sleep(0.15)
+def _rss_mib(record: object) -> float:
+    if not isinstance(record, dict):
+        return 0.0
+    rss_kb = record.get("rss_kb")
+    if isinstance(rss_kb, int | float):
+        return float(rss_kb) / 1024.0
+    rss_gb = record.get("rss_gb")
+    if isinstance(rss_gb, int | float):
+        return float(rss_gb) * 1024.0
+    return 0.0
+
+
+def _status(returncode: int, summary: dict[str, object]) -> str:
+    if summary.get("timed_out"):
+        return "timeout"
+    if summary.get("violation") is not None:
+        return "oom"
+    if returncode == EXIT_TIMEOUT:
+        return "timeout"
+    if returncode == EXIT_OOM:
+        return "oom"
+    return "ok"
+
+
+def _guard_command(
+    ns: argparse.Namespace, cmd: list[str], summary_path: Path
+) -> list[str]:
+    rss_gb = ns.rss_mb / 1024.0
+    return [
+        sys.executable,
+        str(MEMORY_GUARD),
+        "--max-rss-gb",
+        f"{rss_gb:.6f}",
+        "--max-total-rss-gb",
+        f"{rss_gb:.6f}",
+        "--poll-interval",
+        str(ns.poll),
+        "--timeout",
+        str(ns.timeout),
+        "--summary-json",
+        str(summary_path),
+        "--",
+        *cmd,
+    ]
 
 
 def main(argv: list[str]) -> int:
@@ -135,62 +135,30 @@ def main(argv: list[str]) -> int:
         return EXIT_SPAWN
 
     label = ns.label or os.path.basename(cmd[0])
-    rss_limit_kib = ns.rss_mb * 1024
+    summary_path = _summary_path(label)
     start = time.monotonic()
-
     try:
-        # start_new_session=True -> child is a session+group leader (pgid == pid),
-        # so we can SIGKILL the whole tree and not just the immediate child.
-        proc = subprocess.Popen(cmd, start_new_session=True)
+        completed = subprocess.run(_guard_command(ns, cmd, summary_path), check=False)
     except FileNotFoundError:
         print(f"safe_run.py: command not found: {cmd[0]}", file=sys.stderr)
         return EXIT_SPAWN
     except Exception as exc:  # noqa: BLE001 - report any spawn failure cleanly
-        print(f"safe_run.py: failed to start {cmd[0]}: {exc}", file=sys.stderr)
+        print(
+            f"safe_run.py: failed to start memory guard for {cmd[0]}: {exc}",
+            file=sys.stderr,
+        )
         return EXIT_SPAWN
 
-    pgid = proc.pid  # equals the new session/group id
-    peak_kib = 0
-    status = "ok"
-    rc = 0
-
+    summary = _load_summary(summary_path)
     try:
-        while True:
-            rc = proc.poll()
-            if rc is not None:
-                break
-            elapsed = time.monotonic() - start
-            if elapsed > ns.timeout:
-                status = "timeout"
-                _kill_group(pgid)
-                proc.wait()
-                rc = EXIT_TIMEOUT
-                break
-            rss = _group_rss_kib(pgid)
-            if rss > peak_kib:
-                peak_kib = rss
-            if rss > rss_limit_kib:
-                status = "oom"
-                _kill_group(pgid)
-                proc.wait()
-                rc = EXIT_OOM
-                break
-            time.sleep(ns.poll)
-    except KeyboardInterrupt:
-        status = "interrupted"
-        _kill_group(pgid)
-        proc.wait()
-        rc = 130
+        summary_path.unlink(missing_ok=True)
+    except OSError:
+        pass
 
-    if rc is None:
-        rc = proc.returncode if proc.returncode is not None else 0
-
-    elapsed = time.monotonic() - start
-    peak_mib = peak_kib / 1024.0
-    detail = (
-        f"status={status} exit={rc} peak_rss={peak_mib:.0f}MiB "
-        f"elapsed={elapsed:.2f}s limit_rss={ns.rss_mb}MiB limit_t={ns.timeout:g}s"
-    )
+    rc = completed.returncode
+    elapsed = float(summary.get("elapsed_s") or (time.monotonic() - start))
+    peak_mib = max(_rss_mib(summary.get("peak")), _rss_mib(summary.get("peak_total")))
+    status = _status(rc, summary)
     if ns.json:
         print(
             "SAFE_RUN "
@@ -208,8 +176,12 @@ def main(argv: list[str]) -> int:
             file=sys.stderr,
         )
     elif not (ns.quiet and status == "ok"):
-        print(f"SAFE_RUN [{label}] {detail}", file=sys.stderr)
-
+        print(
+            f"SAFE_RUN [{label}] status={status} exit={rc} "
+            f"peak_rss={peak_mib:.0f}MiB elapsed={elapsed:.2f}s "
+            f"limit_rss={ns.rss_mb}MiB limit_t={ns.timeout:g}s",
+            file=sys.stderr,
+        )
     return rc
 
 
