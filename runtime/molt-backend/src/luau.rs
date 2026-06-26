@@ -35,6 +35,7 @@ mod helpers;
 mod op_attributes;
 mod op_collections;
 mod op_emitter;
+mod op_objects;
 mod op_strings;
 
 /// Transpiles Molt `SimpleIR` into Luau source text.
