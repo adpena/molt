@@ -48,8 +48,6 @@ use state::*;
 #[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 use tcl::*;
 use ttk::*;
-use widget_create::*;
-use window_commands::*;
 
 pub use intrinsics::*;
 
