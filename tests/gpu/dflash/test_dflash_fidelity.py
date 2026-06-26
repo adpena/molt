@@ -36,6 +36,7 @@ from molt.gpu.dflash import (
     DFLASH_ALGORITHM_FAMILIES,
     DFLASH_ALGORITHM_DRAFT_OUTPUT_CONTRACTS,
     DFLASH_DRAFT_OUTPUT_CONTRACTS,
+    DFLASH_SUPPORTED_BACKENDS,
     DFlashAdapterMetadata,
     DFlashAdapterSpec,
     DFlashConditioning,
@@ -43,6 +44,8 @@ from molt.gpu.dflash import (
     DFlashSelectionContext,
     build_dflash_runtime,
     clear_dflash_adapters,
+    has_dflash_backend,
+    normalize_dflash_backend,
     register_dflash_adapter,
     require_dflash_conditioning,
     resolve_dflash_runtime,
@@ -294,7 +297,7 @@ def test_runtime_rejects_non_linear_draft_output_contract():
 # registry. SPEC.md F6.
 
 
-def _ctx(name: str = "synthetic", backend: str = "native") -> DFlashSelectionContext:
+def _ctx(name: str = "synthetic", backend: str = "webgpu") -> DFlashSelectionContext:
     return DFlashSelectionContext(
         model=object(),
         backend=backend,
@@ -305,6 +308,22 @@ def _ctx(name: str = "synthetic", backend: str = "native") -> DFlashSelectionCon
         target_model_id=f"test://target/{name}",
         tokenizer_id=f"test://tokenizer/{name}",
     )
+
+
+def test_dflash_backend_capability_is_explicit_and_normalized():
+    assert DFLASH_SUPPORTED_BACKENDS == frozenset({"metal", "webgpu"})
+    assert normalize_dflash_backend("  WEBGPU ") == "webgpu"
+    assert normalize_dflash_backend("  ") is None
+    assert has_dflash_backend("webgpu") is True
+    assert has_dflash_backend("metal") is True
+    assert has_dflash_backend("native") is False
+    assert has_dflash_backend("cuda") is False
+    assert has_dflash_backend(None) is False
+
+    with pytest.raises(TypeError, match="backend must be a string when set"):
+        normalize_dflash_backend(object())
+
+    assert _ctx(backend="  METAL ").backend == "metal"
 
 
 def _adapter_spec(
@@ -810,7 +829,7 @@ def test_named_unavailable_adapter_raises_lookuperror():
         build_dflash_runtime(
             model=object(),
             prompt_tokens=[1, 2, 3],
-            backend="native",
+            backend="webgpu",
             dflash_adapter="no_such_adapter",
             target_model_id="test://target/no_such_adapter",
             tokenizer_id="test://tokenizer/no_such_adapter",
@@ -842,7 +861,7 @@ def test_unsupported_adapter_under_dflash_name_does_not_resolve():
         build_dflash_runtime(
             model=object(),
             prompt_tokens=[1, 2, 3],
-            backend="native",
+            backend="webgpu",
             dflash_adapter="unsupported_adapter",
             target_model_id="test://target/unsupported_adapter",
             tokenizer_id="test://tokenizer/unsupported_adapter",

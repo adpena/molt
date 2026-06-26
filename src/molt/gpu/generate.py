@@ -9,6 +9,7 @@ import math
 import os
 from .dflash import (
     DFlashSelectionContext,
+    dflash_backend_requirement_message,
     has_dflash_backend,
     resolve_dflash_runtime,
 )
@@ -53,10 +54,7 @@ def _resolve_default_dflash_runtime(
     if dflash_adapter is not None and not isinstance(dflash_adapter, str):
         raise TypeError("dflash adapter name must be a string when set")
     if dflash_adapter is not None and not has_dflash_backend(backend):
-        raise LookupError(
-            f"dflash adapter '{dflash_adapter}' requires an explicit GPU backend; "
-            "set MOLT_GPU_BACKEND"
-        )
+        raise LookupError(dflash_backend_requirement_message(dflash_adapter))
     if not has_dflash_backend(backend):
         return None
     context = DFlashSelectionContext(

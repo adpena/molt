@@ -1194,6 +1194,49 @@ def test_greedy_decode_skips_dflash_default_without_supported_gpu_backend(monkey
     assert calls == [("plain", [0])]
 
 
+def test_greedy_decode_skips_dflash_default_on_unsupported_backend(monkeypatch):
+    from molt.gpu.dflash import register_dflash_adapter
+    from molt.gpu.generate import greedy_decode
+    from molt.gpu.tensor import Tensor
+
+    calls = []
+
+    def supports(context):
+        calls.append((getattr(context.model, "kind", None), context.backend))
+        return True
+
+    def create_runtime(_context):
+        raise AssertionError(
+            "adapter runtime should not be created for unsupported backend"
+        )
+
+    class FakeModel:
+        kind = "fake-model"
+
+        def __call__(self, tokens):
+            calls.append(("plain", list(tokens)))
+            return Tensor([0.0, 1.0, 2.0])
+
+    monkeypatch.setenv("MOLT_GPU_BACKEND", "native")
+    register_dflash_adapter(
+        _dflash_adapter_spec(
+            name="fake-adapter-unsupported-backend",
+            supports=supports,
+            create_runtime=create_runtime,
+        )
+    )
+
+    out = greedy_decode(
+        FakeModel(),
+        [0],
+        max_new_tokens=1,
+        **_dflash_identity_kwargs(),
+    )
+
+    assert out == [0, 2]
+    assert calls == [("plain", [0])]
+
+
 def test_greedy_decode_raises_when_gpu_backend_has_no_dflash_adapter(monkeypatch):
     from molt.gpu.dflash import clear_dflash_adapters
     from molt.gpu.generate import greedy_decode
@@ -1381,6 +1424,33 @@ def test_greedy_decode_raises_for_explicit_dflash_adapter_without_backend(monkey
     except LookupError as exc:
         assert "requires-backend" in str(exc)
         assert "backend" in str(exc).lower()
+
+
+def test_greedy_decode_raises_for_explicit_dflash_adapter_on_unsupported_backend(
+    monkeypatch,
+):
+    from molt.gpu.generate import greedy_decode
+
+    class FakeModel:
+        def __call__(self, _tokens):
+            raise AssertionError("plain greedy fallback must not run")
+
+    monkeypatch.setenv("MOLT_GPU_BACKEND", "native")
+
+    try:
+        greedy_decode(
+            FakeModel(),
+            [0],
+            max_new_tokens=1,
+            dflash_adapter="requires-webgpu-or-metal",
+            **_dflash_identity_kwargs(),
+        )
+        raise AssertionError("expected explicit DFlash request to fail closed")
+    except LookupError as exc:
+        assert "requires-webgpu-or-metal" in str(exc)
+        assert "DFlash-capable GPU backend" in str(exc)
+        assert "webgpu" in str(exc)
+        assert "metal" in str(exc)
 
 
 def test_greedy_decode_requires_explicit_dflash_identity_on_gpu_backend(monkeypatch):
@@ -1591,6 +1661,29 @@ def test_build_dflash_runtime_raises_for_missing_explicit_adapter():
         raise AssertionError("expected missing explicit adapter failure")
     except LookupError as exc:
         assert "missing-adapter" in str(exc)
+
+
+def test_build_dflash_runtime_raises_for_explicit_adapter_on_unsupported_backend():
+    from molt.gpu.dflash import build_dflash_runtime
+
+    class FakeModel:
+        pass
+
+    try:
+        build_dflash_runtime(
+            FakeModel(),
+            [0],
+            backend="native",
+            dflash_adapter="requires-webgpu-or-metal",
+            block_size=4,
+            **_dflash_builder_identity_kwargs(),
+        )
+        raise AssertionError("expected unsupported backend failure")
+    except LookupError as exc:
+        assert "requires-webgpu-or-metal" in str(exc)
+        assert "DFlash-capable GPU backend" in str(exc)
+        assert "webgpu" in str(exc)
+        assert "metal" in str(exc)
 
 
 def test_build_dflash_runtime_passes_adapter_payload_into_context():

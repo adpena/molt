@@ -6,7 +6,6 @@ from .adapters import (
     DFlashAdapterMetadata,
     DFlashAdapterSpec,
     get_dflash_adapter,
-    has_dflash_backend,
     list_dflash_adapters,
     register_dflash_adapter,
     clear_dflash_adapters,
@@ -19,9 +18,13 @@ from .adapters import (
 )
 from .contracts import (
     DFLASH_DRAFT_OUTPUT_CONTRACTS,
+    DFLASH_SUPPORTED_BACKENDS,
     DFlashConditioning,
     DFlashRuntime,
     DFlashSelectionContext,
+    dflash_backend_requirement_message,
+    has_dflash_backend,
+    normalize_dflash_backend,
     require_dflash_conditioning,
     require_dflash_draft_output_contract,
 )
@@ -33,8 +36,11 @@ __all__ = [
     "DFLASH_ALGORITHM_FAMILIES",
     "DFLASH_ALGORITHM_DRAFT_OUTPUT_CONTRACTS",
     "DFLASH_DRAFT_OUTPUT_CONTRACTS",
+    "DFLASH_SUPPORTED_BACKENDS",
     "DFlashAdapterMetadata",
     "DFlashAdapterSpec",
+    "dflash_backend_requirement_message",
+    "normalize_dflash_backend",
     "require_dflash_conditioning",
     "require_dflash_draft_output_contract",
     "register_dflash_adapter",
