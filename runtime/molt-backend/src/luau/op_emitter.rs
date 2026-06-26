@@ -26,6 +26,9 @@ impl LuauBackend {
         if self.emit_object_op(op) {
             return;
         }
+        if self.emit_value_op(op) {
+            return;
+        }
         if self.emit_scalar_op(op) {
             return;
         }
