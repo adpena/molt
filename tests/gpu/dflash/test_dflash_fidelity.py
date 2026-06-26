@@ -119,6 +119,24 @@ def test_conditioning_missing_position_ids_raises_valueerror():
         DFlashConditioning(**kwargs)
 
 
+def test_conditioning_normalizes_position_ids():
+    kwargs = _valid_conditioning_kwargs()
+    kwargs["position_ids"] = (0, 1.0, 2)
+    cond = DFlashConditioning(**kwargs)
+    assert cond.position_ids == [0, 1, 2]
+
+
+@pytest.mark.parametrize("position_ids", ([0, True], [0, 1.5], [0, -1], object()))
+def test_conditioning_invalid_position_ids_raise(position_ids):
+    kwargs = _valid_conditioning_kwargs()
+    kwargs["position_ids"] = position_ids
+    with pytest.raises(
+        (TypeError, ValueError),
+        match="position_ids must",
+    ):
+        DFlashConditioning(**kwargs)
+
+
 def test_conditioning_bool_last_verified_token_raises_typeerror():
     # bool is a subclass of int in Python; DFlash rejects it explicitly so a
     # truthy flag can never masquerade as token id 1 (SPEC.md F4).
