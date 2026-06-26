@@ -13,11 +13,11 @@ Product board for the molt structural sweep — the first instrument of the Molt
 | critical_hand_classifications | 0 |
 | handset_classifications | 0 |
 | debt_markers_total | 517 |
-| god_files | 21 |
+| god_files | 20 |
 | max_god_file_lines | 7188 |
-| structural_god_files | 5 |
+| structural_god_files | 4 |
 | max_god_file_structural_score | 1383 |
-| god_file_large_regions | 14 |
+| god_file_large_regions | 12 |
 | native_scalar_plan_authority_violations | 0 |
 | repr_name_scalar_authority_violations | 0 |
 | duplicate_authorities | 0 |
@@ -57,7 +57,7 @@ Product board for the molt structural sweep — the first instrument of the Molt
 
 ## Full findings by probe
 
-### god_file (21)
+### god_file (20)
 
 | sev | what | where | action |
 | --- | --- | --- | --- |
@@ -79,7 +79,6 @@ Product board for the molt structural sweep — the first instrument of the Molt
 | low | 4616 lines (ceiling 4000) | `runtime/molt-runtime/src/async_rt/sockets.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | low | 4446 lines (ceiling 4000) | `runtime/molt-runtime/src/object/ops_arith.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | low | 4350 lines (ceiling 4000) | `runtime/molt-runtime/src/builtins/functions_pickle.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
-| low | 4112 lines (ceiling 4000) | `runtime/molt-runtime/src/async_rt/scheduler.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | low | 4002 lines (ceiling 4000) | `runtime/molt-backend/src/native_backend/function_compiler/fc/arith.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | low | 3594 lines (ceiling 2500) | `tools/memory_guard.py` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 
@@ -129,7 +128,7 @@ Product board for the molt structural sweep — the first instrument of the Molt
 | low | 1 debt/workaround markers | `runtime/molt-tir/src/tir/deopt.rs` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | … | _357 more_ | | run `--json` for full list |
 
-### structural_god_file (5)
+### structural_god_file (4)
 
 | sev | what | where | action |
 | --- | --- | --- | --- |
@@ -137,7 +136,6 @@ Product board for the molt structural sweep — the first instrument of the Molt
 | low | 3 large top-level regions (1028 excess lines) | `runtime/molt-runtime/src/call/bind.rs` | extract the large top-level regions into cohesive modules; do not add more autho |
 | low | 3 large top-level regions (737 excess lines) | `runtime/molt-runtime/src/builtins/functions_pickle.rs` | extract the large top-level regions into cohesive modules; do not add more autho |
 | low | 3 large top-level regions (606 excess lines) | `tools/memory_guard.py` | extract the large top-level regions into cohesive modules; do not add more autho |
-| low | 2 large top-level regions (501 excess lines) | `runtime/molt-runtime/src/async_rt/scheduler.rs` | extract the large top-level regions into cohesive modules; do not add more autho |
 
 ### registry_reconciliation (1)
 
