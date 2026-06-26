@@ -313,6 +313,64 @@ def test_speculative_decode_greedy_rejects_invalid_callback_contracts():
         assert "integer token ids" in str(exc)
 
 
+def test_speculative_decode_bounds_contract_is_shared_across_transports():
+    from molt.gpu.speculative import (
+        SpeculativeConditioning,
+        SpeculativeDraftResult,
+        SpeculativeVerifyResult,
+        speculative_decode_greedy,
+        speculative_decode_greedy_conditioned,
+    )
+
+    def draft_block(_prefix_tokens, _block_size):
+        return [1]
+
+    def verify_block(_prefix_tokens, _draft_tokens):
+        return [1, 2]
+
+    def draft_step(_request):
+        return SpeculativeDraftResult([1])
+
+    def verify_step(_request):
+        return SpeculativeVerifyResult([1, 2])
+
+    with pytest.raises(
+        TypeError, match="max_new_tokens must be a non-negative integer"
+    ):
+        speculative_decode_greedy(
+            verify_block,
+            draft_block,
+            [0],
+            max_new_tokens=True,
+        )
+
+    with pytest.raises(ValueError, match="max_new_tokens must be non-negative"):
+        speculative_decode_greedy_conditioned(
+            verify_step,
+            draft_step,
+            [0],
+            initial_conditioning=SpeculativeConditioning(),
+            max_new_tokens=-1,
+        )
+
+    with pytest.raises(TypeError, match="block_size must be a positive integer"):
+        speculative_decode_greedy_conditioned(
+            verify_step,
+            draft_step,
+            [0],
+            initial_conditioning=SpeculativeConditioning(),
+            block_size=True,
+        )
+
+    with pytest.raises(ValueError, match="block_size must be positive"):
+        speculative_decode_greedy(
+            verify_block,
+            draft_block,
+            [0],
+            block_size=0,
+        )
+
+
 def test_speculative_decode_greedy_compiles_in_native_molt(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[1]
     probe = tmp_path / "gpu_speculative_decode_native.py"
