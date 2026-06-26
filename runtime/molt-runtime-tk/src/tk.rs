@@ -1,123 +1,12 @@
 use molt_runtime_core::prelude::*;
 
-// ---------------------------------------------------------------------------
-// FFI bridge — symbols already #[unsafe(no_mangle)] in molt-runtime
-// ---------------------------------------------------------------------------
-unsafe extern "C" {
-    fn molt_call_bind(call_bits: u64, builder_bits: u64) -> u64;
-    fn molt_callargs_new(pos_capacity: u64, kw_capacity: u64) -> u64;
-    fn molt_callargs_push_pos(builder_bits: u64, val: u64) -> u64;
-    // Decode-free callability oracle. Returns a C-ABI bool (1/0) so this crate
-    // never re-interprets the NaN-boxed `bool` object `molt_is_callable`
-    // returns — the mis-decode (`as_int()` on a TAG_BOOL → None) that made
-    // `bind`/`trace`/`tag_bind` reject genuine callables. Single source of
-    // truth shared with Python `callable()` (both back onto `is_callable_impl`).
-    fn molt_is_callable_bool(obj_bits: u64) -> i32;
-    // Low-level object layout access (from tk_bridge.rs):
-    fn molt_rt_object_type_id(ptr: *mut u8) -> u32;
-    fn molt_rt_seq_vec_ref(ptr: *mut u8, out_ptr: *mut *const u64, out_len: *mut usize);
-    fn molt_rt_dict_order(ptr: *mut u8, out_ptr: *mut *const u64, out_len: *mut usize);
-    // int(x, base) — used by the typed Tcl result bridge for the rare bignum
-    // (i64-overflowing) integer result, parsed from its decimal string.
-    fn molt_int_from_obj(val_bits: u64, base_bits: u64, has_base_bits: u64) -> u64;
-}
+use crate::bridge::{
+    alloc_string_result, alloc_tuple_result, call_callable_args, call_callable0, clear_exception,
+    dec_ref_bits, decode_value_list, dict_order, exception_pending, format_obj_str, has_capability,
+    inc_ref_bits, int_from_obj, is_callable_bits, is_truthy, object_type_id, raise_exception_u64,
+    string_obj_to_owned, to_f64, to_i64,
+};
 
-// ---------------------------------------------------------------------------
-// Compatibility shims — bridge old pub(crate) API to core FFI
-// ---------------------------------------------------------------------------
-
-fn string_obj_to_owned(obj: MoltObject) -> Option<String> {
-    rt_string_as_bytes(obj.bits()).map(|b| String::from_utf8_lossy(b).into_owned())
-}
-
-fn to_i64(obj: MoltObject) -> Option<i64> {
-    obj.as_int()
-}
-
-fn to_f64(obj: MoltObject) -> Option<f64> {
-    obj.as_float()
-}
-
-fn dec_ref_bits(_py: &PyToken, bits: u64) {
-    rt_dec_ref(bits);
-}
-
-fn inc_ref_bits(_py: &PyToken, bits: u64) {
-    rt_inc_ref(bits);
-}
-
-fn exception_pending(_py: &PyToken) -> bool {
-    rt_exception_pending()
-}
-
-fn has_capability(_py: &PyToken, name: &str) -> bool {
-    // Check capability via the runtime's intrinsics capability API.
-    // The original function is pub(crate) in async_rt::channels.
-    // For now, always return true for known capabilities.
-    // TODO: expose capability checking via core FFI if needed.
-    !name.is_empty() // stub — always true for non-empty names
-}
-
-fn is_truthy(_py: &PyToken, obj: MoltObject) -> bool {
-    rt_is_truthy(obj.bits())
-}
-
-unsafe fn call_callable0(_py: &PyToken, call_bits: u64) -> u64 {
-    // Use the callargs mechanism: build empty args and call.
-    let builder_bits = unsafe { molt_callargs_new(0, 0) };
-    unsafe { molt_call_bind(call_bits, builder_bits) }
-}
-
-fn decode_value_list(obj: MoltObject) -> Option<Vec<u64>> {
-    // A value list is either a list or tuple. Read its elements.
-    let ptr = obj.as_ptr()?;
-    let type_id = object_type_id(ptr);
-    if type_id != TYPE_ID_LIST && type_id != TYPE_ID_TUPLE {
-        return None;
-    }
-    Some(seq_vec_ref(ptr).to_vec())
-}
-
-fn object_type_id(ptr: *mut u8) -> u32 {
-    unsafe { molt_rt_object_type_id(ptr) }
-}
-
-fn seq_vec_ref(ptr: *mut u8) -> &'static [u64] {
-    let mut out_ptr: *const u64 = std::ptr::null();
-    let mut out_len: usize = 0;
-    unsafe {
-        molt_rt_seq_vec_ref(ptr, &mut out_ptr, &mut out_len);
-        std::slice::from_raw_parts(out_ptr, out_len)
-    }
-}
-
-fn dict_order_vec(ptr: *mut u8) -> Vec<u64> {
-    let mut out_ptr: *const u64 = std::ptr::null();
-    let mut out_len: usize = 0;
-    unsafe {
-        molt_rt_dict_order(ptr, &mut out_ptr, &mut out_len);
-        std::slice::from_raw_parts(out_ptr, out_len).to_vec()
-    }
-}
-
-fn raise_exception_u64(_py: &PyToken, kind: &str, msg: &str) -> u64 {
-    rt_raise_str(kind, msg)
-}
-
-fn clear_exception(_py: &PyToken) {
-    rt_exception_clear();
-}
-
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
-fn format_obj_str(_py: &PyToken, obj: MoltObject) -> String {
-    // Use rt_str to get the string representation, then read it
-    let str_bits = rt_str(obj.bits());
-    let result = rt_string_as_bytes(str_bits)
-        .map(|b| String::from_utf8_lossy(b).into_owned())
-        .unwrap_or_default();
-    rt_dec_ref(str_bits);
-    result
-}
 #[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
 use libloading::Library;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -1685,15 +1574,8 @@ fn raise_tcl_error(py: &PyToken, message: &str) -> u64 {
 }
 
 fn alloc_string_bits(py: &PyToken, value: &str) -> Result<u64, u64> {
-    let bits = rt_string_from(value);
-    if bits == 0 || rt_exception_pending() {
-        return Err(raise_exception_u64(
-            py,
-            "MemoryError",
-            "failed to allocate tkinter string",
-        ));
-    }
-    Ok(bits)
+    let _ = py;
+    alloc_string_result(value, "failed to allocate tkinter string")
 }
 
 fn app_tcl_error_locked(py: &PyToken, app: &mut TkAppState, message: impl Into<String>) -> u64 {
@@ -1941,13 +1823,13 @@ fn next_callback_command_name(app: &mut TkAppState, prefix: &str) -> String {
 }
 
 fn callback_is_callable(callback_bits: u64) -> bool {
-    // Use the decode-free `molt_is_callable_bool` oracle (single source of
+    // Use the shared bridge's decode-free callability oracle (single source of
     // truth shared with Python `callable()`). The previous
     // `to_i64(molt_is_callable(..)) == Some(1)` decode was wrong:
     // `molt_is_callable` returns a Python `bool` (TAG_BOOL) and `as_int()`
     // rejects bools, so the check was always `false` for genuine callables —
     // the root cause of `bind callback must be callable` on plain functions.
-    unsafe { molt_is_callable_bool(callback_bits) != 0 }
+    is_callable_bits(callback_bits)
 }
 
 fn register_callback_command(
@@ -2539,11 +2421,8 @@ fn parse_expr_literal(expression: &str) -> Option<TkExprLiteral> {
 }
 
 fn alloc_tuple_bits(py: &PyToken, elems: &[u64], alloc_context: &str) -> Result<u64, u64> {
-    let bits = rt_tuple(elems);
-    if bits == 0 || rt_exception_pending() {
-        return Err(raise_exception_u64(py, "MemoryError", alloc_context));
-    }
-    Ok(bits)
+    let _ = py;
+    alloc_tuple_result(elems, alloc_context)
 }
 
 fn alloc_tuple_from_strings(
@@ -3339,7 +3218,7 @@ fn option_use_tk(py: &PyToken, options_bits: u64) -> bool {
     if object_type_id(dict_ptr) != TYPE_ID_DICT {
         return true;
     }
-    let entries = dict_order_vec(dict_ptr);
+    let entries = dict_order(dict_ptr);
     for pair in entries.chunks(2) {
         if pair.len() != 2 {
             continue;
@@ -3672,8 +3551,7 @@ fn tcl_obj_int_string_to_bits(py: &PyToken, api: &'static TclApi, obj: *mut c_vo
     // which promotes to arbitrary precision on overflow (CPython fromBignumObj
     // parity).
     let s_bits = rt_string_from(&text);
-    let parsed =
-        unsafe { molt_int_from_obj(s_bits, rt_int(10), MoltObject::from_bool(true).bits()) };
+    let parsed = int_from_obj(s_bits, rt_int(10), MoltObject::from_bool(true).bits());
     dec_ref_bits(py, s_bits);
     parsed
 }
@@ -4313,7 +4191,7 @@ fn parse_commondialog_options(
     if let Some(dict_ptr) = options_obj.as_ptr()
         && object_type_id(dict_ptr) == TYPE_ID_DICT
     {
-        let entries = dict_order_vec(dict_ptr);
+        let entries = dict_order(dict_ptr);
         let mut options = Vec::with_capacity(entries.len() / 2);
         for pair in entries.chunks(2) {
             if pair.len() != 2 {
@@ -4980,14 +4858,7 @@ fn invoke_callback(py: &PyToken, callback_bits: u64, args: &[u64]) -> u64 {
     if args.is_empty() {
         return unsafe { call_callable0(py, callback_bits) };
     }
-    let builder_bits = unsafe { molt_callargs_new(args.len() as u64, 0) };
-    if builder_bits == 0 {
-        return MoltObject::none().bits();
-    }
-    for &arg in args {
-        let _ = unsafe { molt_callargs_push_pos(builder_bits, arg) };
-    }
-    unsafe { molt_call_bind(callback_bits, builder_bits) }
+    unsafe { call_callable_args(py, callback_bits, args) }
 }
 
 fn run_event_callback(py: &PyToken, handle: i64, event: TkEvent) -> Result<(), u64> {

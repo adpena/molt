@@ -5,6 +5,9 @@
 
 #[cfg(feature = "tk")]
 #[allow(dead_code)]
+pub(crate) mod bridge;
+#[cfg(feature = "tk")]
+#[allow(dead_code)]
 pub mod tk;
 #[cfg(feature = "tk")]
 pub mod tkinter_core;

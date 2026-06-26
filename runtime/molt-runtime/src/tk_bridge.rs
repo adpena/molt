@@ -4,6 +4,7 @@
 //! internal `pub(crate)` function.  The tk crate declares matching
 //! `unsafe extern "C"` imports and they are resolved at link time.
 
+use crate::audit::{AuditArgs, AuditDecision, AuditEvent, audit_emit};
 use crate::*;
 
 // ---------------------------------------------------------------------------
@@ -55,4 +56,33 @@ pub extern "C" fn molt_rt_dict_order(ptr: *mut u8, out_ptr: *mut *const u64, out
         *out_ptr = vec.as_ptr();
         *out_len = vec.len();
     }
+}
+
+// ---------------------------------------------------------------------------
+// Capability helpers
+// ---------------------------------------------------------------------------
+
+#[unsafe(no_mangle)]
+pub extern "C" fn __molt_tk_has_capability(name_ptr: *const u8, name_len: usize) -> i32 {
+    crate::with_gil_entry_nopanic!(_py, {
+        let name = unsafe {
+            std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len))
+        };
+        let allowed = crate::has_capability(_py, name);
+        let decision = if allowed {
+            AuditDecision::Allowed
+        } else {
+            AuditDecision::Denied {
+                reason: format!("missing {name} capability"),
+            }
+        };
+        audit_emit(AuditEvent::new(
+            "tk.has_capability",
+            "tk.has_capability",
+            AuditArgs::Custom(name.to_string()),
+            decision,
+            module_path!().to_string(),
+        ));
+        if allowed { 1 } else { 0 }
+    })
 }
