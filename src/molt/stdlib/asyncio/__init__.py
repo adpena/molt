@@ -4262,163 +4262,23 @@ if _EXPOSE_WINDOWS_POLICIES:
     WindowsSelectorEventLoopPolicy = _WindowsSelectorEventLoopPolicy
     WindowsProactorEventLoopPolicy = _WindowsProactorEventLoopPolicy
 
-class BaseTransport:
-    """Base class for transports."""
-
-    def __init__(self, extra: dict | None = None):
-        self._extra = extra if extra is not None else {}
-
-    def get_extra_info(self, name: str, default: Any = None) -> Any:
-        return self._extra.get(name, default)
-
-    def is_closing(self) -> bool:
-        raise NotImplementedError
-
-    def close(self) -> None:
-        raise NotImplementedError
-
-    def set_protocol(self, protocol: "BaseProtocol") -> None:
-        raise NotImplementedError
-
-    def get_protocol(self) -> "BaseProtocol":
-        raise NotImplementedError
-
-class ReadTransport(BaseTransport):
-    """Interface for read-only transports."""
-
-    def is_reading(self) -> bool:
-        raise NotImplementedError
-
-    def pause_reading(self) -> None:
-        raise NotImplementedError
-
-    def resume_reading(self) -> None:
-        raise NotImplementedError
-
-class WriteTransport(BaseTransport):
-    """Interface for write-only transports."""
-
-    def set_write_buffer_limits(
-        self, high: int | None = None, low: int | None = None
-    ) -> None:
-        raise NotImplementedError
-
-    def get_write_buffer_size(self) -> int:
-        raise NotImplementedError
-
-    def get_write_buffer_limits(self) -> tuple[int, int]:
-        raise NotImplementedError
-
-    def write(self, data: bytes) -> None:
-        raise NotImplementedError
-
-    def writelines(self, list_of_data: list[bytes]) -> None:
-        for data in list_of_data:
-            self.write(data)
-
-    def write_eof(self) -> None:
-        raise NotImplementedError
-
-    def can_write_eof(self) -> bool:
-        raise NotImplementedError
-
-    def abort(self) -> None:
-        raise NotImplementedError
-
-class Transport(ReadTransport, WriteTransport):
-    """Interface representing a bidirectional transport."""
-
-class DatagramTransport(BaseTransport):
-    """Interface for datagram (UDP) transports."""
-
-    def sendto(self, data: bytes, addr: Any = None) -> None:
-        raise NotImplementedError
-
-    def abort(self) -> None:
-        raise NotImplementedError
-
-class SubprocessTransport(BaseTransport):
-    """Interface for subprocess transports."""
-
-    def get_pid(self) -> int:
-        raise NotImplementedError
-
-    def get_returncode(self) -> int | None:
-        raise NotImplementedError
-
-    def get_pipe_transport(self, fd: int) -> BaseTransport | None:
-        raise NotImplementedError
-
-    def send_signal(self, signal: int) -> None:
-        raise NotImplementedError
-
-    def terminate(self) -> None:
-        raise NotImplementedError
-
-    def kill(self) -> None:
-        raise NotImplementedError
-
-    def close(self) -> None:
-        raise NotImplementedError
-
-class BaseProtocol:
-    """Base class for protocols."""
-
-    def connection_made(self, transport: BaseTransport) -> None:
-        """Called when a connection is made."""
-
-    def connection_lost(self, exc: BaseException | None) -> None:
-        """Called when the connection is lost or closed."""
-
-    def pause_writing(self) -> None:
-        """Called when the transport's buffer goes over the high-water mark."""
-
-    def resume_writing(self) -> None:
-        """Called when the transport's buffer drains below the low-water mark."""
-
-class Protocol(BaseProtocol):
-    """Interface for stream protocol event callbacks."""
-
-    def data_received(self, data: bytes) -> None:
-        """Called when some data is received."""
-
-    def eof_received(self) -> bool | None:
-        """Called when the other end signals it won't send data anymore."""
-
-class BufferedProtocol(BaseProtocol):
-    """Interface for stream protocol with manual buffer control."""
-
-    def get_buffer(self, sizehint: int) -> bytearray:
-        """Called to allocate a new receive buffer."""
-        raise NotImplementedError
-
-    def buffer_updated(self, nbytes: int) -> None:
-        """Called when the buffer was updated with the received data."""
-        raise NotImplementedError
-
-    def eof_received(self) -> bool | None:
-        """Called when the other end signals it won't send data anymore."""
-
-class DatagramProtocol(BaseProtocol):
-    """Interface for datagram protocol event callbacks."""
-
-    def datagram_received(self, data: bytes, addr: Any) -> None:
-        """Called when a datagram is received."""
-
-    def error_received(self, exc: OSError) -> None:
-        """Called when a send or receive operation raises an OSError."""
-
-class SubprocessProtocol(BaseProtocol):
-    """Interface for subprocess event callbacks."""
-
-    def pipe_data_received(self, fd: int, data: bytes) -> None:
-        """Called when the child process writes data into its stdout or stderr pipe."""
-
-    def pipe_connection_lost(self, fd: int, exc: BaseException | None) -> None:
-        """Called when one of the pipes communicating with the child process is closed."""
-
-    def process_exited(self) -> None:
-        """Called when the child process has exited."""
+from . import transports as transports
+from .transports import (
+    BaseTransport as BaseTransport,
+    DatagramTransport as DatagramTransport,
+    ReadTransport as ReadTransport,
+    SubprocessTransport as SubprocessTransport,
+    Transport as Transport,
+    WriteTransport as WriteTransport,
+)
+from . import protocols as protocols
+from .protocols import (
+    BaseProtocol as BaseProtocol,
+    BufferedProtocol as BufferedProtocol,
+    DatagramProtocol as DatagramProtocol,
+    Protocol as Protocol,
+    SubprocessProtocol as SubprocessProtocol,
+)
 
 class StreamReaderProtocol(Protocol):
     """Stream reader protocol."""
@@ -5723,29 +5583,6 @@ def __getattr__(name: str) -> Any:
         raise AttributeError(f"module 'asyncio' has no attribute '{name}'")
     globals()[name] = mod
     return mod
-
-protocols = _module(
-    "asyncio.protocols",
-    {
-        "BaseProtocol": BaseProtocol,
-        "Protocol": Protocol,
-        "BufferedProtocol": BufferedProtocol,
-        "DatagramProtocol": DatagramProtocol,
-        "SubprocessProtocol": SubprocessProtocol,
-    },
-)
-
-transports = _module(
-    "asyncio.transports",
-    {
-        "BaseTransport": Transport,
-        "Transport": Transport,
-        "ReadTransport": Transport,
-        "WriteTransport": Transport,
-        "DatagramTransport": DatagramTransport,
-        "SubprocessTransport": SubprocessTransport,
-    },
-)
 
 runners = _module(
     "asyncio.runners",
