@@ -101,7 +101,7 @@ impl MatchState {
 
 /// Attempt to match `node` starting at `pos` in the subject, followed by the
 /// continuation nodes in `rest`.  This continuation-passing design is critical
-/// for correct backtracking in quantifiers — the quantifier can try different
+/// for correct backtracking in quantifiers â€” the quantifier can try different
 /// repetition counts and verify that the rest of the pattern also matches.
 ///
 /// Returns `Some(final_pos)` on success or `None` on failure.
@@ -348,7 +348,7 @@ pub(super) fn try_match_group_then_rest(
             match match_rest(rest, end_pos, state) {
                 Some(final_pos) => Some(final_pos),
                 None => {
-                    // Rest failed — we need to try other inner matches.
+                    // Rest failed â€” we need to try other inner matches.
                     // For alternation/quantifier inner nodes, the backtracking
                     // in try_match already handles this.  But since we called
                     // try_match with empty rest, we got the "first" match.
@@ -493,7 +493,7 @@ pub(super) fn collect_repeat_positions(
     let saved = state.save_groups();
     if let Some(next) = try_match(inner, pos, &[], state) {
         if next == pos {
-            // Zero-width — don't recurse to avoid infinite loop.
+            // Zero-width â€” don't recurse to avoid infinite loop.
             state.restore_groups(saved);
             return;
         }
@@ -507,7 +507,7 @@ pub(super) fn collect_repeat_positions(
 pub(super) fn match_anchor(kind: &str, pos: usize, state: &MatchState) -> Option<usize> {
     match kind {
         "start" => {
-            // ^ — matches beginning of string, or after \n in MULTILINE.
+            // ^ â€” matches beginning of string, or after \n in MULTILINE.
             if pos == 0 {
                 return Some(pos);
             }
@@ -517,7 +517,7 @@ pub(super) fn match_anchor(kind: &str, pos: usize, state: &MatchState) -> Option
             None
         }
         "end" => {
-            // $ — matches end of string, or before \n in MULTILINE.
+            // $ â€” matches end of string, or before \n in MULTILINE.
             // Also matches before a final \n at end (CPython behavior).
             if pos == state.end {
                 return Some(pos);
@@ -532,11 +532,11 @@ pub(super) fn match_anchor(kind: &str, pos: usize, state: &MatchState) -> Option
             None
         }
         "start_abs" => {
-            // \A — matches only at the start of the string.
+            // \A â€” matches only at the start of the string.
             if pos == 0 { Some(pos) } else { None }
         }
         "end_abs" => {
-            // \Z — matches only at the end of the string (or before a
+            // \Z â€” matches only at the end of the string (or before a
             // trailing newline at the very end).
             if pos == state.end {
                 return Some(pos);
@@ -547,7 +547,7 @@ pub(super) fn match_anchor(kind: &str, pos: usize, state: &MatchState) -> Option
             None
         }
         "word_boundary" => {
-            // \b — word boundary.
+            // \b â€” word boundary.
             let left_word = pos > 0 && state.is_word_char(state.chars[pos - 1]);
             let right_word = pos < state.chars.len() && state.is_word_char(state.chars[pos]);
             if left_word != right_word {
@@ -557,7 +557,7 @@ pub(super) fn match_anchor(kind: &str, pos: usize, state: &MatchState) -> Option
             }
         }
         "word_boundary_not" => {
-            // \B — non-word-boundary.
+            // \B â€” non-word-boundary.
             let left_word = pos > 0 && state.is_word_char(state.chars[pos - 1]);
             let right_word = pos < state.chars.len() && state.is_word_char(state.chars[pos]);
             if left_word == right_word {
@@ -692,7 +692,7 @@ pub(super) fn try_match_repeat(
         match try_match(inner, cur, &[], state) {
             Some(next) => {
                 if next == cur && i > 0 {
-                    // Zero-width match in minimum — still counts.
+                    // Zero-width match in minimum â€” still counts.
                     state.restore_groups(saved);
                     break;
                 }
@@ -713,7 +713,7 @@ pub(super) fn try_match_repeat(
         match try_match(inner, cur, &[], state) {
             Some(next) => {
                 if next == cur {
-                    // Zero-width match — stop collecting.
+                    // Zero-width match â€” stop collecting.
                     state.restore_groups(saved);
                     break;
                 }
@@ -779,7 +779,7 @@ pub(super) fn try_match_look(
         };
         if positive == ok {
             if !ok {
-                // Positive lookbehind failed — restore.
+                // Positive lookbehind failed â€” restore.
                 // (ok is false AND positive is false, so this is negative
                 // lookbehind succeeding because the inner didn't match.)
                 state.restore_groups(saved);
@@ -790,7 +790,7 @@ pub(super) fn try_match_look(
             // groups already restored above.
             Some(pos)
         } else {
-            // Assertion failed — always restore.
+            // Assertion failed â€” always restore.
             state.restore_groups(saved);
             None
         }
@@ -800,333 +800,16 @@ pub(super) fn try_match_look(
         let matched = try_match(inner, pos, &[], state).is_some();
         if positive == matched {
             if !matched {
-                // Negative lookahead succeeded (inner did NOT match) —
+                // Negative lookahead succeeded (inner did NOT match) â€”
                 // groups already unchanged, restore to be safe.
                 state.restore_groups(saved);
             }
-            // Positive lookahead succeeded — keep groups from inner.
+            // Positive lookahead succeeded â€” keep groups from inner.
             Some(pos)
         } else {
-            // Assertion failed — restore groups.
+            // Assertion failed â€” restore groups.
             state.restore_groups(saved);
             None
         }
     }
-}
-
-// ---------------------------------------------------------------------------
-// Top-level match engine: execute a compiled pattern against text
-// ---------------------------------------------------------------------------
-
-/// Internal result of a successful match.
-pub(super) struct MatchResult {
-    pub(super) start: usize,
-    pub(super) end: usize,
-    /// Groups indexed 1..=group_count.  Index 0 is unused.
-    pub(super) groups: Vec<Option<(usize, usize)>>,
-}
-
-/// Execute a compiled pattern in the given mode.
-///
-/// Returns `Some(MatchResult)` on success, `None` on no match.
-pub(super) fn execute_match(
-    compiled: &CompiledPattern,
-    text: &str,
-    pos: usize,
-    end: usize,
-    mode: &str,
-) -> Option<MatchResult> {
-    match mode {
-        "match" => {
-            // Anchored at start (pos), match from pos.
-            let mut state = MatchState::new(text, compiled.flags, compiled.group_count, pos, end);
-            if pos > state.chars.len() || end > state.chars.len() {
-                return None;
-            }
-            let result = try_match(&compiled.root, pos, &[], &mut state);
-            result.map(|end_pos| MatchResult {
-                start: pos,
-                end: end_pos,
-                groups: state.groups,
-            })
-        }
-        "fullmatch" => {
-            // Must match the entire text[pos..end].
-            let mut state = MatchState::new(text, compiled.flags, compiled.group_count, pos, end);
-            if pos > state.chars.len() || end > state.chars.len() {
-                return None;
-            }
-            let result = try_match(&compiled.root, pos, &[], &mut state);
-            match result {
-                Some(end_pos) if end_pos == end => Some(MatchResult {
-                    start: pos,
-                    end: end_pos,
-                    groups: state.groups,
-                }),
-                _ => None,
-            }
-        }
-        "search" => {
-            // Search: try matching at each position from pos to end.
-            let chars: Vec<char> = text.chars().collect();
-            let text_len = chars.len();
-            if pos > text_len || end > text_len {
-                return None;
-            }
-            for start in pos..=end {
-                let mut state =
-                    MatchState::new(text, compiled.flags, compiled.group_count, pos, end);
-                if let Some(end_pos) = try_match(&compiled.root, start, &[], &mut state) {
-                    return Some(MatchResult {
-                        start,
-                        end: end_pos,
-                        groups: state.groups,
-                    });
-                }
-            }
-            None
-        }
-        _ => None,
-    }
-}
-
-/// Build a MoltObject tuple representing the match result for the intrinsic
-/// return value.
-///
-/// Format: `(match_start, match_end, groups_tuple)`
-/// where `groups_tuple` is a tuple of `(start, end) | None` for each group.
-pub(super) fn build_match_result_bits(
-    _py: &CoreGilToken,
-    result: &MatchResult,
-    group_count: u32,
-) -> u64 {
-    let start_bits = MoltObject::from_int(result.start as i64).bits();
-    let end_bits = MoltObject::from_int(result.end as i64).bits();
-
-    // Build group spans tuple.
-    let mut group_elems: Vec<u64> = Vec::with_capacity(group_count as usize);
-    for i in 1..=(group_count as usize) {
-        if i < result.groups.len() {
-            match result.groups[i] {
-                Some((gs, ge)) => {
-                    let gs_bits = MoltObject::from_int(gs as i64).bits();
-                    let ge_bits = MoltObject::from_int(ge as i64).bits();
-                    let pair_ptr = alloc_tuple(_py, &[gs_bits, ge_bits]);
-                    if pair_ptr.is_null() {
-                        group_elems.push(MoltObject::none().bits());
-                    } else {
-                        group_elems.push(MoltObject::from_ptr(pair_ptr).bits());
-                    }
-                }
-                None => {
-                    group_elems.push(MoltObject::none().bits());
-                }
-            }
-        } else {
-            group_elems.push(MoltObject::none().bits());
-        }
-    }
-
-    let groups_ptr = alloc_tuple(_py, &group_elems);
-    let groups_bits = if groups_ptr.is_null() {
-        MoltObject::none().bits()
-    } else {
-        MoltObject::from_ptr(groups_ptr).bits()
-    };
-
-    let result_ptr = alloc_tuple(_py, &[start_bits, end_bits, groups_bits]);
-    if result_ptr.is_null() {
-        MoltObject::none().bits()
-    } else {
-        MoltObject::from_ptr(result_ptr).bits()
-    }
-}
-
-// ---------------------------------------------------------------------------
-// molt_re_execute — Phase-1b match engine
-// ---------------------------------------------------------------------------
-
-/// `molt_re_execute(handle, text, pos, end, mode) -> match_result | None`
-///
-/// Execute a compiled regex pattern against the given text.
-///
-/// Arguments:
-///   handle — integer handle from `molt_re_compile`
-///   text   — subject string
-///   pos    — start position (char index)
-///   end    — end position (char index, exclusive)
-///   mode   — "match", "search", or "fullmatch"
-///
-/// Returns:
-///   None on no match, or a tuple `(start, end, groups_tuple)` where
-///   groups_tuple is a tuple of `(start, end) | None` for each group.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_re_execute(
-    handle_bits: u64,
-    text_bits: u64,
-    pos_bits: u64,
-    end_bits: u64,
-    mode_bits: u64,
-) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
-        let Some(handle) = to_i64(obj_from_bits(handle_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "handle must be int");
-        };
-        let Some(text) = string_obj_to_owned(obj_from_bits(text_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "text must be str");
-        };
-        let Some(pos) = to_i64(obj_from_bits(pos_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "pos must be int");
-        };
-        let Some(end) = to_i64(obj_from_bits(end_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "end must be int");
-        };
-        let Some(mode) = string_obj_to_owned(obj_from_bits(mode_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "mode must be str");
-        };
-
-        let pos_usize = if pos < 0 { 0usize } else { pos as usize };
-        let end_usize = if end < 0 { 0usize } else { end as usize };
-
-        // Look up the compiled pattern.
-        let guard = regex_state(_py)
-            .patterns
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let Some(compiled) = guard.get(&handle) else {
-            return raise_exception::<_>(_py, "ValueError", "invalid regex handle");
-        };
-
-        // Clone the parts we need so we can drop the lock.
-        let root = compiled.root.clone();
-        let group_count = compiled.group_count;
-        let flags = compiled.flags;
-        drop(guard);
-
-        let local_compiled = CompiledPattern {
-            root,
-            group_count,
-            group_names: HashMap::new(), // not needed for matching
-            flags,
-            warn_pos: None,
-        };
-
-        match execute_match(&local_compiled, &text, pos_usize, end_usize, &mode) {
-            Some(result) => build_match_result_bits(_py, &result, group_count),
-            None => MoltObject::none().bits(),
-        }
-    })
-}
-
-// ---------------------------------------------------------------------------
-// molt_re_finditer_collect — Phase-1b find-all engine
-// ---------------------------------------------------------------------------
-
-/// `molt_re_finditer_collect(handle, text, pos, end) -> list | None`
-///
-/// Find all non-overlapping matches of a compiled pattern in the text.
-///
-/// Returns a list of match result tuples `[(start, end, groups), ...]`
-/// or None if the pattern handle is invalid.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_re_finditer_collect(
-    handle_bits: u64,
-    text_bits: u64,
-    pos_bits: u64,
-    end_bits: u64,
-) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
-        let Some(handle) = to_i64(obj_from_bits(handle_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "handle must be int");
-        };
-        let Some(text) = string_obj_to_owned(obj_from_bits(text_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "text must be str");
-        };
-        let Some(pos) = to_i64(obj_from_bits(pos_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "pos must be int");
-        };
-        let Some(end) = to_i64(obj_from_bits(end_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "end must be int");
-        };
-
-        let pos_usize = if pos < 0 { 0usize } else { pos as usize };
-        let end_usize = if end < 0 { 0usize } else { end as usize };
-
-        // Look up the compiled pattern.
-        let guard = regex_state(_py)
-            .patterns
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let Some(compiled) = guard.get(&handle) else {
-            return raise_exception::<_>(_py, "ValueError", "invalid regex handle");
-        };
-
-        let root = compiled.root.clone();
-        let group_count = compiled.group_count;
-        let flags = compiled.flags;
-        drop(guard);
-
-        let local_compiled = CompiledPattern {
-            root,
-            group_count,
-            group_names: HashMap::new(),
-            flags,
-            warn_pos: None,
-        };
-
-        let chars: Vec<char> = text.chars().collect();
-        let text_len = chars.len();
-        let end_clamp = end_usize.min(text_len);
-
-        let mut results: Vec<u64> = Vec::new();
-        let mut cur = pos_usize;
-        let mut prev_empty_match_at: Option<usize> = None;
-
-        while cur <= end_clamp {
-            match execute_match(&local_compiled, &text, cur, end_clamp, "search") {
-                Some(result) => {
-                    let match_start = result.start;
-                    let match_end = result.end;
-
-                    // Avoid infinite loop on zero-width matches at the same position.
-                    if match_start == match_end {
-                        if prev_empty_match_at == Some(match_start) {
-                            // Already yielded an empty match here — advance.
-                            if cur < end_clamp {
-                                cur += 1;
-                            } else {
-                                break;
-                            }
-                            continue;
-                        }
-                        prev_empty_match_at = Some(match_start);
-                    } else {
-                        prev_empty_match_at = None;
-                    }
-
-                    let bits = build_match_result_bits(_py, &result, group_count);
-                    results.push(bits);
-
-                    if match_end == match_start {
-                        // Zero-width match — advance by one to avoid infinite loop.
-                        if cur < end_clamp {
-                            cur = match_start + 1;
-                        } else {
-                            break;
-                        }
-                    } else {
-                        cur = match_end;
-                    }
-                }
-                None => break,
-            }
-        }
-
-        let list_ptr = alloc_list(_py, &results);
-        if list_ptr.is_null() {
-            MoltObject::none().bits()
-        } else {
-            MoltObject::from_ptr(list_ptr).bits()
-        }
-    })
 }

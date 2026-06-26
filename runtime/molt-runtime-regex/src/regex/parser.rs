@@ -1,173 +1,8 @@
 use super::*;
-
-// ---------------------------------------------------------------------------
-// Phase-1 regex compiler: IR parser + compiled-pattern registry
-// ---------------------------------------------------------------------------
-//
-// This section implements the Rust-side `molt_re_compile` / `molt_re_pattern_info`
-// intrinsics (Phase 1).  The match engine (`molt_re_execute` /
-// `molt_re_finditer_collect`) is a Phase-1b stub that always returns None /
-// empty list, signalling Python to fall back to its own match engine.
-//
-// Design notes:
-// * No `regex` crate — backreferences are required and not supported there.
-// * Hand-rolled recursive-descent parser that mirrors the Python `_Parser` class
-//   in `src/molt/stdlib/re/__init__.py` exactly (same quirks, same IR shape).
-// * Compiled patterns are owned by the active runtime state so handles do not
-//   survive teardown/reinit.
-// * Handle allocation starts at 1 so that 0 can serve as "invalid".
-
 use std::collections::HashMap;
-use std::sync::{
-    Mutex,
-    atomic::{AtomicI64, Ordering},
-};
 
 // ---------------------------------------------------------------------------
-// Re-use the flag constants already defined at the top of this file.
-// (RE_IGNORECASE = 2, RE_VERBOSE = 64, RE_ASCII = 256)
-// Additional flags:
-pub(super) const RE_MULTILINE: i64 = 8;
-pub(super) const RE_DOTALL: i64 = 16;
-pub(super) const RE_UNICODE: i64 = 32;
-pub(super) const RE_LOCALE: i64 = 4;
-
-// ---------------------------------------------------------------------------
-// IR node enum — mirrors the Python dataclasses in re/__init__.py
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone)]
-pub(crate) enum ReNode {
-    Empty,
-    Literal(String),
-    Any,
-    Anchor(String),
-    CharClass {
-        negated: bool,
-        ranges: Vec<(String, String)>,
-        chars: Vec<String>,
-        categories: Vec<String>,
-    },
-    Concat(Vec<ReNode>),
-    Alt(Vec<ReNode>),
-    Repeat {
-        node: Box<ReNode>,
-        min_count: u64,
-        max_count: Option<u64>,
-        greedy: bool,
-    },
-    Group {
-        node: Box<ReNode>,
-        index: u32,
-    },
-    Backref(u32),
-    Look {
-        node: Box<ReNode>,
-        behind: bool,
-        positive: bool,
-        width: Option<u64>,
-    },
-    ScopedFlags {
-        node: Box<ReNode>,
-        add_flags: i64,
-        clear_flags: i64,
-    },
-    Conditional {
-        group_index: u32,
-        yes: Box<ReNode>,
-        no: Box<ReNode>,
-    },
-}
-
-// ---------------------------------------------------------------------------
-// Compiled pattern — stored in the global registry
-// ---------------------------------------------------------------------------
-
-#[derive(Debug)]
-pub(crate) struct CompiledPattern {
-    pub root: ReNode,
-    pub group_count: u32,
-    pub group_names: HashMap<String, u32>,
-    pub flags: i64,
-    /// Position (char index) of a nested-set-in-charclass warning, or None.
-    pub warn_pos: Option<i64>,
-}
-
-// ---------------------------------------------------------------------------
-// Runtime-scoped pattern registry
-// ---------------------------------------------------------------------------
-
-pub(super) struct RegexRuntimeState {
-    pub(super) next_handle: AtomicI64,
-    pub(super) patterns: Mutex<HashMap<i64, CompiledPattern>>,
-}
-
-impl RegexRuntimeState {
-    pub(super) fn new() -> Self {
-        Self {
-            next_handle: AtomicI64::new(1),
-            patterns: Mutex::new(HashMap::new()),
-        }
-    }
-
-    pub(super) fn clear(&self) {
-        self.patterns
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clear();
-    }
-}
-
-pub(super) unsafe extern "C" fn regex_runtime_state_init() -> *mut u8 {
-    Box::into_raw(Box::new(RegexRuntimeState::new())) as *mut u8
-}
-
-pub(super) unsafe extern "C" fn regex_runtime_state_clear(ptr: *mut u8) {
-    if ptr.is_null() {
-        return;
-    }
-    unsafe {
-        (&*(ptr as *const RegexRuntimeState)).clear();
-    }
-}
-
-pub(super) unsafe extern "C" fn regex_runtime_state_drop(ptr: *mut u8) {
-    if ptr.is_null() {
-        return;
-    }
-    unsafe {
-        drop(Box::from_raw(ptr as *mut RegexRuntimeState));
-    }
-}
-
-pub(super) fn regex_state(_py: &CoreGilToken) -> &'static RegexRuntimeState {
-    let ptr = crate::bridge::runtime_state_get_or_init(
-        b"molt-runtime-regex/patterns/v1",
-        regex_runtime_state_init,
-        regex_runtime_state_clear,
-        regex_runtime_state_drop,
-    );
-    assert!(
-        !ptr.is_null(),
-        "molt regex runtime state initialization failed"
-    );
-    unsafe { &*(ptr as *const RegexRuntimeState) }
-}
-
-pub(super) fn re_alloc_handle(_py: &CoreGilToken) -> i64 {
-    regex_state(_py).next_handle.fetch_add(1, Ordering::Relaxed)
-}
-
-pub(super) fn re_store_pattern(_py: &CoreGilToken, handle: i64, pattern: CompiledPattern) {
-    let mut guard = regex_state(_py)
-        .patterns
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
-    guard.insert(handle, pattern);
-}
-
-// ---------------------------------------------------------------------------
-// Parser state — mirrors _Parser in re/__init__.py
+// Parser state â€” mirrors _Parser in re/__init__.py
 // ---------------------------------------------------------------------------
 
 pub(super) struct ReParser {
@@ -175,7 +10,7 @@ pub(super) struct ReParser {
     pub(super) pos: usize,
     pub(super) group_count: u32,
     pub(super) group_names: HashMap<String, u32>,
-    /// Fixed widths keyed by group index — used for look-behind validation.
+    /// Fixed widths keyed by group index â€” used for look-behind validation.
     pub(super) group_widths: HashMap<u32, Option<u64>>,
     pub(super) open_group_names: std::collections::HashSet<String>,
     pub(super) flags: i64,
@@ -356,7 +191,7 @@ impl ReParser {
                 self.next_ch()?; // consume '{'
                 let min_res = self.parse_number();
                 if min_res.is_err() {
-                    // Not a valid quantifier — backtrack.
+                    // Not a valid quantifier â€” backtrack.
                     self.pos = start_pos;
                     return Ok(node);
                 }
@@ -364,7 +199,7 @@ impl ReParser {
                 let max_count = if self.peek() == Some(',') {
                     self.next_ch()?; // consume ','
                     if self.peek() == Some('}') {
-                        None // {n,} — unbounded
+                        None // {n,} â€” unbounded
                     } else {
                         let max_res = self.parse_number();
                         if max_res.is_err() {
@@ -377,7 +212,7 @@ impl ReParser {
                     Some(min_count)
                 };
                 if self.peek() != Some('}') {
-                    // Backtrack — not a valid quantifier.
+                    // Backtrack â€” not a valid quantifier.
                     self.pos = start_pos;
                     return Ok(node);
                 }
@@ -450,7 +285,7 @@ impl ReParser {
             self.next_ch()?; // consume '?'
             return self.parse_extension_group();
         }
-        // Capturing group — assign index at open-paren time (CPython order).
+        // Capturing group â€” assign index at open-paren time (CPython order).
         self.group_count += 1;
         let idx = self.group_count;
         let node = self.parse_expr()?;
@@ -926,7 +761,7 @@ impl ReParser {
                     self.raw_next()?; // consume '-'
                     match self.raw_peek() {
                         None | Some(']') => {
-                            // Not a range — backtrack the '-'.
+                            // Not a range â€” backtrack the '-'.
                             self.pos = saved_pos;
                             Ok(ClassItem::Char(ch.to_string()))
                         }
@@ -1054,91 +889,5 @@ pub(super) fn parse_pattern(pattern: &str, flags: i64) -> Result<CompiledPattern
         group_names,
         flags: flags | inline_flags,
         warn_pos,
-    })
-}
-
-// ---------------------------------------------------------------------------
-// molt_re_compile intrinsic
-// ---------------------------------------------------------------------------
-
-/// `molt_re_compile(pattern: str, flags: int) -> int`
-///
-/// Parse a regex pattern string and return an opaque integer handle.  The
-/// compiled `CompiledPattern` is stored in the active runtime registry.
-/// Returns -1 and raises `re.error` on parse failure.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_re_compile(pattern_bits: u64, flags_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
-        let Some(pattern) = string_obj_to_owned(obj_from_bits(pattern_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "pattern must be str");
-        };
-        let Some(flags) = to_i64(obj_from_bits(flags_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "flags must be int");
-        };
-        match parse_pattern(&pattern, flags) {
-            Ok(compiled) => {
-                let handle = re_alloc_handle(_py);
-                re_store_pattern(_py, handle, compiled);
-                MoltObject::from_int(handle).bits()
-            }
-            Err(msg) => raise_exception::<_>(_py, "ValueError", &msg),
-        }
-    })
-}
-
-// ---------------------------------------------------------------------------
-// molt_re_pattern_info intrinsic
-// ---------------------------------------------------------------------------
-
-/// `molt_re_pattern_info(handle: int) -> (groups, group_names_dict, flags, warn_pos)`
-///
-/// Returns a 4-tuple:
-///   0: groups      — int,   number of capturing groups
-///   1: group_names — dict,  {name: index}
-///   2: flags       — int,   effective flags (pattern flags | inline flags)
-///   3: warn_pos    — int or None,  char position of nested-set warning (or None)
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_re_pattern_info(handle_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
-        let Some(handle) = to_i64(obj_from_bits(handle_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "handle must be int");
-        };
-        let guard = regex_state(_py)
-            .patterns
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let Some(compiled) = guard.get(&handle) else {
-            return raise_exception::<_>(_py, "ValueError", "invalid regex handle");
-        };
-        // Build group_names dict.
-        let mut pairs: Vec<u64> = Vec::with_capacity(compiled.group_names.len() * 2);
-        for (name, &idx) in &compiled.group_names {
-            let name_ptr = alloc_string(_py, name.as_bytes());
-            if name_ptr.is_null() {
-                return MoltObject::none().bits();
-            }
-            let name_bits = MoltObject::from_ptr(name_ptr).bits();
-            let idx_bits = MoltObject::from_int(idx as i64).bits();
-            pairs.push(name_bits);
-            pairs.push(idx_bits);
-        }
-        let dict_ptr = alloc_dict_with_pairs(_py, &pairs);
-        if dict_ptr.is_null() {
-            return MoltObject::none().bits();
-        }
-        let dict_bits = MoltObject::from_ptr(dict_ptr).bits();
-
-        let groups_bits = MoltObject::from_int(compiled.group_count as i64).bits();
-        let flags_bits_out = MoltObject::from_int(compiled.flags).bits();
-        let warn_bits = match compiled.warn_pos {
-            Some(pos) => MoltObject::from_int(pos).bits(),
-            None => MoltObject::none().bits(),
-        };
-
-        let tuple_ptr = alloc_tuple(_py, &[groups_bits, dict_bits, flags_bits_out, warn_bits]);
-        if tuple_ptr.is_null() {
-            return MoltObject::none().bits();
-        }
-        MoltObject::from_ptr(tuple_ptr).bits()
     })
 }
