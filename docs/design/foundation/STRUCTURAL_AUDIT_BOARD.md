@@ -13,7 +13,7 @@ Product board for the molt structural sweep — the first instrument of the Molt
 | critical_hand_classifications | 0 |
 | handset_classifications | 0 |
 | debt_markers_total | 513 |
-| god_files | 10 |
+| god_files | 9 |
 | max_god_file_lines | 5982 |
 | structural_god_files | 1 |
 | max_god_file_structural_score | 606 |
@@ -37,10 +37,10 @@ Product board for the molt structural sweep — the first instrument of the Molt
 | low | god_file | `runtime/molt-runtime/src/object/ops_string.rs` | 5026 lines (ceiling 4000) |
 | low | god_file | `runtime/molt-backend/src/rust.rs` | 4895 lines (ceiling 4000) |
 | low | god_file | `runtime/molt-runtime/src/object/ops_bytes.rs` | 4818 lines (ceiling 4000) |
-| low | god_file | `src/molt/stdlib/asyncio/__init__.py` | 3717 lines (ceiling 2500) |
 | low | god_file | `tools/memory_guard.py` | 3594 lines (ceiling 2500) |
 | low | structural_god_file | `tools/memory_guard.py` | 3 large top-level regions (606 excess lines) |
 | low | debt_marker | `runtime/molt-backend/src/native_backend/function_compiler…` | 8 debt/workaround markers |
+| low | debt_marker | `src/molt/stdlib/_pyio.py` | 7 debt/workaround markers |
 
 ## TOP DELETION CANDIDATES (0) — replace, don't just delete
 
@@ -103,7 +103,7 @@ Product board for the molt structural sweep — the first instrument of the Molt
 | low | 1 debt/workaround markers | `runtime/molt-backend/src/luau/op_emitter.rs` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | … | _355 more_ | | run `--json` for full list |
 
-### god_file (10)
+### god_file (9)
 
 | sev | what | where | action |
 | --- | --- | --- | --- |
@@ -115,7 +115,6 @@ Product board for the molt structural sweep — the first instrument of the Molt
 | low | 5026 lines (ceiling 4000) | `runtime/molt-runtime/src/object/ops_string.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | low | 4895 lines (ceiling 4000) | `runtime/molt-backend/src/rust.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | low | 4818 lines (ceiling 4000) | `runtime/molt-runtime/src/object/ops_bytes.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
-| low | 3717 lines (ceiling 2500) | `src/molt/stdlib/asyncio/__init__.py` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | low | 3594 lines (ceiling 2500) | `tools/memory_guard.py` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 
 ### structural_god_file (1)
