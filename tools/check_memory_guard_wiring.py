@@ -566,10 +566,14 @@ PYTHON_GUARD_CONTRACTS: tuple[TokenContract, ...] = (
         "CLI build/test/bench/diff commands must pass family guard prefixes",
     ),
     TokenContract(
+        "src/molt/cli/setup_readiness.py",
+        ("MOLT_BUILD",),
+        "CLI setup/toolchain readiness must use build-family guard prefixes",
+    ),
+    TokenContract(
         "src/molt/cli/toolchain_validation.py",
         (
             "_load_cli_harness_memory_guard",
-            "MOLT_BUILD",
             "MOLT_BENCH",
             "MOLT_CONFORMANCE",
         ),

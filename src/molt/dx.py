@@ -408,7 +408,10 @@ class DxProject:
         return cls(Path(__file__).resolve().parents[2])
 
     def load_config(self) -> dict[str, object]:
-        with (self.root / "pyproject.toml").open("rb") as fh:
+        pyproject = self.root / "pyproject.toml"
+        if not pyproject.exists():
+            return {}
+        with pyproject.open("rb") as fh:
             data = tomllib.load(fh)
         tool = data.get("tool", {})
         if not isinstance(tool, dict):

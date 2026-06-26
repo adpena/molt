@@ -39,11 +39,12 @@ from molt.cli.runtime_fingerprints import (
     _write_runtime_fingerprint,
 )
 from molt.cli.runtime_paths import _cargo_profile_dir, _cargo_target_root
-from molt.cli.toolchain_validation import (
+from molt.cli.setup_readiness import (
     _llvm_backend_unavailable_message,
     _llvm_sys_prefix_env_var,
     _required_llvm_backend_major,
 )
+
 
 def _backend_fingerprint_path(
     project_root: Path,
@@ -57,6 +58,7 @@ def _backend_fingerprint_path(
         stem_suffix=f"{cargo_profile}",
         extension="fingerprint",
     )
+
 
 def _backend_fingerprint(
     project_root: Path,
@@ -106,6 +108,7 @@ def _backend_fingerprint(
         "inputs_digest": inputs_digest,
         "meta_digest": meta_digest,
     }
+
 
 def _ensure_backend_binary(
     backend_bin: Path,
@@ -445,6 +448,7 @@ def _ensure_backend_binary(
                         file=sys.stderr,
                     )
     return True
+
 
 def _artifact_newer_than_sources(
     artifact: Path,
