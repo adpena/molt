@@ -13,14 +13,34 @@ from .contracts import DFlashRuntime, DFlashSelectionContext
 
 
 _DFLASH_ADAPTERS = {}
+DFLASH_ALGORITHM_FAMILIES = frozenset(
+    {
+        "base_dflash",
+        "dflash_v2",
+        "ddtree",
+        "dflare",
+        "dual_diffusion_draft",
+    }
+)
 
 
 def _require_non_empty_string(value, field_name: str) -> str:
     if not isinstance(value, str):
         raise TypeError(f"dflash adapter {field_name} must be a string")
-    if not value.strip():
+    normalized = value.strip()
+    if not normalized:
         raise ValueError(f"dflash adapter {field_name} must be non-empty")
-    return value
+    return normalized
+
+
+def _require_algorithm_family(value) -> str:
+    family = _require_non_empty_string(value, "algorithm_family").strip().lower()
+    if family not in DFLASH_ALGORITHM_FAMILIES:
+        allowed = ", ".join(sorted(DFLASH_ALGORITHM_FAMILIES))
+        raise ValueError(
+            f"dflash adapter algorithm_family must be a DFlash-family value: {allowed}"
+        )
+    return family
 
 
 def _require_bool_true(value, field_name: str) -> bool:
@@ -98,9 +118,7 @@ class DFlashAdapterMetadata:
         uses_non_causal_draft_attention: bool,
         injects_target_context_each_layer: bool,
     ) -> None:
-        self.algorithm_family = _require_non_empty_string(
-            algorithm_family, "algorithm_family"
-        )
+        self.algorithm_family = _require_algorithm_family(algorithm_family)
         self.adapter_version = _require_non_empty_string(
             adapter_version, "adapter_version"
         )
@@ -162,7 +180,21 @@ class DFlashAdapterSpec:
         self.priority = priority
 
 
+def _adapter_metadata_matches_context(spec: DFlashAdapterSpec, context) -> bool:
+    if not isinstance(context, DFlashSelectionContext):
+        raise TypeError("dflash adapter context must be DFlashSelectionContext")
+    if context.target_model_id != spec.target_model_id:
+        return False
+    if context.tokenizer_id != spec.metadata.tokenizer_id:
+        return False
+    if context.block_size == 1:
+        return False
+    return context.block_size <= spec.metadata.max_block_size
+
+
 def _adapter_supports(spec: DFlashAdapterSpec, context) -> bool:
+    if not _adapter_metadata_matches_context(spec, context):
+        return False
     supported = spec.supports(context)
     if not isinstance(supported, bool):
         raise TypeError("dflash adapter supports() must return bool")
@@ -265,6 +297,13 @@ def resolve_dflash_runtime(context, preferred_name: str | None = None):
     runtime = adapter.create_runtime(context)
     if not isinstance(runtime, DFlashRuntime):
         raise TypeError("dflash adapter create_runtime() must return DFlashRuntime")
+    effective_block_size = runtime.block_size or context.block_size
+    if effective_block_size == 1:
+        raise ValueError("dflash runtime block_size must support block drafting")
+    if effective_block_size > adapter.metadata.max_block_size:
+        raise ValueError(
+            "dflash runtime block_size exceeds adapter metadata max_block_size"
+        )
     return runtime
 
 
@@ -277,6 +316,8 @@ def build_dflash_runtime(
     eos_token_id=None,
     max_new_tokens: int = 100,
     block_size: int = 16,
+    target_model_id: str,
+    tokenizer_id: str,
     adapter_payload=None,
 ):
     context = DFlashSelectionContext(
@@ -286,6 +327,8 @@ def build_dflash_runtime(
         eos_token_id=eos_token_id,
         max_new_tokens=max_new_tokens,
         block_size=block_size,
+        target_model_id=target_model_id,
+        tokenizer_id=tokenizer_id,
         adapter_payload=adapter_payload,
     )
     runtime = resolve_dflash_runtime(context, preferred_name=dflash_adapter)

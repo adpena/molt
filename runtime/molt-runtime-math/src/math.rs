@@ -1709,11 +1709,19 @@ pub extern "C" fn molt_math_sqrt(val_bits: u64) -> u64 {
 pub extern "C" fn molt_math_floor(val_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let obj = obj_from_bits(val_bits);
-        if let Some(i) = to_i64(obj) {
-            return MoltObject::from_int(i).bits();
-        }
+        // A bare heap BigInt is already an exact int; return it unchanged
+        // (retaining the owned alias) BEFORE the `to_i64` fast path so a
+        // fit-i64 BigInt whose magnitude exceeds the 47-bit inline window is
+        // not re-boxed through the truncating inline `from_int`.
         if bigint_ptr_from_bits(val_bits).is_some() {
+            inc_ref_bits(_py, val_bits);
             return val_bits;
+        }
+        if let Some(i) = to_i64(obj) {
+            // Full-range boxing — never inline-only `from_int`, which would
+            // silently truncate exact-integer floats or i64 magnitudes
+            // >= 2**46 (mod 2**47).
+            return int_bits_from_i64(_py, i);
         }
         if let Some(f) = as_float_extended(obj) {
             let Some(bits) = round_float_bits(_py, f, RoundMode::Floor) else {
@@ -1755,11 +1763,19 @@ pub extern "C" fn molt_math_floor(val_bits: u64) -> u64 {
 pub extern "C" fn molt_math_ceil(val_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let obj = obj_from_bits(val_bits);
-        if let Some(i) = to_i64(obj) {
-            return MoltObject::from_int(i).bits();
-        }
+        // A bare heap BigInt is already an exact int; return it unchanged
+        // (retaining the owned alias) BEFORE the `to_i64` fast path so a
+        // fit-i64 BigInt whose magnitude exceeds the 47-bit inline window is
+        // not re-boxed through the truncating inline `from_int`.
         if bigint_ptr_from_bits(val_bits).is_some() {
+            inc_ref_bits(_py, val_bits);
             return val_bits;
+        }
+        if let Some(i) = to_i64(obj) {
+            // Full-range boxing — never inline-only `from_int`, which would
+            // silently truncate exact-integer floats or i64 magnitudes
+            // >= 2**46 (mod 2**47).
+            return int_bits_from_i64(_py, i);
         }
         if let Some(f) = as_float_extended(obj) {
             let Some(bits) = round_float_bits(_py, f, RoundMode::Ceil) else {
@@ -1801,11 +1817,19 @@ pub extern "C" fn molt_math_ceil(val_bits: u64) -> u64 {
 pub extern "C" fn molt_math_trunc(val_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let obj = obj_from_bits(val_bits);
-        if let Some(i) = to_i64(obj) {
-            return MoltObject::from_int(i).bits();
-        }
+        // A bare heap BigInt is already an exact int; return it unchanged
+        // (retaining the owned alias) BEFORE the `to_i64` fast path so a
+        // fit-i64 BigInt whose magnitude exceeds the 47-bit inline window is
+        // not re-boxed through the truncating inline `from_int`.
         if bigint_ptr_from_bits(val_bits).is_some() {
+            inc_ref_bits(_py, val_bits);
             return val_bits;
+        }
+        if let Some(i) = to_i64(obj) {
+            // Full-range boxing — never inline-only `from_int`, which would
+            // silently truncate exact-integer floats or i64 magnitudes
+            // >= 2**46 (mod 2**47).
+            return int_bits_from_i64(_py, i);
         }
         if let Some(f) = as_float_extended(obj) {
             let Some(bits) = round_float_bits(_py, f, RoundMode::Trunc) else {

@@ -19,6 +19,43 @@ from __future__ import annotations
 from ..speculative import SpeculativeConditioning
 
 
+def _required_non_empty_string(value, field_name: str) -> str:
+    if not isinstance(value, str):
+        raise TypeError(f"{field_name} must be a string")
+    normalized = value.strip()
+    if not normalized:
+        raise ValueError(f"{field_name} must be non-empty")
+    return normalized
+
+
+def _positive_int(value, field_name: str) -> int:
+    if isinstance(value, bool):
+        raise TypeError(f"{field_name} must be a positive integer")
+    number = int(value)
+    if number != value:
+        raise TypeError(f"{field_name} must be a positive integer")
+    if number <= 0:
+        raise ValueError(f"{field_name} must be positive")
+    return number
+
+
+def _non_negative_int(value, field_name: str) -> int:
+    if isinstance(value, bool):
+        raise TypeError(f"{field_name} must be a non-negative integer")
+    number = int(value)
+    if number != value:
+        raise TypeError(f"{field_name} must be a non-negative integer")
+    if number < 0:
+        raise ValueError(f"{field_name} must be non-negative")
+    return number
+
+
+def _optional_positive_int(value, field_name: str) -> int | None:
+    if value is None:
+        return None
+    return _positive_int(value, field_name)
+
+
 class DFlashConditioning(SpeculativeConditioning):
     """Required target-conditioned payload for a paper-faithful DFlash drafter.
 
@@ -94,10 +131,15 @@ class DFlashRuntime:
                 "DFlashRuntime draft_step and verify_step must be distinct callables"
             )
         require_dflash_conditioning(initial_conditioning, "initial_conditioning")
+        runtime_block_size = _optional_positive_int(
+            block_size, "DFlashRuntime block_size"
+        )
+        if runtime_block_size == 1:
+            raise ValueError("DFlashRuntime block_size must support block drafting")
         self.draft_step = draft_step
         self.verify_step = verify_step
         self.initial_conditioning = initial_conditioning
-        self.block_size = block_size
+        self.block_size = runtime_block_size
 
 
 class DFlashSelectionContext:
@@ -112,12 +154,18 @@ class DFlashSelectionContext:
         eos_token_id,
         max_new_tokens: int,
         block_size: int,
+        target_model_id: str,
+        tokenizer_id: str,
         adapter_payload=None,
     ) -> None:
         self.model = model
         self.backend = backend
         self.prompt_tokens = list(prompt_tokens)
         self.eos_token_id = eos_token_id
-        self.max_new_tokens = max_new_tokens
-        self.block_size = block_size
+        self.max_new_tokens = _non_negative_int(max_new_tokens, "max_new_tokens")
+        self.block_size = _positive_int(block_size, "block_size")
+        self.target_model_id = _required_non_empty_string(
+            target_model_id, "target_model_id"
+        )
+        self.tokenizer_id = _required_non_empty_string(tokenizer_id, "tokenizer_id")
         self.adapter_payload = adapter_payload

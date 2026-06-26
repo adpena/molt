@@ -230,14 +230,24 @@ here so the algorithm cannot be declared done without satisfying it.
   The metadata must identify the DFlash-family algorithm/version, tokenizer,
   mask token, target layer IDs, target feature schema, KV schema, target
   conditioning path, maximum block size, non-causal draft attention, and
-  per-layer target-context injection. Empty, loose, single-token-only, causal
-  autoregressive, or non-injecting metadata is rejected before registration.
+  per-layer target-context injection. Algorithm family is limited to the
+  explicit `DFLASH_ALGORITHM_FAMILIES` vocabulary; empty, loose, non-DFlash,
+  single-token-only, causal autoregressive, or non-injecting metadata is
+  rejected before registration. At resolution time, `DFlashSelectionContext`
+  must expose explicit DFlash identity facts (`dflash_target_model_id` plus
+  `dflash_tokenizer_id`, or matching explicit builder arguments). Generic
+  legacy identity fields such as `model_id`, `target_model_id`, `name_or_path`,
+  or ordinary `tokenizer_id` are not DFlash custody and do not enable adapter
+  resolution. Adapter-specific `supports()` callbacks run only after the
+  canonical metadata/context match succeeds.
 - **Checkable assertion (today):** `DFlashAdapterSpec` validates non-empty
   `target_model_id`, `draft_model_id`, and `provenance`, requires a typed
   `DFlashAdapterMetadata`, and that metadata validates the schema fields above;
-  the fail-closed corpus asserts the typed refusals. Test fixtures use
-  `test://...` ids and explicit test-only provenance/metadata so they cannot be
-  mistaken for production model support.
+  the resolver refuses missing/mismatched context identity before adapter
+  callbacks run; returned runtimes are rejected when their effective block size
+  exceeds the adapter's declared `max_block_size`. The fail-closed corpus asserts
+  the typed refusals. Test fixtures use `test://...` ids and explicit test-only
+  provenance/metadata so they cannot be mistaken for production model support.
 - **Status:** STRUCTURALLY ENFORCED + GATED.
 
 ---
@@ -264,6 +274,7 @@ typed error, by `tests/gpu/dflash/test_dflash_fidelity.py`:
 | anonymous adapter draft | `DFlashAdapterSpec(draft_model_id="   ", …)` | `ValueError("dflash adapter draft_model_id must be non-empty")` | `adapters.py` |
 | missing adapter provenance | `DFlashAdapterSpec(provenance=None, …)` | `TypeError("dflash adapter provenance must be a string")` | `adapters.py` |
 | loose adapter metadata | `DFlashAdapterSpec(metadata={...}, …)` | `TypeError("dflash adapter metadata must be DFlashAdapterMetadata")` | `adapters.py` |
+| non-DFlash algorithm family | `DFlashAdapterMetadata(algorithm_family="eagle", …)` | `ValueError("dflash adapter algorithm_family must be a DFlash-family value: …")` | `adapters.py` |
 | missing adapter tokenizer | `DFlashAdapterMetadata(tokenizer_id="", …)` | `ValueError("dflash adapter tokenizer_id must be non-empty")` | `adapters.py` |
 | invalid adapter mask token | `DFlashAdapterMetadata(mask_token_id=True, …)` | `TypeError("dflash adapter mask_token_id must be an integer token id")` | `adapters.py` |
 | missing target layer IDs | `DFlashAdapterMetadata(target_layer_ids=[], …)` | `ValueError("dflash adapter target_layer_ids must be non-empty")` | `adapters.py` |
@@ -273,6 +284,10 @@ typed error, by `tests/gpu/dflash/test_dflash_fidelity.py`:
 | causal/autoregressive metadata | `DFlashAdapterMetadata(uses_non_causal_draft_attention=False, …)` | `ValueError("dflash adapter uses_non_causal_draft_attention must be true")` | `adapters.py` |
 | non-injecting metadata | `DFlashAdapterMetadata(injects_target_context_each_layer=False, …)` | `ValueError("dflash adapter injects_target_context_each_layer must be true")` | `adapters.py` |
 | non-spec adapter registration | `register_dflash_adapter(object())` | `TypeError("register_dflash_adapter expects DFlashAdapterSpec")` | `register_dflash_adapter` |
+| missing DFlash context identity | model lacks `dflash_target_model_id` / `dflash_tokenizer_id` | no adapter resolution; `supports()` is not called | `resolve_dflash_runtime` |
+| legacy identity attr names | model exposes only `model_id`, `target_model_id`, `name_or_path`, or `tokenizer_id` | no adapter resolution; `supports()` is not called | `DFlashSelectionContext` |
+| target/tokenizer mismatch | context identity differs from adapter metadata | no adapter resolution; `supports()` is not called | `resolve_dflash_runtime` |
+| runtime exceeds checkpoint capacity | adapter runtime block size exceeds `metadata.max_block_size` | `ValueError("dflash runtime block_size exceeds adapter metadata max_block_size")` | `resolve_dflash_runtime` |
 | generic adapter returns non-runtime | adapter `create_runtime` returns a non-`DFlashRuntime` | `TypeError("dflash adapter create_runtime() must return DFlashRuntime")` | `build_dflash_runtime` |
 | named adapter unavailable | `build_dflash_runtime(…, dflash_adapter="x")` with no supporting adapter | `LookupError("dflash adapter 'x' is unavailable for this context")` | `build_dflash_runtime` |
 | mislabel guard | `import tinygrad.dflash` | `ImportError("tinygrad.dflash is not available: …")` (points at `molt.gpu.dflash`, names `tinygrad.speculative` as the generic alternative) | `src/molt/stdlib/tinygrad/dflash.py` |
