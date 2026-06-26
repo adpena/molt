@@ -47,6 +47,7 @@ class _GeneratorProtocolAttrs(Protocol):
     _emitted_syntax_warnings: set[tuple[str, int, str]]
     _expr_col: tuple[int, int] | None
     _inline_super_must_fold: bool
+    _list_int_containers: set[str]
     _midend_env_snapshot: Any
     _midend_stats_reported: Any
     _module_attr_type_hints: dict[str, str]
@@ -134,4 +135,3 @@ class _GeneratorProtocolAttrs(Protocol):
     gpu_kernel_symbols_by_name: dict[str, str]
     imported_attr_names: dict[str, str]
     imported_module_attr_mutations: set[tuple[str, str]]
-    imported_modules: dict[str, str]

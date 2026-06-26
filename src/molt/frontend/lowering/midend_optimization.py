@@ -52,6 +52,56 @@ else:
 
 
 class MidendOptimizationMixin(_MixinBase):
+    def _init_midend_state(
+        self,
+        optimization_profile: MidendProfile,
+        pgo_hot_functions: set[str] | None,
+    ) -> None:
+        if optimization_profile not in {"dev", "release"}:
+            optimization_profile = "release"
+        self.optimization_profile: MidendProfile = optimization_profile
+        self.midend_hot_functions: set[str] = {
+            symbol.strip()
+            for symbol in (pgo_hot_functions or set())
+            if isinstance(symbol, str) and symbol.strip()
+        }
+        self.midend_env = self._resolve_midend_env_config()
+        self._midend_env_snapshot = self._capture_midend_env_snapshot()
+        self.midend_stats: dict[str, int] = {
+            "expanded_attempts": 0,
+            "expanded_accepted": 0,
+            "expanded_fallbacks": 0,
+            "midend_module_skips": 0,
+            "midend_oversized_function_skips": 0,
+            "invalid_unbound_rollback": 0,
+            "invalid_unbound_uses": 0,
+            "fixed_point_fail_fast": 0,
+            "cfg_structural_failures": 0,
+            "cfg_structural_canonicalizations": 0,
+            "sccp_iteration_cap_hits": 0,
+            "cse_dce_fp_cap_hits": 0,
+            "sccp_branch_prunes": 0,
+            "loop_edge_thread_prunes": 0,
+            "try_edge_thread_prunes": 0,
+            "unreachable_blocks_removed": 0,
+            "cfg_region_prunes": 0,
+            "label_prunes": 0,
+            "jump_noop_elisions": 0,
+            "licm_hoists": 0,
+            "guard_hoist_attempts": 0,
+            "guard_hoist_accepted": 0,
+            "guard_hoist_rejected": 0,
+            "fused_dict_guard_prunes": 0,
+            "phi_edge_trims": 0,
+            "gvn_hits": 0,
+            "dce_removed_total": 0,
+        }
+        self.midend_stats_by_function: dict[str, dict[str, int]] = {}
+        self.midend_pass_stats_by_function: dict[str, dict[str, dict[str, Any]]] = {}
+        self.midend_policy_outcomes_by_function: dict[str, dict[str, Any]] = {}
+        self._active_midend_function_name = "<direct>"
+        self._midend_stats_reported = False
+
     def _run_ir_midend_passes(self, ops: list[MoltOp]) -> list[MoltOp]:
         self._refresh_midend_env_config_if_needed()
         # Dev-profile mid-end gate removed: MISSING-value miscompile fixes

@@ -38,6 +38,8 @@ else:
 
 
 class ComprehensionMixin(_MixinBase):
+    _list_int_containers: set[str]
+
     def visit_ListComp(self, node: ast.ListComp) -> Any:
         async_needed = self._comprehension_requires_async(node.generators, [node.elt])
         if async_needed and not self.is_async_context():

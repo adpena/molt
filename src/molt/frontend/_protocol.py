@@ -60,6 +60,7 @@ if TYPE_CHECKING:
     from molt.type_facts import TypeFacts
 
 class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
+    imported_modules: dict[str, str]
     imported_names: dict[str, str]
     in_annotation: Any
     in_generator: Any
@@ -946,6 +947,8 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _init_locals_cache(self) -> None: ...
 
     def _init_locals_cache_and_pin(self) -> None: ...
+
+    def _init_midend_state(self, optimization_profile: MidendProfile, pgo_hot_functions: set[str] | None) -> None: ...
 
     def _init_return_slot(self) -> None: ...
 

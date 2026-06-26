@@ -134,6 +134,7 @@ def test_moved_methods_resolve_on_class() -> None:
     assert hasattr(SimpleTIRGenerator, "_value_reads_plain_local_binding")
     # midend optimization
     assert hasattr(SimpleTIRGenerator, "_run_ir_midend_passes")
+    assert hasattr(SimpleTIRGenerator, "_init_midend_state")
     assert hasattr(SimpleTIRGenerator, "_resolve_midend_function_policy")
     assert hasattr(SimpleTIRGenerator, "_canonicalize_control_aware_ops")
     # serialization
@@ -417,21 +418,70 @@ def _assembled_class_methods() -> set[str]:
     return names - _BUILTIN_NAMES
 
 
-def _assembled_class_attrs() -> set[str]:
-    """Instance attributes (``self.x = ...`` in __init__) + class-level
-    annotated vars across the assembled class and its mixins."""
+def _direct_self_store_attrs(func: object) -> set[str]:
+    """Direct ``self.x = ...`` stores in one generator/mixin method.
+
+    Nested helper classes/functions define their own ``self`` and are not part
+    of the assembled generator state surface.
+    """
     import textwrap
 
     attrs: set[str] = set()
-    init_src = textwrap.dedent(inspect.getsource(SimpleTIRGenerator.__init__))
-    for node in ast.walk(ast.parse(init_src)):
-        if (
-            isinstance(node, ast.Attribute)
-            and isinstance(node.value, ast.Name)
-            and node.value.id == "self"
-            and isinstance(node.ctx, ast.Store)
-        ):
-            attrs.add(node.attr)
+    try:
+        src = textwrap.dedent(inspect.getsource(func))
+    except (OSError, TypeError):
+        return attrs
+    module = ast.parse(src)
+    method = next(
+        (
+            n
+            for n in module.body
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+        ),
+        None,
+    )
+    if method is None or not method.args.args or method.args.args[0].arg != "self":
+        return attrs
+
+    class Visitor(ast.NodeVisitor):
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            if node is method:
+                self.generic_visit(node)
+
+        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+            if node is method:
+                self.generic_visit(node)
+
+        def visit_ClassDef(self, node: ast.ClassDef) -> None:
+            return
+
+        def visit_Lambda(self, node: ast.Lambda) -> None:
+            return
+
+        def visit_Attribute(self, node: ast.Attribute) -> None:
+            if (
+                isinstance(node.value, ast.Name)
+                and node.value.id == "self"
+                and isinstance(node.ctx, ast.Store)
+            ):
+                attrs.add(node.attr)
+            self.generic_visit(node)
+
+    Visitor().visit(method)
+    return attrs
+
+
+def _assembled_class_attrs() -> set[str]:
+    """Instance attributes assigned by direct ``self.x = ...`` stores plus
+    class-level annotated vars across the assembled class and its mixins."""
+    attrs: set[str] = set()
+    for klass in SimpleTIRGenerator.__mro__:
+        if klass is object:
+            continue
+        for value in vars(klass).values():
+            if isinstance(value, (staticmethod, classmethod)):
+                value = value.__func__
+            attrs.update(_direct_self_store_attrs(value))
     for klass in SimpleTIRGenerator.__mro__:
         if klass is object:
             continue
