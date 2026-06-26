@@ -34,14 +34,15 @@ mod function_body;
 mod helpers;
 mod op_attributes;
 mod op_calls;
-mod op_collections;
 mod op_container_access;
 mod op_control;
 mod op_emitter;
 mod op_lists;
+mod op_maps;
 mod op_objects;
 mod op_scalars;
 mod op_strings;
+mod op_tuples;
 
 /// Transpiles Molt `SimpleIR` into Luau source text.
 pub struct LuauBackend {
