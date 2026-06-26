@@ -247,78 +247,25 @@ class ModuleLifecycleMixin(_MixinBase):
         # chunk N+M would fall through to incorrect resolution paths (e.g.
         # stdlib_allowlist matching a variable alias against a module name).
         self.module_chunk_globals.update(self.globals.keys())
-        self.locals = {}
-        self.boxed_locals = {}
-        self.closure_locals = set()
-        self.comp_shadow_locals = set()
-        self.boxed_local_hints = {}
-        self.free_vars = {}
-        self.free_var_hints = {}
-        self.global_decls = set()
-        self.nonlocal_decls = set()
-        self.scope_assigned = set()
-        self.unbound_check_names = set()
-        self.exact_locals = {}
-        self.exact_builtin_locals = {}
+        self._reset_local_binding_state(
+            reset_locals_cache=False,
+            reset_del_targets=False,
+        )
         self.globals = {}
-        self.imported_names = dict(self.global_imported_names)
-        self.imported_attr_names = dict(self.global_imported_attr_names)
-        self.imported_modules = dict(self.global_imported_modules)
-        self.local_imported_names = set()
-        self.local_imported_modules = set()
+        self._reset_import_resolution_state(reset_module_attr_mutations=False)
         # Clear the per-function module cache so that module references are
         # re-fetched via MODULE_CACHE_GET in each new chunk function.  Without
         # this, a cached MoltValue from a previous chunk's WASM locals would be
         # reused, but the corresponding WASM local does not exist in the new
         # chunk — leaving the variable at its zero-initialized default (0x0),
         # which is not a valid module object.
-        self._module_cache_values = {}
-        self.async_locals = {}
-        self.async_internal_locals = set()
-        self.async_public_locals = set()
-        self.async_locals_base = 0
-        self.async_closure_offset = None
-        self.async_local_hints = {}
-        self.explicit_type_hints = {}
-        self.container_elem_hints = {}
-        self.dict_key_hints = {}
-        self.dict_value_hints = {}
-        self.bytearray_len_hints = {}
-        self.context_depth = 0
-        self.control_flow_depth = 0
-        self.const_ints = {}
-        self._op_by_result = {}
-        self.in_generator = False
-        self.async_context = False
-        self.current_line = None
+        self._reset_function_cache_state()
+        self._reset_async_scope_state()
+        self._reset_type_hint_scope_state(reset_bytearray_len=True)
         self.module_annotations = None
         self.module_annotations_conditional = True
         self.module_annotation_exec_map = None
-        self.try_end_labels = []
-        self.try_scopes = []
-        self.try_suppress_depth = None
-        self.try_handler_scopes = []
-        self.exception_stack_depth_baseline = None
-        self.exception_stack_prev_baseline = None
-        self.return_unwind_depth = 0
-        self.return_unwind_popped_scopes = []
-        self.finally_depth = 0
-        self.return_label = None
-        self.return_slot = None
-        self.return_slot_index = None
-        self.return_slot_offset = None
-        self.block_terminated = False
-        self.range_loop_stack = []
-        self.async_index_loop_stack = []
-        self.loop_break_flags = []
-        self.loop_try_depths = []
-        self.loop_break_counter = 0
-        self.loop_layout_guards = []
-        self.loop_guard_assumptions = []
-        self.loop_static_class_refs = []
-        self.loop_static_class_eager_refs = []
-        self.loop_static_class_counter = 0
-        self.active_exceptions = []
+        self._reset_control_flow_state(reset_function_exception_label=False)
 
     def _module_chunk_stmt_cost(self, stmt: ast.stmt) -> int:
         # Chunking decisions happen before lowering the next top-level
