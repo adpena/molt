@@ -98,6 +98,14 @@ EXPECTED_MIXINS = [
     "PatternMatchMixin",
     "CallReductionMixin",
     "CallVisitorMixin",
+    "CallNamedDispatchMixin",
+    "CallNamedBuiltinDispatchMixin",
+    "CallImportedAttributeDispatchMixin",
+    "CallAttributeDispatchMixin",
+    "CallRuntimeHelperMixin",
+    "CallMethodDispatchMixin",
+    "CallModuleDispatchMixin",
+    "CallDefaultsMixin",
     "ClassDefVisitorMixin",
     "ComprehensionMixin",
     "ExpressionVisitorMixin",
@@ -371,7 +379,16 @@ def test_mixin_modules_import_standalone() -> None:
         "molt.frontend.lowering.type_annotations",
         "molt.frontend.visitors.async_gen",
         "molt.frontend.visitors.pattern_match",
+        "molt.frontend.visitors.call_defaults",
+        "molt.frontend.visitors.call_dispatch_attribute",
+        "molt.frontend.visitors.call_dispatch_common",
+        "molt.frontend.visitors.call_dispatch_imported",
+        "molt.frontend.visitors.call_dispatch_named",
+        "molt.frontend.visitors.call_dispatch_named_builtins",
+        "molt.frontend.visitors.call_method_dispatch",
+        "molt.frontend.visitors.call_module_dispatch",
         "molt.frontend.visitors.call_reductions",
+        "molt.frontend.visitors.call_runtime_helpers",
         "molt.frontend.visitors.calls",
         "molt.frontend.visitors.classes",
         "molt.frontend.visitors.comprehensions",
@@ -389,6 +406,14 @@ def test_reducer_call_lowering_stays_out_of_call_dispatcher() -> None:
     calls_src = (
         ROOT / "src" / "molt" / "frontend" / "visitors" / "calls.py"
     ).read_text(encoding="utf-8")
+    named_builtins_src = (
+        ROOT
+        / "src"
+        / "molt"
+        / "frontend"
+        / "visitors"
+        / "call_dispatch_named_builtins.py"
+    ).read_text(encoding="utf-8")
     reductions_src = (
         ROOT / "src" / "molt" / "frontend" / "visitors" / "call_reductions.py"
     ).read_text(encoding="utf-8")
@@ -400,8 +425,11 @@ def test_reducer_call_lowering_stays_out_of_call_dispatcher() -> None:
     assert "def _emit_sum_call" not in calls_src
     assert "def _emit_any_all_call" not in calls_src
     assert "def _try_emit_inline_sum_genexpr" not in calls_src
-    assert "return self._emit_sum_call(func_id, node, needs_bind)" in calls_src
-    assert "return self._emit_any_all_call(func_id, node, needs_bind)" in calls_src
+    assert "return self._emit_sum_call(func_id, node, needs_bind)" in named_builtins_src
+    assert (
+        "return self._emit_any_all_call(func_id, node, needs_bind)"
+        in named_builtins_src
+    )
 
 
 # ---------------------------------------------------------------------------
