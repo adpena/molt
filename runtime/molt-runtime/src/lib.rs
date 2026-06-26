@@ -1,4 +1,4 @@
-//! Molt Runtime Core
+﻿//! Molt Runtime Core
 //! Handles memory management, task scheduling, channels, and FFI boundaries.
 //!
 //! Locking contract (contributor guidance):
@@ -185,7 +185,7 @@ pub mod lifecycle {
 ///
 /// Functions that are already `pub` via wildcard re-exports (e.g. `molt_len`,
 /// `molt_str_from_obj`, `molt_repr_from_obj`, `molt_math_sqrt`) can be called
-/// directly through `molt_runtime::…`.  This module exposes intrinsics that are
+/// directly through `molt_runtime::?`.  This module exposes intrinsics that are
 /// otherwise `pub(crate)` or require GIL-internal helpers.
 pub mod ffi_bridge {
     use crate::concurrency::GilGuard;
@@ -548,8 +548,6 @@ pub use crate::builtins::pprint_ext::*;
 pub use crate::builtins::punycode::*;
 #[cfg(not(feature = "stdlib_math"))]
 pub use crate::builtins::random_mod::*;
-#[cfg(not(feature = "stdlib_regex"))]
-pub use crate::builtins::regex::*;
 #[cfg(feature = "stdlib_crypto")]
 pub use crate::builtins::secrets::*;
 pub use crate::builtins::select::*;
@@ -1254,3 +1252,4 @@ unsafe extern "C" {
 // Attribute accessors moved to builtins/attributes.rs.
 
 mod arena;
+

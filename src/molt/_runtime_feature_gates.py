@@ -86,6 +86,25 @@ RUNTIME_FEATURE_GATES: tuple[tuple[str, str], ...] = (
     ("molt_http_", "stdlib_http"),
     ("molt_socketserver_", "stdlib_http"),
     ("molt_urllib_", "stdlib_http"),
+    # Advanced regex compiler/engine intrinsics live in the extracted
+    # molt-runtime-regex crate. Lower-level literal/charclass helpers remain
+    # core runtime intrinsics and intentionally stay ungated.
+    ("molt_re_finditer_collect", "stdlib_regex"),
+    ("molt_re_fullmatch_check", "stdlib_regex"),
+    ("molt_re_match_groupdict", "stdlib_regex"),
+    ("molt_re_match_groups", "stdlib_regex"),
+    ("molt_re_match_group", "stdlib_regex"),
+    ("molt_re_named_backref_advance", "stdlib_regex"),
+    ("molt_re_negative_", "stdlib_regex"),
+    ("molt_re_pattern_info", "stdlib_regex"),
+    ("molt_re_positive_", "stdlib_regex"),
+    ("molt_re_strip_verbose", "stdlib_regex"),
+    ("molt_re_sub_callable", "stdlib_regex"),
+    ("molt_re_compile", "stdlib_regex"),
+    ("molt_re_execute", "stdlib_regex"),
+    ("molt_re_escape", "stdlib_regex"),
+    ("molt_re_split", "stdlib_regex"),
+    ("molt_re_sub", "stdlib_regex"),
     # networking: IP address helpers. SSL keeps an always-linkable ABI because
     # asyncio imports ssl eagerly even in micro profiles; runtime operations
     # without net support raise from the Rust intrinsic implementation.
@@ -194,6 +213,7 @@ LINK_AFFECTING_FEATURES: frozenset[str] = frozenset(
         "stdlib_http",
         "stdlib_logging_ext",
         "stdlib_net",
+        "stdlib_regex",
         "stdlib_serialization",
         "stdlib_stringprep",
         "stdlib_text",
