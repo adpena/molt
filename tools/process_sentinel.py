@@ -278,8 +278,7 @@ def _repo_scoped_command_match(command: str, root: Path) -> bool:
         _normalized_path_text(token) for token in REPO_SCOPED_MOLT_ENTRYPOINT_TOKENS
     )
     artifact_root_tokens = tuple(
-        _normalized_path_text(token)
-        for token in REPO_SCOPED_MOLT_ARTIFACT_ROOT_TOKENS
+        _normalized_path_text(token) for token in REPO_SCOPED_MOLT_ARTIFACT_ROOT_TOKENS
     )
     for repo_token in _normalized_repo_tokens(root):
         if not _command_contains(normalized_command, repo_token):
@@ -874,13 +873,8 @@ def terminate_group(
     )
     if action.result != "sent":
         return
-    deadline = time.monotonic() + max(0.0, grace)
-    while time.monotonic() < deadline:
-        try:
-            os.killpg(pgid, 0)
-        except (ProcessLookupError, PermissionError):
-            return
-        time.sleep(0.05)
+    if memory_guard.process_group_exited_or_unobservable(pgid, grace=grace):
+        return
     samples = sample_processes_for_sentinel()
     protected_pgids = protected_process_group_ids(
         samples,

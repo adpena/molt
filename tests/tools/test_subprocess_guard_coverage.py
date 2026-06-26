@@ -34,6 +34,16 @@ def test_current_repo_subprocess_guard_coverage_is_clean() -> None:
     assert REPO_ROOT / "src" / "molt" / "repl.py" in module.DEFAULT_TARGETS
 
 
+def test_copied_default_targets_still_scan_guard_text_files() -> None:
+    module = _load_audit_tool()
+
+    default_audit = module.audit_paths()
+    copied_audit = module.audit_paths(tuple(module.DEFAULT_TARGETS))
+
+    assert copied_audit.ok
+    assert copied_audit.scanned_files == default_audit.scanned_files
+
+
 def test_unclassified_raw_subprocess_call_fails(tmp_path: Path) -> None:
     module = _load_audit_tool()
     source = tmp_path / "bad.py"
