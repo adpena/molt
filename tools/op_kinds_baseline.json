@@ -20,6 +20,8 @@
       "builtin_print",
       "call_builtin",
       "call_function",
+      "call_method_ic",
+      "call_super_method_ic",
       "cast_bool",
       "checked_add",
       "checked_mul",

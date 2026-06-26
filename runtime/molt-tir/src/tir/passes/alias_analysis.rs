@@ -1202,6 +1202,8 @@ mod tests {
             DeleteVar,
             Call,
             CallMethod,
+            CallMethodIc,
+            CallSuperMethodIc,
             CallBuiltin,
             OrdAt,
             BoxVal,
@@ -1317,6 +1319,8 @@ mod tests {
             | DeleteVar
             | Call
             | CallMethod
+            | CallMethodIc
+            | CallSuperMethodIc
             | CallBuiltin
             | OrdAt
             | BoxVal
@@ -1386,6 +1390,8 @@ mod tests {
     const OLD_REFCOUNT_BARRIER_OPCODES: &[OpCode] = &[
         OpCode::Call,
         OpCode::CallMethod,
+        OpCode::CallMethodIc,
+        OpCode::CallSuperMethodIc,
         OpCode::CallBuiltin,
         OpCode::StoreAttr,
         OpCode::StoreIndex,
@@ -1401,6 +1407,8 @@ mod tests {
     const OLD_REUSE_OPCODE_BARRIERS: &[OpCode] = &[
         OpCode::Call,
         OpCode::CallMethod,
+        OpCode::CallMethodIc,
+        OpCode::CallSuperMethodIc,
         OpCode::CallBuiltin,
         OpCode::StoreAttr,
         OpCode::StoreIndex,
@@ -1422,6 +1430,8 @@ mod tests {
         OpCode::StoreIndex,
         OpCode::Call,
         OpCode::CallMethod,
+        OpCode::CallMethodIc,
+        OpCode::CallSuperMethodIc,
         OpCode::CallBuiltin,
         OpCode::Raise,
         OpCode::Yield,

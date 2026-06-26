@@ -2645,18 +2645,34 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 }
             }
 
-            // ── CallBuiltin: builtin_name(args...) ──
+            OpCode::CallMethodIc => {
+                if !self.lower_call_method_ic_op(op) {
+                    self.record_fatal(
+                        "malformed CallMethodIc op: expected receiver operand and method attr",
+                    );
+                }
+            }
+
+            OpCode::CallSuperMethodIc => {
+                if !self.lower_call_super_method_ic_op(op) {
+                    self.record_fatal(
+                        "malformed CallSuperMethodIc op: expected class/self operands and method attr",
+                    );
+                }
+            }
+
+            // CallBuiltin: builtin_name(args...)
             //
             // Two patterns reach here:
             //   A) `call_builtin` from the frontend: s_value / name attr holds the
             //      builtin name, operands[0] is a ConstStr with the name bits,
             //      rest are positional args.
             //   B) `print` / `builtin_print`: the op kind IS the builtin name,
-            //      stored in `_original_kind`.  ALL operands are arguments — the
+            //      stored in `_original_kind`. ALL operands are arguments; the
             //      first is NOT a name.
             //
             // We detect (B) by checking for `_original_kind` (only set when the
-            // SSA converter wraps a non-canonical kind).  For (A), the `name`
+            // SSA converter wraps a non-canonical kind). For (A), the `name`
             // attr holds the builtin name string.
             OpCode::CallBuiltin => {
                 let i64_ty = self.backend.context.i64_type();
@@ -6995,6 +7011,118 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         trampoline_fn
     }
 
+    fn method_dispatch_name(op: &TirOp) -> Option<String> {
+        op.attrs
+            .get("method")
+            .or_else(|| op.attrs.get("s_value"))
+            .and_then(|v| match v {
+                AttrValue::Str(s) => Some(s.clone()),
+                _ => None,
+            })
+    }
+
+    fn lower_call_method_ic_op(&mut self, op: &TirOp) -> bool {
+        if op.operands.is_empty() {
+            return false;
+        }
+        let Some(method_name) = Self::method_dispatch_name(op) else {
+            return false;
+        };
+        let recv_bits = self.materialize_dynbox_operand(op.operands[0]);
+        let extra: Vec<inkwell::values::IntValue<'ctx>> = op.operands[1..]
+            .iter()
+            .map(|&id| self.materialize_dynbox_operand(id))
+            .collect();
+        let site_bits = self.next_call_site_bits("call_method_ic");
+        let (name_ptr_bits, name_len_bits) = self.raw_string_const_ptr_len(&method_name);
+        let symbol = match extra.len() {
+            0 => "molt_call_method_ic0",
+            1 => "molt_call_method_ic1",
+            2 => "molt_call_method_ic2",
+            3 => "molt_call_method_ic3",
+            4 => "molt_call_method_ic4",
+            n => panic!(
+                "call_method_ic supports at most 4 positional args in LLVM lowering; got {n}"
+            ),
+        };
+        let call_fn = self.ensure_runtime_i64_fn(symbol, 4 + extra.len());
+        let mut call_args: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> = vec![
+            site_bits.into(),
+            recv_bits.into(),
+            name_ptr_bits.into(),
+            name_len_bits.into(),
+        ];
+        call_args.extend(
+            extra
+                .iter()
+                .map(|v| -> inkwell::values::BasicMetadataValueEnum<'ctx> { (*v).into() }),
+        );
+        let result = self
+            .backend
+            .builder
+            .build_call(call_fn, &call_args, symbol)
+            .unwrap()
+            .try_as_basic_value()
+            .unwrap_basic();
+        if let Some(&result_id) = op.results.first() {
+            self.values.insert(result_id, result);
+            self.value_types.insert(result_id, TirType::DynBox);
+        }
+        true
+    }
+
+    fn lower_call_super_method_ic_op(&mut self, op: &TirOp) -> bool {
+        if op.operands.len() < 2 {
+            return false;
+        }
+        let Some(method_name) = Self::method_dispatch_name(op) else {
+            return false;
+        };
+        let class_bits = self.materialize_dynbox_operand(op.operands[0]);
+        let self_bits = self.materialize_dynbox_operand(op.operands[1]);
+        let extra: Vec<inkwell::values::IntValue<'ctx>> = op.operands[2..]
+            .iter()
+            .map(|&id| self.materialize_dynbox_operand(id))
+            .collect();
+        let site_bits = self.next_call_site_bits("call_super_method_ic");
+        let (name_ptr_bits, name_len_bits) = self.raw_string_const_ptr_len(&method_name);
+        let symbol = match extra.len() {
+            0 => "molt_call_super_method_ic0",
+            1 => "molt_call_super_method_ic1",
+            2 => "molt_call_super_method_ic2",
+            3 => "molt_call_super_method_ic3",
+            4 => "molt_call_super_method_ic4",
+            n => panic!(
+                "call_super_method_ic supports at most 4 positional args in LLVM lowering; got {n}"
+            ),
+        };
+        let call_fn = self.ensure_runtime_i64_fn(symbol, 5 + extra.len());
+        let mut call_args: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> = vec![
+            site_bits.into(),
+            class_bits.into(),
+            self_bits.into(),
+            name_ptr_bits.into(),
+            name_len_bits.into(),
+        ];
+        call_args.extend(
+            extra
+                .iter()
+                .map(|v| -> inkwell::values::BasicMetadataValueEnum<'ctx> { (*v).into() }),
+        );
+        let result = self
+            .backend
+            .builder
+            .build_call(call_fn, &call_args, symbol)
+            .unwrap()
+            .try_as_basic_value()
+            .unwrap_basic();
+        if let Some(&result_id) = op.results.first() {
+            self.values.insert(result_id, result);
+            self.value_types.insert(result_id, TirType::DynBox);
+        }
+        true
+    }
+
     fn lower_preserved_simpleir_op(&mut self, op: &TirOp, kind: &str) -> bool {
         let i64_ty = self.backend.context.i64_type();
         // Vectorized reduction family (`VEC_SUM/PROD/MIN/MAX_*` from the
@@ -7089,127 +7217,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .backend
                     .builder
                     .build_call(list_from_range_fn, &[start, stop, step], "list_from_range")
-                    .unwrap()
-                    .try_as_basic_value()
-                    .unwrap_basic();
-                if let Some(&result_id) = op.results.first() {
-                    self.values.insert(result_id, result);
-                    self.value_types.insert(result_id, TirType::DynBox);
-                }
-                true
-            }
-            "call_method_ic" => {
-                // Fused instance-method dispatch (LOAD_METHOD/CALL_METHOD):
-                //   operands = [recv, a0, a1, ...]  attrs.s_value = <method>
-                // Lowers to a single molt_call_method_icN(site, recv, name_ptr,
-                // name_len, a0..) runtime call — no bound-method / callargs
-                // allocation on the IC fast path. The runtime entry is
-                // target-independent extern "C"; on the native LLVM target the
-                // name pointer is a real pointer cast to i64 (every arg i64),
-                // matching the `4 + N`-i64 declaration in runtime_imports.rs.
-                if op.operands.is_empty() {
-                    return false;
-                }
-                let Some(method_name) = op.attrs.get("s_value").and_then(|v| match v {
-                    AttrValue::Str(s) => Some(s.clone()),
-                    _ => None,
-                }) else {
-                    return false;
-                };
-                let recv_bits = self.materialize_dynbox_operand(op.operands[0]);
-                let extra: Vec<inkwell::values::IntValue<'ctx>> = op.operands[1..]
-                    .iter()
-                    .map(|&id| self.materialize_dynbox_operand(id))
-                    .collect();
-                let site_bits = self.next_call_site_bits("call_method_ic");
-                let (name_ptr_bits, name_len_bits) = self.raw_string_const_ptr_len(&method_name);
-                let symbol = match extra.len() {
-                    0 => "molt_call_method_ic0",
-                    1 => "molt_call_method_ic1",
-                    2 => "molt_call_method_ic2",
-                    3 => "molt_call_method_ic3",
-                    4 => "molt_call_method_ic4",
-                    n => panic!(
-                        "call_method_ic supports at most 4 positional args in LLVM lowering; got {n}"
-                    ),
-                };
-                let arity = 4 + extra.len();
-                let call_fn = self.ensure_runtime_i64_fn(symbol, arity);
-                let mut call_args: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> = vec![
-                    site_bits.into(),
-                    recv_bits.into(),
-                    name_ptr_bits.into(),
-                    name_len_bits.into(),
-                ];
-                call_args.extend(
-                    extra
-                        .iter()
-                        .map(|v| -> inkwell::values::BasicMetadataValueEnum<'ctx> { (*v).into() }),
-                );
-                let result = self
-                    .backend
-                    .builder
-                    .build_call(call_fn, &call_args, symbol)
-                    .unwrap()
-                    .try_as_basic_value()
-                    .unwrap_basic();
-                if let Some(&result_id) = op.results.first() {
-                    self.values.insert(result_id, result);
-                    self.value_types.insert(result_id, TirType::DynBox);
-                }
-                true
-            }
-            "call_super_method_ic" => {
-                // Fused super().method() dispatch (no super / bound-method /
-                // callargs allocation on the fast path):
-                //   operands = [class, self, a0, a1, ...]  attrs.s_value = <method>
-                // Lowers to molt_call_super_method_icN(site, class, self,
-                // name_ptr, name_len, a0..).
-                if op.operands.len() < 2 {
-                    return false;
-                }
-                let Some(method_name) = op.attrs.get("s_value").and_then(|v| match v {
-                    AttrValue::Str(s) => Some(s.clone()),
-                    _ => None,
-                }) else {
-                    return false;
-                };
-                let class_bits = self.materialize_dynbox_operand(op.operands[0]);
-                let self_bits = self.materialize_dynbox_operand(op.operands[1]);
-                let extra: Vec<inkwell::values::IntValue<'ctx>> = op.operands[2..]
-                    .iter()
-                    .map(|&id| self.materialize_dynbox_operand(id))
-                    .collect();
-                let site_bits = self.next_call_site_bits("call_super_method_ic");
-                let (name_ptr_bits, name_len_bits) = self.raw_string_const_ptr_len(&method_name);
-                let symbol = match extra.len() {
-                    0 => "molt_call_super_method_ic0",
-                    1 => "molt_call_super_method_ic1",
-                    2 => "molt_call_super_method_ic2",
-                    3 => "molt_call_super_method_ic3",
-                    4 => "molt_call_super_method_ic4",
-                    n => panic!(
-                        "call_super_method_ic supports at most 4 positional args in LLVM lowering; got {n}"
-                    ),
-                };
-                let arity = 5 + extra.len();
-                let call_fn = self.ensure_runtime_i64_fn(symbol, arity);
-                let mut call_args: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> = vec![
-                    site_bits.into(),
-                    class_bits.into(),
-                    self_bits.into(),
-                    name_ptr_bits.into(),
-                    name_len_bits.into(),
-                ];
-                call_args.extend(
-                    extra
-                        .iter()
-                        .map(|v| -> inkwell::values::BasicMetadataValueEnum<'ctx> { (*v).into() }),
-                );
-                let result = self
-                    .backend
-                    .builder
-                    .build_call(call_fn, &call_args, symbol)
                     .unwrap()
                     .try_as_basic_value()
                     .unwrap_basic();
@@ -12214,16 +12221,12 @@ mod tests {
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(TirOp {
             dialect: Dialect::Molt,
-            opcode: OpCode::Copy,
+            opcode: OpCode::CallMethodIc,
             operands,
             results: vec![result],
             attrs: {
                 let mut attrs = AttrDict::new();
-                attrs.insert(
-                    "_original_kind".into(),
-                    AttrValue::Str("call_method_ic".into()),
-                );
-                attrs.insert("s_value".into(), AttrValue::Str("m".into()));
+                attrs.insert("method".into(), AttrValue::Str("m".into()));
                 attrs
             },
             source_span: None,
@@ -12249,16 +12252,12 @@ mod tests {
         entry.ops.push(const_none_def(arg));
         entry.ops.push(TirOp {
             dialect: Dialect::Molt,
-            opcode: OpCode::Copy,
+            opcode: OpCode::CallMethodIc,
             operands: vec![recv, arg],
             results: vec![result],
             attrs: {
                 let mut attrs = AttrDict::new();
-                attrs.insert(
-                    "_original_kind".into(),
-                    AttrValue::Str("call_method_ic".into()),
-                );
-                attrs.insert("s_value".into(), AttrValue::Str("m".into()));
+                attrs.insert("method".into(), AttrValue::Str("m".into()));
                 attrs
             },
             source_span: None,
@@ -12305,16 +12304,12 @@ mod tests {
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(TirOp {
             dialect: Dialect::Molt,
-            opcode: OpCode::Copy,
+            opcode: OpCode::CallSuperMethodIc,
             operands,
             results: vec![result],
             attrs: {
                 let mut attrs = AttrDict::new();
-                attrs.insert(
-                    "_original_kind".into(),
-                    AttrValue::Str("call_super_method_ic".into()),
-                );
-                attrs.insert("s_value".into(), AttrValue::Str("m".into()));
+                attrs.insert("method".into(), AttrValue::Str("m".into()));
                 attrs
             },
             source_span: None,

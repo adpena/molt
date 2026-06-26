@@ -1873,6 +1873,20 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
             out: out_var,
             ..OpIR::default()
         }),
+        OpCode::CallMethodIc => Some(OpIR {
+            kind: "call_method_ic".to_string(),
+            args: Some(operand_args(op)),
+            s_value: attr_str(&op.attrs, "method").or_else(|| attr_str(&op.attrs, "s_value")),
+            out: out_var,
+            ..OpIR::default()
+        }),
+        OpCode::CallSuperMethodIc => Some(OpIR {
+            kind: "call_super_method_ic".to_string(),
+            args: Some(operand_args(op)),
+            s_value: attr_str(&op.attrs, "method").or_else(|| attr_str(&op.attrs, "s_value")),
+            out: out_var,
+            ..OpIR::default()
+        }),
         OpCode::CallBuiltin => {
             let kind =
                 attr_str(&op.attrs, "_original_kind").unwrap_or_else(|| "call_builtin".to_string());
@@ -5834,6 +5848,101 @@ mod tests {
                 call_op
             );
         }
+    }
+
+    #[test]
+    fn tir_round_trip_preserves_method_ic_as_first_class_ops() {
+        let func_ir = FunctionIR {
+            name: "method_ic_roundtrip".into(),
+            params: vec![
+                "recv".into(),
+                "arg".into(),
+                "class".into(),
+                "self_obj".into(),
+            ],
+            ops: vec![
+                OpIR {
+                    kind: "call_method_ic".into(),
+                    args: Some(vec!["recv".into(), "arg".into()]),
+                    s_value: Some("f".into()),
+                    out: Some("r".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "call_super_method_ic".into(),
+                    args: Some(vec!["class".into(), "self_obj".into(), "arg".into()]),
+                    s_value: Some("g".into()),
+                    out: Some("s".into()),
+                    ..OpIR::default()
+                },
+            ],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+        };
+
+        let tir_func = lower_to_tir(&func_ir);
+        let tir_ops: Vec<&TirOp> = tir_func
+            .blocks
+            .values()
+            .flat_map(|block| &block.ops)
+            .collect();
+        let method_op = tir_ops
+            .iter()
+            .copied()
+            .find(|op| op.opcode == OpCode::CallMethodIc)
+            .expect("call_method_ic must lower to a first-class opcode");
+        assert!(
+            !method_op.attrs.contains_key("_original_kind"),
+            "call_method_ic must not remain a Copy/_original_kind bridge"
+        );
+        assert_eq!(
+            method_op.attrs.get("method"),
+            Some(&AttrValue::Str("f".into()))
+        );
+        let super_op = tir_ops
+            .iter()
+            .copied()
+            .find(|op| op.opcode == OpCode::CallSuperMethodIc)
+            .expect("call_super_method_ic must lower to a first-class opcode");
+        assert!(
+            !super_op.attrs.contains_key("_original_kind"),
+            "call_super_method_ic must not remain a Copy/_original_kind bridge"
+        );
+        assert_eq!(
+            super_op.attrs.get("method"),
+            Some(&AttrValue::Str("g".into()))
+        );
+
+        let round_tripped = lower_to_simple_ir(&tir_func);
+        let method = round_tripped
+            .iter()
+            .find(|op| op.kind == "call_method_ic")
+            .expect("round-trip should re-emit call_method_ic");
+        assert_eq!(method.s_value.as_deref(), Some("f"));
+        assert_eq!(
+            method.args.as_ref().expect("call_method_ic args"),
+            &vec!["recv".to_string(), "arg".to_string()]
+        );
+        assert_eq!(method.out.as_deref(), Some("r"));
+
+        let super_method = round_tripped
+            .iter()
+            .find(|op| op.kind == "call_super_method_ic")
+            .expect("round-trip should re-emit call_super_method_ic");
+        assert_eq!(super_method.s_value.as_deref(), Some("g"));
+        assert_eq!(
+            super_method
+                .args
+                .as_ref()
+                .expect("call_super_method_ic args"),
+            &vec![
+                "class".to_string(),
+                "self_obj".to_string(),
+                "arg".to_string()
+            ]
+        );
+        assert_eq!(super_method.out.as_deref(), Some("s"));
     }
 
     /// Verify that no type map (empty) means no flags are set.
