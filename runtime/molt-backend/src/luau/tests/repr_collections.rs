@@ -742,6 +742,79 @@ fn test_call_method_list_pop_uses_python_error_guards() {
 }
 
 #[test]
+fn test_call_method_list_count_and_index_use_collection_authority() {
+    let ir = SimpleIR {
+        functions: vec![FunctionIR {
+            name: "list_call_method_count_index".to_string(),
+            params: vec![
+                "xs".to_string(),
+                "needle".to_string(),
+                "start".to_string(),
+                "stop".to_string(),
+            ],
+            param_types: Some(vec![
+                "list[int]".to_string(),
+                "int".to_string(),
+                "int".to_string(),
+                "int".to_string(),
+            ]),
+            source_file: None,
+            is_extern: false,
+            ops: vec![
+                OpIR {
+                    kind: "call_method".to_string(),
+                    s_value: Some("count".to_string()),
+                    args: Some(vec!["xs".to_string(), "needle".to_string()]),
+                    out: Some("count".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "call_method".to_string(),
+                    s_value: Some("index".to_string()),
+                    args: Some(vec!["xs".to_string(), "needle".to_string()]),
+                    out: Some("idx".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "call_method".to_string(),
+                    s_value: Some("index".to_string()),
+                    args: Some(vec![
+                        "xs".to_string(),
+                        "needle".to_string(),
+                        "start".to_string(),
+                        "stop".to_string(),
+                    ]),
+                    out: Some("bounded".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret_void".to_string(),
+                    ..OpIR::default()
+                },
+            ],
+        }],
+        profile: None,
+    };
+    let mut backend = LuauBackend::new();
+    let output = backend.compile(&ir);
+    assert!(
+        output.contains("for _, __v in ipairs(xs)")
+            && output.contains("count = count + 1")
+            && output.contains("local idx = -1")
+            && output.contains("local bounded = -1")
+            && output.contains("__start")
+            && output.contains("__stop"),
+        "list method count/index must share direct collection lowering, got:\n{output}"
+    );
+    assert!(
+        !output.contains("xs:count")
+            && !output.contains("xs:index")
+            && !output.contains("molt_get_attr(xs"),
+        "typed list count/index must not use generic method lookup, got:\n{output}"
+    );
+}
+
+#[test]
 fn test_list_index_range_honors_start_stop_bounds() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
