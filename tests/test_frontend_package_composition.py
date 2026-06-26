@@ -70,6 +70,7 @@ EXPECTED_MIXINS = [
     "SerializationMixin",
     "CompileWarningMixin",
     "EmissionCoreMixin",
+    "ExceptionLoweringMixin",
     "FunctionLifecycleMixin",
     "FunctionMetadataMixin",
     "ModuleLifecycleMixin",
@@ -233,6 +234,13 @@ def test_moved_methods_resolve_on_class() -> None:
     assert hasattr(SimpleTIRGenerator, "_augassign_op_kind")
     assert hasattr(SimpleTIRGenerator, "visit_For")
     assert hasattr(SimpleTIRGenerator, "visit_TryStar")
+    # exception lowering and unwind custody
+    assert hasattr(SimpleTIRGenerator, "_emit_exception_new")
+    assert hasattr(SimpleTIRGenerator, "_emit_exception_match")
+    assert hasattr(SimpleTIRGenerator, "_emit_raise_exit")
+    assert hasattr(SimpleTIRGenerator, "_emit_raise_if_pending")
+    assert hasattr(SimpleTIRGenerator, "_emit_control_flow_scope_unwind")
+    assert hasattr(SimpleTIRGenerator, "_emit_sync_try_except_split")
     # import lowering
     assert hasattr(SimpleTIRGenerator, "_resolve_relative_import")
     assert hasattr(SimpleTIRGenerator, "_should_attempt_runtime_module_import")
@@ -258,6 +266,7 @@ def test_mixin_modules_import_standalone() -> None:
         "molt.frontend.lowering.class_resolution",
         "molt.frontend.lowering.compile_warnings",
         "molt.frontend.lowering.emission_core",
+        "molt.frontend.lowering.exception_lowering",
         "molt.frontend.lowering.function_lifecycle",
         "molt.frontend.lowering.function_metadata",
         "molt.frontend.lowering.import_lowering",
