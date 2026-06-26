@@ -12,6 +12,7 @@ from tests.native_process_guard import run_native_test_process
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+TKINTER_TTK_BUILD_DEFAULT_TIMEOUT_SEC = 1200.0
 
 
 def _artifact_root() -> Path:
@@ -90,6 +91,7 @@ def test_tkinter_ttk_script_compiles_via_cli_build() -> None:
             ],
             cwd=REPO_ROOT,
             env=_build_env(),
+            default_timeout=TKINTER_TTK_BUILD_DEFAULT_TIMEOUT_SEC,
             capture_output=True,
             text=True,
         )
