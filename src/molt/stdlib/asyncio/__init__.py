@@ -3,7 +3,6 @@
 from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Callable, Iterable, Iterator, cast
 from dataclasses import dataclass
-import builtins as _builtins
 from collections import deque as _deque
 import heapq as _heapq
 import logging as _logging
@@ -640,33 +639,21 @@ def _mark_builtin(fn: Any) -> None:
     func(fn)
     return None
 
-_builtin_cancelled = getattr(_builtins, "CancelledError", None)
-if _builtin_cancelled is None:
-
-    class CancelledError(BaseException):
-        pass
-
-    _builtins.CancelledError = CancelledError  # type: ignore[attr-defined]
-else:
-    CancelledError = _builtin_cancelled
+from . import exceptions as exceptions
+from .exceptions import (
+    BrokenBarrierError as BrokenBarrierError,
+    CancelledError as CancelledError,
+    IncompleteReadError as IncompleteReadError,
+    InvalidStateError as InvalidStateError,
+    LimitOverrunError as LimitOverrunError,
+    SendfileNotAvailableError as SendfileNotAvailableError,
+    TimeoutError as TimeoutError,
+)
 
 def _is_cancelled_exc(exc: BaseException) -> bool:
     if isinstance(exc, CancelledError):
         return True
     return type(exc).__name__ == "CancelledError"
-
-class InvalidStateError(Exception):
-    pass
-
-TimeoutError = _builtins.TimeoutError
-
-class LimitOverrunError(Exception):
-    def __init__(self, message: str, consumed: int) -> None:
-        super().__init__(message)
-        self.consumed = consumed
-
-class SendfileNotAvailableError(RuntimeError):
-    pass
 
 FIRST_COMPLETED = object()
 FIRST_EXCEPTION = object()
@@ -2111,7 +2098,6 @@ from . import locks as locks
 from .locks import (
     Barrier as Barrier,
     BoundedSemaphore as BoundedSemaphore,
-    BrokenBarrierError as BrokenBarrierError,
     Condition as Condition,
     Event as Event,
     Lock as Lock,
@@ -2260,12 +2246,6 @@ class _Timeout:
                 self._task.uncancel()
             raise TimeoutError
         return False
-
-class IncompleteReadError(EOFError):
-    def __init__(self, partial: bytes, expected: int) -> None:
-        super().__init__(f"{expected} bytes expected, {len(partial)} bytes read")
-        self.partial = partial
-        self.expected = expected
 
 class StreamReader:
     def __init__(self, sock: _socket.socket) -> None:
@@ -5686,19 +5666,6 @@ coroutines = _module(
         "os": _os,
         "sys": _sys,
         "types": _types,
-    },
-)
-
-exceptions = _module(
-    "asyncio.exceptions",
-    {
-        "CancelledError": CancelledError,
-        "InvalidStateError": InvalidStateError,
-        "TimeoutError": TimeoutError,
-        "SendfileNotAvailableError": SendfileNotAvailableError,
-        "IncompleteReadError": IncompleteReadError,
-        "LimitOverrunError": LimitOverrunError,
-        "BrokenBarrierError": BrokenBarrierError,
     },
 )
 

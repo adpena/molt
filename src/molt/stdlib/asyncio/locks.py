@@ -12,6 +12,7 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 _MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
 
 from asyncio import (
+    BrokenBarrierError,
     Future,
     _asyncio_condition_wait_for_step,
     _asyncio_waiters_notify,
@@ -41,10 +42,6 @@ from asyncio import (
 
 exceptions: Any | None = None
 mixins: Any | None = None
-
-
-class BrokenBarrierError(RuntimeError):
-    pass
 
 
 class Event:
