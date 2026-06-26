@@ -315,6 +315,38 @@ pub extern "C" fn __molt_math_int_bits_from_bigint(
     })
 }
 
+/// CPython's exact modular numeric hash over a rational `numerator/denominator`
+/// (the shared `object::ops_hash::py_numeric_hash`). Each BigInt is passed as
+/// `(sign, big-endian magnitude bytes, len)` like `int_bits_from_bigint`. Lets
+/// the math crate's Fraction hash through the single shared numeric authority so
+/// a Fraction hashes equal to a numerically-equal int/float/Decimal.
+#[unsafe(no_mangle)]
+pub extern "C" fn __molt_math_py_numeric_hash(
+    num_sign: i32,
+    num_ptr: *const u8,
+    num_len: usize,
+    den_sign: i32,
+    den_ptr: *const u8,
+    den_len: usize,
+) -> i64 {
+    let to_big = |sign: i32, ptr: *const u8, len: usize| -> BigInt {
+        let sign = match sign {
+            -1 => Sign::Minus,
+            0 => Sign::NoSign,
+            _ => Sign::Plus,
+        };
+        let bytes = if ptr.is_null() || len == 0 {
+            &[][..]
+        } else {
+            unsafe { std::slice::from_raw_parts(ptr, len) }
+        };
+        BigInt::from_bytes_be(sign, bytes)
+    };
+    let numer = to_big(num_sign, num_ptr, num_len);
+    let denom = to_big(den_sign, den_ptr, den_len);
+    crate::object::ops_hash::py_numeric_hash(&numer, &denom)
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_math_bigint_ptr_from_bits(bits: u64) -> *mut u8 {
     match builtins::numbers::bigint_ptr_from_bits(bits) {

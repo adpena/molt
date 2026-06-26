@@ -144,6 +144,7 @@ PREFIXES = [
     "bridge::",
     "molt_runtime_core::ffi::",
     "molt_runtime_core::",
+    "object::ops_hash::",
     "builtins::attr::",
     "object::type_ids::",
     "crate::",
@@ -161,6 +162,8 @@ RT_WRAPPER_EQUIVALENTS = [
     ("object::ops_sys::runtime_target_at_least(_py, ", "__RT_TARGET_AT_LEAST__("),
     ("runtime_target_at_least(_py, ", "__RT_TARGET_AT_LEAST__("),
     ("rt_target_at_least(", "__RT_TARGET_AT_LEAST__("),
+    ("py_hash_inf()", "__NUMERIC_HASH_INF__"),
+    ("PY_HASH_INF", "__NUMERIC_HASH_INF__"),
 ]
 
 

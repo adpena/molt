@@ -539,7 +539,7 @@ pub mod ffi {
 
         /// GIL-free list[int] setitem (NaN-boxed interface).
         pub fn molt_list_int_setitem_nogil(list_bits: u64, index_bits: u64, value_bits: u64)
-            -> u64;
+        -> u64;
 
         /// Raw-register list[int] getitem: raw i64 index in, raw i64 value out.
         pub fn molt_list_int_getitem_raw(list_bits: u64, raw_index: i64) -> i64;
@@ -939,16 +939,16 @@ pub unsafe fn bridge_owned_u64_to_vec(ptr: *const u64, len: usize) -> Vec<u64> {
 /// Provides type IDs, object model types, the GIL token, convenience
 /// helpers, and safe wrappers over the runtime FFI.
 pub mod prelude {
+    pub use crate::HashContextCode;
     pub use crate::type_ids::*;
     pub use crate::with_core_gil;
     pub use crate::with_gil_entry;
     pub use crate::with_gil_entry_body;
-    pub use crate::HashContextCode;
     pub use crate::{
-        bits_from_ptr, bridge_owned_u64_buffer, bridge_owned_u64_to_vec, bridge_owned_u8_buffer,
-        bridge_owned_u8_to_string_lossy, bridge_owned_u8_to_vec, obj_from_bits, opaque_handle_bits,
-        opaque_handle_ptr_from_bits, ptr_from_bits, CoreGilGuard, CoreGilToken, GilReleaseGuard,
-        MoltObject, PyToken,
+        CoreGilGuard, CoreGilToken, GilReleaseGuard, MoltObject, PyToken, bits_from_ptr,
+        bridge_owned_u8_buffer, bridge_owned_u8_to_string_lossy, bridge_owned_u8_to_vec,
+        bridge_owned_u64_buffer, bridge_owned_u64_to_vec, obj_from_bits, opaque_handle_bits,
+        opaque_handle_ptr_from_bits, ptr_from_bits,
     };
 
     // Safe runtime wrappers
@@ -975,8 +975,22 @@ pub type RuntimeExtensionStateInit = unsafe extern "C" fn() -> *mut u8;
 pub type RuntimeExtensionStateClear = unsafe extern "C" fn(*mut u8);
 pub type RuntimeExtensionStateDrop = unsafe extern "C" fn(*mut u8);
 
+/// `MOLTVTAB` encoded as a little-endian `u64`.
+pub const RUNTIME_VTABLE_ABI_MAGIC: u64 = 0x4241_5456_544c_4f4d;
+pub const RUNTIME_VTABLE_ABI_VERSION: u32 = 1;
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RuntimeVtableHeader {
+    pub abi_magic: u64,
+    pub abi_version: u32,
+    pub abi_size: usize,
+}
+
 #[repr(C)]
 pub struct RuntimeVtable {
+    pub header: RuntimeVtableHeader,
+
     // --- Runtime-scoped extension state ---
     pub runtime_state_get_or_init: unsafe extern "C" fn(
         *const u8,
@@ -1083,6 +1097,25 @@ pub struct RuntimeVtable {
     /// type-list checks (list/dict/set), which missed bytearray and every other
     /// unhashable type and were not version-gated.
     pub ensure_hashable: unsafe extern "C" fn(u64, i32) -> i32,
+
+    // --- Numeric hashing ---
+    /// CPython's exact modular numeric hash over a rational
+    /// `numerator / denominator` (the in-tree `object::ops_hash::py_numeric_hash`).
+    /// Each BigInt is passed as `(sign, big-endian magnitude bytes, len)`, the
+    /// same encoding as `to_bigint`/`int_bits_from_bigint`: `sign` is -1/0/+1.
+    /// The byte buffers are borrowed for the duration of the call. Returns the
+    /// `i64` hash (already `-1 -> -2` fixed). This lets satellite crates
+    /// (Decimal in `molt-runtime-serial`) hash through the single shared numeric
+    /// authority so a Decimal hashes equal to a numerically-equal
+    /// int/float/Fraction.
+    pub py_numeric_hash: unsafe extern "C" fn(i32, *const u8, usize, i32, *const u8, usize) -> i64,
+    /// CPython's finite `Decimal.__hash__`, computed without materializing
+    /// `10**exp10`. The coefficient is passed as `(sign, big-endian magnitude
+    /// bytes, len)` and the decimal value is `coefficient * 10**exp10`.
+    pub py_decimal_hash: unsafe extern "C" fn(i32, *const u8, usize, i64) -> i64,
+    /// CPython `_PyHASH_INF` (`314159`), shared with the in-tree float/Decimal
+    /// hash paths so satellite crates do not spell their own infinity hash.
+    pub py_hash_inf: unsafe extern "C" fn() -> i64,
 }
 
 /// Stable discriminant for the runtime's `HashContext`, passed across the FFI

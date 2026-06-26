@@ -15,7 +15,7 @@ pub(crate) struct HashSecret {
 
 const PY_HASH_BITS: u32 = 61;
 const PY_HASH_MODULUS: u64 = (1u64 << PY_HASH_BITS) - 1;
-const PY_HASH_INF: i64 = 314_159;
+pub(crate) const PY_HASH_INF: i64 = 314_159;
 const PY_HASH_NONE: i64 = 0xfca86420;
 const PY_HASHSEED_MAX: u64 = 4_294_967_295;
 
@@ -539,6 +539,13 @@ pub(crate) fn hash_int(val: i64) -> i64 {
 
 fn hash_bigint(ptr: *mut u8) -> i64 {
     let big = unsafe { bigint_ref(ptr) };
+    hash_bigint_value(big)
+}
+
+/// CPython `long_hash` (Objects/longobject.c): `(|n| mod _PyHASH_MODULUS)` with
+/// the sign re-applied and the `-1 -> -2` fixup. Shared by the BigInt heap path
+/// and by [`py_numeric_hash`] (which needs `hash(abs(numerator))`).
+pub(crate) fn hash_bigint_value(big: &BigInt) -> i64 {
     let sign = big.sign();
     let modulus = hash_modulus_big();
     let hash = big.abs().mod_floor(modulus);
@@ -547,6 +554,98 @@ fn hash_bigint(ptr: *mut u8) -> i64 {
         hash = -hash;
     }
     fix_hash(hash)
+}
+
+/// `|n| mod _PyHASH_MODULUS` as a `u64` in `[0, _PyHASH_MODULUS)`. This is the
+/// magnitude of CPython's `hash(abs(n))` for a non-negative argument (no sign,
+/// no `-1 -> -2` fixup, since a non-negative residue is never `-1`).
+fn bigint_abs_mod_modulus(n: &BigInt) -> u64 {
+    let modulus = hash_modulus_big();
+    // mod_floor on a non-negative dividend with a positive modulus yields a
+    // residue in [0, modulus), so to_u64 always succeeds.
+    n.abs().mod_floor(modulus).to_u64().unwrap_or(0)
+}
+
+/// `base^exp mod _PyHASH_MODULUS` via square-and-multiply over the Mersenne
+/// modular multiply. `base` must already be reduced (`< _PyHASH_MODULUS`).
+fn pow_mod_mersenne(mut base: u64, mut exp: u64) -> u64 {
+    let mut result = 1u64;
+    while exp > 0 {
+        if exp & 1 == 1 {
+            result = mul_mod_mersenne(result, base);
+        }
+        exp >>= 1;
+        if exp > 0 {
+            base = mul_mod_mersenne(base, base);
+        }
+    }
+    result
+}
+
+/// Modular inverse of `q mod _PyHASH_MODULUS` via Fermat's little theorem
+/// (`_PyHASH_MODULUS` is the Mersenne prime `2**61 - 1`), i.e. `q^(M-2) mod M`.
+/// `q_mod` must be reduced and non-zero (the caller guarantees `denominator`
+/// is not divisible by the modulus before calling).
+fn modinv_mersenne(q_mod: u64) -> u64 {
+    pow_mod_mersenne(q_mod, PY_HASH_MODULUS - 2)
+}
+
+/// CPython's exact numeric hash for a rational `numerator / denominator`
+/// (`Lib/fractions.py::_hash_algorithm`, generalized so `Decimal.__hash__` and
+/// the integer/float entry points all agree). `denominator` MUST be positive
+/// (Fraction/Decimal both normalize to a positive denominator).
+///
+/// ```text
+/// if denominator % M == 0:  hash_ = _PyHASH_INF        # no modular inverse
+/// else:                     hash_ = (|num| mod M) * inv(den mod M) mod M
+/// result = hash_ if num >= 0 else -hash_
+/// return -2 if result == -1 else result
+/// ```
+///
+/// `M == _PyHASH_MODULUS == 2**61 - 1`. This is the single shared authority for
+/// the cross-type invariant `hash(1) == hash(1.0) == hash(Fraction(1)) ==
+/// hash(Decimal(1))` and `hash(Fraction(3, 2)) == hash(1.5)`.
+pub(crate) fn py_numeric_hash(numerator: &BigInt, denominator: &BigInt) -> i64 {
+    let den_mod = bigint_abs_mod_modulus(denominator);
+    let hash_mag: u64 = if den_mod == 0 {
+        // Denominator divisible by the (prime) modulus => no modular inverse;
+        // CPython's `pow(den, -1, M)` raises ValueError and the hash becomes
+        // _PyHASH_INF (sign applied below). Mirrors the `except ValueError`
+        // branch exactly.
+        PY_HASH_INF as u64
+    } else {
+        let num_mod = bigint_abs_mod_modulus(numerator);
+        mul_mod_mersenne(num_mod, modinv_mersenne(den_mod))
+    };
+    let result = if numerator.sign() == Sign::Minus {
+        -(hash_mag as i64)
+    } else {
+        hash_mag as i64
+    };
+    fix_hash(result)
+}
+
+/// CPython's finite `Decimal.__hash__` for `coefficient * 10**exp10`.
+///
+/// This is intentionally separate from [`py_numeric_hash`]: Decimal exponents
+/// can be very large, and materializing `10**abs(exp10)` as a BigInt turns a
+/// modular hash into an allocation bomb. CPython hashes Decimals by modular
+/// exponentiation, so this path reduces the signed coefficient once and scales
+/// by `10**exp10 mod _PyHASH_MODULUS`.
+pub(crate) fn py_decimal_hash(coefficient: &BigInt, exp10: i64) -> i64 {
+    let coeff_mod = bigint_abs_mod_modulus(coefficient);
+    let scale_mod = pow_mod_mersenne(10, exp10.unsigned_abs());
+    let hash_mag = if exp10 >= 0 {
+        mul_mod_mersenne(coeff_mod, scale_mod)
+    } else {
+        mul_mod_mersenne(coeff_mod, modinv_mersenne(scale_mod))
+    };
+    let result = if coefficient.sign() == Sign::Minus {
+        -(hash_mag as i64)
+    } else {
+        hash_mag as i64
+    };
+    fix_hash(result)
 }
 
 fn hash_float(val: f64) -> i64 {
@@ -1351,4 +1450,139 @@ pub(crate) fn ensure_hashable(_py: &PyToken<'_>, key_bits: u64, ctx: HashContext
         }
     }
     true
+}
+
+#[cfg(test)]
+mod numeric_hash_tests {
+    //! Pins the shared modular numeric hash against CPython 3.12 reference
+    //! values (computed with `sys.hash_info.modulus == 2**61 - 1`). These are
+    //! the same constants the differential `fractions_hash_modular.py`,
+    //! `decimal_hash_modular.py`, and `numeric_cross_type_hash_invariant.py`
+    //! tests assert end-to-end on the compiled binary.
+    use super::{
+        hash_bigint_value, hash_float, hash_int, pow_mod_mersenne, py_decimal_hash, py_numeric_hash,
+    };
+    use num_bigint::BigInt;
+    use num_traits::One;
+
+    fn frac(n: i128, d: i128) -> i64 {
+        py_numeric_hash(&BigInt::from(n), &BigInt::from(d))
+    }
+
+    #[test]
+    fn fraction_hash_matches_cpython() {
+        // Whole numbers beyond i64 must NOT collapse to 0.
+        let big = BigInt::from(10u8).pow(30);
+        assert_eq!(py_numeric_hash(&big, &BigInt::one()), 465258685558744706);
+        // A whole Fraction equals its int hash.
+        assert_eq!(
+            py_numeric_hash(&big, &BigInt::one()),
+            hash_bigint_value(&big)
+        );
+
+        assert_eq!(frac(1, 3), 1537228672809129301);
+        assert_eq!(frac(-7, 2), -1152921504606846979);
+        assert_eq!(frac(22, 7), 1976436865040309104);
+        assert_eq!(frac(-1, 3), -1537228672809129301);
+        assert_eq!(frac(-5, 1), -5);
+        assert_eq!(frac(0, 1), 0);
+
+        // Reduction invariant: equal rationals hash identically.
+        assert_eq!(frac(2, 6), frac(1, 3));
+
+        // Large denominator beyond i64.
+        let d = BigInt::from(10u8).pow(25);
+        assert_eq!(py_numeric_hash(&BigInt::one(), &d), 550712693447214898);
+    }
+
+    #[test]
+    fn cross_type_numeric_invariant() {
+        // hash(1) == hash(1.0) == hash(Fraction(1)) == hash(Decimal(1))
+        assert_eq!(hash_int(1), 1);
+        assert_eq!(hash_float(1.0), 1);
+        assert_eq!(frac(1, 1), 1);
+
+        // hash(Fraction(3, 2)) == hash(1.5)
+        assert_eq!(frac(3, 2), hash_float(1.5));
+        assert_eq!(hash_float(1.5), 1152921504606846977);
+
+        // 1/10 has no exact float; Fraction(1,10) and Decimal('0.1') agree via
+        // the shared modular authority (computed identically here).
+        assert_eq!(frac(1, 10), 2075258708292324556);
+
+        // Negative cross-type.
+        assert_eq!(hash_int(-7), -7);
+        assert_eq!(hash_float(-7.0), -7);
+        assert_eq!(frac(-7, 1), -7);
+    }
+
+    #[test]
+    fn decimal_style_hash_matches_cpython() {
+        // Decimal value = coeff * 10^exp, expressed as a rational.
+        let ten = BigInt::from(10u8);
+        // Decimal('1.5') == 15 / 10
+        assert_eq!(
+            py_numeric_hash(&BigInt::from(15), &ten),
+            1152921504606846977
+        );
+        // Decimal('-2.5') == -25 / 10
+        assert_eq!(
+            py_numeric_hash(&BigInt::from(-25), &ten),
+            -1152921504606846978
+        );
+        // Decimal('1E+5') == 100000 / 1
+        assert_eq!(
+            py_numeric_hash(&BigInt::from(100000), &BigInt::one()),
+            100000
+        );
+        // Decimal('0.1') == 1 / 10 == hash(Fraction(1,10)).
+        assert_eq!(py_numeric_hash(&BigInt::one(), &ten), 2075258708292324556);
+
+        assert_eq!(py_decimal_hash(&BigInt::from(15), -1), 1152921504606846977);
+        assert_eq!(
+            py_decimal_hash(&BigInt::from(-25), -1),
+            -1152921504606846978
+        );
+        assert_eq!(py_decimal_hash(&BigInt::from(1), 5), 100000);
+        assert_eq!(py_decimal_hash(&BigInt::one(), -1), 2075258708292324556);
+    }
+
+    #[test]
+    fn decimal_hash_large_exponents_stay_modular() {
+        assert_eq!(
+            py_decimal_hash(&BigInt::one(), 999_999),
+            2137339169833320222
+        );
+        assert_eq!(
+            py_decimal_hash(&BigInt::one(), -999_999),
+            2239689609886435038
+        );
+        assert_eq!(
+            py_decimal_hash(&BigInt::from(-1), 999_999),
+            -2137339169833320222
+        );
+        assert_eq!(
+            py_decimal_hash(&BigInt::from(-1), -999_999),
+            -2239689609886435038
+        );
+    }
+
+    #[test]
+    fn fix_hash_minus_one_maps_to_minus_two() {
+        // Find a rational whose modular hash magnitude is exactly 1 with a
+        // negative sign so the raw result is -1 and must map to -2. hash of
+        // Fraction(-1, 1) is -1 -> -2.
+        assert_eq!(frac(-1, 1), -2);
+    }
+
+    #[test]
+    fn fermat_modular_inverse_roundtrips() {
+        // pow_mod_mersenne(q, M-2) is the inverse of q mod M; q * inv % M == 1.
+        const M: u64 = (1u64 << 61) - 1;
+        for q in [2u64, 3, 7, 10, 9999, 1234567891] {
+            let inv = pow_mod_mersenne(q, M - 2);
+            let prod = ((q as u128) * (inv as u128)) % (M as u128);
+            assert_eq!(prod, 1, "modular inverse failed for q={q}");
+        }
+    }
 }

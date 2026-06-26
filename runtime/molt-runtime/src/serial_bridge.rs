@@ -325,6 +325,47 @@ extern "C" fn bridge_bigint_ptr_from_bits(bits: u64) -> *mut u8 {
     }
 }
 
+fn bigint_from_bridge_parts(sign: i32, ptr: *const u8, len: usize) -> BigInt {
+    let sign = match sign {
+        -1 => Sign::Minus,
+        0 => Sign::NoSign,
+        _ => Sign::Plus,
+    };
+    let bytes = if ptr.is_null() || len == 0 {
+        &[][..]
+    } else {
+        unsafe { std::slice::from_raw_parts(ptr, len) }
+    };
+    BigInt::from_bytes_be(sign, bytes)
+}
+
+extern "C" fn bridge_py_numeric_hash(
+    num_sign: i32,
+    num_ptr: *const u8,
+    num_len: usize,
+    den_sign: i32,
+    den_ptr: *const u8,
+    den_len: usize,
+) -> i64 {
+    let numer = bigint_from_bridge_parts(num_sign, num_ptr, num_len);
+    let denom = bigint_from_bridge_parts(den_sign, den_ptr, den_len);
+    crate::object::ops_hash::py_numeric_hash(&numer, &denom)
+}
+
+extern "C" fn bridge_py_decimal_hash(
+    coeff_sign: i32,
+    coeff_ptr: *const u8,
+    coeff_len: usize,
+    exp10: i64,
+) -> i64 {
+    let coefficient = bigint_from_bridge_parts(coeff_sign, coeff_ptr, coeff_len);
+    crate::object::ops_hash::py_decimal_hash(&coefficient, exp10)
+}
+
+extern "C" fn bridge_py_hash_inf() -> i64 {
+    crate::object::ops_hash::PY_HASH_INF
+}
+
 extern "C" fn bridge_bigint_ref(
     ptr: *mut u8,
     out_sign: *mut i32,
@@ -713,7 +754,8 @@ extern "C" fn bridge_molt_module_import(name_bits: u64) -> u64 {
 // ---------------------------------------------------------------------------
 
 use molt_runtime_core::{
-    RuntimeExtensionStateClear, RuntimeExtensionStateDrop, RuntimeExtensionStateInit, RuntimeVtable,
+    RUNTIME_VTABLE_ABI_MAGIC, RUNTIME_VTABLE_ABI_VERSION, RuntimeExtensionStateClear,
+    RuntimeExtensionStateDrop, RuntimeExtensionStateInit, RuntimeVtable, RuntimeVtableHeader,
 };
 
 extern "C" fn bridge_runtime_state_get_or_init(
@@ -738,6 +780,11 @@ extern "C" fn bridge_runtime_state_get_or_init(
 /// The global vtable populated with pointers to the private bridge functions.
 /// The serial crate fetches this once at init time via `__molt_serial_get_vtable()`.
 static RUNTIME_VTABLE: RuntimeVtable = RuntimeVtable {
+    header: RuntimeVtableHeader {
+        abi_magic: RUNTIME_VTABLE_ABI_MAGIC,
+        abi_version: RUNTIME_VTABLE_ABI_VERSION,
+        abi_size: std::mem::size_of::<RuntimeVtable>(),
+    },
     runtime_state_get_or_init: bridge_runtime_state_get_or_init,
     raise_exception: bridge_raise_exception,
     exception_pending: bridge_exception_pending,
@@ -804,6 +851,9 @@ static RUNTIME_VTABLE: RuntimeVtable = RuntimeVtable {
     molt_getattr_builtin: bridge_molt_getattr_builtin,
     molt_module_import: bridge_molt_module_import,
     ensure_hashable: bridge_ensure_hashable,
+    py_numeric_hash: bridge_py_numeric_hash,
+    py_decimal_hash: bridge_py_decimal_hash,
+    py_hash_inf: bridge_py_hash_inf,
 };
 
 #[unsafe(no_mangle)]

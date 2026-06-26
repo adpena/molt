@@ -97,6 +97,7 @@ _MOLT_DECIMAL_IS_NORMAL = _require_intrinsic("molt_decimal_is_normal")
 _MOLT_DECIMAL_IS_SIGNED = _require_intrinsic("molt_decimal_is_signed")
 _MOLT_DECIMAL_IS_SUBNORMAL = _require_intrinsic("molt_decimal_is_subnormal")
 _MOLT_DECIMAL_IS_ZERO = _require_intrinsic("molt_decimal_is_zero")
+_MOLT_DECIMAL_HASH = _require_intrinsic("molt_decimal_hash")
 _MOLT_DECIMAL_COPY_ABS = _require_intrinsic("molt_decimal_copy_abs")
 _MOLT_DECIMAL_COPY_NEGATE = _require_intrinsic("molt_decimal_copy_negate")
 _MOLT_DECIMAL_COPY_SIGN = _require_intrinsic("molt_decimal_copy_sign")
@@ -783,9 +784,18 @@ class Decimal:
         return not bool(_MOLT_DECIMAL_IS_ZERO(self._handle))
 
     def __hash__(self) -> int:
+        # CPython `_pydecimal.Decimal.__hash__`: a signaling NaN cannot be
+        # hashed; a quiet NaN falls back to identity (object.__hash__); every
+        # finite/infinite value uses the exact modular numeric hash so a Decimal
+        # hashes equal to a numerically-equal int/float/Fraction. The numeric
+        # case is computed by the shared `py_numeric_hash` runtime authority.
+        if self.is_snan():
+            # Match CPython's C `_decimal` module message (no trailing period),
+            # which is the differential-parity reference.
+            raise TypeError("Cannot hash a signaling NaN value")
         if self.is_nan():
-            raise TypeError("cannot hash a NaN value")
-        return hash(float(self))
+            return object.__hash__(self)
+        return int(_MOLT_DECIMAL_HASH(self._handle))
 
     # ── Arithmetic operators ──────────────────────────────────────────────
 

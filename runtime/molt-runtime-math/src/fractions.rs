@@ -7,7 +7,6 @@ use molt_runtime_core::prelude::*;
 use num_bigint::BigInt;
 use num_integer::Integer;
 use num_traits::{One, Signed, ToPrimitive, Zero};
-use std::hash::{Hash, Hasher};
 
 // ---------------------------------------------------------------------------
 // FractionHandle – always in lowest terms, denominator > 0
@@ -108,22 +107,12 @@ impl FractionHandle {
     }
 
     fn hash_val(&self) -> i64 {
-        // CPython Fraction.__hash__ mirrors float hash for whole numbers.
-        if self.denom.is_one() {
-            return self.numer.to_i64().unwrap_or(0);
-        }
-        let f = self.to_f64();
-        if f.is_finite() {
-            // Mirror float hash for exact representable values.
-            let bits = f.to_bits();
-            bits as i64
-        } else {
-            // Fallback: hash numerator XOR denominator.
-            let mut hasher = std::collections::hash_map::DefaultHasher::new();
-            self.numer.to_string().hash(&mut hasher);
-            self.denom.to_string().hash(&mut hasher);
-            hasher.finish() as i64
-        }
+        // CPython `Fraction.__hash__` (Lib/fractions.py::_hash_algorithm): the
+        // exact modular numeric hash over the reduced numerator/denominator,
+        // computed by the single shared `py_numeric_hash` authority (reached
+        // through the math bridge) so a Fraction hashes equal to a numerically-
+        // equal int/float/Decimal. `denom` is always > 0 here.
+        py_numeric_hash(&self.numer, &self.denom)
     }
 }
 
@@ -635,7 +624,11 @@ pub extern "C" fn molt_fraction_hash(a_bits: u64) -> u64 {
         let Ok(a) = fraction_from_obj_bits(_py, a_bits) else {
             return raise_exception::<u64>(_py, "TypeError", "expected Fraction handle");
         };
-        int_bits_from_i64(_py, a.hash_val())
+        // The modular numeric hash spans the full ±(2**61-1) range, so box it
+        // through the BigInt path (mirroring `molt_fraction_numerator`) rather
+        // than the 47-bit inline-int fast path, which would silently truncate
+        // large hashes (e.g. hash(Fraction(10**30))).
+        int_bits_from_bigint(_py, BigInt::from(a.hash_val()))
     })
 }
 
