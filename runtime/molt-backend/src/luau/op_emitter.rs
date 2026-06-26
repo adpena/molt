@@ -5,6 +5,9 @@ impl LuauBackend {
         if self.emit_list_op(op) {
             return;
         }
+        if self.emit_container_access_op(op) {
+            return;
+        }
         if self.emit_collection_op(op) {
             return;
         }
