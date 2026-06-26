@@ -77,6 +77,7 @@ EXPECTED_MIXINS = [
     "AttributeAccessMixin",
     "ClassResolutionMixin",
     "TypeAnnotationMixin",
+    "LoopLoweringMixin",
     "AnalysisCollectStaticMixin",
     "AnalysisPatternMixin",
     "AsyncGenVisitorMixin",
@@ -178,6 +179,13 @@ def test_moved_methods_resolve_on_class() -> None:
     assert hasattr(SimpleTIRGenerator, "_emit_function_annotate")
     assert hasattr(SimpleTIRGenerator, "_iterable_element_hint")
     assert hasattr(SimpleTIRGenerator, "_emit_guard_type")
+    # loop lowering and loop guards
+    assert hasattr(SimpleTIRGenerator, "_emit_for_loop")
+    assert hasattr(SimpleTIRGenerator, "_emit_range_loop")
+    assert hasattr(SimpleTIRGenerator, "_emit_iter_new")
+    assert hasattr(SimpleTIRGenerator, "_emit_hoisted_loop_guards")
+    assert hasattr(SimpleTIRGenerator, "_emit_loop_unwind")
+    assert hasattr(SimpleTIRGenerator, "_visit_loop_body")
     # pattern_match
     assert hasattr(SimpleTIRGenerator, "visit_Match")
     assert hasattr(SimpleTIRGenerator, "_emit_match_class")
@@ -240,6 +248,7 @@ def test_mixin_modules_import_standalone() -> None:
         "molt.frontend.lowering.function_lifecycle",
         "molt.frontend.lowering.function_metadata",
         "molt.frontend.lowering.local_bindings",
+        "molt.frontend.lowering.loop_lowering",
         "molt.frontend.lowering.midend_optimization",
         "molt.frontend.lowering.module_lifecycle",
         "molt.frontend.lowering.serialization",
