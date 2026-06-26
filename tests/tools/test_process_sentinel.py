@@ -1122,15 +1122,14 @@ def test_terminate_group_refuses_posix_group_without_expected_identities(
 
 def test_terminate_group_uses_pid_kill_without_getpgrp_on_windows(monkeypatch) -> None:
     module = _load_process_sentinel()
-    samples = {
-        100: module.memory_guard.ProcessSample(
-            pid=100,
-            ppid=1,
-            pgid=None,
-            rss_kb=500_000,
-            command="/repo/molt/target/release-fast/molt-backend",
-        ),
-    }
+    sample = module.memory_guard.ProcessSample(
+        pid=100,
+        ppid=1,
+        pgid=None,
+        rss_kb=500_000,
+        command="/repo/molt/target/release-fast/molt-backend",
+    )
+    samples = {100: sample}
     killed: list[tuple[int, int]] = []
     killpg_calls: list[tuple[int, int]] = []
 
@@ -1147,10 +1146,41 @@ def test_terminate_group_uses_pid_kill_without_getpgrp_on_windows(monkeypatch) -
     monkeypatch.setattr(module.time, "sleep", lambda _seconds: None)
     monkeypatch.setattr(module, "sample_processes_for_sentinel", lambda: samples)
 
-    module.terminate_group(100, grace=0.001, root=Path("/repo/molt"))
+    module.terminate_group(
+        100,
+        grace=0.001,
+        root=Path("/repo/molt"),
+        expected_identity=module.memory_guard.process_identity(sample),
+    )
 
     assert [pid for pid, _sig in killed] == [100, 100]
     assert killpg_calls == []
+
+
+def test_terminate_group_refuses_windows_group_without_expected_identity(
+    monkeypatch,
+) -> None:
+    module = _load_process_sentinel()
+    samples = {
+        100: module.memory_guard.ProcessSample(
+            pid=100,
+            ppid=1,
+            pgid=None,
+            rss_kb=500_000,
+            command="/repo/molt/target/release-fast/molt-backend",
+        ),
+    }
+    killed: list[tuple[int, int]] = []
+
+    monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
+    monkeypatch.setattr(module, "_safe_getpgrp", lambda: None)
+    monkeypatch.setattr(module.os, "getpid", lambda: 9999)
+    monkeypatch.setattr(module.os, "kill", lambda pid, sig: killed.append((pid, sig)))
+    monkeypatch.setattr(module, "sample_processes_for_sentinel", lambda: samples)
+
+    module.terminate_group(100, grace=0.001, root=Path("/repo/molt"))
+
+    assert killed == []
 
 
 def test_terminate_group_windows_refuses_reused_pid_identity(monkeypatch) -> None:
@@ -1731,7 +1761,7 @@ def test_main_once_dry_run_reports_without_terminating(monkeypatch, capsys) -> N
     assert terminated == []
 
 
-def test_main_once_reports_operator_incident_for_terminated_group(
+def test_main_once_reports_repo_match_without_terminating(
     monkeypatch,
     capsys,
 ) -> None:
@@ -1764,12 +1794,12 @@ def test_main_once_reports_operator_incident_for_terminated_group(
     rc = module.main(["--once", "--kill-all", "--grace-sec", "0.25"])
 
     assert rc == 1
-    assert terminated == [(10, 0.25)]
+    assert terminated == []
     err = capsys.readouterr().err
-    assert "action=terminate" in err
+    assert "action=dry_run" in err
     assert "kill_all" in err
     assert "pgid=10" in err
-    assert "killed_at=2026-05-24T10:00:00Z" in err
+    assert "observed_at=2026-05-24T10:00:00Z" in err
     assert "elapsed=0.00s" in err
     assert "age=1200s" in err
     assert "grace=0.25s" in err
@@ -1900,7 +1930,7 @@ def test_main_until_clean_drains_delayed_launches(monkeypatch) -> None:
     )
 
     assert rc == 0
-    assert terminated == [first_pgid, second_pgid]
+    assert terminated == []
 
 
 def test_main_until_clean_waits_for_no_matched_groups(monkeypatch) -> None:
