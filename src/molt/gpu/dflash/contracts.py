@@ -19,6 +19,7 @@ from __future__ import annotations
 from ..speculative import (
     SpeculativeConditioning,
     _normalize_optional_token_id,
+    _normalize_token_id,
     _normalize_token_sequence,
 )
 
@@ -68,6 +69,22 @@ def _optional_positive_int(value, field_name: str) -> int | None:
     return _positive_int(value, field_name)
 
 
+def _normalize_position_ids(position_ids) -> list[int]:
+    try:
+        values = list(position_ids)
+    except TypeError as exc:
+        raise TypeError("position_ids must be iterable") from exc
+    out = []
+    for position_id in values:
+        try:
+            out.append(_non_negative_int(position_id, "position_ids"))
+        except (TypeError, ValueError) as exc:
+            raise type(exc)(
+                "position_ids must contain non-negative integer positions"
+            ) from exc
+    return out
+
+
 def require_dflash_draft_output_contract(value, field_name: str) -> str:
     contract = _required_non_empty_string(value, field_name).strip().lower()
     if contract not in DFLASH_DRAFT_OUTPUT_CONTRACTS:
@@ -101,16 +118,16 @@ class DFlashConditioning(SpeculativeConditioning):
             raise ValueError("DFlashConditioning requires target_kv")
         if position_ids is None:
             raise ValueError("DFlashConditioning requires position_ids")
-        if isinstance(last_verified_token, bool):
-            raise TypeError("last_verified_token must be an integer token id")
-        token = int(last_verified_token)
-        if token != last_verified_token:
-            raise TypeError("last_verified_token must be an integer token id")
+        position_ids = _normalize_position_ids(position_ids)
+        token = _normalize_token_id(
+            last_verified_token,
+            "last_verified_token must be an integer token id",
+        )
         super().__init__(
             target_features=target_features,
             target_kv=target_kv,
             patch_features=patch_features,
-            position_ids=list(position_ids),
+            position_ids=position_ids,
             aux=aux,
         )
         self.last_verified_token = token
