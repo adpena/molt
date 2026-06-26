@@ -782,9 +782,43 @@ fn test_call_method_list_count_and_index_use_collection_authority() {
                         "xs".to_string(),
                         "needle".to_string(),
                         "start".to_string(),
+                    ]),
+                    out: Some("start_only".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "call_method".to_string(),
+                    s_value: Some("index".to_string()),
+                    args: Some(vec![
+                        "xs".to_string(),
+                        "needle".to_string(),
+                        "start".to_string(),
                         "stop".to_string(),
                     ]),
                     out: Some("bounded".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "missing".to_string(),
+                    out: Some("missing_stop".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "list_index_range".to_string(),
+                    args: Some(vec![
+                        "xs".to_string(),
+                        "needle".to_string(),
+                        "start".to_string(),
+                        "missing_stop".to_string(),
+                    ]),
+                    out: Some("missing_stop_index".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "call_method".to_string(),
+                    s_value: Some("custom".to_string()),
+                    args: Some(vec!["xs".to_string()]),
+                    out: Some("custom_result".to_string()),
                     ..OpIR::default()
                 },
                 OpIR {
@@ -801,16 +835,25 @@ fn test_call_method_list_count_and_index_use_collection_authority() {
         output.contains("for _, __v in ipairs(xs)")
             && output.contains("count = count + 1")
             && output.contains("local idx = -1")
+            && output.contains("local start_only = -1")
             && output.contains("local bounded = -1")
+            && output.contains("local missing_stop_index = -1")
             && output.contains("__start")
-            && output.contains("__stop"),
+            && output.contains("__stop")
+            && output.contains("local __stop = __n")
+            && output.contains("__raw_stop == molt_missing_sentinel then __stop = __n"),
         "list method count/index must share direct collection lowering, got:\n{output}"
     );
     assert!(
         !output.contains("xs:count")
             && !output.contains("xs:index")
-            && !output.contains("molt_get_attr(xs"),
+            && !output.contains("molt_get_attr(xs, \"count\")")
+            && !output.contains("molt_get_attr(xs, \"index\")"),
         "typed list count/index must not use generic method lookup, got:\n{output}"
+    );
+    assert!(
+        output.contains("molt_get_attr(xs, \"custom\")") && !output.contains("xs:custom"),
+        "unknown typed list methods must fall through to generic method lookup, got:\n{output}"
     );
 }
 
@@ -858,8 +901,12 @@ fn test_list_index_range_honors_start_stop_bounds() {
     assert!(
         output.contains("__start")
             && output.contains("__stop")
-            && output.contains("__n + start")
-            && output.contains("__n + stop")
+            && output.contains("local __raw_start = start")
+            && output.contains("local __raw_stop = stop")
+            && output.contains("__raw_start == molt_missing_sentinel then __start = 0")
+            && output.contains("__raw_stop == molt_missing_sentinel then __stop = __n")
+            && output.contains("__n + __raw_start")
+            && output.contains("__n + __raw_stop")
             && output.contains("for __i = __start + 1, __stop do"),
         "list.index(value, start, stop) must honor range bounds, got:\n{output}"
     );
