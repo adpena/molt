@@ -69,16 +69,26 @@ from molt.cli.models import (
     _TimedResult,
 )
 from molt.cli.native_link_deps import _collect_cargo_native_link_deps
-from molt.cli.native_toolchain import _append_darwin_runtime_frameworks, _zig_target_query
+from molt.cli.native_toolchain import (
+    _append_darwin_runtime_frameworks,
+    _zig_target_query,
+)
 from molt.cli.output import emit_json as _emit_json
 from molt.cli.output import fail as _fail
 from molt.cli.output import json_payload as _json_payload
-from molt.cli.project_roots import _find_molt_root, _find_project_root, _require_molt_root
+from molt.cli.project_roots import (
+    _find_molt_root,
+    _find_project_root,
+    _require_molt_root,
+)
 from molt.cli.runtime_build import _ensure_runtime_lib
 from molt.cli.runtime_paths import _runtime_lib_path
 from molt.cli.target_python import _parse_target_python_version
-from molt.cli.toolchain_validation import _ensure_rustup_target
-from molt.cli.wrapper_build import _build_args_has_python_version_flag, _run_wrapper_build
+from molt.cli.setup_readiness import _ensure_rustup_target
+from molt.cli.wrapper_build import (
+    _build_args_has_python_version_flag,
+    _run_wrapper_build,
+)
 
 
 def _resolve_python_exe(python_exe: str | None) -> str:
@@ -132,7 +142,6 @@ def _run_command(
         )
         _emit_json(payload, json_output=True)
     return result.returncode
-
 
 
 def _run_command_timed(
@@ -210,13 +219,15 @@ def _run_script_cross(
         else _find_project_root(Path.cwd())
     )
     build_args = list(build_args or [])
-    resolved_build_entry, resolved_build_entry_error = _build_inputs._resolve_wrapper_build_entry(
-        file_path=file_path,
-        module=module,
-        project_root=project_root,
-        json_output=json_output,
-        command="run",
-        build_args=build_args,
+    resolved_build_entry, resolved_build_entry_error = (
+        _build_inputs._resolve_wrapper_build_entry(
+            file_path=file_path,
+            module=module,
+            project_root=project_root,
+            json_output=json_output,
+            command="run",
+            build_args=build_args,
+        )
     )
     if resolved_build_entry_error is not None:
         return resolved_build_entry_error
@@ -421,13 +432,15 @@ def _deploy(
         else _find_project_root(Path.cwd())
     )
     build_cmd_args = list(build_args)
-    resolved_build_entry, resolved_build_entry_error = _build_inputs._resolve_wrapper_build_entry(
-        file_path=file_path,
-        module=module,
-        project_root=project_root,
-        json_output=json_output,
-        command="deploy",
-        build_args=build_cmd_args,
+    resolved_build_entry, resolved_build_entry_error = (
+        _build_inputs._resolve_wrapper_build_entry(
+            file_path=file_path,
+            module=module,
+            project_root=project_root,
+            json_output=json_output,
+            command="deploy",
+            build_args=build_cmd_args,
+        )
     )
     if resolved_build_entry_error is not None:
         return resolved_build_entry_error
@@ -614,13 +627,15 @@ def run_script(
         else _find_project_root(Path.cwd())
     )
     build_args = list(build_args or [])
-    resolved_build_entry, resolved_build_entry_error = _build_inputs._resolve_wrapper_build_entry(
-        file_path=file_path,
-        module=module,
-        project_root=project_root,
-        json_output=json_output,
-        command="run",
-        build_args=build_args,
+    resolved_build_entry, resolved_build_entry_error = (
+        _build_inputs._resolve_wrapper_build_entry(
+            file_path=file_path,
+            module=module,
+            project_root=project_root,
+            json_output=json_output,
+            command="run",
+            build_args=build_args,
+        )
     )
     if resolved_build_entry_error is not None:
         return resolved_build_entry_error

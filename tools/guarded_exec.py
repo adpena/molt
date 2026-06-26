@@ -19,7 +19,7 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 try:
-    from molt.cli.toolchain_validation import _llvm_backend_unavailable_message
+    from molt.cli.setup_readiness import _llvm_backend_unavailable_message
 except ModuleNotFoundError:  # pragma: no cover - source tree corruption
     _llvm_backend_unavailable_message = None  # type: ignore[assignment]
 

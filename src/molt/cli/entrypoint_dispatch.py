@@ -32,7 +32,8 @@ from molt.cli.output import fail as _fail
 from molt.cli.package_distribution import package, publish, verify
 from molt.cli.package_registry import _is_remote_registry
 from molt.cli.target_python import _parse_target_python_version
-from molt.cli.toolchain_validation import doctor, setup, update_repo, validate
+from molt.cli.setup_readiness import doctor, setup
+from molt.cli.toolchain_validation import update_repo, validate
 from molt.cli.wrapper_build import _build_args_has_python_version_flag
 
 

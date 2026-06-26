@@ -20,6 +20,7 @@ COMMAND_RUNTIME = importlib.import_module("molt.cli.command_runtime")
 CARGO_EXECUTION = importlib.import_module("molt.cli.cargo_execution")
 NATIVE_LINK_DEPS = importlib.import_module("molt.cli.native_link_deps")
 NATIVE_TOOLCHAIN = importlib.import_module("molt.cli.native_toolchain")
+SETUP_READINESS = importlib.import_module("molt.cli.setup_readiness")
 TOOLCHAIN_VALIDATION = importlib.import_module("molt.cli.toolchain_validation")
 RUNTIME_BUILD = importlib.import_module("molt.cli.runtime_build")
 RUNTIME_WASM_VALIDATION = importlib.import_module("molt.cli.runtime_wasm_validation")
@@ -1151,9 +1152,9 @@ def test_update_plan_bootstraps_missing_cargo_tool_helpers(
 def test_llvm_backend_advice_names_exact_prefix_and_config(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(TOOLCHAIN_VALIDATION.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(SETUP_READINESS.platform, "system", lambda: "Windows")
 
-    advice = TOOLCHAIN_VALIDATION._llvm_backend_advice(22)
+    advice = SETUP_READINESS._llvm_backend_advice(22)
 
     joined = "\n".join(advice)
     assert "LLVM_SYS_221_PREFIX" in joined
@@ -1164,9 +1165,9 @@ def test_llvm_backend_advice_names_exact_prefix_and_config(
 def test_llvm_report_distinguishes_windows_clang_without_config(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(TOOLCHAIN_VALIDATION.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(SETUP_READINESS.platform, "system", lambda: "Windows")
     monkeypatch.setattr(
-        TOOLCHAIN_VALIDATION,
+        SETUP_READINESS,
         "_required_llvm_backend_major",
         lambda _root: 22,
         raising=True,
@@ -1187,7 +1188,7 @@ def test_llvm_report_distinguishes_windows_clang_without_config(
         "zig": "zig",
     }
     monkeypatch.setattr(
-        TOOLCHAIN_VALIDATION.shutil,
+        SETUP_READINESS.shutil,
         "which",
         lambda name: present.get(name),
         raising=True,
@@ -1203,9 +1204,9 @@ def test_llvm_report_distinguishes_windows_clang_without_config(
             )
         return subprocess.CompletedProcess(cmd, 1, "", "")
 
-    monkeypatch.setattr(TOOLCHAIN_VALIDATION.subprocess, "run", fake_run, raising=True)
+    monkeypatch.setattr(SETUP_READINESS.subprocess, "run", fake_run, raising=True)
 
-    report = TOOLCHAIN_VALIDATION._build_toolchain_report(ROOT)
+    report = SETUP_READINESS._build_toolchain_report(ROOT)
     llvm = next(
         check for check in report.checks if check["name"] == "llvm-backend-toolchain"
     )
@@ -1218,9 +1219,9 @@ def test_llvm_report_distinguishes_windows_clang_without_config(
 def test_windows_msvc_env_reports_inactive_dev_shell(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(TOOLCHAIN_VALIDATION.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(SETUP_READINESS.platform, "system", lambda: "Windows")
     monkeypatch.setattr(
-        TOOLCHAIN_VALIDATION,
+        SETUP_READINESS,
         "_windows_vsdevcmd_path",
         lambda: Path("C:/VS/Common7/Tools/VsDevCmd.bat"),
         raising=True,
@@ -1239,25 +1240,25 @@ def test_windows_msvc_env_reports_inactive_dev_shell(
         "wasm-pack": "wasm-pack",
     }
     monkeypatch.setattr(
-        TOOLCHAIN_VALIDATION.shutil,
+        SETUP_READINESS.shutil,
         "which",
         lambda name: present.get(name),
         raising=True,
     )
     monkeypatch.setattr(
-        TOOLCHAIN_VALIDATION,
+        SETUP_READINESS,
         "_detect_llvm_backend_toolchain",
         lambda _root: (22, None),
         raising=True,
     )
     monkeypatch.setattr(
-        TOOLCHAIN_VALIDATION,
+        SETUP_READINESS,
         "_run_completed_command",
         lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, ""),
         raising=True,
     )
 
-    report = TOOLCHAIN_VALIDATION._build_toolchain_report(ROOT)
+    report = SETUP_READINESS._build_toolchain_report(ROOT)
 
     msvc = next(check for check in report.checks if check["name"] == "msvc-build-env")
     assert msvc["ok"] is False
@@ -1269,13 +1270,13 @@ def test_llvm_detection_rejects_mismatched_config_major(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        TOOLCHAIN_VALIDATION,
+        SETUP_READINESS,
         "_required_llvm_backend_major",
         lambda _root: 22,
         raising=True,
     )
     monkeypatch.setattr(
-        TOOLCHAIN_VALIDATION.shutil,
+        SETUP_READINESS.shutil,
         "which",
         lambda name: (
             "C:/LLVM/bin/llvm-config.exe"
@@ -1288,9 +1289,9 @@ def test_llvm_detection_rejects_mismatched_config_major(
     def fake_run(_cmd, **_kwargs):
         return subprocess.CompletedProcess(_cmd, 0, "21.1.0\n", "")
 
-    monkeypatch.setattr(TOOLCHAIN_VALIDATION.subprocess, "run", fake_run, raising=True)
+    monkeypatch.setattr(SETUP_READINESS.subprocess, "run", fake_run, raising=True)
 
-    assert TOOLCHAIN_VALIDATION._detect_llvm_backend_toolchain(ROOT) == (22, None)
+    assert SETUP_READINESS._detect_llvm_backend_toolchain(ROOT) == (22, None)
 
 
 def test_cli_repl_command_delegates_to_guarded_repl(

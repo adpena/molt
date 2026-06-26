@@ -72,7 +72,7 @@ from molt.cli.models import (
 from molt.cli.output import CliFailure as _CliFailure
 from molt.cli.output import fail as _fail
 from molt.cli.target_python import TargetPythonVersion
-from molt.cli.toolchain_validation import _ensure_rustup_target
+from molt.cli.setup_readiness import _ensure_rustup_target
 
 _PreparedFrontendPipelineBundle = tuple[
     _PreparedFrontendRunTicket,
@@ -99,11 +99,13 @@ _PreparedFrontendPipelineBundle = tuple[
     _ExternalPackageNativeArtifactPlan,
 ]
 
+
 def _output_base_for_entry(entry_module: str, source_path: Path) -> str:
     base = entry_module.rsplit(".", 1)[-1] or source_path.stem
     if base == "__main__" and "." in entry_module:
         base = entry_module.rsplit(".", 2)[-2]
     return base
+
 
 def _syntax_error_info_from_exception(
     exc: Exception, *, path: Path
@@ -135,6 +137,7 @@ def _syntax_error_info_from_exception(
         offset=offset,
         text=text,
     )
+
 
 def _prepare_build_module_outputs(
     *,
@@ -191,6 +194,7 @@ def _prepare_build_module_outputs(
         import_plan=import_plan,
         output_layout=output_layout,
     ), None
+
 
 def _prepare_frontend_analysis(
     *,
@@ -323,6 +327,7 @@ def _prepare_frontend_analysis(
         module_dep_closures=module_dep_closures,
         dirty_lowering_modules=dirty_lowering_modules,
     ), None
+
 
 def _prepare_frontend_lowering_config(
     *,
@@ -477,6 +482,7 @@ def _prepare_frontend_lowering_config(
         frontend_parallel_worker_timings=frontend_parallel_worker_timings,
     ), None
 
+
 def _prepare_build_callbacks(
     *,
     frontend_module_timings: list[dict[str, Any]],
@@ -580,6 +586,7 @@ def _prepare_build_callbacks(
         set_binary_image_closure_payload=_set_binary_image_closure_payload,
         record_binary_image_analysis=_record_binary_image_analysis,
     )
+
 
 def _prepare_frontend_stage_state(
     *,
@@ -806,6 +813,7 @@ def _prepare_frontend_stage_state(
         ),
         None,
     )
+
 
 def _prepare_frontend_pipeline(
     *,

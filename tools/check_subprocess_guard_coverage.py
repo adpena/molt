@@ -312,27 +312,27 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
         "lowest-level guarded subprocess implementation",
     ),
     AllowedRawSubprocessUse(
-        "tools/memory_guard.py",
+        "tools/memory_guard_core/process_custody.py",
         "_pid_exited_or_unobservable",
         "os.kill",
         "memory guard pid-existence probe with signal 0 after a scoped "
         "termination attempt; not signal authority",
     ),
     AllowedRawSubprocessUse(
-        "tools/memory_guard.py",
+        "tools/memory_guard_core/process_custody.py",
         "_process_group_exited_or_unobservable",
         "os.killpg",
         "memory guard process-group existence probe with signal 0 after a "
         "scoped termination attempt; not signal authority",
     ),
     AllowedRawSubprocessUse(
-        "tools/memory_guard.py",
+        "tools/memory_guard_core/process_custody.py",
         "_send_pid_signal_action",
         "os.kill",
         "memory guard watched-root and escaped-PID signal primitive",
     ),
     AllowedRawSubprocessUse(
-        "tools/memory_guard.py",
+        "tools/memory_guard_core/process_custody.py",
         "_send_process_group_signal_action",
         "os.killpg",
         "memory guard watched process-group signal primitive",
@@ -554,19 +554,19 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
         "and repo-sentinel startup custody",
     ),
     AllowedRawSubprocessUse(
-        "src/molt/cli/toolchain_validation.py",
+        "src/molt/cli/setup_readiness.py",
         "_llvm_config_matches_major",
         "run",
         "bounded llvm-config version probe for explicit toolchain validation",
     ),
     AllowedRawSubprocessUse(
-        "src/molt/cli/toolchain_validation.py",
+        "src/molt/cli/setup_readiness.py",
         "_clang_llvm_version_detail",
         "run",
         "bounded clang version probe for explicit toolchain validation",
     ),
     AllowedRawSubprocessUse(
-        "src/molt/cli/toolchain_validation.py",
+        "src/molt/cli/setup_readiness.py",
         "_windows_vsdevcmd_path",
         "run",
         "bounded vswhere metadata probe for explicit Windows toolchain validation",
