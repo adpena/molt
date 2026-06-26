@@ -1,14 +1,97 @@
-"""Runtime orchestration for DFlash-style speculative decoding."""
+"""Generic lossless block-speculative decoding utilities.
+
+This module is intentionally neutral: it owns generic speculative request,
+response, conditioning, and decode-loop primitives. DFlash-specific contracts
+live in ``molt.gpu.dflash`` and may specialize these primitives, but generic
+speculative decoding must not live under the DFlash package.
+"""
 
 from __future__ import annotations
 
-from .contracts import (
-    DFlashConditioning,
-    SpeculativeConditioning,
-    SpeculativeDraftRequest,
-    SpeculativeVerifyRequest,
-    require_dflash_conditioning,
-)
+__all__ = [
+    "SpeculativeConditioning",
+    "SpeculativeDraftRequest",
+    "SpeculativeDraftResult",
+    "SpeculativeVerifyRequest",
+    "SpeculativeVerifyResult",
+    "SpeculativeDecodeResult",
+    "speculative_decode_greedy",
+    "speculative_decode_greedy_conditioned",
+]
+
+
+class SpeculativeConditioning:
+    """Opaque target-owned conditioning payload for speculative drafters."""
+
+    def __init__(
+        self,
+        *,
+        target_features=None,
+        target_kv=None,
+        patch_features=None,
+        position_ids=None,
+        aux=None,
+    ) -> None:
+        self.target_features = target_features
+        self.target_kv = target_kv
+        self.patch_features = patch_features
+        self.position_ids = position_ids
+        self.aux = aux
+
+    def validate_refresh_conditioning(self, conditioning, source_name: str):
+        """Validate refreshed verifier-owned conditioning for this decode loop."""
+        return conditioning
+
+
+class SpeculativeDraftRequest:
+    """Input to a model-specific drafter step."""
+
+    def __init__(
+        self,
+        prefix_tokens,
+        max_block_size: int,
+        conditioning: SpeculativeConditioning,
+        *,
+        step_index: int,
+    ) -> None:
+        self.prefix_tokens = list(prefix_tokens)
+        self.max_block_size = max_block_size
+        self.conditioning = conditioning
+        self.step_index = step_index
+
+
+class SpeculativeDraftResult:
+    """Draft model output: proposed tokens only."""
+
+    def __init__(self, draft_tokens) -> None:
+        self.draft_tokens = list(draft_tokens)
+
+
+class SpeculativeVerifyRequest:
+    """Input to a target-model verification step."""
+
+    def __init__(
+        self,
+        prefix_tokens,
+        draft_tokens,
+        conditioning: SpeculativeConditioning,
+        *,
+        step_index: int,
+    ) -> None:
+        self.prefix_tokens = list(prefix_tokens)
+        self.draft_tokens = list(draft_tokens)
+        self.conditioning = conditioning
+        self.step_index = step_index
+
+
+class SpeculativeVerifyResult:
+    """Target-model verification output with optional refreshed conditioning."""
+
+    def __init__(
+        self, verified_tokens, *, conditioning: SpeculativeConditioning | None = None
+    ) -> None:
+        self.verified_tokens = list(verified_tokens)
+        self.conditioning = conditioning
 
 
 class SpeculativeDecodeResult:
@@ -165,9 +248,9 @@ def speculative_decode_greedy_conditioned(
     verify_calls = 0
     step_index = 0
     conditioning = initial_conditioning or SpeculativeConditioning()
-    enforce_dflash_conditioning = isinstance(conditioning, DFlashConditioning)
-    if enforce_dflash_conditioning:
-        require_dflash_conditioning(conditioning, "initial_conditioning")
+    refresh_validator = getattr(conditioning, "validate_refresh_conditioning", None)
+    if callable(refresh_validator):
+        conditioning = refresh_validator(conditioning, "initial_conditioning")
 
     while len(emitted) < max_new_tokens:
         remaining = max_new_tokens - len(emitted)
@@ -207,12 +290,13 @@ def speculative_decode_greedy_conditioned(
                 "verify_step must return len(draft_tokens) + 1 target tokens"
             )
         if verify_result.conditioning is not None:
-            if enforce_dflash_conditioning:
-                require_dflash_conditioning(
+            if callable(refresh_validator):
+                conditioning = refresh_validator(
                     verify_result.conditioning,
                     "verify_result.conditioning",
                 )
-            conditioning = verify_result.conditioning
+            else:
+                conditioning = verify_result.conditioning
 
         mismatch = False
         for idx, draft_token in enumerate(drafted):

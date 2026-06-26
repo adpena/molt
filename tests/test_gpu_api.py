@@ -1849,11 +1849,6 @@ def test_submodule_dflash():
     from molt.gpu.dflash import (
         DFlashAdapterSpec,
         DFlashConditioning,
-        SpeculativeConditioning,
-        SpeculativeDraftRequest,
-        SpeculativeDraftResult,
-        SpeculativeVerifyRequest,
-        SpeculativeVerifyResult,
         build_dflash_runtime,
         require_dflash_conditioning,
     )
@@ -1863,6 +1858,26 @@ def test_submodule_dflash():
         for obj in (
             DFlashAdapterSpec,
             DFlashConditioning,
+        )
+    )
+    assert callable(build_dflash_runtime)
+    assert callable(require_dflash_conditioning)
+
+
+def test_submodule_speculative():
+    from molt.gpu.speculative import (
+        SpeculativeConditioning,
+        SpeculativeDraftRequest,
+        SpeculativeDraftResult,
+        SpeculativeVerifyRequest,
+        SpeculativeVerifyResult,
+        speculative_decode_greedy,
+        speculative_decode_greedy_conditioned,
+    )
+
+    assert all(
+        obj is not None
+        for obj in (
             SpeculativeConditioning,
             SpeculativeDraftRequest,
             SpeculativeDraftResult,
@@ -1870,8 +1885,8 @@ def test_submodule_dflash():
             SpeculativeVerifyResult,
         )
     )
-    assert callable(build_dflash_runtime)
-    assert callable(require_dflash_conditioning)
+    assert callable(speculative_decode_greedy)
+    assert callable(speculative_decode_greedy_conditioned)
 
 
 def test_submodule_kv_cache():

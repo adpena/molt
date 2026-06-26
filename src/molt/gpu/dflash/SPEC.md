@@ -27,7 +27,7 @@ the fail-closed corpus now.
 | **paper** | Chen, Liang, and Liu, "DFlash: Block Diffusion for Flash Speculative Decoding" |
 | **arXiv** | `arXiv:2602.06036v2` — <https://arxiv.org/abs/2602.06036> |
 | **official project** | DFlash, Z-Lab — <https://z-lab.ai/projects/dflash/> |
-| **molt contract layer** | `src/molt/gpu/dflash/{contracts,adapters,runtime}.py` |
+| **molt contract layer** | `src/molt/gpu/dflash/{contracts,adapters}.py`; generic speculative protocol/loop primitives live in `src/molt/gpu/speculative.py` |
 | **molt mislabel guard** | `src/molt/stdlib/tinygrad/dflash.py` (fails closed: `tinygrad.dflash` raises `ImportError`) |
 
 ### Primary-source verification (arXiv:2602.06036v2, refreshed 2026-06-25)
@@ -112,8 +112,8 @@ here so the algorithm cannot be declared done without satisfying it.
   the target context). Reference-model gradient/sensitivity check under
   `tests/gpu/dflash/reference/`.
 - **Contract anchor (today):** `DFlashConditioning` requires non-`None`
-  `target_features` (`contracts.py:56-57`); `require_dflash_conditioning`
-  re-checks it at every boundary (`contracts.py:80-81`).
+  `target_features`; `require_dflash_conditioning` re-checks it at every
+  boundary.
 - **Status:** contract: GATED (fail-closed corpus). algorithm: PENDING Phase 5a.
 
 ### F2 — `kv_injection`: target features are INJECTED into each draft layer's KV cache
@@ -130,8 +130,7 @@ here so the algorithm cannot be declared done without satisfying it.
   drafter — the post-injection KV tensors equal the target-derived KV at the
   injected positions (bit/ULP-bounded per `docs/spec/tinygrad_pin.md` policy).
 - **Contract anchor (today):** `DFlashConditioning` requires non-`None`
-  `target_kv` (`contracts.py:58-59`); re-checked by `require_dflash_conditioning`
-  (`contracts.py:82-83`).
+  `target_kv`; re-checked by `require_dflash_conditioning`.
 - **Status:** contract: GATED. algorithm: PENDING Phase 5a.
 
 ### F3 — `verifier_drafter_separation`: target verification and draft logic are distinct, target-owns-conditioning
@@ -145,11 +144,12 @@ here so the algorithm cannot be declared done without satisfying it.
   autoregressive path.
 - **Checkable assertion (today):** `DFlashRuntime` requires *two distinct
   callables* `draft_step` and `verify_step`, each validated `callable`, and
-  rejects the same callable supplied for both roles (`contracts.py`); the
-  conditioned decode loop re-validates DFlash
-  conditioning on every verifier-refreshed conditioning when the initial
-  conditioning is DFlash (`runtime.py:209-215`). A non-callable for either, or a
-  generic (non-`DFlashConditioning`) conditioning, raises.
+  rejects the same callable supplied for both roles (`contracts.py`);
+  `DFlashConditioning.validate_refresh_conditioning` makes the neutral
+  conditioned decode loop re-validate DFlash conditioning on every
+  verifier-refreshed conditioning when the initial conditioning is DFlash. A
+  non-callable for either, or a generic (non-`DFlashConditioning`) conditioning,
+  raises.
 - **Status:** STRUCTURALLY ENFORCED + GATED (fail-closed corpus asserts the
   non-callable and non-DFlash-conditioning rejections).
 
@@ -166,10 +166,9 @@ here so the algorithm cannot be declared done without satisfying it.
   requested size (1..`max_block_size`) per step; the block is a function of
   `last_verified_token` (perturbing it changes the block).
 - **Contract anchor (today):** `DFlashConditioning` requires an integer
-  `last_verified_token` (rejects `bool`; rejects non-integral)
-  (`contracts.py:62-66`); `SpeculativeDraftRequest` carries `max_block_size`
-  (`contracts.py:91-105`); the decode loop enforces
-  `1 <= len(drafted) <= request_size` (`runtime.py:187-191`).
+  `last_verified_token` (rejects `bool`; rejects non-integral); the neutral
+  `SpeculativeDraftRequest` carries `max_block_size`; the neutral decode loop
+  enforces `1 <= len(drafted) <= request_size`.
 - **Status:** contract: GATED. algorithm: PENDING Phase 5a.
 
 ### F5 — `losslessness`: the verified output equals greedy target decoding
@@ -185,10 +184,10 @@ here so the algorithm cannot be declared done without satisfying it.
 - **Checkable assertion (algorithm):** run the reference target model in pure
   greedy mode and in DFlash speculative mode; assert the emitted token streams are
   identical (exact integer-token equality).
-- **Contract anchor (today):** `speculative_decode_greedy_conditioned` enforces the
-  lossless verification protocol — `verify_step` must return `len(drafted)+1`
-  target tokens (`runtime.py:205-208`); a draft token is accepted only when it
-  equals the target token, else mismatch re-anchors (`runtime.py:217-241`).
+- **Contract anchor (today):** `molt.gpu.speculative.speculative_decode_greedy_conditioned`
+  enforces the lossless verification protocol: `verify_step` must return `len(drafted)+1`
+  target tokens; a draft token is accepted only when it
+  equals the target token, else mismatch re-anchors.
 - **Status:** protocol: ENFORCED (loop structure). end-to-end equality: PENDING
   Phase 5a reference model.
 
@@ -206,12 +205,12 @@ here so the algorithm cannot be declared done without satisfying it.
     roles raises `TypeError`;
   - constructing `DFlashRuntime` / calling `require_dflash_conditioning` with a
     generic (non-`DFlashConditioning`) or incomplete conditioning raises
-    `TypeError`/`ValueError` (`contracts.py:77-88`, `:157`);
+    `TypeError`/`ValueError`;
   - resolving an adapter that is absent / unsupported returns `None`, and a
-    *named* unavailable adapter raises `LookupError`
-    (`adapters.py:97-141`, `:167-170`) — never a generic fallback runtime;
+    *named* unavailable adapter raises `LookupError` — never a generic fallback
+    runtime;
   - `import tinygrad.dflash` raises `ImportError` pointing at `molt.gpu.dflash`
-    (`src/molt/stdlib/tinygrad/dflash.py:13-18`) — a generic helper cannot be
+    (`src/molt/stdlib/tinygrad/dflash.py`) — a generic helper cannot be
     imported under the DFlash name.
 - **Status:** STRUCTURALLY ENFORCED + GATED (fail-closed corpus exercises every
   one of these typed refusals).
@@ -249,16 +248,16 @@ typed error, by `tests/gpu/dflash/test_dflash_fidelity.py`:
 
 | guard | trigger | typed refusal (exact) | source |
 |---|---|---|---|
-| missing `target_features` | `DFlashConditioning(target_features=None, …)` | `ValueError("DFlashConditioning requires target_features")` | `contracts.py:56-57` |
-| missing `target_kv` | `DFlashConditioning(target_kv=None, …)` | `ValueError("DFlashConditioning requires target_kv")` | `contracts.py:58-59` |
-| missing `position_ids` | `DFlashConditioning(position_ids=None, …)` | `ValueError("DFlashConditioning requires position_ids")` | `contracts.py:60-61` |
-| non-integer `last_verified_token` (bool) | `DFlashConditioning(last_verified_token=True, …)` | `TypeError("last_verified_token must be an integer token id")` | `contracts.py:62-63` |
-| non-integral `last_verified_token` | `DFlashConditioning(last_verified_token=1.5, …)` | `TypeError("last_verified_token must be an integer token id")` | `contracts.py:64-66` |
-| generic conditioning at boundary | `require_dflash_conditioning(SpeculativeConditioning(...))` | `TypeError("… must be DFlashConditioning")` | `contracts.py:78-79` |
-| non-callable `draft_step` | `DFlashRuntime(draft_step=object(), …)` | `TypeError("DFlashRuntime draft_step must be callable")` | `contracts.py:153-154` |
-| non-callable `verify_step` | `DFlashRuntime(verify_step=object(), …)` | `TypeError("DFlashRuntime verify_step must be callable")` | `contracts.py:155-156` |
+| missing `target_features` | `DFlashConditioning(target_features=None, …)` | `ValueError("DFlashConditioning requires target_features")` | `DFlashConditioning` |
+| missing `target_kv` | `DFlashConditioning(target_kv=None, …)` | `ValueError("DFlashConditioning requires target_kv")` | `DFlashConditioning` |
+| missing `position_ids` | `DFlashConditioning(position_ids=None, …)` | `ValueError("DFlashConditioning requires position_ids")` | `DFlashConditioning` |
+| non-integer `last_verified_token` (bool) | `DFlashConditioning(last_verified_token=True, …)` | `TypeError("last_verified_token must be an integer token id")` | `DFlashConditioning` |
+| non-integral `last_verified_token` | `DFlashConditioning(last_verified_token=1.5, …)` | `TypeError("last_verified_token must be an integer token id")` | `DFlashConditioning` |
+| generic conditioning at boundary | `require_dflash_conditioning(SpeculativeConditioning(...))` | `TypeError("… must be DFlashConditioning")` | `require_dflash_conditioning` |
+| non-callable `draft_step` | `DFlashRuntime(draft_step=object(), …)` | `TypeError("DFlashRuntime draft_step must be callable")` | `DFlashRuntime` |
+| non-callable `verify_step` | `DFlashRuntime(verify_step=object(), …)` | `TypeError("DFlashRuntime verify_step must be callable")` | `DFlashRuntime` |
 | collapsed drafter/verifier | `DFlashRuntime(draft_step=f, verify_step=f, …)` | `TypeError("DFlashRuntime draft_step and verify_step must be distinct callables")` | `contracts.py` |
-| generic conditioning into runtime | `DFlashRuntime(initial_conditioning=SpeculativeConditioning(...))` | `TypeError("initial_conditioning must be DFlashConditioning")` | `contracts.py:157` → `:78-79` |
+| generic conditioning into runtime | `DFlashRuntime(initial_conditioning=SpeculativeConditioning(...))` | `TypeError("initial_conditioning must be DFlashConditioning")` | `DFlashRuntime` |
 | anonymous adapter target | `DFlashAdapterSpec(target_model_id="", …)` | `ValueError("dflash adapter target_model_id must be non-empty")` | `adapters.py` |
 | anonymous adapter draft | `DFlashAdapterSpec(draft_model_id="   ", …)` | `ValueError("dflash adapter draft_model_id must be non-empty")` | `adapters.py` |
 | missing adapter provenance | `DFlashAdapterSpec(provenance=None, …)` | `TypeError("dflash adapter provenance must be a string")` | `adapters.py` |
@@ -271,10 +270,10 @@ typed error, by `tests/gpu/dflash/test_dflash_fidelity.py`:
 | single-token-only adapter | `DFlashAdapterMetadata(max_block_size=1, …)` | `ValueError("dflash adapter max_block_size must support block drafting")` | `adapters.py` |
 | causal/autoregressive metadata | `DFlashAdapterMetadata(uses_non_causal_draft_attention=False, …)` | `ValueError("dflash adapter uses_non_causal_draft_attention must be true")` | `adapters.py` |
 | non-injecting metadata | `DFlashAdapterMetadata(injects_target_context_each_layer=False, …)` | `ValueError("dflash adapter injects_target_context_each_layer must be true")` | `adapters.py` |
-| non-spec adapter registration | `register_dflash_adapter(object())` | `TypeError("register_dflash_adapter expects DFlashAdapterSpec")` | `adapters.py:46-47` |
-| generic adapter returns non-runtime | adapter `create_runtime` returns a non-`DFlashRuntime` | `TypeError("dflash adapter create_runtime() must return DFlashRuntime")` | `adapters.py:139-140` |
-| named adapter unavailable | `build_dflash_runtime(…, dflash_adapter="x")` with no supporting adapter | `LookupError("dflash adapter 'x' is unavailable for this context")` | `adapters.py:167-170` |
-| mislabel guard | `import tinygrad.dflash` | `ImportError("tinygrad.dflash is not available: …")` (points at `molt.gpu.dflash`, names `tinygrad.speculative` as the generic alternative) | `src/molt/stdlib/tinygrad/dflash.py:13-18` |
+| non-spec adapter registration | `register_dflash_adapter(object())` | `TypeError("register_dflash_adapter expects DFlashAdapterSpec")` | `register_dflash_adapter` |
+| generic adapter returns non-runtime | adapter `create_runtime` returns a non-`DFlashRuntime` | `TypeError("dflash adapter create_runtime() must return DFlashRuntime")` | `build_dflash_runtime` |
+| named adapter unavailable | `build_dflash_runtime(…, dflash_adapter="x")` with no supporting adapter | `LookupError("dflash adapter 'x' is unavailable for this context")` | `build_dflash_runtime` |
+| mislabel guard | `import tinygrad.dflash` | `ImportError("tinygrad.dflash is not available: …")` (points at `molt.gpu.dflash`, names `tinygrad.speculative` as the generic alternative) | `src/molt/stdlib/tinygrad/dflash.py` |
 
 ## Status legend
 

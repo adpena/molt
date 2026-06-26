@@ -328,19 +328,27 @@ Falcon-OCR VLM e2e working (DFlash multi-head attention, RMSNorm, rotary embeddi
 ### 3.3 DFlash Contract & Implementation State
 
 **Design doc:** `/Users/adpena/Projects/molt/docs/spec/areas/perf/0520_DFLASH_CONTRACT.md`
-**Implementation:** `/Users/adpena/Projects/molt/src/molt/gpu/dflash/`
+**Implementation:** `/Users/adpena/Projects/molt/src/molt/gpu/dflash/` plus
+generic speculative loop primitives in `/Users/adpena/Projects/molt/src/molt/gpu/speculative.py`
 
 | Component | File | Status |
 |-----------|------|--------|
-| Contracts | contracts.py (5.9KB) | Complete — SpeculativeConditioning, DFlashConditioning, DFlashRuntime, draft/verify request/result types; requires target_features, target_kv, position_ids, last_verified_token |
+| Generic speculative protocol | ../speculative.py | Complete for neutral lossless block-speculative request/result/loop primitives; not a DFlash claim |
+| DFlash contracts | contracts.py | Complete fail-closed contract specialization: DFlashConditioning, DFlashRuntime, and refresh validation require target_features, target_kv, position_ids, last_verified_token |
 | Adapters | adapters.py (5.3KB) | Complete — registry; resolve_dflash_adapter fail-closed on missing |
-| Runtime | runtime.py (8.3KB) | Complete — fail-fast on missing required conditioning fields |
+| DFlash package runtime bridge | deleted | Removed; generic loops no longer live under the DFlash namespace |
 | KV Cache | ../kv_cache.py (31.2KB) | Complete — tiered, H2O importance scoring, eviction, DDTree-style block-diagonal layout |
-| Generate | ../generate.py (8.0KB) | Complete — block-diffusion loop with verifier/drafter separation |
+| Generate | ../generate.py (8.0KB) | Routes plain greedy, generic block-speculative callbacks, and fail-closed DFlash adapter resolution |
 
-**Paper-required properties — all verified present:** target-conditioned drafting (contracts.py:46-74), verifier/drafter separation (contracts.py:142-162), hidden-feature conditioning (contracts.py:49), KV injection (contracts.py:50-51), position IDs (contracts.py:51), last verified token type-checked (contracts.py:52,62-66), fail-closed adapter resolution.
+**Paper-required properties:** fail-closed contract properties are verified:
+target-conditioned payload fields, verifier/drafter separation, position IDs,
+last verified token type checks, typed adapter metadata, and fail-closed adapter
+resolution. Algorithmic properties are **not** complete until a real
+target-conditioned block-diffusion drafter consumes target hidden features,
+performs per-layer KV injection, and passes the reference losslessness oracle.
 
-**Verification status: PASS** — no generic speculative decoding shipped under the DFlash label.
+**Verification status:** PASS for the fail-closed DFlash namespace/adapter
+contract; PENDING for F1/F2/F4/F5 algorithmic DFlash fidelity.
 
 **Known limitations (documented):** no trained drafter shipped (contract only; drafter models require external training); block size configurable but not auto-tuned.
 

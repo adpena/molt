@@ -38,7 +38,6 @@ from molt.gpu.dflash import (
     DFlashConditioning,
     DFlashRuntime,
     DFlashSelectionContext,
-    SpeculativeConditioning,
     build_dflash_runtime,
     clear_dflash_adapters,
     register_dflash_adapter,
@@ -48,6 +47,7 @@ from molt.gpu.dflash import (
     restore_dflash_adapters,
 )
 from molt.gpu.dflash.contracts import DFlashSelectionContext as _CtxAlias  # noqa: F401
+from molt.gpu.speculative import SpeculativeConditioning
 
 
 # --- shared fixtures: a *valid* DFlash conditioning, so each negative test ---
