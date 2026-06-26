@@ -13,8 +13,8 @@ Product board for the molt structural sweep — the first instrument of the Molt
 | critical_hand_classifications | 0 |
 | handset_classifications | 0 |
 | debt_markers_total | 513 |
-| god_files | 8 |
-| max_god_file_lines | 5934 |
+| god_files | 7 |
+| max_god_file_lines | 5879 |
 | structural_god_files | 1 |
 | max_god_file_structural_score | 606 |
 | god_file_large_regions | 3 |
@@ -29,7 +29,6 @@ Product board for the molt structural sweep — the first instrument of the Molt
 | medium | debt_marker | `tools/linear_seed_backlog.py` | 21 debt/workaround markers |
 | medium | debt_marker | `tools/structural_audit.py` | 20 debt/workaround markers |
 | medium | debt_marker | `src/molt/stdlib/tempfile.py` | 16 debt/workaround markers |
-| low | god_file | `runtime/molt-runtime/src/builtins/platform.rs` | 5934 lines (ceiling 4000) |
 | low | god_file | `runtime/molt-runtime/src/async_rt/generators_async.rs` | 5879 lines (ceiling 4000) |
 | low | god_file | `runtime/molt-runtime/src/object/ops_sys.rs` | 5741 lines (ceiling 4000) |
 | low | god_file | `runtime/molt-runtime/src/object/ops_encoding.rs` | 5542 lines (ceiling 4000) |
@@ -41,6 +40,7 @@ Product board for the molt structural sweep — the first instrument of the Molt
 | low | debt_marker | `runtime/molt-backend/src/native_backend/function_compiler…` | 8 debt/workaround markers |
 | low | debt_marker | `src/molt/stdlib/_pyio.py` | 7 debt/workaround markers |
 | low | debt_marker | `src/molt/stdlib/email/message.py` | 6 debt/workaround markers |
+| low | debt_marker | `tools/check_type_coverage_todos.py` | 5 debt/workaround markers |
 
 ## TOP DELETION CANDIDATES (0) — replace, don't just delete
 
@@ -103,11 +103,10 @@ Product board for the molt structural sweep — the first instrument of the Molt
 | low | 1 debt/workaround markers | `runtime/molt-backend/src/luau/op_emitter.rs` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | … | _355 more_ | | run `--json` for full list |
 
-### god_file (8)
+### god_file (7)
 
 | sev | what | where | action |
 | --- | --- | --- | --- |
-| low | 5934 lines (ceiling 4000) | `runtime/molt-runtime/src/builtins/platform.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | low | 5879 lines (ceiling 4000) | `runtime/molt-runtime/src/async_rt/generators_async.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | low | 5741 lines (ceiling 4000) | `runtime/molt-runtime/src/object/ops_sys.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | low | 5542 lines (ceiling 4000) | `runtime/molt-runtime/src/object/ops_encoding.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
