@@ -112,7 +112,7 @@ def _iter_source_files(root: Path, suffixes: tuple[str, ...]) -> list[Path]:
             if _is_excluded(path, root):
                 continue
             out.append(path)
-    return out
+    return sorted(out, key=lambda path: path.relative_to(root).as_posix())
 
 
 # --- findings -------------------------------------------------------------
@@ -132,8 +132,15 @@ class Finding:
     class_retired: str = ""
     metric: float = 0.0  # used for ranking within a probe
 
-    def sort_key(self) -> tuple[int, float]:
-        return (_SEV_ORDER.get(self.severity, 9), -self.metric)
+    def sort_key(self) -> tuple[int, float, str, str, str, str]:
+        return (
+            _SEV_ORDER.get(self.severity, 9),
+            -self.metric,
+            self.probe,
+            self.location,
+            self.title,
+            self.detail,
+        )
 
 
 @dataclass(frozen=True)
