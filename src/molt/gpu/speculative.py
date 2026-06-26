@@ -124,16 +124,31 @@ class SpeculativeDecodeResult:
         return float(self.accepted_draft_tokens) / float(self.drafted_tokens)
 
 
+def _normalize_token_id(value, error_message: str) -> int:
+    if isinstance(value, bool):
+        raise TypeError(error_message)
+    try:
+        token = int(value)
+    except (TypeError, ValueError) as exc:
+        raise TypeError(error_message) from exc
+    if token != value:
+        raise TypeError(error_message)
+    return token
+
+
 def _normalize_token_sequence(values, source_name):
     out = []
     for value in values:
-        if isinstance(value, bool):
-            raise TypeError(f"{source_name} must return integer token ids")
-        token = int(value)
-        if token != value:
-            raise TypeError(f"{source_name} must return integer token ids")
-        out.append(token)
+        out.append(
+            _normalize_token_id(value, f"{source_name} must return integer token ids")
+        )
     return out
+
+
+def _normalize_optional_token_id(value, field_name: str) -> int | None:
+    if value is None:
+        return None
+    return _normalize_token_id(value, f"{field_name} must be an integer token id")
 
 
 def _require_non_negative_int(value, field_name: str) -> int:
@@ -196,6 +211,7 @@ def _run_lossless_speculative_decode(
 ):
     max_new_tokens = _require_non_negative_int(max_new_tokens, "max_new_tokens")
     block_size = _require_positive_int(block_size, "block_size")
+    eos_token_id = _normalize_optional_token_id(eos_token_id, "eos_token_id")
 
     prompt = _normalize_token_sequence(prompt_tokens, "prompt_tokens")
     prefix = list(prompt)
