@@ -1123,11 +1123,22 @@ def _prune_stale_repo_processes(
     if stale_orphan_sec is None and stale_pytest_sec is None:
         return ()
     samples = memory_guard.sample_processes()
+    # CANONICAL: the preflight terminates ONLY under explicit guard custody, like
+    # the continuous sentinel (commit 5df6b35d5 "Require explicit custody for repo
+    # sentinel termination"). A guard about to launch a command owns nothing yet,
+    # and repo-scope heuristics match parent shells, Codex/Claude helpers, and
+    # unrelated processes that merely reference the repo path on their command
+    # line (e.g. `powershell -Command "... python -m molt build <repo>..."`).
+    # Signalling those repeatedly killed the operator's Codex CLI parents. With an
+    # empty owned set there are ZERO kill candidates, so the preflight can never
+    # terminate a process it cannot prove it owns. Cross-session cleanup is
+    # operator-driven via `molt clean --kill-processes`.
     groups = process_sentinel.process_groups(
         samples,
         root=_REPO_ROOT,
         self_pid=os.getpid(),
         self_pgid=memory_guard._safe_getpgrp(),
+        owned_pids=frozenset(),
     )
     accounted_rss_kb = sum(group.total_rss_kb for group in groups)
     current_limits = limits.current_memory_limits(
