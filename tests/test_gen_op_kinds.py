@@ -21,6 +21,7 @@ See ``docs/design/foundation/25_op_kind_registry.md`` and
 from __future__ import annotations
 
 import ast
+import importlib
 import importlib.util
 import json
 import re
@@ -30,10 +31,21 @@ from types import SimpleNamespace
 
 
 ROOT = Path(__file__).resolve().parents[1]
-GEN = ROOT / "tools" / "gen_op_kinds.py"
 AUDIT = ROOT / "tools" / "audit_op_kinds.py"
 OUT_RS = ROOT / "runtime/molt-tir/src/tir/op_kinds_generated.rs"
 OUT_PY = ROOT / "src/molt/frontend/lowering/op_kinds_generated.py"
+
+
+def _read_rs_module_cluster(root_file: Path) -> str:
+    parts: list[str] = []
+    module_dir = root_file.with_suffix("")
+    if module_dir.is_dir():
+        for child in sorted(module_dir.rglob("*.rs")):
+            if "tests" in child.relative_to(module_dir).parts:
+                continue
+            parts.append(child.read_text(encoding="utf-8"))
+    parts.append(root_file.read_text(encoding="utf-8"))
+    return "\n".join(parts)
 
 
 def _rust_pub_decl(src: str, kind: str, name: str) -> bool:
@@ -62,7 +74,11 @@ def _load(path: Path, name: str):
 
 
 def _gen():
-    return _load(GEN, "molt_test_gen_op_kinds")
+    return importlib.import_module("tools.op_kinds")
+
+
+def _render_rust():
+    return importlib.import_module("tools.op_kinds.render_rust")
 
 
 def _audit():
@@ -110,7 +126,7 @@ def test_generated_rs_is_in_sync() -> None:
 
 
 def test_render_rs_rustfmt_uses_shared_memory_guard(monkeypatch) -> None:
-    gen = _gen()
+    render_rust = _render_rust()
     calls: list[dict[str, object]] = []
 
     def fake_guarded_completed_process(cmd, **kwargs):
@@ -125,12 +141,12 @@ def test_render_rs_rustfmt_uses_shared_memory_guard(monkeypatch) -> None:
         )
 
     monkeypatch.setattr(
-        gen.harness_memory_guard,
+        render_rust.harness_memory_guard,
         "guarded_completed_process",
         fake_guarded_completed_process,
     )
 
-    formatted = gen._rustfmt_rust_source("fn main(){}\n")
+    formatted = render_rust._rustfmt_rust_source("fn main(){}\n")
 
     assert formatted == "fn main() {}\n"
     assert len(calls) == 1
@@ -167,11 +183,9 @@ def test_simpleir_control_kinds_delegate_to_generated_tables() -> None:
     audit_mod = _audit()
     data = gen.load_table()
     rendered = gen.render_rs(data)
-    mod_rs = (ROOT / "runtime/molt-tir/src/tir/mod.rs").read_text(encoding="utf-8")
-    cfg_rs = (ROOT / "runtime/molt-tir/src/tir/cfg.rs").read_text(encoding="utf-8")
-    lower_from_simple = (
-        ROOT / "runtime/molt-tir/src/tir/lower_from_simple.rs"
-    ).read_text(encoding="utf-8")
+    mod_rs = _read_rs_module_cluster(ROOT / "runtime/molt-tir/src/tir/mod.rs")
+    cfg_rs = _read_rs_module_cluster(ROOT / "runtime/molt-tir/src/tir/cfg.rs")
+    lower_from_simple = _read_rs_module_cluster(ROOT / "runtime/molt-tir/src/tir/lower_from_simple.rs")
     audit = (ROOT / "tools/audit_op_kinds.py").read_text(encoding="utf-8")
 
     expected = {
@@ -349,11 +363,9 @@ def test_simpleir_control_kind_tables_match_registry_and_consumers() -> None:
     )
     assert consumed_generated == consumed_expected
 
-    tir_mod = (ROOT / "runtime/molt-tir/src/tir/mod.rs").read_text(encoding="utf-8")
-    cfg = (ROOT / "runtime/molt-tir/src/tir/cfg.rs").read_text(encoding="utf-8")
-    lower_from_simple = (
-        ROOT / "runtime/molt-tir/src/tir/lower_from_simple.rs"
-    ).read_text(encoding="utf-8")
+    tir_mod = _read_rs_module_cluster(ROOT / "runtime/molt-tir/src/tir/mod.rs")
+    cfg = _read_rs_module_cluster(ROOT / "runtime/molt-tir/src/tir/cfg.rs")
+    lower_from_simple = _read_rs_module_cluster(ROOT / "runtime/molt-tir/src/tir/lower_from_simple.rs")
     audit_source = (ROOT / "tools/audit_op_kinds.py").read_text(encoding="utf-8")
 
     assert "op_kinds_generated::simpleir_kind_is_structural(kind)" in tir_mod
@@ -573,9 +585,7 @@ def test_guarded_field_init_has_one_wire_spelling() -> None:
     assert res.rows[current].native_arm
     assert res.rows[current].wasm_arm
 
-    llvm_lowering = (
-        ROOT / "runtime/molt-backend/src/llvm_backend/lowering.rs"
-    ).read_text(encoding="utf-8")
+    llvm_lowering = _read_rs_module_cluster(ROOT / "runtime/molt-backend/src/llvm_backend/lowering.rs")
     assert f'Some("{current}")' in llvm_lowering
     assert f'Some("{rejected}")' not in llvm_lowering
 
@@ -607,9 +617,7 @@ def test_effects_rs_delegates_to_generated_tables() -> None:
     gen = _gen()
     data = gen.load_table()
     rendered = gen.render_rs(data)
-    effects = (ROOT / "runtime/molt-tir/src/tir/passes/effects.rs").read_text(
-        encoding="utf-8"
-    )
+    effects = _read_rs_module_cluster(ROOT / "runtime/molt-tir/src/tir/passes/effects.rs")
 
     # effects.rs delegates rather than hand-lists.
     for fn, table in (
@@ -670,7 +678,7 @@ def test_verify_result_arity_delegates_to_generated_table() -> None:
     gen = _gen()
     data = gen.load_table()
     rendered = gen.render_rs(data)
-    verify = (ROOT / "runtime/molt-tir/src/tir/verify.rs").read_text(encoding="utf-8")
+    verify = _read_rs_module_cluster(ROOT / "runtime/molt-tir/src/tir/verify.rs")
 
     table = {row["name"]: row["result_arity"] for row in data["opcode"]}
     variable = {opcode for opcode, arity in table.items() if arity == "variable"}
@@ -756,12 +764,8 @@ def test_call_roles_delegate_to_generated_tables() -> None:
     gen = _gen()
     data = gen.load_table()
     rendered = gen.render_rs(data)
-    call_graph = (ROOT / "runtime/molt-tir/src/tir/call_graph.rs").read_text(
-        encoding="utf-8"
-    )
-    call_facts = (ROOT / "runtime/molt-tir/src/tir/call_facts.rs").read_text(
-        encoding="utf-8"
-    )
+    call_graph = _read_rs_module_cluster(ROOT / "runtime/molt-tir/src/tir/call_graph.rs")
+    call_facts = _read_rs_module_cluster(ROOT / "runtime/molt-tir/src/tir/call_facts.rs")
 
     expected_roles = {
         "Call": "user_call",
@@ -854,7 +858,7 @@ def test_ssa_attr_transport_delegates_to_generated_tables() -> None:
     gen = _gen()
     data = gen.load_table()
     rendered = gen.render_rs(data)
-    ssa = (ROOT / "runtime/molt-tir/src/tir/ssa.rs").read_text(encoding="utf-8")
+    ssa = _read_rs_module_cluster(ROOT / "runtime/molt-tir/src/tir/ssa.rs")
 
     expected_attrs = {
         "Import": "module",
@@ -1032,9 +1036,7 @@ def test_fuzz_tir_passes_uses_generated_opcode_shapes() -> None:
     gen = _gen()
     data = gen.load_table()
     rendered = gen.render_rs(data)
-    fuzz = (
-        ROOT / "runtime/molt-backend/fuzz/fuzz_targets/fuzz_tir_passes.rs"
-    ).read_text(encoding="utf-8")
+    fuzz = _read_rs_module_cluster(ROOT / "runtime/molt-backend/fuzz/fuzz_targets/fuzz_tir_passes.rs")
 
     expected = {
         "Add": {"operands": 2, "attr_payload": "none"},
@@ -1148,22 +1150,12 @@ def test_operand_independent_result_types_delegate_to_generated_table() -> None:
     gen = _gen()
     data = gen.load_table()
     rendered = gen.render_rs(data)
-    block_versioning = (
-        ROOT / "runtime/molt-tir/src/tir/passes/block_versioning.rs"
-    ).read_text(encoding="utf-8")
-    type_refine = (ROOT / "runtime/molt-tir/src/tir/type_refine.rs").read_text(
-        encoding="utf-8"
-    )
-    branchless = (
-        ROOT / "runtime/molt-tir/src/tir/passes/branchless_count.rs"
-    ).read_text(encoding="utf-8")
-    fast_math = (ROOT / "runtime/molt-tir/src/tir/passes/fast_math.rs").read_text(
-        encoding="utf-8"
-    )
-    gvn = (ROOT / "runtime/molt-tir/src/tir/passes/gvn.rs").read_text(encoding="utf-8")
-    strength_reduction = (
-        ROOT / "runtime/molt-tir/src/tir/passes/strength_reduction.rs"
-    ).read_text(encoding="utf-8")
+    block_versioning = _read_rs_module_cluster(ROOT / "runtime/molt-tir/src/tir/passes/block_versioning.rs")
+    type_refine = _read_rs_module_cluster(ROOT / "runtime/molt-tir/src/tir/type_refine.rs")
+    branchless = _read_rs_module_cluster(ROOT / "runtime/molt-tir/src/tir/passes/branchless_count.rs")
+    fast_math = _read_rs_module_cluster(ROOT / "runtime/molt-tir/src/tir/passes/fast_math.rs")
+    gvn = _read_rs_module_cluster(ROOT / "runtime/molt-tir/src/tir/passes/gvn.rs")
+    strength_reduction = _read_rs_module_cluster(ROOT / "runtime/molt-tir/src/tir/passes/strength_reduction.rs")
 
     expected = {
         "ConstInt": "i64",
@@ -1303,9 +1295,7 @@ def test_type_refine_result_type_rules_delegate_to_generated_tables() -> None:
     gen = _gen()
     data = gen.load_table()
     rendered = gen.render_rs(data)
-    type_refine = (ROOT / "runtime/molt-tir/src/tir/type_refine.rs").read_text(
-        encoding="utf-8"
-    )
+    type_refine = _read_rs_module_cluster(ROOT / "runtime/molt-tir/src/tir/type_refine.rs")
 
     expected_attr_rows = {
         "ObjectNewBound": "object_type_hint",
@@ -1470,9 +1460,7 @@ def test_sccp_constant_rules_delegate_to_generated_tables() -> None:
     gen = _gen()
     data = gen.load_table()
     rendered = gen.render_rs(data)
-    sccp = (ROOT / "runtime/molt-tir/src/tir/passes/sccp.rs").read_text(
-        encoding="utf-8"
-    )
+    sccp = _read_rs_module_cluster(ROOT / "runtime/molt-tir/src/tir/passes/sccp.rs")
 
     expected_seed_rows = {
         "ConstInt": "int_attr",
@@ -1629,9 +1617,7 @@ def test_value_range_rules_delegate_to_generated_tables() -> None:
     gen = _gen()
     data = gen.load_table()
     rendered = gen.render_rs(data)
-    value_range = (ROOT / "runtime/molt-tir/src/tir/passes/value_range.rs").read_text(
-        encoding="utf-8"
-    )
+    value_range = _read_rs_module_cluster(ROOT / "runtime/molt-tir/src/tir/passes/value_range.rs")
 
     expected_transfer_rows = {
         "Add": "add",
@@ -1778,9 +1764,7 @@ def test_range_devirt_roles_delegate_to_generated_table() -> None:
     gen = _gen()
     data = gen.load_table()
     rendered = gen.render_rs(data)
-    range_devirt = (ROOT / "runtime/molt-tir/src/tir/passes/range_devirt.rs").read_text(
-        encoding="utf-8"
-    )
+    range_devirt = _read_rs_module_cluster(ROOT / "runtime/molt-tir/src/tir/passes/range_devirt.rs")
 
     expected_rows = [
         {"opcode": "CallBuiltin", "role": "range_call_candidate"},
@@ -1817,9 +1801,7 @@ def test_vectorize_opcode_facts_delegate_to_generated_table() -> None:
     gen = _gen()
     data = gen.load_table()
     rendered = gen.render_rs(data)
-    vectorize = (ROOT / "runtime/molt-tir/src/tir/passes/vectorize.rs").read_text(
-        encoding="utf-8"
-    )
+    vectorize = _read_rs_module_cluster(ROOT / "runtime/molt-tir/src/tir/passes/vectorize.rs")
 
     expected_rows = {
         "Add": {"body": "scalar_arithmetic", "reduction": "sum"},
@@ -2051,9 +2033,7 @@ def test_lir_verify_rules_delegate_to_generated_table() -> None:
     gen = _gen()
     data = gen.load_table()
     rendered = gen.render_rs(data)
-    verify_lir = (ROOT / "runtime/molt-tir/src/tir/verify_lir.rs").read_text(
-        encoding="utf-8"
-    )
+    verify_lir = _read_rs_module_cluster(ROOT / "runtime/molt-tir/src/tir/verify_lir.rs")
 
     expected_rows = {
         "BoxVal": "box_value",
@@ -2337,9 +2317,7 @@ def test_range_devirt_role_validation_rejects_drift() -> None:
         raise AssertionError("duplicate range-devirt opcode role was accepted")
 
 
-def test_operand_independent_result_type_validation_rejects_drift(
-    tmp_path, monkeypatch
-) -> None:
+def test_operand_independent_result_type_validation_rejects_drift(tmp_path) -> None:
     gen = _gen()
     table = ROOT / "runtime/molt-tir/src/tir/op_kinds.toml"
     original = table.read_text(encoding="utf-8")
@@ -2361,9 +2339,8 @@ def test_operand_independent_result_type_validation_rejects_drift(
     )
     tmp_table = tmp_path / "op_kinds_bad_type.toml"
     tmp_table.write_text(bad_type, encoding="utf-8", newline="\n")
-    monkeypatch.setattr(gen, "TABLE", tmp_table)
     try:
-        gen.load_table()
+        gen.load_table(tmp_table)
     except gen.OpKindTableError as exc:
         assert "operand_independent_result_type must be one of" in str(exc)
     else:  # pragma: no cover - explicit fail branch for pytest output clarity
@@ -2386,9 +2363,8 @@ def test_operand_independent_result_type_validation_rejects_drift(
     )
     tmp_table = tmp_path / "op_kinds_bad_arity.toml"
     tmp_table.write_text(bad_arity, encoding="utf-8", newline="\n")
-    monkeypatch.setattr(gen, "TABLE", tmp_table)
     try:
-        gen.load_table()
+        gen.load_table(tmp_table)
     except gen.OpKindTableError as exc:
         assert "operand_independent_result_type requires result_arity = 'one'" in str(
             exc
@@ -2397,7 +2373,7 @@ def test_operand_independent_result_type_validation_rejects_drift(
         raise AssertionError("multi-result intrinsic result-type fact was accepted")
 
 
-def test_result_arity_rejects_unreviewed_variable_opcode(tmp_path, monkeypatch) -> None:
+def test_result_arity_rejects_unreviewed_variable_opcode(tmp_path) -> None:
     """`variable` is an audited escape hatch, not a default for uncertain ops."""
     gen = _gen()
     table = ROOT / "runtime/molt-tir/src/tir/op_kinds.toml"
@@ -2416,10 +2392,9 @@ def test_result_arity_rejects_unreviewed_variable_opcode(tmp_path, monkeypatch) 
     )
     tmp_table = tmp_path / "op_kinds.toml"
     tmp_table.write_text(mutated, encoding="utf-8", newline="\n")
-    monkeypatch.setattr(gen, "TABLE", tmp_table)
 
     try:
-        gen.load_table()
+        gen.load_table(tmp_table)
     except gen.OpKindTableError as exc:
         assert "result_arity = 'variable' is reserved" in str(exc)
     else:  # pragma: no cover - explicit fail branch for pytest output clarity
@@ -2431,13 +2406,9 @@ def test_gvn_numbering_roles_delegate_to_generated_table() -> None:
     gen = _gen()
     data = gen.load_table()
     rendered = gen.render_rs(data)
-    effects = (ROOT / "runtime/molt-tir/src/tir/passes/effects.rs").read_text(
-        encoding="utf-8"
-    )
-    type_refine = (ROOT / "runtime/molt-tir/src/tir/type_refine.rs").read_text(
-        encoding="utf-8"
-    )
-    gvn = (ROOT / "runtime/molt-tir/src/tir/passes/gvn.rs").read_text(encoding="utf-8")
+    effects = _read_rs_module_cluster(ROOT / "runtime/molt-tir/src/tir/passes/effects.rs")
+    type_refine = _read_rs_module_cluster(ROOT / "runtime/molt-tir/src/tir/type_refine.rs")
+    gvn = _read_rs_module_cluster(ROOT / "runtime/molt-tir/src/tir/passes/gvn.rs")
 
     expected_always = {
         "BoxVal",
@@ -2689,9 +2660,7 @@ def test_alias_barrier_predicates_delegate_to_generated_tables() -> None:
     gen = _gen()
     data = gen.load_table()
     rendered = gen.render_rs(data)
-    alias = (ROOT / "runtime/molt-tir/src/tir/passes/alias_analysis.rs").read_text(
-        encoding="utf-8"
-    )
+    alias = _read_rs_module_cluster(ROOT / "runtime/molt-tir/src/tir/passes/alias_analysis.rs")
 
     expected_rc = {
         "Call",
@@ -2785,9 +2754,7 @@ def test_deforestation_fusion_barriers_delegate_to_generated_table() -> None:
     gen = _gen()
     data = gen.load_table()
     rendered = gen.render_rs(data)
-    deforestation = (
-        ROOT / "runtime/molt-tir/src/tir/passes/deforestation.rs"
-    ).read_text(encoding="utf-8")
+    deforestation = _read_rs_module_cluster(ROOT / "runtime/molt-tir/src/tir/passes/deforestation.rs")
 
     expected = {
         "Call",
@@ -2849,9 +2816,7 @@ def test_polyhedral_opcodes_delegate_to_generated_tables() -> None:
     gen = _gen()
     data = gen.load_table()
     rendered = gen.render_rs(data)
-    polyhedral = (ROOT / "runtime/molt-tir/src/tir/passes/polyhedral.rs").read_text(
-        encoding="utf-8"
-    )
+    polyhedral = _read_rs_module_cluster(ROOT / "runtime/molt-tir/src/tir/passes/polyhedral.rs")
 
     loop_headers = {"ForIter", "ScfFor"}
     affine_body = {
@@ -2910,9 +2875,7 @@ def test_generator_fusion_poll_roles_delegate_to_generated_table() -> None:
     gen = _gen()
     data = gen.load_table()
     rendered = gen.render_rs(data)
-    generator_fusion = (
-        ROOT / "runtime/molt-tir/src/tir/passes/generator_fusion.rs"
-    ).read_text(encoding="utf-8")
+    generator_fusion = _read_rs_module_cluster(ROOT / "runtime/molt-tir/src/tir/passes/generator_fusion.rs")
 
     required = {"StateYield"}
     reject = {
@@ -3010,9 +2973,7 @@ def test_lowered_state_machine_body_opcodes_delegate_to_generated_table() -> Non
     gen = _gen()
     data = gen.load_table()
     rendered = gen.render_rs(data)
-    function = (ROOT / "runtime/molt-tir/src/tir/function.rs").read_text(
-        encoding="utf-8"
-    )
+    function = _read_rs_module_cluster(ROOT / "runtime/molt-tir/src/tir/function.rs")
 
     expected = {
         "AllocTask",
@@ -3061,9 +3022,7 @@ def test_drop_insertion_suspension_points_delegate_to_generated_table() -> None:
     gen = _gen()
     data = gen.load_table()
     rendered = gen.render_rs(data)
-    drop_insertion = (
-        ROOT / "runtime/molt-tir/src/tir/passes/drop_insertion.rs"
-    ).read_text(encoding="utf-8")
+    drop_insertion = _read_rs_module_cluster(ROOT / "runtime/molt-tir/src/tir/passes/drop_insertion.rs")
 
     expected = {
         "ChanRecvYield",
@@ -3108,9 +3067,7 @@ def test_drop_insertion_return_deferral_barriers_delegate_to_generated_table() -
     gen = _gen()
     data = gen.load_table()
     rendered = gen.render_rs(data)
-    drop_insertion = (
-        ROOT / "runtime/molt-tir/src/tir/passes/drop_insertion.rs"
-    ).read_text(encoding="utf-8")
+    drop_insertion = _read_rs_module_cluster(ROOT / "runtime/molt-tir/src/tir/passes/drop_insertion.rs")
 
     expected = {"DecRef", "Free", "IncRef"}
     assert set(data["drop_insertion_return_deferral_barrier_opcodes"]) == expected
@@ -3156,12 +3113,8 @@ def test_state_machine_opcodes_delegate_to_generated_table() -> None:
     gen = _gen()
     data = gen.load_table()
     rendered = gen.render_rs(data)
-    inliner = (ROOT / "runtime/molt-tir/src/tir/passes/inliner.rs").read_text(
-        encoding="utf-8"
-    )
-    promotion = (
-        ROOT / "runtime/molt-tir/src/tir/passes/module_slot_promotion.rs"
-    ).read_text(encoding="utf-8")
+    inliner = _read_rs_module_cluster(ROOT / "runtime/molt-tir/src/tir/passes/inliner.rs")
+    promotion = _read_rs_module_cluster(ROOT / "runtime/molt-tir/src/tir/passes/module_slot_promotion.rs")
 
     expected = {
         "AllocTask",
@@ -3213,9 +3166,7 @@ def test_module_slot_promotion_roles_delegate_to_generated_tables() -> None:
     gen = _gen()
     data = gen.load_table()
     rendered = gen.render_rs(data)
-    promotion = (
-        ROOT / "runtime/molt-tir/src/tir/passes/module_slot_promotion.rs"
-    ).read_text(encoding="utf-8")
+    promotion = _read_rs_module_cluster(ROOT / "runtime/molt-tir/src/tir/passes/module_slot_promotion.rs")
     production = promotion.split("#[cfg(test)]", maxsplit=1)[0]
 
     assert data["module_concurrency_marker_source_roles"] == [
@@ -3311,21 +3262,11 @@ def test_residual_tir_semantic_roles_delegate_to_generated_tables() -> None:
     data = gen.load_table()
     rendered = gen.render_rs(data)
 
-    overflow_peel = (
-        ROOT / "runtime/molt-tir/src/tir/passes/overflow_peel.rs"
-    ).read_text(encoding="utf-8")
-    verify = (ROOT / "runtime/molt-tir/src/tir/verify.rs").read_text(
-        encoding="utf-8"
-    )
-    sroa = (ROOT / "runtime/molt-tir/src/tir/passes/sroa.rs").read_text(
-        encoding="utf-8"
-    )
-    strength = (
-        ROOT / "runtime/molt-tir/src/tir/passes/strength_reduction.rs"
-    ).read_text(encoding="utf-8")
-    scev = (ROOT / "runtime/molt-tir/src/tir/passes/scev.rs").read_text(
-        encoding="utf-8"
-    )
+    overflow_peel = _read_rs_module_cluster(ROOT / "runtime/molt-tir/src/tir/passes/overflow_peel.rs")
+    verify = _read_rs_module_cluster(ROOT / "runtime/molt-tir/src/tir/verify.rs")
+    sroa = _read_rs_module_cluster(ROOT / "runtime/molt-tir/src/tir/passes/sroa.rs")
+    strength = _read_rs_module_cluster(ROOT / "runtime/molt-tir/src/tir/passes/strength_reduction.rs")
+    scev = _read_rs_module_cluster(ROOT / "runtime/molt-tir/src/tir/passes/scev.rs")
 
     assert data["tir_verify_attr_rules"] == [
         {"opcode": "Call", "rule": "call_callee"},
@@ -3410,9 +3351,7 @@ def test_refcount_heap_exposure_delegates_to_generated_table() -> None:
     gen = _gen()
     data = gen.load_table()
     rendered = gen.render_rs(data)
-    refcount = (ROOT / "runtime/molt-tir/src/tir/passes/refcount_elim.rs").read_text(
-        encoding="utf-8"
-    )
+    refcount = _read_rs_module_cluster(ROOT / "runtime/molt-tir/src/tir/passes/refcount_elim.rs")
 
     expected = {
         "AllocTask",
@@ -3473,9 +3412,7 @@ def test_escape_alloc_sites_delegate_to_generated_table() -> None:
     gen = _gen()
     data = gen.load_table()
     rendered = gen.render_rs(data)
-    escape_analysis = (
-        ROOT / "runtime/molt-tir/src/tir/passes/escape_analysis.rs"
-    ).read_text(encoding="utf-8")
+    escape_analysis = _read_rs_module_cluster(ROOT / "runtime/molt-tir/src/tir/passes/escape_analysis.rs")
 
     expected = {
         "Alloc",
@@ -3521,9 +3458,7 @@ def test_refcount_balance_roles_delegate_to_generated_table() -> None:
     gen = _gen()
     data = gen.load_table()
     rendered = gen.render_rs(data)
-    refcount = (ROOT / "runtime/molt-tir/src/tir/passes/refcount_elim.rs").read_text(
-        encoding="utf-8"
-    )
+    refcount = _read_rs_module_cluster(ROOT / "runtime/molt-tir/src/tir/passes/refcount_elim.rs")
 
     assert set(data["refcount_balance_inc_opcodes"]) == {"IncRef"}
     assert set(data["refcount_balance_dec_opcodes"]) == {"DecRef"}
@@ -3565,9 +3500,7 @@ def test_i64_arithmetic_lowering_facts_delegate_to_generated_tables() -> None:
     gen = _gen()
     data = gen.load_table()
     rendered = gen.render_rs(data)
-    lower_to_lir = (ROOT / "runtime/molt-tir/src/tir/lower_to_lir.rs").read_text(
-        encoding="utf-8"
-    )
+    lower_to_lir = _read_rs_module_cluster(ROOT / "runtime/molt-tir/src/tir/lower_to_lir.rs")
 
     overflow_box_dispatch = {
         "Add",
@@ -3641,9 +3574,7 @@ def test_llvm_boxed_runtime_inplace_dispatch_delegates_to_generated_table() -> N
     gen = _gen()
     data = gen.load_table()
     rendered = gen.render_rs(data)
-    llvm_lowering = (
-        ROOT / "runtime/molt-backend/src/llvm_backend/lowering.rs"
-    ).read_text(encoding="utf-8")
+    llvm_lowering = _read_rs_module_cluster(ROOT / "runtime/molt-backend/src/llvm_backend/lowering.rs")
 
     expected = {"InplaceAdd", "InplaceSub", "InplaceMul"}
     assert set(data["boxed_runtime_inplace_dispatch_opcodes"]) == expected
@@ -3668,15 +3599,9 @@ def test_i64_zero_divisor_guards_delegate_to_generated_table() -> None:
     gen = _gen()
     data = gen.load_table()
     rendered = gen.render_rs(data)
-    lower_to_lir = (ROOT / "runtime/molt-tir/src/tir/lower_to_lir.rs").read_text(
-        encoding="utf-8"
-    )
-    licm = (ROOT / "runtime/molt-tir/src/tir/passes/licm.rs").read_text(
-        encoding="utf-8"
-    )
-    check_exception = (
-        ROOT / "runtime/molt-tir/src/tir/passes/check_exception_elim.rs"
-    ).read_text(encoding="utf-8")
+    lower_to_lir = _read_rs_module_cluster(ROOT / "runtime/molt-tir/src/tir/lower_to_lir.rs")
+    licm = _read_rs_module_cluster(ROOT / "runtime/molt-tir/src/tir/passes/licm.rs")
+    check_exception = _read_rs_module_cluster(ROOT / "runtime/molt-tir/src/tir/passes/check_exception_elim.rs")
 
     zero_divisor_guards = {"Div", "FloorDiv", "Mod"}
     shift_count_guards = {"Shl", "Shr"}
@@ -3737,30 +3662,14 @@ def test_exception_label_opcode_facts_delegate_to_generated_tables() -> None:
     data = gen.load_table()
     rendered = gen.render_rs(data)
     sources = {
-        "inliner": (ROOT / "runtime/molt-tir/src/tir/passes/inliner.rs").read_text(
-            encoding="utf-8"
-        ),
-        "generator_fusion": (
-            ROOT / "runtime/molt-tir/src/tir/passes/generator_fusion.rs"
-        ).read_text(encoding="utf-8"),
-        "lower_to_simple": (
-            ROOT / "runtime/molt-tir/src/tir/lower_to_simple.rs"
-        ).read_text(encoding="utf-8"),
-        "lower_from_simple": (
-            ROOT / "runtime/molt-tir/src/tir/lower_from_simple.rs"
-        ).read_text(encoding="utf-8"),
-        "function": (ROOT / "runtime/molt-tir/src/tir/function.rs").read_text(
-            encoding="utf-8"
-        ),
-        "dominators": (ROOT / "runtime/molt-tir/src/tir/dominators.rs").read_text(
-            encoding="utf-8"
-        ),
-        "dce": (ROOT / "runtime/molt-tir/src/tir/passes/dce.rs").read_text(
-            encoding="utf-8"
-        ),
-        "sccp": (ROOT / "runtime/molt-tir/src/tir/passes/sccp.rs").read_text(
-            encoding="utf-8"
-        ),
+        "inliner": _read_rs_module_cluster(ROOT / "runtime/molt-tir/src/tir/passes/inliner.rs"),
+        "generator_fusion": _read_rs_module_cluster(ROOT / "runtime/molt-tir/src/tir/passes/generator_fusion.rs"),
+        "lower_to_simple": _read_rs_module_cluster(ROOT / "runtime/molt-tir/src/tir/lower_to_simple.rs"),
+        "lower_from_simple": _read_rs_module_cluster(ROOT / "runtime/molt-tir/src/tir/lower_from_simple.rs"),
+        "function": _read_rs_module_cluster(ROOT / "runtime/molt-tir/src/tir/function.rs"),
+        "dominators": _read_rs_module_cluster(ROOT / "runtime/molt-tir/src/tir/dominators.rs"),
+        "dce": _read_rs_module_cluster(ROOT / "runtime/molt-tir/src/tir/passes/dce.rs"),
+        "sccp": _read_rs_module_cluster(ROOT / "runtime/molt-tir/src/tir/passes/sccp.rs"),
     }
 
     label_attr = {"CheckException", "TryStart", "TryEnd"}
@@ -3873,9 +3782,7 @@ def test_alias_slot_observation_delegates_to_generated_table() -> None:
     gen = _gen()
     data = gen.load_table()
     rendered = gen.render_rs(data)
-    alias = (ROOT / "runtime/molt-tir/src/tir/passes/alias_analysis.rs").read_text(
-        encoding="utf-8"
-    )
+    alias = _read_rs_module_cluster(ROOT / "runtime/molt-tir/src/tir/passes/alias_analysis.rs")
 
     expected_direct = {
         "AllocTask",
@@ -3946,9 +3853,7 @@ def test_alias_memory_region_delegates_to_generated_table() -> None:
     gen = _gen()
     data = gen.load_table()
     rendered = gen.render_rs(data)
-    alias = (ROOT / "runtime/molt-tir/src/tir/passes/alias_analysis.rs").read_text(
-        encoding="utf-8"
-    )
+    alias = _read_rs_module_cluster(ROOT / "runtime/molt-tir/src/tir/passes/alias_analysis.rs")
 
     expected_scalar = {
         "Add",
@@ -4231,12 +4136,8 @@ def test_canonicalize_delegates_opcode_facts_to_generated_tables() -> None:
     gen = _gen()
     data = gen.load_table()
     rendered = gen.render_rs(data)
-    canonicalize = (ROOT / "runtime/molt-tir/src/tir/passes/canonicalize.rs").read_text(
-        encoding="utf-8"
-    )
-    check_exception = (
-        ROOT / "runtime/molt-tir/src/tir/passes/check_exception_elim.rs"
-    ).read_text(encoding="utf-8")
+    canonicalize = _read_rs_module_cluster(ROOT / "runtime/molt-tir/src/tir/passes/canonicalize.rs")
+    check_exception = _read_rs_module_cluster(ROOT / "runtime/molt-tir/src/tir/passes/check_exception_elim.rs")
 
     assert "fn is_commutative" not in canonicalize
     assert "fn swap_comparison" not in canonicalize
@@ -4400,7 +4301,7 @@ def test_opcode_effects_exhaustive_over_enum() -> None:
     table_names = [row["name"] for row in data["opcode"]]
     assert len(table_names) == len(set(table_names)), "duplicate opcode rows"
 
-    src = (ROOT / "runtime/molt-tir/src/tir/ops.rs").read_text(encoding="utf-8")
+    src = _read_rs_module_cluster(ROOT / "runtime/molt-tir/src/tir/ops.rs")
     m = re.search(r"pub enum OpCode \{(.*?)\n\}", src, re.S)
     assert m is not None
     enum_variants = []
@@ -5075,9 +4976,7 @@ def test_absorbing_kinds_remain_copy_fresh_spellings_not_aliases() -> None:
 def test_ownership_lattice_uses_generated_result_absorption_tables() -> None:
     """The production lattice must delegate container absorption to generated
     tables, not a hand-maintained `BuildList | BuildTuple | ...` match."""
-    source = (
-        ROOT / "runtime/molt-tir/src/tir/passes/ownership_lattice_min.rs"
-    ).read_text(encoding="utf-8")
+    source = _read_rs_module_cluster(ROOT / "runtime/molt-tir/src/tir/passes/ownership_lattice_min.rs")
     marker = "fn op_result_absorbs_operand_ownership("
     assert marker in source
     start = source.index(marker)
@@ -5108,9 +5007,7 @@ def test_ownership_lattice_delegates_conditional_result_validity_to_generated_ta
     None
 ):
     """Conditional result validity must stay sourced from generated op-kind facts."""
-    ownership = (
-        ROOT / "runtime/molt-tir/src/tir/passes/ownership_lattice_min.rs"
-    ).read_text(encoding="utf-8")
+    ownership = _read_rs_module_cluster(ROOT / "runtime/molt-tir/src/tir/passes/ownership_lattice_min.rs")
     assert "op_kinds_generated::" in ownership, (
         "ownership_lattice_min.rs must reference generated op-kind tables"
     )
@@ -5142,12 +5039,8 @@ def test_drop_insertion_delegates_consume_to_generated_table() -> None:
 
     DropInsertion may ask for the consumed root, but it must not own generated
     table reads or a hand-maintained CallArgs-builder spelling list."""
-    drop = (ROOT / "runtime/molt-tir/src/tir/passes/drop_insertion.rs").read_text(
-        encoding="utf-8"
-    )
-    ownership = (
-        ROOT / "runtime/molt-tir/src/tir/passes/ownership_lattice_min.rs"
-    ).read_text(encoding="utf-8")
+    drop = _read_rs_module_cluster(ROOT / "runtime/molt-tir/src/tir/passes/drop_insertion.rs")
+    ownership = _read_rs_module_cluster(ROOT / "runtime/molt-tir/src/tir/passes/ownership_lattice_min.rs")
 
     assert "op_consumed_operand_root" in drop, (
         "drop_insertion.rs must import the ownership-module consume query"
@@ -5206,9 +5099,7 @@ def test_drop_insertion_delegates_conditional_result_validity_to_ownership_latti
 ):
     """drop_insertion.rs must consume conditional result-validity through
     OwnershipLattice root facts, not own a second generated-table/root scan."""
-    drop = (ROOT / "runtime/molt-tir/src/tir/passes/drop_insertion.rs").read_text(
-        encoding="utf-8"
-    )
+    drop = _read_rs_module_cluster(ROOT / "runtime/molt-tir/src/tir/passes/drop_insertion.rs")
     drop_prod = drop.split("mod tests", 1)[0]
     assert "fn op_result_is_conditionally_valid_only_on_edge(" not in drop
     assert "opcode_result_is_conditionally_valid_only_on_edge" not in drop
@@ -5234,9 +5125,7 @@ def test_drop_insertion_consumes_finalizer_sensitive_roots_from_ownership_lattic
     return-boundary deferral; statement-release boundary composition is checked
     separately through `StatementReleasePlan`.
     """
-    drop = (ROOT / "runtime/molt-tir/src/tir/passes/drop_insertion.rs").read_text(
-        encoding="utf-8"
-    )
+    drop = _read_rs_module_cluster(ROOT / "runtime/molt-tir/src/tir/passes/drop_insertion.rs")
     assert ".finalizer_sensitive_values()" not in drop
     assert ".finalizer_sensitive_roots()" in drop
     assert "let root = boundary.root;" not in drop
@@ -5257,12 +5146,8 @@ def test_drop_insertion_consumes_non_owning_copy_roots_from_ownership_lattice() 
     no-heap alias classifier is consumed through a separate ownership helper for
     CFG remapping; droppability must read the OwnershipRootFacts root set.
     """
-    drop = (ROOT / "runtime/molt-tir/src/tir/passes/drop_insertion.rs").read_text(
-        encoding="utf-8"
-    )
-    lattice = (
-        ROOT / "runtime/molt-tir/src/tir/passes/ownership_lattice_min.rs"
-    ).read_text(encoding="utf-8")
+    drop = _read_rs_module_cluster(ROOT / "runtime/molt-tir/src/tir/passes/drop_insertion.rs")
+    lattice = _read_rs_module_cluster(ROOT / "runtime/molt-tir/src/tir/passes/ownership_lattice_min.rs")
     assert "non_owning_copy_results" not in drop
     assert "copy_kind_mints_fresh_owned_ref" not in drop
     assert "let mints_fresh =" not in drop
@@ -5285,13 +5170,9 @@ def test_drop_insertion_consumes_no_heap_copy_aliases_from_ownership_lattice() -
     read belongs to the ownership fact module so the pass does not grow another
     copy-spelling authority.
     """
-    drop = (ROOT / "runtime/molt-tir/src/tir/passes/drop_insertion.rs").read_text(
-        encoding="utf-8"
-    )
+    drop = _read_rs_module_cluster(ROOT / "runtime/molt-tir/src/tir/passes/drop_insertion.rs")
     drop_prod = drop.split("mod tests", 1)[0]
-    lattice = (
-        ROOT / "runtime/molt-tir/src/tir/passes/ownership_lattice_min.rs"
-    ).read_text(encoding="utf-8")
+    lattice = _read_rs_module_cluster(ROOT / "runtime/molt-tir/src/tir/passes/ownership_lattice_min.rs")
 
     assert "copy_transparent_alias" in drop_prod
     assert "copy_kind_is_explicit_no_heap_move" not in drop_prod
@@ -5308,12 +5189,8 @@ def test_drop_insertion_consumes_parameter_and_stack_roots_from_ownership_lattic
     None
 ):
     """Parameter/stack no-drop facts belong to OwnershipRootFacts, not the pass."""
-    drop = (ROOT / "runtime/molt-tir/src/tir/passes/drop_insertion.rs").read_text(
-        encoding="utf-8"
-    )
-    lattice = (
-        ROOT / "runtime/molt-tir/src/tir/passes/ownership_lattice_min.rs"
-    ).read_text(encoding="utf-8")
+    drop = _read_rs_module_cluster(ROOT / "runtime/molt-tir/src/tir/passes/drop_insertion.rs")
+    lattice = _read_rs_module_cluster(ROOT / "runtime/molt-tir/src/tir/passes/ownership_lattice_min.rs")
     assert "let param_ids" not in drop
     assert "let param_roots" not in drop
     assert "let stack_values" not in drop
@@ -5328,12 +5205,8 @@ def test_drop_insertion_consumes_parameter_and_stack_roots_from_ownership_lattic
 
 def test_drop_insertion_delegates_droppable_predicate_to_drop_eligibility() -> None:
     """DropInsertion owns placement, not the composed root/raw droppability test."""
-    drop = (ROOT / "runtime/molt-tir/src/tir/passes/drop_insertion.rs").read_text(
-        encoding="utf-8"
-    )
-    lattice = (
-        ROOT / "runtime/molt-tir/src/tir/passes/ownership_lattice_min.rs"
-    ).read_text(encoding="utf-8")
+    drop = _read_rs_module_cluster(ROOT / "runtime/molt-tir/src/tir/passes/drop_insertion.rs")
+    lattice = _read_rs_module_cluster(ROOT / "runtime/molt-tir/src/tir/passes/ownership_lattice_min.rs")
     assert "let droppable =" not in drop
     assert "raw_scalars.contains" not in drop
     assert "live.is_raw_scalar(v)" not in drop
@@ -5348,12 +5221,8 @@ def test_drop_insertion_delegates_droppable_predicate_to_drop_eligibility() -> N
 
 def test_drop_insertion_consumes_python_lifetime_facts_from_ownership_lattice() -> None:
     """DropInsertion consumes Python lifetime roots instead of re-scanning them."""
-    drop = (ROOT / "runtime/molt-tir/src/tir/passes/drop_insertion.rs").read_text(
-        encoding="utf-8"
-    )
-    lattice = (
-        ROOT / "runtime/molt-tir/src/tir/passes/ownership_lattice_min.rs"
-    ).read_text(encoding="utf-8")
+    drop = _read_rs_module_cluster(ROOT / "runtime/molt-tir/src/tir/passes/drop_insertion.rs")
+    lattice = _read_rs_module_cluster(ROOT / "runtime/molt-tir/src/tir/passes/ownership_lattice_min.rs")
     assert "PythonLifetimeFacts::compute(" in drop
     assert "let python_boundary_roots" not in drop
     assert "let explicit_release_roots" not in drop
@@ -5412,12 +5281,8 @@ def test_drop_insertion_consumes_statement_release_plan_from_ownership_lattice()
     maps that combine FinalizerSensitive storage boundaries, Python lifetime
     exclusions, drop eligibility, sorting, and deduplication.
     """
-    drop = (ROOT / "runtime/molt-tir/src/tir/passes/drop_insertion.rs").read_text(
-        encoding="utf-8"
-    )
-    lattice = (
-        ROOT / "runtime/molt-tir/src/tir/passes/ownership_lattice_min.rs"
-    ).read_text(encoding="utf-8")
+    drop = _read_rs_module_cluster(ROOT / "runtime/molt-tir/src/tir/passes/drop_insertion.rs")
+    lattice = _read_rs_module_cluster(ROOT / "runtime/molt-tir/src/tir/passes/ownership_lattice_min.rs")
 
     assert "StatementReleasePlan::compute(" in drop
     assert "statement_release_plan.contains_released_root(" in drop
@@ -5450,12 +5315,8 @@ def test_drop_insertion_consumes_exception_creation_facts_from_ownership_lattice
     None
 ):
     """CreationRef classification belongs to the ownership module, not placement."""
-    drop = (ROOT / "runtime/molt-tir/src/tir/passes/drop_insertion.rs").read_text(
-        encoding="utf-8"
-    )
-    lattice = (
-        ROOT / "runtime/molt-tir/src/tir/passes/ownership_lattice_min.rs"
-    ).read_text(encoding="utf-8")
+    drop = _read_rs_module_cluster(ROOT / "runtime/molt-tir/src/tir/passes/drop_insertion.rs")
+    lattice = _read_rs_module_cluster(ROOT / "runtime/molt-tir/src/tir/passes/ownership_lattice_min.rs")
     assert "exception_creation_ref_values" in drop
     assert "fn exception_creation_ref_values(" not in drop
     assert "copy_kind_is_exception_creation_ref" not in drop
@@ -5617,9 +5478,7 @@ def test_op_borrow_source_delegates_to_generated_table() -> None:
     Index references elsewhere in alias_analysis.rs (load-purity classification,
     the borrow-provenance unit-test fixtures) are not mistaken for the deleted
     hand-coded match."""
-    alias = (ROOT / "runtime/molt-tir/src/tir/passes/alias_analysis.rs").read_text(
-        encoding="utf-8"
-    )
+    alias = _read_rs_module_cluster(ROOT / "runtime/molt-tir/src/tir/passes/alias_analysis.rs")
     marker = "fn op_borrow_source("
     assert marker in alias, "op_borrow_source not found"
     start = alias.index(marker)
@@ -5801,7 +5660,7 @@ def test_terminator_section_exhaustive_over_enum() -> None:
     table_names = [row["name"] for row in data["terminator"]]
     assert len(table_names) == len(set(table_names)), "duplicate terminator rows"
 
-    src = (ROOT / "runtime/molt-tir/src/tir/blocks.rs").read_text(encoding="utf-8")
+    src = _read_rs_module_cluster(ROOT / "runtime/molt-tir/src/tir/blocks.rs")
     m = re.search(r"pub enum Terminator \{(.*?)\n\}", src, re.S)
     assert m is not None, "Terminator enum not found in blocks.rs"
     enum_variants = []
@@ -5886,12 +5745,8 @@ def test_drop_insertion_delegates_transfer_to_generated_authority() -> None:
     Scoped to the two transfer-helper FUNCTION BODIES so the structural shape
     match (which fields carry args — legitimately in the pass) is not mistaken for
     a hand-coded transfer fact."""
-    drop = (ROOT / "runtime/molt-tir/src/tir/passes/drop_insertion.rs").read_text(
-        encoding="utf-8"
-    )
-    ownership = (
-        ROOT / "runtime/molt-tir/src/tir/passes/ownership_lattice_min.rs"
-    ).read_text(encoding="utf-8")
+    drop = _read_rs_module_cluster(ROOT / "runtime/molt-tir/src/tir/passes/drop_insertion.rs")
+    ownership = _read_rs_module_cluster(ROOT / "runtime/molt-tir/src/tir/passes/ownership_lattice_min.rs")
 
     def _fn_body(src: str, marker: str, label: str) -> str:
         assert marker in src, f"{marker} not found in {label}"
