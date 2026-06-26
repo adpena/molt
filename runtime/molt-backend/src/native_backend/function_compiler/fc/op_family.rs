@@ -4,8 +4,9 @@
 //!
 //! `compile_func_inner`'s per-op `match op.kind.as_str()` dispatch routes each
 //! IR op-kind to one of the extracted `fc::*` family handlers (`handle_arith_op`,
-//! `handle_sequence_op`, …). Historically the dispatch arm hand-listed the kinds
-//! it routed to a handler, and the handler *independently* matched the same set
+//! `handle_arith_division_op`, `handle_sequence_op`, …). Historically the
+//! dispatch arm hand-listed the kinds it routed to a handler, and the handler
+//! *independently* matched the same set
 //! internally — two hand-synced copies of one kind list.
 //!
 //! That duplication is exactly what regressed in commit `8b5773878` ("Extract
@@ -54,6 +55,7 @@ use std::sync::OnceLock;
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
 pub(in crate::native_backend::function_compiler) enum NativeOpFamily {
     Arith,
+    ArithDivision,
     Sequence,
     Generators,
     ScalarBuiltins,
@@ -112,6 +114,10 @@ pub(in crate::native_backend::function_compiler) const FAMILY_DISPATCH_TABLE: &[
     &[&str],
 )] = &[
     (NativeOpFamily::Arith, super::arith::HANDLED_KINDS),
+    (
+        NativeOpFamily::ArithDivision,
+        super::arith_division::HANDLED_KINDS,
+    ),
     // `vec_*` reductions: handled by `handle_arith_op` via delegation to
     // `fc::vec_reductions`. Their authority lives ONLY in
     // `vec_reductions::HANDLED_KINDS`; routing them to `Arith` here is what lets
@@ -357,6 +363,30 @@ mod tests {
                 !kind.starts_with("vec_"),
                 "arith::HANDLED_KINDS should not list vec_* kind `{kind}`; the \
                  vec_reductions authority owns it",
+            );
+        }
+    }
+
+    /// Quotient/remainder/power/rounding ops have their own codegen unit and
+    /// kind authority; keeping them out of `arith::HANDLED_KINDS` prevents the
+    /// scalar arithmetic handler from becoming the monolith again.
+    #[test]
+    fn arithmetic_division_kinds_route_to_arith_division() {
+        assert!(
+            !super::super::arith_division::HANDLED_KINDS.is_empty(),
+            "arith_division::HANDLED_KINDS must enumerate the quotient/power kinds",
+        );
+        let arith_kinds: HashSet<&str> =
+            super::super::arith::HANDLED_KINDS.iter().copied().collect();
+        for &kind in super::super::arith_division::HANDLED_KINDS {
+            assert_eq!(
+                native_op_family(kind),
+                Some(NativeOpFamily::ArithDivision),
+                "arithmetic division kind `{kind}` must route to the ArithDivision handler",
+            );
+            assert!(
+                !arith_kinds.contains(kind),
+                "arith_division kind `{kind}` must not also live in arith::HANDLED_KINDS",
             );
         }
     }
