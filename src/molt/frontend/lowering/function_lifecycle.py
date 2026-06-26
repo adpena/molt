@@ -183,51 +183,15 @@ class FunctionLifecycleMixin(_MixinBase):
             self.funcs_map[name]["ops"].clear()
         self.current_func_name = name
         self.current_ops = self.funcs_map[name]["ops"]
-        self.locals = {}
-        self.locals_cache_val = None
-        self.boxed_locals = {}
-        self.closure_locals = set()
-        self.comp_shadow_locals = set()
-        self.boxed_local_hints = {}
-        self.free_vars = {}
-        self.free_var_hints = {}
-        self.global_decls = set()
-        self.nonlocal_decls = set()
-        self.scope_assigned = set()
-        self.del_targets = set()
-        self.unbound_check_names = set()
-        self.exact_locals = {}
-        self.exact_builtin_locals = {}
-        self.imported_names = dict(self.global_imported_names)
-        self.imported_attr_names = dict(self.global_imported_attr_names)
-        self.imported_modules = dict(self.global_imported_modules)
-        self.local_imported_names = set()
-        self.local_imported_modules = set()
-        self.imported_module_attr_mutations = set(
-            self.global_imported_module_attr_mutations
+        self._reset_local_binding_state(
+            reset_locals_cache=True,
+            reset_del_targets=True,
         )
-        self.async_locals = {}
-        self.async_internal_locals = set()
-        self.async_public_locals = set()
-        self.async_locals_base = 0
-        self.async_closure_offset = None
-        self.async_local_hints = {}
-        self.explicit_type_hints = {}
-        self.container_elem_hints = {}
-        self.dict_key_hints = {}
-        self.dict_value_hints = {}
-        self.context_depth = 0
-        self.control_flow_depth = 0
-        self.const_ints = {}
-        self._op_by_result = {}
-        self._module_cache_values = {}
-        self.in_generator = False
-        self.async_context = False
-        self.current_line = None
-        self.try_end_labels = []
-        self.try_scopes = []
-        self.try_suppress_depth = None
-        self.try_handler_scopes = []
+        self._reset_import_resolution_state(reset_module_attr_mutations=True)
+        self._reset_async_scope_state()
+        self._reset_type_hint_scope_state(reset_bytearray_len=False)
+        self._reset_function_cache_state()
+        self._reset_control_flow_state(reset_function_exception_label=False)
         # ── Exception model (C2): two decoupled concerns ──────────────────
         # 1. OBSERVATION — every function unconditionally carries a
         #    function-level exception label.  `emit()` auto-routes a pending
@@ -274,17 +238,6 @@ class FunctionLifecycleMixin(_MixinBase):
         else:
             self.exception_stack_prev_baseline = None
             self.exception_stack_depth_baseline = None
-        self.return_unwind_depth = 0
-        self.return_unwind_popped_scopes = []
-        self.finally_depth = 0
-        self.active_exceptions = []
-        self.return_label = None
-        self.return_slot = None
-        self.return_slot_index = None
-        self.return_slot_offset = None
-        self.block_terminated = False
-        self.loop_static_class_refs = []
-        self.loop_static_class_eager_refs = []
         if needs_return_slot:
             self._init_return_slot()
         self._apply_type_facts(type_facts_name or name)

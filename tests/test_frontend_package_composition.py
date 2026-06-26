@@ -65,6 +65,7 @@ PUBLIC_SURFACE = [
 
 # Mixins extracted from SimpleTIRGenerator (extend as more families move).
 EXPECTED_MIXINS = [
+    "GeneratorStateMixin",
     "LocalBindingMixin",
     "MidendOptimizationMixin",
     "SerializationMixin",
@@ -126,9 +127,26 @@ def test_mixins_present_in_mro() -> None:
     assert "NodeVisitor" in mro_names
 
 
+def test_assembled_generator_root_stays_methodless() -> None:
+    """The package root is assembly only; behavior belongs to mixin authorities."""
+    own_methods = {
+        name
+        for name, value in vars(SimpleTIRGenerator).items()
+        if callable(value) and not name.startswith("__")
+    }
+    assert own_methods == set()
+    assert "__init__" not in vars(SimpleTIRGenerator)
+
+
 def test_moved_methods_resolve_on_class() -> None:
     """Representative methods from each mixin resolve on the assembled class."""
     # local bindings
+    assert hasattr(SimpleTIRGenerator, "_reset_local_binding_state")
+    assert hasattr(SimpleTIRGenerator, "_reset_import_resolution_state")
+    assert hasattr(SimpleTIRGenerator, "_reset_async_scope_state")
+    assert hasattr(SimpleTIRGenerator, "_reset_type_hint_scope_state")
+    assert hasattr(SimpleTIRGenerator, "_reset_function_cache_state")
+    assert hasattr(SimpleTIRGenerator, "_reset_control_flow_state")
     assert hasattr(SimpleTIRGenerator, "_load_local_value")
     assert hasattr(SimpleTIRGenerator, "_store_local_value")
     assert hasattr(SimpleTIRGenerator, "_value_reads_plain_local_binding")
@@ -320,6 +338,7 @@ def test_mixin_modules_import_standalone() -> None:
         "molt.frontend.lowering.expression_primitives",
         "molt.frontend.lowering.function_lifecycle",
         "molt.frontend.lowering.function_metadata",
+        "molt.frontend.lowering.generator_state",
         "molt.frontend.lowering.import_lowering",
         "molt.frontend.lowering.local_bindings",
         "molt.frontend.lowering.loop_lowering",
