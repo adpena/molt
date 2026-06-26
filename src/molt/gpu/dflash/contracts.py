@@ -22,6 +22,12 @@ from ..speculative import (
     _normalize_optional_token_id,
     _normalize_token_sequence,
 )
+from ..backend_config import (
+    GPU_DEVICE_BACKENDS,
+    MOLT_GPU_BACKEND_ENV,
+    is_gpu_device_backend,
+    normalize_gpu_backend,
+)
 
 
 DFLASH_DRAFT_OUTPUT_CONTRACTS = frozenset(
@@ -30,32 +36,18 @@ DFLASH_DRAFT_OUTPUT_CONTRACTS = frozenset(
         "per_position_marginals",
     }
 )
-DFLASH_SUPPORTED_BACKENDS = frozenset(
-    {
-        "metal",
-        "webgpu",
-    }
-)
-
-
-def normalize_dflash_backend(backend: str | None) -> str | None:
-    if backend is None:
-        return None
-    if not isinstance(backend, str):
-        raise TypeError("backend must be a string when set")
-    normalized = backend.strip().lower()
-    return normalized or None
+DFLASH_SUPPORTED_BACKENDS = GPU_DEVICE_BACKENDS
 
 
 def has_dflash_backend(backend: str | None) -> bool:
-    return normalize_dflash_backend(backend) in DFLASH_SUPPORTED_BACKENDS
+    return is_gpu_device_backend(backend)
 
 
 def dflash_backend_requirement_message(adapter_name: str) -> str:
     allowed = ", ".join(sorted(DFLASH_SUPPORTED_BACKENDS))
     return (
         f"dflash adapter '{adapter_name}' requires a DFlash-capable GPU backend; "
-        f"set MOLT_GPU_BACKEND to one of: {allowed}"
+        f"set {MOLT_GPU_BACKEND_ENV} to one of: {allowed}"
     )
 
 
@@ -236,7 +228,7 @@ class DFlashSelectionContext:
         adapter_payload=None,
     ) -> None:
         self.model = model
-        self.backend = normalize_dflash_backend(backend)
+        self.backend = normalize_gpu_backend(backend)
         self.prompt_tokens = _normalize_token_sequence(
             prompt_tokens,
             "prompt_tokens",

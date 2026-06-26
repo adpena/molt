@@ -22,9 +22,7 @@ from .contracts import (
     DFlashConditioning,
     DFlashRuntime,
     DFlashSelectionContext,
-    dflash_backend_requirement_message,
     has_dflash_backend,
-    normalize_dflash_backend,
     require_dflash_conditioning,
     require_dflash_draft_output_contract,
 )
@@ -39,8 +37,6 @@ __all__ = [
     "DFLASH_SUPPORTED_BACKENDS",
     "DFlashAdapterMetadata",
     "DFlashAdapterSpec",
-    "dflash_backend_requirement_message",
-    "normalize_dflash_backend",
     "require_dflash_conditioning",
     "require_dflash_draft_output_contract",
     "register_dflash_adapter",
