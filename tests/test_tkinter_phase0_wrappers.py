@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 
@@ -13,14 +14,41 @@ STDLIB_ROOT = REPO_ROOT / "src" / "molt" / "stdlib"
 def _run_probe(script: str) -> list[str]:
     rendered = script.replace("__STDLIB_ROOT__", repr(str(STDLIB_ROOT)))
     env = os.environ.copy()
-    proc = subprocess.run(
-        [sys.executable, "-c", rendered],
-        cwd=REPO_ROOT,
-        check=True,
-        capture_output=True,
-        text=True,
-        env=env,
+    tmp_root = (
+        Path(os.environ.get("MOLT_EXT_ROOT", REPO_ROOT)) / "tmp" / "tkinter-probes"
     )
+    tmp_root.mkdir(parents=True, exist_ok=True)
+    probe_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            suffix=".py",
+            prefix="tkinter_probe_",
+            dir=tmp_root,
+            delete=False,
+        ) as handle:
+            handle.write(rendered)
+            probe_path = Path(handle.name)
+        proc = subprocess.run(
+            [sys.executable, str(probe_path)],
+            cwd=REPO_ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        if proc.returncode != 0:
+            raise AssertionError(
+                "tkinter probe failed\n"
+                f"probe: {probe_path}\n"
+                f"returncode: {proc.returncode}\n"
+                f"stdout:\n{proc.stdout}\n"
+                f"stderr:\n{proc.stderr}"
+            )
+    finally:
+        if probe_path is not None:
+            probe_path.unlink(missing_ok=True)
     return [line for line in proc.stdout.splitlines() if line]
 
 
@@ -978,45 +1006,69 @@ class _ProbeFile:
 
 probe_file = _ProbeFile(41)
 file_events = []
-app.createfilehandler(
-    probe_file,
-    _tkinter.READABLE | _tkinter.WRITABLE,
-    lambda file_obj, mask: file_events.append((file_obj.fileno(), mask)),
-)
-_dispatch_fileevent(app._handle, probe_file, "readable")
-_dispatch_fileevent(app._handle, probe_file, "writable")
-readable_command = "::__molt_filehandler_41_readable"
-writable_command = "::__molt_filehandler_41_writable"
-checks["createfilehandler_registers_runtime_events"] = (
-    app._handle["fileevents"].get(41, {}).get("readable") == readable_command
-    and app._handle["fileevents"].get(41, {}).get("writable") == writable_command
-)
-checks["createfilehandler_dispatches_callback_with_file_and_mask"] = (
-    file_events == [(41, _tkinter.READABLE), (41, _tkinter.WRITABLE)]
-)
-try:
-    app.createfilehandler(probe_file, _tkinter.READABLE, None)
-except BaseException as exc:  # noqa: BLE001
-    checks["createfilehandler_bad_callback_error_shape"] = (
-        type(exc).__name__ == "TypeError" and str(exc) == "bad argument list"
+if sys.platform == "win32":
+    try:
+        app.createfilehandler(
+            probe_file,
+            _tkinter.READABLE,
+            lambda file_obj, mask: file_events.append((file_obj.fileno(), mask)),
+        )
+    except BaseException as exc:  # noqa: BLE001
+        checks["createfilehandler_windows_unavailable"] = (
+            type(exc).__name__ == "NotImplementedError"
+            and str(exc) == "createfilehandler is not available on Windows"
+        )
+    else:
+        checks["createfilehandler_windows_unavailable"] = False
+    try:
+        app.deletefilehandler(probe_file)
+    except BaseException as exc:  # noqa: BLE001
+        checks["deletefilehandler_windows_unavailable"] = (
+            type(exc).__name__ == "NotImplementedError"
+            and str(exc) == "deletefilehandler is not available on Windows"
+        )
+    else:
+        checks["deletefilehandler_windows_unavailable"] = False
+else:
+    app.createfilehandler(
+        probe_file,
+        _tkinter.READABLE | _tkinter.WRITABLE,
+        lambda file_obj, mask: file_events.append((file_obj.fileno(), mask)),
     )
-else:
-    checks["createfilehandler_bad_callback_error_shape"] = False
-app.deletefilehandler(probe_file)
-checks["deletefilehandler_unregisters_runtime_events"] = (
-    41 not in app._handle["fileevents"]
-    and readable_command not in app._handle["commands"]
-    and writable_command not in app._handle["commands"]
-)
-checks["deletefilehandler_stops_dispatch"] = (
-    _dispatch_fileevent(app._handle, probe_file, "readable") is False
-)
-try:
+    _dispatch_fileevent(app._handle, probe_file, "readable")
+    _dispatch_fileevent(app._handle, probe_file, "writable")
+    readable_command = "::__molt_filehandler_41_readable"
+    writable_command = "::__molt_filehandler_41_writable"
+    checks["createfilehandler_registers_runtime_events"] = (
+        app._handle["fileevents"].get(41, {}).get("readable") == readable_command
+        and app._handle["fileevents"].get(41, {}).get("writable") == writable_command
+    )
+    checks["createfilehandler_dispatches_callback_with_file_and_mask"] = (
+        file_events == [(41, _tkinter.READABLE), (41, _tkinter.WRITABLE)]
+    )
+    try:
+        app.createfilehandler(probe_file, _tkinter.READABLE, None)
+    except BaseException as exc:  # noqa: BLE001
+        checks["createfilehandler_bad_callback_error_shape"] = (
+            type(exc).__name__ == "TypeError" and str(exc) == "bad argument list"
+        )
+    else:
+        checks["createfilehandler_bad_callback_error_shape"] = False
     app.deletefilehandler(probe_file)
-except BaseException:  # noqa: BLE001
-    checks["deletefilehandler_idempotent"] = False
-else:
-    checks["deletefilehandler_idempotent"] = True
+    checks["deletefilehandler_unregisters_runtime_events"] = (
+        41 not in app._handle["fileevents"]
+        and readable_command not in app._handle["commands"]
+        and writable_command not in app._handle["commands"]
+    )
+    checks["deletefilehandler_stops_dispatch"] = (
+        _dispatch_fileevent(app._handle, probe_file, "readable") is False
+    )
+    try:
+        app.deletefilehandler(probe_file)
+    except BaseException:  # noqa: BLE001
+        checks["deletefilehandler_idempotent"] = False
+    else:
+        checks["deletefilehandler_idempotent"] = True
 trace_marker = object()
 app.settrace(trace_marker)
 checks["trace_roundtrip"] = app.gettrace() is trace_marker
@@ -2375,16 +2427,10 @@ def test_tkinter_phase0_wrappers_support_headless_intrinsic_stubs() -> None:
         "after_callback_invoked",
         "adderrorinfo_sets_errorinfo",
         "create_use_tk_false_forwarded",
-        "createfilehandler_bad_callback_error_shape",
-        "createfilehandler_dispatches_callback_with_file_and_mask",
-        "createfilehandler_registers_runtime_events",
         "createtimerhandler_callback_invoked",
         "createtimerhandler_delete_idempotent",
         "createtimerhandler_repr_marks_deleted",
         "createtimerhandler_returns_tktt",
-        "deletefilehandler_idempotent",
-        "deletefilehandler_stops_dispatch",
-        "deletefilehandler_unregisters_runtime_events",
         "deletecommand_runtime_notified",
         "last_error_passthrough",
         "set_get_roundtrip",
@@ -2442,6 +2488,20 @@ def test_tkinter_phase0_wrappers_support_headless_intrinsic_stubs() -> None:
         "trace_roundtrip",
         "willdispatch_returns_none",
     }
+    if sys.platform == "win32":
+        expected |= {
+            "createfilehandler_windows_unavailable",
+            "deletefilehandler_windows_unavailable",
+        }
+    else:
+        expected |= {
+            "createfilehandler_bad_callback_error_shape",
+            "createfilehandler_dispatches_callback_with_file_and_mask",
+            "createfilehandler_registers_runtime_events",
+            "deletefilehandler_idempotent",
+            "deletefilehandler_stops_dispatch",
+            "deletefilehandler_unregisters_runtime_events",
+        }
     missing = sorted(expected - checks.keys())
     assert not missing, f"missing expected headless checks: {missing}"
 

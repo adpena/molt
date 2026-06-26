@@ -71,6 +71,30 @@ merely made safe), and no drop_insertion guard is needed.
   EVERY loop-carried local's header phi receives a valid `None` (or MISSING) seed on EVERY preheader
   edge, conditional-wrapped or not — then §2.7 is correct unchanged.
 
+### SSA construction analysis (deeper — the seed mechanism)
+The seed lives in `runtime/molt-tir/src/tir/ssa.rs` `rename_and_emit`:
+- `undef_value` (lines 696-697) is a `ConstNone` emitted ONLY in the ENTRY block (lines 774-783),
+  which dominates every block — so a branch arg equal to `undef_vid` is a VALID `None` everywhere.
+- A branch arg for a variable with no reaching def resolves to `undef_value` (line 803,
+  `.or(self.undef_value)`).
+- The second pass (lines 908-963) re-resolves `undef_vid` branch args by walking the dominator
+  chain for a real reaching def; for a loop-local first-bound INSIDE the loop, no dominator of the
+  preheader defines it, so the walk KEEPS `undef_vid` (None).
+- BY THIS MODEL the conditional preheader's loop-phi arg should be `undef_vid` = None (DecRef-safe).
+  But the crash drops POISON (varying garbage `type_id`s), so the ACTUAL conditional CFG/SSA diverges
+  from this model — a use-before-def branch arg, or a second-pass mis-resolution under the
+  conditional CFG. This MUST be inspected directly to fix correctly.
+
+**TO PIN + FIX without the build daemon:** write a `ssa.rs` unit test that constructs the
+`if c: for i: d = {...}` CFG by hand — entry → CondBranch → { preheader → Branch header(d_seed,i_seed) ;
+after } ; header(d_phi,i_phi) → CondBranch → { body → Branch header(d_new,i_next) ; loop_exit } — run
+`rename_and_emit`, and assert the header block's PREHEADER-edge arg for `d` equals `undef_vid` (the
+ConstNone). It will likely be a use-before-def poison value, reproducing the UAF at unit-test level,
+where the branch-arg computation / second-pass resolution can be fixed and verified with `cargo test`
+alone. (TOOLING NOTE: `TIR_DUMP=1` / `MOLT_TIR_DUMP` execute inside the build daemon and are NOT
+relayed to the foreground build's stderr — only "Compiling/Successfully built" is — so an IR dump
+needs a daemon-bypass or the daemon's own output channel; the unit-test route sidesteps this.)
+
 ## Verification gate (ALL on the compiled binary, not cargo test)
 1. `repro_flat` 513→15 MB, no crash; `repro_min` no crash, correct output.
 2. EVERY `mem_probes.py` pattern (baseline,dict,list,tuple,set,str,obj_slots,obj_dict,nested,cond,

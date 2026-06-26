@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import ast
 import functools
 import os
 from pathlib import Path
@@ -10,6 +9,28 @@ from molt.cli.compiler_metadata import _compiler_root
 from molt.cli import module_resolution as _module_resolution
 from molt.cli.output import fail as _fail
 from molt.cli.runtime_features import _runtime_builtin_features_for_profile
+from molt import stdlib_intrinsic_policy as _stdlib_intrinsic_policy
+
+_INTRINSIC_CALL_NAMES = _stdlib_intrinsic_policy.INTRINSIC_CALL_NAMES
+_STDLIB_POLICY_GATE_STATUS = _stdlib_intrinsic_policy.STATUS_POLICY_GATE
+_STDLIB_PROBE_INTRINSIC = _stdlib_intrinsic_policy.STDLIB_PROBE_INTRINSIC
+_classify_stdlib_module_statuses = (
+    _stdlib_intrinsic_policy.classify_stdlib_module_statuses
+)
+_is_fail_closed_import_policy_gate = (
+    _stdlib_intrinsic_policy.is_fail_closed_import_policy_gate
+)
+_module_relative_import_base = _stdlib_intrinsic_policy.module_relative_import_base
+_module_required_intrinsic_names = (
+    _stdlib_intrinsic_policy.module_required_intrinsic_names
+)
+_same_package_intrinsic_import_closure = (
+    _stdlib_intrinsic_policy.same_package_intrinsic_import_closure
+)
+_stdlib_module_intrinsic_status = (
+    _stdlib_intrinsic_policy.stdlib_module_intrinsic_status
+)
+_stdlib_module_static_imports = _stdlib_intrinsic_policy.stdlib_module_static_imports
 
 
 @functools.lru_cache(maxsize=8)
@@ -52,114 +73,6 @@ def _stdlib_allowlist() -> set[str]:
     return set(_stdlib_allowlist_cached(project_root))
 
 
-_INTRINSIC_CALL_NAMES = {
-    "load_intrinsic",
-    "require_intrinsic",
-    "require_optional_intrinsic",
-    "_load_intrinsic",
-    "_intrinsic_load",
-    "_intrinsics_require",
-    "_intrinsic_require",
-    "_require_intrinsic",
-    "_require_callable_intrinsic",
-}
-
-
-_STDLIB_PROBE_INTRINSIC = "molt_stdlib_probe"
-
-
-_STDLIB_POLICY_GATE_STATUS = "policy-gate"
-
-
-def _is_fail_closed_import_policy_gate(text: str) -> bool:
-    try:
-        tree = ast.parse(text)
-    except SyntaxError:
-        return False
-    body = list(tree.body)
-    if (
-        body
-        and isinstance(body[0], ast.Expr)
-        and isinstance(body[0].value, ast.Constant)
-        and isinstance(body[0].value.value, str)
-    ):
-        body = body[1:]
-    while (
-        body and isinstance(body[0], ast.ImportFrom) and body[0].module == "__future__"
-    ):
-        body = body[1:]
-    if len(body) != 1 or not isinstance(body[0], ast.Raise):
-        return False
-    exc = body[0].exc
-    if isinstance(exc, ast.Call):
-        exc = exc.func
-    if isinstance(exc, ast.Name):
-        return exc.id == "ImportError"
-    if isinstance(exc, ast.Attribute):
-        return exc.attr == "ImportError"
-    return False
-
-
-def _module_required_intrinsic_names(path: Path) -> frozenset[str]:
-    """Return every ``molt_*`` intrinsic a module statically requires.
-
-    The same extraction classifies intrinsic backing and feature-profile gaps,
-    so those two policy views cannot disagree.
-    """
-    try:
-        source = path.read_text(encoding="utf-8")
-    except Exception:
-        return frozenset()
-    try:
-        tree = ast.parse(source)
-    except SyntaxError:
-        return frozenset()
-
-    intrinsic_names: set[str] = set()
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
-            continue
-        call_name: str | None = None
-        if isinstance(node.func, ast.Name):
-            call_name = node.func.id
-        elif isinstance(node.func, ast.Attribute):
-            call_name = node.func.attr
-        if call_name not in _INTRINSIC_CALL_NAMES and call_name != "_lazy_intrinsic":
-            continue
-        first: ast.expr | None = None
-        if node.args:
-            first = node.args[0]
-        else:
-            for keyword in node.keywords:
-                if keyword.arg == "name":
-                    first = keyword.value
-                    break
-        if not isinstance(first, ast.Constant) or not isinstance(first.value, str):
-            continue
-        name = first.value
-        if name.startswith("molt_"):
-            intrinsic_names.add(name)
-    return frozenset(intrinsic_names)
-
-
-def _stdlib_module_intrinsic_status(path: Path) -> str:
-    if path.name == "_intrinsics.py":
-        return "intrinsic-backed"
-    try:
-        text = path.read_text(encoding="utf-8")
-    except Exception:
-        return "python-only"
-
-    intrinsic_names = _module_required_intrinsic_names(path)
-    if not intrinsic_names:
-        if _is_fail_closed_import_policy_gate(text):
-            return _STDLIB_POLICY_GATE_STATUS
-        return "python-only"
-    if intrinsic_names == {_STDLIB_PROBE_INTRINSIC}:
-        return "probe-only"
-    return "intrinsic-backed"
-
-
 def _enforce_intrinsic_stdlib(
     module_graph: dict[str, Path],
     stdlib_root: Path,
@@ -168,6 +81,7 @@ def _enforce_intrinsic_stdlib(
     missing: list[str] = []
     probe_only: list[str] = []
     stdlib_root = stdlib_root.resolve()
+    stdlib_modules: dict[str, Path] = {}
     for name, path in module_graph.items():
         if not path or not path.suffix == ".py":
             continue
@@ -175,7 +89,9 @@ def _enforce_intrinsic_stdlib(
             path.resolve().relative_to(stdlib_root)
         except ValueError:
             continue
-        status = _stdlib_module_intrinsic_status(path)
+        stdlib_modules[name] = path
+    statuses = _classify_stdlib_module_statuses(stdlib_modules)
+    for name, status in statuses.items():
         if status == "python-only":
             missing.append(name)
         elif status == "probe-only":
@@ -297,7 +213,9 @@ _CORE_STDLIB_MODULES_MICRO = (
 )
 
 
-def _core_stdlib_module_names_for_profile(stdlib_profile: str | None) -> tuple[str, ...]:
+def _core_stdlib_module_names_for_profile(
+    stdlib_profile: str | None,
+) -> tuple[str, ...]:
     if (stdlib_profile or "micro") == "micro":
         return _CORE_STDLIB_MODULES_MICRO
     return _CORE_STDLIB_MODULES_FULL
