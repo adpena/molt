@@ -6,11 +6,25 @@ import os
 import signal
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
 from tools import harness_memory_guard
+
+
+def _record_terminated_pgids(target: list[int]) -> Callable[..., None]:
+    def record(
+        pgid: int,
+        *,
+        grace: float,
+        expected_identities: object | None = None,
+    ) -> None:
+        assert expected_identities is not None
+        target.append(pgid)
+
+    return record
 
 
 def test_limits_from_env_prefers_harness_prefix(monkeypatch) -> None:
@@ -1717,7 +1731,7 @@ def test_repo_process_sentinel_records_and_terminates_violation(
     monkeypatch.setattr(
         harness_memory_guard.process_sentinel,
         "terminate_group",
-        lambda pgid, *, grace: terminated.append(pgid),
+        _record_terminated_pgids(terminated),
     )
     limits = harness_memory_guard.HarnessMemoryLimits(
         enabled=True,
@@ -1774,7 +1788,10 @@ def test_repo_process_sentinel_records_and_terminates_violation(
     assert event["claim_status"] == "claimed"
     assert event["termination"]["attempted"] is True
     assert event["termination"]["signal"]["name"] == "SIGTERM"
-    assert event["termination"]["fallback_signal"]["name"] == "SIGKILL"
+    assert (
+        event["termination"]["fallback_signal"]
+        == harness_memory_guard.memory_guard.fallback_kill_signal_payload()
+    )
     assert event["termination"]["grace_sec"] == 0.25
     assert event["termination"]["rss_triggered"] is True
 
@@ -1809,7 +1826,7 @@ def test_repo_process_sentinel_records_observer_when_claim_already_taken(
     monkeypatch.setattr(
         harness_memory_guard.process_sentinel,
         "terminate_group",
-        lambda pgid, *, grace: terminated.append(pgid),
+        _record_terminated_pgids(terminated),
     )
     limits = harness_memory_guard.HarnessMemoryLimits(
         enabled=True,
@@ -1878,7 +1895,7 @@ def test_repo_process_sentinel_scopes_automatic_kills_to_current_tree(
     monkeypatch.setattr(
         harness_memory_guard.process_sentinel,
         "terminate_group",
-        lambda pgid, *, grace: terminated.append(pgid),
+        _record_terminated_pgids(terminated),
     )
     limits = harness_memory_guard.HarnessMemoryLimits(
         enabled=True,
@@ -1909,7 +1926,10 @@ def test_repo_process_sentinel_scopes_automatic_kills_to_current_tree(
     assert event["claim_status"] == "claimed"
     assert event["termination"]["attempted"] is True
     assert event["termination"]["signal"]["name"] == "SIGTERM"
-    assert event["termination"]["fallback_signal"]["name"] == "SIGKILL"
+    assert (
+        event["termination"]["fallback_signal"]
+        == harness_memory_guard.memory_guard.fallback_kill_signal_payload()
+    )
     assert event["termination"]["rss_triggered"] is True
     assert "--peer" not in events
 
@@ -1965,7 +1985,7 @@ def test_repo_process_sentinel_keeps_reparented_observed_child_in_scope(
     monkeypatch.setattr(
         harness_memory_guard.process_sentinel,
         "terminate_group",
-        lambda pgid, *, grace: terminated.append(pgid),
+        _record_terminated_pgids(terminated),
     )
     limits = harness_memory_guard.HarnessMemoryLimits(
         enabled=True,
@@ -2043,7 +2063,7 @@ def test_repo_process_sentinel_rejects_codex_parented_sibling_group(
     monkeypatch.setattr(
         harness_memory_guard.process_sentinel,
         "terminate_group",
-        lambda pgid, *, grace: terminated.append(pgid),
+        _record_terminated_pgids(terminated),
     )
     limits = harness_memory_guard.HarnessMemoryLimits(
         enabled=True,
@@ -2118,7 +2138,7 @@ def test_repo_process_sentinel_rejects_reused_current_tree_pgid_without_repo_ide
     monkeypatch.setattr(
         harness_memory_guard.process_sentinel,
         "terminate_group",
-        lambda pgid, *, grace: terminated.append(pgid),
+        _record_terminated_pgids(terminated),
     )
     limits = harness_memory_guard.HarnessMemoryLimits(
         enabled=True,
@@ -2194,7 +2214,7 @@ def test_repo_process_sentinel_drains_only_groups_started_after_baseline(
     monkeypatch.setattr(
         harness_memory_guard.process_sentinel,
         "terminate_group",
-        lambda pgid, *, grace: terminated.append(pgid),
+        _record_terminated_pgids(terminated),
     )
     limits = harness_memory_guard.HarnessMemoryLimits(
         enabled=True,
@@ -2234,7 +2254,10 @@ def test_repo_process_sentinel_drains_only_groups_started_after_baseline(
     assert event["claim_status"] == "claimed"
     assert event["termination"]["attempted"] is True
     assert event["termination"]["signal"]["name"] == "SIGTERM"
-    assert event["termination"]["fallback_signal"]["name"] == "SIGKILL"
+    assert (
+        event["termination"]["fallback_signal"]
+        == harness_memory_guard.memory_guard.fallback_kill_signal_payload()
+    )
     assert event["termination"]["grace_sec"] == 0.25
     assert event["termination"]["rss_triggered"] is False
 
@@ -2268,7 +2291,7 @@ def test_repo_process_sentinel_drain_skips_protected_codex_group(
     monkeypatch.setattr(
         harness_memory_guard.process_sentinel,
         "terminate_group",
-        lambda pgid, *, grace: terminated.append(pgid),
+        _record_terminated_pgids(terminated),
     )
     limits = harness_memory_guard.HarnessMemoryLimits(
         enabled=True,
@@ -2383,7 +2406,7 @@ def test_auto_repo_sentinel_prunes_stale_orphaned_groups(
     monkeypatch.setattr(
         harness_memory_guard.process_sentinel,
         "terminate_group",
-        lambda pgid, *, grace: terminated.append(pgid),
+        _record_terminated_pgids(terminated),
     )
     monkeypatch.setattr(
         harness_memory_guard,
@@ -2441,7 +2464,10 @@ def test_auto_repo_sentinel_prunes_stale_orphaned_groups(
     assert event["claim_status"] == "claimed"
     assert event["termination"]["attempted"] is True
     assert event["termination"]["signal"]["name"] == "SIGTERM"
-    assert event["termination"]["fallback_signal"]["name"] == "SIGKILL"
+    assert (
+        event["termination"]["fallback_signal"]
+        == harness_memory_guard.memory_guard.fallback_kill_signal_payload()
+    )
     assert event["termination"]["grace_sec"] == 0.25
     assert event["termination"]["rss_triggered"] is False
 
@@ -2479,7 +2505,7 @@ def test_auto_repo_sentinel_ignores_reused_host_pgid_without_molt_identity(
     monkeypatch.setattr(
         harness_memory_guard.process_sentinel,
         "terminate_group",
-        lambda pgid, *, grace: terminated.append(pgid),
+        _record_terminated_pgids(terminated),
     )
     monkeypatch.setattr(
         harness_memory_guard,
