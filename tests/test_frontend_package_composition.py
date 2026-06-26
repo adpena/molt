@@ -73,6 +73,7 @@ EXPECTED_MIXINS = [
     "RuntimeReferenceMixin",
     "CompileWarningMixin",
     "EmissionCoreMixin",
+    "ExpressionPrimitivesMixin",
     "ExceptionLoweringMixin",
     "FunctionLifecycleMixin",
     "FunctionMetadataMixin",
@@ -146,6 +147,12 @@ def test_moved_methods_resolve_on_class() -> None:
     assert hasattr(SimpleTIRGenerator, "emit")
     assert hasattr(SimpleTIRGenerator, "_suppress_check_exception")
     assert hasattr(SimpleTIRGenerator, "_bridge_fallback")
+    # expression primitives
+    assert hasattr(SimpleTIRGenerator, "_emit_expr_list")
+    assert hasattr(SimpleTIRGenerator, "_emit_compare_op")
+    assert hasattr(SimpleTIRGenerator, "_emit_not")
+    assert hasattr(SimpleTIRGenerator, "_parse_molt_buffer_call")
+    assert hasattr(SimpleTIRGenerator, "_emit_call_bound_or_func")
     # function lifecycle
     assert hasattr(SimpleTIRGenerator, "_function_contains_locals_call")
     assert hasattr(SimpleTIRGenerator, "start_function")
@@ -296,6 +303,7 @@ def test_mixin_modules_import_standalone() -> None:
         "molt.frontend.lowering.compile_warnings",
         "molt.frontend.lowering.emission_core",
         "molt.frontend.lowering.exception_lowering",
+        "molt.frontend.lowering.expression_primitives",
         "molt.frontend.lowering.function_lifecycle",
         "molt.frontend.lowering.function_metadata",
         "molt.frontend.lowering.import_lowering",
