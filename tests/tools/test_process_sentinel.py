@@ -494,6 +494,37 @@ def test_process_groups_exclude_mixed_custody_group_with_owned_child() -> None:
     assert groups == []
 
 
+def test_process_groups_explicit_custody_excludes_repo_scoped_shell() -> None:
+    # CANONICAL custody guarantee the harness preflight relies on: requiring
+    # EXPLICIT guard custody (an empty owned set, since a guard about to launch a
+    # command owns nothing yet) yields ZERO kill candidates even for a repo-scope
+    # heuristic match. A parent shell whose command line runs molt -- exactly what
+    # Codex spawns -- is NEVER signalled. Locks the fix for the recurring
+    # Codex-parent kill: harness_memory_guard `_prune_stale_repo_processes` passes
+    # owned_pids=frozenset() so the preflight can never terminate a process it
+    # cannot prove it owns.
+    module = _load_process_sentinel()
+    root = Path("/repo/molt")
+    samples = {
+        100: module.memory_guard.ProcessSample(
+            pid=100,
+            ppid=1,
+            pgid=100,
+            rss_kb=100,
+            command="/bin/bash -c cd /repo/molt && cargo build -p molt-backend",
+        ),
+    }
+
+    # Heuristic ownership WOULD match the shell (repo + molt build on its cmdline).
+    heuristic = module.process_groups(samples, root=root, self_pid=9999)
+    assert [group.pgid for group in heuristic] == [100]
+    # Explicit custody (empty owned set) excludes it -- no kill candidate.
+    explicit = module.process_groups(
+        samples, root=root, self_pid=9999, owned_pids=frozenset()
+    )
+    assert explicit == []
+
+
 def test_process_groups_exclude_windows_snapshot_helper_descendants(
     monkeypatch,
 ) -> None:
