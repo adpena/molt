@@ -3,7 +3,6 @@ use std::collections::HashMap;
 use molt_obj_model::MoltObject;
 
 use super::functions::alloc_string_bits;
-use super::functions_http::urllib_request_attr_optional;
 use super::functions_pickle::pickle_resolve_global_bits;
 use crate::object::type_ids::TYPE_ID_TUPLE;
 use crate::{
@@ -13,6 +12,29 @@ use crate::{
     obj_from_bits, object_type_id, raise_exception, seq_vec_ref, string_obj_to_owned, to_f64,
     to_i64,
 };
+
+fn logging_attr_optional(
+    _py: &crate::PyToken<'_>,
+    obj_bits: u64,
+    name: &[u8],
+) -> Result<Option<u64>, u64> {
+    let Some(name_bits) = attr_name_bits_from_bytes(_py, name) else {
+        return Err(MoltObject::none().bits());
+    };
+    let missing = missing_bits(_py);
+    let value_bits = molt_getattr_builtin(obj_bits, name_bits, missing);
+    dec_ref_bits(_py, name_bits);
+    if exception_pending(_py) {
+        if crate::builtins::attr::clear_attribute_error_if_pending(_py) {
+            return Ok(None);
+        }
+        return Err(MoltObject::none().bits());
+    }
+    if value_bits == missing {
+        return Ok(None);
+    }
+    Ok(Some(value_bits))
+}
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_csv_runtime_ready() -> u64 {
@@ -267,7 +289,7 @@ fn logging_config_call_method1(
     method_name: &[u8],
     arg_bits: u64,
 ) -> Result<u64, u64> {
-    let Some(method_bits) = urllib_request_attr_optional(_py, obj_bits, method_name)? else {
+    let Some(method_bits) = logging_attr_optional(_py, obj_bits, method_name)? else {
         return Err(raise_exception::<u64>(
             _py,
             "AttributeError",
@@ -286,7 +308,7 @@ fn logging_config_clear_logger_handlers(
     _py: &crate::PyToken<'_>,
     logger_bits: u64,
 ) -> Result<(), u64> {
-    let Some(handlers_bits) = urllib_request_attr_optional(_py, logger_bits, b"handlers")? else {
+    let Some(handlers_bits) = logging_attr_optional(_py, logger_bits, b"handlers")? else {
         return Ok(());
     };
     let Some(handlers_ptr) = obj_from_bits(handlers_bits).as_ptr() else {

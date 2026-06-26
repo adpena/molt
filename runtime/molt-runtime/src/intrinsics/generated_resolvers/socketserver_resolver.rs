@@ -3,42 +3,52 @@
 #[cold]
 pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
     match symbol {
+        #[cfg(feature = "stdlib_http")]
         "molt_socketserver_register" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_socketserver_register",
             crate::molt_socketserver_register as *const (),
         )),
+        #[cfg(feature = "stdlib_http")]
         "molt_socketserver_unregister" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_socketserver_unregister",
             crate::molt_socketserver_unregister as *const (),
         )),
+        #[cfg(feature = "stdlib_http")]
         "molt_socketserver_dispatch_begin" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_socketserver_dispatch_begin",
             crate::molt_socketserver_dispatch_begin as *const (),
         )),
+        #[cfg(feature = "stdlib_http")]
         "molt_socketserver_dispatch_poll" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_socketserver_dispatch_poll",
             crate::molt_socketserver_dispatch_poll as *const (),
         )),
+        #[cfg(feature = "stdlib_http")]
         "molt_socketserver_dispatch_cancel" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_socketserver_dispatch_cancel",
             crate::molt_socketserver_dispatch_cancel as *const (),
         )),
+        #[cfg(feature = "stdlib_http")]
         "molt_socketserver_get_request_poll" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_socketserver_get_request_poll",
             crate::molt_socketserver_get_request_poll as *const (),
         )),
+        #[cfg(feature = "stdlib_http")]
         "molt_socketserver_set_response" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_socketserver_set_response",
             crate::molt_socketserver_set_response as *const (),
         )),
+        #[cfg(feature = "stdlib_http")]
         "molt_socketserver_serve_forever" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_socketserver_serve_forever",
             crate::molt_socketserver_serve_forever as *const (),
         )),
+        #[cfg(feature = "stdlib_http")]
         "molt_socketserver_handle_request" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_socketserver_handle_request",
             crate::molt_socketserver_handle_request as *const (),
         )),
+        #[cfg(feature = "stdlib_http")]
         "molt_socketserver_shutdown" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_socketserver_shutdown",
             crate::molt_socketserver_shutdown as *const (),

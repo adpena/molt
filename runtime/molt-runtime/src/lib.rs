@@ -497,8 +497,6 @@ pub use crate::builtins::functions::*;
 #[cfg(not(feature = "stdlib_serial"))]
 pub use crate::builtins::functions_email::*;
 #[cfg(not(feature = "stdlib_http"))]
-pub use crate::builtins::functions_http::*;
-#[cfg(not(feature = "stdlib_http"))]
 pub use crate::builtins::functions_logging::*;
 pub use crate::builtins::functions_pickle::*;
 pub use crate::builtins::functions_re::*;

@@ -3,245 +3,245 @@
 #[cold]
 pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
     match symbol {
-        #[cfg(feature = "stdlib_net")]
+        #[cfg(feature = "stdlib_http")]
         "molt_urllib_quote" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_urllib_quote",
             crate::molt_urllib_quote as *const (),
         )),
-        #[cfg(feature = "stdlib_net")]
+        #[cfg(feature = "stdlib_http")]
         "molt_urllib_quote_plus" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_urllib_quote_plus",
             crate::molt_urllib_quote_plus as *const (),
         )),
-        #[cfg(feature = "stdlib_net")]
+        #[cfg(feature = "stdlib_http")]
         "molt_urllib_unquote" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_urllib_unquote",
             crate::molt_urllib_unquote as *const (),
         )),
-        #[cfg(feature = "stdlib_net")]
+        #[cfg(feature = "stdlib_http")]
         "molt_urllib_unquote_plus" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_urllib_unquote_plus",
             crate::molt_urllib_unquote_plus as *const (),
         )),
-        #[cfg(feature = "stdlib_net")]
+        #[cfg(feature = "stdlib_http")]
         "molt_urllib_parse_qsl" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_urllib_parse_qsl",
             crate::molt_urllib_parse_qsl as *const (),
         )),
-        #[cfg(feature = "stdlib_net")]
+        #[cfg(feature = "stdlib_http")]
         "molt_urllib_parse_qs" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_urllib_parse_qs",
             crate::molt_urllib_parse_qs as *const (),
         )),
-        #[cfg(feature = "stdlib_net")]
+        #[cfg(feature = "stdlib_http")]
         "molt_urllib_urlencode" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_urllib_urlencode",
             crate::molt_urllib_urlencode as *const (),
         )),
-        #[cfg(feature = "stdlib_net")]
+        #[cfg(feature = "stdlib_http")]
         "molt_urllib_urlsplit" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_urllib_urlsplit",
             crate::molt_urllib_urlsplit as *const (),
         )),
-        #[cfg(feature = "stdlib_net")]
+        #[cfg(feature = "stdlib_http")]
         "molt_urllib_urlparse" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_urllib_urlparse",
             crate::molt_urllib_urlparse as *const (),
         )),
-        #[cfg(feature = "stdlib_net")]
+        #[cfg(feature = "stdlib_http")]
         "molt_urllib_urlunsplit" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_urllib_urlunsplit",
             crate::molt_urllib_urlunsplit as *const (),
         )),
-        #[cfg(feature = "stdlib_net")]
+        #[cfg(feature = "stdlib_http")]
         "molt_urllib_urlunparse" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_urllib_urlunparse",
             crate::molt_urllib_urlunparse as *const (),
         )),
-        #[cfg(feature = "stdlib_net")]
+        #[cfg(feature = "stdlib_http")]
         "molt_urllib_urldefrag" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_urllib_urldefrag",
             crate::molt_urllib_urldefrag as *const (),
         )),
-        #[cfg(feature = "stdlib_net")]
+        #[cfg(feature = "stdlib_http")]
         "molt_urllib_urljoin" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_urllib_urljoin",
             crate::molt_urllib_urljoin as *const (),
         )),
-        #[cfg(feature = "stdlib_net")]
+        #[cfg(feature = "stdlib_http")]
         "molt_urllib_error_urlerror_init" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_urllib_error_urlerror_init",
             crate::molt_urllib_error_urlerror_init as *const (),
         )),
-        #[cfg(feature = "stdlib_net")]
+        #[cfg(feature = "stdlib_http")]
         "molt_urllib_error_urlerror_str" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_urllib_error_urlerror_str",
             crate::molt_urllib_error_urlerror_str as *const (),
         )),
-        #[cfg(feature = "stdlib_net")]
+        #[cfg(feature = "stdlib_http")]
         "molt_urllib_error_httperror_init" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_urllib_error_httperror_init",
             crate::molt_urllib_error_httperror_init as *const (),
         )),
-        #[cfg(feature = "stdlib_net")]
+        #[cfg(feature = "stdlib_http")]
         "molt_urllib_error_httperror_str" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_urllib_error_httperror_str",
             crate::molt_urllib_error_httperror_str as *const (),
         )),
-        #[cfg(feature = "stdlib_net")]
+        #[cfg(feature = "stdlib_http")]
         "molt_urllib_error_content_too_short_init" => {
             Some(crate::builtins::functions::runtime_fn_addr(
                 "crate::molt_urllib_error_content_too_short_init",
                 crate::molt_urllib_error_content_too_short_init as *const (),
             ))
         }
-        #[cfg(feature = "stdlib_net")]
+        #[cfg(feature = "stdlib_http")]
         "molt_urllib_request_request_init" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_urllib_request_request_init",
             crate::molt_urllib_request_request_init as *const (),
         )),
-        #[cfg(feature = "stdlib_net")]
+        #[cfg(feature = "stdlib_http")]
         "molt_urllib_request_opener_init" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_urllib_request_opener_init",
             crate::molt_urllib_request_opener_init as *const (),
         )),
-        #[cfg(feature = "stdlib_net")]
+        #[cfg(feature = "stdlib_http")]
         "molt_urllib_request_add_handler" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_urllib_request_add_handler",
             crate::molt_urllib_request_add_handler as *const (),
         )),
-        #[cfg(feature = "stdlib_net")]
+        #[cfg(feature = "stdlib_http")]
         "molt_urllib_request_open" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_urllib_request_open",
             crate::molt_urllib_request_open as *const (),
         )),
-        #[cfg(feature = "stdlib_net")]
+        #[cfg(feature = "stdlib_http")]
         "molt_urllib_request_process_http_error" => {
             Some(crate::builtins::functions::runtime_fn_addr(
                 "crate::molt_urllib_request_process_http_error",
                 crate::molt_urllib_request_process_http_error as *const (),
             ))
         }
-        #[cfg(feature = "stdlib_net")]
+        #[cfg(feature = "stdlib_http")]
         "molt_urllib_request_response_read" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_urllib_request_response_read",
             crate::molt_urllib_request_response_read as *const (),
         )),
-        #[cfg(feature = "stdlib_net")]
+        #[cfg(feature = "stdlib_http")]
         "molt_urllib_request_response_readinto" => {
             Some(crate::builtins::functions::runtime_fn_addr(
                 "crate::molt_urllib_request_response_readinto",
                 crate::molt_urllib_request_response_readinto as *const (),
             ))
         }
-        #[cfg(feature = "stdlib_net")]
+        #[cfg(feature = "stdlib_http")]
         "molt_urllib_request_response_read1" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_urllib_request_response_read1",
             crate::molt_urllib_request_response_read1 as *const (),
         )),
-        #[cfg(feature = "stdlib_net")]
+        #[cfg(feature = "stdlib_http")]
         "molt_urllib_request_response_readinto1" => {
             Some(crate::builtins::functions::runtime_fn_addr(
                 "crate::molt_urllib_request_response_readinto1",
                 crate::molt_urllib_request_response_readinto1 as *const (),
             ))
         }
-        #[cfg(feature = "stdlib_net")]
+        #[cfg(feature = "stdlib_http")]
         "molt_urllib_request_response_readline" => {
             Some(crate::builtins::functions::runtime_fn_addr(
                 "crate::molt_urllib_request_response_readline",
                 crate::molt_urllib_request_response_readline as *const (),
             ))
         }
-        #[cfg(feature = "stdlib_net")]
+        #[cfg(feature = "stdlib_http")]
         "molt_urllib_request_response_readlines" => {
             Some(crate::builtins::functions::runtime_fn_addr(
                 "crate::molt_urllib_request_response_readlines",
                 crate::molt_urllib_request_response_readlines as *const (),
             ))
         }
-        #[cfg(feature = "stdlib_net")]
+        #[cfg(feature = "stdlib_http")]
         "molt_urllib_request_response_readable" => {
             Some(crate::builtins::functions::runtime_fn_addr(
                 "crate::molt_urllib_request_response_readable",
                 crate::molt_urllib_request_response_readable as *const (),
             ))
         }
-        #[cfg(feature = "stdlib_net")]
+        #[cfg(feature = "stdlib_http")]
         "molt_urllib_request_response_writable" => {
             Some(crate::builtins::functions::runtime_fn_addr(
                 "crate::molt_urllib_request_response_writable",
                 crate::molt_urllib_request_response_writable as *const (),
             ))
         }
-        #[cfg(feature = "stdlib_net")]
+        #[cfg(feature = "stdlib_http")]
         "molt_urllib_request_response_seekable" => {
             Some(crate::builtins::functions::runtime_fn_addr(
                 "crate::molt_urllib_request_response_seekable",
                 crate::molt_urllib_request_response_seekable as *const (),
             ))
         }
-        #[cfg(feature = "stdlib_net")]
+        #[cfg(feature = "stdlib_http")]
         "molt_urllib_request_response_tell" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_urllib_request_response_tell",
             crate::molt_urllib_request_response_tell as *const (),
         )),
-        #[cfg(feature = "stdlib_net")]
+        #[cfg(feature = "stdlib_http")]
         "molt_urllib_request_response_seek" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_urllib_request_response_seek",
             crate::molt_urllib_request_response_seek as *const (),
         )),
-        #[cfg(feature = "stdlib_net")]
+        #[cfg(feature = "stdlib_http")]
         "molt_urllib_request_response_close" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_urllib_request_response_close",
             crate::molt_urllib_request_response_close as *const (),
         )),
-        #[cfg(feature = "stdlib_net")]
+        #[cfg(feature = "stdlib_http")]
         "molt_urllib_request_response_drop" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_urllib_request_response_drop",
             crate::molt_urllib_request_response_drop as *const (),
         )),
-        #[cfg(feature = "stdlib_net")]
+        #[cfg(feature = "stdlib_http")]
         "molt_urllib_request_response_geturl" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_urllib_request_response_geturl",
             crate::molt_urllib_request_response_geturl as *const (),
         )),
-        #[cfg(feature = "stdlib_net")]
+        #[cfg(feature = "stdlib_http")]
         "molt_urllib_request_response_getcode" => {
             Some(crate::builtins::functions::runtime_fn_addr(
                 "crate::molt_urllib_request_response_getcode",
                 crate::molt_urllib_request_response_getcode as *const (),
             ))
         }
-        #[cfg(feature = "stdlib_net")]
+        #[cfg(feature = "stdlib_http")]
         "molt_urllib_request_response_getreason" => {
             Some(crate::builtins::functions::runtime_fn_addr(
                 "crate::molt_urllib_request_response_getreason",
                 crate::molt_urllib_request_response_getreason as *const (),
             ))
         }
-        #[cfg(feature = "stdlib_net")]
+        #[cfg(feature = "stdlib_http")]
         "molt_urllib_request_response_getheader" => {
             Some(crate::builtins::functions::runtime_fn_addr(
                 "crate::molt_urllib_request_response_getheader",
                 crate::molt_urllib_request_response_getheader as *const (),
             ))
         }
-        #[cfg(feature = "stdlib_net")]
+        #[cfg(feature = "stdlib_http")]
         "molt_urllib_request_response_getheaders" => {
             Some(crate::builtins::functions::runtime_fn_addr(
                 "crate::molt_urllib_request_response_getheaders",
                 crate::molt_urllib_request_response_getheaders as *const (),
             ))
         }
-        #[cfg(feature = "stdlib_net")]
+        #[cfg(feature = "stdlib_http")]
         "molt_urllib_request_response_getheaders_list" => {
             Some(crate::builtins::functions::runtime_fn_addr(
                 "crate::molt_urllib_request_response_getheaders_list",
                 crate::molt_urllib_request_response_getheaders_list as *const (),
             ))
         }
-        #[cfg(feature = "stdlib_net")]
+        #[cfg(feature = "stdlib_http")]
         "molt_urllib_request_response_message" => {
             Some(crate::builtins::functions::runtime_fn_addr(
                 "crate::molt_urllib_request_response_message",
