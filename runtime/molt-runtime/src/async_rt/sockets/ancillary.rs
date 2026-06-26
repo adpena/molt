@@ -335,6 +335,13 @@ pub(super) struct RecvmsgIntoTarget {
 }
 
 #[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
+impl RecvmsgIntoTarget {
+    pub(super) fn len(&self) -> usize {
+        self.len
+    }
+}
+
+#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
 pub(super) fn collect_recvmsg_into_targets(
     _py: &PyToken<'_>,
     buffers_bits: u64,
