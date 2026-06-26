@@ -870,7 +870,11 @@ mod tests {
         assert!(resolve_symbol("molt_ssl_context_new").is_some());
         assert!(resolve_symbol("molt_ssl_wrap_socket").is_some());
         assert!(resolve_symbol("molt_ssl_socket_read").is_some());
+    }
 
+    #[cfg(not(feature = "stdlib_http"))]
+    #[test]
+    fn http_intrinsics_do_not_resolve_when_stdlib_http_is_disabled() {
         assert!(resolve_symbol("molt_http_client_execute").is_none());
     }
 

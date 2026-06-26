@@ -3,18 +3,22 @@
 #[cold]
 pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
     match symbol {
+        #[cfg(feature = "stdlib_http")]
         "molt_ctypes_require_ffi" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_ctypes_require_ffi",
             crate::molt_ctypes_require_ffi as *const (),
         )),
+        #[cfg(feature = "stdlib_http")]
         "molt_ctypes_coerce_value" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_ctypes_coerce_value",
             crate::molt_ctypes_coerce_value as *const (),
         )),
+        #[cfg(feature = "stdlib_http")]
         "molt_ctypes_default_value" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_ctypes_default_value",
             crate::molt_ctypes_default_value as *const (),
         )),
+        #[cfg(feature = "stdlib_http")]
         "molt_ctypes_sizeof" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_ctypes_sizeof",
             crate::molt_ctypes_sizeof as *const (),
