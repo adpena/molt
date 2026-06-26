@@ -57,8 +57,6 @@ pub(crate) mod functions;
 pub(crate) mod functions_email;
 pub(crate) mod functions_fnmatch;
 #[cfg(not(feature = "stdlib_http"))]
-pub(crate) mod functions_http;
-#[cfg(not(feature = "stdlib_http"))]
 pub(crate) mod functions_logging;
 pub(crate) mod functions_pickle;
 pub(crate) mod functions_re;

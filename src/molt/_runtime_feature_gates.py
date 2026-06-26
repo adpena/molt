@@ -79,11 +79,16 @@ RUNTIME_FEATURE_GATES: tuple[tuple[str, str], ...] = (
     ("molt_unicodedata_", "stdlib_text"),
     # zoneinfo: IANA TZif helpers live in the extracted zoneinfo leaf crate.
     ("molt_zoneinfo_", "stdlib_zoneinfo"),
-    # networking: http, urllib. SSL keeps an always-linkable ABI because
+    # HTTP-family intrinsics live in the extracted molt-runtime-http crate.
+    # Networking transport support is still gated by stdlib_net inside the
+    # implementation; symbol ownership is governed by stdlib_http.
+    ("molt_ctypes_", "stdlib_http"),
+    ("molt_http_", "stdlib_http"),
+    ("molt_socketserver_", "stdlib_http"),
+    ("molt_urllib_", "stdlib_http"),
+    # networking: IP address helpers. SSL keeps an always-linkable ABI because
     # asyncio imports ssl eagerly even in micro profiles; runtime operations
     # without net support raise from the Rust intrinsic implementation.
-    ("molt_http_", "stdlib_net"),
-    ("molt_urllib_", "stdlib_net"),
     ("molt_ipaddress_", "stdlib_net"),
     # asyncio: event loop, futures, tasks, queues, streams, transports
     ("molt_asyncio_", "stdlib_asyncio"),
@@ -186,6 +191,7 @@ LINK_AFFECTING_FEATURES: frozenset[str] = frozenset(
         "stdlib_csv",
         "stdlib_decimal",
         "stdlib_fs_extra",
+        "stdlib_http",
         "stdlib_logging_ext",
         "stdlib_net",
         "stdlib_serialization",
