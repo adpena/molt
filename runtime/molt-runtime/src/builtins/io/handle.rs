@@ -202,12 +202,8 @@ pub(crate) unsafe fn file_handle_enter(_py: &PyToken<'_>, ptr: *mut u8) -> u64 {
         let handle_ptr = file_handle_ptr(ptr);
         if !handle_ptr.is_null() {
             let handle = &mut *handle_ptr;
-            if handle.detached {
-                return raise_exception::<_>(
-                    _py,
-                    "ValueError",
-                    file_handle_detached_message(handle),
-                );
+            if let Err(bits) = file_handle_require_attached(_py, handle) {
+                return bits;
             }
             if file_handle_is_closed(handle) {
                 return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
@@ -224,12 +220,8 @@ pub(crate) unsafe fn file_handle_exit(_py: &PyToken<'_>, ptr: *mut u8, _exc_bits
         let handle_ptr = file_handle_ptr(ptr);
         if !handle_ptr.is_null() {
             let handle = &mut *handle_ptr;
-            if handle.detached {
-                return raise_exception::<_>(
-                    _py,
-                    "ValueError",
-                    file_handle_detached_message(handle),
-                );
+            if let Err(bits) = file_handle_require_attached(_py, handle) {
+                return bits;
             }
             let backend_state = Arc::clone(&handle.state);
             {
@@ -258,12 +250,8 @@ pub(crate) fn close_payload(_py: &PyToken<'_>, payload_bits: u64) {
             let handle_ptr = file_handle_ptr(ptr);
             if !handle_ptr.is_null() {
                 let handle = &*handle_ptr;
-                if handle.detached {
-                    return raise_exception::<_>(
-                        _py,
-                        "ValueError",
-                        file_handle_detached_message(handle),
-                    );
+                if file_handle_require_attached(_py, handle).is_err() {
+                    return;
                 }
             }
             file_handle_close_ptr(ptr);
@@ -291,6 +279,21 @@ pub(crate) fn file_handle_detached_message(handle: &MoltFileHandle) -> &'static 
         "underlying buffer has been detached"
     } else {
         "raw stream has been detached"
+    }
+}
+
+pub(crate) fn file_handle_require_attached(
+    _py: &PyToken<'_>,
+    handle: &MoltFileHandle,
+) -> Result<(), u64> {
+    if handle.detached {
+        Err(raise_exception::<u64>(
+            _py,
+            "ValueError",
+            file_handle_detached_message(handle),
+        ))
+    } else {
+        Ok(())
     }
 }
 
