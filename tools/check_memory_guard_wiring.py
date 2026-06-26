@@ -219,10 +219,19 @@ PYTHON_GUARD_CONTRACTS: tuple[TokenContract, ...] = (
         "tools/bench_friends.py",
         (
             "harness_memory_guard",
-            "guarded_completed_process",
             "repo_process_sentinel",
+            "MOLT_BENCH",
         ),
-        "friend benchmark runner must guard child runs",
+        "friend benchmark orchestrator must keep suite-level guard limits and sentinels",
+    ),
+    TokenContract(
+        "tools/bench_friends_phase.py",
+        (
+            "harness_memory_guard",
+            "guarded_completed_process",
+            "MOLT_BENCH",
+        ),
+        "friend benchmark phase runner must guard child commands",
     ),
     TokenContract(
         "tools/bench_audit.py",
@@ -537,17 +546,34 @@ PYTHON_GUARD_CONTRACTS: tuple[TokenContract, ...] = (
         "harness quality layers must guard tool subprocesses",
     ),
     TokenContract(
-        "src/molt/cli/__init__.py",
+        "src/molt/cli/command_runtime.py",
         (
             "_load_cli_harness_memory_guard",
-            "guarded_completed_process",
+            "run_completed_command",
             "guarded_completed_process_to_tempfiles",
+            "MOLT_DIFF",
+        ),
+        "CLI shared command runtime must route subprocesses through process_guard",
+    ),
+    TokenContract(
+        "src/molt/cli/commands.py",
+        (
+            "memory_guard_prefix",
+            "MOLT_BUILD",
+            "MOLT_BENCH",
+            "MOLT_DIFF",
+        ),
+        "CLI build/test/bench/diff commands must pass family guard prefixes",
+    ),
+    TokenContract(
+        "src/molt/cli/toolchain_validation.py",
+        (
+            "_load_cli_harness_memory_guard",
             "MOLT_BUILD",
             "MOLT_BENCH",
             "MOLT_CONFORMANCE",
-            "MOLT_DIFF",
         ),
-        "CLI build/test/bench/diff commands must use family guard prefixes",
+        "CLI validation must summarize and use family guard prefixes",
     ),
 )
 
