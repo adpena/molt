@@ -7,8 +7,8 @@ string is the wire contract between the Python frontend and the Rust backend.
 Five independent components must agree on that vocabulary, but each keeps its own
 copy of the table:
 
-  1. the frontend ``map_ops_to_json`` if/elif chain (the EMITTER — authoritative
-     wire vocabulary; ``serialization.py``),
+  1. the frontend ``map_ops_to_json`` dispatcher and extracted serialization
+     handlers (the EMITTER — authoritative wire vocabulary),
   2. the TIR SSA mapper ``kind_to_opcode`` (string -> ``OpCode``; ``ssa.rs``) —
      any kind it does not recognize is silently lifted to ``OpCode::Copy`` with
      the spelling stashed in ``_original_kind`` (the ``_ => OpCode::Copy`` arm),
@@ -54,8 +54,9 @@ THE AUTHORITATIVE LAYER. The ``MoltOp.kind`` vocabulary (~1777 uppercase
 ``MoltOp(kind=...)`` construction sites in the visitors) is an INTERNAL frontend
 detail fully consumed by ``map_ops_to_json``; the audit's source of truth for the
 cross-component contract is therefore the JSON ``"kind"`` STRING that
-``map_ops_to_json`` emits (lowercase), because that is exactly what every backend
-component keys on. Phase 2's table is keyed by the emitted JSON kind.
+``map_ops_to_json`` and its handler modules emit (lowercase), because that is
+exactly what every backend component keys on. Phase 2's table is keyed by the
+emitted JSON kind.
 """
 
 from __future__ import annotations
@@ -70,9 +71,22 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
-SERIALIZATION_PY = ROOT / "src/molt/frontend/lowering/serialization.py"
+SERIALIZATION_DIR = ROOT / "src/molt/frontend/lowering"
+SERIALIZATION_PY = SERIALIZATION_DIR / "serialization.py"
+SERIALIZATION_MODULES = (
+    SERIALIZATION_PY,
+    SERIALIZATION_DIR / "serialization_basic_ops.py",
+    SERIALIZATION_DIR / "serialization_collection_ops.py",
+    SERIALIZATION_DIR / "serialization_exception_ops.py",
+    SERIALIZATION_DIR / "serialization_function_ops.py",
+    SERIALIZATION_DIR / "serialization_loop_string_async_ops.py",
+    SERIALIZATION_DIR / "serialization_object_attr_ops.py",
+)
 SSA_RS = ROOT / "runtime/molt-tir/src/tir/ssa.rs"
 LLVM_RS = ROOT / "runtime/molt-backend/src/llvm_backend/lowering.rs"
+LLVM_PRESERVED_OPS_RS = (
+    ROOT / "runtime/molt-backend/src/llvm_backend/lowering/preserved_ops.rs"
+)
 ALIAS_RS = ROOT / "runtime/molt-tir/src/tir/passes/alias_analysis.rs"
 NATIVE_RS = ROOT / "runtime/molt-backend/src/native_backend/function_compiler.rs"
 NATIVE_FC_DIR = ROOT / "runtime/molt-backend/src/native_backend/function_compiler/fc"
@@ -82,6 +96,9 @@ NATIVE_FC_DIR = ROOT / "runtime/molt-backend/src/native_backend/function_compile
 # no-result ops are no longer a native-routing exemption: they may carry side
 # effects or control metadata and must be claimed by a handler slice.
 LOWER_TO_SIMPLE_RS = ROOT / "runtime/molt-tir/src/tir/lower_to_simple.rs"
+LOWER_TO_SIMPLE_OP_LOWERING_RS = (
+    ROOT / "runtime/molt-tir/src/tir/lower_to_simple/op_lowering.rs"
+)
 WASM_RS = ROOT / "runtime/molt-backend/src/wasm.rs"
 RUNTIME_SRC = ROOT / "runtime/molt-runtime/src"
 
@@ -452,8 +469,8 @@ def _resolve_name_assignment(
 @dataclass
 class FrontendKinds:
     constant: set[str] = field(default_factory=set)
-    computed: dict[int, set[str]] = field(default_factory=dict)  # line -> kinds
-    unresolved: list[tuple[int, str]] = field(default_factory=list)
+    computed: dict[str, set[str]] = field(default_factory=dict)  # file:line -> kinds
+    unresolved: list[tuple[str, int, str]] = field(default_factory=list)
 
     @property
     def all(self) -> set[str]:
@@ -481,33 +498,35 @@ def _static_kind_strings(expr: ast.expr) -> set[str] | None:
 
 
 def extract_frontend_kinds() -> FrontendKinds:
-    src = SERIALIZATION_PY.read_text(encoding="utf-8")
-    tree = ast.parse(src)
-    _attach_parents(tree)
     fk = FrontendKinds()
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Dict):
-            continue
-        for k, v in zip(node.keys, node.values):
-            if not (isinstance(k, ast.Constant) and k.value == "kind"):
+    for path in SERIALIZATION_MODULES:
+        src = path.read_text(encoding="utf-8")
+        tree = ast.parse(src, filename=str(path))
+        _attach_parents(tree)
+        rel_path = path.relative_to(ROOT).as_posix()
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Dict):
                 continue
-            static = _static_kind_strings(v)
-            if static is not None:
-                fk.constant.update(static)
-                continue
-            ln = getattr(v, "lineno", -1)
-            guard = _enclosing_kind_guard(node)
-            func = _enclosing_function(node)
-            resolved: set[str] | None = None
-            if isinstance(v, ast.Attribute) and v.attr == "kind":
-                # bare `op.kind` under a guard with (lowercase) literals
-                resolved = set(guard) if guard else None
-            elif isinstance(v, ast.Name) and func is not None:
-                resolved = _resolve_name_assignment(func, v.id, guard)
-            if resolved:
-                fk.computed[ln] = resolved
-            else:
-                fk.unresolved.append((ln, ast.dump(v)[:60]))
+            for k, v in zip(node.keys, node.values):
+                if not (isinstance(k, ast.Constant) and k.value == "kind"):
+                    continue
+                static = _static_kind_strings(v)
+                if static is not None:
+                    fk.constant.update(static)
+                    continue
+                ln = getattr(v, "lineno", -1)
+                guard = _enclosing_kind_guard(node)
+                func = _enclosing_function(node)
+                resolved: set[str] | None = None
+                if isinstance(v, ast.Attribute) and v.attr == "kind":
+                    # bare `op.kind` under a guard with (lowercase) literals
+                    resolved = set(guard) if guard else None
+                elif isinstance(v, ast.Name) and func is not None:
+                    resolved = _resolve_name_assignment(func, v.id, guard)
+                if resolved:
+                    fk.computed[f"{rel_path}:{ln}"] = resolved
+                else:
+                    fk.unresolved.append((rel_path, ln, ast.dump(v)[:60]))
     return fk
 
 
@@ -866,7 +885,7 @@ def extract_native_lower_nonresult_kinds() -> set[str]:
     """Kinds whose lowered SimpleIR op carries NO result (`out` absent/`None`).
 
     The single source of truth for "does this kind's SimpleIR op carry a result?"
-    is ``fn lower_op`` in ``lower_to_simple.rs`` (the per-OpCode SSA->SimpleIR
+    is ``fn lower_op`` in ``lower_to_simple/op_lowering.rs`` (the per-OpCode SSA->SimpleIR
     lowering): each ``OpCode::X => Some(OpIR { kind: "K", … })`` arm sets ``out``
     to ``out_var`` / ``Some(..)`` / a ``*_var`` (result-producing) or omits it /
     sets ``None`` (no result). This extractor returns exactly the kinds for which
@@ -880,10 +899,12 @@ def extract_native_lower_nonresult_kinds() -> set[str]:
     side-effect/control-flow ops must still be explicitly routed by native
     ``HANDLED_KINDS`` slices.
     """
-    src = LOWER_TO_SIMPLE_RS.read_text(encoding="utf-8")
+    src = LOWER_TO_SIMPLE_OP_LOWERING_RS.read_text(encoding="utf-8")
     fm = re.search(r"\bfn\s+lower_op\b", src)
     if fm is None:
-        raise RustMatchParseError("fn lower_op not found in lower_to_simple.rs")
+        raise RustMatchParseError(
+            "fn lower_op not found in lower_to_simple/op_lowering.rs"
+        )
     open_idx = src.index("{", fm.end())
     depth = 0
     end = None
@@ -1204,7 +1225,9 @@ def run_audit() -> AuditResult:
     # LLVM arms, the vec-reduction table, and runtime extern ABIs are NOT
     # generated — extract them from source as before.
     llvm_arms = set(
-        extract_match_arms(LLVM_RS, "lower_preserved_simpleir_op", "match kind {")
+        extract_match_arms(
+            LLVM_PRESERVED_OPS_RS, "lower_preserved_simpleir_op", "match kind {"
+        )
     )
     llvm_vec = extract_vec_reduction_ops()
     runtime_externs = extract_runtime_molt_externs()
@@ -1434,8 +1457,8 @@ def print_report(res: AuditResult) -> None:
     print(f"    computed (resolved) sites              : {len(fk.computed)}")
     if fk.unresolved:
         print(f"    UNRESOLVED computed sites              : {len(fk.unresolved)}")
-        for ln, dump in fk.unresolved:
-            print(f"      line {ln}: {dump}")
+        for rel_path, ln, dump in fk.unresolved:
+            print(f"      {rel_path}:{ln}: {dump}")
     print(f"  ssa.rs kind_to_opcode arms               : {len(res.mapper_kinds)}")
     print(f"  llvm dedicated arms                      : {len(res.llvm_arms)}")
     print(f"  llvm VEC_REDUCTION_OPS table              : {len(res.llvm_vec_table)}")
@@ -1594,8 +1617,8 @@ def main(argv: list[str]) -> int:
             f"({len(res.frontend.unresolved)}); extend the resolver",
             file=sys.stderr,
         )
-        for ln, dump in res.frontend.unresolved:
-            print(f"  line {ln}: {dump}", file=sys.stderr)
+        for rel_path, ln, dump in res.frontend.unresolved:
+            print(f"  {rel_path}:{ln}: {dump}", file=sys.stderr)
         return 3
 
     if args.write_baseline:

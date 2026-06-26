@@ -13,7 +13,7 @@ Product board for the molt structural sweep — the first instrument of the Molt
 | critical_hand_classifications | 0 |
 | handset_classifications | 0 |
 | debt_markers_total | 521 |
-| god_files | 34 |
+| god_files | 33 |
 | max_god_file_lines | 11816 |
 | structural_god_files | 8 |
 | max_god_file_structural_score | 2811 |
@@ -40,7 +40,7 @@ Product board for the molt structural sweep — the first instrument of the Molt
 | medium | god_file | `runtime/molt-runtime/src/builtins/functions.rs` | 6249 lines (ceiling 4000) |
 | medium | god_file | `tools/gen_op_kinds.py` | 6209 lines (ceiling 2500) |
 | medium | god_file | `runtime/molt-runtime/src/builtins/modules.rs` | 6019 lines (ceiling 4000) |
-| medium | god_file | `src/molt/frontend/lowering/serialization.py` | 4549 lines (ceiling 2500) |
+| medium | god_file | `src/molt/frontend/visitors/classes.py` | 3988 lines (ceiling 2500) |
 
 ## TOP DELETION CANDIDATES (0) — replace, don't just delete
 
@@ -57,7 +57,7 @@ Product board for the molt structural sweep — the first instrument of the Molt
 
 ## Full findings by probe
 
-### god_file (34)
+### god_file (33)
 
 | sev | what | where | action |
 | --- | --- | --- | --- |
@@ -75,7 +75,6 @@ Product board for the molt structural sweep — the first instrument of the Molt
 | medium | 6249 lines (ceiling 4000) | `runtime/molt-runtime/src/builtins/functions.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | medium | 6209 lines (ceiling 2500) | `tools/gen_op_kinds.py` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | medium | 6019 lines (ceiling 4000) | `runtime/molt-runtime/src/builtins/modules.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
-| medium | 4549 lines (ceiling 2500) | `src/molt/frontend/lowering/serialization.py` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | medium | 3988 lines (ceiling 2500) | `src/molt/frontend/visitors/classes.py` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | low | 5982 lines (ceiling 4000) | `runtime/molt-worker/src/main.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | low | 5900 lines (ceiling 4000) | `runtime/molt-runtime/src/builtins/attributes.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
