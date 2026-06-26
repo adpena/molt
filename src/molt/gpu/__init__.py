@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import struct
 import array
+import operator
 import _intrinsics as _molt_intrinsics
 
 TYPE_CHECKING = False
@@ -69,6 +70,44 @@ def _resolve_optional_intrinsic(name: str, cache_name: str):
             return value
 
     return None
+
+
+def _require_positive_launch_dim(value, field_name: str) -> int:
+    if isinstance(value, bool):
+        raise TypeError(f"GPU launch {field_name} must be a positive integer")
+    try:
+        number = operator.index(value)
+    except (TypeError, ValueError) as exc:
+        raise TypeError(f"GPU launch {field_name} must be a positive integer") from exc
+    if number <= 0:
+        raise ValueError(f"GPU launch {field_name} must be positive")
+    return number
+
+
+def _normalize_launch_config(config) -> tuple[int, int]:
+    if isinstance(config, dict):
+        keys = set(config)
+        allowed = {"grid", "threads"}
+        unknown = keys - allowed
+        if unknown:
+            names = ", ".join(sorted(str(key) for key in unknown))
+            raise ValueError(f"unknown GPU launch config field(s): {names}")
+        if not keys:
+            raise ValueError("GPU launch config dict must set grid or threads")
+        grid = _require_positive_launch_dim(config.get("grid", 256), "grid")
+        threads = _require_positive_launch_dim(config.get("threads", 256), "threads")
+        return grid, threads
+    if isinstance(config, tuple):
+        if len(config) == 1:
+            grid = _require_positive_launch_dim(config[0], "grid")
+            return grid, 256
+        if len(config) == 2:
+            grid = _require_positive_launch_dim(config[0], "grid")
+            threads = _require_positive_launch_dim(config[1], "threads")
+            return grid, threads
+        raise ValueError("GPU launch tuple config must contain grid or grid, threads")
+    grid = _require_positive_launch_dim(config, "grid")
+    return grid, 256
 
 
 class Buffer:
@@ -225,19 +264,7 @@ class _KernelLauncher:
 
     def __getitem__(self, config):
         """Configure launch: kernel[grid, threads] or kernel[total_threads]"""
-        if isinstance(config, dict):
-            self._grid = config.get("grid", 256)
-            self._threads = config.get("threads", 256)
-        elif isinstance(config, tuple):
-            if len(config) >= 2:
-                self._grid = config[0]
-                self._threads = config[1]
-            elif len(config) == 1:
-                self._grid = config[0]
-                self._threads = 256
-        elif isinstance(config, int):
-            self._grid = config
-            self._threads = 256
+        self._grid, self._threads = _normalize_launch_config(config)
         return self
 
     def __call__(self, *args):
