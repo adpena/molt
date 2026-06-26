@@ -161,6 +161,20 @@ Goals:
 - G5. No per-module special cases, no allowlist papering, one mechanism.
 - G6. Quantified wins: binary size, cold start, and micro-buildability of
   programs that gratuitously import heavy modules.
+- G7. INTRINSIC/FUNCTION-GRANULAR within a USED feature (the extreme-tree-shaking
+  bar): reaching `re.match` links `molt_re_match` and its transitive intrinsic
+  needs and NOTHING ELSE — `molt_re_sub`/`molt_re_finditer`/etc. are absent from
+  the binary. Feature-granularity ("used the feature → link the whole crate and
+  let --gc-sections clean up") is NOT a sufficient guarantee; each intrinsic must
+  be INDEPENDENTLY dead-strippable. The per-app resolver already references only
+  reached intrinsics (`app_resolver.rs:28-30`), so the ONLY way an unused
+  intrinsic survives is a cross-intrinsic call-graph edge (a reached intrinsic
+  keeping an unreached one alive via a shared helper). Where G7's gate (§7.3)
+  exposes such an edge, that feature's intrinsics are RE-MODULARIZED (split the
+  shared helper, or make the edge conditional/feature-local) until each intrinsic
+  is independently strippable. This is the same bar as deforestation applied to
+  the runtime surface: nothing the program does not reach may survive in the
+  artifact.
 
 Non-goals:
 - Not changing the runtime intrinsic ABI or the per-app resolver data layout
@@ -468,7 +482,15 @@ de-regex `f6e3793d5`; the lazy idiom in `pprint.py:524`/`difflib.py:787`/
   `filterwarnings`; `unittest/__init__.py:9` re → into the regex-assert methods;
   `gettext.py:17` struct → into `_parse`; `typing_extensions.py:15` re → module
   `__getattr__` for `Match`/`Pattern`; `glob.py` `magic_check` → into the
-  existing PEP 562 `__getattr__`.
+  existing PEP 562 `__getattr__`; `_pylong.py` module-level `import decimal` +
+  `import _decimal` (the eager backend marker) → into `int_to_decimal` (the ONLY
+  decimal consumer; `int_to_decimal_string` reaches decimal solely via it, and
+  only on its >450k-bit branch). Under G7 this is NOT core: `_pylong` is reached
+  by any `str(int)`/`int(str)`, but its decimal use is the rare huge-int path, so
+  the eager module-level import gratuitously forces `stdlib_decimal` (→ `math` +
+  `serial`) on nearly every program that touches int↔str. The FIND catalog's
+  "decimal = CORE" was feature-granular reasoning; G7 reclassifies it as
+  lazy-able — the same load-semantics face as §1.4.
 - **De-regex trivial patterns**: `logging/config.py:13,33` `IDENTIFIER` →
   hand scan or the existing `molt_logging_config_valid_ident` intrinsic.
 - **CORE (do not touch):** `textwrap`, `_strptime`, `json/*`, `_markupbase`,
@@ -561,6 +583,16 @@ Every layer of the AST-to-binary spine gets a proof at its own layer.
   `app_resolver.rs:46`) that the manifest contains zero `molt_re_*`, and via
   `nm`/symbol inspection that no `molt_re_compile` is present. This proves the
   section is *unexpressible*, not merely smaller.
+- `within_feature_intrinsic_granularity` (G7's gate, the extreme-tree-shaking
+  guarantee): a program reaching ONLY `re.match` → `MOLT_DUMP_INTRINSIC_MANIFEST`
+  shows `molt_re_match` + its transitive needs but NOT `molt_re_sub` /
+  `molt_re_finditer`, and `nm` confirms the unreached regex intrinsics are absent
+  from the binary. Because the per-app resolver already references only reached
+  intrinsics (`app_resolver.rs:28-30`), a SURVIVING unused intrinsic can only mean
+  a cross-intrinsic call-graph edge (a reached intrinsic dragging an unreached one
+  via a shared helper) — this gate surfaces it and forces re-modularizing that
+  feature's intrinsics until each is independently dead-strippable. Run per
+  feature with a reached/unreached intrinsic pair; CI-gated.
 - The existing `runtime_intrinsic_symbols_required` fail-closed test stays green
   (the symbol-set precondition is unchanged).
 
