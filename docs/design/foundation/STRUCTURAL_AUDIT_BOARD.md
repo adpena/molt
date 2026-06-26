@@ -39,8 +39,8 @@ Product board for the molt structural sweep — the first instrument of the Molt
 | low | god_file | `runtime/molt-runtime/src/async_rt/generators_async.rs` | 5879 lines (ceiling 4000) |
 | low | god_file | `runtime/molt-runtime/src/object/ops_sys.rs` | 5741 lines (ceiling 4000) |
 | low | god_file | `runtime/molt-runtime/src/object/ops_encoding.rs` | 5542 lines (ceiling 4000) |
-| low | god_file | `runtime/molt-runtime/src/builtins/io.rs` | 5437 lines (ceiling 4000) |
-| low | god_file | `runtime/molt-runtime/src/async_rt/sockets.rs` | 5298 lines (ceiling 4000) |
+| low | god_file | `runtime/molt-runtime/src/call/bind.rs` | 5281 lines (ceiling 4000) |
+| low | god_file | `runtime/molt-wasm-host/src/main.rs` | 5133 lines (ceiling 4000) |
 
 ## TOP DELETION CANDIDATES (0) — replace, don't just delete
 
@@ -71,13 +71,13 @@ Product board for the molt structural sweep — the first instrument of the Molt
 | low | 5879 lines (ceiling 4000) | `runtime/molt-runtime/src/async_rt/generators_async.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | low | 5741 lines (ceiling 4000) | `runtime/molt-runtime/src/object/ops_sys.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | low | 5542 lines (ceiling 4000) | `runtime/molt-runtime/src/object/ops_encoding.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
-| low | 5437 lines (ceiling 4000) | `runtime/molt-runtime/src/builtins/io.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
-| low | 5298 lines (ceiling 4000) | `runtime/molt-runtime/src/async_rt/sockets.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | low | 5281 lines (ceiling 4000) | `runtime/molt-runtime/src/call/bind.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | low | 5133 lines (ceiling 4000) | `runtime/molt-wasm-host/src/main.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | low | 5026 lines (ceiling 4000) | `runtime/molt-runtime/src/object/ops_string.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | low | 4895 lines (ceiling 4000) | `runtime/molt-backend/src/rust.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | low | 4818 lines (ceiling 4000) | `runtime/molt-runtime/src/object/ops_bytes.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
+| low | 4722 lines (ceiling 4000) | `runtime/molt-runtime/src/async_rt/sockets.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
+| low | 4561 lines (ceiling 4000) | `runtime/molt-runtime/src/builtins/io.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | low | 4446 lines (ceiling 4000) | `runtime/molt-runtime/src/object/ops_arith.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | low | 4350 lines (ceiling 4000) | `runtime/molt-runtime/src/builtins/functions_pickle.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | low | 4112 lines (ceiling 4000) | `runtime/molt-runtime/src/async_rt/scheduler.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
