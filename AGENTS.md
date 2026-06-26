@@ -268,20 +268,20 @@ Intermediate commits are acceptable only when each one is itself a complete, end
 Read these first instead of rediscovering project structure:
 
 - Code authority:
-  - `runtime/molt-backend/src/tir/` for TIR, pass manager, analyses, lowering,
+  - `runtime/molt-tir/src/tir/` for TIR, pass manager, analyses, lowering,
     verification, and generated op-kind facts.
-  - `runtime/molt-backend/src/tir/pass_manager.rs`,
-    `runtime/molt-backend/src/tir/module_phase.rs`, and
-    `runtime/molt-backend/src/tir/drop_phase.rs` for pipeline order,
+  - `runtime/molt-tir/src/tir/pass_manager.rs`,
+    `runtime/molt-tir/src/tir/module_phase.rs`, and
+    `runtime/molt-tir/src/tir/drop_phase.rs` for pipeline order,
     module-level transforms, and terminal RC drop insertion.
-  - `runtime/molt-backend/src/tir/op_kinds.toml` for the canonical op-kind
+  - `runtime/molt-tir/src/tir/op_kinds.toml` for the canonical op-kind
     vocabulary, effect rows, ownership classifiers, and generated backend/
     frontend tables.
-  - `runtime/molt-backend/src/tir/op_kinds_generated.rs` and
+  - `runtime/molt-tir/src/tir/op_kinds_generated.rs` and
     `src/molt/frontend/lowering/op_kinds_generated.py` for generated op-kind
     tables; update `op_kinds.toml` plus `tools/gen_op_kinds.py`, not generated
     outputs by hand.
-  - `runtime/molt-backend/src/representation_plan.rs` for scalar/container
+  - `runtime/molt-tir/src/representation_plan.rs` for scalar/container
     representation authority shared by backends.
   - `runtime/molt-backend/src/native_backend/`,
     `runtime/molt-backend/src/llvm_backend/`, `runtime/molt-backend/src/wasm.rs`,
