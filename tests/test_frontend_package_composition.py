@@ -79,6 +79,12 @@ EXPECTED_MIXINS = [
     "MidendDataflowMixin",
     "MidendCFGMixin",
     "SerializationMixin",
+    "SerializationBasicOpsMixin",
+    "SerializationFunctionOpsMixin",
+    "SerializationExceptionOpsMixin",
+    "SerializationObjectAttrOpsMixin",
+    "SerializationCollectionOpsMixin",
+    "SerializationLoopStringAsyncOpsMixin",
     "OwnershipLoweringMixin",
     "StringFormattingMixin",
     "RuntimeReferenceMixin",
@@ -185,6 +191,12 @@ def test_moved_methods_resolve_on_class() -> None:
     assert hasattr(SimpleTIRGenerator, "_canonicalize_control_aware_ops")
     # serialization
     assert hasattr(SimpleTIRGenerator, "map_ops_to_json")
+    assert hasattr(SimpleTIRGenerator, "_serialize_basic_op")
+    assert hasattr(SimpleTIRGenerator, "_serialize_function_op")
+    assert hasattr(SimpleTIRGenerator, "_serialize_exception_op")
+    assert hasattr(SimpleTIRGenerator, "_serialize_object_attr_op")
+    assert hasattr(SimpleTIRGenerator, "_serialize_collection_op")
+    assert hasattr(SimpleTIRGenerator, "_serialize_loop_string_async_op")
     assert hasattr(SimpleTIRGenerator, "_scalarize_string_split_fields_json")
     # compile warnings
     assert hasattr(SimpleTIRGenerator, "_prescan_compile_warnings")
@@ -391,6 +403,13 @@ def test_mixin_modules_import_standalone() -> None:
         "molt.frontend.lowering.module_lifecycle",
         "molt.frontend.lowering.ownership_lowering",
         "molt.frontend.lowering.serialization",
+        "molt.frontend.lowering.serialization_basic_ops",
+        "molt.frontend.lowering.serialization_collection_ops",
+        "molt.frontend.lowering.serialization_context",
+        "molt.frontend.lowering.serialization_exception_ops",
+        "molt.frontend.lowering.serialization_function_ops",
+        "molt.frontend.lowering.serialization_loop_string_async_ops",
+        "molt.frontend.lowering.serialization_object_attr_ops",
         "molt.frontend.lowering.sema_state",
         "molt.frontend.lowering.string_formatting",
         "molt.frontend.lowering.symbol_naming",
