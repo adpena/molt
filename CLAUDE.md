@@ -84,6 +84,11 @@ contradictory.
 - Prefer one shared analysis primitive over repeated probes. If CLI setup,
   diagnostics, validation, binary closure, docs, and tests need the same fact,
   route them through the same implementation or generated authority.
+- Canonical TIR, op-kind, and representation facts live under `runtime/molt-tir/`:
+  `runtime/molt-tir/src/tir/`, `runtime/molt-tir/src/tir/op_kinds.toml`,
+  `runtime/molt-tir/src/tir/op_kinds_generated.rs`, and
+  `runtime/molt-tir/src/representation_plan.rs`. Do not patch an old backend
+  lane or add a local classifier when this generated authority can own it.
 
 ### Concrete examples of partial implementations to reject
 
@@ -420,22 +425,25 @@ harness memory guard only wraps `molt run`/`molt test`/`molt build` — not bare
 RSS (observed: 97GB before OOM-kill) and wedge the machine.
 
 Always route direct binary execution — smoke tests, bisecting, profiling,
-differential one-offs, repro reduction — through the watchdog wrapper:
+differential one-offs, repro reduction — through the shared memory guard or a
+harness path that delegates to it. `tools/safe_run.py` is not a new authority
+for process custody; use it only after it is known to route through the shared
+guard stack for the current command family.
 
 ```bash
-# Hard wall-time + RSS caps; SIGKILLs the whole process group on violation.
-python3 tools/safe_run.py --rss-mb 2048 --timeout 15 -- ./my_binary [args]
-# exit 124 = TIMEOUT (hang), 137 = OOM (RSS cap hit), else the child's own code.
-# --json for machine-readable status; stdout is forwarded live (status -> stderr).
+# Hard wall-time + RSS caps with protected host/control-plane filtering.
+python3 tools/memory_guard.py --max-rss-gb 2 --max-total-rss-gb 3 --timeout 15 -- ./my_binary [args]
 ```
 
 Rules:
-- Bisecting a suspected hang/OOM: `safe_run.py` with a SMALL `--rss-mb` (e.g.
-  512) and short `--timeout` (e.g. 8) so a runaway dies in <1s, not at 97GB.
+- Bisecting a suspected hang/OOM: use `tools/memory_guard.py` with a small RSS
+  budget and short timeout so a runaway dies promptly under custody evidence.
 - Prefer `molt run`/`molt test` (guarded) over raw binaries whenever possible;
-  use `safe_run.py` for the cases where you must invoke the artifact directly.
+  use the shared guard for the cases where you must invoke the artifact
+  directly.
 - `gtimeout`/`perl -e 'alarm'` bound wall-time but NOT memory — they do not stop
-  an OOM. Use `safe_run.py` for anything that could allocate unboundedly.
+  an OOM. Use the shared memory guard for anything that could allocate
+  unboundedly.
 - An infinite-loop / hang / OOM bug is the most severe class: fix it
   structurally and add a differential regression. Do not work around it by only
   capping the runner.
