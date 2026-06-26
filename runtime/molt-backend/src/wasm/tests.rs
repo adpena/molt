@@ -1,3 +1,4 @@
+use super::local_layout::collect_read_vars;
 use super::*;
 use std::collections::BTreeSet;
 
@@ -241,22 +242,6 @@ fn make_op(kind: &str, args: Option<Vec<&str>>, var: Option<&str>, out: Option<&
         out: out.map(String::from),
         ..Default::default()
     }
-}
-
-/// Replicate the read-var scanning logic from the compiler to test it in isolation.
-fn collect_read_vars(ops: &[OpIR]) -> BTreeSet<String> {
-    let mut s = BTreeSet::new();
-    for op in ops {
-        if let Some(args) = &op.args {
-            for arg in args {
-                s.insert(arg.clone());
-            }
-        }
-        if let Some(var) = &op.var {
-            s.insert(var.clone());
-        }
-    }
-    s
 }
 
 #[test]
