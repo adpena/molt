@@ -842,7 +842,7 @@ def terminate_group(
             else expected_identity
         )
         if expected_pid_identity is None:
-            expected_pid_identity = memory_guard.process_identity(sample)
+            return
         if memory_guard.process_identity(sample) != expected_pid_identity:
             return
         if not is_molt_process(sample, root=root, self_pid=os.getpid()):
@@ -942,7 +942,10 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--kill-all",
         action="store_true",
-        help="Terminate every currently matched Molt process group.",
+        help=(
+            "Report every currently matched Molt process group; termination "
+            "requires explicit guard-owned process identity."
+        ),
     )
     parser.add_argument(
         "--stale-orphan-sec",
@@ -1090,22 +1093,23 @@ def main(argv: Sequence[str] | None = None) -> int:
     stream = sys.stdout if args.json else sys.stderr
     started = time.monotonic()
     clean_since: float | None = None
-    known_process_identities: dict[int, memory_guard.ProcessIdentity] = {}
+    explicit_process_identities: dict[int, memory_guard.ProcessIdentity] = {}
 
     def scan_groups() -> list[ProcessGroup]:
-        groups = process_groups(
+        return process_groups(
             sample_processes_for_sentinel(),
             root=root,
             self_pid=os.getpid(),
             self_pgid=_safe_getpgrp(),
-            known_process_identities=known_process_identities,
+            known_process_identities=explicit_process_identities,
         )
-        for group in groups:
-            for sample in group.samples:
-                known_process_identities[sample.pid] = memory_guard.process_identity(
-                    sample
-                )
-        return groups
+
+    def explicitly_owned_violation(violation: SentinelViolation) -> bool:
+        return bool(violation.samples) and all(
+            explicit_process_identities.get(sample.pid)
+            == memory_guard.process_identity(sample)
+            for sample in violation.samples
+        )
 
     def process_observed_groups(
         groups: Sequence[ProcessGroup],
@@ -1143,18 +1147,37 @@ def main(argv: Sequence[str] | None = None) -> int:
             if args.json and violations
             else None
         )
-        emit_violations(
-            violations,
-            json_mode=args.json,
-            stream=stream,
-            incident_at=_utc_timestamp(),
-            elapsed_s=observed_at - started,
-            dry_run=args.dry_run,
-            grace_sec=args.grace_sec,
-            repro_payloads=repro_payloads,
-        )
+        terminable_violations = [
+            violation for violation in violations if explicitly_owned_violation(violation)
+        ]
+        observed_violations = [
+            violation for violation in violations if violation not in terminable_violations
+        ]
+        incident_at = _utc_timestamp()
+        if observed_violations:
+            emit_violations(
+                observed_violations,
+                json_mode=args.json,
+                stream=stream,
+                incident_at=incident_at,
+                elapsed_s=observed_at - started,
+                dry_run=True,
+                grace_sec=args.grace_sec,
+                repro_payloads=repro_payloads,
+            )
+        if terminable_violations:
+            emit_violations(
+                terminable_violations,
+                json_mode=args.json,
+                stream=stream,
+                incident_at=incident_at,
+                elapsed_s=observed_at - started,
+                dry_run=args.dry_run,
+                grace_sec=args.grace_sec,
+                repro_payloads=repro_payloads,
+            )
         if not args.dry_run:
-            for violation in violations:
+            for violation in terminable_violations:
                 terminate_group(
                     violation.pgid,
                     grace=args.grace_sec,
