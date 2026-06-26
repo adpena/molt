@@ -11,16 +11,9 @@ from .dflash import (
     DFlashSelectionContext,
     resolve_dflash_runtime,
 )
-from .dflash.runtime import (
-    SpeculativeDecodeResult,
-    speculative_decode_greedy,
-    speculative_decode_greedy_conditioned,
-)
+from . import speculative as _speculative
 
 __all__ = [
-    "SpeculativeDecodeResult",
-    "speculative_decode_greedy",
-    "speculative_decode_greedy_conditioned",
     "greedy_decode",
     "top_k_sample",
     "top_p_sample",
@@ -106,7 +99,7 @@ def greedy_decode(
             raise ValueError(
                 "greedy_decode speculative mode requires both draft_block and verify_block"
             )
-        speculative = speculative_decode_greedy(
+        speculative = _speculative.speculative_decode_greedy(
             verify_block,
             draft_block,
             prompt_tokens,
@@ -127,7 +120,7 @@ def greedy_decode(
             eos_token_id=eos_token_id,
         )
         if runtime is not None:
-            speculative = speculative_decode_greedy_conditioned(
+            speculative = _speculative.speculative_decode_greedy_conditioned(
                 runtime.verify_step,
                 runtime.draft_step,
                 prompt_tokens,
