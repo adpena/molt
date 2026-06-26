@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import collections
+import asyncio as _asyncio
 import logging as _logging
 import sys
 import warnings
@@ -38,7 +39,6 @@ from asyncio import (
     _tls_client_from_fd,
     _tls_server_from_fd,
     _tls_server_payload,
-    get_running_loop,
     molt_asyncio_server_accept_loop_new,
     molt_asyncio_socket_reader_read_new,
     molt_asyncio_socket_reader_readline_new,
@@ -236,7 +236,7 @@ class StreamWriter:
     async def drain(self) -> None:
         if not self._buffer:
             return None
-        loop = get_running_loop()
+        loop = _asyncio.get_running_loop()
         while self._buffer:
             chunk = _require_asyncio_intrinsic(
                 molt_asyncio_stream_buffer_snapshot, "asyncio_stream_buffer_snapshot"
@@ -285,7 +285,7 @@ class StreamWriter:
         ssl_shutdown_timeout: float | None = None,
     ) -> None:
         """Upgrade this stream connection to TLS."""
-        loop = get_running_loop()
+        loop = _asyncio.get_running_loop()
         transport = self._transport
         if transport is None:
             # Build a lightweight transport shim so _EventLoop.start_tls
@@ -361,7 +361,7 @@ class Server(AbstractServer):
         self.sockets = [sock]
         self._closed = False
         self._serving = True
-        self._loop = get_running_loop()
+        self._loop = _asyncio.get_running_loop()
         self._accept_task = self._loop.create_task(
             self._accept_loop(), name=None, context=None
         )
@@ -370,7 +370,7 @@ class Server(AbstractServer):
         return self._closed
 
     async def _accept_loop(self) -> None:
-        loop = get_running_loop()
+        loop = _asyncio.get_running_loop()
         await _require_asyncio_intrinsic(
             molt_asyncio_server_accept_loop_new, "asyncio_server_accept_loop_new"
         )(
@@ -555,7 +555,7 @@ async def open_connection(
     if local_addr is not None:
         sock.bind(local_addr)
     sock.setblocking(False)
-    loop = get_running_loop()
+    loop = _asyncio.get_running_loop()
     await loop.sock_connect(sock, (host, port))
     reader = StreamReader(sock)
     writer = StreamWriter(sock)
@@ -578,7 +578,7 @@ async def open_unix_connection(
     if local_addr is not None:
         sock.bind(local_addr)
     sock.setblocking(False)
-    loop = get_running_loop()
+    loop = _asyncio.get_running_loop()
     await loop.sock_connect(sock, path)
     if use_tls:
         raw_fd = sock.detach()
