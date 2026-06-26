@@ -2,75 +2,75 @@ use super::*;
 
 pub(super) const TCL_OK: c_int = 0;
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 type TclFindExecutableFn = unsafe extern "C" fn(*const c_char);
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 type TclCreateInterpFn = unsafe extern "C" fn() -> *mut c_void;
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 type TclDeleteInterpFn = unsafe extern "C" fn(*mut c_void);
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 type TclInitFn = unsafe extern "C" fn(*mut c_void) -> c_int;
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 type TclEvalExFn = unsafe extern "C" fn(*mut c_void, *const c_char, c_int, c_int) -> c_int;
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 type TclEvalObjvFn = unsafe extern "C" fn(*mut c_void, c_int, *const *mut c_void, c_int) -> c_int;
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 type TclGetStringResultFn = unsafe extern "C" fn(*mut c_void) -> *const c_char;
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 type TclNewStringObjFn = unsafe extern "C" fn(*const c_char, c_int) -> *mut c_void;
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 type TclNewListObjFn = unsafe extern "C" fn(c_int, *const *mut c_void) -> *mut c_void;
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 type TclListObjAppendElementFn =
     unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void) -> c_int;
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 type TclIncrRefCountFn = unsafe extern "C" fn(*mut c_void);
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 type TclDecrRefCountFn = unsafe extern "C" fn(*mut c_void);
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 type TclDbIncrRefCountFn = unsafe extern "C" fn(*mut c_void, *const c_char, c_int);
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 type TclDbDecrRefCountFn = unsafe extern "C" fn(*mut c_void, *const c_char, c_int);
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 type TclDoOneEventFn = unsafe extern "C" fn(c_int) -> c_int;
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 type TclSplitListFn =
     unsafe extern "C" fn(*mut c_void, *const c_char, *mut c_int, *mut *mut *const c_char) -> c_int;
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 type TclMergeFn = unsafe extern "C" fn(c_int, *const *const c_char) -> *mut c_char;
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 type TclFreeFn = unsafe extern "C" fn(*mut c_char);
 
 // --- Typed Tcl_Obj bridge (wantobjects=1 parity, CPython _tkinter.c AsObj/FromObj) ---
 //
 // `Tcl_WideInt` is `long long` (i64) on every supported platform.
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 pub(super) type TclWideInt = i64;
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 type TclNewWideIntObjFn = unsafe extern "C" fn(TclWideInt) -> *mut c_void;
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 type TclNewDoubleObjFn = unsafe extern "C" fn(f64) -> *mut c_void;
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 type TclNewBooleanObjFn = unsafe extern "C" fn(c_int) -> *mut c_void;
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 type TclNewByteArrayObjFn = unsafe extern "C" fn(*const u8, c_int) -> *mut c_void;
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 type TclGetWideIntFromObjFn =
     unsafe extern "C" fn(*mut c_void, *mut c_void, *mut TclWideInt) -> c_int;
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 type TclGetDoubleFromObjFn = unsafe extern "C" fn(*mut c_void, *mut c_void, *mut f64) -> c_int;
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 type TclGetBooleanFromObjFn = unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_int) -> c_int;
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 type TclGetStringFromObjFn = unsafe extern "C" fn(*mut c_void, *mut c_int) -> *const c_char;
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 type TclGetByteArrayFromObjFn = unsafe extern "C" fn(*mut c_void, *mut c_int) -> *const u8;
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 type TclListObjGetElementsFn =
     unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_int, *mut *mut *mut c_void) -> c_int;
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 type TclGetObjResultFn = unsafe extern "C" fn(*mut c_void) -> *mut c_void;
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 type TclGetObjTypeFn = unsafe extern "C" fn(*const c_char) -> *const c_void;
 
 /// Prefix of the public `Tcl_Obj` struct, used solely to read `typePtr` — the
@@ -85,7 +85,7 @@ type TclGetObjTypeFn = unsafe extern "C" fn(*const c_char) -> *const c_void;
 /// 8 bytes as 9.0's `Tcl_Size`, so this `#[repr(C)]` shape — whose
 /// `usize`-width head fields force `type_ptr` to offset 24 — is correct on both.
 /// A static assertion below pins the offset so an ABI change fails the build.
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 #[repr(C)]
 pub(super) struct TclObjHeader {
     // Width-agnostic head: three pointer-sized words cover {refCount, bytes,
@@ -100,13 +100,13 @@ pub(super) struct TclObjHeader {
     pub(super) type_ptr: *const c_void,
 }
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 const _: () = {
     // typePtr must land at offset 24 on every supported 64-bit Tcl ABI.
     assert!(std::mem::offset_of!(TclObjHeader, type_ptr) == 24);
 };
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 #[derive(Clone, Copy)]
 pub(super) struct TclApi {
     pub(super) find_executable: TclFindExecutableFn,
@@ -145,7 +145,7 @@ pub(super) struct TclApi {
 /// Cached `Tcl_ObjType*` pointers used by the typed result bridge, captured once
 /// per interpreter (per CPython `Tkapp_New`). A null entry means "type not
 /// registered in this Tcl build"; the dispatch then simply never matches it.
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 #[derive(Clone, Copy, Default)]
 pub(super) struct TclTypePtrs {
     pub(super) int_t: *const c_void,
@@ -159,12 +159,12 @@ pub(super) struct TclTypePtrs {
     pub(super) bignum_t: *const c_void,
 }
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 unsafe impl Send for TclTypePtrs {}
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 unsafe impl Sync for TclTypePtrs {}
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 impl TclTypePtrs {
     /// Capture the interpreter's internal type pointers. Mirrors CPython
     /// `Tkapp_New`: probe by name via `Tcl_GetObjType`, falling back to reading
@@ -236,10 +236,10 @@ impl TclTypePtrs {
     }
 }
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 pub(super) const TCL_REFCOUNT_FILE: &[u8] = b"molt-runtime/tk.rs\0";
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 impl TclApi {
     pub(super) unsafe fn incr_ref_count_obj(&self, obj: *mut c_void) {
         if let Some(incr) = self.incr_ref_count {
@@ -278,7 +278,7 @@ impl TclApi {
     }
 }
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 pub(super) fn bundled_tcl_runtime_lib_dir() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
     let exe_dir = exe.parent()?;
@@ -292,7 +292,7 @@ pub(super) fn bundled_tcl_runtime_lib_dir() -> Option<PathBuf> {
     candidates.into_iter().next()
 }
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 pub(super) fn runtime_version_dir(root: &Path, stem: &str) -> Option<PathBuf> {
     ["9.0", "8.7", "8.6"]
         .into_iter()
@@ -300,7 +300,7 @@ pub(super) fn runtime_version_dir(root: &Path, stem: &str) -> Option<PathBuf> {
         .find(|path| path.is_dir())
 }
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 pub(super) fn configured_tcl_runtime_lib_dir() -> Option<PathBuf> {
     static CONFIGURED: OnceLock<Option<PathBuf>> = OnceLock::new();
     CONFIGURED
@@ -323,7 +323,7 @@ pub(super) fn configured_tcl_runtime_lib_dir() -> Option<PathBuf> {
         .clone()
 }
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 pub(super) fn tcl_library_candidates() -> Vec<PathBuf> {
     let mut candidates = Vec::new();
     if let Ok(path) = std::env::var("MOLT_TCL_LIB")
@@ -410,7 +410,7 @@ pub(super) fn tcl_library_candidates() -> Vec<PathBuf> {
     candidates
 }
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 pub(super) fn tcl_find_executable_arg() -> CString {
     let mut candidate_bytes: Vec<Vec<u8>> = Vec::new();
     if let Ok(path) = std::env::current_exe() {
@@ -428,7 +428,7 @@ pub(super) fn tcl_find_executable_arg() -> CString {
     CString::new("molt").expect("literal executable name must be NUL-free")
 }
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 pub(super) fn load_tcl_api() -> Result<&'static TclApi, String> {
     static API: OnceLock<Result<TclApi, String>> = OnceLock::new();
     API.get_or_init(|| {
@@ -551,21 +551,21 @@ pub(super) fn load_tcl_api() -> Result<&'static TclApi, String> {
     .map_err(Clone::clone)
 }
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 #[derive(Clone)]
 pub(super) enum TclObjKind {
     Scalar(String),
     List(Vec<TclObj>),
 }
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 #[derive(Clone)]
 pub(super) struct TclObj {
     pub(super) kind: TclObjKind,
     pub(super) interp_ptr: usize,
 }
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 impl TclObj {
     pub(super) fn scalar(text: String) -> Self {
         Self {
@@ -609,7 +609,7 @@ impl TclObj {
     }
 }
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 impl std::fmt::Display for TclObj {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self.kind {
@@ -642,47 +642,47 @@ impl std::fmt::Display for TclObj {
     }
 }
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 impl From<&str> for TclObj {
     fn from(value: &str) -> Self {
         Self::scalar(value.to_string())
     }
 }
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 impl From<String> for TclObj {
     fn from(value: String) -> Self {
         Self::scalar(value)
     }
 }
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 impl From<i64> for TclObj {
     fn from(value: i64) -> Self {
         Self::scalar(value.to_string())
     }
 }
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 impl From<i32> for TclObj {
     fn from(value: i32) -> Self {
         Self::scalar(value.to_string())
     }
 }
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 impl From<f64> for TclObj {
     fn from(value: f64) -> Self {
         Self::scalar(value.to_string())
     }
 }
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 pub(super) trait IntoTclCommand {
     fn into_command(self) -> Vec<TclObj>;
 }
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 impl IntoTclCommand for TclObj {
     fn into_command(self) -> Vec<TclObj> {
         match self.kind {
@@ -692,7 +692,7 @@ impl IntoTclCommand for TclObj {
     }
 }
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 macro_rules! impl_into_tcl_command_tuple {
     ($($ty:ident => $var:ident),+ $(,)?) => {
         impl<$($ty),+> IntoTclCommand for ($($ty,)+)
@@ -707,16 +707,16 @@ macro_rules! impl_into_tcl_command_tuple {
     };
 }
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 impl_into_tcl_command_tuple!(A => a);
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 impl_into_tcl_command_tuple!(A => a, B => b);
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 impl_into_tcl_command_tuple!(A => a, B => b, C => c);
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 impl_into_tcl_command_tuple!(A => a, B => b, C => c, D => d);
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 pub(super) fn tcl_result_string(api: &TclApi, interp: *mut c_void) -> String {
     let ptr = unsafe { (api.get_string_result)(interp) };
     if ptr.is_null() {
@@ -727,7 +727,7 @@ pub(super) fn tcl_result_string(api: &TclApi, interp: *mut c_void) -> String {
         .into_owned()
 }
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 pub(super) fn tcl_split_list(
     api: &TclApi,
     interp: *mut c_void,
@@ -765,7 +765,7 @@ pub(super) fn tcl_split_list(
     Ok(out)
 }
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 pub(super) fn tcl_merge_args(api: &TclApi, args: &[String]) -> Result<Vec<u8>, String> {
     let mut c_args = Vec::with_capacity(args.len());
     for arg in args {
@@ -784,7 +784,7 @@ pub(super) fn tcl_merge_args(api: &TclApi, args: &[String]) -> Result<Vec<u8>, S
     Ok(merged)
 }
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 pub(super) struct TclInterpreter {
     pub(super) interp_addr: usize,
     pub(super) owner_thread: ThreadId,
@@ -792,7 +792,7 @@ pub(super) struct TclInterpreter {
     pub(super) types: TclTypePtrs,
 }
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 impl TclInterpreter {
     pub(super) fn new() -> Result<Self, String> {
         static FIND_EXECUTABLE_ONCE: OnceLock<()> = OnceLock::new();
@@ -944,7 +944,7 @@ impl TclInterpreter {
     }
 }
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 impl Drop for TclInterpreter {
     fn drop(&mut self) {
         if self.interp_addr != 0 {

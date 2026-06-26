@@ -21,7 +21,7 @@ pub(super) const TK_BACKEND_IMPLEMENTED: bool = false;
 #[cfg(not(target_arch = "wasm32"))]
 pub(super) const TK_BACKEND_IMPLEMENTED: bool = true;
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 pub(super) fn tk_runtime_available() -> bool {
     static AVAILABLE: OnceLock<bool> = OnceLock::new();
     *AVAILABLE.get_or_init(|| {
@@ -35,14 +35,14 @@ pub(super) fn tk_runtime_available() -> bool {
     })
 }
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 pub(super) fn tcl_runtime_available() -> bool {
     static AVAILABLE: OnceLock<bool> = OnceLock::new();
     *AVAILABLE
         .get_or_init(|| std::panic::catch_unwind(|| TclInterpreter::new().is_ok()).unwrap_or(false))
 }
 
-#[cfg(all(not(target_arch = "wasm32"), not(feature = "tk")))]
+#[cfg(all(not(target_arch = "wasm32"), not(feature = "native-tcl")))]
 pub(super) fn tcl_runtime_available() -> bool {
     true
 }
@@ -52,7 +52,7 @@ pub(super) fn tcl_runtime_available() -> bool {
     false
 }
 
-#[cfg(all(not(target_arch = "wasm32"), not(feature = "tk")))]
+#[cfg(all(not(target_arch = "wasm32"), not(feature = "native-tcl")))]
 pub(super) fn tk_runtime_available() -> bool {
     // Headless phase-0 path remains available without compiling Tcl bindings.
     true
@@ -206,9 +206,9 @@ pub(super) struct TkAppState {
     pub(super) next_after_id: u64,
     pub(super) next_callback_command_id: u64,
     pub(super) quit_requested: bool,
-    #[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+    #[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
     pub(super) interpreter: Option<TclInterpreter>,
-    #[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+    #[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
     pub(super) tk_loaded: bool,
 }
 
@@ -588,7 +588,7 @@ pub(super) fn require_tk_app_new(py: &PyToken, _use_tk: bool) -> Result<(), u64>
     {
         return Err(raise_tk_gate_error(py, TkOperation::AppNew, &state));
     }
-    #[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+    #[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
     if _use_tk && !tk_runtime_available() {
         let unavailable = TkGateState {
             backend_unimplemented: true,
@@ -773,7 +773,7 @@ pub(super) fn wm_state_for_path_mut<'a>(
 }
 
 pub(super) fn drop_app_state_refs(py: &PyToken, app: &mut TkAppState) {
-    #[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+    #[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
     unregister_all_tcl_callback_procs(app);
     clear_value_map_refs(py, &mut app.variables);
     let filehandler_fds: Vec<i64> = app.filehandlers.keys().copied().collect();
@@ -835,7 +835,7 @@ pub(super) fn drop_app_state_refs(py: &PyToken, app: &mut TkAppState) {
     app.last_error = None;
     app.next_callback_command_id = 0;
     app.quit_requested = true;
-    #[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+    #[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
     {
         app.interpreter = None;
         app.tk_loaded = false;
