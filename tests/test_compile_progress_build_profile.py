@@ -65,11 +65,6 @@ def test_compile_progress_run_case_uses_memory_guard(
         "guarded_completed_process",
         fake_guarded_completed_process,
     )
-    monkeypatch.setattr(
-        module,
-        "_kill_run_scoped_processes",
-        lambda marker, *, include_daemon: [],
-    )
     logs_root = tmp_path / "logs"
     logs_root.mkdir()
 
@@ -108,7 +103,6 @@ def test_compile_progress_timeout_uses_guard_cleanup(
         cache_mode="cache-report",
         daemon=True,
     )
-    cleanup_calls: list[tuple[str, bool]] = []
 
     def fake_guarded_completed_process(cmd, **kwargs):
         return subprocess.CompletedProcess(
@@ -118,16 +112,11 @@ def test_compile_progress_timeout_uses_guard_cleanup(
             stderr="timed out",
         )
 
-    def fake_kill(marker, *, include_daemon):
-        cleanup_calls.append((marker, include_daemon))
-        return [101] if not include_daemon else []
-
     monkeypatch.setattr(
         module.harness_memory_guard,
         "guarded_completed_process",
         fake_guarded_completed_process,
     )
-    monkeypatch.setattr(module, "_kill_run_scoped_processes", fake_kill)
     logs_root = tmp_path / "logs"
     logs_root.mkdir()
 
@@ -151,7 +140,6 @@ def test_compile_progress_timeout_uses_guard_cleanup(
         result.returncode
         == module.harness_memory_guard.memory_guard.TIMEOUT_RETURN_CODE
     )
-    assert cleanup_calls == [("target-marker", False), ("target-marker", True)]
-    assert "kill-guarded" in (logs_root / "dev_cold.attempt1.stderr.log").read_text(
-        encoding="utf-8"
-    )
+    assert "handled_by=harness_memory_guard" in (
+        logs_root / "dev_cold.attempt1.stderr.log"
+    ).read_text(encoding="utf-8")
