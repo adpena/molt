@@ -23,120 +23,39 @@
 
 use molt_runtime_core::prelude::*;
 
-// ---------------------------------------------------------------------------
-// Compatibility shims: map the old pub(crate) runtime API to the new
-// extern-"C" FFI wrappers provided by molt-runtime-core::prelude.
-//
-// The original tkinter_core.rs used functions like alloc_string(_py, bytes),
-// raise_exception::<u64>(_py, kind, msg), to_i64(obj), etc.
-// Below we provide equivalent thin wrappers so the rest of the file
-// requires minimal edits.
-// ---------------------------------------------------------------------------
-
-/// Read a string value as an owned Rust String.
-fn string_obj_to_owned(obj: MoltObject) -> Option<String> {
-    rt_string_as_bytes(obj.bits()).map(|b| String::from_utf8_lossy(b).into_owned())
-}
-
-/// Extract i64 from a MoltObject.
-fn to_i64(obj: MoltObject) -> Option<i64> {
-    obj.as_int()
-}
-
-/// Extract f64 from a MoltObject.
-fn to_f64(obj: MoltObject) -> Option<f64> {
-    obj.as_float()
-}
+use crate::bridge::{
+    alloc_list_result as bridge_alloc_list_result,
+    alloc_string_result as bridge_alloc_string_result,
+    alloc_tuple_result as bridge_alloc_tuple_result, decode_value_list_bits, dict_order,
+    object_type_id, string_obj_to_owned, to_f64, to_i64,
+};
 
 // ─── Internal helpers ────────────────────────────────────────────────────────
 
 /// Allocate a Molt string from a Rust `&str` and return its NaN-boxed bits.
 /// Returns `Err(bits)` on allocation failure (MemoryError raised).
 fn alloc_str_bits(value: &str) -> Result<u64, u64> {
-    let bits = rt_string_from(value);
-    if bits == 0 || rt_exception_pending() {
-        return Err(rt_raise_str(
-            "MemoryError",
-            "failed to allocate tkinter_core string",
-        ));
-    }
-    Ok(bits)
+    bridge_alloc_string_result(value, "failed to allocate tkinter_core string")
 }
 
 /// Allocate a Molt list from a slice of owned bits and return its NaN-boxed bits.
 /// The elements are inc-ref'd by `rt_list`.
 /// Returns `Err(bits)` on allocation failure.
 fn alloc_list_bits(elems: &[u64]) -> Result<u64, u64> {
-    let bits = rt_list(elems);
-    if bits == 0 || rt_exception_pending() {
-        return Err(rt_raise_str(
-            "MemoryError",
-            "failed to allocate tkinter_core list",
-        ));
-    }
-    Ok(bits)
+    bridge_alloc_list_result(elems, "failed to allocate tkinter_core list")
 }
 
 /// Allocate a Molt tuple from a slice of owned bits and return its NaN-boxed bits.
 /// The elements are inc-ref'd by `rt_tuple`.
 /// Returns `Err(bits)` on allocation failure.
 fn alloc_tuple_result(elems: &[u64]) -> Result<u64, u64> {
-    let bits = rt_tuple(elems);
-    if bits == 0 || rt_exception_pending() {
-        return Err(rt_raise_str(
-            "MemoryError",
-            "failed to allocate tkinter_core tuple",
-        ));
-    }
-    Ok(bits)
+    bridge_alloc_tuple_result(elems, "failed to allocate tkinter_core tuple")
 }
 
 /// Extract a Rust `String` from NaN-boxed bits that should be a Molt string.
 /// Returns `None` if the value is not a string (could be int, None, etc.).
 fn bits_to_string(bits: u64) -> Option<String> {
     string_obj_to_owned(obj_from_bits(bits))
-}
-
-/// Read the elements of a list or tuple pointer into a `Vec<u64>`.
-/// Returns `None` if the bits don't refer to a list/tuple pointer.
-fn read_seq_elements(bits: u64) -> Option<Vec<u64>> {
-    let obj = obj_from_bits(bits);
-    let ptr = obj.as_ptr()?;
-    let type_id = object_type_id(ptr);
-    if type_id != TYPE_ID_LIST && type_id != TYPE_ID_TUPLE {
-        return None;
-    }
-    let vec = seq_vec_ref(ptr);
-    Some(vec.to_vec())
-}
-
-// Low-level object layout access — resolved at link time from molt-runtime.
-unsafe extern "C" {
-    fn molt_rt_object_type_id(ptr: *mut u8) -> u32;
-    fn molt_rt_seq_vec_ref(ptr: *mut u8, out_ptr: *mut *const u64, out_len: *mut usize);
-    fn molt_rt_dict_order(ptr: *mut u8, out_ptr: *mut *const u64, out_len: *mut usize);
-}
-
-fn object_type_id(ptr: *mut u8) -> u32 {
-    unsafe { molt_rt_object_type_id(ptr) }
-}
-
-fn seq_vec_ref(ptr: *mut u8) -> &'static [u64] {
-    let mut out_ptr: *const u64 = std::ptr::null();
-    let mut out_len: usize = 0;
-    unsafe {
-        molt_rt_seq_vec_ref(ptr, &mut out_ptr, &mut out_len);
-        std::slice::from_raw_parts(out_ptr, out_len)
-    }
-}
-
-fn dict_order(ptr: *mut u8) -> Vec<u64> {
-    let mut out_ptr: *const u64 = std::ptr::null();
-    let mut out_len: usize = 0;
-    unsafe {
-        molt_rt_dict_order(ptr, &mut out_ptr, &mut out_len);
-        std::slice::from_raw_parts(out_ptr, out_len).to_vec()
-    }
 }
 
 /// Try to interpret bits as an integer.  Handles int, bool, and int-subclass.
@@ -283,7 +202,7 @@ const MODIFIER_NAMES: &[&str] = &[
 /// Returns None on malformed input.
 pub extern "C" fn molt_tk_event_build_from_args(_widget_path_bits: u64, args_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let Some(elems) = read_seq_elements(args_bits) else {
+        let Some(elems) = decode_value_list_bits(args_bits) else {
             return MoltObject::none().bits();
         };
         if elems.len() != EVENT_FIELD_COUNT {
@@ -646,7 +565,7 @@ fn flatten_recursive(bits: u64, out: &mut Vec<u64>) {
     if bits_is_none(bits) {
         return;
     }
-    if let Some(elems) = read_seq_elements(bits) {
+    if let Some(elems) = decode_value_list_bits(bits) {
         for elem_bits in elems {
             flatten_recursive(elem_bits, out);
         }
