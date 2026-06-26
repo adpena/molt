@@ -13,6 +13,8 @@ from ..speculative import _normalize_non_negative_token_id
 from .contracts import (
     DFlashRuntime,
     DFlashSelectionContext,
+    dflash_backend_requirement_message,
+    has_dflash_backend,
     require_dflash_draft_output_contract,
 )
 
@@ -257,12 +259,6 @@ def clear_dflash_adapters() -> None:
     _DFLASH_ADAPTERS.clear()
 
 
-def has_dflash_backend(backend: str | None) -> bool:
-    if backend is None:
-        return False
-    return backend.strip() != ""
-
-
 def resolve_dflash_adapter(context, preferred_name: str | None = None):
     backend = context.backend
     if not has_dflash_backend(backend):
@@ -345,6 +341,8 @@ def build_dflash_runtime(
         tokenizer_id=tokenizer_id,
         adapter_payload=adapter_payload,
     )
+    if dflash_adapter is not None and not has_dflash_backend(context.backend):
+        raise LookupError(dflash_backend_requirement_message(dflash_adapter))
     runtime = resolve_dflash_runtime(context, preferred_name=dflash_adapter)
     if runtime is not None:
         return runtime
