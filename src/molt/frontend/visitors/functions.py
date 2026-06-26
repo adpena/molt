@@ -37,6 +37,40 @@ else:
 
 
 class FunctionVisitorMixin(_MixinBase):
+    def _is_contextmanager_decorator(self, deco: ast.expr) -> bool:
+        if isinstance(deco, ast.Name) and deco.id == "contextmanager":
+            return True
+        if (
+            isinstance(deco, ast.Attribute)
+            and isinstance(deco.value, ast.Name)
+            and deco.value.id == "contextlib"
+            and deco.attr == "contextmanager"
+        ):
+            return True
+        return False
+
+    @staticmethod
+    def _is_gpu_kernel_decorator(deco: ast.expr) -> bool:
+        """Return True if the decorator is @gpu.kernel."""
+        # @gpu.kernel  (attribute form: gpu.kernel)
+        if (
+            isinstance(deco, ast.Attribute)
+            and isinstance(deco.value, ast.Name)
+            and deco.value.id == "gpu"
+            and deco.attr == "kernel"
+        ):
+            return True
+        # @kernel  (bare name after `from molt.gpu import kernel`)
+        if isinstance(deco, ast.Name) and deco.id == "kernel":
+            return True
+        return False
+
+    def _has_gpu_kernel_decorator(
+        self, node: ast.FunctionDef | ast.AsyncFunctionDef
+    ) -> bool:
+        """Return True if any decorator on *node* is @gpu.kernel."""
+        return any(self._is_gpu_kernel_decorator(d) for d in node.decorator_list)
+
     def visit_Return(self, node: ast.Return) -> None:
         if self.finally_depth > 0:
             self._emit_syntax_warning(node, "'return' in a 'finally' block")

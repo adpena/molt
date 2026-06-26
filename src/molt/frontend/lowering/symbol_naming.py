@@ -21,6 +21,22 @@ else:
 
 
 class SymbolNamingMixin(_MixinBase):
+    @staticmethod
+    def _sanitize_module_name(name: str) -> str:
+        out: list[str] = []
+        for ch in name:
+            if ch.isalnum() or ch == "_":
+                out.append(ch)
+            else:
+                out.append("_")
+        if not out:
+            return "module"
+        return "".join(out)
+
+    @classmethod
+    def module_init_symbol(cls, name: str) -> str:
+        return f"molt_init_{cls._sanitize_module_name(name)}"
+
     def _function_symbol(self, name: str) -> str:
         reserved = self.reserved_func_symbols.get(name)
         if reserved is not None and self.current_func_name == "molt_main":
