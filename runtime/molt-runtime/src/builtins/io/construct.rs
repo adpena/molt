@@ -39,12 +39,8 @@ pub extern "C" fn molt_buffered_new(cls_bits: u64, raw_bits: u64, buffer_size_bi
         };
         unsafe {
             let raw_handle = &mut *raw_handle_ptr;
-            if raw_handle.detached {
-                return raise_exception::<_>(
-                    _py,
-                    "ValueError",
-                    file_handle_detached_message(raw_handle),
-                );
+            if let Err(bits) = file_handle_require_attached(_py, raw_handle) {
+                return bits;
             }
             if file_handle_is_closed(raw_handle) {
                 return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
@@ -142,12 +138,8 @@ pub extern "C" fn molt_text_io_wrapper_new(
         };
         unsafe {
             let buffer_handle = &mut *buffer_handle_ptr;
-            if buffer_handle.detached {
-                return raise_exception::<_>(
-                    _py,
-                    "ValueError",
-                    file_handle_detached_message(buffer_handle),
-                );
+            if let Err(bits) = file_handle_require_attached(_py, buffer_handle) {
+                return bits;
             }
             if file_handle_is_closed(buffer_handle) {
                 return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
