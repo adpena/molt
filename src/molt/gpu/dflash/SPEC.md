@@ -273,6 +273,7 @@ typed error, by `tests/gpu/dflash/test_dflash_fidelity.py`:
 | missing `target_features` | `DFlashConditioning(target_features=None, …)` | `ValueError("DFlashConditioning requires target_features")` | `DFlashConditioning` |
 | missing `target_kv` | `DFlashConditioning(target_kv=None, …)` | `ValueError("DFlashConditioning requires target_kv")` | `DFlashConditioning` |
 | missing `position_ids` | `DFlashConditioning(position_ids=None, …)` | `ValueError("DFlashConditioning requires position_ids")` | `DFlashConditioning` |
+| invalid `position_ids` | `DFlashConditioning(position_ids=[0, 1.5], …)` | `TypeError("position_ids must contain non-negative integer positions")` | `DFlashConditioning` |
 | non-integer `last_verified_token` (bool) | `DFlashConditioning(last_verified_token=True, …)` | `TypeError("last_verified_token must be an integer token id")` | `DFlashConditioning` |
 | non-integral `last_verified_token` | `DFlashConditioning(last_verified_token=1.5, …)` | `TypeError("last_verified_token must be an integer token id")` | `DFlashConditioning` |
 | generic conditioning at boundary | `require_dflash_conditioning(SpeculativeConditioning(...))` | `TypeError("… must be DFlashConditioning")` | `require_dflash_conditioning` |
