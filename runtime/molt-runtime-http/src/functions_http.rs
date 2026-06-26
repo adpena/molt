@@ -829,7 +829,10 @@ fn ctypes_sizeof_bits(
         ));
     };
     let out = match to_i64(obj_from_bits(size_bits)) {
-        Some(value) => MoltObject::from_int(value).bits(),
+        // Full-range boxing — a ctypes type's _size can in principle exceed the
+        // inline window (e.g. sizeof(c_char * (2**50))); `from_int` would
+        // silently truncate it mod 2**47.
+        Some(value) => int_bits_from_bigint(_py, BigInt::from(value)),
         None => {
             raise_exception::<u64>(_py, "TypeError", "ctypes size value must be int-compatible")
         }

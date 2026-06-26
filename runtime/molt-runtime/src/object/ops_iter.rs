@@ -132,8 +132,14 @@ pub extern "C" fn molt_range_count(range_bits: u64, val_bits: u64) -> u64 {
                 let Some(value) = range_value_at_index_i64(start, stop, step, idx) else {
                     break;
                 };
-                let elem_bits = MoltObject::from_int(value).bits();
-                let Some(eq) = (unsafe { eq_bool_from_bits(_py, elem_bits, val_bits) }) else {
+                // Box the candidate element at full range; a range whose values
+                // exceed the inline window (e.g. range(2**60, 2**60 + 3)) would
+                // otherwise be compared as a truncated element. `int_bits_from_i64`
+                // may return a heap BigInt, so release it after the comparison.
+                let elem_bits = int_bits_from_i64(_py, value);
+                let eq_opt = unsafe { eq_bool_from_bits(_py, elem_bits, val_bits) };
+                dec_ref_bits(_py, elem_bits);
+                let Some(eq) = eq_opt else {
                     return MoltObject::none().bits();
                 };
                 if eq {
@@ -142,7 +148,7 @@ pub extern "C" fn molt_range_count(range_bits: u64, val_bits: u64) -> u64 {
                 idx += 1;
             }
             if let Some(i) = count.to_i64() {
-                return MoltObject::from_int(i).bits();
+                return int_bits_from_i64(_py, i);
             }
             return int_bits_from_bigint(_py, count);
         }
@@ -168,7 +174,10 @@ pub extern "C" fn molt_range_index(range_bits: u64, val_bits: u64) -> u64 {
         {
             if let Some(idx) = range_index_for_candidate(&start, &stop, &step, &candidate) {
                 if let Some(i) = idx.to_i64() {
-                    return MoltObject::from_int(i).bits();
+                    // Full-range boxing — a large range index (e.g.
+                    // range(2**62).index(2**61)) exceeds the inline window and
+                    // would be silently truncated by `from_int`.
+                    return int_bits_from_i64(_py, i);
                 }
                 return int_bits_from_bigint(_py, idx);
             }
