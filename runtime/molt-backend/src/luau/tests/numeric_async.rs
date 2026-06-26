@@ -77,6 +77,168 @@ fn test_compile_checked_lowers_checked_mul_helper() {
 }
 
 #[test]
+fn test_compile_checked_lowers_zero_division_guards() {
+    let ir = SimpleIR {
+        functions: vec![FunctionIR {
+            name: "zero_division_guard_test".to_string(),
+            params: vec!["a".to_string(), "b".to_string()],
+            param_types: Some(vec!["int".to_string(), "int".to_string()]),
+            source_file: None,
+            is_extern: false,
+            ops: vec![
+                OpIR {
+                    kind: "div".to_string(),
+                    args: Some(vec!["a".to_string(), "b".to_string()]),
+                    out: Some("quotient".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "mod".to_string(),
+                    args: Some(vec!["a".to_string(), "b".to_string()]),
+                    out: Some("remainder".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "floordiv".to_string(),
+                    args: Some(vec!["a".to_string(), "b".to_string()]),
+                    out: Some("floor_quotient".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret".to_string(),
+                    args: Some(vec!["floor_quotient".to_string()]),
+                    ..OpIR::default()
+                },
+            ],
+        }],
+        profile: None,
+    };
+    let mut backend = LuauBackend::new();
+    let source = backend
+        .compile_checked(&ir)
+        .expect("division ops should lower with Python zero-division guards");
+
+    assert!(source.contains("__msg=\"division by zero\""));
+    assert!(source.contains("__msg=\"integer modulo by zero\""));
+    assert!(source.contains("__msg=\"integer division or modulo by zero\""));
+    assert!(source.contains("local quotient: number = a / b"));
+    assert!(source.contains("local remainder: number = a % b"));
+    assert!(source.contains("local floor_quotient: number = a // b"));
+    assert!(!source.contains("[unsupported op: div]"));
+    assert!(!source.contains("[unsupported op: mod]"));
+    assert!(!source.contains("[unsupported op: floordiv]"));
+}
+
+#[test]
+fn test_compile_checked_lowers_pow_mod_square_multiply_loop() {
+    let ir = SimpleIR {
+        functions: vec![FunctionIR {
+            name: "pow_mod_test".to_string(),
+            params: vec!["base".to_string(), "exp".to_string(), "modulus".to_string()],
+            param_types: Some(vec![
+                "int".to_string(),
+                "int".to_string(),
+                "int".to_string(),
+            ]),
+            source_file: None,
+            is_extern: false,
+            ops: vec![
+                OpIR {
+                    kind: "pow_mod".to_string(),
+                    args: Some(vec![
+                        "base".to_string(),
+                        "exp".to_string(),
+                        "modulus".to_string(),
+                    ]),
+                    out: Some("result".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret".to_string(),
+                    args: Some(vec!["result".to_string()]),
+                    ..OpIR::default()
+                },
+            ],
+        }],
+        profile: None,
+    };
+    let mut backend = LuauBackend::new();
+    let source = backend
+        .compile_checked(&ir)
+        .expect("pow_mod should lower without stub markers");
+
+    assert!(source.contains("local result; do local __b, __e, __m = base % modulus, exp, modulus"));
+    assert!(source.contains("while __e > 0 do"));
+    assert!(source.contains("__r = (__r * __b) % __m"));
+    assert!(source.contains("__e = __e // 2"));
+    assert!(!source.contains("[unsupported op: pow_mod]"));
+}
+
+#[test]
+fn test_compile_checked_lowers_vector_reduction_kernels() {
+    let ir = SimpleIR {
+        functions: vec![
+            FunctionIR {
+                name: "vector_sum_kernel_test".to_string(),
+                params: vec!["values".to_string()],
+                param_types: Some(vec!["list".to_string()]),
+                source_file: None,
+                is_extern: false,
+                ops: vec![
+                    OpIR {
+                        kind: "vec_sum_i64".to_string(),
+                        args: Some(vec!["values".to_string()]),
+                        out: Some("sum_result".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret".to_string(),
+                        args: Some(vec!["sum_result".to_string()]),
+                        ..OpIR::default()
+                    },
+                ],
+            },
+            FunctionIR {
+                name: "vector_min_kernel_test".to_string(),
+                params: vec!["values".to_string()],
+                param_types: Some(vec!["list".to_string()]),
+                source_file: None,
+                is_extern: false,
+                ops: vec![
+                    OpIR {
+                        kind: "vec_min_i64".to_string(),
+                        args: Some(vec!["values".to_string()]),
+                        out: Some("min_result".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret".to_string(),
+                        args: Some(vec!["min_result".to_string()]),
+                        ..OpIR::default()
+                    },
+                ],
+            },
+        ],
+        profile: None,
+    };
+    let mut backend = LuauBackend::new();
+    let source = backend
+        .compile_checked(&ir)
+        .expect("vector reductions should lower without stub markers");
+
+    assert!(source.contains("local sum_result\n\tdo"));
+    assert!(source.contains("local acc = 0"));
+    assert!(source.contains("for __vi = 1, #values do local v = values[__vi]; acc = acc + v end"));
+    assert!(source.contains("local min_result\n\tdo"));
+    assert!(source.contains("local acc = math.huge"));
+    assert!(source.contains(
+        "for __vi = 1, #values do local v = values[__vi]; if v < acc then acc = v end end"
+    ));
+    assert!(!source.contains("[unsupported op: vec_sum_i64]"));
+    assert!(!source.contains("[unsupported op: vec_min_i64]"));
+}
+
+#[test]
 fn test_compile_checked_lowers_intarray_from_seq_dense_integer_table() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {

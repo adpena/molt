@@ -1,56 +1,6 @@
 use super::*;
 
 impl LuauBackend {
-    pub(super) fn emit_binary_op(&mut self, op: &OpIR, operator: &str) {
-        let out = self.out_var(op);
-        let args = op.args.as_deref().unwrap_or(&[]);
-        if args.len() >= 2 {
-            let arithmetic = matches!(operator, "+" | "-" | "*" | "/" | "%" | "//" | "^");
-            let lhs = if arithmetic {
-                self.numeric_operand_expr(&args[0])
-            } else {
-                sanitize_ident(&args[0])
-            };
-            let rhs = if arithmetic {
-                self.numeric_operand_expr(&args[1])
-            } else {
-                sanitize_ident(&args[1])
-            };
-            // Parenthesize comparison/boolean results to prevent precedence
-            // issues when the sink pass inlines into `not` expressions.
-            // Without parens: `not a == b` → `(not a) == b` (wrong).
-            // With parens: `not (a == b)` (correct).
-            let is_cmp = matches!(operator, "==" | "~=" | "<" | "<=" | ">" | ">=");
-            let is_logical = matches!(operator, "and" | "or");
-            // Type annotation: arithmetic → number, comparisons → boolean.
-            let ty_ann = if arithmetic {
-                ": number"
-            } else if is_cmp {
-                ": boolean"
-            } else {
-                ""
-            };
-            if is_cmp || is_logical {
-                self.emit_line(&format!("local {out}{ty_ann} = ({lhs} {operator} {rhs})"));
-            } else {
-                self.emit_line(&format!("local {out}{ty_ann} = {lhs} {operator} {rhs}"));
-            }
-        }
-    }
-
-    // --- helper: bit32 op ---
-    pub(super) fn emit_bit_op(&mut self, op: &OpIR, func: &str) {
-        let out = self.out_var(op);
-        let args = op.args.as_deref().unwrap_or(&[]);
-        if args.len() >= 2 {
-            let lhs = sanitize_ident(&args[0]);
-            let rhs = sanitize_ident(&args[1]);
-            self.emit_line(&format!("local {out}: number = bit32.{func}({lhs}, {rhs})"));
-        }
-    }
-
-    // --- helpers ---
-
     pub(super) fn out_var(&self, op: &OpIR) -> String {
         op.out
             .as_deref()
