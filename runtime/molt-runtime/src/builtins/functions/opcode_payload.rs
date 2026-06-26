@@ -1,3 +1,7 @@
+// CPython opcode and token payload ABI.
+// Extracted from functions.rs so generated metadata and stack-effect mechanics
+// no longer share the function-object runtime compilation unit.
+
 use super::*;
 use serde_json::Value as JsonValue;
 
