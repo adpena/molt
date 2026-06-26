@@ -21,10 +21,18 @@ DEFAULT_TARGETS = (
     REPO_ROOT / "src" / "molt" / "process_guard.py",
     REPO_ROOT / "src" / "molt" / "repl.py",
 )
+DEFAULT_TEXT_TARGETS = (
+    REPO_ROOT / "Makefile",
+    REPO_ROOT / "Makefile.pgo",
+    REPO_ROOT / "packaging",
+    REPO_ROOT / "tools",
+)
 EXCLUDED_PREFIXES = (
     "tests/differential/",
     "tests/harness/corpus/",
 )
+TEXT_FILE_NAMES = frozenset({"Makefile", "Makefile.pgo"})
+TEXT_FILE_SUFFIXES = frozenset({".bat", ".cmd", ".ps1", ".sh"})
 SUBPROCESS_METHODS = frozenset(
     {
         "run",
@@ -35,7 +43,18 @@ SUBPROCESS_METHODS = frozenset(
     }
 )
 OS_SIGNAL_METHODS = frozenset({"kill", "killpg"})
-SHELL_KILL_PATTERNS = ("pkill ", "pkill\t", "pkill -", "kill -TERM", "kill -KILL")
+SHELL_KILL_PATTERNS = (
+    "Stop-Process",
+    "kill -9",
+    "kill -KILL",
+    "kill -TERM",
+    "killall ",
+    "killall\t",
+    "pkill ",
+    "pkill\t",
+    "pkill -",
+    "taskkill",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,10 +121,11 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
         "bounded git metadata probe; benchmark child execution uses MOLT_BENCH guard",
     ),
     AllowedRawSubprocessUse(
-        "tools/bench_friends.py",
+        "tools/bench_friends_output.py",
         "_git_rev",
         "run",
-        "bounded git metadata probe; suite phases use guarded_completed_process",
+        "bounded git metadata probe for friend-suite report provenance; suite "
+        "phases use guarded_completed_process",
     ),
     AllowedRawSubprocessUse(
         "tools/bench_wasm.py",
@@ -160,16 +180,34 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
         "bounded ps metadata probe for adaptive compile throttling",
     ),
     AllowedRawSubprocessUse(
-        "tools/compile_progress.py",
-        "_kill_run_scoped_processes",
+        "tools/bootstrap_llvm.py",
+        "_run",
         "run",
-        "bounded ps metadata probe before killing marker-scoped compile children",
+        "bounded toolchain bootstrap command runner used by explicit LLVM setup",
     ),
     AllowedRawSubprocessUse(
-        "tools/compile_progress.py",
-        "_kill_run_scoped_processes",
-        "os.kill",
-        "marker-scoped compile-child cleanup; backend daemon commands are excluded",
+        "tools/bootstrap_llvm.py",
+        "_visual_studio_installation",
+        "run",
+        "bounded vswhere metadata probe for Windows LLVM/MSVC setup",
+    ),
+    AllowedRawSubprocessUse(
+        "tools/bootstrap_llvm.py",
+        "_windows_msvc_env",
+        "run",
+        "bounded VsDevCmd environment probe for Windows LLVM/MSVC setup",
+    ),
+    AllowedRawSubprocessUse(
+        "tools/bootstrap_llvm.py",
+        "_verify_llvm_config",
+        "run",
+        "bounded llvm-config version probe after explicit LLVM setup",
+    ),
+    AllowedRawSubprocessUse(
+        "tools/check_perf_freshness.py",
+        "_tracked_perf_artifacts",
+        "run",
+        "bounded git ls-files metadata probe for performance-artifact freshness",
     ),
     AllowedRawSubprocessUse(
         "tools/gen_stringprep_tables.py",
@@ -178,7 +216,13 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
         "bounded rustfmt child for checked-in generated Rust stringprep tables",
     ),
     AllowedRawSubprocessUse(
-        "tools/molt_dev.py",
+        "tools/gen_protocol.py",
+        "_format_generated_text",
+        "run",
+        "bounded ruff-format child for checked-in generated protocol text",
+    ),
+    AllowedRawSubprocessUse(
+        "tools/molt_dev_probe.py",
         "probe_pid",
         "os.kill",
         "bounded pid-liveness probe only; detached-run and gate children avoid raw "
@@ -191,22 +235,28 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
         "bounded git workspace metadata/mutation helper outside benchmark/test lanes",
     ),
     AllowedRawSubprocessUse(
-        "tools/memory_guard.py",
+        "tools/memory_guard_core/memory_limits.py",
         "_darwin_physical_memory_bytes",
         "run",
         "memory guard platform probe for adaptive host budgets",
     ),
     AllowedRawSubprocessUse(
-        "tools/memory_guard.py",
+        "tools/memory_guard_core/memory_limits.py",
         "_darwin_available_memory_bytes",
         "run",
         "memory guard vm_stat platform probe for adaptive host budgets",
     ),
     AllowedRawSubprocessUse(
-        "tools/memory_guard.py",
+        "tools/memory_guard_core/process_model.py",
         "sample_processes_posix",
         "run",
         "memory guard POSIX process sampler",
+    ),
+    AllowedRawSubprocessUse(
+        "tools/memory_guard_core/windows_snapshot.py",
+        "_windows_process_snapshot_rows_hard_timeout",
+        "run",
+        "memory guard Windows process snapshot helper with a hard timeout",
     ),
     AllowedRawSubprocessUse(
         "tools/memory_guard.py",
@@ -241,26 +291,6 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
         "os.killpg",
         "memory guard process-group existence probe with signal 0 after a "
         "scoped termination attempt; not signal authority",
-    ),
-    AllowedRawSubprocessUse(
-        "tools/memory_guard.py",
-        "_terminate_single_process_group",
-        "os.killpg",
-        "memory guard low-level process-group teardown primitive",
-        expected_count=2,
-    ),
-    AllowedRawSubprocessUse(
-        "tools/memory_guard.py",
-        "_terminate_single_process_group",
-        "os.kill",
-        "memory guard low-level process-group fallback termination primitive",
-    ),
-    AllowedRawSubprocessUse(
-        "tools/memory_guard.py",
-        "_terminate_single_pid",
-        "os.kill",
-        "memory guard exact escaped-PID teardown primitive",
-        expected_count=2,
     ),
     AllowedRawSubprocessUse(
         "tools/memory_guard.py",
@@ -308,51 +338,56 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
         "bounded git diff/show helper for static secret scanning",
     ),
     AllowedRawSubprocessUse(
-        "tools/safe_run.py",
-        "_group_rss_kib",
+        "tools/perf_authority.py",
+        "_git_output",
         "run",
-        "safe_run low-level process-group RSS sampler",
+        "bounded git metadata probe for performance-authority provenance",
+    ),
+    AllowedRawSubprocessUse(
+        "tools/perf_authority.py",
+        "git_rev_is_ancestor_of_origin",
+        "run",
+        "bounded git ancestry probe for performance-authority freshness",
+    ),
+    AllowedRawSubprocessUse(
+        "tools/perf_calibration.py",
+        "_sample_peak_rss",
+        "run",
+        "bounded ps/tasklist metadata probe for calibration RSS reporting",
+    ),
+    AllowedRawSubprocessUse(
+        "tools/perf_calibration.py",
+        "run_and_measure",
+        "Popen",
+        "calibration workload launcher owns its explicit benchmark child and "
+        "records timing/RSS evidence",
+    ),
+    AllowedRawSubprocessUse(
+        "tools/perf_calibration.py",
+        "_competing_build_count",
+        "run",
+        "bounded tasklist/ps metadata probes for benchmark-noise reporting",
+        expected_count=2,
     ),
     AllowedRawSubprocessUse(
         "tools/safe_run.py",
         "main",
-        "Popen",
-        "safe_run low-level guarded subprocess implementation",
-    ),
-    AllowedRawSubprocessUse(
-        "tools/safe_run.py",
-        "_kill_group",
-        "os.killpg",
-        "safe_run low-level process-group teardown primitive",
+        "run",
+        "compatibility facade launches tools/memory_guard.py as the custody owner",
     ),
     AllowedRawSubprocessUse(
         "tools/process_sentinel.py",
         "terminate_group",
         "os.killpg",
-        "repo process sentinel low-level process-group teardown primitive",
-        expected_count=3,
-    ),
-    AllowedRawSubprocessUse(
-        "tools/process_sentinel.py",
-        "terminate_group",
-        "os.kill",
-        "repo process sentinel Windows PID teardown primitive when process "
-        "groups are unavailable",
-        expected_count=2,
-    ),
-    AllowedRawSubprocessUse(
-        "tools/bench_backend_incremental.py",
-        "_terminate_process",
-        "os.killpg",
-        "backend incremental benchmark tears down its own timeout child group",
-        expected_count=2,
+        "repo process sentinel process-group existence probe after "
+        "identity-checked memory_guard signal actions",
     ),
     AllowedRawSubprocessUse(
         "tools/check_subprocess_guard_coverage.py",
         "<module>",
         "shell.kill",
         "static checker pattern vocabulary for shell kill detection",
-        expected_count=5,
+        expected_count=10,
     ),
     AllowedRawSubprocessUse(
         "tests/cli/test_backend_daemon_sequential.py",
@@ -449,7 +484,26 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
         "static checker fixture that proves unclassified shell process-kill strings fail",
     ),
     AllowedRawSubprocessUse(
-        "src/molt/cli/__init__.py",
+        "tests/tools/test_subprocess_guard_coverage.py",
+        "test_unclassified_makefile_pkill_fails",
+        "shell.kill",
+        "static checker fixture that proves unclassified Makefile process-kill "
+        "strings fail",
+    ),
+    AllowedRawSubprocessUse(
+        "tests/cli/test_cli_import_collection.py",
+        "test_run_subprocess_captured_to_tempfiles_does_not_block_on_inherited_pipes",
+        "os.kill",
+        "bounded test cleanup for the subprocess pipe-drain regression child",
+    ),
+    AllowedRawSubprocessUse(
+        "tools/uv_project_env.py",
+        "run_command",
+        "call",
+        "bounded project-environment helper command runner",
+    ),
+    AllowedRawSubprocessUse(
+        "src/molt/cli/command_runtime.py",
         "_run_completed_command",
         "run",
         "CLI subprocess helper's explicit unguarded branch for opt-out call sites",
@@ -474,31 +528,35 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
         "backend daemon custody pid-liveness probe only; not signal authority",
     ),
     AllowedRawSubprocessUse(
-        "src/molt/backend_daemon_custody.py",
-        "terminate_backend_daemon_identity",
-        "os.kill",
-        "backend daemon custody verified termination and verified escalation",
-        expected_count=2,
-    ),
-    AllowedRawSubprocessUse(
         "src/molt/process_guard.py",
         "run_completed_command",
         "run",
         "shared subprocess guard helper's explicit unguarded branch for opt-out call sites",
     ),
     AllowedRawSubprocessUse(
-        "src/molt/cli/__init__.py",
-        "_reexec_cli_with_hash_seed",
-        "run",
-        "Windows deterministic-PYTHONHASHSEED self-reexec path; POSIX uses "
-        "execvpe and the restarted process preserves the same CLI custody path",
-    ),
-    AllowedRawSubprocessUse(
-        "src/molt/cli/__init__.py",
+        "src/molt/cli/backend_execution.py",
         "_start_backend_daemon",
         "Popen",
         "backend daemon start uses HarnessExecutionContext, process-group kwargs, "
         "and repo-sentinel startup custody",
+    ),
+    AllowedRawSubprocessUse(
+        "src/molt/cli/toolchain_validation.py",
+        "_llvm_config_matches_major",
+        "run",
+        "bounded llvm-config version probe for explicit toolchain validation",
+    ),
+    AllowedRawSubprocessUse(
+        "src/molt/cli/toolchain_validation.py",
+        "_clang_llvm_version_detail",
+        "run",
+        "bounded clang version probe for explicit toolchain validation",
+    ),
+    AllowedRawSubprocessUse(
+        "src/molt/cli/toolchain_validation.py",
+        "_windows_vsdevcmd_path",
+        "run",
+        "bounded vswhere metadata probe for explicit Windows toolchain validation",
     ),
 )
 
@@ -637,6 +695,34 @@ def _iter_python_files(paths: Sequence[Path], *, root: Path) -> Iterable[Path]:
             yield candidate
 
 
+def _is_guard_text_file(path: Path) -> bool:
+    return path.name in TEXT_FILE_NAMES or path.suffix in TEXT_FILE_SUFFIXES
+
+
+def _iter_text_files(paths: Sequence[Path], *, root: Path) -> Iterable[Path]:
+    seen: set[Path] = set()
+    for raw_path in paths:
+        path = raw_path if raw_path.is_absolute() else root / raw_path
+        path = path.resolve()
+        if path.is_file():
+            candidates = [path]
+        else:
+            candidates = sorted(
+                candidate
+                for candidate in path.rglob("*")
+                if candidate.is_file() and _is_guard_text_file(candidate)
+            )
+        for candidate in candidates:
+            if (
+                candidate in seen
+                or not _is_guard_text_file(candidate)
+                or _is_excluded(candidate, root=root)
+            ):
+                continue
+            seen.add(candidate)
+            yield candidate
+
+
 def _scan_file(path: Path, *, root: Path) -> tuple[RawSubprocessCall, ...]:
     rel = _normalize_path(path, root=root)
     source_text = path.read_text(encoding="utf-8")
@@ -648,17 +734,41 @@ def _scan_file(path: Path, *, root: Path) -> tuple[RawSubprocessCall, ...]:
     return tuple(visitor.calls)
 
 
+def _scan_text_file(path: Path, *, root: Path) -> tuple[RawSubprocessCall, ...]:
+    rel = _normalize_path(path, root=root)
+    source_text = path.read_text(encoding="utf-8", errors="replace")
+    calls: list[RawSubprocessCall] = []
+    for line_no, line in enumerate(source_text.splitlines(), start=1):
+        if any(pattern in line for pattern in SHELL_KILL_PATTERNS):
+            calls.append(
+                RawSubprocessCall(
+                    path=rel,
+                    line=line_no,
+                    qualname="<text>",
+                    method="shell.kill",
+                    source=" ".join(line.strip().split()),
+                )
+            )
+    return tuple(calls)
+
+
 def audit_paths(
     paths: Sequence[Path] = DEFAULT_TARGETS,
     *,
     root: Path = REPO_ROOT,
     allowlist: Sequence[AllowedRawSubprocessUse] = ALLOWLIST,
+    text_paths: Sequence[Path] | None = None,
 ) -> SubprocessGuardAudit:
+    if text_paths is None:
+        text_paths = DEFAULT_TEXT_TARGETS if paths is DEFAULT_TARGETS else ()
     scanned_files = 0
     raw_calls: list[RawSubprocessCall] = []
     for path in _iter_python_files(paths, root=root):
         scanned_files += 1
         raw_calls.extend(_scan_file(path, root=root))
+    for path in _iter_text_files(text_paths, root=root):
+        scanned_files += 1
+        raw_calls.extend(_scan_text_file(path, root=root))
 
     allowed_by_key: Mapping[tuple[str, str, str], AllowedRawSubprocessUse] = {
         entry.key: entry for entry in allowlist

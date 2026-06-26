@@ -5,9 +5,7 @@ import argparse
 import datetime as dt
 import json
 import os
-import signal
 import shutil
-import subprocess
 import sys
 import time
 from dataclasses import asdict, dataclass
@@ -227,58 +225,6 @@ def _base_env(
     return env
 
 
-def _kill_run_scoped_processes(marker: str) -> list[int]:
-    if not marker or os.name == "nt":
-        return []
-    current_pid = os.getpid()
-    match_tokens = ["molt.cli build", "cargo build", "rustc", "/sccache"]
-    killed: list[int] = []
-    deadline = time.monotonic() + 3.0
-    while True:
-        ps = subprocess.run(
-            ["ps", "-ax", "-o", "pid=,command="],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if ps.returncode != 0:
-            return killed
-        matching: list[int] = []
-        for line in ps.stdout.splitlines():
-            stripped = line.strip()
-            if not stripped:
-                continue
-            parts = stripped.split(maxsplit=1)
-            if not parts:
-                continue
-            try:
-                pid = int(parts[0])
-            except ValueError:
-                continue
-            if pid == current_pid:
-                continue
-            cmd = parts[1] if len(parts) > 1 else ""
-            if marker not in cmd:
-                continue
-            if not any(token in cmd for token in match_tokens):
-                continue
-            matching.append(pid)
-        if not matching:
-            return killed
-        for pid in matching:
-            try:
-                os.kill(pid, signal.SIGKILL)
-                killed.append(pid)
-            except ProcessLookupError:
-                continue
-            except OSError:
-                continue
-        if time.monotonic() >= deadline:
-            return killed
-        time.sleep(0.2)
-    return killed
-
-
 def _run_case(
     *,
     case: CaseSpec,
@@ -294,7 +240,6 @@ def _run_case(
     retry_backoff_sec: float,
     build_lock_timeout_sec: float | None,
 ) -> CaseResult:
-    target_marker = env_base.get("CARGO_TARGET_DIR", "")
     diagnostics_path: Path | None = None
     if diagnostics:
         diagnostics_path = out_root / "diagnostics" / f"{case.name}.json"
@@ -345,13 +290,7 @@ def _run_case(
                 returncode == harness_memory_guard.memory_guard.GUARD_RETURN_CODE
             )
             if timed_out or guard_killed:
-                killed = _kill_run_scoped_processes(target_marker)
-                if killed:
-                    stderr = (
-                        stderr
-                        + "\n[kill-guarded] pids="
-                        + ",".join(str(pid) for pid in killed)
-                    )
+                stderr = stderr + "\n[guarded-cleanup] handled_by=harness_memory_guard"
         except OSError as exc:
             stderr = str(exc)
             returncode = 1

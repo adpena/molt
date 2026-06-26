@@ -21,7 +21,11 @@ pgo-build: pgo-clean
 
 # Step 2: Train on comprehensive workload via molt compiler
 pgo-train: pgo-build
-	pkill -9 -f "molt-backend" 2>/dev/null || true
+	python3 tools/process_sentinel.py \
+		--stale-orphan-sec 3600 \
+		--stale-pytest-sec 900 \
+		--until-clean-sec 1 \
+		--max-runtime-sec 15
 	CARGO_TARGET_DIR=$(PGO_TARGET) \
 	MOLT_BACKEND_PROFILE=release \
 	MOLT_BACKEND_DAEMON=0 \
