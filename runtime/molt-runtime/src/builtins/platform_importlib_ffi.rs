@@ -12,8 +12,6 @@ mod metadata_spec;
 mod payloads;
 #[path = "platform_importlib_ffi/reload_bootstrap.rs"]
 mod reload_bootstrap;
-#[path = "platform_importlib_ffi/resources.rs"]
-mod resources;
 
 #[allow(unused_imports)]
 use bootstrap_loader::*;
@@ -27,8 +25,6 @@ use metadata_spec::*;
 use payloads::*;
 #[allow(unused_imports)]
 use reload_bootstrap::*;
-#[allow(unused_imports)]
-use resources::*;
 
 pub(super) use bootstrap_loader::importlib_coerce_search_paths_values;
 pub use bootstrap_loader::{
@@ -39,15 +35,10 @@ pub use bootstrap_loader::{
     molt_importlib_finder_signature, molt_importlib_module_spec_is_package,
     molt_importlib_package_root_from_origin, molt_importlib_path_importer_cache_signature,
     molt_importlib_path_is_archive_member, molt_importlib_read_file,
-    molt_importlib_resources_normalize_path, molt_importlib_resources_only,
-    molt_importlib_resources_reader_contents_from_roots,
-    molt_importlib_resources_reader_is_resource_from_roots,
-    molt_importlib_resources_reader_open_resource_bytes_from_roots,
-    molt_importlib_resources_reader_resource_path_from_roots, molt_importlib_source_exec_payload,
-    molt_importlib_source_from_cache, molt_importlib_source_hash,
-    molt_importlib_source_loader_payload, molt_importlib_sourcefileloader_exec_module,
-    molt_importlib_sourceless_loader_exec_module, molt_importlib_sourceless_loader_payload,
-    molt_importlib_validate_resource_name, molt_importlib_zip_read_entry,
+    molt_importlib_source_exec_payload, molt_importlib_source_from_cache,
+    molt_importlib_source_hash, molt_importlib_source_loader_payload,
+    molt_importlib_sourcefileloader_exec_module, molt_importlib_sourceless_loader_exec_module,
+    molt_importlib_sourceless_loader_payload, molt_importlib_zip_read_entry,
     molt_importlib_zip_source_exec_payload, molt_importlib_zip_source_loader_exec_module,
     molt_linecache_loader_get_source, molt_sys_bootstrap_include_cwd,
     molt_sys_bootstrap_module_roots, molt_sys_bootstrap_path, molt_sys_bootstrap_payload,
@@ -66,8 +57,6 @@ pub use import_transaction::{
     molt_importlib_import_or_fallback, molt_importlib_import_required,
     molt_importlib_import_transaction, molt_importlib_known_absent_missing_name,
     molt_importlib_load_module_shim, molt_importlib_resolve_name,
-    molt_importlib_resources_joinpath, molt_importlib_resources_open_mode_is_text,
-    molt_importlib_resources_package_leaf_name,
 };
 pub(super) use metadata_spec::importlib_module_from_spec_impl;
 pub use metadata_spec::{
@@ -91,24 +80,4 @@ pub use reload_bootstrap::{
     molt_importlib_parent_search_paths, molt_importlib_reload, molt_importlib_runtime_modules,
     molt_importlib_runtime_state_payload, molt_importlib_runtime_state_view,
     molt_importlib_search_paths,
-};
-pub use resources::{
-    molt_importlib_resources_as_file_enter, molt_importlib_resources_as_file_exit,
-    molt_importlib_resources_contents_from_package,
-    molt_importlib_resources_contents_from_package_parts, molt_importlib_resources_files_payload,
-    molt_importlib_resources_is_resource_from_package,
-    molt_importlib_resources_is_resource_from_package_parts,
-    molt_importlib_resources_loader_reader, molt_importlib_resources_module_name,
-    molt_importlib_resources_open_resource_bytes_from_package,
-    molt_importlib_resources_open_resource_bytes_from_package_parts,
-    molt_importlib_resources_package_info, molt_importlib_resources_path_payload,
-    molt_importlib_resources_read_text_from_package,
-    molt_importlib_resources_read_text_from_package_parts,
-    molt_importlib_resources_reader_child_names, molt_importlib_resources_reader_contents,
-    molt_importlib_resources_reader_exists, molt_importlib_resources_reader_files_traversable,
-    molt_importlib_resources_reader_is_dir, molt_importlib_resources_reader_is_resource,
-    molt_importlib_resources_reader_open_resource_bytes,
-    molt_importlib_resources_reader_resource_path, molt_importlib_resources_reader_roots,
-    molt_importlib_resources_resource_path_from_package,
-    molt_importlib_resources_resource_path_from_package_parts,
 };
