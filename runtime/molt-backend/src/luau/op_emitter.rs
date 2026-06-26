@@ -360,97 +360,19 @@ impl LuauBackend {
                 }
             }
             "call_method" => {
+                if self.emit_typed_list_method_call(op) {
+                    return;
+                }
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if !args.is_empty() {
                     let obj = sanitize_ident(&args[0]);
                     let method_name = op.s_value.as_deref().unwrap_or("unknown");
-                    let method = sanitize_ident(method_name);
                     let call_args = args[1..]
                         .iter()
                         .map(|a| sanitize_ident(a))
                         .collect::<Vec<_>>()
                         .join(", ");
-                    // When the receiver is a known list, emit direct table
-                    // operations instead of method calls (Luau tables don't
-                    // have Python list methods).
-                    let obj_is_list = self.plan_knows_list(&args[0]);
-                    if obj_is_list {
-                        match method_name {
-                            "append" => {
-                                if let Some(val) = args.get(1) {
-                                    self.emit_line(&format!(
-                                        "{obj}[#{obj} + 1] = {}",
-                                        sanitize_ident(val)
-                                    ));
-                                }
-                                // append returns None in Python; skip output.
-                            }
-                            "pop" => {
-                                let idx = args.get(1).map(|s| sanitize_ident(s));
-                                if let Some(ref out_name) = op.out {
-                                    let out = sanitize_ident(out_name);
-                                    self.emit_list_pop(&obj, idx.as_deref(), Some(&out));
-                                } else {
-                                    self.emit_list_pop(&obj, idx.as_deref(), None);
-                                }
-                            }
-                            "insert" => {
-                                if args.len() >= 3 {
-                                    let idx = sanitize_ident(&args[1]);
-                                    let val = sanitize_ident(&args[2]);
-                                    self.emit_list_insert(&obj, &idx, &val);
-                                }
-                            }
-                            "remove" => {
-                                if let Some(val) = args.get(1) {
-                                    let val = sanitize_ident(val);
-                                    // Guard: table.find returns nil when not found,
-                                    // and table.remove(t, nil) silently removes the
-                                    // LAST element. Must check and raise ValueError.
-                                    self.emit_line(&format!(
-                                        "do local __idx = table.find({obj}, {val}); if __idx then table.remove({obj}, __idx) else error(\"ValueError: list.remove(x): x not in list\") end end"
-                                    ));
-                                }
-                            }
-                            "sort" => {
-                                self.emit_line(&format!("table.sort({obj})"));
-                            }
-                            "reverse" => {
-                                // In-place reverse via swap loop.
-                                self.emit_line(&format!(
-                                    "for __i = 1, math.floor(#{obj} / 2) do {obj}[__i], {obj}[#{obj} - __i + 1] = {obj}[#{obj} - __i + 1], {obj}[__i] end"
-                                ));
-                            }
-                            "clear" => {
-                                self.emit_line(&format!("table.clear({obj})"));
-                            }
-                            "copy" => {
-                                if let Some(ref out_name) = op.out {
-                                    let out = sanitize_ident(out_name);
-                                    self.emit_line(&format!("local {out} = table.clone({obj})"));
-                                }
-                            }
-                            "extend" => {
-                                if let Some(other) = args.get(1) {
-                                    let other = sanitize_ident(other);
-                                    self.emit_line(&format!(
-                                        "table.move({other}, 1, #{other}, #{obj} + 1, {obj})"
-                                    ));
-                                }
-                            }
-                            _ => {
-                                // Fall through to generic method call for count/index/etc.
-                                if let Some(ref out_name) = op.out {
-                                    let out = sanitize_ident(out_name);
-                                    self.emit_line(&format!(
-                                        "local {out} = {obj}:{method}({call_args})"
-                                    ));
-                                } else {
-                                    self.emit_line(&format!("{obj}:{method}({call_args})"));
-                                }
-                            }
-                        }
-                    } else if let Some(ref out_name) = op.out {
+                    if let Some(ref out_name) = op.out {
                         let out = sanitize_ident(out_name);
                         let escaped = escape_luau_string(method_name);
                         self.emit_line(&format!(
@@ -835,58 +757,6 @@ impl LuauBackend {
             }
 
             // ================================================================
-            // Vectorized reduction ops (emit stubs)
-            // ================================================================
-            kind if kind.starts_with("vec_sum_")
-                || kind.starts_with("vec_prod_")
-                || kind.starts_with("vec_min_")
-                || kind.starts_with("vec_max_") =>
-            {
-                let out = self.out_var(op);
-                let args = op.args.as_deref().unwrap_or(&[]);
-                // Vectorized reduction: args[0] = iterable.
-                // Emit as a Luau loop that computes the reduction, returning
-                // a tuple-like table {result, false} on success.
-                // The subsequent get_item(out, 0) and get_item(out, 1) unpack it.
-                if let Some(iterable) = args.first() {
-                    let iterable = sanitize_ident(iterable);
-                    let (init, body_op) = if kind.starts_with("vec_sum_") {
-                        ("0", "acc = acc + v")
-                    } else if kind.starts_with("vec_prod_") {
-                        ("1", "acc = acc * v")
-                    } else if kind.starts_with("vec_min_") {
-                        ("math.huge", "if v < acc then acc = v end")
-                    } else {
-                        ("-math.huge", "if v > acc then acc = v end")
-                    };
-                    self.emit_line(&format!("local {out}; do -- [vectorized: {kind}]"));
-                    self.push_indent();
-                    self.emit_line(&format!(
-                        "if type({iterable}) == \"table\" and #({iterable}) > 0 then"
-                    ));
-                    self.push_indent();
-                    self.emit_line(&format!("local acc = {init}"));
-                    self.emit_line(&format!(
-                        "for __vi = 1, #{iterable} do local v = {iterable}[__vi]; {body_op} end"
-                    ));
-                    self.emit_line(&format!("{out} = {{acc, false}}"));
-                    self.pop_indent();
-                    self.emit_line("else");
-                    self.push_indent();
-                    self.emit_line(&format!("{out} = {{nil, true}}"));
-                    self.pop_indent();
-                    self.emit_line("end");
-                    self.pop_indent();
-                    self.emit_line("end");
-                } else {
-                    // No iterable arg — emit nil tuple (will fall through to loop).
-                    self.emit_line(&format!(
-                        "local {out} = {{nil, true}} -- [vectorized: {kind}]"
-                    ));
-                }
-            }
-
-            // ================================================================
             // Serialization stubs
             // ================================================================
             "json_parse" | "msgpack_parse" | "cbor_parse" => {
@@ -915,48 +785,6 @@ impl LuauBackend {
                     self.emit_line(&format!("local {out} = nil -- [{}]", op.kind));
                 }
             }
-            "intarray_from_seq" => {
-                let out = self.out_var(op);
-                let args = op.args.as_deref().unwrap_or(&[]);
-                if let Some(seq) = args.first() {
-                    let seq = sanitize_ident(seq);
-                    self.emit_line(&format!("local {out}"));
-                    self.emit_line("do");
-                    self.push_indent();
-                    self.emit_line(&format!("local __seq = {seq}"));
-                    self.emit_line("if type(__seq) == \"table\" then");
-                    self.push_indent();
-                    self.emit_line("local __arr = {}");
-                    self.emit_line("local __ok = true");
-                    self.emit_line("for __i = 1, #__seq do");
-                    self.push_indent();
-                    self.emit_line("local __v = __seq[__i]");
-                    self.emit_line("if type(__v) == \"number\" and math.floor(__v) == __v then");
-                    self.push_indent();
-                    self.emit_line("__arr[__i] = __v");
-                    self.pop_indent();
-                    self.emit_line("else");
-                    self.push_indent();
-                    self.emit_line("__ok = false");
-                    self.emit_line("break");
-                    self.pop_indent();
-                    self.emit_line("end");
-                    self.pop_indent();
-                    self.emit_line("end");
-                    self.emit_line(&format!("{out} = if __ok then __arr else nil"));
-                    self.pop_indent();
-                    self.emit_line("else");
-                    self.push_indent();
-                    self.emit_line(&format!("{out} = nil"));
-                    self.pop_indent();
-                    self.emit_line("end");
-                    self.pop_indent();
-                    self.emit_line("end");
-                } else {
-                    self.emit_line(&format!("local {out} = nil"));
-                }
-            }
-
             "bytearray_fill_range" => {
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 4 {
@@ -1015,76 +843,6 @@ impl LuauBackend {
                     }
                     if let Some(value) = value_out {
                         self.emit_line(&format!("local {value} = {tmp}[1]"));
-                    }
-                }
-            }
-
-            "checked_add" => {
-                // 2-result op: op.var = wrapping sum (results[0]), op.out =
-                // overflow flag (results[1]) — the IterNextUnboxed transport
-                // convention. Luau supports multi-return destructuring, so no
-                // tmp table is needed (unlike iter_next_unboxed's table
-                // unpack). The helper returns (a + b, false): f64 addition
-                // never overflows i64, so the flag is constant-false and the
-                // peel's slow loop is dead on this target by design.
-                let args = op.args.as_deref().unwrap_or(&[]);
-                if args.len() >= 2 {
-                    let lhs = sanitize_ident(&args[0]);
-                    let rhs = sanitize_ident(&args[1]);
-                    let flag_out = op.out.as_deref().map(sanitize_ident);
-                    let sum_out = op.var.as_deref().map(sanitize_ident);
-                    match (sum_out, flag_out) {
-                        (Some(sum), Some(flag)) => {
-                            self.emit_line(&format!(
-                                "local {sum}: number, {flag}: boolean = molt_checked_i64_add({lhs}, {rhs})"
-                            ));
-                        }
-                        (Some(sum), None) => {
-                            self.emit_line(&format!(
-                                "local {sum}: number = molt_checked_i64_add({lhs}, {rhs})"
-                            ));
-                        }
-                        (None, Some(flag)) => {
-                            self.emit_line(&format!(
-                                "local _, {flag}: boolean = molt_checked_i64_add({lhs}, {rhs})"
-                            ));
-                        }
-                        (None, None) => {}
-                    }
-                }
-            }
-
-            "checked_mul" => {
-                // 2-result op: op.var = wrapping product (results[0]), op.out =
-                // overflow/inexactness flag (results[1]) — the IterNextUnboxed
-                // transport convention. The helper returns (a * b, flag) where
-                // flag is CONSERVATIVE: true whenever the f64 product may have
-                // lost precision (|product| >= 2^53), forcing the boxed BigInt
-                // slow loop. A structural (a * b, false) here would be a SILENT
-                // WRONG ANSWER above 2^53 — see molt_checked_i64_mul.
-                let args = op.args.as_deref().unwrap_or(&[]);
-                if args.len() >= 2 {
-                    let lhs = sanitize_ident(&args[0]);
-                    let rhs = sanitize_ident(&args[1]);
-                    let flag_out = op.out.as_deref().map(sanitize_ident);
-                    let product_out = op.var.as_deref().map(sanitize_ident);
-                    match (product_out, flag_out) {
-                        (Some(product), Some(flag)) => {
-                            self.emit_line(&format!(
-                                "local {product}: number, {flag}: boolean = molt_checked_i64_mul({lhs}, {rhs})"
-                            ));
-                        }
-                        (Some(product), None) => {
-                            self.emit_line(&format!(
-                                "local {product}: number = molt_checked_i64_mul({lhs}, {rhs})"
-                            ));
-                        }
-                        (None, Some(flag)) => {
-                            self.emit_line(&format!(
-                                "local _, {flag}: boolean = molt_checked_i64_mul({lhs}, {rhs})"
-                            ));
-                        }
-                        (None, None) => {}
                     }
                 }
             }

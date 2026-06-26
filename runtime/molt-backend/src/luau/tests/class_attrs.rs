@@ -837,10 +837,10 @@ fn test_luau_repr_authority_typed_list_call_method_dispatch() {
     };
     let mut backend = LuauBackend::new();
     let output = backend.compile(&ir);
-    // Must use direct table insertion, not xs:append(v).
+    // Must use the shared direct list append lowering, not xs:append(v).
     assert!(
-        output.contains("xs[#xs + 1] = v"),
-        "Expected table insert for list param, got:\n{output}"
+        output.contains("rawset(xs, #xs + 1, v)"),
+        "Expected raw list append for list param, got:\n{output}"
     );
     assert!(
         !output.contains("xs:append"),
