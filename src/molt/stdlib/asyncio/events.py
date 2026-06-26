@@ -14,6 +14,7 @@ from collections import deque as _deque
 from typing import TYPE_CHECKING, Any, Callable, cast as _cast
 
 from _intrinsics import require_intrinsic as _require_intrinsic
+from ._debug import _debug_exc_state, _debug_task_summary, _debug_write
 
 _MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
 
@@ -32,9 +33,6 @@ from asyncio import (
     _EXPOSE_WINDOWS_POLICIES,
     _IS_WINDOWS,
     _asyncio_cancel_pending_tasks,
-    _debug_exc_state,
-    _debug_task_summary,
-    _debug_write,
     _fd_from_fileobj,
     _restore_token_id,
     _require_asyncio_intrinsic,
