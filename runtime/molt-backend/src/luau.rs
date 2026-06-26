@@ -32,6 +32,7 @@ pub use source_checks::{review_luau_perf, validate_luau_source};
 mod compile_pipeline;
 mod function_body;
 mod helpers;
+mod op_collections;
 mod op_emitter;
 
 /// Transpiles Molt `SimpleIR` into Luau source text.
