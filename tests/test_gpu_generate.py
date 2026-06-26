@@ -371,6 +371,23 @@ def test_speculative_decode_bounds_contract_is_shared_across_transports():
             block_size=0,
         )
 
+    with pytest.raises(TypeError, match="eos_token_id must be an integer token id"):
+        speculative_decode_greedy(
+            verify_block,
+            draft_block,
+            [0],
+            eos_token_id=True,
+        )
+
+    with pytest.raises(TypeError, match="eos_token_id must be an integer token id"):
+        speculative_decode_greedy_conditioned(
+            verify_step,
+            draft_step,
+            [0],
+            initial_conditioning=SpeculativeConditioning(),
+            eos_token_id=1.5,
+        )
+
 
 def test_speculative_decode_greedy_compiles_in_native_molt(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[1]
