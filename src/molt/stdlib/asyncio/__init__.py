@@ -37,9 +37,7 @@ import enum as _enum
 
 from _intrinsics import require_intrinsic as _intrinsic_require
 
-
 _SOCKET_MODULE: Any | None = None
-
 
 class _LazySocketModule(_types.ModuleType):
     def __init__(self) -> None:
@@ -51,7 +49,6 @@ class _LazySocketModule(_types.ModuleType):
     def __dir__(self) -> list[str]:
         return dir(_socket_module())
 
-
 def _socket_module() -> Any:
     global _SOCKET_MODULE
     module = _SOCKET_MODULE
@@ -60,10 +57,8 @@ def _socket_module() -> Any:
         _SOCKET_MODULE = module
     return module
 
-
 _SOCKET = _LazySocketModule()
 _socket = _SOCKET
-
 
 _VERSION_INFO = getattr(_sys, "version_info", (3, 12, 0, "final", 0))
 _IS_WINDOWS = _os.name == "nt"
@@ -638,14 +633,12 @@ if TYPE_CHECKING:
 
     def molt_event_loop_notify_writer_ready(_loop_handle: Any, _fd: Any) -> None: ...
 
-
 def _mark_builtin(fn: Any) -> None:
     func = _require_asyncio_intrinsic(
         _molt_function_set_builtin, "function_set_builtin"
     )
     func(fn)
     return None
-
 
 _builtin_cancelled = getattr(_builtins, "CancelledError", None)
 if _builtin_cancelled is None:
@@ -657,62 +650,36 @@ if _builtin_cancelled is None:
 else:
     CancelledError = _builtin_cancelled
 
-
 def _is_cancelled_exc(exc: BaseException) -> bool:
     if isinstance(exc, CancelledError):
         return True
     return type(exc).__name__ == "CancelledError"
 
-
 class InvalidStateError(Exception):
     pass
 
-
 TimeoutError = _builtins.TimeoutError
-
-
-class QueueEmpty(Exception):
-    pass
-
-
-class QueueFull(Exception):
-    pass
-
-
-class _QueueShutDown(Exception):
-    pass
-
-
-class BrokenBarrierError(RuntimeError):
-    pass
-
 
 class LimitOverrunError(Exception):
     def __init__(self, message: str, consumed: int) -> None:
         super().__init__(message)
         self.consumed = consumed
 
-
 class SendfileNotAvailableError(RuntimeError):
     pass
-
 
 FIRST_COMPLETED = object()
 FIRST_EXCEPTION = object()
 ALL_COMPLETED = object()
 
-
 def isfuture(obj: Any) -> bool:
     return isinstance(obj, Future)
-
 
 def iscoroutine(obj: Any) -> bool:
     return bool(_molt_inspect_iscoroutine(obj))
 
-
 def iscoroutinefunction(func: Any) -> bool:
     return bool(_molt_inspect_iscoroutinefunction(func))
-
 
 class Future:
     @classmethod
@@ -897,72 +864,54 @@ class Future:
         if handle is not None:
             molt_asyncio_future_drop(handle)
 
-
 def future_add_to_awaited_by(fut: Any, waiter: Any) -> None:
     if isinstance(fut, Future) and isinstance(waiter, Future):
         if fut._asyncio_awaited_by is None:
             fut._asyncio_awaited_by = set()
         fut._asyncio_awaited_by.add(waiter)
 
-
 def future_discard_from_awaited_by(fut: Any, waiter: Any) -> None:
     if isinstance(fut, Future) and isinstance(waiter, Future):
         if fut._asyncio_awaited_by is not None:
             fut._asyncio_awaited_by.discard(waiter)
 
-
 def _debug_gather_enabled() -> bool:
     return _os.getenv("MOLT_DEBUG_GATHER") == "1"
 
-
 _DEBUG_GATHER = _debug_gather_enabled()
-
 
 def _debug_wait_for_enabled() -> bool:
     return _os.getenv("MOLT_DEBUG_WAIT_FOR") == "1"
 
-
 _DEBUG_WAIT_FOR = _debug_wait_for_enabled()
-
 
 def _debug_tasks_enabled() -> bool:
     return _os.getenv("MOLT_DEBUG_TASKS") == "1"
 
-
 _DEBUG_TASKS = _debug_tasks_enabled()
-
 
 def _debug_asyncio_promise_enabled() -> bool:
     return _os.getenv("MOLT_DEBUG_ASYNCIO_PROMISE") == "1"
 
-
 _DEBUG_ASYNCIO_PROMISE = _debug_asyncio_promise_enabled()
-
 
 def _debug_asyncio_exc_enabled() -> bool:
     return _os.getenv("MOLT_DEBUG_ASYNCIO_EXC") == "1"
 
-
 _DEBUG_ASYNCIO_EXC = _debug_asyncio_exc_enabled()
-
 
 def _debug_asyncio_condition_enabled() -> bool:
     return _os.getenv("MOLT_DEBUG_ASYNCIO_CONDITION") == "1"
 
-
 _DEBUG_ASYNCIO_CONDITION = _debug_asyncio_condition_enabled()
-
 
 def _debug_asyncio_handles_enabled() -> bool:
     return _os.getenv("MOLT_DEBUG_ASYNCIO_HANDLES") == "1"
 
-
 _DEBUG_ASYNCIO_HANDLES = _debug_asyncio_handles_enabled()
-
 
 def _debug_asyncio_shutdown_enabled() -> bool:
     return _os.getenv("MOLT_DEBUG_ASYNCIO_SHUTDOWN") == "1"
-
 
 _DEBUG_ASYNCIO_SHUTDOWN = _debug_asyncio_shutdown_enabled()
 
@@ -984,7 +933,6 @@ _SUBPROCESS_STDOUT = -2
 _SUBPROCESS_DEVNULL = -3
 _WAIT_TIMEOUT_EPS = 1e-6
 
-
 def _require_asyncio_intrinsic(
     fn: Callable[..., Any] | None, name: str
 ) -> Callable[..., Any]:
@@ -992,12 +940,10 @@ def _require_asyncio_intrinsic(
         raise RuntimeError(f"asyncio intrinsic not available: {name}")
     return fn
 
-
 def _require_io_wait_new() -> Callable[..., Any]:
     if _molt_io_wait_new is None:
         raise RuntimeError("asyncio intrinsic not available: io_wait_new")
     return _molt_io_wait_new
-
 
 def _require_ssl_transport_support(
     operation: str,
@@ -1014,7 +960,6 @@ def _require_ssl_transport_support(
         raise RuntimeError("asyncio ssl transport intrinsic returned invalid payload")
     return outcome
 
-
 def _socket_eai_codes() -> set[int]:
     codes: set[int] = set()
     socket_module = _socket_module()
@@ -1026,9 +971,7 @@ def _socket_eai_codes() -> set[int]:
             codes.add(value)
     return codes
 
-
 _SOCKET_EAI_CODES: set[int] | None = None
-
 
 def _map_socket_name_resolution_error(exc: OSError) -> OSError:
     global _SOCKET_EAI_CODES
@@ -1041,7 +984,6 @@ def _map_socket_name_resolution_error(exc: OSError) -> OSError:
             return gaierror_cls(errno_value, str(exc))
     return exc
 
-
 def _tls_client_connect(
     host: str, port: int, server_hostname: str | None = None
 ) -> Any:
@@ -1050,13 +992,11 @@ def _tls_client_connect(
         "asyncio_tls_client_connect_new",
     )(host, port, server_hostname)
 
-
 def _tls_client_from_fd(fd: int, server_hostname: str | None = None) -> Any:
     return _require_asyncio_intrinsic(
         molt_asyncio_tls_client_from_fd_new,
         "asyncio_tls_client_from_fd_new",
     )(fd, server_hostname)
-
 
 def _tls_server_payload(ssl: Any) -> tuple[str, str]:
     payload = _require_asyncio_intrinsic(
@@ -1071,13 +1011,11 @@ def _tls_server_payload(ssl: Any) -> tuple[str, str]:
         return payload
     raise RuntimeError("asyncio tls server payload intrinsic returned invalid payload")
 
-
 def _tls_server_from_fd(fd: int, certfile: str, keyfile: str) -> Any:
     return _require_asyncio_intrinsic(
         molt_asyncio_tls_server_from_fd_new,
         "asyncio_tls_server_from_fd_new",
     )(fd, certfile, keyfile)
-
 
 def _require_unix_socket_support() -> None:
     _require_asyncio_intrinsic(
@@ -1085,13 +1023,11 @@ def _require_unix_socket_support() -> None:
         "asyncio_require_unix_socket_support",
     )()
 
-
 def _require_child_watcher_support() -> None:
     _require_asyncio_intrinsic(
         molt_asyncio_require_child_watcher_support,
         "asyncio_require_child_watcher_support",
     )()
-
 
 def _asyncio_cancel_pending_tasks(tasks: Any) -> int:
     return int(
@@ -1100,14 +1036,12 @@ def _asyncio_cancel_pending_tasks(tasks: Any) -> int:
         )(tasks)
     )
 
-
 def _asyncio_waiters_notify(waiters: Any, count: int, result: Any) -> int:
     return int(
         _require_asyncio_intrinsic(
             molt_asyncio_waiters_notify, "asyncio_waiters_notify"
         )(waiters, count, result)
     )
-
 
 def _asyncio_waiters_notify_exception(waiters: Any, count: int, exc: Any) -> int:
     return int(
@@ -1116,7 +1050,6 @@ def _asyncio_waiters_notify_exception(waiters: Any, count: int, exc: Any) -> int
         )(waiters, count, exc)
     )
 
-
 def _asyncio_waiters_remove(waiters: Any, waiter: Any) -> bool:
     return bool(
         _require_asyncio_intrinsic(
@@ -1124,14 +1057,12 @@ def _asyncio_waiters_remove(waiters: Any, waiter: Any) -> bool:
         )(waiters, waiter)
     )
 
-
 def _asyncio_barrier_release(waiters: Any) -> int:
     return int(
         _require_asyncio_intrinsic(
             molt_asyncio_barrier_release, "asyncio_barrier_release"
         )(waiters)
     )
-
 
 def _asyncio_condition_wait_for_step(
     condition: Any, predicate: Callable[[], Any]
@@ -1141,14 +1072,12 @@ def _asyncio_condition_wait_for_step(
     )(condition, predicate)
     return bool(done), payload
 
-
 def _asyncio_future_transfer(source: Any, target: Any) -> bool:
     return bool(
         _require_asyncio_intrinsic(
             molt_asyncio_future_transfer, "asyncio_future_transfer"
         )(source, target)
     )
-
 
 def _asyncio_event_waiters_cleanup(waiters: Any) -> int:
     return int(
@@ -1157,18 +1086,15 @@ def _asyncio_event_waiters_cleanup(waiters: Any) -> int:
         )(waiters)
     )
 
-
 def _task_registry_set(token_id: int, task: Any | None) -> None:
     _require_asyncio_intrinsic(
         molt_asyncio_task_registry_set, "asyncio_task_registry_set"
     )(token_id, task)
 
-
 def _task_registry_get(token_id: int) -> Any | None:
     return _require_asyncio_intrinsic(
         molt_asyncio_task_registry_get, "asyncio_task_registry_get"
     )(token_id)
-
 
 def _task_registry_contains(token_id: int) -> bool:
     return bool(
@@ -1177,12 +1103,10 @@ def _task_registry_contains(token_id: int) -> bool:
         )(token_id)
     )
 
-
 def _task_registry_current() -> Any | None:
     return _require_asyncio_intrinsic(
         molt_asyncio_task_registry_current, "asyncio_task_registry_current"
     )()
-
 
 def _task_registry_current_for_loop(loop: Any | None = None) -> Any | None:
     return _require_asyncio_intrinsic(
@@ -1190,12 +1114,10 @@ def _task_registry_current_for_loop(loop: Any | None = None) -> Any | None:
         "asyncio_task_registry_current_for_loop",
     )(loop)
 
-
 def _task_registry_pop(token_id: int) -> Any | None:
     return _require_asyncio_intrinsic(
         molt_asyncio_task_registry_pop, "asyncio_task_registry_pop"
     )(token_id)
-
 
 def _task_registry_move(old_token_id: int, new_token_id: int) -> bool:
     return bool(
@@ -1204,18 +1126,15 @@ def _task_registry_move(old_token_id: int, new_token_id: int) -> bool:
         )(old_token_id, new_token_id)
     )
 
-
 def _task_registry_values() -> Any:
     return _require_asyncio_intrinsic(
         molt_asyncio_task_registry_values, "asyncio_task_registry_values"
     )()
 
-
 def _event_waiters_register(token_id: int, waiter: Any) -> None:
     _require_asyncio_intrinsic(
         molt_asyncio_event_waiters_register, "asyncio_event_waiters_register"
     )(token_id, waiter)
-
 
 def _event_waiters_unregister(token_id: int, waiter: Any) -> bool:
     return bool(
@@ -1223,7 +1142,6 @@ def _event_waiters_unregister(token_id: int, waiter: Any) -> bool:
             molt_asyncio_event_waiters_unregister, "asyncio_event_waiters_unregister"
         )(token_id, waiter)
     )
-
 
 def _event_waiters_cleanup_token(token_id: int) -> int:
     return int(
@@ -1233,14 +1151,12 @@ def _event_waiters_cleanup_token(token_id: int) -> int:
         )(token_id)
     )
 
-
 def _asyncio_ready_queue_drain(ready_lock: Any, ready: Any) -> int:
     return int(
         _require_asyncio_intrinsic(
             molt_asyncio_ready_queue_drain, "asyncio_ready_queue_drain"
         )(ready_lock, ready)
     )
-
 
 def _asyncio_taskgroup_on_task_done(tasks: Any, errors: Any, task: Any) -> bool:
     return bool(
@@ -1249,7 +1165,6 @@ def _asyncio_taskgroup_on_task_done(tasks: Any, errors: Any, task: Any) -> bool:
         )(tasks, errors, task)
     )
 
-
 def _asyncio_tasks_add_done_callback(tasks: Any, callback: Callable[[Any], Any]) -> int:
     return int(
         _require_asyncio_intrinsic(
@@ -1257,16 +1172,13 @@ def _asyncio_tasks_add_done_callback(tasks: Any, callback: Callable[[Any], Any])
         )(tasks, callback)
     )
 
-
 async def _async_yield_once() -> None:
     fut = molt_async_sleep(0.0, None)
     await fut
 
-
 async def _io_wait(fd: int, events: int, timeout: float | None = None) -> Any:
     io_wait = _require_io_wait_new()
     return await _require_asyncio_intrinsic(io_wait, "io_wait_new")(fd, events, timeout)
-
 
 _molt_io_wait_new = _intrinsic_require("molt_io_wait_new", globals())
 molt_pending = _intrinsic_require("molt_pending", globals())
@@ -1729,18 +1641,15 @@ molt_asyncio_queue_drop = _intrinsic_require("molt_asyncio_queue_drop", globals(
 
 _PENDING_SENTINEL: Any | None = None
 
-
 def _pending_sentinel() -> Any:
     global _PENDING_SENTINEL
     if _PENDING_SENTINEL is None:
         _PENDING_SENTINEL = molt_pending()
     return _PENDING_SENTINEL
 
-
 def _is_pending(value: Any) -> bool:
     pending = _pending_sentinel()
     return value is pending or value == pending
-
 
 def _debug_exc_state(tag: str) -> None:
     if not _DEBUG_ASYNCIO_EXC:
@@ -1758,7 +1667,6 @@ def _debug_exc_state(tag: str) -> None:
         )
     )
     return None
-
 
 def _debug_task_summary(task: Any) -> str:
     task_type = type(task).__name__
@@ -1784,15 +1692,12 @@ def _debug_task_summary(task: Any) -> str:
         done_state=done_state,
     )
 
-
 class _SubprocessConstants:
     PIPE = _SUBPROCESS_PIPE
     DEVNULL = _SUBPROCESS_DEVNULL
     STDOUT = _SUBPROCESS_STDOUT
 
-
 subprocess = _SubprocessConstants
-
 
 def _fd_from_fileobj(fileobj: Any) -> int:
     if isinstance(fileobj, int):
@@ -1800,7 +1705,6 @@ def _fd_from_fileobj(fileobj: Any) -> int:
     if hasattr(fileobj, "fileno"):
         return int(fileobj.fileno())
     raise ValueError("fileobj must be a file descriptor or have fileno()")
-
 
 def _socket_wait_key(sock: Any) -> Any:
     fileno = getattr(sock, "fileno", None)
@@ -1811,14 +1715,12 @@ def _socket_wait_key(sock: Any) -> Any:
         return handle_getter()
     raise TypeError("socket object must provide fileno() or _require_handle()")
 
-
 def _encode_proc_fd(fd: int) -> int:
     if fd < 0:
         raise ValueError("file descriptor must be >= 0")
     if fd > _PROC_STDIO_FD_MAX:
         raise ValueError("file descriptor is too large")
     return _PROC_STDIO_FD_BASE + int(fd)
-
 
 def _normalize_proc_stdio(value: Any, *, allow_stdout: bool) -> int:
     return int(
@@ -1839,7 +1741,6 @@ def _normalize_proc_stdio(value: Any, *, allow_stdout: bool) -> int:
             _PROC_STDIO_FD_MAX,
         )
     )
-
 
 class _NonBlockingSocket:
     def __init__(self, sock: Any) -> None:
@@ -1863,10 +1764,8 @@ class _NonBlockingSocket:
             self._sock.settimeout(self._prev)
         return None
 
-
 def spawn(task: Any) -> None:
     molt_spawn(task)
-
 
 class CancellationToken:
     def __init__(self) -> None:
@@ -1905,7 +1804,6 @@ class CancellationToken:
         if getattr(self, "_owned", False):
             molt_cancel_token_drop(int(self._token))
 
-
 def _wrap_existing_token(token_id: int, owned: bool) -> CancellationToken:
     token = CancellationToken()
     old_id = token._token
@@ -1917,24 +1815,20 @@ def _wrap_existing_token(token_id: int, owned: bool) -> CancellationToken:
         molt_cancel_token_drop(int(old_id))
     return token
 
-
 def _swap_current_token(token: CancellationToken) -> int:
     if molt_cancel_token_set_current is not None:  # type: ignore[name-defined]
         return molt_cancel_token_set_current(token.token_id())  # type: ignore[name-defined]
     return 0
-
 
 def _restore_token_id(token_id: int) -> None:
     if molt_cancel_token_set_current is not None:  # type: ignore[name-defined]
         molt_cancel_token_set_current(token_id)  # type: ignore[name-defined]
     return None
 
-
 def _current_token_id() -> int:
     if molt_cancel_token_get_current is not None:  # type: ignore[name-defined]
         return molt_cancel_token_get_current()  # type: ignore[name-defined]
     return 0
-
 
 def _debug_write(message: str) -> None:
     err = getattr(_sys, "stderr", None)
@@ -1955,7 +1849,6 @@ def _debug_write(message: str) -> None:
         return None
     print(message)
 
-
 def _future_done(task: Any) -> bool:
     if isinstance(task, Future):
         return bool(molt_asyncio_future_done(task._fut_handle))
@@ -1963,7 +1856,6 @@ def _future_done(task: Any) -> bool:
     if callable(done_fn):
         return done_fn()
     return False
-
 
 def _future_cancelled(task: Any) -> bool:
     if isinstance(task, Future):
@@ -1973,7 +1865,6 @@ def _future_cancelled(task: Any) -> bool:
         return cancelled_fn()
     return False
 
-
 def _future_exception(task: Any) -> BaseException | None:
     if isinstance(task, Future):
         return task._exception
@@ -1982,27 +1873,21 @@ def _future_exception(task: Any) -> BaseException | None:
     except BaseException as err:
         return err
 
-
 def _register_event_waiter(token_id: int, fut: Future) -> None:
     _event_waiters_register(token_id, fut)
-
 
 def _unregister_event_waiter(token_id: int, fut: Future) -> None:
     _event_waiters_unregister(token_id, fut)
 
-
 def _cleanup_event_waiters_for_token(token_id: int) -> None:
     _event_waiters_cleanup_token(token_id)
 
-
 _TASK_COUNTER = 0
-
 
 def _next_task_name() -> str:
     global _TASK_COUNTER
     _TASK_COUNTER += 1
     return f"Task-{_TASK_COUNTER}"
-
 
 class Task(Future):
     _coro: Any
@@ -2222,294 +2107,26 @@ class Task(Future):
         self.add_done_callback(lambda _fut: _transfer(_fut))
         return waiter.__await__()
 
-
-class Event:
-    def __init__(self) -> None:
-        self._evt_handle: int = molt_asyncio_event_new()
-        self._waiters: list[Future] = []
-
-    def is_set(self) -> bool:
-        return bool(molt_asyncio_event_is_set(self._evt_handle))
-
-    def set(self) -> None:
-        if molt_asyncio_event_is_set(self._evt_handle):
-            return None
-        molt_asyncio_event_set_fast(self._evt_handle)
-        waiters = self._waiters
-        self._waiters = []
-        _require_asyncio_intrinsic(
-            molt_asyncio_event_set_waiters, "asyncio_event_set_waiters"
-        )(waiters, True)
-        return None
-
-    def clear(self) -> None:
-        molt_asyncio_event_clear_handle(self._evt_handle)
-
-    async def wait(self) -> bool:
-        if molt_asyncio_event_is_set(self._evt_handle):
-            return True
-        fut = Future()
-        fut._molt_event_owner = self
-        token_id = _current_token_id()
-        fut._molt_event_token_id = token_id
-        self._waiters.append(fut)
-        _register_event_waiter(token_id, fut)
-        try:
-            return await fut
-        except BaseException as exc:
-            if _is_cancelled_exc(exc):
-                _unregister_event_waiter(token_id, fut)
-                _asyncio_waiters_remove(self._waiters, fut)
-            raise
-
-    def __repr__(self) -> str:
-        state = "set" if self.is_set() else "unset"
-        return f"<Event [{state}]>"
-
-    def __del__(self) -> None:
-        handle = getattr(self, "_evt_handle", None)
-        if handle is not None:
-            molt_asyncio_event_drop(handle)
-
-
-class Lock:
-    def __init__(self) -> None:
-        self._lock_handle: int = molt_asyncio_lock_new()
-        self._waiters: _deque[Future] = _deque()
-
-    def locked(self) -> bool:
-        return bool(molt_asyncio_lock_locked(self._lock_handle))
-
-    async def acquire(self) -> bool:
-        if molt_asyncio_lock_acquire_fast(self._lock_handle):
-            return True
-        fut = Future()
-        self._waiters.append(fut)
-        try:
-            await fut
-        except BaseException as exc:
-            if _is_cancelled_exc(exc):
-                _asyncio_waiters_remove(self._waiters, fut)
-            raise
-        molt_asyncio_lock_acquire_fast(self._lock_handle)
-        return True
-
-    def release(self) -> None:
-        if not molt_asyncio_lock_locked(self._lock_handle):
-            raise RuntimeError("Lock is not acquired")
-        molt_asyncio_lock_release_fast(self._lock_handle)
-        if self._waiters:
-            _asyncio_waiters_notify(self._waiters, 1, True)
-
-    async def __aenter__(self) -> "Lock":
-        await self.acquire()
-        return self
-
-    async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
-        self.release()
-
-    def __repr__(self) -> str:
-        state = "locked" if self.locked() else "unlocked"
-        return f"<Lock [{state}]>"
-
-    def __del__(self) -> None:
-        handle = getattr(self, "_lock_handle", None)
-        if handle is not None:
-            molt_asyncio_lock_drop(handle)
-
-
-class Condition:
-    def __init__(self, lock: Lock | None = None) -> None:
-        self._lock = lock or Lock()
-        self._waiters: _deque[Future] = _deque()
-
-    def locked(self) -> bool:
-        return self._lock.locked()
-
-    async def acquire(self) -> bool:
-        return await self._lock.acquire()
-
-    def release(self) -> None:
-        self._lock.release()
-
-    async def __aenter__(self) -> "Condition":
-        await self.acquire()
-        return self
-
-    async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
-        self.release()
-
-    async def wait(self) -> bool:
-        if not self.locked():
-            raise RuntimeError("Condition lock is not acquired")
-        fut = Future()
-        self._waiters.append(fut)
-        self.release()
-        try:
-            await fut
-        except BaseException as exc:
-            if _is_cancelled_exc(exc):
-                _asyncio_waiters_remove(self._waiters, fut)
-            raise
-        finally:
-            await self.acquire()
-        return True
-
-    async def wait_for(self, predicate: Callable[[], bool]) -> bool:
-        while True:
-            done, payload = _asyncio_condition_wait_for_step(self, predicate)
-            if done:
-                return payload
-            await payload
-
-    def notify(self, n: int = 1) -> None:
-        if not self.locked():
-            raise RuntimeError("Condition lock is not acquired")
-        _asyncio_waiters_notify(self._waiters, n, True)
-
-    def notify_all(self) -> None:
-        self.notify(len(self._waiters))
-
-    def __repr__(self) -> str:
-        state = "locked" if self.locked() else "unlocked"
-        waiters = len(self._waiters)
-        return f"<Condition [{state}, waiters:{waiters}]>"
-
-
-class Semaphore:
-    def __init__(self, value: int = 1) -> None:
-        if value < 0:
-            raise ValueError("Semaphore initial value must be >= 0")
-        self._sem_handle: int = molt_asyncio_semaphore_new(value)
-        self._waiters: _deque[Future] = _deque()
-
-    def locked(self) -> bool:
-        return molt_asyncio_semaphore_value(self._sem_handle) == 0
-
-    async def acquire(self) -> bool:
-        if molt_asyncio_semaphore_acquire_fast(self._sem_handle):
-            return True
-        fut = Future()
-        self._waiters.append(fut)
-        try:
-            await fut
-        except BaseException as exc:
-            if _is_cancelled_exc(exc):
-                _asyncio_waiters_remove(self._waiters, fut)
-            raise
-        return True
-
-    def release(self) -> None:
-        molt_asyncio_semaphore_release_fast(self._sem_handle, -1)
-        if self._waiters:
-            _asyncio_waiters_notify(self._waiters, 1, True)
-
-    async def __aenter__(self) -> "Semaphore":
-        await self.acquire()
-        return self
-
-    async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
-        self.release()
-
-    def __repr__(self) -> str:
-        value = int(molt_asyncio_semaphore_value(self._sem_handle))
-        state = "locked" if value == 0 else f"unlocked, value:{value}"
-        return f"<Semaphore [{state}]>"
-
-    def __del__(self) -> None:
-        handle = getattr(self, "_sem_handle", None)
-        if handle is not None:
-            molt_asyncio_semaphore_drop(handle)
-
-
-class BoundedSemaphore(Semaphore):
-    def __init__(self, value: int = 1) -> None:
-        super().__init__(value)
-        self._initial_value = value
-
-    def release(self) -> None:
-        molt_asyncio_semaphore_release_fast(self._sem_handle, self._initial_value)
-        if self._waiters:
-            _asyncio_waiters_notify(self._waiters, 1, True)
-
-
-class Barrier:
-    def __init__(self, parties: int) -> None:
-        if parties <= 0:
-            raise ValueError("Barrier parties must be > 0")
-        self._parties = parties
-        self._count = 0
-        self._waiters: list[Future] = []
-        self._broken = False
-
-    async def wait(self) -> int:
-        if self._broken:
-            raise BrokenBarrierError("Barrier broken")
-        fut = Future()
-        self._waiters.append(fut)
-        self._count += 1
-        if self._count == self._parties:
-            self._count = 0
-            # Set the result of each waiter to its index.
-            waiters = self._waiters
-            self._waiters = []
-            for i, w in enumerate(waiters):
-                if not w.done():
-                    w.set_result(i)
-        try:
-            return await fut
-        except BaseException as exc:
-            if _is_cancelled_exc(exc):
-                _asyncio_waiters_remove(self._waiters, fut)
-                if self._count > 0:
-                    self._count -= 1
-            raise
-
-    @property
-    def parties(self) -> int:
-        return self._parties
-
-    @property
-    def n_waiting(self) -> int:
-        return self._count
-
-    @property
-    def broken(self) -> bool:
-        return self._broken
-
-    async def reset(self) -> None:
-        waiters = self._waiters
-        self._waiters = []
-        self._count = 0
-        self._broken = False
-        # Wake all waiters with BrokenBarrierError.
-        for w in waiters:
-            if not w.done():
-                w.set_exception(BrokenBarrierError("Barrier was reset"))
-
-    async def abort(self) -> None:
-        self._broken = True
-        waiters = self._waiters
-        self._waiters = []
-        self._count = 0
-        # Wake all waiters with BrokenBarrierError.
-        for w in waiters:
-            if not w.done():
-                w.set_exception(BrokenBarrierError("Barrier was aborted"))
-
-    async def __aenter__(self) -> int:
-        return await self.wait()
-
-    async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
-        pass
-
-    def __repr__(self) -> str:
-        if self._broken:
-            state = "broken"
-        else:
-            state = "filling"
-        return f"<Barrier [{state}, waiters:{self._count}/{self._parties}]>"
-
+from . import locks as locks
+from .locks import (
+    Barrier as Barrier,
+    BoundedSemaphore as BoundedSemaphore,
+    BrokenBarrierError as BrokenBarrierError,
+    Condition as Condition,
+    Event as Event,
+    Lock as Lock,
+    Semaphore as Semaphore,
+)
+from . import queues as queues
+from .queues import (
+    LifoQueue as LifoQueue,
+    PriorityQueue as PriorityQueue,
+    Queue as Queue,
+    QueueEmpty as QueueEmpty,
+    QueueFull as QueueFull,
+)
+if _EXPOSE_QUEUE_SHUTDOWN:
+    from .queues import QueueShutDown as QueueShutDown
 
 class TaskGroup:
     def __init__(self) -> None:
@@ -2573,7 +2190,6 @@ class TaskGroup:
         if not self._tasks:
             return
         _asyncio_cancel_pending_tasks(self._tasks)
-
 
 class _Timeout:
     def __init__(self, when: float | None) -> None:
@@ -2645,13 +2261,11 @@ class _Timeout:
             raise TimeoutError
         return False
 
-
 class IncompleteReadError(EOFError):
     def __init__(self, partial: bytes, expected: int) -> None:
         super().__init__(f"{expected} bytes expected, {len(partial)} bytes read")
         self.partial = partial
         self.expected = expected
-
 
 class StreamReader:
     def __init__(self, sock: _socket.socket) -> None:
@@ -2798,7 +2412,6 @@ class StreamReader:
         if _molt_socket_reader_drop is not None:
             _molt_socket_reader_drop(reader)
 
-
 class StreamWriter:
     def __init__(self, sock: _socket.socket) -> None:
         self._sock = sock
@@ -2900,7 +2513,6 @@ class StreamWriter:
     def transport(self) -> Any:
         return self._transport
 
-
 class _StreamWriterTransportShim:
     """Minimal transport facade used by StreamWriter.start_tls.
 
@@ -2912,7 +2524,6 @@ class _StreamWriterTransportShim:
     def __init__(self, sock: Any) -> None:
         self._sock = sock
         self._closed = False
-
 
 class AbstractServer:
     def close(self) -> None:
@@ -2938,7 +2549,6 @@ class AbstractServer:
 
     def abort_clients(self) -> None:
         raise RuntimeError("abstract asyncio server API")
-
 
 class Server(AbstractServer):
     def __init__(
@@ -3025,7 +2635,6 @@ class Server(AbstractServer):
         # exposed at the Python level.
         pass
 
-
 class ProcessStreamReader:
     def __init__(self, handle: Any) -> None:
         self._handle = handle
@@ -3075,7 +2684,6 @@ class ProcessStreamReader:
         if _molt_stream_reader_drop is not None:
             _molt_stream_reader_drop(reader)
 
-
 class ProcessStreamWriter:
     def __init__(self, handle: Any) -> None:
         self._handle = handle
@@ -3117,9 +2725,7 @@ class ProcessStreamWriter:
     async def wait_closed(self) -> None:
         return None
 
-
 _PROCESS_WAIT_FUTURES: dict[int, Any] = {}
-
 
 class Process:
     def __init__(
@@ -3229,7 +2835,6 @@ class Process:
         if _molt_process_drop is not None:
             _molt_process_drop(self._handle)
 
-
 class Handle:
     def __init__(
         self,
@@ -3264,7 +2869,6 @@ class Handle:
         else:
             self._callback(*self._args)
 
-
 class TimerHandle(Handle):
     def __init__(
         self,
@@ -3291,7 +2895,6 @@ class TimerHandle(Handle):
             self._timer_task,
         )
         self._timer_task = None
-
 
 class AbstractEventLoop:
     def run_forever(self) -> None:
@@ -3524,7 +3127,6 @@ class AbstractEventLoop:
 
     async def sock_sendfile(self, sock: Any, file: Any, offset: int = 0, count=None):
         raise RuntimeError("abstract asyncio event loop API")
-
 
 class _EventLoop(AbstractEventLoop):
     def __init__(self, selector: Any | None = None) -> None:
@@ -4507,19 +4109,15 @@ class _EventLoop(AbstractEventLoop):
                 remaining -= len(chunk)
         return sent
 
-
 class BaseEventLoop(_EventLoop):
     pass
-
 
 class SelectorEventLoop(_EventLoop):
     def __init__(self, selector: Any | None = None) -> None:
         super().__init__(selector)
 
-
 class _ProactorEventLoop(_EventLoop):
     pass
-
 
 class AbstractEventLoopPolicy:
     """Base class for event loop policies."""
@@ -4532,7 +4130,6 @@ class AbstractEventLoopPolicy:
 
     def new_event_loop(self) -> EventLoop:
         raise RuntimeError("abstract asyncio event loop policy API")
-
 
 class DefaultEventLoopPolicy(AbstractEventLoopPolicy):
     def get_event_loop(self) -> EventLoop:
@@ -4548,24 +4145,19 @@ class DefaultEventLoopPolicy(AbstractEventLoopPolicy):
         loop_cls = _EventLoop
         return loop_cls()
 
-
 class _UnixDefaultEventLoopPolicy(DefaultEventLoopPolicy):
     pass
-
 
 class _WindowsSelectorEventLoopPolicy(DefaultEventLoopPolicy):
     pass
 
-
 class _WindowsProactorEventLoopPolicy(DefaultEventLoopPolicy):
     pass
-
 
 def _default_event_loop_policy() -> AbstractEventLoopPolicy:
     if _IS_WINDOWS:
         return DefaultEventLoopPolicy()
     return _UnixDefaultEventLoopPolicy()
-
 
 class AbstractChildWatcher:
     def __init__(self) -> None:
@@ -4613,34 +4205,26 @@ class AbstractChildWatcher:
         callback, args = entry
         callback(int(pid), int(returncode), *args)
 
-
 class SafeChildWatcher(AbstractChildWatcher):
     pass
-
 
 class BaseChildWatcher(AbstractChildWatcher):
     pass
 
-
 class FastChildWatcher(AbstractChildWatcher):
     pass
-
 
 class MultiLoopChildWatcher(AbstractChildWatcher):
     pass
 
-
 class ThreadedChildWatcher(AbstractChildWatcher):
     pass
-
 
 class PidfdChildWatcher(AbstractChildWatcher):
     pass
 
-
 _CHILD_WATCHER: AbstractChildWatcher | None = None
 _CAN_USE_PIDFD_CACHE: bool | None = None
-
 
 def can_use_pidfd() -> bool:
     global _CAN_USE_PIDFD_CACHE
@@ -4662,13 +4246,11 @@ def can_use_pidfd() -> bool:
     _CAN_USE_PIDFD_CACHE = True
     return True
 
-
 def waitstatus_to_exitcode(status: int) -> int:
     converter = getattr(_os, "waitstatus_to_exitcode", None)
     if converter is None:
         raise NotImplementedError("os.waitstatus_to_exitcode is unavailable")
     return int(converter(status))
-
 
 def get_child_watcher() -> AbstractChildWatcher:
     _require_child_watcher_support()
@@ -4679,7 +4261,6 @@ def get_child_watcher() -> AbstractChildWatcher:
     if loop is not None:
         _CHILD_WATCHER.attach_loop(loop)
     return _CHILD_WATCHER
-
 
 def set_child_watcher(watcher: AbstractChildWatcher | None) -> None:
     _require_child_watcher_support()
@@ -4695,15 +4276,11 @@ def set_child_watcher(watcher: AbstractChildWatcher | None) -> None:
     _CHILD_WATCHER = watcher
     return None
 
-
 EventLoop = _EventLoop
 if _EXPOSE_WINDOWS_POLICIES:
     ProactorEventLoop = _ProactorEventLoop
     WindowsSelectorEventLoopPolicy = _WindowsSelectorEventLoopPolicy
     WindowsProactorEventLoopPolicy = _WindowsProactorEventLoopPolicy
-if _EXPOSE_QUEUE_SHUTDOWN:
-    QueueShutDown = _QueueShutDown
-
 
 class BaseTransport:
     """Base class for transports."""
@@ -4726,7 +4303,6 @@ class BaseTransport:
     def get_protocol(self) -> "BaseProtocol":
         raise NotImplementedError
 
-
 class ReadTransport(BaseTransport):
     """Interface for read-only transports."""
 
@@ -4738,7 +4314,6 @@ class ReadTransport(BaseTransport):
 
     def resume_reading(self) -> None:
         raise NotImplementedError
-
 
 class WriteTransport(BaseTransport):
     """Interface for write-only transports."""
@@ -4770,10 +4345,8 @@ class WriteTransport(BaseTransport):
     def abort(self) -> None:
         raise NotImplementedError
 
-
 class Transport(ReadTransport, WriteTransport):
     """Interface representing a bidirectional transport."""
-
 
 class DatagramTransport(BaseTransport):
     """Interface for datagram (UDP) transports."""
@@ -4783,7 +4356,6 @@ class DatagramTransport(BaseTransport):
 
     def abort(self) -> None:
         raise NotImplementedError
-
 
 class SubprocessTransport(BaseTransport):
     """Interface for subprocess transports."""
@@ -4809,7 +4381,6 @@ class SubprocessTransport(BaseTransport):
     def close(self) -> None:
         raise NotImplementedError
 
-
 class BaseProtocol:
     """Base class for protocols."""
 
@@ -4825,7 +4396,6 @@ class BaseProtocol:
     def resume_writing(self) -> None:
         """Called when the transport's buffer drains below the low-water mark."""
 
-
 class Protocol(BaseProtocol):
     """Interface for stream protocol event callbacks."""
 
@@ -4834,7 +4404,6 @@ class Protocol(BaseProtocol):
 
     def eof_received(self) -> bool | None:
         """Called when the other end signals it won't send data anymore."""
-
 
 class BufferedProtocol(BaseProtocol):
     """Interface for stream protocol with manual buffer control."""
@@ -4850,7 +4419,6 @@ class BufferedProtocol(BaseProtocol):
     def eof_received(self) -> bool | None:
         """Called when the other end signals it won't send data anymore."""
 
-
 class DatagramProtocol(BaseProtocol):
     """Interface for datagram protocol event callbacks."""
 
@@ -4859,7 +4427,6 @@ class DatagramProtocol(BaseProtocol):
 
     def error_received(self, exc: OSError) -> None:
         """Called when a send or receive operation raises an OSError."""
-
 
 class SubprocessProtocol(BaseProtocol):
     """Interface for subprocess event callbacks."""
@@ -4873,10 +4440,8 @@ class SubprocessProtocol(BaseProtocol):
     def process_exited(self) -> None:
         """Called when the child process has exited."""
 
-
 class StreamReaderProtocol(Protocol):
     """Stream reader protocol."""
-
 
 class _DatagramSocketTransport(DatagramTransport):
     def __init__(self, sock: _socket.socket, loop: "_EventLoop") -> None:
@@ -4905,7 +4470,6 @@ class _DatagramSocketTransport(DatagramTransport):
         if name == "socket":
             return self._sock
         return default
-
 
 class _ReadPipeTransport(Transport):
     """Read pipe transport backed by Rust intrinsics.
@@ -4983,7 +4547,6 @@ class _ReadPipeTransport(Transport):
             molt_pipe_transport_drop, "pipe_transport_drop"
         )
         drop_fn(self._pipe_handle)
-
 
 class _WritePipeTransport(Transport):
     """Write pipe transport backed by Rust intrinsics.
@@ -5068,21 +4631,17 @@ class _WritePipeTransport(Transport):
         )
         drop_fn(self._pipe_handle)
 
-
 def _get_running_loop() -> EventLoop | None:
     return molt_asyncio_running_loop_get()
 
-
 def _set_running_loop(loop: EventLoop | None) -> None:
     molt_asyncio_running_loop_set(loop)
-
 
 def get_running_loop() -> EventLoop:
     loop = _get_running_loop()
     if loop is None:
         raise RuntimeError("no running event loop")
     return loop
-
 
 def get_event_loop_policy() -> AbstractEventLoopPolicy:
     if _VERSION_INFO >= (3, 14):
@@ -5097,7 +4656,6 @@ def get_event_loop_policy() -> AbstractEventLoopPolicy:
         molt_asyncio_event_loop_policy_set(policy)
     return policy
 
-
 def set_event_loop_policy(policy: AbstractEventLoopPolicy | None) -> None:
     if _VERSION_INFO >= (3, 14):
         _warnings.warn(
@@ -5108,7 +4666,6 @@ def set_event_loop_policy(policy: AbstractEventLoopPolicy | None) -> None:
     if policy is None:
         policy = _default_event_loop_policy()
     molt_asyncio_event_loop_policy_set(policy)
-
 
 def get_event_loop() -> EventLoop:
     if _VERSION_INFO >= (3, 14):
@@ -5121,14 +4678,11 @@ def get_event_loop() -> EventLoop:
         )
     return get_event_loop_policy().get_event_loop()
 
-
 def set_event_loop(loop: EventLoop | None) -> None:
     get_event_loop_policy().set_event_loop(loop)
 
-
 def new_event_loop() -> EventLoop:
     return get_event_loop_policy().new_event_loop()
-
 
 def _cancel_all_tasks(loop: EventLoop) -> None:
     try:
@@ -5163,7 +4717,6 @@ def _cancel_all_tasks(loop: EventLoop) -> None:
         if _DEBUG_ASYNCIO_SHUTDOWN:
             _debug_exc_state("cancel_all_tasks_after_waiter_exception")
         pass
-
 
 class Runner:
     def __init__(
@@ -5243,7 +4796,6 @@ class Runner:
         set_event_loop(None)
         self._context = None
 
-
 def run(
     awaitable: Any,
     *,
@@ -5271,7 +4823,6 @@ def run(
         raise exc
     return result
 
-
 async def sleep(delay: float = 0.0, result: Any | None = None) -> Any:
     if delay <= 0:
         delay = 0.0
@@ -5279,7 +4830,6 @@ async def sleep(delay: float = 0.0, result: Any | None = None) -> Any:
         delay = float(delay)
     fut = _require_asyncio_intrinsic(molt_async_sleep, "async_sleep")(delay, result)
     return await fut
-
 
 async def open_connection(
     host: str,
@@ -5319,7 +4869,6 @@ async def open_connection(
     writer = StreamWriter(sock)
     return reader, writer
 
-
 async def open_unix_connection(
     path: str,
     *,
@@ -5350,12 +4899,10 @@ async def open_unix_connection(
     writer = StreamWriter(sock)
     return reader, writer
 
-
 async def to_thread(func: Any, /, *args: Any, **kwargs: Any) -> Any:
     args_tuple = args if args else None
     kwargs_dict = kwargs if kwargs else None
     return await molt_asyncio_to_thread(func, args_tuple, kwargs_dict)
-
 
 async def start_server(
     client_connected_cb: Any,
@@ -5420,7 +4967,6 @@ async def start_server(
         sock, client_connected_cb, reader_ctor=reader_ctor, writer_ctor=writer_ctor
     )
 
-
 async def start_unix_server(
     client_connected_cb: Any,
     path: str,
@@ -5476,7 +5022,6 @@ async def start_unix_server(
         sock, client_connected_cb, reader_ctor=reader_ctor, writer_ctor=writer_ctor
     )
 
-
 async def create_subprocess_exec(
     *program: Any,
     stdin: Any | None = None,
@@ -5517,7 +5062,6 @@ async def create_subprocess_exec(
     )
     return Process(handle, stdin_stream, stdout_stream, stderr_stream)
 
-
 async def create_subprocess_shell(
     cmd: str,
     stdin: Any | None = None,
@@ -5538,7 +5082,6 @@ async def create_subprocess_shell(
         cwd=cwd,
         env=env,
     )
-
 
 async def shield(awaitable: Any) -> Any:
     fut: Future
@@ -5576,7 +5119,6 @@ async def shield(awaitable: Any) -> Any:
             raise
         raise
 
-
 def eager_task_factory(
     loop: EventLoop,
     coro: Any,
@@ -5591,7 +5133,6 @@ def eager_task_factory(
     CPython eager_start=True behaviour.
     """
     return Task(coro, loop=loop, name=name, context=context)
-
 
 def create_eager_task_factory(
     custom_task_constructor: Callable[..., Task] | None = None,
@@ -5618,13 +5159,11 @@ def create_eager_task_factory(
 
     return _factory
 
-
 def create_task(
     coro: Any, *, name: str | None = None, context: Any | None = None
 ) -> Task:
     loop = get_running_loop()
     return loop.create_task(coro, name=name, context=context)
-
 
 def ensure_future(awaitable: Any, *, loop: EventLoop | None = None) -> Future:
     if isinstance(awaitable, Future):
@@ -5635,7 +5174,6 @@ def ensure_future(awaitable: Any, *, loop: EventLoop | None = None) -> Future:
         except RuntimeError:
             loop = get_event_loop()
     return Task(awaitable, loop=loop)
-
 
 def run_coroutine_threadsafe(coro: Any, loop: EventLoop) -> Future:
     fut = Future()
@@ -5660,7 +5198,6 @@ def run_coroutine_threadsafe(coro: Any, loop: EventLoop) -> Future:
     except BaseException as exc:
         fut.set_exception(exc)
     return fut
-
 
 def wrap_future(fut: Any, *, loop: EventLoop | None = None) -> Future:
     if isinstance(fut, Future):
@@ -5711,7 +5248,6 @@ def wrap_future(fut: Any, *, loop: EventLoop | None = None) -> Future:
         proxy.set_exception(exc)
     return proxy
 
-
 def current_task(loop: EventLoop | None = None) -> Task | None:
     if loop is None:
         loop = get_running_loop()
@@ -5719,7 +5255,6 @@ def current_task(loop: EventLoop | None = None) -> Task | None:
     if task is None:
         return None
     return task if isinstance(task, Task) else None
-
 
 def all_tasks(loop: EventLoop | None = None) -> set[Task]:
     if loop is None:
@@ -5733,18 +5268,15 @@ def all_tasks(loop: EventLoop | None = None) -> set[Task]:
         return set(task_values)
     return set()
 
-
 @dataclass(frozen=True, slots=True)
 class FrameCallGraphEntry:
     frame: _types.FrameType
-
 
 @dataclass(frozen=True, slots=True)
 class FutureCallGraph:
     future: Future
     call_stack: tuple[FrameCallGraphEntry, ...]
     awaited_by: tuple["FutureCallGraph", ...]
-
 
 def _build_graph_for_future(
     future: Future,
@@ -5780,7 +5312,6 @@ def _build_graph_for_future(
             stack = stack[limit:]
     stack.reverse()
     return FutureCallGraph(future, tuple(stack), tuple(awaited_by))
-
 
 def capture_call_graph(
     future: Future | None = None,
@@ -5834,7 +5365,6 @@ def capture_call_graph(
         elif trim < 0:
             call_stack = call_stack[trim:]
     return FutureCallGraph(future, tuple(call_stack), tuple(awaited_by))
-
 
 def format_call_graph(
     future: Future | None = None,
@@ -5896,7 +5426,6 @@ def format_call_graph(
         graph = None
     return "\n".join(buf)
 
-
 def print_call_graph(
     future: Future | None = None,
     /,
@@ -5906,7 +5435,6 @@ def print_call_graph(
     limit: int | None = None,
 ) -> None:
     print(format_call_graph(future, depth=depth, limit=limit), file=file)
-
 
 async def wait(
     aws: Any,
@@ -5935,7 +5463,6 @@ async def wait(
     )
     return await waiter
 
-
 async def wait_for(awaitable: Any, timeout: float | None) -> Any:
     fut = ensure_future(awaitable)
     waiter = _require_asyncio_intrinsic(
@@ -5943,17 +5470,14 @@ async def wait_for(awaitable: Any, timeout: float | None) -> Any:
     )(fut, timeout)
     return await waiter
 
-
 def timeout(delay: float | None) -> _Timeout:
     if delay is None:
         return _Timeout(None)
     loop = get_running_loop()
     return _Timeout(loop.time() + float(delay))
 
-
 def timeout_at(when: float) -> _Timeout:
     return _Timeout(float(when))
-
 
 async def gather(*aws: Any, return_exceptions: bool = False) -> list[Any]:
     if not aws:
@@ -5964,14 +5488,12 @@ async def gather(*aws: Any, return_exceptions: bool = False) -> list[Any]:
     )
     return await waiter
 
-
 async def _wait_one(queue: "Queue", timeout: float | None) -> Any:
     if timeout is None:
         task = await queue.get()
     else:
         task = await wait_for(queue.get(), timeout)
     return await task
-
 
 class _AsCompletedIterator:
     def __init__(
@@ -6024,7 +5546,6 @@ class _AsCompletedIterator:
                     timeout = 0.0
             return await _wait_one(self._queue, timeout)
 
-
 def as_completed(aws: Iterable[Any], timeout: float | None = None) -> Iterator[Any]:
     tasks = [ensure_future(aw) for aw in aws]
     if timeout is None:
@@ -6041,185 +5562,6 @@ def as_completed(aws: Iterable[Any], timeout: float | None = None) -> Iterator[A
 
     return _AsCompletedIterator(tasks, queue, normalized_timeout)
 
-
-class Queue:
-    _Q_TYPE: int = 0  # FIFO
-
-    def __init__(self, maxsize: int = 0) -> None:
-        if maxsize < 0:
-            raise ValueError("maxsize must be >= 0")
-        self._maxsize = maxsize
-        self._q_handle: int = molt_asyncio_queue_new(maxsize, self._Q_TYPE)
-        self._getters: _deque[Future] = _deque()
-        self._putters: _deque[Future] = _deque()
-        self._finished = Event()
-        self._finished.set()
-        self._shutdown = False
-        self._init()
-
-    @property
-    def maxsize(self) -> int:
-        return self._maxsize
-
-    def _init(self) -> None:
-        self._queue: Any = _deque()
-
-    def qsize(self) -> int:
-        return int(molt_asyncio_queue_qsize(self._q_handle))
-
-    def _handle_maxsize(self) -> int:
-        return int(molt_asyncio_queue_maxsize(self._q_handle))
-
-    def empty(self) -> bool:
-        return bool(molt_asyncio_queue_empty(self._q_handle))
-
-    def full(self) -> bool:
-        return bool(molt_asyncio_queue_full(self._q_handle))
-
-    async def put(self, item: Any) -> None:
-        if molt_asyncio_queue_is_shutdown(self._q_handle):
-            raise _QueueShutDown
-        while self.full():
-            fut = Future()
-            self._putters.append(fut)
-            try:
-                await fut
-            except BaseException as exc:
-                if _is_cancelled_exc(exc):
-                    _asyncio_waiters_remove(self._putters, fut)
-                raise
-            if molt_asyncio_queue_is_shutdown(self._q_handle):
-                raise _QueueShutDown
-        self._put_nowait(item)
-
-    def put_nowait(self, item: Any) -> None:
-        if molt_asyncio_queue_is_shutdown(self._q_handle):
-            raise _QueueShutDown
-        if self.full():
-            raise QueueFull
-        self._put_nowait(item)
-
-    def _put_nowait(self, item: Any) -> None:
-        molt_asyncio_queue_put_nowait(self._q_handle, item)
-        if self._finished.is_set():
-            self._finished.clear()
-        if self._getters:
-            delivered = molt_asyncio_queue_get_nowait(self._q_handle)
-            if not self._wakeup_next(self._getters, delivered):
-                self._put(delivered)
-        else:
-            self._put(item)
-
-    def _put(self, item: Any) -> None:
-        self._queue.append(item)
-
-    async def get(self) -> Any:
-        if not molt_asyncio_queue_empty(self._q_handle):
-            return self._get_nowait()
-        if molt_asyncio_queue_is_shutdown(self._q_handle):
-            raise _QueueShutDown
-        fut = Future()
-        self._getters.append(fut)
-        try:
-            return await fut
-        except BaseException as exc:
-            if _is_cancelled_exc(exc):
-                _asyncio_waiters_remove(self._getters, fut)
-            raise
-
-    def get_nowait(self) -> Any:
-        if not molt_asyncio_queue_empty(self._q_handle):
-            return self._get_nowait()
-        if molt_asyncio_queue_is_shutdown(self._q_handle):
-            raise _QueueShutDown
-        raise QueueEmpty
-
-    def _get_nowait(self) -> Any:
-        item = self._get()
-        molt_asyncio_queue_get_nowait(self._q_handle)
-        if self._putters:
-            self._wakeup_next(self._putters, None)
-        return item
-
-    def _get(self) -> Any:
-        return self._queue.popleft()
-
-    def _wakeup_next(self, waiters: Any, result: Any) -> bool:
-        while waiters:
-            fut = waiters.popleft()
-            if not fut.done():
-                fut.set_result(result)
-                return True
-        return False
-
-    def _wakeup_all_exception(self, waiters: Any, exc: BaseException) -> None:
-        while waiters:
-            fut = waiters.popleft()
-            if not fut.done():
-                fut.set_exception(exc)
-
-    def task_done(self) -> None:
-        molt_asyncio_queue_task_done(self._q_handle)
-        if int(molt_asyncio_queue_unfinished_tasks(self._q_handle)) == 0:
-            self._finished.set()
-
-    async def join(self) -> None:
-        await self._finished.wait()
-
-    if _EXPOSE_QUEUE_SHUTDOWN:
-
-        def shutdown(self) -> None:
-            self._shutdown = True
-            molt_asyncio_queue_shutdown(self._q_handle, False)
-            exc = _QueueShutDown()
-            self._wakeup_all_exception(self._getters, exc)
-            self._wakeup_all_exception(self._putters, exc)
-
-    def __repr__(self) -> str:
-        size = self.qsize()
-        maxsize = self._maxsize
-        if maxsize > 0:
-            return f"<Queue maxsize={maxsize} qsize={size}>"
-        return f"<Queue qsize={size}>"
-
-    @classmethod
-    def __class_getitem__(cls, item: Any) -> Any:
-        return _require_asyncio_intrinsic(molt_generic_alias_new, "generic_alias_new")(
-            cls, item
-        )
-
-    def __del__(self) -> None:
-        handle = getattr(self, "_q_handle", None)
-        if handle is not None:
-            molt_asyncio_queue_drop(handle)
-
-
-class PriorityQueue(Queue):
-    _Q_TYPE: int = 2  # Priority
-
-    def _init(self) -> None:
-        self._queue = []
-
-    def _put(self, item: Any) -> None:
-        _heapq.heappush(self._queue, item)
-
-    def _get(self) -> Any:
-        return _heapq.heappop(self._queue)
-
-
-class LifoQueue(Queue):
-    _Q_TYPE: int = 1  # LIFO
-
-    def _init(self) -> None:
-        self._queue = []
-
-    def _put(self, item: Any) -> None:
-        self._queue.append(item)
-
-    def _get(self) -> Any:
-        return self._queue.pop()
-
-
 def _module(name: str, attrs: dict[str, Any]) -> _types.ModuleType:
     mod = _require_asyncio_intrinsic(_molt_module_new, "module_new")(name)
     mod_dict = getattr(mod, "__dict__", None)
@@ -6232,7 +5574,6 @@ def _module(name: str, attrs: dict[str, Any]) -> _types.ModuleType:
     mod.__package__ = name.rpartition(".")[0]
     _sys.modules[name] = mod
     return mod
-
 
 def _format_callback_source(
     callback: Any, args: tuple[Any, ...], *, debug: bool = False
@@ -6247,10 +5588,8 @@ def _format_callback_source(
         return f"{name}({args_repr})"
     return f"{name}()"
 
-
 def _extract_stack(limit: int | None = None) -> list[Any]:
     return _traceback.extract_stack(limit=limit)
-
 
 class FlowControlMixin:
     def __init__(self) -> None:
@@ -6262,19 +5601,16 @@ class FlowControlMixin:
     def resume_writing(self) -> None:
         self._paused = False
 
-
 _coroutine = getattr(_types, "coroutine", None)
 if _coroutine is None:
 
     def _coroutine(func: Any) -> Any:
         return func
 
-
 def on_fork() -> None:
     global _CHILD_WATCHER
     _set_running_loop(None)
     _CHILD_WATCHER = None
-
 
 _events_attrs: dict[str, Any] = {
     "AbstractEventLoop": AbstractEventLoop,
@@ -6381,25 +5717,6 @@ format_helpers = _module(
 )
 setattr(events, "format_helpers", format_helpers)
 
-
-def _queues_attrs() -> dict[str, Any]:
-    attrs = {
-        "GenericAlias": _types.GenericAlias,
-        "Queue": Queue,
-        "PriorityQueue": PriorityQueue,
-        "LifoQueue": LifoQueue,
-        "QueueEmpty": QueueEmpty,
-        "QueueFull": QueueFull,
-        "collections": _collections,
-        "heapq": _heapq,
-        "locks": locks,
-        "mixins": mixins,
-    }
-    if _EXPOSE_QUEUE_SHUTDOWN:
-        attrs["QueueShutDown"] = _QueueShutDown
-    return attrs
-
-
 def _make_log_module() -> _types.ModuleType:
     logger = _logging.getLogger("asyncio")
     return _module(
@@ -6410,7 +5727,6 @@ def _make_log_module() -> _types.ModuleType:
         },
     )
 
-
 def _make_mixins_module() -> _types.ModuleType:
     return _module(
         "asyncio.mixins",
@@ -6420,35 +5736,12 @@ def _make_mixins_module() -> _types.ModuleType:
         },
     )
 
-
-def _make_locks_module() -> _types.ModuleType:
-    return _module(
-        "asyncio.locks",
-        {
-            "Lock": Lock,
-            "Event": Event,
-            "Condition": Condition,
-            "Semaphore": Semaphore,
-            "BoundedSemaphore": BoundedSemaphore,
-            "Barrier": Barrier,
-            "BrokenBarrierError": BrokenBarrierError,
-            "collections": _collections,
-            "enum": _enum,
-            "exceptions": exceptions,
-            "mixins": mixins,
-        },
-    )
-
-
-def _make_queues_module() -> _types.ModuleType:
-    return _module("asyncio.queues", _queues_attrs())
-
-
 log = _make_log_module()
 mixins = _make_mixins_module()
-locks = _make_locks_module()
-queues = _make_queues_module()
-
+locks.exceptions = exceptions
+locks.mixins = mixins
+queues.locks = locks
+queues.mixins = mixins
 
 def __getattr__(name: str) -> Any:
     if name == "log":
@@ -6456,14 +5749,13 @@ def __getattr__(name: str) -> Any:
     elif name == "mixins":
         mod = _make_mixins_module()
     elif name == "locks":
-        mod = _make_locks_module()
+        mod = locks
     elif name == "queues":
-        mod = _make_queues_module()
+        mod = queues
     else:
         raise AttributeError(f"module 'asyncio' has no attribute '{name}'")
     globals()[name] = mod
     return mod
-
 
 protocols = _module(
     "asyncio.protocols",
@@ -6548,7 +5840,6 @@ if _typing_final_alias is None:
     def _typing_final_alias(arg: Any) -> Any:
         return arg
 
-
 timeouts = _module(
     "asyncio.timeouts",
     {
@@ -6631,17 +5922,14 @@ selector_events = _module(
     },
 )
 
-
 class EnumType(type):
     pass
-
 
 class AppProtocolState(metaclass=EnumType):
     STATE_INIT = 0
     STATE_CON_MADE = 1
     STATE_EOF = 2
     STATE_CON_LOST = 3
-
 
 class SSLProtocolState(metaclass=EnumType):
     UNWRAPPED = 0
@@ -6650,13 +5938,10 @@ class SSLProtocolState(metaclass=EnumType):
     FLUSHING = 3
     SHUTDOWN = 4
 
-
 class SSLProtocol:
     pass
 
-
 del EnumType
-
 
 _ssl_again_errors: list[type[Any]] = []
 for _name in ("SSLWantReadError", "SSLWantWriteError"):
@@ -6667,12 +5952,10 @@ if not _ssl_again_errors:
     _ssl_again_errors = [_ssl.SSLError]
 SSLAgainErrors = tuple(_ssl_again_errors)
 
-
 def add_flowcontrol_defaults(
     *args: Any, **kwargs: Any
 ) -> tuple[tuple[Any, ...], dict[str, Any]]:
     return args, kwargs
-
 
 sslproto = _module(
     "asyncio.sslproto",
@@ -6806,10 +6089,8 @@ streams = _module(
 )
 setattr(subprocess, "streams", streams)
 
-
 class TransportSocket:
     pass
-
 
 trsock = _module(
     "asyncio.trsock",
@@ -6903,7 +6184,6 @@ if _IS_WINDOWS:
             "DEVNULL": _subprocess.DEVNULL,
         },
     )
-
 
 async def staggered_race(
     coro_fns: Iterable[Any], delay: float | None
@@ -7053,7 +6333,6 @@ async def staggered_race(
         # after staggered_race exits.
         on_completed_fut_cell[0] = None
 
-
 staggered = _module(
     "asyncio.staggered",
     {
@@ -7166,7 +6445,6 @@ if _EXPOSE_GRAPH:
     _builtin_targets.extend([future_add_to_awaited_by, future_discard_from_awaited_by])
 for _fn in _builtin_targets:
     _mark_builtin(_fn)
-
 
 # ---------------------------------------------------------------------------
 # Namespace cleanup — remove names that are not part of CPython's asyncio API.
