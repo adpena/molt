@@ -702,3 +702,245 @@ pub(crate) fn textwrap_dedent_impl(text: &str) -> String {
     }
     result
 }
+
+// Runtime textwrap ABI entrypoints.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_textwrap_dedent(text_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        let Some(text) = string_obj_to_owned(obj_from_bits(text_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "text must be str");
+        };
+        let result = textwrap_dedent_impl(&text);
+        let out_ptr = alloc_string(_py, result.as_bytes());
+        if out_ptr.is_null() {
+            MoltObject::none().bits()
+        } else {
+            MoltObject::from_ptr(out_ptr).bits()
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_textwrap_shorten(
+    text_bits: u64,
+    width_bits: u64,
+    placeholder_bits: u64,
+) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        let Some(text) = string_obj_to_owned(obj_from_bits(text_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "text must be str");
+        };
+        let Some(width) = to_i64(obj_from_bits(width_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "width must be int");
+        };
+        let placeholder = if obj_from_bits(placeholder_bits).is_none() {
+            " [...]".to_string()
+        } else {
+            string_obj_to_owned(obj_from_bits(placeholder_bits))
+                .unwrap_or_else(|| " [...]".to_string())
+        };
+        // Collapse whitespace and truncate
+        let collapsed: String = text.split_whitespace().collect::<Vec<&str>>().join(" ");
+        if (collapsed.len() as i64) <= width {
+            let out_ptr = alloc_string(_py, collapsed.as_bytes());
+            if out_ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            return MoltObject::from_ptr(out_ptr).bits();
+        }
+        let ph_len = placeholder.len() as i64;
+        let max_text = width - ph_len;
+        if max_text < 0 {
+            let out_ptr = alloc_string(_py, placeholder.as_bytes());
+            if out_ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            return MoltObject::from_ptr(out_ptr).bits();
+        }
+        // Find last space before max_text
+        let mut truncate_at = max_text as usize;
+        if truncate_at < collapsed.len() {
+            // Find last space at or before truncate_at
+            if let Some(pos) = collapsed[..truncate_at].rfind(' ') {
+                truncate_at = pos;
+            }
+        }
+        let result = format!("{}{}", &collapsed[..truncate_at].trim_end(), placeholder);
+        let out_ptr = alloc_string(_py, result.as_bytes());
+        if out_ptr.is_null() {
+            MoltObject::none().bits()
+        } else {
+            MoltObject::from_ptr(out_ptr).bits()
+        }
+    })
+}
+
+// Runtime textwrap wrapping/fill ABI entrypoints.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_textwrap_wrap(text_bits: u64, width_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        let Some(text) = string_obj_to_owned(obj_from_bits(text_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "text must be str");
+        };
+        let Some(width) = to_i64(obj_from_bits(width_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "width must be int");
+        };
+        let options = textwrap_default_options(width);
+        let lines = match textwrap_wrap_impl(&text, &options) {
+            Ok(lines) => lines,
+            Err(msg) => return raise_exception::<_>(_py, "ValueError", &msg),
+        };
+        alloc_string_list(_py, &lines)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_textwrap_wrap_ex(
+    text_bits: u64,
+    width_bits: u64,
+    initial_indent_bits: u64,
+    subsequent_indent_bits: u64,
+    expand_tabs_bits: u64,
+    replace_whitespace_bits: u64,
+    fix_sentence_endings_bits: u64,
+    break_long_words_bits: u64,
+    drop_whitespace_bits: u64,
+    break_on_hyphens_bits: u64,
+    tabsize_bits: u64,
+    max_lines_placeholder_bits: u64,
+) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        let Some(text) = string_obj_to_owned(obj_from_bits(text_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "text must be str");
+        };
+        let options = match textwrap_parse_options_ex(
+            _py,
+            width_bits,
+            initial_indent_bits,
+            subsequent_indent_bits,
+            expand_tabs_bits,
+            replace_whitespace_bits,
+            fix_sentence_endings_bits,
+            break_long_words_bits,
+            drop_whitespace_bits,
+            break_on_hyphens_bits,
+            tabsize_bits,
+            max_lines_placeholder_bits,
+        ) {
+            Ok(options) => options,
+            Err(bits) => return bits,
+        };
+        let lines = match textwrap_wrap_impl(&text, &options) {
+            Ok(lines) => lines,
+            Err(msg) => return raise_exception::<_>(_py, "ValueError", &msg),
+        };
+        alloc_string_list(_py, &lines)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_textwrap_fill(text_bits: u64, width_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        let Some(text) = string_obj_to_owned(obj_from_bits(text_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "text must be str");
+        };
+        let Some(width) = to_i64(obj_from_bits(width_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "width must be int");
+        };
+        let options = textwrap_default_options(width);
+        let out = match textwrap_wrap_impl(&text, &options) {
+            Ok(lines) => lines.join("\n"),
+            Err(msg) => return raise_exception::<_>(_py, "ValueError", &msg),
+        };
+        let out_ptr = alloc_string(_py, out.as_bytes());
+        if out_ptr.is_null() {
+            MoltObject::none().bits()
+        } else {
+            MoltObject::from_ptr(out_ptr).bits()
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_textwrap_fill_ex(
+    text_bits: u64,
+    width_bits: u64,
+    initial_indent_bits: u64,
+    subsequent_indent_bits: u64,
+    expand_tabs_bits: u64,
+    replace_whitespace_bits: u64,
+    fix_sentence_endings_bits: u64,
+    break_long_words_bits: u64,
+    drop_whitespace_bits: u64,
+    break_on_hyphens_bits: u64,
+    tabsize_bits: u64,
+    max_lines_placeholder_bits: u64,
+) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        let Some(text) = string_obj_to_owned(obj_from_bits(text_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "text must be str");
+        };
+        let options = match textwrap_parse_options_ex(
+            _py,
+            width_bits,
+            initial_indent_bits,
+            subsequent_indent_bits,
+            expand_tabs_bits,
+            replace_whitespace_bits,
+            fix_sentence_endings_bits,
+            break_long_words_bits,
+            drop_whitespace_bits,
+            break_on_hyphens_bits,
+            tabsize_bits,
+            max_lines_placeholder_bits,
+        ) {
+            Ok(options) => options,
+            Err(bits) => return bits,
+        };
+        let out = match textwrap_wrap_impl(&text, &options) {
+            Ok(lines) => lines.join("\n"),
+            Err(msg) => return raise_exception::<_>(_py, "ValueError", &msg),
+        };
+        let out_ptr = alloc_string(_py, out.as_bytes());
+        if out_ptr.is_null() {
+            MoltObject::none().bits()
+        } else {
+            MoltObject::from_ptr(out_ptr).bits()
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_textwrap_indent(text_bits: u64, prefix_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        let Some(text) = string_obj_to_owned(obj_from_bits(text_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "text must be str");
+        };
+        let Some(prefix) = string_obj_to_owned(obj_from_bits(prefix_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "prefix must be str");
+        };
+        textwrap_indent_with_predicate(_py, &text, &prefix, None)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_textwrap_indent_ex(
+    text_bits: u64,
+    prefix_bits: u64,
+    predicate_bits: u64,
+) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        let Some(text) = string_obj_to_owned(obj_from_bits(text_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "text must be str");
+        };
+        let Some(prefix) = string_obj_to_owned(obj_from_bits(prefix_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "prefix must be str");
+        };
+        let predicate = if obj_from_bits(predicate_bits).is_none() {
+            None
+        } else {
+            Some(predicate_bits)
+        };
+        textwrap_indent_with_predicate(_py, &text, &prefix, predicate)
+    })
+}
