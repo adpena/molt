@@ -115,6 +115,64 @@ fn test_compile_checked_lowers_type_check_helpers() {
 }
 
 #[test]
+fn test_compile_checked_lowers_callable_builtin_through_invocation_authority() {
+    let ir = SimpleIR {
+        functions: vec![FunctionIR {
+            name: "callable_builtin_test".to_string(),
+            params: vec!["candidate".to_string()],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+            ops: vec![
+                OpIR {
+                    kind: "builtin_func".to_string(),
+                    out: Some("callable_fn".to_string()),
+                    s_value: Some("molt_callable_builtin".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "callargs_new".to_string(),
+                    out: Some("callable_args".to_string()),
+                    args: Some(vec!["candidate".to_string()]),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "call_func".to_string(),
+                    out: Some("is_callable".to_string()),
+                    args: Some(vec!["callable_fn".to_string(), "callable_args".to_string()]),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret".to_string(),
+                    args: Some(vec!["is_callable".to_string()]),
+                    ..OpIR::default()
+                },
+            ],
+        }],
+        profile: None,
+    };
+    let mut backend = LuauBackend::new();
+    let source = backend
+        .compile_checked(&ir)
+        .expect("callable builtin should lower through invocation authority");
+
+    assert!(
+        source
+            .contains("local callable_fn = function(a, ...) return type(a[1]) == \"function\" end")
+            && source.contains(
+                "local is_callable = if callable_fn then callable_fn(callable_args) else nil"
+            ),
+        "callable builtin should share the Luau function predicate, got:\n{source}"
+    );
+    assert!(
+        !source.contains("molt_callable(")
+            && !source.contains("[unsupported op: builtin_func]")
+            && !source.contains("[unsupported op: call_func]"),
+        "callable builtin must not emit an undefined helper or markers, got:\n{source}"
+    );
+}
+
+#[test]
 fn test_compile_checked_lowers_descriptor_attribute_authority() {
     let ir = SimpleIR {
         functions: vec![

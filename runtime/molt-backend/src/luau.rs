@@ -33,6 +33,7 @@ mod compile_pipeline;
 mod function_body;
 mod helpers;
 mod op_attributes;
+mod op_calls;
 mod op_collections;
 mod op_control;
 mod op_emitter;

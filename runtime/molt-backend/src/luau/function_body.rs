@@ -415,20 +415,33 @@ impl LuauBackend {
                         let var_name = &after_local[..var_end];
                         if !var_name.is_empty() {
                             let rest = after_local[var_end..].trim_start();
-                            if rest.starts_with('=') {
-                                // This is `local var = ...` — check for hoisted or duplicate.
+                            let assignment_rest = if rest.starts_with('=') {
+                                Some(rest)
+                            } else if let Some(type_rest) = rest.strip_prefix(':') {
+                                let eq_idx = type_rest.find('=');
+                                let comma_idx = type_rest.find(',');
+                                match (eq_idx, comma_idx) {
+                                    (Some(eq_idx), Some(comma_idx)) if comma_idx < eq_idx => None,
+                                    (Some(eq_idx), _) => Some(type_rest[eq_idx..].trim_start()),
+                                    _ => None,
+                                }
+                            } else {
+                                None
+                            };
+                            if let Some(assignment_rest) = assignment_rest {
+                                // This is `local var = ...` or `local var: T = ...`:
+                                // keep the first declaration and convert hoisted or duplicate
+                                // declarations into assignments.
                                 if self.hoisted_vars.contains(var_name)
                                     || !seen_locals.insert(var_name.to_string())
                                 {
-                                    // Already declared — strip `local `.
                                     let indent = &line[..line.len() - trimmed.len()];
                                     patched.push_str(indent);
-                                    patched.push_str(after_local);
+                                    patched.push_str(var_name);
+                                    patched.push(' ');
+                                    patched.push_str(assignment_rest);
                                     patched.push('\n');
                                     replaced = true;
-                                } else {
-                                    // First declaration — keep `local`.
-                                    // (already inserted into seen_locals above)
                                 }
                             } else if rest.is_empty() || rest.starts_with("--") {
                                 // Bare `local var` pre-declaration.
