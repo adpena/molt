@@ -14,7 +14,7 @@ import ast
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from molt.frontend.sema.result import ClassGraph
+from molt.frontend.sema.result import ClassFacts, ClassGraph
 
 
 def build_class_graph(node: ast.Module) -> ClassGraph:
@@ -94,6 +94,146 @@ def build_class_graph(node: ast.Module) -> ClassGraph:
 
 
 ClassTable = Mapping[str, Mapping[str, Any]]
+
+
+CLASS_BODY_SIMPLE_STMTS = (
+    ast.FunctionDef,
+    ast.AsyncFunctionDef,
+    ast.ClassDef,
+    ast.Assign,
+    ast.AnnAssign,
+    ast.Expr,
+    ast.Pass,
+)
+
+
+def class_body_needs_block_exec(body: Sequence[ast.stmt]) -> bool:
+    """True when a class body must execute through the mutable namespace block."""
+    for stmt in body:
+        if not isinstance(stmt, CLASS_BODY_SIMPLE_STMTS):
+            return True
+        if isinstance(stmt, ast.Assign):
+            if any(not isinstance(t, ast.Name) for t in stmt.targets):
+                return True
+        elif isinstance(stmt, ast.AnnAssign):
+            if not isinstance(stmt.target, ast.Name):
+                return True
+    return False
+
+
+def _is_property_update_method(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    if len(node.decorator_list) != 1:
+        return False
+    decorator = node.decorator_list[0]
+    return (
+        isinstance(decorator, ast.Attribute)
+        and isinstance(decorator.value, ast.Name)
+        and decorator.value.id == node.name
+        and decorator.attr in {"setter", "deleter"}
+    )
+
+
+def _is_inert_class_expr(node: ast.Expr) -> bool:
+    return isinstance(node.value, ast.Constant) and isinstance(
+        node.value.value, (str, bytes, int, float, complex, bool, type(None))
+    )
+
+
+def _class_member_facts_are_opaque(node: ast.ClassDef) -> bool:
+    if node.decorator_list or node.keywords:
+        return True
+    if class_body_needs_block_exec(node.body):
+        return True
+    for item in node.body:
+        if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if item.decorator_list and not _is_property_update_method(item):
+                return True
+        elif isinstance(item, ast.Expr) and not _is_inert_class_expr(item):
+            return True
+    return False
+
+
+def build_class_facts(node: ast.Module) -> ClassFacts:
+    """Collect final class-body member facts used by class semantic predicates."""
+    method_names_by_class: dict[str, frozenset[str]] = {}
+    attr_names_by_class: dict[str, frozenset[str]] = {}
+    counts: dict[str, int] = {}
+    opaque: set[str] = set()
+
+    def target_names(target: ast.AST) -> list[str]:
+        if isinstance(target, ast.Name):
+            return [target.id]
+        if isinstance(target, ast.Starred):
+            return target_names(target.value)
+        if isinstance(target, (ast.Tuple, ast.List)):
+            names: list[str] = []
+            for elt in target.elts:
+                names.extend(target_names(elt))
+            return names
+        return []
+
+    def bind_method(members: dict[str, str], name: str) -> None:
+        members[name] = "method"
+
+    def bind_attr(members: dict[str, str], name: str) -> None:
+        members[name] = "attr"
+
+    def delete_name(members: dict[str, str], name: str) -> None:
+        members.pop(name, None)
+
+    for stmt in ast.walk(node):
+        if not isinstance(stmt, ast.ClassDef):
+            continue
+        counts[stmt.name] = counts.get(stmt.name, 0) + 1
+        if _class_member_facts_are_opaque(stmt):
+            opaque.add(stmt.name)
+        members: dict[str, str] = {}
+        for item in stmt.body:
+            if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                if not _is_property_update_method(item):
+                    bind_method(members, item.name)
+                continue
+            if isinstance(item, ast.ClassDef):
+                bind_attr(members, item.name)
+                continue
+            if isinstance(item, ast.Assign):
+                for target in item.targets:
+                    for name in target_names(target):
+                        bind_attr(members, name)
+                continue
+            if isinstance(item, ast.AnnAssign):
+                if item.value is not None:
+                    for name in target_names(item.target):
+                        bind_attr(members, name)
+                continue
+            if isinstance(item, ast.AugAssign):
+                for name in target_names(item.target):
+                    bind_attr(members, name)
+                continue
+            if isinstance(item, (ast.Import, ast.ImportFrom)):
+                for alias in item.names:
+                    bind_attr(members, alias.asname or alias.name.split(".", 1)[0])
+                continue
+            if isinstance(item, ast.Delete):
+                for target in item.targets:
+                    for name in target_names(target):
+                        delete_name(members, name)
+                continue
+
+        method_names_by_class[stmt.name] = frozenset(
+            name for name, kind in members.items() if kind == "method"
+        )
+        attr_names_by_class[stmt.name] = frozenset(
+            name for name, kind in members.items() if kind == "attr"
+        )
+
+    ambiguous = frozenset(name for name, count in counts.items() if count != 1)
+    return ClassFacts(
+        method_names_by_class=method_names_by_class,
+        attr_names_by_class=attr_names_by_class,
+        opaque_member_class_names=frozenset(opaque),
+        ambiguous_class_names=ambiguous,
+    )
 
 
 def c3_merge(seqs: Sequence[Sequence[str]]) -> list[str] | None:
@@ -212,14 +352,58 @@ def reachable_base_names(
     return _seen
 
 
+def _local_class_known(class_facts: ClassFacts, class_name: str) -> bool:
+    return (
+        class_name in class_facts.method_names_by_class
+        or class_name in class_facts.attr_names_by_class
+    )
+
+
+def _class_member_state(
+    class_facts: ClassFacts,
+    imported_classes: ClassTable,
+    class_name: str,
+    member: str,
+) -> str | None:
+    """Return ``method``, ``blocked``, ``absent``, or ``None`` for unknown."""
+    if (
+        class_name in class_facts.ambiguous_class_names
+        or class_name in class_facts.opaque_member_class_names
+    ):
+        return None
+    if _local_class_known(class_facts, class_name):
+        method_names = class_facts.method_names_by_class.get(class_name, frozenset())
+        attr_names = class_facts.attr_names_by_class.get(class_name, frozenset())
+        if member in attr_names:
+            return "blocked"
+        if member in method_names:
+            return "method"
+        return "absent"
+
+    info = imported_classes.get(class_name)
+    if info is None:
+        return None
+    methods = info.get("methods", {})
+    class_attrs = info.get("class_attrs", {})
+    if member in class_attrs:
+        return "blocked"
+    if member in methods:
+        return "method"
+    return "absent"
+
+
 def static_method_owner_after(
-    classes: ClassTable, mro: Sequence[str], start: str, method: str
+    class_facts: ClassFacts,
+    imported_classes: ClassTable,
+    mro: Sequence[str],
+    start: str,
+    method: str,
 ) -> str | None:
     """Return the first class defining ``method`` strictly after ``start``.
 
     This mirrors ``super(start, ...).method`` resolution for the static
-    zero-arg-super fold. Missing class metadata is fail-closed because an
-    unknown class could define the method.
+    zero-arg-super fold. Missing class metadata and non-method class attribute
+    interposition are fail-closed because either could change runtime lookup.
     """
     mro_names = list(mro)
     if start not in mro_names:
@@ -227,10 +411,10 @@ def static_method_owner_after(
     for name in mro_names[mro_names.index(start) + 1 :]:
         if name == "object":
             return None
-        info = classes.get(name)
-        if info is None:
+        state = _class_member_state(class_facts, imported_classes, name, method)
+        if state is None or state == "blocked":
             return None
-        if method in info.get("methods", {}):
+        if state == "method":
             return name
     return None
 
@@ -259,7 +443,8 @@ def super_fold_is_sound(
     class_name: str,
     method: str,
     *,
-    classes: ClassTable,
+    class_facts: ClassFacts,
+    imported_classes: ClassTable,
     class_graph: ClassGraph,
     module_name: str | None,
     entry_module: str | None,
@@ -278,20 +463,24 @@ def super_fold_is_sound(
         return False
     if class_name not in class_graph.bases_by_class:
         return False
-    own_mro = static_mro_names(class_graph, classes, class_name)
+    own_mro = static_mro_names(class_graph, imported_classes, class_name)
     if own_mro is None:
         return False
-    expected_owner = static_method_owner_after(classes, own_mro, class_name, method)
+    expected_owner = static_method_owner_after(
+        class_facts, imported_classes, own_mro, class_name, method
+    )
     if expected_owner is None:
         return False
-    subclasses = visible_subclasses_of(class_graph, class_name, classes)
+    subclasses = visible_subclasses_of(class_graph, class_name, imported_classes)
     if subclasses is None:
         return False
     for sub in subclasses:
-        sub_mro = static_mro_names(class_graph, classes, sub)
+        sub_mro = static_mro_names(class_graph, imported_classes, sub)
         if sub_mro is None:
             return False
-        sub_owner = static_method_owner_after(classes, sub_mro, class_name, method)
+        sub_owner = static_method_owner_after(
+            class_facts, imported_classes, sub_mro, class_name, method
+        )
         if sub_owner != expected_owner:
             return False
     return True

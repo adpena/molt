@@ -236,6 +236,7 @@ def test_moved_methods_resolve_on_class() -> None:
         "_static_method_owner_after",
         "_visible_subclasses_of",
         "_super_fold_is_sound",
+        "_class_body_needs_block_exec",
     ):
         assert not hasattr(SimpleTIRGenerator, deleted_classgraph_bridge)
     # type annotations and hints

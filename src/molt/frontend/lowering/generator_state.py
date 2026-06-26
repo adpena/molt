@@ -312,7 +312,8 @@ class GeneratorStateMixin(_MixinBase):
         self.code_slots_emitted = False
         self.var_count: int = 0
         self.state_count: int = 0
-        self.classes: dict[str, ClassInfo] = dict(known_classes or {})
+        self.known_classes: dict[str, ClassInfo] = dict(known_classes or {})
+        self.classes: dict[str, ClassInfo] = dict(self.known_classes)
         self.local_class_names: set[str] = set()
         # Depth of class-statement bodies currently being lowered.  A nested
         # ``class`` statement (a class defined inside another class body) must
@@ -372,14 +373,6 @@ class GeneratorStateMixin(_MixinBase):
         self.stable_module_funcs: set[str] = set()
         self.module_declared_funcs: dict[str, FunctionKind] = {}
         self.module_declared_classes: set[str] = set()
-        # Static class graph for this module — the soundness substrate for the
-        # zero-arg ``super()`` fold (see ``frontend.sema.classgraph``).
-        # ``module_subclassed_names``: names referenced as a base anywhere.
-        # ``module_class_bases``: class name -> list of base-name lists across
-        # all class statements defining that name (``["<opaque>"]`` for a class
-        # whose bases are not all simple names).
-        self.module_subclassed_names: set[str] = set()
-        self.module_class_bases: dict[str, list[list[str]]] = {}
         self.stable_module_classes: set[str] = set()
         self.module_defined_funcs: set[str] = set()
         self.class_definition_pending: set[str] = set()

@@ -37,8 +37,6 @@ class StatementScopeVisitorMixin(_MixinBase):
         prev_mutated = self.mutated_classes
         prev_declared = self.module_declared_funcs
         prev_declared_classes = self.module_declared_classes
-        prev_subclassed_names = self.module_subclassed_names
-        prev_class_bases = self.module_class_bases
         prev_stable_classes = self.stable_module_classes
         prev_reserved = self.reserved_func_symbols
         prev_defined = self.module_defined_funcs
@@ -242,8 +240,6 @@ class StatementScopeVisitorMixin(_MixinBase):
         self.mutated_classes = prev_mutated
         self.module_declared_funcs = prev_declared
         self.module_declared_classes = prev_declared_classes
-        self.module_subclassed_names = prev_subclassed_names
-        self.module_class_bases = prev_class_bases
         self.stable_module_classes = prev_stable_classes
         self.reserved_func_symbols = prev_reserved
         self.module_defined_funcs = prev_defined

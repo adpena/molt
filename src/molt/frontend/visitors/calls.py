@@ -2206,7 +2206,8 @@ class CallVisitorMixin(CallReductionMixin, _MixinBase):
         if not super_fold_is_sound(
             current_class,
             method_name,
-            classes=self.classes,
+            class_facts=self._sema.class_facts,
+            imported_classes=self.known_classes,
             class_graph=self._sema.class_graph,
             module_name=self.module_name,
             entry_module=self.entry_module,
