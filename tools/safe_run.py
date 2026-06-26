@@ -99,6 +99,8 @@ def _status(returncode: int, summary: dict[str, object]) -> str:
         return "timeout"
     if summary.get("violation") is not None:
         return "oom"
+    if "returncode" in summary:
+        return "ok"
     if returncode == EXIT_TIMEOUT:
         return "timeout"
     if returncode == EXIT_OOM:

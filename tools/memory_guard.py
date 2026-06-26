@@ -109,6 +109,7 @@ from tools.memory_guard_core.windows_snapshot import (  # noqa: E402
 )
 from tools.memory_guard_core import process_model as _process_model  # noqa: E402
 from tools.memory_guard_core import repro_context as _repro_context  # noqa: E402
+
 PYTEST_OUTER_GUARD_SUMMARY_DIR = ROOT / "tmp" / "pytest-memory-guard"
 GUARD_RETURN_CODE = 137
 TIMEOUT_RETURN_CODE = 124
@@ -670,6 +671,11 @@ def _process_group_exited_or_unobservable(pgid: int, *, grace: float) -> bool:
     return False
 
 
+def process_group_exited_or_unobservable(pgid: int, *, grace: float) -> bool:
+    """Shared non-terminating process-group liveness probe after a scoped signal."""
+    return _process_group_exited_or_unobservable(pgid, grace=grace)
+
+
 def _signal_name(signum: int | None) -> str | None:
     if signum is None:
         return None
@@ -990,7 +996,9 @@ def terminate_watched_processes(
                 )
             ):
                 result = "skipped_host_control_lineage"
-            elif root_sample is not None and _sample_pgid(root_sample) in protected_pgids:
+            elif (
+                root_sample is not None and _sample_pgid(root_sample) in protected_pgids
+            ):
                 result = "skipped_protected_root_group"
             else:
                 result = "skipped_unowned_root_pid"
@@ -1002,7 +1010,9 @@ def terminate_watched_processes(
                     result=result,
                 )
             )
-        identity_sampler = (lambda: observed_samples) if samples is not None else sampler
+        identity_sampler = (
+            (lambda: observed_samples) if samples is not None else sampler
+        )
         remaining_pids: set[int] = set()
         for pid in sorted(owned_pids, reverse=True):
             if pid <= 0:
@@ -1801,8 +1811,7 @@ def _returncode_signal_payload(returncode: int) -> dict[str, object] | None:
         signo = returncode - 128
         conventional_shell_status = True
     elif (
-        _is_windows_process_model()
-        and returncode in WINDOWS_PROCESS_SIGNAL_EXIT_CODES
+        _is_windows_process_model() and returncode in WINDOWS_PROCESS_SIGNAL_EXIT_CODES
     ):
         signo = returncode
     else:

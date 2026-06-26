@@ -376,13 +376,6 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
         "compatibility facade launches tools/memory_guard.py as the custody owner",
     ),
     AllowedRawSubprocessUse(
-        "tools/process_sentinel.py",
-        "terminate_group",
-        "os.killpg",
-        "repo process sentinel process-group existence probe after "
-        "identity-checked memory_guard signal actions",
-    ),
-    AllowedRawSubprocessUse(
         "tools/check_subprocess_guard_coverage.py",
         "<module>",
         "shell.kill",
@@ -760,7 +753,7 @@ def audit_paths(
     text_paths: Sequence[Path] | None = None,
 ) -> SubprocessGuardAudit:
     if text_paths is None:
-        text_paths = DEFAULT_TEXT_TARGETS if paths is DEFAULT_TARGETS else ()
+        text_paths = DEFAULT_TEXT_TARGETS if tuple(paths) == DEFAULT_TARGETS else ()
     scanned_files = 0
     raw_calls: list[RawSubprocessCall] = []
     for path in _iter_python_files(paths, root=root):
