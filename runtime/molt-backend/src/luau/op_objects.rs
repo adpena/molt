@@ -194,6 +194,63 @@ impl LuauBackend {
                     self.emit_line(&format!("local {out} = nil -- bound_method missing args"));
                 }
             }
+            "super_new" => {
+                let out = self.out_var(op);
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if args.len() >= 2 {
+                    let class = sanitize_ident(&args[0]);
+                    self.emit_line(&format!(
+                        "local {out} = setmetatable({{}}, {{__index = getmetatable({class}).__index}})"
+                    ));
+                } else {
+                    self.emit_line(&format!("local {out} = {{}}"));
+                }
+            }
+            "classmethod_new" | "staticmethod_new" | "property_new" => {
+                if let Some(ref out_name) = op.out {
+                    let out = sanitize_ident(out_name);
+                    let args = op.args.as_deref().unwrap_or(&[]);
+                    match op.kind.as_str() {
+                        "classmethod_new" => {
+                            let func = args
+                                .first()
+                                .map(|arg| sanitize_ident(arg))
+                                .unwrap_or_else(|| "nil".to_string());
+                            self.emit_line(&format!(
+                                "local {out} = {{__molt_descriptor_kind=\"classmethod\", __func={func}}}"
+                            ));
+                        }
+                        "staticmethod_new" => {
+                            let func = args
+                                .first()
+                                .map(|arg| sanitize_ident(arg))
+                                .unwrap_or_else(|| "nil".to_string());
+                            self.emit_line(&format!(
+                                "local {out} = {{__molt_descriptor_kind=\"staticmethod\", __func={func}}}"
+                            ));
+                        }
+                        "property_new" => {
+                            let get = args
+                                .first()
+                                .map(|arg| sanitize_ident(arg))
+                                .unwrap_or_else(|| "nil".to_string());
+                            let set = args
+                                .get(1)
+                                .map(|arg| sanitize_ident(arg))
+                                .unwrap_or_else(|| "nil".to_string());
+                            let del = args
+                                .get(2)
+                                .map(|arg| sanitize_ident(arg))
+                                .unwrap_or_else(|| "nil".to_string());
+                            self.emit_line(&format!(
+                                "local {out} = {{__molt_descriptor_kind=\"property\", __get={get}, __set={set}, __del={del}}}"
+                            ));
+                        }
+                        _ => unreachable!(),
+                    }
+                }
+            }
+
             "class_set_base" => {
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 2 {
