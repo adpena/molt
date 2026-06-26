@@ -43,7 +43,6 @@ from molt.frontend.sema import (
     parse_stateful_function_type_hint,
     stateful_function_frame_plan,
     stateful_function_result_type_hint,
-    super_fold_is_sound,
 )
 from molt.frontend.visitors.call_reductions import CallReductionMixin
 
@@ -2196,22 +2195,19 @@ class CallVisitorMixin(CallReductionMixin, _MixinBase):
         # successor-owner is identical across ``current_class`` and all of its
         # subclasses.  Linear hierarchies satisfy this; a diamond subclass
         # (``Final(Left, Right)`` interposing ``Right`` between ``Left`` and
-        # ``Base``) does not — that is the parity bug.  The sema predicate
-        # verifies the successor-owner is stable across the whole entry-module
-        # subclass graph (and bails for non-entry modules, whose subclasses may
-        # be defined downstream and are invisible here). When it bails, super()
+        # ``Base``) does not — that is the parity bug.  Sema precomputes the
+        # methods whose successor-owner is stable across the whole entry-module
+        # subclass graph (and leaves non-entry modules empty, since downstream
+        # subclasses may be invisible here). When the fact is absent, super()
         # lowers to the runtime path, which the backend fuses into the
         # allocation-free ``call_super_method_ic`` -- already the fast path.
         assert self._sema is not None, "module sema must be populated before lowering"
-        if not super_fold_is_sound(
-            current_class,
-            method_name,
-            class_facts=self._sema.class_facts,
-            imported_classes=self.known_classes,
-            class_graph=self._sema.class_graph,
-            module_name=self.module_name,
-            entry_module=self.entry_module,
-        ):
+        sound_super_methods = (
+            self._sema.class_facts.super_fold_sound_methods_by_class.get(
+                current_class, frozenset()
+            )
+        )
+        if method_name not in sound_super_methods:
             return None
         method_info, owner_class = self._resolve_super_method_info(
             current_class, method_name

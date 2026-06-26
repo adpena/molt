@@ -12,6 +12,7 @@ from __future__ import annotations
 import ast
 
 from collections.abc import Mapping, Sequence
+from dataclasses import replace
 from typing import Any
 
 from molt.frontend.sema.result import ClassFacts, ClassGraph
@@ -233,6 +234,7 @@ def build_class_facts(node: ast.Module) -> ClassFacts:
         attr_names_by_class=attr_names_by_class,
         opaque_member_class_names=frozenset(opaque),
         ambiguous_class_names=ambiguous,
+        super_fold_sound_methods_by_class={},
     )
 
 
@@ -484,3 +486,40 @@ def super_fold_is_sound(
         if sub_owner != expected_owner:
             return False
     return True
+
+
+def class_facts_with_super_fold_sound_methods(
+    *,
+    class_graph: ClassGraph,
+    class_facts: ClassFacts,
+    imported_classes: ClassTable,
+    module_name: str | None,
+    entry_module: str | None,
+) -> ClassFacts:
+    """Return ``class_facts`` with zero-arg-super fold decisions precomputed."""
+    candidate_methods: set[str] = set()
+    for methods in class_facts.method_names_by_class.values():
+        candidate_methods.update(methods)
+    for info in imported_classes.values():
+        candidate_methods.update(info.get("methods", {}).keys())
+
+    sound_by_class: dict[str, frozenset[str]] = {}
+    for class_name in class_graph.bases_by_class:
+        sound_methods = {
+            method
+            for method in candidate_methods
+            if super_fold_is_sound(
+                class_name,
+                method,
+                class_facts=class_facts,
+                imported_classes=imported_classes,
+                class_graph=class_graph,
+                module_name=module_name,
+                entry_module=entry_module,
+            )
+        }
+        sound_by_class[class_name] = frozenset(sound_methods)
+    return replace(
+        class_facts,
+        super_fold_sound_methods_by_class=sound_by_class,
+    )

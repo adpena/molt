@@ -55,13 +55,18 @@ class ClassFacts:
     set. ``opaque_member_class_names`` records class bodies whose member set
     cannot be proven from straight-line syntax. Repeated class definitions are
     retained as ``ambiguous_class_names`` so consumers fail closed instead of
-    merging incompatible bodies.
+    merging incompatible bodies. ``block_exec_class_nodes`` records class bodies
+    whose namespace must be executed through the mutable block path.
+    ``super_fold_sound_methods_by_class`` is the precomputed query result
+    consumed by lowering for zero-arg ``super()``.
     """
 
     method_names_by_class: dict[str, frozenset[str]]
     attr_names_by_class: dict[str, frozenset[str]]
     opaque_member_class_names: frozenset[str]
     ambiguous_class_names: frozenset[str]
+    block_exec_class_nodes: frozenset[int]
+    super_fold_sound_methods_by_class: dict[str, frozenset[str]]
 
 
 @dataclass(frozen=True)

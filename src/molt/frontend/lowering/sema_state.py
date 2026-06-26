@@ -10,7 +10,13 @@ from __future__ import annotations
 import ast
 from typing import TYPE_CHECKING
 
-from molt.frontend.sema import SemaResult, analyze_module
+from dataclasses import replace
+
+from molt.frontend.sema import (
+    SemaResult,
+    analyze_module,
+    class_facts_with_super_fold_sound_methods,
+)
 
 if TYPE_CHECKING:
     from molt.frontend._protocol import _GeneratorProtocol
@@ -68,6 +74,16 @@ class SemaStateMixin(_MixinBase):
         (doc 44 risk #1: mis-classifying a cursor as a fact is a miscompile).
         """
         sema = analyze_module(node)
+        sema = replace(
+            sema,
+            class_facts=class_facts_with_super_fold_sound_methods(
+                class_graph=sema.class_graph,
+                class_facts=sema.class_facts,
+                imported_classes=self.known_classes,
+                module_name=self.module_name,
+                entry_module=self.entry_module,
+            ),
+        )
         self._sema = sema
         self.module_const_dicts = sema.const_dicts
         self.module_declared_funcs = sema.function_meta.declared_funcs

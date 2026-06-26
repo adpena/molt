@@ -22,6 +22,7 @@ from molt.frontend.sema import (
     build_class_facts,
     build_class_graph,
     c3_merge,
+    class_facts_with_super_fold_sound_methods,
     class_body_needs_block_exec,
     collect_module_class_names,
     collect_module_func_defaults,
@@ -115,6 +116,7 @@ def _class_facts(
         },
         opaque_member_class_names=frozenset(opaque or set()),
         ambiguous_class_names=frozenset(ambiguous or set()),
+        super_fold_sound_methods_by_class={},
     )
 
 
@@ -133,6 +135,7 @@ def test_class_facts_collect_methods_and_attr_blockers() -> None:
     assert facts.method_names_by_class == {"C": frozenset({"f", "g"})}
     assert facts.attr_names_by_class == {"C": frozenset({"x", "y"})}
     assert facts.opaque_member_class_names == frozenset()
+    assert facts.super_fold_sound_methods_by_class == {}
     assert facts.ambiguous_class_names == frozenset()
 
 
@@ -455,6 +458,53 @@ def test_super_fold_rejects_decorated_method_interposer() -> None:
     )
 
 
+def test_class_facts_precompute_super_fold_sound_methods() -> None:
+    graph = ClassGraph(
+        bases_by_class={
+            "Base": [["object"]],
+            "Mid": [["Base"]],
+            "Leaf": [["Mid"]],
+        },
+        subclassed_names={"Base", "Mid"},
+    )
+    facts = _class_facts({"Base": {"f"}, "Mid": {"g"}, "Leaf": set()})
+    enriched = class_facts_with_super_fold_sound_methods(
+        class_graph=graph,
+        class_facts=facts,
+        imported_classes={},
+        module_name="__main__",
+        entry_module=None,
+    )
+    assert enriched.super_fold_sound_methods_by_class == {
+        "Base": frozenset(),
+        "Mid": frozenset({"f"}),
+        "Leaf": frozenset({"f", "g"}),
+    }
+
+
+def test_class_facts_precompute_rejects_diamond_super_fold() -> None:
+    graph = ClassGraph(
+        bases_by_class={
+            "Base": [["object"]],
+            "Left": [["Base"]],
+            "Right": [["Base"]],
+            "Final": [["Left", "Right"]],
+        },
+        subclassed_names={"Base", "Left", "Right"},
+    )
+    facts = _class_facts(
+        {"Base": {"who"}, "Right": {"who"}, "Left": set(), "Final": set()}
+    )
+    enriched = class_facts_with_super_fold_sound_methods(
+        class_graph=graph,
+        class_facts=facts,
+        imported_classes={},
+        module_name="__main__",
+        entry_module=None,
+    )
+    assert "who" not in enriched.super_fold_sound_methods_by_class["Left"]
+
+
 # ---------------------------------------------------------------------------
 # const environment
 # ---------------------------------------------------------------------------
@@ -602,6 +652,7 @@ def test_analyze_module_aggregates_all_families() -> None:
     assert r.class_facts.method_names_by_class == {"A": frozenset({"m"})}
     assert r.class_facts.attr_names_by_class == {"A": frozenset({"k"})}
     assert r.class_facts.opaque_member_class_names == frozenset()
+    assert r.class_facts.super_fold_sound_methods_by_class == {}
     assert r.function_meta.defaults["f"]["params"] == 2
 
 
@@ -649,6 +700,9 @@ def test_populate_sema_state_fills_god_object_dicts_from_result() -> None:
     assert not hasattr(gen, "module_class_bases")
     assert not hasattr(gen, "module_subclassed_names")
     assert gen._sema.class_facts.method_names_by_class == {"A": frozenset({"m"})}
+    assert gen._sema.class_facts.super_fold_sound_methods_by_class == {
+        "A": frozenset()
+    }
     assert gen.module_func_defaults["f"]["params"] == 2
     assert gen._sema is sema
 
