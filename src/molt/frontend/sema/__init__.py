@@ -18,7 +18,16 @@ from __future__ import annotations
 
 import ast
 
-from molt.frontend.sema.classgraph import build_class_graph
+from molt.frontend.sema.classgraph import (
+    build_class_graph,
+    c3_merge,
+    reachable_base_names,
+    static_class_bases,
+    static_method_owner_after,
+    static_mro_names,
+    super_fold_is_sound,
+    visible_subclasses_of,
+)
 from molt.frontend.sema.constenv import collect_module_const_dicts
 from molt.frontend.sema.funcmeta import (
     FUNCTION_KIND_VALUES,
@@ -62,6 +71,7 @@ __all__ = [
     "async_generator_contains_return_value",
     "async_generator_contains_yield_from",
     "build_class_graph",
+    "c3_merge",
     "collect_module_class_names",
     "collect_module_const_dicts",
     "collect_module_func_defaults",
@@ -70,11 +80,17 @@ __all__ = [
     "function_contains_yield",
     "normalize_function_kind",
     "parse_stateful_function_type_hint",
+    "reachable_base_names",
     "signature_contains_yield",
     "stateful_function_frame_plan",
     "stateful_function_result_type_hint",
     "stateful_function_tag",
     "stateful_function_task_kind",
+    "static_class_bases",
+    "static_method_owner_after",
+    "static_mro_names",
+    "super_fold_is_sound",
+    "visible_subclasses_of",
 ]
 
 

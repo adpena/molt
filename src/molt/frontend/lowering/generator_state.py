@@ -373,7 +373,7 @@ class GeneratorStateMixin(_MixinBase):
         self.module_declared_funcs: dict[str, FunctionKind] = {}
         self.module_declared_classes: set[str] = set()
         # Static class graph for this module — the soundness substrate for the
-        # zero-arg ``super()`` fold (see ``_collect_module_class_graph``).
+        # zero-arg ``super()`` fold (see ``frontend.sema.classgraph``).
         # ``module_subclassed_names``: names referenced as a base anywhere.
         # ``module_class_bases``: class name -> list of base-name lists across
         # all class statements defining that name (``["<opaque>"]`` for a class
