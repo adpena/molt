@@ -234,20 +234,23 @@ here so the algorithm cannot be declared done without satisfying it.
   explicit `DFLASH_ALGORITHM_FAMILIES` vocabulary; empty, loose, non-DFlash,
   single-token-only, causal autoregressive, or non-injecting metadata is
   rejected before registration. At resolution time, `DFlashSelectionContext`
-  must expose explicit DFlash identity facts (`dflash_target_model_id` plus
-  `dflash_tokenizer_id`, or matching explicit builder arguments). Generic
-  legacy identity fields such as `model_id`, `target_model_id`, `name_or_path`,
-  or ordinary `tokenizer_id` are not DFlash custody and do not enable adapter
-  resolution. Adapter-specific `supports()` callbacks run only after the
-  canonical metadata/context match succeeds.
+  must be constructed from explicit DFlash identity arguments
+  (`dflash_target_model_id`/`dflash_tokenizer_id` as decode-call arguments, or
+  matching `target_model_id`/`tokenizer_id` at the builder API). Model-object
+  attributes, including same-named DFlash-looking attributes, `model_id`,
+  `target_model_id`, `name_or_path`, or ordinary `tokenizer_id`, are not
+  DFlash custody and do not enable adapter resolution or adapter-name selection.
+  Adapter-specific `supports()` callbacks run only after the canonical
+  metadata/context match succeeds.
 - **Checkable assertion (today):** `DFlashAdapterSpec` validates non-empty
   `target_model_id`, `draft_model_id`, and `provenance`, requires a typed
   `DFlashAdapterMetadata`, and that metadata validates the schema fields above;
-  the resolver refuses missing/mismatched context identity before adapter
-  callbacks run; returned runtimes are rejected when their effective block size
-  exceeds the adapter's declared `max_block_size`. The fail-closed corpus asserts
-  the typed refusals. Test fixtures use `test://...` ids and explicit test-only
-  provenance/metadata so they cannot be mistaken for production model support.
+  context construction rejects missing/empty explicit identity; the resolver
+  refuses mismatched context identity before adapter callbacks run; returned
+  runtimes are rejected when their effective block size exceeds the adapter's
+  declared `max_block_size`. The fail-closed corpus asserts the typed refusals.
+  Test fixtures use `test://...` ids and explicit test-only provenance/metadata
+  so they cannot be mistaken for production model support.
 - **Status:** STRUCTURALLY ENFORCED + GATED.
 
 ---
@@ -284,8 +287,9 @@ typed error, by `tests/gpu/dflash/test_dflash_fidelity.py`:
 | causal/autoregressive metadata | `DFlashAdapterMetadata(uses_non_causal_draft_attention=False, …)` | `ValueError("dflash adapter uses_non_causal_draft_attention must be true")` | `adapters.py` |
 | non-injecting metadata | `DFlashAdapterMetadata(injects_target_context_each_layer=False, …)` | `ValueError("dflash adapter injects_target_context_each_layer must be true")` | `adapters.py` |
 | non-spec adapter registration | `register_dflash_adapter(object())` | `TypeError("register_dflash_adapter expects DFlashAdapterSpec")` | `register_dflash_adapter` |
-| missing DFlash context identity | model lacks `dflash_target_model_id` / `dflash_tokenizer_id` | no adapter resolution; `supports()` is not called | `resolve_dflash_runtime` |
-| legacy identity attr names | model exposes only `model_id`, `target_model_id`, `name_or_path`, or `tokenizer_id` | no adapter resolution; `supports()` is not called | `DFlashSelectionContext` |
+| missing DFlash context identity | context/builder receives `target_model_id=None` | `TypeError("target_model_id must be a string")` | `DFlashSelectionContext` |
+| empty DFlash tokenizer identity | context/builder receives `tokenizer_id=" "` | `ValueError("tokenizer_id must be non-empty")` | `DFlashSelectionContext` |
+| legacy/model identity attr names | model exposes only `dflash_target_model_id`, `dflash_tokenizer_id`, `model_id`, `target_model_id`, `name_or_path`, or `tokenizer_id` | explicit identity is still required; model fields are ignored | `DFlashSelectionContext` |
 | target/tokenizer mismatch | context identity differs from adapter metadata | no adapter resolution; `supports()` is not called | `resolve_dflash_runtime` |
 | runtime exceeds checkpoint capacity | adapter runtime block size exceeds `metadata.max_block_size` | `ValueError("dflash runtime block_size exceeds adapter metadata max_block_size")` | `resolve_dflash_runtime` |
 | generic adapter returns non-runtime | adapter `create_runtime` returns a non-`DFlashRuntime` | `TypeError("dflash adapter create_runtime() must return DFlashRuntime")` | `build_dflash_runtime` |
