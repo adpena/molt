@@ -36,11 +36,13 @@ from __future__ import annotations
 
 import argparse
 import ast
+import io
 import json
 import re
 import sys
 from dataclasses import dataclass, asdict
 from pathlib import Path
+import tokenize
 
 ROOT_DEFAULT = Path(__file__).resolve().parents[1]
 BASELINE_PATH_REL = "tools/structural_audit_baseline.json"
@@ -153,6 +155,12 @@ class SourceRegion:
     @property
     def span(self) -> int:
         return max(1, self.end_line - self.start_line + 1)
+
+
+@dataclass(frozen=True)
+class DebtMarkerHit:
+    line: int
+    marker: str
 
 
 _LARGE_SOURCE_REGION_LINES = 250
@@ -710,12 +718,200 @@ def probe_structural_god_files(
     return findings
 
 
-_DEBT_RE = re.compile(
+_COMMENT_DEBT_RE = re.compile(
     r"\b(TODO|FIXME|HACK|XXX|WORKAROUND|KLUDGE)\b|"
-    r"\b(unimplemented!|todo!)\s*\(|"
-    r"for now\b|temporar(y|ily)\b",
+    r"\bfor now\b|"
+    r"\btemporar(?:y|ily)\s+"
+    r"(?:"
+    r"allow|allowed|bypass|bypassed|compat|defer|deferred|disable|disabled|"
+    r"fallback|guard|hack|ignore|ignored|placeholder|relax|relaxed|shim|"
+    r"skip|skipped|special-case|stub|stubbed|workaround"
+    r")\b",
     re.IGNORECASE,
 )
+_CODE_DEBT_RE = re.compile(r"\b(unimplemented!|todo!)\s*\(")
+
+
+def _line_preserving_spaces(segment: str) -> str:
+    return "".join("\n" if ch == "\n" else " " for ch in segment)
+
+
+def _python_comment_segments(text: str) -> list[tuple[int, str]]:
+    try:
+        tokens = tokenize.generate_tokens(io.StringIO(text).readline)
+        return [
+            (tok.start[0], tok.string)
+            for tok in tokens
+            if tok.type == tokenize.COMMENT
+        ]
+    except tokenize.TokenError:
+        return [
+            (line_no, line)
+            for line_no, line in enumerate(text.splitlines(), start=1)
+            if line.lstrip().startswith("#")
+        ]
+
+
+def _rust_comment_segments(text: str) -> list[tuple[int, str]]:
+    comments: list[tuple[int, str]] = []
+    i = 0
+    line = 1
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if ch == "\n":
+            line += 1
+            i += 1
+            continue
+        if text.startswith("//", i):
+            start = i
+            start_line = line
+            end = text.find("\n", i)
+            if end < 0:
+                end = n
+            comments.append((start_line, text[start:end]))
+            i = end
+            continue
+        if text.startswith("/*", i):
+            start = i
+            start_line = line
+            end = text.find("*/", i + 2)
+            if end < 0:
+                end = n
+            else:
+                end += 2
+            segment = text[start:end]
+            comments.append((start_line, segment))
+            line += segment.count("\n")
+            i = end
+            continue
+        if ch == '"':
+            i += 1
+            while i < n:
+                if text[i] == "\n":
+                    line += 1
+                if text[i] == "\\":
+                    i += 2
+                    continue
+                if text[i] == '"':
+                    i += 1
+                    break
+                i += 1
+            continue
+        if ch == "r":
+            raw = re.match(r"r(#+)\"", text[i:])
+            if raw is not None:
+                hashes = raw.group(1)
+                end_pat = '"' + hashes
+                start = i
+                i += len(raw.group(0))
+                end = text.find(end_pat, i)
+                if end < 0:
+                    line += text[start:n].count("\n")
+                    i = n
+                else:
+                    end += len(end_pat)
+                    line += text[start:end].count("\n")
+                    i = end
+                continue
+            if text.startswith('r"', i):
+                start = i
+                i += 2
+                end = text.find('"', i)
+                if end < 0:
+                    line += text[start:n].count("\n")
+                    i = n
+                else:
+                    end += 1
+                    line += text[start:end].count("\n")
+                    i = end
+                continue
+        i += 1
+    return comments
+
+
+def _mask_rust_comments_and_strings(text: str) -> str:
+    out: list[str] = []
+    i = 0
+    n = len(text)
+    while i < n:
+        if text.startswith("//", i):
+            end = text.find("\n", i)
+            if end < 0:
+                end = n
+            out.append(_line_preserving_spaces(text[i:end]))
+            i = end
+            continue
+        if text.startswith("/*", i):
+            end = text.find("*/", i + 2)
+            if end < 0:
+                end = n
+            else:
+                end += 2
+            out.append(_line_preserving_spaces(text[i:end]))
+            i = end
+            continue
+        ch = text[i]
+        if ch == '"':
+            start = i
+            i += 1
+            while i < n:
+                if text[i] == "\\":
+                    i += 2
+                    continue
+                if text[i] == '"':
+                    i += 1
+                    break
+                i += 1
+            out.append(_line_preserving_spaces(text[start:i]))
+            continue
+        if ch == "r":
+            raw = re.match(r"r(#+)\"", text[i:])
+            if raw is not None:
+                hashes = raw.group(1)
+                end_pat = '"' + hashes
+                start = i
+                i += len(raw.group(0))
+                end = text.find(end_pat, i)
+                i = n if end < 0 else end + len(end_pat)
+                out.append(_line_preserving_spaces(text[start:i]))
+                continue
+            if text.startswith('r"', i):
+                start = i
+                i += 2
+                end = text.find('"', i)
+                i = n if end < 0 else end + 1
+                out.append(_line_preserving_spaces(text[start:i]))
+                continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def _debt_marker_hits(path: Path, text: str) -> list[DebtMarkerHit]:
+    if path.suffix == ".py":
+        comment_segments = _python_comment_segments(text)
+        code_text = ""
+    elif path.suffix == ".rs":
+        comment_segments = _rust_comment_segments(text)
+        code_text = _mask_rust_comments_and_strings(text)
+    else:
+        comment_segments = []
+        code_text = ""
+
+    hits: list[DebtMarkerHit] = []
+    for line, comment in comment_segments:
+        for match in _COMMENT_DEBT_RE.finditer(comment):
+            hits.append(DebtMarkerHit(line=line, marker=match.group(0)))
+    if code_text:
+        for match in _CODE_DEBT_RE.finditer(code_text):
+            hits.append(
+                DebtMarkerHit(
+                    line=_line_of_offset(code_text, match.start()),
+                    marker=match.group(1),
+                )
+            )
+    return sorted(hits, key=lambda hit: (hit.line, hit.marker.lower()))
 
 
 def probe_debt_markers(root: Path) -> list[Finding]:
@@ -729,19 +925,23 @@ def probe_debt_markers(root: Path) -> list[Finding]:
             text = path.read_text(errors="replace")
         except OSError:
             continue
-        hits = _DEBT_RE.findall(text)
+        hits = _debt_marker_hits(path, text)
         count = len(hits)
         if count == 0:
             continue
         rel = path.relative_to(root).as_posix()
         sev = "medium" if count >= 15 else "low"
+        first_line = hits[0].line
+        examples = ", ".join(
+            f"L{hit.line}:{hit.marker}" for hit in hits[:5]
+        )
         findings.append(
             Finding(
                 probe="debt_marker",
                 severity=sev,
                 title=f"{count} debt/workaround markers",
-                location=rel,
-                detail="TODO/FIXME/HACK/XXX/WORKAROUND/unimplemented!/'for now'",
+                location=f"{rel}:{first_line}",
+                detail=examples,
                 suggested_action="resolve in place (zero-workaround policy) or convert "
                 "to a tracked task with a structural fix",
                 class_retired="accumulating-technical-debt",
