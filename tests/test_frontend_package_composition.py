@@ -34,6 +34,11 @@ from molt.frontend import (
     compile_to_tir,
 )
 from molt.frontend._protocol import _GeneratorProtocol
+from molt.frontend.lowering.generator_state import (
+    FUNCTION_CONTEXT_STATE_ATTRS,
+    FUNCTION_STATE_SNAPSHOT_ATTRS,
+    GeneratorStateMixin,
+)
 from tests.process_guard_common import run_guarded_test_process
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -147,6 +152,8 @@ def test_moved_methods_resolve_on_class() -> None:
     assert hasattr(SimpleTIRGenerator, "_reset_type_hint_scope_state")
     assert hasattr(SimpleTIRGenerator, "_reset_function_cache_state")
     assert hasattr(SimpleTIRGenerator, "_reset_control_flow_state")
+    assert hasattr(SimpleTIRGenerator, "_capture_function_scope_state")
+    assert hasattr(SimpleTIRGenerator, "_restore_function_scope_state")
     assert hasattr(SimpleTIRGenerator, "_load_local_value")
     assert hasattr(SimpleTIRGenerator, "_store_local_value")
     assert hasattr(SimpleTIRGenerator, "_value_reads_plain_local_binding")
@@ -194,6 +201,8 @@ def test_moved_methods_resolve_on_class() -> None:
     assert hasattr(SimpleTIRGenerator, "_emit_globals_builtin_ref")
     assert hasattr(SimpleTIRGenerator, "_init_locals_cache_and_pin")
     # module lifecycle
+    assert hasattr(SimpleTIRGenerator, "_init_module_lifecycle_state")
+    assert hasattr(SimpleTIRGenerator, "_emit_initial_module_object")
     assert hasattr(SimpleTIRGenerator, "_emit_module_metadata")
     assert hasattr(SimpleTIRGenerator, "_emit_module_frame_enter")
     assert hasattr(SimpleTIRGenerator, "_reset_module_chunk_state")
@@ -508,6 +517,25 @@ def _assembled_class_attrs() -> set[str]:
     return attrs - _BUILTIN_NAMES
 
 
+def test_function_state_snapshot_matches_reset_authority() -> None:
+    """Nested-function lowering snapshots every per-function reset field once."""
+    reset_methods = (
+        GeneratorStateMixin._reset_local_binding_state,
+        GeneratorStateMixin._reset_import_resolution_state,
+        GeneratorStateMixin._reset_async_scope_state,
+        GeneratorStateMixin._reset_type_hint_scope_state,
+        GeneratorStateMixin._reset_function_cache_state,
+        GeneratorStateMixin._reset_control_flow_state,
+    )
+    reset_attrs: set[str] = set()
+    for method in reset_methods:
+        reset_attrs.update(_direct_self_store_attrs(method))
+
+    snapshot_attrs = set(FUNCTION_STATE_SNAPSHOT_ATTRS)
+    assert len(FUNCTION_STATE_SNAPSHOT_ATTRS) == len(snapshot_attrs)
+    assert snapshot_attrs == reset_attrs | set(FUNCTION_CONTEXT_STATE_ATTRS)
+
+
 def _discover_mixin_classes() -> dict[str, type]:
     """Auto-discover every *Mixin class under visitors/ and lowering/ so this
     guard automatically covers new mixins added in later extraction phases."""
@@ -618,3 +646,62 @@ def test_compile_to_tir_deterministic_with_match() -> None:
     assert ir_a == ir_b
     # The match lowering must have produced ops (sanity: the mixin ran).
     assert "classify" in ir_a
+
+
+def test_nested_function_compile_restores_class_body_loop_state() -> None:
+    """Compiling a nested function inside a class-body loop is transactional."""
+    source = (
+        "class Outer:\n"
+        "    total = 0\n"
+        "    for item in (1, 2):\n"
+        "        def method(self):\n"
+        "            return item\n"
+        "        total = total + item\n"
+        "    done = total\n"
+    )
+    ir = compile_to_tir(source)
+    main_ops = next(
+        func["ops"] for func in ir["functions"] if func["name"] == "molt_main"
+    )
+    const_names = {
+        op["out"]: op["s_value"]
+        for op in main_ops
+        if op["kind"] == "const_str" and "out" in op
+    }
+    by_out = {op["out"]: op for op in main_ops if "out" in op}
+
+    def key_name(op: dict) -> str | None:
+        args = op.get("args", [])
+        if len(args) < 2:
+            return None
+        return const_names.get(args[1])
+
+    done_store = next(
+        op
+        for op in main_ops
+        if op["kind"] == "store_index"
+        and op.get("container_type") == "dict"
+        and key_name(op) == "done"
+    )
+    done_source = by_out[done_store["args"][2]]
+    assert done_source["kind"] == "index"
+    assert done_source["args"][0] == done_store["args"][0]
+    assert const_names[done_source["args"][1]] == "total"
+
+    class_ns = done_store["args"][0]
+    total_update = next(
+        op
+        for op in main_ops
+        if op["kind"] == "store_index"
+        and op.get("container_type") == "dict"
+        and op["args"][0] == class_ns
+        and key_name(op) == "total"
+        and by_out.get(op["args"][2], {}).get("kind") == "add"
+    )
+    update_expr = by_out[total_update["args"][2]]
+    update_reads = [by_out[arg] for arg in update_expr["args"] if arg in by_out]
+    assert {
+        const_names[op["args"][1]]
+        for op in update_reads
+        if op["kind"] == "index" and op["args"][0] == class_ns
+    } == {"item", "total"}

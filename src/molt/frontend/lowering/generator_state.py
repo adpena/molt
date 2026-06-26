@@ -35,7 +35,138 @@ else:
     _MixinBase = object
 
 
+FUNCTION_LOCAL_BINDING_STATE_ATTRS = (
+    "locals",
+    "locals_cache_val",
+    "boxed_locals",
+    "closure_locals",
+    "comp_shadow_locals",
+    "boxed_local_hints",
+    "free_vars",
+    "free_var_hints",
+    "global_decls",
+    "nonlocal_decls",
+    "scope_assigned",
+    "del_targets",
+    "unbound_check_names",
+    "exact_locals",
+    "exact_builtin_locals",
+)
+
+FUNCTION_IMPORT_RESOLUTION_STATE_ATTRS = (
+    "imported_names",
+    "imported_attr_names",
+    "imported_modules",
+    "local_imported_names",
+    "local_imported_modules",
+    "imported_module_attr_mutations",
+)
+
+FUNCTION_ASYNC_SCOPE_STATE_ATTRS = (
+    "async_locals",
+    "async_internal_locals",
+    "async_public_locals",
+    "async_locals_base",
+    "async_closure_offset",
+    "async_local_hints",
+)
+
+FUNCTION_TYPE_HINT_SCOPE_STATE_ATTRS = (
+    "explicit_type_hints",
+    "container_elem_hints",
+    "dict_key_hints",
+    "dict_value_hints",
+    "bytearray_len_hints",
+)
+
+FUNCTION_CACHE_STATE_ATTRS = (
+    "const_ints",
+    "_op_by_result",
+    "_module_cache_values",
+    "in_generator",
+    "async_context",
+    "current_line",
+)
+
+FUNCTION_CONTROL_FLOW_STATE_ATTRS = (
+    "context_depth",
+    "control_flow_depth",
+    "try_end_labels",
+    "try_scopes",
+    "try_suppress_depth",
+    "try_handler_scopes",
+    "function_exception_label",
+    "exception_stack_depth_baseline",
+    "exception_stack_prev_baseline",
+    "return_unwind_depth",
+    "return_unwind_popped_scopes",
+    "finally_depth",
+    "active_exceptions",
+    "range_loop_stack",
+    "async_index_loop_stack",
+    "loop_break_flags",
+    "loop_try_depths",
+    "loop_break_counter",
+    "loop_layout_guards",
+    "loop_guard_assumptions",
+    "loop_static_class_refs",
+    "loop_static_class_eager_refs",
+    "loop_static_class_counter",
+    "return_label",
+    "return_slot",
+    "return_slot_index",
+    "return_slot_offset",
+    "block_terminated",
+)
+
+FUNCTION_CONTEXT_STATE_ATTRS = (
+    "current_class",
+    "current_method_first_param",
+    "defer_module_attrs",
+    "deferred_module_attrs",
+    "class_definition_pending",
+)
+
+FUNCTION_STATE_SNAPSHOT_ATTRS = (
+    FUNCTION_CONTEXT_STATE_ATTRS
+    + FUNCTION_LOCAL_BINDING_STATE_ATTRS
+    + FUNCTION_ASYNC_SCOPE_STATE_ATTRS
+    + FUNCTION_TYPE_HINT_SCOPE_STATE_ATTRS
+    + FUNCTION_CONTROL_FLOW_STATE_ATTRS
+    + FUNCTION_IMPORT_RESOLUTION_STATE_ATTRS
+    + FUNCTION_CACHE_STATE_ATTRS
+)
+
+
 class GeneratorStateMixin(_MixinBase):
+    def _capture_state_attrs(self, attrs: tuple[str, ...]) -> dict[str, Any]:
+        missing = [name for name in attrs if not hasattr(self, name)]
+        if missing:
+            raise AssertionError(
+                f"state capture requested uninitialized attrs: {missing}"
+            )
+        return {name: getattr(self, name) for name in attrs}
+
+    def _restore_state_attrs(
+        self, attrs: tuple[str, ...], state: dict[str, Any]
+    ) -> None:
+        expected = set(attrs)
+        actual = set(state)
+        if actual != expected:
+            missing = sorted(expected - actual)
+            extra = sorted(actual - expected)
+            raise AssertionError(
+                f"state restore payload drift: missing={missing} extra={extra}"
+            )
+        for name in attrs:
+            setattr(self, name, state[name])
+
+    def _capture_function_scope_state(self) -> dict[str, Any]:
+        return self._capture_state_attrs(FUNCTION_STATE_SNAPSHOT_ATTRS)
+
+    def _restore_function_scope_state(self, state: dict[str, Any]) -> None:
+        self._restore_state_attrs(FUNCTION_STATE_SNAPSHOT_ATTRS, state)
+
     def _reset_local_binding_state(
         self,
         *,
@@ -299,14 +430,19 @@ class GeneratorStateMixin(_MixinBase):
         self.global_dict_key_hints: dict[str, str] = {}
         self.global_dict_value_hints: dict[str, str] = {}
         self.type_facts = type_facts
-        self.module_name = module_name or "__main__"
+        self._init_module_lifecycle_state(
+            source_path=source_path,
+            module_name=module_name,
+            module_spec_name=module_spec_name,
+            module_is_namespace=module_is_namespace,
+            entry_module=entry_module,
+            module_chunking=module_chunking,
+            module_chunk_max_ops=module_chunk_max_ops,
+            known_modules=known_modules,
+            stdlib_allowlist=stdlib_allowlist,
+        )
         self.type_facts_module = type_facts_module or self.module_name
-        self.module_spec_name = module_spec_name or self.module_name
-        self.entry_module = entry_module
         self.enable_phi = enable_phi
-        self.module_prefix = f"{self._sanitize_module_name(self.module_name)}__"
-        self.known_modules = set(known_modules or [])
-        self.stdlib_allowlist = set(stdlib_allowlist or [])
         self.known_func_defaults: dict[str, dict[str, dict[str, Any]]] = (
             known_func_defaults or {}
         )
@@ -322,45 +458,19 @@ class GeneratorStateMixin(_MixinBase):
         self.globals_builtin_val: MoltValue | None = None
         self.globals_builtin_emitted = False
         self.module_annotations_conditional = False
-        self.module_frame_emitted = False
-        self.module_chunking = module_chunking
-        self.module_chunk_max_ops = module_chunk_max_ops
-        self.module_stmt_offsets: list[int] = []
-        self.module_chunk_counter = 0
-        self.module_chunk_symbols: list[str] = []
         self._init_midend_state(optimization_profile, pgo_hot_functions)
-        self.module_frame_entered = False
-        self.module_frame_exited = False
-        self.module_frame_code_id: int | None = None
         self.class_annotation_items: list[tuple[str, ast.expr, int]] = []
         self.class_annotation_exec_map: MoltValue | None = None
         self.class_annotation_exec_name: str | None = None
         self.class_annotation_exec_counter = 0
         self.annotation_name_counter = 0
-        self.module_obj: MoltValue | None = None
         self.future_annotations = False
         self.defer_module_attrs = False
         self.deferred_module_attrs: set[str] = set()
         self.fallback_policy = fallback_policy
         self.compat = CompatibilityReporter(fallback_policy, source_path)
-        self.source_path = source_path
-        self.module_is_package = False
-        self.module_is_namespace = module_is_namespace
         self._emitted_syntax_warnings: set[tuple[str, int, str]] = set()
         self._deferred_runtime_warnings: list[str] = []
-        if source_path:
-            normalized_path = source_path.replace("\\", "/")
-            if normalized_path.endswith("/__init__.py") or normalized_path.endswith(
-                "/__init__.pyi"
-            ):
-                self.module_is_package = True
-        if self.module_is_namespace:
-            self.module_is_package = True
-        self.module_package_override: str | None = None
-        self.module_package_override_set = False
-        self.module_spec_override: str | None = None
-        self.module_spec_override_set = False
-        self.module_spec_override_is_package: bool | None = None
         self._reset_control_flow_state(reset_function_exception_label=True)
         self.func_aliases: dict[str, str] = {}
         self.reserved_func_symbols: dict[str, str] = {}
@@ -382,77 +492,5 @@ class GeneratorStateMixin(_MixinBase):
         # None until then (and for direct non-module lowering entry points).
         self._sema: SemaResult | None = None
         self._register_code_symbol("molt_main")
-        if self.module_name:
-            is_real_entry_module = (
-                self.entry_module
-                and self.module_name == self.entry_module
-                and self.module_name != "__main__"
-            )
-            entry_spawn_override_enabled = (
-                is_real_entry_module and "multiprocessing.spawn" in self.known_modules
-            )
-            name_val = MoltValue(self.next_var(), type_hint="str")
-            self.emit(
-                MoltOp(kind="CONST_STR", args=[self.module_name], result=name_val)
-            )
-            module_val = MoltValue(self.next_var(), type_hint="module")
-            self.emit(MoltOp(kind="MODULE_NEW", args=[name_val], result=module_val))
-            self.emit(
-                MoltOp(
-                    kind="MODULE_CACHE_SET",
-                    args=[name_val, module_val],
-                    result=MoltValue("none"),
-                )
-            )
-            if entry_spawn_override_enabled:
-                spawn_key = MoltValue(self.next_var(), type_hint="str")
-                self.emit(
-                    MoltOp(kind="CONST_STR", args=["MOLT_MP_SPAWN"], result=spawn_key)
-                )
-                spawn_default = MoltValue(self.next_var(), type_hint="str")
-                self.emit(MoltOp(kind="CONST_STR", args=[""], result=spawn_default))
-                spawn_value = MoltValue(self.next_var(), type_hint="str")
-                self.emit(
-                    MoltOp(
-                        kind="ENV_GET",
-                        args=[spawn_key, spawn_default],
-                        result=spawn_value,
-                    )
-                )
-                spawn_expected = MoltValue(self.next_var(), type_hint="str")
-                self.emit(MoltOp(kind="CONST_STR", args=["1"], result=spawn_expected))
-                spawn_eq = MoltValue(self.next_var(), type_hint="bool")
-                self.emit(
-                    MoltOp(
-                        kind="STRING_EQ",
-                        args=[spawn_value, spawn_expected],
-                        result=spawn_eq,
-                    )
-                )
-                spawn_not = MoltValue(self.next_var(), type_hint="bool")
-                self.emit(MoltOp(kind="NOT", args=[spawn_eq], result=spawn_not))
-                self.emit(MoltOp(kind="IF", args=[spawn_not], result=MoltValue("none")))
-            if is_real_entry_module:
-                main_name = MoltValue(self.next_var(), type_hint="str")
-                self.emit(MoltOp(kind="CONST_STR", args=["__main__"], result=main_name))
-                self.emit(
-                    MoltOp(
-                        kind="MODULE_CACHE_SET",
-                        args=[main_name, module_val],
-                        result=MoltValue("none"),
-                    )
-                )
-                name_attr = MoltValue(self.next_var(), type_hint="str")
-                self.emit(MoltOp(kind="CONST_STR", args=["__name__"], result=name_attr))
-                self.emit(
-                    MoltOp(
-                        kind="MODULE_SET_ATTR",
-                        args=[module_val, name_attr, main_name],
-                        result=MoltValue("none"),
-                    )
-                )
-                if entry_spawn_override_enabled:
-                    self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-        self.module_obj = module_val
-        self._emit_module_metadata()
+        self._emit_initial_module_object()
         self._apply_type_facts("molt_main")

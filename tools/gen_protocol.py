@@ -54,6 +54,8 @@ Determinism / clean diffs
   * Imports are computed from the identifiers actually referenced in the emitted
     signatures/annotations, so a new ``_types`` type used in a moved signature is
     auto-imported (no fragile hand-maintained import list).
+  * Rendered output is passed through Ruff format before write/check so generated
+    sync and repository formatting have one authority.
 
 Usage::
 
@@ -66,6 +68,7 @@ from __future__ import annotations
 import argparse
 import ast
 import inspect
+import subprocess
 import sys
 import textwrap
 from pathlib import Path
@@ -663,6 +666,34 @@ def _split_attrs(
     return attrs[:midpoint], attrs[midpoint:]
 
 
+def _format_generated_text(path: Path, text: str) -> str:
+    """Format generated Python text through the repository formatter."""
+    cmd = [
+        sys.executable,
+        "-m",
+        "ruff",
+        "format",
+        "--stdin-filename",
+        str(path),
+        "-",
+    ]
+    proc = subprocess.run(
+        cmd,
+        input=text,
+        text=True,
+        capture_output=True,
+        cwd=ROOT,
+        check=False,
+    )
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout).strip()
+        raise ProtocolGenError(
+            f"failed to format generated protocol text for {path.relative_to(ROOT)}: "
+            f"{detail}"
+        )
+    return proc.stdout
+
+
 def generate() -> dict[Path, str]:
     """Render both generated files. Returns ``{path: rendered_text}``."""
     import molt.frontend._types as types_module
@@ -683,7 +714,10 @@ def generate() -> dict[Path, str]:
     protocol_text = render_protocol_file(
         attrs_second, methods, types_module_exports=types_module_exports
     )
-    return {OUT_ATTRS: attrs_text, OUT_PROTOCOL: protocol_text}
+    return {
+        OUT_ATTRS: _format_generated_text(OUT_ATTRS, attrs_text),
+        OUT_PROTOCOL: _format_generated_text(OUT_PROTOCOL, protocol_text),
+    }
 
 
 # ---------------------------------------------------------------------------
