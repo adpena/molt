@@ -1,19 +1,30 @@
 #[cfg(any(target_arch = "wasm32", not(feature = "native-tcl")))]
+use super::app_commands::{
+    handle_option_command, handle_rename_command, handle_send_command, handle_tk_global_command,
+};
+#[cfg(any(target_arch = "wasm32", not(feature = "native-tcl")))]
+use super::focus_commands::{handle_focus_command, handle_focus_direction_command};
+#[cfg(any(target_arch = "wasm32", not(feature = "native-tcl")))]
+use super::geometry_commands::{handle_geometry_command, handle_raise_or_lower_command};
+#[cfg(any(target_arch = "wasm32", not(feature = "native-tcl")))]
+use super::grab_commands::handle_grab_command;
+#[cfg(any(target_arch = "wasm32", not(feature = "native-tcl")))]
 use super::resources::{
     command_is_image_instance, handle_font_command, handle_image_command,
     handle_image_instance_command,
 };
 #[cfg(any(target_arch = "wasm32", not(feature = "native-tcl")))]
+use super::selection_commands::{handle_clipboard_command, handle_selection_command};
+#[cfg(any(target_arch = "wasm32", not(feature = "native-tcl")))]
+use super::tix_commands::{
+    handle_tix_command, handle_tix_form_command, handle_tix_set_silent_command,
+};
+#[cfg(any(target_arch = "wasm32", not(feature = "native-tcl")))]
 use super::widget_create::{handle_widget_create_command, is_widget_constructor_command};
 #[cfg(any(target_arch = "wasm32", not(feature = "native-tcl")))]
-use super::window_commands::{
-    handle_clipboard_command, handle_focus_command, handle_focus_direction_command,
-    handle_geometry_command, handle_grab_command, handle_option_command,
-    handle_raise_or_lower_command, handle_rename_command, handle_selection_command,
-    handle_send_command, handle_tix_command, handle_tix_form_command,
-    handle_tix_set_silent_command, handle_tk_global_command, handle_winfo_command,
-    handle_wm_command,
-};
+use super::winfo_commands::handle_winfo_command;
+#[cfg(any(target_arch = "wasm32", not(feature = "native-tcl")))]
+use super::wm_commands::handle_wm_command;
 use super::*;
 
 pub(super) fn handle_eval_command(py: &PyToken, handle: i64, args: &[u64]) -> Result<u64, u64> {
