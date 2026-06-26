@@ -51,15 +51,15 @@ class SemaStateMixin(_MixinBase):
                                             (sema/funcmeta.collect_module_func_kinds)
           self.module_declared_classes    ← sema.function_meta.declared_classes
                                             (sema/funcmeta.collect_module_class_names)
-          self.module_class_bases         ← sema.class_graph.bases_by_class
-                                            (sema/classgraph.build_class_graph)
-          self.module_subclassed_names    ← sema.class_graph.subclassed_names
-                                            (sema/classgraph.build_class_graph)
+          sema.class_graph                → read directly by classgraph fold
+                                            queries (no god-object dict shim)
+          sema.class_facts                → read directly by classgraph fold
+                                            queries (no god-object dict shim)
           self.module_func_defaults       ← known_func_defaults override, else
                                             sema.function_meta.defaults
                                             (sema/funcmeta.collect_module_func_defaults)
 
-        These six dicts are each written exactly once (here) and only *read* during
+        These four dicts are each written exactly once (here) and only *read* during
         the walk — verified against HEAD: no ``.add``/``.pop``/``[k]=`` mutation of
         any of them occurs in the visit/emit methods.  Walk-mutated cursors
         (``const_ints`` written in ``emit()``; ``exact_locals`` mutated across
@@ -72,8 +72,6 @@ class SemaStateMixin(_MixinBase):
         self.module_const_dicts = sema.const_dicts
         self.module_declared_funcs = sema.function_meta.declared_funcs
         self.module_declared_classes = sema.function_meta.declared_classes
-        self.module_class_bases = sema.class_graph.bases_by_class
-        self.module_subclassed_names = sema.class_graph.subclassed_names
         self.module_func_defaults = self.known_func_defaults.get(
             self.module_name, sema.function_meta.defaults
         )

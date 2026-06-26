@@ -39,6 +39,7 @@ from molt.frontend.sema import (
     async_generator_contains_return_value,
     async_generator_contains_yield_from,
     c3_merge,
+    class_body_needs_block_exec,
     function_contains_yield,
     signature_contains_yield,
     stateful_function_frame_plan,
@@ -100,45 +101,6 @@ class ClassDefVisitorMixin(_MixinBase):
                 and not child.keywords
             ):
                 return True
-        return False
-
-    # Statement node types a class body can hold and have lowered by the
-    # dedicated straight-line arms of ``visit_ClassDef`` (attribute bindings and
-    # method/nested-class definitions).  ANY other top-level body statement —
-    # control flow (For/AsyncFor/If/While/With/AsyncWith/Try/TryStar/Match),
-    # ``del`` (Delete), augmented assignment (AugAssign), import, etc. — requires
-    # executing the body as a normal block over the class namespace mapping
-    # (CPython semantics).  ``Pass`` is inert.  (P0 #50.)
-    _CLASS_BODY_SIMPLE_STMTS = (
-        ast.FunctionDef,
-        ast.AsyncFunctionDef,
-        ast.ClassDef,
-        ast.Assign,
-        ast.AnnAssign,
-        ast.Expr,
-        ast.Pass,
-    )
-
-    @classmethod
-    def _class_body_needs_block_exec(cls, body: list[ast.stmt]) -> bool:
-        """True when a class body holds control flow / ``del`` (P0 #50).
-
-        Only the *top-level* class-body statements matter: control flow nested
-        inside a method body or a comprehension is the method's/comprehension's
-        own scope, not the class block.  An ``AnnAssign`` / ``Assign`` whose
-        target is not a bare ``Name`` (e.g. ``obj.attr = x`` or ``a, b = t`` —
-        a tuple-unpack the straight-line arms do not handle) also forces block
-        execution so it routes through the full assignment lowering.
-        """
-        for stmt in body:
-            if not isinstance(stmt, cls._CLASS_BODY_SIMPLE_STMTS):
-                return True
-            if isinstance(stmt, ast.Assign):
-                if any(not isinstance(t, ast.Name) for t in stmt.targets):
-                    return True
-            elif isinstance(stmt, ast.AnnAssign):
-                if not isinstance(stmt.target, ast.Name):
-                    return True
         return False
 
     def _emit_dataclass_application(
@@ -819,7 +781,7 @@ class ClassDefVisitorMixin(_MixinBase):
         # ``f_locals``).  Forcing ``dynamic_build`` gives that body a heap-backed
         # namespace mapping which is the loop-carried-correct store for its
         # names; the straight-line static fast path is untouched.  (P0 #50.)
-        body_needs_block = self._class_body_needs_block_exec(node.body)
+        body_needs_block = class_body_needs_block_exec(node.body)
         if body_needs_block:
             dynamic_build = True
         if not has_explicit_bases:

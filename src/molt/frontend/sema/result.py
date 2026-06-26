@@ -12,12 +12,12 @@ old inline computations are deleted only once their ``SemaResult`` twin proves
 byte-equal — F2c rewires the walk to read these tables at the use sites.
 
 Scope of this phase: the module-level pre-walk facts that are written **exactly
-once** in ``visit_Module`` and only read thereafter (the class graph, the const
-environment, and per-top-level-function metadata).  Walk-mutated cursors
-(``const_ints`` written in ``emit()``, ``exact_locals`` mutated across visit
-methods, the per-function scope dicts populated lazily in ``start_function``) are
-deliberately **excluded** — they are cursors, not Sema facts, and mis-classifying
-one is a miscompile (doc 44 risk #1).
+once** in ``visit_Module`` and only read thereafter (the class graph, local
+class member facts, the const environment, and per-top-level-function metadata).
+Walk-mutated cursors (``const_ints`` written in ``emit()``, ``exact_locals``
+mutated across visit methods, the per-function scope dicts populated lazily in
+``start_function``) are deliberately **excluded** — they are cursors, not Sema
+facts, and mis-classifying one is a miscompile (doc 44 risk #1).
 """
 
 from __future__ import annotations
@@ -43,6 +43,25 @@ class ClassGraph:
 
     bases_by_class: dict[str, list[list[str]]]
     subclassed_names: set[str]
+
+
+@dataclass(frozen=True)
+class ClassFacts:
+    """Per-class AST member facts computed before lowering.
+
+    ``method_names_by_class`` contains names whose final class-body binding is
+    a method definition. ``attr_names_by_class`` contains names whose final
+    binding is a non-method class attribute. A deleted name appears in neither
+    set. ``opaque_member_class_names`` records class bodies whose member set
+    cannot be proven from straight-line syntax. Repeated class definitions are
+    retained as ``ambiguous_class_names`` so consumers fail closed instead of
+    merging incompatible bodies.
+    """
+
+    method_names_by_class: dict[str, frozenset[str]]
+    attr_names_by_class: dict[str, frozenset[str]]
+    opaque_member_class_names: frozenset[str]
+    ambiguous_class_names: frozenset[str]
 
 
 @dataclass(frozen=True)
@@ -74,5 +93,6 @@ class SemaResult:
     """
 
     class_graph: ClassGraph
+    class_facts: ClassFacts
     const_dicts: dict[str, dict[str, Any]]
     function_meta: FunctionMeta

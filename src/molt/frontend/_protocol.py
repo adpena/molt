@@ -66,6 +66,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     in_annotation: Any
     in_generator: Any
     instance_attr_mutations: dict[str, set[str]]
+    known_classes: Any
     known_func_defaults: dict[str, dict[str, dict[str, Any]]]
     known_func_kinds: dict[str, dict[str, str]]
     known_modules: Any
@@ -103,7 +104,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     module_chunk_max_ops: Any
     module_chunk_symbols: list[str]
     module_chunking: Any
-    module_class_bases: dict[str, list[list[str]]]
     module_const_dicts: dict[str, dict[str, Any]]
     module_declared_classes: set[str]
     module_declared_funcs: dict[str, str]
@@ -128,7 +128,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     module_spec_override_is_package: bool | None
     module_spec_override_set: Any
     module_stmt_offsets: list[int]
-    module_subclassed_names: set[str]
     mutated_classes: set[str]
     nonlocal_decls: set[str]
     optimization_profile: MidendProfile
@@ -371,9 +370,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _capture_state_attrs(self, attrs: tuple[str, ...]) -> dict[str, Any]: ...
 
     def _class_attr_is_data_descriptor(self, class_name: str, attr: str) -> bool: ...
-
-    @classmethod
-    def _class_body_needs_block_exec(cls, body: list[ast.stmt]) -> bool: ...
 
     def _class_constructor_fold_safe(
         self, class_name: str, class_info: ClassInfo
