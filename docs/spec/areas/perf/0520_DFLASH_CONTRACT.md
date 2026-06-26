@@ -183,6 +183,13 @@ non-causal draft attention, and per-layer target-context injection. A loose
 metadata dict, non-DFlash `algorithm_family`, single-token-only adapter,
 causal/autoregressive-only adapter, or adapter that does not inject target
 context into every draft layer is rejected before registration.
+Resolution also requires explicit target/tokenizer identity at the call
+boundary: `greedy_decode(..., dflash_target_model_id=...,
+dflash_tokenizer_id=...)` or `build_dflash_runtime(..., target_model_id=...,
+tokenizer_id=...)`. Model-object attributes, including `dflash_adapter`,
+`dflash_target_model_id`, `dflash_tokenizer_id`, `model_id`, `target_model_id`,
+`name_or_path`, and ordinary `tokenizer_id`, are not selector authority and do
+not enable adapter resolution.
 
 Generic speculative-decoding helpers live under `src/molt/gpu/speculative.py`
 and `src/molt/stdlib/tinygrad/speculative.py`. The `molt.gpu.dflash` namespace
