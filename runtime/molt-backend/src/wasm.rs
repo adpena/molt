@@ -16,7 +16,7 @@ use crate::wasm_dispatch::br_table_state_remap_params;
 use crate::wasm_dispatch::{
     build_dense_state_remap_table, build_dispatch_block_map, build_dispatch_blocks,
     build_dispatch_control_maps, build_sparse_state_remap_entries, build_state_resume_maps,
-    emit_sparse_state_remap_lookup, has_non_linear_control_flow,
+    dispatch_control_panic, emit_sparse_state_remap_lookup, has_non_linear_control_flow,
 };
 use crate::wasm_import_tracking::{TrackedImportIds, selected_import_id};
 use crate::wasm_imports::collect_reloc_required_imports;
@@ -3967,7 +3967,11 @@ impl WasmBackend {
             None
         };
         let dispatch_control_maps = if stateful || jumpful {
-            Some(build_dispatch_control_maps(&func_ir.ops, stateful))
+            Some(build_dispatch_control_maps(
+                &func_ir.ops,
+                stateful,
+                &func_ir.name,
+            ))
         } else {
             None
         };
@@ -12238,11 +12242,11 @@ impl WasmBackend {
                             if let Some(local_idx) = ret_local {
                                 func.instruction(&Instruction::LocalGet(local_idx));
                             } else {
-                                eprintln!(
-                                    "WASM lowering warning: missing return local in {} op {} (var={:?}); returning None",
-                                    func_ir.name, op_idx, op.var
+                                dispatch_control_panic(
+                                    &func_ir.name,
+                                    op_idx,
+                                    format_args!("ret target local {:?} is not present", op.var),
                                 );
-                                const_cache.emit_none(func);
                             }
                         }
                         // Scope arena teardown: free the per-function arena
@@ -12603,7 +12607,13 @@ impl WasmBackend {
                         // explicit no-ops instead of falling through the
                         // unknown-op default.
                     }
-                    _ => {}
+                    _ => {
+                        dispatch_control_panic(
+                            &func_ir.name,
+                            op_idx,
+                            format_args!("unsupported op kind `{}`", op.kind),
+                        );
+                    }
                 }
 
                 // --- Peephole: invalidate known_raw_ints tracking ---
@@ -13025,18 +13035,9 @@ impl WasmBackend {
                             let args = op.args.as_ref().unwrap();
                             let cond = locals[&args[0]];
                             let else_idx = else_for_if.get(&idx).copied();
-                            let Some(end_idx) = end_for_if.get(&idx).copied() else {
-                                eprintln!(
-                                    "WASM lowering warning: malformed if without end_if in {} at op {}; falling through",
-                                    func_ir.name, idx
-                                );
-                                let next_block = idx + 1;
-                                func.instruction(&Instruction::I64Const(next_block as i64));
-                                func.instruction(&Instruction::LocalSet(state_local));
-                                func.instruction(&Instruction::Br(depth));
-                                block_terminated = true;
-                                continue;
-                            };
+                            let end_idx = end_for_if.get(&idx).copied().unwrap_or_else(|| {
+                                dispatch_control_panic(&func_ir.name, idx, "if without end_if")
+                            });
                             let false_target = if let Some(else_pos) = else_idx {
                                 else_pos + 1
                             } else {
@@ -13070,18 +13071,9 @@ impl WasmBackend {
                             block_terminated = true;
                         }
                         "else" => {
-                            let Some(end_idx) = end_for_else.get(&idx).copied() else {
-                                eprintln!(
-                                    "WASM lowering warning: malformed else without end_if in {} at op {}; falling through",
-                                    func_ir.name, idx
-                                );
-                                let next_block = idx + 1;
-                                func.instruction(&Instruction::I64Const(next_block as i64));
-                                func.instruction(&Instruction::LocalSet(state_local));
-                                func.instruction(&Instruction::Br(depth));
-                                block_terminated = true;
-                                continue;
-                            };
+                            let end_idx = end_for_else.get(&idx).copied().unwrap_or_else(|| {
+                                dispatch_control_panic(&func_ir.name, idx, "else without end_if")
+                            });
                             let end_block = end_idx + 1;
                             func.instruction(&Instruction::I64Const(end_block as i64));
                             func.instruction(&Instruction::LocalSet(state_local));
@@ -13117,18 +13109,14 @@ impl WasmBackend {
                         "loop_break_if_true" => {
                             let args = op.args.as_ref().unwrap();
                             let cond = locals[&args[0]];
-                            let Some(end_idx) = loop_break_target.get(&idx).copied() else {
-                                eprintln!(
-                                    "WASM lowering warning: loop_break_if_true without loop in {} at op {}; falling through",
-                                    func_ir.name, idx
-                                );
-                                let next_block = idx + 1;
-                                func.instruction(&Instruction::I64Const(next_block as i64));
-                                func.instruction(&Instruction::LocalSet(state_local));
-                                func.instruction(&Instruction::Br(depth));
-                                block_terminated = true;
-                                continue;
-                            };
+                            let end_idx =
+                                loop_break_target.get(&idx).copied().unwrap_or_else(|| {
+                                    dispatch_control_panic(
+                                        &func_ir.name,
+                                        idx,
+                                        "loop_break_if_true without loop",
+                                    )
+                                });
                             let end_block = end_idx + 1;
                             let next_block = idx + 1;
                             emit_branch_truthiness_i32(
@@ -13155,18 +13143,14 @@ impl WasmBackend {
                             // (`!= 0`) instead of an is_truthy(cond) value: TRUE
                             // (pending) -> jump to the loop-end state, FALSE ->
                             // fall through to the next state.
-                            let Some(end_idx) = loop_break_target.get(&idx).copied() else {
-                                eprintln!(
-                                    "WASM lowering warning: loop_break_if_exception without loop in {} at op {}; falling through",
-                                    func_ir.name, idx
-                                );
-                                let next_block = idx + 1;
-                                func.instruction(&Instruction::I64Const(next_block as i64));
-                                func.instruction(&Instruction::LocalSet(state_local));
-                                func.instruction(&Instruction::Br(depth));
-                                block_terminated = true;
-                                continue;
-                            };
+                            let end_idx =
+                                loop_break_target.get(&idx).copied().unwrap_or_else(|| {
+                                    dispatch_control_panic(
+                                        &func_ir.name,
+                                        idx,
+                                        "loop_break_if_exception without loop",
+                                    )
+                                });
                             let end_block = end_idx + 1;
                             let next_block = idx + 1;
                             emit_call(func, reloc_enabled, import_ids["exception_pending"]);
@@ -13186,18 +13170,14 @@ impl WasmBackend {
                         "loop_break_if_false" => {
                             let args = op.args.as_ref().unwrap();
                             let cond = locals[&args[0]];
-                            let Some(end_idx) = loop_break_target.get(&idx).copied() else {
-                                eprintln!(
-                                    "WASM lowering warning: loop_break_if_false without loop in {} at op {}; falling through",
-                                    func_ir.name, idx
-                                );
-                                let next_block = idx + 1;
-                                func.instruction(&Instruction::I64Const(next_block as i64));
-                                func.instruction(&Instruction::LocalSet(state_local));
-                                func.instruction(&Instruction::Br(depth));
-                                block_terminated = true;
-                                continue;
-                            };
+                            let end_idx =
+                                loop_break_target.get(&idx).copied().unwrap_or_else(|| {
+                                    dispatch_control_panic(
+                                        &func_ir.name,
+                                        idx,
+                                        "loop_break_if_false without loop",
+                                    )
+                                });
                             let end_block = end_idx + 1;
                             let next_block = idx + 1;
                             emit_branch_truthiness_i32(
@@ -13220,18 +13200,14 @@ impl WasmBackend {
                             block_terminated = true;
                         }
                         "loop_break" => {
-                            let Some(end_idx) = loop_break_target.get(&idx).copied() else {
-                                eprintln!(
-                                    "WASM lowering warning: loop_break without loop in {} at op {}; falling through",
-                                    func_ir.name, idx
-                                );
-                                let next_block = idx + 1;
-                                func.instruction(&Instruction::I64Const(next_block as i64));
-                                func.instruction(&Instruction::LocalSet(state_local));
-                                func.instruction(&Instruction::Br(depth));
-                                block_terminated = true;
-                                continue;
-                            };
+                            let end_idx =
+                                loop_break_target.get(&idx).copied().unwrap_or_else(|| {
+                                    dispatch_control_panic(
+                                        &func_ir.name,
+                                        idx,
+                                        "loop_break without loop",
+                                    )
+                                });
                             let end_block = end_idx + 1;
                             func.instruction(&Instruction::I64Const(end_block as i64));
                             func.instruction(&Instruction::LocalSet(state_local));
@@ -13239,18 +13215,14 @@ impl WasmBackend {
                             block_terminated = true;
                         }
                         "loop_continue" => {
-                            let Some(start_idx) = loop_continue_target.get(&idx).copied() else {
-                                eprintln!(
-                                    "WASM lowering warning: loop_continue without loop in {} at op {}; falling through",
-                                    func_ir.name, idx
-                                );
-                                let next_block = idx + 1;
-                                func.instruction(&Instruction::I64Const(next_block as i64));
-                                func.instruction(&Instruction::LocalSet(state_local));
-                                func.instruction(&Instruction::Br(depth));
-                                block_terminated = true;
-                                continue;
-                            };
+                            let start_idx =
+                                loop_continue_target.get(&idx).copied().unwrap_or_else(|| {
+                                    dispatch_control_panic(
+                                        &func_ir.name,
+                                        idx,
+                                        "loop_continue without loop",
+                                    )
+                                });
                             let start_block = start_idx + 1;
                             func.instruction(&Instruction::I64Const(start_block as i64));
                             func.instruction(&Instruction::LocalSet(state_local));
@@ -13266,19 +13238,16 @@ impl WasmBackend {
                         }
                         "jump" => {
                             let target_label = op.value.expect("jump missing label");
-                            let Some(target_idx) = label_to_index.get(&target_label).copied()
-                            else {
-                                eprintln!(
-                                    "WASM lowering warning: unknown jump label {} in {} at op {}; falling through",
-                                    target_label, func_ir.name, idx
-                                );
-                                let next_block = idx + 1;
-                                func.instruction(&Instruction::I64Const(next_block as i64));
-                                func.instruction(&Instruction::LocalSet(state_local));
-                                func.instruction(&Instruction::Br(depth));
-                                block_terminated = true;
-                                continue;
-                            };
+                            let target_idx = label_to_index
+                                .get(&target_label)
+                                .copied()
+                                .unwrap_or_else(|| {
+                                    dispatch_control_panic(
+                                        &func_ir.name,
+                                        idx,
+                                        format_args!("unknown jump label {target_label}"),
+                                    )
+                                });
                             let target_block = target_idx;
                             func.instruction(&Instruction::I64Const(target_block as i64));
                             func.instruction(&Instruction::LocalSet(state_local));
@@ -13288,21 +13257,19 @@ impl WasmBackend {
                         "br_if" => {
                             let args = op.args.as_ref().unwrap();
                             let cond = locals[&args[0]];
-                            let Some(target_label) = op.value else {
-                                eprintln!(
-                                    "WASM lowering warning: br_if missing label in {} at op {}; falling through",
-                                    func_ir.name, idx
-                                );
-                                continue;
-                            };
-                            let Some(target_idx) = label_to_index.get(&target_label).copied()
-                            else {
-                                eprintln!(
-                                    "WASM lowering warning: unknown br_if label {} in {} at op {}; falling through",
-                                    target_label, func_ir.name, idx
-                                );
-                                continue;
-                            };
+                            let target_label = op.value.unwrap_or_else(|| {
+                                dispatch_control_panic(&func_ir.name, idx, "br_if missing label")
+                            });
+                            let target_idx = label_to_index
+                                .get(&target_label)
+                                .copied()
+                                .unwrap_or_else(|| {
+                                    dispatch_control_panic(
+                                        &func_ir.name,
+                                        idx,
+                                        format_args!("unknown br_if label {target_label}"),
+                                    )
+                                });
                             emit_branch_truthiness_i32(
                                 func,
                                 cond,
@@ -13341,31 +13308,25 @@ impl WasmBackend {
                                 func.instruction(&Instruction::Br(depth));
                                 block_terminated = true;
                             } else {
-                                let Some(target_label) = op.value else {
-                                    eprintln!(
-                                        "WASM lowering warning: check_exception missing label in {} at op {}; falling through",
-                                        func_ir.name, idx
-                                    );
-                                    let next_block = idx + 1;
-                                    func.instruction(&Instruction::I64Const(next_block as i64));
-                                    func.instruction(&Instruction::LocalSet(state_local));
-                                    func.instruction(&Instruction::Br(depth));
-                                    block_terminated = true;
-                                    continue;
-                                };
-                                let Some(target_idx) = label_to_index.get(&target_label).copied()
-                                else {
-                                    eprintln!(
-                                        "WASM lowering warning: unknown check_exception label {} in {} at op {}; falling through",
-                                        target_label, func_ir.name, idx
-                                    );
-                                    let next_block = idx + 1;
-                                    func.instruction(&Instruction::I64Const(next_block as i64));
-                                    func.instruction(&Instruction::LocalSet(state_local));
-                                    func.instruction(&Instruction::Br(depth));
-                                    block_terminated = true;
-                                    continue;
-                                };
+                                let target_label = op.value.unwrap_or_else(|| {
+                                    dispatch_control_panic(
+                                        &func_ir.name,
+                                        idx,
+                                        "check_exception missing label",
+                                    )
+                                });
+                                let target_idx = label_to_index
+                                    .get(&target_label)
+                                    .copied()
+                                    .unwrap_or_else(|| {
+                                        dispatch_control_panic(
+                                            &func_ir.name,
+                                            idx,
+                                            format_args!(
+                                                "unknown check_exception label {target_label}"
+                                            ),
+                                        )
+                                    });
                                 let target_block = target_idx;
                                 let next_block = idx + 1;
                                 emit_call(func, reloc_enabled, import_ids["exception_pending"]);
@@ -13389,11 +13350,11 @@ impl WasmBackend {
                             if let Some(local_idx) = ret_local {
                                 func.instruction(&Instruction::LocalGet(local_idx));
                             } else {
-                                eprintln!(
-                                    "WASM lowering warning: missing state-machine return local in {} op {} (var={:?}); returning None",
-                                    func_ir.name, idx, op.var
+                                dispatch_control_panic(
+                                    &func_ir.name,
+                                    idx,
+                                    format_args!("ret target local {:?} is not present", op.var),
                                 );
-                                const_cache.emit_none(func);
                             }
                             // Defensive arena teardown: state-machine functions
                             // do not currently produce arena-eligible allocs
@@ -13563,33 +13524,19 @@ impl WasmBackend {
                     match op.kind.as_str() {
                         "state_switch" | "state_transition" | "state_yield" | "chan_send_yield"
                         | "chan_recv_yield" => {
-                            eprintln!(
-                                "WASM lowering warning: jumpful path hit stateful op {} in {} at op {}; falling through",
-                                op.kind, func_ir.name, idx
+                            dispatch_control_panic(
+                                &func_ir.name,
+                                idx,
+                                format_args!("jumpful path hit stateful op {}", op.kind),
                             );
-                            let next_block = idx + 1;
-                            func.instruction(&Instruction::I64Const(next_block as i64));
-                            func.instruction(&Instruction::LocalSet(state_local));
-                            func.instruction(&Instruction::Br(depth));
-                            block_terminated = true;
-                            continue;
                         }
                         "if" => {
                             let args = op.args.as_ref().unwrap();
                             let cond = locals[&args[0]];
                             let else_idx = else_for_if.get(&idx).copied();
-                            let Some(end_idx) = end_for_if.get(&idx).copied() else {
-                                eprintln!(
-                                    "WASM lowering warning: malformed if without end_if in {} at op {}; falling through",
-                                    func_ir.name, idx
-                                );
-                                let next_block = idx + 1;
-                                func.instruction(&Instruction::I64Const(next_block as i64));
-                                func.instruction(&Instruction::LocalSet(state_local));
-                                func.instruction(&Instruction::Br(depth));
-                                block_terminated = true;
-                                continue;
-                            };
+                            let end_idx = end_for_if.get(&idx).copied().unwrap_or_else(|| {
+                                dispatch_control_panic(&func_ir.name, idx, "if without end_if")
+                            });
                             let false_target = if let Some(else_pos) = else_idx {
                                 else_pos + 1
                             } else {
@@ -13623,18 +13570,9 @@ impl WasmBackend {
                             block_terminated = true;
                         }
                         "else" => {
-                            let Some(end_idx) = end_for_else.get(&idx).copied() else {
-                                eprintln!(
-                                    "WASM lowering warning: malformed else without end_if in {} at op {}; falling through",
-                                    func_ir.name, idx
-                                );
-                                let next_block = idx + 1;
-                                func.instruction(&Instruction::I64Const(next_block as i64));
-                                func.instruction(&Instruction::LocalSet(state_local));
-                                func.instruction(&Instruction::Br(depth));
-                                block_terminated = true;
-                                continue;
-                            };
+                            let end_idx = end_for_else.get(&idx).copied().unwrap_or_else(|| {
+                                dispatch_control_panic(&func_ir.name, idx, "else without end_if")
+                            });
                             let end_block = end_idx + 1;
                             func.instruction(&Instruction::I64Const(end_block as i64));
                             func.instruction(&Instruction::LocalSet(state_local));
@@ -13670,18 +13608,14 @@ impl WasmBackend {
                         "loop_break_if_true" => {
                             let args = op.args.as_ref().unwrap();
                             let cond = locals[&args[0]];
-                            let Some(end_idx) = loop_break_target.get(&idx).copied() else {
-                                eprintln!(
-                                    "WASM lowering warning: loop_break_if_true without loop in {} at op {}; falling through",
-                                    func_ir.name, idx
-                                );
-                                let next_block = idx + 1;
-                                func.instruction(&Instruction::I64Const(next_block as i64));
-                                func.instruction(&Instruction::LocalSet(state_local));
-                                func.instruction(&Instruction::Br(depth));
-                                block_terminated = true;
-                                continue;
-                            };
+                            let end_idx =
+                                loop_break_target.get(&idx).copied().unwrap_or_else(|| {
+                                    dispatch_control_panic(
+                                        &func_ir.name,
+                                        idx,
+                                        "loop_break_if_true without loop",
+                                    )
+                                });
                             let end_block = end_idx + 1;
                             let next_block = idx + 1;
                             emit_branch_truthiness_i32(
@@ -13708,18 +13642,14 @@ impl WasmBackend {
                             // (`!= 0`) instead of an is_truthy(cond) value: TRUE
                             // (pending) -> jump to the loop-end state, FALSE ->
                             // fall through to the next state.
-                            let Some(end_idx) = loop_break_target.get(&idx).copied() else {
-                                eprintln!(
-                                    "WASM lowering warning: loop_break_if_exception without loop in {} at op {}; falling through",
-                                    func_ir.name, idx
-                                );
-                                let next_block = idx + 1;
-                                func.instruction(&Instruction::I64Const(next_block as i64));
-                                func.instruction(&Instruction::LocalSet(state_local));
-                                func.instruction(&Instruction::Br(depth));
-                                block_terminated = true;
-                                continue;
-                            };
+                            let end_idx =
+                                loop_break_target.get(&idx).copied().unwrap_or_else(|| {
+                                    dispatch_control_panic(
+                                        &func_ir.name,
+                                        idx,
+                                        "loop_break_if_exception without loop",
+                                    )
+                                });
                             let end_block = end_idx + 1;
                             let next_block = idx + 1;
                             emit_call(func, reloc_enabled, import_ids["exception_pending"]);
@@ -13739,18 +13669,14 @@ impl WasmBackend {
                         "loop_break_if_false" => {
                             let args = op.args.as_ref().unwrap();
                             let cond = locals[&args[0]];
-                            let Some(end_idx) = loop_break_target.get(&idx).copied() else {
-                                eprintln!(
-                                    "WASM lowering warning: loop_break_if_false without loop in {} at op {}; falling through",
-                                    func_ir.name, idx
-                                );
-                                let next_block = idx + 1;
-                                func.instruction(&Instruction::I64Const(next_block as i64));
-                                func.instruction(&Instruction::LocalSet(state_local));
-                                func.instruction(&Instruction::Br(depth));
-                                block_terminated = true;
-                                continue;
-                            };
+                            let end_idx =
+                                loop_break_target.get(&idx).copied().unwrap_or_else(|| {
+                                    dispatch_control_panic(
+                                        &func_ir.name,
+                                        idx,
+                                        "loop_break_if_false without loop",
+                                    )
+                                });
                             let end_block = end_idx + 1;
                             let next_block = idx + 1;
                             emit_branch_truthiness_i32(
@@ -13773,18 +13699,14 @@ impl WasmBackend {
                             block_terminated = true;
                         }
                         "loop_break" => {
-                            let Some(end_idx) = loop_break_target.get(&idx).copied() else {
-                                eprintln!(
-                                    "WASM lowering warning: loop_break without loop in {} at op {}; falling through",
-                                    func_ir.name, idx
-                                );
-                                let next_block = idx + 1;
-                                func.instruction(&Instruction::I64Const(next_block as i64));
-                                func.instruction(&Instruction::LocalSet(state_local));
-                                func.instruction(&Instruction::Br(depth));
-                                block_terminated = true;
-                                continue;
-                            };
+                            let end_idx =
+                                loop_break_target.get(&idx).copied().unwrap_or_else(|| {
+                                    dispatch_control_panic(
+                                        &func_ir.name,
+                                        idx,
+                                        "loop_break without loop",
+                                    )
+                                });
                             let end_block = end_idx + 1;
                             func.instruction(&Instruction::I64Const(end_block as i64));
                             func.instruction(&Instruction::LocalSet(state_local));
@@ -13792,18 +13714,14 @@ impl WasmBackend {
                             block_terminated = true;
                         }
                         "loop_continue" => {
-                            let Some(start_idx) = loop_continue_target.get(&idx).copied() else {
-                                eprintln!(
-                                    "WASM lowering warning: loop_continue without loop in {} at op {}; falling through",
-                                    func_ir.name, idx
-                                );
-                                let next_block = idx + 1;
-                                func.instruction(&Instruction::I64Const(next_block as i64));
-                                func.instruction(&Instruction::LocalSet(state_local));
-                                func.instruction(&Instruction::Br(depth));
-                                block_terminated = true;
-                                continue;
-                            };
+                            let start_idx =
+                                loop_continue_target.get(&idx).copied().unwrap_or_else(|| {
+                                    dispatch_control_panic(
+                                        &func_ir.name,
+                                        idx,
+                                        "loop_continue without loop",
+                                    )
+                                });
                             let start_block = start_idx + 1;
                             func.instruction(&Instruction::I64Const(start_block as i64));
                             func.instruction(&Instruction::LocalSet(state_local));
@@ -13818,31 +13736,19 @@ impl WasmBackend {
                             block_terminated = true;
                         }
                         "jump" => {
-                            let Some(target_label) = op.value else {
-                                eprintln!(
-                                    "WASM lowering warning: jump missing label in {} at op {}; falling through",
-                                    func_ir.name, idx
-                                );
-                                let next_block = idx + 1;
-                                func.instruction(&Instruction::I64Const(next_block as i64));
-                                func.instruction(&Instruction::LocalSet(state_local));
-                                func.instruction(&Instruction::Br(depth));
-                                block_terminated = true;
-                                continue;
-                            };
-                            let Some(target_idx) = label_to_index.get(&target_label).copied()
-                            else {
-                                eprintln!(
-                                    "WASM lowering warning: unknown jump label {} in {} at op {}; falling through",
-                                    target_label, func_ir.name, idx
-                                );
-                                let next_block = idx + 1;
-                                func.instruction(&Instruction::I64Const(next_block as i64));
-                                func.instruction(&Instruction::LocalSet(state_local));
-                                func.instruction(&Instruction::Br(depth));
-                                block_terminated = true;
-                                continue;
-                            };
+                            let target_label = op.value.unwrap_or_else(|| {
+                                dispatch_control_panic(&func_ir.name, idx, "jump missing label")
+                            });
+                            let target_idx = label_to_index
+                                .get(&target_label)
+                                .copied()
+                                .unwrap_or_else(|| {
+                                    dispatch_control_panic(
+                                        &func_ir.name,
+                                        idx,
+                                        format_args!("unknown jump label {target_label}"),
+                                    )
+                                });
                             let target_block = target_idx;
                             func.instruction(&Instruction::I64Const(target_block as i64));
                             func.instruction(&Instruction::LocalSet(state_local));
@@ -13852,21 +13758,19 @@ impl WasmBackend {
                         "br_if" => {
                             let args = op.args.as_ref().unwrap();
                             let cond = locals[&args[0]];
-                            let Some(target_label) = op.value else {
-                                eprintln!(
-                                    "WASM lowering warning: br_if missing label in {} at op {}; falling through",
-                                    func_ir.name, idx
-                                );
-                                continue;
-                            };
-                            let Some(target_idx) = label_to_index.get(&target_label).copied()
-                            else {
-                                eprintln!(
-                                    "WASM lowering warning: unknown br_if label {} in {} at op {}; falling through",
-                                    target_label, func_ir.name, idx
-                                );
-                                continue;
-                            };
+                            let target_label = op.value.unwrap_or_else(|| {
+                                dispatch_control_panic(&func_ir.name, idx, "br_if missing label")
+                            });
+                            let target_idx = label_to_index
+                                .get(&target_label)
+                                .copied()
+                                .unwrap_or_else(|| {
+                                    dispatch_control_panic(
+                                        &func_ir.name,
+                                        idx,
+                                        format_args!("unknown br_if label {target_label}"),
+                                    )
+                                });
                             emit_branch_truthiness_i32(
                                 func,
                                 cond,
@@ -13901,31 +13805,25 @@ impl WasmBackend {
                                 func.instruction(&Instruction::Br(depth));
                                 block_terminated = true;
                             } else {
-                                let Some(target_label) = op.value else {
-                                    eprintln!(
-                                        "WASM lowering warning: check_exception missing label in {} at op {}; falling through",
-                                        func_ir.name, idx
-                                    );
-                                    let next_block = idx + 1;
-                                    func.instruction(&Instruction::I64Const(next_block as i64));
-                                    func.instruction(&Instruction::LocalSet(state_local));
-                                    func.instruction(&Instruction::Br(depth));
-                                    block_terminated = true;
-                                    continue;
-                                };
-                                let Some(target_idx) = label_to_index.get(&target_label).copied()
-                                else {
-                                    eprintln!(
-                                        "WASM lowering warning: unknown check_exception label {} in {} at op {}; falling through",
-                                        target_label, func_ir.name, idx
-                                    );
-                                    let next_block = idx + 1;
-                                    func.instruction(&Instruction::I64Const(next_block as i64));
-                                    func.instruction(&Instruction::LocalSet(state_local));
-                                    func.instruction(&Instruction::Br(depth));
-                                    block_terminated = true;
-                                    continue;
-                                };
+                                let target_label = op.value.unwrap_or_else(|| {
+                                    dispatch_control_panic(
+                                        &func_ir.name,
+                                        idx,
+                                        "check_exception missing label",
+                                    )
+                                });
+                                let target_idx = label_to_index
+                                    .get(&target_label)
+                                    .copied()
+                                    .unwrap_or_else(|| {
+                                        dispatch_control_panic(
+                                            &func_ir.name,
+                                            idx,
+                                            format_args!(
+                                                "unknown check_exception label {target_label}"
+                                            ),
+                                        )
+                                    });
                                 let target_block = target_idx;
                                 let next_block = idx + 1;
                                 emit_call(func, reloc_enabled, import_ids["exception_pending"]);
@@ -13949,11 +13847,11 @@ impl WasmBackend {
                             if let Some(local_idx) = ret_local {
                                 func.instruction(&Instruction::LocalGet(local_idx));
                             } else {
-                                eprintln!(
-                                    "WASM lowering warning: missing state-machine return local in {} op {} (var={:?}); returning None",
-                                    func_ir.name, idx, op.var
+                                dispatch_control_panic(
+                                    &func_ir.name,
+                                    idx,
+                                    format_args!("ret target local {:?} is not present", op.var),
                                 );
-                                const_cache.emit_none(func);
                             }
                             // Defensive arena teardown: state-machine functions
                             // do not currently produce arena-eligible allocs
