@@ -69,6 +69,7 @@ EXPECTED_MIXINS = [
     "MidendOptimizationMixin",
     "SerializationMixin",
     "OwnershipLoweringMixin",
+    "StringFormattingMixin",
     "CompileWarningMixin",
     "EmissionCoreMixin",
     "ExceptionLoweringMixin",
@@ -249,6 +250,12 @@ def test_moved_methods_resolve_on_class() -> None:
     assert hasattr(SimpleTIRGenerator, "_finalize_code_ids")
     assert hasattr(SimpleTIRGenerator, "_ensure_code_slots_init")
     assert hasattr(SimpleTIRGenerator, "to_json")
+    # string formatting and template lowering
+    assert hasattr(SimpleTIRGenerator, "_try_extract_const_str")
+    assert hasattr(SimpleTIRGenerator, "_parse_format_tokens")
+    assert hasattr(SimpleTIRGenerator, "_emit_format_tokens")
+    assert hasattr(SimpleTIRGenerator, "_emit_format_spec_value")
+    assert hasattr(SimpleTIRGenerator, "_emit_template_interpolation")
     # import lowering
     assert hasattr(SimpleTIRGenerator, "_resolve_relative_import")
     assert hasattr(SimpleTIRGenerator, "_should_attempt_runtime_module_import")
@@ -284,6 +291,7 @@ def test_mixin_modules_import_standalone() -> None:
         "molt.frontend.lowering.module_lifecycle",
         "molt.frontend.lowering.ownership_lowering",
         "molt.frontend.lowering.serialization",
+        "molt.frontend.lowering.string_formatting",
         "molt.frontend.lowering.symbol_naming",
         "molt.frontend.lowering.type_annotations",
         "molt.frontend.visitors.async_gen",
