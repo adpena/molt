@@ -1,12 +1,16 @@
 #[cfg(any(target_arch = "wasm32", not(feature = "native-tcl")))]
+use super::resources::{
+    command_is_image_instance, handle_font_command, handle_image_command,
+    handle_image_instance_command,
+};
+#[cfg(any(target_arch = "wasm32", not(feature = "native-tcl")))]
 use super::widget_create::{handle_widget_create_command, is_widget_constructor_command};
 #[cfg(any(target_arch = "wasm32", not(feature = "native-tcl")))]
 use super::window_commands::{
-    command_is_image_instance, handle_clipboard_command, handle_focus_command,
-    handle_focus_direction_command, handle_font_command, handle_geometry_command,
-    handle_grab_command, handle_image_command, handle_image_instance_command,
-    handle_option_command, handle_raise_or_lower_command, handle_rename_command,
-    handle_selection_command, handle_send_command, handle_tix_command, handle_tix_form_command,
+    handle_clipboard_command, handle_focus_command, handle_focus_direction_command,
+    handle_geometry_command, handle_grab_command, handle_option_command,
+    handle_raise_or_lower_command, handle_rename_command, handle_selection_command,
+    handle_send_command, handle_tix_command, handle_tix_form_command,
     handle_tix_set_silent_command, handle_tk_global_command, handle_winfo_command,
     handle_wm_command,
 };

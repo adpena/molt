@@ -29,6 +29,7 @@ mod generic_widgets;
 mod intrinsics;
 mod native;
 mod parsing;
+mod resources;
 mod state;
 #[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 mod tcl;
