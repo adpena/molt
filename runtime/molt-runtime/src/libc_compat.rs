@@ -4,8 +4,17 @@
 // Minimal libc constants/types for wasm builds where libc isn't available.
 
 pub type c_char = i8;
+pub type c_double = f64;
+pub type c_float = f32;
 pub type c_int = i32;
 pub type c_long = i32;
+pub type c_longlong = i64;
+pub type c_short = i16;
+pub type c_uchar = u8;
+pub type c_uint = u32;
+pub type c_ulong = u32;
+pub type c_ulonglong = u64;
+pub type c_ushort = u16;
 pub type socklen_t = u32;
 #[allow(clippy::upper_case_acronyms)]
 pub type SOCKET = i32;
@@ -129,3 +138,8 @@ pub static _CLOCK_PROCESS_CPUTIME_ID: u32 = 2;
 #[used]
 #[unsafe(no_mangle)]
 pub static _CLOCK_THREAD_CPUTIME_ID: u32 = 3;
+
+#[cfg(target_arch = "wasm32")]
+pub unsafe fn _exit(_code: c_int) -> ! {
+    core::arch::wasm32::unreachable()
+}

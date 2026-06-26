@@ -11,7 +11,7 @@ pub(crate) mod poll;
 pub(crate) mod process;
 pub(crate) mod scheduler;
 pub(crate) mod sockets;
-#[cfg(molt_has_net_io)]
+#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
 pub(crate) mod sockets_net;
 pub(crate) use generators_async::*;
 pub(crate) mod task;
