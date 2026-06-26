@@ -34,6 +34,7 @@ mod function_body;
 mod helpers;
 mod op_attributes;
 mod op_collections;
+mod op_control;
 mod op_emitter;
 mod op_objects;
 mod op_scalars;

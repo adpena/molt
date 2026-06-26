@@ -72,21 +72,25 @@ impl LuauBackend {
                 }
             }
             "index" => {
-                if args.len() >= 4 {
+                if args.len() >= 3 {
                     let out = self.out_var(op);
                     let val = sanitize_ident(&args[1]);
                     let start = sanitize_ident(&args[2]);
-                    let stop = sanitize_ident(&args[3]);
-                    self.emit_list_index_range_into(&out, &list, &val, &start, &stop);
+                    let stop = args.get(3).map(|arg| sanitize_ident(arg));
+                    self.emit_list_index_range_into(
+                        &out,
+                        &list,
+                        &val,
+                        Some(&start),
+                        stop.as_deref(),
+                    );
                 } else if let Some(val) = args.get(1) {
                     let out = self.out_var(op);
                     let val = sanitize_ident(val);
                     self.emit_list_index_into(&out, &list, &val);
                 }
             }
-            _ => {
-                self.emit_luau_list_method_fallback(op, &list, args);
-            }
+            _ => return false,
         }
         true
     }
@@ -296,10 +300,16 @@ impl LuauBackend {
                 if args.len() >= 2 {
                     let list = sanitize_ident(&args[0]);
                     let val = sanitize_ident(&args[1]);
-                    if args.len() >= 4 {
+                    if args.len() >= 3 {
                         let start = sanitize_ident(&args[2]);
-                        let stop = sanitize_ident(&args[3]);
-                        self.emit_list_index_range_into(&out, &list, &val, &start, &stop);
+                        let stop = args.get(3).map(|arg| sanitize_ident(arg));
+                        self.emit_list_index_range_into(
+                            &out,
+                            &list,
+                            &val,
+                            Some(&start),
+                            stop.as_deref(),
+                        );
                     } else {
                         self.emit_list_index_into(&out, &list, &val);
                     }
@@ -748,27 +758,25 @@ impl LuauBackend {
         out: &str,
         list: &str,
         val: &str,
-        start: &str,
-        stop: &str,
+        start: Option<&str>,
+        stop: Option<&str>,
     ) {
-        self.emit_line(&format!(
-            "local {out} = -1; do local __n = #{list}; local __start = if {start} < 0 then __n + {start} else {start}; if __start < 0 then __start = 0 end; if __start > __n then __start = __n end; local __stop = if {stop} < 0 then __n + {stop} else {stop}; if __stop < 0 then __stop = 0 end; if __stop > __n then __stop = __n end; local __found = false; for __i = __start + 1, __stop do if {list}[__i] == {val} then {out} = __i - 1; __found = true; break end end; if not __found then error(\"ValueError: \" .. tostring({val}) .. \" is not in list\") end end"
-        ));
-    }
-
-    fn emit_luau_list_method_fallback(&mut self, op: &OpIR, list: &str, args: &[String]) {
-        let method_name = op.s_value.as_deref().unwrap_or("unknown");
-        let method = sanitize_ident(method_name);
-        let call_args = args[1..]
-            .iter()
-            .map(|arg| sanitize_ident(arg))
-            .collect::<Vec<_>>()
-            .join(", ");
-        if let Some(ref out_name) = op.out {
-            let out = sanitize_ident(out_name);
-            self.emit_line(&format!("local {out} = {list}:{method}({call_args})"));
+        let start_init = if let Some(start) = start {
+            format!(
+                "local __raw_start = {start}; local __start; if __raw_start == molt_missing_sentinel then __start = 0 elseif __raw_start < 0 then __start = __n + __raw_start else __start = __raw_start end"
+            )
         } else {
-            self.emit_line(&format!("{list}:{method}({call_args})"));
-        }
+            "local __start = 0".to_string()
+        };
+        let stop_init = if let Some(stop) = stop {
+            format!(
+                "local __raw_stop = {stop}; local __stop; if __raw_stop == molt_missing_sentinel then __stop = __n elseif __raw_stop < 0 then __stop = __n + __raw_stop else __stop = __raw_stop end"
+            )
+        } else {
+            "local __stop = __n".to_string()
+        };
+        self.emit_line(&format!(
+            "local {out} = -1; do local __n = #{list}; {start_init}; if __start < 0 then __start = 0 end; if __start > __n then __start = __n end; {stop_init}; if __stop < 0 then __stop = 0 end; if __stop > __n then __stop = __n end; local __found = false; for __i = __start + 1, __stop do if {list}[__i] == {val} then {out} = __i - 1; __found = true; break end end; if not __found then error(\"ValueError: \" .. tostring({val}) .. \" is not in list\") end end"
+        ));
     }
 }

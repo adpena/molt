@@ -601,20 +601,6 @@ impl LuauBackend {
                     self.emit_line(&format!("local {out} = molt_isinstance(nil, nil)"));
                 }
             }
-            "exception_match_builtin" => {
-                let out = self.out_var(op);
-                let args = op.args.as_deref().unwrap_or(&[]);
-                if let Some(exc) = args.first() {
-                    let class_name = op.s_value.as_deref().unwrap_or("Exception");
-                    self.emit_line(&format!(
-                        "local {out} = molt_exception_match({}, \"{class_name}\")",
-                        sanitize_ident(exc)
-                    ));
-                } else {
-                    self.emit_line(&format!("local {out} = false"));
-                }
-            }
-
             // ================================================================
             // Type casting
             // ================================================================
@@ -705,6 +691,8 @@ impl LuauBackend {
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(val) = args.first() {
                     self.emit_line(&format!("local {out} = {}", sanitize_ident(val)));
+                } else {
+                    self.emit_line(&format!("local {out} = nil"));
                 }
             }
 
@@ -788,6 +776,8 @@ impl LuauBackend {
                     self.emit_line("end");
                     self.pop_indent();
                     self.emit_line("end");
+                } else {
+                    self.emit_line(&format!("local {out} = nil"));
                 }
             }
             "checked_add" => {
