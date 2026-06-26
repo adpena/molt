@@ -296,6 +296,8 @@ typed error, by `tests/gpu/dflash/test_dflash_fidelity.py`:
 | causal/autoregressive metadata | `DFlashAdapterMetadata(uses_non_causal_draft_attention=False, …)` | `ValueError("dflash adapter uses_non_causal_draft_attention must be true")` | `adapters.py` |
 | non-injecting metadata | `DFlashAdapterMetadata(injects_target_context_each_layer=False, …)` | `ValueError("dflash adapter injects_target_context_each_layer must be true")` | `adapters.py` |
 | non-spec adapter registration | `register_dflash_adapter(object())` | `TypeError("register_dflash_adapter expects DFlashAdapterSpec")` | `register_dflash_adapter` |
+| non-token prompt identity | context/builder receives `prompt_tokens=[True]` | `TypeError("prompt_tokens must contain integer token ids")` | `DFlashSelectionContext` |
+| non-token EOS identity | context/builder receives `eos_token_id=1.5` | `TypeError("eos_token_id must be an integer token id")` | `DFlashSelectionContext` |
 | missing DFlash context identity | context/builder receives `target_model_id=None` | `TypeError("target_model_id must be a string")` | `DFlashSelectionContext` |
 | empty DFlash tokenizer identity | context/builder receives `tokenizer_id=" "` | `ValueError("tokenizer_id must be non-empty")` | `DFlashSelectionContext` |
 | legacy/model identity attr names | model exposes only `dflash_target_model_id`, `dflash_tokenizer_id`, `model_id`, `target_model_id`, `name_or_path`, or `tokenizer_id` | explicit identity is still required; model fields are ignored | `DFlashSelectionContext` |

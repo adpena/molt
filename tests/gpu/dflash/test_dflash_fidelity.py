@@ -677,6 +677,46 @@ def test_selection_context_requires_explicit_dflash_identity():
         )
 
 
+def test_selection_context_normalizes_token_identity():
+    context = DFlashSelectionContext(
+        model=object(),
+        backend="native",
+        prompt_tokens=[1, 2.0, 3],
+        eos_token_id=4.0,
+        max_new_tokens=8,
+        block_size=4,
+        target_model_id="test://target/token-identity",
+        tokenizer_id="test://tokenizer/token-identity",
+    )
+
+    assert context.prompt_tokens == [1, 2, 3]
+    assert context.eos_token_id == 4
+
+    with pytest.raises(TypeError, match="prompt_tokens must contain integer token ids"):
+        DFlashSelectionContext(
+            model=object(),
+            backend="native",
+            prompt_tokens=[1, True],
+            eos_token_id=None,
+            max_new_tokens=8,
+            block_size=4,
+            target_model_id="test://target/token-identity",
+            tokenizer_id="test://tokenizer/token-identity",
+        )
+
+    with pytest.raises(TypeError, match="eos_token_id must be an integer token id"):
+        DFlashSelectionContext(
+            model=object(),
+            backend="native",
+            prompt_tokens=[1, 2, 3],
+            eos_token_id=1.5,
+            max_new_tokens=8,
+            block_size=4,
+            target_model_id="test://target/token-identity",
+            tokenizer_id="test://tokenizer/token-identity",
+        )
+
+
 def test_adapter_supports_not_called_for_target_tokenizer_mismatch():
     called = False
 

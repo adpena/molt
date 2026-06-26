@@ -136,12 +136,11 @@ def _normalize_token_id(value, error_message: str) -> int:
     return token
 
 
-def _normalize_token_sequence(values, source_name):
+def _normalize_token_sequence(values, source_name, *, relation: str = "return"):
+    error_message = f"{source_name} must {relation} integer token ids"
     out = []
     for value in values:
-        out.append(
-            _normalize_token_id(value, f"{source_name} must return integer token ids")
-        )
+        out.append(_normalize_token_id(value, error_message))
     return out
 
 
@@ -213,7 +212,11 @@ def _run_lossless_speculative_decode(
     block_size = _require_positive_int(block_size, "block_size")
     eos_token_id = _normalize_optional_token_id(eos_token_id, "eos_token_id")
 
-    prompt = _normalize_token_sequence(prompt_tokens, "prompt_tokens")
+    prompt = _normalize_token_sequence(
+        prompt_tokens,
+        "prompt_tokens",
+        relation="contain",
+    )
     prefix = list(prompt)
     emitted = []
     drafted_total = 0
