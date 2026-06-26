@@ -1,4 +1,4 @@
-# DFlash fidelity SPEC — the F1–F6 invariants (executable-spec anchor)
+# DFlash fidelity SPEC — the F1–F7 invariants (executable-spec anchor)
 
 <!--
 authority: this file is the machine-checkable transcription of the DFlash
@@ -229,11 +229,12 @@ here so the algorithm cannot be declared done without satisfying it.
   draft model id, provenance/source string, and typed `DFlashAdapterMetadata`.
   The metadata must identify the DFlash-family algorithm/version, tokenizer,
   mask token, target layer IDs, target feature schema, KV schema, target
-  conditioning path, maximum block size, non-causal draft attention, and
-  per-layer target-context injection. Algorithm family is limited to the
+  conditioning path, draft output contract, maximum block size, non-causal draft
+  attention, and per-layer target-context injection. Algorithm family is limited to the
   explicit `DFLASH_ALGORITHM_FAMILIES` vocabulary; empty, loose, non-DFlash,
-  single-token-only, causal autoregressive, or non-injecting metadata is
-  rejected before registration. At resolution time, `DFlashSelectionContext`
+  single-token-only, causal autoregressive, non-injecting, or unknown draft
+  output metadata, or an algorithm/output-contract mismatch is rejected before
+  registration. At resolution time, `DFlashSelectionContext`
   must be constructed from explicit DFlash identity arguments
   (`dflash_target_model_id`/`dflash_tokenizer_id` as decode-call arguments, or
   matching `target_model_id`/`tokenizer_id` at the builder API). Model-object
@@ -244,8 +245,14 @@ here so the algorithm cannot be declared done without satisfying it.
   metadata/context match succeeds.
 - **Checkable assertion (today):** `DFlashAdapterSpec` validates non-empty
   `target_model_id`, `draft_model_id`, and `provenance`, requires a typed
-  `DFlashAdapterMetadata`, and that metadata validates the schema fields above;
-  context construction rejects missing/empty explicit identity; the resolver
+  `DFlashAdapterMetadata`, and that metadata validates the schema fields above,
+  including an explicit `draft_output_contract` (`block_sequence` for the current
+  linear verifier runtime, `per_position_marginals` for DDTree-style one-pass
+  marginal outputs). `DFLASH_ALGORITHM_DRAFT_OUTPUT_CONTRACTS` derives the
+  allowed algorithm-family vocabulary and rejects incompatible pairings.
+  Runtime construction also declares its `draft_output_contract`, and the
+  resolver rejects adapter/runtime mismatches before any runtime is exposed.
+  Context construction rejects missing/empty explicit identity; the resolver
   refuses mismatched context identity before adapter callbacks run; returned
   runtimes are rejected when their effective block size exceeds the adapter's
   declared `max_block_size`. The fail-closed corpus asserts the typed refusals.
@@ -283,6 +290,8 @@ typed error, by `tests/gpu/dflash/test_dflash_fidelity.py`:
 | missing target layer IDs | `DFlashAdapterMetadata(target_layer_ids=[], …)` | `ValueError("dflash adapter target_layer_ids must be non-empty")` | `adapters.py` |
 | missing hidden-state schema | `DFlashAdapterMetadata(target_feature_schema=" ", …)` | `ValueError("dflash adapter target_feature_schema must be non-empty")` | `adapters.py` |
 | missing KV schema | `DFlashAdapterMetadata(kv_schema=None, …)` | `TypeError("dflash adapter kv_schema must be a string")` | `adapters.py` |
+| invalid draft output contract | `DFlashAdapterMetadata(draft_output_contract="tree_attention", …)` | `ValueError("dflash adapter draft_output_contract must be a DFlash draft output contract: …")` | `adapters.py` |
+| family/output mismatch | `DFlashAdapterMetadata(algorithm_family="ddtree", draft_output_contract="block_sequence", …)` | `ValueError("dflash adapter draft_output_contract is incompatible with algorithm_family …")` | `adapters.py` |
 | single-token-only adapter | `DFlashAdapterMetadata(max_block_size=1, …)` | `ValueError("dflash adapter max_block_size must support block drafting")` | `adapters.py` |
 | causal/autoregressive metadata | `DFlashAdapterMetadata(uses_non_causal_draft_attention=False, …)` | `ValueError("dflash adapter uses_non_causal_draft_attention must be true")` | `adapters.py` |
 | non-injecting metadata | `DFlashAdapterMetadata(injects_target_context_each_layer=False, …)` | `ValueError("dflash adapter injects_target_context_each_layer must be true")` | `adapters.py` |
@@ -292,6 +301,7 @@ typed error, by `tests/gpu/dflash/test_dflash_fidelity.py`:
 | legacy/model identity attr names | model exposes only `dflash_target_model_id`, `dflash_tokenizer_id`, `model_id`, `target_model_id`, `name_or_path`, or `tokenizer_id` | explicit identity is still required; model fields are ignored | `DFlashSelectionContext` |
 | target/tokenizer mismatch | context identity differs from adapter metadata | no adapter resolution; `supports()` is not called | `resolve_dflash_runtime` |
 | runtime exceeds checkpoint capacity | adapter runtime block size exceeds `metadata.max_block_size` | `ValueError("dflash runtime block_size exceeds adapter metadata max_block_size")` | `resolve_dflash_runtime` |
+| runtime/metadata draft contract mismatch | adapter declares `per_position_marginals` but returns the current linear `block_sequence` runtime | `ValueError("dflash runtime draft_output_contract does not match adapter metadata")` | `resolve_dflash_runtime` |
 | generic adapter returns non-runtime | adapter `create_runtime` returns a non-`DFlashRuntime` | `TypeError("dflash adapter create_runtime() must return DFlashRuntime")` | `build_dflash_runtime` |
 | named adapter unavailable | `build_dflash_runtime(…, dflash_adapter="x")` with no supporting adapter | `LookupError("dflash adapter 'x' is unavailable for this context")` | `build_dflash_runtime` |
 | mislabel guard | `import tinygrad.dflash` | `ImportError("tinygrad.dflash is not available: …")` (points at `molt.gpu.dflash`, names `tinygrad.speculative` as the generic alternative) | `src/molt/stdlib/tinygrad/dflash.py` |
@@ -309,7 +319,7 @@ typed error, by `tests/gpu/dflash/test_dflash_fidelity.py`:
 
 ## The gate
 
-`pytest tests/gpu/dflash/` green (fail-closed corpus today; F1–F6 fidelity once
+`pytest tests/gpu/dflash/` green (fail-closed corpus today; F1–F7 fidelity once
 Phase 5a + the reference model land) is **release-blocking** for any change
 touching `src/molt/gpu/dflash/**` or the `tinygrad` speculative modules
 (`speculative`, `eagle`, `mirror_sd`, `tree_attention`, `flash_attention`,

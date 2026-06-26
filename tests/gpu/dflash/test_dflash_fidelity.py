@@ -34,6 +34,8 @@ import pytest
 
 from molt.gpu.dflash import (
     DFLASH_ALGORITHM_FAMILIES,
+    DFLASH_ALGORITHM_DRAFT_OUTPUT_CONTRACTS,
+    DFLASH_DRAFT_OUTPUT_CONTRACTS,
     DFlashAdapterMetadata,
     DFlashAdapterSpec,
     DFlashConditioning,
@@ -171,6 +173,7 @@ def test_runtime_noncallable_draft_step_raises_typeerror():
             draft_step=object(),
             verify_step=lambda req: req,
             initial_conditioning=_valid_conditioning(),
+            draft_output_contract="block_sequence",
         )
 
 
@@ -180,6 +183,7 @@ def test_runtime_noncallable_verify_step_raises_typeerror():
             draft_step=lambda req: req,
             verify_step=object(),
             initial_conditioning=_valid_conditioning(),
+            draft_output_contract="block_sequence",
         )
 
 
@@ -195,6 +199,7 @@ def test_runtime_same_draft_and_verify_callable_raises_typeerror():
             draft_step=collapsed_step,
             verify_step=collapsed_step,
             initial_conditioning=_valid_conditioning(),
+            draft_output_contract="block_sequence",
         )
 
 
@@ -213,6 +218,7 @@ def test_runtime_generic_conditioning_raises_typeerror():
             draft_step=lambda req: req,
             verify_step=lambda req: req,
             initial_conditioning=generic,
+            draft_output_contract="block_sequence",
         )
 
 
@@ -224,6 +230,7 @@ def test_runtime_none_conditioning_raises_typeerror():
             draft_step=lambda req: req,
             verify_step=lambda req: req,
             initial_conditioning=None,
+            draft_output_contract="block_sequence",
         )
 
 
@@ -233,12 +240,28 @@ def test_runtime_with_valid_inputs_constructs():
         draft_step=lambda req: req,
         verify_step=lambda req: req,
         initial_conditioning=_valid_conditioning(),
+        draft_output_contract="block_sequence",
         block_size=8,
     )
     assert callable(rt.draft_step)
     assert callable(rt.verify_step)
     assert isinstance(rt.initial_conditioning, DFlashConditioning)
+    assert rt.draft_output_contract == "block_sequence"
     assert rt.block_size == 8
+
+
+def test_runtime_rejects_non_linear_draft_output_contract():
+    with pytest.raises(
+        ValueError,
+        match="DFlashRuntime draft_output_contract must be block_sequence",
+    ):
+        DFlashRuntime(
+            draft_step=lambda req: req,
+            verify_step=lambda req: req,
+            initial_conditioning=_valid_conditioning(),
+            draft_output_contract="per_position_marginals",
+            block_size=8,
+        )
 
 
 # === (b) adapters: a generic, non-target-conditioned adapter under the =========
@@ -265,22 +288,28 @@ def _adapter_spec(
     supports,
     create_runtime,
     priority: int = 0,
+    metadata: DFlashAdapterMetadata | None = None,
 ) -> DFlashAdapterSpec:
     return DFlashAdapterSpec(
         name=name,
         target_model_id=f"test://target/{name}",
         draft_model_id=f"test://draft/{name}",
         provenance="test-only synthetic DFlash adapter fixture",
-        metadata=_adapter_metadata(name),
+        metadata=metadata or _adapter_metadata(name),
         supports=supports,
         create_runtime=create_runtime,
         priority=priority,
     )
 
 
-def _adapter_metadata(name: str = "synthetic") -> DFlashAdapterMetadata:
+def _adapter_metadata(
+    name: str = "synthetic",
+    *,
+    algorithm_family: str = "base_dflash",
+    draft_output_contract: str = "block_sequence",
+) -> DFlashAdapterMetadata:
     return DFlashAdapterMetadata(
-        algorithm_family="base_dflash",
+        algorithm_family=algorithm_family,
         adapter_version=f"test://adapter-version/{name}",
         tokenizer_id=f"test://tokenizer/{name}",
         mask_token_id=0,
@@ -288,6 +317,7 @@ def _adapter_metadata(name: str = "synthetic") -> DFlashAdapterMetadata:
         target_feature_schema="test:hidden_states[batch,seq,hidden]",
         kv_schema="test:kv[layer,batch,heads,seq,dim]",
         target_conditioning_path="kv_injection_each_draft_layer",
+        draft_output_contract=draft_output_contract,
         max_block_size=4,
         uses_non_causal_draft_attention=True,
         injects_target_context_each_layer=True,
@@ -377,6 +407,12 @@ def test_adapter_spec_requires_model_pair_provenance(
             "dflash adapter kv_schema must be a string",
         ),
         (
+            "draft_output_contract",
+            "tree_attention",
+            ValueError,
+            "dflash adapter draft_output_contract must be a DFlash draft output contract",
+        ),
+        (
             "max_block_size",
             1,
             ValueError,
@@ -408,6 +444,7 @@ def test_adapter_metadata_requires_dflash_identity_fields(
         "target_feature_schema": "test:hidden_states[batch,seq,hidden]",
         "kv_schema": "test:kv[layer,batch,heads,seq,dim]",
         "target_conditioning_path": "kv_injection_each_draft_layer",
+        "draft_output_contract": "block_sequence",
         "max_block_size": 4,
         "uses_non_causal_draft_attention": True,
         "injects_target_context_each_layer": True,
@@ -427,6 +464,7 @@ def test_adapter_metadata_rejects_non_dflash_algorithm_family():
         "target_feature_schema": "test:hidden_states[batch,seq,hidden]",
         "kv_schema": "test:kv[layer,batch,heads,seq,dim]",
         "target_conditioning_path": "kv_injection_each_draft_layer",
+        "draft_output_contract": "block_sequence",
         "max_block_size": 4,
         "uses_non_causal_draft_attention": True,
         "injects_target_context_each_layer": True,
@@ -440,6 +478,7 @@ def test_adapter_metadata_rejects_non_dflash_algorithm_family():
 
 @pytest.mark.parametrize("family", sorted(DFLASH_ALGORITHM_FAMILIES))
 def test_adapter_metadata_accepts_declared_dflash_algorithm_families(family):
+    draft_output_contract = next(iter(DFLASH_ALGORITHM_DRAFT_OUTPUT_CONTRACTS[family]))
     metadata = DFlashAdapterMetadata(
         algorithm_family=family.upper(),
         adapter_version=f"test://adapter-version/{family}",
@@ -449,11 +488,61 @@ def test_adapter_metadata_accepts_declared_dflash_algorithm_families(family):
         target_feature_schema="test:hidden_states[batch,seq,hidden]",
         kv_schema="test:kv[layer,batch,heads,seq,dim]",
         target_conditioning_path="kv_injection_each_draft_layer",
+        draft_output_contract=draft_output_contract,
         max_block_size=4,
         uses_non_causal_draft_attention=True,
         injects_target_context_each_layer=True,
     )
     assert metadata.algorithm_family == family
+
+
+def test_adapter_metadata_accepts_declared_dflash_draft_output_contracts():
+    assert set().union(*DFLASH_ALGORITHM_DRAFT_OUTPUT_CONTRACTS.values()) == set(
+        DFLASH_DRAFT_OUTPUT_CONTRACTS
+    )
+    family_by_output_contract = {
+        next(iter(output_contracts)): family
+        for family, output_contracts in DFLASH_ALGORITHM_DRAFT_OUTPUT_CONTRACTS.items()
+    }
+    for draft_output_contract in sorted(DFLASH_DRAFT_OUTPUT_CONTRACTS):
+        family = family_by_output_contract[draft_output_contract]
+        metadata = DFlashAdapterMetadata(
+            algorithm_family=family,
+            adapter_version=f"test://adapter-version/{draft_output_contract}",
+            tokenizer_id=f"test://tokenizer/{draft_output_contract}",
+            mask_token_id=0,
+            target_layer_ids=[0, 2],
+            target_feature_schema="test:hidden_states[batch,seq,hidden]",
+            kv_schema="test:kv[layer,batch,heads,seq,dim]",
+            target_conditioning_path="kv_injection_each_draft_layer",
+            draft_output_contract=draft_output_contract.upper(),
+            max_block_size=4,
+            uses_non_causal_draft_attention=True,
+            injects_target_context_each_layer=True,
+        )
+        assert metadata.draft_output_contract == draft_output_contract
+        assert metadata.algorithm_family == family
+
+
+def test_adapter_metadata_rejects_family_draft_output_contract_mismatch():
+    with pytest.raises(
+        ValueError,
+        match="dflash adapter draft_output_contract is incompatible with algorithm_family",
+    ):
+        DFlashAdapterMetadata(
+            algorithm_family="ddtree",
+            adapter_version="test://adapter-version/family-contract-mismatch",
+            tokenizer_id="test://tokenizer/family-contract-mismatch",
+            mask_token_id=0,
+            target_layer_ids=[0, 2],
+            target_feature_schema="test:hidden_states[batch,seq,hidden]",
+            kv_schema="test:kv[layer,batch,heads,seq,dim]",
+            target_conditioning_path="kv_injection_each_draft_layer",
+            draft_output_contract="block_sequence",
+            max_block_size=4,
+            uses_non_causal_draft_attention=True,
+            injects_target_context_each_layer=True,
+        )
 
 
 def test_adapter_spec_requires_typed_metadata():
@@ -508,6 +597,7 @@ def test_adapter_runtime_block_size_cannot_exceed_checkpoint_metadata():
             draft_step=lambda _request: None,
             verify_step=lambda _request: None,
             initial_conditioning=_valid_conditioning(),
+            draft_output_contract="block_sequence",
             block_size=8,
         )
 
@@ -524,6 +614,40 @@ def test_adapter_runtime_block_size_cannot_exceed_checkpoint_metadata():
     ):
         resolve_dflash_runtime(
             _ctx("oversized-runtime"), preferred_name="oversized-runtime"
+        )
+
+
+def test_adapter_runtime_draft_output_contract_must_match_metadata():
+    def _supports(_context) -> bool:
+        return True
+
+    def _create_runtime(_context):
+        return DFlashRuntime(
+            draft_step=lambda _request: None,
+            verify_step=lambda _request: None,
+            initial_conditioning=_valid_conditioning(),
+            draft_output_contract="block_sequence",
+            block_size=4,
+        )
+
+    spec = _adapter_spec(
+        name="marginal-metadata",
+        supports=_supports,
+        create_runtime=_create_runtime,
+        metadata=_adapter_metadata(
+            "marginal-metadata",
+            algorithm_family="ddtree",
+            draft_output_contract="per_position_marginals",
+        ),
+    )
+    register_dflash_adapter(spec)
+
+    with pytest.raises(
+        ValueError,
+        match="dflash runtime draft_output_contract does not match adapter metadata",
+    ):
+        resolve_dflash_runtime(
+            _ctx("marginal-metadata"), preferred_name="marginal-metadata"
         )
 
 
