@@ -26,6 +26,8 @@ mod context;
 mod data_segments;
 mod function_emitter;
 mod op_loop;
+mod tir_pipeline;
+mod trampoline_analysis;
 mod trampolines;
 use crate::wasm_plan::{
     DEFAULT_GPU_INTRINSIC_MANIFEST_NAMES, detect_multi_return_candidates, emit_wasm_stage_audit,
