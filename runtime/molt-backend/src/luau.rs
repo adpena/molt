@@ -37,6 +37,7 @@ mod op_calls;
 mod op_collections;
 mod op_control;
 mod op_emitter;
+mod op_lists;
 mod op_objects;
 mod op_scalars;
 mod op_strings;

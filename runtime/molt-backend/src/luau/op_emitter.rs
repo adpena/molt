@@ -2,6 +2,9 @@ use super::*;
 
 impl LuauBackend {
     pub(super) fn emit_op(&mut self, op: &OpIR) {
+        if self.emit_list_op(op) {
+            return;
+        }
         if self.emit_collection_op(op) {
             return;
         }
