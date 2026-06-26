@@ -2203,6 +2203,14 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         self, ops: list[MoltOp], cfg: CFGGraph, executable_edges: set[tuple[int, int]]
     ) -> tuple[list[MoltOp], int]: ...
 
+    def _try_emit_attribute_receiver_call(
+        self, node: ast.Call, needs_bind: bool
+    ) -> Any: ...
+
+    def _try_emit_imported_attribute_call(
+        self, node: ast.Call, needs_bind: bool
+    ) -> Any: ...
+
     def _try_emit_imported_module_direct_or_task_call(
         self,
         target_module: str | None,
@@ -2229,6 +2237,12 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _try_emit_intrinsic_handle_class_constructor(
         self, target_module: str, attr_name: str, node: ast.Call
     ) -> MoltValue | None: ...
+
+    def _try_emit_named_builtin_call(
+        self, node: ast.Call, func_id: str, needs_bind: bool
+    ) -> Any: ...
+
+    def _try_emit_named_call(self, node: ast.Call, needs_bind: bool) -> Any: ...
 
     def _try_emit_static_dataclass_constructor(
         self, node: ast.Call, class_id: str, class_info: ClassInfo, class_ref: MoltValue
