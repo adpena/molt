@@ -2366,7 +2366,7 @@ def test_auto_repo_sentinel_does_not_exit_drain(monkeypatch, tmp_path: Path) -> 
     assert captured["suppress_auto_guard"] is False
 
 
-def test_auto_repo_sentinel_prunes_stale_orphaned_groups(
+def test_auto_repo_sentinel_preflight_requires_explicit_owned_custody(
     monkeypatch,
     tmp_path: Path,
     capsys,
@@ -2387,11 +2387,18 @@ def test_auto_repo_sentinel_prunes_stale_orphaned_groups(
     )
     terminated: list[int] = []
     sentinel_calls: list[dict[str, object]] = []
+    process_group_calls: list[dict[str, object]] = []
 
     @contextlib.contextmanager
     def fake_repo_process_sentinel(**kwargs):  # type: ignore[no-untyped-def]
         sentinel_calls.append(kwargs)
         yield object()
+
+    def fake_process_groups(*args, **kwargs):  # type: ignore[no-untyped-def]
+        process_group_calls.append(dict(kwargs))
+        if kwargs.get("owned_pids") == frozenset():
+            return []
+        return [group]
 
     monkeypatch.setattr(
         harness_memory_guard.memory_guard,
@@ -2401,7 +2408,7 @@ def test_auto_repo_sentinel_prunes_stale_orphaned_groups(
     monkeypatch.setattr(
         harness_memory_guard.process_sentinel,
         "process_groups",
-        lambda *args, **kwargs: [group],
+        fake_process_groups,
     )
     monkeypatch.setattr(
         harness_memory_guard.process_sentinel,
@@ -2438,38 +2445,13 @@ def test_auto_repo_sentinel_prunes_stale_orphaned_groups(
     ):
         pass
 
-    assert terminated == [555]
+    assert terminated == []
     assert sentinel_calls
+    assert process_group_calls
+    assert process_group_calls[0]["owned_pids"] == frozenset()
     err = capsys.readouterr().err
-    assert "stale orphaned Molt process group" in err
-    assert "age=4000s" in err
-    assert "threshold=3600s" in err
-    events = (tmp_path / "memory_guard" / "molt_build_stale_preflight.jsonl").read_text(
-        encoding="utf-8"
-    )
-    assert "repo_process_guard_stale_preflight" in events
-    assert "stale_orphan" in events
-    event = json.loads(events)
-    assert event["violation"]["external_parent_pids"] == [1]
-    assert event["violation"]["process_samples"][0]["pid"] == 555
-    assert event["repro"]["cwd"] == str(harness_memory_guard._REPO_ROOT)
-    assert event["repro"]["sentinel_label"] == "molt_build_stale_preflight"
-    assert event["kill_scope"] == "repo"
-    assert event["killer_label"] == "molt_build_stale_preflight"
-    assert event["killer_pid"] == os.getpid()
-    assert event["victim_pgid"] == 555
-    assert event["victim_command"] == "molt-backend --daemon"
-    assert event["owner_match_reason"] == "stale_orphan_repo_scope"
-    assert event["scope_to_current_tree"] is False
-    assert event["claim_status"] == "claimed"
-    assert event["termination"]["attempted"] is True
-    assert event["termination"]["signal"]["name"] == "SIGTERM"
-    assert (
-        event["termination"]["fallback_signal"]
-        == harness_memory_guard.memory_guard.fallback_kill_signal_payload()
-    )
-    assert event["termination"]["grace_sec"] == 0.25
-    assert event["termination"]["rss_triggered"] is False
+    assert "stale orphaned Molt process group" not in err
+    assert not (tmp_path / "memory_guard" / "molt_build_stale_preflight.jsonl").exists()
 
 
 def test_auto_repo_sentinel_ignores_reused_host_pgid_without_molt_identity(
