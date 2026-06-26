@@ -28,6 +28,7 @@ def load_manifest(path: Path = MANIFEST) -> dict:
     if not isinstance(imports, list) or not imports:
         raise WasmAbiManifestError("manifest must define at least one [[import]]")
     seen_imports: set[str] = set()
+    seen_runtime_callables: set[str] = set()
     for idx, entry in enumerate(imports):
         if not isinstance(entry, dict):
             raise WasmAbiManifestError(f"import entry {idx} must be a table")
@@ -40,6 +41,26 @@ def load_manifest(path: Path = MANIFEST) -> dict:
         seen_imports.add(name)
         if not isinstance(type_idx, int) or type_idx < 0:
             raise WasmAbiManifestError(f"import {name!r} has invalid type index")
+        runtime_name = entry.get("runtime_name")
+        callable_arity = entry.get("callable_arity")
+        callable_result = entry.get("callable_result", "i64")
+        has_callable_field = runtime_name is not None or callable_arity is not None
+        if has_callable_field:
+            if not isinstance(runtime_name, str) or not runtime_name:
+                raise WasmAbiManifestError(f"import {name!r} has invalid runtime_name")
+            if runtime_name in seen_runtime_callables:
+                raise WasmAbiManifestError(f"duplicate runtime callable {runtime_name!r}")
+            seen_runtime_callables.add(runtime_name)
+            if not isinstance(callable_arity, int) or callable_arity < 0:
+                raise WasmAbiManifestError(f"import {name!r} has invalid callable_arity")
+            if callable_result not in {"i64", "void"}:
+                raise WasmAbiManifestError(
+                    f"import {name!r} has invalid callable_result {callable_result!r}"
+                )
+        elif callable_result != "i64":
+            raise WasmAbiManifestError(
+                f"import {name!r} cannot set callable_result without callable_arity"
+            )
 
     prefixes = data.get("pure_skip_prefix", [])
     if not isinstance(prefixes, list):
@@ -71,6 +92,38 @@ def render_rs(data: dict) -> str:
     for entry in data["import"]:
         lines.append(f'    ("{entry["name"]}", {entry["type"]}),\n')
     lines.append("];\n\n")
+    lines.extend(
+        [
+            "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
+            "pub(crate) enum RuntimeCallableResult {\n",
+            "    I64,\n",
+            "    Void,\n",
+            "}\n\n",
+            "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
+            "pub(crate) struct RuntimeCallableImportSpec {\n",
+            "    pub(crate) runtime_name: &'static str,\n",
+            "    pub(crate) import_name: &'static str,\n",
+            "    pub(crate) arity: usize,\n",
+            "    pub(crate) result: RuntimeCallableResult,\n",
+            "}\n\n",
+            "pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[\n",
+        ]
+    )
+    for entry in data["import"]:
+        if "callable_arity" not in entry:
+            continue
+        result = "Void" if entry.get("callable_result") == "void" else "I64"
+        lines.extend(
+            [
+                "    RuntimeCallableImportSpec {\n",
+                f'        runtime_name: "{entry["runtime_name"]}",\n',
+                f'        import_name: "{entry["name"]}",\n',
+                f'        arity: {entry["callable_arity"]},\n',
+                f"        result: RuntimeCallableResult::{result},\n",
+                "    },\n",
+            ]
+        )
+    lines.append("];\n\n")
     lines.append("pub(crate) const PURE_PROFILE_SKIP_PREFIXES: &[&str] = &[\n")
     for entry in data.get("pure_skip_prefix", []):
         lines.append(f'    "{entry["prefix"]}",\n')
@@ -93,6 +146,16 @@ def render_py(data: dict) -> str:
     lines.append("WASM_IMPORT_REGISTRY: tuple[str, ...] = (\n")
     for entry in data["import"]:
         lines.append(f'    "{entry["name"]}",\n')
+    lines.append(")\n\n")
+    lines.append("WASM_RUNTIME_CALLABLE_IMPORTS: tuple[tuple[str, str, int, str], ...] = (\n")
+    for entry in data["import"]:
+        if "callable_arity" not in entry:
+            continue
+        result = entry.get("callable_result", "i64")
+        lines.append(
+            f'    ("{entry["runtime_name"]}", "{entry["name"]}", '
+            f'{entry["callable_arity"]}, "{result}"),\n'
+        )
     lines.append(")\n\n")
     lines.append("PURE_PROFILE_SKIP_PREFIXES: tuple[str, ...] = (\n")
     for entry in data.get("pure_skip_prefix", []):

@@ -1,9 +1,9 @@
 use super::context::CompileFuncContext;
 use super::trampoline_analysis::WasmTrampolineAnalysis;
 use super::*;
-use runtime_table::{builtin_table_funcs, seed_poll_table_indices};
+use runtime_surface::WasmRuntimeSurfacePlan;
 
-mod runtime_table;
+mod runtime_surface;
 
 impl WasmBackend {
     pub(super) fn emit_wasm_module(
@@ -27,62 +27,14 @@ impl WasmBackend {
         // In pure mode, IO/ASYNC/TIME imports are omitted entirely. Any code path
         // that references a skipped import will trigger a clear compile-time panic.
         let is_pure = self.options.wasm_profile == WasmProfile::Pure;
-        let is_auto = self.options.wasm_profile == WasmProfile::Auto;
-
-        // Relocatable Auto must declare the conservative import frontier before
-        // wasm-ld sees the object. Non-relocatable Auto deliberately registers
-        // the full canonical registry here and lets TrackedImportIds plus
-        // strip_unused_imports decide final retention from actual codegen use.
-        let auto_required: Option<BTreeSet<String>> = if is_auto && self.options.reloc_enabled {
-            let mut required = collect_reloc_required_imports(&ir);
-            if !task_kinds.is_empty() {
-                required.insert("task_new".to_string());
-            }
-            if task_kinds.values().any(|kind| {
-                matches!(
-                    kind,
-                    TrampolineKind::Generator
-                        | TrampolineKind::Coroutine
-                        | TrampolineKind::AsyncGen
-                )
-            }) {
-                required.insert("handle_resolve".to_string());
-                required.insert("inc_ref_obj".to_string());
-            }
-            if task_kinds
-                .values()
-                .any(|kind| matches!(kind, TrampolineKind::Coroutine))
-            {
-                required.insert("cancel_token_get_current".to_string());
-                required.insert("task_register_token_owned".to_string());
-            }
-            if task_kinds
-                .values()
-                .any(|kind| matches!(kind, TrampolineKind::AsyncGen))
-            {
-                required.insert("asyncgen_new".to_string());
-            }
-            // Runtime method caches can materialize these constructor callables
-            // even when no IR op mentions the imports directly. If Auto prunes
-            // them, wrapper emission degrades the callable slots to sentinel
-            // traps in both direct and reloc/link wasm paths.
-            required.extend(
-                RESERVED_RUNTIME_CALLABLE_SPECS
-                    .iter()
-                    .map(|spec| spec.import_name.to_string()),
-            );
-            // LIR fast-lane bodies reach runtime helpers via NAMED calls
-            // (WasmFunctionOutput::runtime_calls) that no IR op mentions -
-            // e.g. the overflow-safe box's cold `int_from_i64`. Auto-pruning
-            // them would resolve the call to the u32::MAX skipped-import
-            // sentinel and emit `unreachable`.
-            for output in lir_fast_outputs.values() {
-                required.extend(output.runtime_calls.iter().map(|name| name.to_string()));
-            }
-            Some(required)
-        } else {
-            None
-        };
+        let runtime_surface = WasmRuntimeSurfacePlan::build(
+            &ir,
+            &lir_fast_outputs,
+            &task_kinds,
+            &self.import_ids,
+            &self.options,
+        );
+        let auto_required = runtime_surface.auto_required_imports.clone();
         let is_skipped_import = |name: &str| -> bool {
             is_pure && crate::wasm_abi_generated::pure_profile_skips_import(name)
         };
@@ -141,165 +93,12 @@ impl WasmBackend {
 
         // Host Imports - driven by static registry (see wasm_imports.rs).
         for &(name, type_idx) in crate::wasm_imports::IMPORT_REGISTRY {
-            add_import(
-                name,
-                canonical_static_import_type_idx(name, type_idx),
-                &mut self.import_ids,
-            );
+            add_import(name, type_idx, &mut self.import_ids);
         }
 
         let reloc_enabled = self.options.reloc_enabled;
 
-        let defined_function_names: BTreeSet<&str> =
-            ir.functions.iter().map(|func| func.name.as_str()).collect();
-        let mut max_func_arity = 0usize;
-        let mut max_call_arity = 0usize;
-        let mut max_class_def_words = 0usize;
-        let mut builtin_trampoline_specs: BTreeMap<String, usize> = BTreeMap::new();
-        let mut direct_import_call_specs: BTreeMap<String, usize> = BTreeMap::new();
-        let mut manifest_intrinsic_names: BTreeSet<String> = BTreeSet::new();
-        for func_ir in &ir.functions {
-            let is_poll = func_ir.name.ends_with("_poll");
-            let const_strings: BTreeMap<&str, &str> = func_ir
-                .ops
-                .iter()
-                .filter_map(|op| {
-                    if op.kind == "const_str" {
-                        Some((op.out.as_deref()?, op.s_value.as_deref()?))
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-            let runtime_lookup_vars: BTreeSet<&str> = func_ir
-                .ops
-                .iter()
-                .filter_map(|op| {
-                    if op.kind == "builtin_func"
-                        && matches!(
-                            op.s_value.as_deref(),
-                            Some("molt_require_intrinsic_runtime")
-                                | Some("molt_load_intrinsic_runtime")
-                        )
-                    {
-                        op.out.as_deref()
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-            if !is_poll {
-                max_func_arity = max_func_arity.max(func_ir.params.len());
-            }
-            for op in &func_ir.ops {
-                if !is_poll
-                    && (op.kind == "call_func" || op.kind == "invoke_ffi")
-                    && let Some(args) = &op.args
-                    && !args.is_empty()
-                {
-                    max_call_arity = max_call_arity.max(args.len() - 1);
-                }
-                if op.kind == "class_def"
-                    && let Some(meta) = op.s_value.as_deref()
-                {
-                    let mut parts = meta.split(',');
-                    let nbases = parts
-                        .next()
-                        .and_then(|s| s.parse::<usize>().ok())
-                        .expect("class_def metadata missing base count");
-                    let nattrs = parts
-                        .next()
-                        .and_then(|s| s.parse::<usize>().ok())
-                        .expect("class_def metadata missing attr count");
-                    let words = nbases.max(1) + (nattrs * 2).max(1);
-                    max_class_def_words = max_class_def_words.max(words);
-                }
-                if op.kind == "builtin_func"
-                    && let Some(name) = op.s_value.as_ref()
-                {
-                    let arity = op.value.unwrap_or(0) as usize;
-                    if let Some(prev) = builtin_trampoline_specs.get(name) {
-                        if *prev != arity {
-                            panic!(
-                                "builtin trampoline arity mismatch for {name}: {prev} vs {arity}"
-                            );
-                        }
-                    } else {
-                        builtin_trampoline_specs.insert(name.clone(), arity);
-                    }
-                }
-                if op.kind == "call"
-                    && let Some(target_name) = op.s_value.as_ref()
-                    && !defined_function_names.contains(target_name.as_str())
-                {
-                    let import_name = target_name
-                        .strip_prefix("molt_")
-                        .unwrap_or(target_name.as_str());
-                    let is_runtime_import_target = target_name.starts_with("molt_")
-                        || self.import_ids.contains_key(import_name);
-                    if !is_runtime_import_target {
-                        continue;
-                    }
-                    let arity = op.args.as_ref().map_or(0, Vec::len);
-                    if let Some(prev) = direct_import_call_specs.get(target_name) {
-                        if *prev != arity {
-                            panic!(
-                                "direct imported call arity mismatch for {target_name}: {prev} vs {arity}"
-                            );
-                        }
-                    } else {
-                        direct_import_call_specs.insert(target_name.clone(), arity);
-                    }
-                }
-                if let Some(runtime_name) = gpu_runtime_call_symbol(op.kind.as_str()) {
-                    direct_import_call_specs
-                        .entry(runtime_name.to_string())
-                        .or_insert(0);
-                }
-                if op.kind == "call_func"
-                    && let Some(args) = op.args.as_ref()
-                    && args.len() >= 3
-                    && runtime_lookup_vars.contains(args[0].as_str())
-                    && let Some(name) = const_strings.get(args[1].as_str())
-                {
-                    manifest_intrinsic_names.insert((*name).to_string());
-                }
-            }
-        }
-        let mut auto_import_names: Vec<(String, usize)> = builtin_trampoline_specs
-            .iter()
-            .map(|(runtime_name, arity)| {
-                (
-                    runtime_name
-                        .strip_prefix("molt_")
-                        .unwrap_or(runtime_name.as_str())
-                        .to_string(),
-                    *arity,
-                )
-            })
-            .filter(|(import_name, _)| !self.import_ids.contains_key(import_name))
-            .collect();
-        auto_import_names.extend(
-            direct_import_call_specs
-                .iter()
-                .map(|(runtime_name, arity)| {
-                    (
-                        runtime_name
-                            .strip_prefix("molt_")
-                            .unwrap_or(runtime_name.as_str())
-                            .to_string(),
-                        *arity,
-                    )
-                })
-                .filter(|(import_name, _)| !self.import_ids.contains_key(import_name)),
-        );
-        for spec in RESERVED_RUNTIME_CALLABLE_SPECS {
-            if !self.import_ids.contains_key(spec.import_name) {
-                auto_import_names.push((spec.import_name.to_string(), spec.arity));
-            }
-        }
-        auto_import_names.sort_by(|a, b| a.0.cmp(&b.0));
-        auto_import_names.dedup_by(|a, b| a.0 == b.0);
+        let auto_import_names = runtime_surface.auto_import_names(&self.import_ids);
         let mut next_type_idx = STATIC_TYPE_COUNT;
         for &arity in auto_import_names.iter().map(|(_, arity)| arity) {
             if let std::collections::btree_map::Entry::Vacant(entry) =
@@ -323,6 +122,15 @@ impl WasmBackend {
             );
         }
         self.func_count = import_idx;
+        let WasmRuntimeSurfacePlan {
+            max_func_arity,
+            max_call_arity,
+            max_class_def_words,
+            builtin_trampoline_specs,
+            direct_import_call_specs,
+            mut manifest_intrinsic_names,
+            ..
+        } = runtime_surface;
 
         // Per-app intrinsic manifest: serialize used intrinsic names as a
         // NUL-separated data segment so the runtime only registers these.
@@ -480,14 +288,14 @@ impl WasmBackend {
 
         // Memory & Table (imported for shared-instance linking)
 
-        let builtin_table_funcs = builtin_table_funcs();
+        let builtin_table_funcs = RUNTIME_CALLABLE_IMPORTS;
         let reserved_runtime_callable_names: BTreeSet<&str> = RESERVED_RUNTIME_CALLABLE_SPECS
             .iter()
             .map(|spec| spec.runtime_name)
             .collect();
         let hardcoded_builtin_runtime_names: BTreeSet<&str> = builtin_table_funcs
             .iter()
-            .map(|(runtime_name, _, _)| *runtime_name)
+            .map(|spec| spec.runtime_name)
             .collect();
         let mut auto_builtin_table_funcs: Vec<(String, String, usize)> = builtin_trampoline_specs
             .iter()
@@ -507,7 +315,7 @@ impl WasmBackend {
         let mut compact_builtin_trampoline_funcs: Vec<(String, usize)> = Vec::new();
         let builtin_runtime_names: BTreeSet<&str> = builtin_table_funcs
             .iter()
-            .map(|(runtime_name, _, _)| *runtime_name)
+            .map(|spec| spec.runtime_name)
             .chain(
                 RESERVED_RUNTIME_CALLABLE_SPECS
                     .iter()
@@ -521,7 +329,7 @@ impl WasmBackend {
             .collect();
         for runtime_name in builtin_table_funcs
             .iter()
-            .map(|(runtime_name, _, _)| *runtime_name)
+            .map(|spec| spec.runtime_name)
             .chain(
                 RESERVED_RUNTIME_CALLABLE_SPECS
                     .iter()
@@ -540,21 +348,7 @@ impl WasmBackend {
                 compact_builtin_trampoline_funcs.push((runtime_name.to_string(), *arity));
             }
         }
-        // Intrinsic ABIs are canonicalized to i64/u64 for dynamic function-object dispatch.
-        // Keep wrapper conversion sets empty so generated wrappers preserve 64-bit bits values.
-        let builtin_i32_arg0_imports: BTreeSet<&str> = [].into_iter().collect();
-        let builtin_i32_return_imports: BTreeSet<&str> = [].into_iter().collect();
-        let void_builtin_imports: BTreeSet<&str> = [
-            "process_drop",
-            "socket_drop",
-            "stream_close",
-            "stream_drop",
-            "ws_close",
-            "ws_drop",
-        ]
-        .into_iter()
-        .collect();
-        let mut builtin_wrapper_funcs: Vec<(String, String, usize)> =
+        let mut builtin_wrapper_funcs: Vec<(String, String, usize, RuntimeCallableResult)> =
             RESERVED_RUNTIME_CALLABLE_SPECS
                 .iter()
                 .map(|spec| {
@@ -562,26 +356,39 @@ impl WasmBackend {
                         spec.runtime_name.to_string(),
                         spec.import_name.to_string(),
                         spec.arity,
+                        RuntimeCallableResult::I64,
                     )
                 })
                 .collect();
-        for (runtime_name, import_name, arity) in builtin_table_funcs
+        for (runtime_name, import_name, arity, result) in builtin_table_funcs
             .iter()
-            .map(|(runtime_name, import_name, arity)| {
+            .map(|spec| {
                 (
-                    (*runtime_name).to_string(),
-                    (*import_name).to_string(),
-                    *arity,
+                    spec.runtime_name.to_string(),
+                    spec.import_name.to_string(),
+                    spec.arity,
+                    spec.result,
                 )
             })
-            .chain(auto_builtin_table_funcs.iter().cloned())
+            .chain(
+                auto_builtin_table_funcs
+                    .iter()
+                    .map(|(runtime_name, import_name, arity)| {
+                        (
+                            runtime_name.clone(),
+                            import_name.clone(),
+                            *arity,
+                            RuntimeCallableResult::I64,
+                        )
+                    }),
+            )
         {
             // Only generate wrappers for builtins that are actually referenced
             // by user code (present in builtin_trampoline_specs). With table
             // compaction, unreferenced builtins are omitted entirely - their
             // wrappers would be dead code wasting space in the code section.
             if builtin_trampoline_specs.contains_key(runtime_name.as_str()) {
-                builtin_wrapper_funcs.push((runtime_name, import_name, arity));
+                builtin_wrapper_funcs.push((runtime_name, import_name, arity, result));
             }
         }
         if builtin_trampoline_specs.len() != compact_builtin_trampoline_funcs.len() {
@@ -593,7 +400,7 @@ impl WasmBackend {
         }
         let compact_builtin_table_len: usize = builtin_table_funcs
             .iter()
-            .map(|(rn, _, _)| (*rn).to_string())
+            .map(|spec| spec.runtime_name.to_string())
             .chain(auto_builtin_table_funcs.iter().map(|(rn, _, _)| rn.clone()))
             .filter(|rn| builtin_trampoline_specs.contains_key(rn.as_str()))
             .count();
@@ -631,7 +438,7 @@ impl WasmBackend {
         self.exports.export("molt_table", ExportKind::Table, 0);
 
         let mut builtin_wrapper_indices = BTreeMap::new();
-        for (runtime_name, import_name, arity) in &builtin_wrapper_funcs {
+        for (runtime_name, import_name, arity, result) in &builtin_wrapper_funcs {
             let type_idx = *user_type_map
                 .get(arity)
                 .unwrap_or_else(|| panic!("missing builtin wrapper signature for arity {arity}"));
@@ -645,15 +452,9 @@ impl WasmBackend {
             let mut func = Function::new_with_locals_types(Vec::new());
             for idx in 0..*arity {
                 func.instruction(&Instruction::LocalGet(idx as u32));
-                if idx == 0 && builtin_i32_arg0_imports.contains(import_name.as_str()) {
-                    func.instruction(&Instruction::I32WrapI64);
-                }
             }
             emit_call(&mut func, reloc_enabled, import_idx);
-            if builtin_i32_return_imports.contains(import_name.as_str()) {
-                func.instruction(&Instruction::I64ExtendI32U);
-            }
-            if void_builtin_imports.contains(import_name.as_str()) {
+            if *result == RuntimeCallableResult::Void {
                 func.instruction(&Instruction::I64Const(box_none()));
             }
             func.instruction(&Instruction::End);
@@ -718,7 +519,9 @@ impl WasmBackend {
             "molt_sys_set_version_info".to_string(),
             self.import_ids["sys_set_version_info"],
         );
-        seed_poll_table_indices(&mut func_to_table_idx);
+        for (slot, import_name) in POLL_TABLE_FUNCS.iter().enumerate() {
+            func_to_table_idx.insert(format!("molt_{import_name}"), (slot + 1) as u32);
+        }
 
         let reserved_runtime_callable_table_start = poll_table_prefix;
         let reserved_runtime_trampoline_table_start =
@@ -749,16 +552,16 @@ impl WasmBackend {
         // Table compaction: only allocate slots for referenced builtins.
         // Unreferenced builtins are completely omitted from the element table.
         let mut compact_slot = 0u32;
-        for (runtime_name, import_name, _) in builtin_table_funcs
+        for (runtime_name, import_name) in builtin_table_funcs
             .iter()
-            .map(|(runtime_name, import_name, arity)| {
-                (
-                    (*runtime_name).to_string(),
-                    (*import_name).to_string(),
-                    *arity,
-                )
-            })
-            .chain(auto_builtin_table_funcs.iter().cloned())
+            .map(|spec| (spec.runtime_name.to_string(), spec.import_name.to_string()))
+            .chain(
+                auto_builtin_table_funcs
+                    .iter()
+                    .map(|(runtime_name, import_name, _)| {
+                        (runtime_name.clone(), import_name.clone())
+                    }),
+            )
         {
             let runtime_key = runtime_name;
             let is_referenced = builtin_trampoline_specs.contains_key(runtime_key.as_str());

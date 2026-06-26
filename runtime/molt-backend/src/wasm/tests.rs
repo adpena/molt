@@ -1,5 +1,6 @@
 use super::local_layout::collect_read_vars;
 use super::*;
+use crate::wasm_plan::is_production_lir_wasm_fast_path_name;
 use std::collections::BTreeSet;
 
 #[test]
