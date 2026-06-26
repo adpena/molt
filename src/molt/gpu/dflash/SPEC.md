@@ -241,6 +241,9 @@ here so the algorithm cannot be declared done without satisfying it.
   attributes, including same-named DFlash-looking attributes, `model_id`,
   `target_model_id`, `name_or_path`, or ordinary `tokenizer_id`, are not
   DFlash custody and do not enable adapter resolution or adapter-name selection.
+  Backend identity is normalized by the DFlash context contract and must be one
+  of the explicit `DFLASH_SUPPORTED_BACKENDS` (`metal`, `webgpu`) before any
+  adapter can resolve; arbitrary non-empty backend strings are not capability.
   Adapter-specific `supports()` callbacks run only after the canonical
   metadata/context match succeeds.
 - **Checkable assertion (today):** `DFlashAdapterSpec` validates non-empty
@@ -304,6 +307,7 @@ typed error, by `tests/gpu/dflash/test_dflash_fidelity.py`:
 | missing DFlash context identity | context/builder receives `target_model_id=None` | `TypeError("target_model_id must be a string")` | `DFlashSelectionContext` |
 | empty DFlash tokenizer identity | context/builder receives `tokenizer_id=" "` | `ValueError("tokenizer_id must be non-empty")` | `DFlashSelectionContext` |
 | legacy/model identity attr names | model exposes only `dflash_target_model_id`, `dflash_tokenizer_id`, `model_id`, `target_model_id`, `name_or_path`, or `tokenizer_id` | explicit identity is still required; model fields are ignored | `DFlashSelectionContext` |
+| unsupported backend identity | `backend="native"` or `MOLT_GPU_BACKEND=native` with an explicit DFlash adapter | `LookupError("dflash adapter '…' requires a DFlash-capable GPU backend; set MOLT_GPU_BACKEND to one of: metal, webgpu")` | `DFLASH_SUPPORTED_BACKENDS` |
 | target/tokenizer mismatch | context identity differs from adapter metadata | no adapter resolution; `supports()` is not called | `resolve_dflash_runtime` |
 | runtime exceeds checkpoint capacity | adapter runtime block size exceeds `metadata.max_block_size` | `ValueError("dflash runtime block_size exceeds adapter metadata max_block_size")` | `resolve_dflash_runtime` |
 | runtime/metadata draft contract mismatch | adapter declares `per_position_marginals` but returns the current linear `block_sequence` runtime | `ValueError("dflash runtime draft_output_contract does not match adapter metadata")` | `resolve_dflash_runtime` |

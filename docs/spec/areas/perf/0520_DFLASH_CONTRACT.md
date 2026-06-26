@@ -92,6 +92,12 @@ The runtime must fail closed when a DFlash-capable backend is requested and no
 adapter resolves. Plain greedy fallback is only allowed when DFlash is disabled
 or no DFlash-capable backend is selected.
 
+The DFlash-capable backend vocabulary is the code-exported
+`molt.gpu.dflash.DFLASH_SUPPORTED_BACKENDS`: currently `metal` and `webgpu`.
+Backend identity is normalized by `DFlashSelectionContext`; arbitrary non-empty
+backend strings such as `native` or misspellings are not capability and cannot
+resolve a DFlash adapter.
+
 `DFlashAdapterMetadata.algorithm_family` is constrained to the explicit
 vocabulary exported by `molt.gpu.dflash.DFLASH_ALGORITHM_FAMILIES`:
 `base_dflash`, `dflash_v2`, `ddtree`, `dflare`, and
