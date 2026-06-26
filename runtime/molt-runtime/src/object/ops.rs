@@ -35,6 +35,8 @@ mod fast_compare;
 mod specialized_list;
 mod subscript;
 
+#[cfg(target_os = "windows")]
+pub use super::ops_sys::molt_set_argv_utf16;
 pub(crate) use super::ops_sys::parse_codec_arg;
 pub use super::ops_sys::{
     molt_chr, molt_ellipsis, molt_gc_collect, molt_gc_disable, molt_gc_enable, molt_gc_get_count,
@@ -44,8 +46,8 @@ pub use super::ops_sys::{
     molt_len_set, molt_len_str, molt_len_tuple, molt_missing, molt_not_implemented,
     molt_object_hash, molt_pending, molt_raise_recursion_error, molt_recursion_enter_fast,
     molt_recursion_exit_fast, molt_recursion_guard_enter, molt_recursion_guard_exit, molt_set_argv,
-    molt_set_argv_utf16, molt_setrecursionlimit, molt_signal_raise, molt_sys_abiflags,
-    molt_sys_api_version, molt_sys_executable, molt_sys_flags_payload, molt_sys_hexversion,
+    molt_setrecursionlimit, molt_signal_raise, molt_sys_abiflags, molt_sys_api_version,
+    molt_sys_executable, molt_sys_flags_payload, molt_sys_hexversion,
     molt_sys_implementation_payload, molt_sys_set_version_info, molt_sys_version,
     molt_sys_version_info, molt_time_altzone, molt_time_asctime, molt_time_daylight,
     molt_time_get_clock_info, molt_time_gmtime, molt_time_localtime, molt_time_mktime,

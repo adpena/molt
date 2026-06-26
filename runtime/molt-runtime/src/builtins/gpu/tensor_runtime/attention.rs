@@ -168,6 +168,60 @@ fn decode_mask_value(
     )
 }
 
+#[cfg(any(
+    target_arch = "wasm32",
+    all(target_os = "macos", feature = "molt_gpu_metal"),
+    all(not(target_arch = "wasm32"), feature = "molt_gpu_webgpu")
+))]
+fn expand_attention_mask_to_webgpu_bytes(
+    mask: &TensorRuntimeView,
+    mask_shape: &[usize],
+    mask_strides: &[usize],
+    batch: usize,
+    heads: usize,
+    seq_q: usize,
+    seq_k: usize,
+) -> Result<Vec<u8>, String> {
+    let total = batch
+        .checked_mul(heads)
+        .and_then(|n| n.checked_mul(seq_q))
+        .and_then(|n| n.checked_mul(seq_k))
+        .ok_or_else(|| "attention mask shape overflow".to_string())?;
+    let mut out = vec![0u8; total * 4];
+    for b in 0..batch {
+        for h in 0..heads {
+            for q_idx in 0..seq_q {
+                for k_idx in 0..seq_k {
+                    let mask_index = (if mask_shape[0] == 1 {
+                        0
+                    } else {
+                        b * mask_strides[0]
+                    }) + (if mask_shape[1] == 1 {
+                        0
+                    } else {
+                        h * mask_strides[1]
+                    }) + (if mask_shape[2] == 1 {
+                        0
+                    } else {
+                        q_idx * mask_strides[2]
+                    }) + (if mask_shape[3] == 1 {
+                        0
+                    } else {
+                        k_idx * mask_strides[3]
+                    });
+                    let value = unsafe {
+                        (mask.buffer.data_view.ptr.add(mask_index * 4) as *const f32)
+                            .read_unaligned()
+                    };
+                    let out_index = ((b * heads + h) * seq_q + q_idx) * seq_k + k_idx;
+                    out[out_index * 4..(out_index + 1) * 4].copy_from_slice(&value.to_le_bytes());
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
 fn read_float_buffer_value(view: ByteView, format: ScalarFormat, index: usize) -> f32 {
     match format {
         ScalarFormat::F32 => unsafe { (view.ptr.add(index * 4) as *const f32).read_unaligned() },
