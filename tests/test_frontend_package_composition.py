@@ -79,6 +79,7 @@ EXPECTED_MIXINS = [
     "FunctionMetadataMixin",
     "ModuleGlobalsMixin",
     "ModuleLifecycleMixin",
+    "SemaStateMixin",
     "ImportLoweringMixin",
     "SymbolNamingMixin",
     "AttributeAccessMixin",
@@ -155,6 +156,7 @@ def test_moved_methods_resolve_on_class() -> None:
     assert hasattr(SimpleTIRGenerator, "_emit_call_bound_or_func")
     # function lifecycle
     assert hasattr(SimpleTIRGenerator, "_function_contains_locals_call")
+    assert hasattr(SimpleTIRGenerator, "_task_closure_size")
     assert hasattr(SimpleTIRGenerator, "start_function")
     assert hasattr(SimpleTIRGenerator, "_capture_function_state")
     assert hasattr(SimpleTIRGenerator, "_emit_return_value")
@@ -176,7 +178,12 @@ def test_moved_methods_resolve_on_class() -> None:
     assert hasattr(SimpleTIRGenerator, "_emit_module_metadata")
     assert hasattr(SimpleTIRGenerator, "_emit_module_frame_enter")
     assert hasattr(SimpleTIRGenerator, "_reset_module_chunk_state")
+    # sema-state population
+    assert hasattr(SimpleTIRGenerator, "_module_stable_funcs")
+    assert hasattr(SimpleTIRGenerator, "_populate_sema_state")
     # symbol naming
+    assert hasattr(SimpleTIRGenerator, "_sanitize_module_name")
+    assert hasattr(SimpleTIRGenerator, "module_init_symbol")
     assert hasattr(SimpleTIRGenerator, "_function_symbol")
     assert hasattr(SimpleTIRGenerator, "_register_code_symbol")
     assert hasattr(SimpleTIRGenerator, "_qualname_for_def")
@@ -188,6 +195,9 @@ def test_moved_methods_resolve_on_class() -> None:
     assert hasattr(SimpleTIRGenerator, "_emit_attribute_load")
     assert hasattr(SimpleTIRGenerator, "_emit_attribute_store")
     # class resolution
+    assert hasattr(SimpleTIRGenerator, "_class_layout_stable")
+    assert hasattr(SimpleTIRGenerator, "_emit_class_ref")
+    assert hasattr(SimpleTIRGenerator, "_emit_class_method_func")
     assert hasattr(SimpleTIRGenerator, "_c3_merge")
     assert hasattr(SimpleTIRGenerator, "_class_mro_names")
     assert hasattr(SimpleTIRGenerator, "_resolve_method_info")
@@ -198,6 +208,7 @@ def test_moved_methods_resolve_on_class() -> None:
     assert hasattr(SimpleTIRGenerator, "_emit_function_annotate")
     assert hasattr(SimpleTIRGenerator, "_iterable_element_hint")
     assert hasattr(SimpleTIRGenerator, "_emit_guard_type")
+    assert hasattr(SimpleTIRGenerator, "_apply_explicit_hint")
     # loop lowering and loop guards
     assert hasattr(SimpleTIRGenerator, "_emit_for_loop")
     assert hasattr(SimpleTIRGenerator, "_emit_range_loop")
@@ -221,11 +232,13 @@ def test_moved_methods_resolve_on_class() -> None:
     assert hasattr(SimpleTIRGenerator, "visit_ClassDef")
     assert hasattr(SimpleTIRGenerator, "_compute_method_closure")
     assert hasattr(SimpleTIRGenerator, "_extract_inline_init_assigns")
+    assert hasattr(SimpleTIRGenerator, "_function_needs_classcell")
     # comprehensions
     assert hasattr(SimpleTIRGenerator, "visit_ListComp")
     assert hasattr(SimpleTIRGenerator, "visit_GeneratorExp")
     # functions
     assert hasattr(SimpleTIRGenerator, "visit_FunctionDef")
+    assert hasattr(SimpleTIRGenerator, "_has_gpu_kernel_decorator")
     assert hasattr(SimpleTIRGenerator, "visit_Lambda")
     assert hasattr(SimpleTIRGenerator, "visit_Return")
     # async/generator
@@ -313,6 +326,7 @@ def test_mixin_modules_import_standalone() -> None:
         "molt.frontend.lowering.module_lifecycle",
         "molt.frontend.lowering.ownership_lowering",
         "molt.frontend.lowering.serialization",
+        "molt.frontend.lowering.sema_state",
         "molt.frontend.lowering.string_formatting",
         "molt.frontend.lowering.symbol_naming",
         "molt.frontend.lowering.type_annotations",
