@@ -583,6 +583,7 @@ pub(crate) use crate::builtins::type_ops::{
     collect_runtime_classinfo, isinstance_bits, isinstance_runtime, issubclass_bits,
     issubclass_runtime, runtime_classinfo_protocol_match, type_of_bits,
 };
+pub use crate::builtins::types::dataclasses::*;
 pub use crate::builtins::types::*;
 pub use crate::builtins::warnings_ext::*;
 #[cfg(feature = "stdlib_compression")]
