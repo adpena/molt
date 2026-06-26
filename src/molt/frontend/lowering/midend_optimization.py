@@ -41,6 +41,7 @@ from molt.frontend._types import (
     _TrackedOpsList,
     build_cfg,
 )
+from molt.frontend.lowering.op_kinds_generated import FRONTEND_EFFECT_CLASS
 
 if TYPE_CHECKING:
     from molt.frontend._protocol import _GeneratorProtocol
@@ -1056,135 +1057,7 @@ class MidendOptimizationMixin(_MixinBase):
         return None
 
     def _op_effect_class(self, op_kind: str) -> str:
-        if op_kind in {
-            "CONST",
-            "CONST_BIGINT",
-            "CONST_BOOL",
-            "CONST_FLOAT",
-            # CONST_STR is NOT pure: it allocates heap memory via
-            # molt_string_from_bytes. LICM must not hoist it out of
-            # loops — the Cranelift SSA variable for the string pointer
-            # gets corrupted by loop-header phi merges if defined once
-            # before the loop instead of on each iteration.
-            "CONST_BYTES",
-            "CONST_NONE",
-            "CONST_NOT_IMPLEMENTED",
-            "CONST_ELLIPSIS",
-            "MISSING",
-            "PHI",
-            "NOT",
-            "IS",
-            "TYPE_OF",
-            "ADD",
-            "SUB",
-            "MUL",
-            "ABS",
-            "AND",
-            "OR",
-            "EQ",
-            "NE",
-            "LT",
-            "LE",
-            "GT",
-            "GE",
-            "STRING_EQ",
-        }:
-            return "pure"
-        if op_kind in {
-            "LEN",
-            "INDEX",
-            "GET_ATTR",
-            "GETATTR",
-            "LOAD_ATTR",
-            "GETATTR_NAME",
-            "HASATTR_NAME",
-            "GETATTR_SPECIAL_OBJ",
-            "GETATTR_GENERIC_OBJ",
-            "GETATTR_GENERIC_PTR",
-            "GETATTR_NAME_DEFAULT",
-            "GUARDED_GETATTR",
-            "MODULE_GET_ATTR",
-            "ISINSTANCE",
-            "EXCEPTION_MATCH_BUILTIN",
-            "CONTAINS",
-        }:
-            return "reads_heap"
-        if op_kind in {
-            "CALL",
-            "CALL_INDIRECT",
-            "CALL_INTERNAL",
-            "INVOKE_FFI",
-            "STORE_ATTR",
-            "SETATTR",
-            "SET_ATTR",
-            "STORE_INDEX",
-            "SET_INDEX",
-            "LIST_APPEND",
-            "LIST_EXTEND",
-            "LIST_POP",
-            "LIST_REMOVE",
-            "LIST_INSERT",
-            "LIST_CLEAR",
-            "LIST_REVERSE",
-            "BYTEARRAY_FILL_RANGE",
-            "DICT_SET",
-            "DICT_STR_INT_INC",
-            "DICT_SPLIT_COUNT_INT_INC",
-            "DICT_SETDEFAULT",
-            "DICT_POP",
-            "DICT_POPITEM",
-            "DICT_CLEAR",
-            "DICT_UPDATE",
-            "DICT_UPDATE_KWSTAR",
-            "DICT_UPDATE_MISSING",
-            "DEL_ATTR",
-            "DELATTR",
-            "SETATTR_NAME",
-            "SETATTR_INIT",
-            "SETATTR_GENERIC_OBJ",
-            "SETATTR_GENERIC_PTR",
-            "GUARDED_SETATTR",
-            "GUARDED_SETATTR_INIT",
-            "DELATTR_NAME",
-            "DEL_INDEX",
-            "STORE_VAR",
-            "DELETE_VAR",
-        }:
-            return "writes_heap"
-        if op_kind in {
-            "LOAD_VAR",
-        }:
-            return "reads_heap"
-        if op_kind.startswith("EXCEPTION_") or op_kind.startswith("STATE_"):
-            return "control"
-        if op_kind in {
-            "IF",
-            "ELSE",
-            "END_IF",
-            "LOOP_START",
-            "LOOP_END",
-            "LOOP_BREAK",
-            "LOOP_BREAK_IF_TRUE",
-            "LOOP_BREAK_IF_FALSE",
-            "LOOP_BREAK_IF_EXCEPTION",
-            "LOOP_CONTINUE",
-            "TRY_START",
-            "TRY_END",
-            "JUMP",
-            "RETURN",
-            "RAISE",
-            "RAISE_CAUSE",
-            "RERAISE",
-            "LABEL",
-            "STATE_LABEL",
-            "CHECK_EXCEPTION",
-            "GUARD_TAG",
-            "GUARD_TYPE",
-            "GUARD_LAYOUT",
-            "GUARD_DICT_SHAPE",
-        }:
-            return "control"
-        return "unknown"
+        return FRONTEND_EFFECT_CLASS.get(op_kind, "unknown")
 
     def _is_pure_op_for_global_cse(self, op_kind: str) -> bool:
         return self._op_effect_class(op_kind) == "pure"

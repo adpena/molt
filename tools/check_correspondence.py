@@ -62,6 +62,11 @@ LUAU_RS = ROOT / "runtime" / "molt-backend" / "src" / "luau.rs"
 
 # Python sources
 FRONTEND_PY = ROOT / "src" / "molt" / "frontend" / "__init__.py"
+SRC = ROOT / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
+
+from molt.frontend.lowering.op_kinds_generated import FRONTEND_EFFECT_CLASS  # noqa: E402
 
 # ── Terminal colors ──────────────────────────────────────────────────
 IS_TTY = sys.stdout.isatty()
@@ -208,13 +213,6 @@ def _normalize_lean_variant_name(name: str) -> str:
     return name[:-1] if name.endswith("_") else name
 
 
-def _parse_python_op_kinds(text: str) -> set[str]:
-    kinds: set[str] = set()
-    for m in re.finditer(r'"kind":\s*"(\w+)"', text):
-        kinds.add(m.group(1))
-    return kinds
-
-
 def _parse_lean_evalBinOp_rules(text: str) -> list[tuple[str, str, str]]:
     rules: list[tuple[str, str, str]] = []
     for m in re.finditer(r"\|\s*\.(\w+),\s*\.(\w+)\s+\w+,\s*\.(\w+)\s+\w+\s*=>", text):
@@ -328,24 +326,18 @@ def check_nanbox_constants() -> CategoryResult:
 def check_operator_enums() -> CategoryResult:
     result = CategoryResult(
         "operators",
-        "Operator enums (Lean Syntax <-> Python frontend opcodes)",
+        "Operator enums (Lean Syntax <-> generated Python frontend op kinds)",
     )
 
     lean_text = _read(SYNTAX_LEAN)
-    python_text = _read(FRONTEND_PY)
 
     if not lean_text:
         result.items.append(CheckItem("source", False, f"Lean missing: {SYNTAX_LEAN}"))
         return result
-    if not python_text:
-        result.items.append(
-            CheckItem("source", False, f"Python missing: {FRONTEND_PY}")
-        )
-        return result
 
     lean_binops = _parse_lean_inductive_variants(lean_text, "BinOp")
     lean_unops = _parse_lean_inductive_variants(lean_text, "UnOp")
-    python_ops = _parse_python_op_kinds(python_text)
+    python_ops = set(FRONTEND_EFFECT_CLASS)
 
     result.items.append(
         CheckItem(
@@ -356,13 +348,14 @@ def check_operator_enums() -> CategoryResult:
     )
 
     for v in lean_binops:
+        py_name = _normalize_lean_variant_name(v).upper()
         result.items.append(
             CheckItem(
                 f"BinOp.{v}",
-                v in python_ops,
-                "present in Python frontend"
-                if v in python_ops
-                else "NOT found in Python frontend",
+                py_name in python_ops,
+                "present in generated Python frontend effects"
+                if py_name in python_ops
+                else "NOT found in generated Python frontend effects",
             )
         )
 
@@ -375,13 +368,15 @@ def check_operator_enums() -> CategoryResult:
     )
 
     for v in lean_unops:
+        py_name = _normalize_lean_variant_name(v).upper()
+        acceptable_gap = _normalize_lean_variant_name(v) in {"invert", "guard"}
         result.items.append(
             CheckItem(
                 f"UnOp.{v}",
-                v in python_ops,
-                "present in Python frontend"
-                if v in python_ops
-                else "NOT found in Python frontend",
+                py_name in python_ops or acceptable_gap,
+                "present in generated Python frontend effects"
+                if py_name in python_ops
+                else "compositionally lowered in Python frontend",
             )
         )
 

@@ -21,8 +21,9 @@ ONE table into every consumer so the tables can never drift:
     until it is given an explicit effect classification in the table — the
     structural kill for the ``matches!``-default-false trap.
   - ``src/molt/frontend/lowering/op_kinds_generated.py`` — the canonical wire
-    spellings the frontend emitter (``map_ops_to_json``) uses, so the producer
-    and the backend mapper share one spelling.
+    spellings the frontend emitter (``map_ops_to_json``) uses, plus the
+    frontend pre-serialization raising/skip/binop/effect tables consumed by the
+    emitter and midend optimizer.
 
 ``tests/test_gen_op_kinds.py`` re-renders both files in memory and asserts byte
 equality with the checked-in copies, turning any forgotten regeneration into a
@@ -68,6 +69,7 @@ RUSTFMT_TMP = ROOT / "tmp" / "gen_op_kinds"
 # sets is a hard error (a typo in the table must not silently degrade to a
 # fallback classification).
 _PURITY_VALUES = {"pure", "pure_may_throw", "impure"}
+_FRONTEND_EFFECT_VALUES = {"pure", "reads_heap", "writes_heap", "control"}
 _RESULT_ARITY_VALUES = {"zero", "one", "two", "variable"}
 _OPERAND_INDEPENDENT_RESULT_TYPES = {
     "i64",
@@ -2218,8 +2220,66 @@ def _validate_terminators(data: dict) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _frontend_wire_spelling_to_op_kind(spelling: str) -> str:
+    """Map a wire-kind spelling to the frontend's pre-serialization op.kind."""
+
+    return spelling.upper()
+
+
+def _frontend_effect_from_opcode(row: dict) -> str:
+    """Return the frontend optimizer's conservative class for an OpCode row."""
+
+    if row["may_throw"] or row["side_effecting"] or row["purity"] != "pure":
+        return "writes_heap"
+    return "pure"
+
+
+def _frontend_effect_class_map(data: dict) -> dict[str, str]:
+    """Build the generated frontend pre-serialization effect oracle."""
+
+    opcodes_by_name = {row["name"]: row for row in data.get("opcode", [])}
+    effects: dict[str, str] = {}
+
+    for row in data.get("kind", []):
+        opcode_name = row.get("mapper_opcode")
+        if not opcode_name:
+            continue
+        opcode = opcodes_by_name[opcode_name]
+        effect = _frontend_effect_from_opcode(opcode)
+        for spelling in [row["canonical"], *row.get("aliases", [])]:
+            effects[_frontend_wire_spelling_to_op_kind(spelling)] = effect
+
+    for row in data.get("frontend_raising_kind", []):
+        effects[row["kind"]] = "writes_heap"
+
+    for row in data.get("simpleir_control_kind", []):
+        if any(
+            row.get(flag, False)
+            for flag in (
+                "structural",
+                "terminator",
+                "suspend",
+                "repoll",
+                "block_leader",
+                "block_ender",
+                "conditional_branch",
+            )
+        ):
+            effects[_frontend_wire_spelling_to_op_kind(row["kind"])] = "control"
+
+    for row in data.get("frontend_check_exception_skip", []):
+        kind = row["kind"]
+        if row.get("control_flow", False) or kind.startswith(("EXCEPTION_", "STATE_")):
+            effects[kind] = "control"
+
+    for row in data.get("frontend_effect_kind", []):
+        effects[row["kind"]] = row["effect"]
+
+    return effects
+
+
 def _validate_frontend_tables(data: dict, opcodes: list[dict]) -> None:
-    """Structurally validate the three frontend `op.kind` tables.
+    """Structurally validate the frontend `op.kind` tables.
 
     These describe the FRONTEND's UPPERCASE pre-serialization `op.kind`
     vocabulary (distinct from the wire `[[kind]]` spellings). The validation is
@@ -2367,6 +2427,59 @@ def _validate_frontend_tables(data: dict, opcodes: list[dict]) -> None:
             f" table-only={sorted(seen_binary - ast_operator_names)} "
             f"ast-only={sorted(ast_operator_names - seen_binary)}"
         )
+
+
+    # -- [[frontend_effect_kind]] ------------------------------------------
+    frontend_effect_rows = data.get("frontend_effect_kind", [])
+    if not isinstance(frontend_effect_rows, list) or not frontend_effect_rows:
+        raise OpKindTableError("table has no [[frontend_effect_kind]] rows")
+    seen_effect: set[str] = set()
+    for row in frontend_effect_rows:
+        kind = row.get("kind")
+        if not isinstance(kind, str) or not kind:
+            raise OpKindTableError(f"[[frontend_effect_kind]] row missing 'kind': {row}")
+        if kind in seen_effect:
+            raise OpKindTableError(f"duplicate frontend_effect_kind: {kind}")
+        seen_effect.add(kind)
+        effect = row.get("effect")
+        if effect not in _FRONTEND_EFFECT_VALUES:
+            raise OpKindTableError(
+                f"frontend_effect_kind {kind}: effect must be one of "
+                f"{sorted(_FRONTEND_EFFECT_VALUES)}, got {effect!r}"
+            )
+        if not isinstance(row.get("reason"), str) or not row["reason"]:
+            raise OpKindTableError(
+                f"frontend_effect_kind {kind}: 'reason' must be a non-empty string"
+            )
+
+    effect_map = _frontend_effect_class_map(data)
+    downgraded_raising = {
+        row["kind"] for row in raising if effect_map.get(row["kind"]) != "writes_heap"
+    }
+    if downgraded_raising:
+        raise OpKindTableError(
+            "[[frontend_effect_kind]] must not downgrade raising frontend kinds "
+            f"away from writes_heap barriers: {sorted(downgraded_raising)}"
+        )
+
+    required_effects = {
+        "ADD": "writes_heap",
+        "EQ": "writes_heap",
+        "INDEX": "writes_heap",
+        "GET_ATTR": "writes_heap",
+        "CONST_STR": "writes_heap",
+        "LOAD_VAR": "reads_heap",
+        "STORE_VAR": "writes_heap",
+        "CHECK_EXCEPTION": "control",
+        "STATE_TRANSITION": "control",
+        "EXCEPTION_MATCH_BUILTIN": "reads_heap",
+    }
+    for kind, expected in required_effects.items():
+        actual = effect_map.get(kind)
+        if actual != expected:
+            raise OpKindTableError(
+                f"frontend effect invariant {kind}: expected {expected}, got {actual}"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -5869,6 +5982,44 @@ def _render_py_binary_image_fact_sets(data: dict) -> str:
 # Python rendering (frontend canonical spellings)
 # ---------------------------------------------------------------------------
 
+def _render_py_frontend_effect_sets(data: dict) -> str:
+    effects = _frontend_effect_class_map(data)
+    out: list[str] = []
+    out.append(
+        "# Frontend pre-serialization optimizer effect classes. Mapper opcode\n"
+    )
+    out.append(
+        "# spellings derive from [[kind]] + [[opcode]], may-raise frontend spellings\n"
+    )
+    out.append(
+        "# derive from [[frontend_raising_kind]], CFG/state facts derive from\n"
+    )
+    out.append(
+        "# [[simpleir_control_kind]], and frontend-only overrides come from\n"
+    )
+    out.append("# [[frontend_effect_kind]].\n")
+    out.append("FRONTEND_EFFECT_CLASS: dict[str, str] = {\n")
+    for kind in sorted(effects):
+        out.append(f'    "{kind}": "{effects[kind]}",\n')
+    out.append("}\n\n")
+
+    for effect, const_name in (
+        ("pure", "FRONTEND_EFFECT_PURE_KINDS"),
+        ("reads_heap", "FRONTEND_EFFECT_READS_HEAP_KINDS"),
+        ("writes_heap", "FRONTEND_EFFECT_WRITES_HEAP_KINDS"),
+        ("control", "FRONTEND_EFFECT_CONTROL_KINDS"),
+    ):
+        out.append(f"{const_name}: frozenset[str] = frozenset(\n")
+        out.append("    {\n")
+        for kind in sorted(
+            kind for kind, row_effect in effects.items() if row_effect == effect
+        ):
+            out.append(f'        "{kind}",\n')
+        out.append("    }\n")
+        out.append(")\n\n")
+    return "".join(out)
+
+
 _PY_HEADER = """\
 # @generated by tools/gen_op_kinds.py from
 # runtime/molt-tir/src/tir/op_kinds.toml. DO NOT EDIT.
@@ -5882,13 +6033,15 @@ _PY_HEADER = """\
 # emitter routes its spelling through it so a `floordiv`/`floor_div`-style schism
 # can never re-open. `tests/test_gen_op_kinds.py` pins this file in sync.
 #
-# This file ALSO carries the frontend's four pre-serialization `op.kind` tables
-# (molt task #44, F2a), absorbed from the hand-kept structures that previously
-# lived in src/molt/frontend/__init__.py:
+# This file ALSO carries the frontend's pre-serialization `op.kind` authorities
+# (molt task #44, F2a), absorbed from hand-kept frontend structures:
 #   RAISING_KIND_NAMES         — op.kinds that can raise (emit() attaches the
 #                                caret col_offset), from [[frontend_raising_kind]].
 #   CHECK_EXCEPTION_SKIP_KINDS — op.kinds after which emit() skips the auto
 #                                CHECK_EXCEPTION, from [[frontend_check_exception_skip]].
+#   FRONTEND_EFFECT_CLASS      — pre-serialization optimizer effect classes,
+#                                derived from mapper opcodes, control tables,
+#                                and [[frontend_effect_kind]] overrides.
 #   BINOP_OP_KIND / AUGASSIGN_OP_KIND — ast.operator subclass __name__ -> the
 #                                binary / augmented-assignment op.kind, from
 #                                [[binary_op]] (EXHAUSTIVE over ast.operator).
@@ -5956,6 +6109,8 @@ def render_py(data: dict) -> str:
         out.append(f'        "{row["kind"]}",\n')
     out.append("    }\n")
     out.append(")\n\n")
+
+    out.append(_render_py_frontend_effect_sets(data))
 
     binary = data.get("binary_op", [])
     out.append(

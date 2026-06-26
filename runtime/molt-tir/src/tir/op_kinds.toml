@@ -6,7 +6,8 @@
 # lives. tools/gen_op_kinds.py renders it into:
 #   - runtime/molt-tir/src/tir/op_kinds_generated.rs  (mapper + classifier
 #     + per-OpCode effect-oracle arms), and
-#   - src/molt/frontend/lowering/op_kinds_generated.py    (canonical spellings).
+#   - src/molt/frontend/lowering/op_kinds_generated.py    (canonical spellings
+#     + frontend pre-serialization effect classes).
 # tests/test_gen_op_kinds.py re-renders in memory and asserts equality with the
 # checked-in generated files, so any drift is a test failure. Do NOT edit the
 # generated files by hand; edit this table and regenerate.
@@ -34,6 +35,11 @@
 #                  kinds consumed structurally before kind_to_opcode. These rows
 #                  generate tir::is_structural, cfg.rs block-boundary helpers,
 #                  and lower_from_simple.rs pre-SSA rewrite membership.
+#   - [[frontend_effect_kind]] — frontend-only optimizer effect facts and
+#                  explicit pre-serialization overrides. The generated frontend
+#                  effect oracle derives mapper defaults, raising barriers, and
+#                  control facts before these rows override/add local frontend
+#                  facts such as CONST_STR and LOAD_VAR.
 #   - [[consuming_kind]] — per-SPELLING operand-consume overrides (design 27
 #                  §2.3): the Copy-lifted `_original_kind` spellings that free an
 #                  operand internally (the CallArgs builder), finer than the
@@ -4119,6 +4125,260 @@ reason = "frontend-internal: serializes to wire `set_attr_generic_obj` (StoreAtt
 [[frontend_raising_kind]]
 kind = "SETATTR_GENERIC_PTR"
 reason = "frontend-internal: serializes to wire `set_attr_generic_ptr` (StoreAttr alias, may_throw); raises AttributeError/TypeError"
+
+# ---------------------------------------------------------------------------
+# FRONTEND_EFFECT_KINDS - frontend pre-serialization optimizer effect classes.
+#
+# The generator derives mapper defaults from [[kind]] + [[opcode]], raising
+# barriers from [[frontend_raising_kind]], and CFG/state control from
+# [[simpleir_control_kind]]. Rows here are frontend-only facts or explicit
+# pre-serialization overrides such as CONST_STR and LOAD_VAR.
+# ---------------------------------------------------------------------------
+
+[[frontend_effect_kind]]
+kind = "ABS"
+effect = "pure"
+reason = "frontend intrinsic: abs result is pure at this pre-serialization kind"
+
+[[frontend_effect_kind]]
+kind = "CONST_ELLIPSIS"
+effect = "pure"
+reason = "const: the Ellipsis singleton is an immediate singleton"
+
+[[frontend_effect_kind]]
+kind = "CONST_NOT_IMPLEMENTED"
+effect = "pure"
+reason = "const: the NotImplemented singleton is an immediate singleton"
+
+[[frontend_effect_kind]]
+kind = "MISSING"
+effect = "pure"
+reason = "structural: internal missing sentinel marker with no runtime effect"
+
+[[frontend_effect_kind]]
+kind = "PHI"
+effect = "pure"
+reason = "structural: SSA phi merge node, not a runtime operation"
+
+[[frontend_effect_kind]]
+kind = "TYPE_OF"
+effect = "pure"
+reason = "frontend intrinsic: observe value type tag for optimizer guards"
+
+[[frontend_effect_kind]]
+kind = "CONTAINS"
+effect = "reads_heap"
+reason = "frontend predicate: membership test reads container state and must not be DCE-pure"
+
+[[frontend_effect_kind]]
+kind = "EXCEPTION_MATCH_BUILTIN"
+effect = "reads_heap"
+reason = "exception matching predicate reads exception/type state"
+
+[[frontend_effect_kind]]
+kind = "GETATTR"
+effect = "reads_heap"
+reason = "legacy frontend spelling for attribute read; reads heap and must not be DCE-pure"
+
+[[frontend_effect_kind]]
+kind = "HASATTR_NAME"
+effect = "reads_heap"
+reason = "hasattr-name helper reads attribute state"
+
+[[frontend_effect_kind]]
+kind = "ISINSTANCE"
+effect = "reads_heap"
+reason = "isinstance helper reads type/object state"
+
+[[frontend_effect_kind]]
+kind = "LEN"
+effect = "reads_heap"
+reason = "len helper reads container/object state"
+
+[[frontend_effect_kind]]
+kind = "LOAD_VAR"
+effect = "reads_heap"
+reason = "frontend local/module slot read; aliases Copy in the wire mapper but is read-only before serialization"
+
+[[frontend_effect_kind]]
+kind = "BYTEARRAY_FILL_RANGE"
+effect = "writes_heap"
+reason = "mutation: bytearray range write helper"
+
+[[frontend_effect_kind]]
+kind = "CONST_STR"
+effect = "writes_heap"
+reason = "frontend string constant materializes a runtime string allocation before typed TIR lowering"
+
+[[frontend_effect_kind]]
+kind = "DELATTR"
+effect = "writes_heap"
+reason = "mutation: legacy frontend delattr spelling"
+
+[[frontend_effect_kind]]
+kind = "DELATTR_NAME"
+effect = "writes_heap"
+reason = "mutation: delete named attribute helper"
+
+[[frontend_effect_kind]]
+kind = "DICT_CLEAR"
+effect = "writes_heap"
+reason = "mutation: dictionary clear helper"
+
+[[frontend_effect_kind]]
+kind = "DICT_POP"
+effect = "writes_heap"
+reason = "mutation: dictionary pop helper"
+
+[[frontend_effect_kind]]
+kind = "DICT_POPITEM"
+effect = "writes_heap"
+reason = "mutation: dictionary popitem helper"
+
+[[frontend_effect_kind]]
+kind = "DICT_SET"
+effect = "writes_heap"
+reason = "mutation: dictionary item write helper"
+
+[[frontend_effect_kind]]
+kind = "DICT_SETDEFAULT"
+effect = "writes_heap"
+reason = "mutation: dictionary setdefault helper"
+
+[[frontend_effect_kind]]
+kind = "DICT_SPLIT_COUNT_INT_INC"
+effect = "writes_heap"
+reason = "mutation: split dictionary integer increment helper"
+
+[[frontend_effect_kind]]
+kind = "DICT_STR_INT_INC"
+effect = "writes_heap"
+reason = "mutation: string-key integer increment helper"
+
+[[frontend_effect_kind]]
+kind = "DICT_UPDATE"
+effect = "writes_heap"
+reason = "mutation: dictionary update helper"
+
+[[frontend_effect_kind]]
+kind = "DICT_UPDATE_KWSTAR"
+effect = "writes_heap"
+reason = "mutation: **kwargs dictionary update helper"
+
+[[frontend_effect_kind]]
+kind = "DICT_UPDATE_MISSING"
+effect = "writes_heap"
+reason = "mutation: dictionary missing-key update helper"
+
+[[frontend_effect_kind]]
+kind = "GUARDED_SETATTR"
+effect = "writes_heap"
+reason = "mutation: guarded attribute write helper"
+
+[[frontend_effect_kind]]
+kind = "GUARDED_SETATTR_INIT"
+effect = "writes_heap"
+reason = "mutation: guarded initialization attribute write helper"
+
+[[frontend_effect_kind]]
+kind = "LIST_APPEND"
+effect = "writes_heap"
+reason = "mutation: list append helper"
+
+[[frontend_effect_kind]]
+kind = "LIST_CLEAR"
+effect = "writes_heap"
+reason = "mutation: list clear helper"
+
+[[frontend_effect_kind]]
+kind = "LIST_EXTEND"
+effect = "writes_heap"
+reason = "mutation: list extend helper"
+
+[[frontend_effect_kind]]
+kind = "LIST_INSERT"
+effect = "writes_heap"
+reason = "mutation: list insert helper"
+
+[[frontend_effect_kind]]
+kind = "LIST_POP"
+effect = "writes_heap"
+reason = "mutation: list pop helper"
+
+[[frontend_effect_kind]]
+kind = "LIST_REMOVE"
+effect = "writes_heap"
+reason = "mutation: list remove helper"
+
+[[frontend_effect_kind]]
+kind = "LIST_REVERSE"
+effect = "writes_heap"
+reason = "mutation: list reverse helper"
+
+[[frontend_effect_kind]]
+kind = "SETATTR"
+effect = "writes_heap"
+reason = "mutation: legacy frontend setattr spelling"
+
+[[frontend_effect_kind]]
+kind = "SETATTR_INIT"
+effect = "writes_heap"
+reason = "mutation: initialization attribute write helper"
+
+[[frontend_effect_kind]]
+kind = "SETATTR_NAME"
+effect = "writes_heap"
+reason = "mutation: named attribute write helper"
+
+[[frontend_effect_kind]]
+kind = "SET_INDEX"
+effect = "writes_heap"
+reason = "mutation: legacy frontend index write spelling"
+
+[[frontend_effect_kind]]
+kind = "CHECK_EXCEPTION"
+effect = "control"
+reason = "control-flow: pending-exception branch/check node"
+
+[[frontend_effect_kind]]
+kind = "GUARD_DICT_SHAPE"
+effect = "control"
+reason = "control-flow: dictionary shape guard deopt/check"
+
+[[frontend_effect_kind]]
+kind = "GUARD_LAYOUT"
+effect = "control"
+reason = "control-flow: object layout guard deopt/check"
+
+[[frontend_effect_kind]]
+kind = "GUARD_TAG"
+effect = "control"
+reason = "control-flow: type tag guard deopt/check"
+
+[[frontend_effect_kind]]
+kind = "GUARD_TYPE"
+effect = "control"
+reason = "control-flow: type guard deopt/check"
+
+[[frontend_effect_kind]]
+kind = "RAISE_CAUSE"
+effect = "control"
+reason = "control-flow: raise-from exceptional transfer"
+
+[[frontend_effect_kind]]
+kind = "RERAISE"
+effect = "control"
+reason = "control-flow: bare re-raise exceptional transfer"
+
+[[frontend_effect_kind]]
+kind = "TRY_END"
+effect = "control"
+reason = "control-flow: exception region end"
+
+[[frontend_effect_kind]]
+kind = "TRY_START"
+effect = "control"
+reason = "control-flow: exception region start"
 
 # ---------------------------------------------------------------------------
 # CHECK_EXCEPTION_SKIP_KINDS — frontend `op.kind`s after which emit() does NOT

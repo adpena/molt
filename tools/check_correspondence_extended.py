@@ -4,7 +4,7 @@
 Adds:
   1. NaN-boxing constant check with Rust expression resolution
   2. BinOp/UnOp variant count check (Lean vs Python)
-  3. Pure-op set alignment check (Lean ops vs Python _op_effect_class)
+  3. Frontend effect alignment check (Lean ops vs generated Python effects)
   4. Compiler pass presence check (Lean pass files exist with key functions)
 
 Exits 1 if any mismatch is found.
@@ -39,8 +39,12 @@ ROOT = _find_repo_root()
 NANBOX_LEAN = ROOT / "formal" / "lean" / "MoltTIR" / "Runtime" / "NanBox.lean"
 SYNTAX_LEAN = ROOT / "formal" / "lean" / "MoltTIR" / "Syntax.lean"
 OBJ_MODEL_RS = ROOT / "runtime" / "molt-obj-model" / "src" / "lib.rs"
-FRONTEND_PY = ROOT / "src" / "molt" / "frontend" / "__init__.py"
 LEAN_PASSES_DIR = ROOT / "formal" / "lean" / "MoltTIR" / "Passes"
+SRC = ROOT / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
+
+from molt.frontend.lowering.op_kinds_generated import FRONTEND_EFFECT_CLASS  # noqa: E402
 
 IS_TTY = sys.stdout.isatty()
 
@@ -143,29 +147,15 @@ def _parse_lean_inductive_variants(text: str, type_name: str) -> list[str]:
     return variants
 
 
-def _parse_python_effect_classes(text: str) -> dict[str, set[str]]:
+def _generated_python_effect_classes() -> dict[str, set[str]]:
     classes: dict[str, set[str]] = {
         "pure": set(),
         "reads_heap": set(),
         "writes_heap": set(),
         "control": set(),
     }
-    m = re.search(r"def _op_effect_class\(self, op_kind: str\) -> str:", text)
-    if not m:
-        return classes
-    method_body = text[m.end() :]
-    end_match = re.search(r"\n    def ", method_body)
-    if end_match:
-        method_body = method_body[: end_match.start()]
-    for block_match in re.finditer(
-        r'if\s+op_kind\s+in\s+\{([^}]+)\}:\s*\n\s*return\s+"(\w+)"',
-        method_body,
-    ):
-        ops_str = block_match.group(1)
-        effect_class = block_match.group(2)
-        if effect_class in classes:
-            for op_match in re.finditer(r'"(\w+)"', ops_str):
-                classes[effect_class].add(op_match.group(1))
+    for kind, effect in FRONTEND_EFFECT_CLASS.items():
+        classes[effect].add(kind)
     return classes
 
 
@@ -227,18 +217,14 @@ def check_operator_counts(verbose: bool) -> bool:
     """Check BinOp/UnOp variant counts between Lean and Python."""
     print(bold("\n[2] BinOp/UnOp variant count alignment"))
     lean_text = _read(SYNTAX_LEAN)
-    py_text = _read(FRONTEND_PY)
-    if not lean_text or not py_text:
+    if not lean_text:
         print(red("  SKIP: source files missing"))
         return True
 
     lean_binops = _parse_lean_inductive_variants(lean_text, "BinOp")
     lean_unops = _parse_lean_inductive_variants(lean_text, "UnOp")
 
-    # Extract Python op kinds from effect classes
-    py_effect_ops: set[str] = set()
-    for m in re.finditer(r'"([A-Z_]+)"', py_text):
-        py_effect_ops.add(m.group(1))
+    py_effect_ops = set(FRONTEND_EFFECT_CLASS)
 
     ok = True
 
@@ -248,22 +234,8 @@ def check_operator_counts(verbose: bool) -> bool:
         if v.upper() not in py_effect_ops:
             missing_binops.append(v)
     if missing_binops:
-        # Some are acceptable (bitwise/advanced ops not in Python pure set)
-        acceptable = {
-            "bit_and",
-            "bit_or",
-            "bit_xor",
-            "lshift",
-            "rshift",
-            "div",
-            "floordiv",
-            "pow",
-            "mod",
-        }
-        real_missing = [m for m in missing_binops if m not in acceptable]
-        if real_missing:
-            print(red(f"  FAIL: Lean BinOps missing from Python: {real_missing}"))
-            ok = False
+        print(red(f"  FAIL: Lean BinOps missing from Python: {missing_binops}"))
+        ok = False
 
     if verbose:
         print(f"  Lean BinOp: {len(lean_binops)} variants: {', '.join(lean_binops)}")
@@ -275,9 +247,8 @@ def check_operator_counts(verbose: bool) -> bool:
         if v.upper() not in py_effect_ops:
             missing_unops.append(v)
     if missing_unops:
-        # neg is modeled in Lean but Python inlines it (SUB from 0)
-        # invert is bitwise, not present in Python IR
-        acceptable = {"invert", "neg"}
+        # invert is not yet surfaced in the frontend generated effect authority.
+        acceptable = {"invert"}
         real_missing = [m for m in missing_unops if m not in acceptable]
         if real_missing:
             print(red(f"  FAIL: Lean UnOps missing from Python: {real_missing}"))
@@ -293,53 +264,92 @@ def check_operator_counts(verbose: bool) -> bool:
 
 
 def check_pure_op_alignment(verbose: bool) -> bool:
-    """Check that Lean arithmetic/comparison ops are in Python's pure set."""
-    print(bold("\n[3] Pure-op set alignment"))
+    """Check Lean operator names against generated frontend effects."""
+    print(bold("\n[3] Frontend effect alignment"))
     lean_text = _read(SYNTAX_LEAN)
-    py_text = _read(FRONTEND_PY)
-    if not lean_text or not py_text:
+    if not lean_text:
         print(red("  SKIP: source files missing"))
         return True
 
-    py_classes = _parse_python_effect_classes(py_text)
+    py_classes = _generated_python_effect_classes()
     pure_ops = py_classes["pure"]
+    barrier_ops = py_classes["writes_heap"]
     lean_binops = _parse_lean_inductive_variants(lean_text, "BinOp")
     lean_unops = _parse_lean_inductive_variants(lean_text, "UnOp")
 
     ok = True
 
-    # Core arithmetic/comparison ops that should be pure
-    expected_pure_binops = {"add", "sub", "mul", "eq", "ne", "lt", "le", "gt", "ge"}
-    # neg is modeled in Lean but Python inlines it (SUB from 0)
-    expected_pure_unops = {"not", "abs"}
+    expected_barrier_binops = {
+        "add",
+        "sub",
+        "mul",
+        "div",
+        "floordiv",
+        "mod",
+        "pow",
+        "eq",
+        "ne",
+        "lt",
+        "le",
+        "gt",
+        "ge",
+        "bit_and",
+        "bit_or",
+        "bit_xor",
+        "lshift",
+        "rshift",
+        "in",
+        "not_in",
+    }
+    expected_pure_binops = {"and", "or", "is", "is_not"}
+    expected_pure_unops = {"not", "abs", "neg", "pos"}
+
+    for op in expected_barrier_binops:
+        if op in [v for v in lean_binops]:
+            kind = op.upper()
+            if kind not in barrier_ops:
+                print(
+                    red(
+                        f"  FAIL: BinOp.{op} in Lean but {kind} is not a frontend barrier"
+                    )
+                )
+                ok = False
+            elif verbose:
+                print(green(f"  ok: BinOp.{op} -> {kind} is a frontend barrier"))
 
     for op in expected_pure_binops:
         if op in [v for v in lean_binops]:
-            if op.upper() not in pure_ops:
+            kind = op.upper()
+            if kind not in pure_ops:
                 print(
                     red(
-                        f"  FAIL: BinOp.{op} in Lean but {op.upper()} not in Python pure ops"
+                        f"  FAIL: BinOp.{op} in Lean but {kind} not in frontend pure ops"
                     )
                 )
                 ok = False
             elif verbose:
-                print(green(f"  ok: BinOp.{op} -> {op.upper()} is pure"))
+                print(green(f"  ok: BinOp.{op} -> {kind} is pure"))
 
     for op in expected_pure_unops:
         if op in [v for v in lean_unops]:
-            if op.upper() not in pure_ops:
+            kind = op.upper()
+            if kind not in pure_ops:
                 print(
                     red(
-                        f"  FAIL: UnOp.{op} in Lean but {op.upper()} not in Python pure ops"
+                        f"  FAIL: UnOp.{op} in Lean but {kind} not in frontend pure ops"
                     )
                 )
                 ok = False
             elif verbose:
-                print(green(f"  ok: UnOp.{op} -> {op.upper()} is pure"))
+                print(green(f"  ok: UnOp.{op} -> {kind} is pure"))
 
     if ok:
-        checked = len(expected_pure_binops) + len(expected_pure_unops)
-        print(green(f"  {checked} core ops verified as pure in both Lean and Python"))
+        checked = (
+            len(expected_barrier_binops)
+            + len(expected_pure_binops)
+            + len(expected_pure_unops)
+        )
+        print(green(f"  {checked} core ops verified against frontend effects"))
     return ok
 
 
