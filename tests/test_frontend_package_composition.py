@@ -73,6 +73,11 @@ EXPECTED_MIXINS = [
     "GeneratorStateMixin",
     "LocalBindingMixin",
     "MidendOptimizationMixin",
+    "MidendPipelineMixin",
+    "MidendPolicyMixin",
+    "MidendCanonicalizationMixin",
+    "MidendDataflowMixin",
+    "MidendCFGMixin",
     "SerializationMixin",
     "OwnershipLoweringMixin",
     "StringFormattingMixin",
@@ -173,6 +178,10 @@ def test_moved_methods_resolve_on_class() -> None:
     assert hasattr(SimpleTIRGenerator, "_run_ir_midend_passes")
     assert hasattr(SimpleTIRGenerator, "_init_midend_state")
     assert hasattr(SimpleTIRGenerator, "_resolve_midend_function_policy")
+    assert hasattr(SimpleTIRGenerator, "_canonicalize_block_with_state")
+    assert hasattr(SimpleTIRGenerator, "_compute_sccp")
+    assert hasattr(SimpleTIRGenerator, "_ensure_structural_cfg_validity")
+    assert hasattr(SimpleTIRGenerator, "_hoist_loop_invariant_pure_ops")
     assert hasattr(SimpleTIRGenerator, "_canonicalize_control_aware_ops")
     # serialization
     assert hasattr(SimpleTIRGenerator, "map_ops_to_json")
@@ -373,7 +382,12 @@ def test_mixin_modules_import_standalone() -> None:
         "molt.frontend.lowering.import_lowering",
         "molt.frontend.lowering.local_bindings",
         "molt.frontend.lowering.loop_lowering",
+        "molt.frontend.lowering.midend_canonicalization",
+        "molt.frontend.lowering.midend_cfg",
+        "molt.frontend.lowering.midend_dataflow",
         "molt.frontend.lowering.midend_optimization",
+        "molt.frontend.lowering.midend_pipeline",
+        "molt.frontend.lowering.midend_policy",
         "molt.frontend.lowering.module_lifecycle",
         "molt.frontend.lowering.ownership_lowering",
         "molt.frontend.lowering.serialization",
