@@ -36,6 +36,7 @@ from molt.frontend._types import (
 if TYPE_CHECKING:
     from molt.frontend.sema import SemaResult
 
+
 class _GeneratorProtocolAttrs(Protocol):
     _IMPORT_TRANSACTION_BOOTSTRAP_MODULES: frozenset[str]
     _STUB_IMPORT_MODULES: frozenset[str]
@@ -56,7 +57,7 @@ class _GeneratorProtocolAttrs(Protocol):
     _module_pressure_function_count: Any
     _module_pressure_total_ops: Any
     _op_by_result: dict[str, MoltOp]
-    _sema: 'SemaResult | None'
+    _sema: "SemaResult | None"
     _source_is_stdlib_module: Any
     _typing_import_aliases: set[str]
     active_exceptions: list[ActiveException]
