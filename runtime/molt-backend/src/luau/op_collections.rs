@@ -100,7 +100,7 @@ impl LuauBackend {
             // ================================================================
             // Collection construction
             // ================================================================
-            "build_list" | "list_new" | "callargs_new" => {
+            "build_list" | "list_new" => {
                 let out = self.out_var(op);
                 let items = op
                     .args
@@ -219,7 +219,7 @@ impl LuauBackend {
             // ================================================================
             // List operations
             // ================================================================
-            "list_append" | "callargs_push_pos" => {
+            "list_append" => {
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 2 {
                     let list = sanitize_ident(&args[0]);
@@ -240,7 +240,7 @@ impl LuauBackend {
                     }
                 }
             }
-            "list_extend" | "callargs_expand_star" => {
+            "list_extend" => {
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 2 {
                     let list = sanitize_ident(&args[0]);
@@ -349,7 +349,7 @@ impl LuauBackend {
                     }
                 }
             }
-            "dict_set" | "callargs_push_kw" => {
+            "dict_set" => {
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 3 {
                     let dict = sanitize_ident(&args[0]);
@@ -409,10 +409,7 @@ impl LuauBackend {
                     self.emit_line(&format!("{dict}[{key}] = nil"));
                 }
             }
-            "dict_update"
-            | "dict_update_missing"
-            | "callargs_expand_kwstar"
-            | "dict_update_kwstar" => {
+            "dict_update" | "dict_update_missing" | "dict_update_kwstar" => {
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 2 {
                     let dict = sanitize_ident(&args[0]);

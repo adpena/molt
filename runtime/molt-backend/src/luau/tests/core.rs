@@ -29,6 +29,44 @@ fn test_empty_ir() {
 }
 
 #[test]
+fn test_compile_checked_lowers_call_function_alias_without_shadowing_globals() {
+    let ir = SimpleIR {
+        functions: vec![FunctionIR {
+            name: "call_function_alias_test".to_string(),
+            params: vec!["arg".to_string()],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+            ops: vec![
+                OpIR {
+                    kind: "call_function".to_string(),
+                    args: Some(vec!["print".to_string(), "arg".to_string()]),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret_void".to_string(),
+                    ..OpIR::default()
+                },
+            ],
+        }],
+        profile: None,
+    };
+    let mut backend = LuauBackend::new();
+    let source = backend
+        .compile_checked(&ir)
+        .expect("call_function alias should lower through invocation authority");
+
+    assert!(
+        source.contains("if print then print(arg) end"),
+        "call_function should call its first operand as the callable, got:\n{source}"
+    );
+    assert!(
+        !source.contains("local print") && !source.contains("[unsupported op: call_function]"),
+        "call_function must not shadow Luau globals or leave markers, got:\n{source}"
+    );
+}
+
+#[test]
 fn test_simple_function() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
