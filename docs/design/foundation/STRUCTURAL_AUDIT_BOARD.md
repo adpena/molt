@@ -78,29 +78,29 @@ Product board for the molt structural sweep — the first instrument of the Molt
 | low | 2 debt/workaround markers | `runtime/molt-backend/src/luau_backend/source_postprocess.rs` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 2 debt/workaround markers | `runtime/molt-backend/src/native_backend/function_compiler/cleanup_r…` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 2 debt/workaround markers | `runtime/molt-backend/src/native_backend/function_compiler/fc/corout…` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
-| low | 2 debt/workaround markers | `runtime/molt-runtime/src/builtins/functions_stat.rs` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
-| low | 2 debt/workaround markers | `runtime/molt-runtime/src/builtins/io_path_utils.rs` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
-| low | 2 debt/workaround markers | `runtime/molt-runtime/src/object/builders.rs` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
-| low | 2 debt/workaround markers | `runtime/molt-runtime/src/object/ops_set.rs` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 2 debt/workaround markers | `runtime/molt-runtime-logging/src/logging_ext.rs` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 2 debt/workaround markers | `runtime/molt-runtime-regex/src/regex/matcher.rs` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 2 debt/workaround markers | `runtime/molt-runtime-serial/src/binascii.rs` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 2 debt/workaround markers | `runtime/molt-runtime-serial/src/csv.rs` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
+| low | 2 debt/workaround markers | `runtime/molt-runtime/src/builtins/functions_stat.rs` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
+| low | 2 debt/workaround markers | `runtime/molt-runtime/src/builtins/io_path_utils.rs` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
+| low | 2 debt/workaround markers | `runtime/molt-runtime/src/object/builders.rs` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
+| low | 2 debt/workaround markers | `runtime/molt-runtime/src/object/ops_set.rs` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 2 debt/workaround markers | `runtime/molt-tier/src/lib.rs` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 2 debt/workaround markers | `runtime/molt-tir/src/passes/method_fusion.rs` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 2 debt/workaround markers | `runtime/molt-tir/src/tir/passes/ownership_lattice_min.rs` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 2 debt/workaround markers | `runtime/molt-tir/src/tir/passes/refcount_elim.rs` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 2 debt/workaround markers | `src/molt/gpu/distributed.py` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
-| low | 2 debt/workaround markers | `src/molt/stdlib/zlib.py` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 2 debt/workaround markers | `src/molt/stdlib/email/charset.py` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 2 debt/workaround markers | `src/molt/stdlib/email/headerregistry.py` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
-| low | 2 debt/workaround markers | `src/molt/stdlib/tkinter/__init__.py` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 2 debt/workaround markers | `src/molt/stdlib/test/support/import_helper.py` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
-| low | 1 debt/workaround markers | `runtime/molt-backend/src/rust.rs` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
-| low | 1 debt/workaround markers | `runtime/molt-backend/src/wasm_values.rs` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
+| low | 2 debt/workaround markers | `src/molt/stdlib/tkinter/__init__.py` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
+| low | 2 debt/workaround markers | `src/molt/stdlib/zlib.py` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
+| low | 1 debt/workaround markers | `runtime/molt-backend/src/llvm_backend/lowering/value_materializatio…` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 1 debt/workaround markers | `runtime/molt-backend/src/llvm_backend/mod.rs` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 1 debt/workaround markers | `runtime/molt-backend/src/luau/compile_pipeline.rs` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
-| low | 1 debt/workaround markers | `runtime/molt-backend/src/luau/op_emitter.rs` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
+| low | 1 debt/workaround markers | `runtime/molt-backend/src/luau/op_collections.rs` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
+| low | 1 debt/workaround markers | `runtime/molt-backend/src/native_backend/function_compiler.rs` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | … | _355 more_ | | run `--json` for full list |
 
 ### registry_reconciliation (1)
