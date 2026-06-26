@@ -80,87 +80,8 @@ impl WasmBackend {
         } else {
             None
         };
-        let skipped_import_prefixes: &[&str] = if is_pure {
-            &[
-                // IO
-                "process_",
-                "socket",
-                "db_",
-                "ws_",
-                "file_",
-                "stream_",
-                "path_exists",
-                "path_listdir",
-                "path_mkdir",
-                "path_unlink",
-                "path_rmdir",
-                "path_chmod",
-                "open_builtin",
-                // ASYNC
-                "async_sleep",
-                "future_",
-                "promise_",
-                "thread_",
-                "lock_",
-                "rlock_",
-                "chan_",
-                "asyncio_",
-                "asyncgen_",
-                "anext_",
-                "io_wait",
-                "spawn",
-                "block_on",
-                "cancel_token_",
-                "cancelled",
-                "cancel_current",
-                "sleep_register",
-                "contextlib_async",
-                // TIME
-                "time_",
-                // COMPRESSION
-                "deflate_raw",
-                "inflate_raw",
-                "bz2_",
-                "gzip_",
-                "lzma_",
-                "zlib_",
-                "compression_",
-                // SERIALIZATION (msgpack/cbor - JSON stays)
-                "msgpack_",
-                "cbor_",
-                // CRYPTO (hashlib - sha2/sha1/md5 stay as core)
-                "hash_new",
-                "hash_update",
-                "hash_digest",
-                "hash_hexdigest",
-                "hash_copy",
-                "hmac_",
-                "pbkdf2_",
-                "scrypt",
-                "compare_digest",
-                "secrets_",
-                // AST
-                "ast_",
-                // ARCHIVE
-                "zipfile_",
-                // FS EXTRA
-                "glob_",
-                "tempfile_",
-                "tarfile_",
-            ]
-        } else {
-            &[]
-        };
         let is_skipped_import = |name: &str| -> bool {
-            if !is_pure {
-                return false;
-            }
-            for prefix in skipped_import_prefixes {
-                if name.starts_with(prefix) {
-                    return true;
-                }
-            }
-            false
+            is_pure && crate::wasm_abi_generated::pure_profile_skips_import(name)
         };
 
         let mut import_idx = 0;

@@ -1,0 +1,3630 @@
+# Canonical WASM ABI/import manifest.
+# Generated consumers are produced by tools/gen_wasm_abi.py.
+# Edit this file, then run: python tools/gen_wasm_abi.py
+
+[[import]]
+name = "alloc"
+type = 2
+
+[[import]]
+name = "alloc_class"
+type = 3
+
+[[import]]
+name = "alloc_class_static"
+type = 3
+
+[[import]]
+name = "alloc_class_trusted"
+type = 3
+
+[[import]]
+name = "arena_new"
+type = 0
+
+[[import]]
+name = "arena_alloc_object"
+type = 3
+
+[[import]]
+name = "arena_free"
+type = 1
+
+[[import]]
+name = "dec_ref_obj"
+type = 1
+
+[[import]]
+name = "inc_ref_obj"
+type = 1
+
+[[import]]
+name = "obj_get_state"
+type = 14
+
+[[import]]
+name = "obj_set_state"
+type = 39
+
+[[import]]
+name = "resource_on_allocate"
+type = 1
+
+[[import]]
+name = "resource_on_free"
+type = 1
+
+[[import]]
+name = "module_cache_get"
+type = 2
+
+[[import]]
+name = "module_cache_del"
+type = 2
+
+[[import]]
+name = "module_cache_set"
+type = 3
+
+[[import]]
+name = "module_del_global"
+type = 3
+
+[[import]]
+name = "module_del_global_if_present"
+type = 3
+
+[[import]]
+name = "module_get_attr"
+type = 3
+
+[[import]]
+name = "module_import_from"
+type = 3
+
+[[import]]
+name = "module_get_global"
+type = 3
+
+[[import]]
+name = "module_get_name"
+type = 3
+
+[[import]]
+name = "module_import"
+type = 2
+
+[[import]]
+name = "module_import_star"
+type = 3
+
+[[import]]
+name = "module_new"
+type = 2
+
+[[import]]
+name = "module_set_attr"
+type = 5
+
+[[import]]
+name = "exception_active"
+type = 0
+
+[[import]]
+name = "exception_current"
+type = 0
+
+[[import]]
+name = "exception_enter_handler"
+type = 1
+
+[[import]]
+name = "exception_class"
+type = 2
+
+[[import]]
+name = "exception_clear"
+type = 0
+
+[[import]]
+name = "exception_context_set"
+type = 2
+
+[[import]]
+name = "exception_kind"
+type = 2
+
+[[import]]
+name = "exception_last"
+type = 0
+
+[[import]]
+name = "exception_last_pending"
+type = 0
+
+[[import]]
+name = "exception_match_builtin"
+type = 3
+
+[[import]]
+name = "exception_resolve_captured"
+type = 1
+
+[[import]]
+name = "exception_message"
+type = 2
+
+[[import]]
+name = "exception_new"
+type = 3
+
+[[import]]
+name = "exception_new_builtin"
+type = 3
+
+[[import]]
+name = "exception_new_builtin_empty"
+type = 2
+
+[[import]]
+name = "exception_new_builtin_one"
+type = 3
+
+[[import]]
+name = "exception_new_from_class"
+type = 3
+
+[[import]]
+name = "exception_pending"
+type = 0
+
+[[import]]
+name = "exception_pop"
+type = 0
+
+[[import]]
+name = "exception_push"
+type = 0
+
+[[import]]
+name = "exception_set_cause"
+type = 3
+
+[[import]]
+name = "exception_set_last"
+type = 2
+
+[[import]]
+name = "exception_set_value"
+type = 3
+
+[[import]]
+name = "exception_stack_clear"
+type = 0
+
+[[import]]
+name = "exceptiongroup_combine"
+type = 2
+
+[[import]]
+name = "exceptiongroup_match"
+type = 3
+
+[[import]]
+name = "raise"
+type = 2
+
+[[import]]
+name = "builtin_type"
+type = 2
+
+[[import]]
+name = "class_apply_set_name"
+type = 2
+
+[[import]]
+name = "class_layout_version"
+type = 2
+
+[[import]]
+name = "class_merge_layout"
+type = 5
+
+[[import]]
+name = "class_new"
+type = 2
+
+[[import]]
+name = "class_set_base"
+type = 3
+
+[[import]]
+name = "class_set_layout_version"
+type = 3
+
+[[import]]
+name = "classmethod_new"
+type = 2
+
+[[import]]
+name = "isinstance"
+type = 3
+
+[[import]]
+name = "issubclass"
+type = 3
+
+[[import]]
+name = "object_field_get"
+type = 3
+
+[[import]]
+name = "object_field_get_ptr"
+type = 16
+
+[[import]]
+name = "object_field_init"
+type = 5
+
+[[import]]
+name = "object_field_init_ptr"
+type = 17
+
+[[import]]
+name = "object_field_set"
+type = 5
+
+[[import]]
+name = "object_field_set_ptr"
+type = 17
+
+[[import]]
+name = "object_new"
+type = 0
+
+[[import]]
+name = "object_new_bound"
+type = 2
+
+[[import]]
+name = "object_new_bound_sized"
+type = 3
+
+[[import]]
+name = "object_set_class"
+type = 16
+
+[[import]]
+name = "property_new"
+type = 5
+
+[[import]]
+name = "staticmethod_new"
+type = 2
+
+[[import]]
+name = "super_builtin"
+type = 3
+
+[[import]]
+name = "super_new"
+type = 3
+
+[[import]]
+name = "type_of"
+type = 2
+
+[[import]]
+name = "bound_method_new"
+type = 3
+
+[[import]]
+name = "closure_load"
+type = 16
+
+[[import]]
+name = "closure_store"
+type = 17
+
+[[import]]
+name = "fn_ptr_code_set"
+type = 3
+
+[[import]]
+name = "func_new"
+type = 5
+
+[[import]]
+name = "func_new_builtin"
+type = 5
+
+[[import]]
+name = "func_new_closure"
+type = 7
+
+[[import]]
+name = "function_closure_bits"
+type = 2
+
+[[import]]
+name = "function_default_kind"
+type = 2
+
+[[import]]
+name = "function_defaults_version"
+type = 2
+
+[[import]]
+name = "function_is_coroutine"
+type = 2
+
+[[import]]
+name = "function_is_generator"
+type = 2
+
+[[import]]
+name = "function_init_metadata_packed"
+type = 7
+
+[[import]]
+name = "function_set_builtin"
+type = 2
+
+[[import]]
+name = "function_set_defaults"
+type = 5
+
+[[import]]
+name = "is_bound_method"
+type = 2
+
+[[import]]
+name = "is_function_obj"
+type = 2
+
+[[import]]
+name = "bridge_unavailable"
+type = 2
+
+[[import]]
+name = "capabilities_has"
+type = 2
+
+[[import]]
+name = "capabilities_require"
+type = 2
+
+[[import]]
+name = "capabilities_trusted"
+type = 0
+
+[[import]]
+name = "call_arity_error"
+type = 3
+
+[[import]]
+name = "call_bind"
+type = 3
+
+[[import]]
+name = "call_bind_ic"
+type = 5
+
+[[import]]
+name = "call_method_ic0"
+type = 41
+
+[[import]]
+name = "call_method_ic1"
+type = 42
+
+[[import]]
+name = "call_method_ic2"
+type = 43
+
+[[import]]
+name = "call_method_ic3"
+type = 44
+
+[[import]]
+name = "call_method_ic4"
+type = 45
+
+[[import]]
+name = "call_super_method_ic0"
+type = 46
+
+[[import]]
+name = "call_super_method_ic1"
+type = 47
+
+[[import]]
+name = "call_super_method_ic2"
+type = 48
+
+[[import]]
+name = "call_super_method_ic3"
+type = 49
+
+[[import]]
+name = "call_super_method_ic4"
+type = 50
+
+[[import]]
+name = "call_func_dispatch"
+type = 7
+
+[[import]]
+name = "call_indirect_ic"
+type = 5
+
+[[import]]
+name = "callargs_expand_kwstar"
+type = 3
+
+[[import]]
+name = "callargs_expand_star"
+type = 3
+
+[[import]]
+name = "callargs_new"
+type = 3
+
+[[import]]
+name = "callargs_push_kw"
+type = 5
+
+[[import]]
+name = "callargs_push_pos"
+type = 3
+
+[[import]]
+name = "handle_resolve"
+type = 13
+
+[[import]]
+name = "invoke_ffi_ic"
+type = 7
+
+[[import]]
+name = "fast_dict_get"
+type = 5
+
+[[import]]
+name = "fast_list_append"
+type = 3
+
+[[import]]
+name = "fast_str_join"
+type = 3
+
+[[import]]
+name = "fast_str_startswith"
+type = 3
+
+[[import]]
+name = "fast_str_upper"
+type = 1
+
+[[import]]
+name = "fast_str_lower"
+type = 1
+
+[[import]]
+name = "fast_str_strip"
+type = 1
+
+[[import]]
+name = "guard_layout_ptr"
+type = 17
+
+[[import]]
+name = "guard_type"
+type = 3
+
+[[import]]
+name = "guarded_field_get_ptr"
+type = 21
+
+[[import]]
+name = "guarded_field_init_ptr"
+type = 22
+
+[[import]]
+name = "guarded_field_set_ptr"
+type = 22
+
+[[import]]
+name = "guarded_class_def"
+type = 40
+
+[[import]]
+name = "abs_builtin"
+type = 2
+
+[[import]]
+name = "add"
+type = 3
+
+[[import]]
+name = "int_from_i64"
+type = 2
+
+[[import]]
+name = "str_concat"
+type = 3
+
+[[import]]
+name = "str_contains"
+type = 3
+
+[[import]]
+name = "bit_and"
+type = 3
+
+[[import]]
+name = "bit_or"
+type = 3
+
+[[import]]
+name = "bit_xor"
+type = 3
+
+[[import]]
+name = "div"
+type = 3
+
+[[import]]
+name = "divmod_builtin"
+type = 3
+
+[[import]]
+name = "floordiv"
+type = 3
+
+[[import]]
+name = "inplace_add"
+type = 3
+
+[[import]]
+name = "inplace_bit_and"
+type = 3
+
+[[import]]
+name = "inplace_bit_or"
+type = 3
+
+[[import]]
+name = "inplace_bit_xor"
+type = 3
+
+[[import]]
+name = "inplace_div"
+type = 3
+
+[[import]]
+name = "inplace_floordiv"
+type = 3
+
+[[import]]
+name = "inplace_lshift"
+type = 3
+
+[[import]]
+name = "inplace_matmul"
+type = 3
+
+[[import]]
+name = "inplace_mod"
+type = 3
+
+[[import]]
+name = "inplace_mul"
+type = 3
+
+[[import]]
+name = "inplace_pow"
+type = 3
+
+[[import]]
+name = "inplace_rshift"
+type = 3
+
+[[import]]
+name = "inplace_sub"
+type = 3
+
+[[import]]
+name = "invert"
+type = 2
+
+[[import]]
+name = "lshift"
+type = 3
+
+[[import]]
+name = "matmul"
+type = 3
+
+[[import]]
+name = "mod"
+type = 3
+
+[[import]]
+name = "mul"
+type = 3
+
+[[import]]
+name = "pow"
+type = 3
+
+[[import]]
+name = "pow_mod"
+type = 5
+
+[[import]]
+name = "neg"
+type = 2
+
+[[import]]
+name = "pos"
+type = 2
+
+[[import]]
+name = "round"
+type = 5
+
+[[import]]
+name = "rshift"
+type = 3
+
+[[import]]
+name = "sub"
+type = 3
+
+[[import]]
+name = "trunc"
+type = 2
+
+[[import]]
+name = "eq"
+type = 3
+
+[[import]]
+name = "ge"
+type = 3
+
+[[import]]
+name = "gt"
+type = 3
+
+[[import]]
+name = "is"
+type = 3
+
+[[import]]
+name = "le"
+type = 3
+
+[[import]]
+name = "lt"
+type = 3
+
+[[import]]
+name = "ne"
+type = 3
+
+[[import]]
+name = "ellipsis"
+type = 0
+
+[[import]]
+name = "missing"
+type = 0
+
+[[import]]
+name = "not_implemented"
+type = 0
+
+[[import]]
+name = "pending"
+type = 0
+
+[[import]]
+name = "is_callable"
+type = 2
+
+[[import]]
+name = "is_generator"
+type = 2
+
+[[import]]
+name = "is_truthy"
+type = 2
+
+[[import]]
+name = "is_truthy_bool"
+type = 2
+
+[[import]]
+name = "is_truthy_bool_nogil"
+type = 2
+
+[[import]]
+name = "is_truthy_int"
+type = 2
+
+[[import]]
+name = "is_truthy_int_nogil"
+type = 2
+
+[[import]]
+name = "not"
+type = 2
+
+[[import]]
+name = "context_closing"
+type = 2
+
+[[import]]
+name = "context_depth"
+type = 0
+
+[[import]]
+name = "context_enter"
+type = 2
+
+[[import]]
+name = "context_exit"
+type = 3
+
+[[import]]
+name = "context_null"
+type = 2
+
+[[import]]
+name = "context_unwind"
+type = 2
+
+[[import]]
+name = "context_unwind_to"
+type = 3
+
+[[import]]
+name = "code_new"
+type = 35
+
+[[import]]
+name = "code_slot_set"
+type = 3
+
+[[import]]
+name = "code_slots_init"
+type = 2
+
+[[import]]
+name = "frame_locals_set"
+type = 2
+
+[[import]]
+name = "trace_enter_slot"
+type = 2
+
+[[import]]
+name = "trace_exit"
+type = 0
+
+[[import]]
+name = "trace_set_line"
+type = 2
+
+[[import]]
+name = "runtime_init"
+type = 0
+
+[[import]]
+name = "runtime_shutdown"
+type = 0
+
+[[import]]
+name = "sys_set_version_info"
+type = 29
+
+[[import]]
+name = "print_builtin"
+type = 12
+
+[[import]]
+name = "print_newline"
+type = 8
+
+[[import]]
+name = "print_obj"
+type = 1
+
+[[import]]
+name = "gen_locals"
+type = 2
+
+[[import]]
+name = "gen_locals_register"
+type = 5
+
+[[import]]
+name = "future_cancel"
+type = 2
+
+[[import]]
+name = "future_cancel_clear"
+type = 2
+
+[[import]]
+name = "future_cancel_msg"
+type = 3
+
+[[import]]
+name = "future_poll"
+type = 2
+
+[[import]]
+name = "generator_close"
+type = 2
+
+[[import]]
+name = "generator_send"
+type = 3
+
+[[import]]
+name = "generator_throw"
+type = 3
+
+[[import]]
+name = "promise_new"
+type = 0
+
+[[import]]
+name = "promise_poll"
+type = 2
+
+[[import]]
+name = "promise_set_exception"
+type = 3
+
+[[import]]
+name = "promise_set_result"
+type = 3
+
+[[import]]
+name = "block_on"
+type = 2
+
+[[import]]
+name = "sleep_register"
+type = 27
+
+[[import]]
+name = "spawn"
+type = 1
+
+[[import]]
+name = "task_new"
+type = 5
+
+[[import]]
+name = "task_register_token_owned"
+type = 3
+
+[[import]]
+name = "recursion_guard_enter"
+type = 0
+
+[[import]]
+name = "recursion_guard_exit"
+type = 8
+
+[[import]]
+name = "set_intrinsic_manifest"
+type = 3
+
+[[import]]
+name = "del_attr_generic"
+type = 23
+
+[[import]]
+name = "del_attr_name"
+type = 3
+
+[[import]]
+name = "del_attr_object"
+type = 18
+
+[[import]]
+name = "del_attr_ptr"
+type = 23
+
+[[import]]
+name = "get_attr_generic"
+type = 23
+
+[[import]]
+name = "get_attr_name"
+type = 3
+
+[[import]]
+name = "get_attr_name_default"
+type = 5
+
+[[import]]
+name = "get_attr_object"
+type = 18
+
+[[import]]
+name = "get_attr_object_ic"
+type = 25
+
+[[import]]
+name = "get_attr_ptr"
+type = 23
+
+[[import]]
+name = "get_attr_special"
+type = 18
+
+[[import]]
+name = "getattr_builtin"
+type = 5
+
+[[import]]
+name = "has_attr_name"
+type = 3
+
+[[import]]
+name = "set_attr_generic"
+type = 24
+
+[[import]]
+name = "set_attr_name"
+type = 5
+
+[[import]]
+name = "set_attr_object"
+type = 25
+
+[[import]]
+name = "set_attr_ptr"
+type = 24
+
+[[import]]
+name = "contains"
+type = 3
+
+[[import]]
+name = "del_index"
+type = 3
+
+[[import]]
+name = "dict_clear"
+type = 2
+
+[[import]]
+name = "dict_contains"
+type = 3
+
+[[import]]
+name = "dict_copy"
+type = 2
+
+[[import]]
+name = "dict_from_obj"
+type = 2
+
+[[import]]
+name = "dict_get"
+type = 5
+
+[[import]]
+name = "dict_getitem"
+type = 3
+
+[[import]]
+name = "dict_inc"
+type = 5
+
+[[import]]
+name = "dict_items"
+type = 2
+
+[[import]]
+name = "dict_keys"
+type = 2
+
+[[import]]
+name = "dict_new"
+type = 2
+
+[[import]]
+name = "dict_pop"
+type = 7
+
+[[import]]
+name = "dict_popitem"
+type = 2
+
+[[import]]
+name = "dict_set"
+type = 5
+
+[[import]]
+name = "dict_setdefault"
+type = 5
+
+[[import]]
+name = "dict_setitem"
+type = 5
+
+[[import]]
+name = "dict_setdefault_empty_list"
+type = 3
+
+[[import]]
+name = "dict_str_int_inc"
+type = 5
+
+[[import]]
+name = "dict_update"
+type = 3
+
+[[import]]
+name = "dict_update_kwstar"
+type = 3
+
+[[import]]
+name = "dict_values"
+type = 2
+
+[[import]]
+name = "enumerate"
+type = 5
+
+[[import]]
+name = "enumerate_builtin"
+type = 3
+
+[[import]]
+name = "filter_builtin"
+type = 3
+
+[[import]]
+name = "frozenset_add"
+type = 3
+
+[[import]]
+name = "frozenset_new"
+type = 2
+
+[[import]]
+name = "index"
+type = 3
+
+[[import]]
+name = "intarray_from_seq"
+type = 2
+
+[[import]]
+name = "iter"
+type = 2
+
+[[import]]
+name = "iter_next"
+type = 2
+
+[[import]]
+name = "iter_sentinel"
+type = 3
+
+[[import]]
+name = "len"
+type = 2
+
+[[import]]
+name = "len_dict"
+type = 2
+
+[[import]]
+name = "len_list"
+type = 2
+
+[[import]]
+name = "len_set"
+type = 2
+
+[[import]]
+name = "len_str"
+type = 2
+
+[[import]]
+name = "len_tuple"
+type = 2
+
+[[import]]
+name = "list_append"
+type = 3
+
+[[import]]
+name = "list_builder_append"
+type = 6
+
+[[import]]
+name = "list_contains"
+type = 3
+
+[[import]]
+name = "list_builder_finish"
+type = 2
+
+[[import]]
+name = "list_builder_new"
+type = 2
+
+[[import]]
+name = "list_clear"
+type = 2
+
+[[import]]
+name = "list_int_getitem"
+type = 3
+
+[[import]]
+name = "list_int_getitem_nogil"
+type = 3
+
+[[import]]
+name = "list_int_getitem_raw"
+type = 3
+
+[[import]]
+name = "list_int_getitem_raw_checked"
+type = 3
+
+[[import]]
+name = "list_int_getitem_truthy"
+type = 3
+
+[[import]]
+name = "list_int_len"
+type = 2
+
+[[import]]
+name = "list_int_new"
+type = 3
+
+[[import]]
+name = "list_fill_new"
+type = 3
+
+[[import]]
+name = "list_int_setitem"
+type = 5
+
+[[import]]
+name = "list_int_setitem_nogil"
+type = 5
+
+[[import]]
+name = "list_int_setitem_raw"
+type = 5
+
+[[import]]
+name = "list_copy"
+type = 2
+
+[[import]]
+name = "list_count"
+type = 3
+
+[[import]]
+name = "list_extend"
+type = 3
+
+[[import]]
+name = "list_from_range"
+type = 5
+
+[[import]]
+name = "list_index"
+type = 3
+
+[[import]]
+name = "list_index_range"
+type = 7
+
+[[import]]
+name = "list_insert"
+type = 5
+
+[[import]]
+name = "list_pop"
+type = 3
+
+[[import]]
+name = "list_remove"
+type = 3
+
+[[import]]
+name = "list_reverse"
+type = 2
+
+[[import]]
+name = "list_sort"
+type = 5
+
+[[import]]
+name = "map_builtin"
+type = 3
+
+[[import]]
+name = "range_new"
+type = 5
+
+[[import]]
+name = "reversed_builtin"
+type = 2
+
+[[import]]
+name = "set_add"
+type = 3
+
+[[import]]
+name = "set_add_probe"
+type = 3
+
+[[import]]
+name = "set_contains"
+type = 3
+
+[[import]]
+name = "set_difference_update"
+type = 3
+
+[[import]]
+name = "set_discard"
+type = 3
+
+[[import]]
+name = "set_intersection_update"
+type = 3
+
+[[import]]
+name = "set_new"
+type = 2
+
+[[import]]
+name = "set_pop"
+type = 2
+
+[[import]]
+name = "set_remove"
+type = 3
+
+[[import]]
+name = "set_symdiff_update"
+type = 3
+
+[[import]]
+name = "set_update"
+type = 3
+
+[[import]]
+name = "slice"
+type = 5
+
+[[import]]
+name = "slice_new"
+type = 5
+
+[[import]]
+name = "sorted_builtin"
+type = 5
+
+[[import]]
+name = "store_index"
+type = 5
+
+[[import]]
+name = "tuple_builder_finish"
+type = 2
+
+[[import]]
+name = "tuple_count"
+type = 3
+
+[[import]]
+name = "tuple_from_list"
+type = 2
+
+[[import]]
+name = "tuple_getitem"
+type = 3
+
+[[import]]
+name = "tuple_index"
+type = 3
+
+[[import]]
+name = "zip_builtin"
+type = 3
+
+[[import]]
+name = "ascii_from_obj"
+type = 2
+
+[[import]]
+name = "bigint_from_str"
+type = 16
+
+[[import]]
+name = "bin_builtin"
+type = 2
+
+[[import]]
+name = "callable_builtin"
+type = 2
+
+[[import]]
+name = "chr"
+type = 2
+
+[[import]]
+name = "complex_from_obj"
+type = 5
+
+[[import]]
+name = "float_from_obj"
+type = 2
+
+[[import]]
+name = "format_builtin"
+type = 3
+
+[[import]]
+name = "hex_builtin"
+type = 2
+
+[[import]]
+name = "int_from_obj"
+type = 5
+
+[[import]]
+name = "int_from_str_of_obj"
+type = 5
+
+[[import]]
+name = "oct_builtin"
+type = 2
+
+[[import]]
+name = "ord"
+type = 2
+
+[[import]]
+name = "ord_at"
+type = 3
+
+[[import]]
+name = "str_from_obj"
+type = 2
+
+[[import]]
+name = "aiter"
+type = 2
+
+[[import]]
+name = "all_builtin"
+type = 2
+
+[[import]]
+name = "anext"
+type = 2
+
+[[import]]
+name = "anext_builtin"
+type = 3
+
+[[import]]
+name = "anext_default_poll"
+type = 2
+
+[[import]]
+name = "any_builtin"
+type = 2
+
+[[import]]
+name = "compile_builtin"
+type = 9
+
+[[import]]
+name = "dir_builtin"
+type = 2
+
+[[import]]
+name = "env_get"
+type = 3
+
+[[import]]
+name = "env_snapshot"
+type = 0
+
+[[import]]
+name = "errno_constants"
+type = 0
+
+[[import]]
+name = "getargv"
+type = 0
+
+[[import]]
+name = "getcwd"
+type = 0
+
+[[import]]
+name = "getframe"
+type = 2
+
+[[import]]
+name = "getpid"
+type = 0
+
+[[import]]
+name = "getrecursionlimit"
+type = 0
+
+[[import]]
+name = "hash_builtin"
+type = 2
+
+[[import]]
+name = "id"
+type = 2
+
+[[import]]
+name = "max_builtin"
+type = 5
+
+[[import]]
+name = "min_builtin"
+type = 5
+
+[[import]]
+name = "next_builtin"
+type = 3
+
+[[import]]
+name = "open_builtin"
+type = 28
+
+[[import]]
+name = "repr_builtin"
+type = 2
+
+[[import]]
+name = "repr_from_obj"
+type = 2
+
+[[import]]
+name = "round_builtin"
+type = 3
+
+[[import]]
+name = "setrecursionlimit"
+type = 2
+
+[[import]]
+name = "sum_builtin"
+type = 3
+
+[[import]]
+name = "vars_builtin"
+type = 2
+
+[[import]]
+name = "memoryview_cast"
+type = 7
+
+[[import]]
+name = "memoryview_new"
+type = 2
+
+[[import]]
+name = "memoryview_tobytes"
+type = 2
+
+[[import]]
+name = "sys_abiflags"
+type = 0
+
+[[import]]
+name = "sys_api_version"
+type = 0
+
+[[import]]
+name = "sys_executable"
+type = 0
+
+[[import]]
+name = "sys_hexversion"
+type = 0
+
+[[import]]
+name = "sys_implementation_payload"
+type = 0
+
+[[import]]
+name = "sys_platform"
+type = 0
+
+[[import]]
+name = "sys_stderr"
+type = 0
+
+[[import]]
+name = "sys_stdin"
+type = 0
+
+[[import]]
+name = "sys_stdout"
+type = 0
+
+[[import]]
+name = "sys_version"
+type = 0
+
+[[import]]
+name = "sys_version_info"
+type = 0
+
+[[import]]
+name = "dataclass_get"
+type = 3
+
+[[import]]
+name = "dataclass_new"
+type = 7
+
+[[import]]
+name = "dataclass_set"
+type = 5
+
+[[import]]
+name = "dataclass_set_class"
+type = 3
+
+[[import]]
+name = "chan_drop"
+type = 2
+
+[[import]]
+name = "chan_new"
+type = 2
+
+[[import]]
+name = "chan_recv"
+type = 2
+
+[[import]]
+name = "chan_recv_blocking"
+type = 2
+
+[[import]]
+name = "chan_send"
+type = 3
+
+[[import]]
+name = "chan_send_blocking"
+type = 3
+
+[[import]]
+name = "chan_try_recv"
+type = 2
+
+[[import]]
+name = "chan_try_send"
+type = 3
+
+[[import]]
+name = "cbor_parse_scalar"
+type = 19
+
+[[import]]
+name = "cbor_parse_scalar_obj"
+type = 2
+
+[[import]]
+name = "msgpack_parse_scalar"
+type = 19
+
+[[import]]
+name = "msgpack_parse_scalar_obj"
+type = 2
+
+[[import]]
+name = "vec_max_int"
+type = 3
+
+[[import]]
+name = "vec_max_int_range"
+type = 5
+
+[[import]]
+name = "vec_max_int_range_trusted"
+type = 5
+
+[[import]]
+name = "vec_max_int_trusted"
+type = 3
+
+[[import]]
+name = "vec_min_int"
+type = 3
+
+[[import]]
+name = "vec_min_int_range"
+type = 5
+
+[[import]]
+name = "vec_min_int_range_trusted"
+type = 5
+
+[[import]]
+name = "vec_min_int_trusted"
+type = 3
+
+[[import]]
+name = "vec_prod_int"
+type = 3
+
+[[import]]
+name = "vec_prod_int_range"
+type = 5
+
+[[import]]
+name = "vec_prod_int_range_trusted"
+type = 5
+
+[[import]]
+name = "vec_prod_int_trusted"
+type = 3
+
+[[import]]
+name = "vec_sum_float"
+type = 3
+
+[[import]]
+name = "vec_sum_float_range"
+type = 5
+
+[[import]]
+name = "vec_sum_float_range_iter"
+type = 3
+
+[[import]]
+name = "vec_sum_float_range_iter_trusted"
+type = 3
+
+[[import]]
+name = "vec_sum_float_range_trusted"
+type = 5
+
+[[import]]
+name = "vec_sum_float_trusted"
+type = 3
+
+[[import]]
+name = "vec_sum_int"
+type = 3
+
+[[import]]
+name = "vec_sum_int_range"
+type = 5
+
+[[import]]
+name = "vec_sum_int_range_iter"
+type = 3
+
+[[import]]
+name = "vec_sum_int_range_iter_trusted"
+type = 3
+
+[[import]]
+name = "vec_sum_int_range_trusted"
+type = 5
+
+[[import]]
+name = "vec_sum_int_trusted"
+type = 3
+
+[[import]]
+name = "heapq_heapify"
+type = 2
+
+[[import]]
+name = "heapq_heappop"
+type = 2
+
+[[import]]
+name = "heapq_heappush"
+type = 3
+
+[[import]]
+name = "heapq_heappushpop"
+type = 3
+
+[[import]]
+name = "heapq_heapreplace"
+type = 3
+
+[[import]]
+name = "statistics_mean_slice"
+type = 12
+
+[[import]]
+name = "statistics_stdev_slice"
+type = 12
+
+[[import]]
+name = "taq_ingest_line"
+type = 5
+
+[[import]]
+name = "io_wait_new"
+type = 5
+
+[[import]]
+name = "async_sleep"
+type = 3
+
+[[import]]
+name = "async_sleep_poll"
+type = 2
+
+[[import]]
+name = "asyncgen_hooks_get"
+type = 0
+
+[[import]]
+name = "asyncgen_hooks_set"
+type = 3
+
+[[import]]
+name = "asyncgen_locals"
+type = 2
+
+[[import]]
+name = "asyncgen_locals_register"
+type = 5
+
+[[import]]
+name = "asyncgen_new"
+type = 2
+
+[[import]]
+name = "asyncgen_poll"
+type = 2
+
+[[import]]
+name = "asyncgen_shutdown"
+type = 0
+
+[[import]]
+name = "asyncio_fd_watcher_poll"
+type = 2
+
+[[import]]
+name = "asyncio_gather_poll"
+type = 2
+
+[[import]]
+name = "asyncio_ready_runner_poll"
+type = 2
+
+[[import]]
+name = "asyncio_server_accept_loop_poll"
+type = 2
+
+[[import]]
+name = "asyncio_sock_accept_poll"
+type = 2
+
+[[import]]
+name = "asyncio_sock_connect_poll"
+type = 2
+
+[[import]]
+name = "asyncio_sock_recv_into_poll"
+type = 2
+
+[[import]]
+name = "asyncio_sock_recv_poll"
+type = 2
+
+[[import]]
+name = "asyncio_sock_recvfrom_into_poll"
+type = 2
+
+[[import]]
+name = "asyncio_sock_recvfrom_poll"
+type = 2
+
+[[import]]
+name = "asyncio_sock_sendall_poll"
+type = 2
+
+[[import]]
+name = "asyncio_sock_sendto_poll"
+type = 2
+
+[[import]]
+name = "asyncio_socket_reader_read_poll"
+type = 2
+
+[[import]]
+name = "asyncio_socket_reader_readline_poll"
+type = 2
+
+[[import]]
+name = "asyncio_stream_reader_read_poll"
+type = 2
+
+[[import]]
+name = "asyncio_stream_reader_readline_poll"
+type = 2
+
+[[import]]
+name = "asyncio_stream_send_all_poll"
+type = 2
+
+[[import]]
+name = "asyncio_timer_handle_poll"
+type = 2
+
+[[import]]
+name = "asyncio_wait_for_poll"
+type = 2
+
+[[import]]
+name = "asyncio_wait_poll"
+type = 2
+
+[[import]]
+name = "buffer2d_get"
+type = 5
+
+[[import]]
+name = "buffer2d_matmul"
+type = 3
+
+[[import]]
+name = "buffer2d_new"
+type = 5
+
+[[import]]
+name = "buffer2d_set"
+type = 7
+
+[[import]]
+name = "bytearray_count"
+type = 3
+
+[[import]]
+name = "bytearray_count_slice"
+type = 9
+
+[[import]]
+name = "bytearray_endswith"
+type = 3
+
+[[import]]
+name = "bytearray_endswith_slice"
+type = 9
+
+[[import]]
+name = "bytearray_find"
+type = 3
+
+[[import]]
+name = "bytearray_find_slice"
+type = 9
+
+[[import]]
+name = "bytearray_fill_range"
+type = 7
+
+[[import]]
+name = "bytearray_from_obj"
+type = 2
+
+[[import]]
+name = "bytearray_from_str"
+type = 5
+
+[[import]]
+name = "bytearray_replace"
+type = 7
+
+[[import]]
+name = "bytearray_split"
+type = 3
+
+[[import]]
+name = "bytearray_split_max"
+type = 5
+
+[[import]]
+name = "bytearray_startswith"
+type = 3
+
+[[import]]
+name = "bytearray_startswith_slice"
+type = 9
+
+[[import]]
+name = "bytes_count"
+type = 3
+
+[[import]]
+name = "bytes_count_slice"
+type = 9
+
+[[import]]
+name = "bytes_endswith"
+type = 3
+
+[[import]]
+name = "bytes_endswith_slice"
+type = 9
+
+[[import]]
+name = "bytes_find"
+type = 3
+
+[[import]]
+name = "bytes_find_slice"
+type = 9
+
+[[import]]
+name = "bytes_from_bytes"
+type = 19
+
+[[import]]
+name = "bytes_from_obj"
+type = 2
+
+[[import]]
+name = "bytes_from_str"
+type = 5
+
+[[import]]
+name = "bytes_replace"
+type = 7
+
+[[import]]
+name = "bytes_split"
+type = 3
+
+[[import]]
+name = "bytes_split_max"
+type = 5
+
+[[import]]
+name = "bytes_startswith"
+type = 3
+
+[[import]]
+name = "bytes_startswith_slice"
+type = 9
+
+[[import]]
+name = "cancel_current"
+type = 0
+
+[[import]]
+name = "cancel_token_cancel"
+type = 2
+
+[[import]]
+name = "cancel_token_clone"
+type = 2
+
+[[import]]
+name = "cancel_token_drop"
+type = 2
+
+[[import]]
+name = "cancel_token_get_current"
+type = 0
+
+[[import]]
+name = "cancel_token_is_cancelled"
+type = 2
+
+[[import]]
+name = "cancel_token_new"
+type = 2
+
+[[import]]
+name = "cancel_token_set_current"
+type = 2
+
+[[import]]
+name = "cancelled"
+type = 0
+
+[[import]]
+name = "contextlib_async_exitstack_enter_context_poll"
+type = 2
+
+[[import]]
+name = "contextlib_async_exitstack_exit_poll"
+type = 2
+
+[[import]]
+name = "contextlib_asyncgen_enter_poll"
+type = 2
+
+[[import]]
+name = "contextlib_asyncgen_exit_poll"
+type = 2
+
+[[import]]
+name = "importlib_bootstrap_payload"
+type = 3
+
+[[import]]
+name = "importlib_cache_from_source"
+type = 2
+
+[[import]]
+name = "importlib_coerce_module_name"
+type = 5
+
+[[import]]
+name = "importlib_decode_source"
+type = 2
+
+[[import]]
+name = "importlib_ensure_default_meta_path"
+type = 2
+
+[[import]]
+name = "importlib_exec_extension"
+type = 5
+
+[[import]]
+name = "importlib_exec_restricted_source"
+type = 5
+
+[[import]]
+name = "importlib_exec_sourceless"
+type = 5
+
+[[import]]
+name = "importlib_extension_loader_payload"
+type = 5
+
+[[import]]
+name = "importlib_filefinder_find_spec"
+type = 5
+
+[[import]]
+name = "importlib_filefinder_invalidate"
+type = 2
+
+[[import]]
+name = "importlib_find_in_path"
+type = 3
+
+[[import]]
+name = "importlib_find_in_path_package_context"
+type = 3
+
+[[import]]
+name = "importlib_find_spec"
+type = 28
+
+[[import]]
+name = "importlib_find_spec_orchestrate"
+type = 12
+
+[[import]]
+name = "importlib_frozen_external_payload"
+type = 3
+
+[[import]]
+name = "importlib_frozen_payload"
+type = 3
+
+[[import]]
+name = "importlib_import_transaction"
+type = 7
+
+[[import]]
+name = "importlib_import_optional"
+type = 2
+
+[[import]]
+name = "importlib_import_or_fallback"
+type = 3
+
+[[import]]
+name = "importlib_import_required"
+type = 2
+
+[[import]]
+name = "importlib_invalidate_caches"
+type = 0
+
+[[import]]
+name = "importlib_known_absent_missing_name"
+type = 2
+
+[[import]]
+name = "importlib_load_module_shim"
+type = 5
+
+[[import]]
+name = "importlib_metadata_dist_paths"
+type = 3
+
+[[import]]
+name = "importlib_metadata_distributions_payload"
+type = 3
+
+[[import]]
+name = "importlib_metadata_entry_points_filter_payload"
+type = 12
+
+[[import]]
+name = "importlib_metadata_entry_points_select_payload"
+type = 7
+
+[[import]]
+name = "importlib_metadata_normalize_name"
+type = 2
+
+[[import]]
+name = "importlib_metadata_packages_distributions_payload"
+type = 3
+
+[[import]]
+name = "importlib_metadata_payload"
+type = 2
+
+[[import]]
+name = "importlib_metadata_record_payload"
+type = 2
+
+[[import]]
+name = "importlib_metadata_types_payload"
+type = 7
+
+[[import]]
+name = "importlib_module_from_spec"
+type = 2
+
+[[import]]
+name = "importlib_module_spec_is_package"
+type = 2
+
+[[import]]
+name = "importlib_package_root_from_origin"
+type = 2
+
+[[import]]
+name = "importlib_path_is_archive_member"
+type = 2
+
+[[import]]
+name = "importlib_pathfinder_find_spec"
+type = 5
+
+[[import]]
+name = "importlib_read_file"
+type = 2
+
+[[import]]
+name = "importlib_reload"
+type = 7
+
+[[import]]
+name = "importlib_resolve_name"
+type = 3
+
+[[import]]
+name = "importlib_resources_as_file_enter"
+type = 3
+
+[[import]]
+name = "importlib_resources_as_file_exit"
+type = 5
+
+[[import]]
+name = "importlib_resources_contents_from_package"
+type = 5
+
+[[import]]
+name = "importlib_resources_contents_from_package_parts"
+type = 7
+
+[[import]]
+name = "importlib_resources_files_payload"
+type = 7
+
+[[import]]
+name = "importlib_resources_is_resource_from_package"
+type = 7
+
+[[import]]
+name = "importlib_resources_is_resource_from_package_parts"
+type = 7
+
+[[import]]
+name = "importlib_resources_joinpath"
+type = 3
+
+[[import]]
+name = "importlib_resources_loader_reader"
+type = 3
+
+[[import]]
+name = "importlib_resources_module_name"
+type = 3
+
+[[import]]
+name = "importlib_resources_normalize_path"
+type = 2
+
+[[import]]
+name = "importlib_resources_only"
+type = 5
+
+[[import]]
+name = "importlib_resources_open_mode_is_text"
+type = 2
+
+[[import]]
+name = "importlib_resources_open_resource_bytes_from_package"
+type = 7
+
+[[import]]
+name = "importlib_resources_package_info"
+type = 5
+
+[[import]]
+name = "importlib_resources_package_leaf_name"
+type = 2
+
+[[import]]
+name = "importlib_resources_path_payload"
+type = 2
+
+[[import]]
+name = "importlib_resources_read_text_from_package"
+type = 9
+
+[[import]]
+name = "importlib_resources_read_text_from_package_parts"
+type = 9
+
+[[import]]
+name = "importlib_resources_reader_child_names"
+type = 3
+
+[[import]]
+name = "importlib_resources_reader_contents"
+type = 2
+
+[[import]]
+name = "importlib_resources_reader_contents_from_roots"
+type = 2
+
+[[import]]
+name = "importlib_resources_reader_exists"
+type = 3
+
+[[import]]
+name = "importlib_resources_reader_files_traversable"
+type = 2
+
+[[import]]
+name = "importlib_resources_reader_is_dir"
+type = 3
+
+[[import]]
+name = "importlib_resources_reader_is_resource"
+type = 3
+
+[[import]]
+name = "importlib_resources_reader_is_resource_from_roots"
+type = 3
+
+[[import]]
+name = "importlib_resources_reader_open_resource_bytes"
+type = 3
+
+[[import]]
+name = "importlib_resources_reader_resource_path"
+type = 3
+
+[[import]]
+name = "importlib_resources_reader_resource_path_from_roots"
+type = 3
+
+[[import]]
+name = "importlib_resources_reader_roots"
+type = 2
+
+[[import]]
+name = "importlib_resources_resource_path_from_package"
+type = 7
+
+[[import]]
+name = "importlib_resources_resource_path_from_package_parts"
+type = 7
+
+[[import]]
+name = "importlib_runtime_modules"
+type = 0
+
+[[import]]
+name = "importlib_set_module_state"
+type = 28
+
+[[import]]
+name = "importlib_source_exec_payload"
+type = 5
+
+[[import]]
+name = "importlib_source_from_cache"
+type = 2
+
+[[import]]
+name = "importlib_source_hash"
+type = 2
+
+[[import]]
+name = "importlib_sourceless_loader_payload"
+type = 5
+
+[[import]]
+name = "importlib_spec_from_file_location"
+type = 12
+
+[[import]]
+name = "importlib_spec_from_loader"
+type = 12
+
+[[import]]
+name = "importlib_stabilize_module_state"
+type = 9
+
+[[import]]
+name = "importlib_validate_resource_name"
+type = 2
+
+[[import]]
+name = "importlib_zip_read_entry"
+type = 3
+
+[[import]]
+name = "importlib_zip_source_exec_payload"
+type = 7
+
+[[import]]
+name = "file_close"
+type = 2
+
+[[import]]
+name = "file_detach"
+type = 2
+
+[[import]]
+name = "file_fileno"
+type = 2
+
+[[import]]
+name = "file_flush"
+type = 2
+
+[[import]]
+name = "file_isatty"
+type = 2
+
+[[import]]
+name = "file_open"
+type = 3
+
+[[import]]
+name = "file_read"
+type = 3
+
+[[import]]
+name = "file_readable"
+type = 2
+
+[[import]]
+name = "file_readinto"
+type = 3
+
+[[import]]
+name = "file_readinto1"
+type = 3
+
+[[import]]
+name = "file_readline"
+type = 3
+
+[[import]]
+name = "file_readlines"
+type = 3
+
+[[import]]
+name = "file_reconfigure"
+type = 9
+
+[[import]]
+name = "file_seek"
+type = 5
+
+[[import]]
+name = "file_seekable"
+type = 2
+
+[[import]]
+name = "file_tell"
+type = 2
+
+[[import]]
+name = "file_truncate"
+type = 3
+
+[[import]]
+name = "file_writable"
+type = 2
+
+[[import]]
+name = "file_write"
+type = 3
+
+[[import]]
+name = "file_writelines"
+type = 3
+
+[[import]]
+name = "io_wait"
+type = 2
+
+[[import]]
+name = "stream_clone"
+type = 2
+
+[[import]]
+name = "stream_close"
+type = 1
+
+[[import]]
+name = "stream_drop"
+type = 1
+
+[[import]]
+name = "stream_new"
+type = 2
+
+[[import]]
+name = "stream_recv"
+type = 2
+
+[[import]]
+name = "stream_send"
+type = 18
+
+[[import]]
+name = "stream_send_obj"
+type = 3
+
+[[import]]
+name = "json_parse_scalar"
+type = 19
+
+[[import]]
+name = "json_parse_scalar_obj"
+type = 2
+
+[[import]]
+name = "lock_acquire"
+type = 5
+
+[[import]]
+name = "lock_drop"
+type = 2
+
+[[import]]
+name = "lock_locked"
+type = 2
+
+[[import]]
+name = "lock_new"
+type = 0
+
+[[import]]
+name = "lock_release"
+type = 2
+
+[[import]]
+name = "rlock_acquire"
+type = 5
+
+[[import]]
+name = "rlock_drop"
+type = 2
+
+[[import]]
+name = "rlock_locked"
+type = 2
+
+[[import]]
+name = "rlock_new"
+type = 0
+
+[[import]]
+name = "rlock_release"
+type = 2
+
+[[import]]
+name = "math_acos"
+type = 2
+
+[[import]]
+name = "math_cos"
+type = 2
+
+[[import]]
+name = "math_exp"
+type = 2
+
+[[import]]
+name = "math_lgamma"
+type = 2
+
+[[import]]
+name = "math_log"
+type = 2
+
+[[import]]
+name = "math_log2"
+type = 2
+
+[[import]]
+name = "math_sin"
+type = 2
+
+[[import]]
+name = "os_access"
+type = 3
+
+[[import]]
+name = "os_altsep"
+type = 0
+
+[[import]]
+name = "os_chdir"
+type = 2
+
+[[import]]
+name = "os_chmod"
+type = 3
+
+[[import]]
+name = "os_close"
+type = 2
+
+[[import]]
+name = "os_cpu_count"
+type = 0
+
+[[import]]
+name = "os_curdir"
+type = 0
+
+[[import]]
+name = "os_devnull"
+type = 0
+
+[[import]]
+name = "os_dup"
+type = 2
+
+[[import]]
+name = "os_dup2"
+type = 3
+
+[[import]]
+name = "os_extsep"
+type = 0
+
+[[import]]
+name = "os_fdopen"
+type = 5
+
+[[import]]
+name = "os_fsencode"
+type = 2
+
+[[import]]
+name = "os_fspath"
+type = 2
+
+[[import]]
+name = "os_fstat"
+type = 2
+
+[[import]]
+name = "os_ftruncate"
+type = 3
+
+[[import]]
+name = "os_get_inheritable"
+type = 2
+
+[[import]]
+name = "os_get_terminal_size"
+type = 2
+
+[[import]]
+name = "os_getcwd"
+type = 0
+
+[[import]]
+name = "os_getegid"
+type = 0
+
+[[import]]
+name = "os_geteuid"
+type = 0
+
+[[import]]
+name = "os_getgid"
+type = 0
+
+[[import]]
+name = "os_getloadavg"
+type = 0
+
+[[import]]
+name = "os_getlogin"
+type = 0
+
+[[import]]
+name = "os_getpgrp"
+type = 0
+
+[[import]]
+name = "os_getpid"
+type = 0
+
+[[import]]
+name = "os_getppid"
+type = 0
+
+[[import]]
+name = "os_getuid"
+type = 0
+
+[[import]]
+name = "os_isatty"
+type = 2
+
+[[import]]
+name = "os_kill"
+type = 3
+
+[[import]]
+name = "os_linesep"
+type = 0
+
+[[import]]
+name = "os_link"
+type = 3
+
+[[import]]
+name = "os_listdir"
+type = 2
+
+[[import]]
+name = "os_lseek"
+type = 5
+
+[[import]]
+name = "os_lstat"
+type = 2
+
+[[import]]
+name = "os_mkdir"
+type = 3
+
+[[import]]
+name = "os_name"
+type = 0
+
+[[import]]
+name = "os_open"
+type = 5
+
+[[import]]
+name = "os_open_flags"
+type = 0
+
+[[import]]
+name = "os_pardir"
+type = 0
+
+[[import]]
+name = "os_path_commonpath"
+type = 2
+
+[[import]]
+name = "os_path_commonprefix"
+type = 2
+
+[[import]]
+name = "os_path_getatime"
+type = 2
+
+[[import]]
+name = "os_path_getctime"
+type = 2
+
+[[import]]
+name = "os_path_getmtime"
+type = 2
+
+[[import]]
+name = "os_path_getsize"
+type = 2
+
+[[import]]
+name = "os_path_realpath"
+type = 2
+
+[[import]]
+name = "os_path_samefile"
+type = 3
+
+[[import]]
+name = "os_pathsep"
+type = 0
+
+[[import]]
+name = "os_pipe"
+type = 0
+
+[[import]]
+name = "os_read"
+type = 3
+
+[[import]]
+name = "os_readlink"
+type = 2
+
+[[import]]
+name = "os_removedirs"
+type = 2
+
+[[import]]
+name = "os_rename"
+type = 3
+
+[[import]]
+name = "os_replace"
+type = 3
+
+[[import]]
+name = "os_rmdir"
+type = 2
+
+[[import]]
+name = "os_scandir"
+type = 2
+
+[[import]]
+name = "os_sendfile"
+type = 7
+
+[[import]]
+name = "os_sep"
+type = 0
+
+[[import]]
+name = "os_set_inheritable"
+type = 3
+
+[[import]]
+name = "os_setpgrp"
+type = 0
+
+[[import]]
+name = "os_setsid"
+type = 0
+
+[[import]]
+name = "os_stat"
+type = 2
+
+[[import]]
+name = "os_symlink"
+type = 3
+
+[[import]]
+name = "os_sysconf"
+type = 2
+
+[[import]]
+name = "os_sysconf_names"
+type = 0
+
+[[import]]
+name = "os_truncate"
+type = 3
+
+[[import]]
+name = "os_umask"
+type = 2
+
+[[import]]
+name = "os_uname"
+type = 0
+
+[[import]]
+name = "os_urandom"
+type = 2
+
+[[import]]
+name = "os_utime"
+type = 5
+
+[[import]]
+name = "os_waitpid"
+type = 3
+
+[[import]]
+name = "os_walk"
+type = 5
+
+[[import]]
+name = "os_wexitstatus"
+type = 2
+
+[[import]]
+name = "os_wifexited"
+type = 2
+
+[[import]]
+name = "os_wifsignaled"
+type = 2
+
+[[import]]
+name = "os_wifstopped"
+type = 2
+
+[[import]]
+name = "os_write"
+type = 3
+
+[[import]]
+name = "os_wstopsig"
+type = 2
+
+[[import]]
+name = "os_wtermsig"
+type = 2
+
+[[import]]
+name = "path_chmod"
+type = 3
+
+[[import]]
+name = "path_exists"
+type = 2
+
+[[import]]
+name = "path_listdir"
+type = 2
+
+[[import]]
+name = "path_mkdir"
+type = 3
+
+[[import]]
+name = "path_rmdir"
+type = 2
+
+[[import]]
+name = "path_unlink"
+type = 2
+
+[[import]]
+name = "socket_accept"
+type = 2
+
+[[import]]
+name = "socket_bind"
+type = 3
+
+[[import]]
+name = "socket_clone"
+type = 2
+
+[[import]]
+name = "socket_close"
+type = 2
+
+[[import]]
+name = "socket_connect"
+type = 3
+
+[[import]]
+name = "socket_connect_ex"
+type = 3
+
+[[import]]
+name = "socket_constants"
+type = 0
+
+[[import]]
+name = "socket_detach"
+type = 2
+
+[[import]]
+name = "socket_drop"
+type = 1
+
+[[import]]
+name = "socket_fileno"
+type = 2
+
+[[import]]
+name = "socket_getaddrinfo"
+type = 9
+
+[[import]]
+name = "socket_getblocking"
+type = 2
+
+[[import]]
+name = "socket_gethostname"
+type = 0
+
+[[import]]
+name = "socket_getnameinfo"
+type = 3
+
+[[import]]
+name = "socket_getpeername"
+type = 2
+
+[[import]]
+name = "socket_getservbyname"
+type = 3
+
+[[import]]
+name = "socket_getservbyport"
+type = 3
+
+[[import]]
+name = "socket_getsockname"
+type = 2
+
+[[import]]
+name = "socket_getsockopt"
+type = 7
+
+[[import]]
+name = "socket_gettimeout"
+type = 2
+
+[[import]]
+name = "socket_has_ipv6"
+type = 0
+
+[[import]]
+name = "socket_inet_ntop"
+type = 3
+
+[[import]]
+name = "socket_inet_pton"
+type = 3
+
+[[import]]
+name = "socket_listen"
+type = 3
+
+[[import]]
+name = "socket_new"
+type = 7
+
+[[import]]
+name = "socket_recv"
+type = 5
+
+[[import]]
+name = "socket_recv_into"
+type = 7
+
+[[import]]
+name = "socket_recvfrom"
+type = 5
+
+[[import]]
+name = "socket_send"
+type = 5
+
+[[import]]
+name = "socket_sendall"
+type = 5
+
+[[import]]
+name = "socket_sendto"
+type = 7
+
+[[import]]
+name = "socket_setblocking"
+type = 3
+
+[[import]]
+name = "socket_setsockopt"
+type = 7
+
+[[import]]
+name = "socket_settimeout"
+type = 3
+
+[[import]]
+name = "socket_shutdown"
+type = 3
+
+[[import]]
+name = "socketpair"
+type = 5
+
+[[import]]
+name = "db_exec"
+type = 26
+
+[[import]]
+name = "db_exec_obj"
+type = 3
+
+[[import]]
+name = "db_query"
+type = 26
+
+[[import]]
+name = "db_query_obj"
+type = 3
+
+[[import]]
+name = "string_capitalize"
+type = 2
+
+[[import]]
+name = "string_count"
+type = 3
+
+[[import]]
+name = "string_count_slice"
+type = 9
+
+[[import]]
+name = "string_endswith"
+type = 3
+
+[[import]]
+name = "string_endswith_slice"
+type = 9
+
+[[import]]
+name = "string_eq"
+type = 3
+
+[[import]]
+name = "string_find"
+type = 3
+
+[[import]]
+name = "string_find_slice"
+type = 9
+
+[[import]]
+name = "string_format"
+type = 3
+
+[[import]]
+name = "string_from_bytes"
+type = 19
+
+[[import]]
+name = "string_join"
+type = 3
+
+[[import]]
+name = "string_lower"
+type = 2
+
+[[import]]
+name = "string_lstrip"
+type = 3
+
+[[import]]
+name = "string_replace"
+type = 7
+
+[[import]]
+name = "string_rstrip"
+type = 3
+
+[[import]]
+name = "string_split"
+type = 3
+
+[[import]]
+name = "string_split_field_eq"
+type = 7
+
+[[import]]
+name = "string_split_field"
+type = 5
+
+[[import]]
+name = "string_split_field_end"
+type = 5
+
+[[import]]
+name = "string_split_field_is_ascii"
+type = 5
+
+[[import]]
+name = "string_split_field_len"
+type = 5
+
+[[import]]
+name = "string_split_field_len_from_bounds"
+type = 7
+
+[[import]]
+name = "string_split_field_ord_at_bounds"
+type = 12
+
+[[import]]
+name = "string_split_field_start"
+type = 5
+
+[[import]]
+name = "string_split_field_to_int"
+type = 5
+
+[[import]]
+name = "string_split_max"
+type = 5
+
+[[import]]
+name = "string_split_sep_dict_inc"
+type = 7
+
+[[import]]
+name = "string_split_validate"
+type = 3
+
+[[import]]
+name = "string_split_ws_dict_inc"
+type = 5
+
+[[import]]
+name = "string_startswith"
+type = 3
+
+[[import]]
+name = "string_startswith_slice"
+type = 9
+
+[[import]]
+name = "string_strip"
+type = 3
+
+[[import]]
+name = "string_upper"
+type = 2
+
+[[import]]
+name = "struct_calcsize"
+type = 2
+
+[[import]]
+name = "struct_iter_unpack"
+type = 3
+
+[[import]]
+name = "struct_pack"
+type = 3
+
+[[import]]
+name = "struct_pack_into"
+type = 5
+
+[[import]]
+name = "struct_unpack"
+type = 3
+
+[[import]]
+name = "struct_unpack_from"
+type = 5
+
+[[import]]
+name = "process_drop"
+type = 1
+
+[[import]]
+name = "process_kill"
+type = 2
+
+[[import]]
+name = "process_pid"
+type = 2
+
+[[import]]
+name = "process_poll"
+type = 2
+
+[[import]]
+name = "process_returncode"
+type = 2
+
+[[import]]
+name = "process_spawn"
+type = 9
+
+[[import]]
+name = "process_stderr"
+type = 2
+
+[[import]]
+name = "process_stdin"
+type = 2
+
+[[import]]
+name = "process_stdout"
+type = 2
+
+[[import]]
+name = "process_terminate"
+type = 2
+
+[[import]]
+name = "process_wait_future"
+type = 2
+
+[[import]]
+name = "thread_current_ident"
+type = 0
+
+[[import]]
+name = "thread_current_native_id"
+type = 0
+
+[[import]]
+name = "thread_drop"
+type = 2
+
+[[import]]
+name = "thread_ident"
+type = 2
+
+[[import]]
+name = "thread_is_alive"
+type = 2
+
+[[import]]
+name = "thread_join"
+type = 3
+
+[[import]]
+name = "thread_native_id"
+type = 2
+
+[[import]]
+name = "thread_poll"
+type = 2
+
+[[import]]
+name = "thread_spawn"
+type = 2
+
+[[import]]
+name = "thread_submit"
+type = 5
+
+[[import]]
+name = "time_gmtime"
+type = 2
+
+[[import]]
+name = "time_localtime"
+type = 2
+
+[[import]]
+name = "time_monotonic"
+type = 0
+
+[[import]]
+name = "time_monotonic_ns"
+type = 0
+
+[[import]]
+name = "time_perf_counter"
+type = 0
+
+[[import]]
+name = "time_perf_counter_ns"
+type = 0
+
+[[import]]
+name = "time_process_time"
+type = 0
+
+[[import]]
+name = "time_process_time_ns"
+type = 0
+
+[[import]]
+name = "time_strftime"
+type = 3
+
+[[import]]
+name = "time_time"
+type = 0
+
+[[import]]
+name = "time_time_ns"
+type = 0
+
+[[import]]
+name = "time_timezone"
+type = 0
+
+[[import]]
+name = "time_tzname"
+type = 0
+
+[[import]]
+name = "weakref_drop"
+type = 2
+
+[[import]]
+name = "weakref_get"
+type = 2
+
+[[import]]
+name = "weakref_register"
+type = 5
+
+[[import]]
+name = "ws_close"
+type = 1
+
+[[import]]
+name = "ws_connect"
+type = 19
+
+[[import]]
+name = "ws_connect_obj"
+type = 2
+
+[[import]]
+name = "ws_drop"
+type = 1
+
+[[import]]
+name = "ws_pair"
+type = 20
+
+[[import]]
+name = "ws_pair_obj"
+type = 2
+
+[[import]]
+name = "ws_recv"
+type = 2
+
+[[import]]
+name = "ws_send"
+type = 18
+
+[[import]]
+name = "ws_send_obj"
+type = 3
+
+[[import]]
+name = "ws_wait"
+type = 2
+
+[[import]]
+name = "ws_wait_new"
+type = 5
+
+# Import-name prefixes omitted by the backend Pure profile.
+# These apply to molt_runtime imports, not WASI/env host imports.
+
+[[pure_skip_prefix]]
+prefix = "process_"
+
+[[pure_skip_prefix]]
+prefix = "socket"
+
+[[pure_skip_prefix]]
+prefix = "db_"
+
+[[pure_skip_prefix]]
+prefix = "ws_"
+
+[[pure_skip_prefix]]
+prefix = "file_"
+
+[[pure_skip_prefix]]
+prefix = "stream_"
+
+[[pure_skip_prefix]]
+prefix = "path_exists"
+
+[[pure_skip_prefix]]
+prefix = "path_listdir"
+
+[[pure_skip_prefix]]
+prefix = "path_mkdir"
+
+[[pure_skip_prefix]]
+prefix = "path_unlink"
+
+[[pure_skip_prefix]]
+prefix = "path_rmdir"
+
+[[pure_skip_prefix]]
+prefix = "path_chmod"
+
+[[pure_skip_prefix]]
+prefix = "open_builtin"
+
+[[pure_skip_prefix]]
+prefix = "async_sleep"
+
+[[pure_skip_prefix]]
+prefix = "future_"
+
+[[pure_skip_prefix]]
+prefix = "promise_"
+
+[[pure_skip_prefix]]
+prefix = "thread_"
+
+[[pure_skip_prefix]]
+prefix = "lock_"
+
+[[pure_skip_prefix]]
+prefix = "rlock_"
+
+[[pure_skip_prefix]]
+prefix = "chan_"
+
+[[pure_skip_prefix]]
+prefix = "asyncio_"
+
+[[pure_skip_prefix]]
+prefix = "asyncgen_"
+
+[[pure_skip_prefix]]
+prefix = "anext_"
+
+[[pure_skip_prefix]]
+prefix = "io_wait"
+
+[[pure_skip_prefix]]
+prefix = "spawn"
+
+[[pure_skip_prefix]]
+prefix = "block_on"
+
+[[pure_skip_prefix]]
+prefix = "cancel_token_"
+
+[[pure_skip_prefix]]
+prefix = "cancelled"
+
+[[pure_skip_prefix]]
+prefix = "cancel_current"
+
+[[pure_skip_prefix]]
+prefix = "sleep_register"
+
+[[pure_skip_prefix]]
+prefix = "contextlib_async"
+
+[[pure_skip_prefix]]
+prefix = "time_"
+
+[[pure_skip_prefix]]
+prefix = "deflate_raw"
+
+[[pure_skip_prefix]]
+prefix = "inflate_raw"
+
+[[pure_skip_prefix]]
+prefix = "bz2_"
+
+[[pure_skip_prefix]]
+prefix = "gzip_"
+
+[[pure_skip_prefix]]
+prefix = "lzma_"
+
+[[pure_skip_prefix]]
+prefix = "zlib_"
+
+[[pure_skip_prefix]]
+prefix = "compression_"
+
+[[pure_skip_prefix]]
+prefix = "msgpack_"
+
+[[pure_skip_prefix]]
+prefix = "cbor_"
+
+[[pure_skip_prefix]]
+prefix = "hash_new"
+
+[[pure_skip_prefix]]
+prefix = "hash_update"
+
+[[pure_skip_prefix]]
+prefix = "hash_digest"
+
+[[pure_skip_prefix]]
+prefix = "hash_hexdigest"
+
+[[pure_skip_prefix]]
+prefix = "hash_copy"
+
+[[pure_skip_prefix]]
+prefix = "hmac_"
+
+[[pure_skip_prefix]]
+prefix = "pbkdf2_"
+
+[[pure_skip_prefix]]
+prefix = "scrypt"
+
+[[pure_skip_prefix]]
+prefix = "compare_digest"
+
+[[pure_skip_prefix]]
+prefix = "secrets_"
+
+[[pure_skip_prefix]]
+prefix = "ast_"
+
+[[pure_skip_prefix]]
+prefix = "zipfile_"
+
+[[pure_skip_prefix]]
+prefix = "glob_"
+
+[[pure_skip_prefix]]
+prefix = "tempfile_"
+
+[[pure_skip_prefix]]
+prefix = "tarfile_"

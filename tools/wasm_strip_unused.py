@@ -18,6 +18,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import re
 import shutil
@@ -31,6 +32,15 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from tools import artifact_publish, harness_memory_guard  # noqa: E402
+
+_WASM_ABI_GENERATED = REPO_ROOT / "src/molt/_wasm_abi_generated.py"
+_WASM_ABI_SPEC = importlib.util.spec_from_file_location(
+    "molt_tools_wasm_abi_generated", _WASM_ABI_GENERATED
+)
+if _WASM_ABI_SPEC is None or _WASM_ABI_SPEC.loader is None:
+    raise RuntimeError(f"cannot load generated WASM ABI data: {_WASM_ABI_GENERATED}")
+_WASM_ABI = importlib.util.module_from_spec(_WASM_ABI_SPEC)
+_WASM_ABI_SPEC.loader.exec_module(_WASM_ABI)
 
 
 # ---------------------------------------------------------------------------
@@ -49,6 +59,7 @@ class ImportCategory(str, Enum):
     WEBSOCKET = "websocket"  # WebSocket connect/send/recv
     SOCKET = "socket"  # Raw socket operations
     TIME = "time"  # Timezone/offset (beyond clock_time_get)
+    PURE_PROFILE = "pure_profile"  # molt_runtime import omitted by backend Pure
     INDIRECT_CALL = (
         "indirect_call"  # molt_call_indirectN — required for function pointers
     )
@@ -316,6 +327,7 @@ STRIPPABLE_CATEGORIES = {
     ImportCategory.WEBSOCKET,
     ImportCategory.SOCKET,
     ImportCategory.TIME,
+    ImportCategory.PURE_PROFILE,
 }
 
 CALL_INDIRECT_RE = re.compile(r"^molt_call_indirect\d+")
@@ -514,6 +526,12 @@ def parse_imports(wasm_path: Path) -> list[ImportInfo]:
 
 def _classify_import(info: ImportInfo) -> None:
     """Classify an import by matching against known rules."""
+    if info.module == "molt_runtime" and _WASM_ABI.pure_profile_skips_import(info.name):
+        info.category = ImportCategory.PURE_PROFILE
+        info.description = "Skipped by the backend Pure WASM profile"
+        info.strippable = True
+        return
+
     # Check for indirect call handlers first
     if info.module == "env" and CALL_INDIRECT_RE.match(info.name):
         info.category = ImportCategory.INDIRECT_CALL

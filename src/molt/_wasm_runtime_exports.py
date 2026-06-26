@@ -5,7 +5,8 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Iterable
 
-_IMPORT_REGISTRY_ENTRY_RE = re.compile(r'\("([^"]+)",\s*\d+\)')
+from ._wasm_abi_generated import WASM_IMPORT_REGISTRY
+
 _INTRINSIC_CALL_RE = re.compile(
     r'(?:_(?:require|lazy|optional)_intrinsic|_intrinsic_require)\(\s*"(?P<name>molt_[A-Za-z0-9_]+)"'
     r'|_resolve_optional_intrinsic\(\s*"[^"]+"\s*,\s*"(?P<resolved_name>molt_[A-Za-z0-9_]+)"'
@@ -81,24 +82,7 @@ def _normalize_runtime_export_name(name: str) -> str:
 
 @lru_cache(maxsize=1)
 def wasm_runtime_import_names() -> tuple[str, ...]:
-    repo_root = Path(__file__).resolve().parents[2]
-    registry_path = repo_root / "runtime" / "molt-backend" / "src" / "wasm_imports.rs"
-    names: list[str] = []
-    in_registry = False
-    for raw_line in registry_path.read_text(encoding="utf-8").splitlines():
-        line = raw_line.strip()
-        if not in_registry:
-            if line.startswith("pub(crate) const IMPORT_REGISTRY:"):
-                in_registry = True
-            continue
-        if line == "];":
-            break
-        match = _IMPORT_REGISTRY_ENTRY_RE.search(line)
-        if match:
-            names.append(match.group(1))
-    if not names:
-        raise RuntimeError(f"failed to read wasm import registry from {registry_path}")
-    return tuple(sorted(set(names)))
+    return tuple(sorted(set(WASM_IMPORT_REGISTRY)))
 
 
 def _runtime_owned_module_path(repo_root: Path, module_name: str) -> Path | None:
