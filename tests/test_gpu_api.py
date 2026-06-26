@@ -269,6 +269,34 @@ def test_kernel_launcher_normalizes_single_int_and_dict_configs(monkeypatch):
     ]
 
 
+def test_kernel_launcher_config_does_not_leak_between_calls(monkeypatch):
+    import molt.gpu as gpu
+
+    calls = []
+
+    @gpu.kernel
+    def noop():
+        raise AssertionError("backend launch should own execution")
+
+    def fake_launch(func, grid, threads, args):
+        calls.append((func.__name__, grid, threads, len(args)))
+
+    monkeypatch.setattr(gpu, "_MOLT_GPU_KERNEL_LAUNCH", fake_launch)
+
+    configured = noop[2, 3]
+    configured()
+    noop()
+    noop[4]()
+    noop()
+
+    assert calls == [
+        ("noop", 2, 3, 0),
+        ("noop", 256, 256, 0),
+        ("noop", 4, 256, 0),
+        ("noop", 256, 256, 0),
+    ]
+
+
 @pytest.mark.parametrize(
     ("config", "exc_type", "message"),
     (
