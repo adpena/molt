@@ -9,36 +9,38 @@ Product board for the molt structural sweep — the first instrument of the Molt
 
 | metric | value |
 | --- | --- |
-| hand_classified_matches | 12 |
+| hand_classified_matches | 0 |
 | critical_hand_classifications | 0 |
-| handset_classifications | 4 |
-| debt_markers_total | 524 |
-| god_files | 47 |
-| max_god_file_lines | 18484 |
-| structural_god_files | 14 |
-| max_god_file_structural_score | 12487 |
-| god_file_large_regions | 45 |
+| handset_classifications | 0 |
+| debt_markers_total | 521 |
+| god_files | 34 |
+| max_god_file_lines | 11816 |
+| structural_god_files | 8 |
+| max_god_file_structural_score | 2811 |
+| god_file_large_regions | 26 |
+| native_scalar_plan_authority_violations | 0 |
+| repr_name_scalar_authority_violations | 0 |
 | duplicate_authorities | 0 |
 
 ## TOP STRUCTURAL RISKS (ranked)
 
 | sev | risk class | where | what |
 | --- | --- | --- | --- |
-| high | god_file | `runtime/molt-runtime-tk/src/tk.rs` | 18484 lines (ceiling 4000) |
-| high | god_file | `runtime/molt-backend/src/wasm.rs` | 14562 lines (ceiling 4000) |
-| high | god_file | `runtime/molt-backend/src/llvm_backend/lowering.rs` | 13917 lines (ceiling 4000) |
-| high | god_file | `runtime/molt-runtime/src/object/ops.rs` | 12282 lines (ceiling 4000) |
-| high | god_file | `src/molt/frontend/__init__.py` | 8956 lines (ceiling 2500) |
-| high | god_file | `src/molt/frontend/visitors/calls.py` | 8108 lines (ceiling 2500) |
-| medium | structural_god_file | `runtime/molt-backend/src/llvm_backend/lowering.rs` | 2 large top-level regions (12487 excess lines) |
 | medium | god_file | `runtime/molt-runtime/src/builtins/gpu.rs` | 11816 lines (ceiling 4000) |
-| medium | god_file | `runtime/molt-backend/src/luau.rs` | 10335 lines (ceiling 4000) |
 | medium | god_file | `runtime/molt-runtime/src/builtins/platform_importlib_ffi.rs` | 8737 lines (ceiling 4000) |
-| medium | god_file | `runtime/molt-tir/src/tir/passes/drop_insertion.rs` | 8416 lines (ceiling 4000) |
-| medium | god_file | `runtime/molt-tir/src/tir/lower_to_simple.rs` | 8281 lines (ceiling 4000) |
-| medium | god_file | `runtime/molt-backend/src/native_backend/simple_backend.rs` | 7928 lines (ceiling 4000) |
-| medium | god_file | `runtime/molt-runtime-http/src/functions_http.rs` | 7521 lines (ceiling 4000) |
+| medium | god_file | `runtime/molt-runtime-http/src/functions_http.rs` | 7524 lines (ceiling 4000) |
 | medium | god_file | `runtime/molt-runtime/src/builtins/platform.rs` | 7473 lines (ceiling 4000) |
+| medium | god_file | `runtime/molt-runtime/src/builtins/functions_http.rs` | 7329 lines (ceiling 4000) |
+| medium | god_file | `runtime/molt-runtime/src/builtins/exceptions.rs` | 7230 lines (ceiling 4000) |
+| medium | god_file | `src/molt/stdlib/asyncio/__init__.py` | 7188 lines (ceiling 2500) |
+| medium | god_file | `runtime/molt-runtime/src/call/bind.rs` | 7120 lines (ceiling 4000) |
+| medium | god_file | `runtime/molt-runtime/src/builtins/io.rs` | 6838 lines (ceiling 4000) |
+| medium | god_file | `runtime/molt-runtime/src/async_rt/sockets.rs` | 6676 lines (ceiling 4000) |
+| medium | god_file | `runtime/molt-runtime/src/builtins/types.rs` | 6512 lines (ceiling 4000) |
+| medium | god_file | `runtime/molt-runtime/src/builtins/functions.rs` | 6249 lines (ceiling 4000) |
+| medium | god_file | `tools/gen_op_kinds.py` | 6209 lines (ceiling 2500) |
+| medium | god_file | `runtime/molt-runtime/src/builtins/modules.rs` | 6019 lines (ceiling 4000) |
+| medium | god_file | `src/molt/frontend/lowering/serialization.py` | 4549 lines (ceiling 2500) |
 
 ## TOP DELETION CANDIDATES (0) — replace, don't just delete
 
@@ -55,93 +57,84 @@ Product board for the molt structural sweep — the first instrument of the Molt
 
 ## Full findings by probe
 
-### god_file (47)
+### god_file (34)
 
 | sev | what | where | action |
 | --- | --- | --- | --- |
-| high | 18484 lines (ceiling 4000) | `runtime/molt-runtime-tk/src/tk.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
-| high | 14562 lines (ceiling 4000) | `runtime/molt-backend/src/wasm.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
-| high | 13917 lines (ceiling 4000) | `runtime/molt-backend/src/llvm_backend/lowering.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
-| high | 12282 lines (ceiling 4000) | `runtime/molt-runtime/src/object/ops.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
-| high | 8956 lines (ceiling 2500) | `src/molt/frontend/__init__.py` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
-| high | 8108 lines (ceiling 2500) | `src/molt/frontend/visitors/calls.py` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | medium | 11816 lines (ceiling 4000) | `runtime/molt-runtime/src/builtins/gpu.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
-| medium | 10335 lines (ceiling 4000) | `runtime/molt-backend/src/luau.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | medium | 8737 lines (ceiling 4000) | `runtime/molt-runtime/src/builtins/platform_importlib_ffi.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
-| medium | 8416 lines (ceiling 4000) | `runtime/molt-tir/src/tir/passes/drop_insertion.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
-| medium | 8281 lines (ceiling 4000) | `runtime/molt-tir/src/tir/lower_to_simple.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
-| medium | 7928 lines (ceiling 4000) | `runtime/molt-backend/src/native_backend/simple_backend.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
-| medium | 7521 lines (ceiling 4000) | `runtime/molt-runtime-http/src/functions_http.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
+| medium | 7524 lines (ceiling 4000) | `runtime/molt-runtime-http/src/functions_http.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | medium | 7473 lines (ceiling 4000) | `runtime/molt-runtime/src/builtins/platform.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
-| medium | 7326 lines (ceiling 4000) | `runtime/molt-runtime/src/builtins/functions_http.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
-| medium | 7310 lines (ceiling 4000) | `runtime/molt-backend/src/native_backend/function_compiler.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
+| medium | 7329 lines (ceiling 4000) | `runtime/molt-runtime/src/builtins/functions_http.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | medium | 7230 lines (ceiling 4000) | `runtime/molt-runtime/src/builtins/exceptions.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | medium | 7188 lines (ceiling 2500) | `src/molt/stdlib/asyncio/__init__.py` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | medium | 7120 lines (ceiling 4000) | `runtime/molt-runtime/src/call/bind.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | medium | 6838 lines (ceiling 4000) | `runtime/molt-runtime/src/builtins/io.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
-| medium | 6726 lines (ceiling 4000) | `runtime/molt-runtime/src/async_rt/sockets.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
-| medium | 6592 lines (ceiling 4000) | `runtime/molt-tir/src/passes.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
+| medium | 6676 lines (ceiling 4000) | `runtime/molt-runtime/src/async_rt/sockets.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | medium | 6512 lines (ceiling 4000) | `runtime/molt-runtime/src/builtins/types.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
-| medium | 6511 lines (ceiling 2500) | `src/molt/frontend/lowering/midend_optimization.py` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
-| medium | 6493 lines (ceiling 4000) | `runtime/molt-backend/src/main.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
-| medium | 6353 lines (ceiling 4000) | `runtime/molt-tir/src/representation_plan.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | medium | 6249 lines (ceiling 4000) | `runtime/molt-runtime/src/builtins/functions.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
-| medium | 6017 lines (ceiling 4000) | `runtime/molt-runtime/src/builtins/modules.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
-| medium | 5282 lines (ceiling 2500) | `tools/gen_op_kinds.py` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
-| medium | 4450 lines (ceiling 2500) | `src/molt/frontend/lowering/serialization.py` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
-| medium | 4007 lines (ceiling 2500) | `src/molt/frontend/visitors/classes.py` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
+| medium | 6209 lines (ceiling 2500) | `tools/gen_op_kinds.py` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
+| medium | 6019 lines (ceiling 4000) | `runtime/molt-runtime/src/builtins/modules.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
+| medium | 4549 lines (ceiling 2500) | `src/molt/frontend/lowering/serialization.py` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
+| medium | 3988 lines (ceiling 2500) | `src/molt/frontend/visitors/classes.py` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | low | 5982 lines (ceiling 4000) | `runtime/molt-worker/src/main.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | low | 5900 lines (ceiling 4000) | `runtime/molt-runtime/src/builtins/attributes.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | low | 5879 lines (ceiling 4000) | `runtime/molt-runtime/src/async_rt/generators_async.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
-| low | 5709 lines (ceiling 4000) | `runtime/molt-runtime/src/builtins/regex.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
+| low | 5741 lines (ceiling 4000) | `runtime/molt-runtime/src/object/ops_sys.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | low | 5709 lines (ceiling 4000) | `runtime/molt-runtime-regex/src/regex.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
+| low | 5709 lines (ceiling 4000) | `runtime/molt-runtime/src/builtins/regex.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | low | 5528 lines (ceiling 4000) | `runtime/molt-runtime/src/object/ops_encoding.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | low | 5162 lines (ceiling 4000) | `runtime/molt-runtime/src/object/ops_builtins.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | low | 5133 lines (ceiling 4000) | `runtime/molt-wasm-host/src/main.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | low | 5026 lines (ceiling 4000) | `runtime/molt-runtime/src/object/ops_string.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
-| … | _7 more_ | | run `--json` for full list |
+| low | 4914 lines (ceiling 4000) | `runtime/molt-tir/src/representation_plan.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
+| low | 4895 lines (ceiling 4000) | `runtime/molt-backend/src/rust.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
+| low | 4817 lines (ceiling 4000) | `runtime/molt-runtime/src/object/ops_bytes.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
+| low | 4446 lines (ceiling 4000) | `runtime/molt-runtime/src/object/ops_arith.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
+| low | 4350 lines (ceiling 4000) | `runtime/molt-runtime/src/builtins/functions_pickle.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
+| low | 4112 lines (ceiling 4000) | `runtime/molt-runtime/src/async_rt/scheduler.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
+| low | 4002 lines (ceiling 4000) | `runtime/molt-backend/src/native_backend/function_compiler/fc/arith.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
+| low | 3594 lines (ceiling 2500) | `tools/memory_guard.py` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 
-### structural_god_file (14)
+### structural_god_file (8)
 
 | sev | what | where | action |
 | --- | --- | --- | --- |
-| medium | 2 large top-level regions (12487 excess lines) | `runtime/molt-backend/src/llvm_backend/lowering.rs` | extract the large top-level regions into cohesive modules; do not add more autho |
-| medium | 3 large top-level regions (5743 excess lines) | `runtime/molt-backend/src/native_backend/function_compiler.rs` | extract the large top-level regions into cohesive modules; do not add more autho |
-| medium | 3 large top-level regions (4741 excess lines) | `runtime/molt-backend/src/native_backend/simple_backend.rs` | extract the large top-level regions into cohesive modules; do not add more autho |
 | medium | 4 large top-level regions (2811 excess lines) | `runtime/molt-runtime/src/builtins/attributes.rs` | extract the large top-level regions into cohesive modules; do not add more autho |
-| medium | 4 large top-level regions (1294 excess lines) | `runtime/molt-runtime/src/object/ops.rs` | extract the large top-level regions into cohesive modules; do not add more autho |
 | medium | 4 large top-level regions (1175 excess lines) | `runtime/molt-runtime/src/call/bind.rs` | extract the large top-level regions into cohesive modules; do not add more autho |
-| medium | 4 large top-level regions (486 excess lines) | `runtime/molt-tir/src/passes.rs` | extract the large top-level regions into cohesive modules; do not add more autho |
 | medium | 4 large top-level regions (432 excess lines) | `runtime/molt-runtime/src/object/ops_builtins.rs` | extract the large top-level regions into cohesive modules; do not add more autho |
-| low | 3 large top-level regions (1629 excess lines) | `runtime/molt-tir/src/tir/lower_to_simple.rs` | extract the large top-level regions into cohesive modules; do not add more autho |
 | low | 3 large top-level regions (1383 excess lines) | `runtime/molt-wasm-host/src/main.rs` | extract the large top-level regions into cohesive modules; do not add more autho |
 | low | 3 large top-level regions (737 excess lines) | `runtime/molt-runtime/src/builtins/functions_pickle.rs` | extract the large top-level regions into cohesive modules; do not add more autho |
-| low | 3 large top-level regions (601 excess lines) | `tools/memory_guard.py` | extract the large top-level regions into cohesive modules; do not add more autho |
+| low | 3 large top-level regions (606 excess lines) | `tools/memory_guard.py` | extract the large top-level regions into cohesive modules; do not add more autho |
+| low | 3 large top-level regions (568 excess lines) | `tools/gen_op_kinds.py` | extract the large top-level regions into cohesive modules; do not add more autho |
 | low | 2 large top-level regions (501 excess lines) | `runtime/molt-runtime/src/async_rt/scheduler.rs` | extract the large top-level regions into cohesive modules; do not add more autho |
-| low | 3 large top-level regions (437 excess lines) | `tools/gen_op_kinds.py` | extract the large top-level regions into cohesive modules; do not add more autho |
 
-### debt_marker (398)
+### debt_marker (400)
 
 | sev | what | where | action |
 | --- | --- | --- | --- |
 | medium | 21 debt/workaround markers | `tools/linear_seed_backlog.py` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | medium | 20 debt/workaround markers | `tools/structural_audit.py` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | medium | 16 debt/workaround markers | `src/molt/stdlib/tempfile.py` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
-| low | 11 debt/workaround markers | `runtime/molt-backend/src/native_backend/function_compiler.rs` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
+| low | 8 debt/workaround markers | `runtime/molt-backend/src/native_backend/function_compiler/preanalys…` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 7 debt/workaround markers | `src/molt/stdlib/_pyio.py` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 6 debt/workaround markers | `src/molt/stdlib/email/message.py` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 5 debt/workaround markers | `tools/check_type_coverage_todos.py` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 5 debt/workaround markers | `tools/linear_hygiene.py` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
-| low | 4 debt/workaround markers | `runtime/molt-backend-mlir/src/tir_to_mlir.rs` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
-| low | 4 debt/workaround markers | `runtime/molt-gpu/src/device/arena.rs` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 4 debt/workaround markers | `runtime/molt-runtime/src/builtins/tempfile_mod.rs` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
+| low | 4 debt/workaround markers | `runtime/molt-gpu/src/device/arena.rs` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
+| low | 4 debt/workaround markers | `runtime/molt-backend-mlir/src/tir_to_mlir.rs` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 4 debt/workaround markers | `src/molt/stdlib/xml/etree/ElementPath.py` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 4 debt/workaround markers | `src/molt/stdlib/xml/etree/ElementTree.py` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 3 debt/workaround markers | `runtime/molt-runtime/src/builtins/types.rs` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
-| low | 2 debt/workaround markers | `runtime/molt-backend/src/luau.rs` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
-| low | 2 debt/workaround markers | `runtime/molt-backend/src/llvm_backend/lowering.rs` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
-| low | 2 debt/workaround markers | `runtime/molt-backend/src/luau_backend/source_postprocess.rs` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
-| low | 2 debt/workaround markers | `runtime/molt-backend/src/native_backend/function_compiler/fc/corout…` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
+| low | 2 debt/workaround markers | `runtime/molt-tir/src/passes/method_fusion.rs` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
+| low | 2 debt/workaround markers | `runtime/molt-tir/src/tir/passes/ownership_lattice_min.rs` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
+| low | 2 debt/workaround markers | `runtime/molt-tir/src/tir/passes/refcount_elim.rs` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
+| low | 2 debt/workaround markers | `runtime/molt-tier/src/lib.rs` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
+| low | 2 debt/workaround markers | `runtime/molt-runtime-serial/src/binascii.rs` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
+| low | 2 debt/workaround markers | `runtime/molt-runtime-serial/src/csv.rs` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
+| low | 2 debt/workaround markers | `runtime/molt-runtime-regex/src/regex.rs` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
+| low | 2 debt/workaround markers | `runtime/molt-runtime-logging/src/logging_ext.rs` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 2 debt/workaround markers | `runtime/molt-runtime/src/builtins/binascii.rs` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 2 debt/workaround markers | `runtime/molt-runtime/src/builtins/csv.rs` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 2 debt/workaround markers | `runtime/molt-runtime/src/builtins/functions_stat.rs` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
@@ -149,46 +142,21 @@ Product board for the molt structural sweep — the first instrument of the Molt
 | low | 2 debt/workaround markers | `runtime/molt-runtime/src/builtins/regex.rs` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 2 debt/workaround markers | `runtime/molt-runtime/src/object/builders.rs` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 2 debt/workaround markers | `runtime/molt-runtime/src/object/ops_set.rs` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
-| low | 2 debt/workaround markers | `runtime/molt-runtime-logging/src/logging_ext.rs` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
-| low | 2 debt/workaround markers | `runtime/molt-runtime-regex/src/regex.rs` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
-| low | 2 debt/workaround markers | `runtime/molt-runtime-serial/src/binascii.rs` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
-| low | 2 debt/workaround markers | `runtime/molt-runtime-serial/src/csv.rs` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
-| low | 2 debt/workaround markers | `runtime/molt-runtime-tk/src/tk.rs` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
-| low | 2 debt/workaround markers | `runtime/molt-tier/src/lib.rs` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
-| low | 2 debt/workaround markers | `runtime/molt-tir/src/passes.rs` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
-| low | 2 debt/workaround markers | `runtime/molt-tir/src/tir/passes/ownership_lattice_min.rs` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
-| low | 2 debt/workaround markers | `runtime/molt-tir/src/tir/passes/refcount_elim.rs` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
+| low | 2 debt/workaround markers | `runtime/molt-backend/src/luau_backend/source_postprocess.rs` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
+| low | 2 debt/workaround markers | `runtime/molt-backend/src/native_backend/function_compiler/cleanup_r…` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
+| low | 2 debt/workaround markers | `runtime/molt-backend/src/native_backend/function_compiler/fc/corout…` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 2 debt/workaround markers | `src/molt/gpu/distributed.py` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 2 debt/workaround markers | `src/molt/stdlib/zlib.py` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 2 debt/workaround markers | `src/molt/stdlib/email/charset.py` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 2 debt/workaround markers | `src/molt/stdlib/email/headerregistry.py` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 2 debt/workaround markers | `src/molt/stdlib/tkinter/__init__.py` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 2 debt/workaround markers | `src/molt/stdlib/test/support/import_helper.py` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
-| … | _358 more_ | | run `--json` for full list |
-
-### semantic_fallthrough (16)
-
-| sev | what | where | action |
-| --- | --- | --- | --- |
-| low | `matches!` hand-set of 8 opcodes (implicit-false default) | `runtime/molt-tir/src/tir/passes/overflow_peel.rs:153` | if this encodes a semantic property, add a classifier set to op_kinds.toml and q |
-| low | `matches!` hand-set of 5 opcodes (implicit-false default) | `runtime/molt-tir/src/tir/lower_from_simple.rs:390` | if this encodes a semantic property, add a classifier set to op_kinds.toml and q |
-| low | hand-classified `match` over 5 opcodes (silent default) | `runtime/molt-tir/src/tir/passes/module_slot_promotion.rs:210` | if this encodes op semantics, migrate into op_kinds.toml ([[opcode]] row / class |
-| low | `matches!` hand-set of 4 opcodes (implicit-false default) | `runtime/molt-tir/src/tir/function.rs:158` | if this encodes a semantic property, add a classifier set to op_kinds.toml and q |
-| low | `matches!` hand-set of 4 opcodes (implicit-false default) | `runtime/molt-tir/src/tir/lower_to_simple.rs:870` | if this encodes a semantic property, add a classifier set to op_kinds.toml and q |
-| low | hand-classified `match` over 4 opcodes (silent default) | `runtime/molt-tir/src/tir/ops.rs:459` | if this encodes op semantics, migrate into op_kinds.toml ([[opcode]] row / class |
-| low | hand-classified `match` over 4 opcodes (silent default) | `runtime/molt-tir/src/tir/verify.rs:198` | if this encodes op semantics, migrate into op_kinds.toml ([[opcode]] row / class |
-| low | hand-classified `match` over 4 opcodes (silent default) | `runtime/molt-tir/src/tir/passes/counted_loop.rs:360` | if this encodes op semantics, migrate into op_kinds.toml ([[opcode]] row / class |
-| low | hand-classified `match` over 4 opcodes (silent default) | `runtime/molt-tir/src/tir/passes/counted_loop.rs:429` | if this encodes op semantics, migrate into op_kinds.toml ([[opcode]] row / class |
-| low | hand-classified `match` over 4 opcodes (silent default) | `runtime/molt-tir/src/tir/passes/counted_loop.rs:556` | if this encodes op semantics, migrate into op_kinds.toml ([[opcode]] row / class |
-| low | hand-classified `match` over 4 opcodes (silent default) | `runtime/molt-tir/src/tir/passes/module_slot_promotion.rs:99` | if this encodes op semantics, migrate into op_kinds.toml ([[opcode]] row / class |
-| low | hand-classified `match` over 4 opcodes (silent default) | `runtime/molt-tir/src/tir/passes/sroa.rs:202` | if this encodes op semantics, migrate into op_kinds.toml ([[opcode]] row / class |
-| low | hand-classified `match` over 4 opcodes (silent default) | `runtime/molt-tir/src/tir/passes/strength_reduction.rs:70` | if this encodes op semantics, migrate into op_kinds.toml ([[opcode]] row / class |
-| low | hand-classified `match` over 3 opcodes (silent default) | `runtime/molt-tir/src/tir/passes/module_slot_promotion.rs:508` | if this encodes op semantics, migrate into op_kinds.toml ([[opcode]] row / class |
-| low | hand-classified `match` over 3 opcodes (silent default) | `runtime/molt-tir/src/tir/passes/module_slot_promotion.rs:629` | if this encodes op semantics, migrate into op_kinds.toml ([[opcode]] row / class |
-| low | hand-classified `match` over 3 opcodes (silent default) | `runtime/molt-tir/src/tir/passes/scev.rs:604` | if this encodes op semantics, migrate into op_kinds.toml ([[opcode]] row / class |
+| low | 1 debt/workaround markers | `runtime/molt-tir/src/tir/bolt.rs` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
+| low | 1 debt/workaround markers | `runtime/molt-tir/src/tir/call_facts.rs` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
+| … | _360 more_ | | run `--json` for full list |
 
 ### registry_reconciliation (1)
 
 | sev | what | where | action |
 | --- | --- | --- | --- |
-| info | OpCode variants=109 · [[opcode]] rows≈44 | `runtime/molt-tir/src/tir/{ops.rs,op_kinds.toml}` | no action unless a NEW non-exhaustive opcode classifier appears (probe semantic_ |
+| info | OpCode variants=111 · [[opcode]] rows≈44 | `runtime/molt-tir/src/tir/{ops.rs,op_kinds.toml}` | no action unless a NEW non-exhaustive opcode classifier appears (probe semantic_ |
