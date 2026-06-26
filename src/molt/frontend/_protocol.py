@@ -57,6 +57,7 @@ from molt.frontend._types import (
 if TYPE_CHECKING:
     from molt.frontend.sema import FunctionKind
     from molt.frontend.sema import SemaResult
+    from molt.frontend.lowering.serialization_context import SerializationContext
     from molt.type_facts import TypeFacts
 
 
@@ -2141,6 +2142,38 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _sccp_in_const_int_values(
         self, sccp: SCCPResult
     ) -> dict[int, dict[str, int]]: ...
+
+    @staticmethod
+    def _serialization_carry_bound_local(
+        op: MoltOp, entry: dict[str, Any]
+    ) -> dict[str, Any]: ...
+
+    @staticmethod
+    def _serialization_control_value(op: MoltOp) -> int: ...
+
+    def _serialization_field_offset(
+        self, expected_class: str, attr: str
+    ) -> int | None: ...
+
+    def _serialize_basic_op(self, op: MoltOp, ctx: SerializationContext) -> bool: ...
+
+    def _serialize_collection_op(
+        self, op: MoltOp, ctx: SerializationContext
+    ) -> bool: ...
+
+    def _serialize_exception_op(
+        self, op: MoltOp, ctx: SerializationContext
+    ) -> bool: ...
+
+    def _serialize_function_op(self, op: MoltOp, ctx: SerializationContext) -> bool: ...
+
+    def _serialize_loop_string_async_op(
+        self, op: MoltOp, ctx: SerializationContext
+    ) -> bool: ...
+
+    def _serialize_object_attr_op(
+        self, op: MoltOp, ctx: SerializationContext
+    ) -> bool: ...
 
     def _should_attempt_runtime_module_import(self, module_name: str) -> bool: ...
 
