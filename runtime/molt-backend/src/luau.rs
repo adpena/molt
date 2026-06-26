@@ -37,10 +37,13 @@ mod op_calls;
 mod op_container_access;
 mod op_control;
 mod op_emitter;
+mod op_iteration;
 mod op_lists;
 mod op_maps;
 mod op_objects;
+mod op_runtime_surface;
 mod op_scalars;
+mod op_sets;
 mod op_strings;
 mod op_tuples;
 
