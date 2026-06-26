@@ -12,9 +12,9 @@ Product board for the molt structural sweep — the first instrument of the Molt
 | hand_classified_matches | 0 |
 | critical_hand_classifications | 0 |
 | handset_classifications | 0 |
-| debt_markers_total | 521 |
-| god_files | 26 |
-| max_god_file_lines | 7329 |
+| debt_markers_total | 520 |
+| god_files | 25 |
+| max_god_file_lines | 7230 |
 | structural_god_files | 6 |
 | max_god_file_structural_score | 1383 |
 | god_file_large_regions | 18 |
@@ -26,7 +26,6 @@ Product board for the molt structural sweep — the first instrument of the Molt
 
 | sev | risk class | where | what |
 | --- | --- | --- | --- |
-| medium | god_file | `runtime/molt-runtime/src/builtins/functions_http.rs` | 7329 lines (ceiling 4000) |
 | medium | god_file | `runtime/molt-runtime/src/builtins/exceptions.rs` | 7230 lines (ceiling 4000) |
 | medium | god_file | `src/molt/stdlib/asyncio/__init__.py` | 7188 lines (ceiling 2500) |
 | medium | god_file | `runtime/molt-runtime/src/builtins/io.rs` | 6838 lines (ceiling 4000) |
@@ -41,6 +40,7 @@ Product board for the molt structural sweep — the first instrument of the Molt
 | low | god_file | `runtime/molt-worker/src/main.rs` | 5982 lines (ceiling 4000) |
 | low | god_file | `runtime/molt-runtime/src/builtins/platform.rs` | 5934 lines (ceiling 4000) |
 | low | god_file | `runtime/molt-runtime/src/async_rt/generators_async.rs` | 5879 lines (ceiling 4000) |
+| low | god_file | `runtime/molt-runtime/src/object/ops_sys.rs` | 5741 lines (ceiling 4000) |
 
 ## TOP DELETION CANDIDATES (0) — replace, don't just delete
 
@@ -57,11 +57,10 @@ Product board for the molt structural sweep — the first instrument of the Molt
 
 ## Full findings by probe
 
-### god_file (26)
+### god_file (25)
 
 | sev | what | where | action |
 | --- | --- | --- | --- |
-| medium | 7329 lines (ceiling 4000) | `runtime/molt-runtime/src/builtins/functions_http.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | medium | 7230 lines (ceiling 4000) | `runtime/molt-runtime/src/builtins/exceptions.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | medium | 7188 lines (ceiling 2500) | `src/molt/stdlib/asyncio/__init__.py` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | medium | 6838 lines (ceiling 4000) | `runtime/molt-runtime/src/builtins/io.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
@@ -99,7 +98,7 @@ Product board for the molt structural sweep — the first instrument of the Molt
 | low | 3 large top-level regions (606 excess lines) | `tools/memory_guard.py` | extract the large top-level regions into cohesive modules; do not add more autho |
 | low | 2 large top-level regions (501 excess lines) | `runtime/molt-runtime/src/async_rt/scheduler.rs` | extract the large top-level regions into cohesive modules; do not add more autho |
 
-### debt_marker (400)
+### debt_marker (399)
 
 | sev | what | where | action |
 | --- | --- | --- | --- |
@@ -143,7 +142,7 @@ Product board for the molt structural sweep — the first instrument of the Molt
 | low | 2 debt/workaround markers | `src/molt/stdlib/test/support/import_helper.py` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 1 debt/workaround markers | `runtime/molt-tir/src/tir/bolt.rs` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 1 debt/workaround markers | `runtime/molt-tir/src/tir/call_facts.rs` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
-| … | _360 more_ | | run `--json` for full list |
+| … | _359 more_ | | run `--json` for full list |
 
 ### registry_reconciliation (1)
 
