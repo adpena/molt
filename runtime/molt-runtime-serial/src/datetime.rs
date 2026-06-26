@@ -2168,6 +2168,8 @@ pub extern "C" fn molt_datetime_hash_date(y_bits: u64, m_bits: u64, d_bits: u64)
         };
         // CPython: date.__hash__ = hash(ordinal)
         let ord = ymd_to_ordinal(y as i32, m as i32, d as i32);
+        // The ordinal is bounded (1..=3_652_059 for year 1..=9999), so its hash
+        // always lands in the inline window — `from_int` is exact here.
         MoltObject::from_int(py_hash_int(ord)).bits()
     })
 }
@@ -2209,7 +2211,9 @@ pub extern "C" fn molt_datetime_hash_time(
         let adjusted = total_us - utcoff_us;
         // Hash as if it's the integer value of total microseconds
         let h_val = py_hash_i128(adjusted as i128);
-        MoltObject::from_int(h_val).bits()
+        // A tz-adjusted (negative) time reduces mod (2**61 - 1) to a value far
+        // outside the inline window; box the full Python hash, never `from_int`.
+        int_bits_from_i64(_py, h_val)
     })
 }
 
@@ -2270,7 +2274,10 @@ pub extern "C" fn molt_datetime_hash_datetime(
         };
         let adjusted = total_us - utcoff_us;
         let h_val = py_hash_i128(adjusted);
-        MoltObject::from_int(h_val).bits()
+        // `py_hash_i128` returns the Python hash reduced mod (2**61 - 1), which
+        // routinely exceeds the 47-bit inline window; box the full value rather
+        // than truncating it through `from_int`.
+        int_bits_from_i64(_py, h_val)
     })
 }
 
@@ -2297,7 +2304,9 @@ pub extern "C" fn molt_datetime_hash_timedelta(
         // more precisely it hashes the tuple (days, secs, us) after normalization.
         let total_us: i128 =
             days as i128 * 86_400 * 1_000_000 + secs as i128 * 1_000_000 + us as i128;
-        MoltObject::from_int(py_hash_i128(total_us)).bits()
+        // Large timedeltas reduce mod (2**61 - 1) well past the inline window;
+        // box the full Python hash, never `from_int`.
+        int_bits_from_i64(_py, py_hash_i128(total_us))
     })
 }
 
@@ -2738,7 +2747,15 @@ pub extern "C" fn molt_datetime_as_int(value_bits: u64) -> u64 {
             return MoltObject::from_int(if b { 1 } else { 0 }).bits();
         }
         if let Some(i) = to_i64(obj) {
-            return MoltObject::from_int(i).bits();
+            // Full-range boxing — `from_int` would silently truncate a fit-i64
+            // BigInt or exact-integer float with magnitude >= 2**46.
+            return int_bits_from_i64(_py, i);
+        }
+        // A Python int wider than i64 is still an exact int; box it as a heap
+        // BigInt so callers see the true value (e.g. an out-of-range year is
+        // then rejected by the *value* check) instead of a bogus TypeError.
+        if let Some(big) = to_bigint(obj) {
+            return int_bits_from_bigint(_py, big);
         }
         raise_exception::<u64>(_py, "TypeError", "integer argument expected")
     })
