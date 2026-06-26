@@ -38,6 +38,7 @@ from molt.frontend.sema import (
     FunctionKind,
     async_generator_contains_return_value,
     async_generator_contains_yield_from,
+    c3_merge,
     function_contains_yield,
     signature_contains_yield,
     stateful_function_frame_plan,
@@ -882,7 +883,7 @@ class ClassDefVisitorMixin(_MixinBase):
 
         base_mros = [self._class_mro_names(name) for name in base_names]
         base_mros.append(list(base_names))
-        merged = self._c3_merge(base_mros)
+        merged = c3_merge(base_mros)
         if merged is None:
             merged = list(base_names)
         mro_names = [node.name] + merged

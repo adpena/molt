@@ -32,62 +32,6 @@ else:
 
 
 class AnalysisCollectStaticMixin(_MixinBase):
-    def _static_class_bases(self, class_name: str) -> list[str] | None:
-        """Return the single static base-name list for ``class_name`` usable to
-        compute a C3 MRO, or ``None`` when it cannot be computed soundly.
-
-        Sources, in order: the module class graph collected pre-pass
-        (``module_class_bases`` — covers classes defined *later* in source than
-        the current method body), then the dependency-closure class table
-        (``self.classes``).  Returns ``None`` if the class has multiple
-        conflicting definitions, an opaque (non-simple-name / keyword) base, a
-        dynamically-built class, or is otherwise not statically resolvable.
-        """
-        if class_name == "object":
-            return ["object"]
-        defs = self.module_class_bases.get(class_name)
-        if defs is not None:
-            if len(defs) != 1:
-                return None  # re-bound / conditional class def — not foldable
-            entry = defs[0]
-            if "<opaque>" in entry:
-                return None
-            return list(entry)
-        info = self.classes.get(class_name)
-        if info is not None:
-            if info.get("dynamic") or info.get("custom_metaclass"):
-                return None
-            return list(info.get("bases", []) or ["object"])
-        # Unknown name (builtin base like Exception, or not-yet-seen): treat as
-        # un-foldable so a hidden interposition can never be missed.
-        return None
-
-    def _static_mro_names(
-        self, class_name: str, _stack: tuple[str, ...] = ()
-    ) -> list[str] | None:
-        """Compute the C3 linearization of ``class_name`` from the static class
-        graph, or ``None`` when any contributing class is not statically
-        resolvable (forcing the super fold to fail-closed).
-        """
-        if class_name in _stack:
-            return None  # cyclic inheritance — not resolvable
-        if class_name == "object":
-            return ["object"]
-        bases = self._static_class_bases(class_name)
-        if bases is None:
-            return None
-        base_mros: list[list[str]] = []
-        for base in bases:
-            base_mro = self._static_mro_names(base, _stack + (class_name,))
-            if base_mro is None:
-                return None
-            base_mros.append(base_mro)
-        base_mros.append(list(bases))
-        merged = self._c3_merge(base_mros)
-        if merged is None:
-            return None  # C3 inconsistency — CPython would raise; don't fold
-        return [class_name] + merged
-
     def _collect_module_annotation_items(
         self, node: ast.Module
     ) -> tuple[list[tuple[str, ast.expr, int]], dict[int, int]]:
