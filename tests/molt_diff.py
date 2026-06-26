@@ -6,7 +6,6 @@ import json
 import os
 import re
 import runpy
-import signal
 import socket
 import shutil
 import subprocess
@@ -807,22 +806,6 @@ def _pid_alive(pid: int) -> bool:
     return True
 
 
-def _kill_pid(pid: int, *, grace: float = 0.75) -> None:
-    if pid <= 0:
-        return
-    try:
-        os.kill(pid, signal.SIGTERM)
-    except OSError:
-        return
-    deadline = time.monotonic() + max(0.05, grace)
-    while time.monotonic() < deadline:
-        if not _pid_alive(pid):
-            return
-        time.sleep(0.05)
-    with contextlib.suppress(OSError):
-        os.kill(pid, signal.SIGKILL)
-
-
 def _daemon_ping(socket_path: Path, *, timeout: float = 0.75) -> bool:
     if os.name != "posix":
         return False
@@ -882,6 +865,14 @@ class _BackendDaemonProcess:
     pid: int
     socket_path: Path
     command: str
+
+
+@dataclass(frozen=True)
+class _PrunableProcess:
+    pid: int
+    identity: memory_guard.ProcessIdentity
+    command: str
+    reason: str
 
 
 def _list_backend_daemon_processes() -> list[_BackendDaemonProcess]:
@@ -972,7 +963,80 @@ def _terminate_verified_backend_daemon(
     return True
 
 
-def _list_orphan_diff_workers() -> list[int]:
+def _prune_custody_event_path() -> Path:
+    return _repo_root() / "tmp" / "memory_guard" / "incidents" / "molt-diff-prune.jsonl"
+
+
+def _record_prune_custody_event(
+    process: _PrunableProcess,
+    actions: Sequence[memory_guard.GuardTerminationAction],
+) -> None:
+    path = _prune_custody_event_path()
+    payload = {
+        "event": "molt_diff_prune_custody",
+        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "pid": process.pid,
+        "reason": process.reason,
+        "command": process.command,
+        "actions": [
+            {
+                "target_kind": action.target_kind,
+                "target_id": action.target_id,
+                "signal": action.signal,
+                "signal_name": action.signal_name,
+                "result": action.result,
+                "error": action.error,
+            }
+            for action in actions
+        ],
+    }
+    with contextlib.suppress(OSError):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, sort_keys=True) + "\n")
+
+
+def _actions_completed_cleanup(
+    actions: Sequence[memory_guard.GuardTerminationAction],
+) -> bool:
+    return any(
+        action.result in {"completed_or_missing", "sent", "missing"}
+        for action in actions
+    )
+
+
+def _prune_verified_processes(
+    processes: Sequence[_PrunableProcess],
+    *,
+    label: str,
+    grace: float,
+) -> None:
+    if not processes:
+        return
+    pruned = 0
+    skipped = 0
+    for process in processes:
+        actions = memory_guard.terminate_verified_pid(
+            process.pid,
+            process.identity,
+            sampler=memory_guard.sample_processes,
+            grace=grace,
+        )
+        if _actions_completed_cleanup(actions):
+            pruned += 1
+            continue
+        skipped += 1
+        _record_prune_custody_event(process, actions)
+    if skipped:
+        print(
+            f"[INFO] Pruned {pruned} {label}(s); skipped {skipped} by custody "
+            f"gate (events: {_prune_custody_event_path()})"
+        )
+    elif pruned:
+        print(f"[INFO] Pruned {pruned} {label}(s)")
+
+
+def _list_orphan_diff_workers() -> list[_PrunableProcess]:
     if os.name != "posix":
         return []
     repo_python = Path(__file__).resolve().parents[1] / ".venv" / "bin" / "python3"
@@ -980,76 +1044,31 @@ def _list_orphan_diff_workers() -> list[int]:
         "from multiprocessing.spawn import spawn_main",
         "from multiprocessing.resource_tracker import main",
     )
-    try:
-        result = subprocess.run(
-            ["ps", "-axo", "pid=,ppid=,command="],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=2.0,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return []
-    orphan_pids: list[int] = []
-    for raw_line in result.stdout.splitlines():
-        line = raw_line.strip()
-        if not line:
+    samples = memory_guard.sample_processes()
+    candidates: list[_PrunableProcess] = []
+    for sample in samples.values():
+        if sample.ppid != 1:
             continue
-        parts = line.split(None, 2)
-        if len(parts) < 3:
+        if str(repo_python) not in sample.command:
             continue
-        pid_raw, ppid_raw, cmd = parts
-        if not (pid_raw.isdigit() and ppid_raw.isdigit()):
-            continue
-        if int(ppid_raw) != 1:
-            continue
-        if str(repo_python) not in cmd:
-            continue
-        if any(marker in cmd for marker in markers):
-            orphan_pids.append(int(pid_raw))
-    return sorted(set(orphan_pids))
+        if any(marker in sample.command for marker in markers):
+            candidates.append(
+                _PrunableProcess(
+                    pid=sample.pid,
+                    identity=memory_guard.process_identity(sample),
+                    command=sample.command,
+                    reason="orphan_diff_worker",
+                )
+            )
+    return sorted(candidates, key=lambda process: process.pid)
 
 
 def _prune_orphan_diff_workers() -> None:
-    pids = _list_orphan_diff_workers()
-    if not pids:
-        return
-    for pid in pids:
-        _kill_pid(pid)
-    print(f"[INFO] Pruned {len(pids)} orphan multiprocessing worker(s)")
-
-
-def _list_process_rows() -> list[tuple[int, int, int, str]]:
-    if os.name != "posix":
-        return []
-    age_field = "etimes" if _ps_supports_field("etimes") else "etime"
-    try:
-        result = subprocess.run(
-            ["ps", "-axo", f"pid=,ppid=,{age_field}=,command="],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=2.0,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return []
-
-    rows: list[tuple[int, int, int, str]] = []
-    for raw_line in result.stdout.splitlines():
-        line = raw_line.strip()
-        if not line:
-            continue
-        parts = line.split(None, 3)
-        if len(parts) < 4:
-            continue
-        pid_raw, ppid_raw, elapsed_raw, cmd = parts
-        if not (pid_raw.isdigit() and ppid_raw.isdigit()):
-            continue
-        elapsed = _parse_ps_elapsed(elapsed_raw)
-        if elapsed is None:
-            continue
-        rows.append((int(pid_raw), int(ppid_raw), elapsed, cmd))
-    return rows
+    _prune_verified_processes(
+        _list_orphan_diff_workers(),
+        label="orphan multiprocessing worker",
+        grace=0.75,
+    )
 
 
 def _is_diff_build_helper_command(cmd: str) -> bool:
@@ -1070,15 +1089,15 @@ def _is_diff_build_helper_command(cmd: str) -> bool:
     return False
 
 
-def _list_orphan_build_helpers() -> list[int]:
+def _list_orphan_build_helpers() -> list[_PrunableProcess]:
     if os.name != "posix":
         return []
-    rows = _list_process_rows()
-    if not rows:
+    samples = memory_guard.sample_processes()
+    if not samples:
         return []
 
-    cmd_by_pid = {pid: cmd for pid, _ppid, _etimes, cmd in rows}
-    ppid_by_pid = {pid: ppid for pid, ppid, _etimes, _cmd in rows}
+    cmd_by_pid = {pid: sample.command for pid, sample in samples.items()}
+    ppid_by_pid = {pid: sample.ppid for pid, sample in samples.items()}
     stale_sec = max(60, _parse_int_env("MOLT_DIFF_HELPER_STALE_SEC", 20 * 60))
 
     def _has_diff_ancestor(pid: int) -> bool:
@@ -1092,27 +1111,44 @@ def _list_orphan_build_helpers() -> list[int]:
             current = ppid_by_pid.get(current, 0)
         return False
 
-    pids: list[int] = []
-    for pid, ppid, etimes, cmd in rows:
-        if not _is_diff_build_helper_command(cmd):
+    candidates: list[_PrunableProcess] = []
+    for sample in samples.values():
+        if not _is_diff_build_helper_command(sample.command):
             continue
-        if ppid == 1:
-            pids.append(pid)
+        if sample.ppid == 1:
+            candidates.append(
+                _PrunableProcess(
+                    pid=sample.pid,
+                    identity=memory_guard.process_identity(sample),
+                    command=sample.command,
+                    reason="orphan_diff_build_helper",
+                )
+            )
             continue
         # A helper that has outlived any diff harness ancestry is stale and can
         # deadlock later runs by holding shared build locks.
-        if etimes >= stale_sec and not _has_diff_ancestor(pid):
-            pids.append(pid)
-    return sorted(set(pids))
+        if (
+            sample.elapsed_sec is not None
+            and sample.elapsed_sec >= stale_sec
+            and not _has_diff_ancestor(sample.pid)
+        ):
+            candidates.append(
+                _PrunableProcess(
+                    pid=sample.pid,
+                    identity=memory_guard.process_identity(sample),
+                    command=sample.command,
+                    reason="stale_diff_build_helper",
+                )
+            )
+    return sorted(candidates, key=lambda process: process.pid)
 
 
 def _prune_orphan_build_helpers() -> None:
-    pids = _list_orphan_build_helpers()
-    if not pids:
-        return
-    for pid in pids:
-        _kill_pid(pid, grace=0.35)
-    print(f"[INFO] Pruned {len(pids)} orphan build helper process(es)")
+    _prune_verified_processes(
+        _list_orphan_build_helpers(),
+        label="orphan build helper process",
+        grace=0.35,
+    )
 
 
 def _prune_backend_daemons() -> None:

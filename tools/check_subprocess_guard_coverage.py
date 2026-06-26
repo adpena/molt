@@ -461,18 +461,6 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
     ),
     AllowedRawSubprocessUse(
         "tests/molt_diff.py",
-        "_list_orphan_diff_workers",
-        "run",
-        "differential harness orphan-worker metadata sampler",
-    ),
-    AllowedRawSubprocessUse(
-        "tests/molt_diff.py",
-        "_list_process_rows",
-        "run",
-        "differential harness process-table sampler",
-    ),
-    AllowedRawSubprocessUse(
-        "tests/molt_diff.py",
         "_dyld_preflight_error",
         "run",
         "differential harness bounded dyld preflight compile probe",
@@ -482,14 +470,6 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
         "_pid_alive",
         "os.kill",
         "differential harness generic pid-liveness probe",
-    ),
-    AllowedRawSubprocessUse(
-        "tests/molt_diff.py",
-        "_kill_pid",
-        "os.kill",
-        "differential harness generic orphan worker/build-helper teardown; "
-        "backend daemon pruning is covered by identity-custody tests",
-        expected_count=2,
     ),
     AllowedRawSubprocessUse(
         "tests/test_tkinter_phase0_wrappers.py",

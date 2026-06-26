@@ -49,7 +49,7 @@ compatibility. If 3.12/3.13/3.14 differ, document the chosen target in specs/tes
 - **Cache hardening**: set `MOLT_DIFF_FORCE_NO_CACHE=1|0` to force/disable `--no-cache`. Default is cache-enabled on all platforms; dyld guard/retry can force no-cache for the current incident-scoped run.
 - **Batch compile server cooldown**: diff workers now require repeated consecutive batch-server failures before entering cooldown. Tune with `MOLT_DIFF_BATCH_COMPILE_SERVER_DISABLE_AFTER_FAILURES=<n>` and `MOLT_DIFF_BATCH_COMPILE_SERVER_DISABLE_COOLDOWN_SEC=<seconds>`.
 - **Shared target pinning (macOS)**: explicitly set both `CARGO_TARGET_DIR` and `MOLT_DIFF_CARGO_TARGET_DIR` to the same shared path for diff runs so workers do not drift onto ad-hoc/default targets and duplicate rebuilds.
-- **Interrupted-run cleanup**: before a new long sweep, clear stale Molt-owned harness workers through the custody-aware sentinel (`tools/process_sentinel.py --once --stale-orphan-sec 3600 --stale-pytest-sec 900`). Use raw PID kills only as verified last-resort triage after confirming the process is Molt-owned and outside Claude, the Codex app, and all host/control-plane process groups. Keep one supervising diff run per shared target.
+- **Interrupted-run cleanup**: before a new long sweep, clear stale Molt-owned harness workers through the custody-aware sentinel (`tools/process_sentinel.py --once --stale-orphan-sec 3600 --stale-pytest-sec 900`). Do not use raw PID, name, process-group, parent-chain, `pkill`, `killall`, `taskkill`, or `Stop-Process` cleanup for diff recovery; ambiguous ownership must skip and leave evidence. Keep one supervising diff run per shared target.
 
 ## Debug Commands
 

@@ -69,7 +69,7 @@ Required pre-commit and post-batch gates, unless the current authority files req
 
 - cargo build --profile release-fast --workspace
 - cargo test --profile release-fast -p molt-backend --features native-backend --lib
-- pkill -9 -f molt-backend; /Users/adpena/Projects/molt/.venv/bin/python3 -m pytest tests/compliance/ -p no:cacheprovider --tb=line -q
+- python3 tools/process_sentinel.py --once --stale-orphan-sec 3600 --stale-pytest-sec 900; /Users/adpena/Projects/molt/.venv/bin/python3 -m pytest tests/compliance/ -p no:cacheprovider --tb=line -q
 - git status --short
 
 Gate rules:
@@ -80,6 +80,7 @@ Gate rules:
 - If a gate turns red after your change, fixing that gate becomes the next task.
 - Add focused parity regressions for every implemented behavior across the affected backends.
 - Refresh generated artifacts when their source of truth moves.
+- Never repair these gates with raw PID/name/process-group cleanup. Stale Molt workers and daemons must go through the custody-aware sentinel or backend-daemon identity records so Codex, Claude, app-server, renderer, node-repl, shell hosts, and parent watcher processes remain untouchable.
 
 Five-year production target:
 
