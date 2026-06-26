@@ -8,7 +8,10 @@ impl LuauBackend {
         if self.emit_container_access_op(op) {
             return;
         }
-        if self.emit_collection_op(op) {
+        if self.emit_tuple_op(op) {
+            return;
+        }
+        if self.emit_map_set_op(op) {
             return;
         }
         if self.emit_attribute_op(op) {
@@ -314,37 +317,6 @@ impl LuauBackend {
             // ================================================================
             // Dict key/value/items ops
             // ================================================================
-            "dict_keys" => {
-                let out = self.out_var(op);
-                let args = op.args.as_deref().unwrap_or(&[]);
-                if let Some(d) = args.first() {
-                    self.emit_line(&format!(
-                        "local {out} = molt_dict_keys({})",
-                        sanitize_ident(d)
-                    ));
-                }
-            }
-            "dict_values" => {
-                let out = self.out_var(op);
-                let args = op.args.as_deref().unwrap_or(&[]);
-                if let Some(d) = args.first() {
-                    self.emit_line(&format!(
-                        "local {out} = molt_dict_values({})",
-                        sanitize_ident(d)
-                    ));
-                }
-            }
-            "dict_items" => {
-                let out = self.out_var(op);
-                let args = op.args.as_deref().unwrap_or(&[]);
-                if let Some(d) = args.first() {
-                    self.emit_line(&format!(
-                        "local {out} = molt_dict_items({})",
-                        sanitize_ident(d)
-                    ));
-                }
-            }
-
             // ================================================================
             // Phi nodes (SSA merge — no-op in sequential Luau) / nop
             // ================================================================
