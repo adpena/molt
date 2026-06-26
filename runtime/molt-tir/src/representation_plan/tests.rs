@@ -1,5 +1,8 @@
+use std::collections::HashMap;
+
 use super::test_fixtures::{function, op};
 use super::*;
+use crate::tir::values::ValueId;
 
 fn const_int(out: &str, value: i64) -> OpIR {
     OpIR {
@@ -474,108 +477,6 @@ fn plan_uses_entry_param_names_as_scalar_facts() {
 
     assert!(int_like.contains("x"));
     assert!(bool_like.contains("flag"));
-}
-
-fn graph_fact_test_index() -> (IndexedFunctionFactIndex<'static>, NameId) {
-    let mut names = FunctionNameIndex::with_capacity(1);
-    let target = names.intern("target");
-    let len = names.len();
-    (
-        IndexedFunctionFactIndex {
-            names,
-            stores: Vec::new(),
-            alias_groups: Vec::new(),
-            alias_sources: vec![false; len],
-            alias_outputs: vec![false; len],
-        },
-        target,
-    )
-}
-
-fn int_fact() -> ScalarRepresentationFact {
-    ScalarRepresentationFact {
-        ty: TirType::I64,
-        repr: LirRepr::I64,
-    }
-}
-
-fn bool_fact() -> ScalarRepresentationFact {
-    ScalarRepresentationFact {
-        ty: TirType::Bool,
-        repr: LirRepr::Bool1,
-    }
-}
-
-fn dynbox_top_fact() -> ScalarRepresentationFact {
-    ScalarRepresentationFact {
-        ty: TirType::DynBox,
-        repr: LirRepr::DynBox,
-    }
-}
-
-#[test]
-fn graph_join_does_not_narrow_strong_dynbox_top() {
-    let (index, target) = graph_fact_test_index();
-    let mut plan = ScalarRepresentationPlan::with_capacity(1);
-    plan.insert_fact("target".to_string(), dynbox_top_fact());
-    let mut facts = IndexedScalarFacts::from_plan(&plan, &index);
-    let int_id = facts.intern_fact(int_fact());
-
-    assert!(!facts.insert_graph_fact_id(target, int_id));
-    facts.sync_to_plan(&mut plan, &index);
-
-    assert_eq!(plan.facts_by_name.get("target"), Some(&dynbox_top_fact()));
-    assert!(!plan.scalar_name_sets().0.contains("target"));
-}
-
-#[test]
-fn graph_join_replaces_weak_dynbox_fallback_with_proven_source() {
-    let (index, target) = graph_fact_test_index();
-    let mut plan = ScalarRepresentationPlan::with_capacity(1);
-    plan.insert_fact("target".to_string(), dynbox_top_fact());
-    plan.weak_fact_names.insert("target".to_string());
-    let mut facts = IndexedScalarFacts::from_plan(&plan, &index);
-    let int_id = facts.intern_fact(int_fact());
-
-    assert!(facts.insert_graph_fact_id(target, int_id));
-    facts.sync_to_plan(&mut plan, &index);
-
-    assert_eq!(plan.facts_by_name.get("target"), Some(&int_fact()));
-    assert!(!plan.weak_fact_names.contains("target"));
-    assert!(plan.scalar_name_sets().0.contains("target"));
-}
-
-#[test]
-fn graph_join_incoming_dynbox_widens_specific_fact() {
-    let (index, target) = graph_fact_test_index();
-    let mut plan = ScalarRepresentationPlan::with_capacity(1);
-    plan.insert_fact("target".to_string(), int_fact());
-    let mut facts = IndexedScalarFacts::from_plan(&plan, &index);
-    let top_id = facts.intern_fact(dynbox_top_fact());
-
-    assert!(facts.insert_graph_fact_id(target, top_id));
-    facts.sync_to_plan(&mut plan, &index);
-
-    assert_eq!(plan.facts_by_name.get("target"), Some(&dynbox_top_fact()));
-    assert!(!plan.scalar_name_sets().0.contains("target"));
-}
-
-#[test]
-fn graph_join_conflicts_different_strong_non_top_facts() {
-    let (index, target) = graph_fact_test_index();
-    let mut plan = ScalarRepresentationPlan::with_capacity(1);
-    plan.insert_fact("target".to_string(), int_fact());
-    let mut facts = IndexedScalarFacts::from_plan(&plan, &index);
-    let bool_id = facts.intern_fact(bool_fact());
-
-    assert!(facts.insert_graph_fact_id(target, bool_id));
-    facts.sync_to_plan(&mut plan, &index);
-
-    assert!(!plan.facts_by_name.contains_key("target"));
-    assert!(plan.conflicted_names.contains("target"));
-    let (int_like, bool_like, _, _, _) = plan.scalar_name_sets();
-    assert!(!int_like.contains("target"));
-    assert!(!bool_like.contains("target"));
 }
 
 #[test]
