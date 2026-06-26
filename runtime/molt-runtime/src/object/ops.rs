@@ -1590,7 +1590,7 @@ pub extern "C" fn molt_dec_ref_obj(bits: u64) {
                 let type_id = (*header_ptr).type_id;
                 if !crate::object::is_valid_heap_type_id(type_id) {
                     if let Some((file, line, frame, col, end_col)) =
-                        crate::builtins::exceptions::frame_stack_top_info(_py)
+                        crate::builtins::frames::frame_stack_top_info(_py)
                     {
                         eprintln!(
                             "molt fatal: invalid object header before dec_ref \

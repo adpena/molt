@@ -1,4 +1,4 @@
-use crate::builtins::exceptions::{frame_stack_pop, frame_stack_push_function};
+use crate::builtins::frames::{frame_stack_pop, frame_stack_push_function};
 use crate::call::function::protect_borrowed_args_aliased_return;
 use crate::call::type_policy::{
     InitArgPolicy, callable_matches_runtime_symbol, resolved_constructor_init_policy,

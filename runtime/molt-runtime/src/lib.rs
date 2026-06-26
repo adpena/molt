@@ -1,4 +1,4 @@
-﻿//! Molt Runtime Core
+//! Molt Runtime Core
 //! Handles memory management, task scheduling, channels, and FFI boundaries.
 //!
 //! Locking contract (contributor guidance):
@@ -185,7 +185,7 @@ pub mod lifecycle {
 ///
 /// Functions that are already `pub` via wildcard re-exports (e.g. `molt_len`,
 /// `molt_str_from_obj`, `molt_repr_from_obj`, `molt_math_sqrt`) can be called
-/// directly through `molt_runtime::?`.  This module exposes intrinsics that are
+/// directly through `molt_runtime::…`.  This module exposes intrinsics that are
 /// otherwise `pub(crate)` or require GIL-internal helpers.
 pub mod ffi_bridge {
     use crate::concurrency::GilGuard;
@@ -462,37 +462,39 @@ pub(crate) use crate::builtins::exceptions::{
     exception_context_bits, exception_context_fallback_pop, exception_context_fallback_push,
     exception_dict_bits, exception_group_method_bits, exception_handler_active,
     exception_kind_bits, exception_last_bits_noinc, exception_matches_type,
-    exception_materialize_traceback_bits, exception_materialized_args_bits,
-    exception_materialized_message_bits, exception_message_for_storage, exception_message_is_lazy,
-    exception_method_bits, exception_msg_bits, exception_pending, exception_stack_baseline_get,
+    exception_materialized_args_bits, exception_materialized_message_bits,
+    exception_message_for_storage, exception_message_is_lazy, exception_method_bits,
+    exception_msg_bits, exception_pending, exception_stack_baseline_get,
     exception_stack_baseline_set, exception_stack_depth, exception_stack_pop,
     exception_stack_pop_restore_last, exception_stack_push, exception_stack_set_depth,
     exception_store_args_and_message, exception_suppress_bits, exception_trace_bits,
     exception_type_bits, exception_type_bits_from_name, exception_value_bits,
     exceptions_clear_runtime_state, format_exception, format_exception_message,
-    format_exception_with_traceback, frame_stack_active_globals_bits, frame_stack_pop,
-    frame_stack_push_function, frame_stack_push_owned, frame_stack_set_line,
-    generator_exception_stack_drop, generator_exception_stack_store,
-    generator_exception_stack_take, generator_raise_active, global_last_exception_bits_noinc,
-    handle_system_exit, molt_exception_active, molt_exception_clear, molt_exception_kind,
-    molt_exception_last, molt_exception_pending, molt_exception_set_last, molt_getframe,
-    molt_globals_builtin, molt_locals_builtin, molt_raise, raise_exception,
-    raise_key_error_with_key, raise_not_iterable, raise_unicode_decode_error,
-    raise_unicode_encode_error, raise_unsupported_inplace, record_exception, set_generator_raise,
-    set_task_raise_active, task_exception_baseline_drop, task_exception_baseline_store,
-    task_exception_baseline_take, task_exception_depth_drop, task_exception_depth_store,
-    task_exception_depth_take, task_exception_handler_stack_drop,
-    task_exception_handler_stack_store, task_exception_handler_stack_take,
-    task_exception_stack_drop, task_exception_stack_store, task_exception_stack_take,
-    task_last_exception_contains_valid, task_last_exception_drop, task_raise_active,
-    traceback_payload_code_bits, traceback_payload_col, traceback_payload_end_col,
-    traceback_payload_line, traceback_payload_next_bits,
+    format_exception_with_traceback, generator_exception_stack_drop,
+    generator_exception_stack_store, generator_exception_stack_take, generator_raise_active,
+    global_last_exception_bits_noinc, handle_system_exit, molt_exception_active,
+    molt_exception_clear, molt_exception_kind, molt_exception_last, molt_exception_pending,
+    molt_exception_set_last, molt_raise, raise_exception, raise_key_error_with_key,
+    raise_not_iterable, raise_unicode_decode_error, raise_unicode_encode_error,
+    raise_unsupported_inplace, record_exception, set_generator_raise, set_task_raise_active,
+    task_exception_baseline_drop, task_exception_baseline_store, task_exception_baseline_take,
+    task_exception_depth_drop, task_exception_depth_store, task_exception_depth_take,
+    task_exception_handler_stack_drop, task_exception_handler_stack_store,
+    task_exception_handler_stack_take, task_exception_stack_drop, task_exception_stack_store,
+    task_exception_stack_take, task_last_exception_contains_valid, task_last_exception_drop,
+    task_raise_active,
 };
 pub(crate) use crate::builtins::exceptions::{raise_os_error, raise_os_error_errno};
 pub use crate::builtins::fcntl::*;
 pub use crate::builtins::fnmatch::*;
 #[cfg(not(feature = "stdlib_math"))]
 pub use crate::builtins::fractions::*;
+pub(crate) use crate::builtins::frames::{
+    exception_materialize_traceback_bits, frame_stack_active_globals_bits, frame_stack_pop,
+    frame_stack_push_function, frame_stack_push_owned, frame_stack_set_line, molt_getframe,
+    molt_globals_builtin, molt_locals_builtin, traceback_payload_code_bits, traceback_payload_col,
+    traceback_payload_end_col, traceback_payload_line, traceback_payload_next_bits,
+};
 pub use crate::builtins::functions::*;
 #[cfg(not(feature = "stdlib_serial"))]
 pub use crate::builtins::functions_email::*;
@@ -1252,4 +1254,3 @@ unsafe extern "C" {
 // Attribute accessors moved to builtins/attributes.rs.
 
 mod arena;
-

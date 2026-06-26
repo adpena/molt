@@ -153,7 +153,7 @@ fn trace_bad_module_name_arg(_py: &PyToken<'_>, where_: &str, bits: u64) {
     let obj = obj_from_bits(bits);
     let type_name = type_name(_py, obj);
     let rendered = format_obj_str(_py, obj);
-    if let Some((file, line, func, _, _)) = crate::builtins::exceptions::frame_stack_top_info(_py) {
+    if let Some((file, line, func, _, _)) = crate::builtins::frames::frame_stack_top_info(_py) {
         eprintln!(
             "molt bad module name where={} type={} value={} frame={} file={} line={}",
             where_, type_name, rendered, func, file, line
