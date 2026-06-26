@@ -149,7 +149,9 @@ here so the algorithm cannot be declared done without satisfying it.
   conditioned decode loop re-validate DFlash conditioning on every
   verifier-refreshed conditioning when the initial conditioning is DFlash. A
   non-callable for either, or a generic (non-`DFlashConditioning`) conditioning,
-  raises.
+  raises. The neutral conditioned loop also rejects loose drafter/verifier
+  transport by requiring `SpeculativeDraftResult` and `SpeculativeVerifyResult`
+  returns.
 - **Status:** STRUCTURALLY ENFORCED + GATED (fail-closed corpus asserts the
   non-callable and non-DFlash-conditioning rejections).
 
