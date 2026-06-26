@@ -165,7 +165,7 @@ Before the per-family scorecards, the evidence base establishes the following ar
 
 #### 2c. Bound methods / fuse_method_dispatch
 
-**UPSTREAM.** `call_method` with `fused_method_dispatch` attribute on the op. The super() fold (`_super_fold_is_sound`, `calls.py:122–146`): restricted to entry-module, guards against MRO diamonds. `CallMethod` is a first-class TIR opcode.
+**UPSTREAM.** `call_method` with `fused_method_dispatch` attribute on the op. The zero-arg `super()` fold now asks `frontend.sema.classgraph.super_fold_is_sound` over sema-owned static class-graph/C3/reachability facts: restricted to entry-module, guards against MRO diamonds. `CallMethod` is a first-class TIR opcode.
 
 **Score.** IMPORTANCE=3, GAP=1.
 
@@ -195,7 +195,7 @@ Before the per-family scorecards, the evidence base establishes the following ar
 
 #### 3b. MRO/super
 
-**UPSTREAM.** `_class_mro_names`, `_static_mro_names`, `_static_method_owner_after` (`calls.py:74–100`). Static MRO computation for single-inheritance via list of base names. C3 linearization for multi-inheritance: NOT computed statically by the frontend — only base-name lists are tracked; the runtime computes the real MRO. `super()` fold for entry-module, diamond-guarded (`_super_fold_is_sound`).
+**UPSTREAM.** Runtime class metadata still uses `_class_mro_names` in the class-resolution mixin. Static class facts used by the fold live in `frontend.sema.classgraph`: `c3_merge`, `static_class_bases`, `static_mro_names`, `reachable_base_names`, `static_method_owner_after`, and `super_fold_is_sound`. Static C3 linearization is computed for fold eligibility and fails closed on opaque, ambiguous, cyclic, or unknown bases; the runtime remains authoritative for dynamic class construction.
 
 **Score.** IMPORTANCE=3, GAP=1. Static MRO is conservatively correct (runtime is authoritative). Super fold is correctly guarded.
 

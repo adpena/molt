@@ -15,15 +15,23 @@ import ast
 
 from molt.frontend import SimpleTIRGenerator
 from molt.frontend.sema import (
+    ClassGraph,
     SemaResult,
     analyze_module,
     build_class_graph,
+    c3_merge,
     collect_module_class_names,
     collect_module_func_defaults,
     collect_module_func_kinds,
+    function_contains_yield,
+    reachable_base_names,
+    static_class_bases,
+    static_method_owner_after,
+    static_mro_names,
+    super_fold_is_sound,
+    visible_subclasses_of,
 )
 from molt.frontend.sema.constenv import collect_module_const_dicts
-from molt.frontend.sema.funcmeta import _function_contains_yield
 
 
 # ---------------------------------------------------------------------------
@@ -82,6 +90,156 @@ def test_class_graph_includes_nested_and_function_local_classes() -> None:
     assert g.subclassed_names == {"Base", "LB"}
 
 
+def _method_classes(*rows: tuple[str, set[str]]) -> dict[str, dict[str, object]]:
+    return {
+        name: {"methods": {method: object() for method in methods}}
+        for name, methods in rows
+    }
+
+
+def test_static_method_owner_after_fails_closed_on_unknown_owner() -> None:
+    classes = _method_classes(("Base", {"f"}))
+    assert (
+        static_method_owner_after(classes, ["Child", "Base", "object"], "Child", "f")
+        == "Base"
+    )
+    assert (
+        static_method_owner_after(classes, ["Child", "Missing", "Base"], "Child", "f")
+        is None
+    )
+
+
+def test_c3_merge_computes_diamond_linearization_tail() -> None:
+    assert c3_merge(
+        [
+            ["Left", "Base", "object"],
+            ["Right", "Base", "object"],
+            ["Left", "Right"],
+        ]
+    ) == ["Left", "Right", "Base", "object"]
+
+
+def test_static_class_bases_fail_closed_for_ambiguous_or_opaque_defs() -> None:
+    classes: dict[str, dict[str, object]] = {
+        "Imported": {"bases": ["object"]},
+        "Dynamic": {"bases": ["object"], "dynamic": True},
+    }
+    graph = ClassGraph(
+        bases_by_class={
+            "Local": [["Base"]],
+            "Ambiguous": [["A"], ["B"]],
+            "Opaque": [["<opaque>"]],
+        },
+        subclassed_names={"Base", "A", "B"},
+    )
+    assert static_class_bases(graph, classes, "object") == ["object"]
+    assert static_class_bases(graph, classes, "Local") == ["Base"]
+    assert static_class_bases(graph, classes, "Imported") == ["object"]
+    assert static_class_bases(graph, classes, "Ambiguous") is None
+    assert static_class_bases(graph, classes, "Opaque") is None
+    assert static_class_bases(graph, classes, "Dynamic") is None
+
+
+def test_static_mro_names_and_reachability_share_class_graph_authority() -> None:
+    graph = ClassGraph(
+        bases_by_class={
+            "Base": [["object"]],
+            "Left": [["Base"]],
+            "Right": [["Base"]],
+            "Final": [["Left", "Right"]],
+        },
+        subclassed_names={"Base", "Left", "Right"},
+    )
+    assert static_mro_names(graph, {}, "Final") == [
+        "Final",
+        "Left",
+        "Right",
+        "Base",
+        "object",
+    ]
+    assert reachable_base_names(graph, "Final") == {
+        "Final",
+        "Left",
+        "Right",
+        "Base",
+        "object",
+    }
+
+
+def test_visible_subclasses_fails_closed_when_candidate_mro_is_uncertain() -> None:
+    graph = ClassGraph(
+        bases_by_class={"Base": [["<opaque>"]], "MaybeChild": [["Base"]]},
+        subclassed_names={"Base"},
+    )
+    assert visible_subclasses_of(graph, "Base", {}) is None
+
+
+def test_visible_subclasses_uses_static_mro() -> None:
+    graph = ClassGraph(
+        bases_by_class={
+            "Base": [["object"]],
+            "Mid": [["Base"]],
+            "Leaf": [["Mid"]],
+        },
+        subclassed_names={"Base", "Mid"},
+    )
+    assert visible_subclasses_of(graph, "Base", {}) == ["Mid", "Leaf"]
+
+
+def test_super_fold_sound_for_linear_visible_hierarchy() -> None:
+    graph = ClassGraph(
+        bases_by_class={
+            "Base": [["object"]],
+            "Mid": [["Base"]],
+            "Leaf": [["Mid"]],
+        },
+        subclassed_names={"Base", "Mid"},
+    )
+    assert super_fold_is_sound(
+        "Mid",
+        "f",
+        classes=_method_classes(("Base", {"f"}), ("Mid", {"g"}), ("Leaf", set())),
+        class_graph=graph,
+        module_name="__main__",
+        entry_module=None,
+    )
+
+
+def test_super_fold_rejects_diamond_subclass_interposition() -> None:
+    graph = ClassGraph(
+        bases_by_class={
+            "Base": [["object"]],
+            "Left": [["Base"]],
+            "Right": [["Base"]],
+            "Final": [["Left", "Right"]],
+        },
+        subclassed_names={"Base", "Left", "Right"},
+    )
+    assert not super_fold_is_sound(
+        "Left",
+        "who",
+        classes=_method_classes(("Base", {"who"}), ("Right", {"who"}), ("Left", set())),
+        class_graph=graph,
+        module_name="__main__",
+        entry_module=None,
+    )
+
+
+def test_super_fold_rejects_non_entry_module() -> None:
+    graph = ClassGraph(
+        bases_by_class={"Base": [["object"]], "Child": [["Base"]]},
+        subclassed_names={"Base"},
+    )
+    assert not super_fold_is_sound(
+        "Child",
+        "f",
+        classes=_method_classes(("Base", {"f"})),
+        class_graph=graph,
+        module_name="library_mod",
+        entry_module="__main__",
+    )
+
+
 # ---------------------------------------------------------------------------
 # const environment
 # ---------------------------------------------------------------------------
@@ -130,12 +288,10 @@ def test_func_kinds_sync_async_gen() -> None:
         "async def ag():\n    yield 1\n"
         "def g():\n    yield 1\n"
         "def gf():\n    yield from range(3)\n"
-        "async def ag():\n    yield 1\n"
     )
     assert collect_module_func_kinds(ast.parse(src)) == {
         "s": "sync",
         "a": "async",
-        "ag": "async_gen",
         "g": "gen",
         "gf": "gen",
         "ag": "asyncgen",
@@ -146,7 +302,7 @@ def test_func_contains_yield_does_not_descend_into_nested_def() -> None:
     # a yield inside a NESTED function does not make the outer a generator
     src = "def outer():\n    def inner():\n        yield 1\n    return inner\n"
     fn = ast.parse(src).body[0]
-    assert _function_contains_yield(fn) is False
+    assert function_contains_yield(fn) is False
 
 
 def test_func_contains_yield_ignores_lambda_body() -> None:
@@ -154,7 +310,7 @@ def test_func_contains_yield_ignores_lambda_body() -> None:
     fn = ast.parse(src).body[0]
     # CPython parses (yield) in a lambda as the lambda's own generator; the
     # scanner skips Lambda bodies, so outer is NOT a generator.
-    assert _function_contains_yield(fn) is False
+    assert function_contains_yield(fn) is False
 
 
 def test_class_names_top_level_only() -> None:

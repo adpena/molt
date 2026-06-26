@@ -43,6 +43,7 @@ from molt.frontend.sema import (
     parse_stateful_function_type_hint,
     stateful_function_frame_plan,
     stateful_function_result_type_hint,
+    super_fold_is_sound,
 )
 from molt.frontend.visitors.call_reductions import CallReductionMixin
 
@@ -170,108 +171,6 @@ class CallVisitorMixin(CallReductionMixin, _MixinBase):
             ):
                 return True, True
         return False, False
-
-    def _static_method_owner_after(
-        self, mro: list[str], start: str, method: str
-    ) -> str | None:
-        """The first class defining ``method`` strictly after ``start`` in
-        ``mro``, mirroring ``super(start, ...).method`` resolution.  Returns
-        ``None`` if ``start`` is absent, no class after it defines ``method``,
-        or any class after it is not statically resolvable (so its method set
-        is unknown).
-        """
-        if start not in mro:
-            return None
-        for name in mro[mro.index(start) + 1 :]:
-            if name == "object":
-                # ``object`` defines a small fixed set; the methods exercised by
-                # the fold (user methods) are never on ``object``, so reaching
-                # object means "not found above" — bail rather than guess.
-                return None
-            info = self.classes.get(name)
-            if info is None:
-                # A class on the path whose method table we cannot see — bail.
-                return None
-            if method in info.get("methods", {}):
-                return name
-            # If this class is statically a subclass-graph node but absent from
-            # the (dep-closure) class table, we cannot know whether it defines
-            # the method; the caller restricts this to entry-module folding
-            # where every class on a subclass MRO is in self.classes.
-        return None
-
-    def _visible_subclasses_of(self, class_name: str) -> list[str] | None:
-        """All classes in the module class graph that have ``class_name`` in
-        their static MRO (proper subclasses), or ``None`` if any candidate's
-        MRO is not statically computable (fail-closed).
-        """
-        subclasses: list[str] = []
-        for other in self.module_class_bases:
-            if other == class_name:
-                continue
-            mro = self._static_mro_names(other)
-            if mro is None:
-                # Cannot prove this class is NOT a differently-ordered subclass.
-                if class_name in self._reachable_base_names(other):
-                    return None
-                continue
-            if class_name in mro:
-                subclasses.append(other)
-        return subclasses
-
-    def _super_fold_is_sound(self, class_name: str, method: str) -> bool:
-        """Soundness predicate for the static zero-arg ``super()`` fold of
-        ``super().method(...)`` inside ``class_name.method``.
-
-        The fold rewrites the call to a direct call on the first class defining
-        ``method`` strictly after ``class_name`` in *``class_name``'s own* MRO.
-        For a receiver whose runtime type is the subclass ``S``, CPython instead
-        resolves to the first class defining ``method`` after ``class_name`` in
-        ``S``'s MRO.  These agree for every possible receiver iff that
-        successor-owner is identical across ``class_name`` and every subclass of
-        ``class_name``.  Linear hierarchies always satisfy this; diamonds (where
-        a subclass interposes a cooperative C3 sibling that defines ``method``)
-        do not — that is the parity bug this guard fixes.
-
-        Cross-module soundness: the frontend only sees this module's dependency
-        closure, so a downstream module could subclass ``class_name`` invisibly.
-        We therefore restrict the fold to the entry module, whose classes are
-        import-closed (nothing imports the program entry point).  Within the
-        entry module the static class graph (``module_class_bases``) is complete,
-        including subclasses defined *after* ``class_name`` in source order.
-
-        When the predicate returns ``False`` the fold bails and ``super()``
-        lowers to the runtime super path, which the backend fuses into the
-        allocation-free ``call_super_method_ic`` — already the fast path.
-        """
-        is_entry = self.module_name == "__main__" or (
-            self.entry_module is not None and self.module_name == self.entry_module
-        )
-        if not is_entry:
-            return False
-        # The defining class must itself be a statically resolvable entry-module
-        # class graph node.
-        if class_name not in self.module_class_bases:
-            return False
-        own_mro = self._static_mro_names(class_name)
-        if own_mro is None:
-            return False
-        expected_owner = self._static_method_owner_after(own_mro, class_name, method)
-        if expected_owner is None:
-            return False
-        subclasses = self._visible_subclasses_of(class_name)
-        if subclasses is None:
-            return False
-        for sub in subclasses:
-            sub_mro = self._static_mro_names(sub)
-            if sub_mro is None:
-                return False
-            sub_owner = self._static_method_owner_after(sub_mro, class_name, method)
-            if sub_owner != expected_owner:
-                # A subclass routes super() through a different class — the
-                # static fold would skip a cooperative override. Do not fold.
-                return False
-        return True
 
     def _emit_nullcontext(self, payload: MoltValue) -> MoltValue:
         res = MoltValue(self.next_var(), type_hint="context_manager")
@@ -1162,8 +1061,7 @@ class CallVisitorMixin(CallReductionMixin, _MixinBase):
         has_known_direct_target = known_direct_target is not None
         known_info_kind = self._known_module_func_kind(known_direct_target)
         has_known_task_target = (
-            target_kind not in {None, FunctionKind.SYNC}
-            or known_info_kind is not None
+            target_kind not in {None, FunctionKind.SYNC} or known_info_kind is not None
         )
         direct_target_is_linkable = self._is_linkable_module_function_symbol(
             target_module
@@ -2298,13 +2196,21 @@ class CallVisitorMixin(CallReductionMixin, _MixinBase):
         # successor-owner is identical across ``current_class`` and all of its
         # subclasses.  Linear hierarchies satisfy this; a diamond subclass
         # (``Final(Left, Right)`` interposing ``Right`` between ``Left`` and
-        # ``Base``) does not — that is the parity bug.  ``_super_fold_is_sound``
+        # ``Base``) does not — that is the parity bug.  The sema predicate
         # verifies the successor-owner is stable across the whole entry-module
         # subclass graph (and bails for non-entry modules, whose subclasses may
-        # be defined downstream and are invisible here).  When it bails, super()
+        # be defined downstream and are invisible here). When it bails, super()
         # lowers to the runtime path, which the backend fuses into the
-        # allocation-free ``call_super_method_ic`` — already the fast path.
-        if not self._super_fold_is_sound(current_class, method_name):
+        # allocation-free ``call_super_method_ic`` -- already the fast path.
+        assert self._sema is not None, "module sema must be populated before lowering"
+        if not super_fold_is_sound(
+            current_class,
+            method_name,
+            classes=self.classes,
+            class_graph=self._sema.class_graph,
+            module_name=self.module_name,
+            entry_module=self.entry_module,
+        ):
             return None
         method_info, owner_class = self._resolve_super_method_info(
             current_class, method_name

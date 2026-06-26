@@ -16,6 +16,7 @@ from molt.frontend._types import (
     MoltOp,
     MoltValue,
 )
+from molt.frontend.sema import c3_merge
 
 if TYPE_CHECKING:
     from molt.frontend._protocol import _GeneratorProtocol
@@ -86,50 +87,6 @@ class ClassResolutionMixin(_MixinBase):
         )
         return res
 
-    def _c3_merge(self, seqs: list[list[str]]) -> list[str] | None:
-        merged: list[str] = []
-        working = [list(seq) for seq in seqs]
-        heads = [0] * len(working)
-        tail_counts: dict[str, int] = {}
-        for seq in working:
-            for name in seq[1:]:
-                tail_counts[name] = tail_counts.get(name, 0) + 1
-
-        while True:
-            remaining = 0
-            for idx, seq in enumerate(working):
-                if heads[idx] < len(seq):
-                    remaining += 1
-            if remaining == 0:
-                return merged
-
-            candidate: str | None = None
-            for idx, seq in enumerate(working):
-                head_idx = heads[idx]
-                if head_idx >= len(seq):
-                    continue
-                head = seq[head_idx]
-                if tail_counts.get(head, 0) == 0:
-                    candidate = head
-                    break
-
-            if candidate is None:
-                return None
-
-            merged.append(candidate)
-            for idx, seq in enumerate(working):
-                head_idx = heads[idx]
-                if head_idx < len(seq) and seq[head_idx] == candidate:
-                    heads[idx] += 1
-                    next_head_idx = heads[idx]
-                    if next_head_idx < len(seq):
-                        next_head = seq[next_head_idx]
-                        count = tail_counts.get(next_head, 0)
-                        if count <= 1:
-                            tail_counts.pop(next_head, None)
-                        else:
-                            tail_counts[next_head] = count - 1
-
     def _class_mro_names(self, name: str) -> list[str]:
         if name == "object":
             return ["object"]
@@ -142,7 +99,7 @@ class ClassResolutionMixin(_MixinBase):
         bases = info.get("bases", [])
         seqs = [self._class_mro_names(base) for base in bases]
         seqs.append(list(bases))
-        merged = self._c3_merge(seqs)
+        merged = c3_merge(seqs)
         if merged is None:
             mro = [name] + list(bases)
             info["mro"] = mro
@@ -191,26 +148,6 @@ class ClassResolutionMixin(_MixinBase):
             if method in methods:
                 return methods[method], name
         return None, None
-
-    def _reachable_base_names(
-        self, class_name: str, _seen: set[str] | None = None
-    ) -> set[str]:
-        """Transitive set of base names reachable from ``class_name`` over the
-        static module class graph (best-effort; used only to decide whether an
-        un-resolvable class might be a subclass of the fold target)."""
-        if _seen is None:
-            _seen = set()
-        if class_name in _seen:
-            return _seen
-        _seen.add(class_name)
-        defs = self.module_class_bases.get(class_name)
-        if not defs:
-            return _seen
-        for entry in defs:
-            for base in entry:
-                if base != "<opaque>":
-                    self._reachable_base_names(base, _seen)
-        return _seen
 
     def _resolve_super_method_info(
         self, class_name: str, method: str

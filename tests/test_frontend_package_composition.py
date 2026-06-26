@@ -226,9 +226,18 @@ def test_moved_methods_resolve_on_class() -> None:
     assert hasattr(SimpleTIRGenerator, "_class_layout_stable")
     assert hasattr(SimpleTIRGenerator, "_emit_class_ref")
     assert hasattr(SimpleTIRGenerator, "_emit_class_method_func")
-    assert hasattr(SimpleTIRGenerator, "_c3_merge")
     assert hasattr(SimpleTIRGenerator, "_class_mro_names")
     assert hasattr(SimpleTIRGenerator, "_resolve_method_info")
+    for deleted_classgraph_bridge in (
+        "_c3_merge",
+        "_static_class_bases",
+        "_static_mro_names",
+        "_reachable_base_names",
+        "_static_method_owner_after",
+        "_visible_subclasses_of",
+        "_super_fold_is_sound",
+    ):
+        assert not hasattr(SimpleTIRGenerator, deleted_classgraph_bridge)
     # type annotations and hints
     assert hasattr(SimpleTIRGenerator, "_module_has_future_annotations")
     assert hasattr(SimpleTIRGenerator, "_annotation_to_hint")
