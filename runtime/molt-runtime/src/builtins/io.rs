@@ -42,7 +42,7 @@ use handle::{
 };
 pub(crate) use handle::{
     close_payload, file_handle_close_ptr, file_handle_detached_message, file_handle_enter,
-    file_handle_exit, file_handle_is_closed,
+    file_handle_exit, file_handle_is_closed, file_handle_require_attached,
 };
 #[path = "io/text.rs"]
 mod text;
@@ -109,14 +109,6 @@ pub(crate) fn io_clear_runtime_state(_py: &PyToken<'_>, state: &crate::state::Ru
     state.io.vfs_writebacks.lock().unwrap().clear();
 }
 
-macro_rules! file_handle_require_attached {
-    ($py:expr, $handle:expr) => {
-        if $handle.detached {
-            return raise_exception::<_>($py, "ValueError", file_handle_detached_message($handle));
-        }
-    };
-}
-
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_file_read(handle_bits: u64, size_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
@@ -133,7 +125,9 @@ pub extern "C" fn molt_file_read(handle_bits: u64, size_bits: u64) -> u64 {
                 return raise_exception::<_>(_py, "RuntimeError", "file handle missing");
             }
             let handle = &mut *handle_ptr;
-            file_handle_require_attached!(_py, handle);
+            if let Err(bits) = file_handle_require_attached(_py, handle) {
+                return bits;
+            }
             if file_handle_is_closed(handle) {
                 return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
             }
@@ -370,7 +364,9 @@ pub extern "C" fn molt_file_read1(handle_bits: u64, size_bits: u64) -> u64 {
                 return raise_exception::<_>(_py, "RuntimeError", "file handle missing");
             }
             let handle = &mut *handle_ptr;
-            file_handle_require_attached!(_py, handle);
+            if let Err(bits) = file_handle_require_attached(_py, handle) {
+                return bits;
+            }
             if file_handle_is_closed(handle) {
                 return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
             }
@@ -599,7 +595,9 @@ pub extern "C" fn molt_file_readall(handle_bits: u64) -> u64 {
                 return raise_exception::<_>(_py, "RuntimeError", "file handle missing");
             }
             let handle = &mut *handle_ptr;
-            file_handle_require_attached!(_py, handle);
+            if let Err(bits) = file_handle_require_attached(_py, handle) {
+                return bits;
+            }
             if file_handle_is_closed(handle) {
                 return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
             }
@@ -729,7 +727,9 @@ pub extern "C" fn molt_file_readline(handle_bits: u64, size_bits: u64) -> u64 {
                 return raise_exception::<_>(_py, "RuntimeError", "file handle missing");
             }
             let handle = &mut *handle_ptr;
-            file_handle_require_attached!(_py, handle);
+            if let Err(bits) = file_handle_require_attached(_py, handle) {
+                return bits;
+            }
             if file_handle_is_closed(handle) {
                 return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
             }
@@ -957,7 +957,9 @@ pub extern "C" fn molt_file_readlines(handle_bits: u64, hint_bits: u64) -> u64 {
                 return raise_exception::<_>(_py, "RuntimeError", "file handle missing");
             }
             let handle = &mut *handle_ptr;
-            file_handle_require_attached!(_py, handle);
+            if let Err(bits) = file_handle_require_attached(_py, handle) {
+                return bits;
+            }
             if file_handle_is_closed(handle) {
                 return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
             }
@@ -1242,7 +1244,9 @@ fn file_readinto_impl(_py: &PyToken<'_>, handle_bits: u64, buffer_bits: u64, nam
             return raise_exception::<_>(_py, "RuntimeError", "file handle missing");
         }
         let handle = &mut *handle_ptr;
-        file_handle_require_attached!(_py, handle);
+        if let Err(bits) = file_handle_require_attached(_py, handle) {
+            return bits;
+        }
         if file_handle_is_closed(handle) {
             return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
         }
@@ -1316,7 +1320,9 @@ pub extern "C" fn molt_file_peek(handle_bits: u64, size_bits: u64) -> u64 {
                 return raise_exception::<_>(_py, "RuntimeError", "file handle missing");
             }
             let handle = &mut *handle_ptr;
-            file_handle_require_attached!(_py, handle);
+            if let Err(bits) = file_handle_require_attached(_py, handle) {
+                return bits;
+            }
             if file_handle_is_closed(handle) {
                 return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
             }
@@ -1399,7 +1405,9 @@ pub extern "C" fn molt_file_getvalue(handle_bits: u64) -> u64 {
                 return raise_exception::<_>(_py, "RuntimeError", "file handle missing");
             }
             let handle = &mut *handle_ptr;
-            file_handle_require_attached!(_py, handle);
+            if let Err(bits) = file_handle_require_attached(_py, handle) {
+                return bits;
+            }
             if file_handle_is_closed(handle) {
                 return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
             }
@@ -1460,7 +1468,9 @@ pub extern "C" fn molt_file_getbuffer(handle_bits: u64) -> u64 {
                 return raise_exception::<_>(_py, "RuntimeError", "file handle missing");
             }
             let handle = &mut *handle_ptr;
-            file_handle_require_attached!(_py, handle);
+            if let Err(bits) = file_handle_require_attached(_py, handle) {
+                return bits;
+            }
             if file_handle_is_closed(handle) {
                 return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
             }
@@ -1493,12 +1503,8 @@ pub extern "C" fn molt_file_detach(handle_bits: u64) -> u64 {
                 return raise_exception::<_>(_py, "RuntimeError", "file handle missing");
             }
             let handle = &mut *handle_ptr;
-            if handle.detached {
-                return raise_exception::<_>(
-                    _py,
-                    "ValueError",
-                    file_handle_detached_message(handle),
-                );
+            if let Err(bits) = file_handle_require_attached(_py, handle) {
+                return bits;
             }
             if file_handle_is_closed(handle) {
                 return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
@@ -1630,7 +1636,9 @@ pub extern "C" fn molt_file_reconfigure(
                 return raise_exception::<_>(_py, "RuntimeError", "file handle missing");
             }
             let handle = &mut *handle_ptr;
-            file_handle_require_attached!(_py, handle);
+            if let Err(bits) = file_handle_require_attached(_py, handle) {
+                return bits;
+            }
             if file_handle_is_closed(handle) {
                 return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
             }
@@ -1753,7 +1761,9 @@ pub extern "C" fn molt_file_seek(handle_bits: u64, offset_bits: u64, whence_bits
                 return raise_exception::<_>(_py, "RuntimeError", "file handle missing");
             }
             let handle = &mut *handle_ptr;
-            file_handle_require_attached!(_py, handle);
+            if let Err(bits) = file_handle_require_attached(_py, handle) {
+                return bits;
+            }
             if file_handle_is_closed(handle) {
                 return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
             }
@@ -1922,7 +1932,9 @@ pub extern "C" fn molt_file_tell(handle_bits: u64) -> u64 {
                 return raise_exception::<_>(_py, "RuntimeError", "file handle missing");
             }
             let handle = &mut *handle_ptr;
-            file_handle_require_attached!(_py, handle);
+            if let Err(bits) = file_handle_require_attached(_py, handle) {
+                return bits;
+            }
             if file_handle_is_closed(handle) {
                 return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
             }
@@ -1984,7 +1996,9 @@ pub extern "C" fn molt_file_fileno(handle_bits: u64) -> u64 {
                 return raise_exception::<_>(_py, "RuntimeError", "file handle missing");
             }
             let handle = &mut *handle_ptr;
-            file_handle_require_attached!(_py, handle);
+            if let Err(bits) = file_handle_require_attached(_py, handle) {
+                return bits;
+            }
             if file_handle_is_closed(handle) {
                 return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
             }
@@ -2036,7 +2050,9 @@ pub extern "C" fn molt_file_truncate(handle_bits: u64, size_bits: u64) -> u64 {
                 return raise_exception::<_>(_py, "RuntimeError", "file handle missing");
             }
             let handle = &mut *handle_ptr;
-            file_handle_require_attached!(_py, handle);
+            if let Err(bits) = file_handle_require_attached(_py, handle) {
+                return bits;
+            }
             if file_handle_is_closed(handle) {
                 return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
             }
@@ -2133,7 +2149,9 @@ pub extern "C" fn molt_file_readable(handle_bits: u64) -> u64 {
                 return raise_exception::<_>(_py, "RuntimeError", "file handle missing");
             }
             let handle = &mut *handle_ptr;
-            file_handle_require_attached!(_py, handle);
+            if let Err(bits) = file_handle_require_attached(_py, handle) {
+                return bits;
+            }
             if file_handle_is_closed(handle) {
                 return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
             }
@@ -2158,7 +2176,9 @@ pub extern "C" fn molt_file_writable(handle_bits: u64) -> u64 {
                 return raise_exception::<_>(_py, "RuntimeError", "file handle missing");
             }
             let handle = &mut *handle_ptr;
-            file_handle_require_attached!(_py, handle);
+            if let Err(bits) = file_handle_require_attached(_py, handle) {
+                return bits;
+            }
             if file_handle_is_closed(handle) {
                 return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
             }
@@ -2183,7 +2203,9 @@ pub extern "C" fn molt_file_seekable(handle_bits: u64) -> u64 {
                 return raise_exception::<_>(_py, "RuntimeError", "file handle missing");
             }
             let handle = &mut *handle_ptr;
-            file_handle_require_attached!(_py, handle);
+            if let Err(bits) = file_handle_require_attached(_py, handle) {
+                return bits;
+            }
             if file_handle_is_closed(handle) {
                 return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
             }
@@ -2217,7 +2239,9 @@ pub extern "C" fn molt_file_isatty(handle_bits: u64) -> u64 {
                 return raise_exception::<_>(_py, "RuntimeError", "file handle missing");
             }
             let handle = &mut *handle_ptr;
-            file_handle_require_attached!(_py, handle);
+            if let Err(bits) = file_handle_require_attached(_py, handle) {
+                return bits;
+            }
             if file_handle_is_closed(handle) {
                 return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
             }
@@ -2276,7 +2300,9 @@ pub extern "C" fn molt_file_iter(handle_bits: u64) -> u64 {
                 return raise_exception::<_>(_py, "RuntimeError", "file handle missing");
             }
             let handle = &*handle_ptr;
-            file_handle_require_attached!(_py, handle);
+            if let Err(bits) = file_handle_require_attached(_py, handle) {
+                return bits;
+            }
             if file_handle_is_closed(handle) {
                 return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
             }
@@ -2371,7 +2397,9 @@ pub extern "C" fn molt_file_write(handle_bits: u64, data_bits: u64) -> u64 {
                 return raise_exception::<_>(_py, "RuntimeError", "file handle missing");
             }
             let handle = &mut *handle_ptr;
-            file_handle_require_attached!(_py, handle);
+            if let Err(bits) = file_handle_require_attached(_py, handle) {
+                return bits;
+            }
             if file_handle_is_closed(handle) {
                 return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
             }
@@ -2621,7 +2649,9 @@ pub extern "C" fn molt_file_flush(handle_bits: u64) -> u64 {
                 return raise_exception::<_>(_py, "RuntimeError", "file handle missing");
             }
             let handle = &mut *handle_ptr;
-            file_handle_require_attached!(_py, handle);
+            if let Err(bits) = file_handle_require_attached(_py, handle) {
+                return bits;
+            }
             if file_handle_is_closed(handle) {
                 return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
             }
@@ -2672,7 +2702,9 @@ pub extern "C" fn molt_file_close(handle_bits: u64) -> u64 {
                 return raise_exception::<_>(_py, "RuntimeError", "file handle missing");
             }
             let handle = &*handle_ptr;
-            file_handle_require_attached!(_py, handle);
+            if let Err(bits) = file_handle_require_attached(_py, handle) {
+                return bits;
+            }
             // `close()` on an already-closed stream is a silent no-op in
             // CPython (no flush, no error). Short-circuit before the
             // flush-on-close below, which would otherwise raise
