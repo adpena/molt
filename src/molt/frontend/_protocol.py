@@ -2242,6 +2242,22 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         self, node: ast.Call, func_id: str, needs_bind: bool
     ) -> Any: ...
 
+    def _try_emit_named_builtin_constructor_call(
+        self, node: ast.Call, func_id: str, needs_bind: bool
+    ) -> Any: ...
+
+    def _try_emit_named_builtin_fallback_call(
+        self, node: ast.Call, func_id: str, needs_bind: bool
+    ) -> Any: ...
+
+    def _try_emit_named_builtin_iter_call(
+        self, node: ast.Call, func_id: str, needs_bind: bool
+    ) -> Any: ...
+
+    def _try_emit_named_builtin_scalar_call(
+        self, node: ast.Call, func_id: str, needs_bind: bool
+    ) -> Any: ...
+
     def _try_emit_named_call(self, node: ast.Call, needs_bind: bool) -> Any: ...
 
     def _try_emit_static_dataclass_constructor(
