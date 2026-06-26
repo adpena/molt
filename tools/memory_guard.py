@@ -784,6 +784,7 @@ def _send_pid_signal_if_identity_action(
         samples,
         pid,
         current_pid=os.getpid(),
+        owned_pids={pid} if identity is not None else (),
     ):
         return _termination_action(
             target_kind="process",
@@ -845,6 +846,7 @@ def _send_process_group_signal_if_identities_match_action(
             samples,
             sample.pid,
             current_pid=os.getpid(),
+            owned_pids=identities.keys(),
         ):
             return _termination_action(
                 target_kind="process_group",
@@ -993,6 +995,7 @@ def terminate_watched_processes(
                     observed_samples,
                     root_pid,
                     current_pid=os.getpid(),
+                    owned_pids={root_pid} if root_owned else (),
                 )
             ):
                 result = "skipped_host_control_lineage"

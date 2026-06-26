@@ -865,6 +865,57 @@ def test_pid_signal_windows_keeps_current_guard_child_killable(
     assert sent == [(200, module.signal.SIGTERM)]
 
 
+def test_pid_signal_windows_refuses_current_guard_shell_child(
+    monkeypatch,
+) -> None:
+    module = _load_memory_guard()
+    samples = {
+        100: module.ProcessSample(
+            pid=100,
+            ppid=1,
+            pgid=None,
+            rss_kb=500_000,
+            command=(
+                r"C:\Program Files\WindowsApps\OpenAI.Codex_26.609.4994.0_x64__2p2nqsd0c76g0"
+                r"\app\Codex.exe"
+            ),
+        ),
+        999: module.ProcessSample(
+            pid=999,
+            ppid=100,
+            pgid=None,
+            rss_kb=30_000,
+            command=(
+                r"C:\Users\adpen\OneDrive\Documents\molt"
+                r"\tools\memory_guard.py --"
+            ),
+        ),
+        200: module.ProcessSample(
+            pid=200,
+            ppid=999,
+            pgid=None,
+            rss_kb=25_000,
+            command="powershell.exe -NoProfile",
+        ),
+    }
+    sent: list[tuple[int, int]] = []
+
+    monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
+    monkeypatch.setattr(module, "_current_protected_process_group_ids", lambda _s: set())
+    monkeypatch.setattr(module.os, "getpid", lambda: 999)
+    monkeypatch.setattr(module.os, "kill", lambda pid, sig: sent.append((pid, sig)))
+
+    action = module._send_pid_signal_if_identity_action(
+        200,
+        module.process_identity(samples[200]),
+        module.signal.SIGTERM,
+        sampler=lambda: samples,
+    )
+
+    assert action.result == "skipped_host_control_lineage"
+    assert sent == []
+
+
 def test_terminate_watched_processes_windows_keeps_current_guard_child_killable(
     monkeypatch,
 ) -> None:
@@ -916,6 +967,62 @@ def test_terminate_watched_processes_windows_keeps_current_guard_child_killable(
 
     assert (200, module.signal.SIGTERM) in sent
     assert (200, module.fallback_kill_signal()) in sent
+
+
+def test_terminate_watched_processes_windows_refuses_current_guard_shell_child(
+    monkeypatch,
+) -> None:
+    module = _load_memory_guard()
+    samples = {
+        100: module.ProcessSample(
+            pid=100,
+            ppid=1,
+            pgid=None,
+            rss_kb=500_000,
+            command=(
+                r"C:\Program Files\WindowsApps\OpenAI.Codex_26.609.4994.0_x64__2p2nqsd0c76g0"
+                r"\app\resources\codex.exe"
+            ),
+        ),
+        999: module.ProcessSample(
+            pid=999,
+            ppid=100,
+            pgid=None,
+            rss_kb=30_000,
+            command=(
+                r"C:\Users\adpen\OneDrive\Documents\molt"
+                r"\tools\memory_guard.py --"
+            ),
+        ),
+        200: module.ProcessSample(
+            pid=200,
+            ppid=999,
+            pgid=None,
+            rss_kb=25_000,
+            command="cmd.exe /d /c cargo check",
+        ),
+    }
+    sent: list[tuple[int, int]] = []
+
+    monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
+    monkeypatch.setattr(module.os, "getpid", lambda: 999)
+    monkeypatch.setattr(module.os, "kill", lambda pid, sig: sent.append((pid, sig)))
+
+    report = module.terminate_watched_processes(
+        200,
+        samples=samples,
+        watched={200},
+        grace=0.0,
+        root_owned=True,
+    )
+
+    assert sent == []
+    assert any(
+        action.target_kind == "process"
+        and action.target_id == 200
+        and action.result == "skipped_host_control_lineage"
+        for action in report.actions
+    )
 
 
 def test_cleanup_tracked_orphans_windows_passes_live_descendants_to_terminator(
