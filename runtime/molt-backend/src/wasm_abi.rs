@@ -1,52 +1,15 @@
 use std::iter::ExactSizeIterator;
 use wasm_encoder::{TypeSection, ValType};
 
-pub(crate) use crate::wasm_abi_generated::{RUNTIME_CALLABLE_IMPORTS, RuntimeCallableResult};
+pub(crate) use crate::wasm_abi_generated::{
+    POLL_TABLE_FUNCS, RUNTIME_CALLABLE_IMPORTS, RuntimeCallableResult,
+};
 
 pub(crate) const GEN_CONTROL_SIZE: i32 = 48;
 pub(crate) const TASK_KIND_FUTURE: i64 = 0;
 pub(crate) const TASK_KIND_GENERATOR: i64 = 1;
 pub(crate) const TASK_KIND_COROUTINE: i64 = 2;
 pub(crate) const RELOC_TABLE_BASE_DEFAULT: u32 = 4096;
-
-/// Poll/async function names that occupy the prefix slots of the indirect
-/// function table (right after the sentinel slot at index 0).  Defined once
-/// so the wrapper-generation loop, the index-lookup block, and the table
-/// element initialisation all stay in sync automatically.
-pub(crate) const POLL_TABLE_FUNCS: &[&str] = &[
-    "async_sleep_poll",
-    "anext_default_poll",
-    "asyncgen_poll",
-    "promise_poll",
-    "io_wait",
-    "thread_poll",
-    "process_poll",
-    "ws_wait",
-    "asyncio_wait_for_poll",
-    "asyncio_wait_poll",
-    "asyncio_gather_poll",
-    "asyncio_socket_reader_read_poll",
-    "asyncio_socket_reader_readline_poll",
-    "asyncio_stream_reader_read_poll",
-    "asyncio_stream_reader_readline_poll",
-    "asyncio_stream_send_all_poll",
-    "asyncio_sock_recv_poll",
-    "asyncio_sock_connect_poll",
-    "asyncio_sock_accept_poll",
-    "asyncio_sock_recv_into_poll",
-    "asyncio_sock_sendall_poll",
-    "asyncio_sock_recvfrom_poll",
-    "asyncio_sock_recvfrom_into_poll",
-    "asyncio_sock_sendto_poll",
-    "asyncio_timer_handle_poll",
-    "asyncio_fd_watcher_poll",
-    "asyncio_server_accept_loop_poll",
-    "asyncio_ready_runner_poll",
-    "contextlib_asyncgen_enter_poll",
-    "contextlib_asyncgen_exit_poll",
-    "contextlib_async_exitstack_exit_poll",
-    "contextlib_async_exitstack_enter_context_poll",
-];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct ReservedRuntimeCallableSpec {

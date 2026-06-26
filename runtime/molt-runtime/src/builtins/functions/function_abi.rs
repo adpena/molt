@@ -6,7 +6,17 @@
 use super::*;
 
 #[cfg(target_arch = "wasm32")]
-const RESERVED_WASM_RUNTIME_CALLABLE_BASE: u64 = 33;
+const RESERVED_WASM_RUNTIME_CALLABLE_BASE: u64 = {
+    macro_rules! entry_list {
+        ($(($slot:expr, $sym:ident, $import:literal))+) => {
+            1 + [$( { let _ = ($slot, stringify!($sym), $import); () }, )+].len() as u64
+        };
+    }
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../wasm_poll_callables.inc"
+    ))
+};
 const RUNTIME_CALLABLE_KEY_BASE: u64 = 0xFFFF_FF00_0000_0000;
 const RUNTIME_POLL_CALLABLE_KEY_BASE: u64 = RUNTIME_CALLABLE_KEY_BASE + 0x100;
 
@@ -57,43 +67,18 @@ fn runtime_core_callable_key_from_symbol_name(symbol_name: &str) -> Option<u64> 
 }
 
 fn runtime_poll_callable_key_from_symbol_name(symbol_name: &str) -> Option<u64> {
-    match symbol_name {
-        "molt_async_sleep_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 1),
-        "molt_anext_default_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 2),
-        "molt_asyncgen_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 3),
-        "molt_promise_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 4),
-        "molt_io_wait" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 5),
-        "molt_thread_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 6),
-        "molt_process_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 7),
-        "molt_ws_wait" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 8),
-        "molt_asyncio_wait_for_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 9),
-        "molt_asyncio_wait_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 10),
-        "molt_asyncio_gather_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 11),
-        "molt_asyncio_socket_reader_read_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 12),
-        "molt_asyncio_socket_reader_readline_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 13),
-        "molt_asyncio_stream_reader_read_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 14),
-        "molt_asyncio_stream_reader_readline_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 15),
-        "molt_asyncio_stream_send_all_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 16),
-        "molt_asyncio_sock_recv_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 17),
-        "molt_asyncio_sock_connect_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 18),
-        "molt_asyncio_sock_accept_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 19),
-        "molt_asyncio_sock_recv_into_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 20),
-        "molt_asyncio_sock_sendall_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 21),
-        "molt_asyncio_sock_recvfrom_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 22),
-        "molt_asyncio_sock_recvfrom_into_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 23),
-        "molt_asyncio_sock_sendto_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 24),
-        "molt_asyncio_timer_handle_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 25),
-        "molt_asyncio_fd_watcher_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 26),
-        "molt_asyncio_server_accept_loop_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 27),
-        "molt_asyncio_ready_runner_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 28),
-        "molt_contextlib_asyncgen_enter_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 29),
-        "molt_contextlib_asyncgen_exit_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 30),
-        "molt_contextlib_async_exitstack_exit_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 31),
-        "molt_contextlib_async_exitstack_enter_context_poll" => {
-            Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 32)
-        }
-        _ => None,
+    macro_rules! entry_list {
+        ($(($slot:expr, $sym:ident, $import:literal))+) => {
+            match symbol_name {
+                $(stringify!($sym) => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + $slot),)+
+                _ => None,
+            }
+        };
     }
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../wasm_poll_callables.inc"
+    ))
 }
 
 pub(crate) fn canonicalize_runtime_callable_key(fn_ptr: u64) -> u64 {
