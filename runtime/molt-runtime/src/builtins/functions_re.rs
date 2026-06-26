@@ -790,3 +790,373 @@ pub(crate) fn re_any_advance_impl(text: &str, pos: i64, end: i64, flags: i64) ->
         -1
     }
 }
+
+// Runtime regex ABI entrypoints.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_re_char_in_range(
+    ch_bits: u64,
+    start_bits: u64,
+    end_bits: u64,
+    flags_bits: u64,
+) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        let Some(ch) = string_obj_to_owned(obj_from_bits(ch_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "ch must be str");
+        };
+        let Some(start) = string_obj_to_owned(obj_from_bits(start_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "start must be str");
+        };
+        let Some(end) = string_obj_to_owned(obj_from_bits(end_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "end must be str");
+        };
+        let Some(flags) = to_i64(obj_from_bits(flags_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "flags must be int");
+        };
+        let matched = re_char_in_range_impl(&ch, &start, &end, flags);
+        MoltObject::from_bool(matched).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_re_category_matches(
+    ch_bits: u64,
+    category_bits: u64,
+    flags_bits: u64,
+) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        let Some(ch) = string_obj_to_owned(obj_from_bits(ch_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "ch must be str");
+        };
+        let Some(category) = string_obj_to_owned(obj_from_bits(category_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "category must be str");
+        };
+        let Some(flags) = to_i64(obj_from_bits(flags_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "flags must be int");
+        };
+        if category.starts_with("posix:") {
+            return MoltObject::from_bool(false).bits();
+        }
+        let matched = re_category_matches_impl(&ch, category.as_str(), flags);
+        MoltObject::from_bool(matched).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_re_anchor_matches(
+    kind_bits: u64,
+    text_bits: u64,
+    pos_bits: u64,
+    end_bits: u64,
+    origin_bits: u64,
+    flags_bits: u64,
+) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        let Some(kind) = string_obj_to_owned(obj_from_bits(kind_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "kind must be str");
+        };
+        let Some(text) = string_obj_to_owned(obj_from_bits(text_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "text must be str");
+        };
+        let Some(pos) = to_i64(obj_from_bits(pos_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "pos must be int");
+        };
+        let Some(end) = to_i64(obj_from_bits(end_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "end must be int");
+        };
+        let Some(origin) = to_i64(obj_from_bits(origin_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "origin must be int");
+        };
+        let Some(flags) = to_i64(obj_from_bits(flags_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "flags must be int");
+        };
+        let matched = re_anchor_matches_impl(kind.as_str(), &text, pos, end, origin, flags);
+        MoltObject::from_bool(matched).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_re_group_is_set(groups_bits: u64, index_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        let spans = match re_group_spans_from_sequence(_py, groups_bits) {
+            Ok(value) => value,
+            Err(err_bits) => return err_bits,
+        };
+        let Some(index) = to_i64(obj_from_bits(index_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "index must be int");
+        };
+        let is_set = if let Ok(index_usize) = usize::try_from(index) {
+            index_usize < spans.len() && spans[index_usize].is_some()
+        } else {
+            false
+        };
+        MoltObject::from_bool(is_set).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_re_backref_advance(
+    text_bits: u64,
+    pos_bits: u64,
+    end_bits: u64,
+    start_ref_bits: u64,
+    end_ref_bits: u64,
+) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        let Some(text) = string_obj_to_owned(obj_from_bits(text_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "text must be str");
+        };
+        let Some(pos) = to_i64(obj_from_bits(pos_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "pos must be int");
+        };
+        let Some(end) = to_i64(obj_from_bits(end_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "end must be int");
+        };
+        let Some(start_ref) = to_i64(obj_from_bits(start_ref_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "start_ref must be int");
+        };
+        let Some(end_ref) = to_i64(obj_from_bits(end_ref_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "end_ref must be int");
+        };
+        let advanced = re_backref_advance_impl(&text, pos, end, start_ref, end_ref);
+        MoltObject::from_int(advanced).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_re_backref_group_advance(
+    text_bits: u64,
+    pos_bits: u64,
+    end_bits: u64,
+    groups_bits: u64,
+    index_bits: u64,
+) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        let Some(text) = string_obj_to_owned(obj_from_bits(text_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "text must be str");
+        };
+        let Some(pos) = to_i64(obj_from_bits(pos_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "pos must be int");
+        };
+        let Some(end) = to_i64(obj_from_bits(end_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "end must be int");
+        };
+        let spans = match re_group_spans_from_sequence(_py, groups_bits) {
+            Ok(value) => value,
+            Err(err_bits) => return err_bits,
+        };
+        let Some(index) = to_i64(obj_from_bits(index_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "index must be int");
+        };
+        let advanced = if let Ok(index_usize) = usize::try_from(index) {
+            if let Some(Some((start_ref, end_ref))) = spans.get(index_usize) {
+                re_backref_advance_impl(&text, pos, end, *start_ref, *end_ref)
+            } else {
+                -1
+            }
+        } else {
+            -1
+        };
+        MoltObject::from_int(advanced).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_re_apply_scoped_flags(
+    flags_bits: u64,
+    add_flags_bits: u64,
+    clear_flags_bits: u64,
+) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        let Some(flags) = to_i64(obj_from_bits(flags_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "flags must be int");
+        };
+        let Some(add_flags) = to_i64(obj_from_bits(add_flags_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "add_flags must be int");
+        };
+        let Some(clear_flags) = to_i64(obj_from_bits(clear_flags_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "clear_flags must be int");
+        };
+        let scoped = re_apply_scoped_flags_impl(flags, add_flags, clear_flags);
+        MoltObject::from_int(scoped).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_re_charclass_matches(
+    ch_bits: u64,
+    negated_bits: u64,
+    chars_bits: u64,
+    ranges_bits: u64,
+    categories_bits: u64,
+    flags_bits: u64,
+) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        let Some(ch) = string_obj_to_owned(obj_from_bits(ch_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "ch must be str");
+        };
+        let negated = is_truthy(_py, obj_from_bits(negated_bits));
+        let chars = match iterable_to_string_vec(_py, chars_bits) {
+            Ok(values) => values,
+            Err(err_bits) => return err_bits,
+        };
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        let ranges = match re_extract_range_pairs(_py, ranges_bits) {
+            Ok(values) => values,
+            Err(err_bits) => return err_bits,
+        };
+        let categories = match iterable_to_string_vec(_py, categories_bits) {
+            Ok(values) => values,
+            Err(err_bits) => return err_bits,
+        };
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        let Some(flags) = to_i64(obj_from_bits(flags_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "flags must be int");
+        };
+        let matched = re_charclass_matches_impl(
+            &ch,
+            negated,
+            chars.as_slice(),
+            ranges.as_slice(),
+            categories.as_slice(),
+            flags,
+        );
+        MoltObject::from_bool(matched).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_re_charclass_advance(
+    text_bits: u64,
+    pos_bits: u64,
+    end_bits: u64,
+    negated_bits: u64,
+    chars_bits: u64,
+    ranges_bits: u64,
+    categories_bits: u64,
+    flags_bits: u64,
+) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        let Some(text) = string_obj_to_owned(obj_from_bits(text_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "text must be str");
+        };
+        let Some(pos) = to_i64(obj_from_bits(pos_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "pos must be int");
+        };
+        let Some(end) = to_i64(obj_from_bits(end_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "end must be int");
+        };
+        let negated = is_truthy(_py, obj_from_bits(negated_bits));
+        let chars = match iterable_to_string_vec(_py, chars_bits) {
+            Ok(values) => values,
+            Err(err_bits) => return err_bits,
+        };
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        let ranges = match re_extract_range_pairs(_py, ranges_bits) {
+            Ok(values) => values,
+            Err(err_bits) => return err_bits,
+        };
+        let categories = match iterable_to_string_vec(_py, categories_bits) {
+            Ok(values) => values,
+            Err(err_bits) => return err_bits,
+        };
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        let Some(flags) = to_i64(obj_from_bits(flags_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "flags must be int");
+        };
+        let advanced = re_charclass_advance_impl(
+            &text,
+            pos,
+            end,
+            negated,
+            chars.as_slice(),
+            ranges.as_slice(),
+            categories.as_slice(),
+            flags,
+        );
+        MoltObject::from_int(advanced).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_re_group_capture(
+    groups_bits: u64,
+    index_bits: u64,
+    start_bits: u64,
+    end_bits: u64,
+) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        let mut spans = match re_group_spans_from_sequence(_py, groups_bits) {
+            Ok(value) => value,
+            Err(err_bits) => return err_bits,
+        };
+        let Some(index) = to_i64(obj_from_bits(index_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "index must be int");
+        };
+        let Some(start) = to_i64(obj_from_bits(start_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "start must be int");
+        };
+        let Some(end) = to_i64(obj_from_bits(end_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "end must be int");
+        };
+        let Some(index_usize) = usize::try_from(index).ok() else {
+            return raise_exception::<_>(_py, "IndexError", "no such group");
+        };
+        if index_usize >= spans.len() {
+            return raise_exception::<_>(_py, "IndexError", "no such group");
+        }
+        spans[index_usize] = Some((start, end));
+        match re_alloc_group_spans(_py, spans.as_slice()) {
+            Ok(bits) => bits,
+            Err(err_bits) => err_bits,
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_re_group_values(text_bits: u64, groups_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        let Some(text) = string_obj_to_owned(obj_from_bits(text_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "text must be str");
+        };
+        let spans = match re_group_spans_from_sequence(_py, groups_bits) {
+            Ok(value) => value,
+            Err(err_bits) => return err_bits,
+        };
+        let values = re_group_values_from_spans(text.as_str(), spans.as_slice());
+        match re_alloc_group_values(_py, values.as_slice()) {
+            Ok(bits) => bits,
+            Err(err_bits) => err_bits,
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_re_expand_replacement(repl_bits: u64, group_values_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        let Some(repl) = string_obj_to_owned(obj_from_bits(repl_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "repl must be str");
+        };
+        let group_values = match re_group_values_from_sequence(_py, group_values_bits) {
+            Ok(values) => values,
+            Err(err_bits) => return err_bits,
+        };
+        let expanded = match re_expand_replacement_impl(repl.as_str(), group_values.as_slice()) {
+            Ok(value) => value,
+            Err(()) => return raise_exception::<_>(_py, "IndexError", "no such group"),
+        };
+        let out_ptr = alloc_string(_py, expanded.as_bytes());
+        if out_ptr.is_null() {
+            MoltObject::none().bits()
+        } else {
+            MoltObject::from_ptr(out_ptr).bits()
+        }
+    })
+}
