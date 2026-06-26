@@ -27,6 +27,20 @@ _MOLT_DECIMAL_CONTEXT_GET_ROUNDING = _require_intrinsic(
 _MOLT_DECIMAL_CONTEXT_SET_ROUNDING = _require_intrinsic(
     "molt_decimal_context_set_rounding"
 )
+_MOLT_DECIMAL_CONTEXT_GET_EMIN = _require_intrinsic("molt_decimal_context_get_emin")
+_MOLT_DECIMAL_CONTEXT_SET_EMIN = _require_intrinsic("molt_decimal_context_set_emin")
+_MOLT_DECIMAL_CONTEXT_GET_EMAX = _require_intrinsic("molt_decimal_context_get_emax")
+_MOLT_DECIMAL_CONTEXT_SET_EMAX = _require_intrinsic("molt_decimal_context_set_emax")
+_MOLT_DECIMAL_CONTEXT_GET_CLAMP = _require_intrinsic("molt_decimal_context_get_clamp")
+_MOLT_DECIMAL_CONTEXT_SET_CLAMP = _require_intrinsic("molt_decimal_context_set_clamp")
+_MOLT_DECIMAL_CONTEXT_GET_CAPITALS = _require_intrinsic(
+    "molt_decimal_context_get_capitals"
+)
+_MOLT_DECIMAL_CONTEXT_SET_CAPITALS = _require_intrinsic(
+    "molt_decimal_context_set_capitals"
+)
+_MOLT_DECIMAL_CONTEXT_ETINY = _require_intrinsic("molt_decimal_context_etiny")
+_MOLT_DECIMAL_CONTEXT_ETOP = _require_intrinsic("molt_decimal_context_etop")
 _MOLT_DECIMAL_CONTEXT_CLEAR_FLAGS = _require_intrinsic(
     "molt_decimal_context_clear_flags"
 )
@@ -279,16 +293,114 @@ class _SignalDict:
         return f"<decimal.SignalDict {kind}>"
 
 
+def _validate_prec(value: object) -> int:
+    if not isinstance(value, int):
+        raise TypeError("prec must be an integer")
+    if value < 1:
+        raise ValueError("prec must be in [1, inf]. got: %s" % value)
+    return int(value)
+
+
+def _validate_emin(value: object) -> int:
+    if not isinstance(value, int):
+        raise TypeError("Emin must be an integer")
+    if value > 0:
+        raise ValueError("Emin must be in [-inf, 0]. got: %s" % value)
+    return int(value)
+
+
+def _validate_emax(value: object) -> int:
+    if not isinstance(value, int):
+        raise TypeError("Emax must be an integer")
+    if value < 0:
+        raise ValueError("Emax must be in [0, inf]. got: %s" % value)
+    return int(value)
+
+
+def _validate_flag01(value: object, name: str) -> int:
+    if not isinstance(value, int):
+        raise TypeError("%s must be an integer" % name)
+    if value not in (0, 1):
+        raise ValueError("%s must be in [0, 1]. got %s" % (name, value))
+    return int(value)
+
+
+def _rounding_id(value: object) -> int:
+    rid = _ROUNDING_NAME_TO_ID.get(value)
+    if rid is None:
+        raise TypeError("invalid rounding mode")
+    return rid
+
+
 class Context:
     __slots__ = ("_handle", "traps", "flags")
 
-    def __init__(self, _handle: object | None = None) -> None:
-        self._handle = _handle if _handle is not None else _MOLT_DECIMAL_CONTEXT_NEW()
+    def __init__(
+        self,
+        prec: int | None = None,
+        rounding: str | None = None,
+        Emin: int | None = None,
+        Emax: int | None = None,
+        capitals: int | None = None,
+        clamp: int | None = None,
+        flags: object = None,
+        traps: object = None,
+        _handle: object | None = None,
+    ) -> None:
+        # `_handle` is the internal escape hatch used by copy()/getcontext() to
+        # wrap an existing native context; the public surface is CPython's
+        # Context(prec=..., rounding=..., Emin=..., Emax=..., clamp=..., ...).
+        handle = _handle if _handle is not None else _MOLT_DECIMAL_CONTEXT_NEW()
+        self._handle = handle
         self.traps = _SignalDict(self, True)
         self.flags = _SignalDict(self, False)
+        if _handle is None:
+            # Apply any explicitly-supplied settings on top of the native defaults
+            # (prec=28, rounding=ROUND_HALF_EVEN, Emin=-999999, Emax=999999, clamp=0).
+            # These go straight to the validating intrinsics on the bound handle
+            # rather than via the property setters: the setter descriptors are not
+            # reliably dispatched for `self.attr = value` inside a constructor body,
+            # whereas the intrinsic call is unambiguous and carries the same
+            # CPython range validation.
+            if prec is not None:
+                _MOLT_DECIMAL_CONTEXT_SET_PREC(handle, _validate_prec(prec))
+            if rounding is not None:
+                _MOLT_DECIMAL_CONTEXT_SET_ROUNDING(handle, _rounding_id(rounding))
+            # Emax must be widened before Emin is narrowed (and vice versa) so an
+            # intermediate Emin > Emax is never rejected; the native setters
+            # validate each bound against zero, not against each other.
+            if Emax is not None:
+                _MOLT_DECIMAL_CONTEXT_SET_EMAX(handle, _validate_emax(Emax))
+            if Emin is not None:
+                _MOLT_DECIMAL_CONTEXT_SET_EMIN(handle, _validate_emin(Emin))
+            if capitals is not None:
+                _MOLT_DECIMAL_CONTEXT_SET_CAPITALS(handle, _validate_flag01(capitals, "capitals"))
+            if clamp is not None:
+                _MOLT_DECIMAL_CONTEXT_SET_CLAMP(handle, _validate_flag01(clamp, "clamp"))
+            if flags is not None:
+                self._set_signals(self.flags, flags)
+            if traps is not None:
+                self._set_signals(self.traps, traps)
+
+    @staticmethod
+    def _set_signals(target: "_SignalDict", signals: object) -> None:
+        # CPython accepts either a {signal: bool} mapping or an iterable of the
+        # signal classes that should be enabled.
+        if isinstance(signals, dict):
+            items = signals.items()
+        else:
+            items = ((sig, True) for sig in signals)
+        # Reset to all-off, then enable the requested signals.
+        for code in _SIGNAL_MAP.values():
+            if target._is_trap:
+                _MOLT_DECIMAL_CONTEXT_SET_TRAP(target._ctx._handle, code, False)
+            else:
+                _MOLT_DECIMAL_CONTEXT_SET_FLAG(target._ctx._handle, code, False)
+        for sig, value in items:
+            target[sig] = bool(value)
 
     def copy(self) -> "Context":
-        return Context(_MOLT_DECIMAL_CONTEXT_COPY(self._handle))
+        return Context(_handle=_MOLT_DECIMAL_CONTEXT_COPY(self._handle))
 
     def clear_flags(self) -> None:
         _MOLT_DECIMAL_CONTEXT_CLEAR_FLAGS(self._handle)
@@ -299,7 +411,7 @@ class Context:
 
     @prec.setter
     def prec(self, value: int) -> None:
-        _MOLT_DECIMAL_CONTEXT_SET_PREC(self._handle, int(value))
+        _MOLT_DECIMAL_CONTEXT_SET_PREC(self._handle, _validate_prec(value))
 
     @property
     def rounding(self) -> str:
@@ -308,10 +420,47 @@ class Context:
 
     @rounding.setter
     def rounding(self, value: str) -> None:
-        rid = _ROUNDING_NAME_TO_ID.get(value)
-        if rid is None:
-            raise ValueError("invalid rounding mode")
-        _MOLT_DECIMAL_CONTEXT_SET_ROUNDING(self._handle, rid)
+        _MOLT_DECIMAL_CONTEXT_SET_ROUNDING(self._handle, _rounding_id(value))
+
+    @property
+    def Emin(self) -> int:
+        return int(_MOLT_DECIMAL_CONTEXT_GET_EMIN(self._handle))
+
+    @Emin.setter
+    def Emin(self, value: int) -> None:
+        _MOLT_DECIMAL_CONTEXT_SET_EMIN(self._handle, _validate_emin(value))
+
+    @property
+    def Emax(self) -> int:
+        return int(_MOLT_DECIMAL_CONTEXT_GET_EMAX(self._handle))
+
+    @Emax.setter
+    def Emax(self, value: int) -> None:
+        _MOLT_DECIMAL_CONTEXT_SET_EMAX(self._handle, _validate_emax(value))
+
+    @property
+    def capitals(self) -> int:
+        return int(_MOLT_DECIMAL_CONTEXT_GET_CAPITALS(self._handle))
+
+    @capitals.setter
+    def capitals(self, value: int) -> None:
+        _MOLT_DECIMAL_CONTEXT_SET_CAPITALS(self._handle, _validate_flag01(value, "capitals"))
+
+    @property
+    def clamp(self) -> int:
+        return int(_MOLT_DECIMAL_CONTEXT_GET_CLAMP(self._handle))
+
+    @clamp.setter
+    def clamp(self, value: int) -> None:
+        _MOLT_DECIMAL_CONTEXT_SET_CLAMP(self._handle, _validate_flag01(value, "clamp"))
+
+    def Etiny(self) -> int:
+        """Smallest allowable exponent (= Emin - prec + 1)."""
+        return int(_MOLT_DECIMAL_CONTEXT_ETINY(self._handle))
+
+    def Etop(self) -> int:
+        """Largest allowable exponent for a value with prec digits (= Emax - prec + 1)."""
+        return int(_MOLT_DECIMAL_CONTEXT_ETOP(self._handle))
 
     def create_decimal(self, value: object) -> "Decimal":
         # Decimal(...) construction is context-invariant; apply this context by routing
@@ -1119,7 +1268,7 @@ def _decimal_from_handle(handle: object) -> Decimal:
 
 
 def getcontext() -> Context:
-    return Context(_MOLT_DECIMAL_CONTEXT_GET_CURRENT())
+    return Context(_handle=_MOLT_DECIMAL_CONTEXT_GET_CURRENT())
 
 
 def setcontext(ctx: Context) -> None:
@@ -1130,20 +1279,30 @@ def setcontext(ctx: Context) -> None:
         _MOLT_DECIMAL_CONTEXT_DROP(prev)
 
 
-def localcontext(ctx: Context | None = None) -> "_LocalContext":
+def localcontext(ctx: Context | None = None, **kwargs: object) -> "_LocalContext":
     if ctx is not None and not isinstance(ctx, Context):
         raise TypeError("context must be a decimal.Context")
-    return _LocalContext(ctx)
+    return _LocalContext(ctx, kwargs)
 
 
 class _LocalContext:
     __slots__ = ("_ctx", "_saved")
 
-    def __init__(self, ctx: Context | None) -> None:
+    def __init__(self, ctx: Context | None, kwargs: dict | None = None) -> None:
         if ctx is None:
             ctx = getcontext().copy()
         else:
             ctx = ctx.copy()
+        # CPython 3.11+: localcontext(ctx, **kwargs) sets attributes on the copy.
+        if kwargs:
+            allowed = {"prec", "rounding", "Emin", "Emax", "capitals", "clamp"}
+            for name, value in kwargs.items():
+                if name not in allowed:
+                    raise TypeError(
+                        "'%s' is an invalid keyword argument for this function"
+                        % name
+                    )
+                setattr(ctx, name, value)
         self._ctx = ctx
         self._saved = None
 
