@@ -21,7 +21,7 @@ pub(super) fn emit_runtime_service_op(
     let import_ids = context.import_ids;
     let locals = context.locals;
     let const_cache = context.const_cache;
-    let func_index = context.func_index;
+    let _func_index = context.func_index;
     let reloc_enabled = context.reloc_enabled;
     let native_eh_enabled = context.native_eh_enabled;
 

@@ -1,4 +1,5 @@
 use super::*;
+use std::collections::HashSet;
 
 pub(super) enum CallOpEmission {
     NotHandled,
@@ -7,7 +8,6 @@ pub(super) enum CallOpEmission {
 }
 
 pub(super) struct CallOpContext<'a, 'ctx, 'm> {
-    pub(super) backend: &'m mut WasmBackend,
     pub(super) func_ir: &'a FunctionIR,
     pub(super) ctx: &'a CompileFuncContext<'ctx>,
     pub(super) func_map: &'a BTreeMap<String, u32>,
@@ -28,6 +28,8 @@ pub(super) struct CallOpContext<'a, 'ctx, 'm> {
     pub(super) tail_call_count: &'a Cell<usize>,
     pub(super) ops: &'a [OpIR],
     pub(super) last_use_local: &'m BTreeMap<String, usize>,
+    pub(super) rc_skip_inc: &'m HashSet<usize>,
+    pub(super) rc_skip_dec: &'m HashSet<String>,
     pub(super) rel_idx: usize,
     pub(super) op_idx: usize,
     pub(super) try_stack_is_empty: bool,
@@ -83,13 +85,14 @@ pub(super) fn emit_call_op(
     let tail_call_count = call_ctx.tail_call_count;
     let ops = call_ctx.ops;
     let last_use_local = call_ctx.last_use_local;
+    let rc_skip_inc = call_ctx.rc_skip_inc;
+    let rc_skip_dec = call_ctx.rc_skip_dec;
     let rel_idx = call_ctx.rel_idx;
     let op_idx = call_ctx.op_idx;
     let try_stack_is_empty = call_ctx.try_stack_is_empty;
     let live_object_locals_for_call = |rel_idx: usize, out_name: Option<&String>| -> Vec<u32> {
         collect_live_object_locals_for_call(locals, last_use_local, rel_idx, out_name)
     };
-    let backend = &mut *call_ctx.backend;
 
     match op.kind.as_str() {
         "call_async" => {
@@ -1051,7 +1054,7 @@ pub(super) fn emit_call_op(
                 emit_call(func, reloc_enabled, import_ids["dec_ref_obj"]);
             }
         }
-        _ => CallOpEmission::NotHandled,
+        _ => return CallOpEmission::NotHandled,
     }
 
     CallOpEmission::Handled
