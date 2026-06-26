@@ -10,6 +10,7 @@
 
 use std::fmt::Write as _;
 
+use crate::builtins::numbers::{int_bits_from_bigint, int_bits_from_i64, to_bigint};
 use crate::{
     MoltObject, PyToken, alloc_string, alloc_tuple, dec_ref_bits, obj_from_bits, raise_exception,
     string_obj_to_owned, to_f64, to_i64,
@@ -2257,7 +2258,10 @@ pub extern "C" fn molt_datetime_hash_datetime(
         };
         let adjusted = total_us - utcoff_us;
         let h_val = py_hash_i128(adjusted);
-        MoltObject::from_int(h_val).bits()
+        // `py_hash_i128` returns the Python hash reduced mod (2**61 - 1), which
+        // routinely exceeds the 47-bit inline window; box the full value rather
+        // than truncating it through `from_int`.
+        int_bits_from_i64(_py, h_val)
     })
 }
 
@@ -2725,7 +2729,15 @@ pub extern "C" fn molt_datetime_as_int(value_bits: u64) -> u64 {
             return MoltObject::from_int(if b { 1 } else { 0 }).bits();
         }
         if let Some(i) = to_i64(obj) {
-            return MoltObject::from_int(i).bits();
+            // Full-range boxing — `from_int` would silently truncate a fit-i64
+            // BigInt or exact-integer float with magnitude >= 2**46.
+            return int_bits_from_i64(_py, i);
+        }
+        // A Python int wider than i64 is still an exact int; box it as a heap
+        // BigInt so callers see the true value (e.g. an out-of-range year is
+        // then rejected by the *value* check) instead of a bogus TypeError.
+        if let Some(big) = to_bigint(obj) {
+            return int_bits_from_bigint(_py, big);
         }
         raise_exception::<u64>(_py, "TypeError", "integer argument expected")
     })

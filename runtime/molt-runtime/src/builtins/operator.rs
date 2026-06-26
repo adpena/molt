@@ -4,7 +4,7 @@ use molt_obj_model::MoltObject;
 use num_traits::{Signed, ToPrimitive};
 
 use crate::builtins::exceptions::{exception_matches_builtin_name, molt_exception_last_pending};
-use crate::builtins::numbers::{index_bigint_from_obj, int_bits_from_bigint};
+use crate::builtins::numbers::{index_bigint_from_obj, int_bits_from_bigint, int_bits_from_i64};
 use crate::{
     PyToken, TYPE_ID_DICT, TYPE_ID_STRING, TYPE_ID_TUPLE, alloc_class_obj, alloc_dict_with_pairs,
     alloc_function_obj, alloc_string, alloc_tuple, attr_lookup_ptr_allow_missing,
@@ -1010,7 +1010,9 @@ pub extern "C" fn molt_operator_pos(val: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(val);
         if let Some(i) = to_i64(obj) {
-            return MoltObject::from_int(i).bits();
+            // Full-range boxing — `from_int` would silently truncate a fit-i64
+            // BigInt (e.g. operator.pos(2**60)) or exact-integer float >= 2**46.
+            return int_bits_from_i64(_py, i);
         }
         if let Some(big) = to_bigint(obj) {
             if let Some(i) = bigint_to_inline(&big) {
