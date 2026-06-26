@@ -44,6 +44,10 @@ const MPD_ROUND_05UP: i32 = 7;
 
 const DECIMAL_DEFAULT_PREC: i64 = 28;
 const DECIMAL_DEFAULT_TRAPS: u32 = MPD_IEEE_INVALID_OPERATION | MPD_DIVISION_BY_ZERO | MPD_OVERFLOW;
+// CPython decimal.DefaultContext bounds (Lib/_pydecimal.py): Emax=999999, Emin=-999999, clamp=0.
+const DECIMAL_DEFAULT_EMIN: i64 = -999_999;
+const DECIMAL_DEFAULT_EMAX: i64 = 999_999;
+const DECIMAL_DEFAULT_CLAMP: i32 = 0;
 
 thread_local! {
     static DECIMAL_CONTEXT: RefCell<*mut DecimalContextHandle> = const { RefCell::new(ptr::null_mut()) };
@@ -56,10 +60,28 @@ struct DecimalContextHandle {
     status: u32,
     rounding: i32,
     capitals: i32,
+    /// Smallest adjusted exponent of a normal number; CPython default -999999.
+    emin: i64,
+    /// Largest adjusted exponent; CPython default 999999.
+    emax: i64,
+    /// IEEE clamp flag (0 or 1); CPython default 0.
+    clamp: i32,
     refs: usize,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+impl DecimalContextHandle {
+    /// Etiny = Emin - prec + 1 (CPython Context.Etiny).
+    fn etiny(&self) -> i64 {
+        self.emin - self.prec + 1
+    }
+
+    /// Etop = Emax - prec + 1 (CPython Context.Etop).
+    fn etop(&self) -> i64 {
+        self.emax - self.prec + 1
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum DecimalSpecial {
     Finite,
     Infinity,
@@ -82,6 +104,9 @@ fn default_context() -> DecimalContextHandle {
         status: 0,
         rounding: MPD_ROUND_HALF_EVEN,
         capitals: 1,
+        emin: DECIMAL_DEFAULT_EMIN,
+        emax: DECIMAL_DEFAULT_EMAX,
+        clamp: DECIMAL_DEFAULT_CLAMP,
         refs: 1,
     }
 }
@@ -457,48 +482,180 @@ fn compact_trailing_zeros(dec: &mut DecimalHandle) {
     }
 }
 
-fn apply_precision(
+/// Largest finite value representable in `ctx` (Nmax = (10^prec - 1) * 10^Etop),
+/// with the given sign. Used as the round-down overflow result.
+fn nmax(ctx: &DecimalContextHandle, sign: bool) -> DecimalHandle {
+    let coeff = pow10_i64(ctx.prec).unwrap_or_else(BigInt::zero) - BigInt::one();
+    DecimalHandle {
+        sign,
+        coeff,
+        exp: ctx.etop(),
+        special: DecimalSpecial::Finite,
+    }
+}
+
+/// CPython `Overflow.handle`: the result of an overflowing operation depends on
+/// the rounding mode — either signed infinity or the largest finite number.
+fn overflow_result(ctx: &DecimalContextHandle, sign: bool) -> DecimalHandle {
+    match ctx.rounding {
+        MPD_ROUND_HALF_UP | MPD_ROUND_HALF_EVEN | MPD_ROUND_HALF_DOWN | MPD_ROUND_UP => {
+            DecimalHandle {
+                sign,
+                coeff: BigInt::zero(),
+                exp: 0,
+                special: DecimalSpecial::Infinity,
+            }
+        }
+        MPD_ROUND_CEILING if !sign => DecimalHandle {
+            sign,
+            coeff: BigInt::zero(),
+            exp: 0,
+            special: DecimalSpecial::Infinity,
+        },
+        MPD_ROUND_FLOOR if sign => DecimalHandle {
+            sign,
+            coeff: BigInt::zero(),
+            exp: 0,
+            special: DecimalSpecial::Infinity,
+        },
+        _ => nmax(ctx, sign),
+    }
+}
+
+/// Round, fix the exponent, and apply the context Emin/Emax/clamp bounds,
+/// raising the appropriate signals into `status`.
+///
+/// Faithful port of CPython `Decimal._fix(self, context)` (Lib/_pydecimal.py).
+/// Operates in place on `dec`, which must be a finite Decimal coefficient
+/// representation (sign, coeff, exp). Specials are returned unchanged.
+///
+/// The signals collected in `status` (MPD_SUBNORMAL / MPD_UNDERFLOW /
+/// MPD_OVERFLOW / MPD_CLAMPED / MPD_INEXACT / MPD_ROUNDED) follow the IEEE
+/// 854 precedence the specification requires; `apply_status` is responsible
+/// for turning trapped signals into raised exceptions.
+fn fix_decimal(
     ctx: &DecimalContextHandle,
     dec: &mut DecimalHandle,
     status: &mut u32,
 ) -> Result<(), u32> {
     if dec.special != DecimalSpecial::Finite {
+        // +/-Infinity and NaN are returned unaltered (sNaN payload handling is
+        // performed at the call sites that can observe it).
         return Ok(());
     }
     if ctx.prec <= 0 {
         return Err(MPD_INVALID_CONTEXT);
     }
+
+    let etiny = ctx.etiny();
+    let etop = ctx.etop();
+
+    // Zero: exponent must lie between Etiny and Emax (clamp==0) or Etop (clamp==1).
     if dec.coeff.is_zero() {
+        let exp_max = if ctx.clamp == 1 { etop } else { ctx.emax };
+        let new_exp = dec.exp.max(etiny).min(exp_max);
+        if new_exp != dec.exp {
+            *status |= MPD_CLAMPED;
+            dec.exp = new_exp;
+        }
         return Ok(());
     }
-    let digits = digits_len(&dec.coeff);
-    if digits <= ctx.prec {
+
+    // exp_min = max(self.adjusted() - prec + 1, Etiny)
+    //         = (len(coeff) + exp - prec) clamped up to Etiny.
+    let coeff_digits = digits_len(&dec.coeff);
+    let mut exp_min = coeff_digits + dec.exp - ctx.prec;
+
+    // Overflow: exp_min > Etop  <=>  adjusted() > Emax.
+    if exp_min > etop {
+        *status |= MPD_OVERFLOW | MPD_INEXACT | MPD_ROUNDED;
+        *dec = overflow_result(ctx, dec.sign);
         return Ok(());
     }
 
-    let drop = digits - ctx.prec;
-    let divisor = pow10_i64(drop).ok_or(MPD_INVALID_CONTEXT)?;
-    let q = &dec.coeff / &divisor;
-    let rem = &dec.coeff % &divisor;
-
-    if !rem.is_zero() {
-        *status |= MPD_INEXACT;
-    }
-    *status |= MPD_ROUNDED;
-
-    let mut rounded = q;
-    if round_increment(ctx.rounding, dec.sign, &rounded, &rem, &divisor) {
-        rounded += 1u8;
+    let self_is_subnormal = exp_min < etiny;
+    if self_is_subnormal {
+        exp_min = etiny;
     }
 
-    dec.coeff = rounded;
-    dec.exp += drop;
+    // Round if the value has digits below exp_min.
+    if dec.exp < exp_min {
+        // If every surviving digit is below the rounding point (adjusted <
+        // exp_min - 1), CPython replaces self with 1 * 10**(exp_min - 1) before
+        // rounding at digit 0, so the coefficient becomes "0" and every original
+        // digit is dropped (always inexact in that case).
+        let below_round_point = coeff_digits + dec.exp - exp_min < 0;
+        let (mut coeff, changed_nonzero, changed_increment) = if below_round_point {
+            // self := _dec_from_triple(sign, '1', exp_min - 1); round at prec 0.
+            let inc = round_increment(
+                ctx.rounding,
+                dec.sign,
+                &BigInt::zero(),
+                &BigInt::one(),
+                &BigInt::from(10u8),
+            );
+            (BigInt::zero(), true, inc)
+        } else {
+            let drop = -dec.exp + exp_min;
+            let divisor = pow10_i64(drop).ok_or(MPD_INVALID_CONTEXT)?;
+            let q = &dec.coeff / &divisor;
+            let rem = &dec.coeff % &divisor;
+            let nonzero = !rem.is_zero();
+            let inc = round_increment(ctx.rounding, dec.sign, &q, &rem, &divisor);
+            (q, nonzero, inc)
+        };
 
-    let rounded_digits = digits_len(&dec.coeff);
-    if rounded_digits > ctx.prec {
-        dec.coeff /= 10u8;
-        dec.exp += 1;
+        if changed_increment {
+            coeff += 1u8;
+            // A carry can push the coefficient past prec; drop the trailing digit.
+            if digits_len(&coeff) > ctx.prec {
+                coeff /= 10u8;
+                exp_min += 1;
+            }
+        }
+
+        // Did the rounding push the exponent back above Etop?
+        let overflowed = exp_min > etop;
+        if overflowed {
+            *status |= MPD_OVERFLOW;
+            *dec = overflow_result(ctx, dec.sign);
+        } else {
+            dec.coeff = coeff;
+            dec.exp = exp_min;
+        }
+
+        // Raise the signals in specification precedence order.
+        if changed_nonzero && self_is_subnormal {
+            *status |= MPD_UNDERFLOW;
+        }
+        if self_is_subnormal {
+            *status |= MPD_SUBNORMAL;
+        }
+        if changed_nonzero {
+            *status |= MPD_INEXACT;
+        }
+        *status |= MPD_ROUNDED;
+        if !overflowed && dec.coeff.is_zero() {
+            // Underflow to zero raises Clamped (the result is 0E-Etiny).
+            *status |= MPD_CLAMPED;
+        }
+        return Ok(());
     }
+
+    if self_is_subnormal {
+        *status |= MPD_SUBNORMAL;
+    }
+
+    // clamp==1 fold-down: too few digits, pad up to Etop.
+    if ctx.clamp == 1 && dec.exp > etop {
+        *status |= MPD_CLAMPED;
+        let pad = u32::try_from(dec.exp - etop).map_err(|_| MPD_INVALID_CONTEXT)?;
+        dec.coeff *= pow10_u32(pad);
+        dec.exp = etop;
+        return Ok(());
+    }
+
+    // Representable as-is.
     Ok(())
 }
 
@@ -729,6 +886,166 @@ pub extern "C" fn molt_decimal_context_set_rounding(ctx_bits: u64, round_bits: u
             (*ctx_ptr).rounding = i32::try_from(rounding).unwrap_or(MPD_ROUND_HALF_EVEN);
         }
         MoltObject::none().bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_decimal_context_get_emin(ctx_bits: u64) -> u64 {
+    molt_runtime_core::with_gil_entry!(_py, {
+        let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
+            Some(ptr) => ptr,
+            None => ensure_current_context(),
+        };
+        // SAFETY: pointer validated above.
+        int_bits_from_i64(_py, unsafe { (*ctx_ptr).emin })
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_decimal_context_set_emin(ctx_bits: u64, emin_bits: u64) -> u64 {
+    molt_runtime_core::with_gil_entry!(_py, {
+        let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
+            Some(ptr) => ptr,
+            None => ensure_current_context(),
+        };
+        let Some(emin) = obj_from_bits(emin_bits).as_int() else {
+            return raise_exception::<u64>(_py, "TypeError", "Emin must be an integer");
+        };
+        // CPython: Emin must be in [-inf, 0].
+        if emin > 0 {
+            return raise_exception::<u64>(_py, "ValueError", "Emin must be in [-inf, 0]");
+        }
+        // SAFETY: pointer validated above.
+        unsafe {
+            (*ctx_ptr).emin = emin;
+        }
+        MoltObject::none().bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_decimal_context_get_emax(ctx_bits: u64) -> u64 {
+    molt_runtime_core::with_gil_entry!(_py, {
+        let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
+            Some(ptr) => ptr,
+            None => ensure_current_context(),
+        };
+        // SAFETY: pointer validated above.
+        int_bits_from_i64(_py, unsafe { (*ctx_ptr).emax })
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_decimal_context_set_emax(ctx_bits: u64, emax_bits: u64) -> u64 {
+    molt_runtime_core::with_gil_entry!(_py, {
+        let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
+            Some(ptr) => ptr,
+            None => ensure_current_context(),
+        };
+        let Some(emax) = obj_from_bits(emax_bits).as_int() else {
+            return raise_exception::<u64>(_py, "TypeError", "Emax must be an integer");
+        };
+        // CPython: Emax must be in [0, inf].
+        if emax < 0 {
+            return raise_exception::<u64>(_py, "ValueError", "Emax must be in [0, inf]");
+        }
+        // SAFETY: pointer validated above.
+        unsafe {
+            (*ctx_ptr).emax = emax;
+        }
+        MoltObject::none().bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_decimal_context_get_clamp(ctx_bits: u64) -> u64 {
+    molt_runtime_core::with_gil_entry!(_py, {
+        let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
+            Some(ptr) => ptr,
+            None => ensure_current_context(),
+        };
+        // SAFETY: pointer validated above.
+        int_bits_from_i64(_py, i64::from(unsafe { (*ctx_ptr).clamp }))
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_decimal_context_set_clamp(ctx_bits: u64, clamp_bits: u64) -> u64 {
+    molt_runtime_core::with_gil_entry!(_py, {
+        let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
+            Some(ptr) => ptr,
+            None => ensure_current_context(),
+        };
+        let Some(clamp) = obj_from_bits(clamp_bits).as_int() else {
+            return raise_exception::<u64>(_py, "TypeError", "clamp must be an integer");
+        };
+        // CPython: clamp must be in [0, 1].
+        if !(0..=1).contains(&clamp) {
+            return raise_exception::<u64>(_py, "ValueError", "clamp must be in [0, 1]");
+        }
+        // SAFETY: pointer validated above.
+        unsafe {
+            (*ctx_ptr).clamp = clamp as i32;
+        }
+        MoltObject::none().bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_decimal_context_get_capitals(ctx_bits: u64) -> u64 {
+    molt_runtime_core::with_gil_entry!(_py, {
+        let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
+            Some(ptr) => ptr,
+            None => ensure_current_context(),
+        };
+        // SAFETY: pointer validated above.
+        int_bits_from_i64(_py, i64::from(unsafe { (*ctx_ptr).capitals }))
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_decimal_context_set_capitals(ctx_bits: u64, capitals_bits: u64) -> u64 {
+    molt_runtime_core::with_gil_entry!(_py, {
+        let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
+            Some(ptr) => ptr,
+            None => ensure_current_context(),
+        };
+        let Some(capitals) = obj_from_bits(capitals_bits).as_int() else {
+            return raise_exception::<u64>(_py, "TypeError", "capitals must be an integer");
+        };
+        // CPython: capitals must be in [0, 1].
+        if !(0..=1).contains(&capitals) {
+            return raise_exception::<u64>(_py, "ValueError", "capitals must be in [0, 1]");
+        }
+        // SAFETY: pointer validated above.
+        unsafe {
+            (*ctx_ptr).capitals = capitals as i32;
+        }
+        MoltObject::none().bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_decimal_context_etiny(ctx_bits: u64) -> u64 {
+    molt_runtime_core::with_gil_entry!(_py, {
+        let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
+            Some(ptr) => ptr,
+            None => ensure_current_context(),
+        };
+        // SAFETY: pointer validated above.
+        int_bits_from_i64(_py, unsafe { (*ctx_ptr).etiny() })
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_decimal_context_etop(ctx_bits: u64) -> u64 {
+    molt_runtime_core::with_gil_entry!(_py, {
+        let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
+            Some(ptr) => ptr,
+            None => ensure_current_context(),
+        };
+        // SAFETY: pointer validated above.
+        int_bits_from_i64(_py, unsafe { (*ctx_ptr).etop() })
     })
 }
 
@@ -1034,6 +1351,53 @@ pub extern "C" fn molt_decimal_div(ctx_bits: u64, a_bits: u64, b_bits: u64) -> u
     })
 }
 
+/// Rescale `dec` to the target exponent, padding with zeros or rounding with
+/// `rounding`. Quiet: raises no flags and consults no context (CPython
+/// `Decimal._rescale`). `dec` must be finite. Returns None only on an
+/// impossible (overflowing) power of ten.
+fn rescale_quiet(dec: &DecimalHandle, target_exp: i64, rounding: i32) -> Option<DecimalHandle> {
+    if dec.coeff.is_zero() {
+        return Some(DecimalHandle {
+            sign: dec.sign,
+            coeff: BigInt::zero(),
+            exp: target_exp,
+            special: DecimalSpecial::Finite,
+        });
+    }
+    if dec.exp >= target_exp {
+        let pad = u32::try_from(dec.exp - target_exp).ok()?;
+        return Some(DecimalHandle {
+            sign: dec.sign,
+            coeff: &dec.coeff * pow10_u32(pad),
+            exp: target_exp,
+            special: DecimalSpecial::Finite,
+        });
+    }
+    // Too many digits: round and lose data. If the value is below the rounding
+    // point (adjusted < target_exp - 1), CPython first replaces it with
+    // 1 * 10**(target_exp - 1) so the rounding direction is preserved.
+    let below_round_point = digits_len(&dec.coeff) + dec.exp - target_exp < 0;
+    let (coeff_src, exp_src) = if below_round_point {
+        (BigInt::one(), target_exp - 1)
+    } else {
+        (dec.coeff.clone(), dec.exp)
+    };
+    // exp_src < target_exp here, so the number of low digits to drop is positive.
+    let drop = target_exp - exp_src;
+    let divisor = pow10_i64(drop)?;
+    let mut q = &coeff_src / &divisor;
+    let rem = &coeff_src % &divisor;
+    if round_increment(rounding, dec.sign, &q, &rem, &divisor) {
+        q += 1u8;
+    }
+    Some(DecimalHandle {
+        sign: dec.sign,
+        coeff: q,
+        exp: target_exp,
+        special: DecimalSpecial::Finite,
+    })
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_decimal_quantize(ctx_bits: u64, a_bits: u64, exp_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
@@ -1050,47 +1414,89 @@ pub extern "C" fn molt_decimal_quantize(ctx_bits: u64, a_bits: u64, exp_bits: u6
         // SAFETY: pointer validated above.
         let ctx = unsafe { &mut *ctx_ptr };
 
+        // Special handling: both infinite -> self; one infinite -> InvalidOperation.
+        let a_inf = a.special == DecimalSpecial::Infinity;
+        let exp_inf = exp_dec.special == DecimalSpecial::Infinity;
         if a.special != DecimalSpecial::Finite || exp_dec.special != DecimalSpecial::Finite {
+            if a_inf && exp_inf {
+                return decimal_bits(a.clone());
+            }
             return raise_exception::<u64>(_py, "InvalidOperation", "decimal signal");
         }
 
         let target_exp = exp_dec.exp;
-        let delta = a.exp - target_exp;
-        let mut status = 0u32;
-        let mut coeff = a.coeff.clone();
 
-        if delta >= 0 {
-            let Some(scale) = pow10_i64(delta) else {
-                return raise_exception::<u64>(_py, "InvalidContext", "decimal signal");
-            };
-            coeff *= scale;
-        } else {
-            let cut = -delta;
-            let Some(divisor) = pow10_i64(cut) else {
-                return raise_exception::<u64>(_py, "InvalidContext", "decimal signal");
-            };
-            let q = &coeff / &divisor;
-            let rem = &coeff % &divisor;
-            if !rem.is_zero() {
-                status |= MPD_INEXACT | MPD_ROUNDED;
-            }
-            let mut rounded = q;
-            if round_increment(ctx.rounding, a.sign, &rounded, &rem, &divisor) {
-                rounded += 1u8;
-            }
-            coeff = rounded;
+        // exp._exp must lie within [Etiny, Emax].
+        if !(ctx.etiny() <= target_exp && target_exp <= ctx.emax) {
+            return raise_exception::<u64>(_py, "InvalidOperation", "decimal signal");
         }
 
+        // Zero short-circuit: result is 0 at the target exponent, then _fix.
+        if a.coeff.is_zero() {
+            let mut zero = DecimalHandle {
+                sign: a.sign,
+                coeff: BigInt::zero(),
+                exp: target_exp,
+                special: DecimalSpecial::Finite,
+            };
+            let mut status = 0u32;
+            if let Err(flag) = fix_decimal(ctx, &mut zero, &mut status) {
+                if let Err(bits) = apply_status(_py, ctx, flag) {
+                    return bits;
+                }
+                return raise_exception::<u64>(_py, decimal_signal_name(flag), "decimal signal");
+            }
+            if let Err(bits) = apply_status(_py, ctx, status) {
+                return bits;
+            }
+            return decimal_bits(zero);
+        }
+
+        let self_adjusted = a.exp + digits_len(&a.coeff) - 1;
+        if self_adjusted > ctx.emax {
+            return raise_exception::<u64>(_py, "InvalidOperation", "decimal signal");
+        }
+        if self_adjusted - target_exp + 1 > ctx.prec {
+            return raise_exception::<u64>(_py, "InvalidOperation", "decimal signal");
+        }
+
+        let Some(mut ans) = rescale_quiet(a, target_exp, ctx.rounding) else {
+            return raise_exception::<u64>(_py, "InvalidContext", "decimal signal");
+        };
+        ans.sign = ans.sign && !ans.coeff.is_zero();
+
+        let ans_adjusted = ans.exp + digits_len(&ans.coeff) - 1;
+        if !ans.coeff.is_zero() && ans_adjusted > ctx.emax {
+            return raise_exception::<u64>(_py, "InvalidOperation", "decimal signal");
+        }
+        if digits_len(&ans.coeff) > ctx.prec {
+            return raise_exception::<u64>(_py, "InvalidOperation", "decimal signal");
+        }
+
+        let mut status = 0u32;
+        // Subnormal result.
+        if !ans.coeff.is_zero() && ans_adjusted < ctx.emin {
+            status |= MPD_SUBNORMAL;
+        }
+        // Inexact/Rounded if the exponent grew (digits were dropped).
+        if ans.exp > a.exp {
+            if compare_finite(&ans, a) != Ordering::Equal {
+                status |= MPD_INEXACT;
+            }
+            status |= MPD_ROUNDED;
+        }
+
+        // _fix handles any folddown and the Clamped signal.
+        if let Err(flag) = fix_decimal(ctx, &mut ans, &mut status) {
+            if let Err(bits) = apply_status(_py, ctx, flag) {
+                return bits;
+            }
+            return raise_exception::<u64>(_py, decimal_signal_name(flag), "decimal signal");
+        }
         if let Err(bits) = apply_status(_py, ctx, status) {
             return bits;
         }
-
-        decimal_bits(DecimalHandle {
-            sign: a.sign && !coeff.is_zero(),
-            coeff,
-            exp: target_exp,
-            special: DecimalSpecial::Finite,
-        })
+        decimal_bits(ans)
     })
 }
 
@@ -1170,15 +1576,49 @@ pub extern "C" fn molt_decimal_compare_total(a_bits: u64, b_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_decimal_normalize(ctx_bits: u64, a_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let _ctx_ptr = match context_ptr_from_bits(ctx_bits) {
+        let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
             Some(ptr) => ptr,
             None => ensure_current_context(),
         };
         let Some(a) = decimal_handle_from_bits(a_bits) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid decimal handle");
         };
+        let ctx = unsafe { &mut *ctx_ptr };
+        if a.special != DecimalSpecial::Finite {
+            // NaN/Infinity: returned unchanged (sNaN routing handled by the shim).
+            return decimal_bits(a.clone());
+        }
+        // CPython normalize: round to context first, then strip trailing zeros.
         let mut out = a.clone();
-        compact_trailing_zeros(&mut out);
+        let mut status = 0u32;
+        if let Err(flag) = fix_decimal(ctx, &mut out, &mut status) {
+            if let Err(bits) = apply_status(_py, ctx, flag) {
+                return bits;
+            }
+            return raise_exception::<u64>(_py, decimal_signal_name(flag), "decimal signal");
+        }
+        if let Err(bits) = apply_status(_py, ctx, status) {
+            return bits;
+        }
+        if out.special != DecimalSpecial::Finite {
+            // _fix overflowed to Infinity.
+            return decimal_bits(out);
+        }
+        if out.coeff.is_zero() {
+            // Any zero normalizes to 0E0.
+            return decimal_bits(DecimalHandle {
+                sign: out.sign,
+                coeff: BigInt::zero(),
+                exp: 0,
+                special: DecimalSpecial::Finite,
+            });
+        }
+        // Strip trailing zeros, but never raise the exponent above exp_max.
+        let exp_max = if ctx.clamp == 1 { ctx.etop() } else { ctx.emax };
+        while out.exp < exp_max && (&out.coeff % 10u8).is_zero() {
+            out.coeff /= 10u8;
+            out.exp += 1;
+        }
         decimal_bits(out)
     })
 }
@@ -1227,7 +1667,7 @@ pub extern "C" fn molt_decimal_exp(ctx_bits: u64, a_bits: u64) -> u64 {
             }
         };
         let mut status = MPD_INEXACT | MPD_ROUNDED;
-        if let Err(flag) = apply_precision(ctx, &mut dec, &mut status) {
+        if let Err(flag) = fix_decimal(ctx, &mut dec, &mut status) {
             if let Err(bits) = apply_status(_py, ctx, flag) {
                 return bits;
             }
@@ -1285,6 +1725,53 @@ fn align_add_sub(a: &DecimalHandle, b: &DecimalHandle) -> (BigInt, BigInt, i64) 
     (ca, cb, common_exp)
 }
 
+/// Align two finite operands for addition/subtraction with CPython's `_normalize`
+/// capping (Lib/_pydecimal.py): when the smaller operand is more than ~prec
+/// orders of magnitude below the larger, it is replaced by a single sticky digit.
+/// This keeps the aligned coefficients bounded (a result rounded to `prec` digits
+/// is identical) instead of materializing a 10**(Emax-Emin)-sized integer.
+///
+/// Returns the aligned `(coeff_a, coeff_b, common_exp)` triple, where the sign of
+/// each operand is NOT applied (callers attach signs, as with `align_add_sub`).
+fn normalize_add_operands(
+    a: &DecimalHandle,
+    b: &DecimalHandle,
+    prec: i64,
+) -> (BigInt, BigInt, i64) {
+    // `tmp` is the operand with the larger exponent; `other` the smaller.
+    let (tmp, other, tmp_is_a) = if a.exp < b.exp {
+        (b, a, false)
+    } else {
+        (a, b, true)
+    };
+
+    let tmp_len = digits_len(&tmp.coeff);
+    // exp = tmp.exp + min(-1, tmp_len - prec - 2)
+    let cap_exp = tmp.exp + (-1).min(tmp_len - prec - 2);
+
+    // If `other` is entirely below the sticky-digit threshold, collapse it to
+    // 1 * 10**cap_exp (its exact value rounds identically at `prec` digits).
+    let (other_coeff, other_exp) = {
+        let other_len = digits_len(&other.coeff);
+        if !other.coeff.is_zero() && other_len + other.exp - 1 < cap_exp {
+            (BigInt::one(), cap_exp)
+        } else {
+            (other.coeff.clone(), other.exp)
+        }
+    };
+
+    let common_exp = other_exp;
+    // tmp scaled up to other_exp; the gap is now bounded by ~prec digits.
+    let tmp_shift = u32::try_from(tmp.exp - common_exp).unwrap_or(0);
+    let tmp_coeff = &tmp.coeff * pow10_u32(tmp_shift);
+
+    if tmp_is_a {
+        (tmp_coeff, other_coeff, common_exp)
+    } else {
+        (other_coeff, tmp_coeff, common_exp)
+    }
+}
+
 fn finalize_binary(
     _py: &PyToken,
     ctx: &mut DecimalContextHandle,
@@ -1299,7 +1786,7 @@ fn finalize_binary(
         special: DecimalSpecial::Finite,
     };
     let mut status = 0u32;
-    if let Err(flag) = apply_precision(ctx, &mut dec, &mut status) {
+    if let Err(flag) = fix_decimal(ctx, &mut dec, &mut status) {
         if let Err(bits) = apply_status(_py, ctx, flag) {
             return bits;
         }
@@ -1346,7 +1833,7 @@ fn transcendental_via_f64(
         }
     };
     let mut status = MPD_INEXACT | MPD_ROUNDED;
-    if let Err(flag) = apply_precision(ctx, &mut dec, &mut status) {
+    if let Err(flag) = fix_decimal(ctx, &mut dec, &mut status) {
         if let Err(bits) = apply_status(_py, ctx, flag) {
             return bits;
         }
@@ -1388,7 +1875,7 @@ pub extern "C" fn molt_decimal_add(ctx_bits: u64, a_bits: u64, b_bits: u64) -> u
             return raise_exception::<u64>(_py, "InvalidOperation", "decimal signal");
         }
 
-        let (ca, cb, common_exp) = align_add_sub(a, b);
+        let (ca, cb, common_exp) = normalize_add_operands(a, b, ctx.prec);
         let sa = if a.sign { -ca } else { ca };
         let sb = if b.sign { -cb } else { cb };
         let sum = sa + sb;
@@ -1433,7 +1920,7 @@ pub extern "C" fn molt_decimal_sub(ctx_bits: u64, a_bits: u64, b_bits: u64) -> u
             return raise_exception::<u64>(_py, "InvalidOperation", "decimal signal");
         }
 
-        let (ca, cb, common_exp) = align_add_sub(a, b);
+        let (ca, cb, common_exp) = normalize_add_operands(a, b, ctx.prec);
         let sa = if a.sign { -ca } else { ca };
         let sb = if b.sign { -cb } else { cb };
         let diff = sa - sb;
@@ -1637,7 +2124,7 @@ pub extern "C" fn molt_decimal_pos(ctx_bits: u64, a_bits: u64) -> u64 {
         }
         let mut out = a.clone();
         let mut status = 0u32;
-        if let Err(flag) = apply_precision(ctx, &mut out, &mut status)
+        if let Err(flag) = fix_decimal(ctx, &mut out, &mut status)
             && let Err(bits) = apply_status(_py, ctx, flag)
         {
             return bits;
@@ -1797,8 +2284,8 @@ pub extern "C" fn molt_decimal_is_normal(ctx_bits: u64, a_bits: u64) -> u64 {
         }
         let ctx = unsafe { &*ctx_ptr };
         let adjusted = a.exp + digits_len(&a.coeff) - 1;
-        let emin = 1 - ctx.prec;
-        MoltObject::from_bool(adjusted >= emin).bits()
+        // CPython: is_normal iff context.Emin <= self.adjusted().
+        MoltObject::from_bool(ctx.emin <= adjusted).bits()
     })
 }
 
@@ -1817,8 +2304,8 @@ pub extern "C" fn molt_decimal_is_subnormal(ctx_bits: u64, a_bits: u64) -> u64 {
         }
         let ctx = unsafe { &*ctx_ptr };
         let adjusted = a.exp + digits_len(&a.coeff) - 1;
-        let emin = 1 - ctx.prec;
-        MoltObject::from_bool(adjusted < emin).bits()
+        // CPython: is_subnormal iff self.adjusted() < context.Emin.
+        MoltObject::from_bool(adjusted < ctx.emin).bits()
     })
 }
 
@@ -1848,8 +2335,8 @@ pub extern "C" fn molt_decimal_number_class(ctx_bits: u64, a_bits: u64) -> u64 {
                 } else {
                     let ctx = unsafe { &*ctx_ptr };
                     let adjusted = a.exp + digits_len(&a.coeff) - 1;
-                    let emin = 1 - ctx.prec;
-                    if adjusted < emin {
+                    // CPython number_class: subnormal iff adjusted() < Emin.
+                    if adjusted < ctx.emin {
                         if a.sign { "-Subnormal" } else { "+Subnormal" }
                     } else if a.sign {
                         "-Normal"
@@ -1971,42 +2458,57 @@ pub extern "C" fn molt_decimal_to_integral_value(ctx_bits: u64, a_bits: u64) -> 
         let Some(a) = decimal_handle_from_bits(a_bits) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid decimal handle");
         };
-        let ctx = unsafe { &mut *ctx_ptr };
-        if a.special != DecimalSpecial::Finite {
+        let ctx = unsafe { &*ctx_ptr };
+        if a.special != DecimalSpecial::Finite || a.exp >= 0 {
+            // Specials and already-integral values are returned unchanged.
             return decimal_bits(a.clone());
         }
-        if a.exp >= 0 {
-            return decimal_bits(a.clone());
-        }
-        let cut = -a.exp;
-        let Some(divisor) = pow10_i64(cut) else {
+        // CPython to_integral_value: quiet _rescale(0) — NO Inexact/Rounded.
+        let Some(mut ans) = rescale_quiet(a, 0, ctx.rounding) else {
             return raise_exception::<u64>(_py, "InvalidContext", "decimal signal");
         };
-        let q = &a.coeff / &divisor;
-        let rem = &a.coeff % &divisor;
-        let mut rounded = q;
-        if round_increment(ctx.rounding, a.sign, &rounded, &rem, &divisor) {
-            rounded += 1u8;
-        }
-        let mut status = 0u32;
-        if !rem.is_zero() {
-            status |= MPD_INEXACT | MPD_ROUNDED;
-        }
-        if let Err(bits) = apply_status(_py, ctx, status) {
-            return bits;
-        }
-        decimal_bits(DecimalHandle {
-            sign: a.sign && !rounded.is_zero(),
-            coeff: rounded,
-            exp: 0,
-            special: DecimalSpecial::Finite,
-        })
+        ans.sign = ans.sign && !ans.coeff.is_zero();
+        decimal_bits(ans)
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_decimal_to_integral_exact(ctx_bits: u64, a_bits: u64) -> u64 {
-    molt_decimal_to_integral_value(ctx_bits, a_bits)
+    molt_runtime_core::with_gil_entry!(_py, {
+        let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
+            Some(ptr) => ptr,
+            None => ensure_current_context(),
+        };
+        let Some(a) = decimal_handle_from_bits(a_bits) else {
+            return raise_exception::<u64>(_py, "TypeError", "invalid decimal handle");
+        };
+        let ctx = unsafe { &mut *ctx_ptr };
+        if a.special != DecimalSpecial::Finite || a.exp >= 0 {
+            return decimal_bits(a.clone());
+        }
+        if a.coeff.is_zero() {
+            // Zero -> 0E0 with no signals.
+            return decimal_bits(DecimalHandle {
+                sign: a.sign,
+                coeff: BigInt::zero(),
+                exp: 0,
+                special: DecimalSpecial::Finite,
+            });
+        }
+        // CPython to_integral_exact: _rescale(0), then Inexact (if changed) + Rounded.
+        let Some(mut ans) = rescale_quiet(a, 0, ctx.rounding) else {
+            return raise_exception::<u64>(_py, "InvalidContext", "decimal signal");
+        };
+        ans.sign = ans.sign && !ans.coeff.is_zero();
+        let mut status = MPD_ROUNDED;
+        if compare_finite(&ans, a) != Ordering::Equal {
+            status |= MPD_INEXACT;
+        }
+        if let Err(bits) = apply_status(_py, ctx, status) {
+            return bits;
+        }
+        decimal_bits(ans)
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -2066,6 +2568,102 @@ pub extern "C" fn molt_decimal_to_eng_string(a_bits: u64) -> u64 {
 
 // ── Unary operations ────────────────────────────────────────────────────
 
+/// Largest finite Decimal representable in `ctx` (`9...9 * 10^Etop`, prec nines)
+/// with the given sign — CPython's `_dec_from_triple(sign, '9'*prec, Etop())`,
+/// the next_plus/next_minus result for an infinite operand.
+fn prec_nines(ctx: &DecimalContextHandle, sign: bool) -> DecimalHandle {
+    let coeff = pow10_i64(ctx.prec).unwrap_or_else(BigInt::zero) - BigInt::one();
+    DecimalHandle {
+        sign,
+        coeff,
+        exp: ctx.etop(),
+        special: DecimalSpecial::Finite,
+    }
+}
+
+/// Shared core of next_plus (`toward_pos = true`) and next_minus.
+///
+/// Faithful port of CPython `Decimal.next_plus` / `Decimal.next_minus`:
+/// round the value toward +/-Infinity under a flag-suppressed copy of the
+/// context; if that rounding changes the numeric value, it IS the neighbour;
+/// otherwise step by one unit in the last place, `1 * 10**(Etiny - 1)`.
+fn decimal_next(_py: &PyToken, ctx: &DecimalContextHandle, a: &DecimalHandle, toward_pos: bool) -> u64 {
+    // Infinity handling.
+    if a.special == DecimalSpecial::Infinity {
+        if a.sign != toward_pos {
+            // +Inf for next_plus, -Inf for next_minus: unchanged.
+            return decimal_bits(a.clone());
+        }
+        // -Inf.next_plus() -> -Nmax(nines); +Inf.next_minus() -> +Nmax(nines).
+        // The result keeps the operand's own sign (CPython _dec_from_triple sign).
+        return decimal_bits(prec_nines(ctx, a.sign));
+    }
+    if a.special != DecimalSpecial::Finite {
+        return raise_exception::<u64>(_py, "InvalidOperation", "decimal signal");
+    }
+
+    // Round toward the requested infinity under a flag-suppressed context copy.
+    let mut local = ctx.clone();
+    local.rounding = if toward_pos {
+        MPD_ROUND_CEILING
+    } else {
+        MPD_ROUND_FLOOR
+    };
+    let mut fixed = a.clone();
+    let mut scratch = 0u32; // _ignore_all_flags(): rounding signals are discarded.
+    if fix_decimal(&local, &mut fixed, &mut scratch).is_err() {
+        return raise_exception::<u64>(_py, "InvalidContext", "decimal signal");
+    }
+
+    // If _fix produced a different numeric value, that is the neighbour.
+    let changed = if fixed.special != DecimalSpecial::Finite {
+        true
+    } else {
+        compare_finite(&fixed, a) != Ordering::Equal
+    };
+    if changed {
+        return decimal_bits(fixed);
+    }
+
+    // Otherwise step by one ULP: self +/- 1e(Etiny-1), rounded under `local`.
+    let mut result = if a.coeff.is_zero() {
+        // 0 +/- 1e(Etiny-1): the sum is exactly the epsilon (CPython's __add__
+        // zero-operand branch returns the other operand unchanged), with the sign
+        // set by the step direction. _fix then rounds it to the Etiny boundary.
+        DecimalHandle {
+            sign: !toward_pos,
+            coeff: BigInt::one(),
+            exp: local.etiny() - 1,
+            special: DecimalSpecial::Finite,
+        }
+    } else {
+        // Use the _normalize-capped alignment so the (possibly enormous) exponent
+        // gap between `a` and the Etiny-1 epsilon does not blow up the coefficient.
+        let epsilon = DecimalHandle {
+            sign: false,
+            coeff: BigInt::one(),
+            exp: local.etiny() - 1,
+            special: DecimalSpecial::Finite,
+        };
+        let (ca, ce, common_exp) = normalize_add_operands(a, &epsilon, local.prec);
+        let sa = if a.sign { -ca } else { ca };
+        let combined = if toward_pos { sa + ce } else { sa - ce };
+        let sign = combined.is_negative();
+        let coeff = combined.abs();
+        DecimalHandle {
+            sign: sign && !coeff.is_zero(),
+            coeff,
+            exp: common_exp,
+            special: DecimalSpecial::Finite,
+        }
+    };
+    let mut scratch2 = 0u32;
+    if fix_decimal(&local, &mut result, &mut scratch2).is_err() {
+        return raise_exception::<u64>(_py, "InvalidContext", "decimal signal");
+    }
+    decimal_bits(result)
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_decimal_next_plus(ctx_bits: u64, a_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
@@ -2077,40 +2675,7 @@ pub extern "C" fn molt_decimal_next_plus(ctx_bits: u64, a_bits: u64) -> u64 {
             return raise_exception::<u64>(_py, "TypeError", "invalid decimal handle");
         };
         let ctx = unsafe { &*ctx_ptr };
-        if a.special == DecimalSpecial::Infinity && !a.sign {
-            return decimal_bits(a.clone());
-        }
-        if a.special == DecimalSpecial::Infinity && a.sign {
-            let emax = ctx.prec - 1;
-            let coeff = pow10_i64(ctx.prec).unwrap_or_else(BigInt::zero) - BigInt::one();
-            return decimal_bits(DecimalHandle {
-                sign: true,
-                coeff,
-                exp: emax - ctx.prec + 1,
-                special: DecimalSpecial::Finite,
-            });
-        }
-        if a.special != DecimalSpecial::Finite {
-            return raise_exception::<u64>(_py, "InvalidOperation", "decimal signal");
-        }
-        let etiny = (1 - ctx.prec) - ctx.prec + 1;
-        let epsilon = DecimalHandle {
-            sign: false,
-            coeff: BigInt::one(),
-            exp: etiny,
-            special: DecimalSpecial::Finite,
-        };
-        let (ca, ce, common_exp) = align_add_sub(a, &epsilon);
-        let sa = if a.sign { -ca } else { ca };
-        let sum = sa + ce;
-        let sign = sum.is_negative();
-        let coeff = sum.abs();
-        decimal_bits(DecimalHandle {
-            sign: sign && !coeff.is_zero(),
-            coeff,
-            exp: common_exp,
-            special: DecimalSpecial::Finite,
-        })
+        decimal_next(_py, ctx, a, true)
     })
 }
 
@@ -2125,40 +2690,7 @@ pub extern "C" fn molt_decimal_next_minus(ctx_bits: u64, a_bits: u64) -> u64 {
             return raise_exception::<u64>(_py, "TypeError", "invalid decimal handle");
         };
         let ctx = unsafe { &*ctx_ptr };
-        if a.special == DecimalSpecial::Infinity && a.sign {
-            return decimal_bits(a.clone());
-        }
-        if a.special == DecimalSpecial::Infinity && !a.sign {
-            let emax = ctx.prec - 1;
-            let coeff = pow10_i64(ctx.prec).unwrap_or_else(BigInt::zero) - BigInt::one();
-            return decimal_bits(DecimalHandle {
-                sign: false,
-                coeff,
-                exp: emax - ctx.prec + 1,
-                special: DecimalSpecial::Finite,
-            });
-        }
-        if a.special != DecimalSpecial::Finite {
-            return raise_exception::<u64>(_py, "InvalidOperation", "decimal signal");
-        }
-        let etiny = (1 - ctx.prec) - ctx.prec + 1;
-        let epsilon = DecimalHandle {
-            sign: false,
-            coeff: BigInt::one(),
-            exp: etiny,
-            special: DecimalSpecial::Finite,
-        };
-        let (ca, ce, common_exp) = align_add_sub(a, &epsilon);
-        let sa = if a.sign { -ca } else { ca };
-        let diff = sa - ce;
-        let sign = diff.is_negative();
-        let coeff = diff.abs();
-        decimal_bits(DecimalHandle {
-            sign: sign && !coeff.is_zero(),
-            coeff,
-            exp: common_exp,
-            special: DecimalSpecial::Finite,
-        })
+        decimal_next(_py, ctx, a, false)
     })
 }
 
@@ -2319,20 +2851,29 @@ pub extern "C" fn molt_decimal_scaleb(ctx_bits: u64, a_bits: u64, b_bits: u64) -
             Err(bits) => return bits,
         };
         let ctx = unsafe { &mut *ctx_ptr };
-        if a.special != DecimalSpecial::Finite || b.special != DecimalSpecial::Finite {
+        // NaN second argument is an InvalidOperation; NaN first propagates (handled
+        // by the Python shim's NaN routing). The second argument must be integral.
+        if b.special != DecimalSpecial::Finite || b.exp != 0 {
             return raise_exception::<u64>(_py, "InvalidOperation", "decimal signal");
         }
-        if b.exp != 0 {
-            return raise_exception::<u64>(
-                _py,
-                "InvalidOperation",
-                "second argument must be integer",
-            );
-        }
-        let Some(shift) = b.coeff.to_i64() else {
-            return raise_exception::<u64>(_py, "InvalidOperation", "exponent too large");
+        // Shift must satisfy |shift| <= 2*(Emax + prec) (CPython scaleb bounds).
+        let limit = 2i64.saturating_mul(ctx.emax.saturating_add(ctx.prec));
+        let Some(mut shift) = b.coeff.to_i64() else {
+            return raise_exception::<u64>(_py, "InvalidOperation", "decimal signal");
         };
-        let shift = if b.sign { -shift } else { shift };
+        if b.sign {
+            shift = -shift;
+        }
+        if !(-limit <= shift && shift <= limit) {
+            return raise_exception::<u64>(_py, "InvalidOperation", "decimal signal");
+        }
+        // Infinite first argument is returned unchanged.
+        if a.special == DecimalSpecial::Infinity {
+            return decimal_bits(a.clone());
+        }
+        if a.special != DecimalSpecial::Finite {
+            return raise_exception::<u64>(_py, "InvalidOperation", "decimal signal");
+        }
         let mut dec = DecimalHandle {
             sign: a.sign,
             coeff: a.coeff.clone(),
@@ -2340,12 +2881,15 @@ pub extern "C" fn molt_decimal_scaleb(ctx_bits: u64, a_bits: u64, b_bits: u64) -
             special: DecimalSpecial::Finite,
         };
         let mut status = 0u32;
-        if let Err(flag) = apply_precision(ctx, &mut dec, &mut status)
-            && let Err(bits) = apply_status(_py, ctx, flag)
-        {
+        if let Err(flag) = fix_decimal(ctx, &mut dec, &mut status) {
+            if let Err(bits) = apply_status(_py, ctx, flag) {
+                return bits;
+            }
+            return raise_exception::<u64>(_py, decimal_signal_name(flag), "decimal signal");
+        }
+        if let Err(bits) = apply_status(_py, ctx, status) {
             return bits;
         }
-        let _ = apply_status(_py, ctx, status);
         decimal_bits(dec)
     })
 }
@@ -2411,7 +2955,7 @@ pub extern "C" fn molt_decimal_fma(ctx_bits: u64, a_bits: u64, b_bits: u64, c_bi
             exp: product_exp,
             special: DecimalSpecial::Finite,
         };
-        let (ca, cc, common_exp) = align_add_sub(&product, c);
+        let (ca, cc, common_exp) = normalize_add_operands(&product, c, ctx.prec);
         let sa = if product.sign { -ca } else { ca };
         let sc = if c.sign { -cc } else { cc };
         let sum = sa + sc;
@@ -2419,4 +2963,166 @@ pub extern "C" fn molt_decimal_fma(ctx_bits: u64, a_bits: u64, b_bits: u64, c_bi
         let coeff = sum.abs();
         finalize_binary(_py, ctx, sign, coeff, common_exp)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ctx(prec: i64, emin: i64, emax: i64, clamp: i32, rounding: i32) -> DecimalContextHandle {
+        DecimalContextHandle {
+            prec,
+            traps: 0,
+            status: 0,
+            rounding,
+            capitals: 1,
+            emin,
+            emax,
+            clamp,
+            refs: 1,
+        }
+    }
+
+    fn fin(sign: bool, coeff: &str, exp: i64) -> DecimalHandle {
+        DecimalHandle {
+            sign,
+            coeff: coeff.parse::<BigInt>().unwrap(),
+            exp,
+            special: DecimalSpecial::Finite,
+        }
+    }
+
+    fn adjusted(d: &DecimalHandle) -> i64 {
+        d.exp + digits_len(&d.coeff) - 1
+    }
+
+    #[test]
+    fn default_context_has_cpython_bounds() {
+        let c = default_context();
+        assert_eq!(c.emin, -999_999);
+        assert_eq!(c.emax, 999_999);
+        assert_eq!(c.clamp, 0);
+        assert_eq!(c.prec, 28);
+        // Etiny = Emin - prec + 1 = -1000026; Etop = Emax - prec + 1 = 999972.
+        assert_eq!(c.etiny(), -1_000_026);
+        assert_eq!(c.etop(), 999_972);
+    }
+
+    #[test]
+    fn is_normal_subnormal_at_default_emin() {
+        // Decimal('1e-100') has adjusted exponent -100, which is >> default Emin
+        // (-999999), so it is NORMAL, not subnormal. This is the headline P0:
+        // the phantom emin=1-prec=-27 made this misclassified.
+        let c = default_context();
+        let d = fin(false, "1", -100);
+        assert_eq!(adjusted(&d), -100);
+        assert!(c.emin <= adjusted(&d), "1e-100 must be normal at default Emin");
+        assert!(!(adjusted(&d) < c.emin), "1e-100 must NOT be subnormal");
+    }
+
+    #[test]
+    fn is_subnormal_below_custom_emin() {
+        // With Emin=-50, 1e-100 (adjusted -100) IS subnormal.
+        let c = ctx(28, -50, 999_999, 0, MPD_ROUND_HALF_EVEN);
+        let d = fin(false, "1", -100);
+        assert!(adjusted(&d) < c.emin);
+        assert!(!(c.emin <= adjusted(&d)));
+    }
+
+    #[test]
+    fn fix_overflow_above_emax_traps_and_signals() {
+        // prec=3, Emax=2 (Etop=0). 1.23e5 has adjusted=5 > Emax -> Overflow.
+        let c = ctx(3, -2, 2, 0, MPD_ROUND_HALF_EVEN);
+        let mut d = fin(false, "123", 3); // 1.23e5, adjusted = 5
+        let mut status = 0u32;
+        fix_decimal(&c, &mut d, &mut status).unwrap();
+        assert!(status & MPD_OVERFLOW != 0);
+        assert!(status & MPD_INEXACT != 0);
+        assert!(status & MPD_ROUNDED != 0);
+        // ROUND_HALF_EVEN overflow result is +Infinity.
+        assert_eq!(d.special, DecimalSpecial::Infinity);
+    }
+
+    #[test]
+    fn fix_overflow_round_down_yields_nmax() {
+        // ROUND_DOWN overflow result is the largest finite (Nmax).
+        let c = ctx(3, -2, 2, 0, MPD_ROUND_DOWN);
+        let mut d = fin(false, "123", 3);
+        let mut status = 0u32;
+        fix_decimal(&c, &mut d, &mut status).unwrap();
+        assert!(status & MPD_OVERFLOW != 0);
+        assert_eq!(d.special, DecimalSpecial::Finite);
+        // Nmax = 999 * 10^Etop, Etop = Emax - prec + 1 = 0.
+        assert_eq!(d.coeff, BigInt::from(999));
+        assert_eq!(d.exp, 0);
+    }
+
+    #[test]
+    fn fix_subnormal_underflow_signals() {
+        // prec=3, Emin=-2 => Etiny = -4. A value at 1e-5 (adjusted -5 < Emin)
+        // rounds into the subnormal range and underflows.
+        let c = ctx(3, -2, 999_999, 0, MPD_ROUND_HALF_EVEN);
+        let mut d = fin(false, "15", -6); // 1.5e-5, adjusted = -5
+        let mut status = 0u32;
+        fix_decimal(&c, &mut d, &mut status).unwrap();
+        assert!(status & MPD_SUBNORMAL != 0, "must signal Subnormal");
+        // It was inexact (rounded to Etiny=-4), so Underflow + Inexact + Rounded.
+        assert!(status & MPD_UNDERFLOW != 0, "must signal Underflow");
+        assert!(status & MPD_INEXACT != 0);
+        assert!(status & MPD_ROUNDED != 0);
+        assert_eq!(d.exp, c.etiny());
+    }
+
+    #[test]
+    fn fix_representable_value_is_unchanged_and_silent() {
+        let c = default_context();
+        let mut d = fin(false, "12345", -2); // 123.45, well within bounds
+        let mut status = 0u32;
+        fix_decimal(&c, &mut d, &mut status).unwrap();
+        assert_eq!(status, 0, "in-range value must raise no signals");
+        assert_eq!(d.coeff, BigInt::from(12345));
+        assert_eq!(d.exp, -2);
+    }
+
+    #[test]
+    fn fix_zero_clamps_exponent_into_range() {
+        // prec=3, Emin=-2 => Etiny=-4. Zero with exp=-10 clamps up to Etiny.
+        let c = ctx(3, -2, 2, 0, MPD_ROUND_HALF_EVEN);
+        let mut d = fin(false, "0", -10);
+        let mut status = 0u32;
+        fix_decimal(&c, &mut d, &mut status).unwrap();
+        assert!(status & MPD_CLAMPED != 0);
+        assert_eq!(d.exp, c.etiny());
+        assert!(d.coeff.is_zero());
+    }
+
+    #[test]
+    fn fix_clamp_one_folds_down_exponent() {
+        // clamp=1: a value whose exponent exceeds Etop is folded down (padded).
+        // prec=3, Emax=5 => Etop = 3. 1e4 (coeff '1', exp 4) > Etop -> fold to Etop.
+        let c = ctx(3, -5, 5, 1, MPD_ROUND_HALF_EVEN);
+        let mut d = fin(false, "1", 4);
+        let mut status = 0u32;
+        fix_decimal(&c, &mut d, &mut status).unwrap();
+        assert!(status & MPD_CLAMPED != 0);
+        assert_eq!(d.exp, c.etop());
+        // Coefficient padded: 1 * 10^(4-3) = 10.
+        assert_eq!(d.coeff, BigInt::from(10));
+    }
+
+    #[test]
+    fn rescale_quiet_rounds_to_integer() {
+        // _rescale(0) of 1.2345 with HALF_EVEN -> 1, no flags consulted here.
+        let d = fin(false, "12345", -4); // 1.2345
+        let r = rescale_quiet(&d, 0, MPD_ROUND_HALF_EVEN).unwrap();
+        assert_eq!(r.coeff, BigInt::from(1));
+        assert_eq!(r.exp, 0);
+    }
+
+    #[test]
+    fn etiny_etop_match_cpython_formula() {
+        let c = ctx(9, -10, 10, 0, MPD_ROUND_HALF_EVEN);
+        assert_eq!(c.etiny(), -10 - 9 + 1); // -18
+        assert_eq!(c.etop(), 10 - 9 + 1); // 2
+    }
 }

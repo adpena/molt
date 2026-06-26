@@ -227,7 +227,7 @@ def _parse_intrinsic_defaults(name: str, params: list[str]) -> tuple[str, ...]:
 def _load_manifest() -> tuple[str, list[IntrinsicEntry]]:
     if not MANIFEST.exists():
         raise FileNotFoundError(f"manifest missing: {MANIFEST}")
-    raw = MANIFEST.read_text()
+    raw = MANIFEST.read_text(encoding="utf-8")
     defs = _iter_defs(raw)
     entries: list[IntrinsicEntry] = []
     seen: set[str] = set()
@@ -256,7 +256,7 @@ def _validate_symbols(entries: list[IntrinsicEntry]) -> None:
     runtime_root = ROOT / "runtime"
     src_roots = sorted(path for path in runtime_root.glob("*/src") if path.is_dir())
     rs_files = [rs for src_root in src_roots for rs in src_root.rglob("*.rs")]
-    corpus = "\n".join(path.read_text() for path in rs_files)
+    corpus = "\n".join(path.read_text(encoding="utf-8") for path in rs_files)
     # Single-pass: extract all function names defined in the corpus — O(n+m)
     # instead of O(n*m) regex searches per symbol
     defined_fns = set(re.findall(r"\bfn\s+(\w+)", corpus))
@@ -554,18 +554,18 @@ def _rustfmt(path: Path) -> None:
 
 
 def _write_text_if_changed(path: Path, text: str) -> bool:
-    if path.exists() and path.read_text() == text:
+    if path.exists() and path.read_text(encoding="utf-8") == text:
         return False
     if _CHECK_MODE:
-        _record_check_diff(path, path.read_text() if path.exists() else "", text)
+        _record_check_diff(path, path.read_text(encoding="utf-8") if path.exists() else "", text)
         return True
-    path.write_text(text)
+    path.write_text(text, encoding="utf-8")
     return True
 
 
 def _write_rust_if_changed(path: Path, text: str) -> bool:
     path.parent.mkdir(parents=True, exist_ok=True)
-    if path.exists() and path.read_text() == text:
+    if path.exists() and path.read_text(encoding="utf-8") == text:
         return False
     tmp: Path | None = None
     try:
@@ -581,12 +581,12 @@ def _write_rust_if_changed(path: Path, text: str) -> bool:
             tmp = Path(tmp_file.name)
             tmp_file.write(text)
         _rustfmt(tmp)
-        formatted = tmp.read_text()
-        if path.exists() and path.read_text() == formatted:
+        formatted = tmp.read_text(encoding="utf-8")
+        if path.exists() and path.read_text(encoding="utf-8") == formatted:
             return False
         if _CHECK_MODE:
             _record_check_diff(
-                path, path.read_text() if path.exists() else "", formatted
+                path, path.read_text(encoding="utf-8") if path.exists() else "", formatted
             )
             return True
         tmp.replace(path)
@@ -857,7 +857,7 @@ def _write_pyi(raw_manifest: str) -> None:
 def _remove_backend_overrides_rs() -> None:
     if _CHECK_MODE and OUT_BACKEND_OVERRIDES_RS.exists():
         _record_check_diff(
-            OUT_BACKEND_OVERRIDES_RS, OUT_BACKEND_OVERRIDES_RS.read_text(), ""
+            OUT_BACKEND_OVERRIDES_RS, OUT_BACKEND_OVERRIDES_RS.read_text(encoding="utf-8"), ""
         )
         return
     OUT_BACKEND_OVERRIDES_RS.unlink(missing_ok=True)

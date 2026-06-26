@@ -572,6 +572,164 @@ pub extern "C" fn molt_decimal_context_set_rounding(ctx_bits: u64, round_bits: u
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn molt_decimal_context_get_emin(ctx_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
+            Some(ptr) => ptr,
+            None => ensure_current_context(),
+        };
+        let ctx = unsafe { &*ctx_ptr };
+        int_bits_from_i64(_py, ctx.ctx.emin as i64)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_decimal_context_set_emin(ctx_bits: u64, emin_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
+            Some(ptr) => ptr,
+            None => ensure_current_context(),
+        };
+        let Some(emin) = obj_from_bits(emin_bits).as_int() else {
+            return raise_exception::<u64>(_py, "TypeError", "Emin must be an integer");
+        };
+        // CPython: Emin must be in [-inf, 0]. libmpdec reads ctx->emin directly.
+        if emin > 0 {
+            return raise_exception::<u64>(_py, "ValueError", "Emin must be in [-inf, 0]");
+        }
+        unsafe {
+            (*ctx_ptr).ctx.emin = emin as mpd_ssize_t;
+        }
+        MoltObject::none().bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_decimal_context_get_emax(ctx_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
+            Some(ptr) => ptr,
+            None => ensure_current_context(),
+        };
+        let ctx = unsafe { &*ctx_ptr };
+        int_bits_from_i64(_py, ctx.ctx.emax as i64)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_decimal_context_set_emax(ctx_bits: u64, emax_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
+            Some(ptr) => ptr,
+            None => ensure_current_context(),
+        };
+        let Some(emax) = obj_from_bits(emax_bits).as_int() else {
+            return raise_exception::<u64>(_py, "TypeError", "Emax must be an integer");
+        };
+        // CPython: Emax must be in [0, inf]. libmpdec reads ctx->emax directly.
+        if emax < 0 {
+            return raise_exception::<u64>(_py, "ValueError", "Emax must be in [0, inf]");
+        }
+        unsafe {
+            (*ctx_ptr).ctx.emax = emax as mpd_ssize_t;
+        }
+        MoltObject::none().bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_decimal_context_get_clamp(ctx_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
+            Some(ptr) => ptr,
+            None => ensure_current_context(),
+        };
+        let ctx = unsafe { &*ctx_ptr };
+        int_bits_from_i64(_py, ctx.ctx.clamp as i64)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_decimal_context_set_clamp(ctx_bits: u64, clamp_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
+            Some(ptr) => ptr,
+            None => ensure_current_context(),
+        };
+        let Some(clamp) = obj_from_bits(clamp_bits).as_int() else {
+            return raise_exception::<u64>(_py, "TypeError", "clamp must be an integer");
+        };
+        // CPython: clamp must be in [0, 1].
+        if !(0..=1).contains(&clamp) {
+            return raise_exception::<u64>(_py, "ValueError", "clamp must be in [0, 1]");
+        }
+        unsafe {
+            (*ctx_ptr).ctx.clamp = clamp as c_int;
+        }
+        MoltObject::none().bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_decimal_context_get_capitals(ctx_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
+            Some(ptr) => ptr,
+            None => ensure_current_context(),
+        };
+        let ctx = unsafe { &*ctx_ptr };
+        int_bits_from_i64(_py, ctx.capitals as i64)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_decimal_context_set_capitals(ctx_bits: u64, capitals_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
+            Some(ptr) => ptr,
+            None => ensure_current_context(),
+        };
+        let Some(capitals) = obj_from_bits(capitals_bits).as_int() else {
+            return raise_exception::<u64>(_py, "TypeError", "capitals must be an integer");
+        };
+        // CPython: capitals must be in [0, 1].
+        if !(0..=1).contains(&capitals) {
+            return raise_exception::<u64>(_py, "ValueError", "capitals must be in [0, 1]");
+        }
+        unsafe {
+            (*ctx_ptr).capitals = capitals as c_int;
+        }
+        MoltObject::none().bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_decimal_context_etiny(ctx_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
+            Some(ptr) => ptr,
+            None => ensure_current_context(),
+        };
+        let ctx = unsafe { &*ctx_ptr };
+        // Etiny = Emin - prec + 1.
+        int_bits_from_i64(_py, (ctx.ctx.emin - ctx.ctx.prec + 1) as i64)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_decimal_context_etop(ctx_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
+            Some(ptr) => ptr,
+            None => ensure_current_context(),
+        };
+        let ctx = unsafe { &*ctx_ptr };
+        // Etop = Emax - prec + 1.
+        int_bits_from_i64(_py, (ctx.ctx.emax - ctx.ctx.prec + 1) as i64)
+    })
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_decimal_context_clear_flags(ctx_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let ctx_ptr = match context_ptr_from_bits(ctx_bits) {

@@ -49,6 +49,56 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             crate::molt_decimal_context_set_rounding as *const (),
         )),
         #[cfg(feature = "stdlib_decimal")]
+        "molt_decimal_context_get_emin" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_decimal_context_get_emin",
+            crate::molt_decimal_context_get_emin as *const (),
+        )),
+        #[cfg(feature = "stdlib_decimal")]
+        "molt_decimal_context_set_emin" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_decimal_context_set_emin",
+            crate::molt_decimal_context_set_emin as *const (),
+        )),
+        #[cfg(feature = "stdlib_decimal")]
+        "molt_decimal_context_get_emax" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_decimal_context_get_emax",
+            crate::molt_decimal_context_get_emax as *const (),
+        )),
+        #[cfg(feature = "stdlib_decimal")]
+        "molt_decimal_context_set_emax" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_decimal_context_set_emax",
+            crate::molt_decimal_context_set_emax as *const (),
+        )),
+        #[cfg(feature = "stdlib_decimal")]
+        "molt_decimal_context_get_clamp" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_decimal_context_get_clamp",
+            crate::molt_decimal_context_get_clamp as *const (),
+        )),
+        #[cfg(feature = "stdlib_decimal")]
+        "molt_decimal_context_set_clamp" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_decimal_context_set_clamp",
+            crate::molt_decimal_context_set_clamp as *const (),
+        )),
+        #[cfg(feature = "stdlib_decimal")]
+        "molt_decimal_context_get_capitals" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_decimal_context_get_capitals",
+            crate::molt_decimal_context_get_capitals as *const (),
+        )),
+        #[cfg(feature = "stdlib_decimal")]
+        "molt_decimal_context_set_capitals" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_decimal_context_set_capitals",
+            crate::molt_decimal_context_set_capitals as *const (),
+        )),
+        #[cfg(feature = "stdlib_decimal")]
+        "molt_decimal_context_etiny" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_decimal_context_etiny",
+            crate::molt_decimal_context_etiny as *const (),
+        )),
+        #[cfg(feature = "stdlib_decimal")]
+        "molt_decimal_context_etop" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_decimal_context_etop",
+            crate::molt_decimal_context_etop as *const (),
+        )),
+        #[cfg(feature = "stdlib_decimal")]
         "molt_decimal_context_clear_flags" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_decimal_context_clear_flags",
             crate::molt_decimal_context_clear_flags as *const (),
