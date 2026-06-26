@@ -136,6 +136,34 @@ def _normalize_token_sequence(values, source_name):
     return out
 
 
+def _require_non_negative_int(value, field_name: str) -> int:
+    if isinstance(value, bool):
+        raise TypeError(f"{field_name} must be a non-negative integer")
+    try:
+        number = int(value)
+    except (TypeError, ValueError) as exc:
+        raise TypeError(f"{field_name} must be a non-negative integer") from exc
+    if number != value:
+        raise TypeError(f"{field_name} must be a non-negative integer")
+    if number < 0:
+        raise ValueError(f"{field_name} must be non-negative")
+    return number
+
+
+def _require_positive_int(value, field_name: str) -> int:
+    if isinstance(value, bool):
+        raise TypeError(f"{field_name} must be a positive integer")
+    try:
+        number = int(value)
+    except (TypeError, ValueError) as exc:
+        raise TypeError(f"{field_name} must be a positive integer") from exc
+    if number != value:
+        raise TypeError(f"{field_name} must be a positive integer")
+    if number <= 0:
+        raise ValueError(f"{field_name} must be positive")
+    return number
+
+
 def _require_conditioning(conditioning, source_name: str) -> SpeculativeConditioning:
     if not isinstance(conditioning, SpeculativeConditioning):
         raise TypeError(f"{source_name} must be SpeculativeConditioning")
@@ -154,110 +182,20 @@ def _require_verify_result(result, source_name: str) -> SpeculativeVerifyResult:
     return result
 
 
-def speculative_decode_greedy(
-    verify_block,
-    draft_block,
-    prompt_tokens,
+def _run_lossless_speculative_decode(
     *,
-    max_new_tokens=100,
-    block_size=16,
-    eos_token_id=None,
-):
-    """Lossless block-speculative greedy decoding."""
-    if max_new_tokens < 0:
-        raise ValueError("max_new_tokens must be non-negative")
-    if block_size <= 0:
-        raise ValueError("block_size must be positive")
-
-    prompt = _normalize_token_sequence(prompt_tokens, "prompt_tokens")
-    prefix = list(prompt)
-    emitted = []
-    drafted_total = 0
-    accepted_total = 0
-    target_total = 0
-    verify_calls = 0
-
-    while len(emitted) < max_new_tokens:
-        remaining = max_new_tokens - len(emitted)
-        request_size = block_size if block_size < remaining else remaining
-
-        drafted = _normalize_token_sequence(
-            draft_block(prefix, request_size),
-            "draft_block",
-        )
-        if not drafted:
-            raise ValueError("draft_block must return at least one token")
-        if len(drafted) > request_size:
-            raise ValueError("draft_block returned more than the requested block size")
-        drafted_total += len(drafted)
-
-        verified = _normalize_token_sequence(
-            verify_block(prefix, drafted),
-            "verify_block",
-        )
-        verify_calls += 1
-        if len(verified) != len(drafted) + 1:
-            raise ValueError(
-                "verify_block must return len(drafted_tokens) + 1 target tokens"
-            )
-
-        mismatch = False
-        for idx, draft_token in enumerate(drafted):
-            target_token = verified[idx]
-            if draft_token == target_token:
-                accepted_total += 1
-            else:
-                mismatch = True
-            if eos_token_id is not None and target_token == eos_token_id:
-                return SpeculativeDecodeResult(
-                    prompt,
-                    emitted,
-                    drafted_tokens=drafted_total,
-                    accepted_draft_tokens=accepted_total,
-                    target_tokens_emitted=target_total,
-                    verify_calls=verify_calls,
-                )
-            prefix.append(target_token)
-            emitted.append(target_token)
-            target_total += 1
-            if len(emitted) >= max_new_tokens or mismatch:
-                break
-
-        if mismatch or len(emitted) >= max_new_tokens:
-            continue
-
-        extra_token = verified[len(drafted)]
-        if eos_token_id is not None and extra_token == eos_token_id:
-            break
-        prefix.append(extra_token)
-        emitted.append(extra_token)
-        target_total += 1
-
-    return SpeculativeDecodeResult(
-        prompt,
-        emitted,
-        drafted_tokens=drafted_total,
-        accepted_draft_tokens=accepted_total,
-        target_tokens_emitted=target_total,
-        verify_calls=verify_calls,
-    )
-
-
-def speculative_decode_greedy_conditioned(
-    verify_step,
-    draft_step,
     prompt_tokens,
-    *,
-    initial_conditioning: SpeculativeConditioning | None = None,
-    max_new_tokens=100,
-    block_size=16,
-    eos_token_id=None,
+    max_new_tokens,
+    block_size,
+    eos_token_id,
+    draft_tokens_fn,
+    verify_tokens_fn,
+    draft_source_name: str,
+    verify_source_name: str,
+    verified_length_name: str,
 ):
-    """Lossless speculative decoding with explicit verifier/drafter separation."""
-    if max_new_tokens < 0:
-        raise ValueError("max_new_tokens must be non-negative")
-    if block_size <= 0:
-        raise ValueError("block_size must be positive")
+    max_new_tokens = _require_non_negative_int(max_new_tokens, "max_new_tokens")
+    block_size = _require_positive_int(block_size, "block_size")
 
     prompt = _normalize_token_sequence(prompt_tokens, "prompt_tokens")
     prefix = list(prompt)
@@ -267,61 +205,32 @@ def speculative_decode_greedy_conditioned(
     target_total = 0
     verify_calls = 0
     step_index = 0
-    conditioning = (
-        SpeculativeConditioning()
-        if initial_conditioning is None
-        else _require_conditioning(initial_conditioning, "initial_conditioning")
-    )
-    refresh_validator = conditioning.validate_refresh_conditioning
-    conditioning = refresh_validator(conditioning, "initial_conditioning")
 
     while len(emitted) < max_new_tokens:
         remaining = max_new_tokens - len(emitted)
         request_size = block_size if block_size < remaining else remaining
 
-        draft_request = SpeculativeDraftRequest(
-            prefix,
-            request_size,
-            conditioning,
-            step_index=step_index,
-        )
-        draft_result = _require_draft_result(
-            draft_step(draft_request),
-            "draft_step",
-        )
         drafted = _normalize_token_sequence(
-            draft_result.draft_tokens,
-            "draft_step",
+            draft_tokens_fn(prefix, request_size, step_index),
+            draft_source_name,
         )
         if not drafted:
-            raise ValueError("draft_step must return at least one token")
+            raise ValueError(f"{draft_source_name} must return at least one token")
         if len(drafted) > request_size:
-            raise ValueError("draft_step returned more than the requested block size")
+            raise ValueError(
+                f"{draft_source_name} returned more than the requested block size"
+            )
         drafted_total += len(drafted)
 
-        verify_request = SpeculativeVerifyRequest(
-            prefix,
-            drafted,
-            conditioning,
-            step_index=step_index,
-        )
-        verify_result = _require_verify_result(
-            verify_step(verify_request),
-            "verify_step",
-        )
         verified = _normalize_token_sequence(
-            verify_result.verified_tokens,
-            "verify_step",
+            verify_tokens_fn(prefix, drafted, step_index),
+            verify_source_name,
         )
         verify_calls += 1
         if len(verified) != len(drafted) + 1:
             raise ValueError(
-                "verify_step must return len(draft_tokens) + 1 target tokens"
-            )
-        if verify_result.conditioning is not None:
-            conditioning = refresh_validator(
-                verify_result.conditioning,
-                "verify_result.conditioning",
+                f"{verify_source_name} must return "
+                f"len({verified_length_name}) + 1 target tokens"
             )
 
         mismatch = False
@@ -365,4 +274,95 @@ def speculative_decode_greedy_conditioned(
         accepted_draft_tokens=accepted_total,
         target_tokens_emitted=target_total,
         verify_calls=verify_calls,
+    )
+
+
+def speculative_decode_greedy(
+    verify_block,
+    draft_block,
+    prompt_tokens,
+    *,
+    max_new_tokens=100,
+    block_size=16,
+    eos_token_id=None,
+):
+    """Lossless block-speculative greedy decoding."""
+    return _run_lossless_speculative_decode(
+        prompt_tokens=prompt_tokens,
+        max_new_tokens=max_new_tokens,
+        block_size=block_size,
+        eos_token_id=eos_token_id,
+        draft_tokens_fn=lambda prefix, request_size, _step_index: draft_block(
+            prefix, request_size
+        ),
+        verify_tokens_fn=lambda prefix, drafted, _step_index: verify_block(
+            prefix, drafted
+        ),
+        draft_source_name="draft_block",
+        verify_source_name="verify_block",
+        verified_length_name="drafted_tokens",
+    )
+
+
+def speculative_decode_greedy_conditioned(
+    verify_step,
+    draft_step,
+    prompt_tokens,
+    *,
+    initial_conditioning: SpeculativeConditioning | None = None,
+    max_new_tokens=100,
+    block_size=16,
+    eos_token_id=None,
+):
+    """Lossless speculative decoding with explicit verifier/drafter separation."""
+    conditioning = (
+        SpeculativeConditioning()
+        if initial_conditioning is None
+        else _require_conditioning(initial_conditioning, "initial_conditioning")
+    )
+    refresh_validator = conditioning.validate_refresh_conditioning
+    conditioning = refresh_validator(conditioning, "initial_conditioning")
+
+    def draft_tokens(prefix, request_size, step_index):
+        draft_request = SpeculativeDraftRequest(
+            prefix,
+            request_size,
+            conditioning,
+            step_index=step_index,
+        )
+        draft_result = _require_draft_result(
+            draft_step(draft_request),
+            "draft_step",
+        )
+        return draft_result.draft_tokens
+
+    def verify_tokens(prefix, drafted, step_index):
+        nonlocal conditioning
+        verify_request = SpeculativeVerifyRequest(
+            prefix,
+            drafted,
+            conditioning,
+            step_index=step_index,
+        )
+        verify_result = _require_verify_result(
+            verify_step(verify_request),
+            "verify_step",
+        )
+        if verify_result.conditioning is not None:
+            conditioning = refresh_validator(
+                verify_result.conditioning,
+                "verify_result.conditioning",
+            )
+        return verify_result.verified_tokens
+
+    return _run_lossless_speculative_decode(
+        prompt_tokens=prompt_tokens,
+        max_new_tokens=max_new_tokens,
+        block_size=block_size,
+        eos_token_id=eos_token_id,
+        draft_tokens_fn=draft_tokens,
+        verify_tokens_fn=verify_tokens,
+        draft_source_name="draft_step",
+        verify_source_name="verify_step",
+        verified_length_name="draft_tokens",
     )
