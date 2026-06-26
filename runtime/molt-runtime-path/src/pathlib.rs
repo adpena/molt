@@ -1011,30 +1011,37 @@ pub extern "C" fn molt_pathlib_glob(path_bits: u64, pattern_bits: u64) -> u64 {
         } else {
             format!("{s}/{pattern}")
         };
-        let mut results: Vec<String> = Vec::new();
         #[cfg(feature = "stdlib_fs_extra")]
-        match glob::glob(&full_pattern) {
-            Ok(paths) => {
-                for entry in paths {
-                    match entry {
-                        Ok(p) => results.push(p.to_string_lossy().into_owned()),
-                        Err(_) => continue,
+        {
+            let mut results: Vec<String> = Vec::new();
+            match glob::glob(&full_pattern) {
+                Ok(paths) => {
+                    for entry in paths {
+                        match entry {
+                            Ok(p) => results.push(p.to_string_lossy().into_owned()),
+                            Err(_) => continue,
+                        }
                     }
                 }
+                Err(err) => {
+                    return raise_exception::<u64>(
+                        _py,
+                        "ValueError",
+                        &format!("invalid glob pattern: {err}"),
+                    );
+                }
             }
-            Err(err) => {
-                return raise_exception::<u64>(
-                    _py,
-                    "ValueError",
-                    &format!("invalid glob pattern: {err}"),
-                );
-            }
+            return list_of_strings(_py, &results);
         }
         #[cfg(not(feature = "stdlib_fs_extra"))]
         {
             let _ = &full_pattern;
+            raise_exception::<u64>(
+                _py,
+                "RuntimeError",
+                "pathlib.glob requires the stdlib_fs_extra feature",
+            )
         }
-        list_of_strings(_py, &results)
     })
 }
 
@@ -1058,30 +1065,37 @@ pub extern "C" fn molt_pathlib_rglob(path_bits: u64, pattern_bits: u64) -> u64 {
         } else {
             format!("{s}/**/{pattern}")
         };
-        let mut results: Vec<String> = Vec::new();
         #[cfg(feature = "stdlib_fs_extra")]
-        match glob::glob(&full_pattern) {
-            Ok(paths) => {
-                for entry in paths {
-                    match entry {
-                        Ok(p) => results.push(p.to_string_lossy().into_owned()),
-                        Err(_) => continue,
+        {
+            let mut results: Vec<String> = Vec::new();
+            match glob::glob(&full_pattern) {
+                Ok(paths) => {
+                    for entry in paths {
+                        match entry {
+                            Ok(p) => results.push(p.to_string_lossy().into_owned()),
+                            Err(_) => continue,
+                        }
                     }
                 }
+                Err(err) => {
+                    return raise_exception::<u64>(
+                        _py,
+                        "ValueError",
+                        &format!("invalid glob pattern: {err}"),
+                    );
+                }
             }
-            Err(err) => {
-                return raise_exception::<u64>(
-                    _py,
-                    "ValueError",
-                    &format!("invalid glob pattern: {err}"),
-                );
-            }
+            return list_of_strings(_py, &results);
         }
         #[cfg(not(feature = "stdlib_fs_extra"))]
         {
             let _ = &full_pattern;
+            raise_exception::<u64>(
+                _py,
+                "RuntimeError",
+                "pathlib.rglob requires the stdlib_fs_extra feature",
+            )
         }
-        list_of_strings(_py, &results)
     })
 }
 

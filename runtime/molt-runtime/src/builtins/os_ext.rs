@@ -2212,7 +2212,7 @@ pub extern "C" fn molt_os_utime(path_bits: u64, atime_bits: u64, mtime_bits: u64
                 (atime, mtime)
             };
             if let Err(err) = set_windows_file_times(&path, atime, mtime) {
-                return raise_os_error::<u64>(_py, err, "utime");
+                return os_err_bits(_py, err, "utime");
             }
             MoltObject::none().bits()
         }
