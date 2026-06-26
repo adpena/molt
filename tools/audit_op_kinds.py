@@ -119,6 +119,19 @@ OP_KINDS_TOML = ROOT / "runtime/molt-tir/src/tir/op_kinds.toml"
 BASELINE_PATH = ROOT / "tools/op_kinds_baseline.json"
 
 
+def read_rust_module_cluster(root_file: Path) -> str:
+    """Read a Rust module root plus its extracted sibling module tree."""
+    parts: list[str] = []
+    module_dir = root_file.with_suffix("")
+    if module_dir.is_dir():
+        for child in sorted(module_dir.rglob("*.rs")):
+            if "tests" in child.relative_to(module_dir).parts:
+                continue
+            parts.append(child.read_text(encoding="utf-8"))
+    parts.append(root_file.read_text(encoding="utf-8"))
+    return "\n".join(parts)
+
+
 def _load_op_kinds_toml() -> dict:
     """Parse the op-kind registry. Fail loud if absent — the audit's backend-side
     vocabulary depends on it post phase-2."""
@@ -718,7 +731,7 @@ def extract_llvm_void_runtime_ops() -> dict[str, tuple[str, int]]:
 
 
 def extract_simpleir_arm_kinds(path: Path) -> set[str]:
-    text = path.read_text(encoding="utf-8")
+    text = read_rust_module_cluster(path)
     out: set[str] = set()
     # Match an arm pattern: one-or-more `"lit"` separated by `|`, then `=>`.
     arm = re.compile(
