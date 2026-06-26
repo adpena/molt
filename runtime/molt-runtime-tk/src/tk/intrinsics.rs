@@ -9,21 +9,21 @@ pub extern "C" fn molt_tk_available() -> u64 {
 }
 pub extern "C" fn molt_tk_app_new(_options_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        #[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+        #[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
         let use_tk = option_use_tk(_py, _options_bits);
-        #[cfg(any(target_arch = "wasm32", not(feature = "tk")))]
+        #[cfg(any(target_arch = "wasm32", not(feature = "native-tcl")))]
         let use_tk = true;
         if let Err(bits) = require_tk_app_new(_py, use_tk) {
             return bits;
         }
-        #[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+        #[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
         let app_state = {
             match build_native_tk_app(_py, use_tk) {
                 Ok(app) => app,
                 Err(bits) => return bits,
             }
         };
-        #[cfg(any(target_arch = "wasm32", not(feature = "tk")))]
+        #[cfg(any(target_arch = "wasm32", not(feature = "native-tcl")))]
         let app_state = TkAppState::default();
         let mut registry = tk_registry().lock().unwrap();
         let mut handle = registry.next_handle;
@@ -207,7 +207,7 @@ pub extern "C" fn molt_tk_after(app_bits: u64, delay_ms_bits: u64, callback_bits
             );
         }
 
-        #[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+        #[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
         {
             let Some(interp) = app.interpreter.as_ref() else {
                 unregister_tcl_callback_proc(app, &callback_name);
@@ -255,7 +255,7 @@ pub extern "C" fn molt_tk_after(app_bits: u64, delay_ms_bits: u64, callback_bits
             };
         }
 
-        #[cfg(any(target_arch = "wasm32", not(feature = "tk")))]
+        #[cfg(any(target_arch = "wasm32", not(feature = "native-tcl")))]
         {
             register_after_command_token(app, &token, &callback_name, "timer");
             schedule_after_timer_token(app, &token, delay_ms);
@@ -304,7 +304,7 @@ pub extern "C" fn molt_tk_after_idle(app_bits: u64, callback_bits: u64) -> u64 {
             );
         }
 
-        #[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+        #[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
         {
             let Some(interp) = app.interpreter.as_ref() else {
                 unregister_tcl_callback_proc(app, &callback_name);
@@ -352,7 +352,7 @@ pub extern "C" fn molt_tk_after_idle(app_bits: u64, callback_bits: u64) -> u64 {
             };
         }
 
-        #[cfg(any(target_arch = "wasm32", not(feature = "tk")))]
+        #[cfg(any(target_arch = "wasm32", not(feature = "native-tcl")))]
         {
             register_after_command_token(app, &token, &callback_name, "idle");
             app.event_queue.push_back(TkEvent::Callback {
@@ -1381,7 +1381,7 @@ pub extern "C" fn molt_tk_filehandler_create(
             (TK_FILE_EVENT_EXCEPTION, "exception"),
         ] {
             if (mask & event_mask) == 0 {
-                #[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+                #[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
                 if let Err(bits) = app_interp_eval_list(
                     _py,
                     app,
@@ -1407,7 +1407,7 @@ pub extern "C" fn molt_tk_filehandler_create(
                     format!("filehandler command name collision for \"{command_name}\""),
                 );
             }
-            #[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+            #[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
             if let Err(err) = register_tcl_callback_proc(app, &command_name) {
                 rollback_filehandler_registration_locked(_py, app, fd, &mut registration);
                 return app_tcl_error_locked(
@@ -1418,7 +1418,7 @@ pub extern "C" fn molt_tk_filehandler_create(
                     ),
                 );
             }
-            #[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+            #[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
             if let Err(bits) = app_interp_eval_list(
                 _py,
                 app,
@@ -1504,7 +1504,7 @@ pub extern "C" fn molt_tk_destroy_widget(app_bits: u64, widget_path_bits: u64) -
         let Ok(app) = app_mut_from_registry(_py, &mut registry, handle) else {
             return raise_invalid_handle_error(_py);
         };
-        #[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+        #[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
         {
             let Some(interp) = app.interpreter.as_ref() else {
                 return app_tcl_error_locked(_py, app, "tk runtime interpreter is unavailable");
@@ -1535,7 +1535,7 @@ pub extern "C" fn molt_tk_destroy_widget(app_bits: u64, widget_path_bits: u64) -
             }
             return MoltObject::none().bits();
         }
-        #[cfg(any(target_arch = "wasm32", not(feature = "tk")))]
+        #[cfg(any(target_arch = "wasm32", not(feature = "native-tcl")))]
         {
             let Some(widget) = app.widgets.remove(&widget_path) else {
                 return app_tcl_error_locked(
@@ -1817,7 +1817,7 @@ pub extern "C" fn molt_tk_dialog_show(
             button_labels.push(label);
         }
 
-        #[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+        #[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
         {
             let mut command = vec![
                 "tk_dialog".to_string(),
@@ -1834,7 +1834,7 @@ pub extern "C" fn molt_tk_dialog_show(
             };
         }
 
-        #[cfg(any(target_arch = "wasm32", not(feature = "tk")))]
+        #[cfg(any(target_arch = "wasm32", not(feature = "native-tcl")))]
         {
             let selected = if button_labels.is_empty() {
                 0_i64
@@ -2043,7 +2043,7 @@ pub extern "C" fn molt_tk_simpledialog_query(
                 Err(bits) => return bits,
             };
 
-        #[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+        #[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
         {
             let (int_min, int_max, float_min, float_max) = match query_kind.as_str() {
                 "string" => (None, None, None, None),
@@ -2480,7 +2480,7 @@ pub extern "C" fn molt_tk_simpledialog_query(
             return result_bits;
         }
 
-        #[cfg(any(target_arch = "wasm32", not(feature = "tk")))]
+        #[cfg(any(target_arch = "wasm32", not(feature = "native-tcl")))]
         match query_kind.as_str() {
             "string" => {
                 clear_last_error(handle);

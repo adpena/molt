@@ -64,7 +64,7 @@ fn platform_preflight_blockers_helper_matches_state() {
     assert!(has_platform_preflight_blockers(&state));
 }
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 #[test]
 fn tcl_find_executable_arg_prefers_non_empty_path() {
     let arg = tcl_find_executable_arg();
@@ -820,7 +820,7 @@ fn dialog_selection_clamping_is_stable() {
     assert_eq!(clamp_dialog_selection(9, 3), 2);
 }
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 #[test]
 fn filehandler_event_name_mapping_is_stable() {
     assert_eq!(
@@ -850,7 +850,7 @@ fn filehandler_command_name_is_deterministic() {
     );
 }
 
-#[cfg(all(unix, not(target_arch = "wasm32"), not(feature = "tk")))]
+#[cfg(all(unix, not(target_arch = "wasm32"), not(feature = "native-tcl")))]
 #[test]
 fn filehandler_poll_event_mask_is_stable() {
     let mut registration = TkFileHandlerRegistration {
@@ -877,7 +877,7 @@ fn filehandler_poll_event_mask_is_stable() {
     );
 }
 
-#[cfg(all(unix, not(target_arch = "wasm32"), not(feature = "tk")))]
+#[cfg(all(unix, not(target_arch = "wasm32"), not(feature = "native-tcl")))]
 #[test]
 fn filehandler_revents_translation_is_stable() {
     assert_eq!(

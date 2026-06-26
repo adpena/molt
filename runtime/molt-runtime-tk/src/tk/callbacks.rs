@@ -254,7 +254,7 @@ pub(super) fn schedule_after_timer_token(app: &mut TkAppState, token: &str, dela
 }
 
 pub(super) fn cleanup_after_tokens(py: &PyToken, app: &mut TkAppState, tokens: &HashSet<String>) {
-    #[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+    #[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
     if let Some(interp) = app.interpreter.as_ref() {
         for token in tokens {
             let _ = interp.eval(("after", "cancel", token.clone()));
@@ -284,7 +284,7 @@ pub(super) fn tokens_for_after_command(app: &TkAppState, command_name: &str) -> 
         .collect()
 }
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 pub(super) fn filehandler_event_name(mask: i64) -> Option<&'static str> {
     match mask {
         TK_FILE_EVENT_READABLE => Some("readable"),
@@ -298,7 +298,7 @@ pub(super) fn filehandler_command_name(fd: i64, event_name: &str) -> String {
     format!("::__molt_filehandler_{fd}_{event_name}")
 }
 
-#[cfg(all(unix, not(target_arch = "wasm32"), not(feature = "tk")))]
+#[cfg(all(unix, not(target_arch = "wasm32"), not(feature = "native-tcl")))]
 pub(super) fn filehandler_poll_events(registration: &TkFileHandlerRegistration) -> libc::c_short {
     let mut events: libc::c_short = 0;
     if registration.commands.contains_key(&TK_FILE_EVENT_READABLE) {
@@ -313,7 +313,7 @@ pub(super) fn filehandler_poll_events(registration: &TkFileHandlerRegistration) 
     events
 }
 
-#[cfg(all(unix, not(target_arch = "wasm32"), not(feature = "tk")))]
+#[cfg(all(unix, not(target_arch = "wasm32"), not(feature = "native-tcl")))]
 pub(super) fn filehandler_revents_to_mask(revents: libc::c_short) -> i64 {
     let mut mask = 0_i64;
     if (revents & libc::POLLIN) != 0 || (revents & libc::POLLHUP) != 0 {
@@ -331,7 +331,7 @@ pub(super) fn filehandler_revents_to_mask(revents: libc::c_short) -> i64 {
     mask
 }
 
-#[cfg(all(unix, not(target_arch = "wasm32"), not(feature = "tk")))]
+#[cfg(all(unix, not(target_arch = "wasm32"), not(feature = "native-tcl")))]
 pub(super) fn next_ready_filehandler_commands(
     py: &PyToken,
     handle: i64,
@@ -393,7 +393,7 @@ pub(super) fn next_ready_filehandler_commands(
     Ok(ready_commands)
 }
 
-#[cfg(any(not(unix), target_arch = "wasm32", feature = "tk"))]
+#[cfg(any(not(unix), target_arch = "wasm32", feature = "native-tcl"))]
 pub(super) fn next_ready_filehandler_commands(
     _py: &PyToken,
     _handle: i64,
@@ -410,9 +410,9 @@ pub(super) fn clear_filehandler_registration_locked(
         return Ok(());
     };
     for (&mask, command_name) in &registration.commands {
-        #[cfg(any(target_arch = "wasm32", not(feature = "tk")))]
+        #[cfg(any(target_arch = "wasm32", not(feature = "native-tcl")))]
         let _ = mask;
-        #[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+        #[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
         if let Some(event_name) = filehandler_event_name(mask) {
             let clear_result = app_interp_eval_list(
                 py,
@@ -447,9 +447,9 @@ pub(super) fn rollback_filehandler_registration_locked(
     let installed_commands: Vec<(i64, String)> = registration.commands.drain().collect();
     for (mask, command_name) in installed_commands {
         app.filehandler_commands.remove(&command_name);
-        #[cfg(any(target_arch = "wasm32", not(feature = "tk")))]
+        #[cfg(any(target_arch = "wasm32", not(feature = "native-tcl")))]
         let _ = mask;
-        #[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+        #[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
         if let Some(event_name) = filehandler_event_name(mask) {
             let _ = app_interp_eval_list(
                 py,

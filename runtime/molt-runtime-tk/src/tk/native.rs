@@ -1,6 +1,6 @@
 use super::*;
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 pub(super) fn option_use_tk(py: &PyToken, options_bits: u64) -> bool {
     let obj = obj_from_bits(options_bits);
     let Some(dict_ptr) = obj.as_ptr() else {
@@ -24,7 +24,7 @@ pub(super) fn option_use_tk(py: &PyToken, options_bits: u64) -> bool {
     true
 }
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 pub(super) fn tcl_obj_from_bits(py: &PyToken, bits: u64) -> TclObj {
     let obj = obj_from_bits(bits);
     if obj.is_none() {
@@ -84,7 +84,7 @@ pub(super) fn tcl_obj_from_bits(py: &PyToken, bits: u64) -> TclObj {
 /// Observable arg semantics preserved from the prior string bridge: `None` maps
 /// to an empty string object (Tk treats it as ""), and unknown objects fall back
 /// to their `str()` (e.g. widget paths), never `repr()`.
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 pub(super) fn tcl_obj_alloc_typed_from_bits(
     py: &PyToken,
     api: &'static TclApi,
@@ -188,7 +188,7 @@ pub(super) fn tcl_obj_alloc_typed_from_bits(
     }
 }
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 pub(super) fn alloc_string_obj(api: &'static TclApi, text: &str) -> Result<*mut c_void, String> {
     let bytes = CString::new(text.as_bytes())
         .map_err(|_| "Tcl string contained interior NUL byte".to_string())?;
@@ -196,7 +196,7 @@ pub(super) fn alloc_string_obj(api: &'static TclApi, text: &str) -> Result<*mut 
     non_null_obj(o, "Tcl_NewStringObj returned null")
 }
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 pub(super) fn non_null_obj(o: *mut c_void, msg: &'static str) -> Result<*mut c_void, String> {
     if o.is_null() {
         Err(msg.to_string())
@@ -209,7 +209,7 @@ pub(super) fn non_null_obj(o: *mut c_void, msg: &'static str) -> Result<*mut c_v
 /// `typePtr` exactly like CPython `_tkinter.c`. Runs with the GIL held (allocates
 /// molt objects). `obj` is borrowed (the interpreter owns the result); we never
 /// free it here.
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 pub(super) fn tcl_obj_result_to_bits(
     py: &PyToken,
     api: &'static TclApi,
@@ -312,7 +312,7 @@ pub(super) fn tcl_obj_result_to_bits(
 }
 
 /// Read a `Tcl_Obj`'s UTF-8 string rep into a molt `str`.
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 pub(super) fn tcl_obj_string_to_bits(api: &'static TclApi, obj: *mut c_void) -> u64 {
     let mut len: c_int = 0;
     let ptr = unsafe { (api.get_string_from_obj)(obj, &mut len) };
@@ -329,7 +329,7 @@ pub(super) fn tcl_obj_string_to_bits(api: &'static TclApi, obj: *mut c_void) -> 
 /// Read a Tcl integer-typed `Tcl_Obj` whose value overflows i64 (a true bignum)
 /// as its decimal string, then parse it into a molt arbitrary-precision int —
 /// value-identical to CPython's `fromBignumObj`.
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 pub(super) fn tcl_obj_int_string_to_bits(
     py: &PyToken,
     api: &'static TclApi,
@@ -351,7 +351,7 @@ pub(super) fn tcl_obj_int_string_to_bits(
     parsed
 }
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 pub(super) fn register_tcl_callback_proc(app: &mut TkAppState, name: &str) -> Result<(), String> {
     let Some(interp) = app.interpreter.as_ref() else {
         return Ok(());
@@ -367,7 +367,7 @@ pub(super) fn register_tcl_callback_proc(app: &mut TkAppState, name: &str) -> Re
         .map_err(|err| err.to_string())
 }
 
-#[cfg(all(not(target_arch = "wasm32"), not(feature = "tk")))]
+#[cfg(all(not(target_arch = "wasm32"), not(feature = "native-tcl")))]
 pub(super) fn register_tcl_callback_proc(_app: &mut TkAppState, _name: &str) -> Result<(), String> {
     Ok(())
 }
@@ -377,7 +377,7 @@ pub(super) fn register_tcl_callback_proc(_app: &mut TkAppState, _name: &str) -> 
     Ok(())
 }
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 pub(super) fn unregister_tcl_callback_proc(app: &mut TkAppState, name: &str) {
     let Some(interp) = app.interpreter.as_ref() else {
         return;
@@ -385,13 +385,13 @@ pub(super) fn unregister_tcl_callback_proc(app: &mut TkAppState, name: &str) {
     let _ = interp.eval(("rename", name.to_string(), ""));
 }
 
-#[cfg(all(not(target_arch = "wasm32"), not(feature = "tk")))]
+#[cfg(all(not(target_arch = "wasm32"), not(feature = "native-tcl")))]
 pub(super) fn unregister_tcl_callback_proc(_app: &mut TkAppState, _name: &str) {}
 
 #[cfg(target_arch = "wasm32")]
 pub(super) fn unregister_tcl_callback_proc(_app: &mut TkAppState, _name: &str) {}
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 pub(super) fn unregister_all_tcl_callback_procs(app: &mut TkAppState) {
     let mut callback_names: Vec<String> = app.callbacks.keys().cloned().collect();
     callback_names.extend(app.filehandler_commands.keys().cloned());
@@ -400,7 +400,7 @@ pub(super) fn unregister_all_tcl_callback_procs(app: &mut TkAppState) {
     }
 }
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 pub(super) fn init_tcl_pending_callbacks(interp: &TclInterpreter) -> Result<(), String> {
     interp
         .eval((
@@ -412,7 +412,7 @@ pub(super) fn init_tcl_pending_callbacks(interp: &TclInterpreter) -> Result<(), 
         .map_err(|err| err.to_string())
 }
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 pub(super) fn build_native_tk_app(py: &PyToken, use_tk: bool) -> Result<TkAppState, u64> {
     let mut app = TkAppState::default();
     let interp = match std::panic::catch_unwind(TclInterpreter::new) {
@@ -451,7 +451,7 @@ pub(super) fn build_native_tk_app(py: &PyToken, use_tk: bool) -> Result<TkAppSta
 /// This is a free-standing version of `TclInterpreter::alloc_obj` that does
 /// not require a `&TclInterpreter` reference — only the API function pointers
 /// and the interpreter address (for list-append error messages).
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 pub(super) fn alloc_tcl_obj_from_part(
     api: &'static TclApi,
     interp_addr: usize,
@@ -503,7 +503,7 @@ pub(super) fn alloc_tcl_obj_from_part(
 /// All argument conversion must happen *before* this function is called
 /// (while the GIL is held).  This function only touches Tcl APIs — no
 /// Molt runtime calls.
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 pub(super) fn eval_tcl_without_gil(
     api: &'static TclApi,
     interp_addr: usize,
@@ -538,7 +538,7 @@ pub(super) fn eval_tcl_without_gil(
     Ok(result)
 }
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 pub(super) fn tcl_trace_enabled() -> bool {
     static TRACE: OnceLock<bool> = OnceLock::new();
     *TRACE.get_or_init(|| std::env::var("MOLT_TRACE_TCL").is_ok())
@@ -547,7 +547,7 @@ pub(super) fn tcl_trace_enabled() -> bool {
 /// Locking wrapper: resolve the interpreter context under one registry lock,
 /// then run the command. Used by paths that have not already resolved the
 /// context (event-loop draining, the headless fallthrough).
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 pub(super) fn run_tcl_command(py: &PyToken, handle: i64, args: &[u64]) -> Result<u64, u64> {
     let (api, interp_addr, types) = {
         let mut registry = tk_registry().lock().unwrap();
@@ -571,7 +571,7 @@ pub(super) fn run_tcl_command(py: &PyToken, handle: i64, args: &[u64]) -> Result
 /// This is the hot path: `tk_call_dispatch` resolves the context in the same
 /// single lock that checks callbacks/filehandlers, so a generic `tk.call`
 /// touches the registry mutex only twice (resolve + final clear_last_error).
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 pub(super) fn run_tcl_command_with_ctx(
     py: &PyToken,
     handle: i64,
@@ -651,7 +651,7 @@ pub(super) fn run_tcl_command_with_ctx(
     Ok(bits)
 }
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 pub(super) fn take_pending_tcl_callbacks(
     py: &PyToken,
     handle: i64,
@@ -746,7 +746,7 @@ pub(super) fn take_pending_tcl_callbacks(
     Ok(calls)
 }
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 pub(super) fn dispatch_named_callback_from_strings(
     py: &PyToken,
     handle: i64,
@@ -822,7 +822,7 @@ pub(super) fn dispatch_named_callback_from_strings(
     Ok(true)
 }
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 pub(super) fn pump_tcl_events(py: &PyToken, handle: i64, flags: i32) -> Result<bool, u64> {
     // Extract the do_one_event fn pointer and interp address, then drop
     // the registry lock before releasing the GIL for the Tcl call.
@@ -854,7 +854,7 @@ pub(super) fn pump_tcl_events(py: &PyToken, handle: i64, flags: i32) -> Result<b
     Ok(event_handled || callback_handled)
 }
 
-#[cfg(all(not(target_arch = "wasm32"), not(feature = "tk")))]
+#[cfg(all(not(target_arch = "wasm32"), not(feature = "native-tcl")))]
 pub(super) fn pump_tcl_events(_py: &PyToken, _handle: i64, _flags: i32) -> Result<bool, u64> {
     Ok(false)
 }
