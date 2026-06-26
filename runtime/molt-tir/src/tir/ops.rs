@@ -146,6 +146,8 @@ pub enum OpCode {
     // Call
     Call,
     CallMethod,
+    CallMethodIc,
+    CallSuperMethodIc,
     CallBuiltin,
     /// Fused `ord(container[index])`.
     ///

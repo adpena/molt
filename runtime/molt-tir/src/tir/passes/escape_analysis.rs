@@ -413,10 +413,10 @@ pub fn analyze(func: &TirFunction) -> HashMap<ValueId, EscapeState> {
                         }
                     }
                 }
-                // CallMethod: check if the method is known non-storing.
+                // Dynamic method dispatch: check if the method is known non-storing.
                 // Pure methods on immutable types (str, tuple, int, float,
                 // frozenset) never capture their receiver or arguments.
-                OpCode::CallMethod => {
+                OpCode::CallMethod | OpCode::CallMethodIc | OpCode::CallSuperMethodIc => {
                     let borrows = is_borrowing_method_call(&use_info.attrs);
                     if borrows {
                         // Borrowing method: arg crossed a call boundary without

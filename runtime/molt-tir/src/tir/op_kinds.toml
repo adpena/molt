@@ -247,9 +247,15 @@
 
 pass_delta_box_opcodes = ["BoxVal"]
 pass_delta_unbox_opcodes = ["UnboxVal"]
-pass_delta_generic_call_opcodes = ["Call", "CallMethod", "CallBuiltin"]
+pass_delta_generic_call_opcodes = [
+    "Call",
+    "CallMethod",
+    "CallMethodIc",
+    "CallSuperMethodIc",
+    "CallBuiltin",
+]
 pass_delta_direct_call_opcodes = ["Call"]
-pass_delta_method_call_opcodes = ["CallMethod"]
+pass_delta_method_call_opcodes = ["CallMethod", "CallMethodIc", "CallSuperMethodIc"]
 pass_delta_runtime_helper_call_opcodes = ["CallBuiltin"]
 pass_delta_rc_event_opcodes = ["IncRef", "DecRef", "DelBoundary"]
 pass_delta_inc_ref_opcodes = ["IncRef"]
@@ -280,6 +286,8 @@ pass_delta_heap_alloc_opcodes = ["Alloc", "ObjectNewBound", "ObjectNewBoundStack
 call_opcode_roles = [
     { opcode = "Call", role = "user_call" },
     { opcode = "CallMethod", role = "dynamic_method" },
+    { opcode = "CallMethodIc", role = "dynamic_method" },
+    { opcode = "CallSuperMethodIc", role = "dynamic_method" },
     { opcode = "CallBuiltin", role = "runtime_builtin" },
     { opcode = "Copy", role = "copy_original_kind" },
 ]
@@ -315,6 +323,8 @@ ssa_s_value_attr_keys = [
     { opcode = "DelAttr", attr = "name" },
     { opcode = "CallBuiltin", attr = "name" },
     { opcode = "CallMethod", attr = "method" },
+    { opcode = "CallMethodIc", attr = "method" },
+    { opcode = "CallSuperMethodIc", attr = "method" },
 ]
 
 ssa_original_kind_preserving_kinds = [
@@ -590,6 +600,8 @@ alias_rc_barrier_opcodes = [
     "Call",
     "CallBuiltin",
     "CallMethod",
+    "CallMethodIc",
+    "CallSuperMethodIc",
     "ChanRecvYield",
     "ChanSendYield",
     "CheckException",
@@ -608,6 +620,8 @@ alias_heap_barrier_opcodes = [
     "Call",
     "CallBuiltin",
     "CallMethod",
+    "CallMethodIc",
+    "CallSuperMethodIc",
     "ChanRecvYield",
     "ChanSendYield",
     "ClosureStore",
@@ -658,6 +672,8 @@ refcount_heap_exposure_opcodes = [
     "Call",
     "CallBuiltin",
     "CallMethod",
+    "CallMethodIc",
+    "CallSuperMethodIc",
     "ChanRecvYield",
     "ChanSendYield",
     "ClosureStore",
@@ -737,6 +753,8 @@ fusion_barrier_opcodes = [
     "Call",
     "CallBuiltin",
     "CallMethod",
+    "CallMethodIc",
+    "CallSuperMethodIc",
     "ChanRecvYield",
     "ChanSendYield",
     "ClosureLoad",
@@ -839,6 +857,8 @@ tir_verify_attr_rules = [
     { opcode = "Call", rule = "call_callee" },
     { opcode = "CallBuiltin", rule = "call_callee" },
     { opcode = "CallMethod", rule = "call_method" },
+    { opcode = "CallMethodIc", rule = "call_method" },
+    { opcode = "CallSuperMethodIc", rule = "call_method" },
     { opcode = "ObjectNewBoundStack", rule = "positive_payload_bytes" },
 ]
 
@@ -1035,6 +1055,8 @@ type_refine_attr_result_type_rules = [
     { opcode = "ObjectNewBoundStack", rule = "object_type_hint" },
     { opcode = "Call", rule = "call_return_type" },
     { opcode = "CallMethod", rule = "call_return_type" },
+    { opcode = "CallMethodIc", rule = "call_return_type" },
+    { opcode = "CallSuperMethodIc", rule = "call_return_type" },
     { opcode = "CallBuiltin", rule = "call_builtin_return_type" },
     { opcode = "TypeGuard", rule = "type_guard" },
     { opcode = "Copy", rule = "copy_original_kind" },
@@ -1363,6 +1385,8 @@ alias_slot_direct_observer_opcodes = [
     "Call",
     "CallBuiltin",
     "CallMethod",
+    "CallMethodIc",
+    "CallSuperMethodIc",
     "Index",
     "LoadAttr",
     "Raise",
@@ -2500,6 +2524,24 @@ operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 
 [[opcode]]
+name = "CallMethodIc"
+may_throw = true
+side_effecting = true
+purity = "impure"
+result_arity = "variable"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "CallSuperMethodIc"
+may_throw = true
+side_effecting = true
+purity = "impure"
+result_arity = "variable"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
 name = "CallBuiltin"
 may_throw = true
 side_effecting = true
@@ -3332,6 +3374,16 @@ group = "gpu"
 canonical = "call_method"
 aliases = []
 mapper_opcode = "CallMethod"
+
+[[kind]]
+canonical = "call_method_ic"
+aliases = []
+mapper_opcode = "CallMethodIc"
+
+[[kind]]
+canonical = "call_super_method_ic"
+aliases = []
+mapper_opcode = "CallSuperMethodIc"
 
 [[kind]]
 canonical = "call_builtin"

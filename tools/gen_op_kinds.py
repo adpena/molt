@@ -86,6 +86,8 @@ _VARIABLE_RESULT_ARITY_OPCODES = {
     # statements. The return-value fact is present only when TIR carries a result.
     "Call",
     "CallMethod",
+    "CallMethodIc",
+    "CallSuperMethodIc",
     "CallBuiltin",
     # Exception checks can be pure control-transfer polls or produce an explicit
     # flag in older/diagnostic lanes.
