@@ -107,8 +107,6 @@ pub(crate) mod pprint_ext;
 pub(crate) mod punycode;
 #[cfg(not(feature = "stdlib_math"))]
 pub(crate) mod random_mod;
-#[cfg(not(feature = "stdlib_regex"))]
-pub(crate) mod regex;
 #[cfg(feature = "stdlib_crypto")]
 pub(crate) mod secrets;
 pub(crate) mod select;
