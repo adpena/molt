@@ -27,6 +27,10 @@ import pytest
 import urllib.error
 import urllib.request
 import molt.cli as cli
+from molt._wasm_abi_generated import (
+    WASM_RESERVED_RUNTIME_CALLABLE_BASE,
+    WASM_RESERVED_RUNTIME_CALLABLES,
+)
 from molt.cli import wasm as WASM
 from tools import harness_memory_guard
 import tools.bench_wasm as bench_wasm
@@ -574,14 +578,7 @@ def _collect_export_names(path: Path) -> list[str]:
 
 
 def _reserved_runtime_callable_indices() -> list[int]:
-    include_path = ROOT / "runtime" / "wasm_runtime_callables.inc"
-    indices: list[int] = []
-    pattern = re.compile(r"^\s*\((\d+),")
-    for line in include_path.read_text().splitlines():
-        match = pattern.match(line)
-        if match:
-            indices.append(int(match.group(1)))
-    return indices
+    return [entry[0] for entry in WASM_RESERVED_RUNTIME_CALLABLES]
 
 
 def _infer_wasm_table_base_from_reserved_refs(path: Path) -> int | None:
@@ -597,7 +594,7 @@ def _infer_wasm_table_base_from_reserved_refs(path: Path) -> int | None:
     reserved_indices = _reserved_runtime_callable_indices()
     reserved_count = len(reserved_indices)
     ref_set = set(ref_indices)
-    shared_abi_prefix_len = 33 + reserved_count * 2
+    shared_abi_prefix_len = WASM_RESERVED_RUNTIME_CALLABLE_BASE + reserved_count * 2
 
     for ref_index in ref_indices:
         expected = {ref_index + offset for offset in range(shared_abi_prefix_len)}

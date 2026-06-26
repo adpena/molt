@@ -1,13 +1,16 @@
 from __future__ import annotations
 
-import functools
 import importlib
 import json
 import re
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from molt.cli.compiler_metadata import _compiler_root
+from molt._wasm_abi_generated import (
+    WASM_LEGACY_TABLE_BASE,
+    WASM_RESERVED_RUNTIME_CALLABLE_BASE,
+    WASM_RESERVED_RUNTIME_CALLABLE_COUNT,
+)
 
 
 def _cli_module() -> Any:
@@ -808,19 +811,6 @@ def _effective_split_worker_table_base(
     return runtime_table_min
 
 
-@functools.lru_cache(maxsize=1)
-def _reserved_wasm_runtime_callable_count() -> int:
-    include_path = (
-        _compiler_root() / "runtime" / "wasm_runtime_callables.inc"
-    )
-    pattern = re.compile(r"^\s*\((\d+),")
-    count = 0
-    for line in include_path.read_text().splitlines():
-        if pattern.match(line):
-            count += 1
-    return count
-
-
 def _generate_split_worker_js(
     *,
     shared_memory_initial_pages: int,
@@ -849,10 +839,9 @@ def _generate_split_worker_js(
     runtime_table_ref_signatures_json = json.dumps(
         dict(runtime_table_ref_signatures or {}), sort_keys=True
     )
-    legacy_wasm_table_base = 256
-    reserved_runtime_callable_base = 33
+    reserved_runtime_callable_base = WASM_RESERVED_RUNTIME_CALLABLE_BASE
     reserved_runtime_shared_prefix_len = (
-        reserved_runtime_callable_base + _reserved_wasm_runtime_callable_count() * 2
+        reserved_runtime_callable_base + WASM_RESERVED_RUNTIME_CALLABLE_COUNT * 2
     )
     worker_js = """// Molt split-runtime Cloudflare Workers shim
 // Runtime module is cached independently by the CDN.
@@ -1837,7 +1826,7 @@ export default {
         )
         .replace(
             "__MOLT_LEGACY_WASM_TABLE_BASE__",
-            str(legacy_wasm_table_base),
+            str(WASM_LEGACY_TABLE_BASE),
         )
         .replace(
             "__MOLT_RESERVED_RUNTIME_CALLABLE_BASE__",

@@ -872,6 +872,45 @@ WASM_IMPORT_REGISTRY: tuple[str, ...] = (
     "ws_wait_new",
 )
 
+WASM_POLL_TABLE_IMPORTS: tuple[str, ...] = (
+    "async_sleep_poll",
+    "anext_default_poll",
+    "asyncgen_poll",
+    "promise_poll",
+    "io_wait",
+    "thread_poll",
+    "process_poll",
+    "ws_wait",
+    "asyncio_wait_for_poll",
+    "asyncio_wait_poll",
+    "asyncio_gather_poll",
+    "asyncio_socket_reader_read_poll",
+    "asyncio_socket_reader_readline_poll",
+    "asyncio_stream_reader_read_poll",
+    "asyncio_stream_reader_readline_poll",
+    "asyncio_stream_send_all_poll",
+    "asyncio_sock_recv_poll",
+    "asyncio_sock_connect_poll",
+    "asyncio_sock_accept_poll",
+    "asyncio_sock_recv_into_poll",
+    "asyncio_sock_sendall_poll",
+    "asyncio_sock_recvfrom_poll",
+    "asyncio_sock_recvfrom_into_poll",
+    "asyncio_sock_sendto_poll",
+    "asyncio_timer_handle_poll",
+    "asyncio_fd_watcher_poll",
+    "asyncio_server_accept_loop_poll",
+    "asyncio_ready_runner_poll",
+    "contextlib_asyncgen_enter_poll",
+    "contextlib_asyncgen_exit_poll",
+    "contextlib_async_exitstack_exit_poll",
+    "contextlib_async_exitstack_enter_context_poll",
+)
+
+WASM_RESERVED_RUNTIME_CALLABLE_BASE: int = 1 + len(WASM_POLL_TABLE_IMPORTS)
+
+WASM_LEGACY_TABLE_BASE: int = 256
+
 WASM_RUNTIME_CALLABLE_IMPORTS: tuple[tuple[str, str, int, str], ...] = (
     ("molt_module_cache_set", "module_cache_set", 2, "i64"),
     ("molt_module_import", "module_import", 1, "i64"),
@@ -1192,6 +1231,33 @@ WASM_RUNTIME_CALLABLE_IMPORTS: tuple[tuple[str, str, int, str], ...] = (
     ("molt_ws_send_obj", "ws_send_obj", 2, "i64"),
     ("molt_ws_wait_new", "ws_wait_new", 3, "i64"),
 )
+
+WASM_RESERVED_RUNTIME_CALLABLES: tuple[tuple[int, str, str, int], ...] = (
+    (0, "molt_type_call", "type_call", 1),
+    (1, "molt_type_new", "type_new", 5),
+    (2, "molt_type_init", "type_init", 5),
+    (3, "molt_object_new_bound", "object_new_bound", 1),
+    (4, "molt_object_init", "object_init", 1),
+    (5, "molt_object_init_subclass", "object_init_subclass", 1),
+    (6, "molt_exception_new_bound", "exception_new_bound", 2),
+    (7, "molt_exception_init", "exception_init", 2),
+    (8, "molt_exceptiongroup_init", "exceptiongroup_init", 2),
+    (9, "molt_types_mappingproxy_new", "types_mappingproxy_new", 2),
+    (10, "molt_types_mappingproxy_init", "types_mappingproxy_init", 2),
+    (11, "molt_types_method_new", "types_method_new", 3),
+    (12, "molt_types_method_init", "types_method_init", 3),
+    (13, "molt_types_simplenamespace_init", "types_simplenamespace_init", 3),
+    (14, "molt_types_capsule_new", "types_capsule_new", 1),
+    (15, "molt_types_cell_new", "types_cell_new", 1),
+    (16, "molt_types_dynamic_class_attr_init", "types_dynamic_class_attr_init", 3),
+    (17, "molt_types_coroutine", "types_coroutine", 1),
+    (18, "molt_types_get_original_bases", "types_get_original_bases", 1),
+    (19, "molt_types_prepare_class", "types_prepare_class", 2),
+    (20, "molt_types_resolve_bases", "types_resolve_bases", 2),
+    (21, "molt_types_new_class", "types_new_class", 2),
+)
+
+WASM_RESERVED_RUNTIME_CALLABLE_COUNT: int = len(WASM_RESERVED_RUNTIME_CALLABLES)
 
 PURE_PROFILE_SKIP_PREFIXES: tuple[str, ...] = (
     "process_",
