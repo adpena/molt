@@ -31,8 +31,8 @@ are never installed.
 ## Root cause (exact file:line)
 `src/molt/frontend/visitors/classes.py`, `visit_ClassDef`:
 
-- The re-lower (#50) computes `body_needs_block = _class_body_needs_block_exec(node.body)`
-  and, when true, forces `dynamic_build = True` (line ~698-699) so the class body
+- The re-lower (#50) now reads `ClassFacts.block_exec_class_nodes` for the class
+  AST node and, when true, forces `dynamic_build = True` so the class body
   executes as a real block over a heap namespace dict.
 - The `@dataclass` runtime application — the emission that calls
   `dataclasses.dataclass(cls, init=..., repr=..., eq=..., ...)` to install

@@ -8,9 +8,8 @@ walk-time module state.
 from __future__ import annotations
 
 import ast
-from typing import TYPE_CHECKING
-
 from dataclasses import replace
+from typing import TYPE_CHECKING
 
 from molt.frontend.sema import (
     SemaResult,
@@ -57,10 +56,10 @@ class SemaStateMixin(_MixinBase):
                                             (sema/funcmeta.collect_module_func_kinds)
           self.module_declared_classes    ← sema.function_meta.declared_classes
                                             (sema/funcmeta.collect_module_class_names)
-          sema.class_graph                → read directly by classgraph fold
-                                            queries (no god-object dict shim)
-          sema.class_facts                → read directly by classgraph fold
-                                            queries (no god-object dict shim)
+          sema.class_graph                → read by sema-owned class facts
+                                            and class/call lowering queries
+          sema.class_facts                → read directly by class/call lowering
+                                            (no god-object dict shim)
           self.module_func_defaults       ← known_func_defaults override, else
                                             sema.function_meta.defaults
                                             (sema/funcmeta.collect_module_func_defaults)
