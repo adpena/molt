@@ -11,7 +11,7 @@ from __future__ import annotations
 import ast
 from typing import TYPE_CHECKING, Any
 
-from molt.frontend._types import FuncInfo, MoltOp, MoltValue
+from molt.frontend._types import GEN_CONTROL_SIZE, FuncInfo, MoltOp, MoltValue
 
 if TYPE_CHECKING:
     from molt.frontend._protocol import _GeneratorProtocol
@@ -23,6 +23,17 @@ else:
 
 
 class FunctionLifecycleMixin(_MixinBase):
+    def _task_closure_size(
+        self, payload_slots: int, *, include_gen_control: bool
+    ) -> int:
+        base = self.async_locals_base + len(self.async_locals) * 8
+        required = payload_slots * 8
+        if include_gen_control:
+            required += GEN_CONTROL_SIZE
+        if base < required:
+            return required
+        return base
+
     @staticmethod
     def _function_contains_locals_call(
         node: ast.FunctionDef | ast.AsyncFunctionDef,

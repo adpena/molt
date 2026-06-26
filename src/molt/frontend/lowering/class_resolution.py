@@ -9,7 +9,13 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from molt.frontend._types import BUILTIN_EXCEPTION_NAMES, ClassInfo, MethodInfo
+from molt.frontend._types import (
+    BUILTIN_EXCEPTION_NAMES,
+    ClassInfo,
+    MethodInfo,
+    MoltOp,
+    MoltValue,
+)
 
 if TYPE_CHECKING:
     from molt.frontend._protocol import _GeneratorProtocol
@@ -21,6 +27,65 @@ else:
 
 
 class ClassResolutionMixin(_MixinBase):
+    def _class_layout_stable(self, class_name: str) -> bool:
+        class_info = self.classes.get(class_name)
+        if not class_info:
+            return False
+        if class_info.get("dynamic") or class_info.get("dataclass"):
+            return False
+        if class_name in self.mutated_classes:
+            return False
+        return True
+
+    def _emit_class_ref(self, class_name: str) -> MoltValue:
+        static_ref = self._current_module_static_class_ref(class_name)
+        if static_ref is not None:
+            return static_ref
+        class_info = self.classes.get(class_name)
+        module_name = class_info.get("module") if class_info else None
+        if module_name and module_name != self.module_name:
+            return self._emit_module_attr_get_on(module_name, class_name)
+        return self._emit_module_attr_get(class_name)
+
+    def _current_module_static_class_ref(self, class_name: str) -> MoltValue | None:
+        if self.current_func_name != "molt_main":
+            return None
+        if self.module_globals_dict_escaped:
+            return None
+        if class_name in self.module_global_mutations:
+            return None
+        if class_name in self.class_definition_pending:
+            return None
+        class_info = self.classes.get(class_name)
+        if class_info is None:
+            return None
+        if class_info.get("module") != self.module_name:
+            return None
+        if class_info.get("decorated"):
+            return None
+        if not self._class_layout_stable(class_name):
+            return None
+        static_name = class_info.get("class_value_name")
+        if not static_name:
+            return None
+        current = self.globals.get(class_name)
+        if current is None or current.name != static_name:
+            return None
+        return current
+
+    def _emit_class_method_func(
+        self, class_obj: MoltValue, method_name: str
+    ) -> MoltValue:
+        res = MoltValue(self.next_var(), type_hint="Any")
+        self.emit(
+            MoltOp(
+                kind="GETATTR_GENERIC_OBJ",
+                args=[class_obj, method_name],
+                result=res,
+            )
+        )
+        return res
+
     def _c3_merge(self, seqs: list[list[str]]) -> list[str] | None:
         merged: list[str] = []
         working = [list(seq) for seq in seqs]

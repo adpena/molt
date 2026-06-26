@@ -85,6 +85,22 @@ def _iter_slots_field_names(value: ast.expr | None) -> list[str]:
 
 
 class ClassDefVisitorMixin(_MixinBase):
+    def _function_needs_classcell(
+        self, node: ast.FunctionDef | ast.AsyncFunctionDef
+    ) -> bool:
+        for child in ast.walk(node):
+            if isinstance(child, ast.Name) and child.id == "__class__":
+                return True
+            if (
+                isinstance(child, ast.Call)
+                and isinstance(child.func, ast.Name)
+                and child.func.id == "super"
+                and not child.args
+                and not child.keywords
+            ):
+                return True
+        return False
+
     # Statement node types a class body can hold and have lowered by the
     # dedicated straight-line arms of ``visit_ClassDef`` (attribute bindings and
     # method/nested-class definitions).  ANY other top-level body statement —
@@ -2118,7 +2134,9 @@ class ClassDefVisitorMixin(_MixinBase):
                     args = [self.locals[_MOLT_CLOSURE_PARAM]] + args
                 gen_val = MoltValue(
                     self.next_var(),
-                    type_hint=stateful_function_result_type_hint(FunctionKind.GENERATOR),
+                    type_hint=stateful_function_result_type_hint(
+                        FunctionKind.GENERATOR
+                    ),
                 )
                 self.emit(
                     MoltOp(

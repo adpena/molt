@@ -27,6 +27,17 @@ else:
 
 
 class TypeAnnotationMixin(_MixinBase):
+    def _apply_explicit_hint(self, name: str, value: MoltValue) -> None:
+        hint = self.explicit_type_hints.get(name)
+        if hint is None:
+            return
+        if self.type_hint_policy == "check":
+            self._emit_guard_type(value, hint)
+            self._apply_hint_to_value(name, value, hint)
+            return
+        if self.type_hint_policy == "trust" or self.stdlib_hint_trust:
+            self._apply_hint_to_value(name, value, hint)
+
     def _module_has_future_annotations(self, node: ast.Module) -> bool:
         found = False
 
