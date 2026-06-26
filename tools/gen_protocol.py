@@ -108,6 +108,7 @@ _TYPING_NAMES = {
 _TYPE_CHECKING_IMPORTS = {
     "FunctionKind": "molt.frontend.sema",
     "SemaResult": "molt.frontend.sema",
+    "SerializationContext": "molt.frontend.lowering.serialization_context",
     "TypeFacts": "molt.type_facts",
 }
 
