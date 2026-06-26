@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
 import os
 import re
@@ -104,6 +104,19 @@ HOST_CONTROL_PLANE_LAUNCHER_NAMES = frozenset(
         "sh",
         "zsh",
     }
+)
+HOST_CONTROL_PLANE_LINEAGE_PROTECTED_EXECUTABLE_NAMES = (
+    HOST_CONTROL_PLANE_LAUNCHER_NAMES
+    | frozenset(
+        {
+            "conhost.exe",
+            "git",
+            "git.exe",
+            "git-remote-https",
+            "git-remote-https.exe",
+            "openconsole.exe",
+        }
+    )
 )
 
 
@@ -471,27 +484,39 @@ def has_external_host_control_plane_lineage(
     *,
     current_pid: int | None = None,
     include_self: bool = True,
+    owned_pids: Collection[int] = (),
 ) -> bool:
-    """Return true when pid belongs to host-control lineage outside this guard.
+    """Return true when pid belongs to protected host-control lineage.
 
     Codex/Claude/app-server/renderer/node-repl processes are the operator control
-    plane. Their descendants are also protected unless they are descendants of
-    the currently running guard process, which is the only process subtree a
-    guard is allowed to own and terminate.
+    plane. Their descendants are protected unless a caller proves Molt ownership
+    by passing an explicit owned PID set. Being a descendant of the currently
+    running guard process is not ownership by itself: Codex-launched shell/Git/
+    launcher helpers remain protected even under the guard.
     """
 
     if pid is None or pid <= 0:
         return False
-    if current_pid is not None and current_pid > 0:
-        current_descendants = descendant_pids(samples, current_pid)
-        if pid in current_descendants:
-            sample = samples.get(pid)
-            return sample is not None and is_host_control_plane_process(sample)
-    return has_host_control_plane_ancestor(
+    sample = samples.get(pid)
+    if sample is None:
+        return False
+    host_lineage = has_host_control_plane_ancestor(
         samples,
         pid,
         include_self=include_self,
     )
+    if not host_lineage:
+        return False
+    if pid not in owned_pids:
+        return True
+    if current_pid is None or current_pid <= 0:
+        return True
+    if pid not in descendant_pids(samples, current_pid):
+        return True
+    executable = command_executable_name(sample.command)
+    if executable in HOST_CONTROL_PLANE_LINEAGE_PROTECTED_EXECUTABLE_NAMES:
+        return True
+    return is_host_control_plane_process(sample)
 
 
 def ancestor_pids(
@@ -571,6 +596,7 @@ def root_pid_is_kill_eligible(
         samples,
         root_pid,
         current_pid=current_pid,
+        owned_pids={root_pid} if root_owned else (),
     ):
         return False
     return (
@@ -587,6 +613,7 @@ def filter_protected_watched_pids(
     current_pid: int | None = None,
 ) -> set[int]:
     filtered: set[int] = set()
+    owned_pids = frozenset(watched)
     for pid in watched:
         sample = samples.get(pid)
         if sample is None:
@@ -595,6 +622,7 @@ def filter_protected_watched_pids(
             samples,
             pid,
             current_pid=current_pid,
+            owned_pids=owned_pids,
         ):
             continue
         if is_host_control_plane_process(sample):
