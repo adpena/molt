@@ -293,23 +293,11 @@ pub extern "C" fn molt_socketpair(_family_bits: u64, _type_bits: u64, _proto_bit
         }
         wasm_socket_meta_insert(
             left as i64,
-            WasmSocketMeta {
-                family,
-                sock_type,
-                proto,
-                timeout: None,
-                connect_pending: false,
-            },
+            WasmSocketMeta::new(family, sock_type, proto, None),
         );
         wasm_socket_meta_insert(
             right as i64,
-            WasmSocketMeta {
-                family,
-                sock_type,
-                proto,
-                timeout: None,
-                connect_pending: false,
-            },
+            WasmSocketMeta::new(family, sock_type, proto, None),
         );
         let left_bits = MoltObject::from_int(left as i64).bits();
         let right_bits = MoltObject::from_int(right as i64).bits();

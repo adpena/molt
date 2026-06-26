@@ -40,6 +40,8 @@ use crate::builtins::types::TypesRuntimeState;
 use crate::c_api::CApiModuleRuntimeState;
 use crate::call::bind::CallBindRuntimeState;
 use crate::concurrency::gil::{gil_held, hold_runtime_gil, release_runtime_gil};
+#[cfg(target_arch = "wasm32")]
+use crate::libc_compat as libc;
 use crate::object::utf8_cache::{Utf8CacheStore, Utf8CountCacheStore, build_utf8_count_cache};
 use crate::{
     AsyncHangProbe, BuiltinClasses, CancelTokenEntry, GilGuard, HashSecret, InternedNames,

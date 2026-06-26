@@ -1,3 +1,5 @@
+#[cfg(target_arch = "wasm32")]
+use crate::libc_compat as libc;
 use crate::*;
 use num_bigint::{BigInt, Sign};
 use num_traits::ToPrimitive;
