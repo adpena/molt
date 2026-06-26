@@ -724,7 +724,7 @@ git log --numstat --pretty=format: | awk '...'             # → frontend/__init
 # §1.3 dependency direction
 grep -rcE 'crate::(wasm|luau|rust|llvm_backend|native_backend)' runtime/molt-tir/src/tir/  # → (none)
 grep -rnE 'crate::representation_plan' runtime/molt-tir/src/tir/  # → only lower_to_wasm:1530, lower_to_lir:13
-grep -ohE 'crate::[a-z_]+' runtime/molt-backend/src/representation_plan.rs | sort|uniq -c  # → tir×22, ir×2
+grep -ohE 'crate::[a-z_]+' runtime/molt-tir/src/representation_plan.rs | sort|uniq -c  # → tir×22, ir×2
 # §1.4 satellite drift (CORRECTED — the copies are NOT identical):
 diff <(sort runtime/molt-runtime/src/builtins/functions_http.rs) \
      <(sort runtime/molt-runtime-http/src/functions_http.rs) | grep -c '^[<>]'   # → 820 (NOT 0)
