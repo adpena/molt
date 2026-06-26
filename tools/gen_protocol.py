@@ -44,12 +44,13 @@ Determinism / clean diffs
     therefore need no curated input - they are pure introspection.
   * Attributes are emitted SORTED by name and split at the midpoint across the
     two files. Their *types* come from the curated table harvested from the two
-    files (the only place 191 of the 195 attribute types are recorded - they are
-    set via ``self.x = ...`` in ``__init__`` with no source annotation), merged
-    with the 4 class-level ``__annotations__``. A brand-new attribute introduced
-    by a future move that has no curated type defaults to ``Any`` (its NAME is
-    still on the Protocol, so the superset test passes; ``--check`` then shows a
-    diff so a human can refine the ``Any`` to a precise type).
+    files (the only place most attribute types are recorded - they are set via
+    direct ``self.x = ...`` assignments in the assembled generator/mixin method
+    surface with no source annotation), merged with class-level
+    ``__annotations__``. A brand-new attribute introduced by a future move that
+    has no curated type defaults to ``Any`` (its NAME is still on the Protocol,
+    so the superset test passes; ``--check`` then shows a diff so a human can
+    refine the ``Any`` to a precise type).
   * Imports are computed from the identifiers actually referenced in the emitted
     signatures/annotations, so a new ``_types`` type used in a moved signature is
     auto-imported (no fragile hand-maintained import list).
@@ -287,22 +288,73 @@ def _collect_methods(
 # ---------------------------------------------------------------------------
 
 
-def _init_store_attrs(generator: type) -> set[str]:
-    """Instance attributes assigned via ``self.x = ...`` in ``__init__``.
+def _direct_self_store_attrs(func: object) -> set[str]:
+    """Instance attributes assigned directly by one generator/mixin method.
+
+    Nested helper classes/functions are not generator state: several lowering
+    methods define local visitors whose ``self.x`` stores belong to the helper
+    object, not ``SimpleTIRGenerator``. Count only stores to the root method's
+    ``self`` parameter and do not descend into nested scopes.
+    """
+    src = _function_def_source(func)
+    if src is None:
+        return set()
+    try:
+        module = ast.parse(src)
+    except SyntaxError:
+        return set()
+    method = next(
+        (
+            n
+            for n in module.body
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+        ),
+        None,
+    )
+    if method is None or not method.args.args or method.args.args[0].arg != "self":
+        return set()
+
+    attrs: set[str] = set()
+
+    class Visitor(ast.NodeVisitor):
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            if node is method:
+                self.generic_visit(node)
+
+        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+            if node is method:
+                self.generic_visit(node)
+
+        def visit_ClassDef(self, node: ast.ClassDef) -> None:
+            return
+
+        def visit_Lambda(self, node: ast.Lambda) -> None:
+            return
+
+        def visit_Attribute(self, node: ast.Attribute) -> None:
+            if (
+                isinstance(node.value, ast.Name)
+                and node.value.id == "self"
+                and isinstance(node.ctx, ast.Store)
+            ):
+                attrs.add(node.attr)
+            self.generic_visit(node)
+
+    Visitor().visit(method)
+    return attrs
+
+
+def _surface_store_attrs(surface_classes: list[type]) -> set[str]:
+    """Instance attributes assigned by direct ``self.x = ...`` stores across
+    the assembled generator/mixin method surface.
 
     Mirrors the AST walk in the coverage test exactly so the generated name set
     is the same one the test computes.
     """
     attrs: set[str] = set()
-    init_src = textwrap.dedent(inspect.getsource(generator.__init__))
-    for node in ast.walk(ast.parse(init_src)):
-        if (
-            isinstance(node, ast.Attribute)
-            and isinstance(node.value, ast.Name)
-            and node.value.id == "self"
-            and isinstance(node.ctx, ast.Store)
-        ):
-            attrs.add(node.attr)
+    for klass in surface_classes:
+        for value in vars(klass).values():
+            attrs.update(_direct_self_store_attrs(_unwrap(value)))
     return attrs
 
 
@@ -365,7 +417,7 @@ def _collect_attrs(
     sorted by name. Types come from (class ``__annotations__`` union curated table),
     with ``Any`` as the explicit fallback for a name that has no recorded type.
     """
-    names = _init_store_attrs(generator)
+    names = _surface_store_attrs(surface_classes)
     for klass in surface_classes:
         names.update(getattr(klass, "__annotations__", {}))
     names -= builtins
