@@ -516,8 +516,8 @@ pub use crate::builtins::hmac::*;
 pub use crate::builtins::inspect::*;
 pub use crate::builtins::io::*;
 pub(crate) use crate::builtins::io::{
-    DecodeFailure, close_payload, file_handle_detached_message, file_handle_enter,
-    file_handle_exit, file_handle_is_closed, path_from_bits,
+    close_payload, file_handle_detached_message, file_handle_enter, file_handle_exit,
+    file_handle_is_closed, path_from_bits,
 };
 #[cfg(not(feature = "stdlib_ipaddress"))]
 pub use crate::builtins::ipaddress::*;

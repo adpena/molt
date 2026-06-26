@@ -1,5 +1,8 @@
-use crate::DecodeFailure as OpsDecodeFailure;
-use crate::object::ops::{DecodeTextError as OpsDecodeTextError, EncodeError as OpsEncodeError};
+use crate::object::ops::{
+    DecodeTextError as OpsDecodeTextError, EncodeError as OpsEncodeError, decode_error_byte,
+    decode_error_range,
+};
+use crate::object::ops_encoding::DecodeFailure as OpsDecodeFailure;
 use crate::*;
 
 const ENCODINGS_ALIASES: &[(&str, &str)] = &[
@@ -181,14 +184,6 @@ fn lookup_arg_to_str(_py: &PyToken<'_>, bits: u64) -> Option<String> {
         return raise_exception::<_>(_py, "TypeError", &msg);
     };
     Some(text)
-}
-
-fn decode_error_byte(label: &str, byte: u8, pos: usize, message: &str) -> String {
-    format!("'{label}' codec can't decode byte 0x{byte:02x} in position {pos}: {message}")
-}
-
-fn decode_error_range(label: &str, start: usize, end: usize, message: &str) -> String {
-    format!("'{label}' codec can't decode bytes in position {start}-{end}: {message}")
 }
 
 #[unsafe(no_mangle)]

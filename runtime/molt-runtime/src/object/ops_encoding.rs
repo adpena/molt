@@ -1,7 +1,21 @@
 //! String encoding and decoding — extracted from ops.rs for maintainability.
 
 use super::ops_string::{push_wtf8_codepoint, wtf8_from_bytes, wtf8_has_surrogates};
-use crate::*;
+
+#[derive(Debug)]
+pub(crate) enum DecodeFailure {
+    Byte {
+        pos: usize,
+        byte: u8,
+        message: &'static str,
+    },
+    Range {
+        start: usize,
+        end: usize,
+        message: &'static str,
+    },
+    UnknownErrorHandler(String),
+}
 
 #[derive(Clone, Copy)]
 pub(crate) enum EncodingKind {

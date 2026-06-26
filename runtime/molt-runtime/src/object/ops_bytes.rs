@@ -3,6 +3,7 @@
 //! Each `pub extern "C" fn molt_bytes_*` / `molt_bytearray_*` is a separate
 //! linker symbol so that `wasm-ld --gc-sections` can drop unused entries.
 
+use crate::object::ops_encoding::DecodeFailure;
 use crate::*;
 use memchr::memchr;
 use molt_obj_model::MoltObject;
