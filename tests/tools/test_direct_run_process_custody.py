@@ -41,7 +41,27 @@ def test_safe_run_delegates_process_custody_to_memory_guard(tmp_path: Path) -> N
     assert command[-3:] == [sys.executable, "-c", "print('ok')"]
 
 
+def test_safe_run_status_uses_guard_summary_before_legacy_exit_codes() -> None:
+    safe_run = _load_safe_run()
+
+    assert (
+        safe_run._status(
+            safe_run.EXIT_OOM,
+            {
+                "returncode": safe_run.EXIT_OOM,
+                "timed_out": False,
+                "violation": None,
+            },
+        )
+        == "ok"
+    )
+    assert safe_run._status(0, {"timed_out": True, "violation": None}) == "timeout"
+    assert safe_run._status(0, {"timed_out": False, "violation": {}}) == "oom"
+    assert safe_run._status(safe_run.EXIT_OOM, {"peak": {}}) == "oom"
+
+
 def test_direct_run_tools_have_no_parallel_kill_authority() -> None:
+    removed_compile_progress_helper = "_kill_run" + "_scoped_processes"
     for relative in ("tools/safe_run.py", "tools/compile_progress.py"):
         source = (ROOT / relative).read_text(encoding="utf-8")
         module = ast.parse(source)
@@ -63,5 +83,5 @@ def test_direct_run_tools_have_no_parallel_kill_authority() -> None:
 
         assert "signal" not in imported_modules
         assert "killpg" not in source
-        assert "_kill_run_scoped_processes" not in source
+        assert removed_compile_progress_helper not in source
         assert not process_kill_calls
