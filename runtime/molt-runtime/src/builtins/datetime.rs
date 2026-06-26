@@ -2156,6 +2156,8 @@ pub extern "C" fn molt_datetime_hash_date(y_bits: u64, m_bits: u64, d_bits: u64)
         };
         // CPython: date.__hash__ = hash(ordinal)
         let ord = ymd_to_ordinal(y as i32, m as i32, d as i32);
+        // The ordinal is bounded (1..=3_652_059 for year 1..=9999), so its hash
+        // always lands in the inline window — `from_int` is exact here.
         MoltObject::from_int(py_hash_int(ord)).bits()
     })
 }
@@ -2197,7 +2199,9 @@ pub extern "C" fn molt_datetime_hash_time(
         let adjusted = total_us - utcoff_us;
         // Hash as if it's the integer value of total microseconds
         let h_val = py_hash_i128(adjusted as i128);
-        MoltObject::from_int(h_val).bits()
+        // A tz-adjusted (negative) time reduces mod (2**61 - 1) to a value far
+        // outside the inline window; box the full Python hash, never `from_int`.
+        int_bits_from_i64(_py, h_val)
     })
 }
 
@@ -2288,7 +2292,9 @@ pub extern "C" fn molt_datetime_hash_timedelta(
         // more precisely it hashes the tuple (days, secs, us) after normalization.
         let total_us: i128 =
             days as i128 * 86_400 * 1_000_000 + secs as i128 * 1_000_000 + us as i128;
-        MoltObject::from_int(py_hash_i128(total_us)).bits()
+        // Large timedeltas reduce mod (2**61 - 1) well past the inline window;
+        // box the full Python hash, never `from_int`.
+        int_bits_from_i64(_py, py_hash_i128(total_us))
     })
 }
 
