@@ -252,6 +252,9 @@ generator/async opcode sets. `lowered_state_machine_body_opcodes` separately
 feeds `opcode_is_lowered_state_machine_body_table`, the opcode half of
 `TirFunction::has_state_machine` beside the non-opcode `StateDispatch`
 terminator check. Raw-i64 LIR arithmetic also uses generated opcode facts:
+`overflow_peel_guard_compare_opcodes` and `overflow_peel_body_pure_opcodes`
+feed overflow-peel legality predicates, so the dual-loop BigInt continuation
+does not carry pass-local guard/body opcode allowlists beside the registry.
 `i64_overflow_box_dispatch_opcodes` owns boxed-dispatch overflow custody, while
 `i64_checked_overflow_triple_opcodes` owns checked-overflow triple eligibility.
 Boxed augmented-assignment dispatch is generated too:

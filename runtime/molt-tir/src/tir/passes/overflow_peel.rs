@@ -77,7 +77,10 @@ use std::collections::{HashMap, HashSet};
 
 use crate::tir::blocks::{BlockId, Terminator, TirBlock};
 use crate::tir::function::TirFunction;
-use crate::tir::op_kinds_generated::opcode_is_state_machine_table;
+use crate::tir::op_kinds_generated::{
+    opcode_is_overflow_peel_body_pure_table, opcode_is_overflow_peel_guard_compare_table,
+    opcode_is_state_machine_table,
+};
 use crate::tir::ops::{AttrDict, Dialect, OpCode, TirOp};
 use crate::tir::types::TirType;
 use crate::tir::values::{TirValue, ValueId};
@@ -308,17 +311,18 @@ fn try_peel_loop(func: &mut TirFunction, header: BlockId) -> Result<usize, Refus
     // Guard ops: ignorable markers + Copies + ONE compare producing `cond`.
     let mut guard_compare: Option<&TirOp> = None;
     for op in &guard_block.ops {
-        match op.opcode {
-            OpCode::Copy => {}
-            OpCode::Lt | OpCode::Le | OpCode::Gt | OpCode::Ge | OpCode::Ne | OpCode::Eq
-                if op.results.first() == Some(&cond) =>
-            {
-                if guard_compare.is_some() {
-                    return Err(Refusal::ImpureBody);
-                }
-                guard_compare = Some(op);
+        if op.opcode == OpCode::Copy {
+            continue;
+        }
+        if opcode_is_overflow_peel_guard_compare_table(op.opcode)
+            && op.results.first() == Some(&cond)
+        {
+            if guard_compare.is_some() {
+                return Err(Refusal::ImpureBody);
             }
-            _ => return Err(Refusal::ImpureBody),
+            guard_compare = Some(op);
+        } else {
+            return Err(Refusal::ImpureBody);
         }
     }
     if guard_compare.is_none() {
@@ -346,9 +350,8 @@ fn try_peel_loop(func: &mut TirFunction, header: BlockId) -> Result<usize, Refus
     // (no side effect, deterministic), so a multiply accumulator
     // (`prod = prod * i`) re-executes BigInt-exact on the boxed slow loop.
     for op in &body_block.ops {
-        match op.opcode {
-            OpCode::Copy | OpCode::Add | OpCode::Mul | OpCode::ConstInt => {}
-            _ => return Err(Refusal::ImpureBody),
+        if !opcode_is_overflow_peel_body_pure_table(op.opcode) {
+            return Err(Refusal::ImpureBody);
         }
     }
 
