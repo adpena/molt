@@ -12,11 +12,7 @@
 //! The pipeline can also be used incrementally: build and optimize a module,
 //! then later lower and JIT separately.
 
-use melior::{
-    Context as MlirContext,
-    ExecutionEngine,
-    ir::operation::OperationLike,
-};
+use melior::{Context as MlirContext, ExecutionEngine, ir::operation::OperationLike};
 
 use molt_backend::tir::function::TirFunction;
 
@@ -91,8 +87,7 @@ pub fn compile_via_mlir(
     options: &MlirCompileOptions,
 ) -> Result<MlirCompileResult, String> {
     let ctx = crate::create_mlir_context();
-    // Allow unregistered dialects for molt.* ops that don't have real dialect
-    // registration. These ops are used as placeholders for runtime calls.
+    // Allow unregistered dialects for opaque molt.* runtime-call boundary ops.
     ctx.set_allow_unregistered_dialects(true);
 
     // Step 1: Build MLIR module from TIR.
@@ -252,9 +247,8 @@ mod tests {
 
     #[test]
     fn test_compile_result_stages() {
-        let func =
-            TirFunction::new("empty_ret".into(), vec![], TirType::I64);
-        // This will use the Unreachable terminator default which emits a zero return.
+        let func = TirFunction::new("empty_ret".into(), vec![], TirType::I64);
+        // The unreachable terminator emits an assert trap before the verifier-required return.
         let result = compile_via_mlir(
             &func,
             &MlirCompileOptions {

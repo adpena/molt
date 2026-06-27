@@ -82,7 +82,7 @@ pub(super) fn build_func_op<'c>(
 
         // Build a value map for this block's scope.
         // Start with block arguments.
-        let mut value_map: ValueMap<'c, '_> = HashMap::new();
+        let mut value_map = ValueMap::new(&tir_func.value_types);
 
         if bid == tir_func.entry_block {
             for i in 0..tir_func.param_types.len() {

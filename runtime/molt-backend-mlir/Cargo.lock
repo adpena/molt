@@ -589,15 +589,11 @@ dependencies = [
 name = "molt-backend"
 version = "0.1.0"
 dependencies = [
- "cranelift-codegen",
- "cranelift-frontend",
- "cranelift-module",
- "cranelift-native",
- "cranelift-object",
  "libc",
+ "molt-backend-native",
  "molt-ir",
  "molt-tir",
- "rayon",
+ "object",
  "rmp-serde",
  "serde",
  "serde_json",
@@ -613,6 +609,27 @@ dependencies = [
  "molt-backend",
  "serde_json",
 ]
+
+[[package]]
+name = "molt-backend-native"
+version = "0.1.0"
+dependencies = [
+ "cranelift-codegen",
+ "cranelift-frontend",
+ "cranelift-module",
+ "cranelift-native",
+ "cranelift-object",
+ "libc",
+ "molt-codegen-abi",
+ "molt-ir",
+ "molt-tir",
+ "rayon",
+ "serde",
+]
+
+[[package]]
+name = "molt-codegen-abi"
+version = "0.1.0"
 
 [[package]]
 name = "molt-ir"

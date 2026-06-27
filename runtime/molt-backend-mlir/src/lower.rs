@@ -24,10 +24,7 @@ use melior::{
 /// only LLVM dialect operations and cannot be meaningfully optimized at the
 /// MLIR level (LLVM's own pass manager should be used instead, e.g., via the
 /// execution engine's optimization level parameter).
-pub fn lower_to_llvm_dialect(
-    module: &mut MlirModule<'_>,
-    ctx: &MlirContext,
-) -> Result<(), String> {
+pub fn lower_to_llvm_dialect(module: &mut MlirModule<'_>, ctx: &MlirContext) -> Result<(), String> {
     let pm = PassManager::new(ctx);
     pm.enable_verifier(true);
 
@@ -36,7 +33,10 @@ pub fn lower_to_llvm_dialect(
     // the CF->LLVM conversion.
     pm.add_pass(pass::conversion::create_scf_to_control_flow());
 
-    // Step 2: Use the all-in-one convert-to-llvm pass which handles:
+    // Step 2: Lower math ops such as math.floor before the all-in-one LLVM pass.
+    pm.add_pass(pass::conversion::create_math_to_llvm());
+
+    // Step 3: Use the all-in-one convert-to-llvm pass which handles:
     // - arith -> llvm
     // - func -> llvm
     // - cf -> llvm
@@ -46,7 +46,7 @@ pub fn lower_to_llvm_dialect(
     // cross-dialect dependencies correctly.
     pm.add_pass(pass::conversion::create_to_llvm());
 
-    // Step 3: Reconcile any remaining unrealized_conversion_cast operations
+    // Step 4: Reconcile any remaining unrealized_conversion_cast operations
     // that may be left over from partial conversions.
     pm.add_pass(pass::conversion::create_reconcile_unrealized_casts());
 
@@ -81,7 +81,16 @@ pub fn lower_to_llvm_dialect_stepwise(
             .map_err(|e| format!("Arith->LLVM lowering failed: {e}"))?;
     }
 
-    // Step 3: Index -> LLVM
+    // Step 3: Math -> LLVM
+    {
+        let pm = PassManager::new(ctx);
+        pm.enable_verifier(true);
+        pm.add_pass(pass::conversion::create_math_to_llvm());
+        pm.run(module)
+            .map_err(|e| format!("Math->LLVM lowering failed: {e}"))?;
+    }
+
+    // Step 4: Index -> LLVM
     {
         let pm = PassManager::new(ctx);
         pm.enable_verifier(true);
@@ -90,7 +99,7 @@ pub fn lower_to_llvm_dialect_stepwise(
             .map_err(|e| format!("Index->LLVM lowering failed: {e}"))?;
     }
 
-    // Step 4: CF -> LLVM
+    // Step 5: CF -> LLVM
     {
         let pm = PassManager::new(ctx);
         pm.enable_verifier(true);
@@ -99,7 +108,7 @@ pub fn lower_to_llvm_dialect_stepwise(
             .map_err(|e| format!("CF->LLVM lowering failed: {e}"))?;
     }
 
-    // Step 5: MemRef -> LLVM
+    // Step 6: MemRef -> LLVM
     {
         let pm = PassManager::new(ctx);
         pm.enable_verifier(true);
@@ -108,7 +117,7 @@ pub fn lower_to_llvm_dialect_stepwise(
             .map_err(|e| format!("MemRef->LLVM lowering failed: {e}"))?;
     }
 
-    // Step 6: Func -> LLVM
+    // Step 7: Func -> LLVM
     {
         let pm = PassManager::new(ctx);
         pm.enable_verifier(true);
@@ -117,7 +126,7 @@ pub fn lower_to_llvm_dialect_stepwise(
             .map_err(|e| format!("Func->LLVM lowering failed: {e}"))?;
     }
 
-    // Step 7: Reconcile casts
+    // Step 8: Reconcile casts
     {
         let pm = PassManager::new(ctx);
         pm.enable_verifier(true);

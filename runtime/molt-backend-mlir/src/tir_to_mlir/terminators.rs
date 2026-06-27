@@ -3,7 +3,11 @@ use std::collections::HashMap;
 use melior::{
     Context as MlirContext,
     dialect::{arith, cf, func},
-    ir::{Block, Location, Type, Value, attribute::IntegerAttribute, r#type::IntegerType},
+    ir::{
+        Block, Location, Type, Value,
+        attribute::{FloatAttribute, IntegerAttribute},
+        r#type::IntegerType,
+    },
 };
 use molt_backend::tir::{
     blocks::{BlockId, Terminator},
@@ -146,25 +150,54 @@ pub(super) fn emit_terminator<'c, 'a>(
         }
 
         Terminator::Unreachable => {
-            // Emit an unreachable trap. In MLIR, we use a branch to a non-existent
-            // block which will be caught by the verifier, OR we emit an
-            // `llvm.unreachable` later. For now, emit a return of the correct
-            // type to keep the module valid.
-            let return_type = mlir_type_for_tir(ctx, &tir_func.return_type);
+            append_unreachable_assert(ctx, block, location);
             if matches!(tir_func.return_type, TirType::Never) {
-                // Never-returning function: emit func.return with no values.
                 block.append_operation(func::r#return(&[], location));
             } else {
-                // Emit a poison/zero value return.
-                let zero_attr = IntegerAttribute::new(return_type, 0).into();
-                let zero_op = block.append_operation(arith::constant(ctx, zero_attr, location));
-                let zero_val: Value<'c, '_> = zero_op.result(0).unwrap().into();
+                let zero_val =
+                    zero_value_for_return_type(ctx, block, &tir_func.return_type, location);
                 block.append_operation(func::r#return(&[zero_val], location));
             }
         }
     }
 
     Ok(())
+}
+
+fn append_unreachable_assert<'c, 'a>(
+    ctx: &'c MlirContext,
+    block: &'a Block<'c>,
+    location: Location<'c>,
+) {
+    let i1_type: Type<'c> = IntegerType::new(ctx, 1).into();
+    let false_attr = IntegerAttribute::new(i1_type, 0).into();
+    let false_op = block.append_operation(arith::constant(ctx, false_attr, location));
+    let false_val: Value<'c, '_> = false_op.result(0).unwrap().into();
+    block.append_operation(cf::assert(
+        ctx,
+        false_val,
+        "reached TIR unreachable terminator",
+        location,
+    ));
+}
+
+fn zero_value_for_return_type<'c, 'a>(
+    ctx: &'c MlirContext,
+    block: &'a Block<'c>,
+    return_type: &TirType,
+    location: Location<'c>,
+) -> Value<'c, 'a> {
+    let mlir_type = mlir_type_for_tir(ctx, return_type);
+    let op = if matches!(return_type, TirType::F64) {
+        arith::constant(
+            ctx,
+            FloatAttribute::new(ctx, mlir_type, 0.0).into(),
+            location,
+        )
+    } else {
+        arith::constant(ctx, IntegerAttribute::new(mlir_type, 0).into(), location)
+    };
+    block.append_operation(op).result(0).unwrap().into()
 }
 
 /// Ensure a value is i1 for use as a branch condition.

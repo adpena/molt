@@ -4,18 +4,19 @@ use melior::{
     ir::{
         Block, Location, Type, Value,
         attribute::{FlatSymbolRefAttribute, FloatAttribute, IntegerAttribute},
-        operation::{OperationBuilder, OperationLike},
+        operation::{OperationBuilder, OperationLike, OperationRef},
     },
 };
 use molt_backend::tir::{
     function::TirFunction,
     ops::{AttrValue, Dialect as TirDialect, OpCode, TirOp},
+    values::ValueId,
 };
 
 use super::{
     attrs::{extract_bool_attr, extract_float_attr, extract_int_attr, extract_str_attr},
     opaque_ops::emit_opaque_molt_op,
-    values::{ValueMap, operand_is_float, resolve_value},
+    values::{ValueMap, resolve_value},
 };
 
 #[allow(clippy::too_many_arguments)]
@@ -95,7 +96,7 @@ pub(super) fn emit_tir_op<'c, 'a>(
         }
         (_, OpCode::Neg) => {
             let operand = resolve_value(value_map, op.operands[0])?;
-            let mlir_op = if operand_is_float(operand, ctx) {
+            let mlir_op = if value_map.is_float_value(op.operands[0], operand, ctx) {
                 block.append_operation(arith::negf(operand, location))
             } else {
                 // Integer negate: 0 - x
@@ -275,7 +276,7 @@ pub(super) fn emit_tir_op<'c, 'a>(
         (_, OpCode::Bool) => {
             // Truthiness test: compare operand != 0.
             let operand = resolve_value(value_map, op.operands[0])?;
-            if operand_is_float(operand, ctx) {
+            if value_map.is_float_value(op.operands[0], operand, ctx) {
                 let zero_attr = FloatAttribute::new(ctx, f64_type, 0.0).into();
                 let zero_op = block.append_operation(arith::constant(ctx, zero_attr, location));
                 let zero_val: Value<'c, '_> = zero_op.result(0).unwrap().into();
@@ -362,29 +363,10 @@ pub(super) fn emit_tir_op<'c, 'a>(
             }
         }
 
-        // ---- Pow (integer exponentiation via loop, float via mul chain) ----
         (_, OpCode::Pow) => {
-            // For the MLIR lowering, emit a call to an external `__molt_pow_i64` runtime
-            // function. This avoids inlining a full exponentiation loop at the MLIR level
-            // while still producing a correct, verifiable module.
-            //
-            // The runtime function is declared as:
-            //   func.func private @__molt_pow_i64(i64, i64) -> i64
-            // and will be linked at JIT/object time.
-            let lhs = resolve_value(value_map, op.operands[0])?;
-            let rhs = resolve_value(value_map, op.operands[1])?;
-
-            // Emit a placeholder: result = lhs * rhs (conservative fallback).
-            // A proper implementation would emit an scf.while loop or a runtime call.
-            // For now we emit muli which is correct for pow(x, 1) and at least
-            // type-correct for the pipeline to proceed.
-            let mlir_op = if operand_is_float(lhs, ctx) {
-                block.append_operation(arith::mulf(lhs, rhs, location))
-            } else {
-                block.append_operation(arith::muli(lhs, rhs, location))
-            };
             if let Some(&result_id) = op.results.first() {
-                value_map.insert(result_id, mlir_op.result(0).unwrap().into());
+                let result = emit_pow(op, value_map, result_id)?;
+                value_map.insert(result_id, result);
             }
         }
 
@@ -521,6 +503,52 @@ pub(super) fn emit_tir_op<'c, 'a>(
     Ok(())
 }
 
+fn emit_pow<'c, 'a>(
+    op: &TirOp,
+    value_map: &ValueMap<'c, 'a>,
+    result_id: ValueId,
+) -> Result<Value<'c, 'a>, String> {
+    let lhs_ty = op
+        .operands
+        .first()
+        .and_then(|&id| value_map.type_of(id))
+        .map(|ty| format!("{ty:?}"))
+        .unwrap_or_else(|| "unknown".to_string());
+    let rhs_ty = op
+        .operands
+        .get(1)
+        .and_then(|&id| value_map.type_of(id))
+        .map(|ty| format!("{ty:?}"))
+        .unwrap_or_else(|| "unknown".to_string());
+    let result_ty = value_map
+        .type_of(result_id)
+        .map(|ty| format!("{ty:?}"))
+        .unwrap_or_else(|| "unknown".to_string());
+    Err(format!(
+        "MLIR lowering refuses OpCode::Pow for result %{} ({result_ty}) from \
+         operand types ({lhs_ty}, {rhs_ty}): Python power may raise or leave \
+         the scalar result domain. Add a checked boxed-runtime MLIR ABI before \
+         enabling this opcode.",
+        result_id.0
+    ))
+}
+
+fn emit_math_unary_float<'c, 'a>(
+    _ctx: &'c MlirContext,
+    block: &'a Block<'c>,
+    op_name: &str,
+    operand: Value<'c, '_>,
+    location: Location<'c>,
+) -> Result<OperationRef<'c, 'a>, String> {
+    let result_type = operand.r#type();
+    let op = OperationBuilder::new(op_name, location)
+        .add_operands(&[operand])
+        .add_results(&[result_type])
+        .build()
+        .map_err(|e| format!("Failed to build {op_name}: {e}"))?;
+    Ok(block.append_operation(op))
+}
+
 /// Binary arithmetic op kind for dispatch.
 enum BinaryArithOp {
     Add,
@@ -542,7 +570,7 @@ fn emit_binary_arith<'c, 'a>(
 ) -> Result<(), String> {
     let lhs = resolve_value(value_map, op.operands[0])?;
     let rhs = resolve_value(value_map, op.operands[1])?;
-    let is_float = operand_is_float(lhs, ctx);
+    let is_float = value_map.is_float_value(op.operands[0], lhs, ctx);
 
     let mlir_op = match kind {
         BinaryArithOp::Add => {
@@ -575,8 +603,9 @@ fn emit_binary_arith<'c, 'a>(
         }
         BinaryArithOp::FloorDiv => {
             if is_float {
-                // Floor division on floats: divf then truncate. For now, just divf.
-                block.append_operation(arith::divf(lhs, rhs, location))
+                let div = block.append_operation(arith::divf(lhs, rhs, location));
+                let quotient: Value<'c, '_> = div.result(0).unwrap().into();
+                emit_math_unary_float(ctx, block, "math.floor", quotient, location)?
             } else {
                 block.append_operation(arith::floordivsi(lhs, rhs, location))
             }
@@ -608,7 +637,7 @@ fn emit_comparison<'c, 'a>(
 ) -> Result<(), String> {
     let lhs = resolve_value(value_map, op.operands[0])?;
     let rhs = resolve_value(value_map, op.operands[1])?;
-    let is_float = operand_is_float(lhs, ctx);
+    let is_float = value_map.is_float_value(op.operands[0], lhs, ctx);
 
     let mlir_op = if is_float {
         block.append_operation(arith::cmpf(ctx, float_pred, lhs, rhs, location))
