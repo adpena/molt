@@ -142,42 +142,6 @@ pub(super) fn emit_stateful_resume_prelude(
     func.instruction(&Instruction::End);
 }
 
-pub(super) fn emit_dispatch_block_lookup(
-    func: &mut Function,
-    op_count: usize,
-    block_count: usize,
-    locals: NonLinearDispatchLocals,
-) {
-    func.instruction(&Instruction::LocalGet(locals.state_local));
-    func.instruction(&Instruction::I64Const(op_count as i64));
-    func.instruction(&Instruction::I64GeU);
-    func.instruction(&Instruction::If(BlockType::Empty));
-    func.instruction(&Instruction::I64Const(block_count as i64));
-    func.instruction(&Instruction::LocalSet(locals.state_local));
-    func.instruction(&Instruction::Else);
-    func.instruction(&Instruction::LocalGet(locals.block_map_base_local));
-    func.instruction(&Instruction::I32WrapI64);
-    func.instruction(&Instruction::LocalGet(locals.state_local));
-    func.instruction(&Instruction::I32WrapI64);
-    func.instruction(&Instruction::I32Const(4));
-    func.instruction(&Instruction::I32Mul);
-    func.instruction(&Instruction::I32Add);
-    func.instruction(&Instruction::I32Load(wasm_encoder::MemArg {
-        align: 2,
-        offset: 0,
-        memory_index: 0,
-    }));
-    func.instruction(&Instruction::I64ExtendI32U);
-    func.instruction(&Instruction::LocalSet(locals.state_local));
-    func.instruction(&Instruction::End);
-
-    func.instruction(&Instruction::LocalGet(locals.state_local));
-    func.instruction(&Instruction::I32WrapI64);
-    let targets: Vec<u32> = (0..block_count).map(|idx| idx as u32).collect();
-    func.instruction(&Instruction::BrTable(targets.into(), block_count as u32));
-    func.instruction(&Instruction::End);
-}
-
 pub(super) fn emit_dispatch_if(
     func: &mut Function,
     op_emitter: &WasmFunctionEmitContext<'_, '_>,
