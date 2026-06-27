@@ -22,7 +22,7 @@ impl WasmBackend {
             crate::fold_constants(&mut func_ir.ops);
             crate::passes::hoist_loop_invariants(func_ir);
         }
-        let mut lir_fast_outputs: BTreeMap<String, crate::tir::lower_to_wasm::WasmFunctionOutput> =
+        let mut lir_fast_outputs: BTreeMap<String, crate::lower_to_wasm::WasmFunctionOutput> =
             BTreeMap::new();
         super::tir_pipeline::run_tir_pipeline(&mut ir, &mut lir_fast_outputs);
 

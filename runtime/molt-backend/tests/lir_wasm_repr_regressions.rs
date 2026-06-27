@@ -4,10 +4,10 @@ use molt_backend::tir::blocks::{BlockId, Terminator, TirBlock};
 use molt_backend::tir::function::TirFunction;
 use molt_backend::tir::lir::LirRepr;
 use molt_backend::tir::lower_to_lir::lower_function_to_lir_for_repr_fact_extraction;
-use molt_backend::tir::lower_to_wasm::lower_lir_to_wasm;
 use molt_backend::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
 use molt_backend::tir::types::TirType;
 use molt_backend::tir::values::{TirValue, ValueId};
+use molt_backend_wasm::lower_to_wasm::lower_lir_to_wasm;
 use wasm_encoder::{Instruction, ValType};
 
 fn make_op(

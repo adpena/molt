@@ -46,6 +46,9 @@ for the crate-extraction and incremental-build routing plan.
   resolver modules. `stringprep` is the first generated per-leaf-crate
   sub-registry; the remaining registry work is to lift the other generated
   categories the same way as runtime facade extraction proceeds.
+- `molt-backend-wasm` owns WASM instruction projection and the `wasm-encoder`
+  dependency; `molt-tir` remains the backend-neutral TIR/LIR/representation
+  authority and no longer carries backend-specific WASM codegen.
 - Remaining structural work: finish runtime facade composition, finish per-crate
   intrinsic registries, isolate native backend codegen into its own crate, and
   preserve deterministic cache/build-state custody across concurrent agents.

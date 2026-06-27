@@ -247,9 +247,11 @@ backend-native extraction boundary, but its mechanics are stale now that
 Current extraction state:
 - Already extracted: `runtime/molt-ir` owns the immutable IR/data layer,
   `runtime/molt-passes` owns TIR passes/facts/target descriptors plus the
-  SimpleIR<->TIR round-trip, and `runtime/molt-tir` owns backend projection and
-  representation-plan name projection. None of those crates depends on native/
-  wasm/luau/llvm/rust backend implementation crates.
+  SimpleIR<->TIR round-trip, and `runtime/molt-tir` owns backend-neutral LIR,
+  verification, representation planning, and representation-plan name
+  projection. `runtime/molt-backend-wasm` now owns WASM instruction projection
+  (`lower_to_wasm`) and the `wasm-encoder` dependency. None of the IR/pass/TIR
+  crates depends on native/wasm/luau/llvm/rust backend implementation crates.
 - Not yet extracted: there is no `runtime/molt-backend-native` workspace member.
   `runtime/molt-backend/Cargo.toml` still owns Cranelift and Inkwell
   dependencies, default `native-backend`, `llvm`, `wasm-backend`, `luau-backend`,
@@ -261,9 +263,10 @@ Next structural cut:
 - Create `molt-backend-native` only when `native_backend/*` and
   `llvm_backend/*` can move together as one native codegen authority.
 - Keep `molt-ir` as the typed-IR authority, `molt-passes` as the midend
-  pass/fact/round-trip authority, and `molt-tir` as the backend-projection
-  authority; do not duplicate TIR facts or re-export compatibility shims from
-  the native crate.
+  pass/fact/round-trip authority, and `molt-tir` as the backend-neutral
+  TIR/LIR/representation authority. Backend-specific instruction projection
+  belongs in the backend crates; do not duplicate TIR facts or re-export
+  compatibility shims from the native crate.
 - Keep `molt-backend` as the composition crate until the daemon/bin move is
   atomic; when the bin moves, preserve the binary name `molt-backend` so CLI
   artifact discovery does not fork.
@@ -272,8 +275,8 @@ Next structural cut:
 
 Landing gates for the native extraction:
 - `cargo build -p molt-passes`, `cargo test -p molt-passes`, and
-  `cargo build -p molt-tir` prove the core midend and backend-projection layers
-  remain backend-free.
+  `cargo build -p molt-tir` prove the core midend and TIR/LIR layers remain
+  backend-free.
 - `cargo build -p molt-backend --no-default-features` proves core composition
   no longer pulls Cranelift/Inkwell after the cut.
 - `cargo build -p molt-backend-native --features native-backend` and
