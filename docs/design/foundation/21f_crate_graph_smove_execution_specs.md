@@ -101,6 +101,11 @@ change the mechanics. Absorb all eight.
    store serialized optimized `TirFunction`s. WASM LIR fast outputs are derived from final
    surviving SimpleIR functions, not from a pre-final cached side channel.
 
+10. **Backend-neutral SimpleIR rewrite policy is upstream of backend extraction.** `runtime/molt-tir/src/ir_rewrites.rs`
+    owns phi-store lowering, try/except elision, copy-alias rewriting, and annotation-stub
+    rewriting. `molt-backend` imports these passes from `molt-tir`; it must not grow a replacement
+    `ir_rewrites` module or re-export shim when native/LLVM move into backend leaf crates.
+
 ### 0.1 Doctrine binding (the checklist this doc answers, per DESIGN_DOCTRINE.md)
 - **Killer retired:** the incremental-build killer (a TIR-pass edit rebuilding all 5 backends; a
   185K-line monolith CU). After S8: a TIR-pass edit recompiles `molt-passes` + relinks; a backend

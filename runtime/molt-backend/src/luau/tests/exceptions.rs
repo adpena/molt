@@ -113,7 +113,7 @@ fn test_lower_try_to_pcall_targets_protected_exception_handler() {
 
 pub(super) fn luau_tir_roundtrip_function(mut func: FunctionIR) -> FunctionIR {
     if func.ops.iter().any(|op| op.kind == "phi") {
-        crate::rewrite_phi_to_store_load(&mut func.ops);
+        molt_tir::ir_rewrites::rewrite_phi_to_store_load(&mut func.ops);
     }
     let mut tir_func = crate::tir::lower_from_simple::lower_to_tir(&func);
     crate::tir::type_refine::refine_types(&mut tir_func);

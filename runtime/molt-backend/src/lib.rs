@@ -23,11 +23,6 @@ pub use molt_tir::{passes, representation_plan, tir};
 pub use molt_ir::intrinsic_symbols::{
     runtime_intrinsic_symbols_from_env, runtime_intrinsic_symbols_required,
 };
-mod ir_rewrites;
-pub use crate::ir_rewrites::{
-    elide_useless_try_blocks, elide_useless_try_blocks_for_function, rewrite_annotate_stubs,
-    rewrite_copy_aliases, rewrite_phi_to_store_load,
-};
 #[cfg(feature = "llvm")]
 pub mod llvm_backend;
 pub mod luau_ir;

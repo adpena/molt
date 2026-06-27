@@ -1,4 +1,8 @@
 use super::*;
+use molt_tir::ir_rewrites::{
+    elide_useless_try_blocks_for_function, rewrite_annotate_stubs, rewrite_copy_aliases,
+    rewrite_phi_to_store_load,
+};
 use std::fmt::Write as _;
 
 #[cfg(feature = "native-backend")]
