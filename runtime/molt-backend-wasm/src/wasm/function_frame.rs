@@ -1,34 +1,61 @@
 use super::constant_ops::{
-    const_seed_bits, needs_literal_pointer_locals, needs_seeded_runtime_const,
+    const_seed_bits, emit_seeded_runtime_const_op, needs_literal_pointer_locals,
+    needs_seeded_runtime_const,
 };
 use super::context::CompileFuncContext;
 use super::local_analysis::{LocalVariableAnalysis, analyze_local_variables};
 use super::multi_return_layout::WasmMultiReturnLayout;
+use super::state_dispatch::NonLinearDispatchLocals;
 use super::*;
 
-pub(super) struct WasmLocalLayout {
-    pub(super) locals: BTreeMap<String, u32>,
-    pub(super) local_types: Vec<ValType>,
-    pub(super) runtime_lookup_only_vars: BTreeSet<String>,
-    pub(super) scalar_plan: ScalarRepresentationPlan,
-    pub(super) stateful: bool,
-    pub(super) jumpful: bool,
-    pub(super) tail_call_eligible: bool,
-    pub(super) arena_local: Option<u32>,
-    pub(super) self_ptr_local: Option<u32>,
-    pub(super) state_local: Option<u32>,
-    pub(super) block_map_base_local: Option<u32>,
-    pub(super) return_local: Option<u32>,
-    pub(super) state_remap_base_local: Option<u32>,
-    pub(super) state_remap_value_local: Option<u32>,
-    pub(super) const_cache: ConstantCache,
-    pub(super) const_seed_locals: Vec<(u32, i64)>,
-    pub(super) seeded_runtime_const_ops: Vec<(usize, OpIR)>,
-    pub(super) seeded_runtime_const_op_indices: BTreeSet<usize>,
-    pub(super) multi_return: WasmMultiReturnLayout,
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(in crate::wasm) enum WasmFrameControlMode {
+    Plain,
+    Jumpful,
+    Stateful,
 }
 
-impl WasmLocalLayout {
+impl WasmFrameControlMode {
+    pub(in crate::wasm) fn is_stateful(self) -> bool {
+        matches!(self, Self::Stateful)
+    }
+
+    fn needs_dispatch(self) -> bool {
+        !matches!(self, Self::Plain)
+    }
+}
+
+pub(super) struct WasmFunctionFramePlan {
+    local_types: Vec<ValType>,
+    frame: WasmFunctionFrame,
+}
+
+pub(super) struct WasmFunctionFrame {
+    locals: BTreeMap<String, u32>,
+    runtime_lookup_only_vars: BTreeSet<String>,
+    scalar_plan: ScalarRepresentationPlan,
+    control_mode: WasmFrameControlMode,
+    tail_call_eligible: bool,
+    arena_local: Option<u32>,
+    dispatch_locals: Option<WasmDispatchFrameLocals>,
+    const_cache: ConstantCache,
+    const_seed_locals: Vec<(u32, i64)>,
+    seeded_runtime_const_ops: Vec<(usize, OpIR)>,
+    seeded_runtime_const_op_indices: BTreeSet<usize>,
+    multi_return: WasmMultiReturnLayout,
+}
+
+#[derive(Clone, Copy)]
+struct WasmDispatchFrameLocals {
+    state_local: u32,
+    block_map_base_local: u32,
+    return_local: u32,
+    self_ptr_local: Option<u32>,
+    state_remap_base_local: Option<u32>,
+    state_remap_value_local: Option<u32>,
+}
+
+impl WasmFunctionFramePlan {
     pub(super) fn for_function(func_ir: &FunctionIR, ctx: &CompileFuncContext<'_>) -> Self {
         let mut locals = BTreeMap::new();
         let mut local_count = 0;
@@ -407,27 +434,189 @@ impl WasmLocalLayout {
             &mut local_count,
         );
 
+        let control_mode = if stateful {
+            WasmFrameControlMode::Stateful
+        } else if jumpful {
+            WasmFrameControlMode::Jumpful
+        } else {
+            WasmFrameControlMode::Plain
+        };
+        let dispatch_locals = control_mode
+            .needs_dispatch()
+            .then(|| WasmDispatchFrameLocals {
+                state_local: state_local.expect("state local missing for dispatch wasm"),
+                block_map_base_local: block_map_base_local
+                    .expect("block map base local missing for dispatch wasm"),
+                return_local: return_local.expect("stateful/jumpful missing return local"),
+                self_ptr_local,
+                state_remap_base_local,
+                state_remap_value_local,
+            });
+
         let _ = local_count;
         Self {
-            locals,
             local_types,
-            runtime_lookup_only_vars,
-            scalar_plan,
-            stateful,
-            jumpful,
-            tail_call_eligible,
-            arena_local,
-            self_ptr_local,
-            state_local,
-            block_map_base_local,
-            return_local,
-            state_remap_base_local,
-            state_remap_value_local,
-            const_cache,
-            const_seed_locals,
-            seeded_runtime_const_ops,
-            seeded_runtime_const_op_indices,
-            multi_return,
+            frame: WasmFunctionFrame {
+                locals,
+                runtime_lookup_only_vars,
+                scalar_plan,
+                control_mode,
+                tail_call_eligible,
+                arena_local,
+                dispatch_locals,
+                const_cache,
+                const_seed_locals,
+                seeded_runtime_const_ops,
+                seeded_runtime_const_op_indices,
+                multi_return,
+            },
         }
+    }
+
+    pub(super) fn into_function_and_frame(self) -> (Function, WasmFunctionFrame) {
+        (
+            Function::new_with_locals_types(self.local_types),
+            self.frame,
+        )
+    }
+}
+
+impl WasmFunctionFrame {
+    pub(super) fn control_mode(&self) -> WasmFrameControlMode {
+        self.control_mode
+    }
+
+    pub(super) fn dispatch_locals(&self) -> Option<NonLinearDispatchLocals> {
+        self.dispatch_locals.map(|locals| NonLinearDispatchLocals {
+            state_local: locals.state_local,
+            block_map_base_local: locals.block_map_base_local,
+            return_local: locals.return_local,
+            self_ptr_local: locals.self_ptr_local,
+            state_remap_base_local: locals.state_remap_base_local,
+            state_remap_value_local: locals.state_remap_value_local,
+        })
+    }
+
+    pub(super) fn locals(&self) -> &BTreeMap<String, u32> {
+        &self.locals
+    }
+
+    pub(super) fn runtime_lookup_only_vars(&self) -> &BTreeSet<String> {
+        &self.runtime_lookup_only_vars
+    }
+
+    pub(super) fn seeded_runtime_const_op_indices(&self) -> &BTreeSet<usize> {
+        &self.seeded_runtime_const_op_indices
+    }
+
+    pub(super) fn const_cache(&self) -> &ConstantCache {
+        &self.const_cache
+    }
+
+    pub(super) fn scalar_plan(&self) -> &ScalarRepresentationPlan {
+        &self.scalar_plan
+    }
+
+    pub(super) fn multi_return(&self) -> &WasmMultiReturnLayout {
+        &self.multi_return
+    }
+
+    pub(super) fn tail_call_eligible(&self) -> bool {
+        self.tail_call_eligible
+    }
+
+    pub(super) fn arena_local(&self) -> Option<u32> {
+        self.arena_local
+    }
+
+    pub(super) fn emit_debug_local_map(&self, func_ir: &FunctionIR) {
+        if std::env::var("MOLT_DEBUG_WASM_LOCALS_FUNC").ok().as_deref()
+            != Some(func_ir.name.as_str())
+        {
+            return;
+        }
+        eprintln!("WASM_DEBUG_FUNC {}", func_ir.name);
+        for (idx, op) in func_ir.ops.iter().enumerate() {
+            let mut mentioned: Vec<String> = Vec::new();
+            if let Some(args) = &op.args {
+                mentioned.extend(args.iter().cloned());
+            }
+            if let Some(var) = &op.var {
+                mentioned.push(var.clone());
+            }
+            if let Some(out) = &op.out {
+                mentioned.push(out.clone());
+            }
+            mentioned.sort();
+            mentioned.dedup();
+            let mapped: Vec<String> = mentioned
+                .into_iter()
+                .filter_map(|name| self.locals.get(&name).map(|slot| format!("{name}->{slot}")))
+                .collect();
+            eprintln!(
+                "WASM_DEBUG_OP {} kind={} var={:?} out={:?} args={:?} locals={:?}",
+                idx, op.kind, op.var, op.out, op.args, mapped
+            );
+        }
+    }
+
+    pub(super) fn emit_dispatch_seed_initializers(
+        &self,
+        backend: &mut WasmBackend,
+        func: &mut Function,
+        func_index: u32,
+        reloc_enabled: bool,
+        import_ids: &TrackedImportIds,
+        const_str_scratch_segment: DataSegmentRef,
+    ) {
+        if !self.control_mode.needs_dispatch() {
+            return;
+        }
+        for (_, op) in &self.seeded_runtime_const_ops {
+            emit_seeded_runtime_const_op(
+                backend,
+                func,
+                op,
+                &self.locals,
+                func_index,
+                reloc_enabled,
+                import_ids,
+                const_str_scratch_segment,
+            );
+        }
+        // Seed dispatch locals from their first literal assignment so control-flow
+        // edge threading cannot observe a raw wasm zero (0.0 bits) for an
+        // otherwise integer/none local before its defining block executes.
+        for (local_idx, bits) in self.const_seed_locals.iter().copied() {
+            func.instruction(&Instruction::I64Const(bits));
+            func.instruction(&Instruction::LocalSet(local_idx));
+        }
+    }
+
+    pub(super) fn emit_entry_initializers(
+        &self,
+        func: &mut Function,
+        reloc_enabled: bool,
+        import_ids: &TrackedImportIds,
+    ) {
+        self.const_cache.emit_init(func);
+        if let Some(idx) = self.arena_local {
+            emit_call(func, reloc_enabled, import_ids["arena_new"]);
+            func.instruction(&Instruction::LocalSet(idx));
+        }
+    }
+
+    pub(super) fn emit_implicit_return(
+        &self,
+        func: &mut Function,
+        reloc_enabled: bool,
+        import_ids: &TrackedImportIds,
+    ) {
+        if let Some(arena_idx) = self.arena_local {
+            func.instruction(&Instruction::LocalGet(arena_idx));
+            emit_call(func, reloc_enabled, import_ids["arena_free"]);
+        }
+        self.const_cache.emit_none(func);
+        func.instruction(&Instruction::End);
     }
 }
