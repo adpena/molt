@@ -5,8 +5,8 @@
 
 use std::collections::BTreeSet;
 
-use molt_backend::wasm::{WasmBackend, WasmCompileOptions, WasmProfile};
 use molt_backend::{FunctionIR, OpIR, SimpleIR};
+use molt_backend::{WasmBackend, WasmCompileOptions, WasmProfile};
 use wasmparser::{CompositeInnerType, Operator, Parser, Payload, TypeRef, ValType};
 
 fn empty_ir() -> SimpleIR {

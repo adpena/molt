@@ -33,7 +33,9 @@ pub use molt_tir::{passes, representation_plan, tir};
 #[cfg(all(feature = "wasm-backend", feature = "test-util"))]
 pub mod test_util;
 #[cfg(feature = "wasm-backend")]
-pub mod wasm;
+mod wasm;
+#[cfg(feature = "wasm-backend")]
+pub use wasm::{WasmBackend, WasmCompileOptions, WasmProfile};
 #[cfg(feature = "wasm-backend")]
 mod wasm_abi;
 #[cfg(feature = "wasm-backend")]

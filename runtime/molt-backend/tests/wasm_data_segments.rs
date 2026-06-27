@@ -4,7 +4,7 @@
 //! data offsets are 8-byte aligned, the manifest segment exists, and duplicate
 //! strings are deduplicated.
 
-use molt_backend::wasm::WasmBackend;
+use molt_backend::WasmBackend;
 use molt_backend::{FunctionIR, OpIR, SimpleIR};
 use wasmparser::{DataKind, Parser, Payload};
 
