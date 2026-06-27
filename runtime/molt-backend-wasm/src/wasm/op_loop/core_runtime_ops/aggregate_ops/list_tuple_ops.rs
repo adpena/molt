@@ -1,5 +1,7 @@
+use super::super::super::builder_ops::{BuilderFinish, emit_sequence_builder_from_args};
+use super::super::super::result_sink::store_result_or_drop;
 use super::super::super::*;
-use super::{AggregateRuntimeContext, store_or_drop_result};
+use super::AggregateRuntimeContext;
 
 pub(super) fn emit_list_tuple_op(
     func: &mut Function,
@@ -27,18 +29,15 @@ pub(super) fn emit_list_tuple_op(
             let empty_args_ln: Vec<String> = Vec::new();
             let args = op.args.as_ref().unwrap_or(&empty_args_ln);
             let out = locals[op.out.as_ref().unwrap()];
-            func.instruction(&Instruction::I64Const(box_int(args.len() as i64)));
-            emit_call(func, reloc_enabled, import_ids["list_builder_new"]);
-            func.instruction(&Instruction::LocalSet(out));
-            for name in args {
-                let val = locals[name];
-                func.instruction(&Instruction::LocalGet(out));
-                func.instruction(&Instruction::LocalGet(val));
-                emit_call(func, reloc_enabled, import_ids["list_builder_append"]);
-            }
-            func.instruction(&Instruction::LocalGet(out));
-            emit_call(func, reloc_enabled, import_ids["list_builder_finish"]);
-            func.instruction(&Instruction::LocalSet(out));
+            emit_sequence_builder_from_args(
+                func,
+                args,
+                out,
+                import_ids,
+                locals,
+                reloc_enabled,
+                BuilderFinish::List,
+            );
         }
         "list_int_new" => {
             // Specialized flat i64 list: args = [count, fill_value]
@@ -94,18 +93,15 @@ pub(super) fn emit_list_tuple_op(
                 func.instruction(&Instruction::I64Const(0));
                 func.instruction(&Instruction::LocalSet(out));
             } else {
-                func.instruction(&Instruction::I64Const(box_int(args.len() as i64)));
-                emit_call(func, reloc_enabled, import_ids["list_builder_new"]);
-                func.instruction(&Instruction::LocalSet(out));
-                for name in args {
-                    let val = locals[name];
-                    func.instruction(&Instruction::LocalGet(out));
-                    func.instruction(&Instruction::LocalGet(val));
-                    emit_call(func, reloc_enabled, import_ids["list_builder_append"]);
-                }
-                func.instruction(&Instruction::LocalGet(out));
-                emit_call(func, reloc_enabled, import_ids["tuple_builder_finish"]);
-                func.instruction(&Instruction::LocalSet(out));
+                emit_sequence_builder_from_args(
+                    func,
+                    args,
+                    out,
+                    import_ids,
+                    locals,
+                    reloc_enabled,
+                    BuilderFinish::Tuple,
+                );
             }
         }
         "list_append" => {
@@ -115,7 +111,7 @@ pub(super) fn emit_list_tuple_op(
             func.instruction(&Instruction::LocalGet(list));
             func.instruction(&Instruction::LocalGet(val));
             emit_call(func, reloc_enabled, import_ids["list_append"]);
-            store_or_drop_result(func, op, locals);
+            store_result_or_drop(func, op, locals);
         }
         "list_pop" => {
             let args = op.args.as_ref().unwrap();
@@ -124,7 +120,7 @@ pub(super) fn emit_list_tuple_op(
             func.instruction(&Instruction::LocalGet(list));
             func.instruction(&Instruction::LocalGet(idx));
             emit_call(func, reloc_enabled, import_ids["list_pop"]);
-            store_or_drop_result(func, op, locals);
+            store_result_or_drop(func, op, locals);
         }
         "list_extend" => {
             let args = op.args.as_ref().unwrap();
@@ -133,7 +129,7 @@ pub(super) fn emit_list_tuple_op(
             func.instruction(&Instruction::LocalGet(list));
             func.instruction(&Instruction::LocalGet(other));
             emit_call(func, reloc_enabled, import_ids["list_extend"]);
-            store_or_drop_result(func, op, locals);
+            store_result_or_drop(func, op, locals);
         }
         "list_insert" => {
             let args = op.args.as_ref().unwrap();
@@ -144,7 +140,7 @@ pub(super) fn emit_list_tuple_op(
             func.instruction(&Instruction::LocalGet(idx));
             func.instruction(&Instruction::LocalGet(val));
             emit_call(func, reloc_enabled, import_ids["list_insert"]);
-            store_or_drop_result(func, op, locals);
+            store_result_or_drop(func, op, locals);
         }
         "list_remove" => {
             let args = op.args.as_ref().unwrap();
@@ -153,28 +149,28 @@ pub(super) fn emit_list_tuple_op(
             func.instruction(&Instruction::LocalGet(list));
             func.instruction(&Instruction::LocalGet(val));
             emit_call(func, reloc_enabled, import_ids["list_remove"]);
-            store_or_drop_result(func, op, locals);
+            store_result_or_drop(func, op, locals);
         }
         "list_clear" => {
             let args = op.args.as_ref().unwrap();
             let list = locals[&args[0]];
             func.instruction(&Instruction::LocalGet(list));
             emit_call(func, reloc_enabled, import_ids["list_clear"]);
-            store_or_drop_result(func, op, locals);
+            store_result_or_drop(func, op, locals);
         }
         "list_copy" => {
             let args = op.args.as_ref().unwrap();
             let list = locals[&args[0]];
             func.instruction(&Instruction::LocalGet(list));
             emit_call(func, reloc_enabled, import_ids["list_copy"]);
-            store_or_drop_result(func, op, locals);
+            store_result_or_drop(func, op, locals);
         }
         "list_reverse" => {
             let args = op.args.as_ref().unwrap();
             let list = locals[&args[0]];
             func.instruction(&Instruction::LocalGet(list));
             emit_call(func, reloc_enabled, import_ids["list_reverse"]);
-            store_or_drop_result(func, op, locals);
+            store_result_or_drop(func, op, locals);
         }
         "list_count" => {
             let args = op.args.as_ref().unwrap();
@@ -183,7 +179,7 @@ pub(super) fn emit_list_tuple_op(
             func.instruction(&Instruction::LocalGet(list));
             func.instruction(&Instruction::LocalGet(val));
             emit_call(func, reloc_enabled, import_ids["list_count"]);
-            store_or_drop_result(func, op, locals);
+            store_result_or_drop(func, op, locals);
         }
         "list_index" => {
             let args = op.args.as_ref().unwrap();
@@ -192,7 +188,7 @@ pub(super) fn emit_list_tuple_op(
             func.instruction(&Instruction::LocalGet(list));
             func.instruction(&Instruction::LocalGet(val));
             emit_call(func, reloc_enabled, import_ids["list_index"]);
-            store_or_drop_result(func, op, locals);
+            store_result_or_drop(func, op, locals);
         }
         "list_index_range" => {
             let args = op.args.as_ref().unwrap();
@@ -205,14 +201,14 @@ pub(super) fn emit_list_tuple_op(
             func.instruction(&Instruction::LocalGet(start));
             func.instruction(&Instruction::LocalGet(stop));
             emit_call(func, reloc_enabled, import_ids["list_index_range"]);
-            store_or_drop_result(func, op, locals);
+            store_result_or_drop(func, op, locals);
         }
         "tuple_from_list" => {
             let args = op.args.as_ref().unwrap();
             let list = locals[&args[0]];
             func.instruction(&Instruction::LocalGet(list));
             emit_call(func, reloc_enabled, import_ids["tuple_from_list"]);
-            store_or_drop_result(func, op, locals);
+            store_result_or_drop(func, op, locals);
         }
         "tuple_count" => {
             let args = op.args.as_ref().unwrap();
@@ -221,7 +217,7 @@ pub(super) fn emit_list_tuple_op(
             func.instruction(&Instruction::LocalGet(tuple));
             func.instruction(&Instruction::LocalGet(val));
             emit_call(func, reloc_enabled, import_ids["tuple_count"]);
-            store_or_drop_result(func, op, locals);
+            store_result_or_drop(func, op, locals);
         }
         "tuple_index" => {
             let args = op.args.as_ref().unwrap();

@@ -2,11 +2,13 @@ use super::constant_ops::{ConstantOpContext, emit_constant_op};
 use super::context::CompileFuncContext;
 use super::*;
 
+mod builder_ops;
 mod call_ops;
 mod core_runtime_ops;
 mod local_state_ops;
 mod numeric_ops;
 mod object_attr_ops;
+mod result_sink;
 mod runtime_service_ops;
 
 use call_ops::{CallOpContext, CallOpEmission, emit_call_op};

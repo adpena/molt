@@ -53,25 +53,3 @@ pub(super) fn emit_object_attr_op(
         op_idx,
     )
 }
-
-fn store_or_drop_result(func: &mut Function, op: &OpIR, locals: &BTreeMap<String, u32>) {
-    if let Some(out) = op.out.as_ref() {
-        let res = locals[out];
-        func.instruction(&Instruction::LocalSet(res));
-    } else {
-        func.instruction(&Instruction::Drop);
-    }
-}
-
-fn store_or_drop_non_none_result(func: &mut Function, op: &OpIR, locals: &BTreeMap<String, u32>) {
-    if let Some(out) = op.out.as_ref() {
-        if out != "none" {
-            let res = locals[out];
-            func.instruction(&Instruction::LocalSet(res));
-        } else {
-            func.instruction(&Instruction::Drop);
-        }
-    } else {
-        func.instruction(&Instruction::Drop);
-    }
-}

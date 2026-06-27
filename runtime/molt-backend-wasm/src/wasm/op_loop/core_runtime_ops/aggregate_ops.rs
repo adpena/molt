@@ -76,12 +76,3 @@ pub(super) fn emit_aggregate_runtime_op(
     }
     container_query_ops::emit_container_query_op(func, op, &ctx)
 }
-
-fn store_or_drop_result(func: &mut Function, op: &OpIR, locals: &BTreeMap<String, u32>) {
-    if let Some(out) = op.out.as_ref() {
-        let res = locals[out];
-        func.instruction(&Instruction::LocalSet(res));
-    } else {
-        func.instruction(&Instruction::Drop);
-    }
-}
