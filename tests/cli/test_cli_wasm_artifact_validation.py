@@ -426,7 +426,7 @@ def test_ensure_runtime_wasm_rebuilds_prebuilt_missing_shared_import_abi(
     )
     monkeypatch.setattr(RUNTIME_BUILD, "_read_runtime_fingerprint", lambda path: None)
     monkeypatch.setattr(
-        cli,
+        cli_backend_binary,
         "_artifact_newer_than_sources",
         lambda artifact, sources: Path(artifact) == cargo_runtime,
     )

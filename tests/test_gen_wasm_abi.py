@@ -18,10 +18,18 @@ def _load_gen_wasm_abi():
     return module
 
 
+def _rendered_rs(gen, data) -> str:
+    return "".join(gen.render_rs_modules(data).values())
+
+
 def test_wasm_abi_generated_files_are_in_sync() -> None:
     gen = _load_gen_wasm_abi()
     data = gen.load_manifest()
-    assert gen.OUT_RS.read_text(encoding="utf-8") == gen.render_rs(data)
+    rendered_rs_modules = gen.render_rs_modules(data)
+    assert not gen.LEGACY_OUT_RS.exists()
+    assert set(rendered_rs_modules) == set(gen.OUT_RS_FILES)
+    for name, rendered in rendered_rs_modules.items():
+        assert gen.OUT_RS_FILES[name].read_text(encoding="utf-8") == rendered
     assert gen.OUT_PY.read_text(encoding="utf-8") == gen.render_py(data)
     assert gen.OUT_TABLE_LAYOUT_INC.read_text(encoding="utf-8") == gen.render_table_layout_inc(
         data
@@ -48,7 +56,7 @@ def test_wasm_abi_manifest_owns_static_type_section() -> None:
     }
     assert all(entry["type"] < len(static_types) for entry in data["import"])
 
-    rendered_rs = gen.render_rs(data)
+    rendered_rs = _rendered_rs(gen, data)
     rendered_py = gen.render_py(data)
     assert "STATIC_FUNC_TYPES" in rendered_rs
     assert "STATIC_TYPE_COUNT: u32 = 51" in rendered_rs
@@ -79,7 +87,7 @@ def test_wasm_abi_manifest_owns_pure_profile_prefixes() -> None:
     data = gen.load_manifest()
     prefixes = {entry["prefix"] for entry in data["pure_skip_prefix"]}
     assert {"process_", "socket", "db_", "ws_", "time_"} <= prefixes
-    rendered_rs = gen.render_rs(data)
+    rendered_rs = _rendered_rs(gen, data)
     assert "pure_profile_skips_import" in rendered_rs
     assert "PURE_PROFILE_SKIP_PREFIXES" in rendered_rs
 
@@ -101,7 +109,7 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
     assert imports["site_help0"]["callable_arity"] == 0
     assert imports["site_help1"]["callable_arity"] == 1
 
-    rendered_rs = gen.render_rs(data)
+    rendered_rs = _rendered_rs(gen, data)
     assert "RUNTIME_CALLABLE_IMPORTS" in rendered_rs
     assert "RuntimeCallableResult::Void" in rendered_rs
 
@@ -111,7 +119,7 @@ def test_wasm_abi_manifest_owns_op_import_deps() -> None:
     data = gen.load_manifest()
     op_deps = {entry["kind"]: entry["deps"] for entry in data["op_import_dep"]}
 
-    assert "OP_IMPORT_DEPS" in gen.render_rs(data)
+    assert "OP_IMPORT_DEPS" in _rendered_rs(gen, data)
     assert "module_cache_del" not in op_deps["__structural__"]
     assert op_deps["module_cache_del"] == ["module_cache_del"]
     assert op_deps["print"] == ["print_obj"]
@@ -142,7 +150,7 @@ def test_wasm_abi_manifest_owns_runtime_surface_required_import_matchers() -> No
     )
     assert singletons <= import_names
 
-    rendered_rs = gen.render_rs(data)
+    rendered_rs = _rendered_rs(gen, data)
     rendered_py = gen.render_py(data)
     assert "REQUIRED_RUNTIME_IMPORT_PREFIXES" in rendered_rs
     assert "REQUIRED_RUNTIME_IMPORT_SINGLETONS" in rendered_rs
@@ -182,7 +190,7 @@ def test_wasm_abi_manifest_owns_split_runtime_table_prefix() -> None:
     assert reserved[-1]["runtime_name"] == "molt_types_new_class"
     assert [entry["index"] for entry in reserved] == list(range(len(reserved)))
 
-    rendered_rs = gen.render_rs(data)
+    rendered_rs = _rendered_rs(gen, data)
     rendered_py = gen.render_py(data)
     assert "POLL_TABLE_FUNCS" in rendered_rs
     assert "WASM_LEGACY_TABLE_BASE" in rendered_py

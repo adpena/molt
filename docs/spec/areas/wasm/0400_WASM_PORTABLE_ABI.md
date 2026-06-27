@@ -141,7 +141,7 @@ dependency planning.
 `tools/gen_wasm_abi.py` renders the checked-in Rust, Python, and linker
 consumers:
 
-- `runtime/molt-backend-wasm/src/wasm_abi_generated.rs` for backend import emission.
+- `runtime/molt-backend-wasm/src/wasm_abi_generated/` for backend import emission.
 - `src/molt/_wasm_abi_generated.py` for runtime-export validation, split/link export
   policy, and tools.
 - `tools/wasm_allowed_imports.txt` for `wasm-ld --allow-undefined-file`.
