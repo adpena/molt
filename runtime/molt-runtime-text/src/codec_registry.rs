@@ -54,6 +54,22 @@ pub enum TextEncodingClass {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CodecRuntimeClass {
+    Utf8,
+    Utf8Sig,
+    Charmap,
+    Latin1,
+    Ascii,
+    UnicodeEscape,
+    Utf16,
+    Utf16LE,
+    Utf16BE,
+    Utf32,
+    Utf32LE,
+    Utf32BE,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CodecDescriptor {
     pub kind: EncodingKind,
     pub canonical_label: &'static str,
@@ -81,6 +97,58 @@ impl EncodingKind {
 
     pub fn text_class(self) -> Option<TextEncodingClass> {
         self.descriptor().text_class
+    }
+
+    pub fn runtime_class(self) -> CodecRuntimeClass {
+        match self {
+            EncodingKind::Utf8 => CodecRuntimeClass::Utf8,
+            EncodingKind::Utf8Sig => CodecRuntimeClass::Utf8Sig,
+            EncodingKind::Cp1252
+            | EncodingKind::Cp437
+            | EncodingKind::Cp850
+            | EncodingKind::Cp860
+            | EncodingKind::Cp862
+            | EncodingKind::Cp863
+            | EncodingKind::Cp865
+            | EncodingKind::Cp866
+            | EncodingKind::Cp874
+            | EncodingKind::Cp1250
+            | EncodingKind::Cp1251
+            | EncodingKind::Cp1253
+            | EncodingKind::Cp1254
+            | EncodingKind::Cp1255
+            | EncodingKind::Cp1256
+            | EncodingKind::Cp1257
+            | EncodingKind::Koi8R
+            | EncodingKind::Koi8U
+            | EncodingKind::Iso8859_2
+            | EncodingKind::Iso8859_3
+            | EncodingKind::Iso8859_4
+            | EncodingKind::Iso8859_5
+            | EncodingKind::Iso8859_6
+            | EncodingKind::Iso8859_7
+            | EncodingKind::Iso8859_8
+            | EncodingKind::Iso8859_10
+            | EncodingKind::Iso8859_15
+            | EncodingKind::MacRoman => CodecRuntimeClass::Charmap,
+            EncodingKind::Latin1 => CodecRuntimeClass::Latin1,
+            EncodingKind::Ascii => CodecRuntimeClass::Ascii,
+            EncodingKind::UnicodeEscape => CodecRuntimeClass::UnicodeEscape,
+            EncodingKind::Utf16 => CodecRuntimeClass::Utf16,
+            EncodingKind::Utf16LE => CodecRuntimeClass::Utf16LE,
+            EncodingKind::Utf16BE => CodecRuntimeClass::Utf16BE,
+            EncodingKind::Utf32 => CodecRuntimeClass::Utf32,
+            EncodingKind::Utf32LE => CodecRuntimeClass::Utf32LE,
+            EncodingKind::Utf32BE => CodecRuntimeClass::Utf32BE,
+        }
+    }
+
+    pub fn encode_error_label(self) -> &'static str {
+        match self.runtime_class() {
+            CodecRuntimeClass::Utf8Sig => "utf-8",
+            CodecRuntimeClass::Charmap => "charmap",
+            _ => self.name(),
+        }
     }
 }
 
@@ -624,5 +692,20 @@ mod tests {
             normalize_encoding("unicode-escape").unwrap().text_class(),
             None
         );
+    }
+
+    #[test]
+    fn runtime_classes_own_charmap_and_error_label_facts() {
+        let cp1252 = normalize_encoding("cp1252").unwrap();
+        assert_eq!(cp1252.runtime_class(), CodecRuntimeClass::Charmap);
+        assert_eq!(cp1252.encode_error_label(), "charmap");
+
+        let latin1 = normalize_encoding("latin-1").unwrap();
+        assert_eq!(latin1.runtime_class(), CodecRuntimeClass::Latin1);
+        assert_eq!(latin1.encode_error_label(), "latin-1");
+
+        let utf8_sig = normalize_encoding("utf-8-sig").unwrap();
+        assert_eq!(utf8_sig.runtime_class(), CodecRuntimeClass::Utf8Sig);
+        assert_eq!(utf8_sig.encode_error_label(), "utf-8");
     }
 }
