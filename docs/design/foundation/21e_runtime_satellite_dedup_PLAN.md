@@ -1,9 +1,12 @@
 <!-- Update 2026-06-27: the math-family, XML, difflib, and ipaddress fallback
-lanes have been deleted. The live satellite parity guard now tracks 4 remaining
-dual-path pairs with a residual ceiling of 902; cmath_mod, colorsys, fractions,
-math, random_mod, xml_etree, xml_sax, difflib, and ipaddress are no longer PAIRS
-entries. Their leaf crates own the Rust implementations and generated leaf
-resolver modules. -->
+lanes have been deleted. The path satellite now owns the event-specific
+capability audit bridge, so `os_ext`/`pathlib` leaf code no longer emits generic
+`path.has_capability` events or skips gates for process/env/path operations.
+The live satellite parity guard tracks 4 remaining dual-path pairs with a
+residual ceiling of 886: functions_logging=89, itertools=273, os_ext=277,
+pathlib=247. cmath_mod, colorsys, fractions, math, random_mod, xml_etree,
+xml_sax, difflib, and ipaddress are no longer PAIRS entries. Their leaf crates
+own the Rust implementations and generated leaf resolver modules. -->
 
 <!-- Foundation blueprint 21e. Architect: portfolio-architect (Plan agent), 2026-06-24.
 Executable plan for decomposition move #4 — the molt-runtime satellite dedup arc (R.2 + R.3).
@@ -21,7 +24,23 @@ Supersedes doc 21 §1.4/§2.4 prose AND the missing memory/recovery/baton_move_R
 6. **Scope boundary:** net, asyncio, collections, stringprep, text are LEAF-ONLY (no in-tree mod fallback) → out of scope. Only the 24 dual-path PAIRS are in scope.
 
 ## 1. CURRENT-STATE MAP (verified)
-### 1.1 The 24 pairs + live residuals (normalized = genuine drift after access-layer normalization)
+### 1.1 Live remaining pairs after R.3 deletions and path-audit reconciliation
+
+As of 2026-06-27, `python tools/check_satellite_parity.py --verbose` reports:
+
+| pair | residual | satellite | remaining structural work |
+|---|--:|---|---|
+| functions_logging | 89 | logging/http family | reconcile logging extension state and delete/own the remaining fallback lane |
+| itertools | 273 | itertools | reconcile iterator/runtime-state drift before any deletion |
+| os_ext | 277 | path | remaining drift is dir-fd helper locality, WASM/sysconf/list-allocation source shape, and source spelling around the new path audit bridge |
+| pathlib | 247 | path | remaining drift is mostly source spelling around the new path audit helper; behavior now uses event-specific `pathlib.*` audit names |
+
+The current ratchet ceiling is 886. `os_ext`/`pathlib` are still dual-path and
+must not be deleted until residual reaches zero, but the access-policy authority
+behind the path satellite is now event-specific rather than the old generic
+`path.has_capability` bridge side effect.
+
+### 1.1 Historical 24-pair map from the initial 21e audit
 | pair | residual | satellite | gate |
 |---|--:|---|---|
 | cmath_mod,difflib,functions_zipfile,xml_etree,xml_sax | 0 | math/difflib/serial/xml/xml | resp. |
@@ -100,7 +119,7 @@ R.0 fix red guard (ipaddress/fractions/os_ext/decimal + re-ratchet) [4+1 commits
 Guard already red → R.0 first. Reconcile-by-picking-a-side drops behavior → guard is oracle, differential on BOTH tiers is proof, never delete a copy with residual>0. Two bridge architectures → generalize the proven serial vtable, not a third shim. Normalizer must track canonical spelling → update GIL_MACROS/PREFIXES/RT_WRAPPER_EQUIVALENTS/TOKEN_TYPES in the same commit. One source two ABIs → the access facade is the seam (standalone=extern vtable, in-tree=direct); validate both builds every commit. Heavy-dep leak into micro → cargo tree before each deletion, Option B for heavy. decimal mpdec split → bespoke, last. itertools RuntimeState slots → re-verify post-267df44e9. functions_http residual is mostly stdlib_net-gated ctypes/urllib → reconcile into satellite respecting the net gate. Shared serializing files → one baseline owner. Dangling baton → 21e supersedes it.
 
 ## 7. ALREADY DONE (do not redo)
-R.1 landed: guard (230789ab5), csv reconcile (3b2ac0129), doc correction (8ded12e06), itertools slot-scoping (267df44e9), binascii/http sweep (f95225814), satellite clippy gate (ff22a06c7). R.3 deletions have landed for zoneinfo (e4f9300bf, the template), the math family, XML, difflib, and ipaddress. R.2 abstraction partially exists: molt-runtime-core (CoreGilToken/with_core_gil!/with_gil_entry_body!/RuntimeVtable/prelude); molt-runtime-serial is the working vtable pilot. Differential infra exists.
+R.1 landed: guard (230789ab5), csv reconcile (3b2ac0129), doc correction (8ded12e06), itertools slot-scoping (267df44e9), binascii/http sweep (f95225814), satellite clippy gate (ff22a06c7). R.3 deletions have landed for zoneinfo (e4f9300bf, the template), the math family, XML, difflib, and ipaddress. Path access reconciliation has landed an event-specific audit bridge for `molt-runtime-path`; remaining `os_ext`/`pathlib` drift is no longer a missing capability-gate or generic-audit problem. R.2 abstraction partially exists: molt-runtime-core (CoreGilToken/with_core_gil!/with_gil_entry_body!/RuntimeVtable/prelude); molt-runtime-serial is the working vtable pilot. Differential infra exists.
 
 ## Critical files
 tools/check_satellite_parity.py (oracle: PAIRS/normalizer/ratchet); runtime/molt-runtime-core/src/lib.rs (R.2 facade home — add `access`); runtime/molt-runtime-serial/src/bridge.rs + runtime/molt-runtime/src/serial_bridge.rs (the RuntimeVtable pilot); runtime/molt-runtime/src/{lib.rs,builtins/mod.rs} (dual-path re-export wiring); runtime/molt-runtime/Cargo.toml + src/molt/_runtime_feature_gates.py + src/molt/cli/__init__.py (tier/feature gating, zoneinfo precedent e4f9300bf).

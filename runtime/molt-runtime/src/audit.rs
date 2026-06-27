@@ -14,6 +14,7 @@
 //! `molt-runtime` does not depend on serde, so all JSON output is hand-written.
 //! The helpers in this module escape strings according to RFC 8259.
 
+use std::borrow::Cow;
 use std::cell::RefCell;
 use std::fmt;
 use std::io::Write;
@@ -58,9 +59,9 @@ pub struct AuditEvent {
     /// Monotonic nanosecond timestamp (relative to `UNIX_EPOCH`).
     pub timestamp_ns: u64,
     /// Dot-separated operation identifier, e.g. `"fs.read"`, `"net.connect"`.
-    pub operation: &'static str,
+    pub operation: Cow<'static, str>,
     /// Capability that was checked, e.g. `"fs.read"`, `"net.outbound"`.
-    pub capability: &'static str,
+    pub capability: Cow<'static, str>,
     /// Operation-specific arguments.
     pub args: AuditArgs,
     /// Whether the operation was allowed, denied, or resource-exceeded.
@@ -176,8 +177,27 @@ impl AuditEvent {
     ) -> Self {
         Self {
             timestamp_ns: now_ns(),
-            operation,
-            capability,
+            operation: Cow::Borrowed(operation),
+            capability: Cow::Borrowed(capability),
+            args,
+            decision,
+            module,
+        }
+    }
+
+    /// Create an audit event from owned operation/capability names supplied
+    /// across a runtime satellite bridge.
+    pub fn new_owned(
+        operation: String,
+        capability: String,
+        args: AuditArgs,
+        decision: AuditDecision,
+        module: String,
+    ) -> Self {
+        Self {
+            timestamp_ns: now_ns(),
+            operation: Cow::Owned(operation),
+            capability: Cow::Owned(capability),
             args,
             decision,
             module,
@@ -190,9 +210,9 @@ impl AuditEvent {
         buf.push_str("{\"timestamp_ns\":");
         buf.push_str(&self.timestamp_ns.to_string());
         buf.push_str(",\"operation\":");
-        json_escape(self.operation, &mut buf);
+        json_escape(self.operation.as_ref(), &mut buf);
         buf.push_str(",\"capability\":");
-        json_escape(self.capability, &mut buf);
+        json_escape(self.capability.as_ref(), &mut buf);
         buf.push_str(",\"args\":{");
         self.args.append_json(&mut buf);
         buf.push_str("},\"decision\":{");
@@ -447,6 +467,30 @@ pub fn audit_capability_decision(
     ));
 }
 
+/// Emit a capability decision whose operation/capability names crossed a
+/// runtime satellite bridge as owned strings.
+pub fn audit_capability_decision_owned(
+    operation: String,
+    capability: String,
+    args: AuditArgs,
+    allowed: bool,
+) {
+    let decision = if allowed {
+        AuditDecision::Allowed
+    } else {
+        AuditDecision::Denied {
+            reason: format!("missing {capability} capability"),
+        }
+    };
+    audit_emit(AuditEvent::new_owned(
+        operation,
+        capability,
+        args,
+        decision,
+        module_path!().to_string(),
+    ));
+}
+
 // ---------------------------------------------------------------------------
 // Helper macro
 // ---------------------------------------------------------------------------
@@ -590,8 +634,8 @@ mod tests {
     fn json_serialization_roundtrip() {
         let event = AuditEvent {
             timestamp_ns: 1_700_000_000_000_000_000,
-            operation: "fs.write",
-            capability: "fs.write",
+            operation: "fs.write".into(),
+            capability: "fs.write".into(),
             args: AuditArgs::Path("/tmp/out.txt".into()),
             decision: AuditDecision::Allowed,
             module: "writer".into(),
@@ -611,8 +655,8 @@ mod tests {
     fn json_escape_special_chars() {
         let event = AuditEvent {
             timestamp_ns: 0,
-            operation: "custom",
-            capability: "custom",
+            operation: "custom".into(),
+            capability: "custom".into(),
             args: AuditArgs::Custom("line1\nline2\ttab\"quote\\back".into()),
             decision: AuditDecision::ResourceExceeded {
                 error: "too\nmany".into(),
@@ -680,8 +724,8 @@ mod tests {
         for args in variants {
             let event = AuditEvent {
                 timestamp_ns: 1,
-                operation: "test",
-                capability: "test",
+                operation: "test".into(),
+                capability: "test".into(),
                 args,
                 decision: AuditDecision::Allowed,
                 module: "t".into(),
@@ -759,7 +803,10 @@ mod tests {
             "global audit sink was not inherited by the spawned thread; \
              captured {} events: {:?}",
             events.len(),
-            events.iter().map(|e| e.operation).collect::<Vec<_>>()
+            events
+                .iter()
+                .map(|e| e.operation.as_ref())
+                .collect::<Vec<_>>()
         );
     }
 }
