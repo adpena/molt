@@ -12,11 +12,6 @@ use crate::bridge::{
 };
 use crate::functions_http::{alloc_string_bits, urllib_request_attr_optional};
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_csv_runtime_ready() -> u64 {
-    molt_runtime_core::with_core_gil!(_py, { MoltObject::from_bool(true).bits() })
-}
-
 fn logging_percent_lookup_mapping_value(
     _py: &molt_runtime_core::CoreGilToken,
     mapping_ptr: *mut u8,

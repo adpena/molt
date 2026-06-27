@@ -215,11 +215,11 @@ pub extern "C" fn molt_socket_getservbyport(_: u64, _: u64) -> u64 {
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_socket_has_dualstack_ipv6() -> u64 {
-    net_error!()
+    crate::MoltObject::from_bool(false).bits()
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_socket_has_ipv6() -> u64 {
-    net_error!()
+    crate::MoltObject::from_bool(false).bits()
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_socket_getaddrinfo(_: u64, _: u64, _: u64, _: u64, _: u64, _: u64) -> u64 {

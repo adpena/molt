@@ -2,6 +2,14 @@
 
 import socket
 
+has_cmsg = hasattr(socket, "CMSG_LEN") and hasattr(socket, "CMSG_SPACE")
+print("has_cmsg", has_cmsg)
+
+if not has_cmsg:
+    result = socket.has_dualstack_ipv6()
+    print(isinstance(result, bool))
+    raise SystemExit(0)
+
 # CMSG_LEN and CMSG_SPACE return integers
 cmsg_len_4 = socket.CMSG_LEN(4)
 cmsg_space_4 = socket.CMSG_SPACE(4)
