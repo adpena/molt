@@ -32,6 +32,15 @@ impl LuauBackend {
         if self.emit_scalar_op(op) {
             return;
         }
+        if self.emit_return_op(op) {
+            return;
+        }
+        if self.emit_exception_op(op) {
+            return;
+        }
+        if self.emit_pcall_op(op) {
+            return;
+        }
         if self.emit_control_op(op) {
             return;
         }
