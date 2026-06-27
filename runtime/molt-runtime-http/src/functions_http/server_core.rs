@@ -96,8 +96,7 @@ pub(super) fn socketserver_call_service_actions(
     _py: &molt_runtime_core::CoreGilToken,
     server_bits: u64,
 ) -> Result<(), u64> {
-    let Some(method_bits) = urllib_request_attr_optional(_py, server_bits, b"service_actions")?
-    else {
+    let Some(method_bits) = attr_optional(_py, server_bits, b"service_actions")? else {
         return Ok(());
     };
     if !molt_is_callable(method_bits) {
@@ -299,7 +298,7 @@ pub(super) fn http_server_get_required_attr_bits(
     name: &[u8],
     label: &str,
 ) -> Result<u64, u64> {
-    let Some(bits) = urllib_request_attr_optional(_py, obj_bits, name)? else {
+    let Some(bits) = attr_optional(_py, obj_bits, name)? else {
         return Err(raise_exception::<u64>(_py, "RuntimeError", label));
     };
     if obj_from_bits(bits).is_none() {
@@ -314,7 +313,7 @@ pub(super) fn http_server_get_optional_attr_string(
     obj_bits: u64,
     name: &[u8],
 ) -> Result<Option<String>, u64> {
-    let Some(bits) = urllib_request_attr_optional(_py, obj_bits, name)? else {
+    let Some(bits) = attr_optional(_py, obj_bits, name)? else {
         return Ok(None);
     };
     if obj_from_bits(bits).is_none() {
@@ -377,7 +376,7 @@ pub(super) fn http_server_flush(
     _py: &molt_runtime_core::CoreGilToken,
     handler_bits: u64,
 ) -> Result<(), u64> {
-    let Some(wfile_bits) = urllib_request_attr_optional(_py, handler_bits, b"wfile")? else {
+    let Some(wfile_bits) = attr_optional(_py, handler_bits, b"wfile")? else {
         return Ok(());
     };
     if obj_from_bits(wfile_bits).is_none() {

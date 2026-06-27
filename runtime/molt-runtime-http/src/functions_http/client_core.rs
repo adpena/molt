@@ -18,8 +18,7 @@ pub(super) fn urllib_request_handler_order(
     _py: &molt_runtime_core::CoreGilToken,
     handler_bits: u64,
 ) -> Result<i64, u64> {
-    let Some(order_bits) = urllib_request_attr_optional(_py, handler_bits, b"handler_order")?
-    else {
+    let Some(order_bits) = attr_optional(_py, handler_bits, b"handler_order")? else {
         return Ok(500);
     };
     let out = to_i64(obj_from_bits(order_bits)).unwrap_or(500);
@@ -31,7 +30,7 @@ pub(super) fn urllib_request_ensure_handlers_list(
     _py: &molt_runtime_core::CoreGilToken,
     opener_bits: u64,
 ) -> Result<u64, u64> {
-    if let Some(list_bits) = urllib_request_attr_optional(_py, opener_bits, b"_molt_handlers")? {
+    if let Some(list_bits) = attr_optional(_py, opener_bits, b"_molt_handlers")? {
         let Some(list_ptr) = obj_from_bits(list_bits).as_ptr() else {
             return Err(raise_exception::<u64>(
                 _py,
@@ -78,7 +77,7 @@ pub(super) fn urllib_request_get_cursor(
     _py: &molt_runtime_core::CoreGilToken,
     opener_bits: u64,
 ) -> Result<i64, u64> {
-    let Some(bits) = urllib_request_attr_optional(_py, opener_bits, b"_molt_open_cursor")? else {
+    let Some(bits) = attr_optional(_py, opener_bits, b"_molt_open_cursor")? else {
         return Ok(0);
     };
     let out = to_i64(obj_from_bits(bits)).unwrap_or(0);
@@ -997,22 +996,20 @@ pub(super) fn urllib_cookiejar_handles_from_handlers(
     let mut out: Vec<i64> = Vec::new();
     let mut seen: HashSet<i64> = HashSet::new();
     for handler_bits in handlers {
-        let Some(cookiejar_bits) = urllib_request_attr_optional(_py, *handler_bits, b"cookiejar")?
-        else {
+        let Some(cookiejar_bits) = attr_optional(_py, *handler_bits, b"cookiejar")? else {
             continue;
         };
         if obj_from_bits(cookiejar_bits).is_none() {
             dec_ref_bits(_py, cookiejar_bits);
             continue;
         }
-        let handle_opt =
-            match urllib_request_attr_optional(_py, cookiejar_bits, b"_molt_cookiejar_handle") {
-                Ok(value) => value,
-                Err(bits) => {
-                    dec_ref_bits(_py, cookiejar_bits);
-                    return Err(bits);
-                }
-            };
+        let handle_opt = match attr_optional(_py, cookiejar_bits, b"_molt_cookiejar_handle") {
+            Ok(value) => value,
+            Err(bits) => {
+                dec_ref_bits(_py, cookiejar_bits);
+                return Err(bits);
+            }
+        };
         dec_ref_bits(_py, cookiejar_bits);
         let Some(handle_bits) = handle_opt else {
             continue;
@@ -1075,7 +1072,7 @@ pub(super) fn urllib_http_request_timeout(
     _py: &molt_runtime_core::CoreGilToken,
     request_bits: u64,
 ) -> Result<Option<f64>, u64> {
-    let Some(timeout_bits) = urllib_request_attr_optional(_py, request_bits, b"timeout")? else {
+    let Some(timeout_bits) = attr_optional(_py, request_bits, b"timeout")? else {
         return Ok(None);
     };
     if obj_from_bits(timeout_bits).is_none() {
@@ -1431,7 +1428,7 @@ pub(super) fn urllib_http_extract_request_headers(
     _py: &molt_runtime_core::CoreGilToken,
     request_bits: u64,
 ) -> Result<Vec<(String, String)>, u64> {
-    let Some(headers_bits) = urllib_request_attr_optional(_py, request_bits, b"headers")? else {
+    let Some(headers_bits) = attr_optional(_py, request_bits, b"headers")? else {
         return Ok(Vec::new());
     };
     if obj_from_bits(headers_bits).is_none() {
@@ -1515,7 +1512,7 @@ pub(super) fn urllib_http_extract_method_and_body(
     _py: &molt_runtime_core::CoreGilToken,
     request_bits: u64,
 ) -> Result<(String, Vec<u8>), u64> {
-    let body = match urllib_request_attr_optional(_py, request_bits, b"data")? {
+    let body = match attr_optional(_py, request_bits, b"data")? {
         Some(bits) if !obj_from_bits(bits).is_none() => {
             let Some(ptr) = obj_from_bits(bits).as_ptr() else {
                 dec_ref_bits(_py, bits);
@@ -1544,7 +1541,7 @@ pub(super) fn urllib_http_extract_method_and_body(
         }
         None => Vec::new(),
     };
-    let method = match urllib_request_attr_optional(_py, request_bits, b"method")? {
+    let method = match attr_optional(_py, request_bits, b"method")? {
         Some(bits) if !obj_from_bits(bits).is_none() => {
             let value = crate::bridge::format_obj_str(_py, obj_from_bits(bits));
             dec_ref_bits(_py, bits);
@@ -1586,8 +1583,7 @@ pub(super) fn urllib_http_find_proxy_for_scheme(
     };
     let handlers: Vec<u64> = unsafe { seq_vec_ref(list_ptr).to_vec() };
     for handler_bits in handlers {
-        let Some(proxies_bits) = urllib_request_attr_optional(_py, handler_bits, b"proxies")?
-        else {
+        let Some(proxies_bits) = attr_optional(_py, handler_bits, b"proxies")? else {
             continue;
         };
         saw_proxy_handler = true;
@@ -1716,7 +1712,7 @@ pub(super) fn urllib_proxy_find_basic_credentials(
     realm: Option<&str>,
 ) -> Result<Option<(String, String)>, u64> {
     for handler_bits in handlers {
-        let Some(passwd_bits) = urllib_request_attr_optional(_py, *handler_bits, b"passwd")? else {
+        let Some(passwd_bits) = attr_optional(_py, *handler_bits, b"passwd")? else {
             continue;
         };
         if obj_from_bits(passwd_bits).is_none() {
@@ -1998,7 +1994,7 @@ pub(super) fn urllib_http_try_inmemory_dispatch(
         return Ok(None);
     }
 
-    let Some(dispatch_bits) = (match urllib_request_attr_optional(_py, server_bits, b"_dispatch") {
+    let Some(dispatch_bits) = (match attr_optional(_py, server_bits, b"_dispatch") {
         Ok(value) => value,
         Err(bits) => {
             dec_ref_bits(_py, server_bits);

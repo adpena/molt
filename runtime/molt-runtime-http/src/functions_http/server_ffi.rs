@@ -325,15 +325,14 @@ pub extern "C" fn molt_socketserver_handle_request(server_bits: u64) -> u64 {
         let mut deferred_exception_bits: Option<u64> = None;
         let mut should_process = true;
 
-        if let Some(verify_request_bits) =
-            match urllib_request_attr_optional(_py, server_bits, b"verify_request") {
-                Ok(bits) => bits,
-                Err(bits) => {
-                    dec_ref_bits(_py, request_tuple_bits);
-                    return bits;
-                }
-            }
+        if let Some(verify_request_bits) = match attr_optional(_py, server_bits, b"verify_request")
         {
+            Ok(bits) => bits,
+            Err(bits) => {
+                dec_ref_bits(_py, request_tuple_bits);
+                return bits;
+            }
+        } {
             if !molt_is_callable(verify_request_bits) {
                 dec_ref_bits(_py, verify_request_bits);
                 dec_ref_bits(_py, request_tuple_bits);

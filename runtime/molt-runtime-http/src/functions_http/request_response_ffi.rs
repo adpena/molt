@@ -97,7 +97,7 @@ pub extern "C" fn molt_urllib_request_open(opener_bits: u64, request_bits: u64) 
             let mut active_request_bits = request_bits;
             let mut full_url = {
                 let Some(full_url_bits) =
-                    (match urllib_request_attr_optional(_py, active_request_bits, b"full_url") {
+                    (match attr_optional(_py, active_request_bits, b"full_url") {
                         Ok(bits) => bits,
                         Err(bits) => return bits,
                     })
@@ -137,14 +137,12 @@ pub extern "C" fn molt_urllib_request_open(opener_bits: u64, request_bits: u64) 
 
             let request_method_name = format!("{}_request", scheme);
             for (idx, handler_bits) in handlers.iter().copied().enumerate().skip(start_idx) {
-                let Some(method_bits) = (match urllib_request_attr_optional(
-                    _py,
-                    handler_bits,
-                    request_method_name.as_bytes(),
-                ) {
-                    Ok(bits) => bits,
-                    Err(bits) => return bits,
-                }) else {
+                let Some(method_bits) =
+                    (match attr_optional(_py, handler_bits, request_method_name.as_bytes()) {
+                        Ok(bits) => bits,
+                        Err(bits) => return bits,
+                    })
+                else {
                     continue;
                 };
                 if !molt_is_callable(method_bits) {
@@ -176,7 +174,7 @@ pub extern "C" fn molt_urllib_request_open(opener_bits: u64, request_bits: u64) 
 
             full_url = {
                 let Some(full_url_bits) =
-                    (match urllib_request_attr_optional(_py, active_request_bits, b"full_url") {
+                    (match attr_optional(_py, active_request_bits, b"full_url") {
                         Ok(bits) => bits,
                         Err(bits) => return bits,
                     })
@@ -198,14 +196,12 @@ pub extern "C" fn molt_urllib_request_open(opener_bits: u64, request_bits: u64) 
 
             let method_name = format!("{}_open", scheme);
             for (idx, handler_bits) in handlers.iter().copied().enumerate().skip(start_idx) {
-                let Some(method_bits) = (match urllib_request_attr_optional(
-                    _py,
-                    handler_bits,
-                    method_name.as_bytes(),
-                ) {
-                    Ok(bits) => bits,
-                    Err(bits) => return bits,
-                }) else {
+                let Some(method_bits) =
+                    (match attr_optional(_py, handler_bits, method_name.as_bytes()) {
+                        Ok(bits) => bits,
+                        Err(bits) => return bits,
+                    })
+                else {
                     continue;
                 };
                 if !molt_is_callable(method_bits) {
@@ -232,19 +228,16 @@ pub extern "C" fn molt_urllib_request_open(opener_bits: u64, request_bits: u64) 
                 return MoltObject::none().bits();
             }
 
-            let allow_data_fallback = match urllib_request_attr_optional(
-                _py,
-                opener_bits,
-                b"_molt_allow_data_fallback",
-            ) {
-                Ok(Some(bits)) => {
-                    let value = is_truthy(_py, obj_from_bits(bits));
-                    dec_ref_bits(_py, bits);
-                    value
-                }
-                Ok(None) => false,
-                Err(bits) => return bits,
-            };
+            let allow_data_fallback =
+                match attr_optional(_py, opener_bits, b"_molt_allow_data_fallback") {
+                    Ok(Some(bits)) => {
+                        let value = is_truthy(_py, obj_from_bits(bits));
+                        dec_ref_bits(_py, bits);
+                        value
+                    }
+                    Ok(None) => false,
+                    Err(bits) => return bits,
+                };
 
             let mut response_bits = if scheme == "data" && allow_data_fallback {
                 let payload = match urllib_request_decode_data_url(&full_url) {
@@ -488,14 +481,12 @@ pub extern "C" fn molt_urllib_request_open(opener_bits: u64, request_bits: u64) 
 
             let response_method_name = format!("{}_response", scheme);
             for handler_bits in handlers {
-                let Some(method_bits) = (match urllib_request_attr_optional(
-                    _py,
-                    handler_bits,
-                    response_method_name.as_bytes(),
-                ) {
-                    Ok(bits) => bits,
-                    Err(bits) => return bits,
-                }) else {
+                let Some(method_bits) =
+                    (match attr_optional(_py, handler_bits, response_method_name.as_bytes()) {
+                        Ok(bits) => bits,
+                        Err(bits) => return bits,
+                    })
+                else {
                     continue;
                 };
                 if !molt_is_callable(method_bits) {

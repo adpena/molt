@@ -27,6 +27,7 @@ pub(crate) use recursion::{
 #[cfg(any(
     feature = "stdlib_collections",
     feature = "stdlib_compression",
+    not(feature = "stdlib_itertools"),
     feature = "stdlib_itertools",
     feature = "stdlib_logging_ext",
     feature = "stdlib_math",

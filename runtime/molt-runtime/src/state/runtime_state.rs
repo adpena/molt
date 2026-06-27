@@ -23,8 +23,6 @@ use crate::builtins::copy_mod::CopyMemoRuntimeState;
 use crate::builtins::exceptions::ExceptionsRuntimeState;
 use crate::builtins::functools::FunctoolsRuntimeState;
 use crate::builtins::io::IoRuntimeState;
-#[cfg(not(feature = "stdlib_itertools"))]
-use crate::builtins::itertools::ItertoolsRuntimeState;
 use crate::builtins::modules::ModulesRuntimeState;
 use crate::builtins::operator::OperatorRuntimeState;
 use crate::builtins::platform::PlatformRuntimeState;
@@ -122,6 +120,7 @@ pub(crate) struct SpecialCache {
 #[cfg(any(
     feature = "stdlib_collections",
     feature = "stdlib_compression",
+    not(feature = "stdlib_itertools"),
     feature = "stdlib_itertools",
     feature = "stdlib_logging_ext",
     feature = "stdlib_math",
@@ -339,8 +338,6 @@ pub(crate) struct RuntimeState {
     pub(crate) operator: OperatorRuntimeState,
     pub(crate) platform: PlatformRuntimeState,
     pub(crate) types: TypesRuntimeState,
-    #[cfg(not(feature = "stdlib_itertools"))]
-    pub(crate) itertools: ItertoolsRuntimeState,
     pub(crate) sys_ext: SysRuntimeState,
     pub(crate) c_api_module: Mutex<CApiModuleRuntimeState>,
     pub(crate) call_bind: Mutex<CallBindRuntimeState>,
@@ -448,8 +445,6 @@ impl RuntimeState {
             operator: OperatorRuntimeState::new(),
             platform: PlatformRuntimeState::new(),
             types: TypesRuntimeState::new(),
-            #[cfg(not(feature = "stdlib_itertools"))]
-            itertools: ItertoolsRuntimeState::new(),
             sys_ext: SysRuntimeState::new(),
             c_api_module: Mutex::new(CApiModuleRuntimeState::new()),
             call_bind: Mutex::new(CallBindRuntimeState::new()),
@@ -531,6 +526,7 @@ impl RuntimeState {
 #[cfg(any(
     feature = "stdlib_collections",
     feature = "stdlib_compression",
+    not(feature = "stdlib_itertools"),
     feature = "stdlib_itertools",
     feature = "stdlib_logging_ext",
     feature = "stdlib_math",

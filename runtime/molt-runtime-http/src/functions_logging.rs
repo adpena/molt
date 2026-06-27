@@ -5,12 +5,12 @@ use molt_obj_model::MoltObject;
 use molt_runtime_core::obj_from_bits;
 
 use crate::bridge::{
-    alloc_string, attr_name_bits_from_bytes, builtin_classes, call_callable0, call_callable1,
-    call_class_init_with_args, clear_exception, dec_ref_bits, dict_get_in_place, exception_pending,
-    inc_ref_bits, missing_bits, molt_getattr_builtin, object_type_id, raise_exception,
-    resolve_global_bits, seq_vec_ref, string_obj_to_owned, to_f64, to_i64,
+    alloc_string, alloc_string_bits, attr_name_bits_from_bytes, attr_optional, builtin_classes,
+    call_callable0, call_callable1, call_class_init_with_args, clear_exception, dec_ref_bits,
+    dict_get_in_place, exception_pending, inc_ref_bits, missing_bits, molt_getattr_builtin,
+    object_type_id, raise_exception, resolve_global_bits, seq_vec_ref, string_obj_to_owned, to_f64,
+    to_i64,
 };
-use crate::functions_http::{alloc_string_bits, urllib_request_attr_optional};
 
 fn logging_percent_lookup_mapping_value(
     _py: &molt_runtime_core::CoreGilToken,
@@ -146,12 +146,12 @@ fn logging_config_dict_items(
             "logging config section missing items()",
         ));
     }
-    let iterable_bits = unsafe { call_callable0(_py, items_method_bits) };
+    let iterable_bits = call_callable0(_py, items_method_bits);
     dec_ref_bits(_py, items_method_bits);
     if exception_pending(_py) {
         return Err(MoltObject::none().bits());
     }
-    let list_bits = unsafe { call_callable1(_py, builtin_classes(_py, "list"), iterable_bits) };
+    let list_bits = call_callable1(_py, builtin_classes(_py, "list"), iterable_bits);
     dec_ref_bits(_py, iterable_bits);
     if exception_pending(_py) {
         return Err(MoltObject::none().bits());
@@ -226,7 +226,7 @@ fn logging_config_name_list(
     _py: &molt_runtime_core::CoreGilToken,
     seq_bits: u64,
 ) -> Result<Vec<String>, u64> {
-    let list_bits = unsafe { call_callable1(_py, builtin_classes(_py, "list"), seq_bits) };
+    let list_bits = call_callable1(_py, builtin_classes(_py, "list"), seq_bits);
     if exception_pending(_py) {
         return Err(MoltObject::none().bits());
     }
@@ -269,14 +269,14 @@ fn logging_config_call_method1(
     method_name: &[u8],
     arg_bits: u64,
 ) -> Result<u64, u64> {
-    let Some(method_bits) = urllib_request_attr_optional(_py, obj_bits, method_name)? else {
+    let Some(method_bits) = attr_optional(_py, obj_bits, method_name)? else {
         return Err(raise_exception::<u64>(
             _py,
             "AttributeError",
             "logging object method is missing",
         ));
     };
-    let out_bits = unsafe { call_callable1(_py, method_bits, arg_bits) };
+    let out_bits = call_callable1(_py, method_bits, arg_bits);
     dec_ref_bits(_py, method_bits);
     if exception_pending(_py) {
         return Err(MoltObject::none().bits());
@@ -288,7 +288,7 @@ fn logging_config_clear_logger_handlers(
     _py: &molt_runtime_core::CoreGilToken,
     logger_bits: u64,
 ) -> Result<(), u64> {
-    let Some(handlers_bits) = urllib_request_attr_optional(_py, logger_bits, b"handlers")? else {
+    let Some(handlers_bits) = attr_optional(_py, logger_bits, b"handlers")? else {
         return Ok(());
     };
     let Some(handlers_ptr) = obj_from_bits(handlers_bits).as_ptr() else {
@@ -428,13 +428,11 @@ pub extern "C" fn molt_logging_config_dict(config_bits: u64) -> u64 {
                         return bits;
                     }
                 };
-                let formatter_bits = unsafe {
-                    call_class_init_with_args(
-                        _py,
-                        MoltObject::from_ptr(formatter_class_ptr).bits(),
-                        &[fmt_bits],
-                    )
-                };
+                let formatter_bits = call_class_init_with_args(
+                    _py,
+                    MoltObject::from_ptr(formatter_class_ptr).bits(),
+                    &[fmt_bits],
+                );
                 if exception_pending(_py) {
                     dec_ref_bits(_py, name_bits);
                     dec_ref_bits(_py, cfg_bits);
@@ -548,13 +546,11 @@ pub extern "C" fn molt_logging_config_dict(config_bits: u64) -> u64 {
                             return bits;
                         }
                     };
-                    unsafe {
-                        call_class_init_with_args(
-                            _py,
-                            MoltObject::from_ptr(stream_handler_class_ptr).bits(),
-                            &[stream_arg_bits],
-                        )
-                    }
+                    call_class_init_with_args(
+                        _py,
+                        MoltObject::from_ptr(stream_handler_class_ptr).bits(),
+                        &[stream_arg_bits],
+                    )
                 } else if class_name == "logging.FileHandler" {
                     let filename_bits = match logging_config_dict_lookup(_py, cfg_bits, "filename")
                     {
@@ -590,13 +586,11 @@ pub extern "C" fn molt_logging_config_dict(config_bits: u64) -> u64 {
                             return bits;
                         }
                     };
-                    let out_bits = unsafe {
-                        call_class_init_with_args(
-                            _py,
-                            MoltObject::from_ptr(file_handler_class_ptr).bits(),
-                            &[filename_bits, mode_bits],
-                        )
-                    };
+                    let out_bits = call_class_init_with_args(
+                        _py,
+                        MoltObject::from_ptr(file_handler_class_ptr).bits(),
+                        &[filename_bits, mode_bits],
+                    );
                     if let Ok(None) = logging_config_dict_lookup(_py, cfg_bits, "mode") {
                         dec_ref_bits(_py, mode_bits);
                     }
@@ -710,7 +704,7 @@ pub extern "C" fn molt_logging_config_dict(config_bits: u64) -> u64 {
                 }
             };
             for (name_bits, cfg_bits) in pairs {
-                let logger_bits = unsafe { call_callable1(_py, get_logger_bits, name_bits) };
+                let logger_bits = call_callable1(_py, get_logger_bits, name_bits);
                 if exception_pending(_py) {
                     dec_ref_bits(_py, name_bits);
                     dec_ref_bits(_py, cfg_bits);
@@ -802,7 +796,7 @@ pub extern "C" fn molt_logging_config_dict(config_bits: u64) -> u64 {
         }
 
         if let Ok(Some(root_bits)) = logging_config_dict_lookup(_py, config_bits, "root") {
-            let root_logger_bits = unsafe { call_callable0(_py, get_logger_bits) };
+            let root_logger_bits = call_callable0(_py, get_logger_bits);
             if exception_pending(_py) {
                 return MoltObject::none().bits();
             }

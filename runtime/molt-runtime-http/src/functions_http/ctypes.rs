@@ -5,7 +5,7 @@ pub(super) fn ctypes_attr_present(
     obj_bits: u64,
     name: &[u8],
 ) -> Result<bool, u64> {
-    match urllib_request_attr_optional(_py, obj_bits, name)? {
+    match attr_optional(_py, obj_bits, name)? {
         Some(bits) => {
             dec_ref_bits(_py, bits);
             Ok(true)
@@ -32,7 +32,7 @@ pub(super) fn ctypes_attr_i64(
     obj_bits: u64,
     name: &[u8],
 ) -> Result<Option<i64>, u64> {
-    let Some(bits) = urllib_request_attr_optional(_py, obj_bits, name)? else {
+    let Some(bits) = attr_optional(_py, obj_bits, name)? else {
         return Ok(None);
     };
     let out = to_i64(obj_from_bits(bits));
@@ -45,7 +45,7 @@ pub(super) fn ctypes_attr_bool(
     obj_bits: u64,
     name: &[u8],
 ) -> Result<Option<bool>, u64> {
-    let Some(bits) = urllib_request_attr_optional(_py, obj_bits, name)? else {
+    let Some(bits) = attr_optional(_py, obj_bits, name)? else {
         return Ok(None);
     };
     let out = is_truthy(_py, obj_from_bits(bits));
@@ -58,7 +58,7 @@ pub(super) fn ctypes_attr_string(
     obj_bits: u64,
     name: &[u8],
 ) -> Result<Option<String>, u64> {
-    let Some(bits) = urllib_request_attr_optional(_py, obj_bits, name)? else {
+    let Some(bits) = attr_optional(_py, obj_bits, name)? else {
         return Ok(None);
     };
     let out = string_obj_to_owned(obj_from_bits(bits));
@@ -217,7 +217,7 @@ pub(super) fn ctypes_sizeof_bits(
     _py: &molt_runtime_core::CoreGilToken,
     obj_or_type_bits: u64,
 ) -> Result<u64, u64> {
-    let Some(size_bits) = urllib_request_attr_optional(_py, obj_or_type_bits, b"_size")? else {
+    let Some(size_bits) = attr_optional(_py, obj_or_type_bits, b"_size")? else {
         return Err(raise_exception::<u64>(
             _py,
             "TypeError",
@@ -242,7 +242,7 @@ pub(super) fn urllib_attr_truthy(
     obj_bits: u64,
     name: &[u8],
 ) -> Result<bool, u64> {
-    match urllib_request_attr_optional(_py, obj_bits, name)? {
+    match attr_optional(_py, obj_bits, name)? {
         Some(bits) => {
             let out = is_truthy(_py, obj_from_bits(bits));
             dec_ref_bits(_py, bits);

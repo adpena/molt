@@ -35,6 +35,7 @@ pub(crate) mod frames;
 pub(crate) mod functions;
 pub(crate) mod functions_fnmatch;
 #[cfg(not(feature = "stdlib_http"))]
+#[path = "../../../molt-runtime-http/src/functions_logging.rs"]
 pub(crate) mod functions_logging;
 pub(crate) mod functions_pickle;
 pub(crate) mod functions_re;
@@ -53,6 +54,7 @@ pub(crate) mod io;
 pub(crate) mod io_path;
 pub(crate) mod io_path_utils;
 #[cfg(not(feature = "stdlib_itertools"))]
+#[path = "../../../molt-runtime-itertools/src/itertools.rs"]
 pub(crate) mod itertools;
 pub(crate) mod json;
 #[cfg(all(feature = "stdlib_compression", not(target_arch = "wasm32")))]
