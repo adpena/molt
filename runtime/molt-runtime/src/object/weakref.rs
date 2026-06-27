@@ -515,6 +515,18 @@ pub extern "C" fn molt_weakref_register(
         if !obj_from_bits(callback_bits).is_none() {
             inc_ref_bits(_py, callback_bits);
         }
+        // Mark the target's lifetime-boundary bit so its `dec_ref_ptr`
+        // zero-transition enters the finalize + weakref-clear revival window
+        // (open a revival ref, run callbacks while the object is provably live,
+        // then re-check resurrection) instead of freeing at rc=0. This is the
+        // single cached fact gating that window: an object that never registers
+        // a weakref keeps the bit clear and skips both the global weakref lock
+        // and the revival inc/dec on its free path. The bit is sticky (never
+        // cleared on `unregister`/drop) — conservatively keeping it set only
+        // re-runs the cheap empty-clear + window on final death.
+        unsafe {
+            (*header_from_obj_ptr(target_ptr)).flags |= super::HEADER_FLAG_HAS_WEAKREF;
+        }
         let mut registry = runtime_state(_py).weakrefs.lock().unwrap();
         let weak_slot = PtrSlot(weak_ptr);
         let target_slot = PtrSlot(target_ptr);
