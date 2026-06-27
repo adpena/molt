@@ -53,7 +53,7 @@ fn hello_world_ir() -> SimpleIR {
     const_str.s_value = Some("hello world".to_string());
     const_str.out = Some("s0".to_string());
 
-    let mut print = op("print_obj");
+    let mut print = op("print");
     print.args = Some(vec!["s0".to_string()]);
 
     SimpleIR {
@@ -103,7 +103,9 @@ fn ir_with_async_ops() -> SimpleIR {
 }
 
 fn ir_with_os_name() -> SimpleIR {
-    let mut os_name = op("os_name");
+    let mut os_name = op("builtin_func");
+    os_name.s_value = Some("molt_os_name".to_string());
+    os_name.value = Some(0);
     os_name.out = Some("v0".to_string());
 
     SimpleIR {

@@ -923,6 +923,9 @@ pub(crate) const OP_IMPORT_DEPS: &[(&str, &[&str])] = &[
         "is_truthy_int",
         "is_truthy_bool",
     ]),
+    ("print", &[
+        "print_obj",
+    ]),
     ("eq", &[
         "eq",
     ]),
