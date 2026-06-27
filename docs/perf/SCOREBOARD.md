@@ -51,6 +51,62 @@ baseline; release-output native Y1 = startup_tax < 100ms"). A missing budget
 means `FAIL_COLD_BUDGET` cannot fire (we never invent a budget); the measured
 tax is still recorded so the ceiling can be seeded.
 
+## The measurement PLANE — one truth, five gated projections (doc 64)
+
+`perf_scoreboard.py` is the single measurement **core**: it produces one stream
+of cells (`benchmark × target × backend × profile`). The constitution's
+"required machine-readable scoreboards" are **not** five measurement loops — they
+are five **projections** of that one stream, each a pure function with its own
+gate exit code. This is the load-bearing architectural decision (doc 64 §1
+refusal of "five separate scripts"): **five boards, one truth.**
+
+`tools/perf_board.py <source_scoreboard.json>` projects the source board into:
+
+| board | `kind` | owns | gate FAILs iff |
+|-------|--------|------|----------------|
+| **CPython** | `cpython_floor_board` | all cells | a stable+quiescent `warm_speedup < 1.00`, OR a hard engine/cold/build/run/unstable verdict (the absolute floor) |
+| **Backend** | `backend_parity_board` | all cells, grouped by backend | any lane below its own CPython floor **OR** a *cross-backend divergence* (one backend RED where another is GREEN — "a native win never excuses a wasm regression") |
+| **Profile** | `profile_parity_board` | all cells, grouped by profile | a `release-fast`/`release-output` warm RED (dev-fast warm reds are advisory — compile-latency-optimized) |
+| **PyPy** | `pypy_reference_board` | dynamic-class cells with a PyPy lane | an **un-attributed** loss (`pypy_ratio < 1.00` with no `pypy_advantage_class`). Losing is allowed; *unexplained* losing is the failure. Host absent → `ADVISORY` |
+| **Codon** | `codon_reference_board` | equivalent-semantics cells with a Codon lane | never hard-FAILs (Codon is a *ceiling*, not a floor); advises approach/match/exceed. Host absent → `ADVISORY` |
+
+The **plane gate** (`board_gate_exit_code`) is nonzero iff ANY board's
+`board_state` is `FAIL`. Because each board has its own exit code, a native win
+**cannot** hide a wasm regression and a release-output win **cannot** hide a
+release-fast regression — the asymmetry is enforced by separate verdicts, not a
+reader's diligence. PyPy/Codon comparator boards are `ADVISORY` when the host
+lacks the binary (recorded as host-absent — never a faked ratio, per
+`bench_evidence.METRIC_OK_GATES`).
+
+Quiescence governs warm-RED authority (Rule 3): on a non-authoritative /
+non-quiescent source board, an absolute warm RED downgrades to `ADVISORY` (a
+contended runner cannot manufacture a blocking red); the contamination-robust
+**regression** axis is what the per-merge gate trusts there.
+
+## Board history + the regression gate (doc 64 Phase 4)
+
+The absolute floor answers "is this below CPython NOW?". The second
+Performance-Constitution triage axis — "any previously-green benchmark that
+**regressed**" — needs "previously-green" to be a queryable FACT.
+`tools/perf_history.py` provides it:
+
+- `board_identity = sha256(git_rev ‖ benchmark_tool_blob ‖ suite_hash ‖
+  host_class)` content-addresses each recorded board; `bench/scoreboard/history/`
+  is the durable trail (see its `README.md`).
+- `--gate` compares a candidate board against the **most recent authoritative
+  same-identity-class** baseline: a cell that gated `PASS` then and `FAIL` now is
+  an **error** regression → the gate exits nonzero (CI fails). A still-passing
+  but materially slower (> 5%) cell is a **warn** drift (advisory). A
+  within-threshold delta is **not** flagged (the no-false-positive rule).
+- Only **authoritative** boards become baselines (Rule 2). The history starts
+  empty and **arms** on the first authoritative `main` run; until then the
+  regression gate is silent and the absolute floor is the sole gate.
+
+Both gates are proven falsifiable by `tools/check_perf_plane_gate.py` (ci_gate
+Tier 1): it synthesizes a CPython-red and asserts BOTH the absolute-floor gate
+and the regression gate reject it, and that an unchanged re-run is not flagged. A
+gate that cannot fail certifies nothing.
+
 ## Provenance — the anti-stale-lore enforcement (council ruling A + B)
 
 Every board carries the exact tree + tool + artifact identity it was measured

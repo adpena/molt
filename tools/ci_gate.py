@@ -340,10 +340,25 @@ def _build_checks() -> list[Check]:
                 str(TESTS / "tools" / "test_perf_scoreboard.py"),
                 str(TESTS / "tools" / "test_perf_authority.py"),
                 str(TESTS / "tools" / "test_signed_ratio.py"),
+                # The five-board plane (doc 64 §3.2) + board history regression
+                # gate (Phase 4) are part of the same perf-measurement contract.
+                str(TESTS / "tools" / "test_perf_board.py"),
+                str(TESTS / "tools" / "test_perf_history.py"),
                 "-q",
             ),
             timeout=120,
             needs_pytest=True,
+        )
+    )
+    checks.append(
+        Check(
+            # Fail closed if the perf-plane gate can no longer FAIL on a synthetic
+            # CPython-red regression (doc 64 §5 falsifiable gate). A gate that
+            # cannot fail certifies nothing -- the proxy-measurement meta-bug.
+            name="perf-plane-gate",
+            tier=1,
+            cmd=_uv_run(str(TOOLS / "check_perf_plane_gate.py")),
+            timeout=30,
         )
     )
     checks.append(
