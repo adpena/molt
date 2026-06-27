@@ -1,4 +1,4 @@
-use super::*;
+use super::prelude::Instruction;
 
 // ---------------------------------------------------------------------------
 // Peephole: local.set X; local.get X → local.tee X

@@ -1,5 +1,6 @@
+use super::lir_context::LirLowerCtx;
 use super::lir_scalar::{emit_box_none, emit_return_boxed_i64};
-use super::*;
+use super::prelude::*;
 
 pub(super) fn emit_lir_terminator(ctx: &mut LirLowerCtx, term: &LirTerminator) {
     match term {
