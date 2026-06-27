@@ -1,5 +1,5 @@
+use super::super::result_sink::store_result_or_drop;
 use super::super::*;
-use super::store_or_drop_result;
 
 pub(super) fn emit_method_op(
     backend: &mut WasmBackend,
@@ -18,14 +18,14 @@ pub(super) fn emit_method_op(
             let func_bits = locals[&args[0]];
             func.instruction(&Instruction::LocalGet(func_bits));
             emit_call(func, reloc_enabled, import_ids["classmethod_new"]);
-            store_or_drop_result(func, op, locals);
+            store_result_or_drop(func, op, locals);
         }
         "staticmethod_new" => {
             let args = op.args.as_ref().unwrap();
             let func_bits = locals[&args[0]];
             func.instruction(&Instruction::LocalGet(func_bits));
             emit_call(func, reloc_enabled, import_ids["staticmethod_new"]);
-            store_or_drop_result(func, op, locals);
+            store_result_or_drop(func, op, locals);
         }
         "property_new" => {
             let args = op.args.as_ref().unwrap();
@@ -36,7 +36,7 @@ pub(super) fn emit_method_op(
             func.instruction(&Instruction::LocalGet(setter));
             func.instruction(&Instruction::LocalGet(deleter));
             emit_call(func, reloc_enabled, import_ids["property_new"]);
-            store_or_drop_result(func, op, locals);
+            store_result_or_drop(func, op, locals);
         }
         "bound_method_new" => {
             let args = op.args.as_ref().unwrap();
@@ -45,14 +45,14 @@ pub(super) fn emit_method_op(
             func.instruction(&Instruction::LocalGet(func_bits));
             func.instruction(&Instruction::LocalGet(self_bits));
             emit_call(func, reloc_enabled, import_ids["bound_method_new"]);
-            store_or_drop_result(func, op, locals);
+            store_result_or_drop(func, op, locals);
         }
         "is_bound_method" => {
             let args = op.args.as_ref().unwrap();
             let obj = locals[&args[0]];
             func.instruction(&Instruction::LocalGet(obj));
             emit_call(func, reloc_enabled, import_ids["is_bound_method"]);
-            store_or_drop_result(func, op, locals);
+            store_result_or_drop(func, op, locals);
         }
         "call_method_ic" => {
             // Fused instance-method dispatch (LOAD_METHOD/CALL_METHOD):
@@ -94,7 +94,7 @@ pub(super) fn emit_method_op(
                 _ => "call_method_ic4",
             };
             emit_call(func, reloc_enabled, import_ids[import]);
-            store_or_drop_result(func, op, locals);
+            store_result_or_drop(func, op, locals);
         }
         "call_super_method_ic" => {
             // Fused super().method() dispatch (no super / bound-method /
@@ -135,7 +135,7 @@ pub(super) fn emit_method_op(
                 _ => "call_super_method_ic4",
             };
             emit_call(func, reloc_enabled, import_ids[import]);
-            store_or_drop_result(func, op, locals);
+            store_result_or_drop(func, op, locals);
         }
         _ => return false,
     }

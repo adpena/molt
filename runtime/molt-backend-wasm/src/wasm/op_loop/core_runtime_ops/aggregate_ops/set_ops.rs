@@ -1,5 +1,6 @@
+use super::super::super::result_sink::store_result_or_drop;
 use super::super::super::*;
-use super::{AggregateRuntimeContext, store_or_drop_result};
+use super::AggregateRuntimeContext;
 
 pub(super) fn emit_set_op(
     func: &mut Function,
@@ -48,7 +49,7 @@ pub(super) fn emit_set_op(
             func.instruction(&Instruction::LocalGet(set_bits));
             func.instruction(&Instruction::LocalGet(key));
             emit_call(func, reloc_enabled, import_ids["set_add"]);
-            store_or_drop_result(func, op, locals);
+            store_result_or_drop(func, op, locals);
         }
         "set_add_probe" => {
             let args = op.args.as_ref().unwrap();
@@ -57,7 +58,7 @@ pub(super) fn emit_set_op(
             func.instruction(&Instruction::LocalGet(set_bits));
             func.instruction(&Instruction::LocalGet(key));
             emit_call(func, reloc_enabled, import_ids["set_add_probe"]);
-            store_or_drop_result(func, op, locals);
+            store_result_or_drop(func, op, locals);
         }
         "frozenset_add" => {
             let args = op.args.as_ref().unwrap();
@@ -66,7 +67,7 @@ pub(super) fn emit_set_op(
             func.instruction(&Instruction::LocalGet(set_bits));
             func.instruction(&Instruction::LocalGet(key));
             emit_call(func, reloc_enabled, import_ids["frozenset_add"]);
-            store_or_drop_result(func, op, locals);
+            store_result_or_drop(func, op, locals);
         }
         "set_discard" => {
             let args = op.args.as_ref().unwrap();
@@ -75,7 +76,7 @@ pub(super) fn emit_set_op(
             func.instruction(&Instruction::LocalGet(set_bits));
             func.instruction(&Instruction::LocalGet(key));
             emit_call(func, reloc_enabled, import_ids["set_discard"]);
-            store_or_drop_result(func, op, locals);
+            store_result_or_drop(func, op, locals);
         }
         "set_remove" => {
             let args = op.args.as_ref().unwrap();
@@ -84,14 +85,14 @@ pub(super) fn emit_set_op(
             func.instruction(&Instruction::LocalGet(set_bits));
             func.instruction(&Instruction::LocalGet(key));
             emit_call(func, reloc_enabled, import_ids["set_remove"]);
-            store_or_drop_result(func, op, locals);
+            store_result_or_drop(func, op, locals);
         }
         "set_pop" => {
             let args = op.args.as_ref().unwrap();
             let set_bits = locals[&args[0]];
             func.instruction(&Instruction::LocalGet(set_bits));
             emit_call(func, reloc_enabled, import_ids["set_pop"]);
-            store_or_drop_result(func, op, locals);
+            store_result_or_drop(func, op, locals);
         }
         "set_update" => {
             let args = op.args.as_ref().unwrap();
@@ -100,7 +101,7 @@ pub(super) fn emit_set_op(
             func.instruction(&Instruction::LocalGet(set_bits));
             func.instruction(&Instruction::LocalGet(other));
             emit_call(func, reloc_enabled, import_ids["set_update"]);
-            store_or_drop_result(func, op, locals);
+            store_result_or_drop(func, op, locals);
         }
         "set_intersection_update" => {
             let args = op.args.as_ref().unwrap();
@@ -109,7 +110,7 @@ pub(super) fn emit_set_op(
             func.instruction(&Instruction::LocalGet(set_bits));
             func.instruction(&Instruction::LocalGet(other));
             emit_call(func, reloc_enabled, import_ids["set_intersection_update"]);
-            store_or_drop_result(func, op, locals);
+            store_result_or_drop(func, op, locals);
         }
         "set_difference_update" => {
             let args = op.args.as_ref().unwrap();
@@ -118,7 +119,7 @@ pub(super) fn emit_set_op(
             func.instruction(&Instruction::LocalGet(set_bits));
             func.instruction(&Instruction::LocalGet(other));
             emit_call(func, reloc_enabled, import_ids["set_difference_update"]);
-            store_or_drop_result(func, op, locals);
+            store_result_or_drop(func, op, locals);
         }
         "set_symdiff_update" => {
             let args = op.args.as_ref().unwrap();
@@ -127,7 +128,7 @@ pub(super) fn emit_set_op(
             func.instruction(&Instruction::LocalGet(set_bits));
             func.instruction(&Instruction::LocalGet(other));
             emit_call(func, reloc_enabled, import_ids["set_symdiff_update"]);
-            store_or_drop_result(func, op, locals);
+            store_result_or_drop(func, op, locals);
         }
         _ => return false,
     }

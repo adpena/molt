@@ -1,5 +1,6 @@
+use super::super::super::result_sink::store_result_or_drop;
 use super::super::super::*;
-use super::{AggregateRuntimeContext, store_or_drop_result};
+use super::AggregateRuntimeContext;
 
 pub(super) fn emit_callargs_op(
     func: &mut Function,
@@ -25,7 +26,7 @@ pub(super) fn emit_callargs_op(
             func.instruction(&Instruction::LocalGet(builder_ptr));
             func.instruction(&Instruction::LocalGet(val));
             emit_call(func, reloc_enabled, import_ids["callargs_push_pos"]);
-            store_or_drop_result(func, op, locals);
+            store_result_or_drop(func, op, locals);
         }
         "callargs_push_kw" => {
             let args = op.args.as_ref().unwrap();
@@ -36,7 +37,7 @@ pub(super) fn emit_callargs_op(
             func.instruction(&Instruction::LocalGet(name));
             func.instruction(&Instruction::LocalGet(val));
             emit_call(func, reloc_enabled, import_ids["callargs_push_kw"]);
-            store_or_drop_result(func, op, locals);
+            store_result_or_drop(func, op, locals);
         }
         "callargs_expand_star" => {
             let args = op.args.as_ref().unwrap();
@@ -45,7 +46,7 @@ pub(super) fn emit_callargs_op(
             func.instruction(&Instruction::LocalGet(builder_ptr));
             func.instruction(&Instruction::LocalGet(iterable));
             emit_call(func, reloc_enabled, import_ids["callargs_expand_star"]);
-            store_or_drop_result(func, op, locals);
+            store_result_or_drop(func, op, locals);
         }
         "callargs_expand_kwstar" => {
             let args = op.args.as_ref().unwrap();
@@ -54,7 +55,7 @@ pub(super) fn emit_callargs_op(
             func.instruction(&Instruction::LocalGet(builder_ptr));
             func.instruction(&Instruction::LocalGet(mapping));
             emit_call(func, reloc_enabled, import_ids["callargs_expand_kwstar"]);
-            store_or_drop_result(func, op, locals);
+            store_result_or_drop(func, op, locals);
         }
         _ => return false,
     }

@@ -1,5 +1,6 @@
+use super::super::super::result_sink::store_result_or_drop;
 use super::super::super::*;
-use super::{AggregateRuntimeContext, store_or_drop_result};
+use super::AggregateRuntimeContext;
 
 pub(super) fn emit_dict_op(
     func: &mut Function,
@@ -45,7 +46,7 @@ pub(super) fn emit_dict_op(
             func.instruction(&Instruction::LocalGet(key));
             func.instruction(&Instruction::LocalGet(default));
             emit_call(func, reloc_enabled, import_ids["dict_get"]);
-            store_or_drop_result(func, op, locals);
+            store_result_or_drop(func, op, locals);
         }
         "dict_inc" => {
             let args = op.args.as_ref().unwrap();
@@ -56,7 +57,7 @@ pub(super) fn emit_dict_op(
             func.instruction(&Instruction::LocalGet(key));
             func.instruction(&Instruction::LocalGet(delta));
             emit_call(func, reloc_enabled, import_ids["dict_inc"]);
-            store_or_drop_result(func, op, locals);
+            store_result_or_drop(func, op, locals);
         }
         "dict_str_int_inc" => {
             let args = op.args.as_ref().unwrap();
@@ -67,7 +68,7 @@ pub(super) fn emit_dict_op(
             func.instruction(&Instruction::LocalGet(key));
             func.instruction(&Instruction::LocalGet(delta));
             emit_call(func, reloc_enabled, import_ids["dict_str_int_inc"]);
-            store_or_drop_result(func, op, locals);
+            store_result_or_drop(func, op, locals);
         }
         "dict_pop" => {
             let args = op.args.as_ref().unwrap();
@@ -80,7 +81,7 @@ pub(super) fn emit_dict_op(
             func.instruction(&Instruction::LocalGet(default));
             func.instruction(&Instruction::LocalGet(has_default));
             emit_call(func, reloc_enabled, import_ids["dict_pop"]);
-            store_or_drop_result(func, op, locals);
+            store_result_or_drop(func, op, locals);
         }
         "dict_setdefault" => {
             let args = op.args.as_ref().unwrap();
@@ -91,7 +92,7 @@ pub(super) fn emit_dict_op(
             func.instruction(&Instruction::LocalGet(key));
             func.instruction(&Instruction::LocalGet(default));
             emit_call(func, reloc_enabled, import_ids["dict_setdefault"]);
-            store_or_drop_result(func, op, locals);
+            store_result_or_drop(func, op, locals);
         }
         "dict_setdefault_empty_list" => {
             let args = op.args.as_ref().unwrap();
@@ -104,7 +105,7 @@ pub(super) fn emit_dict_op(
                 reloc_enabled,
                 import_ids["dict_setdefault_empty_list"],
             );
-            store_or_drop_result(func, op, locals);
+            store_result_or_drop(func, op, locals);
         }
         "dict_update" => {
             let args = op.args.as_ref().unwrap();
@@ -113,28 +114,28 @@ pub(super) fn emit_dict_op(
             func.instruction(&Instruction::LocalGet(dict));
             func.instruction(&Instruction::LocalGet(other));
             emit_call(func, reloc_enabled, import_ids["dict_update"]);
-            store_or_drop_result(func, op, locals);
+            store_result_or_drop(func, op, locals);
         }
         "dict_clear" => {
             let args = op.args.as_ref().unwrap();
             let dict = locals[&args[0]];
             func.instruction(&Instruction::LocalGet(dict));
             emit_call(func, reloc_enabled, import_ids["dict_clear"]);
-            store_or_drop_result(func, op, locals);
+            store_result_or_drop(func, op, locals);
         }
         "dict_copy" => {
             let args = op.args.as_ref().unwrap();
             let dict = locals[&args[0]];
             func.instruction(&Instruction::LocalGet(dict));
             emit_call(func, reloc_enabled, import_ids["dict_copy"]);
-            store_or_drop_result(func, op, locals);
+            store_result_or_drop(func, op, locals);
         }
         "dict_popitem" => {
             let args = op.args.as_ref().unwrap();
             let dict = locals[&args[0]];
             func.instruction(&Instruction::LocalGet(dict));
             emit_call(func, reloc_enabled, import_ids["dict_popitem"]);
-            store_or_drop_result(func, op, locals);
+            store_result_or_drop(func, op, locals);
         }
         "dict_update_kwstar" => {
             let args = op.args.as_ref().unwrap();
@@ -143,28 +144,28 @@ pub(super) fn emit_dict_op(
             func.instruction(&Instruction::LocalGet(dict));
             func.instruction(&Instruction::LocalGet(other));
             emit_call(func, reloc_enabled, import_ids["dict_update_kwstar"]);
-            store_or_drop_result(func, op, locals);
+            store_result_or_drop(func, op, locals);
         }
         "dict_keys" => {
             let args = op.args.as_ref().unwrap();
             let dict = locals[&args[0]];
             func.instruction(&Instruction::LocalGet(dict));
             emit_call(func, reloc_enabled, import_ids["dict_keys"]);
-            store_or_drop_result(func, op, locals);
+            store_result_or_drop(func, op, locals);
         }
         "dict_values" => {
             let args = op.args.as_ref().unwrap();
             let dict = locals[&args[0]];
             func.instruction(&Instruction::LocalGet(dict));
             emit_call(func, reloc_enabled, import_ids["dict_values"]);
-            store_or_drop_result(func, op, locals);
+            store_result_or_drop(func, op, locals);
         }
         "dict_items" => {
             let args = op.args.as_ref().unwrap();
             let dict = locals[&args[0]];
             func.instruction(&Instruction::LocalGet(dict));
             emit_call(func, reloc_enabled, import_ids["dict_items"]);
-            store_or_drop_result(func, op, locals);
+            store_result_or_drop(func, op, locals);
         }
         _ => return false,
     }

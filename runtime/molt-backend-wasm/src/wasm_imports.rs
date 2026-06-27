@@ -330,6 +330,9 @@ pub(crate) const OP_IMPORT_DEPS: &[(&str, &[&str])] = &[
     ),
     ("exception_new_builtin_one", &["exception_new_builtin_one"]),
     // Generator ops
+    ("gen_close", &["generator_close"]),
+    ("gen_send", &["generator_send"]),
+    ("gen_throw", &["generator_throw"]),
     ("generator_close", &["generator_close"]),
     ("generator_send", &["generator_send"]),
     ("generator_throw", &["generator_throw"]),

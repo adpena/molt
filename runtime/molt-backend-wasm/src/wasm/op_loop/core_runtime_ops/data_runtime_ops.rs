@@ -1,3 +1,4 @@
+use super::super::result_sink::store_non_none_result_or_drop;
 use super::super::*;
 
 #[allow(unused_variables)]
@@ -234,7 +235,7 @@ fn emit_fixed_arg_import(
         func.instruction(&Instruction::LocalGet(locals[arg]));
     }
     emit_call(func, reloc_enabled, import_ids[import_key]);
-    store_optional_result_or_drop(func, op, locals);
+    store_non_none_result_or_drop(func, op, locals);
 }
 
 fn emit_scalar_parse_op(
@@ -289,15 +290,5 @@ fn emit_scalar_parse_op(
         func.instruction(&Instruction::LocalGet(locals[arg_name]));
         emit_call(func, reloc_enabled, import_ids[object_import]);
         func.instruction(&Instruction::LocalSet(out_ptr));
-    }
-}
-
-fn store_optional_result_or_drop(func: &mut Function, op: &OpIR, locals: &BTreeMap<String, u32>) {
-    if let Some(out) = op.out.as_ref()
-        && out != "none"
-    {
-        func.instruction(&Instruction::LocalSet(locals[out]));
-    } else {
-        func.instruction(&Instruction::Drop);
     }
 }
