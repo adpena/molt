@@ -278,6 +278,38 @@ fn add_two_f64s() {
 }
 
 #[test]
+fn f64_mod_declares_emission_scratch_locals() {
+    let mut func = TirFunction::new(
+        "mod_f64".into(),
+        vec![TirType::F64, TirType::F64],
+        TirType::F64,
+    );
+    let result_id = func.fresh_value();
+    let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+    entry.ops.push(TirOp {
+        dialect: Dialect::Molt,
+        opcode: OpCode::Mod,
+        operands: vec![ValueId(0), ValueId(1)],
+        results: vec![result_id],
+        attrs: AttrDict::new(),
+        source_span: None,
+    });
+    entry.terminator = Terminator::Return {
+        values: vec![result_id],
+    };
+
+    let output = lower_tir_to_wasm(&func);
+
+    assert_eq!(output.param_types, vec![ValType::F64, ValType::F64]);
+    assert_eq!(output.result_types, vec![ValType::F64]);
+    assert_eq!(
+        output.locals,
+        vec![ValType::F64, ValType::F64, ValType::F64],
+        "f64 modulo needs the result local plus two scratch locals declared"
+    );
+}
+
+#[test]
 fn conditional_branch() {
     let mut func = TirFunction::new("cond_branch".into(), vec![TirType::Bool], TirType::I64);
 

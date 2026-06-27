@@ -27,10 +27,6 @@ pub(super) struct LirLowerCtx<'a> {
 }
 
 impl<'a> LirLowerCtx<'a> {
-    pub(super) fn new(func: &'a LirFunction) -> Self {
-        Self::new_with_local_base(func, 0)
-    }
-
     pub(super) fn new_with_local_base(func: &'a LirFunction, local_base: u32) -> Self {
         let rpo = compute_lir_rpo(func);
         let block_index = rpo.iter().enumerate().map(|(i, &bid)| (bid, i)).collect();
@@ -68,6 +64,34 @@ impl<'a> LirLowerCtx<'a> {
         self.value_reprs.insert(value.id, value.repr);
         self.local_types.insert(idx, lir_repr_to_val(value.repr));
         idx
+    }
+
+    pub(super) fn allocate_function_locals(&mut self) {
+        if let Some(entry) = self.func.blocks.get(&self.func.entry_block) {
+            for arg in &entry.args {
+                self.local_for(arg);
+            }
+        }
+        for &bid in &self.rpo.clone() {
+            if let Some(block) = self.func.blocks.get(&bid) {
+                for arg in &block.args {
+                    self.local_for(arg);
+                }
+                for op in &block.ops {
+                    for value in &op.result_values {
+                        self.local_for(value);
+                    }
+                }
+            }
+        }
+    }
+
+    pub(super) fn local_declarations_after(&self, first_local: u32) -> Vec<ValType> {
+        let mut locals = Vec::with_capacity(self.next_local.saturating_sub(first_local) as usize);
+        for idx in first_local..self.next_local {
+            locals.push(self.local_types.get(&idx).copied().unwrap_or(ValType::I64));
+        }
+        locals
     }
 
     pub(super) fn get_local(&self, vid: ValueId) -> u32 {
