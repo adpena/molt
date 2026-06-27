@@ -18,10 +18,15 @@ import json
 import re
 from pathlib import Path
 
+try:
+    from correspondence_sources import parse_lean_inductive_variants
+except ModuleNotFoundError:  # pragma: no cover - package-style import path
+    from tools.correspondence_sources import parse_lean_inductive_variants
+
 ROOT = Path(__file__).resolve().parents[1]
 LEAN_DIR = ROOT / "formal" / "lean" / "MoltTIR"
 
-# ── Real compiler opcodes (from MoltOp.kind values) ──────────────
+# Real compiler opcodes (from MoltOp.kind values)
 # Arithmetic / comparison / bitwise
 REAL_BINOPS = {
     "add",
@@ -132,22 +137,7 @@ def parse_lean_binops() -> set[str]:
     syntax = LEAN_DIR / "Syntax.lean"
     if not syntax.exists():
         return set()
-    text = syntax.read_text()
-    ops: set[str] = set()
-    in_binop = False
-    for line in text.splitlines():
-        if "inductive BinOp" in line:
-            in_binop = True
-            continue
-        if in_binop:
-            if line.strip().startswith("deriving") or (
-                line.strip().startswith("inductive") and "BinOp" not in line
-            ):
-                break
-            matches = re.findall(r"\|\s+(\w+)", line)
-            matches = [name[:-1] if name.endswith("_") else name for name in matches]
-            ops.update(matches)
-    return ops
+    return set(parse_lean_inductive_variants(syntax.read_text(), "BinOp"))
 
 
 def parse_lean_unops() -> set[str]:
@@ -155,22 +145,7 @@ def parse_lean_unops() -> set[str]:
     syntax = LEAN_DIR / "Syntax.lean"
     if not syntax.exists():
         return set()
-    text = syntax.read_text()
-    ops: set[str] = set()
-    in_unop = False
-    for line in text.splitlines():
-        if "inductive UnOp" in line:
-            in_unop = True
-            continue
-        if in_unop:
-            if line.strip().startswith("deriving") or (
-                line.strip().startswith("inductive") and "UnOp" not in line
-            ):
-                break
-            matches = re.findall(r"\|\s+(\w+)", line)
-            matches = [name[:-1] if name.endswith("_") else name for name in matches]
-            ops.update(matches)
-    return ops
+    return set(parse_lean_inductive_variants(syntax.read_text(), "UnOp"))
 
 
 def parse_lean_expr_kinds() -> set[str]:
@@ -178,21 +153,7 @@ def parse_lean_expr_kinds() -> set[str]:
     syntax = LEAN_DIR / "Syntax.lean"
     if not syntax.exists():
         return set()
-    text = syntax.read_text()
-    kinds: set[str] = set()
-    in_expr = False
-    for line in text.splitlines():
-        if "inductive Expr" in line:
-            in_expr = True
-            continue
-        if in_expr:
-            if line.strip().startswith("deriving") or (
-                line.strip().startswith("inductive") and "Expr" not in line
-            ):
-                break
-            matches = re.findall(r"\|\s+(\w+)", line)
-            kinds.update(matches)
-    return kinds
+    return set(parse_lean_inductive_variants(syntax.read_text(), "Expr"))
 
 
 def count_theorems(path: Path) -> int:
