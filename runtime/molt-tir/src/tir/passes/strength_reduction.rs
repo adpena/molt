@@ -88,7 +88,7 @@ pub fn run(func: &mut TirFunction) -> PassStats {
                     const_map.get(&rhs).copied(),
                     is_i64(&lhs, &type_map),
                     OpCode::Shr,
-                    |divisor| positive_power_of_two_shift(divisor),
+                    positive_power_of_two_shift,
                     &old,
                     func,
                     &mut const_map,
@@ -116,7 +116,7 @@ pub fn run(func: &mut TirFunction) -> PassStats {
             if let Some(mut rewrite) = rewrite {
                 rewrite.replacement.results = results;
                 rewrite.replacement.inherit_source_from(&old);
-                new_ops.extend(rewrite.prefix.drain(..));
+                new_ops.append(&mut rewrite.prefix);
                 new_ops.push(rewrite.replacement);
             } else {
                 new_ops.push(op);
