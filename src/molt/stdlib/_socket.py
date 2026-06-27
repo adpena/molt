@@ -16,6 +16,14 @@ _MOLT_IF_NAMETOINDEX = _require_intrinsic("molt_socket_if_nametoindex")
 _MOLT_IF_INDEXTONAME = _require_intrinsic("molt_socket_if_indextoname")
 _MOLT_CMSG_LEN = _require_intrinsic("molt_socket_cmsg_len")
 _MOLT_CMSG_SPACE = _require_intrinsic("molt_socket_cmsg_space")
+_MOLT_SOCKET_INET_PTON = _require_intrinsic("molt_socket_inet_pton")
+_MOLT_SOCKET_INET_NTOP = _require_intrinsic("molt_socket_inet_ntop")
+_MOLT_SOCKET_HTONS = _require_intrinsic("molt_socket_htons")
+_MOLT_SOCKET_NTOHS = _require_intrinsic("molt_socket_ntohs")
+_MOLT_SOCKET_HTONL = _require_intrinsic("molt_socket_htonl")
+_MOLT_SOCKET_NTOHL = _require_intrinsic("molt_socket_ntohl")
+_MOLT_AF_INET = int(getattr(_socket_mod, "AF_INET", 2))
+_MOLT_HAS_CMSG = hasattr(_socket_mod, "SCM_RIGHTS")
 
 
 def _unsupported(name: str):
@@ -25,35 +33,12 @@ def _unsupported(name: str):
     return _fn
 
 
-class _BuiltinFunctionWrapper:
-    __slots__ = ("_fn", "__doc__", "__name__", "__qualname__")
-
-    def __init__(self, fn, name: str):
-        self._fn = fn
-        self.__name__ = name
-        self.__qualname__ = name
-        self.__doc__ = getattr(fn, "__doc__", None)
-
-    def __call__(self, *args, **kwargs):
-        return self._fn(*args, **kwargs)
-
-
-_BuiltinFunctionWrapper.__name__ = "builtin_function_or_method"
-_BuiltinFunctionWrapper.__qualname__ = "builtin_function_or_method"
-
-
 class _PyCapsuleStub:
     pass
 
 
 _PyCapsuleStub.__name__ = "PyCapsule"
 _PyCapsuleStub.__qualname__ = "PyCapsule"
-
-
-def _as_builtin_function(name: str, fn):
-    if callable(fn):
-        return _BuiltinFunctionWrapper(fn, name)
-    return _BuiltinFunctionWrapper(_unsupported(name), name)
 
 
 error = _socket_mod.error
@@ -76,88 +61,138 @@ for _name, _val in list(_socket_mod.__dict__.items()):
         globals()[_name] = int(_val)
 
 
-def _gethostbyname_ex(
+def gethostbyname_ex(
     hostname: str, _gethostbyname_ex_intrinsic=_MOLT_GETHOSTBYNAME_EX
 ):
     return _gethostbyname_ex_intrinsic(hostname)
 
 
-def _getprotobyname(name: str, _getprotobyname_intrinsic=_MOLT_SOCKET_GETPROTOBYNAME):
+def getprotobyname(name: str, _getprotobyname_intrinsic=_MOLT_SOCKET_GETPROTOBYNAME):
     return _getprotobyname_intrinsic(name)
 
 
-def _if_nameindex(_if_nameindex_intrinsic=_MOLT_IF_NAMEINDEX):
+def if_nameindex(_if_nameindex_intrinsic=_MOLT_IF_NAMEINDEX):
     return _if_nameindex_intrinsic()
 
 
-def _if_nametoindex(name: str, _if_nametoindex_intrinsic=_MOLT_IF_NAMETOINDEX):
+def if_nametoindex(name: str, _if_nametoindex_intrinsic=_MOLT_IF_NAMETOINDEX):
     return _if_nametoindex_intrinsic(name)
 
 
-def _if_indextoname(index: int, _if_indextoname_intrinsic=_MOLT_IF_INDEXTONAME):
+def if_indextoname(index: int, _if_indextoname_intrinsic=_MOLT_IF_INDEXTONAME):
     return _if_indextoname_intrinsic(index)
 
 
 _MOLT_SOCKET_SETHOSTNAME = _require_intrinsic("molt_socket_sethostname")
 
 
-def _sethostname(name: str, _sethostname_intrinsic=_MOLT_SOCKET_SETHOSTNAME):
+def sethostname(name: str, _sethostname_intrinsic=_MOLT_SOCKET_SETHOSTNAME):
     _sethostname_intrinsic(name)
 
 
-def _cmsg_len(length: int, _cmsg_len_intrinsic=_MOLT_CMSG_LEN):
+def CMSG_LEN(length: int, _cmsg_len_intrinsic=_MOLT_CMSG_LEN):
     return _cmsg_len_intrinsic(length)
 
 
-def _cmsg_space(length: int, _cmsg_space_intrinsic=_MOLT_CMSG_SPACE):
+def CMSG_SPACE(length: int, _cmsg_space_intrinsic=_MOLT_CMSG_SPACE):
     return _cmsg_space_intrinsic(length)
 
 
-_CALLABLES = {
-    "CMSG_LEN": _cmsg_len,
-    "CMSG_SPACE": _cmsg_space,
-    "close": _MOLT_OS_CLOSE,
-    "dup": _MOLT_OS_DUP,
-    "getaddrinfo": getattr(_socket_mod, "getaddrinfo", _unsupported("getaddrinfo")),
-    "getdefaulttimeout": getattr(
-        _socket_mod, "getdefaulttimeout", _unsupported("getdefaulttimeout")
-    ),
-    "gethostbyaddr": getattr(
-        _socket_mod, "gethostbyaddr", _unsupported("gethostbyaddr")
-    ),
-    "gethostbyname": getattr(
-        _socket_mod, "gethostbyname", _unsupported("gethostbyname")
-    ),
-    "gethostbyname_ex": _gethostbyname_ex,
-    "gethostname": getattr(_socket_mod, "gethostname", _unsupported("gethostname")),
-    "getnameinfo": getattr(_socket_mod, "getnameinfo", _unsupported("getnameinfo")),
-    "getprotobyname": _getprotobyname,
-    "getservbyname": getattr(
-        _socket_mod, "getservbyname", _unsupported("getservbyname")
-    ),
-    "getservbyport": getattr(
-        _socket_mod, "getservbyport", _unsupported("getservbyport")
-    ),
-    "htonl": getattr(_socket_mod, "htonl", _unsupported("htonl")),
-    "htons": getattr(_socket_mod, "htons", _unsupported("htons")),
-    "if_indextoname": _if_indextoname,
-    "if_nameindex": _if_nameindex,
-    "if_nametoindex": _if_nametoindex,
-    "inet_aton": getattr(_socket_mod, "inet_aton", _unsupported("inet_aton")),
-    "inet_ntoa": getattr(_socket_mod, "inet_ntoa", _unsupported("inet_ntoa")),
-    "inet_ntop": getattr(_socket_mod, "inet_ntop", _unsupported("inet_ntop")),
-    "inet_pton": getattr(_socket_mod, "inet_pton", _unsupported("inet_pton")),
-    "ntohl": getattr(_socket_mod, "ntohl", _unsupported("ntohl")),
-    "ntohs": getattr(_socket_mod, "ntohs", _unsupported("ntohs")),
-    "setdefaulttimeout": getattr(
-        _socket_mod, "setdefaulttimeout", _unsupported("setdefaulttimeout")
-    ),
-    "sethostname": _sethostname,
-    "socketpair": getattr(_socket_mod, "socketpair", _unsupported("socketpair")),
-}
+def getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
+    fn = getattr(_socket_mod, "getaddrinfo", _unsupported("getaddrinfo"))
+    return fn(host, port, family, type, proto, flags)
 
-for _name, _fn in _CALLABLES.items():
-    globals()[_name] = _as_builtin_function(_name, _fn)
+
+def getdefaulttimeout():
+    fn = getattr(_socket_mod, "getdefaulttimeout", _unsupported("getdefaulttimeout"))
+    return fn()
+
+
+def gethostbyaddr(host):
+    fn = getattr(_socket_mod, "gethostbyaddr", _unsupported("gethostbyaddr"))
+    return fn(host)
+
+
+def gethostbyname(host):
+    fn = getattr(_socket_mod, "gethostbyname", _unsupported("gethostbyname"))
+    return fn(host)
+
+
+def gethostname():
+    fn = getattr(_socket_mod, "gethostname", _unsupported("gethostname"))
+    return fn()
+
+
+def getnameinfo(sockaddr, flags=0):
+    fn = getattr(_socket_mod, "getnameinfo", _unsupported("getnameinfo"))
+    return fn(sockaddr, flags)
+
+
+def getservbyname(name, proto=None):
+    fn = getattr(_socket_mod, "getservbyname", _unsupported("getservbyname"))
+    return fn(name, proto)
+
+
+def getservbyport(port, proto=None):
+    fn = getattr(_socket_mod, "getservbyport", _unsupported("getservbyport"))
+    return fn(port, proto)
+
+
+def inet_aton(address: str, _af_inet=_MOLT_AF_INET):
+    return inet_pton(_af_inet, address)
+
+
+def inet_ntoa(packed: bytes, _af_inet=_MOLT_AF_INET):
+    return inet_ntop(_af_inet, packed)
+
+
+def inet_pton(family: int, address: str, _inet_pton_intrinsic=_MOLT_SOCKET_INET_PTON):
+    return _inet_pton_intrinsic(family, address)
+
+
+def inet_ntop(family: int, packed: bytes, _inet_ntop_intrinsic=_MOLT_SOCKET_INET_NTOP):
+    return _inet_ntop_intrinsic(family, packed)
+
+
+def htons(value: int, _htons_intrinsic=_MOLT_SOCKET_HTONS):
+    return _htons_intrinsic(value)
+
+
+def ntohs(value: int, _ntohs_intrinsic=_MOLT_SOCKET_NTOHS):
+    return _ntohs_intrinsic(value)
+
+
+def htonl(value: int, _htonl_intrinsic=_MOLT_SOCKET_HTONL):
+    return _htonl_intrinsic(value)
+
+
+def ntohl(value: int, _ntohl_intrinsic=_MOLT_SOCKET_NTOHL):
+    return _ntohl_intrinsic(value)
+
+
+def close(fd: int, _close_intrinsic=_MOLT_OS_CLOSE):
+    return _close_intrinsic(fd)
+
+
+def dup(fd: int, _dup_intrinsic=_MOLT_OS_DUP):
+    return _dup_intrinsic(fd)
+
+
+def setdefaulttimeout(timeout=None):
+    fn = getattr(_socket_mod, "setdefaulttimeout", _unsupported("setdefaulttimeout"))
+    return fn(timeout)
+
+
+def socketpair(family=None, type=None, proto=None):
+    fn = getattr(_socket_mod, "socketpair", _unsupported("socketpair"))
+    if family is None and type is None and proto is None:
+        return fn()
+    return fn(family, type, proto)
+
+if not _MOLT_HAS_CMSG:
+    globals().pop("CMSG_LEN", None)
+    globals().pop("CMSG_SPACE", None)
+
 
 for _name in (
     "_MOLT_SOCKET_CONSTANTS",
@@ -170,6 +205,14 @@ for _name in (
     "_MOLT_IF_INDEXTONAME",
     "_MOLT_CMSG_LEN",
     "_MOLT_CMSG_SPACE",
+    "_MOLT_SOCKET_INET_PTON",
+    "_MOLT_SOCKET_INET_NTOP",
+    "_MOLT_SOCKET_HTONS",
+    "_MOLT_SOCKET_NTOHS",
+    "_MOLT_SOCKET_HTONL",
+    "_MOLT_SOCKET_NTOHL",
+    "_MOLT_AF_INET",
+    "_MOLT_HAS_CMSG",
     "_MOLT_SOCKET_SETHOSTNAME",
 ):
     globals().pop(_name, None)

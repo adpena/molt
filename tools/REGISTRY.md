@@ -22,6 +22,7 @@ this file is the human/agent-readable index of the whole tool surface.
 
 ### Verify / drift-gates (wired in ci_gate tier-1 — fail closed)
 - `tools/structural_audit.py --check` - duplicate-authority / kitchen-sink and undecomposed-god-file ratchet.
+- `tools/check_runtime_symbol_owners.py` - one `#[no_mangle] extern "C"` owner per runtime satellite symbol.
 - `tools/check_perf_gate_wiring.py` — the canonical perf gate must fire on main.
 - `tools/check_ratio_direction.py` — no raw `t/t` ratio outside the signed authority.
 - `tools/check_perf_freshness.py` — no stale/unstamped perf doc with citable numbers.

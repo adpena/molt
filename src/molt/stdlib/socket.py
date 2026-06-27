@@ -164,6 +164,7 @@ else:
     # Fallback for early bootstrap/import edge paths.
     globals().update(_CONSTANTS)
 _EAI_CODES = {val for key, val in _CONSTANTS.items() if key.startswith("EAI_")}
+_HAS_CMSG = "SCM_RIGHTS" in _CONSTANTS
 
 # --- IntEnum / IntFlag wrappers for CPython >= 3.12 parity ---
 from enum import IntEnum, IntFlag
@@ -969,6 +970,13 @@ def send_fds(sock, buffers, fds, flags=0, address=None):
 def recv_fds(sock, bufsize, maxfds, flags=0):
     """Receive file descriptors from a Unix socket using SCM_RIGHTS."""
     return _molt_socket_recv_fds(sock._handle, bufsize, maxfds, flags)
+
+
+if not _HAS_CMSG:
+    for _name in ("CMSG_LEN", "CMSG_SPACE"):
+        if _name in __all__:
+            __all__.remove(_name)
+        globals().pop(_name, None)
 
 
 globals().pop("_require_intrinsic", None)
