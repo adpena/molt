@@ -236,25 +236,6 @@ pub(super) fn emit_core_runtime_op(
                 func.instruction(&Instruction::Drop);
             }
         }
-        "contains" => {
-            let args = op.args.as_ref().unwrap();
-            let container = locals[&args[0]];
-            let item = locals[&args[1]];
-            func.instruction(&Instruction::LocalGet(container));
-            func.instruction(&Instruction::LocalGet(item));
-            let import_key =
-                wasm_specialized_container_import(&scalar_plan, op_idx, "contains", op)
-                    .unwrap_or("contains");
-            let import_id =
-                selected_import_id(import_ids, import_key, &func_ir.name, op.kind.as_str());
-            emit_call(func, reloc_enabled, import_id);
-            if let Some(out) = op.out.as_ref() {
-                let res = locals[out];
-                func.instruction(&Instruction::LocalSet(res));
-            } else {
-                func.instruction(&Instruction::Drop);
-            }
-        }
         "guard_type" | "guard_tag" => {
             let args = op.args.as_ref().unwrap();
             let val = locals[&args[0]];
@@ -354,24 +335,6 @@ pub(super) fn emit_core_runtime_op(
                 func.instruction(&Instruction::Drop);
             }
         }
-        "len" => {
-            let args = op.args.as_ref().unwrap();
-            let arg = locals[&args[0]];
-            func.instruction(&Instruction::LocalGet(arg));
-            // Dispatch to specialized fast-path len when container
-            // type is known, skipping the 18-type dispatch.
-            let import_key =
-                wasm_specialized_container_import(&scalar_plan, op_idx, "len", op).unwrap_or("len");
-            let import_id =
-                selected_import_id(import_ids, import_key, &func_ir.name, op.kind.as_str());
-            emit_call(func, reloc_enabled, import_id);
-            if let Some(out) = op.out.as_ref() {
-                let res = locals[out];
-                func.instruction(&Instruction::LocalSet(res));
-            } else {
-                func.instruction(&Instruction::Drop);
-            }
-        }
         "id" => {
             let args = op.args.as_ref().unwrap();
             let arg = locals[&args[0]];
@@ -383,63 +346,6 @@ pub(super) fn emit_core_runtime_op(
             } else {
                 func.instruction(&Instruction::Drop);
             }
-        }
-        "callargs_new" => {
-            let out = locals[op.out.as_ref().unwrap()];
-            func.instruction(&Instruction::I64Const(0));
-            func.instruction(&Instruction::I64Const(0));
-            emit_call(func, reloc_enabled, import_ids["callargs_new"]);
-            func.instruction(&Instruction::LocalSet(out));
-        }
-        "build_list" | "list_new" => {
-            let empty_args_ln: Vec<String> = Vec::new();
-            let args = op.args.as_ref().unwrap_or(&empty_args_ln);
-            let out = locals[op.out.as_ref().unwrap()];
-            func.instruction(&Instruction::I64Const(box_int(args.len() as i64)));
-            emit_call(func, reloc_enabled, import_ids["list_builder_new"]);
-            func.instruction(&Instruction::LocalSet(out));
-            for name in args {
-                let val = locals[name];
-                func.instruction(&Instruction::LocalGet(out));
-                func.instruction(&Instruction::LocalGet(val));
-                emit_call(func, reloc_enabled, import_ids["list_builder_append"]);
-            }
-            func.instruction(&Instruction::LocalGet(out));
-            emit_call(func, reloc_enabled, import_ids["list_builder_finish"]);
-            func.instruction(&Instruction::LocalSet(out));
-        }
-        "list_int_new" => {
-            // Specialized flat i64 list: args = [count, fill_value]
-            let args = op.args.as_ref().unwrap();
-            let out = locals[op.out.as_ref().unwrap()];
-            let count = locals[&args[0]];
-            let fill = locals[&args[1]];
-            func.instruction(&Instruction::LocalGet(count));
-            func.instruction(&Instruction::LocalGet(fill));
-            emit_call(func, reloc_enabled, import_ids["list_int_new"]);
-            func.instruction(&Instruction::LocalSet(out));
-        }
-        "list_fill_new" => {
-            let args = op.args.as_ref().unwrap();
-            let out = locals[op.out.as_ref().unwrap()];
-            let count = locals[&args[0]];
-            let fill = locals[&args[1]];
-            func.instruction(&Instruction::LocalGet(count));
-            func.instruction(&Instruction::LocalGet(fill));
-            emit_call(func, reloc_enabled, import_ids["list_fill_new"]);
-            func.instruction(&Instruction::LocalSet(out));
-        }
-        "range_new" => {
-            let args = op.args.as_ref().unwrap();
-            let out = locals[op.out.as_ref().unwrap()];
-            let start = locals[&args[0]];
-            let stop = locals[&args[1]];
-            let step = locals[&args[2]];
-            func.instruction(&Instruction::LocalGet(start));
-            func.instruction(&Instruction::LocalGet(stop));
-            func.instruction(&Instruction::LocalGet(step));
-            emit_call(func, reloc_enabled, import_ids["range_new"]);
-            func.instruction(&Instruction::LocalSet(out));
         }
         "env_get" => {
             let args = op.args.as_ref().unwrap();
