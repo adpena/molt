@@ -22,9 +22,7 @@ impl WasmBackend {
             crate::fold_constants(&mut func_ir.ops);
             crate::passes::hoist_loop_invariants(func_ir);
         }
-        let mut lir_fast_outputs: BTreeMap<String, crate::lower_to_wasm::WasmFunctionOutput> =
-            BTreeMap::new();
-        super::tir_pipeline::run_tir_pipeline(&mut ir, &mut lir_fast_outputs);
+        super::tir_pipeline::run_tir_pipeline(&mut ir);
 
         // Fuse `obj.method(args)` (get_attr_generic_ptr + callargs_new +
         // callargs_push_pos + call_bind) into a single allocation-free
@@ -64,6 +62,8 @@ impl WasmBackend {
                 }
             }
         }
+
+        let lir_fast_outputs = compute_lir_wasm_fast_outputs_from_final_ir(&ir);
 
         // Multi-value return candidate detection (section 3.1).
         // This analysis identifies internal functions whose call sites always

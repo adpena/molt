@@ -88,190 +88,68 @@ impl SimpleBackend {
         // All TIR-lowered control flow uses pure label/jump/br_if patterns
         // (no structured loop_start/loop_end).  The Cranelift function compiler
         // handles back-edges via has_loop_or_backedge detection.
-        let mut optimized_tir_by_name: std::collections::BTreeMap<
-            String,
-            crate::tir::function::TirFunction,
-        > = std::collections::BTreeMap::new();
-        {
-            use rayon::prelude::*;
-
-            let _tir_dump = env_setting("TIR_DUMP").as_deref() == Some("1");
-            let _tir_stats = env_setting("TIR_OPT_STATS").as_deref() == Some("1");
-            let mut tir_cache =
-                crate::tir::cache::CompilationCache::open(crate::tir::cache::backend_cache_dir());
-
-            // Phase 1 (sequential): check cache for every function. For cache
-            // hits, apply immediately. For misses, collect the function index,
-            // content hash, and op count for bounded optimization batches.
-            let mut work_items: Vec<TirOptimizationWorkItem> = Vec::new();
-
-            // Debug: dump raw IR for functions matching MOLT_DUMP_FUNC_IR pattern.
-            let dump_func_pattern = std::env::var("MOLT_DUMP_FUNC_IR").ok();
-
-            for (i, func_ir) in ir.functions.iter_mut().enumerate() {
-                // Extern functions: bodies live in stdlib_shared.o.
-                // They are registered as external before codegen.
-                if func_ir.is_extern {
-                    continue;
+        // Debug: dump raw IR for functions matching MOLT_DUMP_FUNC_IR pattern.
+        if let Some(pattern) = std::env::var("MOLT_DUMP_FUNC_IR").ok() {
+            for func_ir in ir
+                .functions
+                .iter()
+                .filter(|func_ir| !func_ir.is_extern && func_ir.name.contains(pattern.as_str()))
+            {
+                let sanitized: String = func_ir
+                    .name
+                    .chars()
+                    .map(|c| {
+                        if c.is_alphanumeric() || c == '_' {
+                            c
+                        } else {
+                            '_'
+                        }
+                    })
+                    .collect();
+                let mut dump = String::new();
+                dump.push_str(&format!(
+                    "// func: {} ({} ops)\n",
+                    func_ir.name,
+                    func_ir.ops.len()
+                ));
+                dump.push_str(&format!("// params: {:?}\n", func_ir.params));
+                dump.push_str(&format!("// param_types: {:?}\n", func_ir.param_types));
+                for (idx, op) in func_ir.ops.iter().enumerate() {
+                    dump.push_str(&format!("{:4}: kind={:30} out={:20} var={:20} args={:40} val={:?} sval={:?} fi={:?} ff={:?}\n",
+                            idx, op.kind,
+                            op.out.as_deref().unwrap_or(""),
+                            op.var.as_deref().unwrap_or(""),
+                            op.args.as_ref().map(|a| a.join(",")).unwrap_or_default(),
+                            op.value, op.s_value, op.fast_int, op.fast_float));
                 }
-
-                // Dump raw ops to file for debugging TIR roundtrip issues.
-                if let Some(ref pattern) = dump_func_pattern
-                    && func_ir.name.contains(pattern.as_str())
-                {
-                    let sanitized: String = func_ir
-                        .name
-                        .chars()
-                        .map(|c| {
-                            if c.is_alphanumeric() || c == '_' {
-                                c
-                            } else {
-                                '_'
-                            }
-                        })
-                        .collect();
-                    let mut dump = String::new();
-                    dump.push_str(&format!(
-                        "// func: {} ({} ops)\n",
-                        func_ir.name,
-                        func_ir.ops.len()
-                    ));
-                    dump.push_str(&format!("// params: {:?}\n", func_ir.params));
-                    dump.push_str(&format!("// param_types: {:?}\n", func_ir.param_types));
-                    for (idx, op) in func_ir.ops.iter().enumerate() {
-                        dump.push_str(&format!("{:4}: kind={:30} out={:20} var={:20} args={:40} val={:?} sval={:?} fi={:?} ff={:?}\n",
-                                idx, op.kind,
-                                op.out.as_deref().unwrap_or(""),
-                                op.var.as_deref().unwrap_or(""),
-                                op.args.as_ref().map(|a| a.join(",")).unwrap_or_default(),
-                                op.value, op.s_value, op.fast_int, op.fast_float));
-                    }
-                    let _ = crate::debug_artifacts::write_debug_artifact(
-                        format!("ir/{sanitized}.txt"),
-                        dump,
-                    );
-                }
-
-                // Loop markers (loop_start, loop_end) are now preserved through
-                // the TIR roundtrip via LoopRole metadata on TirFunction, so
-                // functions with loops benefit from TIR optimization.
-                let body_bytes = crate::tir::serialize::serialize_ops(&func_ir.ops);
-                let cache_hash_body = native_tir_cache_hash_body(&body_bytes);
-                let content_hash = crate::tir::cache::CompilationCache::compute_hash_with_signature(
-                    &func_ir.name,
-                    &func_ir.params,
-                    func_ir.param_types.as_deref(),
-                    &cache_hash_body,
-                );
-                // Check TIR cache: if we have validated optimized ops from a
-                // previous build with the same content hash, reuse them.
-                if let Some(cached_bytes) = tir_cache.get(&content_hash)
-                    && let Some(cached_tir) =
-                        crate::tir::serialize::deserialize_tir_function(&cached_bytes)
-                {
-                    let cached_ops = crate::tir::lower_to_simple::lower_to_simple_ir(&cached_tir);
-                    debug_assert!(
-                        crate::tir::lower_to_simple::validate_labels(&cached_ops),
-                        "native TIR cache back-conversion emitted invalid labels for '{}'",
-                        cached_tir.name
-                    );
-                    func_ir.ops = cached_ops;
-                    optimized_tir_by_name.insert(func_ir.name.clone(), cached_tir);
-                    continue;
-                }
-                work_items.push(TirOptimizationWorkItem {
-                    index: i,
-                    content_hash,
-                    op_count: func_ir.ops.len(),
-                });
-            }
-
-            let uncached_count = work_items.len();
-            if uncached_count > 0 {
-                let resource_plan = tir_optimization_resource_plan();
-                let work_batches = partition_tir_optimization_work_items_with_limits(
-                    work_items,
-                    resource_plan.wave_function_limit,
-                    resource_plan.wave_op_budget,
-                );
-                let batch_count = work_batches.len();
-                if batch_count == 1 {
-                    eprintln!(
-                        "MOLT_BACKEND: TIR optimizing {uncached_count} uncached functions with {} worker(s)",
-                        resource_plan.threads
-                    );
-                } else {
-                    eprintln!(
-                        "MOLT_BACKEND: TIR optimizing {uncached_count} uncached functions in {batch_count} bounded waves with {} worker(s)",
-                        resource_plan.threads
-                    );
-                }
-                let tir_start = std::time::Instant::now();
-
-                // Phase 2 (parallel): run the TIR pipeline on every uncached
-                // function.  Each work item borrows only its own FunctionIR
-                // (via index) and produces an independent result.
-                //
-                // We cannot borrow &mut ir.functions[i] in parallel because
-                // Rust's borrow checker does not allow multiple mutable refs
-                // into the same Vec, even at disjoint indices, through closures.
-                // Instead we extract the ops, optimize them in parallel, and
-                // write them back.
-                // Each element: (func_index, content_hash, optimized_ops)
-                // Use a custom thread pool with 16MB stacks for TIR.
-                // lower_to_simple_ir has deeply nested closures capturing
-                // many HashMaps, which exceeds rayon's default 8MB stacks.
-                let tir_pool = rayon::ThreadPoolBuilder::new()
-                    .num_threads(resource_plan.threads)
-                    .stack_size(64 * 1024 * 1024)
-                    .build()
-                    .expect("Failed to build TIR thread pool");
-                for (batch_idx, batch_items) in work_batches.into_iter().enumerate() {
-                    let batch_ops = batch_items.iter().map(|wi| wi.op_count).sum::<usize>();
-                    if batch_count > 1 {
-                        eprintln!(
-                            "MOLT_BACKEND: TIR batch {}/{} ({} functions, {} ops / budget {})",
-                            batch_idx + 1,
-                            batch_count,
-                            batch_items.len(),
-                            batch_ops,
-                            resource_plan.wave_op_budget
-                        );
-                    }
-                    let inputs: Vec<TirOptimizationInput> = batch_items
-                        .into_iter()
-                        .map(|wi| {
-                            let func_ir = &ir.functions[wi.index];
-                            TirOptimizationInput {
-                                index: wi.index,
-                                content_hash: wi.content_hash,
-                                name: func_ir.name.clone(),
-                                params: func_ir.params.clone(),
-                                ops: func_ir.ops.clone(),
-                                param_types: func_ir.param_types.clone(),
-                            }
-                        })
-                        .collect();
-                    let results: Vec<TirOptimizationOutput> = tir_pool
-                        .install(|| inputs.into_par_iter().map(optimize_tir_input).collect());
-
-                    // Phase 3 (sequential): apply validated TIR ops and cache them.
-                    for output in results {
-                        let func_ir = &mut ir.functions[output.index];
-                        func_ir.ops = output.simple_ops;
-                        let bytes = crate::tir::serialize::serialize_tir_function(&output.tir_func);
-                        tir_cache.put(&output.content_hash, &bytes, vec![]);
-                        optimized_tir_by_name.insert(func_ir.name.clone(), output.tir_func);
-                    }
-                }
-
-                let tir_elapsed = tir_start.elapsed();
-                eprintln!(
-                    "MOLT_BACKEND: TIR parallel optimization took {tir_elapsed:.2?} for {uncached_count} functions"
+                let _ = crate::debug_artifacts::write_debug_artifact(
+                    format!("ir/{sanitized}.txt"),
+                    dump,
                 );
             }
+        }
 
-            tir_cache.save_index();
+        let mut optimized_tir_by_name = BTreeMap::new();
+        if !use_llvm {
+            let native_tti = crate::tir::target_info::TargetInfo::native_from_simd_caps(
+                crate::tir::target_info::SimdCaps::detect_host(),
+            );
+            optimized_tir_by_name = crate::tir::pipeline_cache::run_cached_tir_pipeline(
+                &mut ir.functions,
+                crate::tir::pipeline_cache::TirPipelineRunOptions {
+                    target_info: native_tti,
+                    cache_flavor: crate::tir::pipeline_cache::TirPipelineCacheFlavor::Native,
+                    cache_dir: None,
+                    process_externs: false,
+                    verify_lir: true,
+                    tir_dump: env_setting("TIR_DUMP").as_deref() == Some("1"),
+                    tir_stats: env_setting("TIR_OPT_STATS").as_deref() == Some("1"),
+                    progress_prefix: Some("MOLT_BACKEND"),
+                    resource_plan: crate::tir::pipeline_cache::tir_optimization_resource_plan(),
+                },
+                preprocess_backend_tir_input,
+            )
+            .optimized_tir_by_name;
         }
         if !self.skip_ir_passes {
             eliminate_dead_ops(&mut ir);
@@ -333,9 +211,15 @@ impl SimpleBackend {
                     if func_ir.is_extern {
                         continue;
                     }
-                    let tir_func = optimized_tir_by_name
-                        .remove(&func_ir.name)
-                        .unwrap_or_else(|| crate::tir::lower_from_simple::lower_to_tir(func_ir));
+                    let tir_func =
+                        optimized_tir_by_name
+                            .remove(&func_ir.name)
+                            .unwrap_or_else(|| {
+                                panic!(
+                                    "native TIR cache runner did not return optimized TIR for '{}'",
+                                    func_ir.name
+                                )
+                            });
                     tir_functions.push(tir_func);
                     idx_map.push(idx);
                 }
@@ -489,7 +373,6 @@ impl SimpleBackend {
         #[cfg(feature = "llvm")]
         if use_llvm {
             use crate::llvm_backend::{LlvmBackend, MoltOptLevel};
-            use crate::tir::lower_from_simple::lower_to_tir;
 
             let context = inkwell::context::Context::create();
             let mut llvm = LlvmBackend::new(&context, "molt_module");
@@ -536,30 +419,45 @@ impl SimpleBackend {
                     fuse_method_dispatch(func);
                 }
             }
+            let mut llvm_optimized_tir_by_name =
+                crate::tir::pipeline_cache::run_cached_tir_pipeline(
+                    &mut ir.functions,
+                    crate::tir::pipeline_cache::TirPipelineRunOptions {
+                        target_info: llvm_tti.clone(),
+                        cache_flavor: crate::tir::pipeline_cache::TirPipelineCacheFlavor::Llvm,
+                        cache_dir: None,
+                        process_externs: false,
+                        verify_lir: false,
+                        tir_dump: env_setting("TIR_DUMP").as_deref() == Some("1"),
+                        tir_stats: env_setting("TIR_OPT_STATS").as_deref() == Some("1"),
+                        progress_prefix: Some("MOLT_BACKEND(llvm)"),
+                        resource_plan: crate::tir::pipeline_cache::tir_optimization_resource_plan(),
+                    },
+                    preprocess_backend_tir_input,
+                )
+                .optimized_tir_by_name;
             let mut tir_funcs: Vec<(bool, crate::tir::function::TirFunction)> = ir
                 .functions
                 .iter()
                 .map(|func| {
-                    let mut tir_func = lower_to_tir(func);
-                    // Extern functions (e.g. shared-stdlib-partition symbols
-                    // externalized by `externalize_shared_stdlib_partition`) have
-                    // had their bodies cleared: they are declaration-only and live
-                    // in `stdlib_shared.o`. They lower to a bodyless TIR function
-                    // (no blocks, hence no entry block), which would fail the TIR
-                    // verifier the moment the optimization pipeline ran on it. They
-                    // are *declared* below (`declare_tir_function`) for call
-                    // resolution but never *defined*, so there is nothing to
-                    // optimize. Mirror the Cranelift per-function pipeline, which
-                    // skips extern functions for the same reason. Lower for the
-                    // signature only.
-                    if !func.is_extern {
-                        // Run the full TIR optimization pipeline  same as Cranelift/WASM.
-                        // Without this, all values stay DynBox and every operation
-                        // dispatches through the runtime instead of emitting native ops.
-                        crate::tir::type_refine::refine_types(&mut tir_func);
-                        let _stats = crate::tir::passes::run_pipeline(&mut tir_func, &llvm_tti);
-                        crate::tir::type_refine::refine_types(&mut tir_func);
-                    }
+                    let tir_func = if func.is_extern {
+                        // Extern functions (e.g. shared-stdlib-partition symbols
+                        // externalized by `externalize_shared_stdlib_partition`) have
+                        // had their bodies cleared: they are declaration-only and live
+                        // in `stdlib_shared.o`. They are declared below for call
+                        // resolution but never defined, so the shared cached runner
+                        // skips them and this path lowers only the signature.
+                        crate::tir::lower_from_simple::lower_to_tir(func)
+                    } else {
+                        llvm_optimized_tir_by_name
+                            .remove(&func.name)
+                            .unwrap_or_else(|| {
+                                panic!(
+                                    "LLVM TIR cache runner did not return optimized TIR for '{}'",
+                                    func.name
+                                )
+                            })
+                    };
                     (func.is_extern, tir_func)
                 })
                 .collect();
@@ -1069,5 +967,24 @@ impl SimpleBackend {
             );
         }
         CompileOutput { bytes }
+    }
+}
+
+pub(crate) fn preprocess_backend_tir_input(tmp_func: &mut FunctionIR) {
+    if tmp_func.ops.iter().any(|op| op.kind == "phi") {
+        rewrite_phi_to_store_load(&mut tmp_func.ops);
+        crate::tir::pipeline_cache::trace_tir_function_stage(
+            &tmp_func.name,
+            "after_phi_rewrite",
+            tmp_func.ops.len(),
+        );
+    }
+    if tmp_func.ops.iter().any(|op| op.kind == "exception_push") {
+        elide_useless_try_blocks_for_function(tmp_func);
+        crate::tir::pipeline_cache::trace_tir_function_stage(
+            &tmp_func.name,
+            "after_try_elision",
+            tmp_func.ops.len(),
+        );
     }
 }

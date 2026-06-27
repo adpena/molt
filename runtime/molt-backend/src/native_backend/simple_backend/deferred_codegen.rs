@@ -1,6 +1,18 @@
 use super::*;
 
 #[cfg(feature = "native-backend")]
+pub(crate) const DEFERRED_CODEGEN_FLUSH_FUNCTION_LIMIT: usize = 16;
+#[cfg(feature = "native-backend")]
+pub(crate) const DEFERRED_CODEGEN_FLUSH_OP_BUDGET: usize = 4_000;
+
+#[cfg(feature = "native-backend")]
+pub(crate) fn should_flush_deferred_codegen(deferred_count: usize, deferred_ops: usize) -> bool {
+    deferred_count > 0
+        && (deferred_count >= DEFERRED_CODEGEN_FLUSH_FUNCTION_LIMIT
+            || deferred_ops >= DEFERRED_CODEGEN_FLUSH_OP_BUDGET)
+}
+
+#[cfg(feature = "native-backend")]
 pub(crate) struct DeferredDefine {
     pub(crate) func_id: cranelift_module::FuncId,
     pub(crate) func: cranelift_codegen::ir::Function,
