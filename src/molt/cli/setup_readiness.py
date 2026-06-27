@@ -659,8 +659,8 @@ def _build_toolchain_report(root: Path) -> _ToolchainReport:
             f"defaulting to {root / 'target'}",
             level="warning",
             advice=[
-                "export CARGO_TARGET_DIR=<external>/target",
-                "export MOLT_DIFF_CARGO_TARGET_DIR=$CARGO_TARGET_DIR",
+                "Maintainer/agent DX: export CARGO_TARGET_DIR=<external>/target",
+                "Maintainer/agent DX: export MOLT_DIFF_CARGO_TARGET_DIR=$CARGO_TARGET_DIR",
             ],
         )
     else:
@@ -673,7 +673,7 @@ def _build_toolchain_report(root: Path) -> _ToolchainReport:
             False,
             f"defaulting to {_default_molt_cache()}",
             level="warning",
-            advice=["export MOLT_CACHE=<external>/molt_cache"],
+            advice=["Maintainer/agent DX: export MOLT_CACHE=<external>/molt_cache"],
         )
     else:
         record("molt-cache-dir", True, str(molt_cache_dir))
@@ -685,7 +685,9 @@ def _build_toolchain_report(root: Path) -> _ToolchainReport:
             False,
             "not set",
             level="warning",
-            advice=["export MOLT_DIFF_CARGO_TARGET_DIR=$CARGO_TARGET_DIR"],
+            advice=[
+                "Maintainer/agent DX: export MOLT_DIFF_CARGO_TARGET_DIR=$CARGO_TARGET_DIR"
+            ],
         )
     elif cargo_target_dir is not None and diff_target_dir != cargo_target_dir:
         record(
@@ -693,7 +695,9 @@ def _build_toolchain_report(root: Path) -> _ToolchainReport:
             False,
             f"{diff_target_dir} (CARGO_TARGET_DIR={cargo_target_dir})",
             level="warning",
-            advice=["Set MOLT_DIFF_CARGO_TARGET_DIR=$CARGO_TARGET_DIR"],
+            advice=[
+                "Maintainer/agent DX: set MOLT_DIFF_CARGO_TARGET_DIR=$CARGO_TARGET_DIR"
+            ],
         )
     else:
         record("molt-diff-target-dir", True, str(diff_target_dir))
@@ -724,9 +728,9 @@ def _build_toolchain_report(root: Path) -> _ToolchainReport:
             detail,
             level="warning",
             advice=[
-                "export MOLT_EXT_ROOT=<artifact-root>",
-                "export CARGO_TARGET_DIR=$MOLT_EXT_ROOT/target",
-                "export MOLT_CACHE=$MOLT_EXT_ROOT/.molt_cache",
+                "Maintainer/agent DX: export MOLT_EXT_ROOT=<artifact-root>",
+                "Maintainer/agent DX: export CARGO_TARGET_DIR=$MOLT_EXT_ROOT/target",
+                "Maintainer/agent DX: export MOLT_CACHE=$MOLT_EXT_ROOT/.molt_cache",
             ]
             if not ext_ok
             else None,
@@ -942,6 +946,6 @@ def doctor(
             print("Suggested actions:")
             for action in report.actions:
                 print(f"- [{action['check']}] {action['command']}")
-    if strict and any(not check["ok"] for check in report.checks):
+    if strict and report.errors:
         return 1
     return 0

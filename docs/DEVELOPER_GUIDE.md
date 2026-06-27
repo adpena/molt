@@ -245,11 +245,12 @@ Interpretation:
 - Every `tools/dev.py` command that launches through `uv run` first installs
   the canonical Molt artifact/cache/temp roots and a session id before entering
   the shared memory guard, while preserving explicit caller-provided root
-  overrides for deliberate external artifact placement. When external artifacts
-  are preferred and no explicit root is set, Windows hosts use local
-  `%LOCALAPPDATA%\Molt` / temp-backed Molt roots before falling back to the
-  repository, keeping volatile pytest/build temp directories off synced
-  workspaces such as OneDrive.
+  overrides for deliberate artifact placement. Maintainer/agent sessions should
+  use `tools/run_context_env.py --prefer-external-artifacts --dx` or explicit
+  `MOLT_EXT_ROOT`/`CARGO_TARGET_DIR` roots so build, test, and benchmark
+  artifacts land on a healthy external drive instead of Windows `C:`. This is a
+  development control-plane policy only; public `molt build` users may compile
+  in place, use Molt/Cargo defaults, or pass explicit output/target flags.
 - On Windows, the shared memory guard, pytest bootstrap handoff, and child
   runner all launch guarded subprocesses in an explicit new process group so
   timeout/RSS cleanup cannot deliver interrupt-style console control events into

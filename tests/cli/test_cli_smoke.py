@@ -23,6 +23,7 @@ from molt.cli import build_output_layout as cli_build_output_layout
 from tests.cli.process_guard import run_cli_test_process
 
 DEFAULT_PATHS = importlib.import_module("molt.cli.default_paths")
+SETUP_READINESS = importlib.import_module("molt.cli.setup_readiness")
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -576,6 +577,35 @@ def test_cli_doctor_json() -> None:
     assert "molt-cache-dir" in names
     assert "cargo-upgrade" in names
     assert "llvm-backend-toolchain" in names
+
+
+def test_cli_doctor_strict_treats_warning_only_dx_advice_as_nonfatal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    report = SETUP_READINESS._ToolchainReport(
+        checks=[
+            {
+                "name": "cargo-target-dir",
+                "ok": False,
+                "detail": f"defaulting to {ROOT / 'target'}",
+                "level": "warning",
+                "advice": [
+                    "Maintainer/agent DX: export CARGO_TARGET_DIR=<external>/target"
+                ],
+            }
+        ],
+        warnings=["cargo-target-dir: defaulting to repo target. See advice."],
+        errors=[],
+        environment={},
+        actions=[],
+        backends={},
+        profiles={},
+    )
+
+    monkeypatch.setattr(SETUP_READINESS, "_find_molt_root", lambda _cwd: ROOT)
+    monkeypatch.setattr(SETUP_READINESS, "_build_toolchain_report", lambda _root: report)
+
+    assert SETUP_READINESS.doctor(strict=True) == 0
 
 
 def test_cli_update_check_json() -> None:
