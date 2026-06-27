@@ -3,22 +3,8 @@
 // exported constructors that consume it, so call target identity has one
 // authority instead of a registry/function split across functions.rs.
 
+use super::wasm_callables_generated as wasm_callables;
 use super::*;
-
-#[cfg(target_arch = "wasm32")]
-const RESERVED_WASM_RUNTIME_CALLABLE_BASE: u64 = {
-    macro_rules! entry_list {
-        ($(($slot:expr, $sym:ident, $import:literal))+) => {
-            1 + [$( { let _ = ($slot, stringify!($sym), $import); () }, )+].len() as u64
-        };
-    }
-    include!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../wasm_poll_callables.inc"
-    ))
-};
-const RUNTIME_CALLABLE_KEY_BASE: u64 = 0xFFFF_FF00_0000_0000;
-const RUNTIME_POLL_CALLABLE_KEY_BASE: u64 = RUNTIME_CALLABLE_KEY_BASE + 0x100;
 
 #[derive(Copy, Clone)]
 struct NativeCallableTarget(*const ());
@@ -47,38 +33,7 @@ pub(crate) fn runtime_fn_addr(symbol_path: &str, raw_ptr: *const ()) -> u64 {
 }
 
 fn runtime_callable_key_from_symbol_name(symbol_name: &str) -> Option<u64> {
-    runtime_core_callable_key_from_symbol_name(symbol_name)
-        .or_else(|| runtime_poll_callable_key_from_symbol_name(symbol_name))
-}
-
-fn runtime_core_callable_key_from_symbol_name(symbol_name: &str) -> Option<u64> {
-    match symbol_name {
-        "molt_type_call" => Some(RUNTIME_CALLABLE_KEY_BASE),
-        "molt_type_new" => Some(RUNTIME_CALLABLE_KEY_BASE + 1),
-        "molt_type_init" => Some(RUNTIME_CALLABLE_KEY_BASE + 2),
-        "molt_object_new_bound" => Some(RUNTIME_CALLABLE_KEY_BASE + 3),
-        "molt_object_init" => Some(RUNTIME_CALLABLE_KEY_BASE + 4),
-        "molt_object_init_subclass" => Some(RUNTIME_CALLABLE_KEY_BASE + 5),
-        "molt_exception_new_bound" => Some(RUNTIME_CALLABLE_KEY_BASE + 6),
-        "molt_exception_init" => Some(RUNTIME_CALLABLE_KEY_BASE + 7),
-        "molt_exceptiongroup_init" => Some(RUNTIME_CALLABLE_KEY_BASE + 8),
-        _ => None,
-    }
-}
-
-fn runtime_poll_callable_key_from_symbol_name(symbol_name: &str) -> Option<u64> {
-    macro_rules! entry_list {
-        ($(($slot:expr, $sym:ident, $import:literal))+) => {
-            match symbol_name {
-                $(stringify!($sym) => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + $slot),)+
-                _ => None,
-            }
-        };
-    }
-    include!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../wasm_poll_callables.inc"
-    ))
+    wasm_callables::runtime_callable_key_from_symbol_name(symbol_name)
 }
 
 pub(crate) fn canonicalize_runtime_callable_key(fn_ptr: u64) -> u64 {
@@ -89,29 +44,15 @@ pub(crate) fn canonicalize_runtime_callable_key(fn_ptr: u64) -> u64 {
 pub(crate) fn reserved_wasm_runtime_callable_info(
     fn_ptr: u64,
 ) -> Option<(u64, &'static str, &'static str, usize)> {
-    macro_rules! entry_list {
-        ($(($idx:expr, $sym:ident, $import:literal, $arity:expr))+) => {
-            {
-                $(
-                    if fn_ptr == fn_addr!($sym) {
-                        return Some(($idx as u64, stringify!($sym), $import, $arity));
-                    }
-                )+
-            }
-        };
-    }
-    include!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../wasm_runtime_callables.inc"
-    ));
-    None
+    wasm_callables::reserved_wasm_runtime_callable_info(fn_ptr)
 }
 
 #[cfg(target_arch = "wasm32")]
 pub(crate) fn reserved_wasm_runtime_callable_ptr(fn_ptr: u64) -> Option<u64> {
     let base = crate::wasm_table_base();
-    reserved_wasm_runtime_callable_info(fn_ptr)
-        .map(|(idx, _sym, _import, _arity)| base + RESERVED_WASM_RUNTIME_CALLABLE_BASE + idx)
+    reserved_wasm_runtime_callable_info(fn_ptr).map(|(idx, _sym, _import, _arity)| {
+        base + wasm_callables::RESERVED_WASM_RUNTIME_CALLABLE_BASE + idx
+    })
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -126,41 +67,11 @@ pub(crate) fn reserved_wasm_runtime_callable_arity(fn_ptr: u64) -> Option<usize>
 }
 
 #[cfg(target_arch = "wasm32")]
-const RESERVED_WASM_RUNTIME_CALLABLE_COUNT: u64 = {
-    macro_rules! entry_list {
-        ($(($idx:expr, $sym:ident, $import:literal, $arity:expr))+) => {
-            [$( { let _ = ($idx, stringify!($sym), $import, $arity); () }, )+].len() as u64
-        };
-    }
-    include!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../wasm_runtime_callables.inc"
-    ))
-};
-
-#[cfg(target_arch = "wasm32")]
-const RESERVED_WASM_RUNTIME_TRAMPOLINE_BASE: u64 =
-    RESERVED_WASM_RUNTIME_CALLABLE_BASE + RESERVED_WASM_RUNTIME_CALLABLE_COUNT;
-
-#[cfg(target_arch = "wasm32")]
 pub(crate) fn reserved_wasm_runtime_trampoline_ptr(fn_ptr: u64) -> Option<u64> {
     let base = crate::wasm_table_base();
-    macro_rules! entry_list {
-        ($(($idx:expr, $sym:ident, $import:literal, $arity:expr))+) => {
-            {
-                $(
-                    if fn_ptr == fn_addr!($sym) {
-                        return Some(base + RESERVED_WASM_RUNTIME_TRAMPOLINE_BASE + ($idx as u64));
-                    }
-                )+
-            }
-        };
-    }
-    include!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../wasm_runtime_callables.inc"
-    ));
-    None
+    reserved_wasm_runtime_callable_info(fn_ptr).map(|(idx, _sym, _import, _arity)| {
+        base + wasm_callables::RESERVED_WASM_RUNTIME_TRAMPOLINE_BASE + idx
+    })
 }
 
 #[inline]
@@ -211,72 +122,7 @@ pub(crate) fn runtime_callable_target_ptr(fn_ptr: u64) -> Option<*const ()> {
     {
         return Some(target.0);
     }
-    if fn_ptr == RUNTIME_CALLABLE_KEY_BASE {
-        return Some(molt_type_call as *const ());
-    }
-    if fn_ptr == RUNTIME_CALLABLE_KEY_BASE + 1 {
-        return Some(molt_type_new as *const ());
-    }
-    if fn_ptr == RUNTIME_CALLABLE_KEY_BASE + 2 {
-        return Some(molt_type_init as *const ());
-    }
-    if fn_ptr == RUNTIME_CALLABLE_KEY_BASE + 3 {
-        return Some(molt_object_new_bound as *const ());
-    }
-    if fn_ptr == RUNTIME_CALLABLE_KEY_BASE + 4 {
-        return Some(molt_object_init as *const ());
-    }
-    if fn_ptr == RUNTIME_CALLABLE_KEY_BASE + 5 {
-        return Some(molt_object_init_subclass as *const ());
-    }
-    if fn_ptr == RUNTIME_CALLABLE_KEY_BASE + 6 {
-        return Some(molt_exception_new_bound as *const ());
-    }
-    if fn_ptr == RUNTIME_CALLABLE_KEY_BASE + 7 {
-        return Some(molt_exception_init as *const ());
-    }
-    if fn_ptr == RUNTIME_CALLABLE_KEY_BASE + 8 {
-        return Some(molt_exceptiongroup_init as *const ());
-    }
-    runtime_poll_callable_target_ptr(fn_ptr)
-}
-
-fn runtime_poll_callable_target_ptr(fn_ptr: u64) -> Option<*const ()> {
-    match fn_ptr.checked_sub(RUNTIME_POLL_CALLABLE_KEY_BASE)? {
-        1 => Some(crate::molt_async_sleep_poll as *const ()),
-        2 => Some(crate::molt_anext_default_poll as *const ()),
-        3 => Some(crate::molt_asyncgen_poll as *const ()),
-        4 => Some(crate::molt_promise_poll as *const ()),
-        5 => Some(crate::molt_io_wait as *const ()),
-        6 => Some(crate::molt_thread_poll as *const ()),
-        7 => Some(crate::molt_process_poll as *const ()),
-        8 => Some(crate::molt_ws_wait as *const ()),
-        9 => Some(crate::molt_asyncio_wait_for_poll as *const ()),
-        10 => Some(crate::molt_asyncio_wait_poll as *const ()),
-        11 => Some(crate::molt_asyncio_gather_poll as *const ()),
-        12 => Some(crate::molt_asyncio_socket_reader_read_poll as *const ()),
-        13 => Some(crate::molt_asyncio_socket_reader_readline_poll as *const ()),
-        14 => Some(crate::molt_asyncio_stream_reader_read_poll as *const ()),
-        15 => Some(crate::molt_asyncio_stream_reader_readline_poll as *const ()),
-        16 => Some(crate::molt_asyncio_stream_send_all_poll as *const ()),
-        17 => Some(crate::molt_asyncio_sock_recv_poll as *const ()),
-        18 => Some(crate::molt_asyncio_sock_connect_poll as *const ()),
-        19 => Some(crate::molt_asyncio_sock_accept_poll as *const ()),
-        20 => Some(crate::molt_asyncio_sock_recv_into_poll as *const ()),
-        21 => Some(crate::molt_asyncio_sock_sendall_poll as *const ()),
-        22 => Some(crate::molt_asyncio_sock_recvfrom_poll as *const ()),
-        23 => Some(crate::molt_asyncio_sock_recvfrom_into_poll as *const ()),
-        24 => Some(crate::molt_asyncio_sock_sendto_poll as *const ()),
-        25 => Some(crate::molt_asyncio_timer_handle_poll as *const ()),
-        26 => Some(crate::molt_asyncio_fd_watcher_poll as *const ()),
-        27 => Some(crate::molt_asyncio_server_accept_loop_poll as *const ()),
-        28 => Some(crate::molt_asyncio_ready_runner_poll as *const ()),
-        29 => Some(crate::molt_contextlib_asyncgen_enter_poll as *const ()),
-        30 => Some(crate::molt_contextlib_asyncgen_exit_poll as *const ()),
-        31 => Some(crate::molt_contextlib_async_exitstack_exit_poll as *const ()),
-        32 => Some(crate::molt_contextlib_async_exitstack_enter_context_poll as *const ()),
-        _ => None,
-    }
+    wasm_callables::runtime_callable_target_ptr(fn_ptr)
 }
 
 #[inline]
@@ -1313,17 +1159,6 @@ mod wasm_runtime_callable_tests {
 
     #[test]
     fn wasm_runtime_callable_symbols_resolve_in_functions_scope() {
-        macro_rules! entry_list {
-            ($(($idx:expr, $sym:ident, $import:literal, $arity:expr))+) => {{
-                $(
-                    let _ = $sym as *const ();
-                )+
-            }};
-        }
-
-        include!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../wasm_runtime_callables.inc"
-        ));
+        wasm_callables::assert_reserved_runtime_symbols_resolve();
     }
 }
