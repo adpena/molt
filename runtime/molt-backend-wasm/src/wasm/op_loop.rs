@@ -238,7 +238,6 @@ impl<'a, 'ctx> WasmFunctionEmitContext<'a, 'ctx> {
                     import_ids,
                     locals,
                     const_cache,
-                    func_index,
                     reloc_enabled,
                     native_eh_enabled,
                 },
