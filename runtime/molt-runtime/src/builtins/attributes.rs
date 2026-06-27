@@ -1034,7 +1034,8 @@ unsafe fn type_attr_lookup_ptr_inner(
     }
 }
 
-/// Which builtin scalar class a receiver belongs to, for [`resolve_scalar_method`].
+/// Which builtin numeric scalar class a receiver belongs to, for
+/// [`resolve_scalar_method`].
 ///
 /// `Bool` is distinct from `Int` only for class selection (`bool`'s own class vs
 /// `int`'s); its *methods* come from the int method table because, per CPython,
@@ -1046,18 +1047,52 @@ enum ScalarKind {
     Float,
 }
 
+fn numeric_scalar_kind_from_bits(obj_bits: u64) -> Option<ScalarKind> {
+    let obj = obj_from_bits(obj_bits);
+    if obj.is_float() {
+        return Some(ScalarKind::Float);
+    }
+    if obj.is_bool() {
+        return Some(ScalarKind::Bool);
+    }
+    if obj.is_int() {
+        return Some(ScalarKind::Int);
+    }
+    if let Some(ptr) = maybe_ptr_from_bits(obj_bits) {
+        match unsafe { object_type_id(ptr) } {
+            TYPE_ID_BIGINT => return Some(ScalarKind::Int),
+            TYPE_ID_FLOAT => return Some(ScalarKind::Float),
+            _ => {}
+        }
+    }
+    None
+}
+
+pub(crate) fn is_numeric_scalar_attr_receiver(obj_bits: u64) -> bool {
+    numeric_scalar_kind_from_bits(obj_bits).is_some()
+}
+
+fn scalar_class_bits(_py: &PyToken<'_>, kind: ScalarKind) -> u64 {
+    let builtins = builtin_classes(_py);
+    match kind {
+        ScalarKind::Int => builtins.int,
+        ScalarKind::Bool => builtins.bool,
+        ScalarKind::Float => builtins.float,
+    }
+}
+
 /// Resolve `name` as a bound method on a numeric/bool scalar receiver
 /// `self_bits` of the given `kind`, returning an owned bound-method reference, or
 /// `None` when neither the scalar's own type nor `object` exposes such a method.
 ///
-/// This is the single source of truth for scalar method resolution. Every scalar
-/// attribute path routes through it — inline int/bool/float (via
-/// [`resolve_inline_scalar_attr`]) and heap bigint/float (in [`attr_lookup_ptr`])
-/// — so `getattr`, `getattr(_, default)`, `hasattr`, and direct attribute access
-/// can never disagree about which methods a scalar exposes, regardless of whether
-/// the value is an inline NaN-boxed immediate or heap-allocated. The lookup order
-/// (curated own-type methods → own class → `object`) mirrors the MRO so inherited
-/// dunders such as `object.__init__`/`object.__hash__` resolve on scalars.
+/// This is the method half of the single numeric scalar attribute authority. The
+/// receiver classifier in [`resolve_scalar_attr`] sends inline int/bool/float and
+/// heap bigint/NaN-float through this same binder, so `getattr`,
+/// `getattr(_, default)`, `hasattr`, and direct `object.__getattribute__` can
+/// never disagree about which numeric methods a scalar exposes. The lookup order
+/// (curated own-type methods -> own class -> `object`) mirrors the MRO so
+/// inherited dunders such as `object.__init__`/`object.__hash__` resolve on
+/// scalars.
 /// Bind a curated builtin class attribute `attr_bits` (as returned by
 /// `int_method_bits`/`float_method_bits`/`builtin_class_method_bits`) to a scalar
 /// receiver `self_bits` whose own class is `class_bits`, mirroring the descriptor
@@ -1102,11 +1137,7 @@ fn resolve_scalar_method(
     name: &str,
 ) -> Option<u64> {
     let builtins = builtin_classes(_py);
-    let class_bits = match kind {
-        ScalarKind::Int => builtins.int,
-        ScalarKind::Bool => builtins.bool,
-        ScalarKind::Float => builtins.float,
-    };
+    let class_bits = scalar_class_bits(_py, kind);
     // Direct (curated) method table. `bool` shares int's methods.
     let direct = match kind {
         ScalarKind::Int | ScalarKind::Bool => int_method_bits(_py, name),
@@ -1134,38 +1165,36 @@ fn resolve_scalar_method(
     None
 }
 
-/// Resolve `attr_name` on an inline (non-heap) NaN-boxed scalar receiver — an
-/// inline int, bool, or inline float. Returns the attribute as an owned
-/// reference (the receiver's class for `__class__`, otherwise a bound method), or
-/// `None` when the scalar type exposes no such attribute.
+/// Resolve `attr_name` on a scalar receiver. Numeric scalars include inline
+/// int/bool/float plus heap bigint and heap NaN-float. Returns the attribute as
+/// an owned reference (the receiver's class for `__class__`, otherwise a bound
+/// method), or `None` when the scalar type exposes no such attribute.
 ///
-/// Precondition: `obj_bits` is an immediate scalar — the caller has already
-/// confirmed `maybe_ptr_from_bits(obj_bits)` is `None` (heap scalars route
-/// through [`attr_lookup_ptr`] instead). Shared by every inline-scalar attribute
-/// path — `molt_get_attr_name`, `molt_get_attr_name_default`,
-/// `molt_has_attr_name`, `molt_get_attr_object`, and `molt_object_getattribute`
-/// — so none can diverge on which attributes an inline scalar exposes.
-pub(crate) fn resolve_inline_scalar_attr(
+/// This is shared by every numeric-scalar attribute path:
+/// `molt_get_attr_name`, `molt_get_attr_name_default`, `molt_has_attr_name`,
+/// `molt_get_attr_object`, `attr_lookup_ptr`, and `molt_object_getattribute`.
+/// Non-numeric immediates keep the historical `__class__` behavior here so
+/// callers that handle pointer objects elsewhere still have one immediate-value
+/// resolver.
+pub(crate) fn resolve_scalar_attr(
     _py: &PyToken<'_>,
     obj_bits: u64,
     attr_name: &str,
 ) -> Option<u64> {
-    if attr_name == "__class__" {
+    if let Some(kind) = numeric_scalar_kind_from_bits(obj_bits) {
+        let class_bits = scalar_class_bits(_py, kind);
+        if attr_name == "__class__" {
+            inc_ref_bits(_py, class_bits);
+            return Some(class_bits);
+        }
+        return resolve_scalar_method(_py, obj_bits, kind, attr_name);
+    }
+    if maybe_ptr_from_bits(obj_bits).is_none() && attr_name == "__class__" {
         let class_bits = type_of_bits(_py, obj_bits);
         inc_ref_bits(_py, class_bits);
         return Some(class_bits);
     }
-    let obj = obj_from_bits(obj_bits);
-    let kind = if obj.is_float() {
-        ScalarKind::Float
-    } else if obj.is_bool() {
-        ScalarKind::Bool
-    } else if obj.is_int() {
-        ScalarKind::Int
-    } else {
-        return None;
-    };
-    resolve_scalar_method(_py, obj_bits, kind, attr_name)
+    None
 }
 
 #[unsafe(no_mangle)]
@@ -1194,6 +1223,13 @@ pub(crate) unsafe fn attr_lookup_ptr(
         }
         profile_hit(_py, &ATTR_LOOKUP_COUNT);
         let type_id = object_type_id(obj_ptr);
+        if matches!(type_id, TYPE_ID_BIGINT | TYPE_ID_FLOAT) {
+            let name = string_obj_to_owned(obj_from_bits(attr_bits))?;
+            let self_bits = MoltObject::from_ptr(obj_ptr).bits();
+            if let Some(bits) = resolve_scalar_attr(_py, self_bits, name.as_str()) {
+                return Some(bits);
+            }
+        }
         if !matches!(
             type_id,
             TYPE_ID_OBJECT | TYPE_ID_DATACLASS | TYPE_ID_TYPE | TYPE_ID_EXCEPTION
@@ -1212,25 +1248,6 @@ pub(crate) unsafe fn attr_lookup_ptr(
         }
         if type_id == TYPE_ID_MODULE {
             return module_attr_lookup(_py, obj_ptr, attr_bits);
-        }
-        if type_id == TYPE_ID_BIGINT {
-            let name = string_obj_to_owned(obj_from_bits(attr_bits))?;
-            let self_bits = MoltObject::from_ptr(obj_ptr).bits();
-            if let Some(bits) =
-                resolve_scalar_method(_py, self_bits, ScalarKind::Int, name.as_str())
-            {
-                return Some(bits);
-            }
-        }
-        // Heap-allocated NaN float: dispatch to float methods.
-        if type_id == TYPE_ID_FLOAT {
-            let name = string_obj_to_owned(obj_from_bits(attr_bits))?;
-            let self_bits = MoltObject::from_ptr(obj_ptr).bits();
-            if let Some(bits) =
-                resolve_scalar_method(_py, self_bits, ScalarKind::Float, name.as_str())
-            {
-                return Some(bits);
-            }
         }
         if type_id == TYPE_ID_BOUND_METHOD {
             let name = string_obj_to_owned(obj_from_bits(attr_bits));
@@ -3368,7 +3385,7 @@ pub unsafe extern "C" fn molt_get_attr_object(
                 }
                 return molt_get_attr_generic(ptr, attr_name_ptr, attr_name_len_bits);
             }
-            if let Some(val) = resolve_inline_scalar_attr(_py, obj_bits, attr_name) {
+            if let Some(val) = resolve_scalar_attr(_py, obj_bits, attr_name) {
                 return val as i64;
             }
             attr_error(_py, type_name(_py, obj), attr_name)
@@ -3630,7 +3647,7 @@ pub extern "C" fn molt_get_attr_name(obj_bits: u64, name_bits: u64) -> u64 {
                     obj_bits,
                 ) as u64;
             }
-            if let Some(val) = resolve_inline_scalar_attr(_py, obj_bits, &attr_name) {
+            if let Some(val) = resolve_scalar_attr(_py, obj_bits, &attr_name) {
                 return val;
             }
             let obj = obj_from_bits(obj_bits);
@@ -3711,7 +3728,7 @@ pub extern "C" fn molt_get_attr_name_default(
                 inc_ref_bits(_py, default_bits);
                 return default_bits;
             }
-            if let Some(val) = resolve_inline_scalar_attr(_py, obj_bits, &attr_name) {
+            if let Some(val) = resolve_scalar_attr(_py, obj_bits, &attr_name) {
                 return val;
             }
         }
@@ -3763,11 +3780,11 @@ pub extern "C" fn molt_has_attr_name(obj_bits: u64, name_bits: u64) -> u64 {
                 }
                 return MoltObject::from_bool(false).bits();
             }
-            // Inline (non-heap) scalar receiver — int/bool/float. Route through the
-            // same resolver `getattr` uses so `hasattr` can never disagree with it;
-            // the freshly materialized bound method is released immediately,
-            // mirroring CPython's `hasattr` discarding the value `getattr` returns.
-            if let Some(attr_bits) = resolve_inline_scalar_attr(_py, obj_bits, &attr_name) {
+            // Scalar receiver. Route through the same resolver `getattr` uses
+            // so `hasattr` can never disagree with it; the freshly materialized
+            // bound method is released immediately, mirroring CPython's
+            // `hasattr` discarding the value `getattr` returns.
+            if let Some(attr_bits) = resolve_scalar_attr(_py, obj_bits, &attr_name) {
                 dec_ref_bits(_py, attr_bits);
                 return MoltObject::from_bool(true).bits();
             }
@@ -3783,6 +3800,7 @@ mod tests {
         MoltObject, PtrSlot, PyToken, alloc_string, dec_ref_bits, header_from_obj_ptr,
         runtime_state,
     };
+    use num_bigint::BigInt;
     use std::sync::atomic::Ordering;
 
     fn string_bits(_py: &PyToken<'_>, label: &[u8]) -> u64 {
@@ -3798,6 +3816,55 @@ mod tests {
                 .ref_count
                 .load(Ordering::Acquire)
         }
+    }
+
+    fn assert_callable_attr(_py: &PyToken<'_>, bits: u64) {
+        assert!(!MoltObject::from_bits(bits).is_none());
+        assert!(crate::builtins::callable::is_callable_impl(_py, bits));
+        dec_ref_bits(_py, bits);
+    }
+
+    fn assert_numeric_scalar_attr_entrypoints(_py: &PyToken<'_>, receiver_bits: u64, name: &[u8]) {
+        let name_bits = string_bits(_py, name);
+        let default_bits = string_bits(_py, b"default-sentinel");
+
+        let name_str = std::str::from_utf8(name).unwrap();
+        let resolved = super::resolve_scalar_attr(_py, receiver_bits, name_str)
+            .expect("numeric scalar resolver should find attribute");
+        assert_callable_attr(_py, resolved);
+
+        let getattr_bits = super::molt_get_attr_name(receiver_bits, name_bits);
+        assert_eq!(crate::molt_exception_pending(), 0);
+        assert_callable_attr(_py, getattr_bits);
+
+        let default_getattr_bits =
+            super::molt_get_attr_name_default(receiver_bits, name_bits, default_bits);
+        assert_eq!(crate::molt_exception_pending(), 0);
+        assert_ne!(default_getattr_bits, default_bits);
+        assert_callable_attr(_py, default_getattr_bits);
+
+        let direct_bits = crate::molt_object_getattribute(receiver_bits, name_bits);
+        assert_eq!(crate::molt_exception_pending(), 0);
+        assert_callable_attr(_py, direct_bits);
+
+        let has_bits = super::molt_has_attr_name(receiver_bits, name_bits);
+        assert_eq!(MoltObject::from_bits(has_bits).as_bool(), Some(true));
+
+        let missing_name_bits = string_bits(_py, b"definitely_missing_scalar_attr");
+        let missing_has_bits = super::molt_has_attr_name(receiver_bits, missing_name_bits);
+        assert_eq!(
+            MoltObject::from_bits(missing_has_bits).as_bool(),
+            Some(false)
+        );
+
+        let missing_default_bits =
+            super::molt_get_attr_name_default(receiver_bits, missing_name_bits, default_bits);
+        assert_eq!(missing_default_bits, default_bits);
+        dec_ref_bits(_py, missing_default_bits);
+
+        dec_ref_bits(_py, missing_name_bits);
+        dec_ref_bits(_py, default_bits);
+        dec_ref_bits(_py, name_bits);
     }
 
     #[test]
@@ -3841,6 +3908,28 @@ mod tests {
             for slot in attributes.object_slots() {
                 assert_eq!(slot.load(Ordering::Acquire), 0);
             }
+        });
+    }
+
+    #[test]
+    fn numeric_scalar_attrs_share_runtime_resolver() {
+        let _guard = crate::TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        crate::with_gil_entry_nopanic!(_py, {
+            let inline_int = MoltObject::from_int(42).bits();
+            let inline_bool = MoltObject::from_bool(true).bits();
+            let inline_float = MoltObject::from_float(3.0).bits();
+            let heap_bigint =
+                crate::builtins::numbers::int_bits_from_bigint(_py, BigInt::from(1u64) << 100usize);
+            let heap_nan = crate::object::ops::float_result_bits(_py, f64::NAN);
+
+            assert_numeric_scalar_attr_entrypoints(_py, inline_int, b"bit_length");
+            assert_numeric_scalar_attr_entrypoints(_py, inline_bool, b"bit_length");
+            assert_numeric_scalar_attr_entrypoints(_py, heap_bigint, b"bit_length");
+            assert_numeric_scalar_attr_entrypoints(_py, inline_float, b"is_integer");
+            assert_numeric_scalar_attr_entrypoints(_py, heap_nan, b"is_integer");
+
+            dec_ref_bits(_py, heap_bigint);
+            dec_ref_bits(_py, heap_nan);
         });
     }
 

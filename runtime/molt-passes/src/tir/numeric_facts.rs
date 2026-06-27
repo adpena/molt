@@ -231,7 +231,10 @@ impl IntRange {
     /// i64 extreme, far outside any inline window. Sound for *any* dividend
     /// sign. `d == 0` raises (no value) — caller must exclude it.
     pub(crate) fn floordiv_const(self, d: i64) -> IntRange {
-        debug_assert!(d != 0, "zero divisor excluded by caller (ZeroDivisionError)");
+        debug_assert!(
+            d != 0,
+            "zero divisor excluded by caller (ZeroDivisionError)"
+        );
         let d = d as i128;
         let a = floor_div_i128(self.lo as i128, d);
         let b = floor_div_i128(self.hi as i128, d);
@@ -860,7 +863,10 @@ mod tests {
         assert_eq!(IntRange::point(-7).floordiv_const(-3), IntRange::point(2));
         // Divide by ±1 is identity / negation.
         assert_eq!(IntRange::new(-5, 9).floordiv_const(1), IntRange::new(-5, 9));
-        assert_eq!(IntRange::new(-5, 9).floordiv_const(-1), IntRange::new(-9, 5));
+        assert_eq!(
+            IntRange::new(-5, 9).floordiv_const(-1),
+            IntRange::new(-9, 5)
+        );
     }
 
     #[test]

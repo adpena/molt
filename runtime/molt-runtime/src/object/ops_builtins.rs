@@ -2064,6 +2064,19 @@ pub extern "C" fn molt_object_getattribute(obj_bits: u64, name_bits: u64) -> u64
             }
             let attr_name = string_obj_to_owned(obj_from_bits(name_bits))
                 .unwrap_or_else(|| "<attr>".to_string());
+            if let Some(val) =
+                crate::builtins::attributes::resolve_scalar_attr(_py, obj_bits, &attr_name)
+            {
+                return val;
+            }
+            if crate::builtins::attributes::is_numeric_scalar_attr_receiver(obj_bits) {
+                return attr_error_with_obj(
+                    _py,
+                    type_name(_py, obj_from_bits(obj_bits)),
+                    &attr_name,
+                    obj_bits,
+                ) as u64;
+            }
             if let Some(obj_ptr) = maybe_ptr_from_bits(obj_bits) {
                 let type_id = object_type_id(obj_ptr);
                 let found = match type_id {
@@ -2131,11 +2144,6 @@ pub extern "C" fn molt_object_getattribute(obj_bits: u64, name_bits: u64) -> u64
                     &attr_name,
                     MoltObject::from_ptr(obj_ptr).bits(),
                 ) as u64;
-            }
-            if let Some(val) =
-                crate::builtins::attributes::resolve_inline_scalar_attr(_py, obj_bits, &attr_name)
-            {
-                return val;
             }
             let obj = obj_from_bits(obj_bits);
             attr_error_with_obj(_py, type_name(_py, obj), &attr_name, obj_bits) as u64
