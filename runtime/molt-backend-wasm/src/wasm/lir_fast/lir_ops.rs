@@ -3,6 +3,7 @@ use super::lir_scalar::{
     emit_get_boxed_for_repr, emit_lir_binary_arith, emit_lir_bitwise, emit_lir_bool_select,
     emit_lir_comparison, emit_lir_i64_binary_or_boxed, emit_lir_unary_arith,
 };
+use crate::wasm_abi_generated::{WasmConstLirFastPolicy, wasm_const_op_policy};
 use molt_codegen_abi::box_none_bits;
 use molt_tir::tir::lir::{LirBlock, LirOp, LirRepr};
 use molt_tir::tir::ops::{AttrValue, OpCode};
@@ -45,10 +46,57 @@ pub(super) fn emit_lir_block_ops(ctx: &mut LirLowerCtx, block: &LirBlock) {
     }
 }
 
+fn const_policy_kind_for_opcode(opcode: OpCode) -> Option<&'static str> {
+    match opcode {
+        OpCode::ConstInt => Some("const"),
+        OpCode::ConstBool => Some("const_bool"),
+        OpCode::ConstFloat => Some("const_float"),
+        OpCode::ConstNone => Some("const_none"),
+        OpCode::ConstStr => Some("const_str"),
+        OpCode::ConstBytes => Some("const_bytes"),
+        OpCode::ConstBigInt => Some("const_bigint"),
+        _ => None,
+    }
+}
+
+fn const_lir_fast_policy(opcode: OpCode) -> WasmConstLirFastPolicy {
+    let kind = const_policy_kind_for_opcode(opcode)
+        .unwrap_or_else(|| panic!("opcode {opcode:?} is not a WASM const policy opcode"));
+    wasm_const_op_policy(kind)
+        .unwrap_or_else(|| panic!("missing generated WASM const policy for {kind}"))
+        .lir_fast
+}
+
+fn assert_const_lir_fast_policy(opcode: OpCode, expected: WasmConstLirFastPolicy) {
+    assert_eq!(
+        const_lir_fast_policy(opcode),
+        expected,
+        "generated WASM const LIR-fast policy drifted for {opcode:?}"
+    );
+}
+
+fn emit_placeholder_zero_const(ctx: &mut LirLowerCtx, op: &LirOp) {
+    if let Some(result) = op.result_values.first() {
+        ctx.instructions.push(Instruction::I64Const(0));
+        ctx.emit_set(result.id);
+    }
+}
+
+fn emit_const_bail_to_generic(ctx: &mut LirLowerCtx, op: &LirOp) {
+    for &operand in &op.tir_op.operands {
+        ctx.emit_get(operand);
+    }
+    ctx.emit_bail_to_generic_path();
+    if let Some(result) = op.result_values.first() {
+        ctx.emit_set(result.id);
+    }
+}
+
 fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
     let tir_op = &op.tir_op;
     match tir_op.opcode {
         OpCode::ConstInt => {
+            assert_const_lir_fast_policy(tir_op.opcode, WasmConstLirFastPolicy::Lower);
             let val = match tir_op.attrs.get("value") {
                 Some(AttrValue::Int(v)) => *v,
                 _ => 0,
@@ -64,6 +112,7 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
             }
         }
         OpCode::ConstFloat => {
+            assert_const_lir_fast_policy(tir_op.opcode, WasmConstLirFastPolicy::Lower);
             let val = match tir_op
                 .attrs
                 .get("f_value")
@@ -79,6 +128,7 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
             }
         }
         OpCode::ConstBool => {
+            assert_const_lir_fast_policy(tir_op.opcode, WasmConstLirFastPolicy::Lower);
             let val = match tir_op.attrs.get("value") {
                 Some(AttrValue::Bool(v)) => *v,
                 _ => false,
@@ -90,17 +140,32 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
             }
         }
         OpCode::ConstNone => {
+            assert_const_lir_fast_policy(tir_op.opcode, WasmConstLirFastPolicy::Lower);
             if let Some(result) = op.result_values.first() {
                 ctx.instructions.push(Instruction::I64Const(box_none_bits()));
                 ctx.emit_set(result.id);
             }
         }
-        OpCode::ConstStr | OpCode::ConstBytes => {
-            if let Some(result) = op.result_values.first() {
-                ctx.instructions.push(Instruction::I64Const(0));
-                ctx.emit_set(result.id);
+        OpCode::ConstStr | OpCode::ConstBytes => match const_lir_fast_policy(tir_op.opcode) {
+            WasmConstLirFastPolicy::PlaceholderZero => emit_placeholder_zero_const(ctx, op),
+            WasmConstLirFastPolicy::BailGeneric => emit_const_bail_to_generic(ctx, op),
+            WasmConstLirFastPolicy::Lower => {
+                panic!(
+                    "generated WASM const policy requires direct LIR lowering for {:?}",
+                    tir_op.opcode
+                );
             }
-        }
+        },
+        OpCode::ConstBigInt => match const_lir_fast_policy(tir_op.opcode) {
+            WasmConstLirFastPolicy::BailGeneric => emit_const_bail_to_generic(ctx, op),
+            WasmConstLirFastPolicy::PlaceholderZero => emit_placeholder_zero_const(ctx, op),
+            WasmConstLirFastPolicy::Lower => {
+                panic!(
+                    "generated WASM const policy requires direct LIR lowering for {:?}",
+                    tir_op.opcode
+                );
+            }
+        },
         OpCode::Add | OpCode::InplaceAdd => emit_lir_binary_arith(ctx, op, ArithOp::Add),
         OpCode::CheckedAdd => {
             // (sum, flag) = signed-i64 add. A TOTAL function with two lanes:
@@ -392,10 +457,7 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
         | OpCode::StateBlockStart
         | OpCode::StateBlockEnd
         | OpCode::WarnStderr
-        // ConstBigInt needs a data segment + molt_bigint_from_str, which the
-        // LIR fast lane does not model — bail the function to the generic
-        // emitter (which handles `const_bigint` natively).
-        | OpCode::ConstBigInt => {
+        => {
             for &operand in &tir_op.operands {
                 ctx.emit_get(operand);
             }

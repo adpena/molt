@@ -70,16 +70,45 @@ def test_wasm_abi_manifest_owns_static_type_section() -> None:
     assert "const STATIC_FUNC_TYPES" not in wasm_abi
 
 
-def test_wasm_abi_manifest_feeds_runtime_export_registry() -> None:
+def test_wasm_abi_manifest_owns_runtime_export_policy() -> None:
     gen = _load_gen_wasm_abi()
     data = gen.load_manifest()
     manifest_names = {entry["name"] for entry in data["import"]}
+    host_exports = set(data["runtime_export_policy"]["host_exports"])
+    fallback_specs = {entry["import"]: entry for entry in data["runtime_import_fallback"]}
 
     runtime_exports_path = ROOT / "src/molt/_wasm_runtime_exports.py"
     text = runtime_exports_path.read_text(encoding="utf-8")
     assert "wasm_imports.rs" not in text
     assert "WASM_IMPORT_REGISTRY" in text
+    assert "_HOST_RUNTIME_EXPORTS" not in text
+    assert "_BROWSER_RUNTIME_IMPORT_FALLBACK_EXPORTS" not in text
     assert {"alloc", "runtime_init", "socket_connect", "task_new"} <= manifest_names
+    assert {
+        "molt_runtime_shutdown",
+        "molt_set_wasm_table_base",
+        "molt_gpu_matmul_contiguous",
+    } <= host_exports
+    assert fallback_specs["fast_dict_get"] == {
+        "import": "fast_dict_get",
+        "strategy": "call_bind_ic",
+        "call_arity": 2,
+        "exports": [
+            "molt_call_bind_ic",
+            "molt_callargs_new",
+            "molt_callargs_push_pos",
+        ],
+    }
+    assert fallback_specs["dict_getitem"] == {
+        "import": "dict_getitem",
+        "strategy": "direct_export",
+        "exports": ["molt_dict_getitem_borrowed"],
+    }
+
+    rendered_py = gen.render_py(data)
+    assert "WASM_RUNTIME_HOST_EXPORTS" in rendered_py
+    assert "WASM_RUNTIME_IMPORT_FALLBACK_EXPORTS" in rendered_py
+    assert "WASM_RUNTIME_IMPORT_FALLBACK_SPECS" in rendered_py
 
 
 def test_wasm_abi_manifest_owns_pure_profile_prefixes() -> None:
@@ -125,6 +154,44 @@ def test_wasm_abi_manifest_owns_op_import_deps() -> None:
     assert op_deps["print"] == ["print_obj"]
     assert op_deps["object_new_bound"] == []
     assert op_deps["object_new_bound_stack"] == ["object_new_bound_sized"]
+
+
+def test_wasm_abi_manifest_owns_const_op_policy() -> None:
+    gen = _load_gen_wasm_abi()
+    data = gen.load_manifest()
+    op_deps = {entry["kind"]: entry["deps"] for entry in data["op_import_dep"]}
+    policies = {entry["kind"]: entry for entry in data["const_op_policy"]}
+
+    assert policies["const"] == {
+        "kind": "const",
+        "inline_seed": "int",
+        "literal_payload": "none",
+        "raw_int_effect": "set_int",
+        "lir_fast": "lower",
+        "parse_scalar_literal": False,
+        "dispatch_runtime_seed": False,
+    }
+    assert policies["const_str"]["materializer_import"] == "string_from_bytes"
+    assert policies["const_str"]["literal_payload"] == "string"
+    assert policies["const_str"]["parse_scalar_literal"] is True
+    assert policies["const_bytes"]["materializer_import"] == "bytes_from_bytes"
+    assert policies["const_bytes"]["literal_payload"] == "bytes"
+    assert policies["const_bytes"]["parse_scalar_literal"] is True
+    assert policies["const_bigint"]["materializer_import"] == "bigint_from_str"
+    assert policies["const_bigint"]["literal_payload"] == "bigint_decimal"
+    assert policies["const_bigint"]["parse_scalar_literal"] is False
+    assert policies["const_bigint"]["lir_fast"] == "bail_generic"
+    for kind, policy in policies.items():
+        materializer = policy.get("materializer_import")
+        if materializer is not None:
+            assert materializer in op_deps[kind]
+
+    rendered_rs = _rendered_rs(gen, data)
+    rendered_py = gen.render_py(data)
+    assert "WASM_CONST_OP_POLICIES" in rendered_rs
+    assert "WasmConstLiteralPayload::BigintDecimal" in rendered_rs
+    assert "wasm_const_op_policy" in rendered_rs
+    assert "WASM_CONST_OP_POLICIES" in rendered_py
 
 
 def test_wasm_abi_manifest_owns_runtime_surface_required_import_matchers() -> None:

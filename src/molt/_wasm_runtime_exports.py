@@ -5,7 +5,11 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Iterable
 
-from ._wasm_abi_generated import WASM_IMPORT_REGISTRY
+from ._wasm_abi_generated import (
+    WASM_IMPORT_REGISTRY,
+    WASM_RUNTIME_HOST_EXPORTS,
+    WASM_RUNTIME_IMPORT_FALLBACK_EXPORTS,
+)
 
 _INTRINSIC_CALL_RE = re.compile(
     r'(?:_(?:require|lazy|optional)_intrinsic|_intrinsic_require)\(\s*"(?P<name>molt_[A-Za-z0-9_]+)"'
@@ -15,69 +19,16 @@ _INTRINSIC_SYMBOL_RE = re.compile(
     r'IntrinsicSpec\s*\{\s*name:\s*"(?P<name>[^"]+)"\s*,\s*symbol:\s*"(?P<symbol>[^"]+)"',
     re.DOTALL,
 )
-_HOST_RUNTIME_EXPORTS = frozenset(
-    {
-        "molt_alloc",
-        "molt_handle_resolve",
-        "molt_header_size",
-        "molt_scratch_alloc",
-        "molt_scratch_free",
-        "molt_bytes_from_bytes",
-        "molt_string_from_bytes",
-        "molt_string_as_ptr",
-        "molt_dec_ref_obj",
-        "molt_runtime_shutdown",
-        "molt_set_wasm_table_base",
-        "molt_exception_last",
-        "molt_exception_kind",
-        "molt_exception_message",
-        "molt_object_repr",
-        "molt_profile_dump",
-        "molt_traceback_format_exc",
-        "molt_type_tag_of_bits",
-        "molt_gpu_broadcast_binary_contiguous",
-        "molt_gpu_linear_contiguous",
-        "molt_gpu_linear_split_last_dim_contiguous",
-        "molt_gpu_linear_squared_relu_gate_interleaved_contiguous",
-        "molt_gpu_matmul_contiguous",
-        "molt_gpu_permute_contiguous",
-        "molt_gpu_repeat_axis_contiguous",
-        "molt_gpu_rms_norm_last_axis_contiguous",
-        "molt_gpu_rope_apply_contiguous",
-        "molt_gpu_softmax_last_axis_contiguous",
-        "molt_gpu_squared_relu_gate_interleaved_contiguous",
-        "molt_gpu_tensor_from_buffer",
-        "molt_gpu_tensor_from_parts",
-        "molt_gpu_tensor__tensor_concat_first_dim",
-        "molt_gpu_tensor__tensor_scatter_rows",
-        "molt_gpu_tensor__tensor_take_rows",
-        "molt_gpu_tensor__zeros",
-    }
-)
-_BROWSER_RUNTIME_IMPORT_FALLBACK_EXPORTS = {
-    "molt_fast_list_append": (
-        "molt_call_bind_ic",
-        "molt_callargs_new",
-        "molt_callargs_push_pos",
-    ),
-    "molt_fast_str_join": (
-        "molt_call_bind_ic",
-        "molt_callargs_new",
-        "molt_callargs_push_pos",
-    ),
-    "molt_fast_dict_get": (
-        "molt_call_bind_ic",
-        "molt_callargs_new",
-        "molt_callargs_push_pos",
-    ),
-    "molt_dict_setitem": ("molt_dict_set",),
-    "molt_dict_getitem": ("molt_dict_getitem_borrowed",),
-    "molt_tuple_getitem": ("molt_tuple_getitem_borrowed",),
-}
-
-
 def _normalize_runtime_export_name(name: str) -> str:
     return name if name.startswith("molt_") else f"molt_{name}"
+
+
+@lru_cache(maxsize=1)
+def _runtime_import_fallback_exports() -> dict[str, tuple[str, ...]]:
+    return {
+        _normalize_runtime_export_name(import_name): tuple(exports)
+        for import_name, exports in WASM_RUNTIME_IMPORT_FALLBACK_EXPORTS
+    }
 
 
 @lru_cache(maxsize=1)
@@ -215,11 +166,12 @@ def wasm_runtime_required_export_names(
 ) -> tuple[str, ...]:
     if required_runtime_imports is None:
         return tuple(sorted(f"molt_{name}" for name in wasm_runtime_import_names()))
-    export_names = set(_HOST_RUNTIME_EXPORTS)
+    export_names = set(WASM_RUNTIME_HOST_EXPORTS)
+    fallback_exports = _runtime_import_fallback_exports()
     for raw_name in required_runtime_imports:
         name = _normalize_runtime_export_name(raw_name)
         export_names.add(name)
-        export_names.update(_BROWSER_RUNTIME_IMPORT_FALLBACK_EXPORTS.get(name, ()))
+        export_names.update(fallback_exports.get(name, ()))
     return tuple(sorted(export_names))
 
 
@@ -235,7 +187,7 @@ def wasm_runtime_missing_required_exports(
         name = _normalize_runtime_export_name(raw_name)
         if name in available:
             continue
-        fallback_exports = _BROWSER_RUNTIME_IMPORT_FALLBACK_EXPORTS.get(name)
+        fallback_exports = _runtime_import_fallback_exports().get(name)
         if fallback_exports is not None and set(fallback_exports).issubset(available):
             continue
         missing.add(name)
@@ -248,7 +200,7 @@ def wasm_runtime_export_link_args(
 ) -> str:
     if required_runtime_imports is None:
         export_names = {f"molt_{name}" for name in wasm_runtime_import_names()}
-        export_names.update(_HOST_RUNTIME_EXPORTS)
+        export_names.update(WASM_RUNTIME_HOST_EXPORTS)
         export_names.update(
             canonical_intrinsic_runtime_name(name)
             for name in _all_dynamic_runtime_owned_intrinsic_exports()

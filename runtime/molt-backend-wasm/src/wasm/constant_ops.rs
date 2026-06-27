@@ -1,5 +1,11 @@
 use super::context::CompileFuncContext;
 use super::*;
+#[cfg(test)]
+use crate::wasm_abi_generated::WasmConstLirFastPolicy;
+use crate::wasm_abi_generated::{
+    WasmConstInlineSeed, WasmConstLiteralPayload, WasmConstOpPolicySpec, WasmConstRawIntEffect,
+    wasm_const_op_policy,
+};
 
 pub(super) struct ConstantOpContext<'a, 'ctx> {
     pub(super) backend: &'a mut WasmBackend,
@@ -11,25 +17,227 @@ pub(super) struct ConstantOpContext<'a, 'ctx> {
     pub(super) reloc_enabled: bool,
 }
 
-pub(super) fn needs_literal_pointer_locals(kind: &str) -> bool {
-    matches!(kind, "const_str" | "const_bytes" | "const_bigint")
-}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct WasmConstOpPolicy(&'static WasmConstOpPolicySpec);
 
-pub(super) fn const_seed_bits(op: &OpIR) -> Option<i64> {
-    match op.kind.as_str() {
-        "const" => op.value.map(box_int),
-        "const_bool" => op.value.map(box_bool),
-        "const_float" => op.f_value.map(box_float),
-        "const_none" => Some(box_none()),
-        _ => None,
+impl WasmConstOpPolicy {
+    pub(super) fn for_op(op: &OpIR) -> Option<Self> {
+        Self::for_kind(op.kind.as_str())
     }
-}
 
-pub(super) fn needs_seeded_runtime_const(kind: &str) -> bool {
-    matches!(
-        kind,
-        "const_str" | "const_bytes" | "const_bigint" | "const_not_implemented" | "const_ellipsis"
-    )
+    pub(super) fn for_kind(kind: &str) -> Option<Self> {
+        wasm_const_op_policy(kind).map(Self)
+    }
+
+    pub(super) fn inline_seed(self) -> WasmConstInlineSeed {
+        self.0.inline_seed
+    }
+
+    pub(super) fn literal_payload(self) -> WasmConstLiteralPayload {
+        self.0.literal_payload
+    }
+
+    pub(super) fn parse_scalar_literal(self) -> bool {
+        self.0.parse_scalar_literal
+    }
+
+    pub(super) fn materializer_import(self) -> Option<&'static str> {
+        self.0.materializer_import
+    }
+
+    pub(super) fn raw_int_effect(self) -> WasmConstRawIntEffect {
+        self.0.raw_int_effect
+    }
+
+    #[cfg(test)]
+    pub(super) fn lir_fast_policy(self) -> WasmConstLirFastPolicy {
+        self.0.lir_fast
+    }
+
+    pub(super) fn needs_literal_scratch(self) -> bool {
+        !matches!(self.literal_payload(), WasmConstLiteralPayload::None)
+    }
+
+    pub(super) fn inline_seed_bits(self, op: &OpIR) -> Option<i64> {
+        match self.inline_seed() {
+            WasmConstInlineSeed::Int => op.value.map(box_int),
+            WasmConstInlineSeed::Bool => op.value.map(box_bool),
+            WasmConstInlineSeed::Float => op.f_value.map(box_float),
+            WasmConstInlineSeed::NoneValue => Some(box_none()),
+            WasmConstInlineSeed::None => None,
+        }
+    }
+
+    pub(super) fn needs_dispatch_runtime_seed(self) -> bool {
+        self.0.dispatch_runtime_seed
+    }
+
+    fn required_materializer_import(self) -> &'static str {
+        self.materializer_import()
+            .unwrap_or_else(|| panic!("const op {} has no materializer import", self.0.kind))
+    }
+
+    fn emit_inline_seed(
+        self,
+        func: &mut Function,
+        op: &OpIR,
+        locals: &WasmFrameLocals,
+        const_cache: &ConstantCache,
+    ) -> bool {
+        let Some(out) = op.out.as_ref() else {
+            return false;
+        };
+        match self.inline_seed() {
+            WasmConstInlineSeed::Int => {
+                let val = op.value.unwrap();
+                func.instruction(&Instruction::I64Const(box_int(val)));
+            }
+            WasmConstInlineSeed::Bool => {
+                let val = op.value.unwrap();
+                func.instruction(&Instruction::I64Const(box_bool(val)));
+            }
+            WasmConstInlineSeed::Float => {
+                let val = op.f_value.expect("Float value not found");
+                func.instruction(&Instruction::I64Const(box_float(val)));
+            }
+            WasmConstInlineSeed::NoneValue => {
+                const_cache.emit_none(func);
+            }
+            WasmConstInlineSeed::None => return false,
+        }
+        let local_idx = locals[out];
+        func.instruction(&Instruction::LocalSet(local_idx));
+        true
+    }
+
+    fn apply_raw_int_effect(
+        self,
+        op: &OpIR,
+        locals: &WasmFrameLocals,
+        known_raw_ints: &mut BTreeMap<u32, i64>,
+    ) {
+        match self.raw_int_effect() {
+            WasmConstRawIntEffect::SetInt => {
+                let out = op.out.as_ref().expect("raw-int const out");
+                let local_idx = locals[out];
+                let val = op.value.expect("raw-int const value");
+                known_raw_ints.insert(local_idx, val);
+            }
+            WasmConstRawIntEffect::Clear => forget_output_raw_int(op, locals, known_raw_ints),
+        }
+    }
+
+    fn emit_materialized(
+        self,
+        backend: &mut WasmBackend,
+        func: &mut Function,
+        op: &OpIR,
+        locals: &WasmFrameLocals,
+        func_index: u32,
+        reloc_enabled: bool,
+        import_ids: &TrackedImportIds,
+        const_str_scratch_segment: DataSegmentRef,
+    ) {
+        let import_id = import_ids[self.required_materializer_import()];
+        match self.literal_payload() {
+            WasmConstLiteralPayload::None => {
+                emit_runtime_singleton(func, op, locals, reloc_enabled, import_id);
+            }
+            WasmConstLiteralPayload::String => {
+                emit_const_str(
+                    backend,
+                    func,
+                    op,
+                    locals,
+                    func_index,
+                    reloc_enabled,
+                    import_id,
+                    const_str_scratch_segment,
+                );
+            }
+            WasmConstLiteralPayload::BigintDecimal => {
+                emit_const_bigint(
+                    backend,
+                    func,
+                    op,
+                    locals,
+                    func_index,
+                    reloc_enabled,
+                    import_id,
+                );
+            }
+            WasmConstLiteralPayload::Bytes => {
+                emit_const_bytes(
+                    backend,
+                    func,
+                    op,
+                    locals,
+                    func_index,
+                    reloc_enabled,
+                    import_id,
+                    const_str_scratch_segment,
+                );
+            }
+        }
+    }
+
+    fn emit(
+        self,
+        context: ConstantOpContext<'_, '_>,
+        func: &mut Function,
+        op: &OpIR,
+        known_raw_ints: &mut BTreeMap<u32, i64>,
+    ) {
+        let ConstantOpContext {
+            backend,
+            ctx,
+            import_ids,
+            locals,
+            const_cache,
+            func_index,
+            reloc_enabled,
+        } = context;
+
+        if !self.emit_inline_seed(func, op, locals, const_cache) {
+            self.emit_materialized(
+                backend,
+                func,
+                op,
+                locals,
+                func_index,
+                reloc_enabled,
+                import_ids,
+                ctx.const_str_scratch_segment,
+            );
+        }
+        self.apply_raw_int_effect(op, locals, known_raw_ints);
+    }
+
+    fn emit_seeded_runtime(
+        self,
+        backend: &mut WasmBackend,
+        func: &mut Function,
+        op: &OpIR,
+        locals: &WasmFrameLocals,
+        func_index: u32,
+        reloc_enabled: bool,
+        import_ids: &TrackedImportIds,
+        const_str_scratch_segment: DataSegmentRef,
+    ) {
+        if !matches!(self.inline_seed(), WasmConstInlineSeed::None) {
+            panic!("inline const op {} does not need runtime seeding", op.kind);
+        }
+        self.emit_materialized(
+            backend,
+            func,
+            op,
+            locals,
+            func_index,
+            reloc_enabled,
+            import_ids,
+            const_str_scratch_segment,
+        );
+    }
 }
 
 pub(super) fn emit_constant_op(
@@ -38,96 +246,10 @@ pub(super) fn emit_constant_op(
     op: &OpIR,
     known_raw_ints: &mut BTreeMap<u32, i64>,
 ) -> bool {
-    let ConstantOpContext {
-        backend,
-        ctx,
-        import_ids,
-        locals,
-        const_cache,
-        func_index,
-        reloc_enabled,
-    } = context;
-
-    match op.kind.as_str() {
-        "const" => {
-            let val = op.value.unwrap();
-            func.instruction(&Instruction::I64Const(box_int(val)));
-            let local_idx = locals[op.out.as_ref().unwrap()];
-            func.instruction(&Instruction::LocalSet(local_idx));
-            known_raw_ints.insert(local_idx, val);
-        }
-        "const_bool" => {
-            let val = op.value.unwrap();
-            func.instruction(&Instruction::I64Const(box_bool(val)));
-            let local_idx = locals[op.out.as_ref().unwrap()];
-            func.instruction(&Instruction::LocalSet(local_idx));
-            known_raw_ints.remove(&local_idx);
-        }
-        "const_float" => {
-            let val = op.f_value.expect("Float value not found");
-            func.instruction(&Instruction::I64Const(box_float(val)));
-            let local_idx = locals[op.out.as_ref().unwrap()];
-            func.instruction(&Instruction::LocalSet(local_idx));
-            known_raw_ints.remove(&local_idx);
-        }
-        "const_none" => {
-            const_cache.emit_none(func);
-            let local_idx = locals[op.out.as_ref().unwrap()];
-            func.instruction(&Instruction::LocalSet(local_idx));
-            known_raw_ints.remove(&local_idx);
-        }
-        "const_not_implemented" => {
-            emit_call(func, reloc_enabled, import_ids["not_implemented"]);
-            forget_output_raw_int(op, locals, known_raw_ints);
-            let local_idx = locals[op.out.as_ref().unwrap()];
-            func.instruction(&Instruction::LocalSet(local_idx));
-        }
-        "const_ellipsis" => {
-            emit_call(func, reloc_enabled, import_ids["ellipsis"]);
-            forget_output_raw_int(op, locals, known_raw_ints);
-            let local_idx = locals[op.out.as_ref().unwrap()];
-            func.instruction(&Instruction::LocalSet(local_idx));
-        }
-        "const_str" => {
-            forget_output_raw_int(op, locals, known_raw_ints);
-            emit_const_str(
-                backend,
-                func,
-                op,
-                locals,
-                func_index,
-                reloc_enabled,
-                import_ids,
-                ctx.const_str_scratch_segment,
-            );
-        }
-        "const_bigint" => {
-            forget_output_raw_int(op, locals, known_raw_ints);
-            emit_const_bigint(
-                backend,
-                func,
-                op,
-                locals,
-                func_index,
-                reloc_enabled,
-                import_ids,
-            );
-        }
-        "const_bytes" => {
-            forget_output_raw_int(op, locals, known_raw_ints);
-            emit_const_bytes(
-                backend,
-                func,
-                op,
-                locals,
-                func_index,
-                reloc_enabled,
-                import_ids,
-                ctx.const_str_scratch_segment,
-            );
-        }
-        _ => return false,
-    }
+    let Some(policy) = WasmConstOpPolicy::for_op(op) else {
+        return false;
+    };
+    policy.emit(context, func, op, known_raw_ints);
     true
 }
 
@@ -141,48 +263,35 @@ pub(super) fn emit_seeded_runtime_const_op(
     import_ids: &TrackedImportIds,
     const_str_scratch_segment: DataSegmentRef,
 ) {
-    match op.kind.as_str() {
-        "const_not_implemented" => {
-            emit_call(func, reloc_enabled, import_ids["not_implemented"]);
-            let local_idx = locals[op.out.as_ref().expect("const_not_implemented out")];
-            func.instruction(&Instruction::LocalSet(local_idx));
-        }
-        "const_ellipsis" => {
-            emit_call(func, reloc_enabled, import_ids["ellipsis"]);
-            let local_idx = locals[op.out.as_ref().expect("const_ellipsis out")];
-            func.instruction(&Instruction::LocalSet(local_idx));
-        }
-        "const_str" => emit_const_str(
-            backend,
-            func,
-            op,
-            locals,
-            func_index,
-            reloc_enabled,
-            import_ids,
-            const_str_scratch_segment,
-        ),
-        "const_bigint" => emit_const_bigint(
-            backend,
-            func,
-            op,
-            locals,
-            func_index,
-            reloc_enabled,
-            import_ids,
-        ),
-        "const_bytes" => emit_const_bytes(
-            backend,
-            func,
-            op,
-            locals,
-            func_index,
-            reloc_enabled,
-            import_ids,
-            const_str_scratch_segment,
-        ),
-        _ => panic!("unsupported seeded runtime const op {}", op.kind),
-    }
+    let policy = WasmConstOpPolicy::for_op(op)
+        .unwrap_or_else(|| panic!("unsupported seeded runtime const op {}", op.kind));
+    assert!(
+        policy.needs_dispatch_runtime_seed(),
+        "const op {} does not need runtime seeding",
+        op.kind
+    );
+    policy.emit_seeded_runtime(
+        backend,
+        func,
+        op,
+        locals,
+        func_index,
+        reloc_enabled,
+        import_ids,
+        const_str_scratch_segment,
+    );
+}
+
+fn emit_runtime_singleton(
+    func: &mut Function,
+    op: &OpIR,
+    locals: &WasmFrameLocals,
+    reloc_enabled: bool,
+    import_id: u32,
+) {
+    emit_call(func, reloc_enabled, import_id);
+    let local_idx = locals[op.out.as_ref().expect("runtime const out")];
+    func.instruction(&Instruction::LocalSet(local_idx));
 }
 
 fn forget_output_raw_int(
@@ -281,7 +390,7 @@ fn emit_const_str(
     locals: &WasmFrameLocals,
     func_index: u32,
     reloc_enabled: bool,
-    import_ids: &TrackedImportIds,
+    import_id: u32,
     scratch_segment: DataSegmentRef,
 ) {
     let (out_name, bytes) = const_str_bytes(op);
@@ -293,7 +402,7 @@ fn emit_const_str(
         locals,
         func_index,
         reloc_enabled,
-        import_ids["string_from_bytes"],
+        import_id,
         scratch_segment,
     );
 }
@@ -305,7 +414,7 @@ fn emit_const_bigint(
     locals: &WasmFrameLocals,
     func_index: u32,
     reloc_enabled: bool,
-    import_ids: &TrackedImportIds,
+    import_id: u32,
 ) {
     let (out_name, bytes) = const_bigint_bytes(op);
     let scratch = emit_literal_ptr_len(
@@ -320,7 +429,7 @@ fn emit_const_bigint(
     func.instruction(&Instruction::LocalGet(scratch.ptr_local()));
     func.instruction(&Instruction::I32WrapI64);
     func.instruction(&Instruction::LocalGet(scratch.len_local()));
-    emit_call(func, reloc_enabled, import_ids["bigint_from_str"]);
+    emit_call(func, reloc_enabled, import_id);
     let out_local = locals[out_name];
     func.instruction(&Instruction::LocalSet(out_local));
 }
@@ -332,7 +441,7 @@ fn emit_const_bytes(
     locals: &WasmFrameLocals,
     func_index: u32,
     reloc_enabled: bool,
-    import_ids: &TrackedImportIds,
+    import_id: u32,
     scratch_segment: DataSegmentRef,
 ) {
     let (out_name, bytes) = const_bytes_bytes(op);
@@ -344,7 +453,131 @@ fn emit_const_bytes(
         locals,
         func_index,
         reloc_enabled,
-        import_ids["bytes_from_bytes"],
+        import_id,
         scratch_segment,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn op(kind: &str) -> OpIR {
+        OpIR {
+            kind: kind.to_string(),
+            ..OpIR::default()
+        }
+    }
+
+    #[test]
+    fn const_policy_classifies_inline_seed_bits() {
+        let mut int_op = op("const");
+        int_op.value = Some(7);
+        let mut bool_op = op("const_bool");
+        bool_op.value = Some(1);
+        let mut float_op = op("const_float");
+        float_op.f_value = Some(1.5);
+        let none_op = op("const_none");
+
+        assert_eq!(
+            WasmConstOpPolicy::for_op(&int_op).map(|policy| policy.inline_seed()),
+            Some(WasmConstInlineSeed::Int)
+        );
+        assert_eq!(
+            WasmConstOpPolicy::for_op(&int_op).and_then(|policy| policy.inline_seed_bits(&int_op)),
+            Some(box_int(7))
+        );
+        assert_eq!(
+            WasmConstOpPolicy::for_op(&int_op).map(|policy| policy.raw_int_effect()),
+            Some(WasmConstRawIntEffect::SetInt)
+        );
+        assert_eq!(
+            WasmConstOpPolicy::for_op(&bool_op).map(|policy| policy.inline_seed()),
+            Some(WasmConstInlineSeed::Bool)
+        );
+        assert_eq!(
+            WasmConstOpPolicy::for_op(&bool_op)
+                .and_then(|policy| policy.inline_seed_bits(&bool_op)),
+            Some(box_bool(1))
+        );
+        assert_eq!(
+            WasmConstOpPolicy::for_op(&float_op).map(|policy| policy.inline_seed()),
+            Some(WasmConstInlineSeed::Float)
+        );
+        assert_eq!(
+            WasmConstOpPolicy::for_op(&float_op)
+                .and_then(|policy| policy.inline_seed_bits(&float_op)),
+            Some(box_float(1.5))
+        );
+        assert_eq!(
+            WasmConstOpPolicy::for_op(&none_op).map(|policy| policy.inline_seed()),
+            Some(WasmConstInlineSeed::NoneValue)
+        );
+        assert_eq!(
+            WasmConstOpPolicy::for_op(&none_op)
+                .and_then(|policy| policy.inline_seed_bits(&none_op)),
+            Some(box_none())
+        );
+    }
+
+    #[test]
+    fn const_policy_classifies_runtime_seed_and_literal_scratch() {
+        for (kind, payload, import_name, parse_scalar, lir_policy) in [
+            (
+                "const_str",
+                WasmConstLiteralPayload::String,
+                "string_from_bytes",
+                true,
+                WasmConstLirFastPolicy::PlaceholderZero,
+            ),
+            (
+                "const_bigint",
+                WasmConstLiteralPayload::BigintDecimal,
+                "bigint_from_str",
+                false,
+                WasmConstLirFastPolicy::BailGeneric,
+            ),
+            (
+                "const_bytes",
+                WasmConstLiteralPayload::Bytes,
+                "bytes_from_bytes",
+                true,
+                WasmConstLirFastPolicy::PlaceholderZero,
+            ),
+        ] {
+            let policy = WasmConstOpPolicy::for_kind(kind).expect("literal const policy");
+            assert!(
+                policy.needs_literal_scratch(),
+                "{kind} must allocate literal scratch"
+            );
+            assert_eq!(policy.literal_payload(), payload);
+            assert_eq!(policy.materializer_import(), Some(import_name));
+            assert_eq!(policy.parse_scalar_literal(), parse_scalar);
+            assert_eq!(policy.lir_fast_policy(), lir_policy);
+            assert!(
+                policy.needs_dispatch_runtime_seed(),
+                "{kind} must be materialized for dispatch seeds"
+            );
+        }
+
+        for kind in ["const_not_implemented", "const_ellipsis"] {
+            let policy = WasmConstOpPolicy::for_kind(kind).expect("runtime singleton policy");
+            assert!(
+                !policy.needs_literal_scratch(),
+                "{kind} must not allocate literal scratch"
+            );
+            assert_eq!(policy.literal_payload(), WasmConstLiteralPayload::None);
+            assert!(policy.materializer_import().is_some());
+            assert!(
+                policy.needs_dispatch_runtime_seed(),
+                "{kind} must be materialized for dispatch seeds"
+            );
+        }
+    }
+
+    #[test]
+    fn const_policy_rejects_non_const_ops() {
+        assert_eq!(WasmConstOpPolicy::for_kind("add"), None);
+        assert_eq!(WasmConstOpPolicy::for_kind("parse_int"), None);
+    }
 }

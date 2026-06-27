@@ -2,12 +2,17 @@
 // runtime/molt-backend-wasm/src/wasm_abi_manifest.toml
 // DO NOT EDIT BY HAND.
 
+mod const_policy;
 mod imports;
 mod pure_profile;
 mod runtime_callables;
 mod runtime_surface;
 mod static_types;
 
+pub(crate) use const_policy::{
+    WasmConstInlineSeed, WasmConstLirFastPolicy, WasmConstLiteralPayload, WasmConstOpPolicySpec,
+    WasmConstRawIntEffect, wasm_const_op_policy,
+};
 pub(crate) use imports::{IMPORT_REGISTRY, OP_IMPORT_DEPS};
 pub(crate) use pure_profile::pure_profile_skips_import;
 pub(crate) use runtime_callables::{
