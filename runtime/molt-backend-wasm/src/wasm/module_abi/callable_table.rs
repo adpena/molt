@@ -36,27 +36,7 @@ impl WasmBackend {
             .iter()
             .map(|spec| spec.runtime_name)
             .collect();
-        let hardcoded_builtin_runtime_names: BTreeSet<&str> = builtin_table_funcs
-            .iter()
-            .map(|spec| spec.runtime_name)
-            .collect();
-        let mut auto_builtin_table_funcs: Vec<(String, String, usize)> = builtin_trampoline_specs
-            .iter()
-            .filter(|(runtime_name, _)| {
-                !hardcoded_builtin_runtime_names.contains(runtime_name.as_str())
-                    && !reserved_runtime_callable_names.contains(runtime_name.as_str())
-            })
-            .map(|(runtime_name, arity)| {
-                let import_name = runtime_name
-                    .strip_prefix("molt_")
-                    .unwrap_or(runtime_name.as_str())
-                    .to_string();
-                (runtime_name.clone(), import_name, *arity)
-            })
-            .collect();
-        auto_builtin_table_funcs.sort_by(|a, b| a.0.cmp(&b.0));
-        let mut compact_builtin_trampoline_funcs: Vec<(String, usize)> = Vec::new();
-        let builtin_runtime_names: BTreeSet<&str> = builtin_table_funcs
+        let generated_builtin_runtime_names: BTreeSet<&str> = builtin_table_funcs
             .iter()
             .map(|spec| spec.runtime_name)
             .chain(
@@ -64,12 +44,8 @@ impl WasmBackend {
                     .iter()
                     .map(|spec| spec.runtime_name),
             )
-            .chain(
-                auto_builtin_table_funcs
-                    .iter()
-                    .map(|(runtime_name, _, _)| runtime_name.as_str()),
-            )
             .collect();
+        let mut compact_builtin_trampoline_funcs: Vec<(String, usize)> = Vec::new();
         for runtime_name in builtin_table_funcs
             .iter()
             .map(|spec| spec.runtime_name)
@@ -78,17 +54,16 @@ impl WasmBackend {
                     .iter()
                     .map(|spec| spec.runtime_name),
             )
-            .chain(
-                auto_builtin_table_funcs
-                    .iter()
-                    .map(|(runtime_name, _, _)| runtime_name.as_str()),
-            )
         {
             if reserved_runtime_callable_names.contains(runtime_name) {
                 continue;
             }
-            if let Some(arity) = builtin_trampoline_specs.get(runtime_name) {
-                compact_builtin_trampoline_funcs.push((runtime_name.to_string(), *arity));
+            if let Some(spec) = builtin_table_funcs
+                .iter()
+                .find(|spec| spec.runtime_name == runtime_name)
+                && builtin_trampoline_specs.contains_key(runtime_name)
+            {
+                compact_builtin_trampoline_funcs.push((runtime_name.to_string(), spec.arity));
             }
         }
         let mut builtin_wrapper_funcs: Vec<(String, String, usize, RuntimeCallableResult)> =
@@ -103,44 +78,28 @@ impl WasmBackend {
                     )
                 })
                 .collect();
-        for (runtime_name, import_name, arity, result) in builtin_table_funcs
-            .iter()
-            .map(|spec| {
-                (
-                    spec.runtime_name.to_string(),
-                    spec.import_name.to_string(),
-                    spec.arity,
-                    spec.result,
-                )
-            })
-            .chain(
-                auto_builtin_table_funcs
-                    .iter()
-                    .map(|(runtime_name, import_name, arity)| {
-                        (
-                            runtime_name.clone(),
-                            import_name.clone(),
-                            *arity,
-                            RuntimeCallableResult::I64,
-                        )
-                    }),
+        for (runtime_name, import_name, arity, result) in builtin_table_funcs.iter().map(|spec| {
+            (
+                spec.runtime_name.to_string(),
+                spec.import_name.to_string(),
+                spec.arity,
+                spec.result,
             )
-        {
+        }) {
             if builtin_trampoline_specs.contains_key(runtime_name.as_str()) {
                 builtin_wrapper_funcs.push((runtime_name, import_name, arity, result));
             }
         }
         if builtin_trampoline_specs.len() != compact_builtin_trampoline_funcs.len() {
             for name in builtin_trampoline_specs.keys() {
-                if !builtin_runtime_names.contains(name.as_str()) {
-                    panic!("builtin {name} missing from wasm table");
+                if !generated_builtin_runtime_names.contains(name.as_str()) {
+                    panic!("builtin {name} missing from generated WASM callable table");
                 }
             }
         }
         let compact_builtin_table_len: usize = builtin_table_funcs
             .iter()
             .map(|spec| spec.runtime_name.to_string())
-            .chain(auto_builtin_table_funcs.iter().map(|(rn, _, _)| rn.clone()))
             .filter(|rn| builtin_trampoline_specs.contains_key(rn.as_str()))
             .count();
         let split_runtime_runtime_table_min = self.options.split_runtime_runtime_table_min;
@@ -285,13 +244,6 @@ impl WasmBackend {
         for (runtime_name, import_name) in builtin_table_funcs
             .iter()
             .map(|spec| (spec.runtime_name.to_string(), spec.import_name.to_string()))
-            .chain(
-                auto_builtin_table_funcs
-                    .iter()
-                    .map(|(runtime_name, import_name, _)| {
-                        (runtime_name.clone(), import_name.clone())
-                    }),
-            )
         {
             let runtime_key = runtime_name;
             let is_referenced = builtin_trampoline_specs.contains_key(runtime_key.as_str());

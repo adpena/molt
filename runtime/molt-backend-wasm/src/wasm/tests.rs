@@ -244,6 +244,125 @@ fn import_transaction_callable_wrapper_matches_runtime_import_abi() {
 }
 
 #[test]
+fn void_runtime_callable_wrapper_uses_manifest_result_type() {
+    let mut socket_drop = wasm_test_op("builtin_func", Some("fn"), vec![]);
+    socket_drop.s_value = Some("molt_socket_drop".to_string());
+    socket_drop.value = Some(1);
+    let func = wasm_test_function(
+        "socket_drop_callable",
+        vec![],
+        None,
+        vec![socket_drop, wasm_test_op("ret_void", None, vec![])],
+    );
+    let ir = SimpleIR {
+        functions: vec![func],
+        profile: None,
+    };
+    let wasm = WasmBackend::with_options(WasmCompileOptions {
+        native_eh_enabled: false,
+        reloc_enabled: false,
+        ..WasmCompileOptions::default()
+    })
+    .compile(ir);
+
+    wasmparser::Validator::new()
+        .validate_all(&wasm)
+        .expect("void callable wrapper must synthesize None after the runtime import call");
+
+    let imports = wasm_function_import_type_indices(&wasm);
+    let sigs = wasm_type_section_signatures(&wasm);
+    let import_type = *imports
+        .get("socket_drop")
+        .expect("socket_drop runtime import must be registered");
+    assert_eq!(
+        sigs[import_type as usize],
+        (1, 0),
+        "socket_drop import ABI must be manifest void, not locally defaulted to i64"
+    );
+}
+
+#[test]
+fn intrinsic_runtime_callables_are_manifest_backed() {
+    let mut load_intrinsic = wasm_test_op("builtin_func", Some("fn"), vec![]);
+    load_intrinsic.s_value = Some("molt_load_intrinsic_runtime".to_string());
+    load_intrinsic.value = Some(2);
+    let func = wasm_test_function(
+        "load_intrinsic_callable",
+        vec![],
+        None,
+        vec![load_intrinsic, wasm_test_op("ret_void", None, vec![])],
+    );
+    let ir = SimpleIR {
+        functions: vec![func],
+        profile: None,
+    };
+    let wasm = WasmBackend::with_options(WasmCompileOptions {
+        native_eh_enabled: false,
+        reloc_enabled: false,
+        ..WasmCompileOptions::default()
+    })
+    .compile(ir);
+
+    wasmparser::Validator::new()
+        .validate_all(&wasm)
+        .expect("intrinsic resolver callable must compile through generated ABI metadata");
+
+    let imports = wasm_function_import_type_indices(&wasm);
+    let sigs = wasm_type_section_signatures(&wasm);
+    let import_type = *imports
+        .get("load_intrinsic_runtime")
+        .expect("load_intrinsic_runtime import must be manifest-backed");
+    assert_eq!(sigs[import_type as usize], (2, 1));
+}
+
+#[test]
+#[should_panic(expected = "builtin runtime callable arity mismatch")]
+fn builtin_callable_observed_arity_must_match_manifest() {
+    let mut import_transaction = wasm_test_op("builtin_func", Some("fn"), vec![]);
+    import_transaction.s_value = Some("molt_importlib_import_transaction".to_string());
+    import_transaction.value = Some(4);
+    let func = wasm_test_function(
+        "stale_callable_arity",
+        vec![],
+        None,
+        vec![import_transaction, wasm_test_op("ret_void", None, vec![])],
+    );
+    let ir = SimpleIR {
+        functions: vec![func],
+        profile: None,
+    };
+    let _ = WasmBackend::with_options(WasmCompileOptions {
+        native_eh_enabled: false,
+        reloc_enabled: false,
+        ..WasmCompileOptions::default()
+    })
+    .compile(ir);
+}
+
+#[test]
+#[should_panic(expected = "direct runtime call missing WASM ABI manifest import")]
+fn direct_molt_runtime_call_without_manifest_import_fails_closed() {
+    let mut call = wasm_test_op("call", Some("out"), vec!["arg"]);
+    call.s_value = Some("molt_unregistered_runtime_probe".to_string());
+    let func = wasm_test_function(
+        "unknown_direct_runtime_call",
+        vec!["arg"],
+        None,
+        vec![call, wasm_test_op("ret_void", None, vec![])],
+    );
+    let ir = SimpleIR {
+        functions: vec![func],
+        profile: None,
+    };
+    let _ = WasmBackend::with_options(WasmCompileOptions {
+        native_eh_enabled: false,
+        reloc_enabled: false,
+        ..WasmCompileOptions::default()
+    })
+    .compile(ir);
+}
+
+#[test]
 fn shared_drop_fact_marker_set_is_explicit_for_wasm() {
     assert!(is_shared_drop_fact_marker("drop_inserted"));
     assert!(is_shared_drop_fact_marker(

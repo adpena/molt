@@ -95,6 +95,28 @@ pub(crate) fn emit_static_type_section(types: &mut TypeSection) {
     }
 }
 
+pub(crate) fn runtime_callable_import_name(runtime_name: &str) -> Option<&'static str> {
+    RUNTIME_CALLABLE_IMPORTS
+        .iter()
+        .find_map(|spec| (spec.runtime_name == runtime_name).then_some(spec.import_name))
+        .or_else(|| {
+            RESERVED_RUNTIME_CALLABLE_SPECS
+                .iter()
+                .find_map(|spec| (spec.runtime_name == runtime_name).then_some(spec.import_name))
+        })
+}
+
+pub(crate) fn runtime_callable_arity(runtime_name: &str) -> Option<usize> {
+    RUNTIME_CALLABLE_IMPORTS
+        .iter()
+        .find_map(|spec| (spec.runtime_name == runtime_name).then_some(spec.arity))
+        .or_else(|| {
+            RESERVED_RUNTIME_CALLABLE_SPECS
+                .iter()
+                .find_map(|spec| (spec.runtime_name == runtime_name).then_some(spec.arity))
+        })
+}
+
 // Constant folding pass is now shared via crate::fold_constants in passes.rs.
 
 #[cfg(test)]

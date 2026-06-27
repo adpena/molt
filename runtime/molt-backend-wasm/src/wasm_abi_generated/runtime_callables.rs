@@ -167,6 +167,24 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
         result: RuntimeCallableResult::I64,
     },
     RuntimeCallableImportSpec {
+        runtime_name: "molt_require_intrinsic_runtime",
+        import_name: "require_intrinsic_runtime",
+        arity: 2,
+        result: RuntimeCallableResult::I64,
+    },
+    RuntimeCallableImportSpec {
+        runtime_name: "molt_load_intrinsic_runtime",
+        import_name: "load_intrinsic_runtime",
+        arity: 2,
+        result: RuntimeCallableResult::I64,
+    },
+    RuntimeCallableImportSpec {
+        runtime_name: "molt_runtime_active_runtime",
+        import_name: "runtime_active_runtime",
+        arity: 0,
+        result: RuntimeCallableResult::I64,
+    },
+    RuntimeCallableImportSpec {
         runtime_name: "molt_capabilities_has",
         import_name: "capabilities_has",
         arity: 1,
