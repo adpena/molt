@@ -30,6 +30,7 @@ from .tensor_creation import (
 from .tensor_support import (
     _broadcast_shape_many,
     _broadcast_source_index,
+    _div_result_dtype_and_format,
     _dtype_cast_kind,
     _normalize_tensor_index,
     _preferred_float_format,
@@ -1238,7 +1239,12 @@ class Tensor:
         """Apply a binary op with scalar or tensor broadcasting."""
         if isinstance(other, (int, _float)):
             scalar = _float(other)
-            result_dtype, result_format = _binary_result_dtype_and_format(self, other)
+            if op_code == _OP_DIV:
+                result_dtype, result_format = _div_result_dtype_and_format(self, None)
+            else:
+                result_dtype, result_format = _binary_result_dtype_and_format(
+                    self, other
+                )
             result_buf = alloc(self.size, result_dtype, format_char=result_format)
             src_buf = self._buf
             apply = self._apply_binary_op
@@ -1252,7 +1258,10 @@ class Tensor:
         b_buf = other._buf
         apply = self._apply_binary_op
 
-        result_dtype, result_format = _binary_result_dtype_and_format(self, other)
+        if op_code == _OP_DIV:
+            result_dtype, result_format = _div_result_dtype_and_format(self, other)
+        else:
+            result_dtype, result_format = _binary_result_dtype_and_format(self, other)
 
         intrinsic = _resolve_optional_intrinsic(
             "_MOLT_GPU_BROADCAST_BINARY_CONTIGUOUS",
@@ -1408,10 +1417,11 @@ class Tensor:
     def __rtruediv__(self, other) -> "Tensor":
         if isinstance(other, (int, _float)):
             data = self._data_list()
+            scalar = _float(other)
 
             def _safe_rdiv(x):
                 try:
-                    return _float(other) / x
+                    return scalar / x
                 except ZeroDivisionError:
                     if other > 0:
                         return _float("inf")
@@ -1420,7 +1430,14 @@ class Tensor:
                     else:
                         return _float("nan")
 
-            return self._from_flat([_safe_rdiv(x) for x in data], self._shape)
+            # True division always yields a float result (upstream div upcast),
+            # so build a float buffer directly rather than reusing self._dtype,
+            # which would truncate the quotient when self is an integer tensor.
+            result_dtype, result_format = _div_result_dtype_and_format(self, None)
+            result_buf = alloc(self.size, result_dtype, format_char=result_format)
+            for i in range(self.size):
+                result_buf[i] = _safe_rdiv(data[i])
+            return Tensor(result_buf, shape=self._shape, dtype=result_dtype)
         return NotImplemented
 
     def __pow__(self, other) -> "Tensor":

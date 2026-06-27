@@ -89,6 +89,64 @@ def test_tinygrad_import_public_tensor_where_and_dtype_custody() -> None:
     assert widened.dtype is dtypes.int64
 
 
+def test_tinygrad_true_division_upcasts_integers_to_float() -> None:
+    """`int / int` must be true division producing a float tensor.
+
+    Upstream tinygrad `Tensor.div` runs with `upcast=True` by default, casting
+    both operands to `least_upper_float` before dividing, so integer inputs
+    yield a float result. Documented example
+    (https://docs.tinygrad.org/tensor/elementwise — `div`):
+
+        Tensor([1, 4, 10]).div(Tensor([2, 3, 4])).numpy() -> [0.5, 1.333.., 2.5]
+
+    A prior molt regression stored the float quotient back into an integer
+    buffer, truncating `int / int` to `[0, 1, 2]` (a silent wrong answer). This
+    locks the float-upcast contract across every division path: tensor/tensor,
+    tensor/scalar, and scalar/tensor (`__rtruediv__`).
+    """
+    from tinygrad import Tensor, dtypes
+
+    # tensor / tensor — the documented upstream example.
+    tt = Tensor([1, 4, 10], dtype=dtypes.int32) / Tensor([2, 3, 4], dtype=dtypes.int32)
+    assert tt.dtype is dtypes.float64
+    assert tt.to_list() == pytest.approx([0.5, 4.0 / 3.0, 2.5])
+
+    # tensor / python-int scalar.
+    ts = Tensor([1, 4, 10], dtype=dtypes.int32) / 2
+    assert ts.dtype is dtypes.float64
+    assert ts.to_list() == pytest.approx([0.5, 2.0, 5.0])
+
+    # python-int scalar / tensor (__rtruediv__) — previously truncated to int.
+    st = 7 / Tensor([2, 4, 8], dtype=dtypes.int32)
+    assert st.dtype is dtypes.float64
+    assert st.to_list() == pytest.approx([3.5, 1.75, 0.875])
+
+    # mixed-width integer division also upcasts to float.
+    mixed = Tensor([1, 4, 10], dtype=dtypes.int64) / Tensor([2, 3, 4], dtype=dtypes.int32)
+    assert mixed.dtype is dtypes.float64
+    assert mixed.to_list() == pytest.approx([0.5, 4.0 / 3.0, 2.5])
+
+    # float division is unchanged and preserves float32 precision.
+    ff = (
+        Tensor([1.0, 4.0, 10.0], dtype=dtypes.float32)
+        / Tensor([2.0, 3.0, 4.0], dtype=dtypes.float32)
+    )
+    assert ff.dtype is dtypes.float32
+    assert ff._buf.format_char == "f"
+    assert ff.to_list() == pytest.approx([0.5, 4.0 / 3.0, 2.5], abs=1e-6)
+
+    # add/sub/mul on integers must NOT over-promote — only division upcasts.
+    assert (
+        Tensor([1, 2, 3], dtype=dtypes.int32) + Tensor([4, 5, 6], dtype=dtypes.int32)
+    ).dtype is dtypes.int32
+    assert (
+        Tensor([1, 2, 3], dtype=dtypes.int32) * Tensor([4, 5, 6], dtype=dtypes.int32)
+    ).dtype is dtypes.int32
+    assert (
+        Tensor([4, 5, 6], dtype=dtypes.int32) - Tensor([1, 2, 3], dtype=dtypes.int32)
+    ).dtype is dtypes.int32
+
+
 def test_tinygrad_public_movement_views_match_upstream_surface() -> None:
     from tinygrad import Tensor, dtypes
 
