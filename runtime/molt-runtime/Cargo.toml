@@ -93,7 +93,7 @@ stdlib_ast = ["dep:rustpython-parser"]
 stdlib_fs_extra = ["dep:glob", "dep:tempfile"]
 # Granular domain feature gates for resolve_symbol: when disabled, the
 # linker can strip the implementation code for unused domains.
-stdlib_tk = ["dep:molt-runtime-tk"]
+stdlib_tk = ["dep:molt-runtime-tk", "molt-runtime-tk/tk"]
 stdlib_net = ["dep:molt-runtime-net", "dep:mio", "dep:socket2", "dep:rustls", "dep:rustls-pemfile", "dep:webpki-roots", "dep:tungstenite"]
 stdlib_asyncio = ["dep:molt-runtime-asyncio"]
 stdlib_email = ["stdlib_serial"]
@@ -132,7 +132,7 @@ builtin_contextvars = []
 builtin_fcntl = []
 
 molt_debug_gil = []
-molt_tk_native = ["dep:libloading"]
+molt_tk_native = ["stdlib_tk", "molt-runtime-tk/native-tcl"]
 # Enable dlopen-based C extension loading via the CPython ABI shim
 cext_loader = ["dep:molt-cpython-abi"]
 # Reserved for the freestanding wasm target. Keep this feature independent
@@ -158,7 +158,7 @@ molt-codegen-abi = { path = "../molt-codegen-abi" }
 molt-obj-model = { package = "molt-lang-obj-model", path = "../molt-obj-model" }
 molt-runtime-core = { path = "../molt-runtime-core" }
 molt-runtime-crypto = { path = "../molt-runtime-crypto", optional = true }
-molt-runtime-tk = { path = "../molt-runtime-tk", optional = true }
+molt-runtime-tk = { path = "../molt-runtime-tk", optional = true, default-features = false }
 molt-runtime-compression = { path = "../molt-runtime-compression", optional = true }
 molt-runtime-net = { path = "../molt-runtime-net", optional = true }
 molt-runtime-asyncio = { path = "../molt-runtime-asyncio", optional = true }
@@ -241,7 +241,6 @@ rustls-pemfile = { version = "2.2", optional = true }
 webpki-roots = { version = "1.0", optional = true }
 tungstenite = { version = "0.29", default-features = false, features = ["handshake", "rustls-tls-webpki-roots"], optional = true }
 os_pipe = "1.2"
-libloading = { version = "0.9.0", optional = true }
 molt-cpython-abi = { package = "molt-lang-cpython-abi", path = "../molt-cpython-abi", optional = true, features = ["extension-loader"] }
 wgpu = { version = "29", optional = true }
 pollster = { version = "0.4", optional = true }
