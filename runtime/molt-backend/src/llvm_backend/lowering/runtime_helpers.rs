@@ -269,8 +269,11 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     }
 
     pub(super) fn next_call_site_bits(&mut self, lane: &str) -> inkwell::values::IntValue<'ctx> {
-        let site_id =
-            crate::stable_ic_site_id(self.func.name.as_str(), self.call_site_counter, lane);
+        let site_id = molt_codegen_abi::stable_ic_site_id(
+            self.func.name.as_str(),
+            self.call_site_counter,
+            lane,
+        );
         self.call_site_counter += 1;
         let raw: BasicValueEnum<'ctx> = self
             .backend

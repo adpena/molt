@@ -5,7 +5,7 @@ Checks:
   1. Lean 4 proofs build (lake build)
   2. All Quint models pass invariant checks (quint run)
   3. Known-bad Quint model FAILS (meta-test)
-  4. Proof-code correspondence (NaN-boxing constants match Rust)
+  4. Proof-code correspondence (NaN-boxing constants match Rust codegen ABI)
 
 Usage:
     uv run --python 3.12 python3 tools/check_formal_methods.py
@@ -36,7 +36,7 @@ LEAN_DIR = FORMAL_DIR / "lean"
 QUINT_DIR = FORMAL_DIR / "quint"
 
 # Rust source for NaN-boxing constants
-OBJ_MODEL_LIB = ROOT / "runtime" / "molt-obj-model" / "src" / "lib.rs"
+CODEGEN_ABI_LIB = ROOT / "runtime" / "molt-codegen-abi" / "src" / "lib.rs"
 # Lean formalization of NaN-boxing constants
 NANBOX_LEAN = LEAN_DIR / "MoltTIR" / "Runtime" / "NanBox.lean"
 # Lean Luau backend builtin mapping
@@ -149,37 +149,37 @@ KNOWN_BAD_VIOLATION_MARKERS = (
 # name → (rust_regex, lean_regex)
 NANBOX_CONSTANTS: dict[str, tuple[str, str]] = {
     "QNAN": (
-        r"const QNAN:\s*u64\s*=\s*(0x[0-9a-fA-F_]+)",
+        r"(?:pub\s+)?const QNAN:\s*u64\s*=\s*(0x[0-9a-fA-F_]+)",
         r"def QNAN\s*:\s*UInt64\s*:=\s*(0x[0-9a-fA-F]+)",
     ),
     "TAG_INT": (
-        r"const TAG_INT:\s*u64\s*=\s*(0x[0-9a-fA-F_]+)",
+        r"(?:pub\s+)?const TAG_INT:\s*u64\s*=\s*(0x[0-9a-fA-F_]+)",
         r"def TAG_INT\s*:\s*UInt64\s*:=\s*(0x[0-9a-fA-F]+)",
     ),
     "TAG_BOOL": (
-        r"const TAG_BOOL:\s*u64\s*=\s*(0x[0-9a-fA-F_]+)",
+        r"(?:pub\s+)?const TAG_BOOL:\s*u64\s*=\s*(0x[0-9a-fA-F_]+)",
         r"def TAG_BOOL\s*:\s*UInt64\s*:=\s*(0x[0-9a-fA-F]+)",
     ),
     "TAG_NONE": (
-        r"const TAG_NONE:\s*u64\s*=\s*(0x[0-9a-fA-F_]+)",
+        r"(?:pub\s+)?const TAG_NONE:\s*u64\s*=\s*(0x[0-9a-fA-F_]+)",
         r"def TAG_NONE\s*:\s*UInt64\s*:=\s*(0x[0-9a-fA-F]+)",
     ),
     "TAG_PTR": (
-        r"const TAG_PTR:\s*u64\s*=\s*(0x[0-9a-fA-F_]+)",
+        r"(?:pub\s+)?const TAG_PTR:\s*u64\s*=\s*(0x[0-9a-fA-F_]+)",
         r"def TAG_PTR\s*:\s*UInt64\s*:=\s*(0x[0-9a-fA-F]+)",
     ),
     "TAG_PENDING/TAG_PEND": (
-        r"const TAG_PENDING:\s*u64\s*=\s*(0x[0-9a-fA-F_]+)",
+        r"(?:pub\s+)?const TAG_PENDING:\s*u64\s*=\s*(0x[0-9a-fA-F_]+)",
         r"def TAG_PEND\s*:\s*UInt64\s*:=\s*(0x[0-9a-fA-F]+)",
     ),
     "TAG_MASK": (
-        r"const TAG_MASK:\s*u64\s*=\s*(0x[0-9a-fA-F_]+)",
+        r"(?:pub\s+)?const TAG_MASK:\s*u64\s*=\s*(0x[0-9a-fA-F_]+)",
         r"def TAG_MASK\s*:\s*UInt64\s*:=\s*(0x[0-9a-fA-F]+)",
     ),
     "INT_MASK": (
         # Rust uses a computed expression: (1u64 << INT_WIDTH) - 1
         # We'll handle this specially.
-        r"const INT_MASK:\s*u64\s*=\s*(.+);",
+        r"(?:pub\s+)?const INT_MASK:\s*u64\s*=\s*(.+);",
         r"def INT_MASK\s*:\s*UInt64\s*:=\s*(0x[0-9a-fA-F]+)",
     ),
 }
@@ -188,26 +188,57 @@ NANBOX_CONSTANTS: dict[str, tuple[str, str]] = {
 def _normalize_hex(val: str, rust_text: str = "") -> int:
     """Normalize a hex constant (strip underscores) to an integer."""
     val = val.strip().rstrip(";")
+    cast = re.match(r"^(\w+)\s+as\s+u(?:32|64)$", val)
+    if cast:
+        val = cast.group(1)
+    if re.match(r"^\w+$", val) and rust_text:
+        vm = re.search(
+            rf"(?:pub\s+)?const {val}:\s*u(?:32|64)\s*=\s*([^;]+);",
+            rust_text,
+        )
+        if vm:
+            return _normalize_hex(vm.group(1), rust_text=rust_text)
     # Handle Rust computed expressions like (1u64 << INT_WIDTH) - 1
     if "<<" in val:
-        # Parse: (1u64 << N) - 1, where N is a literal or variable
-        m = re.match(r"\(1u64\s*<<\s*(\w+)\)\s*-\s*1", val.strip())
+        # Parse: (1u64 << N) - 1, where N is a literal or variable.
+        m = re.fullmatch(r"\(1u64\s*<<\s*(.+)\)\s*-\s*1", val.strip())
         if m:
-            shift_val = m.group(1)
-            if shift_val.isdigit():
-                return (1 << int(shift_val)) - 1
-            # Resolve variable from Rust source
-            if rust_text:
-                vm = re.search(rf"const {shift_val}:\s*u64\s*=\s*(\d+)", rust_text)
-                if vm:
-                    return (1 << int(vm.group(1))) - 1
-            raise ValueError(f"Cannot resolve variable: {shift_val}")
+            return (1 << _resolve_rust_shift_width(m.group(1), rust_text)) - 1
         # Parse: 1 << N
-        m2 = re.match(r"1\s*<<\s*(\d+)", val.strip())
+        m2 = re.fullmatch(r"1(?:u64)?\s*<<\s*(.+)", val.strip())
         if m2:
-            return 1 << int(m2.group(1))
+            return 1 << _resolve_rust_shift_width(m2.group(1), rust_text)
         raise ValueError(f"Cannot parse computed constant: {val}")
+    if val.isdigit():
+        return int(val)
     return int(val.replace("_", ""), 16)
+
+
+def _resolve_rust_shift_width(expr: str, rust_text: str) -> int:
+    expr = expr.strip()
+    if expr.startswith("(") and expr.endswith(")"):
+        expr = expr[1:-1].strip()
+    m = re.fullmatch(r"(\w+)(?:\s*-\s*(\d+))?", expr)
+    if not m:
+        raise ValueError(f"Cannot parse shift width: {expr}")
+
+    base, decrement = m.group(1), m.group(2)
+    if base.isdigit():
+        width = int(base)
+    elif rust_text:
+        vm = re.search(
+            rf"(?:pub\s+)?const {base}:\s*u(?:32|64)\s*=\s*([^;]+);",
+            rust_text,
+        )
+        if not vm:
+            raise ValueError(f"Cannot resolve variable: {base}")
+        width = _normalize_hex(vm.group(1), rust_text=rust_text)
+    else:
+        raise ValueError(f"Cannot resolve variable: {base}")
+
+    if decrement:
+        width -= int(decrement)
+    return width
 
 
 # ── Result tracking ──────────────────────────────────────────────────
@@ -478,16 +509,16 @@ def check_known_bad_model() -> CheckResult:
 
 def check_nanbox_correspondence() -> CheckResult:
     """Verify NaN-boxing constants match between Rust and Lean."""
-    if not OBJ_MODEL_LIB.exists():
+    if not CODEGEN_ABI_LIB.exists():
         return CheckResult(
-            "NaN-box correspondence", False, f"Rust source not found: {OBJ_MODEL_LIB}"
+            "NaN-box correspondence", False, f"Rust source not found: {CODEGEN_ABI_LIB}"
         )
     if not NANBOX_LEAN.exists():
         return CheckResult(
             "NaN-box correspondence", False, f"Lean source not found: {NANBOX_LEAN}"
         )
 
-    rust_text = OBJ_MODEL_LIB.read_text()
+    rust_text = CODEGEN_ABI_LIB.read_text()
     lean_text = NANBOX_LEAN.read_text()
 
     mismatches: list[str] = []

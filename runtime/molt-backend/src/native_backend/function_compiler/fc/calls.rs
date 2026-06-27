@@ -1109,7 +1109,7 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
                 let probe_block = builder.create_block();
                 brif_block(&mut *builder, is_ptr, probe_block, &[], slow_block, &[]);
 
-                // Step 2: Extract pointer, check TYPE_ID_FUNCTION (221)
+                // Step 2: Extract pointer, check TYPE_ID_FUNCTION
                 switch_to_block_materialized(&mut *builder, probe_block);
                 seal_block_once(&mut *builder, &mut *sealed_blocks, probe_block);
                 let raw_ptr = builder.ins().band(*func_bits, ptr_mask_val);
@@ -1120,7 +1120,9 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
                     builder
                         .ins()
                         .load(types::I32, MemFlagsData::trusted(), ptr_val, -16i32);
-                let expected_type = builder.ins().iconst(types::I32, 221);
+                let expected_type = builder
+                    .ins()
+                    .iconst(types::I32, i64::from(TYPE_ID_FUNCTION));
                 let type_ok = builder.ins().icmp(IntCC::Equal, type_id, expected_type);
                 let closure_check_block = builder.create_block();
                 brif_block(

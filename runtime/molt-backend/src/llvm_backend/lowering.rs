@@ -14,6 +14,8 @@ use inkwell::basic_block::BasicBlock;
 use inkwell::types::BasicType;
 #[cfg(feature = "llvm")]
 use inkwell::values::{BasicValueEnum, FunctionValue, PhiValue};
+#[cfg(feature = "llvm")]
+use molt_codegen_abi as nanbox;
 
 #[cfg(feature = "llvm")]
 use crate::llvm_backend::LlvmBackend;
@@ -144,9 +146,9 @@ fn box_i64_overflow_safe_with_builder<'ctx>(
 ) -> inkwell::values::IntValue<'ctx> {
     let i64_ty = context.i64_type();
 
-    let bias = i64_ty.const_int(1u64 << 46, false);
+    let bias = i64_ty.const_int(nanbox::INLINE_INT_BIAS as u64, false);
     let biased = builder.build_int_add(raw, bias, "int_inline_bias").unwrap();
-    let limit = i64_ty.const_int(1u64 << 47, false);
+    let limit = i64_ty.const_int(nanbox::INLINE_INT_LIMIT as u64, false);
     let fits = builder
         .build_int_compare(inkwell::IntPredicate::ULT, biased, limit, "int_fits_inline")
         .unwrap();
@@ -237,7 +239,7 @@ fn materialize_dynbox_bits_with_builder<'ctx>(
             builder
                 .build_select(
                     is_nan,
-                    i64_ty.const_int(crate::CANONICAL_NAN_BITS, false),
+                    i64_ty.const_int(nanbox::CANONICAL_NAN_BITS, false),
                     raw_bits,
                     "f64_nan_canonical_bits",
                 )
@@ -347,18 +349,6 @@ const LLVM_FAST_MATH_ALL: u32 = (1 << 0)  // AllowReassoc
 #[cfg(feature = "llvm")]
 fn has_attr(op: &TirOp, key: &str) -> bool {
     matches!(op.attrs.get(key), Some(AttrValue::Bool(true)))
-}
-
-/// NaN-boxing constants (mirrors molt-obj-model/src/lib.rs).
-#[cfg(feature = "llvm")]
-mod nanbox {
-    pub const QNAN: u64 = 0x7ff8_0000_0000_0000;
-    pub const TAG_INT: u64 = 0x0001_0000_0000_0000;
-    pub const TAG_BOOL: u64 = 0x0002_0000_0000_0000;
-    pub const TAG_NONE: u64 = 0x0003_0000_0000_0000;
-    pub const POINTER_MASK: u64 = 0x0000_FFFF_FFFF_FFFF;
-    pub const INT_SIGN_BIT: u64 = 1 << 46;
-    pub const INT_MASK: u64 = (1u64 << 47) - 1;
 }
 
 /// Holds state during lowering of a single TIR function.

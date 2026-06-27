@@ -56,8 +56,8 @@ pub(crate) const fn wasm_table_base() -> u64 {
     WASM_TABLE_BASE_FALLBACK
 }
 
-pub(crate) const INLINE_INT_MIN_I128: i128 = -(1_i128 << 46);
-pub(crate) const INLINE_INT_MAX_I128: i128 = (1_i128 << 46) - 1;
+pub(crate) const INLINE_INT_MIN_I128: i128 = molt_codegen_abi::INT_MIN_INLINE as i128;
+pub(crate) const INLINE_INT_MAX_I128: i128 = molt_codegen_abi::INT_MAX_INLINE as i128;
 pub(crate) const MAX_SMALL_LIST: usize = 16;
 pub(crate) const ITER_EXHAUSTED: usize = usize::MAX;
 
@@ -66,7 +66,7 @@ pub(crate) const GEN_THROW_OFFSET: usize = 8;
 pub(crate) const GEN_CLOSED_OFFSET: usize = 16;
 pub(crate) const GEN_EXC_DEPTH_OFFSET: usize = 24;
 pub(crate) const GEN_YIELD_FROM_OFFSET: usize = 32;
-pub(crate) const GEN_CONTROL_SIZE: usize = 48;
+pub(crate) const GEN_CONTROL_SIZE: usize = molt_codegen_abi::GENERATOR_CONTROL_BYTES as usize;
 
 pub(crate) const ASYNCGEN_GEN_OFFSET: usize = 0;
 pub(crate) const ASYNCGEN_RUNNING_OFFSET: usize = 8;
@@ -78,9 +78,9 @@ pub(crate) const ASYNCGEN_OP_ASEND: i64 = 1;
 pub(crate) const ASYNCGEN_OP_ATHROW: i64 = 2;
 pub(crate) const ASYNCGEN_OP_ACLOSE: i64 = 3;
 
-pub(crate) const TASK_KIND_FUTURE: u64 = 0;
-pub(crate) const TASK_KIND_GENERATOR: u64 = 1;
-pub(crate) const TASK_KIND_COROUTINE: u64 = 2;
+pub(crate) const TASK_KIND_FUTURE: u64 = molt_codegen_abi::TASK_KIND_FUTURE as u64;
+pub(crate) const TASK_KIND_GENERATOR: u64 = molt_codegen_abi::TASK_KIND_GENERATOR as u64;
+pub(crate) const TASK_KIND_COROUTINE: u64 = molt_codegen_abi::TASK_KIND_COROUTINE as u64;
 
 pub(crate) static CALL_DISPATCH_COUNT: AtomicU64 = AtomicU64::new(0);
 pub(crate) static STRUCT_FIELD_STORE_COUNT: AtomicU64 = AtomicU64::new(0);

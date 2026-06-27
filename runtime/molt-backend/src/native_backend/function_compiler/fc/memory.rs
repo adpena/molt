@@ -517,21 +517,17 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
             //     `runtime/molt-runtime/src/object/mod.rs:1185`
             //     which subtracts `size_of::<MoltHeader>()`
             //     to get back to the header).  `MoltHeader`
-            //     is 24 bytes (`object/mod.rs:289-298`) with
+            //     is `HEADER_SIZE_BYTES` with
             //     `flags: u32` at field offset 8, so the
             //     absolute offset of `flags` from `obj_ptr`
             //     (which points to payload start) is
-            //     `-24 + 8 = -16`.  `HEADER_FLAG_HAS_PTRS = 1`
-            //     (bit 0; same file at line 423).
+            //     `HEADER_FLAGS_OFFSET`.
             //
             // The slow path remains the existing runtime
             // call and is reached on flag-set or pointer
             // value — the runtime helper handles decref of
             // the old slot, inc_ref of the new value, the
             // has-ptrs flag transition, and dict sync.
-            const MOLT_HEADER_FLAGS_OFFSET_FROM_PAYLOAD: i32 = -16;
-            const HEADER_FLAG_HAS_PTRS: i64 = 1;
-
             // Defense-in-depth (#50): never dereference the object header
             // when the receiver is not a live heap pointer. A failed
             // allocation upstream (e.g. `object_new_bound` fed a bad
@@ -569,10 +565,12 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 types::I32,
                 MemFlagsData::trusted(),
                 obj_ptr,
-                MOLT_HEADER_FLAGS_OFFSET_FROM_PAYLOAD,
+                HEADER_FLAGS_OFFSET,
             );
             let flags_64 = builder.ins().uextend(types::I64, flags_val);
-            let has_ptrs_bit = builder.ins().band_imm(flags_64, HEADER_FLAG_HAS_PTRS);
+            let has_ptrs_bit = builder
+                .ins()
+                .band_imm(flags_64, i64::from(HEADER_FLAG_HAS_PTRS));
             let has_ptrs_set = builder.ins().icmp_imm(IntCC::NotEqual, has_ptrs_bit, 0);
 
             let tag_mask = builder.ins().iconst(types::I64, nbc.qnan_tag_mask);

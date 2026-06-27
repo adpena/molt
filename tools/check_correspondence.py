@@ -4,7 +4,7 @@
 Verifies that type definitions, constants, operator enums, builtin mappings,
 and semantic invariants stay in sync across:
   - Lean formalization (formal/lean/MoltTIR/)
-  - Rust runtime (runtime/molt-obj-model/, runtime/molt-backend/)
+  - Rust runtime/codegen ABI (runtime/molt-codegen-abi/, runtime/molt-backend/)
   - Python frontend (src/molt/frontend/)
 
 All expected values are parsed from source files -- nothing is hardcoded.
@@ -57,7 +57,7 @@ LATTICE_LEAN = LEAN_DIR / "MoltTIR" / "Passes" / "Lattice.lean"
 SCCP_LEAN = LEAN_DIR / "MoltTIR" / "Passes" / "SCCP.lean"
 
 # Rust sources
-OBJ_MODEL_RS = ROOT / "runtime" / "molt-obj-model" / "src" / "lib.rs"
+CODEGEN_ABI_RS = ROOT / "runtime" / "molt-codegen-abi" / "src" / "lib.rs"
 LUAU_RS = ROOT / "runtime" / "molt-backend" / "src" / "luau.rs"
 
 # Python sources
@@ -140,24 +140,54 @@ def _read(path: Path) -> str:
 
 def _normalize_hex(val: str, rust_text: str = "") -> int:
     val = val.strip().rstrip(";")
+    cast = re.match(r"^(\w+)\s+as\s+u(?:32|64)$", val)
+    if cast:
+        val = cast.group(1)
+    if re.match(r"^\w+$", val) and rust_text:
+        vm = re.search(
+            rf"(?:pub\s+)?const {val}:\s*u(?:32|64)\s*=\s*([^;]+);",
+            rust_text,
+        )
+        if vm:
+            return _normalize_hex(vm.group(1), rust_text=rust_text)
     if "<<" in val:
-        m = re.match(r"\(1u64\s*<<\s*(\w+)\)\s*-\s*1", val.strip())
+        m = re.fullmatch(r"\(1u64\s*<<\s*(.+)\)\s*-\s*1", val.strip())
         if m:
-            shift_val = m.group(1)
-            if shift_val.isdigit():
-                return (1 << int(shift_val)) - 1
-            if rust_text:
-                vm = re.search(rf"const {shift_val}:\s*u64\s*=\s*(\d+)", rust_text)
-                if vm:
-                    return (1 << int(vm.group(1))) - 1
-            raise ValueError(f"Cannot resolve variable: {shift_val}")
-        m2 = re.match(r"1\s*<<\s*(\d+)", val.strip())
+            return (1 << _resolve_rust_shift_width(m.group(1), rust_text)) - 1
+        m2 = re.fullmatch(r"1(?:u64)?\s*<<\s*(.+)", val.strip())
         if m2:
-            return 1 << int(m2.group(1))
+            return 1 << _resolve_rust_shift_width(m2.group(1), rust_text)
         raise ValueError(f"Cannot parse computed constant: {val}")
     if val.isdigit():
         return int(val)
     return int(val.replace("_", ""), 16)
+
+
+def _resolve_rust_shift_width(expr: str, rust_text: str) -> int:
+    expr = expr.strip()
+    if expr.startswith("(") and expr.endswith(")"):
+        expr = expr[1:-1].strip()
+    m = re.fullmatch(r"(\w+)(?:\s*-\s*(\d+))?", expr)
+    if not m:
+        raise ValueError(f"Cannot parse shift width: {expr}")
+
+    base, decrement = m.group(1), m.group(2)
+    if base.isdigit():
+        width = int(base)
+    elif rust_text:
+        vm = re.search(
+            rf"(?:pub\s+)?const {base}:\s*u(?:32|64)\s*=\s*([^;]+);",
+            rust_text,
+        )
+        if not vm:
+            raise ValueError(f"Cannot resolve variable: {base}")
+        width = _normalize_hex(vm.group(1), rust_text=rust_text)
+    else:
+        raise ValueError(f"Cannot resolve variable: {base}")
+
+    if decrement:
+        width -= int(decrement)
+    return width
 
 
 def _parse_lean_hex_constants(text: str) -> dict[str, int]:
@@ -169,7 +199,7 @@ def _parse_lean_hex_constants(text: str) -> dict[str, int]:
 
 def _parse_rust_u64_constants(text: str) -> dict[str, str]:
     result: dict[str, str] = {}
-    for m in re.finditer(r"const\s+(\w+):\s*u64\s*=\s*(.+?);", text):
+    for m in re.finditer(r"(?:pub\s+)?const\s+(\w+):\s*u(?:32|64)\s*=\s*(.+?);", text):
         result[m.group(1)] = m.group(2).strip()
     return result
 
@@ -235,15 +265,15 @@ def _parse_lean_evalUnOp_rules(text: str) -> list[tuple[str, str]]:
 def check_nanbox_constants() -> CategoryResult:
     result = CategoryResult(
         "nanbox",
-        "NaN-boxing constants (Rust molt-obj-model <-> Lean NanBox)",
+        "NaN-boxing constants (Rust molt-codegen-abi <-> Lean NanBox)",
     )
 
-    rust_text = _read(OBJ_MODEL_RS)
+    rust_text = _read(CODEGEN_ABI_RS)
     lean_text = _read(NANBOX_LEAN)
 
     if not rust_text:
         result.items.append(
-            CheckItem("source", False, f"Rust source missing: {OBJ_MODEL_RS}")
+            CheckItem("source", False, f"Rust source missing: {CODEGEN_ABI_RS}")
         )
         return result
     if not lean_text:

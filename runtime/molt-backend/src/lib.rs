@@ -29,16 +29,14 @@ pub mod luau_ir;
 pub mod luau_lower;
 #[cfg(feature = "native-backend")]
 mod native_backend;
+pub use crate::ir::{FunctionIR, OpIR, PgoProfileIR, SimpleIR, validate_simple_ir};
 #[cfg(feature = "native-backend")]
 pub use crate::native_backend::{CompileOutput, NativeBackendModuleContext, SimpleBackend};
 #[cfg(feature = "native-backend")]
 pub(crate) use crate::native_backend::{
-    DeferredDefine, NanBoxConsts, VarValue, block_has_terminator, extend_unique_tracked,
+    DeferredDefine, VarValue, block_has_terminator, extend_unique_tracked,
     switch_to_block_tracking, unbox_int,
 };
-#[cfg(any(feature = "native-backend", feature = "llvm"))]
-mod native_backend_consts;
-pub use crate::ir::{FunctionIR, OpIR, PgoProfileIR, SimpleIR, validate_simple_ir};
 pub use crate::passes::{
     apply_profile_order, build_const_int_map, canonicalize_direct_raise_edges,
     compute_intrinsic_manifest, compute_intrinsic_manifest_checked, elide_dead_struct_allocs,
@@ -47,6 +45,20 @@ pub use crate::passes::{
     escape_analysis, fold_constants, fold_constants_cross_block, fuse_method_dispatch,
     hoist_loop_invariants, inject_runtime_exit, rc_coalescing, rewrite_stateful_loops,
     split_megafunctions,
+};
+#[cfg(any(feature = "native-backend", feature = "llvm"))]
+#[allow(unused_imports)]
+pub(crate) use molt_codegen_abi::{
+    CANONICAL_NAN_BITS, FUNC_DEFAULT_DICT_POP, FUNC_DEFAULT_DICT_UPDATE, FUNC_DEFAULT_NONE,
+    GENERATOR_CONTROL_BYTES, HEADER_COLD_IDX_OFFSET, HEADER_FLAG_CONTAINS_REFS,
+    HEADER_FLAG_HAS_PTRS, HEADER_FLAG_IMMORTAL, HEADER_FLAG_SKIP_CLASS_DECREF, HEADER_FLAGS_OFFSET,
+    HEADER_REFCOUNT_OFFSET, HEADER_SIZE_BYTES, HEADER_TYPE_ID_OFFSET, INLINE_INT_BIAS,
+    INLINE_INT_LIMIT, INT_MASK, INT_MAX_INLINE, INT_MIN_INLINE, INT_SHIFT, INT_SIGN_BIT, INT_WIDTH,
+    JIT_TYPE_ID_LIST_BOOL, LIST_INT_STORAGE_DATA_OFFSET, LIST_INT_STORAGE_LEN_OFFSET, NanBoxConsts,
+    POINTER_MASK, QNAN, QNAN_TAG_BOOL_I64, QNAN_TAG_INT_I64, QNAN_TAG_MASK_I64, QNAN_TAG_NONE_I64,
+    QNAN_TAG_PENDING_I64, QNAN_TAG_PTR_I64, TAG_BOOL, TAG_INT, TAG_MASK, TAG_NONE, TAG_PENDING,
+    TAG_PTR, TASK_KIND_COROUTINE, TASK_KIND_FUTURE, TASK_KIND_GENERATOR, TYPE_ID_FUNCTION,
+    TYPE_ID_OBJECT, pending_bits, stable_ic_site_id,
 };
 /// The representation lattice element (the orthogonal carrier axis to
 /// `TirType`). Re-exported publicly because it appears in the signature of the
@@ -57,8 +69,6 @@ pub use molt_ir::repr::Repr;
 pub use molt_ir::stdlib_module_symbols::{
     STDLIB_MODULE_SYMBOLS_ENV, parse_stdlib_module_symbols, stdlib_module_symbols_from_env,
 };
-#[cfg(any(feature = "native-backend", feature = "llvm"))]
-use native_backend_consts::*;
 
 #[cfg(feature = "luau-backend")]
 pub mod luau;
@@ -69,32 +79,6 @@ pub use molt_backend_wasm::wasm;
 
 #[cfg(feature = "egraphs")]
 pub mod egraph_simplify;
-
-#[cfg(any(feature = "native-backend", feature = "llvm"))]
-fn pending_bits() -> i64 {
-    (QNAN | TAG_PENDING) as i64
-}
-
-#[cfg(any(feature = "native-backend", feature = "llvm"))]
-pub(crate) fn stable_ic_site_id(func_name: &str, op_idx: usize, lane: &str) -> i64 {
-    const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
-    const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
-    let mut hash = FNV_OFFSET;
-    for b in func_name
-        .as_bytes()
-        .iter()
-        .chain(lane.as_bytes().iter())
-        .copied()
-    {
-        hash ^= u64::from(b);
-        hash = hash.wrapping_mul(FNV_PRIME);
-    }
-    hash ^= op_idx as u64;
-    hash = hash.wrapping_mul(FNV_PRIME);
-    // Keep the id within inline-int payload range and avoid zero.
-    let id = (hash & ((1u64 << 46) - 1)).max(1);
-    id as i64
-}
 
 #[cfg(any(feature = "native-backend", feature = "llvm"))]
 pub(crate) fn env_setting(var: &str) -> Option<String> {

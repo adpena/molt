@@ -53,7 +53,7 @@ impl SimpleBackend {
         builder.append_block_params_for_function_params(entry_block);
         builder.switch_to_block(entry_block);
         builder.seal_block(entry_block);
-        let nbc = NanBoxConsts::new(&mut builder);
+        let nbc = NanBoxConsts::new();
 
         let closure_bits = builder.block_params(entry_block)[0];
         let args_ptr = builder.block_params(entry_block)[1];

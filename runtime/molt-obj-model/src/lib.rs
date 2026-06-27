@@ -6,24 +6,17 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{OnceLock, RwLock};
 
+pub use molt_codegen_abi::{INT_MAX_INLINE as INLINE_INT_MAX, INT_MIN_INLINE as INLINE_INT_MIN};
+use molt_codegen_abi::{
+    box_bool_bits, box_float_bits, box_int_bits, box_none_bits, box_pending_bits, box_ptr_bits,
+    canonical_addr_from_masked_bits, fits_inline_int, is_bool_bits, is_float_bits, is_int_bits,
+    is_none_bits, is_pending_bits, is_ptr_bits, ptr_payload_bits, unbox_bool_bits,
+    unbox_inline_int_bits,
+};
+
 #[derive(Copy, Clone, Debug, PartialEq)]
 #[repr(transparent)]
 pub struct MoltObject(u64);
-
-const QNAN: u64 = 0x7ff8_0000_0000_0000;
-const TAG_INT: u64 = 0x0001_0000_0000_0000;
-const TAG_BOOL: u64 = 0x0002_0000_0000_0000;
-const TAG_NONE: u64 = 0x0003_0000_0000_0000;
-const TAG_PTR: u64 = 0x0004_0000_0000_0000;
-const TAG_PENDING: u64 = 0x0005_0000_0000_0000;
-const TAG_MASK: u64 = 0x0007_0000_0000_0000;
-const POINTER_MASK: u64 = 0x0000_FFFF_FFFF_FFFF;
-const INT_SIGN_BIT: u64 = 1 << 46;
-const INT_WIDTH: u64 = 47;
-const INT_MASK: u64 = (1u64 << INT_WIDTH) - 1;
-const CANONICAL_NAN_BITS: u64 = 0x7ff0_0000_0000_0001;
-pub const INLINE_INT_MIN: i64 = -(1i64 << (INT_WIDTH - 1));
-pub const INLINE_INT_MAX: i64 = (1i64 << (INT_WIDTH - 1)) - 1;
 
 const PTR_REGISTRY_SHARDS: usize = 64;
 
@@ -74,11 +67,6 @@ fn trace_ptr_registry() -> bool {
             Some("1")
         )
     })
-}
-
-fn canonical_addr_from_masked(masked: u64) -> u64 {
-    let signed = ((masked << 16) as i64) >> 16;
-    signed as u64
 }
 
 pub fn register_ptr(ptr: *mut u8) -> u64 {
@@ -163,11 +151,7 @@ impl MoltObject {
 
     #[inline(always)]
     pub fn from_float(f: f64) -> Self {
-        if f.is_nan() {
-            Self(CANONICAL_NAN_BITS)
-        } else {
-            Self(f.to_bits())
-        }
+        Self(box_float_bits(f) as u64)
     }
 
     /// Construct an INLINE NaN-boxed int. CONTRACT: `i` must fit the 47-bit
@@ -180,19 +164,16 @@ impl MoltObject {
     #[inline(always)]
     pub fn from_int(i: i64) -> Self {
         debug_assert!(
-            (INLINE_INT_MIN..=INLINE_INT_MAX).contains(&i),
+            fits_inline_int(i),
             "MoltObject::from_int: {i} is outside the 47-bit inline window; \
              callers must route non-inline values through int_bits_from_i128"
         );
-        let val = (i as u64) & INT_MASK;
-        Self(QNAN | TAG_INT | val)
+        Self(box_int_bits(i) as u64)
     }
 
     #[inline(always)]
     pub fn try_from_int(i: i64) -> Option<Self> {
-        (INLINE_INT_MIN..=INLINE_INT_MAX)
-            .contains(&i)
-            .then(|| Self::from_int(i))
+        fits_inline_int(i).then(|| Self::from_int(i))
     }
 
     #[inline(always)]
@@ -203,17 +184,17 @@ impl MoltObject {
     #[inline(always)]
     pub fn from_bool(b: bool) -> Self {
         let val = if b { 1 } else { 0 };
-        Self(QNAN | TAG_BOOL | val)
+        Self(box_bool_bits(val) as u64)
     }
 
     #[inline(always)]
     pub fn none() -> Self {
-        Self(QNAN | TAG_NONE)
+        Self(box_none_bits() as u64)
     }
 
     #[inline(always)]
     pub fn pending() -> Self {
-        Self(QNAN | TAG_PENDING)
+        Self(box_pending_bits() as u64)
     }
 
     #[inline(always)]
@@ -229,20 +210,18 @@ impl MoltObject {
                 high == 0 || high == 0xffff,
                 "Non-canonical pointer for MoltObject"
             );
-            let masked = addr & POINTER_MASK;
-            Self(QNAN | TAG_PTR | masked)
+            Self(box_ptr_bits(addr) as u64)
         }
         #[cfg(not(debug_assertions))]
         {
             let addr = ptr as u64;
-            let masked = addr & POINTER_MASK;
-            Self(QNAN | TAG_PTR | masked)
+            Self(box_ptr_bits(addr) as u64)
         }
     }
 
     #[inline(always)]
     pub fn is_float(&self) -> bool {
-        (self.0 & QNAN) != QNAN
+        is_float_bits(self.0)
     }
 
     #[inline(always)]
@@ -256,18 +235,18 @@ impl MoltObject {
 
     #[inline(always)]
     pub fn is_int(&self) -> bool {
-        (self.0 & (QNAN | TAG_MASK)) == (QNAN | TAG_INT)
+        is_int_bits(self.0)
     }
 
     #[inline(always)]
     pub fn is_bool(&self) -> bool {
-        (self.0 & (QNAN | TAG_MASK)) == (QNAN | TAG_BOOL)
+        is_bool_bits(self.0)
     }
 
     #[inline(always)]
     pub fn as_bool(&self) -> Option<bool> {
         if self.is_bool() {
-            Some((self.0 & 0x1) == 1)
+            Some(unbox_bool_bits(self.0) == 1)
         } else {
             None
         }
@@ -275,24 +254,24 @@ impl MoltObject {
 
     #[inline(always)]
     pub fn is_none(&self) -> bool {
-        (self.0 & (QNAN | TAG_MASK)) == (QNAN | TAG_NONE)
+        is_none_bits(self.0)
     }
 
     #[inline(always)]
     pub fn is_pending(&self) -> bool {
-        (self.0 & (QNAN | TAG_MASK)) == (QNAN | TAG_PENDING)
+        is_pending_bits(self.0)
     }
 
     #[inline(always)]
     pub fn is_ptr(&self) -> bool {
-        (self.0 & (QNAN | TAG_MASK)) == (QNAN | TAG_PTR)
+        is_ptr_bits(self.0)
     }
 
     #[inline(always)]
     pub fn as_ptr(&self) -> Option<*mut u8> {
         if self.is_ptr() {
-            let masked = self.0 & POINTER_MASK;
-            let addr = canonical_addr_from_masked(masked);
+            let masked = ptr_payload_bits(self.0);
+            let addr = canonical_addr_from_masked_bits(masked);
             // The NaN-boxed canonical address is the SINGLE source of truth for a
             // `TAG_PTR` value's identity, on every build profile. Recovering it via
             // `with_exposed_provenance_mut` is exactly what release does, and it is
@@ -332,13 +311,7 @@ impl MoltObject {
     #[inline(always)]
     pub fn as_int(&self) -> Option<i64> {
         if self.is_int() {
-            let val = self.0 & INT_MASK;
-            // Sign-extend from 47-bit using safe bitwise ops
-            if (val & INT_SIGN_BIT) != 0 {
-                Some((val as i64) | !(INT_MASK as i64))
-            } else {
-                Some(val as i64)
-            }
+            Some(unbox_inline_int_bits(self.0))
         } else {
             None
         }
@@ -346,12 +319,7 @@ impl MoltObject {
 
     #[inline(always)]
     pub fn as_int_unchecked(&self) -> i64 {
-        let val = self.0 & INT_MASK;
-        if (val & INT_SIGN_BIT) != 0 {
-            (val as i64) | !(INT_MASK as i64)
-        } else {
-            val as i64
-        }
+        unbox_inline_int_bits(self.0)
     }
 
     /// Returns `true` if this object is immortal — i.e. it must never be
@@ -367,21 +335,14 @@ impl MoltObject {
     /// sign-extended 47-bit payload determines immortality.
     #[inline(always)]
     pub fn is_immortal(&self) -> bool {
-        let tag_bits = self.0 & (QNAN | TAG_MASK);
-
         // None and Bool are unconditionally immortal — single comparison each.
-        if tag_bits == (QNAN | TAG_NONE) || tag_bits == (QNAN | TAG_BOOL) {
+        if self.is_none() || self.is_bool() {
             return true;
         }
 
         // Small integers in [-5, 256].
-        if tag_bits == (QNAN | TAG_INT) {
-            let val = self.0 & INT_MASK;
-            let i = if (val & INT_SIGN_BIT) != 0 {
-                (val as i64) | !(INT_MASK as i64)
-            } else {
-                val as i64
-            };
+        if self.is_int() {
+            let i = self.as_int_unchecked();
             return (-5..=256).contains(&i);
         }
 
@@ -595,8 +556,7 @@ mod tests {
         let addr = ptr.expose_provenance() as u64;
         // Build the TAG_PTR box exactly as `box_ptr_value` does in codegen,
         // bypassing `from_ptr`/`register_ptr`.
-        let masked = addr & POINTER_MASK;
-        let obj = MoltObject(QNAN | TAG_PTR | masked);
+        let obj = MoltObject(box_ptr_bits(addr) as u64);
         assert!(obj.is_ptr());
         let recovered = obj.as_ptr().expect("unregistered TAG_PTR must recover");
         assert_eq!(recovered.expose_provenance() as u64, addr);

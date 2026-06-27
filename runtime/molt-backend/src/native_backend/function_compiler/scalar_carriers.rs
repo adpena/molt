@@ -201,7 +201,7 @@ pub(in crate::native_backend::function_compiler) fn box_raw_i64_value_overflow_s
     // from Cranelift Variables here. Split-heavy CFGs can repair those Variables
     // through implicit block params; local constants make RawI64 -> BoxedI64 an
     // explicit boundary independent of SSA variable repair.
-    let nbc = crate::NanBoxConsts::new(builder);
+    let nbc = crate::NanBoxConsts::new();
     let int_mask = builder.ins().iconst(types::I64, nbc.int_mask);
     let masked = builder.ins().band(raw_val, int_mask);
     let int_tag = builder.ins().iconst(types::I64, nbc.qnan_tag_int);
@@ -265,7 +265,7 @@ pub(in crate::native_backend::function_compiler) fn var_get_boxed_overflow_safe_
     } else if representation_plan.is_float_unboxed(name) {
         let var = *vars.get(name)?;
         let val = builder.use_var(var);
-        let nbc = crate::NanBoxConsts::new(builder);
+        let nbc = crate::NanBoxConsts::new();
         let bits = box_float_value(builder, val, &nbc);
         Some(VarValue(bits))
     } else {

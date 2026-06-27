@@ -74,17 +74,16 @@ change the mechanics. Absorb all eight.
    `native_backend/mod.rs` ancestry root, above `fc/`'s own `use super::super::*` chain.
 
 7. **The NaN-box ABI is split TWO ways by type, refining 21b flag #3 / S3.** ABI-portable
-   (scalar, no Cranelift types) -> `molt-codegen-abi`: the raw consts in
+   (scalar, no Cranelift types) -> dependency-free `molt-codegen-abi`: the raw consts formerly in
    `native_backend_consts.rs` (`QNAN`, `TAG_*`, `INT_*`, `POINTER_MASK`, `CANONICAL_NAN_BITS`,
-   header/layout offsets), the scalar `box_int(i64)->i64` (`simple_backend.rs:814`), the
-   `NanBoxConsts` *struct* (a plain field-bag of `i64`s; `NanBoxConsts::new` takes `_builder` but
-   ignores it -- de-Cranelift it to `NanBoxConsts::new()`), and `pending_bits()->i64` +
-   `stable_ic_site_id(...)->i64` (loose in `lib.rs:76`/:81). **Cranelift-typed helpers STAY in
+   header/layout offsets), scalar bit helpers, the `NanBoxConsts` *struct* (a plain field-bag of
+   `i64`s; `NanBoxConsts::new()` has no Cranelift argument), and `pending_bits()->i64` +
+   `stable_ic_site_id(...)->i64`. The object model, formal correspondence tools, and NaN-box
+   fuzz/property tests consume this crate as the Rust authority. **Cranelift-typed helpers STAY in
    molt-backend-native**: `unbox_int` (`simple_backend.rs:844`), `unbox_int_or_bool` (:873),
    `box_int_value` (:1100) take `&mut FunctionBuilder` / `Value` and MUST NOT enter a
-   molt-ir-only ABI crate (would drag `cranelift` into it). `wasm.rs:19-28` duplicates the const
-   subset (plus its own extras like `INT_MIN_INLINE` at :30 that are NOT shared) -- S3 dedups
-   ONLY the shared subset.
+   dependency-free ABI crate (would drag `cranelift` into it). `wasm_values.rs` and
+   `lower_to_wasm.rs` import the shared subset; WASM encoder/cache/type-table policy stays local.
 
 8. **In-flight git work is the perf/docs lane (disjoint).** `git status` shows only
    `tools/perf_*`, `docs/perf/`, `64_*.md` modified -- no Rust crate files dirty. The swarm is
@@ -399,8 +398,10 @@ runtime/Cargo.toml (not the build root) -- no external pins.
 
 ## 5. S3 -- Extract `molt-codegen-abi` (the shared NaN-box ABI)
 
-**Goal:** a tiny crate (deps `molt-ir` ONLY) holding the ABI-portable NaN-box vocabulary that 3
-backends share (native 48x, llvm 29x, wasm 34x per 21b), killing the `wasm.rs` duplicate copy.
+**Goal:** a tiny dependency-free `no_std` crate holding the ABI-portable NaN-box and codegen
+layout vocabulary that the object model, native, LLVM, WASM, fuzzers, and formal correspondence
+tools share. This kills the backend-local `native_backend_consts` lane, the WASM constant copies,
+the LLVM private `nanbox` module, and the former object-model constant authority.
 
 ### 5.1 Exact partition (fact #7 -- by TYPE, not by file)
 **-> `runtime/molt-codegen-abi/src/lib.rs`:**
@@ -415,6 +416,12 @@ backends share (native 48x, llvm 29x, wasm 34x per 21b), killing the `wasm.rs` d
   G3-checked). Its fields are all `i64` derived from the consts.
 - `pending_bits() -> i64` (`lib.rs:76-78`) and `stable_ic_site_id(func, op_idx, lane) -> i64`
   (`lib.rs:81-99`) -- pure scalar/FNV; move verbatim.
+- Object-model constructors/predicates/decode helpers consume this crate directly: the pointer
+  registry and provenance behavior stays in `molt-lang-obj-model`, but tag math, inline-int
+  decode, bool/none/pending construction, and canonical NaN bits come from
+  `molt-codegen-abi`.
+- Formal correspondence tools and NaN-box fuzz/property tests read the ABI crate as the Rust
+  authority. Do not point them back at `molt-obj-model/src/lib.rs`.
 
 **STAYS in molt-backend-native (Cranelift-typed -- do NOT move; would pull cranelift into the ABI
 crate, violating G7):** `unbox_int` (:844), `unbox_int_or_bool` (:873), `box_int_value` (:1100),
@@ -422,19 +429,16 @@ and every `*_value` helper taking `&mut FunctionBuilder`/`Value`. These import t
 `molt-codegen-abi` post-S7.
 
 ### 5.2 The wasm de-dup (21b G3 byte-identical, the duplication-kill)
-`wasm.rs:19-28` redefines the const subset (`QNAN, CANONICAL_NAN_BITS, TAG_INT, TAG_BOOL,
-TAG_NONE, TAG_PTR, TAG_PENDING, TAG_MASK, POINTER_MASK`). Replace the block with `use
-molt_codegen_abi::{QNAN, CANONICAL_NAN_BITS, TAG_INT, TAG_BOOL, TAG_NONE, TAG_PTR, TAG_PENDING,
-TAG_MASK, POINTER_MASK};`. **KEEP wasm.rs's NON-shared consts in place** (`QNAN_TAG_MASK_I64` :26,
-`QNAN_TAG_PTR_I64` :27 -- derived; verify `INT_MASK`/`INT_SHIFT` :28-29 against
-`native_backend_consts` -- they ARE there, so import them too; `INT_MIN_INLINE` :30 is wasm-only
--> keep local). **Gate: the deduped consts must be byte-identical to the originals** (they are --
-both define `QNAN = 0x7ff8_..`); G3 proves the emitted `.wasm` is unchanged.
+`wasm_values.rs` and `lower_to_wasm.rs` both consume `molt-codegen-abi`; the encoder routines,
+constant-cache locals, `IntFastLane`, relocation table, static type table, and exception tag/table
+layout stay WASM-local. `box_int` now uses the shared `INT_MASK` contract rather than the old WASM
+`POINTER_MASK` drift. **Gate:** emitted WASM semantics must remain stable except for the corrected
+inline-int mask contract.
 
 ### 5.3 Cargo.toml / wiring
-- `runtime/molt-codegen-abi/Cargo.toml`: deps `molt-ir = { path = "../molt-ir" }` ONLY (~300 LOC
-  crate; NO cranelift/inkwell/wasm-encoder -- G7 enforces). Features: none needed (consts are
-  unconditional); add `test-util=[]` for symmetry.
+- `runtime/molt-codegen-abi/Cargo.toml`: no dependencies (~300 LOC crate; NO molt-ir,
+  cranelift, inkwell, wasm-encoder, or runtime deps -- G7 enforces). Features: none needed
+  because ABI facts are unconditional.
 - `molt-backend/Cargo.toml`: add `molt-codegen-abi = { path = "../molt-codegen-abi" }`. Delete
   `mod native_backend_consts;` + `use native_backend_consts::*;` (lib.rs:37-40); `pending_bits`
   moves out so lib.rs:75-78 is deleted (callers import `molt_codegen_abi::pending_bits`); replace
@@ -442,9 +446,10 @@ both define `QNAN = 0x7ff8_..`); G3 proves the emitted `.wasm` is unchanged.
   `"runtime/molt-codegen-abi"`.
 
 ### 5.4 Gates / parallelization
-Full G1-G7; **G7 critical** (prove molt-codegen-abi pulls only molt-ir; prove no cranelift leak).
-**[parallel] with S2** -- it only needs `molt-ir` (S1), touches `native_backend_consts.rs` +
-`lib.rs` + `wasm.rs` + `simple_backend.rs` (the const/helper defs), which S2 does not move. BUT it
+Full G1-G7; **G7 critical** (prove `molt-codegen-abi` has an empty normal dependency tree; prove
+no cranelift/inkwell/wasm-encoder/runtime leak).
+**[parallel] with S2** -- it touches `molt-codegen-abi`, `lib.rs`, WASM value/lowering helpers,
+`molt-obj-model`, and `simple_backend.rs` (the const/helper consumers), which S2 does not move. BUT it
 edits `molt-backend/lib.rs` + `Cargo.toml` (shared with S2/S8) -> serialize the `lib.rs`/`Cargo.toml`
 dep-line edits against whichever of S2/S3 commits first (rebase the dep-line edits; the file MOVES
 are independent). Single agent.
@@ -590,7 +595,7 @@ STAY in this crate (they were always here -- simple_backend.rs).
 
 ### 9.2 The `use super::*` -> explicit-import rewrite (the main mechanical cost; 21b/21 section-1.3)
 `native_backend/mod.rs:1` is `use super::*;` -- it currently re-exports lib.rs's crate-root items
-(NaN-box consts via `use native_backend_consts::*`, the lib.rs helpers, plus the shared Cranelift
+(NaN-box ABI facts via `molt-codegen-abi`, plus the shared Cranelift
 imports it ALSO declares at mod.rs:11-26) down to `simple_backend`/`function_compiler` (and `fc/`
 via their own `use super::super::*` chain). After extraction there is no crate-root `super` to
 glob. Rewrite: replace `use super::*;` at mod.rs:1 with the EXPLICIT set the subtree needs --
@@ -759,6 +764,6 @@ retired; #2 both lenses satisfied; one-authority-per-invariant for op-effects + 
 - `runtime/molt-backend/src/lib.rs` (the re-export facade S1/S2/S3/S4-S8 all re-point; the loose
   NaN-box helpers @:76-99 -> molt-codegen-abi; the per-backend `pub mod` -> `pub use` lines)
 - `runtime/molt-backend/src/native_backend/mod.rs` (S7 `use super::*` @:1 -> explicit-import
-  rewrite, the ancestry root above the fc/ tree) + `native_backend_consts.rs` + `simple_backend.rs`
-  (NaN-box const/helper defs split by type for S3: scalar -> abi, Cranelift-typed -> stay)
+  rewrite, the ancestry root above the fc/ tree) + `simple_backend.rs`
+  (Cranelift-typed NaN-box helpers stay; scalar ABI facts live in `runtime/molt-codegen-abi`)
 - `Cargo.toml` (REPO ROOT -- the workspace members list every new crate joins; NOT runtime/Cargo.toml)

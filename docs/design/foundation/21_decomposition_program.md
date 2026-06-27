@@ -628,10 +628,10 @@ interleave anytime. N1 must wait for the LLVM partner's arc (§0.3). C1/O are cl
 
 **N1 — extract `molt-backend-native` (move #5):**
 - New crate = `native_backend/` + `llvm_backend/` onto `molt-tir`. The `use super::*` glob becomes
-  explicit `use molt_tir::{...}` / `use molt_backend_core::{NaN-box helpers}`. The NaN-box helpers
-  + `stable_ic_site_id`/`pending_bits` currently in `lib.rs` must move to a shared spot both
-  `molt-backend` and `molt-backend-native` can import — put them in `molt-tir` (they are
-  representation-level) or a tiny `molt-backend-abi` leaf.
+  explicit `use molt_tir::{...}` / `use molt_codegen_abi::{...}`. The NaN-box helpers,
+  `stable_ic_site_id`, `pending_bits`, header/layout facts, task/generator layout facts, and
+  type-id values live in dependency-free `molt-codegen-abi`; native, LLVM, WASM, the object model,
+  fuzzers, and formal correspondence tools consume that crate as the single Rust authority.
 - **Sequence AFTER the LLVM partner's current arc** (§0.3) — coordinate a freeze.
 - Gate: symbol identity (G5) is load-bearing here — the C-ABI export surface must be byte-identical;
   `nm` the artifacts before/after.
