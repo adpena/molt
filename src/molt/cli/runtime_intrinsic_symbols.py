@@ -7,6 +7,7 @@ import subprocess
 from pathlib import Path
 
 from molt.cli.atomic_io import _atomic_write_text
+from molt.cli.config_resolution import DEFAULT_STDLIB_PROFILE
 from molt.cli.backend_cache import (
     _nm_candidate_binaries,
     _normalize_native_symbol_name,
@@ -124,7 +125,7 @@ def _stage_runtime_intrinsic_symbols_for_native_codegen(
     runtime_cargo_profile: str,
     molt_root: Path,
     cargo_timeout: float | None,
-    stdlib_profile: str | None = "micro",
+    stdlib_profile: str | None = DEFAULT_STDLIB_PROFILE,
     resolved_modules: set[str] | frozenset[str] | None = None,
     is_wasm_freestanding: bool = False,
 ) -> tuple[str, _CliFailure | None]:

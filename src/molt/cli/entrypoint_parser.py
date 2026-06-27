@@ -14,6 +14,7 @@ from molt.cli.build_output_layout import (
     _BUILD_PROFILE_CHOICES,
     _DEPLOY_PROFILE_CHOICES,
 )
+from molt.cli.config_resolution import STDLIB_PROFILE_CHOICES
 from molt.cli.dx_cli import add_dx_parser
 from molt.cli.toolchain_validation import _VALIDATE_SUITE_CHOICES
 
@@ -237,7 +238,7 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
     )
     build_parser.add_argument(
         "--stdlib-profile",
-        choices=["full", "micro"],
+        choices=list(STDLIB_PROFILE_CHOICES),
         default=None,
         help="Runtime stdlib profile (full=all modules, micro=core only for smallest binary)",
     )

@@ -11,6 +11,7 @@ from molt.cli.config_resolution import (
     _resolve_build_config,
     _resolve_capabilities_config,
     _resolve_command_config,
+    resolve_stdlib_profile,
 )
 
 
@@ -131,11 +132,21 @@ def show_config(
     extension_cfg = _resolve_command_config(config, "extension")
     publish_cfg = _resolve_command_config(config, "publish")
     caps_cfg = _resolve_capabilities_config(config)
+    stdlib_profile_value, stdlib_profile_source = resolve_stdlib_profile(
+        flag=None,
+        build_cfg=build_cfg,
+    )
     data: dict[str, Any] = {
         "root": str(config_root),
         "sources": {
             "molt_toml": str(molt_toml) if molt_toml.exists() else None,
             "pyproject": str(pyproject) if pyproject.exists() else None,
+        },
+        "resolved": {
+            "stdlib_profile": {
+                "value": stdlib_profile_value,
+                "source": stdlib_profile_source,
+            },
         },
         "build": build_cfg,
         "run": run_cfg,
@@ -167,6 +178,10 @@ def show_config(
     print("Paths:")
     for key, value in data["paths"].items():
         print(f"- {key}: {value}")
+    print("Resolved:")
+    print(
+        f"- stdlib_profile: {stdlib_profile_value} (source: {stdlib_profile_source})"
+    )
     if build_cfg:
         print("Build defaults:")
         for key in sorted(build_cfg):

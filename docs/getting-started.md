@@ -38,27 +38,64 @@ Expected: JSON output with exit code `0`.
 
 ## Build And Run Hello World
 
+`uv sync` installs the `molt` command into `.venv` and onto your path. The
+fastest first run is the drop-in form — it builds and runs in one step, just
+like `python examples/hello.py`:
+
 ```bash
-uv run --python 3.12 python3 -m molt.cli build examples/hello.py
+molt run examples/hello.py
+```
+
+To produce a standalone optimized binary and run it directly:
+
+```bash
+molt build examples/hello.py --release
 ./hello_molt
 ```
 
-You can also use the run wrapper directly:
+## Build And Run Profiles
+
+`molt run` defaults to the fast **`dev`** profile (quick iteration) and `molt
+build` defaults to the optimized **`release`** profile (shipping artifact). This
+is the same convention as Rust's `cargo run` (dev) and `cargo build --release`,
+and it is intentional, not a hidden surprise:
+
+- The default is documented at both `molt run --help` and `molt build --help`.
+- The verb does **not** lock the profile. Both verbs accept either profile, so
+  you can always override with one additive flag:
 
 ```bash
-uv run --python 3.12 python3 -m molt.cli run examples/hello.py
+molt run app.py --release         # iterate against an optimized build
+molt build app.py --profile dev   # fast unoptimized build artifact
 ```
+
+`--release` is shorthand for `--profile release`.
 
 ## Compare Against CPython
 
 ```bash
-uv run --python 3.12 python3 -m molt.cli compare examples/hello.py
+molt compare examples/hello.py
 ```
 
 ## Benchmark A Script
 
 ```bash
-uv run --python 3.12 python3 -m molt.cli bench --script examples/hello.py
+molt bench --script examples/hello.py
+```
+
+## Running From A Source Checkout
+
+If you are working in the repository and have not activated `.venv`, prefix any
+command with `uv run --python 3.12` so it uses the project's pinned interpreter:
+
+```bash
+uv run --python 3.12 molt run examples/hello.py
+```
+
+The module form is equivalent and is what the contributor proof lanes use:
+
+```bash
+uv run --python 3.12 python3 -m molt.cli run examples/hello.py
 ```
 
 ## Common Pitfalls

@@ -40,16 +40,31 @@ For the full setup and troubleshooting path, use
 [docs/getting-started.md](docs/getting-started.md).
 
 ```bash
-uv sync --group dev --python 3.12
-uv run --python 3.12 python3 -m molt.cli build examples/hello.py
-./hello_molt
+uv sync --group dev --python 3.12   # installs the `molt` command into .venv
+molt run examples/hello.py          # build + run, like `python examples/hello.py`
 ```
 
-You can also compare behavior directly against CPython:
+`uv sync` puts the `molt` command on your path (in `.venv`). From there the
+common commands are:
 
 ```bash
-uv run --python 3.12 python3 -m molt.cli compare examples/hello.py
+molt run app.py             # build and run (fast `dev` profile, like `cargo run`)
+molt build app.py --release # produce an optimized standalone binary
+./app                       # run the compiled binary directly
+molt compare app.py         # diff Molt's output against CPython
 ```
+
+> `molt run` defaults to the fast `dev` profile and `molt build` defaults to the
+> optimized `release` profile — the same convention as `cargo run` / `cargo
+> build --release`. Override either with `--profile dev|release` (or the
+> `--release` shorthand); both verbs accept both profiles. See
+> [docs/getting-started.md](docs/getting-started.md#build-and-run-profiles).
+
+> **From a source checkout without activating the venv**, prefix any command
+> with `uv run --python 3.12`, e.g.
+> `uv run --python 3.12 molt run examples/hello.py`. The module form
+> `python3 -m molt.cli ...` is equivalent and is what the contributor proof
+> lanes use.
 
 ## Install
 

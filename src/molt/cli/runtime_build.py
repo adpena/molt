@@ -28,6 +28,7 @@ from molt.cli.artifact_state import (
 from molt.cli.atomic_io import _atomic_copy_file, _atomic_write_text
 from molt.cli.build_locks import _build_lock
 from molt.cli.capability_spec import _dedupe_preserve_order
+from molt.cli.config_resolution import DEFAULT_STDLIB_PROFILE
 from molt.cli.cargo_execution import (
     _build_slot,
     _cargo_build_env,
@@ -92,7 +93,7 @@ def _initialize_runtime_artifact_state(
     molt_root: Path,
     runtime_cargo_profile: str,
     target_triple: str | None,
-    stdlib_profile: str | None = "micro",
+    stdlib_profile: str | None = DEFAULT_STDLIB_PROFILE,
 ) -> _RuntimeArtifactState:
     state = _RuntimeArtifactState()
     if is_rust_transpile:
@@ -133,7 +134,7 @@ def _maybe_start_native_runtime_lib_ready_async(
     cargo_timeout: float | None,
     diagnostics_enabled: bool,
     phase_starts: dict[str, float] | None,
-    stdlib_profile: str | None = "micro",
+    stdlib_profile: str | None = DEFAULT_STDLIB_PROFILE,
     resolved_modules: set[str] | frozenset[str] | None = None,
 ) -> None:
     runtime_lib = runtime_state.runtime_lib
@@ -166,7 +167,7 @@ def _ensure_runtime_lib_ready(
     runtime_cargo_profile: str,
     molt_root: Path,
     cargo_timeout: float | None,
-    stdlib_profile: str | None = "micro",
+    stdlib_profile: str | None = DEFAULT_STDLIB_PROFILE,
     resolved_modules: Collection[str] | None = None,
 ) -> bool:
     runtime_lib = runtime_state.runtime_lib
@@ -194,7 +195,7 @@ def _ensure_native_runtime_lib_ready_before_link(
     cargo_timeout: float | None,
     diagnostics_enabled: bool,
     phase_starts: dict[str, float],
-    stdlib_profile: str | None = "micro",
+    stdlib_profile: str | None = DEFAULT_STDLIB_PROFILE,
     resolved_modules: set[str] | frozenset[str] | None = None,
 ) -> bool:
     runtime_lib = runtime_state.runtime_lib
@@ -270,7 +271,7 @@ def _ensure_runtime_lib(
     cargo_profile: str,
     project_root: Path,
     cargo_timeout: float | None,
-    stdlib_profile: str | None = "micro",
+    stdlib_profile: str | None = DEFAULT_STDLIB_PROFILE,
     resolved_modules: Collection[str] | None = None,
 ) -> bool:
     rustflags = os.environ.get("RUSTFLAGS", "")
@@ -552,7 +553,7 @@ def _ensure_runtime_wasm_artifact(
     project_root: Path,
     simd_enabled: bool,
     freestanding: bool,
-    stdlib_profile: str | None = "micro",
+    stdlib_profile: str | None = DEFAULT_STDLIB_PROFILE,
     resolved_modules: set[str] | frozenset[str] | None = None,
     required_exports: set[str] | frozenset[str] | None = None,
 ) -> bool:
@@ -1056,12 +1057,12 @@ def _ensure_runtime_wasm(
     project_root: Path | None = None,
     simd_enabled: bool = True,
     freestanding: bool = False,
-    stdlib_profile: str | None = "micro",
+    stdlib_profile: str | None = DEFAULT_STDLIB_PROFILE,
     resolved_modules: set[str] | frozenset[str] | None = None,
     required_exports: set[str] | frozenset[str] | None = None,
 ) -> bool:
     validate_exports = not reloc
-    effective_stdlib_profile = stdlib_profile or "micro"
+    effective_stdlib_profile = stdlib_profile or DEFAULT_STDLIB_PROFILE
 
     def _runtime_wasm_build_error_detail(
         build: subprocess.CompletedProcess[str],
