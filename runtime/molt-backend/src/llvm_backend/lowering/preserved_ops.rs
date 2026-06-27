@@ -2,6 +2,8 @@ use super::*;
 
 #[path = "preserved_ops/callable_ops.rs"]
 mod callable_ops;
+#[path = "preserved_ops/container_ops.rs"]
+mod container_ops;
 #[path = "preserved_ops/vector_reductions.rs"]
 mod vector_reductions;
 impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
@@ -13,7 +15,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         if kind == "call_async" {
             return self.lower_preserved_call_async_op(op);
         }
-        if super::container_ops::is_preserved_container_kind(kind) {
+        if container_ops::is_preserved_container_kind(kind) {
             return self.lower_preserved_container_op(op, kind);
         }
         if callable_ops::is_preserved_callable_kind(kind) {
