@@ -117,18 +117,6 @@ pub(crate) struct SpecialCache {
     pub(crate) function_globals_descriptor: AtomicU64,
 }
 
-#[cfg(any(
-    feature = "stdlib_collections",
-    feature = "stdlib_compression",
-    not(feature = "stdlib_itertools"),
-    feature = "stdlib_itertools",
-    feature = "stdlib_logging_ext",
-    feature = "stdlib_math",
-    feature = "stdlib_regex",
-    feature = "stdlib_serial",
-    feature = "sqlite",
-    test
-))]
 pub(crate) type RuntimeExtensionStateInit = unsafe extern "C" fn() -> *mut u8;
 pub(crate) type RuntimeExtensionStateClear = unsafe extern "C" fn(*mut u8);
 pub(crate) type RuntimeExtensionStateDrop = unsafe extern "C" fn(*mut u8);
@@ -523,18 +511,6 @@ impl RuntimeState {
     }
 }
 
-#[cfg(any(
-    feature = "stdlib_collections",
-    feature = "stdlib_compression",
-    not(feature = "stdlib_itertools"),
-    feature = "stdlib_itertools",
-    feature = "stdlib_logging_ext",
-    feature = "stdlib_math",
-    feature = "stdlib_regex",
-    feature = "stdlib_serial",
-    feature = "sqlite",
-    test
-))]
 pub(crate) fn runtime_extension_state_get_or_init(
     state: &RuntimeState,
     key: &[u8],

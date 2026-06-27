@@ -24,18 +24,6 @@ pub(crate) use metrics::{
 pub(crate) use recursion::{
     recursion_guard_enter, recursion_guard_exit, recursion_limit_get, recursion_limit_set,
 };
-#[cfg(any(
-    feature = "stdlib_collections",
-    feature = "stdlib_compression",
-    not(feature = "stdlib_itertools"),
-    feature = "stdlib_itertools",
-    feature = "stdlib_logging_ext",
-    feature = "stdlib_math",
-    feature = "stdlib_regex",
-    feature = "stdlib_serial",
-    feature = "sqlite",
-    test
-))]
 pub(crate) use runtime_state::runtime_extension_state_get_or_init;
 pub(crate) use runtime_state::{
     RuntimeState, clear_thread_runtime_state, runtime_extension_states_clear_and_drop,
