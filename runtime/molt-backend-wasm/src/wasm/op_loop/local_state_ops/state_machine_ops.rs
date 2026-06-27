@@ -16,7 +16,7 @@ pub(super) fn emit_state_machine_local_state_op(
             let future = locals[&args[0]];
             let slot_bits = args.get(1).map(|name| locals[name]);
             let out = locals[op.out.as_ref().unwrap()];
-            let self_ptr = locals["__molt_tmp0"];
+            let self_ptr = locals.synthetic(WasmFrameSyntheticLocal::MoltTmp0);
             func.instruction(&Instruction::LocalGet(0));
             emit_call(func, reloc_enabled, import_ids["handle_resolve"]);
             func.instruction(&Instruction::I64ExtendI32U);

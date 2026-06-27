@@ -13,7 +13,7 @@ pub(super) fn emit_closure_local_state_op(
         "closure_load" => {
             let args = op.args.as_ref().unwrap();
             let obj = locals[&args[0]];
-            let tmp_ptr = locals["__molt_tmp0"];
+            let tmp_ptr = locals.synthetic(WasmFrameSyntheticLocal::MoltTmp0);
             func.instruction(&Instruction::LocalGet(obj));
             emit_call(func, reloc_enabled, import_ids["handle_resolve"]);
             func.instruction(&Instruction::I64ExtendI32U);
@@ -31,7 +31,7 @@ pub(super) fn emit_closure_local_state_op(
         "closure_store" => {
             let args = op.args.as_ref().unwrap();
             let obj = locals[&args[0]];
-            let tmp_ptr = locals["__molt_tmp0"];
+            let tmp_ptr = locals.synthetic(WasmFrameSyntheticLocal::MoltTmp0);
             func.instruction(&Instruction::LocalGet(obj));
             emit_call(func, reloc_enabled, import_ids["handle_resolve"]);
             func.instruction(&Instruction::I64ExtendI32U);

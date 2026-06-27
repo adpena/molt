@@ -44,7 +44,7 @@ pub(super) fn emit_async_task_runtime_op(
             // runtime-owned control block.
             let has_args = op.args.as_ref().is_some_and(|a| !a.is_empty());
             if has_args {
-                let resolve_local = locals["__wasm_alloc_resolve"];
+                let resolve_local = locals.synthetic(WasmFrameSyntheticLocal::WasmAllocResolve);
                 func.instruction(&Instruction::LocalGet(res));
                 emit_call(func, reloc_enabled, import_ids["handle_resolve"]);
                 func.instruction(&Instruction::LocalSet(resolve_local));
@@ -52,7 +52,7 @@ pub(super) fn emit_async_task_runtime_op(
             if let Some(args) = op.args.as_ref()
                 && !args.is_empty()
             {
-                let resolve_local = locals["__wasm_alloc_resolve"];
+                let resolve_local = locals.synthetic(WasmFrameSyntheticLocal::WasmAllocResolve);
                 for (i, name) in args.iter().enumerate() {
                     let arg_local = locals[name];
                     func.instruction(&Instruction::LocalGet(resolve_local));

@@ -17,8 +17,8 @@ pub(super) fn emit_field_local_state_op(
             let obj = locals[&args[0]];
             let val = locals[&args[1]];
             let offset = op.value.unwrap();
-            let tmp_addr = locals["__wasm_tmp0"];
-            let tmp_old = locals["__wasm_tmp1"];
+            let tmp_addr = locals.synthetic(WasmFrameSyntheticLocal::WasmTmp0);
+            let tmp_old = locals.synthetic(WasmFrameSyntheticLocal::WasmTmp1);
 
             const_cache.emit_qnan_tag_mask(func);
             func.instruction(&Instruction::I64And);
@@ -108,7 +108,7 @@ pub(super) fn emit_field_local_state_op(
             let obj = locals[&args[0]];
             let val = locals[&args[1]];
             let offset = op.value.unwrap();
-            let tmp_addr = locals["__wasm_tmp0"];
+            let tmp_addr = locals.synthetic(WasmFrameSyntheticLocal::WasmTmp0);
 
             const_cache.emit_qnan_tag_mask(func);
             func.instruction(&Instruction::I64And);
@@ -181,8 +181,8 @@ pub(super) fn emit_field_local_state_op(
             let args = op.args.as_ref().unwrap();
             let obj = locals[&args[0]];
             let offset = op.value.unwrap();
-            let tmp_addr = locals["__wasm_tmp0"];
-            let tmp_val = locals["__wasm_tmp1"];
+            let tmp_addr = locals.synthetic(WasmFrameSyntheticLocal::WasmTmp0);
+            let tmp_val = locals.synthetic(WasmFrameSyntheticLocal::WasmTmp1);
             let out = locals[op.out.as_ref().unwrap()];
 
             func.instruction(&Instruction::LocalGet(obj));
@@ -236,8 +236,8 @@ pub(super) fn emit_field_local_state_op(
             let args = op.args.as_ref().unwrap();
             let obj = locals[&args[0]];
             let offset = op.value.unwrap();
-            let tmp_addr = locals["__wasm_tmp0"];
-            let tmp_val = locals["__wasm_tmp1"];
+            let tmp_addr = locals.synthetic(WasmFrameSyntheticLocal::WasmTmp0);
+            let tmp_val = locals.synthetic(WasmFrameSyntheticLocal::WasmTmp1);
             let out = locals[op.out.as_ref().unwrap()];
 
             func.instruction(&Instruction::LocalGet(obj));

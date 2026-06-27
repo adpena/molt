@@ -137,10 +137,7 @@ fn is_coalescable_local(
     read_vars: &BTreeSet<String>,
     param_set: &BTreeSet<String>,
 ) -> bool {
-    (name.starts_with("__tmp") || name.starts_with("__v"))
-        && !param_set.contains(name)
-        && read_vars.contains(name)
-        && !WasmFrameLocals::is_literal_scratch_name(name)
+    WasmFrameLocals::is_coalescable_value_name(name, read_vars, param_set)
 }
 
 fn defined_and_used_value_vars(ops: &[OpIR]) -> (BTreeSet<String>, BTreeSet<String>) {

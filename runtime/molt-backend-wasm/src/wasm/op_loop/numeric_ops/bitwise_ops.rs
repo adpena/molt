@@ -23,9 +23,9 @@ pub(super) fn emit_bitwise_numeric_op(
                     &known_raw_ints,
                     IntFastLane::IntOrBool,
                 );
-                let tmp_lhs = locals["__molt_tmp0"];
-                let tmp_rhs = locals["__molt_tmp1"];
-                let tmp_raw = locals["__molt_tmp2"];
+                let tmp_lhs = locals.synthetic(WasmFrameSyntheticLocal::MoltTmp0);
+                let tmp_rhs = locals.synthetic(WasmFrameSyntheticLocal::MoltTmp1);
+                let tmp_raw = locals.synthetic(WasmFrameSyntheticLocal::MoltTmp2);
                 emit_unbox_int_local_trusted_tee_opt(
                     func,
                     lhs,
@@ -81,9 +81,9 @@ pub(super) fn emit_bitwise_numeric_op(
                     &known_raw_ints,
                     IntFastLane::IntOrBool,
                 );
-                let tmp_lhs = locals["__molt_tmp0"];
-                let tmp_rhs = locals["__molt_tmp1"];
-                let tmp_raw = locals["__molt_tmp2"];
+                let tmp_lhs = locals.synthetic(WasmFrameSyntheticLocal::MoltTmp0);
+                let tmp_rhs = locals.synthetic(WasmFrameSyntheticLocal::MoltTmp1);
+                let tmp_raw = locals.synthetic(WasmFrameSyntheticLocal::MoltTmp2);
                 emit_unbox_int_local_trusted_tee_opt(
                     func,
                     lhs,
@@ -139,9 +139,9 @@ pub(super) fn emit_bitwise_numeric_op(
                     &known_raw_ints,
                     IntFastLane::IntOrBool,
                 );
-                let tmp_lhs = locals["__molt_tmp0"];
-                let tmp_rhs = locals["__molt_tmp1"];
-                let tmp_raw = locals["__molt_tmp2"];
+                let tmp_lhs = locals.synthetic(WasmFrameSyntheticLocal::MoltTmp0);
+                let tmp_rhs = locals.synthetic(WasmFrameSyntheticLocal::MoltTmp1);
+                let tmp_raw = locals.synthetic(WasmFrameSyntheticLocal::MoltTmp2);
                 emit_unbox_int_local_trusted_tee_opt(
                     func,
                     lhs,
@@ -233,9 +233,9 @@ pub(super) fn emit_bitwise_numeric_op(
                     &known_raw_ints,
                     IntFastLane::IntOrBool,
                 );
-                let tmp_lhs = locals["__molt_tmp0"];
-                let tmp_rhs = locals["__molt_tmp1"];
-                let tmp_raw = locals["__molt_tmp2"];
+                let tmp_lhs = locals.synthetic(WasmFrameSyntheticLocal::MoltTmp0);
+                let tmp_rhs = locals.synthetic(WasmFrameSyntheticLocal::MoltTmp1);
+                let tmp_raw = locals.synthetic(WasmFrameSyntheticLocal::MoltTmp2);
                 emit_unbox_int_local_trusted_tee_opt(
                     func,
                     lhs,
@@ -291,9 +291,9 @@ pub(super) fn emit_bitwise_numeric_op(
                     &known_raw_ints,
                     IntFastLane::IntOrBool,
                 );
-                let tmp_lhs = locals["__molt_tmp0"];
-                let tmp_rhs = locals["__molt_tmp1"];
-                let tmp_raw = locals["__molt_tmp2"];
+                let tmp_lhs = locals.synthetic(WasmFrameSyntheticLocal::MoltTmp0);
+                let tmp_rhs = locals.synthetic(WasmFrameSyntheticLocal::MoltTmp1);
+                let tmp_raw = locals.synthetic(WasmFrameSyntheticLocal::MoltTmp2);
                 emit_unbox_int_local_trusted_tee_opt(
                     func,
                     lhs,
@@ -349,9 +349,9 @@ pub(super) fn emit_bitwise_numeric_op(
                     &known_raw_ints,
                     IntFastLane::IntOrBool,
                 );
-                let tmp_lhs = locals["__molt_tmp0"];
-                let tmp_rhs = locals["__molt_tmp1"];
-                let tmp_raw = locals["__molt_tmp2"];
+                let tmp_lhs = locals.synthetic(WasmFrameSyntheticLocal::MoltTmp0);
+                let tmp_rhs = locals.synthetic(WasmFrameSyntheticLocal::MoltTmp1);
+                let tmp_raw = locals.synthetic(WasmFrameSyntheticLocal::MoltTmp2);
                 emit_unbox_int_local_trusted_tee_opt(
                     func,
                     lhs,
@@ -416,9 +416,9 @@ pub(super) fn emit_bitwise_numeric_op(
                     &known_raw_ints,
                     IntFastLane::IntOrBool,
                 );
-                let tmp_lhs = locals["__molt_tmp0"];
-                let tmp_rhs = locals["__molt_tmp1"];
-                let tmp_raw = locals["__molt_tmp2"];
+                let tmp_lhs = locals.synthetic(WasmFrameSyntheticLocal::MoltTmp0);
+                let tmp_rhs = locals.synthetic(WasmFrameSyntheticLocal::MoltTmp1);
+                let tmp_raw = locals.synthetic(WasmFrameSyntheticLocal::MoltTmp2);
                 emit_unbox_int_local_trusted_opt(func, lhs, tmp_lhs, &const_cache, &known_raw_ints);
                 emit_unbox_int_local_trusted_tee_opt(
                     func,
@@ -497,9 +497,9 @@ pub(super) fn emit_bitwise_numeric_op(
                     &known_raw_ints,
                     IntFastLane::IntOrBool,
                 );
-                let tmp_lhs = locals["__molt_tmp0"];
-                let tmp_rhs = locals["__molt_tmp1"];
-                let tmp_raw = locals["__molt_tmp2"];
+                let tmp_lhs = locals.synthetic(WasmFrameSyntheticLocal::MoltTmp0);
+                let tmp_rhs = locals.synthetic(WasmFrameSyntheticLocal::MoltTmp1);
+                let tmp_raw = locals.synthetic(WasmFrameSyntheticLocal::MoltTmp2);
                 emit_unbox_int_local_trusted_opt(func, lhs, tmp_lhs, &const_cache, &known_raw_ints);
                 emit_unbox_int_local_trusted_tee_opt(
                     func,
