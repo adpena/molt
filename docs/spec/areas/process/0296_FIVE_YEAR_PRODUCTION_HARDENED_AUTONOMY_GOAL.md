@@ -41,17 +41,16 @@ Non-negotiable engineering contract:
 - Never revert or discard partner work. Always start with git status and preserve unrelated WIP.
 - Always stage owned file changes promptly so owned work is atomic and visible.
 
-Canonical environment setup before build, test, bench, or molt commands:
+Maintainer/agent proof-lane environment setup before build, test, bench, or
+molt commands:
 
-export MOLT_EXT_ROOT=$PWD
-export CARGO_TARGET_DIR=$PWD/target
-export MOLT_DIFF_CARGO_TARGET_DIR=$CARGO_TARGET_DIR
-export MOLT_CACHE=$PWD/.molt_cache
-export MOLT_DIFF_ROOT=$PWD/tmp/diff
-export MOLT_DIFF_TMPDIR=$PWD/tmp
-export UV_CACHE_DIR=$PWD/.uv-cache
-export TMPDIR=$PWD/tmp
 export MOLT_SESSION_ID="<unique session id>"
+eval "$(python3 tools/run_context_env.py --prefer-external-artifacts --dx --format posix)"
+
+On Windows checkouts on `C:`, heavy developer/agent lanes should resolve to a
+healthy non-`C:` root unless an explicit emergency override is set. Public users
+may compile in place, use Molt/Cargo defaults, or choose outputs with explicit
+flags/environment variables.
 
 Session startup:
 

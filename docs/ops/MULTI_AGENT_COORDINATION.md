@@ -209,18 +209,20 @@ Differential and conformance lanes are shared resources.
   - docs/spec/matrix updates based on already captured evidence.
 - If the diff lock would make an agent wait without adding signal, record the
   wait in the task log and move to non-colliding work.
-- Always use canonical roots:
+- Resolve canonical roots through the DX authority before heavy maintainer,
+  agent, benchmark, differential, conformance, or CI-style lanes. On Windows
+  checkouts on `C:`, use a healthy non-`C:` root unless an explicit emergency
+  override is set. Public users may compile in place, use Molt/Cargo defaults,
+  or choose outputs with explicit flags/environment variables.
 
   ```bash
-  export MOLT_EXT_ROOT=$PWD
-  export CARGO_TARGET_DIR=$PWD/target
-  export MOLT_DIFF_CARGO_TARGET_DIR=$CARGO_TARGET_DIR
-  export MOLT_CACHE=$PWD/.molt_cache
-  export MOLT_DIFF_ROOT=$PWD/tmp/diff
-  export MOLT_DIFF_TMPDIR=$PWD/tmp
-  export UV_CACHE_DIR=$PWD/.uv-cache
-  export TMPDIR=$PWD/tmp
+  export MOLT_SESSION_ID="<unique-agent-session>"
+  eval "$(python3 tools/run_context_env.py --prefer-external-artifacts --dx --format posix)"
   ```
+
+  Repo-local roots such as `$PWD/target`, `$PWD/.molt_cache`, and `$PWD/tmp`
+  are local fallback/user-default examples, not heavy proof-lane guidance on
+  constrained internal disks.
 
 - Keep RSS and harness custody enabled. Memory blowups are failures, not a
   reason to disable the guard.

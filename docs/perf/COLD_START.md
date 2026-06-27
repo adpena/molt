@@ -31,7 +31,8 @@ Probes, all native, via the molt CLI / `cc`:
 
 Run:
 ```bash
-export MOLT_SESSION_ID=perfscore CARGO_TARGET_DIR="$PWD/target/sessions/perfscore"
+export MOLT_SESSION_ID=perfscore
+eval "$(python3 tools/run_context_env.py --prefer-external-artifacts --dx --format posix)"
 uv run --python 3.12 python3 tools/cold_start_decompose.py \
     --profile release-fast --profile release-output --samples 15
 # -> bench/scoreboard/cold_start_decomposition.json
