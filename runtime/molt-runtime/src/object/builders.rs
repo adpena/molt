@@ -8,6 +8,7 @@ fn raw_payload_total_or_null(payload_size: usize) -> Option<usize> {
     crate::object::checked_object_total_size(payload_size)
 }
 
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_header_size() -> u64 {
     crate::with_gil_entry_nopanic!(_py, { std::mem::size_of::<MoltHeader>() as u64 })
 }

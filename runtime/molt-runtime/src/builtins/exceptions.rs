@@ -3133,6 +3133,7 @@ pub extern "C" fn molt_exception_with_traceback(self_bits: u64, traceback_bits: 
     })
 }
 
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_exception_kind(exc_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let exc_obj = obj_from_bits(exc_bits);

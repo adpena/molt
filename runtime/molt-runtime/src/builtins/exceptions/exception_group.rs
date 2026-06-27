@@ -769,6 +769,7 @@ pub(super) fn alloc_exception_group_from_class_bits(
     }
 }
 
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_exceptiongroup_init(self_bits: u64, args_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let self_obj = obj_from_bits(self_bits);
