@@ -1,0 +1,18 @@
+[package]
+name = "molt-backend-rust"
+version = "0.1.0"
+publish = false
+edition = "2024"
+license = "Apache-2.0"
+
+[dependencies]
+molt-ir = { path = "../molt-ir" }
+molt-tir = { path = "../molt-tir" }
+
+[features]
+default = []
+rust-backend = []
+
+[[test]]
+name = "rust_transpiler_preview"
+required-features = ["rust-backend"]

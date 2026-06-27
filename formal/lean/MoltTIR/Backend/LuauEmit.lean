@@ -1,7 +1,8 @@
 /-
   MoltTIR.Backend.LuauEmit -- Translation from MoltTIR to Luau target AST.
 
-  Models the core translation logic in runtime/molt-backend/src/luau.rs:
+  Models the core translation logic in runtime/molt-backend-luau/src/luau.rs
+  and the src/luau/ emitter family:
   - Expression emission (IR Expr -> LuauExpr)
   - Instruction emission (IR Instr -> List LuauStmt)
   - Block emission (IR Block -> List LuauStmt)

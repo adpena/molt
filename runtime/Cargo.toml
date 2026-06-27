@@ -22,6 +22,8 @@ members = [
     "molt-runtime-protobuf",
     "molt-runtime",
     "molt-backend",
+    "molt-backend-luau",
+    "molt-backend-rust",
     "molt-wasm-host",
     "molt-db",
     "molt-cpython-abi",

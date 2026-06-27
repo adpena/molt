@@ -1,17 +1,17 @@
 # Luau Backend OpIR Support Matrix
 
 **Status:** Generated
-**Source:** `runtime/molt-backend/src/luau.rs`
+**Source:** `runtime/molt-backend-luau/src/luau`
 **Target:** current/future Luau surface; Molt does not add legacy Lua compatibility shims.
 
 ## Summary
 
 - `compile-error`: `0`
-- `implemented-exact`: `298`
+- `implemented-exact`: `299`
 - `implemented-target-limited`: `54`
 - `not-admitted`: `47`
 - `runtime-capability-error`: `6`
-- `total`: `405`
+- `total`: `406`
 
 ## Matrix
 
@@ -58,6 +58,7 @@
 | `call_async` | `implemented-target-limited` | Executes the known poll target directly for the admitted synchronous Luau subset. |
 | `call_bind` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `call_func` | `implemented-exact` | Lowered without checked-output stub markers. |
+| `call_function` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `call_guarded` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `call_indirect` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `call_internal` | `implemented-exact` | Lowered without checked-output stub markers. |

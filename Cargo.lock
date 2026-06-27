@@ -2789,6 +2789,8 @@ dependencies = [
  "libc",
  "metal",
  "mlx-rs",
+ "molt-backend-luau",
+ "molt-backend-rust",
  "molt-backend-wasm",
  "molt-codegen-abi",
  "molt-ir",
@@ -2805,6 +2807,23 @@ dependencies = [
  "wasmparser 0.252.0",
  "wgpu",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "molt-backend-luau"
+version = "0.1.0"
+dependencies = [
+ "molt-ir",
+ "molt-tir",
+ "serde_json",
+]
+
+[[package]]
+name = "molt-backend-rust"
+version = "0.1.0"
+dependencies = [
+ "molt-ir",
+ "molt-tir",
 ]
 
 [[package]]
