@@ -335,6 +335,10 @@ Use this workflow for high-velocity multi-agent iteration:
 5. `UV_NO_SYNC=1 uv run --python 3.12 python3 -u tests/molt_diff.py --build-profile dev --jobs 2 <tests...>`
 
 Key controls:
+- These controls are for Molt repo development, maintainers, agents, and
+  subagents. They should not leak into the public CLI contract: real users may
+  compile in place, use Molt/Cargo defaults, or choose paths with explicit
+  flags/env vars.
 - `--profile dev` defaults to Cargo `dev-fast` (override via `MOLT_DEV_CARGO_PROFILE`).
 - Native codegen uses a backend daemon (`MOLT_BACKEND_DAEMON=1`). If an
   attempted daemon compile fails, the CLI retries only classified lightweight
@@ -344,7 +348,13 @@ Key controls:
   one-shot compile that duplicates backend memory.
 - Cacheable daemon compiles use a probe-first request path: full IR is only encoded and sent after a daemon-declared cache miss.
 - Native runtime verification/build starts asynchronously after cache/setup and is joined at the native link boundary; `emit=obj` intentionally skips that overlap because it never links a binary.
-- Share `CARGO_TARGET_DIR` + `MOLT_CACHE` across agents when you want maximum reuse; lock/fingerprint state is under `<CARGO_TARGET_DIR>/.molt_state/` (or `MOLT_BUILD_STATE_DIR`), so explicit shared roots also share Cargo rebuild locks. Daemon sockets default to `MOLT_BACKEND_DAEMON_SOCKET_DIR` (local temp path).
+- Share `CARGO_TARGET_DIR` + `MOLT_CACHE` across agents when you want maximum
+  reuse; use the DX resolver's external root for maintainer/agent proof lanes
+  when available, especially on Windows checkouts on `C:`. Lock/fingerprint
+  state is under `<CARGO_TARGET_DIR>/.molt_state/` (or
+  `MOLT_BUILD_STATE_DIR`), so explicit shared roots also share Cargo rebuild
+  locks. Daemon sockets default to `MOLT_BACKEND_DAEMON_SOCKET_DIR` (local temp
+  path).
 - Agent task scaffolds record the exact sourced environment in
   `logs/agents/<task-slug>/env.sh`; source that file before build/test/bench
   commands so artifact roots, cache roots, daemon socket roots, and session
