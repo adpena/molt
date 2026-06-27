@@ -1,18 +1,10 @@
 use super::*;
 
 fn list_specialized_index_from_bits(index_bits: u64) -> Option<i64> {
-    let index_obj = obj_from_bits(index_bits);
-    if let Some(i) = to_i64(index_obj) {
+    if let Some(i) = index_i64_integral_bits(index_bits) {
         return Some(i);
     }
-    crate::with_gil_entry_nopanic!(_py, {
-        let key = obj_from_bits(index_bits);
-        let type_err = format!(
-            "list indices must be integers or slices, not {}",
-            type_name(_py, key)
-        );
-        index_i64_with_overflow(_py, index_bits, &type_err, None)
-    })
+    crate::with_gil_entry_nopanic!(_py, { sequence_index_i64(_py, index_bits, "list") })
 }
 
 #[inline]
@@ -425,15 +417,12 @@ pub extern "C" fn molt_list_int_len(list_bits: u64) -> u64 {
 /// Raw i64: 0 is falsy, everything else is truthy.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_list_int_getitem_truthy(list_bits: u64, index_bits: u64) -> u64 {
-    let index_obj = obj_from_bits(index_bits);
     let list_obj = obj_from_bits(list_bits);
     let Some(ptr) = list_obj.as_ptr() else {
         return MoltObject::from_bool(false).bits();
     };
     unsafe {
-        let mut idx = if index_obj.is_int() {
-            index_obj.as_int_unchecked()
-        } else {
+        let Some(mut idx) = list_specialized_index_from_bits(index_bits) else {
             return MoltObject::from_bool(false).bits();
         };
         let storage = &*crate::object::layout::list_int_storage_ptr(ptr);
