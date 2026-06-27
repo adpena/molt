@@ -30,6 +30,12 @@ MATH_LEAF_RESOLVERS_DIR = ROOT / "runtime/molt-runtime-math/src/intrinsics_gener
 MATH_LEAF_RESOLVER_INDEX = MATH_LEAF_RESOLVERS_DIR / "mod.rs"
 XML_LEAF_RESOLVERS_DIR = ROOT / "runtime/molt-runtime-xml/src/intrinsics_generated"
 XML_LEAF_RESOLVER_INDEX = XML_LEAF_RESOLVERS_DIR / "mod.rs"
+DIFFLIB_LEAF_RESOLVERS_DIR = ROOT / "runtime/molt-runtime-difflib/src/intrinsics_generated"
+DIFFLIB_LEAF_RESOLVER_INDEX = DIFFLIB_LEAF_RESOLVERS_DIR / "mod.rs"
+IPADDRESS_LEAF_RESOLVERS_DIR = (
+    ROOT / "runtime/molt-runtime-ipaddress/src/intrinsics_generated"
+)
+IPADDRESS_LEAF_RESOLVER_INDEX = IPADDRESS_LEAF_RESOLVERS_DIR / "mod.rs"
 LEAF_RESOLVER_REGISTRIES = {
     "stringprep": {
         "output": ROOT / "runtime/molt-runtime-stringprep/src/intrinsics_generated.rs",
@@ -100,6 +106,22 @@ LEAF_RESOLVER_REGISTRIES = {
         "crate_resolver_path": "molt_runtime_xml::intrinsics_generated::xml_sax_resolver",
         "symbol_path_prefix": "molt_runtime_xml::xml_sax",
         "function_path_prefix": "crate::xml_sax",
+    },
+    "difflib": {
+        "output": DIFFLIB_LEAF_RESOLVERS_DIR / "difflib_resolver.rs",
+        "module_index": DIFFLIB_LEAF_RESOLVER_INDEX,
+        "crate_path": "molt_runtime_difflib",
+        "crate_resolver_path": "molt_runtime_difflib::intrinsics_generated::difflib_resolver",
+        "symbol_path_prefix": "molt_runtime_difflib::difflib",
+        "function_path_prefix": "crate::difflib",
+    },
+    "ipaddress": {
+        "output": IPADDRESS_LEAF_RESOLVERS_DIR / "ipaddress_resolver.rs",
+        "module_index": IPADDRESS_LEAF_RESOLVER_INDEX,
+        "crate_path": "molt_runtime_ipaddress",
+        "crate_resolver_path": "molt_runtime_ipaddress::intrinsics_generated::ipaddress_resolver",
+        "symbol_path_prefix": "molt_runtime_ipaddress::ipaddress",
+        "function_path_prefix": "crate::ipaddress",
     },
 }
 OUT_BACKEND_OVERRIDES_RS = (

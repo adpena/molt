@@ -433,8 +433,6 @@ pub(crate) use crate::builtins::contextlib::{
 };
 pub use crate::builtins::copy_mod::*;
 pub use crate::builtins::dbm_dumb::*;
-#[cfg(not(feature = "stdlib_difflib"))]
-pub use crate::builtins::difflib::*;
 pub use crate::builtins::enum_ext::*;
 pub(crate) use crate::builtins::exceptions::{
     ACTIVE_EXCEPTION_FALLBACK, ACTIVE_EXCEPTION_STACK, EXCEPTION_STACK, ExceptionSentinel,
@@ -499,8 +497,6 @@ pub(crate) use crate::builtins::io::{
     close_payload, file_handle_detached_message, file_handle_enter, file_handle_exit,
     file_handle_is_closed, path_from_bits,
 };
-#[cfg(not(feature = "stdlib_ipaddress"))]
-pub use crate::builtins::ipaddress::*;
 #[cfg(not(feature = "stdlib_itertools"))]
 pub use crate::builtins::itertools::*;
 pub use crate::builtins::json::*;
@@ -698,8 +694,6 @@ pub(crate) use crate::object::{
 pub use crate::object::{
     MoltHeader, bump_type_version, global_type_version, molt_dec_ref, molt_inc_ref,
 };
-#[cfg(not(feature = "stdlib_ipaddress"))]
-pub(crate) use crate::provenance::opaque_handle_ptr_from_bits;
 #[allow(unused_imports)]
 pub(crate) use crate::provenance::{
     opaque_handle_bits, release_ptr, reset_ptr_registry, resolve_ptr,

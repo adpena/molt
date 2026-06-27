@@ -17,12 +17,13 @@ The live codebase and executable Cargo metadata remain authoritative.
   `cargo metadata --no-deps` reports these as workspace packages.
 - `molt-runtime-stringprep`, the `html` / `unicodedata` portions of
   `molt-runtime-text`, `molt-runtime-zoneinfo`, the math-family modules owned by
-  `molt-runtime-math`, and XML owned by `molt-runtime-xml` are completed
-  leaf-ownership examples: their in-facade fallback modules are deleted, their
-  generated resolver arms delegate into leaf-owned intrinsic sub-registries,
-  their symbol prefixes are link-affecting feature gates, and feature-on/
-  feature-off checks prove the facade no longer carries duplicate authorities
-  for those domains.
+  `molt-runtime-math`, XML owned by `molt-runtime-xml`, `difflib` owned by
+  `molt-runtime-difflib`, and `ipaddress` owned by `molt-runtime-ipaddress` are
+  completed leaf-ownership examples: their in-facade fallback modules are
+  deleted, their generated resolver arms delegate into leaf-owned intrinsic
+  sub-registries, their symbol prefixes are link-affecting feature gates, and
+  feature-on/feature-off checks prove the facade no longer carries duplicate
+  authorities for those domains.
 - `molt-tir` is now a workspace member and the backend-agnostic lower layer:
   TIR, SimpleIR transport/schema, backend-neutral passes, representation facts,
   debug/process diagnostics, and intrinsic-symbol utilities live in
@@ -119,12 +120,13 @@ Hard constraints / watch-items:
   resolver files and skips exact-content no-op writes before invoking rustfmt,
   lazy-loads formatting custody only for changed Rust files, and prevents
   repeated generation from dirtying mtimes or triggering needless Cargo
-  rebuilds. `molt-runtime-stringprep`, `molt-runtime-math`, and
-  `molt-runtime-xml` now own generated per-crate intrinsic sub-registries, with
-  the `molt-runtime` category resolvers reduced to feature-gated facade
-  delegates. The remaining structural target is moving the other category
-  resolvers into **per-crate intrinsic sub-registries** composed by a thin
-  facade resolver. This simultaneously:
+  rebuilds. `molt-runtime-stringprep`, `molt-runtime-math`,
+  `molt-runtime-xml`, `molt-runtime-difflib`, and `molt-runtime-ipaddress` now
+  own generated per-crate intrinsic sub-registries, with the `molt-runtime`
+  category resolvers reduced to feature-gated facade delegates. The remaining
+  structural target is moving the other category resolvers into **per-crate
+  intrinsic sub-registries** composed by a thin facade resolver. This
+  simultaneously:
   (i) finishes breaking the build hub, (ii) advances the per-app intrinsic
   tree-shaking / <2MB binary-size goal. Two top priorities solved by one
   refactor.

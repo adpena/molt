@@ -2,43 +2,16 @@
 #[inline(never)]
 #[cold]
 pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
-    match symbol {
-        "molt_difflib_context_diff" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_difflib_context_diff",
-            crate::molt_difflib_context_diff as *const (),
-        )),
-        "molt_difflib_get_close_matches" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_difflib_get_close_matches",
-            crate::molt_difflib_get_close_matches as *const (),
-        )),
-        "molt_difflib_get_matching_blocks" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_difflib_get_matching_blocks",
-            crate::molt_difflib_get_matching_blocks as *const (),
-        )),
-        "molt_difflib_get_opcodes" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_difflib_get_opcodes",
-            crate::molt_difflib_get_opcodes as *const (),
-        )),
-        "molt_difflib_is_junk" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_difflib_is_junk",
-            crate::molt_difflib_is_junk as *const (),
-        )),
-        "molt_difflib_ndiff" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_difflib_ndiff",
-            crate::molt_difflib_ndiff as *const (),
-        )),
-        "molt_difflib_quick_ratio" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_difflib_quick_ratio",
-            crate::molt_difflib_quick_ratio as *const (),
-        )),
-        "molt_difflib_ratio" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_difflib_ratio",
-            crate::molt_difflib_ratio as *const (),
-        )),
-        "molt_difflib_unified_diff" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_difflib_unified_diff",
-            crate::molt_difflib_unified_diff as *const (),
-        )),
-        _ => None,
+    #[cfg(feature = "stdlib_difflib")]
+    {
+        molt_runtime_difflib::intrinsics_generated::difflib_resolver::resolve_symbol_with(
+            symbol,
+            crate::builtins::functions::runtime_fn_addr,
+        )
+    }
+    #[cfg(not(feature = "stdlib_difflib"))]
+    {
+        let _ = symbol;
+        None
     }
 }

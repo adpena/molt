@@ -73,6 +73,8 @@ RUNTIME_FEATURE_GATES: tuple[tuple[str, str], ...] = (
     ("molt_math_", "stdlib_math"),
     ("molt_random_", "stdlib_math"),
     ("molt_statistics_", "stdlib_math"),
+    # difflib intrinsics live only in the extracted difflib leaf crate.
+    ("molt_difflib_", "stdlib_difflib"),
     # XML-family intrinsics live only in molt-runtime-xml. Disabled profiles
     # must refuse imports instead of relying on deleted in-core fallback copies.
     ("molt_xml_", "stdlib_xml"),
@@ -129,10 +131,8 @@ RUNTIME_FEATURE_GATES: tuple[tuple[str, str], ...] = (
     ("molt_re_escape", "stdlib_regex"),
     ("molt_re_split", "stdlib_regex"),
     ("molt_re_sub", "stdlib_regex"),
-    # networking: IP address helpers. SSL keeps an always-linkable ABI because
-    # asyncio imports ssl eagerly even in micro profiles; runtime operations
-    # without net support raise from the Rust intrinsic implementation.
-    ("molt_ipaddress_", "stdlib_net"),
+    # ipaddress intrinsics live only in the extracted ipaddress leaf crate.
+    ("molt_ipaddress_", "stdlib_ipaddress"),
     # asyncio: event loop, futures, tasks, queues, streams, transports
     ("molt_asyncio_", "stdlib_asyncio"),
     ("molt_event_loop_", "stdlib_asyncio"),
@@ -234,12 +234,13 @@ LINK_AFFECTING_FEATURES: frozenset[str] = frozenset(
         "stdlib_crypto",
         "stdlib_csv",
         "stdlib_decimal",
+        "stdlib_difflib",
         "stdlib_email",
         "stdlib_fs_extra",
         "stdlib_http",
+        "stdlib_ipaddress",
         "stdlib_logging_ext",
         "stdlib_math",
-        "stdlib_net",
         "stdlib_regex",
         "stdlib_serial",
         "stdlib_serialization",

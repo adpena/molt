@@ -345,6 +345,27 @@ def test_math_leaf_intrinsic_modules_refuse_on_micro_profile() -> None:
     assert "colorsys" in message
 
 
+def test_difflib_leaf_intrinsic_modules_refuse_on_micro_profile() -> None:
+    rc, message = _run_pass(
+        [("difflib", STDLIB_ROOT / "difflib.py")], "micro", "native"
+    )
+    assert rc is not None and rc != 0
+    assert message is not None
+    assert "stdlib_difflib" in message
+    assert "difflib" in message
+
+
+def test_ipaddress_leaf_intrinsic_modules_refuse_on_server_profile() -> None:
+    rc, message = _run_pass(
+        [("ipaddress", STDLIB_ROOT / "ipaddress.py")], "server", "native"
+    )
+    assert rc is not None and rc != 0
+    assert message is not None
+    assert "stdlib_ipaddress" in message
+    assert "stdlib_net" not in message
+    assert "ipaddress" in message
+
+
 def test_xml_leaf_intrinsic_modules_refuse_on_micro_profile() -> None:
     rc, message = _run_pass(
         [("xml.etree.ElementTree", STDLIB_ROOT / "xml" / "etree" / "ElementTree.py")],
