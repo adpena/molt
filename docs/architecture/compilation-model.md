@@ -20,11 +20,15 @@ for the crate-extraction and incremental-build routing plan.
   facade delegates through that leaf sub-registry behind `stdlib_stringprep`.
   Feature-on/feature-off `molt-runtime` checks prove the facade no longer
   carries a duplicate stringprep authority.
-- `stdlib_text` now owns the extracted `html` and `unicodedata` implementation:
-  the old in-facade `builtins/html.rs` and `builtins/unicodedata_mod.rs`
-  fallbacks are deleted, `molt_html_*` and `molt_unicodedata_*` resolver arms
-  are gated by `stdlib_text`, and feature-on/feature-off runtime checks prove
-  the facade no longer carries a duplicate text authority for those modules.
+- `molt-runtime-text` now owns the always-on codec identity registry as well as
+  the feature-gated `html` and `unicodedata` implementations. The small
+  `codec_registry` module is a non-optional runtime dependency and is the
+  canonical descriptor source for direct codec labels, Python `encodings`
+  module names, ordinal limits, and text-I/O classes. The heavier html/
+  unicodedata modules remain gated by `stdlib_text`; `molt_html_*` and
+  `molt_unicodedata_*` resolver arms are gated by `stdlib_text`, and
+  feature-on/feature-off runtime checks prove the facade no longer carries a
+  duplicate text authority for those modules.
 - `stdlib_zoneinfo` is leaf-owned: the old in-facade `builtins/zoneinfo.rs`
   fallback is deleted, `molt_zoneinfo_*` resolver arms are gated by
   `stdlib_zoneinfo`, and feature-on/feature-off runtime checks prove the facade

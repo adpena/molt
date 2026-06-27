@@ -1,6 +1,7 @@
 use super::*;
 use crate::object::ops::{decode_error_byte, decode_error_range};
 use crate::object::ops_encoding::DecodeFailure;
+use molt_runtime_text::codec_registry::{TextEncodingClass, normalize_encoding};
 
 #[derive(Clone, Copy, Debug)]
 pub(in crate::builtins::io) enum TextEncodingKind {
@@ -14,144 +15,32 @@ pub(in crate::builtins::io) enum TextEncodingKind {
 pub(in crate::builtins::io) fn normalize_text_encoding(
     encoding: &str,
 ) -> Result<(String, TextEncodingKind), String> {
-    let normalized = encoding.to_ascii_lowercase().replace('_', "-");
-    match normalized.as_str() {
-        "utf-8" | "utf8" => Ok(("utf-8".to_string(), TextEncodingKind::Utf8)),
-        "utf-8-sig" | "utf8-sig" => Ok(("utf-8-sig".to_string(), TextEncodingKind::Utf8)),
-        "cp1252" | "cp-1252" | "windows-1252" => {
-            Ok(("cp1252".to_string(), TextEncodingKind::Latin1))
-        }
-        "cp437" | "ibm437" | "437" => Ok(("cp437".to_string(), TextEncodingKind::Latin1)),
-        "cp850" | "ibm850" | "850" | "cp-850" => {
-            Ok(("cp850".to_string(), TextEncodingKind::Latin1))
-        }
-        "cp860" | "ibm860" | "860" | "cp-860" => {
-            Ok(("cp860".to_string(), TextEncodingKind::Latin1))
-        }
-        "cp862" | "ibm862" | "862" | "cp-862" => {
-            Ok(("cp862".to_string(), TextEncodingKind::Latin1))
-        }
-        "cp863" | "ibm863" | "863" | "cp-863" => {
-            Ok(("cp863".to_string(), TextEncodingKind::Latin1))
-        }
-        "cp865" | "ibm865" | "865" | "cp-865" => {
-            Ok(("cp865".to_string(), TextEncodingKind::Latin1))
-        }
-        "cp866" | "ibm866" | "866" | "cp-866" => {
-            Ok(("cp866".to_string(), TextEncodingKind::Latin1))
-        }
-        "cp874" | "cp-874" | "windows-874" => Ok(("cp874".to_string(), TextEncodingKind::Latin1)),
-        "cp1250" | "cp-1250" | "windows-1250" => {
-            Ok(("cp1250".to_string(), TextEncodingKind::Latin1))
-        }
-        "cp1251" | "cp-1251" | "windows-1251" => {
-            Ok(("cp1251".to_string(), TextEncodingKind::Latin1))
-        }
-        "cp1253" | "cp-1253" | "windows-1253" => {
-            Ok(("cp1253".to_string(), TextEncodingKind::Latin1))
-        }
-        "cp1254" | "cp-1254" | "windows-1254" => {
-            Ok(("cp1254".to_string(), TextEncodingKind::Latin1))
-        }
-        "cp1255" | "cp-1255" | "windows-1255" => {
-            Ok(("cp1255".to_string(), TextEncodingKind::Latin1))
-        }
-        "cp1256" | "cp-1256" | "windows-1256" => {
-            Ok(("cp1256".to_string(), TextEncodingKind::Latin1))
-        }
-        "cp1257" | "cp-1257" | "windows-1257" => {
-            Ok(("cp1257".to_string(), TextEncodingKind::Latin1))
-        }
-        "koi8-r" | "koi8r" | "koi8_r" => Ok(("koi8-r".to_string(), TextEncodingKind::Latin1)),
-        "koi8-u" | "koi8u" | "koi8_u" => Ok(("koi8-u".to_string(), TextEncodingKind::Latin1)),
-        "iso-8859-2" | "iso8859-2" | "latin2" | "latin-2" => {
-            Ok(("iso8859-2".to_string(), TextEncodingKind::Latin1))
-        }
-        "iso-8859-3" | "iso8859-3" | "latin3" | "latin-3" | "latin_3" => {
-            Ok(("iso8859-3".to_string(), TextEncodingKind::Latin1))
-        }
-        "iso-8859-4" | "iso8859-4" | "latin4" | "latin-4" | "latin_4" => {
-            Ok(("iso8859-4".to_string(), TextEncodingKind::Latin1))
-        }
-        "iso-8859-5" | "iso8859-5" | "cyrillic" => {
-            Ok(("iso8859-5".to_string(), TextEncodingKind::Latin1))
-        }
-        "iso-8859-6" | "iso8859-6" | "arabic" => {
-            Ok(("iso8859-6".to_string(), TextEncodingKind::Latin1))
-        }
-        "iso-8859-7" | "iso8859-7" | "greek" => {
-            Ok(("iso8859-7".to_string(), TextEncodingKind::Latin1))
-        }
-        "iso-8859-8" | "iso8859-8" | "hebrew" => {
-            Ok(("iso8859-8".to_string(), TextEncodingKind::Latin1))
-        }
-        "iso-8859-10" | "iso8859-10" | "latin6" | "latin-6" | "latin_6" => {
-            Ok(("iso8859-10".to_string(), TextEncodingKind::Latin1))
-        }
-        "iso-8859-15" | "iso8859-15" | "latin9" | "latin-9" | "latin_9" => {
-            Ok(("iso8859-15".to_string(), TextEncodingKind::Latin1))
-        }
-        "mac-roman" | "macroman" | "mac_roman" => {
-            Ok(("mac-roman".to_string(), TextEncodingKind::Latin1))
-        }
-        "ascii" | "us-ascii" => Ok(("ascii".to_string(), TextEncodingKind::Ascii)),
-        "latin-1" | "latin1" | "iso-8859-1" | "iso8859-1" => {
-            Ok(("latin-1".to_string(), TextEncodingKind::Latin1))
-        }
-        "utf-16" | "utf16" => Ok(("utf-16".to_string(), TextEncodingKind::Utf16)),
-        "utf-16-le" | "utf-16le" | "utf16le" => {
-            Ok(("utf-16-le".to_string(), TextEncodingKind::Utf16))
-        }
-        "utf-16-be" | "utf-16be" | "utf16be" => {
-            Ok(("utf-16-be".to_string(), TextEncodingKind::Utf16))
-        }
-        "utf-32" | "utf32" => Ok(("utf-32".to_string(), TextEncodingKind::Utf32)),
-        "utf-32-le" | "utf-32le" | "utf32le" => {
-            Ok(("utf-32-le".to_string(), TextEncodingKind::Utf32))
-        }
-        "utf-32-be" | "utf-32be" | "utf32be" => {
-            Ok(("utf-32-be".to_string(), TextEncodingKind::Utf32))
-        }
-        _ => Err(format!("unknown encoding: {encoding}")),
-    }
+    let Some(kind) = normalize_encoding(encoding) else {
+        return Err(format!("unknown encoding: {encoding}"));
+    };
+    let Some(class) = kind.text_class() else {
+        return Err(format!("unknown encoding: {encoding}"));
+    };
+    Ok((
+        kind.name().to_string(),
+        text_encoding_kind_from_class(class),
+    ))
 }
 
 pub(in crate::builtins::io) fn text_encoding_kind(label: &str) -> TextEncodingKind {
-    match label {
-        "ascii" => TextEncodingKind::Ascii,
-        "latin-1" => TextEncodingKind::Latin1,
-        "cp1252" => TextEncodingKind::Latin1,
-        "cp437" => TextEncodingKind::Latin1,
-        "cp850" => TextEncodingKind::Latin1,
-        "cp860" => TextEncodingKind::Latin1,
-        "cp862" => TextEncodingKind::Latin1,
-        "cp863" => TextEncodingKind::Latin1,
-        "cp865" => TextEncodingKind::Latin1,
-        "cp866" => TextEncodingKind::Latin1,
-        "cp874" => TextEncodingKind::Latin1,
-        "cp1250" => TextEncodingKind::Latin1,
-        "cp1251" => TextEncodingKind::Latin1,
-        "cp1253" => TextEncodingKind::Latin1,
-        "cp1254" => TextEncodingKind::Latin1,
-        "cp1255" => TextEncodingKind::Latin1,
-        "cp1256" => TextEncodingKind::Latin1,
-        "cp1257" => TextEncodingKind::Latin1,
-        "koi8-r" => TextEncodingKind::Latin1,
-        "koi8-u" => TextEncodingKind::Latin1,
-        "iso8859-2" => TextEncodingKind::Latin1,
-        "iso8859-3" => TextEncodingKind::Latin1,
-        "iso8859-4" => TextEncodingKind::Latin1,
-        "iso8859-5" => TextEncodingKind::Latin1,
-        "iso8859-6" => TextEncodingKind::Latin1,
-        "iso8859-7" => TextEncodingKind::Latin1,
-        "iso8859-8" => TextEncodingKind::Latin1,
-        "iso8859-10" => TextEncodingKind::Latin1,
-        "iso8859-15" => TextEncodingKind::Latin1,
-        "mac-roman" => TextEncodingKind::Latin1,
-        "utf-8-sig" => TextEncodingKind::Utf8,
-        _ if label.starts_with("utf-16") => TextEncodingKind::Utf16,
-        _ if label.starts_with("utf-32") => TextEncodingKind::Utf32,
-        _ => TextEncodingKind::Utf8,
+    normalize_encoding(label)
+        .and_then(|kind| kind.text_class())
+        .map(text_encoding_kind_from_class)
+        .unwrap_or(TextEncodingKind::Utf8)
+}
+
+fn text_encoding_kind_from_class(class: TextEncodingClass) -> TextEncodingKind {
+    match class {
+        TextEncodingClass::Utf8 => TextEncodingKind::Utf8,
+        TextEncodingClass::Ascii => TextEncodingKind::Ascii,
+        TextEncodingClass::SingleByte => TextEncodingKind::Latin1,
+        TextEncodingClass::Utf16 => TextEncodingKind::Utf16,
+        TextEncodingClass::Utf32 => TextEncodingKind::Utf32,
     }
 }
 
