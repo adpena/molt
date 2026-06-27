@@ -36,11 +36,6 @@ fn logging_attr_optional(
     Ok(Some(value_bits))
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_csv_runtime_ready() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { MoltObject::from_bool(true).bits() })
-}
-
 fn logging_percent_lookup_mapping_value(
     _py: &crate::PyToken<'_>,
     mapping_ptr: *mut u8,

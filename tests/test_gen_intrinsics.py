@@ -249,6 +249,22 @@ def test_collections_and_argparse_categories_are_toml_owned() -> None:
     )
 
 
+def test_zipapp_runtime_probe_is_not_archive_leaf_owned() -> None:
+    module = _load_gen_intrinsics_module()
+    builtin_symbols, internal_prefixes, stdlib_modules = module._load_categories()
+
+    assert (
+        module._classify_symbol(
+            "molt_zipapp_runtime_ready",
+            builtin_symbols,
+            internal_prefixes,
+            stdlib_modules,
+        )
+        == "core"
+    )
+    assert ("molt_zipapp_", "archive") not in module._EXTRA_PREFIX_MODULES
+
+
 def test_collections_and_argparse_resolvers_are_leaf_owned() -> None:
     resolver_root = ROOT / "runtime/molt-runtime/src/intrinsics/generated_resolvers"
     facade_argparse = (resolver_root / "argparse_resolver.rs").read_text()
@@ -289,6 +305,45 @@ def test_collections_and_argparse_resolvers_are_leaf_owned() -> None:
     assert "molt_runtime_collections::collections_ext::molt_deque_append" in (
         leaf_collections
     )
+
+
+def test_serial_resolvers_are_leaf_owned() -> None:
+    resolver_root = ROOT / "runtime/molt-runtime/src/intrinsics/generated_resolvers"
+    leaf_root = ROOT / "runtime/molt-runtime-serial/src/intrinsics_generated"
+    leaf_index = (leaf_root / "mod.rs").read_text()
+
+    cases = {
+        "base64": ("stdlib_serial", "base64_mod", "molt_base64_b64encode"),
+        "binascii": ("stdlib_serial", "binascii", "molt_binascii_crc32"),
+        "configparser": (
+            "stdlib_serial",
+            "configparser",
+            "molt_configparser_new",
+        ),
+        "csv": ("stdlib_csv", "csv", "molt_csv_reader_new"),
+        "datetime": ("stdlib_serial", "datetime", "molt_datetime_is_leap"),
+        "decimal": ("stdlib_decimal", "decimal", "molt_decimal_context_new"),
+        "email": ("stdlib_email", "email", "molt_email_message_new"),
+        "quopri": ("stdlib_email", "email", "molt_quopri_encode"),
+        "struct": ("stdlib_serial", "structs", "molt_struct_pack"),
+        "uu": ("stdlib_serial", "binascii", "molt_uu_codec_encode"),
+        "archive": ("stdlib_archive", "zipfile", "molt_zipfile_crc32"),
+    }
+
+    for module_name, (feature, rust_module, symbol) in cases.items():
+        facade = (resolver_root / f"{module_name}_resolver.rs").read_text()
+        leaf = (leaf_root / f"{module_name}_resolver.rs").read_text()
+
+        assert f"pub mod {module_name}_resolver;" in leaf_index
+        assert f'#[cfg(feature = "{feature}")]' in facade
+        assert (
+            "molt_runtime_serial::intrinsics_generated"
+            f"::{module_name}_resolver::resolve_symbol_with"
+        ) in facade
+        assert f"crate::{symbol} as *const ()" not in facade
+        assert "crate::builtins::functions::runtime_fn_addr" in facade
+        assert f"crate::{rust_module}::{symbol} as *const ()" in leaf
+        assert f"molt_runtime_serial::{rust_module}::{symbol}" in leaf
 
 
 def test_rustfmt_uses_shared_memory_guard(monkeypatch, tmp_path: Path) -> None:

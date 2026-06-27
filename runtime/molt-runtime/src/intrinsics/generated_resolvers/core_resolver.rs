@@ -277,6 +277,10 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             "crate::molt_task_register_token_owned",
             crate::molt_task_register_token_owned as *const (),
         )),
+        "molt_zipapp_runtime_ready" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_zipapp_runtime_ready",
+            crate::molt_zipapp_runtime_ready as *const (),
+        )),
         "molt_trace_runtime_ready" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_trace_runtime_ready",
             crate::molt_trace_runtime_ready as *const (),
