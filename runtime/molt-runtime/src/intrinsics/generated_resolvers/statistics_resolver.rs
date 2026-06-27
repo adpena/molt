@@ -2,107 +2,16 @@
 #[inline(never)]
 #[cold]
 pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
-    match symbol {
-        "molt_statistics_mean" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_statistics_mean",
-            crate::molt_statistics_mean as *const (),
-        )),
-        "molt_statistics_fmean" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_statistics_fmean",
-            crate::molt_statistics_fmean as *const (),
-        )),
-        "molt_statistics_stdev" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_statistics_stdev",
-            crate::molt_statistics_stdev as *const (),
-        )),
-        "molt_statistics_variance" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_statistics_variance",
-            crate::molt_statistics_variance as *const (),
-        )),
-        "molt_statistics_pvariance" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_statistics_pvariance",
-            crate::molt_statistics_pvariance as *const (),
-        )),
-        "molt_statistics_pstdev" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_statistics_pstdev",
-            crate::molt_statistics_pstdev as *const (),
-        )),
-        "molt_statistics_median" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_statistics_median",
-            crate::molt_statistics_median as *const (),
-        )),
-        "molt_statistics_median_low" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_statistics_median_low",
-            crate::molt_statistics_median_low as *const (),
-        )),
-        "molt_statistics_median_high" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_statistics_median_high",
-            crate::molt_statistics_median_high as *const (),
-        )),
-        "molt_statistics_median_grouped" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_statistics_median_grouped",
-            crate::molt_statistics_median_grouped as *const (),
-        )),
-        "molt_statistics_mode" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_statistics_mode",
-            crate::molt_statistics_mode as *const (),
-        )),
-        "molt_statistics_multimode" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_statistics_multimode",
-            crate::molt_statistics_multimode as *const (),
-        )),
-        "molt_statistics_quantiles" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_statistics_quantiles",
-            crate::molt_statistics_quantiles as *const (),
-        )),
-        "molt_statistics_harmonic_mean" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_statistics_harmonic_mean",
-            crate::molt_statistics_harmonic_mean as *const (),
-        )),
-        "molt_statistics_geometric_mean" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_statistics_geometric_mean",
-            crate::molt_statistics_geometric_mean as *const (),
-        )),
-        "molt_statistics_covariance" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_statistics_covariance",
-            crate::molt_statistics_covariance as *const (),
-        )),
-        "molt_statistics_correlation" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_statistics_correlation",
-            crate::molt_statistics_correlation as *const (),
-        )),
-        "molt_statistics_linear_regression" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_statistics_linear_regression",
-            crate::molt_statistics_linear_regression as *const (),
-        )),
-        "molt_statistics_normal_dist_new" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_statistics_normal_dist_new",
-            crate::molt_statistics_normal_dist_new as *const (),
-        )),
-        "molt_statistics_normal_dist_samples" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_statistics_normal_dist_samples",
-            crate::molt_statistics_normal_dist_samples as *const (),
-        )),
-        "molt_statistics_normal_dist_inv_cdf" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_statistics_normal_dist_inv_cdf",
-            crate::molt_statistics_normal_dist_inv_cdf as *const (),
-        )),
-        "molt_statistics_normal_dist_pdf" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_statistics_normal_dist_pdf",
-            crate::molt_statistics_normal_dist_pdf as *const (),
-        )),
-        "molt_statistics_normal_dist_cdf" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_statistics_normal_dist_cdf",
-            crate::molt_statistics_normal_dist_cdf as *const (),
-        )),
-        "molt_statistics_normal_dist_zscore" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_statistics_normal_dist_zscore",
-            crate::molt_statistics_normal_dist_zscore as *const (),
-        )),
-        "molt_statistics_normal_dist_overlap" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_statistics_normal_dist_overlap",
-            crate::molt_statistics_normal_dist_overlap as *const (),
-        )),
-        _ => None,
+    #[cfg(feature = "stdlib_math")]
+    {
+        molt_runtime_math::intrinsics_generated::statistics_resolver::resolve_symbol_with(
+            symbol,
+            crate::builtins::functions::runtime_fn_addr,
+        )
+    }
+    #[cfg(not(feature = "stdlib_math"))]
+    {
+        let _ = symbol;
+        None
     }
 }

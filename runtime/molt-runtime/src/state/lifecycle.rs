@@ -14,8 +14,6 @@ use crate::builtins::itertools::itertools_clear_state;
 use crate::builtins::modules::modules_clear_runtime_state;
 use crate::builtins::operator::operator_clear_runtime_state;
 use crate::builtins::platform::platform_clear_runtime_state;
-#[cfg(not(feature = "stdlib_math"))]
-use crate::builtins::random_mod::random_clear_state;
 use crate::builtins::signal_ext::signal_clear_state;
 use crate::builtins::sys_ext::sys_ext_clear_state;
 use crate::builtins::types::types_clear_runtime_state;
@@ -132,11 +130,6 @@ pub(crate) fn runtime_teardown_for_process_exit(_py: &PyToken<'_>, state: &Runti
         trace_shutdown("process_exit_clear_itertools_state");
         itertools_clear_state(_py, state);
     }
-    #[cfg(not(feature = "stdlib_math"))]
-    {
-        trace_shutdown("process_exit_clear_random_state");
-        random_clear_state(state);
-    }
     trace_shutdown("process_exit_clear_sys_ext_state");
     sys_ext_clear_state(_py, state);
     trace_shutdown("process_exit_flush_stdio");
@@ -238,11 +231,6 @@ fn runtime_teardown_inner(_py: &PyToken<'_>, state: &RuntimeState, reset_ptrs: b
     {
         trace_shutdown("clear_itertools_state");
         itertools_clear_state(_py, state);
-    }
-    #[cfg(not(feature = "stdlib_math"))]
-    {
-        trace_shutdown("clear_random_state");
-        random_clear_state(state);
     }
     trace_shutdown("clear_sys_ext_state");
     sys_ext_clear_state(_py, state);

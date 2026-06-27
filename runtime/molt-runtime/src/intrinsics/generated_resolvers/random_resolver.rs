@@ -2,103 +2,16 @@
 #[inline(never)]
 #[cold]
 pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
-    match symbol {
-        "molt_random_new" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_random_new",
-            crate::molt_random_new as *const (),
-        )),
-        "molt_random_seed" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_random_seed",
-            crate::molt_random_seed as *const (),
-        )),
-        "molt_random_random" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_random_random",
-            crate::molt_random_random as *const (),
-        )),
-        "molt_random_getrandbits" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_random_getrandbits",
-            crate::molt_random_getrandbits as *const (),
-        )),
-        "molt_random_randbelow" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_random_randbelow",
-            crate::molt_random_randbelow as *const (),
-        )),
-        "molt_random_getstate" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_random_getstate",
-            crate::molt_random_getstate as *const (),
-        )),
-        "molt_random_setstate" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_random_setstate",
-            crate::molt_random_setstate as *const (),
-        )),
-        "molt_random_shuffle" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_random_shuffle",
-            crate::molt_random_shuffle as *const (),
-        )),
-        "molt_random_gauss" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_random_gauss",
-            crate::molt_random_gauss as *const (),
-        )),
-        "molt_random_uniform" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_random_uniform",
-            crate::molt_random_uniform as *const (),
-        )),
-        "molt_random_triangular" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_random_triangular",
-            crate::molt_random_triangular as *const (),
-        )),
-        "molt_random_expovariate" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_random_expovariate",
-            crate::molt_random_expovariate as *const (),
-        )),
-        "molt_random_normalvariate" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_random_normalvariate",
-            crate::molt_random_normalvariate as *const (),
-        )),
-        "molt_random_lognormvariate" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_random_lognormvariate",
-            crate::molt_random_lognormvariate as *const (),
-        )),
-        "molt_random_vonmisesvariate" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_random_vonmisesvariate",
-            crate::molt_random_vonmisesvariate as *const (),
-        )),
-        "molt_random_paretovariate" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_random_paretovariate",
-            crate::molt_random_paretovariate as *const (),
-        )),
-        "molt_random_weibullvariate" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_random_weibullvariate",
-            crate::molt_random_weibullvariate as *const (),
-        )),
-        "molt_random_gammavariate" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_random_gammavariate",
-            crate::molt_random_gammavariate as *const (),
-        )),
-        "molt_random_betavariate" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_random_betavariate",
-            crate::molt_random_betavariate as *const (),
-        )),
-        "molt_random_choices" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_random_choices",
-            crate::molt_random_choices as *const (),
-        )),
-        "molt_random_sample" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_random_sample",
-            crate::molt_random_sample as *const (),
-        )),
-        "molt_random_randbytes" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_random_randbytes",
-            crate::molt_random_randbytes as *const (),
-        )),
-        "molt_random_randrange" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_random_randrange",
-            crate::molt_random_randrange as *const (),
-        )),
-        "molt_random_binomialvariate" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_random_binomialvariate",
-            crate::molt_random_binomialvariate as *const (),
-        )),
-        _ => None,
+    #[cfg(feature = "stdlib_math")]
+    {
+        molt_runtime_math::intrinsics_generated::random_resolver::resolve_symbol_with(
+            symbol,
+            crate::builtins::functions::runtime_fn_addr,
+        )
+    }
+    #[cfg(not(feature = "stdlib_math"))]
+    {
+        let _ = symbol;
+        None
     }
 }
