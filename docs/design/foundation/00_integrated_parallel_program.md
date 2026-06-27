@@ -84,11 +84,11 @@ The active correctness front has moved from "build DropInsertion" to "converge
 ownership boundaries and delete the remaining legacy RC authority." The current
 code state is:
 
-- `runtime/molt-tir/src/tir/passes/drop_insertion.rs` exists and carries the
+- `runtime/molt-passes/src/tir/passes/drop_insertion.rs` exists and carries the
   RC drop-insertion implementation.
-- `runtime/molt-tir/src/tir/passes/liveness.rs` is registered as
+- `runtime/molt-passes/src/tir/passes/liveness.rs` is registered as
   `AnalysisId::Liveness` and provides representation-filtered live sets.
-- `runtime/molt-tir/src/tir/drop_phase.rs` runs drop insertion as a terminal
+- `runtime/molt-passes/src/tir/drop_phase.rs` runs drop insertion as a terminal
   phase after per-function and module transforms, preserving module-slot
   promotion and final representation facts.
 - `target_uses_tir_drop_insertion` currently enables LLVM, WASM, Luau, and
@@ -128,8 +128,8 @@ one complete A+B change:
   `ExceptionPop` / handler-region exit on every exit path.
 
 The old recovered call-facts and exception-region WIP is superseded by the live
-`runtime/molt-tir/src/tir/call_facts.rs` authority and module-phase seeding in
-`runtime/molt-tir/src/tir/module_phase.rs`. Do not reintroduce a CreationRef-only
+`runtime/molt-passes/src/tir/call_facts.rs` authority and module-phase seeding in
+`runtime/molt-passes/src/tir/module_phase.rs`. Do not reintroduce a CreationRef-only
 or local-call-fact carrier: the accepted path is the shared
 ExceptionRegions/drop-insertion model tracked in design 45 and the module-owned
 CallFacts table.
@@ -146,7 +146,7 @@ being stamped with a bare `unreachable`.
 
 Guarded evidence:
 
-- `runtime/molt-tir/src/tir/dominators.rs` owns the single
+- `runtime/molt-ir/src/tir/dominators.rs` owns the single
   label-to-handler and exception-successor extraction path.
 - `runtime/molt-backend/src/llvm_backend/lowering.rs::compute_function_rpo`
   appends terminator successors and exception successors in one traversal.

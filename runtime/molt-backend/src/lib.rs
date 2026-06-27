@@ -4,16 +4,18 @@
 
 use std::fmt::Write as _;
 
-// The TIR lower layer now lives in the molt-tir crate (decomposition doc 21, move
-// T1). Re-export its modules at this crate root so molt-backend's existing
-// `crate::tir::*` / `crate::passes::*` / `crate::ir::*` /
-// `crate::repr::*` / `crate::representation_plan::*` / leaf-util paths resolve unchanged.
-pub use molt_tir::{
-    debug_artifacts, intrinsic_symbols, ir, ir_schema, json_boundary, passes, process_diagnostics,
-    repr, representation_plan, tir,
+// Immutable IR/data lives in molt-ir; pass/fact orchestration and SimpleIR<->TIR
+// round-tripping live in molt-passes behind molt-tir re-exports; backend
+// projection and representation planning live in molt-tir. Keep backend-local
+// `crate::*` routes explicit so moved facts are not silently borrowed through a
+// legacy crate boundary.
+pub use molt_ir::{
+    MOLT_CLOSURE_PARAM_NAME, debug_artifacts, intrinsic_symbols, ir, ir_schema, json_boundary,
+    process_diagnostics, repr, stdlib_module_symbols,
 };
+pub use molt_tir::{passes, representation_plan, tir};
 
-pub use molt_tir::intrinsic_symbols::{
+pub use molt_ir::intrinsic_symbols::{
     runtime_intrinsic_symbols_from_env, runtime_intrinsic_symbols_required,
 };
 mod ir_rewrites;
@@ -36,9 +38,6 @@ pub(crate) use crate::native_backend::{
 };
 #[cfg(any(feature = "native-backend", feature = "llvm"))]
 mod native_backend_consts;
-#[cfg(any(feature = "native-backend", feature = "llvm"))]
-use native_backend_consts::*;
-mod stdlib_module_symbols;
 pub use crate::ir::{FunctionIR, OpIR, PgoProfileIR, SimpleIR, validate_simple_ir};
 pub use crate::passes::{
     apply_profile_order, build_const_int_map, canonicalize_direct_raise_edges,
@@ -49,16 +48,17 @@ pub use crate::passes::{
     hoist_loop_invariants, inject_runtime_exit, rc_coalescing, rewrite_stateful_loops,
     split_megafunctions,
 };
-pub use crate::stdlib_module_symbols::{
-    STDLIB_MODULE_SYMBOLS_ENV, parse_stdlib_module_symbols, stdlib_module_symbols_from_env,
-};
-pub use molt_tir::MOLT_CLOSURE_PARAM_NAME;
 /// The representation lattice element (the orthogonal carrier axis to
 /// `TirType`). Re-exported publicly because it appears in the signature of the
 /// `pub` `tir::lower_to_lir::lower_function_to_lir` (Phase 1 of the typed-IR
 /// convergence), which the WASM/LIR codegen path drives with the proven
 /// `repr_by_value`.
-pub use molt_tir::repr::Repr;
+pub use molt_ir::repr::Repr;
+pub use molt_ir::stdlib_module_symbols::{
+    STDLIB_MODULE_SYMBOLS_ENV, parse_stdlib_module_symbols, stdlib_module_symbols_from_env,
+};
+#[cfg(any(feature = "native-backend", feature = "llvm"))]
+use native_backend_consts::*;
 
 #[cfg(feature = "luau-backend")]
 pub mod luau;

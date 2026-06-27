@@ -114,7 +114,7 @@ The fact plane is **already real for two fact families**. This arc *advances and
 composes*; it does not restart.
 
 ### 2.1 The op-kind registry (the proven thesis — doc 25)
-- **Table:** `runtime/molt-tir/src/tir/op_kinds.toml` (3146 lines, verified). The
+- **Table:** `runtime/molt-ir/src/tir/op_kinds.toml` (3146 lines, verified). The
   single source of truth for the cross-component op-"kind"-string vocabulary AND a
   growing set of per-OpCode facts: `may_throw`/`side_effecting`/`purity`,
   `operand_ownership`, `result_absorbs_operands`,
@@ -126,7 +126,7 @@ composes*; it does not restart.
   tables (`frontend_raising_kind` / `frontend_check_exception_skip` /
   `binary_op`).
 - **Generator:** `tools/gen_op_kinds.py` (2761 lines, verified). Renders
-  `runtime/molt-tir/src/tir/op_kinds_generated.rs` (3906 lines) +
+  `runtime/molt-ir/src/tir/op_kinds_generated.rs` (3906 lines) +
   `src/molt/frontend/lowering/op_kinds_generated.py` (490 lines). Fail-loud
   validation (`load_table`, `tools/gen_op_kinds.py:198`) rejects a malformed/typo'd
   table rather than silently degrading. The effect oracle is rendered as an

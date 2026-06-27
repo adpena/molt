@@ -70,6 +70,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from tools.op_kinds.paths import TABLE as OP_KINDS_TOML  # noqa: E402
+from tools.op_kinds.paths import TIR_SRC as OP_KIND_TIR_SRC  # noqa: E402
+from tools.op_kinds.paths import tir_path  # noqa: E402
 
 SERIALIZATION_DIR = ROOT / "src/molt/frontend/lowering"
 SERIALIZATION_PY = SERIALIZATION_DIR / "serialization.py"
@@ -82,12 +88,15 @@ SERIALIZATION_MODULES = (
     SERIALIZATION_DIR / "serialization_loop_string_async_ops.py",
     SERIALIZATION_DIR / "serialization_object_attr_ops.py",
 )
-SSA_RS = ROOT / "runtime/molt-tir/src/tir/ssa.rs"
+SSA_RS = OP_KIND_TIR_SRC / "ssa.rs"
 LLVM_RS = ROOT / "runtime/molt-backend/src/llvm_backend/lowering.rs"
+LLVM_RUNTIME_IMPORTS_RS = ROOT / "runtime/molt-backend/src/llvm_backend/runtime_imports.rs"
 LLVM_PRESERVED_OPS_RS = (
     ROOT / "runtime/molt-backend/src/llvm_backend/lowering/preserved_ops.rs"
 )
-ALIAS_RS = ROOT / "runtime/molt-tir/src/tir/passes/alias_analysis.rs"
+LLVM_PRESERVED_OPS_DIR = LLVM_PRESERVED_OPS_RS.with_suffix("")
+LLVM_VEC_REDUCTIONS_RS = LLVM_PRESERVED_OPS_DIR / "vector_reductions.rs"
+ALIAS_RS = tir_path("passes/alias_analysis.rs")
 NATIVE_RS = ROOT / "runtime/molt-backend/src/native_backend/function_compiler.rs"
 NATIVE_FC_DIR = ROOT / "runtime/molt-backend/src/native_backend/function_compiler/fc"
 # The SSA -> SimpleIR lowering. `fn lower_op` is the per-OpCode authority for
@@ -95,12 +104,16 @@ NATIVE_FC_DIR = ROOT / "runtime/molt-backend/src/native_backend/function_compile
 # no-result statement op (`out` absent / `None`). This remains a report fact, but
 # no-result ops are no longer a native-routing exemption: they may carry side
 # effects or control metadata and must be claimed by a handler slice.
-LOWER_TO_SIMPLE_RS = ROOT / "runtime/molt-tir/src/tir/lower_to_simple.rs"
-LOWER_TO_SIMPLE_OP_LOWERING_RS = (
-    ROOT / "runtime/molt-tir/src/tir/lower_to_simple/op_lowering.rs"
-)
+LOWER_TO_SIMPLE_RS = tir_path("lower_to_simple.rs")
+LOWER_TO_SIMPLE_OP_LOWERING_RS = tir_path("lower_to_simple/op_lowering.rs")
 WASM_RS = ROOT / "runtime/molt-backend/src/wasm.rs"
-RUNTIME_SRC = ROOT / "runtime/molt-runtime/src"
+RUNTIME_SRC_ROOTS = tuple(
+    sorted(
+        path / "src"
+        for path in (ROOT / "runtime").glob("molt-runtime*")
+        if (path / "src").is_dir()
+    )
+)
 
 # The op-kind single-source-of-truth registry (task #57, phase 2). Since phase 2
 # landed, the backend's mapper and CopyLowering-classifier vocabularies are
@@ -114,8 +127,6 @@ RUNTIME_SRC = ROOT / "runtime/molt-runtime/src"
 # tests/test_gen_op_kinds.py; the registry⇄enum exhaustiveness by the Rust
 # compiler. (LLVM arms, runtime symbols, and native/WASM SimpleIR dispatch are
 # still extracted directly from source — they are not generated.)
-OP_KINDS_TOML = ROOT / "runtime/molt-tir/src/tir/op_kinds.toml"
-
 BASELINE_PATH = ROOT / "tools/op_kinds_baseline.json"
 
 
@@ -370,6 +381,29 @@ def extract_matches_macro(path: Path, fn: str) -> list[str]:
     return list(dict.fromkeys(_string_literals(block)))
 
 
+def extract_llvm_preserved_op_kinds() -> set[str]:
+    """LLVM SimpleIR-preserved-op coverage after preserved_ops.rs decomposition.
+
+    The root dispatcher owns direct guards and delegates to role-specific child
+    modules. Treat those child match arms as the same LLVM lowering authority;
+    otherwise the audit regresses to the old monolithic-file shape and reports
+    false coverage gaps after structural extraction.
+    """
+    kinds = set(
+        extract_match_arms(
+            LLVM_PRESERVED_OPS_RS, "lower_preserved_simpleir_op", "match kind {"
+        )
+    )
+    kinds.update(re.findall(r'kind\s*==\s*"([^"]+)"', LLVM_PRESERVED_OPS_RS.read_text(encoding="utf-8")))
+    delegated = [
+        (LLVM_PRESERVED_OPS_DIR / "callable_ops.rs", "lower_preserved_callable_op"),
+        (LLVM_PRESERVED_OPS_DIR / "container_ops.rs", "lower_preserved_container_op"),
+    ]
+    for path, fn in delegated:
+        kinds.update(extract_match_arms(path, fn, "match kind {"))
+    return kinds
+
+
 def extract_prefix_rules(path: Path, fn: str) -> list[str]:
     """Return `kind.starts_with("PREFIX")` prefixes used in function `fn`."""
     src = path.read_text(encoding="utf-8")
@@ -556,10 +590,17 @@ class RuntimeExtern:
     path: Path
 
 
-def extract_runtime_type_aliases() -> dict[str, str]:
+@dataclass(frozen=True)
+class ClassifiedRuntimeImport:
+    symbol: str
+    param_count: int
+    return_abi: str
+
+
+def extract_runtime_type_aliases(src_root: Path) -> dict[str, str]:
     aliases: dict[str, str] = {}
     pat = re.compile(r"\btype\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([^;]+);")
-    for p in RUNTIME_SRC.rglob("*.rs"):
+    for p in src_root.rglob("*.rs"):
         try:
             text = p.read_text(encoding="utf-8")
         except OSError:
@@ -591,35 +632,58 @@ def _normalize_runtime_type(ty: str, aliases: dict[str, str]) -> str:
 
 
 def extract_runtime_molt_externs() -> dict[str, RuntimeExtern]:
-    """All `pub (unsafe)? extern "C" fn molt_*` exports in molt-runtime with
-    their source-level ABI. The LLVM generic fallback may only claim symbols
-    whose ABI is positional boxed integers; pointer/string/function-pointer ABIs
-    require dedicated lowering arms and must stay red in this audit."""
-    aliases = extract_runtime_type_aliases()
+    """All `pub (unsafe)? extern "C" fn molt_*` exports in runtime leaf crates.
+
+    The LLVM generic fallback may only claim symbols whose ABI is positional
+    boxed integers; pointer/string/function-pointer ABIs require dedicated
+    lowering arms and must stay red in this audit. Runtime symbols now live in
+    leaf crates (`molt-runtime-math`, `molt-runtime-text`, ...), so scanning only
+    the root runtime crate would recreate the pre-decomposition monolith.
+    """
     out: dict[str, RuntimeExtern] = {}
     pat = re.compile(
         r'pub\s+(?:unsafe\s+)?extern\s+"C"\s+fn\s+'
         r"(molt_[A-Za-z0-9_]+)\s*\((.*?)\)\s*(?:->\s*([^{\n]+))?\s*\{",
         re.S,
     )
-    for p in RUNTIME_SRC.rglob("*.rs"):
-        try:
-            text = p.read_text(encoding="utf-8")
-        except OSError:
-            continue
-        for m in pat.finditer(text):
-            symbol = m.group(1)
-            params = tuple(
-                _normalize_runtime_type(t, aliases)
-                for t in _runtime_param_types(m.group(2))
-            )
-            ret = _normalize_runtime_type((m.group(3) or "()").strip(), aliases)
-            out[symbol] = RuntimeExtern(symbol, params, ret, p.relative_to(ROOT))
+    for src_root in RUNTIME_SRC_ROOTS:
+        aliases = extract_runtime_type_aliases(src_root)
+        for p in src_root.rglob("*.rs"):
+            try:
+                text = p.read_text(encoding="utf-8")
+            except OSError:
+                continue
+            for m in pat.finditer(text):
+                symbol = m.group(1)
+                params = tuple(
+                    _normalize_runtime_type(t, aliases)
+                    for t in _runtime_param_types(m.group(2))
+                )
+                ret = _normalize_runtime_type((m.group(3) or "()").strip(), aliases)
+                out[symbol] = RuntimeExtern(symbol, params, ret, p.relative_to(ROOT))
     return out
 
 
 def extract_runtime_molt_symbols() -> set[str]:
     return set(extract_runtime_molt_externs())
+
+
+def extract_llvm_classified_runtime_imports() -> dict[str, ClassifiedRuntimeImport]:
+    """Runtime symbols the LLVM generic preserved-op fallback may declare.
+
+    `try_lower_preserved_runtime_call` requires a real runtime symbol *and* an
+    entry in `CLASSIFIED_RUNTIME_IMPORTS`; this audit must join both authorities
+    or it can bless a runtime export that LLVM would still fail loudly.
+    """
+    text = LLVM_RUNTIME_IMPORTS_RS.read_text(encoding="utf-8")
+    out: dict[str, ClassifiedRuntimeImport] = {}
+    for symbol, param_count, return_abi in re.findall(
+        r'runtime_sig\(\s*"([^"]+)"\s*,\s*(\d+)\s*,\s*RuntimeReturnAbi::(I64|Void)\s*\)',
+        text,
+        re.S,
+    ):
+        out[symbol] = ClassifiedRuntimeImport(symbol, int(param_count), return_abi)
+    return out
 
 
 _BOXED_RUNTIME_TYPES = {"u64", "i64"}
@@ -639,6 +703,20 @@ def runtime_extern_is_boxed_i64_fallback_eligible(ext: RuntimeExtern) -> bool:
     return all(
         _is_boxed_runtime_type(t) for t in ext.params
     ) and _is_boxed_runtime_type(ext.return_ty)
+
+
+def runtime_extern_classified_fallback_eligible(
+    ext: RuntimeExtern, classified: ClassifiedRuntimeImport
+) -> bool:
+    if len(ext.params) != classified.param_count:
+        return False
+    if not all(_is_boxed_runtime_type(t) for t in ext.params):
+        return False
+    if classified.return_abi == "I64":
+        return _is_boxed_runtime_type(ext.return_ty)
+    if classified.return_abi == "Void":
+        return ext.return_ty == "()"
+    return False
 
 
 def runtime_extern_is_boxed_void_fallback_eligible(
@@ -997,7 +1075,7 @@ def extract_vec_reduction_ops() -> set[str]:
     """The LLVM `VEC_REDUCTION_OPS` exact table (kind, arity). The vec-* family is
     lowered on LLVM by `vec_reduction_runtime_symbol(kind)` BEFORE the dedicated
     `match`, so membership here is real LLVM coverage the arm-extractor misses."""
-    src = LLVM_RS.read_text(encoding="utf-8")
+    src = LLVM_VEC_REDUCTIONS_RS.read_text(encoding="utf-8")
     m = re.search(r"VEC_REDUCTION_OPS\s*:\s*&\[\(&str, usize\)\]\s*=\s*&\[", src)
     if m is None:
         return set()
@@ -1237,19 +1315,17 @@ def run_audit() -> AuditResult:
     no_heap = set(registry.get("classifier_no_heap_move", []))
     # LLVM arms, the vec-reduction table, and runtime extern ABIs are NOT
     # generated — extract them from source as before.
-    llvm_arms = set(
-        extract_match_arms(
-            LLVM_PRESERVED_OPS_RS, "lower_preserved_simpleir_op", "match kind {"
-        )
-    )
+    llvm_arms = extract_llvm_preserved_op_kinds()
     llvm_vec = extract_vec_reduction_ops()
     runtime_externs = extract_runtime_molt_externs()
+    classified_runtime_imports = extract_llvm_classified_runtime_imports()
     runtime_syms = set(runtime_externs)
-    boxed_runtime_fallback = {
+    classified_runtime_fallback = {
         symbol.removeprefix("molt_")
         for symbol, ext in runtime_externs.items()
+        if (classified := classified_runtime_imports.get(symbol)) is not None
         if symbol.startswith("molt_")
-        and runtime_extern_is_boxed_i64_fallback_eligible(ext)
+        and runtime_extern_classified_fallback_eligible(ext, classified)
     }
     void_runtime_ops = extract_llvm_void_runtime_ops()
     void_runtime_mismatches = llvm_void_runtime_abi_mismatches(
@@ -1263,7 +1339,7 @@ def run_audit() -> AuditResult:
             runtime_externs[symbol], arity
         )
     }
-    llvm_runtime_fallback |= boxed_runtime_fallback
+    llvm_runtime_fallback |= classified_runtime_fallback
     native_arms = extract_native_simpleir_arm_kinds()
     native_routing = extract_native_routing_slice_kinds()
     native_handler_routing_drift = extract_native_handler_routing_drifts()

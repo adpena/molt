@@ -86,7 +86,7 @@ The `Vec<bool>` carries the `is_extern` flag in alignment with the returned modu
 
 ## 4. Exact Files to Create/Modify
 
-### 4.1 `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/lower_from_simple.rs`
+### 4.1 `/Users/adpena/Projects/molt/runtime/molt-passes/src/tir/lower_from_simple.rs`
 
 **Add** `pub fn lower_functions_to_tir_module(functions: &[FunctionIR], module_name: &str) -> (TirModule, Vec<bool>)` — iterates the slice, calls the existing `lower_to_tir(f)` for non-extern functions (building the TirFunction), builds a `TirModule`, and returns the aligned `is_extern` vec. Extern `FunctionIR` entries produce a TirFunction that is NOT added to the module (externs are not inlineable and their bodies are empty); the `is_extern` bool at the corresponding position is `true`.
 

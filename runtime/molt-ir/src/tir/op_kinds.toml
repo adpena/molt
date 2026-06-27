@@ -1,0 +1,4823 @@
+# @generated SEED — hand-reviewed; thereafter the SINGLE SOURCE OF TRUTH.
+# Op-kind registry (molt task #57, phase 2). See
+# docs/design/foundation/25_op_kind_registry.md.
+#
+# This table is the ONE place the cross-component op-"kind"-string vocabulary
+# lives. tools/gen_op_kinds.py renders it into:
+#   - runtime/molt-ir/src/tir/op_kinds_generated.rs  (mapper + canonical
+#     OpCode spelling + classifier + per-OpCode effect-oracle arms), and
+#   - src/molt/frontend/lowering/op_kinds_generated.py    (canonical spellings
+#     + frontend pre-serialization effect classes).
+# tests/test_gen_op_kinds.py re-renders in memory and asserts equality with the
+# checked-in generated files, so any drift is a test failure. Do NOT edit the
+# generated files by hand; edit this table and regenerate.
+#
+# INDEPENDENT MAPPINGS over the shared kind vocabulary, kept distinct because
+# they group differently (load-bearing: e.g. `range_new` is a mapper alias of
+# the CallBuiltin group BUT an individual member of the fresh-value classifier
+# set):
+#   - classifier_* (below) — three FLAT sets of individual kinds (the flat
+#                  matches! arms in alias_analysis.rs) + the fresh-value prefix.
+#                  These are the RESULT-side ownership lattice (Owned/Borrowed/
+#                  Raw/MaybeUninit, design 27 §1.1).
+#   - [[opcode]]   — per-OpCode effect oracle (may_throw/side_effecting/purity),
+#                  verifier result arity (`result_arity`), PLUS the per-OpCode
+#                  operand-ownership default
+#                  (`operand_ownership`, the OPERAND-side borrowed|consumed|
+#                  interior_borrow_keepalive axis, design 27 §2.1). Both are
+#                  exhaustive over the enum. The per-position `operand_ownership`
+#                  list form classifies a single operand finer than the op
+#                  default (e.g. `Index`'s container is interior-borrowed, its
+#                  key merely borrowed).
+#   - [[kind]]     — the kind_to_opcode mapper: OpCode-equivalence groups
+#                  (canonical + aliases, the |-grouped arms). The first
+#                  canonical spelling for each mapped OpCode also feeds the
+#                  generated OpCode→backend-op-name table.
+#   - [[simpleir_control_kind]] — SimpleIR CFG/SSA/pre-SSA control facts for
+#                  kinds consumed structurally before kind_to_opcode. These rows
+#                  generate tir::is_structural, cfg.rs block-boundary helpers,
+#                  and lower_from_simple.rs pre-SSA rewrite membership.
+#   - [[frontend_effect_kind]] — frontend-only optimizer effect facts and
+#                  explicit pre-serialization overrides. The generated frontend
+#                  effect oracle derives mapper defaults, raising barriers, and
+#                  control facts before these rows override/add local frontend
+#                  facts such as CONST_STR and LOAD_VAR.
+#   - [[consuming_kind]] — per-SPELLING operand-consume overrides (design 27
+#                  §2.3): the Copy-lifted `_original_kind` spellings that free an
+#                  operand internally (the CallArgs builder), finer than the
+#                  OpCode. Consumed by drop_insertion.rs's op_consumed_operand_root.
+#   - [[absorbing_kind]] — per-SPELLING result-absorption facts for Copy-lifted
+#                  constructors (`*_new`) whose result owns operand lifetimes
+#                  without becoming first-class [[kind]] aliases.
+#   - [[absorbing_operand_kind]] — per-SPELLING existing-container store facts
+#                  for preserved Copy-lifted mutators (`list_append`, etc.) whose
+#                  value operand is retained by container storage while remaining
+#                  borrowed at the ABI/drop edge.
+#   - result_mints_owned_selected_operand — per-OpCode selected-alias result
+#                  ownership: the backend returns one borrowed operand's bits and
+#                  must retain that selected object to make the result an owned +1.
+#   - [[result_finalizer_source_kind]] — per-SPELLING extraction facts whose
+#                  fresh result may carry a finalizer-sensitive value from one
+#                  source operand (`list_pop` result from list operand 0).
+#   - operand_independent_result_type - optional single-result TirType fact for
+#                  opcodes whose result type is intrinsic to the opcode. Omitted
+#                  opcodes must be inferred from operands, attrs, or call/builtin
+#                  metadata by type_refine.rs.
+#   - [[result_validity]] - per-OpCode/per-result validity facts for result slots
+#                  that are not initialized on every outgoing edge
+#                  (`IterNextUnboxed` result 0 is valid only on the not-done edge).
+#   - literal_payload_opcodes - opcode literal payload facts consumed by
+#                  canonicalize.rs and check_exception_elim.rs.
+#   - gvn_always_numberable_opcodes / gvn_type_gated_numberable_opcodes /
+#                  gvn_value_keyed_constant_opcodes /
+#                  gvn_numberable_attr_key_opcodes - opcode-role and value-key
+#                  facts for GVN numbering policy. Always-numberable ops need no
+#                  operand type gate, type-gated ops require primitive operands,
+#                  and value-keyed constants get same-block local value numbers
+#                  only. Any opcode whose equivalence depends on attrs names its
+#                  exact payload-key attrs here; omitted/malformed attrs fail
+#                  closed to identity numbering.
+#   - proven_result_type_seed_opcodes - constant constructors whose intrinsic
+#                  result type seeds type_refine.rs's proven-type map. ConstBigInt
+#                  stays out because DynBox does not narrow backend guard proof.
+#   - type_refine_attr_result_type_rules / type_refine_operand_type_rules -
+#                  generated opcode-to-rule lattices for type_refine.rs result
+#                  inference. The registry owns opcode membership; type_refine.rs
+#                  owns the rule semantics and live operand/attr parsing.
+#   - call_opcode_roles / call_graph_user_call_kinds - generated call graph and
+#                  CallFacts dispatch facts. The opcode role owns first-class
+#                  Call/CallMethod/CallBuiltin/Copy behavior; the kind predicate
+#                  owns the exact `_original_kind` spellings that make a Copy
+#                  fallback count as a user-level call edge.
+#   - ssa_s_value_attr_keys / ssa_original_kind_preserving_kinds - generated
+#                  SSA attr-transport facts. The registry owns which opcode gets
+#                  which string-payload attr key and which SimpleIR spellings
+#                  must be carried as `_original_kind`; ssa.rs owns live value
+#                  resolution and attr insertion.
+#   - polyhedral_loop_header_opcodes / polyhedral_affine_body_opcodes -
+#                  generated opcode-only facts for polyhedral.rs loop-header
+#                  annotation and affine-body eligibility. The pass owns body
+#                  traversal and Copy refinement; the registry owns membership.
+#   - sccp_constant_seed_rules / sccp_constant_eval_rules - generated
+#                  opcode-to-rule lattices for SCCP constant seeding and
+#                  constant evaluation. The registry owns opcode membership;
+#                  sccp.rs owns attr parsing and CPython-compatible fold
+#                  semantics.
+#   - value_range_transfer_rules / value_range_const_fold_rules - generated
+#                  opcode-to-rule lattices for integer interval transfer and
+#                  value_range.rs's constant-mask/length derivation. The
+#                  registry owns opcode membership; value_range.rs owns checked
+#                  arithmetic, Python shift/mod semantics, and range soundness.
+#   - range_devirt_roles - generated opcode-to-role lattice for the
+#                  range_devirt.rs pattern scanner. The registry owns the closed
+#                  CallBuiltin/GetIter/IterNextUnboxed role membership; the pass
+#                  owns range name, operand/result shape, loop-role, and
+#                  dominance/CFG validation.
+#   - fuzz_tir_opcode_shapes - tooling-only opcode palette, operand counts, and
+#                  synthetic attr payload rules for
+#                  runtime/molt-backend/fuzz/fuzz_tir_passes.rs. Result counts
+#                  come from `result_arity` through
+#                  `opcode_fixed_result_count_table`.
+#   - vectorize_opcode_facts - generated opcode-to-fact lattice for
+#                  vectorize.rs body eligibility, loop-header markers,
+#                  annotation targets, and reduction-family hints. The registry
+#                  owns opcode membership; vectorize.rs owns CFG, accumulator
+#                  recognition, lane typing, and hint emission.
+#   - lir_verify_rules - generated opcode-to-rule lattice for verify_lir.rs
+#                  representation-aware verifier hooks. The registry owns
+#                  dispatch membership; verify_lir.rs owns invariant checking.
+#   - repr_raw_i64_full_deopt_seed_rules /
+#                  repr_projectable_bool_result_rules /
+#                  repr_projectable_float_result_rules - generated opcode-to-role
+#                  lattices for representation_plan/value_repr.rs scalar-carrier
+#                  projection. The registry owns opcode membership; value_repr.rs
+#                  owns live value/result/operand checks.
+#   - counted_loop_comparison_roles - generated ordered-comparison role +
+#                  logical-inverse facts consumed by counted_loop.rs. The pass
+#                  owns SSA shape and trip-count arithmetic.
+#   - exception_label_attr_opcodes - opcode facts for ops whose `value` attr is
+#                  a SimpleIR exception label id.
+#   - exception_transfer_edge_opcodes - subset of exception-label ops whose
+#                  label-valued `value` attr contributes an implicit CFG edge.
+#   - exception_region_nesting_roles - TryStart/TryEnd role facts consumed by
+#                  DCE/SCCP try-depth tracking. Distinct from label and transfer
+#                  facts: it owns lexical exception-region nesting only.
+#   - canonicalize_commutative_reorder / canonicalize_swapped_comparison /
+#                  canonicalize_binary_rules - ordered algebraic facts consumed
+#                  by canonicalize.rs. They live here so operand rewrites do not
+#                  carry backend-local hand-sets beside the generated opcode
+#                  oracle.
+#   - [[explicit_release_operand]] - per-OpCode Python lifetime release facts
+#                  for ops that explicitly release one or all operand roots
+#                  (`DecRef` all operands, `DeleteVar` old slot operand 1).
+#   - alias_rc_barrier_opcodes / alias_heap_barrier_opcodes - opcode-only
+#                  alias-analysis barrier facts. They are conservative
+#                  fail-closed barriers consumed by alias_analysis.rs.
+#   - alias_memory_inert_opcodes - opcode-only MemRegion scalar-register facts.
+#                  Omitted opcodes conservatively touch heap memory.
+#   - alias_typed_slot_*_opcodes / alias_region_*_opcodes - opcode classes
+#                  for alias_analysis.rs MemRegion classification. Omitted
+#                  opcodes are GenericHeap.
+#   - alias_transparent_*_opcodes - opcode roles for transparent alias root
+#                  propagation. These also feed slot-observation classification.
+#   - alias_slot_*_opcodes - opcode classes for alias_analysis.rs slot
+#                  observation. Omitted opcodes are conservative observers.
+#   - escape_alloc_site_opcodes - opcode-only allocation-root facts for
+#                  escape_analysis.rs. Omitted opcodes are not tracked as
+#                  allocation roots.
+#   - refcount_heap_exposure_opcodes - opcode-only deferred-RC fact for ops
+#                  whose operands become heap/external roots and therefore cannot
+#                  be treated as non-escaping by refcount_elim.rs.
+#   - refcount_balance_inc_opcodes / refcount_balance_dec_opcodes -
+#                  opcode-role facts for reference-count balance accounting.
+#                  Rendered as one exhaustive role table for refcount_elim.rs.
+#   - lowered_state_machine_body_opcodes - body-op half of
+#                  TirFunction::has_state_machine. StateDispatch terminators
+#                  are the other half, so this remains distinct from the broad
+#                  state-machine pass-exclusion fact below.
+#   - boxed_runtime_inplace_dispatch_opcodes - first-class opcodes whose boxed
+#                  runtime fallback must call `molt_inplace_*` and try the
+#                  in-place dunder before binary fallback.
+#   - drop_insertion_suspension_point_opcodes - opcode-only frame-retain fact
+#                  for drop_insertion.rs. Omitted opcodes do not suspend and do
+#                  not require pre-op coroutine-frame IncRefs.
+#   - drop_insertion_return_deferral_barrier_opcodes - opcode-only fact for
+#                  explicit RC/free rails that disqualify return-boundary
+#                  finalizer-sensitive deferral for touched roots.
+#   - fusion_barrier_opcodes - opcode-only deforestation.rs fusion-eligibility
+#                  fact: ops that make a comprehension/generator body ineligible
+#                  for iterator-chain fusion. A DISTINCT fact from side_effecting
+#                  (see its own comment below). Rendered exhaustively over OpCode.
+#   - generator_fusion_poll_required_yield_opcodes /
+#                  generator_fusion_poll_reject_opcodes - opcode-role facts for
+#                  generator_fusion.rs poll-body eligibility. Required-yield,
+#                  reject, and neutral roles are rendered as one exhaustive table.
+#   - generator_fusion_iter_use_roles - opcode-role facts for generator_fusion.rs
+#                  iterator-use safety scanning. The registry owns IterNext vs
+#                  optional None-guard membership; the pass owns operand and
+#                  terminator use checks.
+#   - state_machine_opcodes - opcode-only linear-transform legality fact: ops
+#                  that belong to generator/async/coroutine state machines and
+#                  therefore cannot be linearly spliced by the TIR function
+#                  inliner or module-slot promotion.
+#   - overflow_peel_guard_compare_opcodes /
+#                  overflow_peel_body_pure_opcodes - opcode-only legality facts
+#                  consumed by overflow_peel.rs. The pass owns CFG/SSA/result
+#                  checks; the registry owns the closed guard/body membership.
+#   - module_concurrency_marker_source_roles - opcode-role facts consumed by
+#                  module_slot_promotion.rs when scanning for threading
+#                  reachability; the pass owns string policy and attr values.
+#   - module_slot_access_roles - opcode-role facts consumed by
+#                  module_slot_promotion.rs for keyed module ATTR access vs
+#                  wildcard module-dict access; the pass owns root/name proof.
+#   - tir_verify_attr_rules - opcode-role facts consumed by verify.rs for
+#                  required attr/operand payload checks; the verifier owns
+#                  diagnostics and payload value validation.
+#   - sroa_const_immediate_rules - opcode-role facts consumed by sroa.rs for
+#                  immediate constant recognition; SROA owns range proof.
+#   - strength_reduction_rules - opcode-role facts consumed by
+#                  strength_reduction.rs; the pass owns constant/type proof and
+#                  the concrete replacement shape.
+#   - scev_expr_rules - opcode-role facts consumed by scev.rs for affine
+#                  expression construction; SCEV owns operand arity and lattice
+#                  folding.
+#   - exception_handling_opcodes - opcode-only function flag source for
+#                  `TirFunction::has_exception_handling`, including observation
+#                  edges and real handler/state regions.
+#   - exception_handler_region_opcodes - opcode-only predicate for the narrower
+#                  `TirFunction::has_exception_handlers()` gate: real try/state
+#                  regions, excluding observation-only CheckException.
+#   - structured_scf_marker_opcodes - opcode-only marker set for structured SCF
+#                  operations handled by TIR structured lowering/backconversion.
+#   - i64_overflow_box_dispatch_opcodes - opcode-only raw-i64 overflow-risk fact.
+#                  These ops must use boxed dispatch unless value-range proof
+#                  keeps operands and results inside the inline integer window.
+#   - i64_checked_overflow_triple_opcodes - opcode-only LIR checked-triple fact.
+#                  These ops can lower to raw result + overflow box + overflow
+#                  flag when type/repr/range proof makes that triple sound.
+#   - i64_zero_divisor_guard_opcodes - opcode-only raw-i64 division-family fact.
+#                  These ops require a nonzero divisor proof before raw i64 LIR
+#                  can be used or before CheckException can be proven redundant.
+#   - i64_shift_count_guard_opcodes - opcode-only raw-i64 shift-family fact.
+#                  These ops require a count proof in [0, 63] before hoist/machine
+#                  shift guard sites can treat them as nothrow and well-defined.
+#
+# NB: TOML requires bare top-level keys (the classifier arrays) to precede any
+# [[array-of-tables]] section, so they appear first.
+
+# ===========================================================================
+# Pass-delta diagnostic categories.
+#
+# These are not optimizer legality facts; they drive MOLT_EMIT_PASS_DELTA's
+# machine-readable dashboard. Keeping them in the op registry prevents TIR
+# diagnostics from growing a second hand-maintained opcode taxonomy.
+# ===========================================================================
+
+pass_delta_box_opcodes = ["BoxVal"]
+pass_delta_unbox_opcodes = ["UnboxVal"]
+pass_delta_generic_call_opcodes = [
+    "Call",
+    "CallMethod",
+    "CallMethodIc",
+    "CallSuperMethodIc",
+    "CallBuiltin",
+]
+pass_delta_direct_call_opcodes = ["Call"]
+pass_delta_method_call_opcodes = ["CallMethod", "CallMethodIc", "CallSuperMethodIc"]
+pass_delta_runtime_helper_call_opcodes = ["CallBuiltin"]
+pass_delta_rc_event_opcodes = ["IncRef", "DecRef", "DelBoundary"]
+pass_delta_inc_ref_opcodes = ["IncRef"]
+pass_delta_dec_ref_opcodes = ["DecRef"]
+pass_delta_del_boundary_opcodes = ["DelBoundary"]
+pass_delta_exception_event_opcodes = [
+    "Raise",
+    "CheckException",
+    "ExceptionPending",
+    "TryStart",
+    "TryEnd",
+    "StateBlockStart",
+    "StateBlockEnd",
+]
+pass_delta_type_guard_opcodes = ["TypeGuard"]
+pass_delta_heap_alloc_opcodes = ["Alloc", "ObjectNewBound", "ObjectNewBoundStack"]
+
+# ===========================================================================
+# Call graph / CallFacts opcode and kind roles.
+#
+# The opcode role is a first-class call classification shared by call_graph.rs
+# and call_facts.rs. The user-call kind list is intentionally spelling-level:
+# it applies only to Copy fallbacks carrying `_original_kind`, so GPU helper
+# kinds that also map to OpCode::Call and CallBuiltin runtime helpers cannot
+# accidentally become user-level call graph edges.
+# ===========================================================================
+
+call_opcode_roles = [
+    { opcode = "Call", role = "user_call" },
+    { opcode = "CallMethod", role = "dynamic_method" },
+    { opcode = "CallMethodIc", role = "dynamic_method" },
+    { opcode = "CallSuperMethodIc", role = "dynamic_method" },
+    { opcode = "CallBuiltin", role = "runtime_builtin" },
+    { opcode = "Copy", role = "copy_original_kind" },
+]
+
+call_graph_user_call_kinds = [
+    "call",
+    "call_func",
+    "call_internal",
+    "call_indirect",
+    "call_bind",
+    "call_function",
+    "call_guarded",
+    "call_method",
+    "invoke_ffi",
+]
+
+# ===========================================================================
+# SSA attr transport.
+#
+# These facts replace ssa.rs's private opcode/kind matches. `s_value` starts as
+# SimpleIR's generic string payload; first-class TIR opcodes read that payload
+# under stable opcode-specific attr names. `_original_kind` is retained only
+# when a non-canonical SimpleIR spelling affects round-trip or backend dispatch.
+# Unknown unmapped kinds still preserve their spelling as Copy fallbacks in
+# ssa.rs; this table owns the mapped spellings that must preserve.
+# ===========================================================================
+
+ssa_s_value_attr_keys = [
+    { opcode = "Import", attr = "module" },
+    { opcode = "ImportFrom", attr = "name" },
+    { opcode = "LoadAttr", attr = "name" },
+    { opcode = "StoreAttr", attr = "name" },
+    { opcode = "DelAttr", attr = "name" },
+    { opcode = "CallBuiltin", attr = "name" },
+    { opcode = "CallMethod", attr = "method" },
+    { opcode = "CallMethodIc", attr = "method" },
+    { opcode = "CallSuperMethodIc", attr = "method" },
+]
+
+ssa_original_kind_preserving_kinds = [
+    "store_var",
+    "call_func",
+    "call_internal",
+    "call_indirect",
+    "call_bind",
+    "call_function",
+    "call_guarded",
+    "invoke_ffi",
+    "gpu_thread_id",
+    "gpu_block_id",
+    "gpu_block_dim",
+    "gpu_grid_dim",
+    "gpu_barrier",
+    "builtin_print",
+    "print",
+    "range_new",
+    "get_attr_generic_ptr",
+    "get_attr_generic_obj",
+    "get_attr_name",
+    "guarded_field_get",
+    "load",
+    "load_attr",
+    "store_attr",
+    "set_attr_name",
+    "set_attr_generic_ptr",
+    "set_attr_generic_obj",
+    "guarded_field_set",
+    "guarded_field_init",
+    "store",
+    "store_init",
+    "del_attr_name",
+    "del_attr_generic_ptr",
+    "del_attr_generic_obj",
+    "index_set",
+]
+
+# ===========================================================================
+# Polyhedral loop classification.
+#
+# The loop-header set drives which loop ops receive tiling annotations. The
+# affine-body set is intentionally opcode-only and excludes Copy; polyhedral.rs
+# layers `op.is_plain_value_copy()` on top because Copy eligibility depends on
+# live attrs, not only the opcode.
+# ===========================================================================
+
+polyhedral_loop_header_opcodes = ["ForIter", "ScfFor"]
+
+polyhedral_affine_body_opcodes = [
+    "Add",
+    "Sub",
+    "Mul",
+    "Div",
+    "FloorDiv",
+    "Mod",
+    "Index",
+    "StoreIndex",
+    "ConstInt",
+    "ConstFloat",
+    "ConstBool",
+    "ConstNone",
+    "Lt",
+    "Le",
+    "Gt",
+    "Ge",
+    "Eq",
+    "Ne",
+    "ForIter",
+    "ScfFor",
+    "ScfYield",
+    "GetIter",
+    "IterNext",
+]
+
+# ===========================================================================
+# Range loop devirtualization pattern roles.
+#
+# These roles are deliberately opcode-only. range_devirt.rs still validates the
+# builtin name (`range`, `builtin_range`, `molt_range`), range arity, GetIter
+# shape, loop-header role, IterNextUnboxed result count, and CFG shape live.
+# ===========================================================================
+
+range_devirt_roles = [
+    { opcode = "CallBuiltin", role = "range_call_candidate" },
+    { opcode = "GetIter", role = "iterator_candidate" },
+    { opcode = "IterNextUnboxed", role = "next_unboxed_candidate" },
+]
+
+# ===========================================================================
+# Fuzz TIR pass generation shape.
+#
+# This is a tooling-only opcode palette for fuzz_tir_passes.rs. The operand
+# count and attr payload rule are byte-to-TIR generation shape, not general
+# semantic arity or payload tables; result counts stay owned by
+# [[opcode]].result_arity / opcode_fixed_result_count_table.
+# ===========================================================================
+
+fuzz_tir_opcode_shapes = [
+    { opcode = "Add", operands = 2 },
+    { opcode = "Sub", operands = 2 },
+    { opcode = "Mul", operands = 2 },
+    { opcode = "Neg", operands = 1 },
+    { opcode = "Not", operands = 1 },
+    { opcode = "Eq", operands = 2 },
+    { opcode = "Lt", operands = 2 },
+    { opcode = "BitAnd", operands = 2 },
+    { opcode = "BitOr", operands = 2 },
+    { opcode = "Shl", operands = 2 },
+    { opcode = "ConstInt", operands = 0, attr_payload = "i64_value" },
+    { opcode = "ConstFloat", operands = 0, attr_payload = "f64_value" },
+    { opcode = "ConstBool", operands = 0, attr_payload = "bool_value" },
+    { opcode = "ConstNone", operands = 0 },
+    { opcode = "IncRef", operands = 1 },
+    { opcode = "DecRef", operands = 1 },
+    { opcode = "BoxVal", operands = 1 },
+    { opcode = "UnboxVal", operands = 1 },
+]
+
+# ===========================================================================
+# CopyLowering classifier (alias_analysis.rs). FLAT sets of individual kinds +
+# the fresh-value prefix rule. A Copy carrying _original_kind = k is classified
+# by these; an unlisted k falls to the fail-closed _ => TransparentAlias
+# default (leak-safe, never UAF — docs/design/foundation/20).
+# ===========================================================================
+
+# copy_kind_mints_fresh_owned_ref: mints a fresh +1 owned reference.
+classifier_fresh_value = [
+    "aiter",
+    "ascii_from_obj",
+    "classmethod_new",
+    "code_new",
+    "complex_from_obj",
+    "contains",
+    "class_def",
+    "dataclass_new",
+    "dataclass_new_values",
+    "dict_from_obj",
+    "dict_items",
+    "dict_keys",
+    "dict_new",
+    "dict_values",
+    "enumerate",
+    "exception_new",
+    "exception_new_builtin",
+    "exception_new_builtin_empty",
+    "exception_new_builtin_one",
+    "exception_new_from_class",
+    "exception_finally_pending_observer",
+    "float_from_obj",
+    "frozenset_new",
+    "func_new",
+    "func_new_closure",
+    # The augassign in-place family. Every molt_inplace_* runtime symbol
+    # returns an OWNED +1 reference regardless of object identity (a mutating
+    # __iadd__-style fast path inc_refs and returns operand 0; the dunder /
+    # binary-fallback paths return a fresh owned result) — so the result must
+    # be classified as minting ownership, never as a transparent alias of
+    # operand 0 (which would leak the +1 under drop insertion). The +=/-=/*=
+    # trio rides first-class opcodes (InplaceAdd/Sub/Mul, [[kind]] below);
+    # these ten ride the preserved-Copy lane.
+    "inplace_bit_and",
+    "inplace_bit_or",
+    "inplace_bit_xor",
+    "inplace_div",
+    "inplace_floordiv",
+    "inplace_lshift",
+    "inplace_matmul",
+    "inplace_mod",
+    "inplace_pow",
+    "inplace_rshift",
+    "int_from_obj",
+    "int_from_str_of_obj",
+    "iter",
+    "list_fill_new",
+    "list_from_range",
+    "list_new",
+    "list_pop",
+    # `@` lowers through the preserved-Copy lane but calls `molt_matmul`,
+    # whose dunder/buffer/error paths return an owned result object.
+    "matmul",
+    "object_new",
+    "property_new",
+    "range_new",
+    "repr_from_obj",
+    "set_new",
+    "slice",
+    "slice_new",
+    "staticmethod_new",
+    "str_from_obj",
+    "string_format",
+    "string_join",
+    "string_split_field_to_int",
+    "tuple_from_list",
+    "tuple_new",
+]
+
+# exception CreationRef producers: a fresh exception object reference whose
+# source ownership is released at the `raise` boundary after the runtime has
+# recorded the exception in handler/context state.
+classifier_exception_creation_ref = [
+    "exception_new",
+    "exception_new_builtin",
+    "exception_new_builtin_empty",
+    "exception_new_builtin_one",
+    "exception_new_from_class",
+]
+
+# ...and the prefix form (the vec_* vectorized-reduction family, each calling a
+# dedicated molt_vec_* runtime reduction returning a fresh boxed result).
+classifier_fresh_value_prefixes = [
+    "vec_",
+]
+
+# copy_kind_mints_owned_alias_ref: result is operand 0's object bits, but the
+# lowering mints a new +1 owned reference for this binding. This is an
+# independent droppable ownership root and must NOT be in the transparent/no-heap
+# alias sets.
+classifier_owned_alias = [
+    "binding_alias",
+]
+
+canonicalize_commutative_reorder = [
+    { opcode = "Add", domain = "numeric" },
+    { opcode = "BitAnd", domain = "i64" },
+    { opcode = "BitOr", domain = "i64" },
+    { opcode = "BitXor", domain = "i64" },
+    { opcode = "Eq", domain = "unboxed_scalar" },
+    { opcode = "Mul", domain = "numeric" },
+    { opcode = "Ne", domain = "unboxed_scalar" },
+]
+
+canonicalize_swapped_comparison = [
+    { opcode = "Lt", swapped = "Gt" },
+    { opcode = "Gt", swapped = "Lt" },
+    { opcode = "Le", swapped = "Ge" },
+    { opcode = "Ge", swapped = "Le" },
+]
+
+canonicalize_binary_rules = [
+    { opcode = "Add", predicate = "rhs_int", value = 0, type_guard = "lhs_i64", action = "copy_lhs" },
+    { opcode = "Add", predicate = "lhs_int", value = 0, type_guard = "rhs_i64", action = "copy_rhs" },
+    { opcode = "InplaceAdd", predicate = "rhs_int", value = 0, type_guard = "lhs_i64", action = "copy_lhs" },
+    { opcode = "InplaceAdd", predicate = "lhs_int", value = 0, type_guard = "rhs_i64", action = "copy_rhs" },
+    { opcode = "Sub", predicate = "rhs_int", value = 0, type_guard = "lhs_i64", action = "copy_lhs" },
+    { opcode = "InplaceSub", predicate = "rhs_int", value = 0, type_guard = "lhs_i64", action = "copy_lhs" },
+    { opcode = "Mul", predicate = "rhs_int", value = 1, type_guard = "lhs_i64", action = "copy_lhs" },
+    { opcode = "Mul", predicate = "lhs_int", value = 1, type_guard = "rhs_i64", action = "copy_rhs" },
+    { opcode = "Mul", predicate = "rhs_int", value = 0, type_guard = "lhs_i64", action = "const_int", result = 0 },
+    { opcode = "Mul", predicate = "lhs_int", value = 0, type_guard = "rhs_i64", action = "const_int", result = 0 },
+    { opcode = "InplaceMul", predicate = "rhs_int", value = 1, type_guard = "lhs_i64", action = "copy_lhs" },
+    { opcode = "InplaceMul", predicate = "lhs_int", value = 1, type_guard = "rhs_i64", action = "copy_rhs" },
+    { opcode = "InplaceMul", predicate = "rhs_int", value = 0, type_guard = "lhs_i64", action = "const_int", result = 0 },
+    { opcode = "InplaceMul", predicate = "lhs_int", value = 0, type_guard = "rhs_i64", action = "const_int", result = 0 },
+    { opcode = "BitOr", predicate = "rhs_int", value = 0, type_guard = "lhs_i64", action = "copy_lhs" },
+    { opcode = "BitXor", predicate = "rhs_int", value = 0, type_guard = "lhs_i64", action = "copy_lhs" },
+    { opcode = "BitAnd", predicate = "rhs_int", value = -1, type_guard = "lhs_i64", action = "copy_lhs" },
+    { opcode = "BitAnd", predicate = "rhs_int", value = 0, type_guard = "lhs_i64", action = "const_int", result = 0 },
+    { opcode = "BitAnd", predicate = "lhs_int", value = 0, type_guard = "rhs_i64", action = "const_int", result = 0 },
+    { opcode = "Sub", predicate = "same_operands", type_guard = "lhs_i64", action = "const_int", result = 0 },
+    { opcode = "InplaceSub", predicate = "same_operands", type_guard = "lhs_i64", action = "const_int", result = 0 },
+    { opcode = "BitXor", predicate = "same_operands", type_guard = "lhs_i64", action = "const_int", result = 0 },
+    { opcode = "And", predicate = "rhs_bool", value = true, type_guard = "none", action = "copy_lhs" },
+    { opcode = "And", predicate = "rhs_bool", value = false, type_guard = "none", action = "const_bool", result = false },
+    { opcode = "And", predicate = "lhs_bool", value = false, type_guard = "none", action = "const_bool", result = false },
+    { opcode = "Or", predicate = "rhs_bool", value = false, type_guard = "none", action = "copy_lhs" },
+    { opcode = "Or", predicate = "rhs_bool", value = true, type_guard = "none", action = "const_bool", result = true },
+    { opcode = "Or", predicate = "lhs_bool", value = true, type_guard = "none", action = "const_bool", result = true },
+]
+
+alias_rc_barrier_opcodes = [
+    "Call",
+    "CallBuiltin",
+    "CallMethod",
+    "CallMethodIc",
+    "CallSuperMethodIc",
+    "ChanRecvYield",
+    "ChanSendYield",
+    "CheckException",
+    "ClosureLoad",
+    "ClosureStore",
+    "Raise",
+    "StateSwitch",
+    "StateTransition",
+    "StateYield",
+    "StoreAttr",
+    "StoreIndex",
+    "TryStart",
+]
+
+alias_heap_barrier_opcodes = [
+    "Call",
+    "CallBuiltin",
+    "CallMethod",
+    "CallMethodIc",
+    "CallSuperMethodIc",
+    "ChanRecvYield",
+    "ChanSendYield",
+    "ClosureStore",
+    "DelAttr",
+    "DelIndex",
+    "Free",
+    "ModuleCacheDel",
+    "ModuleCacheSet",
+    "ModuleDelGlobal",
+    "ModuleDelGlobalIfPresent",
+    "ModuleSetAttr",
+    "Raise",
+    "StateSwitch",
+    "StateTransition",
+    "StateYield",
+    "StoreAttr",
+    "StoreIndex",
+    "Yield",
+    "YieldFrom",
+]
+
+# escape_alloc_site_opcodes: result-producing allocation roots that
+# escape_analysis.rs tracks in its lattice. This is NOT the same as refcount
+# heap exposure: it answers "does the result define a fresh root whose escape
+# state matters?", not "do operands flow into heap/external ownership?".
+escape_alloc_site_opcodes = [
+    "Alloc",
+    "ObjectNewBound",
+    "BuildList",
+    "BuildDict",
+    "BuildTuple",
+    "BuildSet",
+    "AllocTask",
+]
+
+# refcount_heap_exposure_opcodes: operands of these ops flow into a heap-owned
+# or externally visible root for deferred reference-count elimination. This is
+# NOT the alias heap barrier set: constructors (`Build*`, `AllocTask`) retain
+# operands without necessarily being alias barriers, while frees/deletes/module
+# metadata writes are barriers without exposing every operand as a retained root.
+refcount_heap_exposure_opcodes = [
+    "AllocTask",
+    "BuildDict",
+    "BuildList",
+    "BuildSet",
+    "BuildSlice",
+    "BuildTuple",
+    "Call",
+    "CallBuiltin",
+    "CallMethod",
+    "CallMethodIc",
+    "CallSuperMethodIc",
+    "ChanRecvYield",
+    "ChanSendYield",
+    "ClosureStore",
+    "Import",
+    "ImportFrom",
+    "Raise",
+    "StateYield",
+    "StoreAttr",
+    "StoreIndex",
+    "Yield",
+    "YieldFrom",
+]
+
+# refcount_balance_*_opcodes: the opcode-level role in RC balance accounting.
+# IncRef adds one temporary reference; DecRef releases one. Keeping this as a
+# generated role table prevents refcount_elim.rs from growing private
+# IncRef/DecRef hand-sets at each scan site and makes future RC balance opcodes
+# fail loud until they are classified.
+refcount_balance_inc_opcodes = ["IncRef"]
+refcount_balance_dec_opcodes = ["DecRef"]
+
+# lowered_state_machine_body_opcodes: body-op half of
+# TirFunction::has_state_machine(). StateDispatch is a terminator, not an
+# opcode, so it remains checked by function.rs while these body ops are owned
+# here. This is deliberately narrower than state_machine_opcodes:
+# high-level `Yield`/`YieldFrom` and StateBlock delimiters are coroutine markers,
+# but not by themselves proof of the lowered re-entrant dispatch shape that the
+# drop-insertion state-machine bail guards.
+lowered_state_machine_body_opcodes = [
+    "AllocTask",
+    "ChanRecvYield",
+    "ChanSendYield",
+    "StateSwitch",
+    "StateTransition",
+    "StateYield",
+]
+
+# drop_insertion_suspension_point_opcodes: execution-suspension points where
+# live owned values must be retained into the suspended coroutine/generator
+# frame before the op. This is deliberately distinct from state-machine
+# transform legality: StateSwitch/StateTransition/AllocTask are state-machine
+# machinery, but they do not themselves publish the live frame at a suspension.
+drop_insertion_suspension_point_opcodes = [
+    "ChanRecvYield",
+    "ChanSendYield",
+    "StateYield",
+    "Yield",
+    "YieldFrom",
+]
+
+# drop_insertion_return_deferral_barrier_opcodes: explicit ownership rails that
+# make a touched finalizer-sensitive root ineligible for return-boundary
+# deferral. IncRef/DecRef/Free already encode an RC/free transition at that
+# root, so drop_insertion.rs must keep the local release instead of extending
+# the root to a function return cleanup.
+drop_insertion_return_deferral_barrier_opcodes = [
+    "DecRef",
+    "Free",
+    "IncRef",
+]
+
+# fusion_barrier_opcodes: deforestation.rs's loop/genexpr fusion barrier set.
+# An op in this set makes a candidate comprehension/generator body INELIGIBLE
+# for iterator-chain fusion (`sum`/`list`/`map`/`filter`/`any`/`all`/`min`/`max`
+# over a `for` loop). This is a DISTINCT fact from `side_effecting`, not a
+# duplicate of it: fusion preserves per-element evaluation order and count, so
+# allocation/attribute-read/may-throw ops (`ObjectNewBound`, `LoadAttr`,
+# `Index`, `Div`, ...) are SAFE to fuse and are deliberately NOT barriers, even
+# though several of them are side-effecting/may-throw for DCE's purposes.
+# The barriers are exactly the ops that change cross-iteration/control state or
+# suspend: opaque calls, attribute/index mutation+deletion, the async
+# state/channel suspend ops, closure load/store, `raise`, `yield`/`yield from`,
+# and `import`. Rendered EXHAUSTIVELY over OpCode by gen_op_kinds.py, so a new
+# OpCode variant must be classified here before the backend compiles — closing
+# the prior default-false drift trap in the hand-written `is_impure` matches!.
+fusion_barrier_opcodes = [
+    "Call",
+    "CallBuiltin",
+    "CallMethod",
+    "CallMethodIc",
+    "CallSuperMethodIc",
+    "ChanRecvYield",
+    "ChanSendYield",
+    "ClosureLoad",
+    "ClosureStore",
+    "DelAttr",
+    "DelIndex",
+    "Import",
+    "ImportFrom",
+    "Raise",
+    "StateSwitch",
+    "StateTransition",
+    "StateYield",
+    "StoreAttr",
+    "StoreIndex",
+    "Yield",
+    "YieldFrom",
+]
+
+# generator_fusion_poll_*_opcodes: Phase-1 generator poll eligibility roles.
+# A fusable poll must contain at least one RequiredYield and no Reject opcode.
+# StateSwitch is neutral here: clone_and_rewrite_poll drops the bookkeeping
+# switch, while StateYield is the splice point and the reject set covers
+# delegation, async/channel/state-transition, and nested task shapes that Phase 1
+# cannot linearize.
+generator_fusion_poll_required_yield_opcodes = ["StateYield"]
+generator_fusion_poll_reject_opcodes = [
+    "YieldFrom",
+    "Yield",
+    "StateBlockStart",
+    "StateBlockEnd",
+    "ChanSendYield",
+    "ChanRecvYield",
+    "StateTransition",
+    "AllocTask",
+]
+
+# generator_fusion_iter_use_roles: allowed uses of the raw iterator value while
+# proving a generator poll can be fused. IterNext is the required consuming next
+# use; Is is the tolerated not-iterable/None guard. generator_fusion.rs still
+# verifies operand position and terminator non-use live.
+generator_fusion_iter_use_roles = [
+    { opcode = "IterNext", role = "next_use" },
+    { opcode = "Is", role = "none_guard" },
+]
+
+# state_machine_opcodes: generator/async/coroutine suspension machinery that
+# linear CFG transforms must refuse. A callee/loop-containing function with one
+# of these ops cannot be spliced or promoted without rebuilding the surrounding
+# state machine. This is NOT the same as fusion barriers or side effects:
+# `ClosureLoad`/`ClosureStore` and opaque calls block fusion but are not
+# state-machine control, while `AllocTask` creates task state and must block
+# inlining/promotion even though it is not side_effecting for DCE. Generated
+# exhaustively over OpCode so a new suspension/control opcode cannot silently
+# become inlinable or promotable through a default-false hand-set.
+state_machine_opcodes = [
+    "AllocTask",
+    "ChanRecvYield",
+    "ChanSendYield",
+    "StateBlockEnd",
+    "StateBlockStart",
+    "StateSwitch",
+    "StateTransition",
+    "StateYield",
+    "Yield",
+    "YieldFrom",
+]
+
+overflow_peel_guard_compare_opcodes = [
+    "Eq",
+    "Ge",
+    "Gt",
+    "Le",
+    "Lt",
+    "Ne",
+]
+
+overflow_peel_body_pure_opcodes = [
+    "Add",
+    "ConstInt",
+    "Copy",
+    "Mul",
+]
+
+module_concurrency_marker_source_roles = [
+    { opcode = "Import", role = "module_name", attrs = ["s_value", "name"] },
+    { opcode = "ImportFrom", role = "module_name", attrs = ["s_value", "name"] },
+    { opcode = "Call", role = "thread_intrinsic_callee", attrs = ["s_value", "name"] },
+    { opcode = "CallBuiltin", role = "thread_intrinsic_callee", attrs = ["s_value", "name"] },
+]
+
+module_slot_access_roles = [
+    { opcode = "ModuleGetAttr", role = "keyed_attr" },
+    { opcode = "ModuleSetAttr", role = "keyed_attr" },
+    { opcode = "ModuleGetGlobal", role = "wildcard_module_dict" },
+    { opcode = "ModuleDelGlobal", role = "wildcard_module_dict" },
+    { opcode = "ModuleDelGlobalIfPresent", role = "wildcard_module_dict" },
+]
+
+tir_verify_attr_rules = [
+    { opcode = "Call", rule = "call_callee" },
+    { opcode = "CallBuiltin", rule = "call_callee" },
+    { opcode = "CallMethod", rule = "call_method" },
+    { opcode = "CallMethodIc", rule = "call_method" },
+    { opcode = "CallSuperMethodIc", rule = "call_method" },
+    { opcode = "ObjectNewBoundStack", rule = "positive_payload_bytes" },
+]
+
+sroa_const_immediate_rules = [
+    { opcode = "ConstNone", rule = "always_immediate" },
+    { opcode = "ConstBool", rule = "always_immediate" },
+    { opcode = "ConstFloat", rule = "always_immediate" },
+    { opcode = "ConstInt", rule = "inline_int_if_range" },
+]
+
+strength_reduction_rules = [
+    { opcode = "Mul", rule = "mul_by_two" },
+    { opcode = "Pow", rule = "pow_square" },
+    { opcode = "FloorDiv", rule = "power_two_floor_div" },
+    { opcode = "Mod", rule = "power_two_mod" },
+]
+
+scev_expr_rules = [
+    { opcode = "Add", rule = "add" },
+    { opcode = "Sub", rule = "sub" },
+    { opcode = "Mul", rule = "mul" },
+]
+
+exception_handling_opcodes = [
+    "CheckException",
+    "StateBlockEnd",
+    "StateBlockStart",
+    "TryEnd",
+    "TryStart",
+]
+
+exception_handler_region_opcodes = [
+    "StateBlockEnd",
+    "StateBlockStart",
+    "TryEnd",
+    "TryStart",
+]
+
+structured_scf_marker_opcodes = [
+    "ScfFor",
+    "ScfIf",
+    "ScfWhile",
+    "ScfYield",
+]
+
+# i64_overflow_box_dispatch_opcodes: arithmetic opcodes whose raw-i64 operands
+# cannot be lowered as unchecked machine arithmetic unless every operand and
+# result is proven inside the inline-int window. RawI64FullDeopt is a full-i64
+# checked carrier, not a Python-int no-overflow proof; without the stronger
+# value-range proof these ops must route to boxed runtime dispatch to preserve
+# BigInt and overflow semantics. Distinct from zero-divisor and shift-count
+# guards: those prove machine exceptional operands, while this proves overflow
+# custody for whole arithmetic families.
+i64_overflow_box_dispatch_opcodes = [
+    "Add",
+    "Div",
+    "FloorDiv",
+    "InplaceAdd",
+    "InplaceMul",
+    "InplaceSub",
+    "Mod",
+    "Mul",
+    "Sub",
+]
+
+# i64_checked_overflow_triple_opcodes: binary arithmetic ops that can lower to
+# the LIR checked-overflow triple (raw result, boxed overflow value, overflow
+# flag) once type/repr/value-range proof is complete. Division-family opcodes are
+# intentionally excluded: their semantic guard is divisor-zero, not overflow-box
+# side-channel generation.
+i64_checked_overflow_triple_opcodes = [
+    "Add",
+    "Mul",
+    "Sub",
+]
+
+# boxed_runtime_inplace_dispatch_opcodes: first-class opcodes whose boxed
+# runtime arithmetic fallback must call `molt_inplace_*` instead of `molt_*`,
+# preserving CPython's augmented-assignment protocol (`__i<op>__` before the
+# binary/reflected dunder chain). Preserved-Copy `inplace_*` spellings remain
+# string namespace facts carried by `_original_kind`; this opcode fact covers
+# the first-class InplaceAdd/Sub/Mul trio only.
+boxed_runtime_inplace_dispatch_opcodes = [
+    "InplaceAdd",
+    "InplaceSub",
+    "InplaceMul",
+]
+
+# i64_zero_divisor_guard_opcodes: raw i64 lowering for these binary opcodes can
+# machine-trap on a zero RHS (`i64.div_s`/`i64.rem_s`) while Python semantics
+# require `ZeroDivisionError`. The same semantic fact is consumed by
+# lower_to_lir.rs (box unless value-range proves RHS nonzero) and
+# check_exception_elim.rs (only remove CheckException after these ops when the
+# divisor is proven nonzero). Generated exhaustively over OpCode so the two
+# consumers cannot drift.
+i64_zero_divisor_guard_opcodes = [
+    "Div",
+    "FloorDiv",
+    "Mod",
+]
+
+# i64_shift_count_guard_opcodes: raw i64 hoist/lowering proof for these binary
+# opcodes must prove the count operand is in the valid machine-shift range
+# [0, 63]. Python shifts with negative counts raise; unchecked machine shifts
+# with oversized counts silently mask/wrap on backends.
+i64_shift_count_guard_opcodes = [
+    "Shl",
+    "Shr",
+]
+
+literal_payload_opcodes = [
+    { opcode = "ConstInt", literal = "int" },
+    { opcode = "ConstBool", literal = "bool" },
+]
+
+# gvn_*_opcodes: GVN numbering roles. Always-numberable ops are pure value
+# transforms that can share the scoped dominator value table without extra
+# operand proof. Type-gated ops are deterministic computations only when all
+# operands are primitive; gvn.rs checks that per value. Value-keyed constants
+# receive same-block local value numbers only, because backend-native constant
+# materialization is representation-sensitive. gvn_numberable_attr_key_opcodes
+# covers non-constant numbered ops whose semantic equivalence includes an attr
+# payload (TypeGuard's expected type, today). Each row names the exact payload
+# key GVN may extract; omitted/malformed attrs fail closed to identity numbering
+# rather than colliding through a pass-local default.
+gvn_always_numberable_opcodes = [
+    "BoxVal",
+    "UnboxVal",
+]
+
+gvn_type_gated_numberable_opcodes = [
+    "Add",
+    "Sub",
+    "Mul",
+    "InplaceAdd",
+    "InplaceSub",
+    "InplaceMul",
+    "Div",
+    "FloorDiv",
+    "Mod",
+    "Pow",
+    "Neg",
+    "Pos",
+    "Eq",
+    "Ne",
+    "Lt",
+    "Le",
+    "Gt",
+    "Ge",
+    "Is",
+    "IsNot",
+    "BitAnd",
+    "BitOr",
+    "BitXor",
+    "BitNot",
+    "Shl",
+    "Shr",
+    "And",
+    "Or",
+    "Not",
+    "Bool",
+    "TypeGuard",
+]
+
+gvn_value_keyed_constant_opcodes = [
+    { opcode = "ConstInt", key = "i64_attr", attrs = ["value"] },
+    { opcode = "ConstBigInt", key = "str_attr", attrs = ["s_value"] },
+    { opcode = "ConstBool", key = "bool_attr", attrs = ["value"] },
+    { opcode = "ConstNone", key = "none_singleton" },
+    { opcode = "ConstFloat", key = "f64_bits_attr", attrs = ["f_value", "value"] },
+    { opcode = "ConstStr", key = "str_attr", attrs = ["s_value", "value"] },
+    { opcode = "ConstBytes", key = "bytes_attr", attrs = ["bytes", "value"] },
+]
+
+gvn_numberable_attr_key_opcodes = [
+    { opcode = "TypeGuard", key = "str_attr", attrs = ["expected_type", "ty"] },
+]
+
+# proven_result_type_seed_opcodes: constants whose intrinsic result type is
+# useful as a proven-map seed. This is intentionally separate from
+# operand_independent_result_type: comparisons, module loads, and builders have
+# intrinsic result types, but the proven map tracks guard-removal proof seeds.
+proven_result_type_seed_opcodes = [
+    "ConstInt",
+    "ConstBool",
+    "ConstNone",
+    "ConstFloat",
+    "ConstStr",
+    "ConstBytes",
+]
+
+type_refine_attr_result_type_rules = [
+    { opcode = "ObjectNewBound", rule = "object_type_hint" },
+    { opcode = "ObjectNewBoundStack", rule = "object_type_hint" },
+    { opcode = "Call", rule = "call_return_type" },
+    { opcode = "CallMethod", rule = "call_return_type" },
+    { opcode = "CallMethodIc", rule = "call_return_type" },
+    { opcode = "CallSuperMethodIc", rule = "call_return_type" },
+    { opcode = "CallBuiltin", rule = "call_builtin_return_type" },
+    { opcode = "TypeGuard", rule = "type_guard" },
+    { opcode = "Copy", rule = "copy_original_kind" },
+]
+
+type_refine_operand_type_rules = [
+    { opcode = "Add", rule = "add" },
+    { opcode = "InplaceAdd", rule = "add" },
+    { opcode = "Mul", rule = "mul" },
+    { opcode = "InplaceMul", rule = "mul" },
+    { opcode = "Sub", rule = "numeric_arithmetic" },
+    { opcode = "InplaceSub", rule = "numeric_arithmetic" },
+    { opcode = "Mod", rule = "numeric_arithmetic" },
+    { opcode = "Pow", rule = "numeric_arithmetic" },
+    { opcode = "FloorDiv", rule = "numeric_arithmetic" },
+    { opcode = "Div", rule = "true_division" },
+    { opcode = "Neg", rule = "unary_numeric" },
+    { opcode = "Pos", rule = "unary_numeric" },
+    { opcode = "And", rule = "bool_select" },
+    { opcode = "Or", rule = "bool_select" },
+    { opcode = "BitAnd", rule = "bitwise_i64" },
+    { opcode = "BitOr", rule = "bitwise_i64" },
+    { opcode = "BitXor", rule = "bitwise_i64" },
+    { opcode = "BitNot", rule = "bit_not_i64" },
+    { opcode = "BuildTuple", rule = "build_tuple" },
+    { opcode = "GetIter", rule = "get_iter" },
+    { opcode = "ForIter", rule = "iter_next" },
+    { opcode = "IterNext", rule = "iter_next" },
+    { opcode = "Index", rule = "index" },
+    { opcode = "Copy", rule = "copy" },
+    { opcode = "BoxVal", rule = "box_val" },
+    { opcode = "UnboxVal", rule = "unbox_val" },
+]
+
+sccp_constant_seed_rules = [
+    { opcode = "ConstInt", rule = "int_attr" },
+    { opcode = "ConstFloat", rule = "float_attr" },
+    { opcode = "ConstBool", rule = "bool_attr" },
+    { opcode = "ConstStr", rule = "str_attr" },
+    { opcode = "ConstNone", rule = "none_singleton" },
+]
+
+sccp_constant_eval_rules = [
+    { opcode = "Add", rule = "add" },
+    { opcode = "Sub", rule = "sub" },
+    { opcode = "Mul", rule = "mul" },
+    { opcode = "Div", rule = "div" },
+    { opcode = "FloorDiv", rule = "floordiv" },
+    { opcode = "Mod", rule = "mod" },
+    { opcode = "Pow", rule = "pow" },
+    { opcode = "Eq", rule = "eq" },
+    { opcode = "Ne", rule = "ne" },
+    { opcode = "Lt", rule = "lt" },
+    { opcode = "Le", rule = "le" },
+    { opcode = "Gt", rule = "gt" },
+    { opcode = "Ge", rule = "ge" },
+    { opcode = "Neg", rule = "neg" },
+    { opcode = "Not", rule = "not" },
+    { opcode = "BuildList", rule = "build_list" },
+    { opcode = "BuildDict", rule = "build_dict" },
+    { opcode = "BuildTuple", rule = "build_tuple_as_list" },
+]
+
+value_range_transfer_rules = [
+    { opcode = "Add", rule = "add" },
+    { opcode = "Sub", rule = "sub" },
+    { opcode = "Mul", rule = "mul" },
+    { opcode = "Neg", rule = "neg" },
+    { opcode = "BitAnd", rule = "bit_and" },
+    { opcode = "BitOr", rule = "bit_or" },
+    { opcode = "BitXor", rule = "bit_xor" },
+    { opcode = "Mod", rule = "mod" },
+    { opcode = "Shr", rule = "shr" },
+    { opcode = "Shl", rule = "shl" },
+]
+
+value_range_const_fold_rules = [
+    { opcode = "Add", rule = "add" },
+    { opcode = "Sub", rule = "sub" },
+    { opcode = "Mul", rule = "mul" },
+    { opcode = "Shl", rule = "shl" },
+    { opcode = "Shr", rule = "shr" },
+    { opcode = "BitAnd", rule = "bit_and" },
+    { opcode = "BitOr", rule = "bit_or" },
+    { opcode = "BitXor", rule = "bit_xor" },
+]
+
+# value_range_cond_narrow_rules: comparison opcodes whose true edge narrows a
+# loop-body induction variable against its upper bound. The registry owns the
+# opcode membership; value_range.rs owns CFG polarity, operand resolution,
+# numeric saturation, and symbolic-len recording.
+value_range_cond_narrow_rules = [
+    { opcode = "Lt", rule = "lt_upper_exclusive" },
+    { opcode = "Le", rule = "le_upper_inclusive" },
+]
+
+# value_range_container_length_rules: opcodes that seed container-length and
+# len(container) facts used by ValueRangeResult::proves_index_in_bounds. The
+# registry owns opcode membership; value_range.rs owns operand counts,
+# builtin-name validation, copy resolution, and const/symbolic length formulas.
+value_range_container_length_rules = [
+    { opcode = "BuildList", rule = "fixed_literal" },
+    { opcode = "BuildTuple", rule = "fixed_literal" },
+    { opcode = "Mul", rule = "list_repeat" },
+    { opcode = "CallBuiltin", rule = "len_call" },
+]
+
+# vectorize_opcode_facts: all opcode-level facts consumed by vectorize.rs. This
+# deliberately covers body eligibility, non-semantic loop machinery skips,
+# loop-header detection, annotation target selection, and reduction family in
+# one table so vectorize.rs cannot grow parallel hand-maintained taxonomies.
+# Omitted opcodes reject vectorization by default. Copy remains a row with
+# `copy_if_plain` because eligibility depends on live attrs (`is_plain_value_copy`).
+vectorize_opcode_facts = [
+    { opcode = "Add", body = "scalar_arithmetic", reduction = "sum" },
+    { opcode = "Sub", body = "scalar_arithmetic" },
+    { opcode = "Mul", body = "scalar_arithmetic", reduction = "product" },
+    { opcode = "Div", body = "scalar_arithmetic" },
+    { opcode = "FloorDiv", body = "scalar_arithmetic" },
+    { opcode = "Mod", body = "scalar_arithmetic" },
+    { opcode = "Pow", body = "scalar_arithmetic" },
+    { opcode = "Neg", body = "scalar_arithmetic" },
+    { opcode = "Pos", body = "scalar_arithmetic" },
+    { opcode = "BitAnd", body = "scalar_arithmetic", reduction = "and" },
+    { opcode = "BitOr", body = "scalar_arithmetic", reduction = "or" },
+    { opcode = "BitXor", body = "scalar_arithmetic" },
+    { opcode = "BitNot", body = "scalar_arithmetic" },
+    { opcode = "Shl", body = "scalar_arithmetic" },
+    { opcode = "Shr", body = "scalar_arithmetic" },
+    { opcode = "Eq", body = "scalar_arithmetic" },
+    { opcode = "Ne", body = "scalar_arithmetic" },
+    { opcode = "Lt", body = "scalar_arithmetic", reduction = "min" },
+    { opcode = "Le", body = "scalar_arithmetic", reduction = "min" },
+    { opcode = "Gt", body = "scalar_arithmetic", reduction = "max" },
+    { opcode = "Ge", body = "scalar_arithmetic", reduction = "max" },
+    { opcode = "ConstInt", body = "scalar_arithmetic" },
+    { opcode = "ConstFloat", body = "scalar_arithmetic" },
+    { opcode = "ConstBool", body = "scalar_arithmetic" },
+    { opcode = "UnboxVal", body = "scalar_arithmetic" },
+    { opcode = "BoxVal", body = "scalar_arithmetic" },
+    { opcode = "Copy", body = "copy_if_plain" },
+    { opcode = "TypeGuard", body = "non_escaping_guard" },
+    { opcode = "GetIter", body = "iteration_control", annotation_target = true },
+    { opcode = "IterNext", body = "iteration_control" },
+    { opcode = "IterNextUnboxed", body = "iteration_control" },
+    { opcode = "ForIter", body = "iteration_control", loop_header = true, annotation_target = true },
+    { opcode = "ScfFor", body = "iteration_control", loop_header = true, annotation_target = true },
+]
+
+# lir_verify_rules: opcodes that require representation-aware LIR verifier
+# hooks after generic surface/dominance checks. This table owns dispatch
+# membership; verify_lir.rs owns hook invariants and diagnostic text.
+lir_verify_rules = [
+    { opcode = "BoxVal", rule = "box_value" },
+    { opcode = "UnboxVal", rule = "unbox_value" },
+    { opcode = "Add", rule = "checked_i64_arithmetic" },
+    { opcode = "Sub", rule = "checked_i64_arithmetic" },
+    { opcode = "Mul", rule = "checked_i64_arithmetic" },
+    { opcode = "CallBuiltin", rule = "truthy_materialization" },
+]
+
+# repr_projectable_*_result_rules: opcode roles consumed by
+# representation_plan/value_repr.rs when projecting boxed TIR values into native
+# scalar carriers for LIR/WASM/LLVM. The registry owns opcode membership; the
+# representation pass owns live operand carriers, result-index checks, and
+# Copy-source dataflow for each role.
+repr_raw_i64_full_deopt_seed_rules = [
+    { opcode = "CheckedAdd", rule = "checked_result0" },
+    { opcode = "CheckedMul", rule = "checked_result0" },
+    { opcode = "ConstInt", rule = "const_int_not_inline_safe" },
+]
+
+repr_projectable_bool_result_rules = [
+    { opcode = "ConstBool", rule = "always" },
+    { opcode = "Eq", rule = "always" },
+    { opcode = "Ne", rule = "always" },
+    { opcode = "Lt", rule = "always" },
+    { opcode = "Le", rule = "always" },
+    { opcode = "Gt", rule = "always" },
+    { opcode = "Ge", rule = "always" },
+    { opcode = "Is", rule = "always" },
+    { opcode = "IsNot", rule = "always" },
+    { opcode = "Not", rule = "always" },
+    { opcode = "Bool", rule = "always" },
+    { opcode = "ExceptionPending", rule = "always" },
+    { opcode = "CheckedAdd", rule = "result1" },
+    { opcode = "CheckedMul", rule = "result1" },
+    { opcode = "IterNextUnboxed", rule = "result1" },
+    { opcode = "And", rule = "all_operands_bool" },
+    { opcode = "Or", rule = "all_operands_bool" },
+    { opcode = "Index", rule = "index_raw_i64_index" },
+    { opcode = "Copy", rule = "copy_source_bool" },
+]
+
+repr_projectable_float_result_rules = [
+    { opcode = "ConstFloat", rule = "always" },
+    { opcode = "Add", rule = "all_operands_projectable" },
+    { opcode = "Sub", rule = "all_operands_projectable" },
+    { opcode = "Mul", rule = "all_operands_projectable" },
+    { opcode = "Div", rule = "all_operands_projectable" },
+    { opcode = "InplaceAdd", rule = "all_operands_projectable" },
+    { opcode = "InplaceSub", rule = "all_operands_projectable" },
+    { opcode = "InplaceMul", rule = "all_operands_projectable" },
+    { opcode = "Neg", rule = "first_operand_projectable" },
+    { opcode = "Copy", rule = "copy_source_float" },
+]
+
+counted_loop_comparison_roles = [
+    { opcode = "Lt", role = "increasing_exclusive", inverse = "Ge" },
+    { opcode = "Le", role = "increasing_inclusive", inverse = "Gt" },
+    { opcode = "Gt", role = "decreasing_exclusive", inverse = "Le" },
+    { opcode = "Ge", role = "decreasing_inclusive", inverse = "Lt" },
+]
+
+exception_label_attr_opcodes = [
+    "CheckException",
+    "TryStart",
+    "TryEnd",
+]
+
+exception_transfer_edge_opcodes = [
+    "CheckException",
+    "TryStart",
+]
+
+exception_region_nesting_roles = [
+    { opcode = "TryStart", role = "enter" },
+    { opcode = "TryEnd", role = "exit" },
+]
+
+alias_memory_inert_opcodes = [
+    "Add",
+    "And",
+    "BitAnd",
+    "BitNot",
+    "BitOr",
+    "BitXor",
+    "Bool",
+    "BoxVal",
+    "BuildSlice",
+    "CheckException",
+    "CheckedAdd",
+    "CheckedMul",
+    "ConstBigInt",
+    "ConstBool",
+    "ConstBytes",
+    "ConstFloat",
+    "ConstInt",
+    "ConstNone",
+    "ConstStr",
+    "Div",
+    "Eq",
+    "ExceptionPending",
+    "FloorDiv",
+    "FunctionDefaultsVersion",
+    "Ge",
+    "Gt",
+    "InplaceAdd",
+    "InplaceMul",
+    "InplaceSub",
+    "Is",
+    "IsNot",
+    "Le",
+    "Lt",
+    "Mod",
+    "Mul",
+    "Ne",
+    "Neg",
+    "Not",
+    "Or",
+    "Pos",
+    "Pow",
+    "Shl",
+    "Shr",
+    "Sub",
+    "TypeGuard",
+    "UnboxVal",
+]
+
+alias_typed_slot_load_opcodes = [
+    "LoadAttr",
+]
+
+alias_typed_slot_store_opcodes = [
+    "StoreAttr",
+]
+
+alias_transparent_type_guard_opcodes = [
+    "TypeGuard",
+]
+
+alias_transparent_copy_opcodes = [
+    "Copy",
+]
+
+alias_region_copy_refinement_opcodes = [
+    "Copy",
+]
+
+alias_region_container_element_opcodes = [
+    "DelIndex",
+    "Index",
+    "StoreIndex",
+]
+
+alias_region_module_dict_opcodes = [
+    "ModuleCacheDel",
+    "ModuleCacheGet",
+    "ModuleCacheSet",
+    "ModuleDelGlobal",
+    "ModuleDelGlobalIfPresent",
+    "ModuleGetAttr",
+    "ModuleGetGlobal",
+    "ModuleGetName",
+    "ModuleImportFrom",
+    "ModuleSetAttr",
+]
+
+alias_slot_direct_observer_opcodes = [
+    "AllocTask",
+    "BuildDict",
+    "BuildList",
+    "BuildSet",
+    "BuildSlice",
+    "BuildTuple",
+    "Call",
+    "CallBuiltin",
+    "CallMethod",
+    "CallMethodIc",
+    "CallSuperMethodIc",
+    "Index",
+    "LoadAttr",
+    "Raise",
+    "StoreIndex",
+    "Yield",
+    "YieldFrom",
+]
+
+alias_slot_typed_store_opcodes = [
+    "StoreAttr",
+]
+
+alias_slot_never_observer_opcodes = [
+    "CheckException",
+    "DecRef",
+    "IncRef",
+]
+
+# classify_copy_kind inert bucket: no surviving heap reference to own
+# (line/trace_*/missing/nop, the read-only repr/layout guards).
+classifier_inert_marker = [
+    "guard_bool",
+    "guard_dict_shape",
+    "guard_float",
+    "guard_int",
+    "guard_layout",
+    "guard_layout_ptr",
+    "guard_none",
+    "guard_str",
+    "line",
+    "missing",
+    "nop",
+    "trace_enter_slot",
+    "trace_exit",
+]
+
+# classify_copy_kind explicit transparent-alias bucket: known Copy-lifted
+# runtime/effect ops whose result/ownership is intentionally NOT promoted to
+# FreshValue or InertMarker yet, but whose transparent-alias droppability is a
+# deliberate table fact rather than a silent `_ => TransparentAlias` fallthrough.
+# These entries DO NOT grant no-heap-move/MemGVN alias privileges; that
+# separate precision set remains `classifier_no_heap_move`.
+classifier_transparent_alias = [
+    "alloc_class",
+    "alloc_class_static",
+    "alloc_class_trusted",
+    "anext",
+    "asyncgen_locals_register",
+    "asyncgen_new",
+    "asyncgen_shutdown",
+    "bound_method_new",
+    "block_on",
+    "bridge_unavailable",
+    "buffer2d_get",
+    "buffer2d_matmul",
+    "buffer2d_new",
+    "buffer2d_set",
+    "builtin_type",
+    "bytearray_count",
+    "bytearray_count_slice",
+    "bytearray_endswith",
+    "bytearray_endswith_slice",
+    "bytearray_fill_range",
+    "bytearray_find",
+    "bytearray_find_slice",
+    "bytearray_from_obj",
+    "bytearray_from_str",
+    "bytearray_replace",
+    "bytearray_split",
+    "bytearray_split_max",
+    "bytearray_startswith",
+    "bytearray_startswith_slice",
+    "bytes_count",
+    "bytes_count_slice",
+    "bytes_endswith",
+    "bytes_endswith_slice",
+    "bytes_find",
+    "bytes_find_slice",
+    "bytes_from_obj",
+    "bytes_from_str",
+    "bytes_replace",
+    "bytes_split",
+    "bytes_split_max",
+    "bytes_startswith",
+    "bytes_startswith_slice",
+    "callargs_expand_kwstar",
+    "callargs_expand_star",
+    "callargs_new",
+    "callargs_push_kw",
+    "callargs_push_pos",
+    "cancel_current",
+    "cancel_token_cancel",
+    "cancel_token_clone",
+    "cancel_token_drop",
+    "cancel_token_get_current",
+    "cancel_token_is_cancelled",
+    "cancel_token_new",
+    "cancel_token_set_current",
+    "cancelled",
+    "chan_drop",
+    "chan_new",
+    "chr",
+    "class_apply_set_name",
+    "class_layout_version",
+    "class_merge_layout",
+    "class_new",
+    "class_set_base",
+    "class_set_layout_version",
+    "classmethod_new",
+    "code_new",
+    "code_slot_set",
+    "code_slots_init",
+    "context_closing",
+    "context_depth",
+    "context_enter",
+    "context_exit",
+    "context_null",
+    "context_unwind",
+    "context_unwind_to",
+    "dataclass_get",
+    "dataclass_set",
+    "dataclass_set_class",
+    "dict_clear",
+    "dict_copy",
+    "dict_get",
+    "dict_inc",
+    "dict_pop",
+    "dict_popitem",
+    "dict_set",
+    "dict_setdefault",
+    "dict_setdefault_empty_list",
+    "dict_str_int_inc",
+    "dict_update",
+    "dict_update_kwstar",
+    "dict_update_missing",
+    "env_get",
+    "exception_class",
+    "exception_clear",
+    "exception_context_set",
+    "exception_kind",
+    "exception_last",
+    "exception_last_pending",
+    "exception_match_builtin",
+    "exception_message",
+    "exception_pop",
+    "exception_push",
+    "exception_set_cause",
+    "exception_set_last",
+    "exception_stack_clear",
+    "exception_stack_depth",
+    "exception_stack_enter",
+    "exception_stack_exit",
+    "exception_stack_set_depth",
+    "exceptiongroup_combine",
+    "exceptiongroup_match",
+    "file_close",
+    "file_flush",
+    "file_open",
+    "file_read",
+    "file_write",
+    "fn_ptr_code_set",
+    "frame_locals_set",
+    "frozenset_add",
+    "func_new",
+    "func_new_closure",
+    "function_closure_bits",
+    "future_cancel",
+    "future_cancel_clear",
+    "future_cancel_msg",
+    "gen_locals_register",
+    "get_attr_name_default",
+    "has_attr_name",
+    "id",
+    "intarray_from_seq",
+    "invert",
+    "is_bound_method",
+    "is_callable",
+    "is_generator",
+    "is_native_awaitable",
+    "isinstance",
+    "issubclass",
+    "len",
+    "list_append",
+    "list_clear",
+    "list_copy",
+    "list_count",
+    "list_extend",
+    "list_index",
+    "list_index_range",
+    "list_insert",
+    "list_int_new",
+    "list_remove",
+    "list_reverse",
+    "memoryview_new",
+    "memoryview_tobytes",
+    "module_import_star",
+    "module_new",
+    "ord",
+    "pow_mod",
+    "print_newline",
+    "promise_set_exception",
+    "promise_set_result",
+    "promise_new",
+    "property_new",
+    "round",
+    "set_add",
+    "set_add_probe",
+    "set_difference_update",
+    "set_discard",
+    "set_intersection_update",
+    "set_pop",
+    "set_remove",
+    "set_symdiff_update",
+    "set_update",
+    "spawn",
+    "staticmethod_new",
+    "statistics_mean_slice",
+    "statistics_stdev_slice",
+    "string_capitalize",
+    "string_count",
+    "string_count_slice",
+    "string_endswith",
+    "string_endswith_slice",
+    "string_find",
+    "string_find_slice",
+    "string_lower",
+    "string_lstrip",
+    "string_replace",
+    "string_rstrip",
+    "string_split",
+    "string_split_field",
+    "string_split_field_eq",
+    "string_split_field_len",
+    "string_split_max",
+    "string_split_sep_dict_inc",
+    "string_split_validate",
+    "string_split_ws_dict_inc",
+    "string_startswith",
+    "string_startswith_slice",
+    "string_strip",
+    "string_upper",
+    "super_new",
+    "taq_ingest_line",
+    "task_register_token_owned",
+    "thread_submit",
+    "trunc",
+    "tuple_count",
+    "tuple_index",
+    "type_of",
+]
+# copy_kind_is_explicit_no_heap_move: provable no-incref pure move of operand 0
+# (bare copy, the named SSA/var moves, the validate-and-pass-through guards).
+classifier_no_heap_move = [
+    "copy",
+    "copy_var",
+    "guard_tag",
+    "guard_type",
+    "identity_alias",
+    "load_var",
+    "store_var",
+]
+
+[[simpleir_control_kind]]
+kind = "label"
+structural = true
+terminator = false
+suspend = false
+repoll = false
+block_leader = true
+block_ender = false
+conditional_branch = false
+pre_ssa_rewritten = false
+ssa_only = false
+
+[[simpleir_control_kind]]
+kind = "state_label"
+structural = true
+terminator = false
+suspend = false
+repoll = false
+block_leader = true
+block_ender = false
+conditional_branch = false
+pre_ssa_rewritten = false
+ssa_only = false
+
+[[simpleir_control_kind]]
+kind = "if"
+structural = true
+terminator = false
+suspend = false
+repoll = false
+block_leader = true
+block_ender = false
+conditional_branch = true
+pre_ssa_rewritten = false
+ssa_only = false
+
+[[simpleir_control_kind]]
+kind = "else"
+structural = true
+terminator = false
+suspend = false
+repoll = false
+block_leader = true
+block_ender = false
+conditional_branch = false
+pre_ssa_rewritten = false
+ssa_only = false
+
+[[simpleir_control_kind]]
+kind = "end_if"
+structural = true
+terminator = false
+suspend = false
+repoll = false
+block_leader = true
+block_ender = false
+conditional_branch = false
+pre_ssa_rewritten = false
+ssa_only = false
+
+[[simpleir_control_kind]]
+kind = "loop_start"
+structural = true
+terminator = false
+suspend = false
+repoll = false
+block_leader = true
+block_ender = true
+conditional_branch = false
+pre_ssa_rewritten = false
+ssa_only = false
+
+[[simpleir_control_kind]]
+kind = "loop_end"
+structural = true
+terminator = false
+suspend = false
+repoll = false
+block_leader = true
+block_ender = true
+conditional_branch = false
+pre_ssa_rewritten = false
+ssa_only = false
+
+[[simpleir_control_kind]]
+kind = "loop_break"
+structural = true
+terminator = true
+suspend = false
+repoll = false
+block_leader = false
+block_ender = false
+conditional_branch = false
+pre_ssa_rewritten = false
+ssa_only = false
+
+[[simpleir_control_kind]]
+kind = "loop_continue"
+structural = true
+terminator = true
+suspend = false
+repoll = false
+block_leader = false
+block_ender = false
+conditional_branch = false
+pre_ssa_rewritten = false
+ssa_only = false
+
+[[simpleir_control_kind]]
+kind = "jump"
+structural = true
+terminator = true
+suspend = false
+repoll = false
+block_leader = false
+block_ender = false
+conditional_branch = false
+pre_ssa_rewritten = false
+ssa_only = false
+
+[[simpleir_control_kind]]
+kind = "goto"
+structural = true
+terminator = true
+suspend = false
+repoll = false
+block_leader = false
+block_ender = false
+conditional_branch = false
+pre_ssa_rewritten = false
+ssa_only = false
+
+[[simpleir_control_kind]]
+kind = "br_if"
+structural = true
+terminator = false
+suspend = false
+repoll = false
+block_leader = false
+block_ender = false
+conditional_branch = true
+pre_ssa_rewritten = false
+ssa_only = false
+
+[[simpleir_control_kind]]
+kind = "loop_break_if_true"
+structural = true
+terminator = false
+suspend = false
+repoll = false
+block_leader = false
+block_ender = false
+conditional_branch = true
+pre_ssa_rewritten = false
+ssa_only = false
+
+[[simpleir_control_kind]]
+kind = "loop_break_if_false"
+structural = true
+terminator = false
+suspend = false
+repoll = false
+block_leader = false
+block_ender = false
+conditional_branch = true
+pre_ssa_rewritten = false
+ssa_only = false
+
+[[simpleir_control_kind]]
+kind = "loop_break_if_exception"
+structural = true
+terminator = false
+suspend = false
+repoll = false
+block_leader = false
+block_ender = false
+conditional_branch = true
+pre_ssa_rewritten = false
+ssa_only = false
+
+[[simpleir_control_kind]]
+kind = "ret"
+structural = true
+terminator = true
+suspend = false
+repoll = false
+block_leader = false
+block_ender = false
+conditional_branch = false
+pre_ssa_rewritten = false
+ssa_only = false
+
+[[simpleir_control_kind]]
+kind = "ret_void"
+structural = true
+terminator = true
+suspend = false
+repoll = false
+block_leader = false
+block_ender = false
+conditional_branch = false
+pre_ssa_rewritten = false
+ssa_only = false
+
+[[simpleir_control_kind]]
+kind = "return"
+structural = true
+terminator = true
+suspend = false
+repoll = false
+block_leader = false
+block_ender = false
+conditional_branch = false
+pre_ssa_rewritten = false
+ssa_only = false
+
+[[simpleir_control_kind]]
+kind = "nop"
+structural = true
+terminator = false
+suspend = false
+repoll = false
+block_leader = false
+block_ender = false
+conditional_branch = false
+pre_ssa_rewritten = false
+ssa_only = false
+
+[[simpleir_control_kind]]
+kind = "state_switch"
+structural = true
+terminator = false
+suspend = false
+repoll = false
+block_leader = false
+block_ender = true
+conditional_branch = false
+pre_ssa_rewritten = false
+ssa_only = false
+
+[[simpleir_control_kind]]
+kind = "state_yield"
+structural = false
+terminator = false
+suspend = true
+repoll = false
+block_leader = false
+block_ender = true
+conditional_branch = false
+pre_ssa_rewritten = false
+ssa_only = false
+
+[[simpleir_control_kind]]
+kind = "state_transition"
+structural = false
+terminator = false
+suspend = true
+repoll = true
+block_leader = true
+block_ender = true
+conditional_branch = false
+pre_ssa_rewritten = false
+ssa_only = false
+
+[[simpleir_control_kind]]
+kind = "chan_send_yield"
+structural = false
+terminator = false
+suspend = true
+repoll = true
+block_leader = true
+block_ender = true
+conditional_branch = false
+pre_ssa_rewritten = false
+ssa_only = false
+
+[[simpleir_control_kind]]
+kind = "chan_recv_yield"
+structural = false
+terminator = false
+suspend = true
+repoll = true
+block_leader = true
+block_ender = true
+conditional_branch = false
+pre_ssa_rewritten = false
+ssa_only = false
+
+[[simpleir_control_kind]]
+kind = "loop_index_start"
+structural = false
+terminator = false
+suspend = false
+repoll = false
+block_leader = false
+block_ender = false
+conditional_branch = false
+pre_ssa_rewritten = true
+ssa_only = false
+
+[[simpleir_control_kind]]
+kind = "loop_index_next"
+structural = false
+terminator = false
+suspend = false
+repoll = false
+block_leader = false
+block_ender = false
+conditional_branch = false
+pre_ssa_rewritten = true
+ssa_only = false
+
+[[simpleir_control_kind]]
+kind = "phi"
+structural = false
+terminator = false
+suspend = false
+repoll = false
+block_leader = false
+block_ender = false
+conditional_branch = false
+pre_ssa_rewritten = false
+ssa_only = true
+
+[[absorbing_kind]]
+kind = "dict_new"
+
+[[absorbing_kind]]
+kind = "frozenset_new"
+
+[[absorbing_kind]]
+kind = "list_new"
+
+[[absorbing_kind]]
+kind = "set_new"
+
+[[absorbing_kind]]
+kind = "tuple_new"
+
+[[absorbing_kind]]
+kind = "class_def"
+
+[[absorbing_operand_kind]]
+kind = "list_append"
+absorbed_operand = 1
+
+[[absorbing_operand_kind]]
+kind = "set_attr_generic_obj"
+absorbed_operand = 1
+
+[[absorbing_operand_kind]]
+kind = "set_attr_generic_ptr"
+absorbed_operand = 1
+
+[[result_finalizer_source_kind]]
+kind = "list_pop"
+source_operand = 0
+
+[[result_validity]]
+opcode = "IterNextUnboxed"
+result = 0
+validity = "conditional_valid_only_on_edge"
+
+[[explicit_release_operand]]
+opcode = "DecRef"
+operand = "all"
+
+[[explicit_release_operand]]
+opcode = "DeleteVar"
+operand = 1
+
+[[explicit_release_operand]]
+opcode = "DelBoundary"
+operand = "all"
+
+# ===========================================================================
+# Per-OpCode effect classification (EXHAUSTIVE over the OpCode enum).
+#
+# Drives opcode_may_throw / opcode_is_side_effecting / opcode_effects
+# (tir/passes/effects.rs). The generated match is EXHAUSTIVE — no wildcard arm
+# for a listed OpCode — so a newly added OpCode variant fails to compile until
+# given an explicit effect row here. Structural kill for bug-class instance #1
+# (the matches!-default-false trap that silently classified a new opcode as
+# no-effect; the ModuleImportFrom lesson).
+#
+#   may_throw       : opcode_may_throw — DCE must preserve even if result dead.
+#   side_effecting  : opcode_is_side_effecting — has an observable side effect.
+#   purity          : opcode_effects triple for LICM/GVN —
+#                     "pure"           (consistent+effect_free+nothrow),
+#                     "pure_may_throw" (consistent+effect_free, may raise),
+#                     "impure"         (not a pure computation).
+#   result_arity    : fixed verifier result count ("zero" / "one" / "two") or
+#                     "variable" when the result count is context-dependent.
+#                     This drives opcode_fixed_result_count_table and replaces
+#                     verify.rs's hand-maintained result-count match.
+# ===========================================================================
+
+[[opcode]]
+name = "Add"
+may_throw = false
+side_effecting = false
+purity = "pure"
+result_arity = "one"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "Sub"
+may_throw = false
+side_effecting = false
+purity = "pure"
+result_arity = "one"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "Mul"
+may_throw = false
+side_effecting = false
+purity = "pure"
+result_arity = "one"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "CheckedAdd"
+may_throw = false
+side_effecting = false
+purity = "impure"
+result_arity = "two"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "CheckedMul"
+may_throw = false
+side_effecting = false
+purity = "impure"
+result_arity = "two"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "InplaceAdd"
+may_throw = false
+side_effecting = false
+purity = "pure"
+result_arity = "one"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "InplaceSub"
+may_throw = false
+side_effecting = false
+purity = "pure"
+result_arity = "one"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "InplaceMul"
+may_throw = false
+side_effecting = false
+purity = "pure"
+result_arity = "one"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "Div"
+may_throw = true
+side_effecting = false
+purity = "pure_may_throw"
+result_arity = "one"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "FloorDiv"
+may_throw = true
+side_effecting = false
+purity = "pure_may_throw"
+result_arity = "one"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "Mod"
+may_throw = true
+side_effecting = false
+purity = "pure_may_throw"
+result_arity = "one"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "Pow"
+# `0 ** -1` / `0.0 ** -1.0` raise ZeroDivisionError; a negative base with a
+# non-integer exponent returns complex (NOT a float) — both are observable and
+# must never be const-folded away or hoisted above a guard. `pure_may_throw`.
+may_throw = true
+side_effecting = false
+purity = "pure_may_throw"
+result_arity = "one"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "Neg"
+may_throw = false
+side_effecting = false
+purity = "pure"
+result_arity = "one"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "Pos"
+may_throw = false
+side_effecting = false
+purity = "pure"
+result_arity = "one"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "Eq"
+may_throw = false
+side_effecting = false
+purity = "pure"
+result_arity = "one"
+operand_independent_result_type = "bool"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "Ne"
+may_throw = false
+side_effecting = false
+purity = "pure"
+result_arity = "one"
+operand_independent_result_type = "bool"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "Lt"
+may_throw = false
+side_effecting = false
+purity = "pure"
+result_arity = "one"
+operand_independent_result_type = "bool"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "Le"
+may_throw = false
+side_effecting = false
+purity = "pure"
+result_arity = "one"
+operand_independent_result_type = "bool"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "Gt"
+may_throw = false
+side_effecting = false
+purity = "pure"
+result_arity = "one"
+operand_independent_result_type = "bool"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "Ge"
+may_throw = false
+side_effecting = false
+purity = "pure"
+result_arity = "one"
+operand_independent_result_type = "bool"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "Is"
+may_throw = false
+side_effecting = false
+purity = "pure"
+result_arity = "one"
+operand_independent_result_type = "bool"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "IsNot"
+may_throw = false
+side_effecting = false
+purity = "pure"
+result_arity = "one"
+operand_independent_result_type = "bool"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "In"
+may_throw = false
+side_effecting = false
+purity = "impure"
+result_arity = "one"
+operand_independent_result_type = "bool"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "NotIn"
+may_throw = false
+side_effecting = false
+purity = "impure"
+result_arity = "one"
+operand_independent_result_type = "bool"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "BitAnd"
+may_throw = false
+side_effecting = false
+purity = "pure"
+result_arity = "one"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "BitOr"
+may_throw = false
+side_effecting = false
+purity = "pure"
+result_arity = "one"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "BitXor"
+may_throw = false
+side_effecting = false
+purity = "pure"
+result_arity = "one"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "BitNot"
+may_throw = false
+side_effecting = false
+purity = "pure"
+result_arity = "one"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "Shl"
+# `1 << -1` raises ValueError("negative shift count"); the exception is
+# observable even when the result is dead, so DCE must keep it and SCCP must not
+# fold it inside a try region. CSE-safe under dominance but NOT hoistable above a
+# guard ⇒ `pure_may_throw` (was mis-classified `pure`, which let DCE silently
+# drop a dead negative-count shift — a no-raise miscompile).
+may_throw = true
+side_effecting = false
+purity = "pure_may_throw"
+result_arity = "one"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "Shr"
+# `1 >> -1` raises ValueError("negative shift count") — same contract as `Shl`.
+may_throw = true
+side_effecting = false
+purity = "pure_may_throw"
+result_arity = "one"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "And"
+may_throw = false
+side_effecting = false
+purity = "pure"
+result_arity = "one"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+result_mints_owned_selected_operand = true
+
+[[opcode]]
+name = "Or"
+may_throw = false
+side_effecting = false
+purity = "pure"
+result_arity = "one"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+result_mints_owned_selected_operand = true
+
+[[opcode]]
+name = "Not"
+may_throw = false
+side_effecting = false
+purity = "pure"
+result_arity = "one"
+operand_independent_result_type = "bool"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "Bool"
+may_throw = false
+side_effecting = false
+purity = "pure"
+result_arity = "one"
+operand_independent_result_type = "bool"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "Alloc"
+may_throw = false
+side_effecting = true
+purity = "impure"
+result_arity = "one"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "StackAlloc"
+may_throw = false
+side_effecting = false
+purity = "impure"
+result_arity = "one"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "ObjectNewBound"
+may_throw = false
+side_effecting = true
+purity = "impure"
+result_arity = "one"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "ObjectNewBoundStack"
+may_throw = false
+side_effecting = false
+purity = "impure"
+result_arity = "one"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "Free"
+may_throw = false
+side_effecting = true
+purity = "impure"
+result_arity = "zero"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "LoadAttr"
+may_throw = true
+side_effecting = false
+purity = "impure"
+result_arity = "one"
+# The attribute READ borrows its source object (operand 0) AND its result may be
+# an interior borrow / opaque raw-int handle INTO that source's backing store
+# (the `Counter._handle` registry-handle class). `interior_borrow_keepalive`
+# records this on operand 0 (design 27 §2.1 / §1.5 borrow-of edge): the source's
+# drop is deferred to the borrow result's last use, not the source's own
+# straight-line last use (the round-6 BLOCKER-1 UAF: dropping the wrapper after
+# `get_attr` but before `molt_counter_len(handle)` ran the finalizer and made
+# `len(Counter(...))` return 0). It is STILL borrowed (not consumed) — the op
+# frees nothing — so the consume axis (`op_consumed_operand_root`) reads it as
+# non-consuming; the keepalive is the extra liveness coupling layered on top.
+operand_ownership = ["interior_borrow_keepalive"]
+result_absorbs_operands = false
+
+[[opcode]]
+name = "StoreAttr"
+may_throw = true
+side_effecting = true
+purity = "impure"
+result_arity = "zero"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "DelAttr"
+may_throw = true
+side_effecting = true
+purity = "impure"
+result_arity = "zero"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "Index"
+may_throw = true
+side_effecting = false
+purity = "impure"
+result_arity = "one"
+# Subscript READ `cont[key]`: operand 0 (the container) is interior-borrowed —
+# the result may be a borrow into / an opaque handle indexing the container's
+# backing store (`c[k]` on the `Counter._handle` class lowers to
+# `h = get_attr(c,"_handle"); molt_counter_getitem(h,k)`), so the container's
+# drop is deferred to the result's last use (design 27 §1.5 borrow-of edge,
+# round-6 UAF). Operand 1 (the key) is a plain borrowed argument — the result
+# does NOT borrow into it. Per-position so only the container carries the
+# keepalive; both operands remain non-consumed (the op frees neither).
+operand_ownership = ["interior_borrow_keepalive", "borrowed"]
+result_absorbs_operands = false
+
+[[opcode]]
+name = "StoreIndex"
+may_throw = true
+side_effecting = true
+purity = "impure"
+result_arity = "zero"
+# store_index(container, key, value): the container/key operands are borrowed,
+# while the value operand is retained by the container slot. The caller still
+# owns and drops its producer ref; this row only marks the statement boundary for
+# finalizer-sensitive temps.
+operand_ownership = ["borrowed", "borrowed", "container_absorb"]
+result_absorbs_operands = false
+
+[[opcode]]
+name = "DelIndex"
+may_throw = true
+side_effecting = true
+purity = "impure"
+result_arity = "zero"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "DeleteVar"
+may_throw = false
+side_effecting = true
+purity = "impure"
+result_arity = "one"
+operand_ownership = ["borrowed", "borrowed"]
+result_absorbs_operands = false
+
+[[opcode]]
+name = "Call"
+may_throw = true
+side_effecting = true
+purity = "impure"
+result_arity = "variable"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "CallMethod"
+may_throw = true
+side_effecting = true
+purity = "impure"
+result_arity = "variable"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "CallMethodIc"
+may_throw = true
+side_effecting = true
+purity = "impure"
+result_arity = "variable"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "CallSuperMethodIc"
+may_throw = true
+side_effecting = true
+purity = "impure"
+result_arity = "variable"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "CallBuiltin"
+may_throw = true
+side_effecting = true
+purity = "impure"
+result_arity = "variable"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "OrdAt"
+may_throw = true
+side_effecting = false
+purity = "impure"
+result_arity = "one"
+operand_independent_result_type = "i64"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "BoxVal"
+may_throw = false
+side_effecting = false
+purity = "pure"
+result_arity = "one"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "UnboxVal"
+may_throw = false
+side_effecting = false
+purity = "pure"
+result_arity = "one"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "TypeGuard"
+may_throw = false
+side_effecting = false
+purity = "pure"
+result_arity = "one"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "IncRef"
+may_throw = false
+side_effecting = true
+purity = "impure"
+result_arity = "zero"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "DecRef"
+may_throw = false
+side_effecting = true
+purity = "impure"
+result_arity = "zero"
+operand_ownership = "all_consumed"
+result_absorbs_operands = false
+
+# Python lifetime boundary: function-scope `del x` of a non-closure local.
+# The drop phase normalizes it to DecRef when the root is pass-owned and deletes
+# it otherwise, so backend lowerings never need a second release authority.
+[[opcode]]
+name = "DelBoundary"
+may_throw = false
+side_effecting = true
+purity = "impure"
+result_arity = "zero"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "BuildList"
+may_throw = false
+side_effecting = false
+purity = "impure"
+result_arity = "one"
+operand_independent_result_type = "list_dynbox"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = true
+
+[[opcode]]
+name = "BuildDict"
+may_throw = false
+side_effecting = false
+purity = "impure"
+result_arity = "one"
+operand_independent_result_type = "dict_dynbox_dynbox"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = true
+
+[[opcode]]
+name = "BuildTuple"
+may_throw = false
+side_effecting = false
+purity = "impure"
+result_arity = "one"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = true
+
+[[opcode]]
+name = "BuildSet"
+may_throw = false
+side_effecting = false
+purity = "impure"
+result_arity = "one"
+operand_independent_result_type = "set_dynbox"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = true
+
+[[opcode]]
+name = "BuildSlice"
+may_throw = false
+side_effecting = false
+purity = "pure"
+result_arity = "one"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "GetIter"
+may_throw = true
+side_effecting = false
+purity = "impure"
+result_arity = "one"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "IterNext"
+may_throw = true
+side_effecting = false
+purity = "impure"
+result_arity = "one"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "IterNextUnboxed"
+may_throw = true
+side_effecting = false
+purity = "impure"
+result_arity = "two"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "ForIter"
+may_throw = true
+side_effecting = false
+purity = "impure"
+result_arity = "one"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "AllocTask"
+may_throw = false
+side_effecting = false
+purity = "impure"
+result_arity = "one"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "StateSwitch"
+may_throw = false
+side_effecting = true
+purity = "impure"
+result_arity = "zero"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "StateTransition"
+may_throw = true
+side_effecting = true
+purity = "impure"
+result_arity = "one"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "StateYield"
+may_throw = false
+side_effecting = true
+purity = "impure"
+result_arity = "zero"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "ChanSendYield"
+may_throw = true
+side_effecting = true
+purity = "impure"
+result_arity = "one"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "ChanRecvYield"
+may_throw = true
+side_effecting = true
+purity = "impure"
+result_arity = "one"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "ClosureLoad"
+may_throw = true
+side_effecting = false
+purity = "impure"
+result_arity = "one"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "ClosureStore"
+may_throw = true
+side_effecting = true
+purity = "impure"
+result_arity = "zero"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "Yield"
+may_throw = false
+side_effecting = true
+purity = "impure"
+result_arity = "zero"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "YieldFrom"
+may_throw = false
+side_effecting = true
+purity = "impure"
+result_arity = "zero"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "Raise"
+may_throw = true
+side_effecting = true
+purity = "impure"
+result_arity = "zero"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "CheckException"
+may_throw = false
+side_effecting = true
+purity = "impure"
+result_arity = "variable"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "ExceptionPending"
+may_throw = false
+side_effecting = true
+purity = "impure"
+result_arity = "one"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+# Reads a function object's `__defaults__`/`__kwdefaults__` mutation version
+# stamp (a mutable runtime slot). Like `ExceptionPending`, the value can change
+# between loop iterations (a `func.__defaults__ = ...` reassignment, even one
+# performed reentrantly by the called method), so this op MUST NOT be CSE'd or
+# LICM-hoisted across a potential mutation: side_effecting keeps it pinned at
+# its program point. The deopt guard reads it once per call (a single slot
+# load) and compares against 0 ("never mutated since creation").
+[[opcode]]
+name = "FunctionDefaultsVersion"
+may_throw = false
+side_effecting = true
+purity = "impure"
+result_arity = "one"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "TryStart"
+may_throw = false
+side_effecting = true
+purity = "impure"
+result_arity = "zero"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "TryEnd"
+may_throw = false
+side_effecting = true
+purity = "impure"
+result_arity = "zero"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "StateBlockStart"
+may_throw = false
+side_effecting = true
+purity = "impure"
+result_arity = "zero"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "StateBlockEnd"
+may_throw = false
+side_effecting = true
+purity = "impure"
+result_arity = "zero"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "ConstInt"
+may_throw = false
+side_effecting = false
+purity = "pure"
+result_arity = "one"
+operand_independent_result_type = "i64"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "ConstBigInt"
+may_throw = false
+side_effecting = false
+purity = "pure"
+result_arity = "one"
+# ConstBigInt is semantically `int`, but its value exceeds the raw i64 window.
+# The carrier is always boxed (DynBox; repr axis says MaybeBigInt). Typing it
+# I64 would license trusted-unbox on a heap BigInt pointer.
+operand_independent_result_type = "dynbox"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "ConstFloat"
+may_throw = false
+side_effecting = false
+purity = "pure"
+result_arity = "one"
+operand_independent_result_type = "f64"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "ConstStr"
+may_throw = false
+side_effecting = false
+purity = "pure"
+result_arity = "one"
+operand_independent_result_type = "str"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "ConstBool"
+may_throw = false
+side_effecting = false
+purity = "pure"
+result_arity = "one"
+operand_independent_result_type = "bool"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "ConstNone"
+may_throw = false
+side_effecting = false
+purity = "pure"
+result_arity = "one"
+operand_independent_result_type = "none"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "ConstBytes"
+may_throw = false
+side_effecting = false
+purity = "pure"
+result_arity = "one"
+operand_independent_result_type = "bytes"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "Copy"
+may_throw = false
+side_effecting = false
+purity = "impure"
+result_arity = "variable"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "Import"
+may_throw = true
+side_effecting = true
+purity = "impure"
+result_arity = "one"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "ImportFrom"
+may_throw = true
+side_effecting = true
+purity = "impure"
+result_arity = "one"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "ModuleCacheGet"
+may_throw = true
+side_effecting = true
+purity = "impure"
+result_arity = "one"
+operand_independent_result_type = "dynbox"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "ModuleCacheSet"
+may_throw = true
+side_effecting = true
+purity = "impure"
+result_arity = "zero"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "ModuleCacheDel"
+may_throw = true
+side_effecting = true
+purity = "impure"
+result_arity = "zero"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "ModuleGetAttr"
+may_throw = true
+side_effecting = true
+purity = "impure"
+result_arity = "one"
+operand_independent_result_type = "dynbox"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "ModuleImportFrom"
+may_throw = true
+side_effecting = true
+purity = "impure"
+result_arity = "one"
+operand_independent_result_type = "dynbox"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "ModuleGetGlobal"
+may_throw = true
+side_effecting = true
+purity = "impure"
+result_arity = "one"
+operand_independent_result_type = "dynbox"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "ModuleGetName"
+may_throw = true
+side_effecting = true
+purity = "impure"
+result_arity = "one"
+operand_independent_result_type = "dynbox"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "ModuleSetAttr"
+may_throw = true
+side_effecting = true
+purity = "impure"
+result_arity = "zero"
+# module_set_attr(module, name, value): the module dict retains the value.
+# The caller-owned value ref is still borrowed by the runtime ABI, but finalizer
+# ordering needs the storage boundary so compiler-owned expression temps release
+# after the successful module store instead of surviving until module teardown.
+operand_ownership = ["borrowed", "borrowed", "container_absorb"]
+result_absorbs_operands = false
+
+[[opcode]]
+name = "ModuleDelGlobal"
+may_throw = true
+side_effecting = true
+purity = "impure"
+result_arity = "zero"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "ModuleDelGlobalIfPresent"
+may_throw = true
+side_effecting = true
+purity = "impure"
+result_arity = "zero"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "WarnStderr"
+may_throw = false
+side_effecting = true
+purity = "impure"
+result_arity = "zero"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "ScfIf"
+may_throw = false
+side_effecting = false
+purity = "impure"
+result_arity = "variable"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "ScfFor"
+may_throw = false
+side_effecting = false
+purity = "impure"
+result_arity = "variable"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "ScfWhile"
+may_throw = false
+side_effecting = false
+purity = "impure"
+result_arity = "variable"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "ScfYield"
+may_throw = false
+side_effecting = false
+purity = "impure"
+result_arity = "variable"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "Deopt"
+may_throw = false
+side_effecting = true
+purity = "impure"
+result_arity = "zero"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+# ===========================================================================
+# kind_to_opcode mapper (ssa.rs). OpCode-equivalence groups: canonical = the
+# JSON wire kind, aliases = alternate spellings that map identically (the
+# |-grouped arms). A kind with NO row here has no first-class opcode — it is
+# lifted to Copy{_original_kind} and restored / symbol-dispatched.
+# ===========================================================================
+
+[[kind]]
+canonical = "add"
+aliases = []
+mapper_opcode = "Add"
+
+[[kind]]
+canonical = "sub"
+aliases = []
+mapper_opcode = "Sub"
+
+[[kind]]
+canonical = "mul"
+aliases = []
+mapper_opcode = "Mul"
+
+[[kind]]
+canonical = "inplace_add"
+aliases = []
+mapper_opcode = "InplaceAdd"
+
+[[kind]]
+canonical = "inplace_sub"
+aliases = []
+mapper_opcode = "InplaceSub"
+
+[[kind]]
+canonical = "inplace_mul"
+aliases = []
+mapper_opcode = "InplaceMul"
+
+[[kind]]
+canonical = "div"
+aliases = []
+mapper_opcode = "Div"
+
+# Canonical = the FRONTEND spelling `floordiv` (serialization.py emits it for
+# `//`). Before the spelling collapse (task #57 commit 2) the mapper recognized
+# only `floor_div` (lower_to_simple's round-trip output), so a frontend `floordiv`
+# fell to Copy{_original_kind} and always took the boxed molt_floordiv slow path,
+# while a round-tripped `floor_div` reached first-class OpCode::FloorDiv — a
+# perf+correctness asymmetry and the exact drift vector behind bug #5. Collapsing
+# to one canonical spelling routes `//` through OpCode::FloorDiv (the optimized
+# arith/overflow path). `floor_div` is kept as an explicit alias: it is still the
+# lower_to_simple/printer round-trip spelling some backends defensively consume.
+[[kind]]
+canonical = "floordiv"
+aliases = ["floor_div"]
+mapper_opcode = "FloorDiv"
+
+[[kind]]
+canonical = "mod"
+aliases = []
+mapper_opcode = "Mod"
+
+[[kind]]
+canonical = "pow"
+aliases = []
+mapper_opcode = "Pow"
+
+[[kind]]
+canonical = "neg"
+aliases = []
+mapper_opcode = "Neg"
+
+[[kind]]
+canonical = "pos"
+aliases = []
+mapper_opcode = "Pos"
+
+[[kind]]
+canonical = "eq"
+aliases = ["string_eq"]
+mapper_opcode = "Eq"
+
+[[kind]]
+canonical = "ne"
+aliases = []
+mapper_opcode = "Ne"
+
+[[kind]]
+canonical = "lt"
+aliases = []
+mapper_opcode = "Lt"
+
+[[kind]]
+canonical = "le"
+aliases = []
+mapper_opcode = "Le"
+
+[[kind]]
+canonical = "gt"
+aliases = []
+mapper_opcode = "Gt"
+
+[[kind]]
+canonical = "ge"
+aliases = []
+mapper_opcode = "Ge"
+
+[[kind]]
+canonical = "is"
+aliases = []
+mapper_opcode = "Is"
+
+[[kind]]
+canonical = "is_not"
+aliases = []
+mapper_opcode = "IsNot"
+
+[[kind]]
+canonical = "in"
+aliases = []
+mapper_opcode = "In"
+
+[[kind]]
+canonical = "not_in"
+aliases = []
+mapper_opcode = "NotIn"
+
+[[kind]]
+canonical = "bit_and"
+aliases = []
+mapper_opcode = "BitAnd"
+
+[[kind]]
+canonical = "bit_or"
+aliases = []
+mapper_opcode = "BitOr"
+
+[[kind]]
+canonical = "bit_xor"
+aliases = []
+mapper_opcode = "BitXor"
+
+[[kind]]
+canonical = "bit_not"
+aliases = []
+mapper_opcode = "BitNot"
+
+[[kind]]
+canonical = "shl"
+aliases = ["lshift"]
+mapper_opcode = "Shl"
+
+[[kind]]
+canonical = "shr"
+aliases = ["rshift"]
+mapper_opcode = "Shr"
+
+[[kind]]
+canonical = "and"
+aliases = []
+mapper_opcode = "And"
+
+[[kind]]
+canonical = "or"
+aliases = []
+mapper_opcode = "Or"
+
+[[kind]]
+canonical = "not"
+aliases = []
+mapper_opcode = "Not"
+
+[[kind]]
+canonical = "bool"
+aliases = ["cast_bool", "builtin_bool"]
+mapper_opcode = "Bool"
+
+[[kind]]
+canonical = "alloc"
+aliases = []
+mapper_opcode = "Alloc"
+
+[[kind]]
+canonical = "stack_alloc"
+aliases = []
+mapper_opcode = "StackAlloc"
+
+[[kind]]
+canonical = "object_new_bound"
+aliases = []
+mapper_opcode = "ObjectNewBound"
+
+[[kind]]
+canonical = "object_new_bound_stack"
+aliases = []
+mapper_opcode = "ObjectNewBoundStack"
+
+[[kind]]
+canonical = "free"
+aliases = []
+mapper_opcode = "Free"
+
+[[kind]]
+canonical = "get_attr"
+aliases = ["get_attr_generic_ptr", "get_attr_generic_obj", "get_attr_name", "guarded_field_get", "load", "load_attr"]
+mapper_opcode = "LoadAttr"
+
+[[kind]]
+canonical = "set_attr"
+aliases = ["store_attr", "set_attr_name", "set_attr_generic_ptr", "set_attr_generic_obj", "guarded_field_set", "guarded_field_init", "store", "store_init"]
+mapper_opcode = "StoreAttr"
+
+[[kind]]
+canonical = "del_attr"
+aliases = ["del_attr_name", "del_attr_generic_ptr", "del_attr_generic_obj"]
+mapper_opcode = "DelAttr"
+
+[[kind]]
+canonical = "index"
+aliases = []
+mapper_opcode = "Index"
+
+[[kind]]
+canonical = "store_index"
+aliases = ["index_set"]
+mapper_opcode = "StoreIndex"
+
+[[kind]]
+canonical = "del_index"
+aliases = []
+mapper_opcode = "DelIndex"
+
+[[kind]]
+canonical = "delete_var"
+aliases = []
+mapper_opcode = "DeleteVar"
+
+[[kind]]
+canonical = "call"
+aliases = ["call_func", "call_internal", "call_indirect", "call_bind", "call_function", "call_guarded", "invoke_ffi"]
+mapper_opcode = "Call"
+
+[[kind]]
+canonical = "gpu_thread_id"
+aliases = ["gpu_block_id", "gpu_block_dim", "gpu_grid_dim", "gpu_barrier"]
+mapper_opcode = "Call"
+group = "gpu"
+
+[[kind]]
+canonical = "call_method"
+aliases = []
+mapper_opcode = "CallMethod"
+
+[[kind]]
+canonical = "call_method_ic"
+aliases = []
+mapper_opcode = "CallMethodIc"
+
+[[kind]]
+canonical = "call_super_method_ic"
+aliases = []
+mapper_opcode = "CallSuperMethodIc"
+
+[[kind]]
+canonical = "call_builtin"
+aliases = ["builtin_print", "print", "range_new"]
+mapper_opcode = "CallBuiltin"
+
+[[kind]]
+canonical = "ord_at"
+aliases = []
+mapper_opcode = "OrdAt"
+
+[[kind]]
+canonical = "box"
+aliases = ["box_from_raw_int"]
+mapper_opcode = "BoxVal"
+
+[[kind]]
+canonical = "unbox"
+aliases = ["unbox_to_raw_int"]
+mapper_opcode = "UnboxVal"
+
+[[kind]]
+canonical = "type_guard"
+aliases = []
+mapper_opcode = "TypeGuard"
+
+[[kind]]
+canonical = "inc_ref"
+aliases = ["borrow"]
+mapper_opcode = "IncRef"
+
+[[kind]]
+canonical = "dec_ref"
+aliases = ["release"]
+mapper_opcode = "DecRef"
+
+[[kind]]
+canonical = "del_boundary"
+aliases = []
+mapper_opcode = "DelBoundary"
+
+[[kind]]
+canonical = "build_list"
+aliases = []
+mapper_opcode = "BuildList"
+
+[[kind]]
+canonical = "build_dict"
+aliases = []
+mapper_opcode = "BuildDict"
+
+[[kind]]
+canonical = "build_tuple"
+aliases = []
+mapper_opcode = "BuildTuple"
+
+[[kind]]
+canonical = "build_set"
+aliases = []
+mapper_opcode = "BuildSet"
+
+[[kind]]
+canonical = "build_slice"
+aliases = []
+mapper_opcode = "BuildSlice"
+
+[[kind]]
+canonical = "get_iter"
+aliases = []
+mapper_opcode = "GetIter"
+
+[[kind]]
+canonical = "iter_next"
+aliases = []
+mapper_opcode = "IterNext"
+
+[[kind]]
+canonical = "iter_next_unboxed"
+aliases = []
+mapper_opcode = "IterNextUnboxed"
+
+[[kind]]
+canonical = "checked_add"
+aliases = []
+mapper_opcode = "CheckedAdd"
+
+[[kind]]
+canonical = "checked_mul"
+aliases = []
+mapper_opcode = "CheckedMul"
+
+[[kind]]
+canonical = "for_iter"
+aliases = []
+mapper_opcode = "ForIter"
+
+[[kind]]
+canonical = "state_switch"
+aliases = []
+mapper_opcode = "StateSwitch"
+
+[[kind]]
+canonical = "state_transition"
+aliases = []
+mapper_opcode = "StateTransition"
+
+[[kind]]
+canonical = "state_yield"
+aliases = []
+mapper_opcode = "StateYield"
+
+[[kind]]
+canonical = "chan_send_yield"
+aliases = []
+mapper_opcode = "ChanSendYield"
+
+[[kind]]
+canonical = "chan_recv_yield"
+aliases = []
+mapper_opcode = "ChanRecvYield"
+
+[[kind]]
+canonical = "closure_load"
+aliases = []
+mapper_opcode = "ClosureLoad"
+
+[[kind]]
+canonical = "closure_store"
+aliases = []
+mapper_opcode = "ClosureStore"
+
+[[kind]]
+canonical = "alloc_task"
+aliases = []
+mapper_opcode = "AllocTask"
+
+[[kind]]
+canonical = "yield"
+aliases = []
+mapper_opcode = "Yield"
+
+[[kind]]
+canonical = "yield_from"
+aliases = []
+mapper_opcode = "YieldFrom"
+
+[[kind]]
+canonical = "raise"
+aliases = []
+mapper_opcode = "Raise"
+
+[[kind]]
+canonical = "check_exception"
+aliases = []
+mapper_opcode = "CheckException"
+
+[[kind]]
+canonical = "exception_pending"
+aliases = []
+mapper_opcode = "ExceptionPending"
+
+[[kind]]
+canonical = "function_defaults_version"
+aliases = []
+mapper_opcode = "FunctionDefaultsVersion"
+
+[[kind]]
+canonical = "try_start"
+aliases = []
+mapper_opcode = "TryStart"
+
+[[kind]]
+canonical = "try_end"
+aliases = []
+mapper_opcode = "TryEnd"
+
+[[kind]]
+canonical = "state_block_start"
+aliases = []
+mapper_opcode = "StateBlockStart"
+
+[[kind]]
+canonical = "state_block_end"
+aliases = []
+mapper_opcode = "StateBlockEnd"
+
+[[kind]]
+canonical = "const"
+aliases = ["const_int", "load_const"]
+mapper_opcode = "ConstInt"
+
+[[kind]]
+canonical = "const_bigint"
+aliases = []
+mapper_opcode = "ConstBigInt"
+
+[[kind]]
+canonical = "const_float"
+aliases = []
+mapper_opcode = "ConstFloat"
+
+[[kind]]
+canonical = "const_str"
+aliases = []
+mapper_opcode = "ConstStr"
+
+[[kind]]
+canonical = "const_bool"
+aliases = []
+mapper_opcode = "ConstBool"
+
+[[kind]]
+canonical = "const_none"
+aliases = []
+mapper_opcode = "ConstNone"
+
+[[kind]]
+canonical = "const_bytes"
+aliases = []
+mapper_opcode = "ConstBytes"
+
+[[kind]]
+canonical = "copy"
+aliases = ["store_var", "load_var", "copy_var"]
+mapper_opcode = "Copy"
+
+[[kind]]
+canonical = "import"
+aliases = ["import_name", "module_import"]
+mapper_opcode = "Import"
+
+[[kind]]
+canonical = "import_from"
+aliases = []
+mapper_opcode = "ImportFrom"
+
+[[kind]]
+canonical = "module_cache_get"
+aliases = []
+mapper_opcode = "ModuleCacheGet"
+
+[[kind]]
+canonical = "module_cache_set"
+aliases = []
+mapper_opcode = "ModuleCacheSet"
+
+[[kind]]
+canonical = "module_cache_del"
+aliases = []
+mapper_opcode = "ModuleCacheDel"
+
+[[kind]]
+canonical = "module_get_attr"
+aliases = []
+mapper_opcode = "ModuleGetAttr"
+
+[[kind]]
+canonical = "module_import_from"
+aliases = []
+mapper_opcode = "ModuleImportFrom"
+
+[[kind]]
+canonical = "module_get_global"
+aliases = []
+mapper_opcode = "ModuleGetGlobal"
+
+[[kind]]
+canonical = "module_get_name"
+aliases = []
+mapper_opcode = "ModuleGetName"
+
+[[kind]]
+canonical = "module_set_attr"
+aliases = []
+mapper_opcode = "ModuleSetAttr"
+
+[[kind]]
+canonical = "module_del_global"
+aliases = []
+mapper_opcode = "ModuleDelGlobal"
+
+[[kind]]
+canonical = "module_del_global_if_present"
+aliases = []
+mapper_opcode = "ModuleDelGlobalIfPresent"
+
+[[kind]]
+canonical = "warn_stderr"
+aliases = []
+mapper_opcode = "WarnStderr"
+
+# ===========================================================================
+# Operand-ownership overrides per WIRE-KIND SPELLING (molt task #57 follow-up;
+# the borrow-signature column of design 27 §2.1/§2.3, the Perceus rung-2 seed
+# of the #58 Owned/Borrowed/Raw/Consumed lattice).
+#
+# THE OPERAND-OWNERSHIP MODEL (two granularities — read both):
+#
+#   1. PER-OPCODE DEFAULT (the `operand_ownership` field on every [[opcode]]
+#      row above). molt's compiled-function call convention is "callee borrows
+#      all args, returns owned" (design 20 §1.2/§1.5) — so EVERY OpCode borrows
+#      EVERY operand by default (`operand_ownership = "all_borrowed"`). The
+#      field is EXHAUSTIVE over the enum (a new OpCode fails to render until it
+#      is classified), the structural kill for the "is this operand consumed?"
+#      assumption that was hardcoded across the RC passes.
+#        Domain: "all_borrowed" | "all_consumed" | ["borrowed","consumed",...]
+#        (a per-position list, length = the op's fixed operand arity). The
+#        result-side lattice state (Owned/Borrowed/Raw/MaybeUninit, design 27
+#        §1.1) is the classifier_* sets above — a SEPARATE axis from this
+#        operand-side borrowed|consumed axis.
+#
+#   2. PER-SPELLING OVERRIDE (the [[consuming_kind]] rows below). A handful of
+#      Copy-lifted CALL spellings CONSUME an operand: the runtime entry frees it
+#      internally, so the holder MUST NOT also drop it (a trailing DecRef would
+#      double-free). This is finer than the OpCode: `call`, `call_func`,
+#      `call_guarded`, `call_internal`, `invoke_ffi`, `call_bind`,
+#      `call_indirect` ALL map to OpCode::Call (one [[kind]] row, `call`
+#      canonical + aliases) yet only `call_bind`/`call_indirect` carry a
+#      pre-built CallArgs builder operand that the call frees via PtrDropGuard
+#      (call/bind.rs; molt_call_bind_ic / molt_call_indirect_ic). The consume
+#      fact is therefore keyed on the exact `_original_kind` spelling, not the
+#      OpCode.
+#
+# Drives `kind_operand_ownership_table` (consumed by drop_insertion.rs's
+# `op_consumed_operand_root`, which it REPLACES — design 27 §2.3: "Rung 1
+# special-cased this in op_consumed_operand_root; Rung 2 makes it a row"). This
+# retires the hand-coded `matches!(_original_kind, "call_bind" | "call_indirect")`
+# consume list (the C6 CallArgs-double-free bug class). A future consuming op (a
+# streaming builder, a move-into-collection intrinsic) is correctly handled by
+# ADDING a row — never by editing the drop pass.
+#
+#   kind            : the wire-kind SPELLING (canonical OR alias) the
+#                     `_original_kind` attr carries; cross-checked against the
+#                     [[kind]] vocabulary at generation (an unknown spelling is
+#                     a hard error — the structural kill for a typo'd override).
+#   consumed_operand: "last"     — the LAST operand is consumed (preserves the
+#                                   arity-independent `op.operands.last()`
+#                                   semantics op_consumed_operand_root uses;
+#                                   the CallArgs builder is operand [callee,
+#                                   builder] index 1 = last), OR
+#                     <integer>  — a fixed 0-based operand index is consumed.
+# ===========================================================================
+
+[[consuming_kind]]
+# `obj.method(args)` / indirect-call un-fused idiom: lowers (in lower_to_simple)
+# to `b = callargs_new; ...callargs_push_pos(b, a_i)...; r = call_bind(callee, b)`
+# where molt_call_bind_ic FREES `b` internally (PtrDropGuard). The builder is the
+# LAST operand ([callee, builder]); the call takes ownership exactly like a Return
+# transfer — no trailing DecRef, or the TYPE_ID_CALLARGS object double-frees
+# ("invalid object header before dec_ref").
+kind = "call_bind"
+consumed_operand = "last"
+
+[[consuming_kind]]
+# The indirect-call form, same CallArgs-builder PtrDropGuard convention
+# (molt_call_indirect_ic). Builder is the last operand and is consumed.
+kind = "call_indirect"
+consumed_operand = "last"
+
+# ===========================================================================
+# Per-TERMINATOR operand ownership (molt task #58 ladder #72, design 27 §2.4
+# "transfer sites"). The OWNERSHIP-MOVES-OUT axis of the operand-ownership
+# lattice: a `Terminator` does not appear in the `[[opcode]]` enum (it is the
+# `Terminator` enum in blocks.rs, NOT a `TirOp`), so its operand ownership is a
+# DISTINCT table from `opcode_operand_ownership_table`. It is the generated
+# authority drop_insertion.rs reads to decide which terminator operands TRANSFER
+# ownership (the drop pass must NOT emit a trailing `DecRef` at a transfer point —
+# the receiver owns it). This RETIRES the hand-coded transfer carve-out that lived
+# inline in `terminator_branch_args` + the `Return` arm of `terminator_uses_root`.
+#
+# Each `Terminator` variant has TWO operand CATEGORIES, classified independently
+# because they have different ownership:
+#
+#   * direct   — the terminator's own DIRECT operands (not forwarded to a
+#                successor block arg): `Return { values }`, `CondBranch { cond }`,
+#                `Switch { value }`.
+#       - `Return` values are `transferred`: the return ABI moves `+1` to the
+#         caller (design 20 §1.5 "returns owned"). Dropped NOWHERE in the callee.
+#       - `CondBranch`/`Switch` predicates are `borrowed`: the branch TESTS the
+#         value (it is still live AT the terminator, so it is not dropped at the
+#         producing op's straight-line point), but ownership does NOT leave — the
+#         value's drop is merely RELOCATED to the dying successor edge (§3
+#         edge-dying). In molt's lowering the predicate is always an unboxed
+#         bool/i64 discriminant (a raw scalar, `is_raw_scalar` ⇒ NOT droppable),
+#         so this leaf is never reached for a heap value today; classifying it
+#         `borrowed` preserves the EXACT prior `terminator_uses_root` semantics
+#         (read-but-not-transfer) and stays correct if a future shape ever made
+#         the predicate heap-carrying.
+#   * branch_arg — the values FORWARDED to a successor's block arg (phi):
+#                `Branch { args }`, `CondBranch { then_args, else_args }`,
+#                `Switch { cases[].args, default_args }`. ALWAYS `transferred`:
+#                ownership moves INTO the block param on the edge (the C3
+#                forwarded-arg-double-drop class; the successor-side dual is
+#                `incoming_arg_roots` in §3). Dropping it at the source would
+#                double-free the phi's object.
+#
+# Drives `terminator_operand_ownership_table(kind, category)` and the derived
+# `terminator_operand_is_transferred(kind, category)` (op_kinds_generated.rs),
+# consumed by drop_insertion.rs's `terminator_branch_args` (branch_arg category)
+# and `terminator_uses_root` (direct category). A FUTURE terminator transfer fact
+# (a tail-call terminator, a `throw`-with-value transfer) is correctly handled by
+# ADDING a row — never by editing the drop pass.
+#
+#   kind     : the `Terminator` enum variant name (EXHAUSTIVE over the enum — a
+#              new variant fails to render until classified; the structural kill
+#              for an unclassified terminator silently inheriting a borrow/transfer
+#              assumption, mirroring the [[opcode]] exhaustiveness discipline).
+#   direct / branch_arg : the `OperandOwnership` leaf for that category, OR
+#              "none" (NoOperand) when the variant has no operand in that
+#              category (e.g. `Branch` has no direct operand; `Return` forwards no
+#              branch arg; `Unreachable` has neither).
+# ===========================================================================
+
+[[terminator]]
+# Unconditional branch: no direct operand; its `args` are forwarded into the
+# target's phi (transferred).
+name = "Branch"
+direct = "none"
+branch_arg = "transferred"
+
+[[terminator]]
+# Conditional branch: `cond` is the borrowed predicate; `then_args`/`else_args`
+# are forwarded into the successors' phis (transferred).
+name = "CondBranch"
+direct = "borrowed"
+branch_arg = "transferred"
+
+[[terminator]]
+# Multi-way switch: `value` is the borrowed discriminant; each case's args +
+# `default_args` are forwarded into the successors' phis (transferred).
+name = "Switch"
+direct = "borrowed"
+branch_arg = "transferred"
+
+[[terminator]]
+# Generator/coroutine state dispatch: the dispatch state is implicit runtime
+# frame state (no direct SSA operand); case/default args are forwarded into the
+# resume successors' phis (transferred), matching Switch branch-arg semantics.
+name = "StateDispatch"
+direct = "none"
+branch_arg = "transferred"
+
+[[terminator]]
+# Function return: `values` transfer `+1` each to the caller (design 20 §1.5);
+# no branch args.
+name = "Return"
+direct = "transferred"
+branch_arg = "none"
+
+[[terminator]]
+# Unreachable: no operands at all (no direct, no forwarded).
+name = "Unreachable"
+direct = "none"
+branch_arg = "none"
+
+# ===========================================================================
+# Frontend pre-serialization op.kind tables (molt task #44, F2a — absorb the
+# three hand-kept frontend tables that previously lived in
+# src/molt/frontend/__init__.py). These describe the FRONTEND's UPPERCASE
+# `op.kind` vocabulary (what the visit/emit walk produces BEFORE
+# serialization lowercases it to the wire `[[kind]]` spelling above), which is a
+# DISTINCT vocabulary from the wire kinds: e.g. the frontend emits
+# `GETATTR_GENERIC_OBJ` which serialization rewrites to the wire kind
+# `get_attr_generic_obj`. tools/gen_op_kinds.py renders these into
+# src/molt/frontend/lowering/op_kinds_generated.py as RAISING_KIND_NAMES,
+# CHECK_EXCEPTION_SKIP_KINDS, AUGASSIGN_OP_KIND and BINOP_OP_KIND, killing the
+# frontend⇄backend dual raising-oracle (the residual task-#42 drift vector).
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# RAISING_KIND_NAMES — frontend `op.kind`s that can raise at runtime, so emit()
+# attaches the expression-level col_offset for traceback caret annotations.
+# Replaces the hand-kept `_RAISING_OP_KINDS` frozenset.
+#
+# Each row is one frontend UPPERCASE `op.kind`, in exactly ONE of two forms:
+#
+#   opcode = "<OpCode>"  — the kind lowercases to a wire `[[kind]]` spelling
+#       whose mapper_opcode is this OpCode, and that OpCode is `may_throw = true`
+#       above. The generator ASSERTS may_throw==true for this OpCode, so flipping
+#       an opcode to nothrow while leaving it raising here is a generation-time
+#       FAILURE — the structural kill for the dual raising-oracle drift. The
+#       toml `[[opcode]]` oracle is canonical for these.
+#
+#   reason = "..."       — a FRONTEND-SPECIFIC raising kind that cannot derive
+#       from the `[[opcode]]` oracle, in two sub-cases documented per row:
+#         (a) pre-specialization: the kind lowercases to a wire kind whose
+#             OpCode is nothrow (the proven typed int/float lane), but the
+#             FRONTEND op is emitted BEFORE type specialization and may lower to
+#             a boxed/dunder path that raises (e.g. `a + b` → TypeError). The
+#             caret col must attach on the pre-specialization op.
+#         (b) preserved-Copy / no-[[kind]]-row: a frontend-internal op.kind that
+#             serialization rewrites to a may-throw wire kind with no first-class
+#             mapper opcode (lifted to Copy{_original_kind} + symbol dispatch);
+#             observably raising by effects.rs/alias_analysis.rs construction.
+# ---------------------------------------------------------------------------
+
+# OPCODE-MAPPED-RAISING: kind ⇒ may_throw OpCode (cross-checked at generation).
+[[frontend_raising_kind]]
+kind = "DIV"
+opcode = "Div"
+
+[[frontend_raising_kind]]
+kind = "FLOORDIV"
+opcode = "FloorDiv"
+
+[[frontend_raising_kind]]
+kind = "MOD"
+opcode = "Mod"
+
+[[frontend_raising_kind]]
+kind = "POW"
+opcode = "Pow"
+
+[[frontend_raising_kind]]
+kind = "LSHIFT"
+opcode = "Shl"
+
+[[frontend_raising_kind]]
+kind = "RSHIFT"
+opcode = "Shr"
+
+[[frontend_raising_kind]]
+kind = "GET_ATTR"
+opcode = "LoadAttr"
+
+[[frontend_raising_kind]]
+kind = "SET_ATTR"
+opcode = "StoreAttr"
+
+[[frontend_raising_kind]]
+kind = "DEL_ATTR"
+opcode = "DelAttr"
+
+[[frontend_raising_kind]]
+kind = "MODULE_GET_ATTR"
+opcode = "ModuleGetAttr"
+
+[[frontend_raising_kind]]
+kind = "MODULE_IMPORT_FROM"
+opcode = "ModuleImportFrom"
+
+[[frontend_raising_kind]]
+kind = "MODULE_GET_GLOBAL"
+opcode = "ModuleGetGlobal"
+
+[[frontend_raising_kind]]
+kind = "INDEX"
+opcode = "Index"
+
+[[frontend_raising_kind]]
+kind = "STORE_INDEX"
+opcode = "StoreIndex"
+
+[[frontend_raising_kind]]
+kind = "DEL_INDEX"
+opcode = "DelIndex"
+
+[[frontend_raising_kind]]
+kind = "CALL"
+opcode = "Call"
+
+[[frontend_raising_kind]]
+kind = "CALL_FUNC"
+opcode = "Call"
+
+[[frontend_raising_kind]]
+kind = "CALL_METHOD"
+opcode = "CallMethod"
+
+[[frontend_raising_kind]]
+kind = "CALL_BUILTIN"
+opcode = "CallBuiltin"
+
+[[frontend_raising_kind]]
+kind = "CALL_INDIRECT"
+opcode = "Call"
+
+[[frontend_raising_kind]]
+kind = "CALL_GUARDED"
+opcode = "Call"
+
+[[frontend_raising_kind]]
+kind = "CALL_BIND"
+opcode = "Call"
+
+[[frontend_raising_kind]]
+kind = "GET_ITER"
+opcode = "GetIter"
+
+[[frontend_raising_kind]]
+kind = "ITER_NEXT"
+opcode = "IterNext"
+
+[[frontend_raising_kind]]
+kind = "FOR_ITER"
+opcode = "ForIter"
+
+[[frontend_raising_kind]]
+kind = "IMPORT"
+opcode = "Import"
+
+[[frontend_raising_kind]]
+kind = "IMPORT_FROM"
+opcode = "ImportFrom"
+
+# FRONTEND-SPECIFIC (a) pre-specialization: the typed OpCode (Add/Sub/Mul/Bit*/
+# InplaceAdd/Sub/Mul/Eq/Ne/Lt/Le/Gt/Ge) is nothrow, but the frontend emits the
+# op BEFORE type specialization, so it may lower to a boxed/dunder path that
+# raises (TypeError/__add__ raising/OverflowError); the caret col must attach.
+[[frontend_raising_kind]]
+kind = "ADD"
+reason = "pre-specialization: OpCode::Add is the nothrow typed lane, but a pre-spec `a + b` may lower to boxed molt_add / __add__ which raises"
+
+[[frontend_raising_kind]]
+kind = "SUB"
+reason = "pre-specialization: OpCode::Sub is the nothrow typed lane, but a pre-spec `a - b` may lower to boxed molt_sub / __sub__ which raises"
+
+[[frontend_raising_kind]]
+kind = "MUL"
+reason = "pre-specialization: OpCode::Mul is the nothrow typed lane, but a pre-spec `a * b` may lower to boxed molt_mul / __mul__ which raises"
+
+[[frontend_raising_kind]]
+kind = "BIT_AND"
+reason = "pre-specialization: OpCode::BitAnd is the nothrow typed lane, but a pre-spec `a & b` may lower to boxed molt_bit_and / __and__ which raises"
+
+[[frontend_raising_kind]]
+kind = "BIT_OR"
+reason = "pre-specialization: OpCode::BitOr is the nothrow typed lane, but a pre-spec `a | b` may lower to boxed molt_bit_or / __or__ which raises"
+
+[[frontend_raising_kind]]
+kind = "BIT_XOR"
+reason = "pre-specialization: OpCode::BitXor is the nothrow typed lane, but a pre-spec `a ^ b` may lower to boxed molt_bit_xor / __xor__ which raises"
+
+[[frontend_raising_kind]]
+kind = "INPLACE_ADD"
+reason = "pre-specialization: OpCode::InplaceAdd is the nothrow typed lane, but a pre-spec `a += b` may lower to boxed molt_inplace_add / __iadd__ which raises"
+
+[[frontend_raising_kind]]
+kind = "INPLACE_SUB"
+reason = "pre-specialization: OpCode::InplaceSub is the nothrow typed lane, but a pre-spec `a -= b` may lower to boxed molt_inplace_sub / __isub__ which raises"
+
+[[frontend_raising_kind]]
+kind = "INPLACE_MUL"
+reason = "pre-specialization: OpCode::InplaceMul is the nothrow typed lane, but a pre-spec `a *= b` may lower to boxed molt_inplace_mul / __imul__ which raises"
+
+[[frontend_raising_kind]]
+kind = "EQ"
+reason = "pre-specialization: OpCode::Eq is the nothrow typed lane, but a pre-spec `a == b` may lower to a boxed __eq__ which raises"
+
+[[frontend_raising_kind]]
+kind = "NE"
+reason = "pre-specialization: OpCode::Ne is the nothrow typed lane, but a pre-spec `a != b` may lower to a boxed __ne__ which raises"
+
+[[frontend_raising_kind]]
+kind = "LT"
+reason = "pre-specialization: OpCode::Lt is the nothrow typed lane, but a pre-spec `a < b` may lower to a boxed __lt__ which raises"
+
+[[frontend_raising_kind]]
+kind = "LE"
+reason = "pre-specialization: OpCode::Le is the nothrow typed lane, but a pre-spec `a <= b` may lower to a boxed __le__ which raises"
+
+[[frontend_raising_kind]]
+kind = "GT"
+reason = "pre-specialization: OpCode::Gt is the nothrow typed lane, but a pre-spec `a > b` may lower to a boxed __gt__ which raises"
+
+[[frontend_raising_kind]]
+kind = "GE"
+reason = "pre-specialization: OpCode::Ge is the nothrow typed lane, but a pre-spec `a >= b` may lower to a boxed __ge__ which raises"
+
+# FRONTEND-SPECIFIC (b) preserved-Copy / no-[[kind]]-row: frontend-internal
+# op.kinds that serialization rewrites to a may-throw wire kind with no
+# first-class mapper opcode. The inplace_* arith family serializes to
+# inplace_{div,floordiv,mod,pow,lshift,rshift,matmul,bit_*} (the molt_inplace_*
+# symbols raise ZeroDivisionError / negative-shift ValueError / TypeError); the
+# getattr_*/setattr_*/guarded_getattr family serializes to get_attr_*/set_attr_*
+# wire kinds (LoadAttr/StoreAttr aliases — AttributeError).
+[[frontend_raising_kind]]
+kind = "INPLACE_DIV"
+reason = "preserved-Copy: serializes to wire `inplace_div`; molt_inplace_div raises ZeroDivisionError"
+
+[[frontend_raising_kind]]
+kind = "INPLACE_FLOORDIV"
+reason = "preserved-Copy: serializes to wire `inplace_floordiv`; molt_inplace_floordiv raises ZeroDivisionError"
+
+[[frontend_raising_kind]]
+kind = "INPLACE_MOD"
+reason = "preserved-Copy: serializes to wire `inplace_mod`; molt_inplace_mod raises ZeroDivisionError"
+
+[[frontend_raising_kind]]
+kind = "INPLACE_POW"
+reason = "preserved-Copy: serializes to wire `inplace_pow`; molt_inplace_pow raises (0 ** -1 ZeroDivisionError)"
+
+[[frontend_raising_kind]]
+kind = "INPLACE_LSHIFT"
+reason = "preserved-Copy: serializes to wire `inplace_lshift`; molt_inplace_lshift raises ValueError on negative count"
+
+[[frontend_raising_kind]]
+kind = "INPLACE_RSHIFT"
+reason = "preserved-Copy: serializes to wire `inplace_rshift`; molt_inplace_rshift raises ValueError on negative count"
+
+[[frontend_raising_kind]]
+kind = "INPLACE_MATMUL"
+reason = "preserved-Copy: serializes to wire `inplace_matmul`; molt_inplace_matmul dispatches __imatmul__/__matmul__ which raise"
+
+[[frontend_raising_kind]]
+kind = "GETATTR_GENERIC_OBJ"
+reason = "frontend-internal: serializes to wire `get_attr_generic_obj` (LoadAttr alias, may_throw); raises AttributeError"
+
+[[frontend_raising_kind]]
+kind = "GETATTR_GENERIC_PTR"
+reason = "frontend-internal: serializes to wire `get_attr_generic_ptr` (LoadAttr alias, may_throw); raises AttributeError"
+
+[[frontend_raising_kind]]
+kind = "GETATTR_NAME"
+reason = "frontend-internal: serializes to wire `get_attr_name` (LoadAttr alias, may_throw); raises AttributeError"
+
+[[frontend_raising_kind]]
+kind = "GETATTR_NAME_DEFAULT"
+reason = "frontend-internal: serializes to wire `get_attr_name_default` (attribute fetch with default; raises AttributeError when no default applies)"
+
+[[frontend_raising_kind]]
+kind = "GETATTR_SPECIAL_OBJ"
+reason = "frontend-internal: serializes to wire `get_attr_special_obj` (dunder/special attribute fetch; raises AttributeError)"
+
+[[frontend_raising_kind]]
+kind = "GUARDED_GETATTR"
+reason = "frontend-internal: serializes to a guarded_field_get / get_attr_generic_* wire kind (LoadAttr family, may_throw); raises AttributeError"
+
+[[frontend_raising_kind]]
+kind = "SETATTR_GENERIC_OBJ"
+reason = "frontend-internal: serializes to wire `set_attr_generic_obj` (StoreAttr alias, may_throw); raises AttributeError/TypeError"
+
+[[frontend_raising_kind]]
+kind = "SETATTR_GENERIC_PTR"
+reason = "frontend-internal: serializes to wire `set_attr_generic_ptr` (StoreAttr alias, may_throw); raises AttributeError/TypeError"
+
+# ---------------------------------------------------------------------------
+# FRONTEND_EFFECT_KINDS - frontend pre-serialization optimizer effect classes.
+#
+# The generator derives mapper defaults from [[kind]] + [[opcode]], raising
+# barriers from [[frontend_raising_kind]], and CFG/state control from
+# [[simpleir_control_kind]]. Rows here are frontend-only facts or explicit
+# pre-serialization overrides such as CONST_STR and LOAD_VAR.
+# ---------------------------------------------------------------------------
+
+[[frontend_effect_kind]]
+kind = "ABS"
+effect = "pure"
+reason = "frontend intrinsic: abs result is pure at this pre-serialization kind"
+
+[[frontend_effect_kind]]
+kind = "CONST_ELLIPSIS"
+effect = "pure"
+reason = "const: the Ellipsis singleton is an immediate singleton"
+
+[[frontend_effect_kind]]
+kind = "CONST_NOT_IMPLEMENTED"
+effect = "pure"
+reason = "const: the NotImplemented singleton is an immediate singleton"
+
+[[frontend_effect_kind]]
+kind = "MISSING"
+effect = "pure"
+reason = "structural: internal missing sentinel marker with no runtime effect"
+
+[[frontend_effect_kind]]
+kind = "PHI"
+effect = "pure"
+reason = "structural: SSA phi merge node, not a runtime operation"
+
+[[frontend_effect_kind]]
+kind = "TYPE_OF"
+effect = "pure"
+reason = "frontend intrinsic: observe value type tag for optimizer guards"
+
+[[frontend_effect_kind]]
+kind = "CONTAINS"
+effect = "reads_heap"
+reason = "frontend predicate: membership test reads container state and must not be DCE-pure"
+
+[[frontend_effect_kind]]
+kind = "EXCEPTION_MATCH_BUILTIN"
+effect = "reads_heap"
+reason = "exception matching predicate reads exception/type state"
+
+[[frontend_effect_kind]]
+kind = "GETATTR"
+effect = "reads_heap"
+reason = "legacy frontend spelling for attribute read; reads heap and must not be DCE-pure"
+
+[[frontend_effect_kind]]
+kind = "HASATTR_NAME"
+effect = "reads_heap"
+reason = "hasattr-name helper reads attribute state"
+
+[[frontend_effect_kind]]
+kind = "ISINSTANCE"
+effect = "reads_heap"
+reason = "isinstance helper reads type/object state"
+
+[[frontend_effect_kind]]
+kind = "LEN"
+effect = "reads_heap"
+reason = "len helper reads container/object state"
+
+[[frontend_effect_kind]]
+kind = "LOAD_VAR"
+effect = "reads_heap"
+reason = "frontend local/module slot read; aliases Copy in the wire mapper but is read-only before serialization"
+
+[[frontend_effect_kind]]
+kind = "BYTEARRAY_FILL_RANGE"
+effect = "writes_heap"
+reason = "mutation: bytearray range write helper"
+
+[[frontend_effect_kind]]
+kind = "CONST_STR"
+effect = "writes_heap"
+reason = "frontend string constant materializes a runtime string allocation before typed TIR lowering"
+
+[[frontend_effect_kind]]
+kind = "DELATTR"
+effect = "writes_heap"
+reason = "mutation: legacy frontend delattr spelling"
+
+[[frontend_effect_kind]]
+kind = "DELATTR_NAME"
+effect = "writes_heap"
+reason = "mutation: delete named attribute helper"
+
+[[frontend_effect_kind]]
+kind = "DICT_CLEAR"
+effect = "writes_heap"
+reason = "mutation: dictionary clear helper"
+
+[[frontend_effect_kind]]
+kind = "DICT_POP"
+effect = "writes_heap"
+reason = "mutation: dictionary pop helper"
+
+[[frontend_effect_kind]]
+kind = "DICT_POPITEM"
+effect = "writes_heap"
+reason = "mutation: dictionary popitem helper"
+
+[[frontend_effect_kind]]
+kind = "DICT_SET"
+effect = "writes_heap"
+reason = "mutation: dictionary item write helper"
+
+[[frontend_effect_kind]]
+kind = "DICT_SETDEFAULT"
+effect = "writes_heap"
+reason = "mutation: dictionary setdefault helper"
+
+[[frontend_effect_kind]]
+kind = "DICT_SPLIT_COUNT_INT_INC"
+effect = "writes_heap"
+reason = "mutation: split dictionary integer increment helper"
+
+[[frontend_effect_kind]]
+kind = "DICT_STR_INT_INC"
+effect = "writes_heap"
+reason = "mutation: string-key integer increment helper"
+
+[[frontend_effect_kind]]
+kind = "DICT_UPDATE"
+effect = "writes_heap"
+reason = "mutation: dictionary update helper"
+
+[[frontend_effect_kind]]
+kind = "DICT_UPDATE_KWSTAR"
+effect = "writes_heap"
+reason = "mutation: **kwargs dictionary update helper"
+
+[[frontend_effect_kind]]
+kind = "DICT_UPDATE_MISSING"
+effect = "writes_heap"
+reason = "mutation: dictionary missing-key update helper"
+
+[[frontend_effect_kind]]
+kind = "GUARDED_SETATTR"
+effect = "writes_heap"
+reason = "mutation: guarded attribute write helper"
+
+[[frontend_effect_kind]]
+kind = "GUARDED_SETATTR_INIT"
+effect = "writes_heap"
+reason = "mutation: guarded initialization attribute write helper"
+
+[[frontend_effect_kind]]
+kind = "LIST_APPEND"
+effect = "writes_heap"
+reason = "mutation: list append helper"
+
+[[frontend_effect_kind]]
+kind = "LIST_CLEAR"
+effect = "writes_heap"
+reason = "mutation: list clear helper"
+
+[[frontend_effect_kind]]
+kind = "LIST_EXTEND"
+effect = "writes_heap"
+reason = "mutation: list extend helper"
+
+[[frontend_effect_kind]]
+kind = "LIST_INSERT"
+effect = "writes_heap"
+reason = "mutation: list insert helper"
+
+[[frontend_effect_kind]]
+kind = "LIST_POP"
+effect = "writes_heap"
+reason = "mutation: list pop helper"
+
+[[frontend_effect_kind]]
+kind = "LIST_REMOVE"
+effect = "writes_heap"
+reason = "mutation: list remove helper"
+
+[[frontend_effect_kind]]
+kind = "LIST_REVERSE"
+effect = "writes_heap"
+reason = "mutation: list reverse helper"
+
+[[frontend_effect_kind]]
+kind = "SETATTR"
+effect = "writes_heap"
+reason = "mutation: legacy frontend setattr spelling"
+
+[[frontend_effect_kind]]
+kind = "SETATTR_INIT"
+effect = "writes_heap"
+reason = "mutation: initialization attribute write helper"
+
+[[frontend_effect_kind]]
+kind = "SETATTR_NAME"
+effect = "writes_heap"
+reason = "mutation: named attribute write helper"
+
+[[frontend_effect_kind]]
+kind = "SET_INDEX"
+effect = "writes_heap"
+reason = "mutation: legacy frontend index write spelling"
+
+[[frontend_effect_kind]]
+kind = "CHECK_EXCEPTION"
+effect = "control"
+reason = "control-flow: pending-exception branch/check node"
+
+[[frontend_effect_kind]]
+kind = "GUARD_DICT_SHAPE"
+effect = "control"
+reason = "control-flow: dictionary shape guard deopt/check"
+
+[[frontend_effect_kind]]
+kind = "GUARD_LAYOUT"
+effect = "control"
+reason = "control-flow: object layout guard deopt/check"
+
+[[frontend_effect_kind]]
+kind = "GUARD_TAG"
+effect = "control"
+reason = "control-flow: type tag guard deopt/check"
+
+[[frontend_effect_kind]]
+kind = "GUARD_TYPE"
+effect = "control"
+reason = "control-flow: type guard deopt/check"
+
+[[frontend_effect_kind]]
+kind = "RAISE_CAUSE"
+effect = "control"
+reason = "control-flow: raise-from exceptional transfer"
+
+[[frontend_effect_kind]]
+kind = "RERAISE"
+effect = "control"
+reason = "control-flow: bare re-raise exceptional transfer"
+
+[[frontend_effect_kind]]
+kind = "TRY_END"
+effect = "control"
+reason = "control-flow: exception region end"
+
+[[frontend_effect_kind]]
+kind = "TRY_START"
+effect = "control"
+reason = "control-flow: exception region start"
+
+# ---------------------------------------------------------------------------
+# CHECK_EXCEPTION_SKIP_KINDS — frontend `op.kind`s after which emit() does NOT
+# auto-insert a CHECK_EXCEPTION. Replaces the hand-kept inline skip set.
+#
+# This is NOT the complement of may_throw: it is dominated by frontend-only
+# control-flow / structural op.kinds (LABEL/JUMP/IF/PHI/EXCEPTION_*/CALLARGS_*/
+# *_NEW/...) that have no `[[opcode]]` or `[[kind]]` presence at all, plus two
+# DELIBERATE may_throw members (RAISE, STATE_TRANSITION) whose exceptional edge
+# is handled structurally elsewhere (an unconditional raise / a generator state
+# transition's own LOOP_BREAK_IF_EXCEPTION machinery), so a trailing
+# CHECK_EXCEPTION would be dead/wrong. Each row is one frontend UPPERCASE
+# `op.kind`, in exactly ONE form:
+#
+#   opcode = "<OpCode>"                 — opcode-backed; the generator ASSERTS
+#       may_throw==false for it (drift guard: a kind that becomes may_throw must
+#       not silently remain skip-listed).
+#   opcode = "<OpCode>", control_flow = true
+#                                       — opcode-backed AND may_throw, but its
+#       exceptional control flow is structurally handled (RAISE/STATE_TRANSITION);
+#       the generator ASSERTS may_throw==true (the flag must be justified).
+#   reason = "..."                      — frontend-only control-flow/structural
+#       op.kind with no opcode (the bulk of the set).
+# ---------------------------------------------------------------------------
+
+# Opcode-backed, nothrow (cross-checked may_throw == false).
+[[frontend_check_exception_skip]]
+kind = "CHECK_EXCEPTION"
+opcode = "CheckException"
+
+[[frontend_check_exception_skip]]
+kind = "TRY_START"
+opcode = "TryStart"
+
+[[frontend_check_exception_skip]]
+kind = "TRY_END"
+opcode = "TryEnd"
+
+[[frontend_check_exception_skip]]
+kind = "STATE_YIELD"
+opcode = "StateYield"
+
+[[frontend_check_exception_skip]]
+kind = "CONST"
+opcode = "ConstInt"
+
+[[frontend_check_exception_skip]]
+kind = "CONST_NONE"
+opcode = "ConstNone"
+
+[[frontend_check_exception_skip]]
+kind = "CONST_BOOL"
+opcode = "ConstBool"
+
+[[frontend_check_exception_skip]]
+kind = "CONST_STR"
+opcode = "ConstStr"
+
+[[frontend_check_exception_skip]]
+kind = "CONST_FLOAT"
+opcode = "ConstFloat"
+
+[[frontend_check_exception_skip]]
+kind = "CONST_BYTES"
+opcode = "ConstBytes"
+
+[[frontend_check_exception_skip]]
+kind = "IS"
+opcode = "Is"
+
+[[frontend_check_exception_skip]]
+kind = "IS_NOT"
+opcode = "IsNot"
+
+[[frontend_check_exception_skip]]
+kind = "NOT"
+opcode = "Not"
+
+[[frontend_check_exception_skip]]
+kind = "COPY"
+opcode = "Copy"
+
+[[frontend_check_exception_skip]]
+kind = "INC_REF"
+opcode = "IncRef"
+
+[[frontend_check_exception_skip]]
+kind = "DEC_REF"
+opcode = "DecRef"
+
+[[frontend_check_exception_skip]]
+kind = "BINDING_ALIAS"
+reason = "frontend ownership: inc_ref plus same-bits alias, non-throwing"
+
+[[frontend_check_exception_skip]]
+kind = "DELETE_VAR"
+opcode = "DeleteVar"
+
+# Opcode-backed, may_throw, but exceptional edge handled structurally.
+[[frontend_check_exception_skip]]
+kind = "RAISE"
+opcode = "Raise"
+control_flow = true
+
+[[frontend_check_exception_skip]]
+kind = "STATE_TRANSITION"
+opcode = "StateTransition"
+control_flow = true
+
+# Frontend-only control-flow / structural op.kinds (no opcode, no [[kind]] row).
+[[frontend_check_exception_skip]]
+kind = "LABEL"
+reason = "control-flow: basic-block label"
+
+[[frontend_check_exception_skip]]
+kind = "STATE_LABEL"
+reason = "control-flow: generator/coroutine state label"
+
+[[frontend_check_exception_skip]]
+kind = "JUMP"
+reason = "control-flow: unconditional branch"
+
+[[frontend_check_exception_skip]]
+kind = "BR_IF"
+reason = "control-flow: conditional branch"
+
+[[frontend_check_exception_skip]]
+kind = "IF"
+reason = "control-flow: structured-if start"
+
+[[frontend_check_exception_skip]]
+kind = "ELSE"
+reason = "control-flow: structured-if else arm"
+
+[[frontend_check_exception_skip]]
+kind = "END_IF"
+reason = "control-flow: structured-if end"
+
+[[frontend_check_exception_skip]]
+kind = "LOOP_START"
+reason = "control-flow: structured-loop start"
+
+[[frontend_check_exception_skip]]
+kind = "LOOP_END"
+reason = "control-flow: structured-loop end"
+
+[[frontend_check_exception_skip]]
+kind = "LOOP_CONTINUE"
+reason = "control-flow: loop continue edge"
+
+[[frontend_check_exception_skip]]
+kind = "LOOP_BREAK"
+reason = "control-flow: loop break edge"
+
+[[frontend_check_exception_skip]]
+kind = "LOOP_BREAK_IF_TRUE"
+reason = "control-flow: conditional loop break"
+
+[[frontend_check_exception_skip]]
+kind = "LOOP_BREAK_IF_FALSE"
+reason = "control-flow: conditional loop break"
+
+[[frontend_check_exception_skip]]
+kind = "LOOP_BREAK_IF_EXCEPTION"
+reason = "control-flow: loop break on pending exception (IS itself the exception check)"
+
+[[frontend_check_exception_skip]]
+kind = "LOOP_INDEX_START"
+reason = "control-flow: counted-loop index init"
+
+[[frontend_check_exception_skip]]
+kind = "LOOP_INDEX_NEXT"
+reason = "control-flow: counted-loop index advance"
+
+[[frontend_check_exception_skip]]
+kind = "PHI"
+reason = "structural: SSA phi node"
+
+[[frontend_check_exception_skip]]
+kind = "RAISE_CAUSE"
+reason = "control-flow: raise-from; the raise IS the exceptional transfer"
+
+[[frontend_check_exception_skip]]
+kind = "RERAISE"
+reason = "control-flow: bare re-raise; IS the exceptional transfer"
+
+[[frontend_check_exception_skip]]
+kind = "EXCEPTION_PUSH"
+reason = "structural: exception-handler-stack push (handler bookkeeping, not a throw site)"
+
+[[frontend_check_exception_skip]]
+kind = "EXCEPTION_POP"
+reason = "structural: exception-handler-stack pop"
+
+[[frontend_check_exception_skip]]
+kind = "EXCEPTION_STACK_CLEAR"
+reason = "structural: exception-handler-stack clear"
+
+[[frontend_check_exception_skip]]
+kind = "EXCEPTION_STACK_ENTER"
+reason = "structural: exception-handler-stack scope enter"
+
+[[frontend_check_exception_skip]]
+kind = "EXCEPTION_STACK_EXIT"
+reason = "structural: exception-handler-stack scope exit"
+
+[[frontend_check_exception_skip]]
+kind = "EXCEPTION_STACK_DEPTH"
+reason = "structural: read exception-handler-stack depth"
+
+[[frontend_check_exception_skip]]
+kind = "EXCEPTION_STACK_SET_DEPTH"
+reason = "structural: set exception-handler-stack depth"
+
+[[frontend_check_exception_skip]]
+kind = "EXCEPTION_CLEAR"
+reason = "structural: clear the pending exception"
+
+[[frontend_check_exception_skip]]
+kind = "EXCEPTION_LAST"
+reason = "structural: read the last/current exception"
+
+[[frontend_check_exception_skip]]
+kind = "EXCEPTION_LAST_PENDING"
+reason = "structural: test for a pending exception"
+
+[[frontend_check_exception_skip]]
+kind = "EXCEPTION_FINALLY_PENDING_OBSERVER"
+reason = "structural: observe pending exception for finally save/restore"
+
+[[frontend_check_exception_skip]]
+kind = "EXCEPTION_SET_CAUSE"
+reason = "structural: set __cause__ on an exception object"
+
+[[frontend_check_exception_skip]]
+kind = "EXCEPTION_SET_LAST"
+reason = "structural: set the current/last exception slot"
+
+[[frontend_check_exception_skip]]
+kind = "EXCEPTION_CONTEXT_SET"
+reason = "structural: set __context__ on an exception object"
+
+[[frontend_check_exception_skip]]
+kind = "EXCEPTION_MATCH_BUILTIN"
+reason = "structural: except-clause type match test (pure predicate)"
+
+[[frontend_check_exception_skip]]
+kind = "CONTEXT_EXIT"
+reason = "control-flow: propagation check is owned by with cleanup after exception frame release"
+
+[[frontend_check_exception_skip]]
+kind = "CONTEXT_UNWIND_TO"
+reason = "control-flow: unwind handler context to a target depth"
+
+[[frontend_check_exception_skip]]
+kind = "LINE"
+reason = "structural: source-line debug marker"
+
+[[frontend_check_exception_skip]]
+kind = "TRACE_ENTER_SLOT"
+reason = "structural: tracing enter-slot marker"
+
+[[frontend_check_exception_skip]]
+kind = "TRACE_EXIT"
+reason = "structural: tracing exit marker"
+
+[[frontend_check_exception_skip]]
+kind = "CONST_NOT_IMPLEMENTED"
+reason = "const: the NotImplemented singleton"
+
+[[frontend_check_exception_skip]]
+kind = "CONST_ELLIPSIS"
+reason = "const: the Ellipsis singleton"
+
+[[frontend_check_exception_skip]]
+kind = "CALLARGS_NEW"
+reason = "structural: call-args builder allocate"
+
+[[frontend_check_exception_skip]]
+kind = "CALLARGS_PUSH_POS"
+reason = "structural: call-args builder push positional"
+
+[[frontend_check_exception_skip]]
+kind = "CALLARGS_PUSH_KW"
+reason = "structural: call-args builder push keyword"
+
+[[frontend_check_exception_skip]]
+kind = "CALLARGS_EXPAND_STAR"
+reason = "structural: call-args builder *args expand (the trailing CALL carries the check)"
+
+[[frontend_check_exception_skip]]
+kind = "CALLARGS_EXPAND_KWSTAR"
+reason = "structural: call-args builder **kwargs expand (the trailing CALL carries the check)"
+
+[[frontend_check_exception_skip]]
+kind = "BORROW"
+reason = "rc: borrow a reference (no throw)"
+
+[[frontend_check_exception_skip]]
+kind = "RELEASE"
+reason = "rc: release a borrowed reference (no throw)"
+
+[[frontend_check_exception_skip]]
+kind = "EXCEPTION_NEW_BUILTIN_EMPTY"
+reason = "structural: construct a builtin exception object (no-arg); construction does not raise"
+
+[[frontend_check_exception_skip]]
+kind = "EXCEPTION_NEW_BUILTIN_ONE"
+reason = "structural: construct a builtin exception object (one-arg); construction does not raise"
+
+[[frontend_check_exception_skip]]
+kind = "EXCEPTION_NEW_BUILTIN"
+reason = "structural: construct a builtin exception object; construction does not raise"
+
+[[frontend_check_exception_skip]]
+kind = "MISSING"
+reason = "structural: the internal MISSING sentinel marker"
+
+[[frontend_check_exception_skip]]
+kind = "TUPLE_NEW"
+reason = "structural: tuple literal construction (no throw)"
+
+[[frontend_check_exception_skip]]
+kind = "LIST_NEW"
+reason = "structural: list literal construction (no throw)"
+
+[[frontend_check_exception_skip]]
+kind = "DICT_NEW"
+reason = "structural: dict literal construction (no throw)"
+
+[[frontend_check_exception_skip]]
+kind = "SET_NEW"
+reason = "structural: set literal construction (no throw)"
+
+[[frontend_check_exception_skip]]
+kind = "CODE_NEW"
+reason = "structural: code-object construction"
+
+[[frontend_check_exception_skip]]
+kind = "FUNC_NEW"
+reason = "structural: function-object construction"
+
+[[frontend_check_exception_skip]]
+kind = "CODE_SLOT_SET"
+reason = "structural: set a code-object slot"
+
+[[frontend_check_exception_skip]]
+kind = "CLASSMETHOD_NEW"
+reason = "structural: classmethod wrapper construction"
+
+[[frontend_check_exception_skip]]
+kind = "STATICMETHOD_NEW"
+reason = "structural: staticmethod wrapper construction"
+
+[[frontend_check_exception_skip]]
+kind = "PROPERTY_NEW"
+reason = "structural: property wrapper construction"
+
+[[frontend_check_exception_skip]]
+kind = "ret"
+reason = "control-flow: function return; lowercase sentinel kind (not UPPERCASE) — the return edge carries no trailing check"
+
+# ---------------------------------------------------------------------------
+# BINOP_OP_KIND + AUGASSIGN_OP_KIND — the `ast.operator` subclass → frontend
+# `op.kind` maps for binary (`a OP b`) and augmented-assignment (`a OP= b`)
+# lowering. Replaces the hand-kept `_augassign_op_kind` isinstance-chain and the
+# `visit_BinOp` kind-literal chain. Keyed by `ast.operator` subclass __name__.
+#
+# The generator enforces COMPLETENESS: the set of `ast_op` keys here must equal
+# the full set of `ast.operator.__subclasses__()` names — a missing row is a
+# GENERATION-TIME failure (the task-#27 lesson: the hand augassign map silently
+# omitted 7 inplace kinds). `binop_kind` is the binary form, `augassign_kind`
+# the in-place form (which routes through the in-place dunder before the binary
+# fallback, matching CPython).
+# ---------------------------------------------------------------------------
+
+[[binary_op]]
+ast_op = "Add"
+binop_kind = "ADD"
+augassign_kind = "INPLACE_ADD"
+
+[[binary_op]]
+ast_op = "Sub"
+binop_kind = "SUB"
+augassign_kind = "INPLACE_SUB"
+
+[[binary_op]]
+ast_op = "Mult"
+binop_kind = "MUL"
+augassign_kind = "INPLACE_MUL"
+
+[[binary_op]]
+ast_op = "Div"
+binop_kind = "DIV"
+augassign_kind = "INPLACE_DIV"
+
+[[binary_op]]
+ast_op = "FloorDiv"
+binop_kind = "FLOORDIV"
+augassign_kind = "INPLACE_FLOORDIV"
+
+[[binary_op]]
+ast_op = "Mod"
+binop_kind = "MOD"
+augassign_kind = "INPLACE_MOD"
+
+[[binary_op]]
+ast_op = "Pow"
+binop_kind = "POW"
+augassign_kind = "INPLACE_POW"
+
+[[binary_op]]
+ast_op = "BitOr"
+binop_kind = "BIT_OR"
+augassign_kind = "INPLACE_BIT_OR"
+
+[[binary_op]]
+ast_op = "BitAnd"
+binop_kind = "BIT_AND"
+augassign_kind = "INPLACE_BIT_AND"
+
+[[binary_op]]
+ast_op = "BitXor"
+binop_kind = "BIT_XOR"
+augassign_kind = "INPLACE_BIT_XOR"
+
+[[binary_op]]
+ast_op = "LShift"
+binop_kind = "LSHIFT"
+augassign_kind = "INPLACE_LSHIFT"
+
+[[binary_op]]
+ast_op = "RShift"
+binop_kind = "RSHIFT"
+augassign_kind = "INPLACE_RSHIFT"
+
+[[binary_op]]
+ast_op = "MatMult"
+binop_kind = "MATMUL"
+augassign_kind = "INPLACE_MATMUL"

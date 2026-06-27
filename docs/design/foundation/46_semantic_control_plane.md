@@ -124,7 +124,7 @@ coverage`, `perf relevance`. Start narrow: **attach a `CallFacts` record to the
 call op** (direct target, leaf, no-throw, no-alloc, inline-eligibility + why-not,
 arg-noescape mask). That single primitive moves call_fact_coverage from 28.6% to
 measurable, lets backends specialize calls, and is the substrate for #67/#68/#71.
-`runtime/molt-tir/src/tir/fact_graph.rs` now emits deterministic JSON from live
+`runtime/molt-passes/src/tir/fact_graph.rs` now emits deterministic JSON from live
 `TirFunction` / `CallFactsTable` state, `molt factgraph <entry> <function>
 --output <path>` routes the normal frontend/backend pipeline into that
 compiler-emitted artifact, and `tools/fact_graph_dump.py` validates and renders

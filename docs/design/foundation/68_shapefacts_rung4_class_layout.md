@@ -117,7 +117,7 @@ the shape-blind lowering is now structurally absent when the shape is `Proven`.
 
 **Shared substrate this rung reuses (does NOT fork — doc 65 §1, doc 65 §4):**
 - The confidence lattice `FactValue { Proven | Guarded(GuardId) | Profiled(Confidence)
-  | Unknown | False }` (`runtime/molt-tir/src/tir/call_facts.rs:117`). `Unknown` is the
+  | Unknown | False }` (`runtime/molt-passes/src/tir/call_facts.rs:117`). `Unknown` is the
   fail-closed default. A wrong `Proven` is a miscompile; a wrong `Guarded` deopt is a
   miscompile; a conservative `Unknown` is only a missed opt. **`GuardId(u32)`**
   (`call_facts.rs:102`) is the existing typed guard token — `ClassVersionGuard` is a

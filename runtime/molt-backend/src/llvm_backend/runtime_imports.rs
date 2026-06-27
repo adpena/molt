@@ -415,6 +415,7 @@ pub const CLASSIFIED_RUNTIME_IMPORTS: &[RuntimeImportSignature] = &[
     runtime_sig("molt_list_remove", 2, RuntimeReturnAbi::I64),
     runtime_sig("molt_list_reverse", 1, RuntimeReturnAbi::I64),
     runtime_sig("molt_matmul", 2, RuntimeReturnAbi::I64),
+    runtime_sig("molt_inplace_matmul", 2, RuntimeReturnAbi::I64),
     runtime_sig("molt_memoryview_new", 1, RuntimeReturnAbi::I64),
     runtime_sig("molt_memoryview_tobytes", 1, RuntimeReturnAbi::I64),
     runtime_sig("molt_module_import_star", 2, RuntimeReturnAbi::I64),
@@ -543,9 +544,8 @@ pub fn declare_runtime_functions<'ctx>(ctx: &'ctx Context, module: &Module<'ctx>
         // emit_binary_arith / emit_bitwise dispatch `x //= y` etc. through these
         // (they try the `__i<op>__` dunder before the binary protocol). They
         // must be declared here or call_runtime_2's get_function lookup panics
-        // ("Runtime function not declared"). matmul handled via the generic
-        // try_lower_preserved_runtime_call (molt_inplace_matmul), declared by
-        // its own ensure_runtime_i64_fn at the call site.
+        // ("Runtime function not declared"). matmul rides the preserved-Copy
+        // lane and is declared by the classified runtime-import table below.
         //
         // add/sub/mul: the first-class OpCode::InplaceAdd/Sub/Mul share
         // emit_binary_arith with their binary opcode and previously dispatched
@@ -577,6 +577,20 @@ pub fn declare_runtime_functions<'ctx>(ctx: &'ctx Context, module: &Module<'ctx>
 
     // ── Integer boxing (i64 -> u64 NaN-boxed) ──
     //
+    // Channel constructor: returns an opaque runtime handle encoded in Molt
+    // object bits. It is not a generic boxed preserved-Copy fallback because the
+    // Rust ABI advertises the semantic `ChanHandle` type; LLVM owns it through a
+    // dedicated `chan_new` arm.
+    {
+        let fn_ty = i64_ty.fn_type(&[i64_ty.into()], false);
+        let func = module.add_function(
+            "molt_chan_new",
+            fn_ty,
+            Some(inkwell::module::Linkage::External),
+        );
+        add_nounwind(ctx, func);
+    }
+
     // `molt_int_from_i64` boxes a raw i64 into a tagged integer handle. Used by
     // the overflow-safe integer box path (`box_i64_overflow_safe`) so the LLVM
     // backend boxes integers through the same runtime entry point the native

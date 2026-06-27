@@ -83,7 +83,7 @@ structurally absent. "We added a peephole that recovers 10%" is **not** a rung.
 
 **The shared substrate every rung reuses (do not fork it):**
 - The confidence lattice `FactValue { Proven | Guarded(GuardId) | Profiled(Confidence)
-  | Unknown | False }` (`runtime/molt-tir/src/tir/call_facts.rs:117`). `Unknown` is the
+  | Unknown | False }` (`runtime/molt-passes/src/tir/call_facts.rs:117`). `Unknown` is the
   fail-closed default; a wrong `Proven` is a miscompile, a conservative `Unknown` is a
   missed opt. Every rung's facts are `FactValue`-typed so the same soundness reasoning
   applies uniformly.

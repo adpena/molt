@@ -24,13 +24,17 @@ The live codebase and executable Cargo metadata remain authoritative.
   sub-registries, their symbol prefixes are link-affecting feature gates, and
   feature-on/feature-off checks prove the facade no longer carries duplicate
   authorities for those domains.
-- `molt-tir` is now a workspace member and the backend-agnostic lower layer:
-  TIR, SimpleIR transport/schema, backend-neutral passes, representation facts,
-  debug/process diagnostics, and intrinsic-symbol utilities live in
-  `runtime/molt-tir/`. `runtime/molt-backend/Cargo.toml` depends on it and
-  activates `molt-tir/native-backend`, `molt-tir/llvm`, and
-  `molt-tir/wasm-backend` through backend features. The old dx Phase-3 baton
-  predated this cut; use this document, not that standalone baton, for the
+- The lower stack is now split: `runtime/molt-ir/` owns canonical IR/TIR data,
+  SimpleIR transport/schema, representation vocabulary, generated op-kind
+  facts, debug/process diagnostics, and intrinsic-symbol utilities;
+  `runtime/molt-passes/` owns TIR analyses, pass/fact orchestration,
+  SimpleIR<->TIR transport, module/drop orchestration, target/profile
+  descriptors, pass cache, and value-keyed representation facts; and
+  `runtime/molt-tir/` owns backend projection, LIR/WASM/MLIR lowering, and
+  SimpleIR-name representation projection. `runtime/molt-backend/Cargo.toml`
+  depends on this stack and
+  activates its feature gates through backend features. The old dx Phase-3
+  baton predated this cut; use this document, not that standalone baton, for the
   remaining backend-native extraction route.
 - The extraction is not complete. `molt-runtime` is still the facade plus a
   large implementation owner, `runtime/molt-backend/src/native_backend/function_compiler.rs`
@@ -241,8 +245,11 @@ backend-native extraction boundary, but its mechanics are stale now that
 `molt-tir` exists and `molt-backend` depends on it directly.
 
 Current extraction state:
-- Already extracted: `runtime/molt-tir` owns the backend-neutral lower layer and
-  has no native/wasm/luau/llvm/rust backend dependency.
+- Already extracted: `runtime/molt-ir` owns the immutable IR/data layer,
+  `runtime/molt-passes` owns TIR passes/facts/target descriptors plus the
+  SimpleIR<->TIR round-trip, and `runtime/molt-tir` owns backend projection and
+  representation-plan name projection. None of those crates depends on native/
+  wasm/luau/llvm/rust backend implementation crates.
 - Not yet extracted: there is no `runtime/molt-backend-native` workspace member.
   `runtime/molt-backend/Cargo.toml` still owns Cranelift and Inkwell
   dependencies, default `native-backend`, `llvm`, `wasm-backend`, `luau-backend`,
@@ -253,8 +260,10 @@ Current extraction state:
 Next structural cut:
 - Create `molt-backend-native` only when `native_backend/*` and
   `llvm_backend/*` can move together as one native codegen authority.
-- Keep `molt-tir` as the typed-IR/pass/representation authority; do not
-  duplicate TIR facts or re-export compatibility shims from the native crate.
+- Keep `molt-ir` as the typed-IR authority, `molt-passes` as the midend
+  pass/fact/round-trip authority, and `molt-tir` as the backend-projection
+  authority; do not duplicate TIR facts or re-export compatibility shims from
+  the native crate.
 - Keep `molt-backend` as the composition crate until the daemon/bin move is
   atomic; when the bin moves, preserve the binary name `molt-backend` so CLI
   artifact discovery does not fork.
@@ -262,8 +271,9 @@ Next structural cut:
   crate, not a temporary alias. Prefer the existing `molt-tir` exports first.
 
 Landing gates for the native extraction:
-- `cargo build -p molt-tir` and `cargo test -p molt-tir` prove the core lower
-  layer remains backend-free.
+- `cargo build -p molt-passes`, `cargo test -p molt-passes`, and
+  `cargo build -p molt-tir` prove the core midend and backend-projection layers
+  remain backend-free.
 - `cargo build -p molt-backend --no-default-features` proves core composition
   no longer pulls Cranelift/Inkwell after the cut.
 - `cargo build -p molt-backend-native --features native-backend` and

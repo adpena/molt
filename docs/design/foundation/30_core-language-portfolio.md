@@ -21,7 +21,7 @@ Before the per-family scorecards, the evidence base establishes the following ar
 
 **Op-kind registry state (doc 25, phase 1 complete).** 420 frontend JSON kinds; 146 in `kind_to_opcode`; LLVM coverage gap = 28 (all fail-loud); classifier silent-fallthrough = 196 (leak-safe, not UAF). `floordiv`/`floor_div` bidirectional spelling schism is the only live correctness asymmetry. Phase 2 (toml generation) is pending a build slot.
 
-**TIR OpCode enum.** `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/ops.rs:22–268`. First-class opcodes: Add/Sub/Mul/CheckedAdd/CheckedMul, InplaceAdd/Sub/Mul, Div/FloorDiv/Mod/Pow, Neg/Pos, all comparisons, bitwise, Bool, GetIter/IterNext/IterNextUnboxed/ForIter, Yield/YieldFrom, Raise/CheckException/ExceptionPending/TryStart/TryEnd, ConstInt/ConstBigInt/ConstFloat/ConstStr/ConstBool/ConstNone/ConstBytes, ObjectNewBound/ObjectNewBoundStack. The `Copy{_original_kind}` carrier handles the remaining ~274 JSON kinds that have not yet been promoted.
+**TIR OpCode enum.** `/Users/adpena/Projects/molt/runtime/molt-ir/src/tir/ops.rs:22–268`. First-class opcodes: Add/Sub/Mul/CheckedAdd/CheckedMul, InplaceAdd/Sub/Mul, Div/FloorDiv/Mod/Pow, Neg/Pos, all comparisons, bitwise, Bool, GetIter/IterNext/IterNextUnboxed/ForIter, Yield/YieldFrom, Raise/CheckException/ExceptionPending/TryStart/TryEnd, ConstInt/ConstBigInt/ConstFloat/ConstStr/ConstBool/ConstNone/ConstBytes, ObjectNewBound/ObjectNewBoundStack. The `Copy{_original_kind}` carrier handles the remaining ~274 JSON kinds that have not yet been promoted.
 
 **Optimization pass coverage.** range_devirt, iter_devirt, deforestation, overflow_peel, sccp, gvn, licm, bce (via value_range), block_versioning, type_guard_hoist, counted_loop, loop_unroll, sroa, mem_gvn, memory_ssa. Generator/state-machine bodies are explicitly excluded from all structural passes (`has_state_machine()` gate in `function.rs:168-204`).
 
@@ -521,12 +521,12 @@ The following microbench programs are missing and should be added to `tests/perf
 - `/Users/adpena/Projects/molt/src/molt/frontend/visitors/pattern_match.py` (match/case)
 - `/Users/adpena/Projects/molt/src/molt/frontend/lowering/serialization.py` (JSON kind emission, map_ops_to_json:396)
 - `/Users/adpena/Projects/molt/src/molt/frontend/lowering/op_kinds_generated.py` (canonical kind constants)
-- `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/ops.rs` (OpCode enum, TirOp)
-- `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/op_kinds_generated.rs` (kind_to_opcode table)
-- `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/passes/iter_devirt.rs` (list loop devirt)
-- `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/passes/range_devirt.rs` (range loop devirt)
-- `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/passes/deforestation.rs` (genexpr fusion)
-- `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/passes/overflow_peel.rs` (dual-loop int accumulator)
+- `/Users/adpena/Projects/molt/runtime/molt-ir/src/tir/ops.rs` (OpCode enum, TirOp)
+- `/Users/adpena/Projects/molt/runtime/molt-ir/src/tir/op_kinds_generated.rs` (kind_to_opcode table)
+- `/Users/adpena/Projects/molt/runtime/molt-passes/src/tir/passes/iter_devirt.rs` (list loop devirt)
+- `/Users/adpena/Projects/molt/runtime/molt-passes/src/tir/passes/range_devirt.rs` (range loop devirt)
+- `/Users/adpena/Projects/molt/runtime/molt-passes/src/tir/passes/deforestation.rs` (genexpr fusion)
+- `/Users/adpena/Projects/molt/runtime/molt-passes/src/tir/passes/overflow_peel.rs` (dual-loop int accumulator)
 - `/Users/adpena/Projects/molt/runtime/molt-runtime/src/object/ops.rs` (call_binary_dunder, call_inplace_dunder:7927/7993)
 - `/Users/adpena/Projects/molt/runtime/molt-runtime/src/object/ops_arith.rs` (molt_add, molt_inplace_add:260, reflected op chain)
 - `/Users/adpena/Projects/molt/runtime/molt-backend/src/native_backend/function_compiler.rs` (inplace_add handler:4414, add handler:~4300)

@@ -8,21 +8,19 @@ use crate::tir::function::TirFunction;
 use crate::tir::lir::{LirRepr, LirValue};
 use crate::tir::lower_from_simple::lower_to_tir;
 use crate::tir::lower_to_lir::lower_function_to_lir_for_repr_fact_extraction;
-use crate::tir::lower_to_simple::SimpleValueNames;
 use crate::tir::ops::AttrValue;
+use crate::tir::simple_value_names::SimpleValueNames;
 use crate::tir::type_refine::refine_types;
 use crate::tir::types::TirType;
-#[cfg(feature = "llvm")]
 use crate::tir::values::ValueId;
 
-use value_repr::projected_scalar_carrier_name_reprs_for;
-pub(crate) use value_repr::raw_i64_carrier_values_for;
 #[cfg(test)]
-pub(crate) use value_repr::raw_i64_safe_values_for;
-pub use value_repr::{repr_by_value_for, value_range_for};
+pub(crate) use molt_passes::representation_facts::raw_i64_safe_values_for;
+pub use molt_passes::representation_facts::{
+    native_projectable_scalar_reprs_for, repr_by_value_for, value_range_for,
+};
 
 mod indexed_facts;
-mod value_repr;
 
 use indexed_facts::{
     FunctionFactIndex, IndexedFunctionFactIndex, PlanHashMap, PlanHashSet, alias_source_name,
@@ -1070,7 +1068,7 @@ impl ScalarRepresentationPlan {
         let mut projected = BTreeMap::new();
         let mut blocked = BTreeSet::new();
         for (tir_func, names) in tir_value_views {
-            for (name, repr) in projected_scalar_carrier_name_reprs_for(tir_func, names) {
+            for (name, repr) in Self::projected_scalar_carrier_name_reprs_for(tir_func, names) {
                 self.insert_projected_scalar_name_repr(
                     fact_index,
                     name,
@@ -1082,6 +1080,52 @@ impl ScalarRepresentationPlan {
         }
         self.propagate_projected_scalar_name_reprs(fact_index, &mut projected, &mut blocked);
         projected
+    }
+
+    /// Project value-keyed scalar carrier facts into the residual SimpleIR name
+    /// namespace. The value-keyed authority lives in `molt-passes`; this
+    /// adapter remains with lowering/name projection to avoid smuggling
+    /// SimpleIR names into the pass-layer crate.
+    fn projected_scalar_carrier_name_reprs_for(
+        tir_func: &TirFunction,
+        names: &SimpleValueNames,
+    ) -> Vec<(String, Repr)> {
+        let vr = value_range_for(tir_func);
+        let repr_by_value = repr_by_value_for(tir_func, Some(&vr));
+        let carrier_by_value = native_projectable_scalar_reprs_for(tir_func, &repr_by_value);
+        let mut out = Vec::new();
+
+        let mut push_value = |name: String, value: ValueId| {
+            if let Some(&repr) = carrier_by_value.get(&value) {
+                out.push((name, repr));
+            }
+        };
+
+        let mut block_ids: Vec<_> = tir_func.blocks.keys().copied().collect();
+        block_ids.sort_by_key(|block_id| block_id.0);
+        for block_id in block_ids {
+            let block = &tir_func.blocks[&block_id];
+            for (index, arg) in block.args.iter().enumerate() {
+                push_value(names.value_name(arg.id), arg.id);
+                push_value(names.block_arg_slot(block.id, index), arg.id);
+            }
+            for op in &block.ops {
+                let simple_out = op.attrs.get("_simple_out").and_then(|attr| match attr {
+                    AttrValue::Str(name) => Some(name.as_str()),
+                    _ => None,
+                });
+                for (result_index, &result) in op.results.iter().enumerate() {
+                    push_value(names.value_name(result), result);
+                    if result_index == 0
+                        && let Some(simple_out) = simple_out
+                    {
+                        push_value(simple_out.to_string(), result);
+                    }
+                }
+            }
+        }
+
+        out
     }
 
     fn insert_projected_scalar_name_repr(

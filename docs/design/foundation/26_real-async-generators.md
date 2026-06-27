@@ -85,19 +85,19 @@ For a simple `yield i` in a tight loop this is 12 runtime operations per element
 
 ### 1.5 Existing Partial Progress
 
-**Deforestation pass** (`/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/passes/deforestation.rs`): fuses `sum/any/all/list/len/set/tuple/sorted/reversed(genexpr)` patterns where the body is pure. This handles the common builtin-consumer pattern. It does NOT handle `for x in gen(): ...` loops (impure body check at line 119 rejects `StateYield`, `ClosureLoad`, `ClosureStore`, and `Call`). It also does NOT handle non-builtin consumers.
+**Deforestation pass** (`/Users/adpena/Projects/molt/runtime/molt-passes/src/tir/passes/deforestation.rs`): fuses `sum/any/all/list/len/set/tuple/sorted/reversed(genexpr)` patterns where the body is pure. This handles the common builtin-consumer pattern. It does NOT handle `for x in gen(): ...` loops (impure body check at line 119 rejects `StateYield`, `ClosureLoad`, `ClosureStore`, and `Call`). It also does NOT handle non-builtin consumers.
 
-**`iter_devirt` pass** (`/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/passes/iter_devirt.rs`): converts `for x in list` into an index loop, eliminating the iterator object allocation and `IterNext` overhead. This is the proven template the generator fusion pass should follow.
+**`iter_devirt` pass** (`/Users/adpena/Projects/molt/runtime/molt-passes/src/tir/passes/iter_devirt.rs`): converts `for x in list` into an index loop, eliminating the iterator object allocation and `IterNext` overhead. This is the proven template the generator fusion pass should follow.
 
-**E1 inliner** (`/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/passes/inliner.rs`): splices function bodies at call sites. Currently guards against generator-bearing callees (`has_state_machine()` gate) and exception-handler callees. Provides the `clone_function_body_with_fresh_ids` primitive that generator fusion needs.
+**E1 inliner** (`/Users/adpena/Projects/molt/runtime/molt-passes/src/tir/passes/inliner.rs`): splices function bodies at call sites. Currently guards against generator-bearing callees (`has_state_machine()` gate) and exception-handler callees. Provides the `clone_function_body_with_fresh_ids` primitive that generator fusion needs.
 
-**S4 module phase** (`/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/module_phase.rs`): the whole-program pass slot. The inliner runs here; generator fusion must run here because it needs both the caller and the `_poll` body simultaneously.
+**S4 module phase** (`/Users/adpena/Projects/molt/runtime/molt-passes/src/tir/module_phase.rs`): the whole-program pass slot. The inliner runs here; generator fusion must run here because it needs both the caller and the `_poll` body simultaneously.
 
 **D1 design doc** (`/Users/adpena/Projects/molt/docs/design/foundation/07_D1-coroelide.md`): a complete, detailed generator fusion blueprint. All recognition predicates, the splice transform, step-by-step algorithm, file-by-file changes, soundness argument, and conservative bail conditions are specified. This document supersedes any prior generator_fusion.md framing.
 
-**Design 20 (RC drop insertion)** (`/Users/adpena/Projects/molt/docs/design/foundation/20_rc-ownership-drop-insertion.md`): specifies the ownership model including §1.3 (generator suspension points — live-across-yield values must be inc-ref'd before yield and dec-ref'd on frame teardown) and §2.9 (the high-level suspension model). The `drop_insertion` pass currently bails on `has_state_machine()` functions (`/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/passes/drop_insertion.rs:450`). The path to re-enabling it for state machines is StateSwitch-aware liveness (the dominant borrow interval includes the cross-suspend live range).
+**Design 20 (RC drop insertion)** (`/Users/adpena/Projects/molt/docs/design/foundation/20_rc-ownership-drop-insertion.md`): specifies the ownership model including §1.3 (generator suspension points — live-across-yield values must be inc-ref'd before yield and dec-ref'd on frame teardown) and §2.9 (the high-level suspension model). The `drop_insertion` pass currently bails on `has_state_machine()` functions (`/Users/adpena/Projects/molt/runtime/molt-passes/src/tir/passes/drop_insertion.rs:450`). The path to re-enabling it for state machines is StateSwitch-aware liveness (the dominant borrow interval includes the cross-suspend live range).
 
-**Escape analysis** (`/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/passes/escape_analysis.rs`): marks `AllocTask` as `GlobalEscape` (line ~526 — not directly verified but referenced in design docs consistently). This is correct for escaping generators. The fusion pass bypass this by operating at the recognition stage before escape analysis sees the `AllocTask`.
+**Escape analysis** (`/Users/adpena/Projects/molt/runtime/molt-passes/src/tir/passes/escape_analysis.rs`): marks `AllocTask` as `GlobalEscape` (line ~526 — not directly verified but referenced in design docs consistently). This is correct for escaping generators. The fusion pass bypass this by operating at the recognition stage before escape analysis sees the `AllocTask`.
 
 ### 1.6 What Is Absent and Why It Is "Janky"
 
@@ -266,12 +266,12 @@ For **itertools**: `chain`, `islice`, `takewhile`, `dropwhile`, `count`, `cycle`
 ### Phase 1 — Tier B: Generator Frame Elision (D1 implementation)
 
 **Files to create:**
-- `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/passes/generator_fusion.rs` — the recognition + splice pass as specified in `07_D1-coroelide.md` §4.
+- `/Users/adpena/Projects/molt/runtime/molt-passes/src/tir/passes/generator_fusion.rs` — the recognition + splice pass as specified in `07_D1-coroelide.md` §4.
 
 **Files to modify:**
-- `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/passes/mod.rs` — add `pub mod generator_fusion;`
-- `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/module_phase.rs` — add `run_generator_fusion` call after the E1 inliner in `run_module_pipeline`
-- `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/passes/escape_analysis.rs` — Phase B precision: classify non-escaping `AllocTask` as `NoEscape` for the recognition predicate (Phase A correctness: the fusion pass's own single-use scan is sufficient; escape analysis change is polish)
+- `/Users/adpena/Projects/molt/runtime/molt-passes/src/tir/passes/mod.rs` — add `pub mod generator_fusion;`
+- `/Users/adpena/Projects/molt/runtime/molt-passes/src/tir/module_phase.rs` — add `run_generator_fusion` call after the E1 inliner in `run_module_pipeline`
+- `/Users/adpena/Projects/molt/runtime/molt-passes/src/tir/passes/escape_analysis.rs` — Phase B precision: classify non-escaping `AllocTask` as `NoEscape` for the recognition predicate (Phase A correctness: the fusion pass's own single-use scan is sufficient; escape analysis change is polish)
 
 **Test specifications:**
 
@@ -432,7 +432,7 @@ The phases depend on the following landed substrate:
 
 **Phase 1 completion:** After `bench_generator_iter.py` perf gate and all differential tests pass, the native itertools implementations that have Python equivalents become deletion candidates. Do not delete before Phase 4 per-function verification.
 
-**Phase 2 completion:** The `has_state_machine()` bail in `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/passes/drop_insertion.rs:450` is replaced by the StateSwitch-aware liveness path. The bail code is deleted. The `has_state_machine()` predicate on `TirFunction` (function.rs:189) remains valid for other consumers (the inliner, etc.) — it is not deleted, only the drop_insertion bail changes.
+**Phase 2 completion:** The `has_state_machine()` bail in `/Users/adpena/Projects/molt/runtime/molt-passes/src/tir/passes/drop_insertion.rs:450` is replaced by the StateSwitch-aware liveness path. The bail code is deleted. The `has_state_machine()` predicate on `TirFunction` (function.rs:189) remains valid for other consumers (the inliner, etc.) — it is not deleted, only the drop_insertion bail changes.
 
 **Phase 4 completion (per-function):** Each native itertools function deleted from `/Users/adpena/Projects/molt/runtime/molt-runtime/src/builtins/itertools.rs`. The Rust file may become empty and can then be removed. Any import routing it (`mod itertools;` in `lib.rs` or similar) is cleaned up at the same time.
 
@@ -464,14 +464,14 @@ New benchmarks to create:
 Architecture implementation map (files to create or modify, in dependency order):
 
 Create:
-- `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/passes/generator_fusion.rs` (Phase 1, Tier B splice)
+- `/Users/adpena/Projects/molt/runtime/molt-passes/src/tir/passes/generator_fusion.rs` (Phase 1, Tier B splice)
 
 Modify:
-- `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/passes/mod.rs` (add `pub mod generator_fusion;`)
-- `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/module_phase.rs` (call `run_generator_fusion` after E1 inliner)
-- `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/passes/drop_insertion.rs` (Phase 2: replace `has_state_machine()` bail with StateSwitch-aware liveness at line 450)
-- `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/passes/liveness.rs` (Phase 2: add synthetic suspend-predecessor edges for StateSwitch-aware liveness)
-- `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/passes/escape_analysis.rs` (Phase 1 polish: `AllocTask` NoEscape for single-use non-escaping frames)
+- `/Users/adpena/Projects/molt/runtime/molt-passes/src/tir/passes/mod.rs` (add `pub mod generator_fusion;`)
+- `/Users/adpena/Projects/molt/runtime/molt-passes/src/tir/module_phase.rs` (call `run_generator_fusion` after E1 inliner)
+- `/Users/adpena/Projects/molt/runtime/molt-passes/src/tir/passes/drop_insertion.rs` (Phase 2: replace `has_state_machine()` bail with StateSwitch-aware liveness at line 450)
+- `/Users/adpena/Projects/molt/runtime/molt-passes/src/tir/passes/liveness.rs` (Phase 2: add synthetic suspend-predecessor edges for StateSwitch-aware liveness)
+- `/Users/adpena/Projects/molt/runtime/molt-passes/src/tir/passes/escape_analysis.rs` (Phase 1 polish: `AllocTask` NoEscape for single-use non-escaping frames)
 
 Existing design documents that drive implementation (do not modify, implement from them):
 - `/Users/adpena/Projects/molt/docs/design/foundation/07_D1-coroelide.md` — the complete D1 Tier B blueprint

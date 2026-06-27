@@ -64,11 +64,19 @@ name = "tir-midend"
 description = "TIR midend Rust: all-target clippy + feature-complete tests."
 require_fresh_toolchain = true
 globs = [
+  "runtime/molt-ir/**/*.rs",
+  "runtime/molt-ir/**/*.toml",
+  "runtime/molt-ir/Cargo.toml",
+  "runtime/molt-passes/**/*.rs",
+  "runtime/molt-passes/**/*.toml",
+  "runtime/molt-passes/Cargo.toml",
   "runtime/molt-tir/**/*.rs",
   "runtime/molt-tir/**/*.toml",
   "runtime/molt-tir/Cargo.toml",
 ]
 gates = [
+  "cargo clippy -p molt-passes --all-targets --all-features -- -D warnings",
+  "cargo test -p molt-passes --all-features",
   "cargo clippy -p molt-tir --all-targets --all-features -- -D warnings",
   "cargo test -p molt-tir --all-features",
 ]
@@ -148,6 +156,9 @@ description = "Op-kind registry: generated-file sync + down-only emitter/registr
 globs = [
   "tools/gen_op_kinds.py",
   "tools/audit_op_kinds.py",
+  "tools/op_kinds/**/*.py",
+  "runtime/molt-ir/src/tir/op_kinds.toml",
+  "runtime/molt-ir/src/tir/op_kinds_generated.rs",
   "runtime/molt-backend/src/**/op_kind*.rs",
   "runtime/molt-backend/src/**/ops*.rs",
 ]
@@ -233,7 +244,7 @@ globs = [
   "tools/llvm_runtime_abi_audit.py",
   "tests/test_llvm_runtime_abi_audit.py",
   "src/molt/frontend/lowering/serialization.py",
-  "runtime/molt-tir/src/tir/op_kinds_generated.rs",
+  "runtime/molt-ir/src/tir/op_kinds_generated.rs",
   "runtime/molt-backend/src/llvm_backend/lowering.rs",
   "runtime/molt-backend/src/llvm_backend/runtime_imports.rs",
   "runtime/molt-runtime/src/**/*.rs",

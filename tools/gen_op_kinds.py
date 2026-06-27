@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Generate the op-kind registry artifacts from the canonical table.
 
-Single source of truth: ``runtime/molt-tir/src/tir/op_kinds.toml``.
+Single source of truth: ``runtime/molt-ir/src/tir/op_kinds.toml``.
 
 Cross-component op-"kind"-string drift is molt's most prolific silent-miscompile
 bug class (see ``docs/design/foundation/25_op_kind_registry.md`` and
@@ -9,7 +9,7 @@ bug class (see ``docs/design/foundation/25_op_kind_registry.md`` and
 "kind" vocabulary, each with its own private table. This generator renders that
 ONE table into every consumer so the tables can never drift:
 
-  - ``runtime/molt-tir/src/tir/op_kinds_generated.rs`` — the data tables the
+  - ``runtime/molt-ir/src/tir/op_kinds_generated.rs`` — the data tables the
     backend's ``kind_to_opcode`` mapper, the reverse canonical
     ``OpCode``→backend-op-name table, the ``CopyLowering`` classifier
     (``copy_kind_mints_fresh_owned_ref`` / ``classify_copy_kind`` /
@@ -51,17 +51,17 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from tools.op_kinds import render_python as _render_python
-from tools.op_kinds import render_rust as _render_rust
-from tools.op_kinds import schema as _schema
-from tools.op_kinds import validate as _validate
-from tools.op_kinds.paths import (
+from tools.op_kinds import render_python as _render_python  # noqa: E402
+from tools.op_kinds import render_rust as _render_rust  # noqa: E402
+from tools.op_kinds import schema as _schema  # noqa: E402
+from tools.op_kinds import validate as _validate  # noqa: E402
+from tools.op_kinds.paths import (  # noqa: E402
     OUT_PY,
     OUT_RS,
     RUSTFMT_TMP,
     TABLE,
     harness_memory_guard,
-)
+)  # noqa: E402
 
 for _module in (_schema, _validate, _render_rust, _render_python):
     for _name in getattr(_module, '__all__', ()):  # re-export generator authority
@@ -103,7 +103,7 @@ def _check(path: Path, rendered: str) -> bool:
             f"  run `python3 tools/gen_op_kinds.py` to regenerate from "
             f"{TABLE.relative_to(ROOT)}",
             file=sys.stderr,
-        )
+)
         return False
     return True
 
