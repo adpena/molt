@@ -1,93 +1,10 @@
 use super::*;
 
-/// Pre-computed NaN-box tag mask constants materialized at each helper site.
-///
-/// These values are plain immediates, not Cranelift `Variable`s. Keeping
-/// representation constants out of SSA repair prevents label/exception CFG
-/// stitching from turning immutable tag facts into block parameters.
 #[cfg(feature = "native-backend")]
-#[derive(Clone, Copy)]
-pub(crate) struct NanBoxConsts {
-    /// `(QNAN | TAG_MASK) as i64`
-    pub(crate) qnan_tag_mask: i64,
-    /// `(QNAN | TAG_INT) as i64`
-    pub(crate) qnan_tag_int: i64,
-    /// `(QNAN | TAG_PTR) as i64`
-    pub(crate) qnan_tag_ptr: i64,
-    /// `INT_SHIFT` (17)
-    int_shift: i64,
-    /// `POINTER_MASK as i64`
-    pub(crate) pointer_mask: i64,
-    /// `(QNAN | TAG_BOOL) as i64`
-    pub(crate) qnan_tag_bool: i64,
-    /// `INT_WIDTH as i64` (47)  used in fused_both_int_check
-    int_width: i64,
-    /// `48i64`  shift to isolate tag field for nanboxed-special / int checks
-    shift_48: i64,
-    /// `0x7FF9i64`  base of special-tag range
-    special_base: i64,
-    /// `5i64`  width of special-tag range
-    special_limit: i64,
-    /// `((QNAN | TAG_INT) >> 48) as i64`  16-bit tag for nanboxed int check
-    int_tag_16: i64,
-    /// `INT_MASK as i64`  mask for box_int_value
-    pub(crate) int_mask: i64,
-    /// `16i64`  sign-extension shift for unbox_ptr_value
-    shift_16: i64,
-    /// `CANONICAL_NAN_BITS as i64`  canonical NaN for box_float_value
-    canonical_nan: i64,
-}
-
-#[cfg(feature = "native-backend")]
-impl NanBoxConsts {
-    pub(crate) fn new(_builder: &mut FunctionBuilder) -> Self {
-        Self {
-            qnan_tag_mask: (QNAN | TAG_MASK) as i64,
-            qnan_tag_int: (QNAN | TAG_INT) as i64,
-            qnan_tag_ptr: (QNAN | TAG_PTR) as i64,
-            int_shift: INT_SHIFT,
-            pointer_mask: POINTER_MASK as i64,
-            qnan_tag_bool: (QNAN | TAG_BOOL) as i64,
-            int_width: INT_WIDTH as i64,
-            shift_48: 48,
-            special_base: 0x7FF9,
-            special_limit: 5,
-            int_tag_16: ((QNAN | TAG_INT) >> 48) as i64,
-            int_mask: INT_MASK as i64,
-            shift_16: 16,
-            canonical_nan: CANONICAL_NAN_BITS as i64,
-        }
-    }
-}
-
-pub(crate) fn box_int(val: i64) -> i64 {
-    // Use INT_MASK (47 bits) not POINTER_MASK (48 bits) to match the
-    // sign-extending unbox path (ishl/sshr by INT_SHIFT=17).
-    let masked = (val as u64) & INT_MASK;
-    (QNAN | TAG_INT | masked) as i64
-}
-
-#[cfg(feature = "native-backend")]
-pub(crate) fn box_float(val: f64) -> i64 {
-    if val.is_nan() {
-        // Canonicalize NaN to avoid collision with the QNAN tag prefix.
-        // Must match CANONICAL_NAN_BITS in molt-obj-model.
-        0x7ff0_0000_0000_0001_u64 as i64
-    } else {
-        val.to_bits() as i64
-    }
-}
-
-#[cfg(feature = "native-backend")]
-pub(crate) fn box_none() -> i64 {
-    (QNAN | TAG_NONE) as i64
-}
-
-#[cfg(feature = "native-backend")]
-pub(crate) fn box_bool(val: i64) -> i64 {
-    let bit = if val != 0 { 1u64 } else { 0u64 };
-    (QNAN | TAG_BOOL | bit) as i64
-}
+pub(crate) use molt_codegen_abi::{
+    NanBoxConsts, box_bool_bits as box_bool, box_float_bits as box_float, box_int_bits as box_int,
+    box_none_bits as box_none,
+};
 
 #[cfg(feature = "native-backend")]
 pub(crate) fn unbox_int(builder: &mut FunctionBuilder, val: Value, nbc: &NanBoxConsts) -> Value {
@@ -389,9 +306,9 @@ pub(crate) fn int_value_fits_inline(builder: &mut FunctionBuilder, val: Value) -
     // Bias the value by +2^46 so the valid range maps to [0, 2^47-1],
     // then do a single unsigned comparison against 2^47.
     // This is a single-comparison range check that Cranelift cannot fold away.
-    let bias = builder.ins().iconst(types::I64, 1_i64 << 46);
+    let bias = builder.ins().iconst(types::I64, INLINE_INT_BIAS);
     let biased = builder.ins().iadd(val, bias);
-    let limit = builder.ins().iconst(types::I64, 1_i64 << 47);
+    let limit = builder.ins().iconst(types::I64, INLINE_INT_LIMIT);
     builder.ins().icmp(IntCC::UnsignedLessThan, biased, limit)
 }
 

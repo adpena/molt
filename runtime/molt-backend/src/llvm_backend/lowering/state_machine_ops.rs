@@ -314,7 +314,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .try_as_basic_value()
             .unwrap_basic()
             .into_int_value();
-        let pending_const = i64_ty.const_int(crate::pending_bits() as u64, true);
+        let pending_const = i64_ty.const_int(molt_codegen_abi::pending_bits() as u64, true);
         let is_pending = self
             .backend
             .builder
@@ -452,7 +452,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .try_as_basic_value()
             .unwrap_basic()
             .into_int_value();
-        let pending_const = i64_ty.const_int(crate::pending_bits() as u64, true);
+        let pending_const = i64_ty.const_int(molt_codegen_abi::pending_bits() as u64, true);
         let is_pending = self
             .backend
             .builder
@@ -562,7 +562,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .try_as_basic_value()
             .unwrap_basic()
             .into_int_value();
-        let pending_const = i64_ty.const_int(crate::pending_bits() as u64, true);
+        let pending_const = i64_ty.const_int(molt_codegen_abi::pending_bits() as u64, true);
         let is_pending = self
             .backend
             .builder

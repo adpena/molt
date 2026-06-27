@@ -36,6 +36,7 @@ def _find_repo_root() -> Path:
 ROOT = _find_repo_root()
 NANBOX_LEAN = ROOT / "formal" / "lean" / "MoltTIR" / "Runtime" / "NanBox.lean"
 SYNTAX_LEAN = ROOT / "formal" / "lean" / "MoltTIR" / "Syntax.lean"
+CODEGEN_ABI_RS = ROOT / "runtime" / "molt-codegen-abi" / "src" / "lib.rs"
 OBJ_MODEL_RS = ROOT / "runtime" / "molt-obj-model" / "src" / "lib.rs"
 SRC = ROOT / "src"
 if str(SRC) not in sys.path:
@@ -63,9 +64,9 @@ def _parse_lean_hex_constants(text: str) -> dict[str, int]:
 
 
 def _parse_rust_u64_constants(text: str) -> dict[str, int]:
-    """Extract `const NAME: u64 = <value>;` definitions from Rust, resolving expressions."""
+    """Extract unsigned integer Rust constants, resolving simple expressions."""
     raw: dict[str, str] = {}
-    for m in re.finditer(r"const\s+(\w+):\s*u64\s*=\s*(.+?);", text):
+    for m in re.finditer(r"(?:pub\s+)?const\s+(\w+):\s*u(?:32|64)\s*=\s*(.+?);", text):
         raw[m.group(1)] = m.group(2).strip()
 
     resolved: dict[str, int] = {}
@@ -77,6 +78,9 @@ def _parse_rust_u64_constants(text: str) -> dict[str, int]:
 def _resolve_rust_expr(expr: str, raw_consts: dict[str, str]) -> int:
     """Resolve a Rust constant expression to an integer value."""
     expr = expr.strip()
+    cast = re.match(r"^(\w+)\s+as\s+u(?:32|64)$", expr)
+    if cast:
+        expr = cast.group(1)
 
     # Simple hex literal: 0x7ff8_0000_0000_0000
     if re.match(r"^0x[0-9a-fA-F_]+$", expr):
@@ -85,28 +89,41 @@ def _resolve_rust_expr(expr: str, raw_consts: dict[str, str]) -> int:
     # Simple decimal literal
     if expr.isdigit():
         return int(expr)
+    if re.match(r"^\w+$", expr) and expr in raw_consts:
+        return _resolve_rust_expr(raw_consts[expr], raw_consts)
 
-    # Shift: 1 << 46  or  1u64 << VAR
-    m = re.match(r"1(?:u64)?\s*<<\s*(\w+)", expr)
+    # Shift: 1 << 46, 1u64 << VAR, or 1u64 << (VAR - N)
+    m = re.fullmatch(r"1(?:u64)?\s*<<\s*(.+)", expr)
     if m:
-        shift_val = m.group(1)
-        if shift_val.isdigit():
-            return 1 << int(shift_val)
-        if shift_val in raw_consts:
-            return 1 << _resolve_rust_expr(raw_consts[shift_val], raw_consts)
-        raise ValueError(f"Cannot resolve shift variable: {shift_val}")
+        return 1 << _resolve_rust_shift_width(m.group(1), raw_consts)
 
     # (1u64 << VAR) - 1
-    m = re.match(r"\(1u64\s*<<\s*(\w+)\)\s*-\s*1", expr)
+    m = re.fullmatch(r"\(1u64\s*<<\s*(.+)\)\s*-\s*1", expr)
     if m:
-        shift_val = m.group(1)
-        if shift_val.isdigit():
-            return (1 << int(shift_val)) - 1
-        if shift_val in raw_consts:
-            return (1 << _resolve_rust_expr(raw_consts[shift_val], raw_consts)) - 1
-        raise ValueError(f"Cannot resolve shift variable: {shift_val}")
+        return (1 << _resolve_rust_shift_width(m.group(1), raw_consts)) - 1
 
     raise ValueError(f"Cannot parse Rust constant expression: {expr}")
+
+
+def _resolve_rust_shift_width(expr: str, raw_consts: dict[str, str]) -> int:
+    expr = expr.strip()
+    if expr.startswith("(") and expr.endswith(")"):
+        expr = expr[1:-1].strip()
+    m = re.fullmatch(r"(\w+)(?:\s*-\s*(\d+))?", expr)
+    if not m:
+        raise ValueError(f"Cannot parse shift width: {expr}")
+
+    base, decrement = m.group(1), m.group(2)
+    if base.isdigit():
+        width = int(base)
+    elif base in raw_consts:
+        width = _resolve_rust_expr(raw_consts[base], raw_consts)
+    else:
+        raise ValueError(f"Cannot resolve shift variable: {base}")
+
+    if decrement:
+        width -= int(decrement)
+    return width
 
 
 def _parse_lean_inductive_variants(text: str, type_name: str) -> list[str]:
@@ -160,7 +177,7 @@ def lean_nanbox_consts() -> dict[str, int]:
 
 @pytest.fixture(scope="module")
 def rust_nanbox_consts() -> dict[str, int]:
-    return _parse_rust_u64_constants(_read(OBJ_MODEL_RS))
+    return _parse_rust_u64_constants(_read(CODEGEN_ABI_RS))
 
 
 class TestNanBoxConstants:
@@ -178,7 +195,7 @@ class TestNanBoxConstants:
             f"Lean constant {lean_name} not found in {NANBOX_LEAN}"
         )
         assert rust_name in rust_nanbox_consts, (
-            f"Rust constant {rust_name} not found in {OBJ_MODEL_RS}"
+            f"Rust constant {rust_name} not found in {CODEGEN_ABI_RS}"
         )
         lean_val = lean_nanbox_consts[lean_name]
         rust_val = rust_nanbox_consts[rust_name]

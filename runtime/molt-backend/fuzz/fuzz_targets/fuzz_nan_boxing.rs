@@ -1,43 +1,30 @@
 #![no_main]
 use libfuzzer_sys::fuzz_target;
-
-// --------------------------------------------------------------------------
-// Mirror the NaN-boxing constants from molt-backend/src/wasm.rs so that the
-// fuzz target compiles standalone without requiring the full compilation
-// pipeline or exposing private items.
-// --------------------------------------------------------------------------
-
-const QNAN: u64 = 0x7ff8_0000_0000_0000;
-const TAG_INT: u64 = 0x0001_0000_0000_0000;
-const TAG_BOOL: u64 = 0x0002_0000_0000_0000;
-const TAG_NONE: u64 = 0x0003_0000_0000_0000;
-const TAG_PTR: u64 = 0x0004_0000_0000_0000;
-const TAG_PENDING: u64 = 0x0005_0000_0000_0000;
-const TAG_MASK: u64 = 0x0007_0000_0000_0000;
-const POINTER_MASK: u64 = 0x0000_FFFF_FFFF_FFFF;
-const INT_MIN_INLINE: i64 = -(1 << 46);
-const INT_MAX_INLINE: i64 = (1 << 46) - 1;
+use molt_codegen_abi::{
+    INT_MAX_INLINE, INT_MIN_INLINE, POINTER_MASK, QNAN, TAG_BOOL, TAG_INT, TAG_MASK, TAG_NONE,
+    TAG_PENDING, TAG_PTR, box_bool_bits, box_int_bits, box_none_bits, box_ptr_bits,
+    fits_inline_int, is_bool_bits, is_float_bits, is_int_bits, is_ptr_bits, ptr_payload_bits,
+    tag_bits, unbox_bool_bits, unbox_inline_int_bits,
+};
 
 // --------------------------------------------------------------------------
 // Encoding / decoding helpers (mirrors the runtime WASM NaN-boxing scheme)
 // --------------------------------------------------------------------------
 
 fn nan_box_int(value: i64) -> Option<u64> {
-    if value < INT_MIN_INLINE || value > INT_MAX_INLINE {
+    if !fits_inline_int(value) {
         return None;
     }
-    let payload = (value as u64) & POINTER_MASK;
-    Some(QNAN | TAG_INT | payload)
+    Some(box_int_bits(value) as u64)
 }
 
 fn nan_unbox_int(bits: u64) -> Option<i64> {
-    if !is_tagged(bits, TAG_INT) {
+    if !is_int_bits(bits) {
         return None;
     }
     // Mirror the WASM codegen's approach: (val << 17) >> 17 (arithmetic shift)
     // This correctly sign-extends from bit 46 and discards any stray upper bits.
-    let shifted = (bits as i64) << 17;
-    let value = shifted >> 17;
+    let value = unbox_inline_int_bits(bits);
     if value < INT_MIN_INLINE || value > INT_MAX_INLINE {
         return None; // invalid payload — bits above the 47-bit field are set
     }
@@ -45,40 +32,40 @@ fn nan_unbox_int(bits: u64) -> Option<i64> {
 }
 
 fn nan_box_bool(b: bool) -> u64 {
-    QNAN | TAG_BOOL | (b as u64)
+    box_bool_bits(i64::from(b)) as u64
 }
 
 fn nan_unbox_bool(bits: u64) -> Option<bool> {
-    if !is_tagged(bits, TAG_BOOL) {
+    if !is_bool_bits(bits) {
         return None;
     }
-    Some((bits & 1) != 0)
+    Some(unbox_bool_bits(bits) != 0)
 }
 
 fn nan_box_none() -> u64 {
-    QNAN | TAG_NONE
+    box_none_bits() as u64
 }
 
 fn nan_box_ptr(addr: u64) -> Option<u64> {
     if addr & !POINTER_MASK != 0 {
         return None; // address too wide
     }
-    Some(QNAN | TAG_PTR | addr)
+    Some(box_ptr_bits(addr) as u64)
 }
 
 fn nan_unbox_ptr(bits: u64) -> Option<u64> {
-    if !is_tagged(bits, TAG_PTR) {
+    if !is_ptr_bits(bits) {
         return None;
     }
-    Some(bits & POINTER_MASK)
+    Some(ptr_payload_bits(bits))
 }
 
 fn is_tagged(bits: u64, tag: u64) -> bool {
-    (bits & (QNAN | TAG_MASK)) == (QNAN | tag)
+    tag_bits(bits) == (QNAN | tag)
 }
 
 fn tag_of(bits: u64) -> Option<u64> {
-    if (bits & QNAN) != QNAN {
+    if is_float_bits(bits) {
         return None; // plain float or signalling NaN
     }
     Some(bits & TAG_MASK)

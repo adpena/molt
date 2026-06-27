@@ -32,6 +32,13 @@ use wasm_encoder::{BlockType, Ieee64, Instruction, ValType};
 use std::collections::HashMap;
 
 #[cfg(feature = "wasm-backend")]
+use molt_codegen_abi::{
+    INLINE_INT_BIAS, INLINE_INT_LIMIT, INT_MASK, INT_MAX_INLINE as INLINE_INT_MAX,
+    INT_MIN_INLINE as INLINE_INT_MIN, INT_SHIFT as INT_SHIFT_BITS, QNAN_TAG_BOOL_I64,
+    QNAN_TAG_INT_I64, box_none_bits,
+};
+
+#[cfg(feature = "wasm-backend")]
 use molt_tir::tir::blocks::BlockId;
 #[cfg(feature = "wasm-backend")]
 use molt_tir::tir::function::TirFunction;
@@ -43,21 +50,6 @@ use molt_tir::tir::lower_to_lir::{lower_function_to_lir, lower_function_to_lir_w
 use molt_tir::tir::ops::{AttrValue, OpCode};
 #[cfg(feature = "wasm-backend")]
 use molt_tir::tir::values::ValueId;
-
-#[cfg(feature = "wasm-backend")]
-const QNAN: i64 = 0x7ff8_0000_0000_0000u64 as i64;
-#[cfg(feature = "wasm-backend")]
-const TAG_INT: i64 = 0x0001_0000_0000_0000u64 as i64;
-#[cfg(feature = "wasm-backend")]
-const TAG_NONE: i64 = 0x0003_0000_0000_0000u64 as i64;
-#[cfg(feature = "wasm-backend")]
-const INT_MASK: i64 = ((1u64 << 47) - 1) as i64;
-#[cfg(feature = "wasm-backend")]
-const INT_SHIFT_BITS: i64 = 17;
-#[cfg(feature = "wasm-backend")]
-const INLINE_INT_MIN: i64 = -(1i64 << 46);
-#[cfg(feature = "wasm-backend")]
-const INLINE_INT_MAX: i64 = (1i64 << 46) - 1;
 
 // ---------------------------------------------------------------------------
 // Output struct
@@ -587,10 +579,7 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
         }
         OpCode::ConstNone => {
             if let Some(result) = op.result_values.first() {
-                const QNAN: u64 = 0x7ff8_0000_0000_0000;
-                const TAG_NONE: u64 = 0x0003_0000_0000_0000;
-                ctx.instructions
-                    .push(Instruction::I64Const((QNAN | TAG_NONE) as i64));
+                ctx.instructions.push(Instruction::I64Const(box_none_bits()));
                 ctx.emit_set(result.id);
             }
         }
@@ -1098,9 +1087,8 @@ fn emit_get_boxed_for_repr(ctx: &mut LirLowerCtx, v: ValueId) {
         LirRepr::Bool1 => {
             ctx.emit_get(v);
             ctx.instructions.push(Instruction::I64ExtendI32U);
-            ctx.instructions.push(Instruction::I64Const(
-                QNAN | 0x0002_0000_0000_0000u64 as i64,
-            ));
+            ctx.instructions
+                .push(Instruction::I64Const(QNAN_TAG_BOOL_I64));
             ctx.instructions.push(Instruction::I64Or);
         }
         LirRepr::F64 => {
@@ -1338,9 +1326,11 @@ fn emit_lir_i64_binary_or_boxed(
 #[cfg(feature = "wasm-backend")]
 fn emit_box_inline_i64(ctx: &mut LirLowerCtx, src: ValueId) {
     ctx.emit_get(src);
-    ctx.instructions.push(Instruction::I64Const(INT_MASK));
+    ctx.instructions
+        .push(Instruction::I64Const(INT_MASK as i64));
     ctx.instructions.push(Instruction::I64And);
-    ctx.instructions.push(Instruction::I64Const(QNAN | TAG_INT));
+    ctx.instructions
+        .push(Instruction::I64Const(QNAN_TAG_INT_I64));
     ctx.instructions.push(Instruction::I64Or);
 }
 
@@ -1359,16 +1349,20 @@ fn emit_box_inline_i64(ctx: &mut LirLowerCtx, src: ValueId) {
 fn emit_box_i64_overflow_safe(ctx: &mut LirLowerCtx, src: ValueId) {
     // fits = (src + 2^46) <u 2^47
     ctx.emit_get(src);
-    ctx.instructions.push(Instruction::I64Const(1 << 46));
+    ctx.instructions
+        .push(Instruction::I64Const(INLINE_INT_BIAS));
     ctx.instructions.push(Instruction::I64Add);
-    ctx.instructions.push(Instruction::I64Const(1 << 47));
+    ctx.instructions
+        .push(Instruction::I64Const(INLINE_INT_LIMIT));
     ctx.instructions.push(Instruction::I64LtU);
     ctx.instructions
         .push(Instruction::If(BlockType::Result(ValType::I64)));
     ctx.emit_get(src);
-    ctx.instructions.push(Instruction::I64Const(INT_MASK));
+    ctx.instructions
+        .push(Instruction::I64Const(INT_MASK as i64));
     ctx.instructions.push(Instruction::I64And);
-    ctx.instructions.push(Instruction::I64Const(QNAN | TAG_INT));
+    ctx.instructions
+        .push(Instruction::I64Const(QNAN_TAG_INT_I64));
     ctx.instructions.push(Instruction::I64Or);
     ctx.instructions.push(Instruction::Else);
     ctx.emit_get(src);
@@ -1379,7 +1373,7 @@ fn emit_box_i64_overflow_safe(ctx: &mut LirLowerCtx, src: ValueId) {
 #[cfg(feature = "wasm-backend")]
 fn emit_box_none(ctx: &mut LirLowerCtx) {
     ctx.instructions
-        .push(Instruction::I64Const(QNAN | TAG_NONE));
+        .push(Instruction::I64Const(box_none_bits()));
 }
 
 #[cfg(feature = "wasm-backend")]
@@ -1392,9 +1386,8 @@ fn emit_return_boxed_i64(ctx: &mut LirLowerCtx, value: ValueId) {
         LirRepr::Bool1 => {
             ctx.emit_get(value);
             ctx.instructions.push(Instruction::I64ExtendI32U);
-            ctx.instructions.push(Instruction::I64Const(
-                QNAN | 0x0002_0000_0000_0000u64 as i64,
-            ));
+            ctx.instructions
+                .push(Instruction::I64Const(QNAN_TAG_BOOL_I64));
             ctx.instructions.push(Instruction::I64Or);
         }
         LirRepr::F64 => {
@@ -2431,9 +2424,9 @@ mod tests {
         instrs
             .windows(4)
             .filter(|w| {
-                matches!(w[0], Instruction::I64Const(m) if m == INT_MASK)
+                matches!(w[0], Instruction::I64Const(m) if m == INT_MASK as i64)
                     && matches!(w[1], Instruction::I64And)
-                    && matches!(w[2], Instruction::I64Const(t) if t == (QNAN | TAG_INT))
+                    && matches!(w[2], Instruction::I64Const(t) if t == QNAN_TAG_INT_I64)
                     && matches!(w[3], Instruction::I64Or)
             })
             .count()

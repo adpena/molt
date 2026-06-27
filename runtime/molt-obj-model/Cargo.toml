@@ -6,6 +6,7 @@ edition = "2024"
 license = "Apache-2.0"
 
 [dependencies]
+molt-codegen-abi = { path = "../molt-codegen-abi" }
 
 [dev-dependencies]
 criterion = "0.8"

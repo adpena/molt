@@ -1,50 +1,15 @@
 use crate::wasm_binary::emit_call;
+use molt_codegen_abi::{
+    CANONICAL_NAN_BITS, INT_MAX_INLINE, INT_MIN_INLINE, INT_SHIFT, QNAN, QNAN_TAG_MASK_I64,
+    QNAN_TAG_PTR_I64, TAG_BOOL, TAG_INT,
+};
+pub(crate) use molt_codegen_abi::{
+    INT_MASK, POINTER_MASK, box_bool_bits as box_bool, box_float_bits as box_float,
+    box_int_bits as box_int, box_none_bits as box_none, box_pending_bits as box_pending,
+    stable_ic_site_id,
+};
 use std::collections::BTreeMap;
 use wasm_encoder::{BlockType, Function, Instruction, ValType};
-
-const QNAN: u64 = 0x7ff8_0000_0000_0000;
-const CANONICAL_NAN_BITS: u64 = 0x7ff0_0000_0000_0001;
-const TAG_INT: u64 = 0x0001_0000_0000_0000;
-const TAG_BOOL: u64 = 0x0002_0000_0000_0000;
-const TAG_NONE: u64 = 0x0003_0000_0000_0000;
-const TAG_PTR: u64 = 0x0004_0000_0000_0000;
-const TAG_PENDING: u64 = 0x0005_0000_0000_0000;
-const TAG_MASK: u64 = 0x0007_0000_0000_0000;
-pub(crate) const POINTER_MASK: u64 = 0x0000_FFFF_FFFF_FFFF;
-const QNAN_TAG_MASK_I64: i64 = (QNAN | TAG_MASK) as i64;
-const QNAN_TAG_PTR_I64: i64 = (QNAN | TAG_PTR) as i64;
-pub(crate) const INT_MASK: u64 = (1 << 47) - 1;
-const INT_SHIFT: i64 = 17;
-const INT_MIN_INLINE: i64 = -(1 << 46);
-const INT_MAX_INLINE: i64 = (1 << 46) - 1;
-
-pub(crate) fn box_int(val: i64) -> i64 {
-    let masked = (val as u64) & POINTER_MASK;
-    (QNAN | TAG_INT | masked) as i64
-}
-
-pub(crate) fn box_float(val: f64) -> i64 {
-    if val.is_nan() {
-        // Canonicalize NaN to avoid collision with the QNAN tag prefix.
-        // Must match CANONICAL_NAN_BITS in molt-obj-model.
-        CANONICAL_NAN_BITS as i64
-    } else {
-        val.to_bits() as i64
-    }
-}
-
-pub(crate) fn box_bool(val: i64) -> i64 {
-    let bit = if val != 0 { 1u64 } else { 0u64 };
-    (QNAN | TAG_BOOL | bit) as i64
-}
-
-pub(crate) fn box_none() -> i64 {
-    (QNAN | TAG_NONE) as i64
-}
-
-pub(crate) fn box_pending() -> i64 {
-    (QNAN | TAG_PENDING) as i64
-}
 
 /// Emit WASM instructions to convert an f64 on the stack to a NaN-canonicalized i64.
 /// Uses `scratch_local` (an i64 local) as temporary storage.
@@ -65,25 +30,6 @@ pub(crate) fn emit_f64_to_i64_canonical(func: &mut wasm_encoder::Function, scrat
     func.instruction(&Instruction::Else);
     func.instruction(&Instruction::LocalGet(scratch_local));
     func.instruction(&Instruction::End);
-}
-
-pub(crate) fn stable_ic_site_id(func_name: &str, op_idx: usize, lane: &str) -> i64 {
-    const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
-    const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
-    let mut hash = FNV_OFFSET;
-    for b in func_name
-        .as_bytes()
-        .iter()
-        .chain(lane.as_bytes().iter())
-        .copied()
-    {
-        hash ^= u64::from(b);
-        hash = hash.wrapping_mul(FNV_PRIME);
-    }
-    hash ^= op_idx as u64;
-    hash = hash.wrapping_mul(FNV_PRIME);
-    let id = (hash & ((1u64 << 46) - 1)).max(1);
-    id as i64
 }
 
 /// Cache of WASM local indices holding frequently-used i64 constants.

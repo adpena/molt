@@ -154,6 +154,7 @@ molt_gpu_primitives = ["dep:molt-gpu"]
 
 [dependencies]
 # Core runtime (always required)
+molt-codegen-abi = { path = "../molt-codegen-abi" }
 molt-obj-model = { package = "molt-lang-obj-model", path = "../molt-obj-model" }
 molt-runtime-core = { path = "../molt-runtime-core" }
 molt-runtime-crypto = { path = "../molt-runtime-crypto", optional = true }

@@ -23,6 +23,7 @@ members = [
     "runtime/molt-ir",
     "runtime/molt-passes",
     "runtime/molt-tir",
+    "runtime/molt-codegen-abi",
 ]
 exclude = [
     "deploy/browser/simd-ops-rs",

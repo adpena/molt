@@ -10,6 +10,7 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 molt-backend = { path = "..", features = ["wasm-backend"] }
+molt-codegen-abi = { path = "../../molt-codegen-abi" }
 arbitrary = { version = "1", features = ["derive"] }
 wasm-encoder = "0.252.0"
 wasmparser = "0.252.0"
