@@ -14,4 +14,5 @@ pub mod bridge;
 #[path = "../../molt-runtime-core/src/bridge_test_stubs.rs"]
 mod bridge_test_stubs;
 
+pub mod intrinsics_generated;
 pub mod ipaddress;
