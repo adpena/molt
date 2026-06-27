@@ -562,9 +562,7 @@ from molt.cli.runtime_fingerprints import (
     _artifact_needs_rebuild,
     _hash_runtime_file,
     _hash_source_tree_metadata,
-    _inspect_wasm_binary,
     _is_valid_static_library_artifact,
-    _is_valid_wasm_binary,
     _read_runtime_fingerprint,
     _runtime_artifact_fingerprint_matches,
     _runtime_fingerprint,
@@ -590,19 +588,6 @@ from molt.cli.runtime_intrinsic_symbols import (
     _runtime_intrinsic_symbols_digest,
     _runtime_intrinsic_symbols_file,
     _stage_runtime_intrinsic_symbols_for_native_codegen,
-)
-from molt.cli.runtime_wasm_validation import (
-    _is_reusable_wasm_artifact,
-    _is_valid_runtime_wasm_artifact,
-    _is_valid_shared_runtime_wasm_artifact,
-    _runtime_wasm_exports_satisfy,
-    _runtime_wasm_has_shared_import_abi,
-    _runtime_wasm_integrity_sidecar_path,
-    _runtime_wasm_missing_exports,
-    _try_read_wasm_varuint,
-    _validate_wasm_structural,
-    _wasm_has_nonempty_code_section,
-    _write_runtime_wasm_integrity_sidecar,
 )
 from molt.cli.setup_readiness import (
     _build_toolchain_report,

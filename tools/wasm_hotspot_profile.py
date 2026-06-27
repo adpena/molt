@@ -42,14 +42,21 @@ from typing import Any
 
 MOLT_ROOT = Path(__file__).resolve().parent.parent
 TOOLS_DIR = MOLT_ROOT / "tools"
+SRC_DIR = MOLT_ROOT / "src"
 RUN_WASM_JS = MOLT_ROOT / "wasm/run_wasm.js"
 
 # Make tools/ importable
 sys.path.insert(0, str(TOOLS_DIR))
 if str(MOLT_ROOT) not in sys.path:
     sys.path.insert(0, str(MOLT_ROOT))
+if str(SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(SRC_DIR))
 
 from tools import harness_memory_guard  # noqa: E402
+from molt.wasm_artifact import (  # noqa: E402
+    read_wasm_function_bodies,
+    read_wasm_section_spans,
+)
 
 # Programs used for baseline profiling (subset of bench/wasm_bench.py list).
 DEFAULT_PROGRAMS: list[str] = [
@@ -91,12 +98,6 @@ print(total)
     "hello": 'print("hello world")\n',
 }
 
-# WASM binary constants
-WASM_MAGIC = b"\x00asm"
-SECTION_CODE = 10
-SECTION_CUSTOM = 0
-
-
 # ---------------------------------------------------------------------------
 # Node.js resolution
 # ---------------------------------------------------------------------------
@@ -123,205 +124,27 @@ def _resolve_node() -> str | None:
     return None
 
 
-# ---------------------------------------------------------------------------
-# WASM binary parsing helpers
-# ---------------------------------------------------------------------------
-
-
-def _read_leb128_u32(data: bytes, offset: int) -> tuple[int, int]:
-    """Read an unsigned LEB128 value. Returns (value, new_offset)."""
-    result = 0
-    shift = 0
-    while offset < len(data):
-        byte = data[offset]
-        offset += 1
-        result |= (byte & 0x7F) << shift
-        if (byte & 0x80) == 0:
-            break
-        shift += 7
-    return result, offset
-
-
-def _read_wasm_string(data: bytes, offset: int) -> tuple[str, int]:
-    """Read a length-prefixed UTF-8 string. Returns (string, new_offset)."""
-    length, offset = _read_leb128_u32(data, offset)
-    s = data[offset : offset + length].decode("utf-8", errors="replace")
-    return s, offset + length
-
-
-def parse_wasm_sections(wasm_path: Path) -> list[tuple[int, int, int]]:
-    """Parse WASM section headers. Returns list of (sec_id, data_start, size)."""
-    data = wasm_path.read_bytes()
-    if len(data) < 8 or data[:4] != WASM_MAGIC:
-        return []
-
-    sections: list[tuple[int, int, int]] = []
-    scan = 8  # skip magic + version
-    while scan < len(data):
-        sec_id = data[scan]
-        scan += 1
-        sec_size, scan = _read_leb128_u32(data, scan)
-        sections.append((sec_id, scan, sec_size))
-        scan += sec_size
-    return sections
-
-
 def parse_function_sizes(wasm_path: Path) -> list[dict[str, Any]]:
     """Parse the WASM code section to extract per-function body sizes.
 
     Returns a list of dicts with keys: index, offset, body_size_bytes.
     If a "name" custom section exists, function names are also included.
     """
-    data = wasm_path.read_bytes()
-    if len(data) < 8 or data[:4] != WASM_MAGIC:
+    try:
+        return [body.to_dict() for body in read_wasm_function_bodies(wasm_path)]
+    except (OSError, ValueError):
         return []
-
-    code_functions: list[dict[str, Any]] = []
-    name_map: dict[int, str] = {}
-
-    # Parse sections from raw data (sections reference the full data)
-    raw_sections: list[tuple[int, int, int]] = []
-    scan = 8
-    while scan < len(data):
-        sec_id = data[scan]
-        scan += 1
-        sec_size, scan = _read_leb128_u32(data, scan)
-        raw_sections.append((sec_id, scan, sec_size))
-        scan += sec_size
-
-    # Parse name custom section (if present)
-    for sec_id, sec_start, sec_size in raw_sections:
-        if sec_id == SECTION_CUSTOM and sec_size > 0:
-            try:
-                name, name_end = _read_wasm_string(data, sec_start)
-                if name == "name":
-                    _parse_name_section(data, name_end, sec_start + sec_size, name_map)
-            except (IndexError, UnicodeDecodeError):
-                pass
-
-    # Count imported functions
-    import_func_count = _count_imported_functions(data, raw_sections)
-
-    # Parse code section
-    for sec_id, sec_start, sec_size in raw_sections:
-        if sec_id == SECTION_CODE:
-            pos = sec_start
-            func_count, pos = _read_leb128_u32(data, pos)
-            for i in range(func_count):
-                body_size, pos = _read_leb128_u32(data, pos)
-                func_idx = import_func_count + i
-                entry: dict[str, Any] = {
-                    "index": func_idx,
-                    "offset": pos,
-                    "body_size_bytes": body_size,
-                }
-                if func_idx in name_map:
-                    entry["name"] = name_map[func_idx]
-                code_functions.append(entry)
-                pos += body_size
-            break
-
-    return code_functions
-
-
-def _count_imported_functions(
-    data: bytes,
-    sections: list[tuple[int, int, int]],
-) -> int:
-    """Count imported functions (section 2) to offset code-section indices."""
-    SECTION_IMPORT = 2
-    count = 0
-    for sec_id, sec_start, sec_size in sections:
-        if sec_id == SECTION_IMPORT:
-            pos = sec_start
-            num_imports, pos = _read_leb128_u32(data, pos)
-            for _ in range(num_imports):
-                _mod_name, pos = _read_wasm_string(data, pos)
-                _field_name, pos = _read_wasm_string(data, pos)
-                kind = data[pos]
-                pos += 1
-                if kind == 0x00:  # function
-                    count += 1
-                    _type_idx, pos = _read_leb128_u32(data, pos)
-                elif kind == 0x01:  # table
-                    pos += 1  # elem type
-                    _flags = data[pos]
-                    pos += 1
-                    _initial, pos = _read_leb128_u32(data, pos)
-                    if _flags & 0x01:
-                        _max, pos = _read_leb128_u32(data, pos)
-                elif kind == 0x02:  # memory
-                    _flags = data[pos]
-                    pos += 1
-                    _initial, pos = _read_leb128_u32(data, pos)
-                    if _flags & 0x01:
-                        _max, pos = _read_leb128_u32(data, pos)
-                elif kind == 0x03:  # global
-                    pos += 1  # value type
-                    pos += 1  # mutability
-                else:
-                    break
-            break
-    return count
-
-
-def _parse_name_section(
-    data: bytes,
-    start: int,
-    end: int,
-    name_map: dict[int, str],
-) -> None:
-    """Parse the 'name' custom section to build a function index -> name map."""
-    pos = start
-    while pos < end:
-        try:
-            subsection_id = data[pos]
-            pos += 1
-            subsection_size, pos = _read_leb128_u32(data, pos)
-            subsection_end = pos + subsection_size
-
-            if subsection_id == 1:  # function names
-                count, pos = _read_leb128_u32(data, pos)
-                for _ in range(count):
-                    if pos >= subsection_end:
-                        break
-                    func_idx, pos = _read_leb128_u32(data, pos)
-                    func_name, pos = _read_wasm_string(data, pos)
-                    name_map[func_idx] = func_name
-            pos = subsection_end
-        except (IndexError, UnicodeDecodeError):
-            break
 
 
 def parse_section_sizes(wasm_path: Path) -> dict[str, int]:
     """Quick section-level size breakdown (reuses wasm_size_audit logic)."""
-    SECTION_NAMES: dict[int, str] = {
-        0: "custom",
-        1: "type",
-        2: "import",
-        3: "function",
-        4: "table",
-        5: "memory",
-        6: "global",
-        7: "export",
-        8: "start",
-        9: "element",
-        10: "code",
-        11: "data",
-        12: "data_count",
-    }
-    data = wasm_path.read_bytes()
-    if len(data) < 8 or data[:4] != WASM_MAGIC:
+    try:
+        sections = read_wasm_section_spans(wasm_path)
+    except (OSError, ValueError):
         return {}
     by_type: dict[str, int] = {}
-    scan = 8
-    while scan < len(data):
-        sec_id = data[scan]
-        scan += 1
-        sec_size, scan = _read_leb128_u32(data, scan)
-        name = SECTION_NAMES.get(sec_id, f"unknown({sec_id})")
-        by_type[name] = by_type.get(name, 0) + sec_size
-        scan += sec_size
+    for section in sections:
+        by_type[section.name] = by_type.get(section.name, 0) + section.size
     return by_type
 
 

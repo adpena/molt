@@ -22,6 +22,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from molt.wasm_artifact import parse_wasm_section_spans, wasm_section_name
 from tests.wasm_linked_runner import _run_wasm_test_process
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -32,23 +33,6 @@ _SUBPROCESS_TIMEOUT = float(os.environ.get("MOLT_TEST_SUBPROCESS_TIMEOUT", "120"
 # WASM magic number and version (WebAssembly spec section 5.5.1).
 WASM_MAGIC = b"\x00asm"
 WASM_VERSION = b"\x01\x00\x00\x00"
-
-# WASM section IDs (spec section 5.5.2).
-WASM_SECTION_IDS = {
-    0: "custom",
-    1: "type",
-    2: "import",
-    3: "function",
-    4: "table",
-    5: "memory",
-    6: "global",
-    7: "export",
-    8: "start",
-    9: "element",
-    10: "code",
-    11: "data",
-    12: "data_count",
-}
 
 # Programs used for determinism testing.
 DETERMINISM_PROGRAMS: list[tuple[str, str]] = [
@@ -111,38 +95,6 @@ def _build_wasm(src_path: Path, out_dir: Path) -> Path | None:
     for wasm_file in out_dir.rglob("*.wasm"):
         return wasm_file
     return None
-
-
-def _parse_wasm_sections(data: bytes) -> list[tuple[int, int, int]]:
-    """Parse a WASM binary and return section descriptors.
-
-    Returns a list of (section_id, offset, size) tuples.
-    """
-    if len(data) < 8:
-        return []
-    if data[:4] != WASM_MAGIC or data[4:8] != WASM_VERSION:
-        return []
-
-    sections: list[tuple[int, int, int]] = []
-    pos = 8
-    while pos < len(data):
-        if pos >= len(data):
-            break
-        section_id = data[pos]
-        pos += 1
-        # Decode LEB128 size.
-        size = 0
-        shift = 0
-        while pos < len(data):
-            byte = data[pos]
-            pos += 1
-            size |= (byte & 0x7F) << shift
-            shift += 7
-            if (byte & 0x80) == 0:
-                break
-        sections.append((section_id, pos, size))
-        pos += size
-    return sections
 
 
 _F64_CONST_RE = re.compile(r"\(f64\.const\s+([^)\\s]+)")
@@ -319,8 +271,8 @@ class TestWasmModuleStructure:
             if wasm_path is None:
                 pytest.skip(f"WASM build failed for '{name}'")
             data = wasm_path.read_bytes()
-            sections = _parse_wasm_sections(data)
-            section_orders.append([s[0] for s in sections])
+            sections = parse_wasm_section_spans(data)
+            section_orders.append([s.id for s in sections])
 
         assert section_orders[0] == section_orders[1], (
             f"WASM section ordering differs between two compilations of "
@@ -344,16 +296,16 @@ class TestWasmModuleStructure:
             pytest.skip(f"WASM build failed for '{name}'")
 
         data = wasm_path.read_bytes()
-        sections = _parse_wasm_sections(data)
+        sections = parse_wasm_section_spans(data)
 
         # Filter out custom sections (id=0), which can appear anywhere.
-        non_custom = [s[0] for s in sections if s[0] != 0]
+        non_custom = [s.id for s in sections if s.id != 0]
         for i in range(len(non_custom) - 1):
             assert non_custom[i] <= non_custom[i + 1], (
                 f"WASM sections out of order: section {non_custom[i]} "
-                f"({WASM_SECTION_IDS.get(non_custom[i], '?')}) appears "
+                f"({wasm_section_name(non_custom[i])}) appears "
                 f"before {non_custom[i + 1]} "
-                f"({WASM_SECTION_IDS.get(non_custom[i + 1], '?')})"
+                f"({wasm_section_name(non_custom[i + 1])})"
             )
 
 

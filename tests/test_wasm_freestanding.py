@@ -9,6 +9,11 @@ import sys
 from pathlib import Path
 
 import pytest
+from molt.wasm_artifact import (
+    parse_wasm_exports,
+    parse_wasm_imports,
+    parse_wasm_section_spans,
+)
 from tests.wasm_linked_runner import _run_wasm_test_process
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -51,51 +56,12 @@ def _read_varuint(data: bytes, offset: int) -> tuple[int, int]:
     return result, offset
 
 
-def _read_string(data: bytes, offset: int) -> tuple[str, int]:
-    length, offset = _read_varuint(data, offset)
-    return data[offset : offset + length].decode(), offset + length
-
-
-def _read_limits(data: bytes, offset: int) -> tuple[int, int]:
-    flags = data[offset]
-    offset += 1
-    _, offset = _read_varuint(data, offset)
-    if flags & 1:
-        _, offset = _read_varuint(data, offset)
-    return flags, offset
-
-
-def _parse_wasm_imports(wasm_bytes: bytes) -> list[tuple[str, str]]:
+def _wasm_import_pairs(wasm_bytes: bytes) -> list[tuple[str, str]]:
     """Extract (module, name) pairs from a WASM import section."""
-    if len(wasm_bytes) < 8 or wasm_bytes[:4] != b"\x00asm":
-        return []
-    offset = 8
-    imports: list[tuple[str, str]] = []
-    while offset < len(wasm_bytes):
-        section_id = wasm_bytes[offset]
-        offset += 1
-        size, offset = _read_varuint(wasm_bytes, offset)
-        section_end = offset + size
-        if section_id == 2:  # Import section
-            count, offset = _read_varuint(wasm_bytes, offset)
-            for _ in range(count):
-                mod_name, offset = _read_string(wasm_bytes, offset)
-                field_name, offset = _read_string(wasm_bytes, offset)
-                kind = wasm_bytes[offset]
-                offset += 1
-                if kind == 0:  # func
-                    _, offset = _read_varuint(wasm_bytes, offset)
-                elif kind == 1:  # table
-                    offset += 1
-                    _, offset = _read_limits(wasm_bytes, offset)
-                elif kind == 2:  # memory
-                    _, offset = _read_limits(wasm_bytes, offset)
-                elif kind == 3:  # global
-                    offset += 2
-                imports.append((mod_name, field_name))
-            break
-        offset = section_end
-    return imports
+    return [
+        (wasm_import.module, wasm_import.name)
+        for wasm_import in parse_wasm_imports(wasm_bytes, on_error="ignore")
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -145,12 +111,12 @@ def _build_minimal_wasm_with_wasi_import() -> bytes:
 def test_stub_wasi_removes_wasi_imports():
     """stub_wasi_imports should remove all wasi_snapshot_preview1 imports."""
     wasm = _build_minimal_wasm_with_wasi_import()
-    imports_before = _parse_wasm_imports(wasm)
+    imports_before = _wasm_import_pairs(wasm)
     assert any(mod == "wasi_snapshot_preview1" for mod, _ in imports_before)
 
     result, n_stubbed = stub_mod.stub_wasi_imports(wasm)
     assert n_stubbed == 1
-    imports_after = _parse_wasm_imports(result)
+    imports_after = _wasm_import_pairs(result)
     wasi_after = [(m, n) for m, n in imports_after if m == "wasi_snapshot_preview1"]
     assert wasi_after == [], f"WASI imports remain: {wasi_after}"
 
@@ -203,7 +169,7 @@ def test_stub_wasi_with_non_function_imports():
     result, n_stubbed = stub_mod.stub_wasi_imports(wasm)
     assert n_stubbed == 1
 
-    imports_after = _parse_wasm_imports(result)
+    imports_after = _wasm_import_pairs(result)
     wasi_after = [(m, n) for m, n in imports_after if m == "wasi_snapshot_preview1"]
     assert wasi_after == [], f"WASI imports remain after stubbing: {wasi_after}"
 
@@ -294,38 +260,17 @@ def _parse_code_section_call_targets(wasm_bytes: bytes) -> list[list[int]]:
     return []
 
 
-def _parse_wasm_exports(wasm_bytes: bytes) -> list[tuple[str, int, int]]:
+def _wasm_export_tuples(wasm_bytes: bytes) -> list[tuple[str, int, int]]:
     """Extract (name, kind, index) tuples from the WASM export section."""
-    offset = 8
-    while offset < len(wasm_bytes):
-        section_id = wasm_bytes[offset]
-        offset += 1
-        size, offset = _read_varuint(wasm_bytes, offset)
-        section_end = offset + size
-        if section_id == 7:  # Export section
-            count, offset = _read_varuint(wasm_bytes, offset)
-            exports: list[tuple[str, int, int]] = []
-            for _ in range(count):
-                name, offset = _read_string(wasm_bytes, offset)
-                kind = wasm_bytes[offset]
-                offset += 1
-                idx, offset = _read_varuint(wasm_bytes, offset)
-                exports.append((name, kind, idx))
-            return exports
-        offset = section_end
-    return []
+    return [
+        wasm_export.to_tuple()
+        for wasm_export in parse_wasm_exports(wasm_bytes, on_error="ignore")
+    ]
 
 
-def _count_wasm_sections(wasm_bytes: bytes) -> int:
+def _wasm_section_count(wasm_bytes: bytes) -> int:
     """Count the number of sections in a WASM binary."""
-    offset = 8
-    count = 0
-    while offset < len(wasm_bytes):
-        offset += 1  # section id
-        size, offset = _read_varuint(wasm_bytes, offset)
-        offset += size
-        count += 1
-    return count
+    return len(parse_wasm_section_spans(wasm_bytes))
 
 
 def test_stub_wasi_remaps_call_targets():
@@ -387,7 +332,7 @@ def test_stub_wasi_remaps_call_targets():
     # So call to old idx 0 -> new idx 1, call to old idx 1 -> new idx 0
 
     # Verify env import survived at its new index
-    imports_after = _parse_wasm_imports(result)
+    imports_after = _wasm_import_pairs(result)
     env_imports = [(m, n) for m, n in imports_after if m == "env"]
     assert len(env_imports) == 1
     assert env_imports[0] == ("env", "helper")
@@ -462,7 +407,7 @@ def test_stub_wasi_preserves_exports():
     #   stub 0: fd_write stub (func idx 0) -- replaces removed import
     #   defined func 0: func idx 1 -- unchanged
     # Export "main" should still point to func idx 1
-    exports = _parse_wasm_exports(result)
+    exports = _wasm_export_tuples(result)
     assert len(exports) == 1
     name, kind, idx = exports[0]
     assert name == "main"
@@ -519,7 +464,7 @@ def test_stub_wasi_multiple_wasi_imports():
     result, n_stubbed = stub_mod.stub_wasi_imports(wasm)
     assert n_stubbed == 3
 
-    imports_after = _parse_wasm_imports(result)
+    imports_after = _wasm_import_pairs(result)
     wasi_after = [(m, n) for m, n in imports_after if m == "wasi_snapshot_preview1"]
     assert wasi_after == [], f"WASI imports remain: {wasi_after}"
 
@@ -531,12 +476,12 @@ def test_stub_wasi_multiple_wasi_imports():
 def test_stub_wasi_output_section_count_preserved():
     """Stubbing must not lose or duplicate sections."""
     wasm = _build_minimal_wasm_with_wasi_import()
-    n_sections_before = _count_wasm_sections(wasm)
+    n_sections_before = _wasm_section_count(wasm)
 
     result, n_stubbed = stub_mod.stub_wasi_imports(wasm)
     assert n_stubbed == 1
 
-    n_sections_after = _count_wasm_sections(result)
+    n_sections_after = _wasm_section_count(result)
     assert n_sections_after == n_sections_before, (
         f"Section count changed: {n_sections_before} -> {n_sections_after}"
     )
@@ -688,7 +633,7 @@ def test_freestanding_produces_no_wasi_imports(tmp_path):
         f"Build failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
     )
     wasm_bytes = linked.read_bytes()
-    imports = _parse_wasm_imports(wasm_bytes)
+    imports = _wasm_import_pairs(wasm_bytes)
     wasi_imports = [
         (mod, name) for mod, name in imports if mod == "wasi_snapshot_preview1"
     ]
