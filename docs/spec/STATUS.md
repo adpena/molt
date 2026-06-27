@@ -180,13 +180,13 @@ the implementation. For forward-looking priorities, use
   now routes through the shared exception matcher used by C-API error matching
   and attribute-error clearing.
 - Deforestation fusion eligibility is generated from
-  `runtime/molt-tir/src/tir/op_kinds.toml` as the exhaustive
+  `runtime/molt-ir/src/tir/op_kinds.toml` as the exhaustive
   `fusion_barrier_opcodes` classifier. The classifier is intentionally distinct
   from side-effecting/may-throw facts: fusion preserves per-element evaluation
   order, so allocation, attribute reads, indexing, and arithmetic that may throw
   are not barriers unless they alter cross-iteration/control state or suspend.
 - TIR effect classification is generated from `may_throw`, `side_effecting`,
-  and `purity` rows in `runtime/molt-tir/src/tir/op_kinds.toml`. The generator
+  and `purity` rows in `runtime/molt-ir/src/tir/op_kinds.toml`. The generator
   emits exhaustive `opcode_may_throw_table`, `opcode_is_side_effecting_table`,
   generated `ALL_OPCODES`, and typed `opcode_effects_table` facts, so
   `effects.rs` no longer carries a pass-local opcode classifier.
@@ -477,7 +477,7 @@ the implementation. For forward-looking priorities, use
   `MOLT_WASM_EXTRA_REQUIRED_IMPORTS`; that knob no longer forces unused imports
   to survive non-reloc Auto stripping.
 - The TIR RC drop-insertion substrate is implemented as a terminal drop phase
-  (`runtime/molt-tir/src/tir/drop_phase.rs`) backed by
+  (`runtime/molt-passes/src/tir/drop_phase.rs`) backed by
   representation-filtered liveness (`tir/passes/liveness.rs`) and
   `tir/passes/drop_insertion.rs`. It is active for LLVM, WASM, Luau, and native
   Cranelift for the proven shared-drop and ExceptionRegion slices through the

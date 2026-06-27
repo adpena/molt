@@ -218,7 +218,7 @@ The design is an augmented BFS that is self-stabilizing: adding a new reachable 
 
 **Critical**: the stdlib cache key must hash the same reachable function set as the backend computes. If there is drift, the cache will contain functions the backend DFE would eliminate, causing over-linking. The Python BFS and Rust BFS must use identical liveness logic.
 
-### File 3: `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/module_phase.rs` (minor)
+### File 3: `/Users/adpena/Projects/molt/runtime/molt-passes/src/tir/module_phase.rs` (minor)
 
 No structural change needed yet. The TIR-level call graph (`CallGraph::build`) already handles this correctly: it only records `StaticDirect` edges for `OpCode::Call`, not for function-value-creating ops. The TIR DCE is already attribute-aware through the effects oracle (`effects.rs`). The per-attribute DCE is a SimpleIR-level optimization (the `eliminate_dead_functions` BFS) that runs before TIR lifting.
 
@@ -542,7 +542,7 @@ Once the SimpleIR-level DCE lands, the TIR call graph can be extended with a `Mo
 - **`/Users/adpena/Projects/molt/runtime/molt-backend/src/passes.rs:2022`** — the `"func_new" | "func_new_closure" | "code_new"` arm that becomes attribute-conditional for the first two kinds.
 - **`/Users/adpena/Projects/molt/src/molt/cli.py:17057`** — `_reachable_function_names_for_stdlib_cache`; the Python BFS mirror.
 - **`/Users/adpena/Projects/molt/src/molt/cli.py:17019`** — `_DEAD_FUNCTION_ELIM_REFERENCE_KINDS`; structurally unchanged (it is the reference-detection set for the BFS edges, not the liveness logic per se).
-- **`/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/call_graph.rs`** — already correct; does not treat `func_new` as a call edge. No change.
-- **`/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/module_phase.rs`** — no change; per-attribute DCE fires before TIR lifting.
+- **`/Users/adpena/Projects/molt/runtime/molt-passes/src/tir/call_graph.rs`** — already correct; does not treat `func_new` as a call edge. No change.
+- **`/Users/adpena/Projects/molt/runtime/molt-passes/src/tir/module_phase.rs`** — no change; per-attribute DCE fires before TIR lifting.
 - **`/Users/adpena/Projects/molt/src/molt/frontend/__init__.py:5401`** — `_emit_module_attr_set`; this is the frontend emit path that generates `MODULE_SET_ATTR` ops. Its output shape is what the attr-write scanner must recognize in SimpleIR form.
 - **`/Users/adpena/Projects/molt/src/molt/frontend/__init__.py:5170`** — `FUNC_NEW` emit site; the `s_value` is the callee symbol name that the attr-write scanner records.

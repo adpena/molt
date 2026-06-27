@@ -31,10 +31,16 @@ def test_llvm_runtime_abi_audit_passes_current_repo() -> None:
     assert result.duplicate_facts == ()
     assert result.classified_fact_issues == ()
     assert result.unexpected_non_boxed == ()
-    assert {
-        (sig.symbol, sig.arity, sig.rust_return, sig.kind)
-        for sig in result.allowed_non_boxed
-    } == {("molt_chan_new", 1, "ChanHandle", "chan_new")}
+    assert result.allowed_non_boxed == ()
+
+
+def test_runtime_export_scan_includes_runtime_leaf_crates() -> None:
+    exports = AUDIT.runtime_exports(AUDIT.runtime_src_roots(ROOT))
+    mean_source = exports["molt_statistics_mean_slice"].source.replace("\\", "/")
+    stdev_source = exports["molt_statistics_stdev_slice"].source.replace("\\", "/")
+
+    assert mean_source.endswith("runtime/molt-runtime-math/src/math/statistics_tail.rs")
+    assert stdev_source.endswith("runtime/molt-runtime-math/src/math/statistics_tail.rs")
 
 
 def test_classified_abi_facts_reports_duplicate_keys(tmp_path: Path) -> None:

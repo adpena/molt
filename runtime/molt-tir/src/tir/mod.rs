@@ -1,63 +1,24 @@
-pub mod analysis;
-pub mod blocks;
-pub mod bolt;
-pub mod cache;
-pub mod call_facts;
-pub mod call_graph;
-pub mod call_targets;
-pub mod cfg;
-pub mod deopt;
-pub mod dominators;
-pub mod drop_phase;
-pub mod effect_proof;
-pub mod exception_regions;
-pub mod fact_graph;
-pub mod function;
 pub mod lir;
 pub mod lir_printer;
-pub mod lower_from_simple;
 pub mod lower_to_lir;
-pub mod lower_to_simple;
 pub mod lower_to_wasm;
 pub mod mlir_compat;
-pub mod module_phase;
-pub mod numeric_facts;
-pub mod op_kinds_generated;
-pub mod ops;
-pub mod parallel;
-pub mod pass_delta;
-pub mod pass_manager;
-pub mod passes;
-pub mod printer;
-pub mod serialize;
-pub mod ssa;
-pub mod target_info;
 pub mod tests_roundtrip;
-pub mod type_refine;
-pub mod types;
-pub mod values;
-pub mod verify;
 pub mod verify_lir;
 pub mod verify_lir_repr;
 pub mod wasm_component;
 pub mod wasm_split;
 pub mod wasm_streaming;
 
-/// Returns true for SimpleIR ops that are purely structural control-flow
-/// markers (if/else/end_if/loop_start/loop_end/label/state_label) and should
-/// be skipped during SSA conversion and type hint correlation.
-///
-/// Exception-handling ops (check_exception, try_start, try_end,
-/// state_block_start, state_block_end) are NOT structural — they carry
-/// semantics that must be preserved as TirOps through SSA conversion and
-/// the round-trip pipeline.  Classifying them as structural causes SSA to
-/// silently drop them, breaking exception handling and round-trip tests.
-///
-/// Shared between `ssa.rs` and `lower_from_simple.rs` to ensure identical
-/// classification — divergence would silently misalign SSA ops with original ops.
-pub(crate) fn is_structural(kind: &str) -> bool {
-    op_kinds_generated::simpleir_kind_is_structural(kind)
-}
+pub use molt_ir::tir::{
+    blocks, call_targets, cfg, dominators, effect_proof, function, op_kinds_generated, ops,
+    printer, serialize, ssa, types, values, verify,
+};
+pub use molt_passes::tir::{
+    analysis, bolt, cache, call_facts, call_graph, deopt, drop_phase, exception_regions,
+    fact_graph, lower_from_simple, lower_to_simple, module_phase, numeric_facts, parallel,
+    pass_delta, pass_manager, passes, simple_value_names, target_info, type_refine,
+};
 
 // Re-export primary types for convenience.
 pub use self::blocks::{BlockId, Terminator, TirBlock};
@@ -77,8 +38,8 @@ pub use self::fact_graph::{
 };
 pub use self::function::{TirFunction, TirModule};
 pub use self::lir::{LirBlock, LirFunction, LirOp, LirRepr, LirTerminator, LirValue};
-pub use self::module_phase::{ModuleAnalysis, run_module_pipeline};
 pub use self::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
 pub use self::target_info::{BuildProfile, ProfileData, SimdCaps, TargetInfo, TargetKind};
 pub use self::types::{FuncSignature, TirType};
 pub use self::values::{TirValue, ValueId};
+pub use module_phase::{ModuleAnalysis, run_module_pipeline};

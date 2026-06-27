@@ -173,7 +173,7 @@ llvm = ["dep:inkwell"]
 
 ### DX Component: Unified TIR dump ergonomics
 
-**`/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/printer.rs`**
+**`/Users/adpena/Projects/molt/runtime/molt-ir/src/tir/printer.rs`**
 
 Add `TirDumpConfig` struct:
 ```rust
@@ -193,7 +193,7 @@ impl TirDumpConfig {
 
 `MOLT_TIR_DUMP` env-var syntax: `fn_name` alone, `fn_name:pass_name`, or `:pass_name` (all functions, specific pass). Replaces the current split between `TIR_DUMP=1` (printer.rs:18) and `MOLT_TIR_DUMP` (simple_backend.rs:2792). The `TIR_DUMP=1` spelling stays as a backward-compat alias.
 
-**`/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/pass_manager.rs`**
+**`/Users/adpena/Projects/molt/runtime/molt-passes/src/tir/pass_manager.rs`**
 
 Change `MOLT_VERIFY_ANALYSIS` check at line 173 to:
 ```rust
@@ -425,12 +425,12 @@ Each phase is a complete structural piece that can land independently and leave 
 
 ### Phase 1c: Unified TIR dump ergonomics (0.5 days)
 
-- [ ] Add `TirDumpConfig` struct to `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/printer.rs` with `from_env()`, `matches_func()`, `matches_pass()`.
+- [ ] Add `TirDumpConfig` struct to `/Users/adpena/Projects/molt/runtime/molt-ir/src/tir/printer.rs` with `from_env()`, `matches_func()`, `matches_pass()`.
 - [ ] Change `tir_dump_enabled()` to return `TirDumpConfig` (keep the boolean form as `TirDumpConfig::enabled` field for call-site compatibility).
 - [ ] Update `simple_backend.rs` lines 2371 and 2791-2792 to use the new `TirDumpConfig`.
 - [ ] Update `pass_manager.rs` line 173 to accept the filter form of `MOLT_VERIFY_ANALYSIS`.
 - [ ] Verify: `MOLT_TIR_DUMP=fib:gvn cargo test ...` prints TIR only for the `fib` function after the GVN pass.
-- [ ] `git add runtime/molt-tir/src/tir/printer.rs runtime/molt-tir/src/tir/pass_manager.rs runtime/molt-backend/src/native_backend/simple_backend.rs && git commit -m "build: unified MOLT_TIR_DUMP + MOLT_VERIFY_ANALYSIS filter — Phase 1c DX arc"`.
+- [ ] `git add runtime/molt-ir/src/tir/printer.rs runtime/molt-passes/src/tir/pass_manager.rs runtime/molt-backend/src/native_backend/simple_backend.rs && git commit -m "build: unified MOLT_TIR_DUMP + MOLT_VERIFY_ANALYSIS filter — Phase 1c DX arc"`.
 
 ### Phase 2: `function_compiler.rs` module split (3 days)
 

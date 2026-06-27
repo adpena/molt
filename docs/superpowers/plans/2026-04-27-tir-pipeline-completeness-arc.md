@@ -55,7 +55,7 @@ Conclusion: bound-method allocation per iteration is ~4.5s of the 5s overhead; s
 
 ## Audit summary (research agent, 2026-04-27)
 
-The TIR pipeline runs 24 passes (`runtime/molt-tir/src/tir/passes/mod.rs:62-212`). The following are **structural completeness gaps**:
+The TIR pipeline runs 24 passes (`runtime/molt-passes/src/tir/passes/mod.rs:62-212`). The following are **structural completeness gaps**:
 
 1. **No inlining pass** — every method call goes through full dispatch.
 2. **No bound-method fusion** — `LoadAttr → Call(BoundMethod)` (1-use) still allocates a heap BoundMethod per iteration. CPython 3.11+ has `LOAD_METHOD/CALL_METHOD` to avoid this.
@@ -79,7 +79,7 @@ Float-coercion bug root cause:
 
 - Frontend: extend `res_hint` gate to `BUILTIN_TYPE_TAGS` at the three sites.
 - TIR: `infer_result_type_with_attrs` reads `return_type` then `_type_hint` AttrValue for `Call`/`CallMethod`/`CallBuiltin`; pre-snapshot the seeded type in `refine_types`'s op-snapshot tuple to avoid per-round AttrDict cloning.
-- Files: `src/molt/frontend/__init__.py`, `runtime/molt-tir/src/tir/type_refine.rs`.
+- Files: `src/molt/frontend/__init__.py`, `runtime/molt-passes/src/tir/type_refine.rs`.
 - Status: **landed, 608/0 backend, 2055/0/21 workspace, clippy clean.**
 
 ### Phase 1 — bound-method fusion TIR pass (P0 perf)
@@ -89,7 +89,7 @@ Float-coercion bug root cause:
 **Design**:
 - New TIR opcode `CallMethodDirect` (`tir/ops.rs:22` enum). Operands: `[receiver, ...args]`. Attrs: `method_name: Str`, `class_name: Str`, `layout_version: Int`, `ic_index: Int`. Result: same type as the original Call.
 - New SimpleIR kind `call_method_direct` for the round-trip.
-- TIR pass `runtime/molt-tir/src/tir/passes/bound_method_fusion.rs`:
+- TIR pass `runtime/molt-passes/src/tir/passes/bound_method_fusion.rs`:
   - For each `LoadAttr` whose result is a BoundMethod with exactly one use, AND that use is a `Call` with kind=call_bind, replace the pair with one `CallMethodDirect(obj, ...args)` op.
   - Use-count check via the existing `dce.rs` value-use map.
 - Backend lowering: `runtime/molt-backend/src/native_backend/function_compiler.rs` — emit IC probe + cached fn ptr direct call; on miss, fall back to `molt_call_bind_ic`.
@@ -129,7 +129,7 @@ When static resolution fails (dynamic class creation, `super(type_var, obj)`), i
 8. Param types are scalars or typed user classes (no `*args`/`**kwargs`).
 9. Per-site inline depth ≤ 2.
 
-**Files**: `runtime/molt-tir/src/tir/passes/inline.rs` (new); `tir/passes/mod.rs` register after `bound_method_fusion`. Need callee TIR cache via existing `tir/cache.rs`.
+**Files**: `runtime/molt-passes/src/tir/passes/inline.rs` (new); `tir/passes/mod.rs` register after `bound_method_fusion`. Need callee TIR cache via existing `tir/cache.rs`.
 
 ### Phase 5 — escape analysis upgrade
 
@@ -167,13 +167,13 @@ Target: every benchmark ≥ 1.0x of CPython, and ideally ≥ 2x (the project's s
 
 | Concern | File | Lines |
 |---|---|---|
-| TIR pipeline registration | `runtime/molt-tir/src/tir/passes/mod.rs` | 62-212 |
-| LICM whitelist | `runtime/molt-tir/src/tir/passes/licm.rs` | 51-89 |
-| Escape Call→GlobalEscape | `runtime/molt-tir/src/tir/passes/escape_analysis.rs` | 194-198, 232-237 |
-| TIR Call/CallMethod opcodes | `runtime/molt-tir/src/tir/ops.rs` | 71-72 |
-| `infer_result_type` (now attrs-aware) | `runtime/molt-tir/src/tir/type_refine.rs` | 728+ |
-| `annotate_type_flags` legacy hint | `runtime/molt-tir/src/tir/lower_to_simple.rs` | 2753-2806 |
-| `op_kind_already_classified` | `runtime/molt-tir/src/tir/lower_to_simple.rs` | 2811-2905 |
+| TIR pipeline registration | `runtime/molt-passes/src/tir/passes/mod.rs` | 62-212 |
+| LICM whitelist | `runtime/molt-passes/src/tir/passes/licm.rs` | 51-89 |
+| Escape Call→GlobalEscape | `runtime/molt-passes/src/tir/passes/escape_analysis.rs` | 194-198, 232-237 |
+| TIR Call/CallMethod opcodes | `runtime/molt-ir/src/tir/ops.rs` | 71-72 |
+| `infer_result_type` (now attrs-aware) | `runtime/molt-passes/src/tir/type_refine.rs` | 728+ |
+| `annotate_type_flags` legacy hint | `runtime/molt-passes/src/tir/lower_to_simple.rs` | 2753-2806 |
+| `op_kind_already_classified` | `runtime/molt-passes/src/tir/lower_to_simple.rs` | 2811-2905 |
 | Frontend res_hint sites (Phase 3 fix) | `src/molt/frontend/__init__.py` | 16205, 16782, 19767 |
 | Frontend SUPER_NEW emission | `src/molt/frontend/__init__.py` | 18615-18664 |
 | Native call_bind lowering | `runtime/molt-backend/src/native_backend/function_compiler.rs` | 16322-16472 |

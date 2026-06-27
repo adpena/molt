@@ -35,7 +35,7 @@
 | `runtime/molt-runtime/tests/` | runtime integration tests for trace/assert behavior |
 | `runtime/molt-backend/src/lib.rs` | backend capability reporting and canonical debug hook wiring |
 | `runtime/molt-backend/src/wasm.rs` | replace ad hoc `TIR_DUMP` behavior with shared capability-driven dump hooks |
-| `runtime/molt-tir/src/tir/printer.rs` | backend IR formatting reused by the canonical debug surface |
+| `runtime/molt-ir/src/tir/printer.rs` | backend IR formatting reused by the canonical debug surface |
 | `tests/cli/test_cli_debug.py` | new CLI coverage for `molt debug ...` |
 | `tests/test_debug_manifest.py` | manifest/artifact root contract coverage |
 | `tests/test_debug_ir.py` | IR dump API coverage |

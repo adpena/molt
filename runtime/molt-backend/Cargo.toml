@@ -6,6 +6,7 @@ edition = "2024"
 license = "Apache-2.0"
 
 [dependencies]
+molt-ir = { path = "../molt-ir" }
 molt-tir = { path = "../molt-tir" }
 libc = "0.2"
 tikv-jemallocator = { version = "0.7", optional = true }
@@ -60,7 +61,7 @@ cranelift-codegen = { version = "0.133.1", optional = true, default-features = f
 default = ["native-backend"]
 jemalloc = ["dep:tikv-jemallocator"]
 egraphs = ["egg"]
-llvm = ["dep:inkwell", "molt-tir/llvm"]
+llvm = ["dep:inkwell", "molt-ir/llvm", "molt-tir/llvm"]
 polly = ["llvm"]
 luau-backend = []
 native-backend = [
@@ -69,12 +70,13 @@ native-backend = [
     "dep:cranelift-module",
     "dep:cranelift-object",
     "dep:cranelift-native",
+    "molt-ir/native-backend",
     "molt-tir/native-backend",
 ]
 cbor = ["dep:ciborium"]
 rust-backend = []
 mlx = ["dep:mlx-rs"]
-wasm-backend = ["dep:wasm-encoder", "dep:wasmparser", "molt-tir/wasm-backend"]
+wasm-backend = ["dep:wasm-encoder", "dep:wasmparser", "molt-ir/wasm-backend", "molt-tir/wasm-backend"]
 
 [[test]]
 name = "jumpful_malformed_control"

@@ -55,12 +55,12 @@ The fast loop ends either at the loop exit (normal case; `total_raw` is the resu
 ### Phase A: `OpCode::CheckedAdd` — the new primitive (atomic, self-contained)
 
 **Files changed:**
-- `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/ops.rs`
-- `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/passes/effects.rs`
+- `/Users/adpena/Projects/molt/runtime/molt-ir/src/tir/ops.rs`
+- `/Users/adpena/Projects/molt/runtime/molt-passes/src/tir/passes/effects.rs`
 - `/Users/adpena/Projects/molt/runtime/molt-backend/src/native_backend/function_compiler.rs`
 - `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/lower_to_wasm.rs`
 - `/Users/adpena/Projects/molt/runtime/molt-backend/src/llvm_backend/lowering.rs`
-- `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/verify.rs` (if exhaustive match)
+- `/Users/adpena/Projects/molt/runtime/molt-ir/src/tir/verify.rs` (if exhaustive match)
 - Any `matches!`-based oracle that enumerates opcodes (CRITICAL: grep `matches!(.*opcode` exhaustively)
 
 **`tir/ops.rs`:** Add `CheckedAdd` to `OpCode` after `Add`. Two results: `results[0]` = sum (I64), `results[1]` = overflow flag (Bool). One operand semantic: lhs and rhs are I64. Contract: sum = `lhs + rhs` as a wrapping i64; overflow flag = 1 iff the addition overflowed signed i64. This is the only safe way to detect overflow at the add — the sum when overflow_flag=1 is the wrapped value and MUST NOT be used as a Python int.
@@ -77,10 +77,10 @@ The fast loop ends either at the loop exit (normal case; `total_raw` is the resu
 
 ### Phase B: `overflow_peel` TIR pass — the dual-loop transform
 
-**New file:** `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/passes/overflow_peel.rs`
+**New file:** `/Users/adpena/Projects/molt/runtime/molt-passes/src/tir/passes/overflow_peel.rs`
 
 **Registration:**
-- `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/passes/mod.rs`: `pub mod overflow_peel;` + add `run` call in `run_pipeline` between `range_devirt` and `iter_devirt` (range_devirt must have fired to canonicalize IV structure; the peel should run before iter_devirt which may further simplify loop structure)
+- `/Users/adpena/Projects/molt/runtime/molt-passes/src/tir/passes/mod.rs`: `pub mod overflow_peel;` + add `run` call in `run_pipeline` between `range_devirt` and `iter_devirt` (range_devirt must have fired to canonicalize IV structure; the peel should run before iter_devirt which may further simplify loop structure)
 
 **Pass signature:** `pub fn run(func: &mut TirFunction, _tti: &TargetInfo) -> PassStats` — `Mutates::Cfg` (inserts new blocks).
 
@@ -259,17 +259,17 @@ second carrier authority.
 
 | File | Change |
 |---|---|
-| `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/ops.rs:22` | Add `CheckedAdd` to `OpCode` enum after `Add` |
-| `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/passes/effects.rs` | Add `CheckedAdd` arm (ReadOnly, CSE-safe) to ALL exhaustive `match` on OpCode |
+| `/Users/adpena/Projects/molt/runtime/molt-ir/src/tir/ops.rs:22` | Add `CheckedAdd` to `OpCode` enum after `Add` |
+| `/Users/adpena/Projects/molt/runtime/molt-passes/src/tir/passes/effects.rs` | Add `CheckedAdd` arm (ReadOnly, CSE-safe) to ALL exhaustive `match` on OpCode |
 | `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/lower_to_lir.rs:202` | `lowers_to_checked_i64_arithmetic`: add `OpCode::CheckedAdd` as unconditionally eligible (no repr guard needed — it is always a checked triple) |
 | `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/lower_to_wasm.rs:780` | Already handles `lir.checked_overflow` — no change needed beyond ensuring `CheckedAdd` lowers via `lir.checked_overflow` |
 | `/Users/adpena/Projects/molt/runtime/molt-backend/src/llvm_backend/lowering.rs:4138` | Add `OpCode::CheckedAdd` arm using `llvm.sadd.with.overflow.i64` |
 | `/Users/adpena/Projects/molt/runtime/molt-backend/src/native_backend/simple_backend.rs` | Add `checked_add` SimpleIR op emission using Cranelift `sadd_overflow` |
 | `/Users/adpena/Projects/molt/runtime/molt-backend/src/native_backend/function_compiler.rs` | Add `"checked_add"` arm in op dispatch |
-| `/Users/adpena/Projects/molt/runtime/molt-tir/src/representation_plan/value_repr.rs` | In `repr_by_value_for`: add pre-seeding for `loop_overflow_fast_phi_ids` attribute |
-| `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/passes/mod.rs:77` | Add `pub mod overflow_peel;` and `run_pass!(overflow_peel, Mutates::Cfg)` after `range_devirt` |
-| `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/passes/overflow_peel.rs` | **New file** — full pass implementation |
-| `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/verify.rs` | Add `CheckedAdd` validation: 2 results (I64, Bool), 2 operands (I64, I64) |
+| `/Users/adpena/Projects/molt/runtime/molt-passes/src/representation_facts.rs` | In `repr_by_value_for`: add pre-seeding for `loop_overflow_fast_phi_ids` attribute |
+| `/Users/adpena/Projects/molt/runtime/molt-passes/src/tir/passes/mod.rs:77` | Add `pub mod overflow_peel;` and `run_pass!(overflow_peel, Mutates::Cfg)` after `range_devirt` |
+| `/Users/adpena/Projects/molt/runtime/molt-passes/src/tir/passes/overflow_peel.rs` | **New file** — full pass implementation |
+| `/Users/adpena/Projects/molt/runtime/molt-ir/src/tir/verify.rs` | Add `CheckedAdd` validation: 2 results (I64, Bool), 2 operands (I64, I64) |
 | Tests at `passes/mod.rs:132` | Add `"overflow_peel"` in correct position |
 
 **Exhaustive `matches!` audit required before landing Phase A:**
@@ -299,19 +299,19 @@ If phases A-D cannot land in one session, the correct baton is: leave `OpCode::C
 
 ## 12. Essential Files
 
-- `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/ops.rs` — OpCode enum
-- `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/passes/scev.rs` — degree-2 refusal proof, AddRec soundness rules
-- `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/passes/value_range.rs` — `fits_inline_int47`, `INLINE_INT47_LO/HI`
-- `/Users/adpena/Projects/molt/runtime/molt-tir/src/representation_plan/value_repr.rs` — `repr_by_value_for`, `raw_i64_safe_values_for`, internal full-deopt seed
+- `/Users/adpena/Projects/molt/runtime/molt-ir/src/tir/ops.rs` — OpCode enum
+- `/Users/adpena/Projects/molt/runtime/molt-passes/src/tir/passes/scev.rs` — degree-2 refusal proof, AddRec soundness rules
+- `/Users/adpena/Projects/molt/runtime/molt-passes/src/tir/passes/value_range.rs` — `fits_inline_int47`, `INLINE_INT47_LO/HI`
+- `/Users/adpena/Projects/molt/runtime/molt-passes/src/representation_facts.rs` — `repr_by_value_for`, `raw_i64_safe_values_for`, internal full-deopt seed
 - `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/lower_to_lir.rs` — `lower_checked_i64_arithmetic`, `lowers_to_checked_i64_arithmetic`, `LirReprSource`
 - `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/lower_to_wasm.rs` — `emit_lir_binary_arith` (lir.checked_overflow consumer, lines 780-813)
 - `/Users/adpena/Projects/molt/runtime/molt-backend/src/llvm_backend/lowering.rs` — `emit_binary_arith`, `is_inline_safe_int` gate (line 4173)
 - `/Users/adpena/Projects/molt/runtime/molt-backend/src/native_backend/function_compiler.rs` — branchless iadd + `ensure_boxed_overflow_safe` (lines 3951-3965, 495-547)
 - `/Users/adpena/Projects/molt/runtime/molt-backend/src/native_backend/simple_backend.rs` — `int_value_fits_inline` (line 781), `imul_checked_inline` (line 804)
-- `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/passes/mod.rs` — pipeline registration and pass name test
-- `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/module_phase.rs` — `run_module_pipeline` (where overflow_peel slot would go at module scope if ever needed; NOT needed for this arc)
-- `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/function.rs` — `TirFunction` struct, `has_exception_handlers()`
-- `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/passes/effects.rs` — exhaustive opcode match oracle (CRITICAL for CheckedAdd registration)
+- `/Users/adpena/Projects/molt/runtime/molt-passes/src/tir/passes/mod.rs` — pipeline registration and pass name test
+- `/Users/adpena/Projects/molt/runtime/molt-passes/src/tir/module_phase.rs` — `run_module_pipeline` (where overflow_peel slot would go at module scope if ever needed; NOT needed for this arc)
+- `/Users/adpena/Projects/molt/runtime/molt-ir/src/tir/function.rs` — `TirFunction` struct, `has_exception_handlers()`
+- `/Users/adpena/Projects/molt/runtime/molt-passes/src/tir/passes/effects.rs` — exhaustive opcode match oracle (CRITICAL for CheckedAdd registration)
 
 ---
 

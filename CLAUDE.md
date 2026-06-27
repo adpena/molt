@@ -84,11 +84,16 @@ contradictory.
 - Prefer one shared analysis primitive over repeated probes. If CLI setup,
   diagnostics, validation, binary closure, docs, and tests need the same fact,
   route them through the same implementation or generated authority.
-- Canonical TIR, op-kind, and representation facts live under `runtime/molt-tir/`:
-  `runtime/molt-tir/src/tir/`, `runtime/molt-tir/src/tir/op_kinds.toml`,
-  `runtime/molt-tir/src/tir/op_kinds_generated.rs`, and
-  `runtime/molt-tir/src/representation_plan.rs`. Do not patch an old backend
-  lane or add a local classifier when this generated authority can own it.
+- Canonical TIR data, op-kind, and representation facts live under
+  `runtime/molt-ir/`: `runtime/molt-ir/src/tir/`,
+  `runtime/molt-ir/src/tir/op_kinds.toml`,
+  `runtime/molt-ir/src/tir/op_kinds_generated.rs`, and
+  `runtime/molt-ir/src/repr.rs`. TIR analyses, pass orchestration, SimpleIR<->TIR
+  transport, module/drop orchestration, target/profile descriptors, and
+  value-keyed representation facts live under `runtime/molt-passes/`. Residual
+  backend-neutral lowering and SimpleIR-name representation planning live under
+  `runtime/molt-tir/`. Do not patch an old backend lane or add a local
+  classifier when this generated authority can own it.
 
 ### Concrete examples of partial implementations to reject
 

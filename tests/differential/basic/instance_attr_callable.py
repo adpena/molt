@@ -16,7 +16,7 @@ fixed stack slot cannot hold. The store is dropped/no-ops and the later load
 fails. Reproduces only in function scope (module scope is correct, not
 stack-promoted). Fix: the escape analysis must treat an out-of-layout
 attribute store as forcing heap allocation
-(runtime/molt-tir/src/tir/passes/escape_analysis.rs), outside this change's
+(runtime/molt-passes/src/tir/passes/escape_analysis.rs), outside this change's
 frontend lane. See the session baton.
 
 Output must be byte-identical to CPython 3.14.

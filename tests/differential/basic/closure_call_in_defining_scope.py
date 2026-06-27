@@ -1,7 +1,7 @@
 # Regression: a closure that CAPTURES an enclosing variable and is CALLED
 # within its defining scope must not miscompile.
 #
-# Bug (molt task #44): the TIR inliner (runtime/molt-tir/src/tir/passes/
+# Bug (molt task #44): the TIR inliner (runtime/molt-passes/src/tir/passes/
 # inliner.rs) spliced such a closure into its caller and bound the closure's
 # implicit env parameter (`__molt_closure__`, always param[0] of a closure) to
 # the call's *function-value* operand instead of the captured environment. The

@@ -688,7 +688,7 @@ Performance-Constitution dimension in fact, not just in the constitution.**
 - WASM split/component/streaming stubs to wire-or-demote (Phase 4):
   `runtime/molt-tir/src/tir/wasm_split.rs` (`plan_split` name-prefix heuristic 16-36,
   `estimate_sizes` `ops*8` 39-64), `wasm_streaming.rs`, `wasm_component.rs`; the real
-  reachability source: `runtime/molt-tir/src/tir/passes/reachability.rs`.
+  reachability source: `runtime/molt-passes/src/tir/passes/reachability.rs`.
 - wasm-opt converge lane (Phase 4): `tools/wasm_optimize.py` `_DEFAULT_FEATURE_FLAGS`
   (45-56, the load-bearing `--disable-gc`/`--disable-custom-descriptors` set);
   `tools/wasm_link.py` (`--gc-sections`, rec-group flatten); doc 0931 "high-value work #1".

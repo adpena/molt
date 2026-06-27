@@ -194,7 +194,7 @@ Estimated 15-20 conformance tests would pass if fixed.
 ### Key Finding (2026-03-29)
 
 The TIR pass interaction bug is NOT in the TIR passes. It's in `lower_to_simple_ir`
-in `runtime/molt-tir/src/tir/lower_to_simple.rs`.
+in `runtime/molt-passes/src/tir/lower_to_simple.rs`.
 
 **Evidence:**
 1. SimpleIR JSON is byte-for-byte identical between TIR-on and TIR-off

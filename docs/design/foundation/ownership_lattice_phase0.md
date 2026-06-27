@@ -315,7 +315,7 @@ same `is_trivial_lifetime_root`, never as a new guard in a consumer pass.
 
 ### 3.2 Compile-time layer + the one fixpoint
 
-`runtime/molt-tir/src/tir/passes/ownership_lattice_min.rs` gains
+`runtime/molt-passes/src/tir/passes/ownership_lattice_min.rs` gains
 `LifetimeClassFacts` (doc 55:183-202): three seed sets (`may_finalize_roots` =
 today's `finalizer_alloc_roots`; NEW `has_weakref_roots`; NEW
 `has_ptr_field_roots`) flowed through the SAME container-absorption fixpoint that

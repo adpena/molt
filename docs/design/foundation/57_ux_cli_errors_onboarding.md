@@ -82,11 +82,11 @@ The verify-first pass (CLAUDE.md, charter §"RECON") found that the substrate is
   SourceSite transport (`source_line`, `col_offset`, `end_col_offset`) on ops at
   multiple stages (op-rewrite, copy, `LINE` emit, and the active-line post-pass).
   The Rust side owns the canonical TIR attr wrapper in
-  `runtime/molt-tir/src/tir/ops.rs` (`SourceSite` over `_source_line`,
+  `runtime/molt-ir/src/tir/ops.rs` (`SourceSite` over `_source_line`,
   `_col_offset`, `_end_col_offset`), and SSA/lowering/rewrite passes now inherit
   that fact as one unit instead of carrying columns as ad hoc keys.
 - `src/molt/frontend/lowering/op_kinds_generated.py` (generated from
-  `runtime/molt-tir/src/tir/op_kinds.toml`, doc 25) carries `RAISING_KIND_NAMES`
+  `runtime/molt-ir/src/tir/op_kinds.toml`, doc 25) carries `RAISING_KIND_NAMES`
   (line 292): the set of op.kinds that can raise, for which `emit()` attaches the caret
   `col_offset` (header lines 16–17, 289). This is a *generated, registry-backed* fact —
   exactly the right shape, already wired to the op-kind single source of truth.
@@ -491,7 +491,7 @@ tests/test_gen_diagnostics.py                # sync pin (mirror of test_gen_op_k
   `Diagnostic`); `runtime/molt-runtime/src/object/ops_sys.rs`
   (`traceback_format_caret_line_native` → feed the renderer, not inline strings).
 - P2: `src/molt/frontend/lowering/serialization.py` (4405 post-pass → full span);
-  `runtime/molt-tir/src/tir/op_kinds.toml` (`carries_span` column); the four backend
+  `runtime/molt-ir/src/tir/op_kinds.toml` (`carries_span` column); the four backend
   lowerings (`native_backend/`, `llvm_backend/lowering.rs`, `wasm.rs`, `luau.rs` — debug
   channels).
 - P3: `runtime/molt-runtime/src/builtins/modules.rs:5179` (migrate);

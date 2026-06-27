@@ -60,7 +60,7 @@ and ONLY it.
 
 ## 2. The compile-time struct + the ONE fixpoint
 
-In `runtime/molt-tir/src/tir/passes/ownership_lattice_min.rs`, beside the existing
+In `runtime/molt-passes/src/tir/passes/ownership_lattice_min.rs`, beside the existing
 `finalizer_sensitive_roots` machinery (lines 564-683), add (doc 55:183-202):
 
 ```rust
@@ -104,7 +104,7 @@ small attr emission before/with F1's class-visitor extraction; the change is
 move-stable.)
 
 **The classifier is GENERATED, not hand-matched.** Add a `lifetime_class`
-classifier set to `runtime/molt-tir/src/tir/op_kinds.toml` + `tools/gen_op_kinds.py`
+classifier set to `runtime/molt-ir/src/tir/op_kinds.toml` + `tools/gen_op_kinds.py`
 so which ops carry/propagate lifetime facts is a generated authority, never a new
 `matches!` semantic-fallthrough (STRUCTURAL_AUDIT deletion-candidate discipline;
 `tools/gen_op_kinds.py --check` is the gate).

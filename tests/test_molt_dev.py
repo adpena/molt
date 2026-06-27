@@ -164,13 +164,45 @@ def test_committed_gate_manifest_is_valid(drv):
 
 def test_committed_gate_manifest_selects_tir_midend_ratchet(drv):
     cfg = drv.GateConfig.load(COMMITTED_GATES)
-    gates, matched = cfg.select(["runtime/molt-tir/src/tir/passes/bce.rs"])
+    gates, matched = cfg.select(["runtime/molt-ir/src/tir/ops.rs"])
 
     assert [r.name for r in matched] == ["tir-midend"]
     assert "cargo clippy -p molt-tir --all-targets --all-features -- -D warnings" in (
         gates
     )
     assert "cargo test -p molt-tir --all-features" in gates
+    assert "cargo clippy -p molt-passes --all-targets --all-features -- -D warnings" in (
+        gates
+    )
+    assert "cargo test -p molt-passes --all-features" in gates
+
+    gates, matched = cfg.select(["runtime/molt-passes/src/tir/passes/effects.rs"])
+    assert [r.name for r in matched] == ["tir-midend"]
+    assert "cargo clippy -p molt-passes --all-targets --all-features -- -D warnings" in (
+        gates
+    )
+    assert "cargo test -p molt-passes --all-features" in gates
+
+    gates, matched = cfg.select(["runtime/molt-passes/src/tir/lower_to_simple.rs"])
+    assert [r.name for r in matched] == ["tir-midend"]
+    assert "cargo clippy -p molt-passes --all-targets --all-features -- -D warnings" in (
+        gates
+    )
+    assert "cargo test -p molt-passes --all-features" in gates
+
+
+def test_committed_gate_manifest_selects_molt_ir_op_kind_registry(drv):
+    cfg = drv.GateConfig.load(COMMITTED_GATES)
+    gates, matched = cfg.select(["tools/op_kinds/render_rust.py"])
+
+    assert [r.name for r in matched] == ["op-kind-registry"]
+    assert "python3 tools/gen_op_kinds.py --check" in gates
+    assert "python3 tools/audit_op_kinds.py --check" in gates
+
+    gates, matched = cfg.select(["runtime/molt-ir/src/tir/op_kinds.toml"])
+    assert [r.name for r in matched] == ["tir-midend", "op-kind-registry"]
+    assert "python3 tools/gen_op_kinds.py --check" in gates
+    assert "python3 tools/audit_op_kinds.py --check" in gates
 
 
 def test_committed_gate_manifest_selects_wasm_host_ratchet(drv):

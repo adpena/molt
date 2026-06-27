@@ -51,7 +51,7 @@ Product board for the molt structural sweep — the first instrument of the Molt
 
 - **RULE: discovery may be heuristic; authority may not** — this tool's regex discovery RANKS candidates only; it asserts no semantic correctness. The authoritative gate stays tools/gen_op_kinds.py --check (consumes the generated registry). A future version should parse the Rust AST / consume compiler-emitted facts for any claim that gates behavior.
 - **BUILT: fact-by-benchmark attribution substrate** — tools/call_fact_coverage.py, tools/perf_causality.py, and tools/pass_delta_dashboard.py are present; keep their gates wired so attribution stays derived from evidence.
-- **BUILT: fact graph substrate** — runtime/molt-tir/src/tir/fact_graph.rs derives per-value producer/consumer/fact provenance from live TIR and tools/fact_graph_dump.py validates compiler-emitted graph JSON.
+- **BUILT: fact graph substrate** — runtime/molt-passes/src/tir/fact_graph.rs derives per-value producer/consumer/fact provenance from live TIR and tools/fact_graph_dump.py validates compiler-emitted graph JSON.
 
 > MISSING-FACT-by-benchmark board lives in `call_fact_coverage.py` (representation census) + doc 46 — structural_audit does not have benchmark profiles, so it does not claim that board (no overclaiming).
 
@@ -86,12 +86,12 @@ Product board for the molt structural sweep — the first instrument of the Molt
 | low | 1 debt/workaround markers | `runtime/molt-runtime/src/builtins/io_path_utils.rs:1360` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 1 debt/workaround markers | `runtime/molt-runtime/src/object/dict_compact.rs:316` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 1 debt/workaround markers | `runtime/molt-runtime/tests/test_builtins.rs:76` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
-| low | 1 debt/workaround markers | `runtime/molt-tir/src/tir/bolt.rs:129` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
-| low | 1 debt/workaround markers | `runtime/molt-tir/src/tir/call_facts.rs:52` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
-| low | 1 debt/workaround markers | `runtime/molt-tir/src/tir/deopt.rs:42` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
-| low | 1 debt/workaround markers | `runtime/molt-tir/src/tir/passes/escape_analysis.rs:346` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
-| low | 1 debt/workaround markers | `runtime/molt-tir/src/tir/passes/module_slot_promotion.rs:947` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
-| low | 1 debt/workaround markers | `runtime/molt-tir/src/tir/passes/vectorize.rs:494` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
+| low | 1 debt/workaround markers | `runtime/molt-passes/src/tir/bolt.rs:129` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
+| low | 1 debt/workaround markers | `runtime/molt-passes/src/tir/call_facts.rs:52` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
+| low | 1 debt/workaround markers | `runtime/molt-passes/src/tir/deopt.rs:42` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
+| low | 1 debt/workaround markers | `runtime/molt-passes/src/tir/passes/escape_analysis.rs:346` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
+| low | 1 debt/workaround markers | `runtime/molt-passes/src/tir/passes/module_slot_promotion.rs:947` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
+| low | 1 debt/workaround markers | `runtime/molt-passes/src/tir/passes/vectorize.rs:494` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 1 debt/workaround markers | `src/molt/cli/runtime_build.py:1513` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 1 debt/workaround markers | `src/molt/harness_layers.py:644` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 1 debt/workaround markers | `src/molt/stdlib/_aix_support.py:13` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
