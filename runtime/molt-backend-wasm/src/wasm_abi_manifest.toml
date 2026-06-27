@@ -621,6 +621,24 @@ runtime_name = "molt_function_set_defaults"
 callable_arity = 3
 
 [[import]]
+name = "require_intrinsic_runtime"
+type = 3
+runtime_name = "molt_require_intrinsic_runtime"
+callable_arity = 2
+
+[[import]]
+name = "load_intrinsic_runtime"
+type = 3
+runtime_name = "molt_load_intrinsic_runtime"
+callable_arity = 2
+
+[[import]]
+name = "runtime_active_runtime"
+type = 0
+runtime_name = "molt_runtime_active_runtime"
+callable_arity = 0
+
+[[import]]
 name = "is_bound_method"
 type = 2
 

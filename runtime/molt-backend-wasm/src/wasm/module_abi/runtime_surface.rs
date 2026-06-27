@@ -2,7 +2,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use super::super::class_def_layout::ClassDefLayout;
 use crate::representation_plan::ScalarRepresentationPlan;
-use crate::wasm_abi::RESERVED_RUNTIME_CALLABLE_SPECS;
+use crate::wasm_abi::{
+    RESERVED_RUNTIME_CALLABLE_SPECS, runtime_callable_arity, runtime_callable_import_name,
+};
 use crate::wasm_import_tracking::TrackedImportIds;
 use crate::wasm_imports::{
     IMPORT_REGISTRY, OP_IMPORT_DEPS, runtime_surface_requires_direct_import,
@@ -56,15 +58,18 @@ impl WasmRuntimeSurfacePlan {
         let mut auto_import_names: Vec<(String, usize)> = self
             .builtin_trampoline_specs
             .iter()
-            .map(|(runtime_name, arity)| (runtime_import_name(runtime_name), *arity))
+            .map(|(runtime_name, arity)| {
+                (
+                    runtime_callable_import_name(runtime_name)
+                        .unwrap_or_else(|| {
+                            panic!("runtime callable missing generated import spec: {runtime_name}")
+                        })
+                        .to_string(),
+                    *arity,
+                )
+            })
             .filter(|(import_name, _)| !import_ids.contains_key(import_name))
             .collect();
-        auto_import_names.extend(
-            self.direct_import_call_specs
-                .iter()
-                .map(|(runtime_name, arity)| (runtime_import_name(runtime_name), *arity))
-                .filter(|(import_name, _)| !import_ids.contains_key(import_name)),
-        );
         for spec in RESERVED_RUNTIME_CALLABLE_SPECS {
             if !import_ids.contains_key(spec.import_name) {
                 auto_import_names.push((spec.import_name.to_string(), spec.arity));
@@ -174,20 +179,27 @@ impl WasmRuntimeSurfacePlan {
         if kind == "builtin_func"
             && let Some(name) = op.s_value.as_ref()
         {
-            self.record_arity(
-                name,
-                op.value.unwrap_or(0) as usize,
-                RuntimeArityPlan::BuiltinTrampoline,
-            );
+            let manifest_arity = runtime_callable_arity(name).unwrap_or_else(|| {
+                panic!("builtin runtime callable missing from WASM ABI manifest: {name}")
+            });
+            if let Some(observed_arity) = op.value.map(|value| value as usize)
+                && observed_arity != manifest_arity
+            {
+                panic!(
+                    "builtin runtime callable arity mismatch for {name}: manifest {manifest_arity} vs observed {observed_arity}"
+                );
+            }
+            self.record_arity(name, manifest_arity, RuntimeArityPlan::BuiltinTrampoline);
         }
         if kind == "call"
             && let Some(target_name) = op.s_value.as_ref()
             && !defined_function_names.contains(target_name.as_str())
         {
             let import_name = runtime_import_name_str(target_name);
-            let is_runtime_import_target =
-                target_name.starts_with("molt_") || known_imports.contains(import_name);
-            if is_runtime_import_target {
+            if target_name.starts_with("molt_") && !known_imports.contains(import_name) {
+                panic!("direct runtime call missing WASM ABI manifest import: {target_name}");
+            }
+            if known_imports.contains(import_name) {
                 self.record_arity(
                     target_name,
                     op.args.as_ref().map_or(0, Vec::len),
@@ -264,14 +276,20 @@ impl WasmRuntimeSurfacePlan {
         if kind == "builtin_func"
             && let Some(name) = op.s_value.as_ref()
         {
-            self.require_import(runtime_import_name_str(name));
+            let import_name = runtime_callable_import_name(name).unwrap_or_else(|| {
+                panic!("builtin runtime callable missing from WASM ABI manifest: {name}")
+            });
+            self.require_import(import_name);
         }
         if kind == "call"
             && let Some(name) = op.s_value.as_ref()
             && !defined_function_names.contains(name.as_str())
         {
             let import_name = runtime_import_name_str(name);
-            if name.starts_with("molt_") || known_imports.contains(import_name) {
+            if name.starts_with("molt_") && !known_imports.contains(import_name) {
+                panic!("direct runtime call missing WASM ABI manifest import: {name}");
+            }
+            if known_imports.contains(import_name) {
                 self.require_import(import_name);
             }
         }
@@ -385,6 +403,15 @@ impl WasmRuntimeSurfacePlan {
     }
 
     fn record_arity(&mut self, name: &str, arity: usize, plan: RuntimeArityPlan) {
+        if let RuntimeArityPlan::BuiltinTrampoline = plan
+            && let Some(manifest_arity) = runtime_callable_arity(name)
+            && manifest_arity != arity
+        {
+            panic!(
+                "{} arity mismatch for {name}: manifest {manifest_arity} vs observed {arity}",
+                plan.diagnostic_name()
+            );
+        }
         let specs = match plan {
             RuntimeArityPlan::BuiltinTrampoline => &mut self.builtin_trampoline_specs,
             RuntimeArityPlan::DirectImportCall => &mut self.direct_import_call_specs,
@@ -443,8 +470,4 @@ impl RuntimeArityPlan {
 
 fn runtime_import_name_str(runtime_name: &str) -> &str {
     runtime_name.strip_prefix("molt_").unwrap_or(runtime_name)
-}
-
-fn runtime_import_name(runtime_name: &str) -> String {
-    runtime_import_name_str(runtime_name).to_string()
 }
