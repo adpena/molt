@@ -13,14 +13,27 @@ is the first 53-69 doc, taking 59 per the assignment (50-69 band, 59 requested +
 
 # 59 — The Semantic Fact Plane: one generated authority per invariant
 
-> **Status: EXECUTABLE PLAN; Phase 0 implemented.** This is the meta-architecture doc 51 §1
-> calls the cure ("a SEMANTIC FACT PLANE") and doc 52 §C.3 #13 calls the 50-year
-> institution ("every IR fact has a generated producer/consumer/transport contract
-> with drift detection — the op_kinds model extended to all fact families"). It does
+> **Status: EXECUTABLE PLAN; Phase 0 + Phase 4 fact-migration LANDED (verified 2026-06-27);
+> Phases 1-3 (generator manifest + meta-gate) still to build.** This is the
+> meta-architecture doc 51 §1 calls the cure ("a SEMANTIC FACT PLANE") and doc 52 §C.3 #13
+> calls the 50-year institution ("every IR fact has a generated producer/consumer/transport
+> contract with drift detection — the op_kinds model extended to all fact families"). It does
 > not introduce a *new* fact family; it makes the *machinery* for fact families a
 > first-class, generated, CI-gated, idempotent institution, and it fixes the one
 > structural defect in that machinery discovered in execution: the
-> `structural_audit` Phase 0 now uses kitchen-sink and undecomposed metrics so correct decomposition is credited.
+> `structural_audit` Phase 0 now uses kitchen-sink and undecomposed metrics so correct
+> decomposition is credited.
+>
+> **What is DONE (re-verified against the worktree, 2026-06-27):** Phase 0 (the metric
+> correction, §6) and the Phase 4 fact-migration ladder (§8) — every hand-classified opcode
+> fact is now in `op_kinds.toml` and read through a generated predicate. The §0 ratchet rows
+> `hand_classified_matches`, `handset_classifications`, and `critical_hand_classifications`
+> are all at the end-state target **0** (`tools/structural_audit.py --check` GREEN;
+> `gen_op_kinds.py --check` in sync; `cargo check -p molt-ir` clean). **What REMAINS:**
+> Phases 1-3 — `tools/generator_manifest.toml`, `tools/check_generator_manifest.py`, and the
+> reusable closed-domain exhaustiveness auditor do **not** exist yet; the generator-gating
+> holes catalogued in §4 are still open (only `gen_op_kinds.py` is CI `--check` gated). Those
+> phases are the next structural unit for this arc.
 
 ---
 
@@ -36,19 +49,35 @@ is zero and stays zero because adding a new fact follows ONE documented workflow
 adding a new opcode/terminator/fact-family member is a **build error** until the table
 row exists.
 
-**The machine-checkable form of "done"** (the `structural_audit` ratchets, doc 46 §2):
+**The machine-checkable form of "done"** (the `structural_audit` ratchets, doc 46 §2).
+The `now` column is the live value in `tools/structural_audit_baseline.json`, re-verified
+against the worktree on 2026-06-27 (`tools/structural_audit.py --check` GREEN). The
+fact-migration rows — `hand_classified_matches`, `handset_classifications`,
+`critical_hand_classifications` — have all **reached the end-state target 0**: the Phase 4
+ladder (§8) landed every opcode-fact classifier into `op_kinds.toml` (git trail:
+`2891edfc4` raw-i64 lowering facts, `98e189a30` refcount balance roles, `659cc2732` TIR
+state-machine facts, `b9c19fa42` generator fusion poll roles, `7b92eeb6f` residual TIR
+semantic roles, and siblings). The zero is "clean code," not "blind gate": the probe is
+proven to still *find* debt — a synthetic silent-default `match` over 4 opcodes and a
+synthetic ≥3-opcode `matches!` set both trip `probe_semantic_fallthroughs`.
 
-| ratchet | meaning | end-state target |
-| --- | --- | --- |
-| `duplicate_authorities` | one property classified in ≥2 files | **0** (already 0; LOCK it) |
-| `hand_classified_matches` | `match {… _ => value}` opcode classifier w/ silent default | **0** (44 today; was 57) |
-| `handset_classifications` | `matches!(x, OpCode::A \| B \| …)` ≥3-opcode implicit-false set | **0** (29 today; was 48) |
-| `critical_hand_classifications` | the above in an RC/alias/escape/codegen file | **0** (1 today; was 6) |
-| `debt_markers_total` | TODO/FIXME/HACK/WORKAROUND/"for now" | monotone down (526 today) |
-| `kitchen_sink_files` | files over the decomposition ceiling with concern-mixing top-level regions | **0**; driven down by extracting mixed authorities, never inflated by cohesive decomposition products |
-| `undecomposed_god_files` | files over the decomposition ceiling with no sibling decomposition package/stem directory | **0**; a lone monolith remains red until the decomposition package exists |
-| `max_undecomposed_file_lines` | the largest over-ceiling file with no decomposition context | monotone down; decomposition residuals remain board-visible but are excluded from this regression metric |
-| `large_source_file` findings | raw over-ceiling source size | board-only triage; not a ratchet metric |
+| ratchet | meaning | was | 2026-06-23 | now (2026-06-27) | end-state target |
+| --- | --- | --- | --- | --- | --- |
+| `duplicate_authorities` | one property classified in ≥2 files | — | 0 | **0** | **0** (LOCKED) |
+| `hand_classified_matches` | `match {… _ => value}` opcode classifier w/ silent default | 57 | 44 | **0** | **0** (REACHED) |
+| `handset_classifications` | `matches!(x, OpCode::A \| B \| …)` ≥3-opcode implicit-false set | 48 | 29 | **0** | **0** (REACHED) |
+| `critical_hand_classifications` | the above in an RC/alias/escape/codegen file | 6 | 1 | **0** | **0** (REACHED) |
+| `debt_markers_total` | TODO/FIXME/HACK/WORKAROUND/"for now" | — | 526 | **343** | monotone down |
+| `kitchen_sink_files` | files over the decomposition ceiling with concern-mixing top-level regions | — | (RED, raw `god_files` 57) | **0** | **0**; driven down by extracting mixed authorities, never inflated by cohesive decomposition products |
+| `undecomposed_god_files` | files over the decomposition ceiling with no sibling decomposition package/stem directory | — | (RED) | **0** | **0**; a lone monolith remains red until the decomposition package exists |
+| `max_undecomposed_file_lines` | the largest over-ceiling file with no decomposition context | — | (RED) | **0** | monotone down; decomposition residuals remain board-visible but are excluded from this regression metric |
+| `large_source_file` findings | raw over-ceiling source size | — | — | board-only | board-only triage; not a ratchet metric |
+
+The fact-migration rows are at their terminal value **0**; the institution's remaining job
+for them is to *keep* it 0 — every new opcode-fact classifier is caught by
+`structural_audit.py --check` and must go down the §5 add-a-fact workflow. The
+decomposition rows went green via the Phase 0 metric correction (§6) plus the 21a-e
+crate/package extractions.
 
 When every row is green AND the green is *load-bearing* (the gate consumes generated
 facts, not heuristics — doc 46 rule #1), molt has a **semantic nervous system**
@@ -194,12 +223,16 @@ project's own definition (`gen_protocol.py:25`).**
   actually `cli/__init__.py`). `frontend/visitors/` (`calls.py`, `classes.py`,
   `comprehensions.py`, `pattern_match.py`) and `frontend/lowering/` are cohesive
   products.
-- **The collision (measured live, this session):** `structural_audit.py --check`
-  is **RED right now** — `god_files: 53 → 57` and `max_god_file_lines:
-  39520 → 41266` both *regressed*, while `hand_classified_matches` (57→44),
-  `handset_classifications` (48→29), and `critical_hand_classifications` (6→1) all
-  *improved*. Decomposition is making the codebase structurally better and the
-  ratchet redder. §6 is the structural fix.
+- **The collision (measured at authoring time, 2026-06-23 — NOW RESOLVED):** at
+  authoring time `structural_audit.py --check` was **RED** — the raw `god_files: 53 → 57`
+  and `max_god_file_lines: 39520 → 41266` count metrics both *regressed* because of correct
+  decomposition, while `hand_classified_matches` (57→44), `handset_classifications` (48→29),
+  and `critical_hand_classifications` (6→1) all *improved*. Decomposition was making the
+  codebase structurally better and the ratchet redder. **§6 was the structural fix and it
+  has landed (Phase 0, §8): the gate now ratchets `kitchen_sink_files` /
+  `undecomposed_god_files` / `max_undecomposed_file_lines` instead of raw line count, and as
+  of 2026-06-27 every one of those is `0` and `structural_audit.py --check` is GREEN.** The
+  raw-size signal survives as board-only triage (`large_source_file`), not a ratchet.
 
 ---
 
@@ -365,21 +398,28 @@ item so it is not re-litigated per tool.
 
 ## 6. The structural_audit metric tension — the structural fix (F4)
 
-### 6.1 The defect, precisely
-`probe_god_files` (`structural_audit.py:371`) flags every non-generated source file
-over a per-language ceiling (4000 `.rs`, 2500 `.py`). `ratchet_metrics` (`:629`)
-exposes two scalars that "may only go DOWN": `god_files` (the *count* of such files)
-and `max_god_file_lines` (the single worst). The ratchet test
-(`tests/test_structural_audit.py:53`) fails if either rises above baseline.
+> **Status: LANDED (Phase 0, §8).** The redesign described below has shipped:
+> `tools/structural_audit.py` now ratchets `kitchen_sink_files`,
+> `undecomposed_god_files`, and `max_undecomposed_file_lines` (concern-mixing + lone-
+> monolith signals) and treats raw line count as board-only triage
+> (`large_source_file`). As of 2026-06-27 all three ratcheted decomposition metrics are
+> `0`. The line/symbol references below are to the *pre-Phase-0* tool and remain for
+> historical rationale; the current authority is the live `structural_audit.py`.
+
+### 6.1 The defect, precisely (as it stood pre-Phase-0)
+The pre-Phase-0 `probe_god_files` flagged every non-generated source file over a
+per-language ceiling (4000 `.rs`, 2500 `.py`). `ratchet_metrics` exposed two scalars that
+"may only go DOWN": `god_files` (the *count* of such files) and `max_god_file_lines` (the
+single worst). The ratchet test failed if either rose above baseline.
 
 **The collision:** correct decomposition (doc 21) splits one 39K-line god-file into,
 say, eight cohesive 5K-line submodules. Each submodule is *structurally better*
 (one responsibility, the Lattner ideal) but each is still over the 4000 ceiling, so
-the **count rises 1 → 8** and the ratchet goes RED. Measured live this session:
-`god_files: 53 → 57`, `max_god_file_lines: 39520 → 41266` — both regressed *because
-of* the `fc/` family split and the `cli/` package, while the fact-migration metrics
-improved. The `god_files` count metric **penalizes the exact work the project's
-decomposition program mandates.**
+the **count rises 1 → 8** and the ratchet goes RED. Measured at authoring time
+(2026-06-23): `god_files: 53 → 57`, `max_god_file_lines: 39520 → 41266` — both regressed
+*because of* the `fc/` family split and the `cli/` package, while the fact-migration
+metrics improved. The `god_files` count metric **penalized the exact work the project's
+decomposition program mandates** — which is why Phase 0 (now landed) replaced it.
 
 The two illegal escapes (both forbidden):
 - *Re-pin the baseline up* — forbidden by CLAUDE.md ("never re-pin to hide debt") and
@@ -573,8 +613,18 @@ is lane C; phases are non-overlapping files so multiple agents can run them (§9
   meta-gate (synthetic test) AND fails rustc (the real authority); the two agree.
 
 ### Phase 4 — Burn down the deletion-candidate board (the ladder this arc enables).
+> **First sweep LANDED (verified 2026-06-27): the ratchet reached 0.** The
+> authoring-time deletion candidates were migrated into `op_kinds.toml` generated
+> predicates and the hand-classified surface is now **empty** — `hand_classified_matches`,
+> `handset_classifications`, and `critical_hand_classifications` all read **0** (live
+> `structural_audit.py`; independently confirmed by an exhaustive sweep: effects, alias,
+> drop-insertion, copy-kind, repr-facts, deforestation, escape, inliner, and
+> module-slot-promotion classifiers now each delegate to a generated `*_table()`). The
+> *mechanism* (this phase) remains the standing, unbounded cadence for every **future**
+> opcode-fact, now drift-proof. The named line anchors below were the pre-migration
+> coordinates and are retained for historical context.
 - **Do:** this is the *ongoing* lane-C work the institution makes safe — migrate the
-  top `STRUCTURAL_AUDIT_BOARD.md` deletion candidates (the 108-opcode
+  top `STRUCTURAL_AUDIT_BOARD.md` deletion candidates (historically: the 108-opcode
   `lower_to_wasm.rs:551` / `lower_to_simple.rs:1651` near-exhaustive silent-default
   matches; the 74-opcode `verify.rs:235`; the 56-opcode `type_refine.rs:1218`; the
   `effects.rs:313` / `inliner.rs:182` 10-opcode `matches!` sets) into generated
