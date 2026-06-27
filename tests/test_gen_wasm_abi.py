@@ -86,6 +86,46 @@ def test_wasm_abi_manifest_owns_op_import_deps() -> None:
     assert op_deps["object_new_bound_stack"] == ["object_new_bound_sized"]
 
 
+def test_wasm_abi_manifest_owns_runtime_surface_required_import_matchers() -> None:
+    gen = _load_gen_wasm_abi()
+    data = gen.load_manifest()
+    import_names = {entry["name"] for entry in data["import"]}
+    prefixes = {entry["prefix"] for entry in data["runtime_required_import_prefix"]}
+    singletons = {entry["name"] for entry in data["runtime_required_import_singleton"]}
+
+    assert {"os_", "path_", "socket_", "math_", "dataclass_"} <= prefixes
+    assert {
+        "socketpair",
+        "spawn",
+        "block_on",
+        "open_builtin",
+        "errno_constants",
+    } <= singletons
+    assert "os_name" not in singletons
+    assert any("os_name".startswith(prefix) for prefix in prefixes)
+    assert all(
+        any(name.startswith(prefix) for name in import_names)
+        for prefix in prefixes
+    )
+    assert singletons <= import_names
+
+    rendered_rs = gen.render_rs(data)
+    rendered_py = gen.render_py(data)
+    assert "REQUIRED_RUNTIME_IMPORT_PREFIXES" in rendered_rs
+    assert "REQUIRED_RUNTIME_IMPORT_SINGLETONS" in rendered_rs
+    assert "runtime_surface_requires_direct_import" in rendered_rs
+    assert "WASM_REQUIRED_RUNTIME_IMPORT_PREFIXES" in rendered_py
+    assert "runtime_surface_requires_direct_import" in rendered_py
+
+    runtime_surface = (
+        ROOT
+        / "runtime/molt-backend-wasm/src/wasm/module_abi/runtime_surface.rs"
+    ).read_text(encoding="utf-8")
+    assert "REQUIRED_IMPORT_PREFIXES" not in runtime_surface
+    assert "REQUIRED_IMPORT_SINGLETONS" not in runtime_surface
+    assert "runtime_surface_requires_direct_import(kind)" in runtime_surface
+
+
 def test_wasm_abi_manifest_owns_split_runtime_table_prefix() -> None:
     gen = _load_gen_wasm_abi()
     data = gen.load_manifest()

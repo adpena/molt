@@ -1,8 +1,15 @@
+use std::collections::{BTreeMap, BTreeSet};
+
 use super::super::class_def_layout::ClassDefLayout;
-use super::*;
 use crate::representation_plan::ScalarRepresentationPlan;
-use crate::wasm_imports::{IMPORT_REGISTRY, OP_IMPORT_DEPS};
-use crate::wasm_plan::wasm_specialized_container_import;
+use crate::wasm_abi::RESERVED_RUNTIME_CALLABLE_SPECS;
+use crate::wasm_import_tracking::TrackedImportIds;
+use crate::wasm_imports::{
+    IMPORT_REGISTRY, OP_IMPORT_DEPS, runtime_surface_requires_direct_import,
+};
+use crate::wasm_options::{WasmCompileOptions, WasmProfile};
+use crate::wasm_plan::{gpu_runtime_call_symbol, wasm_specialized_container_import};
+use crate::{FunctionIR, OpIR, SimpleIR, TrampolineKind};
 
 pub(super) struct WasmRuntimeSurfacePlan {
     pub(super) auto_required_imports: Option<BTreeSet<String>>,
@@ -307,13 +314,7 @@ impl WasmRuntimeSurfacePlan {
             self.require_import(import_name);
         }
 
-        if REQUIRED_IMPORT_PREFIXES
-            .iter()
-            .any(|prefix| kind.starts_with(prefix))
-        {
-            self.require_import(kind);
-        }
-        if REQUIRED_IMPORT_SINGLETONS.contains(&kind) {
+        if runtime_surface_requires_direct_import(kind) {
             self.require_import(kind);
         }
         if is_poll
@@ -447,65 +448,3 @@ fn runtime_import_name_str(runtime_name: &str) -> &str {
 fn runtime_import_name(runtime_name: &str) -> String {
     runtime_import_name_str(runtime_name).to_string()
 }
-
-const REQUIRED_IMPORT_PREFIXES: &[&str] = &[
-    "os_",
-    "path_",
-    "time_",
-    "struct_",
-    "importlib_",
-    "asyncio_",
-    "contextlib_async",
-    "socket_",
-    "file_",
-    "stream_",
-    "lock_",
-    "rlock_",
-    "thread_",
-    "process_",
-    "db_",
-    "ws_",
-    "cancel_token_",
-    "chan_",
-    "string_",
-    "bytes_",
-    "bytearray_",
-    "math_",
-    "json_",
-    "msgpack_",
-    "cbor_",
-    "vec_",
-    "heapq_",
-    "buffer2d_",
-    "statistics_",
-    "weakref_",
-    "memoryview_",
-    "taq_",
-    "sys_",
-    "dataclass_",
-];
-
-const REQUIRED_IMPORT_SINGLETONS: &[&str] = &[
-    "socketpair",
-    "cancelled",
-    "cancel_current",
-    "spawn",
-    "block_on",
-    "sleep_register",
-    "intarray_from_seq",
-    "enumerate",
-    "aiter",
-    "anext",
-    "open_builtin",
-    "compile_builtin",
-    "getargv",
-    "getpid",
-    "getframe",
-    "getcwd",
-    "getrecursionlimit",
-    "setrecursionlimit",
-    "env_get",
-    "env_snapshot",
-    "os_name",
-    "errno_constants",
-];

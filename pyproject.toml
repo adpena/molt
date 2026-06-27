@@ -131,6 +131,7 @@ lint = [
     "{project_python} tools/check_suite_honesty.py",
     "{project_python} tools/gen_op_kinds.py --check",
     "{project_python} tools/audit_op_kinds.py --check",
+    "{project_python} tools/gen_wasm_abi.py --check",
     "{project_python} tools/llvm_runtime_abi_audit.py --check",
     "@subprocess-guard-audit",
     "@memory-guard-wiring-audit",

@@ -1868,6 +1868,75 @@ pub(crate) const OP_IMPORT_DEPS: &[(&str, &[&str])] = &[
     ]),
 ];
 
+pub(crate) const REQUIRED_RUNTIME_IMPORT_PREFIXES: &[&str] = &[
+    "os_",
+    "path_",
+    "time_",
+    "struct_",
+    "importlib_",
+    "asyncio_",
+    "contextlib_async",
+    "socket_",
+    "file_",
+    "stream_",
+    "lock_",
+    "rlock_",
+    "thread_",
+    "process_",
+    "db_",
+    "ws_",
+    "cancel_token_",
+    "chan_",
+    "string_",
+    "bytes_",
+    "bytearray_",
+    "math_",
+    "json_",
+    "msgpack_",
+    "cbor_",
+    "vec_",
+    "heapq_",
+    "buffer2d_",
+    "statistics_",
+    "weakref_",
+    "memoryview_",
+    "taq_",
+    "sys_",
+    "dataclass_",
+];
+
+pub(crate) const REQUIRED_RUNTIME_IMPORT_SINGLETONS: &[&str] = &[
+    "socketpair",
+    "cancelled",
+    "cancel_current",
+    "spawn",
+    "block_on",
+    "sleep_register",
+    "intarray_from_seq",
+    "enumerate",
+    "aiter",
+    "anext",
+    "open_builtin",
+    "compile_builtin",
+    "getargv",
+    "getpid",
+    "getframe",
+    "getcwd",
+    "getrecursionlimit",
+    "setrecursionlimit",
+    "env_get",
+    "env_snapshot",
+    "errno_constants",
+];
+
+#[inline]
+pub(crate) fn runtime_surface_requires_direct_import(kind: &str) -> bool {
+    REQUIRED_RUNTIME_IMPORT_PREFIXES
+        .iter()
+        .any(|prefix| kind.starts_with(prefix))
+        || REQUIRED_RUNTIME_IMPORT_SINGLETONS.contains(&kind)
+}
+
 pub(crate) const POLL_TABLE_FUNCS: &[&str] = &[
     "async_sleep_poll",
     "anext_default_poll",

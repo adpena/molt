@@ -4447,6 +4447,177 @@ prefix = "tempfile_"
 [[pure_skip_prefix]]
 prefix = "tarfile_"
 
+# Runtime-surface op-kind matchers for Auto/reloc import discovery.
+# These match SimpleIR op kinds that are spelled the same as WASM imports or
+# import-family prefixes. Keep this separate from Pure-profile stripping:
+# Pure-profile prefixes decide what may be omitted from a configured profile,
+# while these entries decide which imports an observed IR op requires.
+
+[[runtime_required_import_prefix]]
+prefix = "os_"
+
+[[runtime_required_import_prefix]]
+prefix = "path_"
+
+[[runtime_required_import_prefix]]
+prefix = "time_"
+
+[[runtime_required_import_prefix]]
+prefix = "struct_"
+
+[[runtime_required_import_prefix]]
+prefix = "importlib_"
+
+[[runtime_required_import_prefix]]
+prefix = "asyncio_"
+
+[[runtime_required_import_prefix]]
+prefix = "contextlib_async"
+
+[[runtime_required_import_prefix]]
+prefix = "socket_"
+
+[[runtime_required_import_prefix]]
+prefix = "file_"
+
+[[runtime_required_import_prefix]]
+prefix = "stream_"
+
+[[runtime_required_import_prefix]]
+prefix = "lock_"
+
+[[runtime_required_import_prefix]]
+prefix = "rlock_"
+
+[[runtime_required_import_prefix]]
+prefix = "thread_"
+
+[[runtime_required_import_prefix]]
+prefix = "process_"
+
+[[runtime_required_import_prefix]]
+prefix = "db_"
+
+[[runtime_required_import_prefix]]
+prefix = "ws_"
+
+[[runtime_required_import_prefix]]
+prefix = "cancel_token_"
+
+[[runtime_required_import_prefix]]
+prefix = "chan_"
+
+[[runtime_required_import_prefix]]
+prefix = "string_"
+
+[[runtime_required_import_prefix]]
+prefix = "bytes_"
+
+[[runtime_required_import_prefix]]
+prefix = "bytearray_"
+
+[[runtime_required_import_prefix]]
+prefix = "math_"
+
+[[runtime_required_import_prefix]]
+prefix = "json_"
+
+[[runtime_required_import_prefix]]
+prefix = "msgpack_"
+
+[[runtime_required_import_prefix]]
+prefix = "cbor_"
+
+[[runtime_required_import_prefix]]
+prefix = "vec_"
+
+[[runtime_required_import_prefix]]
+prefix = "heapq_"
+
+[[runtime_required_import_prefix]]
+prefix = "buffer2d_"
+
+[[runtime_required_import_prefix]]
+prefix = "statistics_"
+
+[[runtime_required_import_prefix]]
+prefix = "weakref_"
+
+[[runtime_required_import_prefix]]
+prefix = "memoryview_"
+
+[[runtime_required_import_prefix]]
+prefix = "taq_"
+
+[[runtime_required_import_prefix]]
+prefix = "sys_"
+
+[[runtime_required_import_prefix]]
+prefix = "dataclass_"
+
+[[runtime_required_import_singleton]]
+name = "socketpair"
+
+[[runtime_required_import_singleton]]
+name = "cancelled"
+
+[[runtime_required_import_singleton]]
+name = "cancel_current"
+
+[[runtime_required_import_singleton]]
+name = "spawn"
+
+[[runtime_required_import_singleton]]
+name = "block_on"
+
+[[runtime_required_import_singleton]]
+name = "sleep_register"
+
+[[runtime_required_import_singleton]]
+name = "intarray_from_seq"
+
+[[runtime_required_import_singleton]]
+name = "enumerate"
+
+[[runtime_required_import_singleton]]
+name = "aiter"
+
+[[runtime_required_import_singleton]]
+name = "anext"
+
+[[runtime_required_import_singleton]]
+name = "open_builtin"
+
+[[runtime_required_import_singleton]]
+name = "compile_builtin"
+
+[[runtime_required_import_singleton]]
+name = "getargv"
+
+[[runtime_required_import_singleton]]
+name = "getpid"
+
+[[runtime_required_import_singleton]]
+name = "getframe"
+
+[[runtime_required_import_singleton]]
+name = "getcwd"
+
+[[runtime_required_import_singleton]]
+name = "getrecursionlimit"
+
+[[runtime_required_import_singleton]]
+name = "setrecursionlimit"
+
+[[runtime_required_import_singleton]]
+name = "env_get"
+
+[[runtime_required_import_singleton]]
+name = "env_snapshot"
+
+[[runtime_required_import_singleton]]
+name = "errno_constants"
+
 # Canonical op -> WASM import dependency planner.
 # Generated Rust consumers are produced by tools/gen_wasm_abi.py.
 
