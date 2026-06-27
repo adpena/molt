@@ -86,10 +86,11 @@ The harness now also writes incremental snapshots (`compile_progress.json` and
 `compile_progress.md`) after every completed case, so interrupted runs still
 preserve completed-case results.
 
-Default output root is `$MOLT_EXT_ROOT/compile_progress_<timestamp>` (with
-`MOLT_EXT_ROOT` defaulting to `/Volumes/APDataStore/Molt`). If the external
-root is unavailable, pass `--output-root` explicitly only for an approved
-emergency override.
+Default output root is `$MOLT_EXT_ROOT/compile_progress_<timestamp>` when
+`MOLT_EXT_ROOT` is set; otherwise the harness falls back to the repo-local
+canonical scratch root under `tmp/`. Maintainer/agent proof lanes should set
+`MOLT_EXT_ROOT` to a healthy external artifact root or pass `--output-root`
+explicitly.
 
 ### 3. Optional focused rerun
 
