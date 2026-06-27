@@ -2,6 +2,7 @@ use super::constant_ops::{
     const_seed_bits, needs_literal_pointer_locals, needs_seeded_runtime_const,
 };
 use super::context::CompileFuncContext;
+use super::control_flow::has_non_linear_control_flow;
 use super::*;
 
 pub(super) fn collect_read_vars(ops: &[OpIR]) -> BTreeSet<String> {
@@ -401,7 +402,7 @@ impl WasmLocalLayout {
         };
 
         // Extended constant cache: cache box_none(), QNAN_TAG_MASK_I64, and
-        // QNAN_TAG_PTR_I64 into locals unconditionally — these large i64
+        // QNAN_TAG_PTR_I64 into locals unconditionally â€” these large i64
         // constants (9-10 bytes each as immediates) appear dozens of times in
         // every function body.  Replacing with local.get (1-2 bytes) saves
         // 7-8 bytes per occurrence.
@@ -424,7 +425,7 @@ impl WasmLocalLayout {
 
         let jumpful = !stateful && saw_jump_or_label;
 
-        // --- Tail call optimization eligibility (WASM tail calls proposal §3.5) ---
+        // --- Tail call optimization eligibility (WASM tail calls proposal Â§3.5) ---
         // A function is eligible for tail call optimization when it is
         // non-stateful (stateful dispatch emits ops one-at-a-time).
         // Exception handling is checked per-call-site via try_stack
