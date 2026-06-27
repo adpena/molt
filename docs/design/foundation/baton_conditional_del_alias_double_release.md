@@ -1,75 +1,93 @@
 # Baton: conditional-`del` alias-group double-release (silent wrong value)
 
-**Status:** root-caused precisely; fix designed, NOT yet implemented.
-**Severity:** P0 — silent WRONG ANSWER (memory corruption surfacing as a wrong value).
+**Status:** FALSIFIED (2026-06-26). The original drop-insertion double-free
+diagnosis below was WRONG. The real root cause was a native-backend
+**division-family carrier-store mismatch** (`i % 7` stored boxed under a
+raw-i64-carrier output name). Fixed in `arith_division.rs` by routing the
+boxed division-family result through `def_var_from_numeric_result` (the
+carrier-aware store `add`/`sub`/`mul` already use). The `del`/alias in the
+original repro were red herrings: `y = x` lowers to a `binding_alias` (own +1)
+and the aliasing is already refcount-balanced — there is no double-free.
 
-## Repro
+**Severity (when open):** P0 — silent WRONG ANSWER.
 
-`tests/differential/memory/alias_reassign_conditional_del.py` → Molt prints `219`,
-CPython prints `123`. (`x[-3:]` of the accumulator; the last three appended chars
-are `1`,`2`,`3` for i=57,58,59. `219` is reused-freed-memory garbage = double-free.)
+## What actually happened (corrected root cause)
+
+`tests/differential/memory/alias_reassign_conditional_del.py` printed `219`
+instead of CPython's `123`. The `219` was NOT reused-freed memory — it was the
+**low byte(s) of a NaN-boxed integer's tag bits**, surfaced because `str(i % 7)`
+stringified the box bits as if they were a raw i64.
+
+The minimal repro that isolates it has NO `del`, NO aliasing, NO slicing:
 
 ```python
-def aliased_with_del(n):
-    x = "s"; i = 0
+def f(n):
+    i = 0
     while i < n:
-        y = x                 # y aliases x  (alias GROUP {x_phi, y}, ONE owned +1)
-        x = y + str(i % 7)    # x = NEW string; old accumulator now reachable only via y
-        if i % 2 == 0:
-            del y             # CONDITIONAL path-authoritative release of the group
-        i = i + 1
-    return x[-3:]
+        print(i % 7)          # molt printed 9221401712017801216, 9221401712017801217, ...
+        i = i + 1             # CPython: 0, 1, 2
+f(3)
 ```
 
-## Root cause (file:line)
+`9221401712017801216` is `0x7FFC_0000_0000_0000` — the quiet-NaN integer tag
+with payload 0. The `print`/`str` consumer read the NaN-box bits as a raw i64.
 
-`runtime/molt-tir/src/tir/passes/drop_insertion/runner.rs`, §1 last-use placement
-(lines ~1366–1417) and its del-suppression guard (line 1378
-`python_lifetime_facts.has_explicit_release_boundary(v)`).
+### The carrier-store mismatch (file:line)
 
-- The alias group `{x_phi (accumulator), y=Copy(x_phi)}` owns exactly ONE `+1`.
-- `x_phi`'s last DIRECT use is `x_new = y + str(...)` in the loop body block, BEFORE
-  the `CondBranch`. So §1 places `x_phi`'s drop **pre-branch** — a single point that
-  executes on BOTH the even and odd paths.
-- The suppression at line 1378 only fires when the root has an **unconditional**
-  explicit-release boundary. The `del y` here is **conditional** (even branch only),
-  so it does NOT suppress `x_phi`'s pre-branch drop.
-- Result on the even path: pre-branch drop releases the group, then `del y` releases
-  the SAME group again → **double-free** → memory reused → `219`. (Odd path: the
-  single pre-branch drop is correct there.)
+The value-range pass (`runtime/molt-tir/src/tir/passes/value_range.rs`,
+`ValueRangeTransferRule::Mod` -> `IntRange::mod_const`) proves `i % 7 ∈ [0, 7)`
+and the representation plan marks the result SSA name a raw-i64 carrier
+(`RawI64Safe`). Producer and consumer BOTH key the carrier off
+`representation_plan.is_raw_int_carrier_name(name)`
+(`runtime/molt-tir/src/representation_plan.rs:518`), so that predicate was
+consistent — they agreed the name is a raw carrier.
 
-### Why §3 edge-dying (per-path, rail-#3 del-aware) does NOT catch it
-The §3 edge-dying rule (runner.rs ~1643) places per-successor-entry drops and
-already excludes del-released roots (rail #3), which is exactly what's needed. BUT
-§3 only handles values **live-out** of the body block. `x_phi` is dead after its
-direct last use, so it is NOT live-out → §1 (pre-branch) owns it instead of §3.
-The missing fact: the alias `y` is used (by `del y`) in a SUCCESSOR block, so in
-alias-root liveness the ROOT `x_phi` SHOULD be live-out of the body block.
+The actual divergence was in the native `mod`/`inplace_mod` lane
+(`runtime/molt-backend/src/native_backend/function_compiler/fc/arith_division.rs`):
 
-## The fix (structural — preferred)
+- The raw-primary fast path (which stores a genuine raw i64 and returns early)
+  requires `out_is_int_primary` AND **both operands** to be raw-i64 Variables.
+- For `i % 7` the constant divisor `7` is NOT a raw-i64 *Variable*
+  (`int_raw_value` returns `None`), so the lane fell to the boxed fallback,
+  producing a NaN-**boxed** `res`.
+- That boxed `res` was then written with the **raw** store
+  `def_var_named(out, res)`. Because `is_raw_int_carrier_name(out)` is `true`,
+  every consumer (`int_raw_value`, the `print` call-arg path via
+  `ensure_boxed_overflow_safe`) treated the variable as a raw i64 and read the
+  box bits directly. Storage and consumption disagreed.
 
-Make the alias-root **live-out** computation alias-aware: a use of any alias of root
-`v` in a successor block — INCLUDING a `DeleteVar`/`DelBoundary` on that alias — keeps
-`v` live-out of the block holding `v`'s direct last use. Then `x_phi` is live-out of
-the body → §3 edge-dying places its drop **per path**: dropped at the odd-branch
-entry (dead there, not del'd), EXCLUDED at the even-branch (rail #3 — already
-del-released). This realizes the "alias-GROUP live-out reasoning across blocks" the
-test header specifies: the group's one `+1` is released exactly once on every path.
+`add`/`sub`/`mul` never had this bug because they finalize through
+`def_var_from_numeric_result` — the carrier-aware store that, for an `I64`
+(boxed) value flowing into a raw-carrier name, *unboxes* to raw via
+`def_var_from_boxed_transport`. The whole division family (`div`, `floordiv`,
+`floor_div`, `binop_floor_div`, `mod`, `inplace_mod`, `pow`, `pow_mod`, `round`,
+`trunc`) was on the raw `def_var_named` store; all of those boxed-result stores
+were migrated to `def_var_from_numeric_result`.
 
-**Alternative (only if the liveness change proves too broad):** a targeted
-del-in-successor pass — for each root del'd in a successor block whose §1 pre-branch
-drop would precede the branch, suppress that pre-branch drop and emit edge-dying
-drops at the successor entries where the root is dead AND not del-released. (This
-duplicates §3's rail-#3 logic, so the liveness fix is cleaner.)
+### Why it did NOT reproduce at module level / for add/mul/floordiv-without-const
+At module scope the loop IV is typically not promoted to a raw-i64 carrier the
+same way (so the boxed store landed under a boxed name — consistent). `add`/`mul`
+already used the carrier-aware finalizer. The bug needed: a value-range-provable
+division-family result (raw-carrier output name) whose native lane took the
+boxed fallback (e.g. const divisor) and stored through the raw `def_var_named`.
 
-## Verification (mandatory — a wrong fix is double-free OR leak)
-- `alias_reassign_conditional_del.py` → `123` on native AND LLVM.
-- FULL `tests/differential/memory/` suite green — especially `cycle_leak_*`,
-  `custom_object_loop_phi_retain`, the `alias_reassign_*` variants,
-  `finalizer_resurrection_leak_gauge`. Bounded RSS (prove no leak introduced on the
-  odd path).
-- `drop_insertion` unit tests: `tests/core_rc.rs`, `tests/python_lifetimes.rs`.
+## Scope / backends
+- Native (Cranelift) only. The shared value-range `RawI64Safe` marking in
+  `runtime/molt-tir/` is UNCHANGED, so LLVM/WASM/Luau carrier classification is
+  unaffected. Those backends lower division through the value-keyed
+  `repr_by_value` lattice and `def_var_from_boxed_transport`-equivalent LIR
+  stores, not the native name-keyed `def_var_named` path, so they did not share
+  this store-site bug.
 
-## Note: second memory P0 found the same run
-`tests/differential/memory/cycle_leak_clean_control.py` **OOMs** — the cycle
-collector does not reclaim reference cycles yet (the GC gap; separate work).
+## Regression coverage
+- `tests/differential/int_loop_modulo/mod_const_loop_iv.py` (the minimal `i % 7`)
+- `tests/differential/int_loop_modulo/mod_var_divisor_loop_iv.py` (`k = 7; i % k`)
+- `tests/differential/int_loop_modulo/floordiv_const_loop_iv.py` (`i // 3`)
+- `tests/differential/int_loop_modulo/mod_accumulate_str_loop_iv.py`
+  (the `str(i % 7)` accumulator minimized from the original alias test)
+- `tests/differential/memory/alias_reassign_conditional_del.py` now prints `123`.
+
+## Note: cycle-collector OOM (still open, separate work)
+`tests/differential/memory/cycle_leak_clean_control.py` OOMs — the cycle
+collector does not reclaim reference cycles yet (the GC gap). That is unrelated
+to this carrier-store bug and remains open.
