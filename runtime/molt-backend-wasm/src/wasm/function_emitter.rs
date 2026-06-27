@@ -1,7 +1,8 @@
 use super::constant_ops::emit_seeded_runtime_const_op;
 use super::context::CompileFuncContext;
+use super::control_flow::ControlKind;
 use super::local_layout::WasmLocalLayout;
-use super::op_loop::{ControlKind, WasmFunctionEmitContext};
+use super::op_loop::WasmFunctionEmitContext;
 use super::state_dispatch::{
     NonLinearDispatchLocals, NonLinearDispatchPlan, emit_jumpful_dispatch, emit_stateful_dispatch,
     exception_handler_region_indices,

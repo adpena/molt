@@ -1,4 +1,5 @@
-use super::op_loop::{ControlKind, WasmFunctionEmitContext};
+use super::control_flow::ControlKind;
+use super::op_loop::WasmFunctionEmitContext;
 use super::*;
 use block_layout::{build_dispatch_block_map, build_dispatch_blocks};
 use state_remap::{
