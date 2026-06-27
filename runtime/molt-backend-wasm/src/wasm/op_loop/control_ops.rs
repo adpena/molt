@@ -6,7 +6,7 @@ use super::*;
 pub(super) struct ControlOpContext<'a> {
     pub(super) func_ir: &'a FunctionIR,
     pub(super) import_ids: &'a TrackedImportIds,
-    pub(super) locals: &'a BTreeMap<String, u32>,
+    pub(super) locals: &'a WasmFrameLocals,
     pub(super) const_cache: &'a ConstantCache,
     pub(super) scalar_plan: &'a ScalarRepresentationPlan,
     pub(super) multi_return: &'a WasmMultiReturnLayout,
@@ -231,7 +231,7 @@ fn emit_ret(
     func_ir: &FunctionIR,
     op: &OpIR,
     import_ids: &TrackedImportIds,
-    locals: &BTreeMap<String, u32>,
+    locals: &WasmFrameLocals,
     multi_return: &WasmMultiReturnLayout,
     reloc_enabled: bool,
     arena_local: Option<u32>,

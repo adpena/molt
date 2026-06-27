@@ -6,7 +6,7 @@ pub(super) fn emit_dataclass_op(
     func: &mut Function,
     op: &OpIR,
     import_ids: &TrackedImportIds,
-    locals: &BTreeMap<String, u32>,
+    locals: &WasmFrameLocals,
     reloc_enabled: bool,
 ) -> bool {
     match op.kind.as_str() {

@@ -20,7 +20,7 @@ pub(super) fn emit_sequence_builder_from_args(
     value_names: &[String],
     out: u32,
     import_ids: &TrackedImportIds,
-    locals: &BTreeMap<String, u32>,
+    locals: &WasmFrameLocals,
     reloc_enabled: bool,
     finish: BuilderFinish,
 ) {

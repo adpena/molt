@@ -12,7 +12,7 @@ pub(super) struct RuntimeServiceOpContext<'a> {
     pub(super) func_map: &'a BTreeMap<String, u32>,
     pub(super) table_base: u32,
     pub(super) import_ids: &'a TrackedImportIds,
-    pub(super) locals: &'a BTreeMap<String, u32>,
+    pub(super) locals: &'a WasmFrameLocals,
     pub(super) const_cache: &'a ConstantCache,
     pub(super) reloc_enabled: bool,
     pub(super) native_eh_enabled: bool,

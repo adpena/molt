@@ -1,7 +1,7 @@
 use super::*;
 
 pub(super) fn collect_live_object_locals_for_call(
-    locals: &BTreeMap<String, u32>,
+    locals: &WasmFrameLocals,
     last_use_local: &BTreeMap<String, usize>,
     rel_idx: usize,
     out_name: Option<&String>,

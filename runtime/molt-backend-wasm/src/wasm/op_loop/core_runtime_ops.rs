@@ -14,7 +14,7 @@ pub(super) fn emit_core_runtime_op(
     op: &OpIR,
     func_ir: &FunctionIR,
     import_ids: &TrackedImportIds,
-    locals: &BTreeMap<String, u32>,
+    locals: &WasmFrameLocals,
     scalar_plan: &ScalarRepresentationPlan,
     multi_return: &WasmMultiReturnLayout,
     reloc_enabled: bool,

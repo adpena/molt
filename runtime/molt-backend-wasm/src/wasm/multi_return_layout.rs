@@ -13,7 +13,7 @@ impl WasmMultiReturnLayout {
     pub(super) fn build(
         func_ir: &FunctionIR,
         multi_return_candidates: &BTreeMap<String, usize>,
-        locals: &mut BTreeMap<String, u32>,
+        locals: &mut WasmFrameLocals,
         local_types: &mut Vec<ValType>,
         local_count: &mut u32,
     ) -> Self {
@@ -95,7 +95,7 @@ impl WasmMultiReturnLayout {
 }
 
 fn ensure_internal_local(
-    locals: &mut BTreeMap<String, u32>,
+    locals: &mut WasmFrameLocals,
     local_types: &mut Vec<ValType>,
     local_count: &mut u32,
     name: &str,
@@ -196,7 +196,10 @@ mod tests {
             ],
             ..FunctionIR::default()
         };
-        let mut locals = BTreeMap::from([("left".to_string(), 0), ("right".to_string(), 1)]);
+        let mut locals = WasmFrameLocals::from(BTreeMap::from([
+            ("left".to_string(), 0),
+            ("right".to_string(), 1),
+        ]));
         let mut local_types = Vec::new();
         let mut local_count = 2;
 
@@ -225,7 +228,7 @@ mod tests {
             ],
             ..FunctionIR::default()
         };
-        let mut locals = BTreeMap::new();
+        let mut locals = WasmFrameLocals::new();
         let mut local_types = Vec::new();
         let mut local_count = 0;
 
@@ -256,7 +259,7 @@ mod tests {
             ],
             ..FunctionIR::default()
         };
-        let mut locals = BTreeMap::new();
+        let mut locals = WasmFrameLocals::new();
         let mut local_types = Vec::new();
         let mut local_count = 0;
 

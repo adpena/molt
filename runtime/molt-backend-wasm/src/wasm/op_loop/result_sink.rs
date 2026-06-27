@@ -1,6 +1,6 @@
 use super::*;
 
-pub(super) fn store_result_or_drop(func: &mut Function, op: &OpIR, locals: &BTreeMap<String, u32>) {
+pub(super) fn store_result_or_drop(func: &mut Function, op: &OpIR, locals: &WasmFrameLocals) {
     if let Some(out) = op.out.as_ref() {
         let res = locals[out];
         func.instruction(&Instruction::LocalSet(res));
@@ -12,7 +12,7 @@ pub(super) fn store_result_or_drop(func: &mut Function, op: &OpIR, locals: &BTre
 pub(super) fn store_non_none_result_or_drop(
     func: &mut Function,
     op: &OpIR,
-    locals: &BTreeMap<String, u32>,
+    locals: &WasmFrameLocals,
 ) {
     if let Some(out) = op.out.as_ref()
         && out != "none"

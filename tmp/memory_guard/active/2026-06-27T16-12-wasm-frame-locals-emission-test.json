@@ -1,0 +1,12 @@
+{
+  "timestamp": "2026-06-27T16:12:00-05:00",
+  "cwd": "C:\\Users\\adpen\\OneDrive\\Documents\\molt",
+  "command": "cargo test -p molt-backend-wasm --features wasm-backend wasm_compiles_exception_stack_depth_bookkeeping_family --lib",
+  "target_dir": "E:\\molt-target\\wasm-frame-locals",
+  "guard_pid": null,
+  "child_pid": null,
+  "status": "passed",
+  "scope": "Focused WASM frame-local emission proof",
+  "evidence_path": "logs/agents/wasm_frame_locals/emission_test.log",
+  "cleanup_policy": "Never kill Codex, Claude, MCP/plugin helpers, shell hosts, ancestors, or unrelated host control-plane processes. Molt cleanup requires live-proved Molt-owned build/test/bench/guard worker identity."
+}

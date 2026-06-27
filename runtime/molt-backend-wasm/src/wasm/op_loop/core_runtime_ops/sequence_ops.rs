@@ -6,7 +6,7 @@ pub(super) fn emit_sequence_runtime_op(
     op: &OpIR,
     func_ir: &FunctionIR,
     import_ids: &TrackedImportIds,
-    locals: &BTreeMap<String, u32>,
+    locals: &WasmFrameLocals,
     scalar_plan: &ScalarRepresentationPlan,
     reloc_enabled: bool,
     arena_local: Option<u32>,
