@@ -1206,7 +1206,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .build_int_to_ptr(task_ptr_bits, ptr_ty, "task_obj_ptr")
             .unwrap();
         let payload_base_words = (payload_base / 8) as usize;
-        let inc_fn = self.ensure_runtime_i64_fn("molt_inc_ref_obj", 1);
+        let inc_fn = self.ensure_runtime_void_fn("molt_inc_ref_obj", 1);
         for (idx, &arg_id) in payload_operands.iter().enumerate() {
             let arg_bits = self.materialize_dynbox_operand(arg_id);
             let field_ptr = unsafe {

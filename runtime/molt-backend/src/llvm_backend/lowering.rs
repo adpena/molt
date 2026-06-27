@@ -57,6 +57,8 @@ mod preserved_ops;
 #[cfg(feature = "llvm")]
 mod runtime_helpers;
 #[cfg(feature = "llvm")]
+mod state_machine_ops;
+#[cfg(feature = "llvm")]
 mod value_materialization;
 
 #[cfg(feature = "llvm")]
