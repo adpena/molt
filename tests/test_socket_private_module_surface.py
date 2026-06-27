@@ -28,6 +28,7 @@ _fake_socket.herror = OSError
 _fake_socket.socket = _SocketType
 _fake_socket.has_ipv6 = True
 _fake_socket.AF_INET = 2
+_fake_socket.SCM_RIGHTS = 1
 _fake_socket.SOCK_STREAM = 1
 _fake_socket.getaddrinfo = lambda *args, **kwargs: [("info", args)]
 _fake_socket.getdefaulttimeout = lambda: None
@@ -60,6 +61,12 @@ builtins._molt_intrinsics = {{
     "molt_socket_if_indextoname": lambda idx: "lo0",
     "molt_socket_cmsg_len": lambda n: n + 1,
     "molt_socket_cmsg_space": lambda n: n + 2,
+    "molt_socket_inet_pton": lambda family, text: b"\\x7f\\x00\\x00\\x01",
+    "molt_socket_inet_ntop": lambda family, packed: "127.0.0.1",
+    "molt_socket_htons": lambda value: value,
+    "molt_socket_ntohs": lambda value: value,
+    "molt_socket_htonl": lambda value: value,
+    "molt_socket_ntohl": lambda value: value,
     "molt_socket_sethostname": lambda name: None,
 }}
 
@@ -109,6 +116,14 @@ checks = {{
         and _private.if_nameindex() == [(1, "lo0")]
         and _private.if_nametoindex("lo0") == 1
         and _private.if_indextoname(1) == "lo0"
+        and _private.htons(1) == 1
+        and _private.ntohs(1) == 1
+        and _private.htonl(1) == 1
+        and _private.ntohl(1) == 1
+        and _private.inet_aton("127.0.0.1") == b"\\x7f\\x00\\x00\\x01"
+        and _private.inet_ntoa(b"\\x7f\\x00\\x00\\x01") == "127.0.0.1"
+        and _private.inet_pton(2, "127.0.0.1") == b"\\x7f\\x00\\x00\\x01"
+        and _private.inet_ntop(2, b"\\x7f\\x00\\x00\\x01") == "127.0.0.1"
     ),
     "private_handles_hidden": (
         "_MOLT_SOCKET_CONSTANTS" not in _private.__dict__
@@ -121,6 +136,14 @@ checks = {{
         and "_MOLT_IF_INDEXTONAME" not in _private.__dict__
         and "_MOLT_CMSG_LEN" not in _private.__dict__
         and "_MOLT_CMSG_SPACE" not in _private.__dict__
+        and "_MOLT_SOCKET_INET_PTON" not in _private.__dict__
+        and "_MOLT_SOCKET_INET_NTOP" not in _private.__dict__
+        and "_MOLT_SOCKET_HTONS" not in _private.__dict__
+        and "_MOLT_SOCKET_NTOHS" not in _private.__dict__
+        and "_MOLT_SOCKET_HTONL" not in _private.__dict__
+        and "_MOLT_SOCKET_NTOHL" not in _private.__dict__
+        and "_MOLT_AF_INET" not in _private.__dict__
+        and "_MOLT_HAS_CMSG" not in _private.__dict__
         and "_MOLT_SOCKET_SETHOSTNAME" not in _private.__dict__
     ),
 }}

@@ -306,7 +306,7 @@ Data science: importance 1, gap 1. Engineering: importance 3, gap 2. Web: import
 
 ### Current State
 
-`stdlib_csv = ["stdlib_serial"]` in Cargo.toml (line 111). `functions_logging.rs:19` contains `molt_csv_runtime_ready()` — confirming CSV has Rust backing. A drift bug was found and fixed in past sessions (csv.rs:2008 gating, per MEMORY.md). The `_csv.py` (listed in stdlib) at `src/molt/stdlib/_csv.py` is likely the low-level C-module replacement.
+`stdlib_csv = ["stdlib_serial"]` in Cargo.toml (line 111). `runtime/molt-runtime-serial/src/csv.rs` owns `molt_csv_runtime_ready()`, and the generated serial CSV resolver routes `molt_csv_*` symbols to that crate. A drift bug was found and fixed in past sessions (csv.rs:2008 gating, per MEMORY.md). The `_csv.py` (listed in stdlib) at `src/molt/stdlib/_csv.py` is likely the low-level C-module replacement.
 
 ### Scores
 

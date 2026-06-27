@@ -183,11 +183,19 @@ fn socket_u32_from_int_only(_py: &PyToken<'_>, value_bits: u64) -> Option<u32> {
         return None;
     }
     if value > BigInt::from(u32::MAX) {
-        raise_exception::<Option<u32>>(_py, "OverflowError", "int larger than 32 bits");
+        raise_exception::<Option<u32>>(
+            _py,
+            "OverflowError",
+            "Python int too large to convert to C unsigned long",
+        );
         return None;
     }
     let Some(out) = value.to_u32() else {
-        raise_exception::<Option<u32>>(_py, "OverflowError", "int larger than 32 bits");
+        raise_exception::<Option<u32>>(
+            _py,
+            "OverflowError",
+            "Python int too large to convert to C unsigned long",
+        );
         return None;
     };
     Some(out)
