@@ -109,6 +109,11 @@ class Check:
     timeout: int = 300  # seconds
     required: bool = True  # False = continue-on-error
     needs_rust: bool = False
+    # needs_cargo: requires the `cargo` binary (skip if absent) but performs NO
+    # heavy compile, so it must NOT take a compile slot. Use this for cheap
+    # toolchain-fact checks like `cargo metadata` that would otherwise contend
+    # for (and be starved by) real builds if marked needs_rust.
+    needs_cargo: bool = False
     needs_lean: bool = False
     needs_quint: bool = False
     needs_pytest: bool = False
@@ -267,6 +272,21 @@ def _build_checks() -> list[Check]:
     )
     checks.append(
         Check(
+            # The recompile-blast-radius ratchet (doc 56 FACT-A): fail closed if a
+            # cross-crate dependency re-couples a layer (a back-edge) or widens any
+            # crate's downstream recompile cone beyond the committed baseline, so
+            # the 21b/21f decomposition's build-cache isolation cannot silently
+            # regress. Reads `cargo metadata` only -- no compile -- so it uses
+            # needs_cargo (skip if cargo absent) and does NOT take a compile slot.
+            name="build-graph-ratchet",
+            tier=1,
+            cmd=_uv_run(str(TOOLS / "build_graph_audit.py"), "--check"),
+            timeout=60,
+            needs_cargo=True,
+        )
+    )
+    checks.append(
+        Check(
             name="runtime-bridge-test-stubs",
             tier=1,
             cmd=_uv_run(str(TOOLS / "check_runtime_bridge_test_stubs.py")),
@@ -325,6 +345,19 @@ def _build_checks() -> list[Check]:
             name="analysis-capsule-contract",
             tier=1,
             cmd=_uv_pytest(str(TESTS / "tools" / "test_analysis_capsule.py"), "-q"),
+            timeout=60,
+            needs_pytest=True,
+        )
+    )
+    checks.append(
+        Check(
+            # Proves the blast-radius ratchet's falsification logic (doc 56 §5):
+            # a synthetic re-coupling edge MUST be flagged as a back-edge and
+            # widen the offending crate's radius, and --check MUST fail on it. A
+            # gate that cannot fail certifies nothing.
+            name="build-graph-audit-contract",
+            tier=1,
+            cmd=_uv_pytest(str(TESTS / "tools" / "test_build_graph_audit.py"), "-q"),
             timeout=60,
             needs_pytest=True,
         )
@@ -561,7 +594,7 @@ def _build_checks() -> list[Check]:
 
 def _skip_reason(check: Check) -> str | None:
     """Return a skip reason if prerequisites are missing, else None."""
-    if check.needs_rust and not _has_tool("cargo"):
+    if (check.needs_rust or check.needs_cargo) and not _has_tool("cargo"):
         return "cargo not found"
     if check.needs_lean and not _has_tool("lake"):
         return "lake (Lean 4) not found"
