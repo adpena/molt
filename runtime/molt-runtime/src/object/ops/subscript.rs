@@ -62,6 +62,33 @@ pub extern "C" fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
                 if tid == TYPE_ID_LIST_BOOL {
                     return molt_list_bool_getitem(obj_bits, key_bits);
                 }
+                // tuple[int]: the most common indexed-tuple shape. Completes the
+                // entry fast-path tier (dict / list_int / list_bool already have
+                // one; tuple was the lone common sequence routed through the full
+                // linear type-dispatch below). Only the unambiguous case is taken
+                // here — exact tuple, a plain inline-int key (NOT bool/float/
+                // bigint, whose index semantics CPython treats distinctly), and an
+                // in-bounds offset. Every other shape (slice key, non-int key,
+                // out-of-bounds, tuple subclass) falls through to the full path
+                // below, so behavior is byte-identical to before this fast path.
+                if tid == TYPE_ID_TUPLE {
+                    let key = obj_from_bits(key_bits);
+                    if key.is_int() {
+                        let elems = seq_vec_ref(obj_ptr);
+                        let len = elems.len() as i64;
+                        let raw = key.as_int_unchecked();
+                        let idx = if raw < 0 { raw + len } else { raw };
+                        if idx >= 0 && idx < len {
+                            let val = elems[idx as usize];
+                            // inc_ref only for heap-pointer elements; inline
+                            // int/float/bool/None elements carry no refcount.
+                            if obj_from_bits(val).as_ptr().is_some() {
+                                inc_ref_bits(_py, val);
+                            }
+                            return val;
+                        }
+                    }
+                }
             }
         }
         if exception_pending(_py) {
