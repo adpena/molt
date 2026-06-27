@@ -137,6 +137,42 @@ def test_format_board_uses_root_specific_tooling_gaps(tmp_path: Path):
     assert "perf_causality.py (not built)" not in board
 
 
+def test_update_baseline_and_write_board_share_one_cli_scan(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+):
+    (tmp_path / "tools").mkdir(parents=True)
+    (tmp_path / "docs" / "design" / "foundation").mkdir(parents=True)
+    (tmp_path / "runtime" / "molt-runtime" / "src").mkdir(parents=True)
+    (tmp_path / "runtime" / "molt-runtime" / "src" / "lib.rs").write_text(
+        'pub fn missing() { todo!("tracked implementation"); }\n',
+        encoding="utf-8",
+    )
+
+    assert (
+        SA.main(
+            [
+                "--root",
+                str(tmp_path),
+                "--update-baseline",
+                "--write-board",
+            ]
+        )
+        == 0
+    )
+
+    baseline = json.loads((tmp_path / "tools" / "structural_audit_baseline.json").read_text())
+    board = (
+        tmp_path / "docs" / "design" / "foundation" / "STRUCTURAL_AUDIT_BOARD.md"
+    ).read_text()
+    output = capsys.readouterr().out
+
+    assert baseline["debt_markers_total"] == 1
+    assert "| debt_markers_total | 1 |" in board
+    assert "runtime/molt-runtime/src/lib.rs:1" in board
+    assert "baseline updated:" in output
+    assert "board written:" in output
+
+
 def test_debt_probe_ignores_domain_temporary_and_tool_regex_strings(tmp_path: Path):
     pkg = tmp_path / "src" / "molt"
     pkg.mkdir(parents=True)
