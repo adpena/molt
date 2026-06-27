@@ -20,6 +20,7 @@ mod context;
 mod control_flow;
 mod data_segments;
 mod function_emitter;
+mod local_analysis;
 mod local_layout;
 mod module_abi;
 mod op_loop;

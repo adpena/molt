@@ -2,23 +2,8 @@ use super::constant_ops::{
     const_seed_bits, needs_literal_pointer_locals, needs_seeded_runtime_const,
 };
 use super::context::CompileFuncContext;
-use super::control_flow::has_non_linear_control_flow;
+use super::local_analysis::{LocalVariableAnalysis, analyze_local_variables};
 use super::*;
-
-pub(super) fn collect_read_vars(ops: &[OpIR]) -> BTreeSet<String> {
-    let mut read_vars = BTreeSet::new();
-    for op in ops {
-        if let Some(args) = &op.args {
-            for arg in args {
-                read_vars.insert(arg.clone());
-            }
-        }
-        if let Some(var) = &op.var {
-            read_vars.insert(var.clone());
-        }
-    }
-    read_vars
-}
 
 pub(super) struct WasmLocalLayout {
     pub(super) locals: BTreeMap<String, u32>,
@@ -71,120 +56,14 @@ impl WasmLocalLayout {
             }
         }
 
-        // --- Dead local elimination: pre-scan to find which IR variables are
-        // ever *read* (appear in op.args or op.var). Output-only variables
-        // that are never read can share a single WASM local ("dead sink"),
-        // reducing the total local count and binary size.
-        let read_vars = collect_read_vars(&func_ir.ops);
-        // Also treat function parameters as always live.
-        let param_set: BTreeSet<String> = func_ir.params.iter().cloned().collect();
-        let mut runtime_lookup_vars: BTreeSet<String> = BTreeSet::new();
-        for op in &func_ir.ops {
-            if op.kind == "builtin_func"
-                && op.s_value.as_deref() == Some("molt_require_intrinsic_runtime")
-                && let Some(out) = op.out.as_ref()
-            {
-                runtime_lookup_vars.insert(out.clone());
-            }
-        }
-        let mut runtime_lookup_only_vars = runtime_lookup_vars.clone();
-        for op in &func_ir.ops {
-            if let Some(var) = op.var.as_ref()
-                && runtime_lookup_vars.contains(var)
-            {
-                runtime_lookup_only_vars.remove(var);
-            }
-            if let Some(args) = op.args.as_ref() {
-                for (idx, arg) in args.iter().enumerate() {
-                    if !runtime_lookup_vars.contains(arg) {
-                        continue;
-                    }
-                    let ok = op.kind == "call_func" && idx == 0 && args.len() == 3;
-                    if !ok {
-                        runtime_lookup_only_vars.remove(arg);
-                    }
-                }
-            }
-        }
-
-        // --- Local variable coalescing (liveness analysis) ---
-        // Compute live ranges for each variable: first write -> last read.
-        // Variables whose ranges don't overlap can share a WASM local,
-        // reducing total local count and binary size.
-        let coalesced_map: BTreeMap<String, String> = if has_non_linear_control_flow(&func_ir.ops) {
-            BTreeMap::new()
-        } else {
-            let mut first_write: BTreeMap<String, usize> = BTreeMap::new();
-            let mut last_read: BTreeMap<String, usize> = BTreeMap::new();
-
-            for (op_idx, op) in func_ir.ops.iter().enumerate() {
-                if let Some(ref out) = op.out {
-                    first_write.entry(out.clone()).or_insert(op_idx);
-                }
-                if let Some(ref args) = op.args {
-                    for arg in args {
-                        last_read.insert(arg.clone(), op_idx);
-                    }
-                }
-                if let Some(ref var) = op.var {
-                    last_read.insert(var.clone(), op_idx);
-                }
-            }
-
-            // Build live ranges for coalescable temporaries only.
-            // Only coalesce variables starting with __tmp or __v to be conservative.
-            // Skip: parameters, dead-sink candidates (never read), _ptr/_len derivatives.
-            let is_coalescable = |name: &str| -> bool {
-                (name.starts_with("__tmp") || name.starts_with("__v"))
-                    && !param_set.contains(name)
-                    && read_vars.contains(name)
-                    && !name.ends_with("_ptr")
-                    && !name.ends_with("_len")
-            };
-
-            let mut ranges: Vec<(usize, usize, String)> = Vec::new();
-            for (name, start) in &first_write {
-                if !is_coalescable(name) {
-                    continue;
-                }
-                let end = last_read.get(name).copied().unwrap_or(*start);
-                ranges.push((*start, end, name.clone()));
-            }
-
-            // Sort by start position for greedy linear scan.
-            ranges.sort_by_key(|r| r.0);
-
-            // Greedy allocation: assign each variable to the lowest-numbered
-            // "slot" (represented by the first variable that occupied it)
-            // whose previous occupant's range has ended.
-            // slot_end[i] = the end position of the variable currently in slot i.
-            // slot_repr[i] = the representative variable name for slot i.
-            let mut slot_end: Vec<usize> = Vec::new();
-            let mut slot_repr: Vec<String> = Vec::new();
-            let mut map: BTreeMap<String, String> = BTreeMap::new();
-
-            for (start, end, name) in &ranges {
-                // Find the lowest slot whose range has ended (end < start).
-                let mut assigned = false;
-                for (i, se) in slot_end.iter_mut().enumerate() {
-                    if *se < *start {
-                        // Reuse this slot: map this variable to the slot's representative.
-                        *se = *end;
-                        map.insert(name.clone(), slot_repr[i].clone());
-                        assigned = true;
-                        break;
-                    }
-                }
-                if !assigned {
-                    // Need a new slot; this variable is its own representative.
-                    slot_end.push(*end);
-                    slot_repr.push(name.clone());
-                    map.insert(name.clone(), name.clone());
-                }
-            }
-
-            map
-        };
+        let LocalVariableAnalysis {
+            read_vars,
+            param_set,
+            runtime_lookup_only_vars,
+            coalesced_map,
+            defined_vars,
+            used_vars,
+        } = analyze_local_variables(func_ir);
 
         // Allocate a single shared dead-sink local for output-only variables.
         let dead_sink_idx = local_count;
@@ -240,22 +119,6 @@ impl WasmLocalLayout {
         let mut const_seed_seen: BTreeSet<String> = BTreeSet::new();
         let mut const_seed_locals_all: Vec<(u32, i64)> = Vec::new();
         let mut seeded_runtime_const_ops: Vec<(usize, OpIR)> = Vec::new();
-        let mut defined_vars: BTreeSet<String> = BTreeSet::new();
-        let mut used_vars: BTreeSet<String> = BTreeSet::new();
-        for op in &func_ir.ops {
-            if let Some(args) = &op.args {
-                for arg in args {
-                    if arg != "self" && arg != "none" && arg.starts_with('v') {
-                        used_vars.insert(arg.clone());
-                    }
-                }
-            }
-            if let Some(out) = &op.out
-                && out != "none"
-            {
-                defined_vars.insert(out.clone());
-            }
-        }
         for (op_idx, op) in func_ir.ops.iter().enumerate() {
             if wasm_scalar_integer_fast_path_for_op(&scalar_plan, op) {
                 fast_int_count += 1;
