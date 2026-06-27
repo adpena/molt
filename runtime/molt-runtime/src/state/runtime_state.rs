@@ -28,8 +28,6 @@ use crate::builtins::itertools::ItertoolsRuntimeState;
 use crate::builtins::modules::ModulesRuntimeState;
 use crate::builtins::operator::OperatorRuntimeState;
 use crate::builtins::platform::PlatformRuntimeState;
-#[cfg(not(feature = "stdlib_math"))]
-use crate::builtins::random_mod::RandomRuntimeState;
 use crate::builtins::signal_ext::{SignalRuntimeState, signal_runtime_state_publish};
 use crate::builtins::sys_ext::SysRuntimeState;
 use crate::builtins::types::TypesRuntimeState;
@@ -121,6 +119,17 @@ pub(crate) struct SpecialCache {
     pub(crate) function_globals_descriptor: AtomicU64,
 }
 
+#[cfg(any(
+    feature = "stdlib_collections",
+    feature = "stdlib_compression",
+    feature = "stdlib_itertools",
+    feature = "stdlib_logging_ext",
+    feature = "stdlib_math",
+    feature = "stdlib_regex",
+    feature = "stdlib_serial",
+    feature = "sqlite",
+    test
+))]
 pub(crate) type RuntimeExtensionStateInit = unsafe extern "C" fn() -> *mut u8;
 pub(crate) type RuntimeExtensionStateClear = unsafe extern "C" fn(*mut u8);
 pub(crate) type RuntimeExtensionStateDrop = unsafe extern "C" fn(*mut u8);
@@ -332,8 +341,6 @@ pub(crate) struct RuntimeState {
     pub(crate) types: TypesRuntimeState,
     #[cfg(not(feature = "stdlib_itertools"))]
     pub(crate) itertools: ItertoolsRuntimeState,
-    #[cfg(not(feature = "stdlib_math"))]
-    pub(crate) random: Mutex<RandomRuntimeState>,
     pub(crate) sys_ext: SysRuntimeState,
     pub(crate) c_api_module: Mutex<CApiModuleRuntimeState>,
     pub(crate) call_bind: Mutex<CallBindRuntimeState>,
@@ -443,8 +450,6 @@ impl RuntimeState {
             types: TypesRuntimeState::new(),
             #[cfg(not(feature = "stdlib_itertools"))]
             itertools: ItertoolsRuntimeState::new(),
-            #[cfg(not(feature = "stdlib_math"))]
-            random: Mutex::new(RandomRuntimeState::new()),
             sys_ext: SysRuntimeState::new(),
             c_api_module: Mutex::new(CApiModuleRuntimeState::new()),
             call_bind: Mutex::new(CallBindRuntimeState::new()),
@@ -523,6 +528,17 @@ impl RuntimeState {
     }
 }
 
+#[cfg(any(
+    feature = "stdlib_collections",
+    feature = "stdlib_compression",
+    feature = "stdlib_itertools",
+    feature = "stdlib_logging_ext",
+    feature = "stdlib_math",
+    feature = "stdlib_regex",
+    feature = "stdlib_serial",
+    feature = "sqlite",
+    test
+))]
 pub(crate) fn runtime_extension_state_get_or_init(
     state: &RuntimeState,
     key: &[u8],

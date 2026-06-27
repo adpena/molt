@@ -405,12 +405,8 @@ pub(crate) use crate::builtins::classes::{
     BuiltinClasses, builtin_classes, builtin_classes_if_initialized, builtin_classes_shutdown,
     builtin_type_bits, class_name_for_error, is_builtin_class_bits, molt_builtin_class_lookup,
 };
-#[cfg(not(feature = "stdlib_math"))]
-pub use crate::builtins::cmath_mod::*;
 pub use crate::builtins::codecs::*;
 pub use crate::builtins::codecs_ext::*;
-#[cfg(not(feature = "stdlib_math"))]
-pub use crate::builtins::colorsys::*;
 #[cfg(feature = "stdlib_compression")]
 pub use crate::builtins::compression_common::*;
 pub use crate::builtins::concurrent::*;
@@ -475,8 +471,6 @@ pub(crate) use crate::builtins::exceptions::{
 pub(crate) use crate::builtins::exceptions::{raise_os_error, raise_os_error_errno};
 pub use crate::builtins::fcntl::*;
 pub use crate::builtins::fnmatch::*;
-#[cfg(not(feature = "stdlib_math"))]
-pub use crate::builtins::fractions::*;
 pub(crate) use crate::builtins::frames::{
     exception_materialize_traceback_bits, frame_stack_active_globals_bits, frame_stack_pop,
     frame_stack_push_function, frame_stack_push_owned, frame_stack_set_line, molt_getframe,
@@ -512,8 +506,6 @@ pub use crate::builtins::itertools::*;
 pub use crate::builtins::json::*;
 #[cfg(feature = "stdlib_compression")]
 pub use crate::builtins::lzma::*;
-#[cfg(not(feature = "stdlib_math"))]
-pub use crate::builtins::math::*;
 pub(crate) use crate::builtins::methods::*;
 pub use crate::builtins::modules::*;
 pub(crate) use crate::builtins::numbers::{
@@ -534,8 +526,6 @@ pub use crate::builtins::platform::*;
 pub use crate::builtins::platform_mod::*;
 pub use crate::builtins::pprint_ext::*;
 pub use crate::builtins::punycode::*;
-#[cfg(not(feature = "stdlib_math"))]
-pub use crate::builtins::random_mod::*;
 #[cfg(feature = "stdlib_crypto")]
 pub use crate::builtins::secrets::*;
 pub use crate::builtins::select::*;
@@ -708,7 +698,7 @@ pub(crate) use crate::object::{
 pub use crate::object::{
     MoltHeader, bump_type_version, global_type_version, molt_dec_ref, molt_inc_ref,
 };
-#[cfg(any(not(feature = "stdlib_ipaddress"), not(feature = "stdlib_math")))]
+#[cfg(not(feature = "stdlib_ipaddress"))]
 pub(crate) use crate::provenance::opaque_handle_ptr_from_bits;
 #[allow(unused_imports)]
 pub(crate) use crate::provenance::{

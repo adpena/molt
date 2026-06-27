@@ -2,103 +2,16 @@
 #[inline(never)]
 #[cold]
 pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
-    match symbol {
-        "molt_cmath_acos" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_cmath_acos",
-            crate::molt_cmath_acos as *const (),
-        )),
-        "molt_cmath_acosh" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_cmath_acosh",
-            crate::molt_cmath_acosh as *const (),
-        )),
-        "molt_cmath_asin" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_cmath_asin",
-            crate::molt_cmath_asin as *const (),
-        )),
-        "molt_cmath_asinh" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_cmath_asinh",
-            crate::molt_cmath_asinh as *const (),
-        )),
-        "molt_cmath_atan" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_cmath_atan",
-            crate::molt_cmath_atan as *const (),
-        )),
-        "molt_cmath_atanh" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_cmath_atanh",
-            crate::molt_cmath_atanh as *const (),
-        )),
-        "molt_cmath_constants" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_cmath_constants",
-            crate::molt_cmath_constants as *const (),
-        )),
-        "molt_cmath_cos" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_cmath_cos",
-            crate::molt_cmath_cos as *const (),
-        )),
-        "molt_cmath_cosh" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_cmath_cosh",
-            crate::molt_cmath_cosh as *const (),
-        )),
-        "molt_cmath_exp" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_cmath_exp",
-            crate::molt_cmath_exp as *const (),
-        )),
-        "molt_cmath_isclose" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_cmath_isclose",
-            crate::molt_cmath_isclose as *const (),
-        )),
-        "molt_cmath_isfinite" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_cmath_isfinite",
-            crate::molt_cmath_isfinite as *const (),
-        )),
-        "molt_cmath_isinf" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_cmath_isinf",
-            crate::molt_cmath_isinf as *const (),
-        )),
-        "molt_cmath_isnan" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_cmath_isnan",
-            crate::molt_cmath_isnan as *const (),
-        )),
-        "molt_cmath_log" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_cmath_log",
-            crate::molt_cmath_log as *const (),
-        )),
-        "molt_cmath_log10" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_cmath_log10",
-            crate::molt_cmath_log10 as *const (),
-        )),
-        "molt_cmath_phase" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_cmath_phase",
-            crate::molt_cmath_phase as *const (),
-        )),
-        "molt_cmath_polar" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_cmath_polar",
-            crate::molt_cmath_polar as *const (),
-        )),
-        "molt_cmath_rect" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_cmath_rect",
-            crate::molt_cmath_rect as *const (),
-        )),
-        "molt_cmath_sin" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_cmath_sin",
-            crate::molt_cmath_sin as *const (),
-        )),
-        "molt_cmath_sinh" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_cmath_sinh",
-            crate::molt_cmath_sinh as *const (),
-        )),
-        "molt_cmath_sqrt" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_cmath_sqrt",
-            crate::molt_cmath_sqrt as *const (),
-        )),
-        "molt_cmath_tan" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_cmath_tan",
-            crate::molt_cmath_tan as *const (),
-        )),
-        "molt_cmath_tanh" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_cmath_tanh",
-            crate::molt_cmath_tanh as *const (),
-        )),
-        _ => None,
+    #[cfg(feature = "stdlib_math")]
+    {
+        molt_runtime_math::intrinsics_generated::cmath_resolver::resolve_symbol_with(
+            symbol,
+            crate::builtins::functions::runtime_fn_addr,
+        )
+    }
+    #[cfg(not(feature = "stdlib_math"))]
+    {
+        let _ = symbol;
+        None
     }
 }

@@ -326,13 +326,23 @@ def test_refusal_groups_multiple_blocked_modules() -> None:
     assert "stdlib_crypto" in message
 
 
-def test_normal_python_only_imports_are_unaffected() -> None:
-    # A pure-Python stdlib module with no gated intrinsics never refuses.
+def test_core_intrinsic_imports_are_unaffected() -> None:
+    # A stdlib module backed only by core ungated intrinsics never refuses.
     rc, message = _run_pass(
-        [("colorsys", STDLIB_ROOT / "colorsys.py")], "micro", "native"
+        [("keyword", STDLIB_ROOT / "keyword.py")], "micro", "native"
     )
     assert rc is None
     assert message is None
+
+
+def test_math_leaf_intrinsic_modules_refuse_on_micro_profile() -> None:
+    rc, message = _run_pass(
+        [("colorsys", STDLIB_ROOT / "colorsys.py")], "micro", "native"
+    )
+    assert rc is not None and rc != 0
+    assert message is not None
+    assert "stdlib_math" in message
+    assert "colorsys" in message
 
 
 def test_modules_outside_stdlib_root_are_ignored() -> None:

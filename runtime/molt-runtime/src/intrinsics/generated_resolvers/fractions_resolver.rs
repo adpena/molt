@@ -2,99 +2,16 @@
 #[inline(never)]
 #[cold]
 pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
-    match symbol {
-        "molt_fraction_abs" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_fraction_abs",
-            crate::molt_fraction_abs as *const (),
-        )),
-        "molt_fraction_add" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_fraction_add",
-            crate::molt_fraction_add as *const (),
-        )),
-        "molt_fraction_as_integer_ratio" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_fraction_as_integer_ratio",
-            crate::molt_fraction_as_integer_ratio as *const (),
-        )),
-        "molt_fraction_denominator" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_fraction_denominator",
-            crate::molt_fraction_denominator as *const (),
-        )),
-        "molt_fraction_drop" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_fraction_drop",
-            crate::molt_fraction_drop as *const (),
-        )),
-        "molt_fraction_eq" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_fraction_eq",
-            crate::molt_fraction_eq as *const (),
-        )),
-        "molt_fraction_floordiv" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_fraction_floordiv",
-            crate::molt_fraction_floordiv as *const (),
-        )),
-        "molt_fraction_from_float" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_fraction_from_float",
-            crate::molt_fraction_from_float as *const (),
-        )),
-        "molt_fraction_from_str" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_fraction_from_str",
-            crate::molt_fraction_from_str as *const (),
-        )),
-        "molt_fraction_hash" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_fraction_hash",
-            crate::molt_fraction_hash as *const (),
-        )),
-        "molt_fraction_le" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_fraction_le",
-            crate::molt_fraction_le as *const (),
-        )),
-        "molt_fraction_limit_denominator" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_fraction_limit_denominator",
-            crate::molt_fraction_limit_denominator as *const (),
-        )),
-        "molt_fraction_lt" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_fraction_lt",
-            crate::molt_fraction_lt as *const (),
-        )),
-        "molt_fraction_mod" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_fraction_mod",
-            crate::molt_fraction_mod as *const (),
-        )),
-        "molt_fraction_mul" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_fraction_mul",
-            crate::molt_fraction_mul as *const (),
-        )),
-        "molt_fraction_neg" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_fraction_neg",
-            crate::molt_fraction_neg as *const (),
-        )),
-        "molt_fraction_new" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_fraction_new",
-            crate::molt_fraction_new as *const (),
-        )),
-        "molt_fraction_numerator" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_fraction_numerator",
-            crate::molt_fraction_numerator as *const (),
-        )),
-        "molt_fraction_pow" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_fraction_pow",
-            crate::molt_fraction_pow as *const (),
-        )),
-        "molt_fraction_sub" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_fraction_sub",
-            crate::molt_fraction_sub as *const (),
-        )),
-        "molt_fraction_to_float" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_fraction_to_float",
-            crate::molt_fraction_to_float as *const (),
-        )),
-        "molt_fraction_to_str" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_fraction_to_str",
-            crate::molt_fraction_to_str as *const (),
-        )),
-        "molt_fraction_truediv" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_fraction_truediv",
-            crate::molt_fraction_truediv as *const (),
-        )),
-        _ => None,
+    #[cfg(feature = "stdlib_math")]
+    {
+        molt_runtime_math::intrinsics_generated::fractions_resolver::resolve_symbol_with(
+            symbol,
+            crate::builtins::functions::runtime_fn_addr,
+        )
+    }
+    #[cfg(not(feature = "stdlib_math"))]
+    {
+        let _ = symbol;
+        None
     }
 }

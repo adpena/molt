@@ -559,6 +559,7 @@ pub(crate) fn hash_bigint_value(big: &BigInt) -> i64 {
 /// `|n| mod _PyHASH_MODULUS` as a `u64` in `[0, _PyHASH_MODULUS)`. This is the
 /// magnitude of CPython's `hash(abs(n))` for a non-negative argument (no sign,
 /// no `-1 -> -2` fixup, since a non-negative residue is never `-1`).
+#[cfg(any(feature = "stdlib_math", feature = "stdlib_serial", test))]
 fn bigint_abs_mod_modulus(n: &BigInt) -> u64 {
     let modulus = hash_modulus_big();
     // mod_floor on a non-negative dividend with a positive modulus yields a
@@ -568,6 +569,7 @@ fn bigint_abs_mod_modulus(n: &BigInt) -> u64 {
 
 /// `base^exp mod _PyHASH_MODULUS` via square-and-multiply over the Mersenne
 /// modular multiply. `base` must already be reduced (`< _PyHASH_MODULUS`).
+#[cfg(any(feature = "stdlib_math", feature = "stdlib_serial", test))]
 fn pow_mod_mersenne(mut base: u64, mut exp: u64) -> u64 {
     let mut result = 1u64;
     while exp > 0 {
@@ -586,6 +588,7 @@ fn pow_mod_mersenne(mut base: u64, mut exp: u64) -> u64 {
 /// (`_PyHASH_MODULUS` is the Mersenne prime `2**61 - 1`), i.e. `q^(M-2) mod M`.
 /// `q_mod` must be reduced and non-zero (the caller guarantees `denominator`
 /// is not divisible by the modulus before calling).
+#[cfg(any(feature = "stdlib_math", feature = "stdlib_serial", test))]
 fn modinv_mersenne(q_mod: u64) -> u64 {
     pow_mod_mersenne(q_mod, PY_HASH_MODULUS - 2)
 }
@@ -605,6 +608,7 @@ fn modinv_mersenne(q_mod: u64) -> u64 {
 /// `M == _PyHASH_MODULUS == 2**61 - 1`. This is the single shared authority for
 /// the cross-type invariant `hash(1) == hash(1.0) == hash(Fraction(1)) ==
 /// hash(Decimal(1))` and `hash(Fraction(3, 2)) == hash(1.5)`.
+#[cfg(any(feature = "stdlib_math", feature = "stdlib_serial", test))]
 pub(crate) fn py_numeric_hash(numerator: &BigInt, denominator: &BigInt) -> i64 {
     let den_mod = bigint_abs_mod_modulus(denominator);
     let hash_mag: u64 = if den_mod == 0 {

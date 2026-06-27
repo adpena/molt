@@ -13,12 +13,8 @@ pub(crate) mod attributes;
 pub(crate) mod bz2;
 pub(crate) mod callable;
 pub(crate) mod classes;
-#[cfg(not(feature = "stdlib_math"))]
-pub(crate) mod cmath_mod;
 pub(crate) mod codecs;
 pub(crate) mod codecs_ext;
-#[cfg(not(feature = "stdlib_math"))]
-pub(crate) mod colorsys;
 #[cfg(feature = "stdlib_compression")]
 pub(crate) mod compression_bridge;
 #[cfg(feature = "stdlib_compression")]
@@ -37,8 +33,6 @@ pub(crate) mod enum_ext;
 pub(crate) mod exceptions;
 pub(crate) mod fcntl;
 pub(crate) mod fnmatch;
-#[cfg(not(feature = "stdlib_math"))]
-pub(crate) mod fractions;
 pub(crate) mod frames;
 pub(crate) mod functions;
 pub(crate) mod functions_fnmatch;
@@ -74,8 +68,6 @@ pub(crate) mod lzma;
 #[cfg(all(feature = "stdlib_compression", target_arch = "wasm32"))]
 #[path = "lzma_wasm.rs"]
 pub(crate) mod lzma;
-#[cfg(not(feature = "stdlib_math"))]
-pub(crate) mod math;
 pub(crate) mod methods;
 mod micro_stubs;
 pub(crate) mod modules;
@@ -89,8 +81,6 @@ pub(crate) mod platform;
 pub(crate) mod platform_mod;
 pub(crate) mod pprint_ext;
 pub(crate) mod punycode;
-#[cfg(not(feature = "stdlib_math"))]
-pub(crate) mod random_mod;
 #[cfg(feature = "stdlib_crypto")]
 pub(crate) mod secrets;
 pub(crate) mod select;

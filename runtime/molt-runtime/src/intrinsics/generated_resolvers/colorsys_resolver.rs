@@ -2,31 +2,16 @@
 #[inline(never)]
 #[cold]
 pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
-    match symbol {
-        "molt_colorsys_rgb_to_hls" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_colorsys_rgb_to_hls",
-            crate::molt_colorsys_rgb_to_hls as *const (),
-        )),
-        "molt_colorsys_hls_to_rgb" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_colorsys_hls_to_rgb",
-            crate::molt_colorsys_hls_to_rgb as *const (),
-        )),
-        "molt_colorsys_rgb_to_hsv" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_colorsys_rgb_to_hsv",
-            crate::molt_colorsys_rgb_to_hsv as *const (),
-        )),
-        "molt_colorsys_hsv_to_rgb" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_colorsys_hsv_to_rgb",
-            crate::molt_colorsys_hsv_to_rgb as *const (),
-        )),
-        "molt_colorsys_rgb_to_yiq" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_colorsys_rgb_to_yiq",
-            crate::molt_colorsys_rgb_to_yiq as *const (),
-        )),
-        "molt_colorsys_yiq_to_rgb" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_colorsys_yiq_to_rgb",
-            crate::molt_colorsys_yiq_to_rgb as *const (),
-        )),
-        _ => None,
+    #[cfg(feature = "stdlib_math")]
+    {
+        molt_runtime_math::intrinsics_generated::colorsys_resolver::resolve_symbol_with(
+            symbol,
+            crate::builtins::functions::runtime_fn_addr,
+        )
+    }
+    #[cfg(not(feature = "stdlib_math"))]
+    {
+        let _ = symbol;
+        None
     }
 }

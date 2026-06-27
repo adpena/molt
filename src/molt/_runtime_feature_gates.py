@@ -65,6 +65,14 @@ RUNTIME_FEATURE_GATES: tuple[tuple[str, str], ...] = (
     ("molt_timezone_", "stdlib_serial"),
     ("molt_struct_", "stdlib_serial"),
     ("molt_uu_codec", "stdlib_serial"),
+    # math-family intrinsics live only in molt-runtime-math. Disabled profiles
+    # must refuse imports instead of relying on deleted in-core fallback copies.
+    ("molt_cmath_", "stdlib_math"),
+    ("molt_colorsys_", "stdlib_math"),
+    ("molt_fraction_", "stdlib_math"),
+    ("molt_math_", "stdlib_math"),
+    ("molt_random_", "stdlib_math"),
+    ("molt_statistics_", "stdlib_math"),
     # ast
     ("molt_ast_", "stdlib_ast"),
     # collections + argparse live in the extracted collections crate.
@@ -227,6 +235,7 @@ LINK_AFFECTING_FEATURES: frozenset[str] = frozenset(
         "stdlib_fs_extra",
         "stdlib_http",
         "stdlib_logging_ext",
+        "stdlib_math",
         "stdlib_net",
         "stdlib_regex",
         "stdlib_serial",
