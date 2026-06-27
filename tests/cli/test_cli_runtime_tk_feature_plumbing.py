@@ -195,6 +195,45 @@ def test_runtime_lib_path_is_stdlib_profile_qualified(
     )
 
 
+def test_cargo_target_root_ignores_removed_legacy_target_root_env(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    legacy_key = "MOLT" + "_TARGET_ROOT"
+    cli._cargo_target_root_cached.cache_clear()
+    monkeypatch.delenv("CARGO_TARGET_DIR", raising=False)
+    for key in (
+        "MOLT_EXT_ROOT",
+        "MOLT_REQUIRE_EXTERNAL_ARTIFACTS",
+        "MOLT_PREFER_EXTERNAL_ARTIFACTS",
+        "MOLT_USE_EXTERNAL_ARTIFACTS",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv(legacy_key, str(tmp_path / "legacy-target"))
+    monkeypatch.setenv("MOLT_SESSION_ID", "alpha/session:beta")
+
+    assert cli._cargo_target_root(tmp_path) == (
+        tmp_path / "target" / "sessions" / "alpha_session_beta"
+    )
+
+
+def test_cargo_target_root_uses_dx_external_session_target_when_required(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    external_root = tmp_path / "external" / "Molt"
+    cli._cargo_target_root_cached.cache_clear()
+    monkeypatch.delenv("CARGO_TARGET_DIR", raising=False)
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(external_root))
+    monkeypatch.setenv("MOLT_REQUIRE_EXTERNAL_ARTIFACTS", "1")
+    monkeypatch.setenv("MOLT_ALLOW_C_DRIVE_ARTIFACTS", "1")
+    monkeypatch.setenv("MOLT_SESSION_ID", "agent-one")
+
+    assert cli._cargo_target_root(tmp_path) == (
+        external_root.resolve() / "target" / "sessions" / "agent-one"
+    )
+
+
 def test_runtime_fingerprint_path_is_stdlib_profile_qualified(tmp_path: Path) -> None:
     target_root = tmp_path / "target" / "dev-fast"
     micro = target_root / "libmolt_runtime.stdlib_micro.a"
