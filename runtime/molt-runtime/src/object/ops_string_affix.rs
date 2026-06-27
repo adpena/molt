@@ -633,7 +633,11 @@ pub extern "C" fn molt_string_center(hay_bits: u64, width_bits: u64, fill_bits: 
                     Err(_) => usize::MAX,
                 };
                 let pad = width_usize.saturating_sub(string_char_count(hay_str));
-                let left = pad.div_ceil(2);
+                // CPython `str.center` (Objects/stringlib/transmogrify.h,
+                // stringlib_center): `left = marg / 2 + (marg & width & 1)`,
+                // i.e. the extra fill goes on the right unless BOTH the total
+                // padding and the target width are odd.
+                let left = pad / 2 + (pad & width_usize & 1);
                 let right = pad - left;
                 align_string_with_fill(hay_str, fill_char, left, right)
             };
