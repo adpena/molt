@@ -106,7 +106,7 @@ ordering the artifact, and gating the result** — not re-measuring.
 | **Native ad-hoc codesign** | `src/molt/cli/native_toolchain.py` `_codesign_binary` (`codesign -f -s -`) | Ad-hoc signs a Mach-O; called for the **daemon binary** (`__init__.py:27484`) and **BOLT output** (`_atomic_copy_file(codesign=True)`) | **NOT called for the user binary** after `_post_link_strip(output_binary)` (`__init__.py:20842`) — the load-bearing gap (§3.1) |
 | **Real-identity codesign** | `src/molt/cli/__init__.py` `_codesign_sign` / `_codesign_identity_info` (lines ~3750–3805) | `codesign -s <identity>` + display/verify for a configured Developer-ID | The "preferred over ad-hoc when configured" branch the build-time signer dispatches to (§3.1) |
 | **Native link driver** | `src/molt/cli/__init__.py` `_build_native_link_driver_command` / `_finalize_native_link` (lines ~20156–20285) | ld64 `-dead_strip` + `-exported_symbols_list` (Darwin); `--gc-sections` + `--version-script` (ELF); `-x -S` + `strip -x` post-link; `-Wl,-O2`; `/OPT:REF` (Windows) | No `-order_file` (Darwin) / ordered-section (ELF) for page-in locality; no `__TEXT`/`__DATA` hot-prefix grouping (§3.2) |
-| **Order-file generator (STUB)** | `runtime/molt-tir/src/tir/bolt.rs` `generate_order_file` (lines 124–136) | Writes a *placeholder* order file ("# Add function symbols in hot-to-cold order"); BOLT/`perf2bolt` (Linux) + Instruments (macOS) scaffolding exists | **The stub never emits real symbols** — this arc derives the startup-hot symbol order and feeds it to the linker (§3.2) |
+| **Order-file generator (STUB)** | `runtime/molt-passes/src/tir/bolt.rs` `generate_order_file` (lines 124–136) | Writes a *placeholder* order file ("# Add function symbols in hot-to-cold order"); BOLT/`perf2bolt` (Linux) + Instruments (macOS) scaffolding exists | **The stub never emits real symbols** — this arc derives the startup-hot symbol order and feeds it to the linker (§3.2) |
 | **BOLT post-link** | `tools/bolt_optimize.sh` + `native_toolchain.py::_run_bolt_post_link` (`--bolt`) | Optional BOLT reordering of an existing binary (re-codesigns via `_atomic_copy_file(codesign=True)`) | The *opt-in heavyweight* path; this arc adds the *always-on lightweight* static startup order (§3.2) and reuses BOLT's reorder as the heavy tier |
 | **Binary-size audit** | `tools/binary_size_analysis.py`, `tools/output_startup_size_audit.py` (fresh-path aware), `tools/wasm_size_audit.py` | Section/symbol size attribution; fresh-path startup shape; WASM raw/gzip/brotli | The size arc's instruments — this arc *consumes* their output (smaller image ⇒ less page-in) and feeds the convergence (§6) |
 | **Runtime-init trace** | `runtime/molt-runtime/src/state/runtime_state.rs` `molt_runtime_init` + `trace_runtime_init` (lines 668–818) | The 12-phase `MOLT_TRACE_RUNTIME_INIT` ladder (0.127 ms total); eager capability load (security-required, not deferrable) | No micro-budget guard so a future phase can't silently regress init (§3.4); confirms NO snapshot is warranted |
@@ -558,7 +558,7 @@ cold-start surface (the deploy story).
 
 ### Phase 5 — Profile-refined `StartupOrder` (complete the `bolt.rs` stub)
 
-**Deliverable:** complete `runtime/molt-tir/src/tir/bolt.rs::generate_order_file`
+**Deliverable:** complete `runtime/molt-passes/src/tir/bolt.rs::generate_order_file`
 (today a stub) to emit a *real* startup-hot order from an Instruments
 (`xctrace record --template 'Time Profiler'`)/`perf2bolt` cold-path profile,
 refining Phase 2's static order; wire it behind the existing `--bolt`-class opt-in
@@ -701,7 +701,7 @@ build (serialize). Phase 3 coordinates with arc 64's owner.
 | 2 | `runtime/molt-backend/src/native_backend/simple_backend.rs` (additive `startup_order` emit); `src/molt/cli/__init__.py` (`_build_native_link_driver_command` order-file flags) | **yes (additive emit)** | independent; feeds 5; serialize Rust build |
 | 3 | `bench/scoreboard/cold_start_budget.json` (seed); `tools/perf_scoreboard.py` (two-axis budget consumption) | no | blocked-by 0,1; **coordinate arc 64** |
 | 4 | `wasm/run_wasm.js`; `deploy/cloudflare/*.js`; `deploy/browser/*.js` | no | independent |
-| 5 | `runtime/molt-tir/src/tir/bolt.rs` (complete `generate_order_file`); `src/molt/cli/native_toolchain.py` (`_run_bolt_post_link` order-file hook) | **yes** | blocked-by 2; serialize Rust build |
+| 5 | `runtime/molt-passes/src/tir/bolt.rs` (complete `generate_order_file`); `src/molt/cli/native_toolchain.py` (`_run_bolt_post_link` order-file hook) | **yes** | blocked-by 2; serialize Rust build |
 | 6 | `tools/perf_scoreboard.py` (`init_budget_us` cell) or `bench/scoreboard/cold_start_budget.json`; a guard test | no | independent |
 
 Five of seven phases (0,1,3,4,6) never trigger a Rust build → maximal parallelism.
@@ -804,7 +804,7 @@ made a release-gating correctness property, not an aspiration.**
   `--gc-sections` / `--version-script`); Windows `/OPT:REF` (~20241).
 - **Per-function-section emit (Phase 2, ELF ordering relies on it):**
   `simple_backend.rs:2604–2606` (`per_function_section(true)`).
-- **Order-file generator to complete (Phase 5):** `runtime/molt-tir/src/tir/bolt.rs`
+- **Order-file generator to complete (Phase 5):** `runtime/molt-passes/src/tir/bolt.rs`
   `generate_order_file` (lines 124–136, **stub**); BOLT scaffolding
   (`optimize_with_bolt`, `collect_perf_profile`) in the same file; CLI hook
   `native_toolchain.py::_run_bolt_post_link` (lines 57–192).

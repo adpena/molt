@@ -235,7 +235,7 @@ CI compiles only `native-backend` (6 refs), `wasm-backend` (1), `llvm` (8).
 HEAD, **`luau-backend` and `rust-backend` FAIL to compile standalone**:
 ```
 error[E0432]: unresolved import `crate::representation_plan::raw_i64_safe_values_for`
-  --> runtime/molt-tir/src/tir/passes/liveness.rs:47
+  --> runtime/molt-passes/src/tir/passes/liveness.rs:47
 ```
 Root cause: `raw_i64_safe_values_for` (representation_plan.rs:537) is
 `#[cfg(any(feature="native-backend", feature="llvm", feature="wasm-backend",

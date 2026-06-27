@@ -268,21 +268,30 @@ Intermediate commits are acceptable only when each one is itself a complete, end
 Read these first instead of rediscovering project structure:
 
 - Code authority:
-  - `runtime/molt-tir/src/tir/` for TIR, pass manager, analyses, lowering,
-    verification, and generated op-kind facts.
-  - `runtime/molt-tir/src/tir/pass_manager.rs`,
-    `runtime/molt-tir/src/tir/module_phase.rs`, and
-    `runtime/molt-tir/src/tir/drop_phase.rs` for pipeline order,
-    module-level transforms, and terminal RC drop insertion.
-  - `runtime/molt-tir/src/tir/op_kinds.toml` for the canonical op-kind
+  - `runtime/molt-ir/src/tir/` for canonical TIR data structures, opcodes,
+    SSA construction, verification, serialization, CFG/dominator helpers, and
+    generated op-kind facts.
+  - `runtime/molt-passes/src/tir/` for TIR analyses, fact graphs, pass manager,
+    pass cache, target/profile descriptors, SimpleIR<->TIR transport,
+    module/drop orchestration, and optimization passes.
+  - `runtime/molt-tir/src/tir/` for residual backend-neutral lowering:
+    LIR/WASM/MLIR projection, verifier glue, component/split streaming helpers,
+    and representation-plan name projection.
+  - `runtime/molt-passes/src/tir/pass_manager.rs`,
+    `runtime/molt-passes/src/tir/module_phase.rs`, and
+    `runtime/molt-passes/src/tir/drop_phase.rs` for per-function pipeline order,
+    module-level orchestration, and terminal RC drop insertion.
+  - `runtime/molt-ir/src/tir/op_kinds.toml` for the canonical op-kind
     vocabulary, effect rows, ownership classifiers, and generated backend/
     frontend tables.
-  - `runtime/molt-tir/src/tir/op_kinds_generated.rs` and
+  - `runtime/molt-ir/src/tir/op_kinds_generated.rs` and
     `src/molt/frontend/lowering/op_kinds_generated.py` for generated op-kind
     tables; update `op_kinds.toml` plus `tools/gen_op_kinds.py`, not generated
     outputs by hand.
-  - `runtime/molt-tir/src/representation_plan.rs` for scalar/container
-    representation authority shared by backends.
+  - `runtime/molt-passes/src/representation_facts.rs` for value-keyed
+    representation facts and raw-scalar carrier proof; `runtime/molt-tir/src/
+    representation_plan.rs` for residual SimpleIR-name projection and
+    backend-facing scalar/container representation plans.
   - `runtime/molt-backend/src/native_backend/`,
     `runtime/molt-backend/src/llvm_backend/`, `runtime/molt-backend/src/wasm.rs`,
     and `runtime/molt-backend/src/luau.rs` for backend-specific lowering.

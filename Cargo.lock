@@ -2789,6 +2789,7 @@ dependencies = [
  "libc",
  "metal",
  "mlx-rs",
+ "molt-ir",
  "molt-tir",
  "objc",
  "pollster",
@@ -2851,6 +2852,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "molt-ir"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "rmp-serde",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "molt-lang-cpython-abi"
 version = "0.1.0"
 dependencies = [
@@ -2868,6 +2879,19 @@ version = "0.1.0"
 dependencies = [
  "criterion",
  "proptest",
+]
+
+[[package]]
+name = "molt-passes"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "molt-ir",
+ "rayon",
+ "rmp-serde",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
 ]
 
 [[package]]
@@ -3186,6 +3210,8 @@ name = "molt-tir"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "molt-ir",
+ "molt-passes",
  "rayon",
  "rmp-serde",
  "serde",

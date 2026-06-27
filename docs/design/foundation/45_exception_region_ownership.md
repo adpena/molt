@@ -153,7 +153,7 @@ consumption paths:
   the default.
 
 Backend-neutral TIR now has `ExceptionRegions` analysis + verification in
-`runtime/molt-tir/src/tir/exception_regions.rs`. It recognizes the current
+`runtime/molt-passes/src/tir/exception_regions.rs`. It recognizes the current
 `Copy` + `_original_kind` exception carriers, computes path-state reachable
 `exception_pop` release boundaries for handler MatchRefs, emits diagnostics for
 missing/ambiguous/too-early releases, is registered with the analysis
@@ -307,8 +307,8 @@ be deleted without leaks or double-frees. No benchmark-only speed fix is
 acceptable while backend runtime parity evidence, the wider `HandlerState`
 boundary, and authoritative exception-heavy speed evidence remain open.
 
-Related live authorities: `runtime/molt-tir/src/tir/exception_regions.rs`,
-`runtime/molt-tir/src/tir/passes/drop_insertion.rs`,
+Related live authorities: `runtime/molt-passes/src/tir/exception_regions.rs`,
+`runtime/molt-passes/src/tir/passes/drop_insertion.rs`,
 `tests/differential/memory/exception_raise_catch_loop_leak.py`, #58
 (ownership-boundary lattice), #24
 (docs/design/llvm_async_state_resume_dominance.md — StateDispatch/exception-CFG),

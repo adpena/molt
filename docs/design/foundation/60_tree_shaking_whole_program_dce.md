@@ -44,7 +44,7 @@ Concretely, at the destination:
   + dynamic-dispatch/getattr-aware liveness + roots, `LiveReason`-tagged per symbol) is
   built once per module on `SimpleIR` and is the single source for:
   `eliminate_dead_functions` (`runtime/molt-tir/src/passes.rs:2503`),
-  `CallGraph::reachable_from` (`runtime/molt-tir/src/tir/call_graph.rs:564`), the Python
+  `CallGraph::reachable_from` (`runtime/molt-passes/src/tir/call_graph.rs:564`), the Python
   stdlib-cache reachability `_reachable_function_names_for_stdlib_cache`
   (`src/molt/cli/__init__.py:19218`), `compute_intrinsic_manifest` (`passes.rs:4534`),
   the native linker root/export set (`cli/__init__.py:20202`/`:20236`), the LLVM module
@@ -58,7 +58,7 @@ Concretely, at the destination:
   hand-`match` duplicated in two languages.** "Which SimpleIR op-kind references a
   function by name (and how to derive the referenced name, and whether it implies a
   `{name}_poll`)" lives once in the op-kind registry
-  (`runtime/molt-tir/src/tir/op_kinds.toml`) and is rendered to both the Rust classifier
+  (`runtime/molt-ir/src/tir/op_kinds.toml`) and is rendered to both the Rust classifier
   and the Python one — so `_DEAD_FUNCTION_ELIM_REFERENCE_KINDS`
   (`cli/__init__.py:19180`, a 26-entry frozenset) can no longer drift from the Rust
   `match op.kind.as_str()` arms (`passes.rs:2519-2573`, the *same* 26 strings, today

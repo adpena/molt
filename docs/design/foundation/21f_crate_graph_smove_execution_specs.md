@@ -741,7 +741,7 @@ retired; #2 both lenses satisfied; one-authority-per-invariant for op-effects + 
   lowering boundary + `is_structural` :52 + the primary-type re-exports :82-99)
 - `runtime/molt-tir/src/representation_plan.rs` (S1 vocab-enum extract @:780-:838 -> molt-ir/repr.rs;
   residual plan logic -> molt-lower; the value_range/scev production edges @:1240-:1332)
-- `runtime/molt-tir/src/tir/passes/effects.rs` + `runtime/molt-tir/src/tir/op_kinds_generated.rs`
+- `runtime/molt-passes/src/tir/passes/effects.rs` + `runtime/molt-ir/src/tir/op_kinds_generated.rs`
   (the matches!-oracle exhaustiveness authority that must travel into molt-ir together -- G-oracle)
 - `runtime/molt-backend/src/lib.rs` (the re-export facade S1/S2/S3/S4-S8 all re-point; the loose
   NaN-box helpers @:76-99 -> molt-codegen-abi; the per-backend `pub mod` -> `pub use` lines)

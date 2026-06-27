@@ -47,7 +47,7 @@ from pathlib import Path
 
 ROOT_DEFAULT = Path(__file__).resolve().parents[1]
 BASELINE_REL = "tools/call_fact_coverage_baseline.json"
-OP_KINDS_REL = "runtime/molt-tir/src/tir/op_kinds.toml"
+OP_KINDS_REL = "runtime/molt-ir/src/tir/op_kinds.toml"
 
 # Representation status of a call-site fact, in increasing order of usefulness.
 ATTACHED = "ATTACHED"  # recorded on the call op → measurable + lowerable
@@ -79,7 +79,7 @@ CALL_FACTS: list[CallFact] = [
         key="direct_target",
         label="direct target known (devirtualized)",
         status=ATTACHED,
-        evidence_file="runtime/molt-tir/src/tir/call_graph.rs",
+        evidence_file="runtime/molt-passes/src/tir/call_graph.rs",
         evidence_symbol="StaticDirect",
         how_to_read="Call op carries `s_value` attr = static callee name; "
         "CallEdge::StaticDirect in the call graph",
@@ -90,7 +90,7 @@ CALL_FACTS: list[CallFact] = [
         key="typed_return",
         label="return Repr/TirType known (not DynBox)",
         status=ATTACHED,
-        evidence_file="runtime/molt-tir/src/tir/types.rs",
+        evidence_file="runtime/molt-ir/src/tir/types.rs",
         evidence_symbol="DynBox",
         how_to_read="result ValueId's TirType in function.value_types; observable "
         "in typed_repr_report JSON opcodes.call.result_reprs",
@@ -100,7 +100,7 @@ CALL_FACTS: list[CallFact] = [
         key="no_throw",
         label="call proven not to raise",
         status=ATTACHED,
-        evidence_file="runtime/molt-tir/src/tir/call_facts.rs",
+        evidence_file="runtime/molt-passes/src/tir/call_facts.rs",
         evidence_symbol="no_throw",
         how_to_read="CallFacts.no_throw (Proven iff opcode-static-no-throw ∨ "
         "resolved-callee-no-handlers ∨ allowlisted-builtin; else Unknown)",
@@ -111,7 +111,7 @@ CALL_FACTS: list[CallFact] = [
         key="leaf",
         label="callee makes no further calls (leaf)",
         status=ATTACHED,
-        evidence_file="runtime/molt-tir/src/tir/call_facts.rs",
+        evidence_file="runtime/molt-passes/src/tir/call_facts.rs",
         evidence_symbol="leaf",
         how_to_read="CallFacts.leaf (Proven/False from !makes_any_call for a "
         "resolved callee; Unknown for opaque) — now on the call site",
@@ -122,7 +122,7 @@ CALL_FACTS: list[CallFact] = [
         key="inlinable",
         label="callee eligible to inline",
         status=ATTACHED,
-        evidence_file="runtime/molt-tir/src/tir/call_facts.rs",
+        evidence_file="runtime/molt-passes/src/tir/call_facts.rs",
         evidence_symbol="inlinable",
         how_to_read="CallFacts.inlinable (Eligible|WhyNot from classify_inline_"
         "eligibility — same gate is_inlineable reduces to; Unknown if opaque)",
@@ -133,7 +133,7 @@ CALL_FACTS: list[CallFact] = [
         key="noescape_args",
         label="arguments do not escape",
         status=TRANSIENT,
-        evidence_file="runtime/molt-tir/src/tir/passes/escape_analysis.rs",
+        evidence_file="runtime/molt-passes/src/tir/passes/escape_analysis.rs",
         evidence_symbol="EscapeState",
         how_to_read="escape_analysis::analyze() yields per-ValueId EscapeState; "
         "the call's arg-escape summary is not attached to the call",
@@ -144,7 +144,7 @@ CALL_FACTS: list[CallFact] = [
         key="no_alloc",
         label="call performs no heap allocation",
         status=TRANSIENT,
-        evidence_file="runtime/molt-tir/src/tir/passes/escape_analysis.rs",
+        evidence_file="runtime/molt-passes/src/tir/passes/escape_analysis.rs",
         evidence_symbol="StackAlloc",
         how_to_read="escape pass rewrites NoEscape Alloc→StackAlloc per value; "
         "there is no per-call 'callee allocates?' summary on the call",

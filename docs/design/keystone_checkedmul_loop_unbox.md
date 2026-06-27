@@ -28,12 +28,12 @@ as a NaN-tagged SMI (`0x7ff9_...`), unboxed each iteration via a 4-op serial
 
 ## File map
 
-- **STEP 0 (op + tables):** `runtime/molt-tir/src/tir/ops.rs` (CheckedMul mirror of
-  CheckedAdd L25-50), `runtime/molt-tir/src/tir/printer.rs` (L235 mirror), and the
+- **STEP 0 (op + tables):** `runtime/molt-ir/src/tir/ops.rs` (CheckedMul mirror of
+  CheckedAdd L25-50), `runtime/molt-ir/src/tir/printer.rs` (L235 mirror), and the
   GENERATED op-kinds tables — `CheckedMul` MUST be `purity="impure"` +
   `GvnNumberingRole=Never` (TOML-driven; regenerate). See risk 6.
 - **STEP 1 (peel + all-backend lowering):**
-  - `runtime/molt-tir/src/tir/passes/overflow_peel.rs` (pure-set L351, phi-qual L461,
+  - `runtime/molt-passes/src/tir/passes/overflow_peel.rs` (pure-set L351, phi-qual L461,
     swap L896-904).
   - `runtime/molt-tir/src/representation_plan.rs` (`checked_loop_seed_names`
     L3911/L3921; `raw_i64_safe_value_seed` full-range gate L1231).

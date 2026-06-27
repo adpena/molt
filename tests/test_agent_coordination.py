@@ -259,7 +259,7 @@ def test_proof_plan_recommends_focused_lanes_for_explicit_paths(tmp_path: Path) 
                 "proof-plan",
                 "tools/agent_coordination.py",
                 "tests/differential/basic/imported_generator_lowering.py",
-                "runtime/molt-tir/src/tir/type_refine.rs",
+                "runtime/molt-passes/src/tir/type_refine.rs",
             ]
         )
     )

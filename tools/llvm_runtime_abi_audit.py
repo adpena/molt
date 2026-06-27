@@ -12,7 +12,7 @@ vocabulary and the generated TIR mapper:
 * `serialization.py` emits JSON wire `kind` strings.
 * `op_kinds_generated.rs::kind_to_opcode_table` maps first-class TIR kinds.
 * emitted-but-unmapped kinds become preserved `Copy{_original_kind}` values.
-* if `runtime/molt-runtime/src/**/*.rs` exports `molt_<kind>`, LLVM's generic
+* if a `runtime/molt-runtime*/src/**/*.rs` leaf exports `molt_<kind>`, LLVM's generic
   fallback can see it through the availability set.
 
 Every boxed/i64 or void export in that surface must be classified in
@@ -27,25 +27,55 @@ import argparse
 import ast
 import json
 import re
+import sys
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from tools.op_kinds.paths import OUT_RS as OP_KINDS_GENERATED_RS  # noqa: E402
+
 SERIALIZATION_PY = ROOT / "src/molt/frontend/lowering/serialization.py"
-OP_KINDS_GENERATED_RS = ROOT / "runtime/molt-tir/src/tir/op_kinds_generated.rs"
 RUNTIME_IMPORTS_RS = ROOT / "runtime/molt-backend/src/llvm_backend/runtime_imports.rs"
-RUNTIME_SRC = ROOT / "runtime/molt-runtime/src"
 
 ABI_I64_RETURNS = {"u64", "i64"}
 ABI_VOID_RETURNS = {"", "()", "void"}
 ABI_I64_PARAMS = {"u64", "i64"}
 
-# `molt_chan_new` returns a Rust handle type, not a boxed/integer ABI value.
-# It must remain unclassified so the generic fallback fails closed until a
-# dedicated lowering owns that ABI.
-ALLOWED_NON_BOXED_RETURNS = {
-    ("molt_chan_new", 1, "ChanHandle"),
-}
+# The generic preserved-runtime fallback may only use boxed/i64 or void ABI
+# exports. Non-boxed returns must be owned by dedicated lowering arms; this
+# allowlist stays empty unless a future dedicated fail-closed exception is
+# explicitly proven.
+ALLOWED_NON_BOXED_RETURNS: set[tuple[str, int, str]] = set()
+
+
+def runtime_src_roots(root: Path = ROOT) -> tuple[Path, ...]:
+    return tuple(
+        sorted(
+            path / "src"
+            for path in (root / "runtime").glob("molt-runtime*")
+            if (path / "src").is_dir()
+        )
+    )
+
+
+RUNTIME_SRC_ROOTS = runtime_src_roots(ROOT)
+
+
+def _iter_src_roots(roots: Path | Iterable[Path]) -> tuple[Path, ...]:
+    if isinstance(roots, Path):
+        return (roots,)
+    return tuple(roots)
+
+
+def _display_path(path: Path) -> str:
+    try:
+        return str(path.relative_to(ROOT))
+    except ValueError:
+        return str(path)
 
 
 @dataclass(frozen=True, order=True)
@@ -177,13 +207,18 @@ def _rust_param_type(param: str) -> str:
     return param.split(":", 1)[1].strip()
 
 
-def runtime_type_aliases(root: Path = RUNTIME_SRC) -> dict[str, str]:
+def runtime_type_aliases(
+    roots: Path | Iterable[Path] = RUNTIME_SRC_ROOTS,
+) -> dict[str, str]:
     aliases: dict[str, str] = {}
     pattern = re.compile(r"\btype\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([^;]+);")
-    for path in sorted(root.rglob("*.rs")):
-        text = path.read_text(encoding="utf-8", errors="ignore")
-        for name, target in pattern.findall(text):
-            aliases[name] = target.strip()
+    for root in _iter_src_roots(roots):
+        if not root.exists():
+            continue
+        for path in sorted(root.rglob("*.rs")):
+            text = path.read_text(encoding="utf-8", errors="ignore")
+            for name, target in pattern.findall(text):
+                aliases[name] = target.strip()
     return aliases
 
 
@@ -196,7 +231,9 @@ def normalize_rust_type(rust_type: str, aliases: dict[str, str]) -> str:
     return normalized
 
 
-def runtime_exports(root: Path = RUNTIME_SRC) -> dict[str, RuntimeSignature]:
+def runtime_exports(
+    roots: Path | Iterable[Path] = RUNTIME_SRC_ROOTS,
+) -> dict[str, RuntimeSignature]:
     pattern = re.compile(
         r"pub\s+(?:unsafe\s+)?extern\s+\"C\"\s+fn\s+"
         r"(?P<name>molt_[A-Za-z0-9_]+)\s*"
@@ -205,20 +242,28 @@ def runtime_exports(root: Path = RUNTIME_SRC) -> dict[str, RuntimeSignature]:
         re.DOTALL,
     )
     exports: dict[str, RuntimeSignature] = {}
-    for path in sorted(root.rglob("*.rs")):
-        rel = str(path.relative_to(ROOT))
-        text = path.read_text(encoding="utf-8", errors="ignore")
-        for match in pattern.finditer(text):
-            symbol = match.group("name")
-            params = match.group("params").strip()
-            rust_params = (
-                tuple(_rust_param_type(param) for param in _split_top_level_commas(params))
-                if params
-                else ()
-            )
-            arity = len(rust_params)
-            rust_return = (match.group("ret") or "").strip()
-            exports[symbol] = RuntimeSignature(symbol, arity, rust_return, rel, "", rust_params)
+    for root in _iter_src_roots(roots):
+        if not root.exists():
+            continue
+        for path in sorted(root.rglob("*.rs")):
+            rel = _display_path(path)
+            text = path.read_text(encoding="utf-8", errors="ignore")
+            for match in pattern.finditer(text):
+                symbol = match.group("name")
+                params = match.group("params").strip()
+                rust_params = (
+                    tuple(
+                        _rust_param_type(param)
+                        for param in _split_top_level_commas(params)
+                    )
+                    if params
+                    else ()
+                )
+                arity = len(rust_params)
+                rust_return = (match.group("ret") or "").strip()
+                exports[symbol] = RuntimeSignature(
+                    symbol, arity, rust_return, rel, "", rust_params
+                )
     return exports
 
 
@@ -361,11 +406,11 @@ def run_audit(root: Path = ROOT) -> AuditResult:
     serialization = root / SERIALIZATION_PY.relative_to(ROOT)
     op_kinds = root / OP_KINDS_GENERATED_RS.relative_to(ROOT)
     runtime_imports = root / RUNTIME_IMPORTS_RS.relative_to(ROOT)
-    runtime_src = root / RUNTIME_SRC.relative_to(ROOT)
+    runtime_roots = runtime_src_roots(root)
 
     preserved_kinds = frontend_wire_kinds(serialization) - mapped_tir_kinds(op_kinds)
-    exports = runtime_exports(runtime_src)
-    aliases = runtime_type_aliases(runtime_src)
+    exports = runtime_exports(runtime_roots)
+    aliases = runtime_type_aliases(runtime_roots)
     facts, duplicates = classified_abi_facts(runtime_imports)
     classified_fact_issues = validate_classified_facts(exports, facts, aliases)
 

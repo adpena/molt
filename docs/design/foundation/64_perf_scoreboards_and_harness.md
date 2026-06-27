@@ -453,7 +453,7 @@ only* delta (within `perf_regression` thresholds + CI) is NOT flagged (no false 
 Complete the derived-attribution stack the STRUCTURAL_AUDIT_BOARD routes:
 
 - `tools/pass_delta_dashboard.py`: consumes the per-pass IR-fact delta emitted by
-  `MOLT_EMIT_PASS_DELTA=1` from `runtime/molt-tir/src/tir/pass_delta.rs` at the TIR
+  `MOLT_EMIT_PASS_DELTA=1` from `runtime/molt-passes/src/tir/pass_delta.rs` at the TIR
   pass-manager seam. The JSONL schema records explicit host OS/architecture/family/
   pointer width, target/profile, before/after fact profiles, and deltas for lost `Repr`
   values, boxes, generic/runtime-helper calls, RC events, exception events, guards, and
@@ -650,7 +650,7 @@ to*. The Phase plan is explicitly parallel-friendly:
 | 2 | `tools/perf_board.py` (projections); fold `benchmark_luau_vs_cpython.py` | no | blocked-by 1 |
 | 3 | `.github/workflows/perf-gate.yml`, `pr_trust_gate.yml`; `tools/ci_gate.py` | partial | blocked-by 2; weekly/manual CPython-floor gate exists, PR smoke/regression tier remains |
 | 4 | `tools/perf_history.py`; `tools/perf_regression.py` (extend) | no | blocked-by 1 |
-| 5 | `tools/perf_causality.py`, `tools/pass_delta_dashboard.py`; `runtime/molt-tir/src/tir/passes/` (additive emit) | **yes (additive diag only)** | blocked-by 1; serialize Rust build |
+| 5 | `tools/perf_causality.py`, `tools/pass_delta_dashboard.py`; `runtime/molt-passes/src/tir/passes/` (additive emit) | **yes (additive diag only)** | blocked-by 1; serialize Rust build |
 | 6 | `tools/bench_suites.py`, `tools/pyperformance_adapter.py`; taxonomy in `perf_schema.py` | no | blocked-by 2 |
 | 7 | `tools/perf_scoreboard.py` (residual shrink); `docs/perf/SCOREBOARD.md` (plane update) | no | interleaved with 1 |
 

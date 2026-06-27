@@ -168,7 +168,7 @@ Two layers, one source of truth:
     `InnerRefOrdering = MayFinalize ∧ HEADER_FLAG_HAS_PTRS` (doc 49: ptr fields +
     a `__del__` that can observe them).
 
-- **TIR fact layer** (`runtime/molt-tir/src/tir/passes/ownership_lattice_min.rs`):
+- **TIR fact layer** (`runtime/molt-passes/src/tir/passes/ownership_lattice_min.rs`):
   a new `LifetimeClassFacts` struct, computed once per function from the frontend
   `defines_del` result attr (already preserved through the SimpleIR round-trip —
   doc 48 status; escape_analysis.rs `op_result_defines_del`) **plus** two new
@@ -260,7 +260,7 @@ a placement special-case.
 >
 > **Re-verified GREEN post-decomposition (2026-06-24, `ac391f8e6`).** After the
 > molt-tir crate extraction moved `drop_insertion.rs` + `ownership_lattice_min.rs`
-> into `runtime/molt-tir/src/tir/passes/`, the corruption suite was re-run
+> into `runtime/molt-passes/src/tir/passes/`, the corruption suite was re-run
 > dual-path — canonical `molt diff` (dev / debug-with-asserts profile) plus direct
 > `safe_run` with `MOLT_ASSERT_NO_LEAK=1` (bypassing the xfail overlay to observe
 > raw process exit) — across the full 15-repro suite (`tests/differential/memory/
@@ -409,11 +409,11 @@ semantics.
   - `src/molt/frontend/`: emit `class_supports_weakref` and `class_has_ptr_fields`
     result attrs on allocation ops, alongside the existing `defines_del` attr
     (frontend visitors/classes.py — already a target of the decomposition F1).
-  - `runtime/molt-tir/src/tir/passes/ownership_lattice_min.rs`: add
+  - `runtime/molt-passes/src/tir/passes/ownership_lattice_min.rs`: add
     `LifetimeClassFacts` (§2.1); thread the two new seed sets through the existing
     container-absorption fixpoint (lines 564-683); keep `finalizer_sensitive_roots`
     as the `may_finalize` view (no behavior change to #58).
-  - `runtime/molt-tir/src/tir/op_kinds.toml` + `tools/gen_op_kinds.py`: a
+  - `runtime/molt-ir/src/tir/op_kinds.toml` + `tools/gen_op_kinds.py`: a
     `lifetime_class` classifier set so the facts are generated, not hand-matched
     (STRUCTURAL_AUDIT_BOARD deletion-candidate discipline; avoids a new
     `matches!` semantic-fallthrough).
@@ -486,7 +486,7 @@ The keystone safety lowering. `Free` becomes a `Trivial`-unique `DecRef` lowerin
 
 Make the runtime-internal-vs-Python-object free distinction unrepresentable-to-confuse.
 
-- **Files:** `runtime/molt-tir/src/tir/ops.rs` (add `OpCode::FreeRaw` after
+- **Files:** `runtime/molt-ir/src/tir/ops.rs` (add `OpCode::FreeRaw` after
   `Free`, line 100); `op_kinds.toml` (its own row); the exhaustive `match`
   consumers flagged in STRUCTURAL_AUDIT_BOARD (lower_to_wasm:551,
   lower_to_simple:1651, verify.rs:235, type_refine.rs — these are exhaustive

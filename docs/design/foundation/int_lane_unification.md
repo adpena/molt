@@ -25,7 +25,7 @@ consumer — so a producer/consumer disagreement is unexpressible, exactly as th
 
 ## 1. The five fragmented decision sites (verified file:line)
 
-1. **Value-range producer** — `runtime/molt-tir/src/tir/passes/value_range.rs:1297`
+1. **Value-range producer** — `runtime/molt-passes/src/tir/passes/value_range.rs:1297`
    (`ValueRangeTransferRule::Mod` → `IntRange::mod_const`): proves the result's bounds.
 2. **Registration authority** — `representation_plan.rs:518` (`is_raw_int_carrier_name`):
    reads the name-keyed `repr_by_name` map.

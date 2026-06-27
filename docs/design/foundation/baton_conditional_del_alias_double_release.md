@@ -34,7 +34,7 @@ with payload 0. The `print`/`str` consumer read the NaN-box bits as a raw i64.
 
 ### The carrier-store mismatch (file:line)
 
-The value-range pass (`runtime/molt-tir/src/tir/passes/value_range.rs`,
+The value-range pass (`runtime/molt-passes/src/tir/passes/value_range.rs`,
 `ValueRangeTransferRule::Mod` -> `IntRange::mod_const`) proves `i % 7 ∈ [0, 7)`
 and the representation plan marks the result SSA name a raw-i64 carrier
 (`RawI64Safe`). Producer and consumer BOTH key the carrier off

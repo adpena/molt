@@ -8,7 +8,7 @@ Companion facts (verified in-tree 2026-06-26):
 - Symbol→feature authority: `src/molt/_runtime_feature_gates.py:36` (`RUNTIME_FEATURE_GATES`), `:214` (`LINK_AFFECTING_FEATURES`)
 - Drifted profile model: `src/molt/cli/runtime_features.py:104` (`_ALL_DOMAIN_FEATURES`), `:153` (`_runtime_builtin_features_for_profile`)
 - The reachability fact (already exists, wrong layer): `runtime/molt-tir/src/passes/intrinsics_manifest.rs:61` (`compute_intrinsic_manifest`)
-- Symbol-set authority + fail-closed: `runtime/molt-tir/src/intrinsic_symbols.rs:50` (`runtime_intrinsic_symbols_required`)
+- Symbol-set authority + fail-closed: `runtime/molt-ir/src/intrinsic_symbols.rs:50` (`runtime_intrinsic_symbols_required`)
 - Native dead-strip resolver: `runtime/molt-backend/src/native_backend/simple_backend/app_resolver.rs:35`; runtime side `runtime/molt-runtime/src/intrinsics/registry.rs:55` (`molt_set_app_intrinsic_resolver`)
 - Cargo feature ladder: `runtime/molt-runtime/Cargo.toml:15-125`
 

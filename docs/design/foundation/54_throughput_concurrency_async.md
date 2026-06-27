@@ -226,7 +226,7 @@ join: ThreadConfined ⊔ Shared = Shared; anything ⊔ Immortal = the other; Sha
   `SpawnArg`) are the escape points that JOIN their operand up to `Shared` (if the build tier is
   unleashed and the object stays a reference) or require `Sharable` (if crossing a heap boundary).
   This is a *projection* of the ownership lattice's escape fact onto the thread axis — **it does
-  not re-run escape analysis; it consumes it.** New file `runtime/molt-tir/src/tir/passes/
+  not re-run escape analysis; it consumes it.** New file `runtime/molt-passes/src/tir/passes/
   isolation_class.rs` (an `AnalysisId::IsolationClass` registered with the AnalysisManager, doc 00
   §S1), reading `AnalysisId::{Alias, Liveness, Escape}` and the ownership lattice.
 - **Transport.** Rides `Repr`/`TirType` through every pass and across the serialization boundary
@@ -277,7 +277,7 @@ order: Pure < Sync < {MayBlock, MaySuspend} (MayBlock and MaySuspend are incompa
 - **Transport.** A CallFacts field on the call op; survives serialization (round-trip tested at the
   call site, per the landmine).
 - **Consumer #1 — the parity guard (retires doc 33 §2-b).** The verifier
-  (`runtime/molt-tir/src/tir/verify.rs`) gains an obligation: **a `MayBlock` intrinsic reached on a
+  (`runtime/molt-ir/src/tir/verify.rs`) gains an obligation: **a `MayBlock` intrinsic reached on a
   code path that statically holds the GIL without a `GilReleaseGuard` is a verify failure.** This
   is doc 33's proposed `MOLT_ASSERT_GIL_RELEASED_ON_BLOCK` runtime harness *promoted to a
   compile-time obligation* — the io.rs/subprocess GIL-held-across-read bugs become unexpressible,
@@ -321,7 +321,7 @@ AwaitFact:
 - **Producer.** `TaskShape` from `ConcurrencyEffect` (Elided/Inline) + a structured-concurrency
   scope analysis (the frontend `async with TaskGroup()`/nursery binds tasks to the scope's
   lifetime). `AwaitFact` from `ConcurrencyEffect` of the awaited callee + the fusion-eligibility
-  predicate shared with doc 26. New analysis `runtime/molt-tir/src/tir/passes/await_graph.rs`
+  predicate shared with doc 26. New analysis `runtime/molt-passes/src/tir/passes/await_graph.rs`
   (consumes `IsolationClass` — a `Fused` await must not cross a thread boundary — and
   `ConcurrencyEffect`).
 - **Transport.** On the task/await ops; round-trip tested.

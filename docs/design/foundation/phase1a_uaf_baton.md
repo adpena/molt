@@ -7,7 +7,7 @@ binary gate is green.
 ## What is done (and verified)
 - The §2.7 back-edge drop-old (the Perceus mutable-slot `drop-old`, dual to §5) is implemented in
   worktree `.claude/worktrees/agent-ab6ad8bdf6890742b`, file
-  `runtime/molt-tir/src/tir/passes/drop_insertion.rs` (the block at ~3029-3181 replacing the old
+  `runtime/molt-passes/src/tir/passes/drop_insertion.rs` (the block at ~3029-3181 replacing the old
   §2.7 no-op).
 - FLAT loops are fixed and measured: `for i in range(1_000_000): d = {...}` goes **513 MB → 15 MB**,
   correct output. 1109/1109 `cargo test -p molt-tir` pass (incl. the accumulator and §5 borrowed-phi
@@ -66,13 +66,13 @@ merely made safe), and no drop_insertion guard is needed.
   (check `src/molt/frontend/lowering/analysis_collect_static.py` and the boxing predicate) would
   explain why the seed is skipped; (2) find where plain SSA-locals (not `_box_local`) get their
   entry-default `None` seed and why a conditional preheader misses it; (3) if the frontend emits the
-  seed correctly, the gap is the molt-tir SSA construction (`runtime/molt-tir/src/tir/ssa.rs`)
+  seed correctly, the gap is the molt-tir SSA construction (`runtime/molt-ir/src/tir/ssa.rs`)
   building the loop-header-phi preheader arg through the conditional. The invariant to restore:
   EVERY loop-carried local's header phi receives a valid `None` (or MISSING) seed on EVERY preheader
   edge, conditional-wrapped or not — then §2.7 is correct unchanged.
 
 ### SSA construction analysis (deeper — the seed mechanism)
-The seed lives in `runtime/molt-tir/src/tir/ssa.rs` `rename_and_emit`:
+The seed lives in `runtime/molt-ir/src/tir/ssa.rs` `rename_and_emit`:
 - `undef_value` (lines 696-697) is a `ConstNone` emitted ONLY in the ENTRY block (lines 774-783),
   which dominates every block — so a branch arg equal to `undef_vid` is a VALID `None` everywhere.
 - A branch arg for a variable with no reaching def resolves to `undef_value` (line 803,

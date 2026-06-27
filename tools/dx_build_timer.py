@@ -288,11 +288,11 @@ def main() -> int:
     touch_journal.recover()
 
     touch_files = {
-        "value_range": REPO_ROOT / "runtime/molt-tir/src/tir/passes/value_range.rs",
+        "value_range": REPO_ROOT / "runtime/molt-passes/src/tir/passes/value_range.rs",
         "function_compiler": REPO_ROOT
         / "runtime/molt-backend/src/native_backend/function_compiler.rs",
         "modules": REPO_ROOT / "runtime/molt-runtime/src/builtins/modules.rs",
-        "gvn": REPO_ROOT / "runtime/molt-tir/src/tir/passes/gvn.rs",
+        "gvn": REPO_ROOT / "runtime/molt-passes/src/tir/passes/gvn.rs",
     }
 
     results: dict[str, dict] = {}

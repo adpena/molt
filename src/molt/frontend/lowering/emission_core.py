@@ -102,7 +102,7 @@ class EmissionCoreMixin(_MixinBase):
 
     def emit(self, op: MoltOp) -> None:
         # Auto-attach expression column offsets to raising ops. RAISING_KIND_NAMES
-        # is generated from runtime/molt-backend/src/tir/op_kinds.toml (the
+        # is generated from runtime/molt-ir/src/tir/op_kinds.toml (the
         # [[frontend_raising_kind]] table cross-checked against the [[opcode]]
         # may_throw oracle) - see the module-level import.
         if (

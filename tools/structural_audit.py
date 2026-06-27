@@ -1298,8 +1298,8 @@ def probe_registry_reconciliation(root: Path) -> list[Finding]:
     """Confidence (INFO) check: the [[opcode]] effect-oracle table is rendered as
     an EXHAUSTIVE rustc match, so coverage is compiler-enforced — this only
     reports parser-agreement so a drift in the *parser* (not the data) surfaces."""
-    ops_rs = root / "runtime/molt-tir/src/tir/ops.rs"
-    toml_path = root / "runtime/molt-tir/src/tir/op_kinds.toml"
+    ops_rs = root / "runtime/molt-ir/src/tir/ops.rs"
+    toml_path = root / "runtime/molt-ir/src/tir/op_kinds.toml"
     findings: list[Finding] = []
     if not ops_rs.is_file() or not toml_path.is_file():
         return findings
@@ -1318,7 +1318,7 @@ def probe_registry_reconciliation(root: Path) -> list[Finding]:
             probe="registry_reconciliation",
             severity="info",
             title=f"OpCode variants={len(variants)} · [[opcode]] rows≈{len(opcode_rows)}",
-            location="runtime/molt-tir/src/tir/{ops.rs,op_kinds.toml}",
+            location="runtime/molt-ir/src/tir/{ops.rs,op_kinds.toml}",
             detail="effect oracle is an exhaustive (no-wildcard) match — coverage is "
             "rustc-enforced; this line is parser confidence only, not a gate",
             suggested_action="no action unless a NEW non-exhaustive opcode classifier "
@@ -1439,7 +1439,7 @@ def _tooling_gaps(root: Path) -> list[tuple[str, str]]:
     call_fact_built = _repo_file_exists(root, "tools/call_fact_coverage.py")
     causality_built = _repo_file_exists(root, "tools/perf_causality.py")
     pass_delta_built = _repo_file_exists(root, "tools/pass_delta_dashboard.py")
-    fact_graph_built = _repo_file_exists(root, "runtime/molt-tir/src/tir/fact_graph.rs")
+    fact_graph_built = _repo_file_exists(root, "runtime/molt-passes/src/tir/fact_graph.rs")
     fact_dump_built = _repo_file_exists(root, "tools/fact_graph_dump.py")
 
     gaps = [
@@ -1503,7 +1503,7 @@ def _tooling_gaps(root: Path) -> list[tuple[str, str]]:
         gaps.append(
             (
                 "BUILT: fact graph substrate",
-                "runtime/molt-tir/src/tir/fact_graph.rs derives per-value "
+                "runtime/molt-passes/src/tir/fact_graph.rs derives per-value "
                 "producer/consumer/fact provenance from live TIR and "
                 "tools/fact_graph_dump.py validates compiler-emitted graph JSON.",
             )
@@ -1512,7 +1512,7 @@ def _tooling_gaps(root: Path) -> list[tuple[str, str]]:
         gaps.append(
             (
                 "MISSING: fact graph",
-                "runtime/molt-tir/src/tir/fact_graph.rs + tools/fact_graph_dump.py "
+                "runtime/molt-passes/src/tir/fact_graph.rs + tools/fact_graph_dump.py "
                 "(not both built) — per-value provenance "
                 "(producer/consumer/invalidator) to explain 'why is this boxed?'.",
             )

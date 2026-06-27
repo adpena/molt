@@ -26,7 +26,7 @@ artifacts are:
 ## The problem: one `RawI64Safe` tier carrying two incompatible proofs
 
 molt answers "is this scalar a bare i64?" for integers via the single
-`Repr::RawI64Safe` tier (`runtime/molt-tir/src/repr.rs:56`). But that one tier is
+`Repr::RawI64Safe` tier (`runtime/molt-ir/src/repr.rs:56`). But that one tier is
 minted from **two structurally different proofs** that the lattice cannot tell
 apart:
 
@@ -34,7 +34,7 @@ apart:
    (`runtime/molt-tir/src/representation_plan.rs:1213`) seeds an op result into
    `RawI64Safe` when `vr.fits_inline_int47(result)` proves its entire range fits
    the signed inline window `[-2^46, 2^46 - 1]`
-   (`runtime/molt-tir/src/tir/passes/value_range.rs:522`). This is a genuinely
+   (`runtime/molt-passes/src/tir/passes/value_range.rs:522`). This is a genuinely
    bounded value: it fits a NaN-box payload, never overflows, never reaches a
    heap BigInt.
 
@@ -68,7 +68,7 @@ value from a full-range checked carrier":
   reinterprets a wrapped 64-bit accumulator as a 47-bit SMI.
 
 - **The BCE coupling trap.** BCE
-  (`runtime/molt-tir/src/tir/passes/bce.rs:82`) proves index safety via
+  (`runtime/molt-passes/src/tir/passes/bce.rs:82`) proves index safety via
   `proves_index_in_bounds` / `proves_index_lt_len_symbolically`. It does NOT
   consult the Repr tier today — and that separation is exactly the invariant we
   must lock down. The moment anyone "optimizes" BCE to trust `is_raw_i64_safe`
@@ -167,7 +167,7 @@ BCE must NEVER share the fact that promotes a raw-i64 carrier. Add a new query i
 `value_range.rs` and switch BCE to it:
 
 ```rust
-// runtime/molt-tir/src/tir/passes/value_range.rs — NEW
+// runtime/molt-passes/src/tir/passes/value_range.rs — NEW
 /// The BCE-ONLY index-safety query. Strictly narrower than the raw-i64 carrier
 /// proof: it proves 0 <= index < len AND that the index's proven range fits a
 /// CONSERVATIVE index-safety window, so a full-range RawI64FullDeopt carrier can
@@ -182,7 +182,7 @@ pub fn proves_index_in_bounds_conservatively(
 ```
 
 ```rust
-// runtime/molt-tir/src/tir/passes/bce.rs:82-83 — CHANGED
+// runtime/molt-passes/src/tir/passes/bce.rs:82-83 — CHANGED
 let proven = vr.proves_index_in_bounds_conservatively(*bid, container, index);
 ```
 

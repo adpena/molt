@@ -16,7 +16,7 @@ GC-managed (dup/drop/reuse are no-ops). This is a complete structural arc that
 top of it.
 
 **Prerequisite (rung 1, design 20):** the `DropInsertion` pass
-(`runtime/molt-tir/src/tir/passes/drop_insertion.rs`, 2715 lines) is landed
+(`runtime/molt-passes/src/tir/passes/drop_insertion.rs`, 2715 lines) is landed
 and **active on LLVM/WASM/Luau/NativeCranelift**
 (`target_uses_tir_drop_insertion`, `pass_manager.rs:67`). Native activation now
 uses the same shared terminal drop phase; the remaining native work is the
@@ -787,16 +787,16 @@ hide in *this* design and which gate catches it. Plus new risks rung 2 introduce
 
 | File | Action | Key change |
 |---|---|---|
-| `runtime/molt-tir/src/tir/passes/drop_insertion.rs` | Modify (P1) | Replace the seven ad-hoc sets/predicates with `Ownership` lattice reads; `droppable` → `lattice(root)==Owned`; keep alias-union/borrow-provenance/consumed-operand as the lattice edge sources |
-| `runtime/molt-tir/src/tir/passes/alias_analysis.rs` | Modify (P1/P4) | `CopyLowering`/`copy_kind_*` become the `result_ownership` reading; P4 generates them from `op_kinds.toml` |
-| `runtime/molt-tir/src/tir/passes/refcount_elim.rs` | Modify (P2) | Replace `build_heap_exposed_set` (:89) with the lattice escape fact; re-enable Step 6 post-drop soundly (:572 early-return removed under the lattice proof) |
-| `runtime/molt-tir/src/tir/passes/reuse_analysis.rs` | Modify (P3) | Restrict `reuse_compatible` to {BigInt, Str, Bytes} for P3 (the parity gate, §4.7); exclude `UserClass`/containers |
-| `runtime/molt-tir/src/tir/pass_manager.rs` | Modify (P3) | Move `reuse_analysis` (:351) to AFTER `refcount_elim_post` (:465); add `target_uses_tir_reuse` gate |
+| `runtime/molt-passes/src/tir/passes/drop_insertion.rs` | Modify (P1) | Replace the seven ad-hoc sets/predicates with `Ownership` lattice reads; `droppable` → `lattice(root)==Owned`; keep alias-union/borrow-provenance/consumed-operand as the lattice edge sources |
+| `runtime/molt-passes/src/tir/passes/alias_analysis.rs` | Modify (P1/P4) | `CopyLowering`/`copy_kind_*` become the `result_ownership` reading; P4 generates them from `op_kinds.toml` |
+| `runtime/molt-passes/src/tir/passes/refcount_elim.rs` | Modify (P2) | Replace `build_heap_exposed_set` (:89) with the lattice escape fact; re-enable Step 6 post-drop soundly (:572 early-return removed under the lattice proof) |
+| `runtime/molt-passes/src/tir/passes/reuse_analysis.rs` | Modify (P3) | Restrict `reuse_compatible` to {BigInt, Str, Bytes} for P3 (the parity gate, §4.7); exclude `UserClass`/containers |
+| `runtime/molt-passes/src/tir/pass_manager.rs` | Modify (P3) | Move `reuse_analysis` (:351) to AFTER `refcount_elim_post` (:465); add `target_uses_tir_reuse` gate |
 | `runtime/molt-backend/src/native_backend/{function_compiler,simple_backend}.rs` | Modify (P3) | Lower reuse-attr'd DecRef/Alloc → `molt_reuse_token`/`molt_reuse_alloc` |
 | `runtime/molt-backend/src/llvm_backend/lowering.rs` | Modify (P3) | Reuse-token lowering arms |
 | `runtime/molt-tir/src/tir/lower_to_wasm.rs` | Modify (P3) | `molt_reuse_token`/`molt_reuse_alloc` import + lowering |
 | `runtime/molt-runtime/src/object/builders.rs` | Modify (P3-later) | `molt_reuse_token` child-decref + weakref-clear variant (for container reuse, post-P3) |
-| `runtime/molt-tir/src/tir/op_kinds.toml` | Modify (P4) | Add `result_ownership` / `operand_ownership[]` / `borrows_source_operand` columns |
+| `runtime/molt-ir/src/tir/op_kinds.toml` | Modify (P4) | Add `result_ownership` / `operand_ownership[]` / `borrows_source_operand` columns |
 | `tools/gen_op_kinds.py`, `tests/test_gen_op_kinds.py` | Modify (P4) | Generate + sync-test the ownership columns |
 | `tests/differential/memory/*.py` | Extend (P2/P3) | Alloc-count + `__del__`/weakref reuse-parity regressions |
 
@@ -804,17 +804,17 @@ hide in *this* design and which gate catches it. Plus new risks rung 2 introduce
 
 ## 9. Key file anchors (verified against origin/main e83f6b07f, 2026-06-06)
 
-- DropInsertion pass + the seven defenses: `runtime/molt-tir/src/tir/passes/drop_insertion.rs` (run at :403; alias-root canon :560; borrowed parameter roots, stack/no-RC roots, C5 non-owning `Copy` roots, and generated `[[result_validity]]` conditionally-valid result roots sourced through `OwnershipRootFacts`; composed droppable/root/raw decision sourced through `DropEligibility`; Python local/slot/release roots, boundary-release root composition, statement-release eligibility, and return-boundary deferral classification sourced through `PythonLifetimeFacts`, including `PythonLifetimeFacts::boundary_release_roots`; result-absorption, generated consumed-operand roots, generated terminator transfer roots, and FinalizerSensitive roots sourced through `OwnershipLattice`/the ownership module; raw scalar production still sourced through `TirLivenessResult`; §5 retain :1005; transfer exclusion `incoming_arg_roots` remains CFG placement; dominance guard :806)
-- Statement-release plan authority: `runtime/molt-tir/src/tir/passes/ownership_lattice_min.rs` (`StatementReleasePlan`) composes `OwnershipLattice::statement_release_finalizer_boundaries`, `PythonLifetimeFacts::is_statement_release_boundary_root`, and `DropEligibility`; `runtime/molt-tir/src/tir/passes/drop_insertion.rs` consumes the plan and owns only DecRef materialization.
-- Alias/borrow machinery: `runtime/molt-tir/src/tir/passes/alias_analysis.rs` (`build_alias_union_find` :226; `BorrowProvenance` :285, `build_borrow_provenance` :334; `op_borrow_source` :272; `CopyLowering` :444; `copy_kind_mints_fresh_owned_ref` :480; `classify_copy_kind` :515; `is_rc_barrier` :917, `is_barrier_for` :932)
-- Liveness (repr-filtered, root-space, borrow-keepalive): `runtime/molt-tir/src/tir/passes/liveness.rs` (`raw_i64_safe_values_for` import :47; `live_out_of` :197; `last_use_in_block` :98)
-- refcount_elim (the elision-to-zero machinery): `runtime/molt-tir/src/tir/passes/refcount_elim.rs` (`is_heap_exposing` :61; `build_heap_exposed_set` :89; `run` :130; `run_post_drop` :154; `post_drop` early-return :572; Step 5 :577; Step 6 :628)
-- reuse_analysis (Perceus reuse, annotation-only today): `runtime/molt-tir/src/tir/passes/reuse_analysis.rs` (`analyze` :160; `reuse_compatible` :132; `size_class` :77; `annotate` :265; `run` :293)
+- DropInsertion pass + the seven defenses: `runtime/molt-passes/src/tir/passes/drop_insertion.rs` (run at :403; alias-root canon :560; borrowed parameter roots, stack/no-RC roots, C5 non-owning `Copy` roots, and generated `[[result_validity]]` conditionally-valid result roots sourced through `OwnershipRootFacts`; composed droppable/root/raw decision sourced through `DropEligibility`; Python local/slot/release roots, boundary-release root composition, statement-release eligibility, and return-boundary deferral classification sourced through `PythonLifetimeFacts`, including `PythonLifetimeFacts::boundary_release_roots`; result-absorption, generated consumed-operand roots, generated terminator transfer roots, and FinalizerSensitive roots sourced through `OwnershipLattice`/the ownership module; raw scalar production still sourced through `TirLivenessResult`; §5 retain :1005; transfer exclusion `incoming_arg_roots` remains CFG placement; dominance guard :806)
+- Statement-release plan authority: `runtime/molt-passes/src/tir/passes/ownership_lattice_min.rs` (`StatementReleasePlan`) composes `OwnershipLattice::statement_release_finalizer_boundaries`, `PythonLifetimeFacts::is_statement_release_boundary_root`, and `DropEligibility`; `runtime/molt-passes/src/tir/passes/drop_insertion.rs` consumes the plan and owns only DecRef materialization.
+- Alias/borrow machinery: `runtime/molt-passes/src/tir/passes/alias_analysis.rs` (`build_alias_union_find` :226; `BorrowProvenance` :285, `build_borrow_provenance` :334; `op_borrow_source` :272; `CopyLowering` :444; `copy_kind_mints_fresh_owned_ref` :480; `classify_copy_kind` :515; `is_rc_barrier` :917, `is_barrier_for` :932)
+- Liveness (repr-filtered, root-space, borrow-keepalive): `runtime/molt-passes/src/tir/passes/liveness.rs` (`raw_i64_safe_values_for` import :47; `live_out_of` :197; `last_use_in_block` :98)
+- refcount_elim (the elision-to-zero machinery): `runtime/molt-passes/src/tir/passes/refcount_elim.rs` (`is_heap_exposing` :61; `build_heap_exposed_set` :89; `run` :130; `run_post_drop` :154; `post_drop` early-return :572; Step 5 :577; Step 6 :628)
+- reuse_analysis (Perceus reuse, annotation-only today): `runtime/molt-passes/src/tir/passes/reuse_analysis.rs` (`analyze` :160; `reuse_compatible` :132; `size_class` :77; `annotate` :265; `run` :293)
 - Reuse runtime ABI (exists; design-20 §10.3 was stale): `runtime/molt-runtime/src/object/builders.rs` (`molt_reuse_token` :46, unique check :70, immortal :59, arena :64; `molt_reuse_alloc` :93, size check :108, payload zero :117)
 - Size classes / allocator: `runtime/molt-runtime/src/object/mod.rs` (`size_class_for` :768; `total_size_from_header_fields` :731; `HEADER_FLAG_IMMORTAL` :444; alloc births :1155,:1228; dealloc zero-transition :1812, finalizer near :1883)
-- Pipeline + gates: `runtime/molt-tir/src/tir/pass_manager.rs` (`target_uses_tir_drop_insertion` :67; `reuse_analysis` slot :351; `refcount_elim` :348; `drop_insertion` :455; `refcount_elim_post` :465; pinned pass-name list :682-701)
+- Pipeline + gates: `runtime/molt-passes/src/tir/pass_manager.rs` (`target_uses_tir_drop_insertion` :67; `reuse_analysis` slot :351; `refcount_elim` :348; `drop_insertion` :455; `refcount_elim_post` :465; pinned pass-name list :682-701)
 - Repr lattice (the Raw filter source): `runtime/molt-tir/src/representation_plan.rs`
-- Registry (signature home): `docs/design/foundation/25_op_kind_registry.md`; `runtime/molt-tir/src/tir/op_kinds.toml`; `tools/audit_op_kinds.py`
+- Registry (signature home): `docs/design/foundation/25_op_kind_registry.md`; `runtime/molt-ir/src/tir/op_kinds.toml`; `tools/audit_op_kinds.py`
 - Rung 1 design: `docs/design/foundation/20_rc-ownership-drop-insertion.md` (the seven Findings #1–#4 in §4.1)
 
 ---
