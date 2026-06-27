@@ -228,7 +228,9 @@ def test_canonical_bench_env_preserves_explicit_roots_and_session(
 
     resolved_root = artifact_root.resolve()
     assert env["MOLT_EXT_ROOT"] == str(resolved_root)
-    assert env["CARGO_TARGET_DIR"] == str(resolved_root / "target")
+    assert env["CARGO_TARGET_DIR"] == str(
+        resolved_root / "target" / "sessions" / env["MOLT_SESSION_ID"]
+    )
     assert env["MOLT_CACHE"] == str(resolved_root / ".molt_cache")
     assert env["MOLT_DIFF_ROOT"] == str(resolved_root / "tmp" / "diff")
     assert env["TMPDIR"] == str(resolved_root / "tmp")
@@ -280,7 +282,9 @@ def test_canonical_bench_env_empty_base_ignores_ambient_artifact_env(
 
     assert env["MOLT_EXT_ROOT"] != str(ambient_root.resolve())
     assert env["CARGO_TARGET_DIR"] != str((ambient_root / "target").resolve())
-    assert env["CARGO_TARGET_DIR"] == str(Path(env["MOLT_EXT_ROOT"]) / "target")
+    assert env["CARGO_TARGET_DIR"] == str(
+        Path(env["MOLT_EXT_ROOT"]) / "target" / "sessions" / env["MOLT_SESSION_ID"]
+    )
 
 
 def test_prepare_molt_binary_defaults_to_cache_reuse(

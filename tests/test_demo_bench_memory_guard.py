@@ -46,7 +46,9 @@ def test_demo_bench_run_cmd_uses_memory_guard(monkeypatch: pytest.MonkeyPatch) -
     assert call["capture_output"] is True
     assert call["text"] is True
     assert call["env"]["MOLT_EXT_ROOT"] == str(demo_bench.ROOT)
-    assert call["env"]["CARGO_TARGET_DIR"] == str(demo_bench.ROOT / "target")
+    assert call["env"]["CARGO_TARGET_DIR"] == str(
+        demo_bench.ROOT / "target" / "sessions" / call["env"]["MOLT_SESSION_ID"]
+    )
     assert call["env"]["TMPDIR"] == str(demo_bench.ROOT / "tmp")
 
 
@@ -62,12 +64,16 @@ def test_demo_bench_base_env_forces_repo_roots_unless_explicit(
     env = demo_bench.base_env()
 
     assert env["MOLT_EXT_ROOT"] == str(demo_bench.ROOT)
-    assert env["CARGO_TARGET_DIR"] == str(demo_bench.ROOT / "target")
+    assert env["CARGO_TARGET_DIR"] == str(
+        demo_bench.ROOT / "target" / "sessions" / env["MOLT_SESSION_ID"]
+    )
 
     explicit = demo_bench.base_env({"MOLT_EXT_ROOT": str(explicit_root)})
 
     assert explicit["MOLT_EXT_ROOT"] == str(explicit_root.resolve())
-    assert explicit["CARGO_TARGET_DIR"] == str(explicit_root.resolve() / "target")
+    assert explicit["CARGO_TARGET_DIR"] == str(
+        explicit_root.resolve() / "target" / "sessions" / explicit["MOLT_SESSION_ID"]
+    )
 
 
 def test_demo_bench_run_k6_uses_live_tree_guard(
