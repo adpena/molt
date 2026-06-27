@@ -31,8 +31,6 @@ pub(crate) mod backing;
 pub(crate) mod buffer2d;
 pub(crate) mod builders;
 #[allow(dead_code)]
-pub mod dict_compact;
-#[allow(dead_code)]
 pub mod gil;
 #[allow(dead_code)]
 pub mod inline_cache;

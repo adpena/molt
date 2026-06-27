@@ -478,11 +478,6 @@ unexpected_i64!(molt_list_int_getitem_raw_checked(
     list_bits: u64,
     raw_index: i64
 ));
-unexpected_u64!(molt_list_int_setitem_raw(
-    list_bits: u64,
-    raw_index: i64,
-    raw_value: i64,
-));
 unexpected_u64!(molt_type_of(val_bits: u64));
 unexpected_u64!(molt_str_from_obj(val_bits: u64));
 unexpected_u64!(molt_repr_from_obj(val_bits: u64));

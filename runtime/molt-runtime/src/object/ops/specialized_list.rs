@@ -226,31 +226,6 @@ pub extern "C" fn molt_list_int_setitem_unchecked(
     list_bits
 }
 
-/// Raw-register fast path for list[int] setitem.
-/// Takes raw i64 index and value (NOT NaN-boxed). Stores value directly into the flat i64 array.
-/// Returns list_bits unchanged (matching molt_list_int_setitem contract).
-/// No-op on out-of-bounds.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_list_int_setitem_raw(list_bits: u64, raw_index: i64, raw_value: i64) -> u64 {
-    let list_obj = obj_from_bits(list_bits);
-    let Some(ptr) = list_obj.as_ptr() else {
-        return list_bits;
-    };
-    unsafe {
-        let storage = &mut *crate::object::layout::list_int_storage_ptr(ptr);
-        let len = storage.len as i64;
-        let mut idx = raw_index;
-        if idx < 0 {
-            idx += len;
-        }
-        if idx < 0 || idx >= len {
-            return list_bits;
-        }
-        *storage.data.add(idx as usize) = raw_value;
-        list_bits
-    }
-}
-
 /// GIL-free list[int] getitem with NaN-boxed interface.
 ///
 /// Identical to `molt_list_int_getitem` (which already skips GIL), but named
