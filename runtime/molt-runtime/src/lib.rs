@@ -146,6 +146,7 @@ mod provenance;
 mod randomness;
 pub mod refcount_verify;
 pub mod resource;
+mod socket_constants;
 mod state;
 mod utils;
 pub mod vfs;
@@ -324,29 +325,30 @@ pub(crate) use crate::async_rt::net_stubs::io_wait_release_socket;
 pub use crate::async_rt::net_stubs::*;
 pub use crate::async_rt::process::*;
 pub(crate) use crate::async_rt::scheduler::BLOCK_ON_TASK;
+pub use crate::async_rt::socket_pure::{
+    molt_socket_cmsg_len, molt_socket_cmsg_space, molt_socket_htonl, molt_socket_htons,
+    molt_socket_inet_ntop, molt_socket_inet_pton, molt_socket_ntohl, molt_socket_ntohs,
+};
 #[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
 pub(crate) use crate::async_rt::sockets::io_wait_release_socket;
 #[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
 pub use crate::async_rt::sockets::*;
-// Socket utilities from sockets_net.rs: only available when networking is compiled in.
+// Host-dependent socket helpers remain net-backed or no-net stubs.
 #[cfg(not(any(molt_has_net_io, target_arch = "wasm32")))]
 pub use crate::async_rt::net_stubs::{
-    molt_socket_cmsg_len, molt_socket_cmsg_space, molt_socket_if_indextoname,
-    molt_socket_if_nameindex, molt_socket_if_nametoindex, molt_socket_recv_fds,
-    molt_socket_send_fds, molt_socket_sendmsg_afalg, molt_socket_sethostname,
+    molt_socket_if_indextoname, molt_socket_if_nameindex, molt_socket_if_nametoindex,
+    molt_socket_recv_fds, molt_socket_send_fds, molt_socket_sendmsg_afalg, molt_socket_sethostname,
 };
 #[cfg(molt_has_net_io)]
 pub use crate::async_rt::sockets::{
-    molt_socket_cmsg_len, molt_socket_cmsg_space, molt_socket_if_indextoname,
-    molt_socket_if_nameindex, molt_socket_if_nametoindex, molt_socket_recv_fds,
-    molt_socket_send_fds, molt_socket_sendmsg_afalg, molt_socket_sethostname,
+    molt_socket_if_indextoname, molt_socket_if_nameindex, molt_socket_if_nametoindex,
+    molt_socket_recv_fds, molt_socket_send_fds, molt_socket_sendmsg_afalg, molt_socket_sethostname,
 };
 
 #[cfg(not(any(molt_has_net_io, target_arch = "wasm32")))]
 pub use crate::async_rt::net_stubs::{
     molt_socket_getfqdn, molt_socket_gethostbyaddr, molt_socket_gethostbyname,
-    molt_socket_gethostbyname_ex, molt_socket_htonl, molt_socket_htons, molt_socket_ntohl,
-    molt_socket_ntohs,
+    molt_socket_gethostbyname_ex,
 };
 
 #[cfg(all(not(target_arch = "wasm32"), molt_has_net_io))]

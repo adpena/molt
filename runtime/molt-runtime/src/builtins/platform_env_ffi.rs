@@ -314,8 +314,8 @@ fn socket_constants() -> Vec<(&'static str, i64)> {
         // module attributes.
         vec![
             ("AF_UNIX", libc::AF_UNIX as i64),
-            ("AF_INET", libc::AF_INET as i64),
-            ("AF_INET6", libc::AF_INET6 as i64),
+            ("AF_INET", crate::socket_constants::AF_INET as i64),
+            ("AF_INET6", crate::socket_constants::AF_INET6 as i64),
             ("SOCK_STREAM", libc::SOCK_STREAM as i64),
             ("SOCK_DGRAM", libc::SOCK_DGRAM as i64),
             ("SOCK_RAW", libc::SOCK_RAW as i64),
@@ -359,8 +359,8 @@ fn socket_constants() -> Vec<(&'static str, i64)> {
             let mut out = vec![
                 ("AF_APPLETALK", 16_i64),
                 ("AF_DECnet", 12_i64),
-                ("AF_INET", 2_i64),
-                ("AF_INET6", 30_i64),
+                ("AF_INET", crate::socket_constants::AF_INET as i64),
+                ("AF_INET6", crate::socket_constants::AF_INET6 as i64),
                 ("AF_IPX", 23_i64),
                 ("AF_LINK", 18_i64),
                 ("AF_ROUTE", 17_i64),
@@ -565,8 +565,8 @@ fn socket_constants() -> Vec<(&'static str, i64)> {
                 // getaddrinfo/getnameinfo flags are ABI constants, not CRT
                 // errno values; the Windows libc crate intentionally does not
                 // expose them.
-                ("AF_INET", 2_i64),
-                ("AF_INET6", 23_i64),
+                ("AF_INET", crate::socket_constants::AF_INET as i64),
+                ("AF_INET6", crate::socket_constants::AF_INET6 as i64),
                 ("SOCK_STREAM", 1_i64),
                 ("SOCK_DGRAM", 2_i64),
                 ("SOCK_RAW", 3_i64),
@@ -604,8 +604,8 @@ fn socket_constants() -> Vec<(&'static str, i64)> {
         #[cfg(all(not(target_os = "macos"), not(windows)))]
         {
             let mut out = vec![
-                ("AF_INET", libc::AF_INET as i64),
-                ("AF_INET6", libc::AF_INET6 as i64),
+                ("AF_INET", crate::socket_constants::AF_INET as i64),
+                ("AF_INET6", crate::socket_constants::AF_INET6 as i64),
                 ("SOCK_STREAM", libc::SOCK_STREAM as i64),
                 ("SOCK_DGRAM", libc::SOCK_DGRAM as i64),
                 ("SOCK_RAW", libc::SOCK_RAW as i64),

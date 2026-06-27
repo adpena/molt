@@ -11,28 +11,7 @@ use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 use std::net::{Ipv4Addr, Ipv6Addr};
 
 #[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
-pub(crate) fn host_from_bits(_py: &PyToken<'_>, bits: u64) -> Result<Option<String>, String> {
-    let obj = obj_from_bits(bits);
-    if obj.is_none() {
-        return Ok(None);
-    }
-    if let Some(text) = string_obj_to_owned(obj) {
-        return Ok(Some(text));
-    }
-    if let Some(ptr) = obj.as_ptr() {
-        unsafe {
-            if object_type_id(ptr) == TYPE_ID_BYTES {
-                let len = bytes_len(ptr);
-                let bytes = std::slice::from_raw_parts(bytes_data(ptr), len);
-                let text = std::str::from_utf8(bytes)
-                    .map_err(|_| "host bytes must be utf-8".to_string())?;
-                return Ok(Some(text.to_string()));
-            }
-        }
-    }
-    let obj_type = class_name_for_error(type_of_bits(_py, bits));
-    Err(format!("host must be str, bytes, or None, not {obj_type}"))
-}
+pub(crate) use super::super::socket_pure::host_from_bits;
 
 #[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
 pub(crate) fn port_from_bits(_py: &PyToken<'_>, bits: u64) -> Result<u16, String> {

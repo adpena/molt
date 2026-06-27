@@ -10,6 +10,7 @@ pub(crate) mod net_stubs;
 pub(crate) mod poll;
 pub(crate) mod process;
 pub(crate) mod scheduler;
+pub(crate) mod socket_pure;
 pub(crate) mod sockets;
 #[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
 pub(crate) mod sockets_net;
