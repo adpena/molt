@@ -1,3 +1,7 @@
+use super::lir_scalar::{
+    emit_get_boxed_for_repr, emit_lir_binary_arith, emit_lir_bitwise, emit_lir_bool_select,
+    emit_lir_comparison, emit_lir_i64_binary_or_boxed, emit_lir_unary_arith,
+};
 use super::*;
 
 #[derive(Clone, Copy)]
