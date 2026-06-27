@@ -1,8 +1,8 @@
 use super::fc::list_index_fast_path::{
     collect_pre_loop_defined_names, generic_list_int_lane_eligible, index_fallback_import_name,
-    metadata_only_structured_loop_ops, scan_loop_hoistable_lists, scan_loop_int_sum_reduction,
-    store_index_fallback_import_name,
+    scan_loop_hoistable_lists, scan_loop_int_sum_reduction, store_index_fallback_import_name,
 };
+use super::fc::loops::metadata_only_structured_loop_ops;
 use super::{
     FieldStoreMode, FunctionPreanalysis, ScalarRepresentationPlan, alias_root_name,
     box_raw_bool_value, box_raw_i64_value_overflow_safe, cleanup_roots_for_names,
@@ -108,6 +108,7 @@ mod block_control;
 mod cleanup_roots;
 mod compile;
 mod list_index_fast_path;
+mod loops;
 mod preanalysis;
 mod scalar_carriers;
 mod shared;

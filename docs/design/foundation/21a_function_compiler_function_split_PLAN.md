@@ -42,10 +42,12 @@ Three load-bearing facts:
    transport, merge-rebind storage, live-through params, guarded bitwise, and
    float compare/value helpers that multiple `fc::*` handlers consume. The
    list-index support module is the private authority for loop-index prelude
-   classification, metadata-only structured loop scans, list pointer hoist
-   eligibility, fallback import policy, regular-list store absorption, integer
-   sum-reduction detection, and the `ListIndexFastPathState` cache/shadow maps
-   consumed by `indexing`, `loops`, `list_ops`, `control_flow`, and `ret_jump`.
+   classification, list pointer hoist eligibility, fallback import policy,
+   regular-list store absorption, integer sum-reduction detection, and the
+   `ListIndexFastPathState` cache/shadow maps consumed by `indexing`, `loops`,
+   `list_ops`, `control_flow`, and `ret_jump`. The loop lifecycle module owns
+   structured loop CFG lowering, metadata-only structured loop classification,
+   and loop-carried reassignment old-value capture/drop.
 
 2. **The file-split buys ~0 build win and was explicitly rejected.** `dx_baseline.md`
    §3.3/§4/§6 (MEASURED) proves `function_compiler.rs` is essentially ONE method,
@@ -115,7 +117,8 @@ No planned M1 opcode-family cluster remains inline. Constant/literal materializa
 
 ### 1.4 Shared helper + shared-state sets
 - **Private shared helper module** (`scalar_carriers.rs`, reached via `super::*`): `name_is_int_like`, `int_raw_value`, `def_inline_int_value`, `bool_raw_value`, `ensure_boxed_*`, `box_raw_*`, `var_get_boxed_overflow_safe_base`, `def_var_from_*`, `emit_protect_borrowed_args_aliased_return`, `merge_rebind_*`, live-through param rebinding, guarded boxed bitwise, `float_value_for*`, dead-scrub value selection, and float compare emission. This is the extracted representation transport authority used by multiple `fc::*` handlers.
-- **Private list/index support module** (`fc/list_index_fast_path.rs`): `ListIndexFastPathState`, cache invalidation, loop-index prelude classification, metadata-only loop control scans, loop-hoistable list detection, pre-loop definition collection, generic-list integer-lane eligibility, fallback import policy, regular-list store absorption, and integer sum-reduction detection. This is the extracted fast-path support authority shared by `indexing`, `loops`, `list_ops`, `control_flow`, and `ret_jump`.
+- **Private list/index support module** (`fc/list_index_fast_path.rs`): `ListIndexFastPathState`, cache invalidation, loop-index prelude classification, loop-hoistable list detection, pre-loop definition collection, generic-list integer-lane eligibility, fallback import policy, regular-list store absorption, and integer sum-reduction detection. This is the extracted fast-path support authority shared by `indexing`, `loops`, `list_ops`, `control_flow`, and `ret_jump`.
+- **Private loop lifecycle module** (`fc/loops.rs`): structured loop CFG lowering, metadata-only structured loop control classification, loop-carried reassignment old-value capture/drop, loop frame state, hoisted list cache threading, reduction skips, and cleanup-on-break bookkeeping.
 - **Shell-owned free helpers** (1-1473, reached via `super::*`): `def_var_named`, `import_func_ref`, cleanup-root helpers, data-segment/module helpers, preanalysis, and other orchestration that remains coupled to `compile_func_inner`. Plus assoc fns `SimpleBackend::import_func_id_split`, `SimpleBackend::intern_data_segment`; shared `fc` helpers own `op_prefers_int_lane` for extracted arithmetic/unary/control-flow handlers.
 - **lib.rs `pub(crate)` surface** (via `crate::`): `NanBoxConsts`, `VarValue`, `DeferredDefine`, `block_has_terminator`, `switch_to_block_tracking`, `extend_unique_tracked`, `unbox_int`, `box_int`. **Already pub(crate) — no widening.**
 - **Shared `let mut` locals** (~45 from preanalysis + in-loop caches): `builder`, `import_refs`, `sealed_blocks`, `vars`, `representation_plan`, `bool_like_vars`, `loop_stack`, `if_stack`, `label_blocks`, element caches, `tracked_obj_vars`, `entry_vars`, `already_decrefed`, `alias_roots`, `last_use`, … → passed as split-borrowed explicit params (existing `handle_list_op` threads 20).
