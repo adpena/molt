@@ -227,10 +227,10 @@ impl<'a> SsaContext<'a> {
         // Opcode-specific attr key aliases: the lowering reads SimpleIR's
         // `s_value` under generated stable names. The registry owns opcode
         // membership; SSA owns copying the live attr payload.
-        if let Some(ref v) = op.s_value {
-            if let Some(attr_key) = opcode_ssa_s_value_attr_key_table(opcode) {
-                attrs.insert(attr_key.into(), AttrValue::Str(v.clone()));
-            }
+        if let Some(ref v) = op.s_value
+            && let Some(attr_key) = opcode_ssa_s_value_attr_key_table(opcode)
+        {
+            attrs.insert(attr_key.into(), AttrValue::Str(v.clone()));
         }
 
         // range_new maps to CallBuiltin but has no s_value to provide the
