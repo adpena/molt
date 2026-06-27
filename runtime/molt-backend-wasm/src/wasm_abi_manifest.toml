@@ -411,6 +411,22 @@ name = "exception_stack_clear"
 type = 0
 
 [[import]]
+name = "exception_stack_depth"
+type = 0
+
+[[import]]
+name = "exception_stack_enter"
+type = 0
+
+[[import]]
+name = "exception_stack_exit"
+type = 2
+
+[[import]]
+name = "exception_stack_set_depth"
+type = 2
+
+[[import]]
 name = "exceptiongroup_combine"
 type = 2
 runtime_name = "molt_exceptiongroup_combine"
@@ -5364,6 +5380,10 @@ deps = [
   "exception_set_last",
   "exception_set_value",
   "exception_stack_clear",
+  "exception_stack_depth",
+  "exception_stack_enter",
+  "exception_stack_exit",
+  "exception_stack_set_depth",
   "func_new",
   "handle_resolve",
   "is",

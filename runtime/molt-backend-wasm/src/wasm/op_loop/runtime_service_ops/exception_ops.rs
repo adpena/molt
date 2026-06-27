@@ -123,6 +123,51 @@ pub(super) fn emit_exception_runtime_op(
                 func.instruction(&Instruction::Drop);
             }
         }
+        // Runtime exception-handler-stack depth bookkeeping, emitted by the
+        // frontend around every function that has try/with handlers (including
+        // the always-present module-globals scaffold). Mirrors the native
+        // Cranelift lowering in molt-backend-native fc/exception_stack.rs: each
+        // op is a direct call into the matching `molt_exception_stack_*` runtime
+        // import, with the i64 result bound to `out` or dropped to keep the
+        // operand stack balanced.
+        "exception_stack_enter" => {
+            emit_call(func, reloc_enabled, import_ids["exception_stack_enter"]);
+            if let Some(out) = op.out.as_ref() {
+                func.instruction(&Instruction::LocalSet(locals[out]));
+            } else {
+                func.instruction(&Instruction::Drop);
+            }
+        }
+        "exception_stack_depth" => {
+            emit_call(func, reloc_enabled, import_ids["exception_stack_depth"]);
+            if let Some(out) = op.out.as_ref() {
+                func.instruction(&Instruction::LocalSet(locals[out]));
+            } else {
+                func.instruction(&Instruction::Drop);
+            }
+        }
+        "exception_stack_exit" => {
+            let args = op.args.as_ref().unwrap();
+            let prev = locals[&args[0]];
+            func.instruction(&Instruction::LocalGet(prev));
+            emit_call(func, reloc_enabled, import_ids["exception_stack_exit"]);
+            if let Some(out) = op.out.as_ref() {
+                func.instruction(&Instruction::LocalSet(locals[out]));
+            } else {
+                func.instruction(&Instruction::Drop);
+            }
+        }
+        "exception_stack_set_depth" => {
+            let args = op.args.as_ref().unwrap();
+            let depth = locals[&args[0]];
+            func.instruction(&Instruction::LocalGet(depth));
+            emit_call(func, reloc_enabled, import_ids["exception_stack_set_depth"]);
+            if let Some(out) = op.out.as_ref() {
+                func.instruction(&Instruction::LocalSet(locals[out]));
+            } else {
+                func.instruction(&Instruction::Drop);
+            }
+        }
         "exception_last" => {
             emit_call(func, reloc_enabled, import_ids["exception_last"]);
             if let Some(out) = op.out.as_ref() {
