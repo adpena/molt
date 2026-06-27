@@ -337,7 +337,7 @@ Check that the Molt toolchain is installed and configured correctly.
 
 ```bash
 molt doctor
-molt doctor --strict                     # Non-zero exit on missing requirements
+molt doctor --strict                     # Non-zero exit on errors; DX warnings remain advisory
 ```
 
 #### `molt config`
