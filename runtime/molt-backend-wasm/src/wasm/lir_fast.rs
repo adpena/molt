@@ -1,4 +1,4 @@
-//! TIR → WASM type-specialized lowering.
+//! TIR to WASM type-specialized lowering.
 //!
 //! Converts a [`TirFunction`] into WASM instructions using the `wasm-encoder` crate.
 //! The key insight: TIR carries refined type information from optimization passes,
@@ -15,9 +15,9 @@
 //! | None        | i64         | Sentinel constant              |
 //! | DynBox      | i64         | NaN-boxed runtime value        |
 //! | Ref64       | i64         | Runtime reference word         |
-//! | Str/List/…  | i64         | Heap pointer as i64            |
+//! | Str/List/... | i64         | Heap pointer as i64            |
 //!
-//! ## SSA → stack machine
+//! ## SSA to stack machine
 //!
 //! TIR is register-based SSA; WASM is a stack machine. We allocate one WASM local
 //! per SSA value and emit explicit local.get/local.set around each operation.
@@ -31,12 +31,12 @@ mod lir_control;
 mod lir_ops;
 mod lir_scalar;
 mod peephole;
-mod prelude;
 
-pub use driver::{
-    lower_lir_to_wasm, lower_lir_to_wasm_boxed_i64_abi, lower_tir_to_wasm,
-    lower_tir_to_wasm_boxed_i64_abi, lower_tir_to_wasm_boxed_i64_abi_with_proof,
-};
+#[cfg(any(test, feature = "test-util"))]
+pub(crate) use driver::lower_lir_to_wasm;
+pub(crate) use driver::lower_tir_to_wasm_boxed_i64_abi_with_proof;
+#[cfg(test)]
+pub(crate) use driver::{lower_tir_to_wasm, lower_tir_to_wasm_boxed_i64_abi};
 
 #[cfg(test)]
 mod tests;

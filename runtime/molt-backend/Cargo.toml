@@ -31,6 +31,7 @@ mlx-rs = { version = "0.25", optional = true }
 # reach the crate-private accessor seams (representation-plan / tir-cache /
 # value-range) that molt-tir exposes only under #[cfg(any(test, feature = "test-util"))].
 molt-tir = { path = "../molt-tir", features = ["test-util"] }
+molt-backend-wasm = { path = "../molt-backend-wasm", default-features = false, features = ["test-util"] }
 wasm-encoder = "0.252.0"
 wasmparser = "0.252.0"
 
@@ -96,6 +97,10 @@ required-features = ["wasm-backend"]
 
 [[test]]
 name = "wasm_compilation"
+required-features = ["wasm-backend"]
+
+[[test]]
+name = "lir_wasm_repr_regressions"
 required-features = ["wasm-backend"]
 
 [[test]]

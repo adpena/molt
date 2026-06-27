@@ -1,9 +1,13 @@
 use super::lir_context::LirLowerCtx;
 use super::lir_scalar::{emit_box_none, emit_return_boxed_i64};
-use super::prelude::*;
+use molt_tir::tir::blocks::BlockId;
+use molt_tir::tir::lir::{LirRepr, LirTerminator};
+use molt_tir::tir::values::ValueId;
+use wasm_encoder::{Ieee64, Instruction};
 
 #[derive(Clone, Copy)]
 pub(super) enum LirReturnAbi {
+    #[cfg(any(test, feature = "test-util"))]
     Native,
     BoxedI64,
 }
@@ -24,6 +28,7 @@ pub(super) fn emit_lir_terminator(
 
 fn emit_lir_return(ctx: &mut LirLowerCtx, values: &[ValueId], return_abi: LirReturnAbi) {
     match return_abi {
+        #[cfg(any(test, feature = "test-util"))]
         LirReturnAbi::Native => {
             if let Some(&val) = values.first() {
                 ctx.emit_get(val);
@@ -80,7 +85,7 @@ pub(super) fn emit_lir_terminator_multiblock(
                 }
                 LirRepr::DynBox | LirRepr::Ref64 => {
                     ctx.emit_get(*cond);
-                    ctx.instructions.push(Instruction::Call(0));
+                    ctx.emit_bail_to_generic_path();
                 }
             }
             store_lir_block_args(ctx, *then_block, then_args);

@@ -13,6 +13,7 @@ use crate::wasm_binary::{
 use crate::wasm_data::{DataSegmentRef, WasmDataSegments};
 use crate::wasm_import_tracking::{TrackedImportIds, selected_import_id};
 pub use crate::wasm_options::{WasmCompileOptions, WasmProfile};
+pub(crate) mod body;
 mod class_def_layout;
 mod compile_pipeline;
 mod constant_ops;
@@ -20,6 +21,7 @@ mod context;
 mod control_flow;
 mod data_segments;
 mod function_emitter;
+pub(crate) mod lir_fast;
 mod local_analysis;
 mod local_layout;
 mod module_abi;

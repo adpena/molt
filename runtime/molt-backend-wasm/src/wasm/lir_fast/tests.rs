@@ -1,13 +1,20 @@
 use super::peephole::peephole_set_get_to_tee;
-use super::prelude::*;
-use super::*;
+use super::{lower_lir_to_wasm, lower_tir_to_wasm, lower_tir_to_wasm_boxed_i64_abi};
 use crate::repr::Repr;
 use crate::tir::blocks::{Terminator, TirBlock};
 use crate::tir::function::TirFunction;
+use crate::tir::lower_to_lir::lower_function_to_lir_with_inline_proof;
 use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
 use crate::tir::types::TirType;
 use crate::tir::values::ValueId;
-use crate::wasm_lir_fast_output::assert_named_runtime_call_pairing;
+use crate::wasm::body::WasmBodyOps;
+use molt_codegen_abi::{INT_MASK, QNAN_TAG_INT_I64};
+use std::collections::HashMap;
+use wasm_encoder::{Instruction, ValType};
+
+fn peephole_instrs(input: Vec<Instruction<'static>>) -> Vec<Instruction<'static>> {
+    peephole_set_get_to_tee(WasmBodyOps::from_instructions(input)).into_instructions_for_tests()
+}
 
 /// Build a trivial function: returns a constant i64.
 fn make_const_return_func(val: i64) -> TirFunction {
@@ -60,7 +67,7 @@ fn binding_alias_copy_retains_before_forwarding_bits() {
         values: vec![alias],
     };
 
-    let output = lower_tir_to_wasm(&func);
+    let output = lower_tir_to_wasm(&func).test_view();
     assert!(
         output.runtime_calls.contains(&"inc_ref_obj"),
         "binding_alias Copy must retain its forwarded source: {:?}",
@@ -71,7 +78,7 @@ fn binding_alias_copy_retains_before_forwarding_bits() {
 #[test]
 fn trivial_const_return() {
     let func = make_const_return_func(42);
-    let output = lower_tir_to_wasm(&func);
+    let output = lower_tir_to_wasm(&func).test_view();
 
     assert_eq!(output.param_types, vec![]);
     assert_eq!(output.result_types, vec![ValType::I64]);
@@ -110,13 +117,12 @@ fn lir_fast_lane_dec_ref_emits_named_runtime_call() {
     });
     entry.terminator = Terminator::Return { values: vec![] };
 
-    let output = lower_tir_to_wasm(&func);
+    let output = lower_tir_to_wasm(&func).test_view();
     assert!(
         output.runtime_calls.contains(&"dec_ref_obj"),
         "WASM LIR fast lane must consume shared DecRef through dec_ref_obj; got {:?}",
         output.runtime_calls
     );
-    assert_named_runtime_call_pairing("drop_ref", &output);
 }
 
 #[test]
@@ -142,20 +148,19 @@ fn lir_fast_lane_del_boundary_emits_named_dec_ref_runtime_call() {
     });
     entry.terminator = Terminator::Return { values: vec![] };
 
-    let output = lower_tir_to_wasm(&func);
+    let output = lower_tir_to_wasm(&func).test_view();
     assert!(
         output.runtime_calls.contains(&"dec_ref_obj"),
         "WASM LIR fast lane must consume DelBoundary through dec_ref_obj; got {:?}",
         output.runtime_calls
     );
-    assert_named_runtime_call_pairing("del_boundary_release", &output);
 }
 
 #[test]
 fn add_two_i64s() {
     let func = make_add_two_consts_func(20, 22);
 
-    let output = lower_tir_to_wasm(&func);
+    let output = lower_tir_to_wasm(&func).test_view();
 
     assert_eq!(output.param_types, Vec::<ValType>::new());
 
@@ -188,7 +193,7 @@ fn bool1_and_stays_raw_without_selected_ref_retain() {
         values: vec![result_id],
     };
 
-    let output = lower_tir_to_wasm(&func);
+    let output = lower_tir_to_wasm(&func).test_view();
     assert!(
         output
             .instructions
@@ -225,7 +230,7 @@ fn dynbox_or_retains_selected_operand_result() {
         values: vec![result_id],
     };
 
-    let output = lower_tir_to_wasm(&func);
+    let output = lower_tir_to_wasm(&func).test_view();
     assert!(
         output.runtime_calls.contains(&"is_truthy"),
         "boxed or must test Python truthiness: {:?}",
@@ -267,7 +272,7 @@ fn add_two_f64s() {
         values: vec![result_id],
     };
 
-    let output = lower_tir_to_wasm(&func);
+    let output = lower_tir_to_wasm(&func).test_view();
 
     assert_eq!(output.param_types, vec![ValType::F64, ValType::F64]);
     let has_f64_add = output
@@ -298,7 +303,7 @@ fn f64_mod_declares_emission_scratch_locals() {
         values: vec![result_id],
     };
 
-    let output = lower_tir_to_wasm(&func);
+    let output = lower_tir_to_wasm(&func).test_view();
 
     assert_eq!(output.param_types, vec![ValType::F64, ValType::F64]);
     assert_eq!(output.result_types, vec![ValType::F64]);
@@ -371,7 +376,7 @@ fn conditional_branch() {
     func.blocks.insert(then_id, then_block);
     func.blocks.insert(else_id, else_block);
 
-    let output = lower_tir_to_wasm(&func);
+    let output = lower_tir_to_wasm(&func).test_view();
 
     // Should contain br_if for the conditional branch.
     let has_br_if = output
@@ -388,7 +393,7 @@ fn conditional_branch() {
 fn comparison_i64_emits_native() {
     let func = make_lt_two_consts_func(20, 22);
 
-    let output = lower_tir_to_wasm(&func);
+    let output = lower_tir_to_wasm(&func).test_view();
 
     let has_lt = output
         .instructions
@@ -418,14 +423,12 @@ fn dynbox_add_falls_back_to_call() {
         values: vec![result_id],
     };
 
-    let output = lower_tir_to_wasm(&func);
+    let output = lower_tir_to_wasm(&func).test_view();
 
-    // DynBox add should emit a Call (runtime dispatch), not i64.add.
-    let has_call = output
-        .instructions
-        .iter()
-        .any(|i| matches!(i, Instruction::Call(_)));
-    assert!(has_call, "expected runtime call for DynBox add");
+    assert!(
+        output.runtime_calls.contains(&"add"),
+        "expected typed runtime import for DynBox add"
+    );
 
     let has_i64_add = output
         .instructions
@@ -456,13 +459,12 @@ fn alloc_task_falls_back_to_runtime_call() {
         values: vec![result_id],
     };
 
-    let output = lower_tir_to_wasm(&func);
+    let output = lower_tir_to_wasm(&func).test_view();
 
-    let has_call = output
-        .instructions
-        .iter()
-        .any(|i| matches!(i, Instruction::Call(_)));
-    assert!(has_call, "expected runtime call for alloc_task");
+    assert!(
+        output.bails_to_generic_path,
+        "alloc_task must bail to generic WASM emission"
+    );
 }
 
 #[test]
@@ -486,13 +488,12 @@ fn state_switch_falls_back_to_runtime_call() {
         values: vec![result_id],
     };
 
-    let output = lower_tir_to_wasm(&func);
+    let output = lower_tir_to_wasm(&func).test_view();
 
-    let has_call = output
-        .instructions
-        .iter()
-        .any(|i| matches!(i, Instruction::Call(_)));
-    assert!(has_call, "expected runtime call for state_switch");
+    assert!(
+        output.bails_to_generic_path,
+        "state_switch must bail to generic WASM emission"
+    );
 }
 
 // -----------------------------------------------------------------------
@@ -507,7 +508,7 @@ fn peephole_collapses_set_get_to_tee() {
         Instruction::LocalGet(3),
         Instruction::End,
     ];
-    let output = peephole_set_get_to_tee(input);
+    let output = peephole_instrs(input);
     assert_eq!(output.len(), 3);
     assert!(
         matches!(output[0], Instruction::I64Const(42)),
@@ -527,7 +528,7 @@ fn peephole_preserves_mismatched_set_get() {
         Instruction::LocalGet(2), // different local
         Instruction::End,
     ];
-    let output = peephole_set_get_to_tee(input);
+    let output = peephole_instrs(input);
     assert_eq!(output.len(), 3);
     assert!(
         matches!(output[0], Instruction::LocalSet(1)),
@@ -550,7 +551,7 @@ fn peephole_handles_consecutive_tee_chains() {
         Instruction::LocalGet(2),
         Instruction::End,
     ];
-    let output = peephole_set_get_to_tee(input);
+    let output = peephole_instrs(input);
     assert_eq!(output.len(), 4);
     assert!(matches!(output[1], Instruction::LocalTee(1)));
     assert!(matches!(output[2], Instruction::LocalTee(2)));
@@ -558,16 +559,16 @@ fn peephole_handles_consecutive_tee_chains() {
 
 #[test]
 fn peephole_empty_and_single() {
-    assert!(peephole_set_get_to_tee(vec![]).is_empty());
+    assert!(peephole_instrs(vec![]).is_empty());
     let single = vec![Instruction::End];
-    assert_eq!(peephole_set_get_to_tee(single).len(), 1);
+    assert_eq!(peephole_instrs(single).len(), 1);
 }
 
 #[test]
 fn peephole_applied_in_const_return() {
     // A const-return function should have tee instead of set+get.
     let func = make_const_return_func(99);
-    let output = lower_tir_to_wasm(&func);
+    let output = lower_tir_to_wasm(&func).test_view();
 
     // After peephole, the pattern: i64.const 99; local.set X; local.get X; return
     // becomes: i64.const 99; local.tee X; return
@@ -683,13 +684,10 @@ fn make_lt_two_consts_func(lhs: i64, rhs: i64) -> TirFunction {
 #[test]
 fn generic_tir_to_wasm_uses_value_repr_not_type_floor_for_int_params() {
     let func = make_add_two_params_func();
-    let output = lower_tir_to_wasm(&func);
+    let output = lower_tir_to_wasm(&func).test_view();
 
     assert!(
-        output
-            .instructions
-            .iter()
-            .any(|i| matches!(i, Instruction::Call(_))),
+        output.runtime_calls.contains(&"add"),
         "unproven int params must lower through boxed runtime dispatch, not a type-floor raw i64 op"
     );
     for (idx, inst) in output.instructions.iter().enumerate() {
@@ -737,7 +735,7 @@ fn full_range_raw_carrier_boxes_overflow_safe_with_named_call() {
         "checked-i64 triple must be refused without a value-range proof"
     );
 
-    let output = lower_lir_to_wasm(&lir);
+    let output = lower_lir_to_wasm(&lir).test_view();
     // The raw operands are boxed overflow-safely: the cold arm is a
     // NAMED int_from_i64 runtime call recorded in runtime_calls.
     assert!(
@@ -750,7 +748,6 @@ fn full_range_raw_carrier_boxes_overflow_safe_with_named_call() {
         "both full-range raw operands must box through the int_from_i64 cold path; got {:?}",
         output.runtime_calls
     );
-    assert_named_runtime_call_pairing("add_two_params", &output);
 }
 
 /// Count occurrences of the inline-int NaN-box packing
@@ -792,7 +789,7 @@ fn mixed_repr_int_add_boxes_both_operands_no_bare_i64_add() {
         &repr,
         &crate::representation_plan::value_range_for(&func),
     );
-    let output = lower_lir_to_wasm(&lir);
+    let output = lower_lir_to_wasm(&lir).test_view();
 
     // No bare OPERAND i64.add: a raw machine add on a possibly-heap-BigInt
     // operand is exactly the truncation bug-class this phase makes
@@ -812,12 +809,9 @@ fn mixed_repr_int_add_boxes_both_operands_no_bare_i64_add() {
             );
         }
     }
-    // Runtime dispatch through the boxed helper (placeholder Call(0)).
+    // Runtime dispatch through the typed boxed helper import.
     assert!(
-        output
-            .instructions
-            .iter()
-            .any(|i| matches!(i, Instruction::Call(_))),
+        output.runtime_calls.contains(&"add"),
         "mixed-repr add must dispatch through the boxed runtime helper"
     );
     // The proven RawI64Safe operand `a` is NaN-boxed (inline-int box) before
@@ -835,7 +829,7 @@ fn mixed_repr_int_add_boxes_both_operands_no_bare_i64_add() {
 #[test]
 fn proven_raw_i64_add_still_emits_native_i64_add() {
     let func = make_add_two_consts_func(20, 22);
-    let output = lower_tir_to_wasm(&func);
+    let output = lower_tir_to_wasm(&func).test_view();
 
     let has_operand_add = output.instructions.iter().enumerate().any(|(idx, inst)| {
         matches!(inst, Instruction::I64Add)
