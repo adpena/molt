@@ -26,62 +26,8 @@ pub(super) fn handle_generic_widget_path_command(
             app.last_error = None;
             return Ok(Some(MoltObject::from_int(widget.next_item_id).bits()));
         }
-        "add" => {
-            if widget.widget_command == "panedwindow" {
-                if args.len() < 3 {
-                    return Err(app_tcl_error_locked(
-                        py,
-                        app,
-                        "panedwindow add expects child path and optional key/value pairs",
-                    ));
-                }
-                let child = get_string_arg(py, handle, args[2], "panedwindow child path")?;
-                if !widget
-                    .pane_children
-                    .iter()
-                    .any(|existing| existing == &child)
-                {
-                    widget.pane_children.push(child.clone());
-                }
-                let option_pairs =
-                    parse_widget_option_pairs(py, handle, args, 3, "panedwindow pane options")?;
-                let pane_options = widget.pane_child_options.entry(child).or_default();
-                for (option_name, value_bits) in option_pairs {
-                    value_map_set_bits(py, pane_options, option_name, value_bits);
-                }
-                app.last_error = None;
-                return Ok(Some(MoltObject::none().bits()));
-            }
-        }
         "insert" => {
-            if widget.widget_command == "panedwindow" {
-                if args.len() < 4 {
-                    return Err(app_tcl_error_locked(
-                        py,
-                        app,
-                        "panedwindow insert expects index, child path, and optional key/value pairs",
-                    ));
-                }
-                let Some(index) =
-                    parse_simple_end_or_int_index_bits(args[2], widget.pane_children.len())
-                else {
-                    return Err(app_tcl_error_locked(
-                        py,
-                        app,
-                        "panedwindow insert index must be an integer or end",
-                    ));
-                };
-                let child = get_string_arg(py, handle, args[3], "panedwindow child path")?;
-                widget.pane_children.retain(|existing| existing != &child);
-                let insert_index = index.min(widget.pane_children.len());
-                widget.pane_children.insert(insert_index, child.clone());
-                let option_pairs =
-                    parse_widget_option_pairs(py, handle, args, 4, "panedwindow pane options")?;
-                let pane_options = widget.pane_child_options.entry(child).or_default();
-                for (option_name, value_bits) in option_pairs {
-                    value_map_set_bits(py, pane_options, option_name, value_bits);
-                }
-            } else if matches!(widget.widget_command.as_str(), "entry" | "text" | "spinbox")
+            if matches!(widget.widget_command.as_str(), "entry" | "text" | "spinbox")
                 && args.len() > 3
             {
                 let insert_index = if widget.widget_command == "text" {
@@ -238,24 +184,6 @@ pub(super) fn handle_generic_widget_path_command(
         "size" | "count" => {
             app.last_error = None;
             return Ok(Some(MoltObject::from_int(0).bits()));
-        }
-        "forget" => {
-            if widget.widget_command == "panedwindow" {
-                if args.len() != 3 {
-                    return Err(app_tcl_error_locked(
-                        py,
-                        app,
-                        "panedwindow forget expects exactly one child path",
-                    ));
-                }
-                let child = get_string_arg(py, handle, args[2], "panedwindow child path")?;
-                widget.pane_children.retain(|existing| existing != &child);
-                if let Some(mut options) = widget.pane_child_options.remove(&child) {
-                    clear_value_map_refs(py, &mut options);
-                }
-                app.last_error = None;
-                return Ok(Some(MoltObject::none().bits()));
-            }
         }
         "replace" => {
             if widget.widget_command == "text" {
@@ -527,25 +455,6 @@ pub(super) fn handle_generic_widget_path_command(
                 app.last_error = None;
                 return alloc_string_bits(py, &format!("1.{index}")).map(Some);
             }
-            if widget.widget_command == "panedwindow" {
-                let token = get_string_arg(py, handle, args[2], "panedwindow index")?;
-                if let Some(position) = widget.pane_children.iter().position(|item| item == &token)
-                {
-                    app.last_error = None;
-                    return Ok(Some(MoltObject::from_int(position as i64).bits()));
-                }
-                if let Some(index) =
-                    parse_simple_end_or_int_index(token.as_str(), widget.pane_children.len())
-                {
-                    app.last_error = None;
-                    return Ok(Some(MoltObject::from_int(index as i64).bits()));
-                }
-                return Err(app_tcl_error_locked(
-                    py,
-                    app,
-                    format!("bad panedwindow index \"{token}\""),
-                ));
-            }
             app.last_error = None;
             Ok(Some(MoltObject::from_int(0).bits()))
         }
@@ -622,15 +531,6 @@ pub(super) fn handle_generic_widget_path_command(
             alloc_empty_tuple_bits(py).map(Some)
         }
         "find" | "tabs" | "panes" => {
-            if subcommand == "panes" && widget.widget_command == "panedwindow" {
-                app.last_error = None;
-                return alloc_tuple_from_strings(
-                    py,
-                    widget.pane_children.as_slice(),
-                    "failed to allocate panedwindow panes tuple",
-                )
-                .map(Some);
-            }
             app.last_error = None;
             alloc_empty_tuple_bits(py).map(Some)
         }
@@ -660,34 +560,6 @@ pub(super) fn handle_generic_widget_path_command(
             alloc_empty_string_bits(py).map(Some)
         }
         "entrycget" => {
-            app.last_error = None;
-            alloc_empty_string_bits(py).map(Some)
-        }
-        "panecget" => {
-            if widget.widget_command == "panedwindow" {
-                if args.len() != 4 {
-                    return Err(app_tcl_error_locked(
-                        py,
-                        app,
-                        "panedwindow panecget expects child and option",
-                    ));
-                }
-                let child = get_string_arg(py, handle, args[2], "panedwindow child path")?;
-                let option_name =
-                    parse_widget_option_name_arg(py, handle, args[3], "pane option name")?;
-                if let Some(bits) = widget
-                    .pane_child_options
-                    .get(&child)
-                    .and_then(|options| options.get(&option_name))
-                    .copied()
-                {
-                    inc_ref_bits(py, bits);
-                    app.last_error = None;
-                    return Ok(Some(bits));
-                }
-                app.last_error = None;
-                return alloc_empty_string_bits(py).map(Some);
-            }
             app.last_error = None;
             alloc_empty_string_bits(py).map(Some)
         }
@@ -765,38 +637,6 @@ pub(super) fn handle_generic_widget_path_command(
         "tag" => {
             text::handle_tag_subcommand(py, handle, widget_path, &mut app.last_error, widget, args)
         }
-        "proxy" => {
-            if args.len() >= 3 {
-                let op = get_string_arg(py, handle, args[2], "proxy subcommand")?;
-                if op == "coord" {
-                    app.last_error = None;
-                    return alloc_widget_coord_bits(py).map(Some);
-                }
-                return Err(app_tcl_error_locked(
-                    py,
-                    app,
-                    unknown_widget_subcommand_message(widget_path, &format!("proxy {op}")),
-                ));
-            }
-            app.last_error = None;
-            Ok(Some(MoltObject::none().bits()))
-        }
-        "sash" => {
-            if args.len() >= 3 {
-                let op = get_string_arg(py, handle, args[2], "sash subcommand")?;
-                if op == "coord" {
-                    app.last_error = None;
-                    return alloc_widget_coord_bits(py).map(Some);
-                }
-                return Err(app_tcl_error_locked(
-                    py,
-                    app,
-                    unknown_widget_subcommand_message(widget_path, &format!("sash {op}")),
-                ));
-            }
-            app.last_error = None;
-            Ok(Some(MoltObject::none().bits()))
-        }
         "icursor" => {
             if args.len() != 3 {
                 return Err(app_tcl_error_locked(
@@ -845,72 +685,6 @@ pub(super) fn handle_generic_widget_path_command(
             app,
             unknown_widget_subcommand_message(widget_path, "itemconfigure"),
         )),
-        "paneconfigure" => {
-            if widget.widget_command != "panedwindow" {
-                return Err(app_tcl_error_locked(
-                    py,
-                    app,
-                    unknown_widget_subcommand_message(widget_path, "paneconfigure"),
-                ));
-            }
-            if args.len() < 3 {
-                return Err(app_tcl_error_locked(
-                    py,
-                    app,
-                    "panedwindow paneconfigure expects child and optional key/value options",
-                ));
-            }
-            let child = get_string_arg(py, handle, args[2], "panedwindow child path")?;
-            if !widget
-                .pane_children
-                .iter()
-                .any(|existing| existing == &child)
-            {
-                return Err(app_tcl_error_locked(
-                    py,
-                    app,
-                    format!("unknown pane \"{child}\""),
-                ));
-            }
-            if args.len() == 3 {
-                let options = widget
-                    .pane_child_options
-                    .get(&child)
-                    .cloned()
-                    .unwrap_or_default();
-                app.last_error = None;
-                return option_map_to_tuple(
-                    py,
-                    &options,
-                    "failed to allocate panedwindow paneconfigure tuple",
-                )
-                .map(Some);
-            }
-            if args.len() == 4 {
-                let option_name =
-                    parse_widget_option_name_arg(py, handle, args[3], "pane option name")?;
-                if let Some(bits) = widget
-                    .pane_child_options
-                    .get(&child)
-                    .and_then(|options| options.get(&option_name))
-                    .copied()
-                {
-                    inc_ref_bits(py, bits);
-                    app.last_error = None;
-                    return Ok(Some(bits));
-                }
-                app.last_error = None;
-                return alloc_empty_string_bits(py).map(Some);
-            }
-            let option_pairs =
-                parse_widget_option_pairs(py, handle, args, 3, "panedwindow pane options")?;
-            let options = widget.pane_child_options.entry(child).or_default();
-            for (option_name, value_bits) in option_pairs {
-                value_map_set_bits(py, options, option_name, value_bits);
-            }
-            app.last_error = None;
-            Ok(Some(MoltObject::none().bits()))
-        }
         "activate" => {
             app.last_error = None;
             Ok(Some(MoltObject::none().bits()))
