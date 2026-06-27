@@ -5,12 +5,13 @@ import hashlib
 import json
 import os
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import Any, cast
 
 from molt.cli.capability_spec import _dedupe_preserve_order
 from molt.cli.compiler_metadata import _rustc_version
 from molt.cli.file_hashing import _sha256_file
 from molt.cli.json_cache import _read_cached_json_object, _write_cached_json_object
+from molt.wasm_artifact import is_valid_wasm_binary
 
 
 def _read_runtime_fingerprint(path: Path) -> dict[str, Any] | None:
@@ -328,20 +329,5 @@ def _artifact_content_looks_valid(path: Path) -> bool:
     if path.suffix in {".a", ".lib"}:
         return _is_valid_static_library_artifact(path)
     if path.suffix == ".wasm":
-        return _is_valid_wasm_binary(path)
+        return is_valid_wasm_binary(path)
     return True
-
-
-def _is_valid_wasm_binary(path: Path) -> bool:
-    return _inspect_wasm_binary(path) == "valid"
-
-
-def _inspect_wasm_binary(path: Path) -> Literal["missing", "invalid", "valid"]:
-    try:
-        with path.open("rb") as handle:
-            magic = handle.read(8)
-    except OSError:
-        return "missing"
-    if magic != b"\x00asm\x01\x00\x00\x00":
-        return "invalid"
-    return "valid"

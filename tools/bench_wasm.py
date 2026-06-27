@@ -34,6 +34,7 @@ from molt.harness_conformance import (  # noqa: E402
 from molt.wasm_artifact import (  # noqa: E402
     _read_wasm_import_metrics,
     _read_wasm_table_min,
+    is_valid_wasm_binary,
 )
 
 SUPER_SAMPLES = 10
@@ -125,12 +126,7 @@ class _SampleResult:
 
 
 def _is_valid_wasm(path: Path) -> bool:
-    try:
-        with path.open("rb") as fh:
-            magic = fh.read(4)
-    except OSError:
-        return False
-    return magic == b"\x00asm"
+    return is_valid_wasm_binary(path)
 
 
 def _external_root() -> Path | None:

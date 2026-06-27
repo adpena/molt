@@ -533,10 +533,8 @@ def test_export_wasm_table_refs_adds_exports_for_active_slots(tmp_path) -> None:
     from molt.cli import _export_wasm_table_refs
     from molt.wasm_artifact import (
         _build_wasm_sections,
-        _parse_wasm_sections,
-        _read_wasm_string,
-        _read_wasm_varuint,
         _write_wasm_varuint,
+        parse_wasm_exports,
     )
 
     type_payload = _write_wasm_varuint(1) + bytes([0x60, 0x00, 0x01, 0x7E])
@@ -566,16 +564,8 @@ def test_export_wasm_table_refs_adds_exports_for_active_slots(tmp_path) -> None:
 
     _export_wasm_table_refs(wasm_path)
 
-    exports = {}
-    for section_id, payload in _parse_wasm_sections(wasm_path.read_bytes()):
-        if section_id != 7:
-            continue
-        offset = 0
-        count, offset = _read_wasm_varuint(payload, offset)
-        for _ in range(count):
-            name, offset = _read_wasm_string(payload, offset)
-            kind = payload[offset]
-            offset += 1
-            index, offset = _read_wasm_varuint(payload, offset)
-            exports[name] = (kind, index)
+    exports = {
+        export.name: (export.kind, export.index)
+        for export in parse_wasm_exports(wasm_path.read_bytes())
+    }
     assert exports["__molt_table_ref_3"] == (0, 0)

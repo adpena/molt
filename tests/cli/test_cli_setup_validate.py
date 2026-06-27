@@ -669,7 +669,7 @@ def test_cli_build_toolchain_probes_use_memory_guard(
 
     assert cli._git_rev(ROOT) == "abc123"
     assert COMPILER_METADATA._rustc_version() == "rustc 1.91.0"
-    assert cli._validate_wasm_structural(wasm_path) is None
+    assert RUNTIME_WASM_VALIDATION._validate_wasm_structural(wasm_path) is None
     assert RUNTIME_BUILD._rust_target_libdir("wasm32-wasip1") == Path(
         "/rust/target/lib"
     )

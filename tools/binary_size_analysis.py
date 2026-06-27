@@ -34,8 +34,16 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
+SRC_ROOT = REPO_ROOT / "src"
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
 
 from tools import harness_memory_guard  # noqa: E402
+from molt.wasm_artifact import (  # noqa: E402
+    WasmSectionSpan,
+    read_wasm_code_metrics,
+    read_wasm_section_spans,
+)
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -84,23 +92,6 @@ CATEGORIES: list[tuple[str, str, list[str]]] = [
     ),
 ]
 
-# WASM section IDs.
-WASM_SECTION_NAMES: dict[int, str] = {
-    0: "custom",
-    1: "type",
-    2: "import",
-    3: "function",
-    4: "table",
-    5: "memory",
-    6: "global",
-    7: "export",
-    8: "start",
-    9: "element",
-    10: "code",
-    11: "data",
-    12: "data_count",
-}
-
 WASM_MAGIC = b"\x00asm"
 
 # Default size budget (native ~30MB, WASM ~17MB — allow some headroom).
@@ -140,20 +131,6 @@ def _parse_size_spec(spec: str) -> int:
     if spec.endswith("B"):
         return int(spec[:-1])
     return int(spec)
-
-
-def _read_leb128_u32(data: bytes, offset: int) -> tuple[int, int]:
-    """Read an unsigned LEB128 value.  Returns (value, new_offset)."""
-    result = 0
-    shift = 0
-    while True:
-        byte = data[offset]
-        offset += 1
-        result |= (byte & 0x7F) << shift
-        if (byte & 0x80) == 0:
-            break
-        shift += 7
-    return result, offset
 
 
 # ---------------------------------------------------------------------------
@@ -450,88 +427,12 @@ def print_native_report(analysis: dict) -> None:
 # ---------------------------------------------------------------------------
 
 
-class WasmSectionInfo:
-    __slots__ = ("id", "name", "offset", "size", "custom_name")
-
-    def __init__(
-        self, *, id: int, name: str, offset: int, size: int, custom_name: str = ""
-    ):
-        self.id = id
-        self.name = name
-        self.offset = offset
-        self.size = size
-        self.custom_name = custom_name
-
-
-def _parse_wasm_sections(path: Path) -> list[WasmSectionInfo]:
-    data = path.read_bytes()
-    if len(data) < 8 or data[:4] != WASM_MAGIC:
-        raise ValueError(f"{path} is not a valid WASM binary")
-
-    offset = 8
-    sections: list[WasmSectionInfo] = []
-
-    while offset < len(data):
-        sec_id = data[offset]
-        offset += 1
-        sec_size, offset = _read_leb128_u32(data, offset)
-        sec_start = offset
-
-        name = WASM_SECTION_NAMES.get(sec_id, f"unknown({sec_id})")
-        custom_name = ""
-
-        if sec_id == 0 and sec_size > 0:
-            try:
-                name_len, name_offset = _read_leb128_u32(data, sec_start)
-                custom_name = data[name_offset : name_offset + name_len].decode(
-                    "utf-8", errors="replace"
-                )
-            except (IndexError, UnicodeDecodeError):
-                custom_name = "<unparseable>"
-
-        sections.append(
-            WasmSectionInfo(
-                id=sec_id,
-                name=name,
-                offset=sec_start,
-                size=sec_size,
-                custom_name=custom_name,
-            )
-        )
-        offset += sec_size
-
-    return sections
-
-
-def _count_wasm_functions(path: Path) -> tuple[int, int]:
-    """Return (function_count, code_section_size) from the code section."""
-    data = path.read_bytes()
-    if len(data) < 8 or data[:4] != WASM_MAGIC:
-        return 0, 0
-
-    offset = 8
-    while offset < len(data):
-        sec_id = data[offset]
-        offset += 1
-        sec_size, offset = _read_leb128_u32(data, offset)
-        sec_start = offset
-
-        if sec_id == 10:  # code section
-            try:
-                func_count, _ = _read_leb128_u32(data, sec_start)
-                return func_count, sec_size
-            except (IndexError, ValueError):
-                return 0, sec_size
-
-        offset += sec_size
-
-    return 0, 0
-
-
 def analyse_wasm(path: Path) -> dict:
     total_bytes = path.stat().st_size
-    sections = _parse_wasm_sections(path)
-    func_count, code_size = _count_wasm_functions(path)
+    sections: list[WasmSectionSpan] = read_wasm_section_spans(path)
+    metrics = read_wasm_code_metrics(path)
+    func_count = metrics.defined_function_count
+    code_size = metrics.code_section_size
     avg_func_size = code_size // func_count if func_count > 0 else 0
 
     by_type: dict[str, int] = {}
