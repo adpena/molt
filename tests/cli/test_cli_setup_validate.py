@@ -1039,16 +1039,24 @@ def test_cli_lint_uses_shared_dx_planner(monkeypatch: pytest.MonkeyPatch) -> Non
         def canonical_env(self) -> dict[str, str]:
             return {"PATH": "", "PYTHONPATH": str(ROOT / "src")}
 
-        def require_project_python(self, context: str) -> Path:
+        def require_project_python(self, context: str, env: dict[str, str]) -> Path:
             assert context == "lint"
+            assert env["PYTHONPATH"] == str(ROOT / "src")
             return ROOT / ".venv" / "bin" / "python3"
 
         def commands(self) -> dict[str, object]:
             return {"lint": "python3 -m ruff check ."}
 
-        def split_command_sequence(self, command: object, name: str) -> list[list[str]]:
+        def split_command_sequence(
+            self,
+            command: object,
+            name: str,
+            *,
+            env: dict[str, str],
+        ) -> list[list[str]]:
             assert command == "python3 -m ruff check ."
             assert name == "lint"
+            assert env["PYTHONPATH"] == str(ROOT / "src")
             return [["python3", "-m", "ruff", "check", "."]]
 
     def fake_run_completed(cmd, **kwargs):

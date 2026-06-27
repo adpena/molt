@@ -46,10 +46,14 @@ _THIS_FILE = Path(__file__).resolve()
 _REPO_ROOT = _THIS_FILE.parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
+_SRC_ROOT = _REPO_ROOT / "src"
+if str(_SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(_SRC_ROOT))
 
 import tools.memory_guard as memory_guard  # noqa: E402
 import tools.harness_memory_guard as harness_memory_guard  # noqa: E402
 import tools.compile_governor as compile_governor  # noqa: E402
+from molt.dx import CANONICAL_ROOT_ENV_KEYS, development_artifact_env  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -555,26 +559,18 @@ def _check_env(check: Check) -> dict[str, str]:
 
 
 def _apply_canonical_env_defaults(env: dict[str, str]) -> None:
-    ext_root = Path(env.setdefault("MOLT_EXT_ROOT", str(ROOT))).expanduser()
-    cargo_target_dir = env.setdefault("CARGO_TARGET_DIR", str(ext_root / "target"))
-    env.setdefault("MOLT_DIFF_CARGO_TARGET_DIR", cargo_target_dir)
-    env.setdefault("CARGO_INCREMENTAL", "0")
-    env.setdefault("MOLT_CACHE", str(ext_root / ".molt_cache"))
-    env.setdefault("MOLT_DIFF_ROOT", str(ext_root / "tmp" / "diff"))
-    env.setdefault("MOLT_DIFF_TMPDIR", str(ext_root / "tmp"))
-    env.setdefault("UV_CACHE_DIR", str(ext_root / ".uv-cache"))
-    env.setdefault("TMPDIR", str(ext_root / "tmp"))
-    env.setdefault("MOLT_SESSION_ID", f"ci-gate-{os.getpid()}")
+    resolved = development_artifact_env(
+        ROOT,
+        env,
+        session_prefix="ci-gate",
+        session_id=env.get("MOLT_SESSION_ID") or f"ci-gate-{os.getpid()}",
+        create_dirs=False,
+    )
+    env.update(resolved)
     env.setdefault("CARGO_BUILD_JOBS", "2")
-    for key in (
-        "CARGO_TARGET_DIR",
-        "MOLT_DIFF_CARGO_TARGET_DIR",
-        "MOLT_CACHE",
-        "MOLT_DIFF_ROOT",
-        "MOLT_DIFF_TMPDIR",
-        "UV_CACHE_DIR",
-        "TMPDIR",
-    ):
+    for key in CANONICAL_ROOT_ENV_KEYS:
+        if key not in env:
+            continue
         with contextlib.suppress(OSError):
             Path(env[key]).expanduser().mkdir(parents=True, exist_ok=True)
 

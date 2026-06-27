@@ -15,7 +15,7 @@
 #   - Rust wasm32-wasip1 target (rustup target add wasm32-wasip1)
 #   - wasm-ld (llvm, via `brew install llvm`)
 #   - Python 3.12+ with molt-lang installed (uv run)
-#   - CARGO_TARGET_DIR pointing to cargo target (defaults to <repo>/target)
+#   - Developer artifact env from tools/run_context_env.py
 
 set -euo pipefail
 
@@ -24,14 +24,14 @@ BENCH_DIR="$REPO_ROOT/tests/benchmarks"
 OUT_DIR="$REPO_ROOT/wasm/bench"
 RUNTIME_WASM="$REPO_ROOT/wasm/molt_runtime.wasm"
 WASM_LINK="$REPO_ROOT/tools/wasm_link.py"
-export MOLT_EXT_ROOT="${MOLT_EXT_ROOT:-$REPO_ROOT}"
-export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$REPO_ROOT/target}"
-export MOLT_DIFF_CARGO_TARGET_DIR="${MOLT_DIFF_CARGO_TARGET_DIR:-$CARGO_TARGET_DIR}"
-export MOLT_CACHE="${MOLT_CACHE:-$REPO_ROOT/.molt_cache}"
-export MOLT_DIFF_ROOT="${MOLT_DIFF_ROOT:-$REPO_ROOT/tmp/diff}"
-export MOLT_DIFF_TMPDIR="${MOLT_DIFF_TMPDIR:-$REPO_ROOT/tmp}"
-export UV_CACHE_DIR="${UV_CACHE_DIR:-$REPO_ROOT/.uv-cache}"
-export TMPDIR="${TMPDIR:-$REPO_ROOT/tmp}"
+eval "$(
+  python3 "$REPO_ROOT/tools/run_context_env.py" \
+    --root "$REPO_ROOT" \
+    --session-prefix "${MOLT_SESSION_PREFIX:-compile-bench-wasm}" \
+    --prefer-external-artifacts \
+    --dx \
+    --format posix
+)"
 CARGO_TARGET="$CARGO_TARGET_DIR"
 
 mkdir -p "$OUT_DIR"

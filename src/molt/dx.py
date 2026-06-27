@@ -23,7 +23,12 @@ CANONICAL_ROOT_ENV_KEYS = (
     "MOLT_DIFF_ROOT",
     "MOLT_DIFF_TMPDIR",
     "UV_CACHE_DIR",
+    "UV_PROJECT_ENVIRONMENT",
+    "PIP_CACHE_DIR",
+    "PYTHONPYCACHEPREFIX",
     "TMPDIR",
+    "TMP",
+    "TEMP",
 )
 CANONICAL_RUN_ENV_KEYS = (
     *CANONICAL_ROOT_ENV_KEYS,
@@ -44,6 +49,7 @@ DEFAULT_POSIX_EXTERNAL_ARTIFACT_ROOTS = (
     "/Volumes/VertigoDataTier/Molt",
     "/Volumes/APDataStore/Molt",
 )
+DEFAULT_WINDOWS_EXTERNAL_ARTIFACT_DIRNAME = "Molt"
 DEFAULT_SCCACHE_CACHE_SIZE = "10G"
 DEFAULT_MOLT_CACHE_MAX_GB = "30"
 DEFAULT_MOLT_CACHE_MAX_AGE_DAYS = "30"
@@ -53,6 +59,23 @@ FALSE_VALUES = {"0", "false", "no", "off"}
 
 class DxConfigError(RuntimeError):
     pass
+
+
+def session_artifact_component(session_id: str) -> str:
+    return "".join(c if c.isalnum() or c in "-_" else "_" for c in session_id)[:32]
+
+
+def session_scoped_target_dir(target_root: Path, session_id: str | None) -> Path:
+    if session_id:
+        return target_root / "sessions" / session_artifact_component(session_id)
+    return target_root
+
+
+def cargo_target_dir_for_artifact_root(
+    artifact_root: Path,
+    session_id: str | None,
+) -> Path:
+    return session_scoped_target_dir(artifact_root / "target", session_id)
 
 
 def _env_bool(
@@ -93,6 +116,16 @@ def _looks_like_ambient_tmpdir(raw: str) -> bool:
     spelling = raw.strip().replace("\\", "/")
     if spelling in {"/tmp", "/var/tmp"} or spelling.startswith("/var/folders/"):
         return True
+    lowered = spelling.lower()
+    if (
+        lowered.endswith("/appdata/local/temp")
+        or "/appdata/local/temp/" in lowered
+        or lowered in {"c:/windows/temp", "c:/temp", "c:/tmp"}
+        or lowered.startswith("c:/windows/temp/")
+        or lowered.startswith("c:/temp/")
+        or lowered.startswith("c:/tmp/")
+    ):
+        return True
     normalized = str(Path(raw).expanduser()).rstrip(os.sep)
     return normalized in {"/tmp", "/var/tmp"} or normalized.startswith("/var/folders/")
 
@@ -102,9 +135,10 @@ def _drop_ambient_tmpdir(env: dict[str, str], *, prefer_external: bool) -> None:
         return
     if _env_bool(env, ("MOLT_PRESERVE_AMBIENT_TMPDIR",), default=False):
         return
-    raw = env.get("TMPDIR")
-    if raw and _looks_like_ambient_tmpdir(raw):
-        env.pop("TMPDIR", None)
+    for key in ("TMPDIR", "TMP", "TEMP"):
+        raw = env.get(key)
+        if raw and _looks_like_ambient_tmpdir(raw):
+            env.pop(key, None)
 
 
 def _dedupe_paths(paths: list[Path]) -> tuple[Path, ...]:
@@ -122,14 +156,69 @@ def _dedupe_paths(paths: list[Path]) -> tuple[Path, ...]:
 def _default_external_artifact_roots(env: Mapping[str, str]) -> tuple[Path, ...]:
     roots: list[Path] = []
     if os.name == "nt":
-        for key in ("LOCALAPPDATA", "TEMP", "TMP"):
-            raw = env.get(key, "").strip()
-            if raw:
-                roots.append(Path(raw).expanduser() / "Molt")
-    roots.extend(
-        Path(path).expanduser() for path in DEFAULT_POSIX_EXTERNAL_ARTIFACT_ROOTS
-    )
+        roots.extend(_default_windows_external_artifact_roots())
+    else:
+        roots.extend(
+            Path(path).expanduser() for path in DEFAULT_POSIX_EXTERNAL_ARTIFACT_ROOTS
+        )
     return _dedupe_paths(roots)
+
+
+def _default_windows_external_artifact_roots() -> tuple[Path, ...]:
+    roots: list[Path] = []
+    for letter in "DEFGHIJKLMNOPQRSTUVWXYZ":
+        drive_root = Path(f"{letter}:\\")
+        if drive_root.exists():
+            roots.append(drive_root / DEFAULT_WINDOWS_EXTERNAL_ARTIFACT_DIRNAME)
+    return tuple(roots)
+
+
+def _requires_external_artifacts(
+    repo_root: Path,
+    env: Mapping[str, str],
+    *,
+    prefer_external: bool,
+) -> bool:
+    if _env_bool(env, ("MOLT_ALLOW_C_DRIVE_ARTIFACTS",), default=False):
+        return False
+    if _env_bool(env, ("MOLT_REQUIRE_EXTERNAL_ARTIFACTS",), default=False):
+        return True
+    if not prefer_external or os.name != "nt":
+        return False
+    return repo_root.resolve().drive.upper() == "C:"
+
+
+def _allow_c_drive_artifacts(env: Mapping[str, str]) -> bool:
+    return _env_bool(env, ("MOLT_ALLOW_C_DRIVE_ARTIFACTS",), default=False)
+
+
+def _is_windows_c_drive_path(path: Path) -> bool:
+    return os.name == "nt" and path.drive.upper() == "C:"
+
+
+def _reject_c_drive_artifact_path(
+    key: str,
+    path: Path,
+    env: Mapping[str, str],
+    *,
+    repo_root: Path,
+    prefer_external: bool,
+) -> None:
+    if not _requires_external_artifacts(
+        repo_root,
+        env,
+        prefer_external=prefer_external,
+    ):
+        return
+    if _allow_c_drive_artifacts(env):
+        return
+    if _is_windows_c_drive_path(path.resolve()):
+        raise DxConfigError(
+            f"{key} resolved to {path}; Molt build artifacts must live on an "
+            "external non-C: drive. Set MOLT_EXTERNAL_ARTIFACT_ROOTS=E:\\Molt "
+            "or another external root, or set MOLT_ALLOW_C_DRIVE_ARTIFACTS=1 "
+            "only for an explicit emergency override."
+        )
 
 
 def _candidate_roots(env: Mapping[str, str]) -> tuple[Path, ...]:
@@ -188,11 +277,16 @@ def select_external_artifact_root(
 
     if env.get("MOLT_EXT_ROOT"):
         return None
+    require_external = _requires_external_artifacts(
+        repo_root,
+        env,
+        prefer_external=prefer_external,
+    )
     if not _env_bool(
         env,
         ("MOLT_PREFER_EXTERNAL_ARTIFACTS", "MOLT_USE_EXTERNAL_ARTIFACTS"),
         default=prefer_external,
-    ):
+    ) and not require_external:
         return None
 
     min_free_gb = _env_float(env, "MOLT_EXTERNAL_MIN_FREE_GB", default=20.0)
@@ -219,13 +313,74 @@ def select_external_artifact_root(
         ):
             continue
         return candidate
+    if require_external:
+        raise DxConfigError(
+            "no healthy external non-C: Molt artifact root was found. Attach an "
+            "external drive or set MOLT_EXTERNAL_ARTIFACT_ROOTS=E:\\Molt with "
+            "sufficient free space; set MOLT_ALLOW_C_DRIVE_ARTIFACTS=1 only for "
+            "an explicit emergency override."
+        )
     return None
+
+
+def require_external_artifact_root(
+    repo_root: Path,
+    env: Mapping[str, str],
+    *,
+    create_dirs: bool,
+    prefer_external: bool,
+) -> Path | None:
+    selected = select_external_artifact_root(
+        repo_root,
+        env,
+        create_dirs=create_dirs,
+        prefer_external=prefer_external,
+    )
+    if selected is not None:
+        return selected
+    if _requires_external_artifacts(
+        repo_root,
+        env,
+        prefer_external=prefer_external,
+    ):
+        candidates = ", ".join(str(path) for path in _candidate_roots(env)) or "<none>"
+        raise DxConfigError(
+            "Molt build artifacts must not be placed on C:. Configure a healthy "
+            "non-C artifact root with MOLT_EXTERNAL_ARTIFACT_ROOTS or MOLT_EXT_ROOT. "
+            f"Checked candidates: {candidates}"
+        )
+    return None
+
+
+def _validate_windows_artifact_root(
+    artifact_root: Path,
+    *,
+    repo_root: Path,
+    env: Mapping[str, str],
+    prefer_external: bool,
+) -> None:
+    if not _requires_external_artifacts(
+        repo_root,
+        env,
+        prefer_external=prefer_external,
+    ):
+        return
+    if not _is_windows_c_drive_path(artifact_root.resolve()):
+        return
+    raise DxConfigError(
+        "Molt build artifacts must not be placed on C:. "
+        f"Rejected artifact root: {artifact_root}"
+    )
 
 
 def _backend_daemon_socket_root(env: Mapping[str, str]) -> Path:
     raw = env.get("MOLT_BACKEND_DAEMON_SOCKET_ROOT", "").strip()
     if raw:
         return Path(raw).expanduser()
+    for key in ("TMPDIR", "TMP", "TEMP"):
+        raw = env.get(key, "").strip()
+        if raw:
+            return Path(raw).expanduser()
     if os.name == "nt":
         return Path(tempfile.gettempdir())
     return Path("/tmp")
@@ -331,6 +486,14 @@ class RunContext:
             path = self.root / path
         return path.resolve()
 
+    def uv_project_env_dir(self, env: Mapping[str, str]) -> Path:
+        explicit = env.get("UV_PROJECT_ENVIRONMENT", "").strip()
+        if explicit:
+            return self._resolve_env_path(explicit)
+        ext_root = self._resolve_env_path(env.get("MOLT_EXT_ROOT", str(self.root)))
+        session = env.get("MOLT_SESSION_ID", f"{self.session_prefix}-{os.getpid()}")
+        return (ext_root / "tmp" / "uv-project-envs" / session).resolve()
+
     def canonical_env(
         self,
         base: Mapping[str, str] | None = None,
@@ -346,7 +509,7 @@ class RunContext:
             ext_root = (
                 None
                 if "MOLT_EXT_ROOT" in forced
-                else select_external_artifact_root(
+                else require_external_artifact_root(
                     self.root,
                     env,
                     create_dirs=create_dirs,
@@ -355,21 +518,48 @@ class RunContext:
             ) or self.root
         else:
             ext_root = self._resolve_env_path(env["MOLT_EXT_ROOT"])
+        _validate_windows_artifact_root(
+            ext_root,
+            repo_root=self.root,
+            env=env,
+            prefer_external=self.prefer_external_artifacts,
+        )
         env["MOLT_EXT_ROOT"] = str(ext_root)
 
         def install_default(key: str, value: Path | str) -> None:
             if key in forced or not env.get(key):
                 env[key] = str(value)
 
-        install_default("CARGO_TARGET_DIR", ext_root / "target")
+        install_default("MOLT_SESSION_ID", f"{self.session_prefix}-{os.getpid()}")
+        install_default(
+            "CARGO_TARGET_DIR",
+            cargo_target_dir_for_artifact_root(ext_root, env.get("MOLT_SESSION_ID")),
+        )
         install_default("MOLT_DIFF_CARGO_TARGET_DIR", env["CARGO_TARGET_DIR"])
         install_default("CARGO_INCREMENTAL", "0")
         install_default("MOLT_CACHE", ext_root / ".molt_cache")
         install_default("MOLT_DIFF_ROOT", ext_root / "tmp" / "diff")
         install_default("MOLT_DIFF_TMPDIR", ext_root / "tmp")
         install_default("UV_CACHE_DIR", ext_root / ".uv-cache")
+        install_default("UV_PROJECT_ENVIRONMENT", self.uv_project_env_dir(env))
+        install_default("PIP_CACHE_DIR", ext_root / ".pip-cache")
+        install_default("PYTHONPYCACHEPREFIX", ext_root / "tmp" / "pycache")
         install_default("TMPDIR", ext_root / "tmp")
-        install_default("MOLT_SESSION_ID", f"{self.session_prefix}-{os.getpid()}")
+        install_default("TMP", env["TMPDIR"])
+        install_default("TEMP", env["TMPDIR"])
+
+        for key in CANONICAL_ROOT_ENV_KEYS:
+            value = env.get(key)
+            if value:
+                env[key] = str(self._resolve_env_path(value))
+                value = env[key]
+                _reject_c_drive_artifact_path(
+                    key,
+                    Path(value).expanduser(),
+                    env,
+                    repo_root=self.root,
+                    prefer_external=self.prefer_external_artifacts,
+                )
 
         if create_dirs:
             for key in CANONICAL_ROOT_ENV_KEYS:
@@ -397,6 +587,32 @@ class RunContext:
                 if value:
                     Path(value).expanduser().mkdir(parents=True, exist_ok=True)
         return env
+
+
+def development_artifact_env(
+    repo_root: Path,
+    base: Mapping[str, str] | None = None,
+    *,
+    session_prefix: str = "dev",
+    session_id: str | None = None,
+    create_dirs: bool = True,
+) -> dict[str, str]:
+    """Resolve Molt developer build/cache/temp roots through the DX authority."""
+
+    env = dict(os.environ if base is None else base)
+    if session_id:
+        env.setdefault("MOLT_SESSION_ID", session_id)
+    env = RunContext(
+        repo_root,
+        session_prefix=session_prefix,
+        prefer_external_artifacts=True,
+    ).dx_env(env, create_dirs=create_dirs)
+    src = repo_root.resolve() / "src"
+    existing = env.get("PYTHONPATH", "")
+    parts = [part for part in existing.split(os.pathsep) if part]
+    if str(src) not in parts:
+        env["PYTHONPATH"] = str(src) if not existing else f"{src}{os.pathsep}{existing}"
+    return env
 
 
 class DxProject:
@@ -429,7 +645,25 @@ class DxProject:
     def project_env_dir(self) -> Path:
         return self.root / ".venv"
 
-    def project_python(self) -> Path:
+    def uv_project_env_dir(self, env: Mapping[str, str]) -> Path:
+        explicit = env.get("UV_PROJECT_ENVIRONMENT", "").strip()
+        if explicit:
+            path = Path(explicit).expanduser()
+            if not path.is_absolute():
+                path = self.root / path
+            return path.resolve()
+        artifact_root = Path(env.get("MOLT_EXT_ROOT", str(self.root))).expanduser()
+        if not artifact_root.is_absolute():
+            artifact_root = self.root / artifact_root
+        session = env.get("MOLT_SESSION_ID", f"dev-{os.getpid()}")
+        return (artifact_root.resolve() / "tmp" / "uv-project-envs" / session).resolve()
+
+    def project_python(self, env: Mapping[str, str] | None = None) -> Path:
+        if env is not None:
+            project_env = self.uv_project_env_dir(env)
+            if os.name == "nt":
+                return project_env / "Scripts" / "python.exe"
+            return project_env / "bin" / "python3"
         if os.name == "nt":
             return self.project_env_dir() / "Scripts" / "python.exe"
         return self.project_env_dir() / "bin" / "python3"
@@ -443,7 +677,7 @@ class DxProject:
     ) -> dict[str, str]:
         run_env = dict(env)
         run_env.setdefault("PYTHONUNBUFFERED", "1")
-        run_env["UV_PROJECT_ENVIRONMENT"] = str(self.project_env_dir())
+        run_env["UV_PROJECT_ENVIRONMENT"] = str(self.uv_project_env_dir(run_env))
         for name in ("VIRTUAL_ENV", "PYTHONHOME", "CONDA_PREFIX", "CONDA_DEFAULT_ENV"):
             run_env.pop(name, None)
         if run_env.get("UV_NO_SYNC") == "1":
@@ -476,7 +710,7 @@ class DxProject:
             artifact_root = artifact_root.resolve()
         else:
             artifact_root = (
-                select_external_artifact_root(
+                require_external_artifact_root(
                     self.root,
                     env,
                     create_dirs=create_dirs,
@@ -484,6 +718,12 @@ class DxProject:
                 )
                 or self.root
             )
+        _validate_windows_artifact_root(
+            artifact_root,
+            repo_root=self.root,
+            env=env,
+            prefer_external=prefer_external,
+        )
         env_cfg = dx.get("env", {})
         if isinstance(env_cfg, dict):
             for key, raw_value in env_cfg.items():
@@ -526,29 +766,44 @@ class DxProject:
                     Path(value).expanduser().mkdir(parents=True, exist_ok=True)
         return env
 
-    def require_project_python(self, context: str) -> Path:
-        python = self.project_python()
+    def require_project_python(
+        self,
+        context: str,
+        env: Mapping[str, str] | None = None,
+    ) -> Path:
+        python = self.project_python(env)
         if not python.exists():
             raise DxConfigError(
                 f"{python} is missing; run `tools/dev.py install` before {context}"
             )
         return python
 
-    def format_command(self, command: str) -> str:
+    def format_command(
+        self,
+        command: str,
+        env: Mapping[str, str] | None = None,
+    ) -> str:
         return command.format(
-            root=str(self.root), project_python=str(self.project_python())
+            root=str(self.root),
+            project_python=str(self.project_python(env)),
         )
 
-    def split_command(self, command: object, name: str) -> list[str]:
+    def split_command(
+        self,
+        command: object,
+        name: str,
+        env: Mapping[str, str] | None = None,
+    ) -> list[str]:
         if not isinstance(command, str) or not command.strip():
             raise DxConfigError(f"Missing [tool.molt.dx.commands].{name}")
-        return shlex.split(self.format_command(command), posix=os.name != "nt")
+        return shlex.split(self.format_command(command, env), posix=os.name != "nt")
 
     def split_command_sequence(
         self,
         command: object,
         name: str,
         *,
+        env: Mapping[str, str] | None = None,
         commands: dict[str, object] | None = None,
         stack: tuple[str, ...] = (),
     ) -> list[list[str]]:
@@ -574,10 +829,11 @@ class DxProject:
                 return self.split_command_sequence(
                     commands[ref],
                     ref,
+                    env=env,
                     commands=commands,
                     stack=(*stack, ref),
                 )
-            return [self.split_command(item, item_name)]
+            return [self.split_command(item, item_name, env)]
 
         if isinstance(command, str):
             return split_item(command, name)

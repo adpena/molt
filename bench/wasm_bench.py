@@ -27,15 +27,19 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 TOOLS_ROOT = ROOT / "tools"
+SRC_ROOT = ROOT / "src"
 BENCH_RESULTS_DIR = ROOT / "bench" / "results"
 BENCH_TMP_ROOT = ROOT / "tmp" / "bench" / "wasm"
 DEFAULT_OUTPUT_PATH = BENCH_RESULTS_DIR / "wasm_baseline.json"
 
 # Make tools/ importable for wasm_optimize
 sys.path.insert(0, str(TOOLS_ROOT))
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
 
 import harness_memory_guard  # noqa: E402
 import perf_authority  # noqa: E402
+from molt.dx import development_artifact_env  # noqa: E402
 
 DEFAULT_PROGRAMS: list[str] = [
     "examples/hello.py",
@@ -163,17 +167,13 @@ class BenchEntry:
 
 def _base_env() -> dict[str, str]:
     """Return a base environment dict with PYTHONPATH and MOLT_EXT_ROOT set."""
-    env = os.environ.copy()
-    env["PYTHONPATH"] = str(ROOT / "src")
-    env.setdefault("MOLT_EXT_ROOT", str(ROOT))
-    env.setdefault("CARGO_TARGET_DIR", str(ROOT / "target"))
-    env.setdefault("MOLT_DIFF_CARGO_TARGET_DIR", env["CARGO_TARGET_DIR"])
-    env.setdefault("MOLT_CACHE", str(ROOT / ".molt_cache"))
-    env.setdefault("MOLT_DIFF_ROOT", str(ROOT / "tmp" / "diff"))
-    env.setdefault("MOLT_DIFF_TMPDIR", str(ROOT / "tmp"))
-    env.setdefault("UV_CACHE_DIR", str(ROOT / ".uv-cache"))
-    env.setdefault("TMPDIR", str(ROOT / "tmp"))
-    return env
+    return development_artifact_env(
+        ROOT,
+        os.environ,
+        session_prefix="wasm-bench",
+        session_id=os.environ.get("MOLT_SESSION_ID") or f"wasm-bench-{os.getpid()}",
+        create_dirs=True,
+    )
 
 
 def _run_guarded(

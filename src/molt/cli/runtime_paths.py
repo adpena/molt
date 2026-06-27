@@ -4,6 +4,8 @@ import functools
 import os
 from pathlib import Path
 
+from molt.dx import development_artifact_env, session_scoped_target_dir
+
 _RUNTIME_STDLIB_PROFILE_ALIASES = {
     "micro": "stdlib_micro",
     "full": "stdlib_full",
@@ -60,10 +62,6 @@ def _molt_session_id() -> str | None:
     return os.environ.get("MOLT_SESSION_ID")
 
 
-def _session_artifact_component(session_id: str) -> str:
-    return "".join(c if c.isalnum() or c in "-_" else "_" for c in session_id)[:32]
-
-
 @functools.lru_cache(maxsize=64)
 def _cargo_profile_dir(cargo_profile: str) -> str:
     return "debug" if cargo_profile == "dev" else cargo_profile
@@ -78,24 +76,7 @@ def _cargo_target_root_cached(
 ) -> Path:
     project_root = Path(project_root_str)
     if not cargo_target_override:
-        # MOLT_TARGET_ROOT relocates the session-target BASE off the project
-        # drive (e.g. an external drive, so C: never fills) while preserving
-        # per-session isolation. It is absolute, so worktree agents — whose
-        # project_root is the worktree, not the main repo — relocate too. Read
-        # here rather than threaded as an arg so EVERY caller of this single
-        # seam (cargo target, build-state, runtime-lib, daemon paths) relocates
-        # uniformly; MOLT_TARGET_ROOT is a process-stable env set at startup, so
-        # the lru_cache stays correct. Default base: <project_root>/target.
-        molt_target_root = os.environ.get("MOLT_TARGET_ROOT")
-        if molt_target_root:
-            base = Path(molt_target_root).expanduser()
-            if not base.is_absolute():
-                base = (project_root / base).absolute()
-        else:
-            base = project_root / "target"
-        if session_id is not None:
-            return base / "sessions" / _session_artifact_component(session_id)
-        return base
+        return session_scoped_target_dir(project_root / "target", session_id)
     path = Path(cargo_target_override).expanduser()
     if not path.is_absolute():
         path = (Path(cwd_str) / path).absolute()
@@ -103,9 +84,26 @@ def _cargo_target_root_cached(
 
 
 def _cargo_target_root(project_root: Path) -> Path:
+    cargo_target_dir = os.environ.get("CARGO_TARGET_DIR")
+    if not cargo_target_dir and any(
+        os.environ.get(key, "").strip()
+        for key in (
+            "MOLT_REQUIRE_EXTERNAL_ARTIFACTS",
+            "MOLT_PREFER_EXTERNAL_ARTIFACTS",
+            "MOLT_USE_EXTERNAL_ARTIFACTS",
+        )
+    ):
+        env = development_artifact_env(
+            project_root,
+            os.environ,
+            session_prefix="runtime",
+            session_id=_molt_session_id() or f"runtime-{os.getpid()}",
+            create_dirs=True,
+        )
+        cargo_target_dir = env.get("CARGO_TARGET_DIR")
     return _cargo_target_root_cached(
         os.fspath(project_root),
-        os.environ.get("CARGO_TARGET_DIR"),
+        cargo_target_dir,
         os.fspath(Path.cwd()),
         _molt_session_id(),
     )

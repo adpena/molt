@@ -3,22 +3,16 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from molt.dx import development_artifact_env
+
 
 def build_molt_conformance_env(project_root: Path, session_id: str) -> dict[str, str]:
-    target_dir = project_root / "target"
-    tmp_dir = project_root / "tmp"
-    return {
-        "MOLT_EXT_ROOT": str(project_root),
-        "CARGO_TARGET_DIR": str(target_dir),
-        "MOLT_DIFF_CARGO_TARGET_DIR": str(target_dir),
-        "MOLT_CACHE": str(project_root / ".molt_cache"),
-        "MOLT_DIFF_ROOT": str(tmp_dir / "diff"),
-        "MOLT_DIFF_TMPDIR": str(tmp_dir),
-        "UV_CACHE_DIR": str(project_root / ".uv-cache"),
-        "TMPDIR": str(tmp_dir),
-        "PYTHONPATH": str(project_root / "src"),
-        "MOLT_SESSION_ID": session_id,
-    }
+    return development_artifact_env(
+        project_root,
+        {"MOLT_SESSION_ID": session_id},
+        session_prefix="conformance",
+        create_dirs=False,
+    )
 
 
 def ensure_molt_conformance_dirs(env: dict[str, str]) -> None:
@@ -28,7 +22,12 @@ def ensure_molt_conformance_dirs(env: dict[str, str]) -> None:
         "MOLT_DIFF_ROOT",
         "MOLT_DIFF_TMPDIR",
         "UV_CACHE_DIR",
+        "UV_PROJECT_ENVIRONMENT",
+        "PIP_CACHE_DIR",
+        "PYTHONPYCACHEPREFIX",
         "TMPDIR",
+        "TMP",
+        "TEMP",
     ):
         Path(env[key]).mkdir(parents=True, exist_ok=True)
 

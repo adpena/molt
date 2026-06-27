@@ -21,6 +21,14 @@ def _load_dev_py():
     return module
 
 
+def _fake_dx_env(module):
+    return {
+        "PATH": "",
+        "PYTHONPATH": str(module.ROOT / "src"),
+        "UV_PROJECT_ENVIRONMENT": str(module.ROOT / ".venv"),
+    }
+
+
 def test_dev_py_update_dispatches_to_cli(monkeypatch) -> None:
     module = _load_dev_py()
     calls: list[tuple[list[str], str | None, bool]] = []
@@ -50,10 +58,11 @@ def test_dev_py_clean_artifacts_dispatches_to_cleanup_tool(monkeypatch) -> None:
     module = _load_dev_py()
     calls: list[list[str]] = []
     create_dirs_values: list[bool] = []
+    fake_env = _fake_dx_env(module)
 
     def fake_canonical_env(*, create_dirs=True):
         create_dirs_values.append(create_dirs)
-        return {"PATH": "", "PYTHONPATH": str(module.ROOT / "src")}
+        return dict(fake_env)
 
     monkeypatch.setattr(
         module,
@@ -78,7 +87,7 @@ def test_dev_py_clean_artifacts_dispatches_to_cleanup_tool(monkeypatch) -> None:
 
     assert calls == [
         [
-            str(module.DX.project_python()),
+            str(module.DX.project_python(fake_env)),
             "tools/artifact_cleanup.py",
             "--apply",
         ]
@@ -93,13 +102,13 @@ def test_dev_py_lint_uses_documented_stdlib_intrinsic_gates(monkeypatch) -> None
     monkeypatch.setattr(
         module,
         "_canonical_env",
-        lambda: {"PATH": "", "PYTHONPATH": str(module.ROOT / "src")},
+        lambda: _fake_dx_env(module),
         raising=True,
     )
     monkeypatch.setattr(
         module,
         "_require_project_python",
-        lambda: module.ROOT / ".venv" / "bin" / "python3",
+        lambda _env: module.ROOT / ".venv" / "bin" / "python3",
         raising=True,
     )
     monkeypatch.setattr(
@@ -139,17 +148,18 @@ def test_dev_py_lint_uses_documented_stdlib_intrinsic_gates(monkeypatch) -> None
 def test_dev_py_bench_defaults_to_guarded_smoke_command(monkeypatch) -> None:
     module = _load_dev_py()
     calls: list[list[str]] = []
+    fake_env = _fake_dx_env(module)
 
     monkeypatch.setattr(
         module,
         "_canonical_env",
-        lambda: {"PATH": "", "PYTHONPATH": str(module.ROOT / "src")},
+        lambda: dict(fake_env),
         raising=True,
     )
     monkeypatch.setattr(
         module,
         "_require_project_python",
-        lambda: module.ROOT / ".venv" / "bin" / "python3",
+        lambda _env: module.ROOT / ".venv" / "bin" / "python3",
         raising=True,
     )
     monkeypatch.setattr(
@@ -164,7 +174,7 @@ def test_dev_py_bench_defaults_to_guarded_smoke_command(monkeypatch) -> None:
 
     assert calls == [
         [
-            str(module.DX.project_python()),
+            str(module.DX.project_python(fake_env)),
             "-m",
             "molt.cli",
             "bench",
@@ -185,13 +195,13 @@ def test_dev_py_bench_forwards_explicit_molt_bench_args(monkeypatch) -> None:
     monkeypatch.setattr(
         module,
         "_canonical_env",
-        lambda: {"PATH": "", "PYTHONPATH": str(module.ROOT / "src")},
+        lambda: _fake_dx_env(module),
         raising=True,
     )
     monkeypatch.setattr(
         module,
         "_require_project_python",
-        lambda: module.ROOT / ".venv" / "bin" / "python3",
+        lambda _env: module.ROOT / ".venv" / "bin" / "python3",
         raising=True,
     )
     monkeypatch.setattr(
@@ -229,7 +239,7 @@ def test_dev_py_clippy_expands_backend_and_tir_ratchets(monkeypatch) -> None:
     monkeypatch.setattr(
         module,
         "_canonical_env",
-        lambda: {"PATH": "", "PYTHONPATH": str(module.ROOT / "src")},
+        lambda: _fake_dx_env(module),
         raising=True,
     )
     monkeypatch.setattr(
@@ -276,13 +286,13 @@ def test_dev_py_gates_expand_pyproject_command_refs(monkeypatch, tmp_path) -> No
     monkeypatch.setattr(
         module,
         "_canonical_env",
-        lambda: {"PATH": "", "PYTHONPATH": str(module.ROOT / "src")},
+        lambda: _fake_dx_env(module),
         raising=True,
     )
     monkeypatch.setattr(
         module,
         "_require_project_python",
-        lambda: module.ROOT / ".venv" / "bin" / "python3",
+        lambda _env: module.ROOT / ".venv" / "bin" / "python3",
         raising=True,
     )
     monkeypatch.setattr(
@@ -382,13 +392,13 @@ def test_dev_py_gates_writes_error_summary_on_failed_gate(
     monkeypatch.setattr(
         module,
         "_canonical_env",
-        lambda: {"PATH": "", "PYTHONPATH": str(module.ROOT / "src")},
+        lambda: _fake_dx_env(module),
         raising=True,
     )
     monkeypatch.setattr(
         module,
         "_require_project_python",
-        lambda: module.ROOT / ".venv" / "bin" / "python3",
+        lambda _env: module.ROOT / ".venv" / "bin" / "python3",
         raising=True,
     )
 
@@ -525,7 +535,11 @@ def test_dev_py_run_uv_installs_canonical_guard_env(monkeypatch) -> None:
     module.run_uv(
         ["python3", "-c", "print('ok')"],
         python="3.12",
-        env={"PATH": "/usr/bin", "MOLT_PREFER_EXTERNAL_ARTIFACTS": "0"},
+        env={
+            "PATH": "/usr/bin",
+            "MOLT_EXT_ROOT": str(module.ROOT),
+            "MOLT_ALLOW_C_DRIVE_ARTIFACTS": "1",
+        },
     )
 
     assert len(calls) == 1
@@ -541,13 +555,22 @@ def test_dev_py_run_uv_installs_canonical_guard_env(monkeypatch) -> None:
     ]
     assert limits is fake_limits
     assert env["MOLT_EXT_ROOT"] == str(module.ROOT)
-    assert env["CARGO_TARGET_DIR"] == str(module.ROOT / "target")
-    assert env["MOLT_DIFF_CARGO_TARGET_DIR"] == str(module.ROOT / "target")
+    assert env["CARGO_TARGET_DIR"] == str(
+        module.ROOT / "target" / "sessions" / env["MOLT_SESSION_ID"]
+    )
+    assert env["MOLT_DIFF_CARGO_TARGET_DIR"] == env["CARGO_TARGET_DIR"]
     assert env["MOLT_CACHE"] == str(module.ROOT / ".molt_cache")
     assert env["MOLT_DIFF_ROOT"] == str(module.ROOT / "tmp" / "diff")
     assert env["MOLT_DIFF_TMPDIR"] == str(module.ROOT / "tmp")
     assert env["UV_CACHE_DIR"] == str(module.ROOT / ".uv-cache")
+    assert env["UV_PROJECT_ENVIRONMENT"].startswith(
+        str(module.ROOT / "tmp" / "uv-project-envs")
+    )
+    assert env["PIP_CACHE_DIR"] == str(module.ROOT / ".pip-cache")
+    assert env["PYTHONPYCACHEPREFIX"] == str(module.ROOT / "tmp" / "pycache")
     assert env["TMPDIR"] == str(module.ROOT / "tmp")
+    assert env["TMP"] == env["TMPDIR"]
+    assert env["TEMP"] == env["TMPDIR"]
     assert env["MOLT_SESSION_ID"].startswith("dev-")
 
 
@@ -578,6 +601,7 @@ def test_dev_py_run_uv_preserves_explicit_canonical_roots(
             "MOLT_EXT_ROOT": str(explicit_root),
             "MOLT_CACHE": str(explicit_cache),
             "MOLT_SESSION_ID": "caller-session",
+            "MOLT_ALLOW_C_DRIVE_ARTIFACTS": "1",
         },
     )
 
@@ -586,7 +610,9 @@ def test_dev_py_run_uv_preserves_explicit_canonical_roots(
     assert env["MOLT_EXT_ROOT"] == str(explicit_root)
     assert env["MOLT_CACHE"] == str(explicit_cache)
     assert env["MOLT_SESSION_ID"] == "caller-session"
-    assert env["CARGO_TARGET_DIR"] == str(explicit_root / "target")
+    assert env["CARGO_TARGET_DIR"] == str(
+        explicit_root / "target" / "sessions" / "caller-session"
+    )
 
 
 def test_dev_py_tty_uses_guard_when_memory_guard_enabled(monkeypatch) -> None:
@@ -630,7 +656,7 @@ def test_dev_py_uv_no_sync_version_probe_uses_memory_guard(monkeypatch) -> None:
     monkeypatch.setattr(
         module,
         "_uv_project_python",
-        lambda: fake_python,
+        lambda _env=None: fake_python,
         raising=True,
     )
     monkeypatch.setattr(
@@ -653,7 +679,11 @@ def test_dev_py_uv_no_sync_version_probe_uses_memory_guard(monkeypatch) -> None:
 
     assert module._uv_project_env_matches_python(
         "3.12",
-        {"PATH": "/usr/bin", "MOLT_PREFER_EXTERNAL_ARTIFACTS": "0"},
+        {
+            "PATH": "/usr/bin",
+            "MOLT_EXT_ROOT": str(module.ROOT),
+            "MOLT_ALLOW_C_DRIVE_ARTIFACTS": "1",
+        },
     )
 
     assert len(calls) == 1
