@@ -2,7 +2,6 @@ use crate::repr::{ContainerKind, ContainerStorageKind};
 use crate::representation_plan::ScalarRepresentationPlan;
 use crate::{FunctionIR, OpIR, SimpleIR};
 use std::collections::{BTreeMap, BTreeSet};
-use wasm_encoder::Instruction;
 
 #[derive(Debug, Clone)]
 pub(crate) struct WasmStageAuditShape {
@@ -338,7 +337,7 @@ pub(crate) const DEFAULT_GPU_INTRINSIC_MANIFEST_NAMES: &[&str] = &[
 
 pub(crate) fn prepare_lir_wasm_fast_output(
     tir_func: &crate::tir::function::TirFunction,
-) -> Option<crate::lower_to_wasm::WasmFunctionOutput> {
+) -> Option<crate::wasm_lir_fast_output::WasmFunctionOutput> {
     // Drive the LIR carrier derivation from the PROVEN `repr_by_value` (the
     // single source of truth shared with LLVM), so `LirRepr::I64` is assigned
     // only to proven raw-i64 carriers (`RawI64Safe` or `RawI64FullDeopt`).
@@ -354,11 +353,7 @@ pub(crate) fn prepare_lir_wasm_fast_output(
     let repr = crate::representation_plan::repr_by_value_for(tir_func, Some(&vr));
     let output =
         crate::lower_to_wasm::lower_tir_to_wasm_boxed_i64_abi_with_proof(tir_func, &repr, &vr)?;
-    let has_placeholder_call = output
-        .instructions
-        .iter()
-        .any(|inst| matches!(inst, Instruction::Call(0)));
-    if has_placeholder_call {
+    if crate::wasm_lir_fast_output::has_lir_fast_output_bail_call(&output) {
         None
     } else {
         Some(output)
@@ -367,7 +362,7 @@ pub(crate) fn prepare_lir_wasm_fast_output(
 
 pub(crate) fn compute_lir_wasm_fast_outputs_from_final_ir(
     ir: &SimpleIR,
-) -> BTreeMap<String, crate::lower_to_wasm::WasmFunctionOutput> {
+) -> BTreeMap<String, crate::wasm_lir_fast_output::WasmFunctionOutput> {
     let mut outputs = BTreeMap::new();
     for func_ir in &ir.functions {
         if func_ir.is_extern || !is_production_lir_wasm_fast_path_name(&func_ir.name) {
