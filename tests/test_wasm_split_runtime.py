@@ -26,12 +26,11 @@ from pathlib import Path
 import pytest
 import urllib.error
 import urllib.request
-import molt.cli as cli
 from molt._wasm_abi_generated import (
     WASM_RESERVED_RUNTIME_CALLABLE_BASE,
     WASM_RESERVED_RUNTIME_CALLABLES,
 )
-from molt.cli import wasm as WASM
+import molt.wasm_artifact as wasm_artifact
 from tools import harness_memory_guard
 import tools.bench_wasm as bench_wasm
 from tests.wasm_linked_runner import _read_timeout_seconds, _run_wasm_test_process
@@ -538,43 +537,11 @@ def _sha256(path: Path) -> str:
 
 
 def _collect_module_imports(path: Path, module_name: str) -> list[str]:
-    result = _run_wasm_test_process(
-        ["wasm-tools", "print", str(path)],
-        cwd=ROOT,
-        text=True,
-        check=True,
-    )
-    text = result.stdout or ""
-    imports: list[str] = []
-    for line in text.splitlines():
-        stripped = line.strip()
-        prefix = f'(import "{module_name}" "'
-        if not stripped.startswith(prefix):
-            continue
-        remainder = stripped[len(prefix) :]
-        name, _, _ = remainder.partition('"')
-        imports.append(name)
-    return imports
+    return sorted(wasm_artifact._collect_wasm_module_import_names(path, module_name))
 
 
 def _collect_export_names(path: Path) -> list[str]:
-    result = _run_wasm_test_process(
-        ["wasm-tools", "print", str(path)],
-        cwd=ROOT,
-        text=True,
-        check=True,
-    )
-    text = result.stdout or ""
-    exports: list[str] = []
-    prefix = '(export "'
-    for line in text.splitlines():
-        stripped = line.strip()
-        if not stripped.startswith(prefix):
-            continue
-        remainder = stripped[len(prefix) :]
-        name, _, _ = remainder.partition('"')
-        exports.append(name)
-    return exports
+    return sorted(wasm_artifact._collect_wasm_export_names(path))
 
 
 def _reserved_runtime_callable_indices() -> list[int]:
@@ -719,14 +686,21 @@ class TestSplitRuntimeArtifacts:
             pytest.skip("build failed")
         app_wasm = out_dir / "app.wasm"
         worker_js = out_dir / "worker.js"
-        if not app_wasm.exists() or not worker_js.exists():
+        manifest = out_dir / "manifest.json"
+        if not app_wasm.exists() or not worker_js.exists() or not manifest.exists():
             pytest.skip("split-runtime artifacts not produced")
 
-        wasm_table_base = _infer_wasm_table_base_from_reserved_refs(app_wasm)
+        manifest_data = json.loads(manifest.read_text())
+        wasm_table_base = manifest_data["wasm_table_base"]
         assert wasm_table_base is not None, (
-            "app.wasm must export a canonical reserved runtime callable/trampoline "
-            "ref block so the split-runtime worker can recover wasm_table_base"
+            "split-runtime manifest must preserve the backend-emitted "
+            "wasm_table_base; table-ref exports are validation facts, not "
+            "fallback authority"
         )
+
+        exported_base = _infer_wasm_table_base_from_reserved_refs(app_wasm)
+        if exported_base is not None:
+            assert exported_base == wasm_table_base
 
         worker_content = worker_js.read_text()
         assert (
@@ -777,7 +751,7 @@ def test_split_runtime_app_exports_host_init(
     )
 
     app_wasm = out_dir / "app.wasm"
-    exports = WASM._collect_wasm_export_names(app_wasm)
+    exports = wasm_artifact._collect_wasm_export_names(app_wasm)
     assert "molt_host_init" in exports
     assert "molt_main" in exports
 
@@ -1935,14 +1909,14 @@ class TestManifestJson:
         app_wasm = out_dir / "app.wasm"
         if not app_wasm.exists():
             pytest.skip("app.wasm not produced")
-        expected_signatures = cli._wasm_import_function_signatures(
+        expected_signatures = wasm_artifact._wasm_import_function_signatures(
             app_wasm, module_name="molt_runtime"
         )
-        expected_result_kinds = cli._wasm_import_function_result_kinds(
+        expected_result_kinds = wasm_artifact._wasm_import_function_result_kinds(
             app_wasm, module_name="molt_runtime"
         )
         if not expected_signatures:
-            pytest.skip("wasm-objdump unavailable or app has no runtime imports")
+            pytest.skip("app has no runtime imports")
 
         abi = self._read_manifest(split_build_a)["abi"]["runtime_imports"]
 

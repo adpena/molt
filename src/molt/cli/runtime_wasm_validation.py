@@ -8,7 +8,7 @@ from molt.cli.atomic_io import _atomic_write_text
 from molt.cli.command_runtime import _run_completed_command
 from molt.cli.file_hashing import _sha256_file
 from molt.cli.runtime_fingerprints import _inspect_wasm_binary
-from molt.cli.wasm import _collect_wasm_export_names, _wasm_import_minima
+from molt.wasm_artifact import _collect_wasm_export_names, _wasm_import_minima
 
 
 def _runtime_wasm_integrity_sidecar_path(path: Path) -> Path:

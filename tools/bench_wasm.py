@@ -31,6 +31,10 @@ from molt.harness_conformance import (  # noqa: E402
     build_molt_conformance_env,
     ensure_molt_conformance_dirs,
 )
+from molt.wasm_artifact import (  # noqa: E402
+    _read_wasm_import_metrics,
+    _read_wasm_table_min,
+)
 
 SUPER_SAMPLES = 10
 
@@ -181,155 +185,6 @@ def _runtime_artifact_stale(path: Path) -> bool:
     except OSError:
         return True
     return _runtime_source_mtime() > artifact_mtime
-
-
-def _read_wasm_varuint(data: bytes, offset: int) -> tuple[int, int]:
-    result = 0
-    shift = 0
-    while True:
-        if offset >= len(data):
-            raise ValueError("Unexpected EOF while reading varuint")
-        byte = data[offset]
-        offset += 1
-        result |= (byte & 0x7F) << shift
-        if byte & 0x80 == 0:
-            return result, offset
-        shift += 7
-        if shift > 35:
-            raise ValueError("varuint too large")
-
-
-def _read_wasm_string(data: bytes, offset: int) -> tuple[str, int]:
-    length, offset = _read_wasm_varuint(data, offset)
-    end = offset + length
-    if end > len(data):
-        raise ValueError("Unexpected EOF while reading string")
-    return data[offset:end].decode("utf-8"), end
-
-
-def _read_wasm_table_min(path: Path) -> int | None:
-    try:
-        data = path.read_bytes()
-    except OSError:
-        return None
-    if len(data) < 8 or data[:4] != b"\0asm" or data[4:8] != b"\x01\x00\x00\x00":
-        return None
-    offset = 8
-    try:
-        while offset < len(data):
-            section_id = data[offset]
-            offset += 1
-            size, offset = _read_wasm_varuint(data, offset)
-            end = offset + size
-            if end > len(data):
-                raise ValueError("Unexpected EOF while reading section")
-            if section_id != 2:
-                offset = end
-                continue
-            payload = data[offset:end]
-            offset = end
-            cursor = 0
-            count, cursor = _read_wasm_varuint(payload, cursor)
-            for _ in range(count):
-                module, cursor = _read_wasm_string(payload, cursor)
-                name, cursor = _read_wasm_string(payload, cursor)
-                if cursor >= len(payload):
-                    raise ValueError("Unexpected EOF while reading import")
-                kind = payload[cursor]
-                cursor += 1
-                if kind == 0:
-                    _, cursor = _read_wasm_varuint(payload, cursor)
-                elif kind == 1:
-                    if cursor >= len(payload):
-                        raise ValueError("Unexpected EOF while reading table type")
-                    cursor += 1
-                    flags, cursor = _read_wasm_varuint(payload, cursor)
-                    minimum, cursor = _read_wasm_varuint(payload, cursor)
-                    if flags & 0x1:
-                        _, cursor = _read_wasm_varuint(payload, cursor)
-                    if module == "env" and name == "__indirect_function_table":
-                        return minimum
-                elif kind == 2:
-                    flags, cursor = _read_wasm_varuint(payload, cursor)
-                    _, cursor = _read_wasm_varuint(payload, cursor)
-                    if flags & 0x1:
-                        _, cursor = _read_wasm_varuint(payload, cursor)
-                elif kind == 3:
-                    if cursor + 2 > len(payload):
-                        raise ValueError("Unexpected EOF while reading global type")
-                    cursor += 2
-                else:
-                    raise ValueError("Unknown import kind")
-    except ValueError:
-        return None
-    return None
-
-
-def _read_wasm_import_metrics(path: Path) -> dict[str, int] | None:
-    try:
-        data = path.read_bytes()
-    except OSError:
-        return None
-    if len(data) < 8 or data[:4] != b"\0asm" or data[4:8] != b"\x01\x00\x00\x00":
-        return None
-    offset = 8
-    total_imports = 0
-    function_imports = 0
-    table_imports = 0
-    try:
-        while offset < len(data):
-            section_id = data[offset]
-            offset += 1
-            size, offset = _read_wasm_varuint(data, offset)
-            end = offset + size
-            if end > len(data):
-                raise ValueError("Unexpected EOF while reading section")
-            if section_id != 2:
-                offset = end
-                continue
-            payload = data[offset:end]
-            offset = end
-            cursor = 0
-            count, cursor = _read_wasm_varuint(payload, cursor)
-            for _ in range(count):
-                _, cursor = _read_wasm_string(payload, cursor)
-                _, cursor = _read_wasm_string(payload, cursor)
-                if cursor >= len(payload):
-                    raise ValueError("Unexpected EOF while reading import")
-                kind = payload[cursor]
-                cursor += 1
-                total_imports += 1
-                if kind == 0:
-                    function_imports += 1
-                    _, cursor = _read_wasm_varuint(payload, cursor)
-                elif kind == 1:
-                    table_imports += 1
-                    if cursor >= len(payload):
-                        raise ValueError("Unexpected EOF while reading table type")
-                    cursor += 1
-                    flags, cursor = _read_wasm_varuint(payload, cursor)
-                    _, cursor = _read_wasm_varuint(payload, cursor)
-                    if flags & 0x1:
-                        _, cursor = _read_wasm_varuint(payload, cursor)
-                elif kind == 2:
-                    flags, cursor = _read_wasm_varuint(payload, cursor)
-                    _, cursor = _read_wasm_varuint(payload, cursor)
-                    if flags & 0x1:
-                        _, cursor = _read_wasm_varuint(payload, cursor)
-                elif kind == 3:
-                    if cursor + 2 > len(payload):
-                        raise ValueError("Unexpected EOF while reading global type")
-                    cursor += 2
-                else:
-                    raise ValueError("Unknown import kind")
-            break
-    except ValueError:
-        return None
-    return {
-        "total": total_imports,
-        "functions": function_imports,
-        "tables": table_imports,
-    }
 
 
 def _parse_node_major(version_text: str) -> int | None:
@@ -716,8 +571,7 @@ def build_runtime_wasm(
     else:
         base_flags = (
             "-C link-arg=--import-memory -C link-arg=--import-table"
-            " -C link-arg=--growable-table"
-            + wasm_runtime_export_link_args()
+            " -C link-arg=--growable-table" + wasm_runtime_export_link_args()
         )
     _append_rustflags(env, base_flags)
     resolved_limits = limits or harness_memory_guard.limits_from_env("MOLT_BENCH", env)
