@@ -2538,10 +2538,7 @@ pub extern "C" fn molt_list_getitem_borrowed(list_bits: u64, index_bits: u64) ->
             if object_type_id(ptr) != TYPE_ID_LIST {
                 return 0;
             }
-            let key = obj_from_bits(index_bits);
-            let idx = if let Some(i) = to_i64(key) {
-                i
-            } else {
+            let Some(idx) = index_i64_integral_bits(index_bits) else {
                 return 0;
             };
             let len = list_len(ptr) as i64;
@@ -2573,10 +2570,7 @@ pub extern "C" fn molt_tuple_getitem_borrowed(tuple_bits: u64, index_bits: u64) 
             if object_type_id(ptr) != TYPE_ID_TUPLE {
                 return 0;
             }
-            let key = obj_from_bits(index_bits);
-            let idx = if let Some(i) = to_i64(key) {
-                i
-            } else {
+            let Some(idx) = index_i64_integral_bits(index_bits) else {
                 return 0;
             };
             let len = tuple_len(ptr) as i64;

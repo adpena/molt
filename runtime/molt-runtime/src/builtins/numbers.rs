@@ -395,7 +395,7 @@ pub(crate) fn round_float_ndigits(val: f64, ndigits: i64) -> f64 {
     round_half_even(scaled) * factor
 }
 
-fn index_i64_integral_bits(bits: u64) -> Option<i64> {
+pub(crate) fn index_i64_integral_bits(bits: u64) -> Option<i64> {
     let obj = obj_from_bits(bits);
     if obj.is_int() {
         return Some(obj.as_int_unchecked());
@@ -567,6 +567,69 @@ pub(crate) fn index_i64_with_overflow(
         ),
     };
     raise_exception::<Option<i64>>(_py, "IndexError", &msg)
+}
+
+fn sequence_index_type_error(_py: &PyToken<'_>, key_bits: u64, container_tp: &str) -> String {
+    format!(
+        "{} indices must be integers or slices, not {}",
+        container_tp,
+        crate::type_name(_py, obj_from_bits(key_bits)),
+    )
+}
+
+pub(crate) fn sequence_index_i64_with_type_error(
+    _py: &PyToken<'_>,
+    key_bits: u64,
+    type_err: &str,
+) -> Option<i64> {
+    if let Some(i) = index_i64_integral_bits(key_bits) {
+        return Some(i);
+    }
+    index_i64_with_overflow(_py, key_bits, type_err, None)
+}
+
+pub(crate) fn sequence_index_bigint(
+    _py: &PyToken<'_>,
+    key_bits: u64,
+    container_tp: &str,
+) -> Option<BigInt> {
+    let type_err = sequence_index_type_error(_py, key_bits, container_tp);
+    index_bigint_from_obj(_py, key_bits, &type_err)
+}
+
+/// Coerce a subscript key to an `i64` sequence index under CPython `__index__`
+/// semantics. This is the single authority for tuple / list / bytearray index
+/// extraction (and shares its integral fast path with `range`).
+///
+/// Accepts `int`, `bool`, an `int` subclass, a bare `bigint`, and any object
+/// implementing `__index__`. REJECTS `float` (even an integral `2.0`), `str`,
+/// `None`, and every other non-index type with `TypeError: <container> indices
+/// must be integers or slices, not <keytype>` — byte-identical to CPython
+/// 3.12+ (`_PyIndex_Check` gates sequence subscript, and `float` has no
+/// `nb_index`). An index magnitude exceeding `isize` raises
+/// `IndexError: cannot fit '<type>' into an index-sized integer`.
+///
+/// Do NOT reintroduce a `to_i64` fast path here: `to_i64` is a *numeric*
+/// coercion that silently accepts integral floats, whereas sequence indexing is
+/// the integer protocol (`__index__`), which floats deliberately do not satisfy.
+///
+/// Returns `None` with a pending exception on any error; the caller must
+/// propagate (`return MoltObject::none().bits()`).
+pub(crate) fn sequence_index_i64(
+    _py: &PyToken<'_>,
+    key_bits: u64,
+    container_tp: &str,
+) -> Option<i64> {
+    // Fast path: int / bool / int-subclass — no BigInt allocation, no float.
+    if let Some(i) = index_i64_integral_bits(key_bits) {
+        return Some(i);
+    }
+    // Slow path: bare bigint, `__index__` objects, overflow -> IndexError, and
+    // the TypeError raise for float / other non-index keys. The message is the
+    // CPython "<container> indices must be integers or slices, not <keytype>"
+    // sequence family, shared by tuple / list / range / byte / bytearray.
+    let type_err = sequence_index_type_error(_py, key_bits, container_tp);
+    index_i64_with_overflow(_py, key_bits, &type_err, None)
 }
 
 pub(crate) fn index_bigint_from_obj(_py: &PyToken<'_>, obj_bits: u64, err: &str) -> Option<BigInt> {

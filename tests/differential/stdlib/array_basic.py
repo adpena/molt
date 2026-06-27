@@ -2,6 +2,24 @@
 
 from array import array, typecodes
 
+
+class IndexOne:
+    def __index__(self):
+        return 1
+
+
+class BigIndex:
+    def __index__(self):
+        return 10**100
+
+
+def show_error(label, fn):
+    try:
+        fn()
+    except Exception as exc:
+        print(label, type(exc).__name__, str(exc))
+
+
 # typecodes string contains expected codes
 print("has_i", "i" in typecodes)
 print("has_d", "d" in typecodes)
@@ -29,6 +47,32 @@ print("after_pop", a.tolist())
 # insert
 a.insert(1, 99)
 print("after_insert", a.tolist())
+
+# scalar index protocol: array subscript/mutation rejects floats but accepts __index__
+a_index = array("i", [10, 20, 30])
+print("index_dunder_get", a_index[IndexOne()])
+a_index[IndexOne()] = 200
+print("index_dunder_set", a_index.tolist())
+del a_index[IndexOne()]
+print("index_dunder_del", a_index.tolist())
+a_index.insert(IndexOne(), 40)
+print("index_dunder_insert", a_index.tolist())
+print("index_dunder_pop", a_index.pop(IndexOne()), a_index.tolist())
+show_error("array_float_get", lambda: a_index[1.0])
+show_error("array_big_get", lambda: a_index[BigIndex()])
+
+def set_float_index():
+    a_index[1.0] = 7
+
+
+def del_float_index():
+    del a_index[1.0]
+
+
+show_error("array_float_set", set_float_index)
+show_error("array_float_del", del_float_index)
+show_error("array_float_pop", lambda: a_index.pop(1.0))
+show_error("array_float_insert", lambda: a_index.insert(1.0, 9))
 
 # remove
 a.remove(99)
