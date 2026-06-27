@@ -38,6 +38,7 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from tools import harness_memory_guard  # noqa: E402
+from molt.dx import development_artifact_env  # noqa: E402
 
 DEFAULT_PROBE_SOURCE = 'print("hello world")\n'
 DEFAULT_TARGETS = ("native", "wasm", "luau", "mlir")
@@ -94,18 +95,18 @@ def _progress(event: str, **fields: Any) -> None:
 
 
 def _canonical_env(base: dict[str, str] | None = None) -> dict[str, str]:
-    env = dict(base or os.environ)
-    env.setdefault("MOLT_EXT_ROOT", str(ROOT))
-    env.setdefault("CARGO_TARGET_DIR", str(ROOT / "target"))
-    env.setdefault("MOLT_DIFF_CARGO_TARGET_DIR", env["CARGO_TARGET_DIR"])
-    env.setdefault("MOLT_CACHE", str(ROOT / ".molt_cache"))
-    env.setdefault("MOLT_DIFF_ROOT", str(ROOT / "tmp" / "diff"))
-    env.setdefault("MOLT_DIFF_TMPDIR", str(ROOT / "tmp"))
-    env.setdefault("UV_CACHE_DIR", str(ROOT / ".uv-cache"))
-    env.setdefault("TMPDIR", str(ROOT / "tmp"))
+    env = development_artifact_env(
+        ROOT,
+        base or os.environ,
+        session_prefix="output-startup-size-audit",
+        session_id=(
+            (base or os.environ).get("MOLT_SESSION_ID")
+            or f"output-startup-size-audit-{os.getpid()}"
+        ),
+        create_dirs=True,
+    )
     env.setdefault("PYTHONHASHSEED", "0")
     env.setdefault("PYTHONUNBUFFERED", "1")
-    env.setdefault("MOLT_SESSION_ID", f"output-startup-size-audit-{os.getpid()}")
     pythonpath = env.get("PYTHONPATH", "")
     if str(SRC_ROOT) not in pythonpath.split(os.pathsep):
         env["PYTHONPATH"] = (

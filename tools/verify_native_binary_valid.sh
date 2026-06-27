@@ -20,11 +20,18 @@
 set -uo pipefail
 cd "$(git rev-parse --show-toplevel 2>/dev/null || echo .)"
 
-export MOLT_EXT_ROOT="$PWD" CARGO_TARGET_DIR="$PWD/target"
-export MOLT_CACHE="$PWD/.molt_cache" TMPDIR="$PWD/tmp"
-export UV_CACHE_DIR="$PWD/.uv-cache" MOLT_SESSION_ID="verify-binary-valid"
+export MOLT_SESSION_ID="${MOLT_SESSION_ID:-verify-binary-valid}"
+eval "$(
+  python3 "$PWD/tools/run_context_env.py" \
+    --root "$PWD" \
+    --session-prefix verify-binary-valid \
+    --prefer-external-artifacts \
+    --dx \
+    --format posix
+)"
 PY="${MOLT_PY:-.venv/bin/python3}"
-mkdir -p tmp/verify_corpus
+CORPUS_DIR="$MOLT_DIFF_TMPDIR/verify_corpus"
+mkdir -p "$CORPUS_DIR"
 
 echo "== self-protection: clean-environment native-binary validity gate =="
 echo "-- backend daemon disabled for this gate; no process-wide daemon kill --"
@@ -44,11 +51,10 @@ echo "-- backend daemon disabled for this gate; no process-wide daemon kill --"
 # `MOLT_STDLIB_PROFILE=full` request (no `--stdlib-profile` flag) must build a
 # real full staticlib, not silently fall back to micro and leave the crypto
 # intrinsics undefined at link.
-mkdir -p tmp/verify_corpus
-printf 'def main()->None:\n    pass\n\nif __name__=="__main__":\n    main()\n' > tmp/verify_corpus/empty.py
-printf 'class P:\n    x:int\n    def __init__(self,x:int=0)->None:\n        self.x=x\n\ndef main()->None:\n    i=0\n    while i<1000:\n        p=P(i); i+=1\n    print(i)\n\nif __name__=="__main__":\n    main()\n' > tmp/verify_corpus/cls.py
-printf 'import json\nd={"a":[1,2,3]}\ns=json.dumps(d)\no=json.loads(s)\nprint(o["a"][0], len(s))\n' > tmp/verify_corpus/usejson.py
-printf 'import hashlib\nh=hashlib.sha256(b"molt")\nprint(h.hexdigest()[:8])\n' > tmp/verify_corpus/usehashlib.py
+printf 'def main()->None:\n    pass\n\nif __name__=="__main__":\n    main()\n' > "$CORPUS_DIR/empty.py"
+printf 'class P:\n    x:int\n    def __init__(self,x:int=0)->None:\n        self.x=x\n\ndef main()->None:\n    i=0\n    while i<1000:\n        p=P(i); i+=1\n    print(i)\n\nif __name__=="__main__":\n    main()\n' > "$CORPUS_DIR/cls.py"
+printf 'import json\nd={"a":[1,2,3]}\ns=json.dumps(d)\no=json.loads(s)\nprint(o["a"][0], len(s))\n' > "$CORPUS_DIR/usejson.py"
+printf 'import hashlib\nh=hashlib.sha256(b"molt")\nprint(h.hexdigest()[:8])\n' > "$CORPUS_DIR/usehashlib.py"
 
 # file|profiles|expected_stdout. `profiles` is a comma-separated subset of
 # {micro,full}. Empty stdout (empty.py) is allowed.
@@ -70,8 +76,8 @@ for profile in micro full; do
       *",${profile},"*) ;;
       *) continue ;;
     esac
-    src="tmp/verify_corpus/${entry_file}"
-    out="tmp/verify_corpus/bin_${profile}_$(basename "$src" .py)"
+    src="$CORPUS_DIR/${entry_file}"
+    out="$CORPUS_DIR/bin_${profile}_$(basename "$src" .py)"
     MOLT_STDLIB_PROFILE="$profile" MOLT_BACKEND_DAEMON=0 "$PY" -m molt build \
       --target native --output "$out" "$src" --rebuild --no-cache \
       > "${out}.log" 2>&1

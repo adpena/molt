@@ -95,8 +95,6 @@ prefer_external_artifacts = true
 
 [tool.molt.dx.env]
 MOLT_EXT_ROOT = "{artifact_root}"
-CARGO_TARGET_DIR = "{artifact_root}/target"
-MOLT_DIFF_CARGO_TARGET_DIR = "{artifact_root}/target"
 MOLT_CACHE = "{artifact_root}/.molt_cache"
 MOLT_DIFF_ROOT = "{artifact_root}/tmp/diff"
 MOLT_DIFF_TMPDIR = "{artifact_root}/tmp"

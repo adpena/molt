@@ -460,28 +460,40 @@ Read these first instead of rediscovering project structure:
   with non-colliding structural work that improves the same end-state.
 
 ## Hard Gate: Canonical Artifact Locations And Cleanup (Non-Negotiable, Urgent)
-- Local development may use repo-local storage, but build artifacts, caches, tmp files, logs, benchmark outputs, and debugging outputs MUST live in canonical locations rather than ad hoc paths scattered across the tree.
-- Default canonical roots:
-  - `target/` for Cargo artifacts and shared build state.
+- Developer build artifacts, caches, tmp files, logs, benchmark outputs, and debugging outputs MUST live in canonical locations selected by the DX resolver rather than ad hoc paths scattered across the tree.
+- Developer canonical roots:
+  - `<MOLT_EXT_ROOT>/target` for Cargo artifacts and shared build state.
   - `bench/results/` for benchmark JSON/results/report artifacts.
   - `logs/` for run logs, profiling logs, regrtest logs, and audit output.
-  - `tmp/` for ephemeral temp files, scratch outputs, local quarantine dirs, and one-off debugging artifacts.
+  - `<MOLT_EXT_ROOT>/tmp` for ephemeral temp files, scratch outputs, uv project environments, pycache, local quarantine dirs, and one-off debugging artifacts.
+  - `<MOLT_EXT_ROOT>/.uv-cache`, `<MOLT_EXT_ROOT>/.pip-cache`, `<MOLT_EXT_ROOT>/.molt_cache`, and `<MOLT_EXT_ROOT>/.sccache` for caches.
   - `dist/`, `build/`, and `wasm/` only when a specific tool or workflow intentionally writes there.
 - Do not create new top-level artifact directories without documenting them in the same change. If a workflow needs a new artifact class, give it one canonical location and update the repo instructions accordingly.
 - Keep the repo clean during active development:
   - reuse canonical directories instead of creating per-command ad hoc output roots;
   - prune stale artifacts regularly, especially large logs, old benchmark bundles, scratch tmp trees, and abandoned debug outputs;
   - remove no-longer-needed artifacts at the end of a task unless they are required for reproducible evidence or are part of the intended checked-in output.
-- Canonical env defaults (use these in your shell before build/test/bench work unless a tool requires something else):
-  - `export MOLT_EXT_ROOT=$PWD`
-  - `export CARGO_TARGET_DIR=$PWD/target`
-  - `export MOLT_DIFF_CARGO_TARGET_DIR=$CARGO_TARGET_DIR`
-  - `export MOLT_CACHE=$PWD/.molt_cache`
-  - `export MOLT_DIFF_ROOT=$PWD/tmp/diff`
-  - `export MOLT_DIFF_TMPDIR=$PWD/tmp`
-  - `export UV_CACHE_DIR=$PWD/.uv-cache`
-  - `export TMPDIR=$PWD/tmp`
-- DX wrappers should prefer healthy external artifact roots before the internal disk when configured (`prefer_external_artifacts`, `MOLT_PREFER_EXTERNAL_ARTIFACTS=1`, or `tools/run_context_env.py --prefer-external-artifacts`). The ordered default candidates are `/Volumes/VertigoDataTier/Molt` then `/Volumes/APDataStore/Molt`; override with `MOLT_EXTERNAL_ARTIFACT_ROOTS` and tune health gating with `MOLT_EXTERNAL_MIN_FREE_GB`.
+- Molt developer builds/tests must use the DX resolver instead of raw repo-local
+  defaults. On Windows checkouts on `C:`, `prefer_external_artifacts` makes the
+  resolver fail closed unless it can place build/test artifacts on a healthy
+  non-`C:` drive such as `E:\Molt`; macOS/Linux use the configured external
+  candidate roots. This is a development self-protection rule, not a user-facing
+  compile contract: real users may build in place, use Cargo defaults, or pass
+  their own target/output flags.
+- Canonical developer env defaults come from `molt dx env`, `molt dx run`,
+  `tools/dev.py`, or `tools/run_context_env.py --prefer-external-artifacts`;
+  do not hand-roll raw `cargo`/`uv` commands without first exporting those facts.
+  The resolver sets `MOLT_EXT_ROOT`, `CARGO_TARGET_DIR`,
+  `MOLT_DIFF_CARGO_TARGET_DIR`, `MOLT_CACHE`, `MOLT_DIFF_ROOT`,
+  `MOLT_DIFF_TMPDIR`, `UV_CACHE_DIR`, `UV_PROJECT_ENVIRONMENT`,
+  `PIP_CACHE_DIR`, `PYTHONPYCACHEPREFIX`, `TMPDIR`, `TMP`, and `TEMP` under the
+  selected artifact root. Default Cargo output is session-scoped as
+  `<MOLT_EXT_ROOT>/target/sessions/<MOLT_SESSION_ID>`; explicit
+  `CARGO_TARGET_DIR` remains an operator-owned override.
+- DX wrappers prefer healthy external artifact roots before the internal disk when configured (`prefer_external_artifacts`, `MOLT_PREFER_EXTERNAL_ARTIFACTS=1`, or `tools/run_context_env.py --prefer-external-artifacts`). Windows defaults probe non-`C:` drive roots (`D:\Molt`, `E:\Molt`, ...); POSIX defaults are `/Volumes/VertigoDataTier/Molt` then `/Volumes/APDataStore/Molt`; override with `MOLT_EXTERNAL_ARTIFACT_ROOTS` and tune health gating with `MOLT_EXTERNAL_MIN_FREE_GB`.
+- `MOLT_ALLOW_C_DRIVE_ARTIFACTS=1` is an explicit emergency override for
+  developer machines only. Do not set it in normal agent work, CI, proof lanes,
+  or benchmark runs.
 - Explicit canonical env vars remain authoritative: if an operator sets `MOLT_EXT_ROOT`, `CARGO_TARGET_DIR`, `MOLT_CACHE`, `TMPDIR`, or related roots, wrappers must derive only missing defaults and must not overwrite the explicit value.
 - Backend daemon sockets are control-plane state, not bulk artifacts. Keep `MOLT_BACKEND_DAEMON_SOCKET_DIR` under a short local socket-capable path by default (for example `/tmp/molt-backend-<repo-hash>`), and override it only to a filesystem proven to support Unix sockets.
 - Canonical cleanup commands:
@@ -491,7 +503,7 @@ Read these first instead of rediscovering project structure:
   - `tools/dev.py clean-artifacts --apply`: dev-wrapper alias for the same cleanup engine.
 - Notes:
   - `CARGO_TARGET_DIR` also relocates Molt’s shared build state under `<CARGO_TARGET_DIR>/.molt_state/` (locks, fingerprints, daemon state). Keep that state in the canonical target root rather than inventing parallel targets.
-  - Cargo incremental quarantine receipts under `target/.molt_state/quarantine/cargo_incremental/` are bounded ignored incident evidence: the guard writes and prunes them during normal retention, and explicit `molt clean --apply` removes them with other allowlisted target artifacts.
+  - Cargo incremental quarantine receipts under `<CARGO_TARGET_DIR>/.molt_state/quarantine/cargo_incremental/` are bounded ignored incident evidence: the guard writes and prunes them during normal retention, and explicit `molt clean --apply` removes them with other allowlisted target artifacts.
   - `molt clean` and `tools/dev.py clean-artifacts` both route through `tools/artifact_cleanup.py`; tracked files, dirty partner work, `.venv/`, `.omx/`, `third_party/`, fuzz corpora, and test corpora are excluded from default cleanup.
   - Keep `.gitignore` and `tools/artifact_cleanup.py` pathspecs in sync whenever a new canonical artifact root is added.
   - If a workflow would generate unusually large artifacts, put them under the canonical root for that class and clean them up once the evidence is no longer needed.
@@ -1300,15 +1312,17 @@ PermissionError: missing 'net.connect' capability. Use --trusted, MOLT_TRUSTED=1
   - Optional: set `MOLT_DIFF_DYLD_LOCAL_ROOT=<abs path>` to override the local dyld quarantine root (default: `/tmp/molt_diff_dyld`).
   - Optional: set `MOLT_DIFF_FORCE_NO_CACHE=1|0` to force/disable `--no-cache` in diff runs. Default is cache-enabled on all platforms; dyld guard/retry can force no-cache for the incident-scoped retry.
   - Optional cleanup for interrupted/crashed sessions before starting a new long run: use the custody-aware sentinel, for example `python3 tools/process_sentinel.py --once --stale-orphan-sec 3600 --stale-pytest-sec 900`. Keep one supervising diff run per shared target to minimize contention and memory spikes.
-- Example (configured artifact root + shared cache + temp root): `ARTIFACT_ROOT=${MOLT_EXT_ROOT:-$PWD} CARGO_TARGET_DIR=${ARTIFACT_ROOT}/target MOLT_CACHE=${ARTIFACT_ROOT}/.molt_cache MOLT_DIFF_ROOT=${ARTIFACT_ROOT}/tmp/diff MOLT_DIFF_TMPDIR=${ARTIFACT_ROOT}/tmp MOLT_DIFF_KEEP=1 MOLT_DIFF_TIMEOUT=180 uv run --python 3.12 python -u tests/molt_diff.py tests/differential/basic`.
-- Example (RSS metrics): `ARTIFACT_ROOT=${MOLT_EXT_ROOT:-$PWD} CARGO_TARGET_DIR=${ARTIFACT_ROOT}/target MOLT_CACHE=${ARTIFACT_ROOT}/.molt_cache MOLT_DIFF_ROOT=${ARTIFACT_ROOT}/tmp/diff MOLT_DIFF_TMPDIR=${ARTIFACT_ROOT}/tmp MOLT_DIFF_KEEP=1 MOLT_DIFF_TIMEOUT=180 uv run --python 3.12 python -u tests/molt_diff.py tests/differential/basic`.
+- Before running differential examples, export the developer artifact authority:
+  `eval "$(python3 tools/run_context_env.py --prefer-external-artifacts --dx --format posix)"`.
+- Example (configured artifact root + shared cache + temp root): `MOLT_DIFF_KEEP=1 MOLT_DIFF_TIMEOUT=180 uv run --python 3.12 python -u tests/molt_diff.py tests/differential/basic`.
+- Example (RSS metrics): `MOLT_DIFF_KEEP=1 MOLT_DIFF_TIMEOUT=180 uv run --python 3.12 python -u tests/molt_diff.py tests/differential/basic`.
   - Example (watch RSS during run): `ps -o pid=,rss=,command= -p <PID> | awk '{printf "pid=%s rss_kb=%s cmd=%s\n",$1,$2,$3}'` (record spikes in [tests/differential/INDEX.md](tests/differential/INDEX.md)).
   - Example (abort on blowup): stop the Molt-owned harness through the memory guard or custody-aware sentinel, then log the abort plus last-known RSS in [tests/differential/INDEX.md](tests/differential/INDEX.md). Do not use raw PID/name/process-group cleanup; custody must reidentify live Molt-owned workers and must skip Claude/Codex/app-server/renderer/node-repl/shell/parent watcher groups.
-- Example (multi-target list, auto-parallel): `ARTIFACT_ROOT=${MOLT_EXT_ROOT:-$PWD} CARGO_TARGET_DIR=${ARTIFACT_ROOT}/target MOLT_CACHE=${ARTIFACT_ROOT}/.molt_cache MOLT_DIFF_ROOT=${ARTIFACT_ROOT}/tmp/diff MOLT_DIFF_TMPDIR=${ARTIFACT_ROOT}/tmp MOLT_DIFF_TIMEOUT=180 uv run --python 3.12 python -u tests/molt_diff.py tests/differential/basic/augassign_inplace.py tests/differential/basic/container_mutation.py tests/differential/basic/ellipsis_basic.py`
+- Example (multi-target list, auto-parallel): `MOLT_DIFF_TIMEOUT=180 uv run --python 3.12 python -u tests/molt_diff.py tests/differential/basic/augassign_inplace.py tests/differential/basic/container_mutation.py tests/differential/basic/ellipsis_basic.py`
   - Example (parallel full sweep + live log + aggregate log + per-test logs):
-    `ARTIFACT_ROOT=${MOLT_EXT_ROOT:-$PWD} CARGO_TARGET_DIR=${ARTIFACT_ROOT}/target MOLT_CACHE=${ARTIFACT_ROOT}/.molt_cache MOLT_DIFF_ROOT=${ARTIFACT_ROOT}/tmp/diff MOLT_DIFF_TMPDIR=${ARTIFACT_ROOT}/tmp MOLT_DIFF_TIMEOUT=180 MOLT_DIFF_GLOB='**/*.py' uv run --python 3.12 python -u tests/molt_diff.py --jobs 8 --live --log-file ${ARTIFACT_ROOT}/tmp/diff_live.log --log-aggregate ${ARTIFACT_ROOT}/tmp/diff_full.log --log-dir ${ARTIFACT_ROOT}/tmp/diff_logs tests/differential`
-  - Example (monitor live log): `tail -f ${ARTIFACT_ROOT}/tmp/diff_live.log`
-  - Example (monitor aggregate log): `tail -f ${ARTIFACT_ROOT}/tmp/diff_full.log`
+    `MOLT_DIFF_TIMEOUT=180 MOLT_DIFF_GLOB='**/*.py' uv run --python 3.12 python -u tests/molt_diff.py --jobs 8 --live --log-file ${MOLT_DIFF_TMPDIR:?}/diff_live.log --log-aggregate ${MOLT_DIFF_TMPDIR:?}/diff_full.log --log-dir ${MOLT_DIFF_TMPDIR:?}/diff_logs tests/differential`
+  - Example (monitor live log): `tail -f ${MOLT_DIFF_TMPDIR:?}/diff_live.log`
+  - Example (monitor aggregate log): `tail -f ${MOLT_DIFF_TMPDIR:?}/diff_full.log`
   - Disable trusted default: `MOLT_DEV_TRUSTED=0 uv run --python 3.12 python -u tests/molt_diff.py tests/differential/basic`.
   - Optional speed workflow: prebuild runtime (`cargo build --release --package molt-runtime`), then do a two-pass diff run (no RSS first, RSS only for failures).
   - Always update [tests/differential/INDEX.md](tests/differential/INDEX.md) after diff runs:

@@ -1348,9 +1348,11 @@ def lint(json_output: bool = False, verbose: bool = False) -> int:
     project = DxProject(root)
     try:
         env = project.canonical_env()
-        project.require_project_python("lint")
+        project.require_project_python("lint", env)
         commands = project.split_command_sequence(
-            project.commands().get("lint"), "lint"
+            project.commands().get("lint"),
+            "lint",
+            env=env,
         )
     except DxConfigError as exc:
         if json_output:

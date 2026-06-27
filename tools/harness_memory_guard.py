@@ -42,6 +42,7 @@ if _SRC_ROOT.exists() and str(_SRC_ROOT) not in sys.path:
 from molt.dx import (  # noqa: E402
     CANONICAL_ROOT_ENV_KEYS as _CANONICAL_ROOT_ENV_KEYS,
     CANONICAL_RUN_ENV_KEYS as _CANONICAL_RUN_ENV_KEYS,
+    DxProject,
     RunContext,
 )
 
@@ -288,17 +289,38 @@ def _effective_env(env: Mapping[str, str] | None) -> Mapping[str, str]:
     return merged
 
 
+def _harness_prefers_external_artifacts(root: Path, env: Mapping[str, str]) -> bool:
+    if _env_bool(
+        env,
+        (
+            "MOLT_REQUIRE_EXTERNAL_ARTIFACTS",
+            "MOLT_PREFER_EXTERNAL_ARTIFACTS",
+            "MOLT_USE_EXTERNAL_ARTIFACTS",
+        ),
+        default=False,
+    ):
+        return True
+    try:
+        return bool(DxProject(root).load_config().get("prefer_external_artifacts"))
+    except (OSError, ValueError):
+        return False
+
+
 def canonical_harness_env(
     env: Mapping[str, str] | None = None,
     *,
     repo_root: Path | None = None,
     force_default_keys: Collection[str] = (),
 ) -> dict[str, str]:
-    """Return a subprocess env with repo-local artifact/cache defaults installed."""
+    """Return a subprocess env with DX-governed artifact/cache defaults installed."""
 
     root = (repo_root or _REPO_ROOT).resolve()
     merged = dict(os.environ) if env is None else dict(env)
-    return RunContext(root, session_prefix="guard").canonical_env(
+    return RunContext(
+        root,
+        session_prefix="guard",
+        prefer_external_artifacts=_harness_prefers_external_artifacts(root, merged),
+    ).canonical_env(
         merged,
         create_dirs=False,
         force_default_keys=force_default_keys,

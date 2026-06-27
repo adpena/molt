@@ -38,9 +38,11 @@ from tools import (  # noqa: E402  (must follow the sys.path self-bootstrap abov
     process_sentinel,
     resource_pressure,
 )
+from molt.dx import CANONICAL_RUN_ENV_KEYS, DX_ENV_KEYS, development_artifact_env  # noqa: E402
 from molt import backend_daemon_custody as daemon_custody  # noqa: E402
 
 _DYLD_GUARD_MARKER = "dyld_guard.json"
+_DIFF_ARTIFACT_ENV_READY = False
 _DIFF_RUN_LOCK_HANDLE: io.TextIOWrapper | None = None
 _WORKER_ORPHAN_GUARD_INSTALLED = False
 _BATCH_COMPILE_SERVER_CLIENT: "_BatchCompileServerClient | None" = None
@@ -139,6 +141,23 @@ def _resolve_molt_cli_python() -> str:
 
 def _repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
+
+
+def _ensure_diff_artifact_env() -> None:
+    global _DIFF_ARTIFACT_ENV_READY
+    if _DIFF_ARTIFACT_ENV_READY:
+        return
+    resolved = development_artifact_env(
+        _repo_root(),
+        os.environ,
+        session_prefix="diff",
+        session_id=os.environ.get("MOLT_SESSION_ID") or f"diff-{os.getpid()}",
+        create_dirs=True,
+    )
+    for key in (*CANONICAL_RUN_ENV_KEYS, *DX_ENV_KEYS, "PYTHONPATH"):
+        if key in resolved:
+            os.environ[key] = resolved[key]
+    _DIFF_ARTIFACT_ENV_READY = True
 
 
 def _stdlib_full_coverage_manifest_path() -> Path:
@@ -548,6 +567,7 @@ def _diff_build_timeout(run_timeout: float | None) -> float | None:
 
 
 def _diff_root() -> Path:
+    _ensure_diff_artifact_env()
     raw = os.environ.get("MOLT_DIFF_ROOT", "").strip()
     if raw:
         root = Path(raw).expanduser()
@@ -598,6 +618,7 @@ def _record_diff_result(record: dict[str, object]) -> None:
 
 
 def _diff_tmp_root() -> Path:
+    _ensure_diff_artifact_env()
     raw = os.environ.get("MOLT_DIFF_TMPDIR", "").strip()
     if raw:
         root = Path(raw).expanduser()
@@ -612,6 +633,7 @@ def _diff_tmp_root() -> Path:
 
 
 def _diff_cargo_target_root() -> Path:
+    _ensure_diff_artifact_env()
     raw = os.environ.get("MOLT_DIFF_CARGO_TARGET_DIR", "").strip()
     if raw:
         root = Path(raw).expanduser()
@@ -630,6 +652,7 @@ def _diff_cargo_target_root() -> Path:
 
 
 def _diff_cache_root() -> Path:
+    _ensure_diff_artifact_env()
     artifact_root = os.environ.get("MOLT_EXT_ROOT", "").strip()
     if artifact_root:
         root = Path(artifact_root).expanduser() / ".molt_cache"

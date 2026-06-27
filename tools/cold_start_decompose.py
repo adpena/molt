@@ -120,9 +120,6 @@ class RunStat:
 def _canonical_env() -> dict[str, str]:
     base = os.environ.copy()
     base["MOLT_SESSION_ID"] = PERFSCORE_SESSION_ID
-    base["CARGO_TARGET_DIR"] = str(
-        REPO_ROOT / "target" / "sessions" / PERFSCORE_SESSION_ID
-    )
     return bench._canonical_bench_env(base)
 
 

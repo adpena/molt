@@ -29,6 +29,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from tools import harness_memory_guard  # noqa: E402
+from molt.dx import development_artifact_env  # noqa: E402
 
 BACKEND_SCHEMA = "molt.typed_repr_report.v1"
 DEFAULT_MARKDOWN_PATH = (
@@ -53,21 +54,13 @@ class FileReport:
 
 
 def _canonical_env() -> dict[str, str]:
-    env = os.environ.copy()
-    defaults = {
-        "MOLT_EXT_ROOT": str(REPO_ROOT),
-        "CARGO_TARGET_DIR": str(REPO_ROOT / "target"),
-        "MOLT_CACHE": str(REPO_ROOT / ".molt_cache"),
-        "MOLT_DIFF_ROOT": str(REPO_ROOT / "tmp" / "diff"),
-        "MOLT_DIFF_TMPDIR": str(REPO_ROOT / "tmp"),
-        "UV_CACHE_DIR": str(REPO_ROOT / ".uv-cache"),
-        "TMPDIR": str(REPO_ROOT / "tmp"),
-    }
-    for key, value in defaults.items():
-        env.setdefault(key, value)
-    env.setdefault("MOLT_DIFF_CARGO_TARGET_DIR", env["CARGO_TARGET_DIR"])
-    env.setdefault("MOLT_SESSION_ID", "representation-report")
-    return env
+    return development_artifact_env(
+        REPO_ROOT,
+        os.environ,
+        session_prefix="representation-report",
+        session_id=os.environ.get("MOLT_SESSION_ID") or "representation-report",
+        create_dirs=True,
+    )
 
 
 def _display_path(path: Path) -> str:
