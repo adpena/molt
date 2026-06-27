@@ -1166,41 +1166,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .unwrap()
     }
 
-    pub(super) fn raw_string_const_ptr_len(
-        &mut self,
-        s: &str,
-    ) -> (
-        inkwell::values::IntValue<'ctx>,
-        inkwell::values::IntValue<'ctx>,
-    ) {
-        let i64_ty = self.backend.context.i64_type();
-        let name_bytes = s.as_bytes();
-        let global = self.backend.module.add_global(
-            self.backend
-                .context
-                .i8_type()
-                .array_type(name_bytes.len() as u32),
-            None,
-            &format!(
-                "__guard_attr_str_{}_{}",
-                self.const_str_counter,
-                s.replace(|c: char| !c.is_alphanumeric(), "_")
-            ),
-        );
-        self.const_str_counter += 1;
-        global.set_linkage(inkwell::module::Linkage::Private);
-        global.set_initializer(&self.backend.context.const_string(name_bytes, false));
-        global.set_constant(true);
-        global.set_unnamed_addr(true);
-        let ptr_bits = self
-            .backend
-            .builder
-            .build_ptr_to_int(global.as_pointer_value(), i64_ty, "guard_attr_ptr")
-            .unwrap();
-        let len_bits = i64_ty.const_int(name_bytes.len() as u64, false);
-        (ptr_bits, len_bits)
-    }
-
     pub(super) fn emit_task_new_with_payload(
         &mut self,
         poll_addr: inkwell::values::IntValue<'ctx>,
