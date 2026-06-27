@@ -617,20 +617,6 @@ pub(super) fn emit_call_op(
             func.instruction(&Instruction::LocalGet(out));
             emit_call(func, reloc_enabled, import_ids["inc_ref_obj"]);
         }
-        "bound_method_new" => {
-            let args = op.args.as_ref().unwrap();
-            let func_bits = locals[&args[0]];
-            let self_bits = locals[&args[1]];
-            func.instruction(&Instruction::LocalGet(func_bits));
-            func.instruction(&Instruction::LocalGet(self_bits));
-            emit_call(func, reloc_enabled, import_ids["bound_method_new"]);
-            if let Some(out) = op.out.as_ref() {
-                let res = locals[out];
-                func.instruction(&Instruction::LocalSet(res));
-            } else {
-                func.instruction(&Instruction::Drop);
-            }
-        }
         _ => return CallOpEmission::NotHandled,
     }
 

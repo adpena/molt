@@ -1,3 +1,4 @@
+use super::super::class_def_layout::ClassDefLayout;
 use super::*;
 use crate::representation_plan::ScalarRepresentationPlan;
 use crate::wasm_imports::{IMPORT_REGISTRY, OP_IMPORT_DEPS};
@@ -159,7 +160,9 @@ impl WasmRuntimeSurfacePlan {
         if kind == "class_def"
             && let Some(meta) = op.s_value.as_deref()
         {
-            self.max_class_def_words = self.max_class_def_words.max(class_def_spill_words(meta));
+            self.max_class_def_words = self
+                .max_class_def_words
+                .max(ClassDefLayout::parse(meta).spill_words());
         }
         if kind == "builtin_func"
             && let Some(name) = op.s_value.as_ref()
@@ -435,19 +438,6 @@ impl RuntimeArityPlan {
             Self::DirectImportCall => "direct imported call",
         }
     }
-}
-
-fn class_def_spill_words(meta: &str) -> usize {
-    let mut parts = meta.split(',');
-    let nbases = parts
-        .next()
-        .and_then(|s| s.parse::<usize>().ok())
-        .expect("class_def metadata missing base count");
-    let nattrs = parts
-        .next()
-        .and_then(|s| s.parse::<usize>().ok())
-        .expect("class_def metadata missing attr count");
-    nbases.max(1) + (nattrs * 2).max(1)
 }
 
 fn runtime_import_name_str(runtime_name: &str) -> &str {
