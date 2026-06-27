@@ -78,6 +78,7 @@ pub(in crate::native_backend::function_compiler) fn op_prefers_int_lane(
 pub(in crate::native_backend::function_compiler) mod arith;
 pub(in crate::native_backend::function_compiler) mod arith_division;
 pub(in crate::native_backend::function_compiler) mod attrs;
+pub(in crate::native_backend::function_compiler) mod bitwise_shift;
 pub(in crate::native_backend::function_compiler) mod callargs;
 pub(in crate::native_backend::function_compiler) mod calls;
 pub(in crate::native_backend::function_compiler) mod class_ops;
@@ -99,6 +100,7 @@ pub(in crate::native_backend::function_compiler) mod indexing;
 pub(in crate::native_backend::function_compiler) mod list_index_fast_path;
 pub(in crate::native_backend::function_compiler) mod list_ops;
 pub(in crate::native_backend::function_compiler) mod loops;
+pub(in crate::native_backend::function_compiler) mod matrix_ops;
 pub(in crate::native_backend::function_compiler) mod memory;
 pub(in crate::native_backend::function_compiler) mod memoryview_buffer;
 pub(in crate::native_backend::function_compiler) mod modules;

@@ -188,3 +188,18 @@ def test_d9_uses_routed_slice_union_for_delegated_handlers() -> None:
     handlers = AUDIT.extract_native_family_handlers()
     assert handlers["Arith"] == ("arith", "handle_arith_op")
     assert AUDIT.extract_native_handler_routing_drifts() == []
+
+
+def test_d9_routes_bitwise_and_matrix_to_dedicated_families() -> None:
+    """Bitwise/shift and matrix operators must not collapse back into arith."""
+    dispatch_slices = AUDIT.extract_native_family_dispatch_slices()
+    assert dispatch_slices["BitwiseShift"] == [("bitwise_shift", "HANDLED_KINDS")]
+    assert dispatch_slices["MatrixOps"] == [("matrix_ops", "HANDLED_KINDS")]
+
+    handlers = AUDIT.extract_native_family_handlers()
+    assert handlers["BitwiseShift"] == (
+        "bitwise_shift",
+        "handle_bitwise_shift_op",
+    )
+    assert handlers["MatrixOps"] == ("matrix_ops", "handle_matrix_op")
+    assert AUDIT.extract_native_handler_routing_drifts() == []
