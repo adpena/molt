@@ -111,6 +111,11 @@ binary artifact, or ownership boundary made the weird behavior possible.
   dependency pull, unexpected feature gate, silent fallback, timeout, generated
   drift, or profile refusal is a prompt to find the missing or duplicated
   authority, not merely an instruction to rerun with a larger profile.
+- Never stop at the first-order question. If the visible question is "why did
+  this command fail?", "why does this import need regex?", "why did the process
+  vanish?", or "why did this profile refuse to build?", also ask which upstream
+  model, ownership boundary, generated fact, dependency edge, or host-control
+  contract made that question appear in the first place.
 - Always identify the crux before acting: the smallest fact that, if corrected,
   collapses the confusing behavior across consumers. Then rip through that
   authority class instead of stacking local fixes.
