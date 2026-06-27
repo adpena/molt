@@ -1,6 +1,7 @@
 //! String encoding and decoding — extracted from ops.rs for maintainability.
 
 use super::ops_string::{push_wtf8_codepoint, wtf8_from_bytes, wtf8_has_surrogates};
+pub(crate) use molt_runtime_text::codec_registry::{EncodingKind, normalize_encoding};
 
 mod charmap_codecs;
 
@@ -21,139 +22,6 @@ pub(crate) enum DecodeFailure {
     UnknownErrorHandler(String),
 }
 
-#[derive(Clone, Copy)]
-pub(crate) enum EncodingKind {
-    Utf8,
-    Utf8Sig,
-    Cp1252,
-    Cp437,
-    Cp850,
-    Cp860,
-    Cp862,
-    Cp863,
-    Cp865,
-    Cp866,
-    Cp874,
-    Cp1250,
-    Cp1251,
-    Cp1253,
-    Cp1254,
-    Cp1255,
-    Cp1256,
-    Cp1257,
-    Koi8R,
-    Koi8U,
-    Iso8859_2,
-    Iso8859_3,
-    Iso8859_4,
-    Iso8859_5,
-    Iso8859_6,
-    Iso8859_7,
-    Iso8859_8,
-    Iso8859_10,
-    Iso8859_15,
-    MacRoman,
-    Latin1,
-    Ascii,
-    UnicodeEscape,
-    Utf16,
-    Utf16LE,
-    Utf16BE,
-    Utf32,
-    Utf32LE,
-    Utf32BE,
-}
-
-impl EncodingKind {
-    pub(crate) fn name(self) -> &'static str {
-        match self {
-            EncodingKind::Utf8 => "utf-8",
-            EncodingKind::Utf8Sig => "utf-8-sig",
-            EncodingKind::Cp1252 => "cp1252",
-            EncodingKind::Cp437 => "cp437",
-            EncodingKind::Cp850 => "cp850",
-            EncodingKind::Cp860 => "cp860",
-            EncodingKind::Cp862 => "cp862",
-            EncodingKind::Cp863 => "cp863",
-            EncodingKind::Cp865 => "cp865",
-            EncodingKind::Cp866 => "cp866",
-            EncodingKind::Cp874 => "cp874",
-            EncodingKind::Cp1250 => "cp1250",
-            EncodingKind::Cp1251 => "cp1251",
-            EncodingKind::Cp1253 => "cp1253",
-            EncodingKind::Cp1254 => "cp1254",
-            EncodingKind::Cp1255 => "cp1255",
-            EncodingKind::Cp1256 => "cp1256",
-            EncodingKind::Cp1257 => "cp1257",
-            EncodingKind::Koi8R => "koi8-r",
-            EncodingKind::Koi8U => "koi8-u",
-            EncodingKind::Iso8859_2 => "iso8859-2",
-            EncodingKind::Iso8859_3 => "iso8859-3",
-            EncodingKind::Iso8859_4 => "iso8859-4",
-            EncodingKind::Iso8859_5 => "iso8859-5",
-            EncodingKind::Iso8859_6 => "iso8859-6",
-            EncodingKind::Iso8859_7 => "iso8859-7",
-            EncodingKind::Iso8859_8 => "iso8859-8",
-            EncodingKind::Iso8859_10 => "iso8859-10",
-            EncodingKind::Iso8859_15 => "iso8859-15",
-            EncodingKind::MacRoman => "mac-roman",
-            EncodingKind::Latin1 => "latin-1",
-            EncodingKind::Ascii => "ascii",
-            EncodingKind::UnicodeEscape => "unicode-escape",
-            EncodingKind::Utf16 => "utf-16",
-            EncodingKind::Utf16LE => "utf-16-le",
-            EncodingKind::Utf16BE => "utf-16-be",
-            EncodingKind::Utf32 => "utf-32",
-            EncodingKind::Utf32LE => "utf-32-le",
-            EncodingKind::Utf32BE => "utf-32-be",
-        }
-    }
-
-    fn ordinal_limit(self) -> u32 {
-        match self {
-            EncodingKind::Ascii => 128,
-            EncodingKind::Latin1 => 256,
-            EncodingKind::UnicodeEscape => u32::MAX,
-            EncodingKind::Cp1252 => u32::MAX,
-            EncodingKind::Cp437 => u32::MAX,
-            EncodingKind::Cp850 => u32::MAX,
-            EncodingKind::Cp860 => u32::MAX,
-            EncodingKind::Cp862 => u32::MAX,
-            EncodingKind::Cp863 => u32::MAX,
-            EncodingKind::Cp865 => u32::MAX,
-            EncodingKind::Cp866 => u32::MAX,
-            EncodingKind::Cp874 => u32::MAX,
-            EncodingKind::Cp1250 => u32::MAX,
-            EncodingKind::Cp1251 => u32::MAX,
-            EncodingKind::Cp1253 => u32::MAX,
-            EncodingKind::Cp1254 => u32::MAX,
-            EncodingKind::Cp1255 => u32::MAX,
-            EncodingKind::Cp1256 => u32::MAX,
-            EncodingKind::Cp1257 => u32::MAX,
-            EncodingKind::Koi8R => u32::MAX,
-            EncodingKind::Koi8U => u32::MAX,
-            EncodingKind::Iso8859_2 => u32::MAX,
-            EncodingKind::Iso8859_3 => u32::MAX,
-            EncodingKind::Iso8859_4 => u32::MAX,
-            EncodingKind::Iso8859_5 => u32::MAX,
-            EncodingKind::Iso8859_6 => u32::MAX,
-            EncodingKind::Iso8859_7 => u32::MAX,
-            EncodingKind::Iso8859_8 => u32::MAX,
-            EncodingKind::Iso8859_10 => u32::MAX,
-            EncodingKind::Iso8859_15 => u32::MAX,
-            EncodingKind::MacRoman => u32::MAX,
-            EncodingKind::Utf8
-            | EncodingKind::Utf8Sig
-            | EncodingKind::Utf16
-            | EncodingKind::Utf16LE
-            | EncodingKind::Utf16BE
-            | EncodingKind::Utf32
-            | EncodingKind::Utf32LE
-            | EncodingKind::Utf32BE => u32::MAX,
-        }
-    }
-}
-
 pub(crate) fn encoding_kind_name(kind: EncodingKind) -> &'static str {
     kind.name()
 }
@@ -167,54 +35,6 @@ pub(crate) enum EncodeError {
         pos: usize,
         limit: u32,
     },
-}
-
-pub(crate) fn normalize_encoding(name: &str) -> Option<EncodingKind> {
-    let normalized = name.to_ascii_lowercase().replace('_', "-");
-    match normalized.as_str() {
-        "utf-8" | "utf8" => Some(EncodingKind::Utf8),
-        "utf-8-sig" | "utf8-sig" => Some(EncodingKind::Utf8Sig),
-        "cp1252" | "cp-1252" | "windows-1252" => Some(EncodingKind::Cp1252),
-        "cp437" | "ibm437" | "437" => Some(EncodingKind::Cp437),
-        "cp850" | "ibm850" | "850" | "cp-850" => Some(EncodingKind::Cp850),
-        "cp860" | "ibm860" | "860" | "cp-860" => Some(EncodingKind::Cp860),
-        "cp862" | "ibm862" | "862" | "cp-862" => Some(EncodingKind::Cp862),
-        "cp863" | "ibm863" | "863" | "cp-863" => Some(EncodingKind::Cp863),
-        "cp865" | "ibm865" | "865" | "cp-865" => Some(EncodingKind::Cp865),
-        "cp866" | "ibm866" | "866" | "cp-866" => Some(EncodingKind::Cp866),
-        "cp874" | "cp-874" | "windows-874" => Some(EncodingKind::Cp874),
-        "cp1250" | "cp-1250" | "windows-1250" => Some(EncodingKind::Cp1250),
-        "cp1251" | "cp-1251" | "windows-1251" => Some(EncodingKind::Cp1251),
-        "cp1253" | "cp-1253" | "windows-1253" => Some(EncodingKind::Cp1253),
-        "cp1254" | "cp-1254" | "windows-1254" => Some(EncodingKind::Cp1254),
-        "cp1255" | "cp-1255" | "windows-1255" => Some(EncodingKind::Cp1255),
-        "cp1256" | "cp-1256" | "windows-1256" => Some(EncodingKind::Cp1256),
-        "cp1257" | "cp-1257" | "windows-1257" => Some(EncodingKind::Cp1257),
-        "koi8-r" | "koi8r" | "koi8_r" => Some(EncodingKind::Koi8R),
-        "koi8-u" | "koi8u" | "koi8_u" => Some(EncodingKind::Koi8U),
-        "iso-8859-2" | "iso8859-2" | "latin2" | "latin-2" => Some(EncodingKind::Iso8859_2),
-        "iso-8859-3" | "iso8859-3" | "latin3" | "latin-3" => Some(EncodingKind::Iso8859_3),
-        "iso-8859-4" | "iso8859-4" | "latin4" | "latin-4" => Some(EncodingKind::Iso8859_4),
-        "iso-8859-5" | "iso8859-5" | "cyrillic" => Some(EncodingKind::Iso8859_5),
-        "iso-8859-6" | "iso8859-6" | "arabic" => Some(EncodingKind::Iso8859_6),
-        "iso-8859-7" | "iso8859-7" | "greek" => Some(EncodingKind::Iso8859_7),
-        "iso-8859-8" | "iso8859-8" | "hebrew" => Some(EncodingKind::Iso8859_8),
-        "iso-8859-10" | "iso8859-10" | "latin6" | "latin-6" => Some(EncodingKind::Iso8859_10),
-        "iso-8859-15" | "iso8859-15" | "latin9" | "latin-9" | "latin_9" => {
-            Some(EncodingKind::Iso8859_15)
-        }
-        "mac-roman" | "macroman" | "mac_roman" => Some(EncodingKind::MacRoman),
-        "latin-1" | "latin1" | "iso-8859-1" | "iso8859-1" => Some(EncodingKind::Latin1),
-        "ascii" | "us-ascii" => Some(EncodingKind::Ascii),
-        "unicode-escape" | "unicodeescape" => Some(EncodingKind::UnicodeEscape),
-        "utf-16" | "utf16" => Some(EncodingKind::Utf16),
-        "utf-16le" | "utf-16-le" | "utf16le" => Some(EncodingKind::Utf16LE),
-        "utf-16be" | "utf-16-be" | "utf16be" => Some(EncodingKind::Utf16BE),
-        "utf-32" | "utf32" => Some(EncodingKind::Utf32),
-        "utf-32le" | "utf-32-le" | "utf32le" => Some(EncodingKind::Utf32LE),
-        "utf-32be" | "utf-32-be" | "utf32be" => Some(EncodingKind::Utf32BE),
-        _ => None,
-    }
 }
 
 #[derive(Clone, Copy)]

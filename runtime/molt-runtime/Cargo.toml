@@ -29,7 +29,7 @@ stdlib_full = [
     "sqlite",
     "molt_gpu_primitives",
 ]
-stdlib_unicode_names = ["dep:unicode_names2", "molt-runtime-text?/stdlib_unicode_names"]
+stdlib_unicode_names = ["dep:unicode_names2", "molt-runtime-text/stdlib_unicode_names"]
 
 # Strict superset chain: micro -> edge -> standard -> server -> full.
 # Each tier includes ALL features of the tier below it plus its own additions.
@@ -106,7 +106,7 @@ stdlib_importlib_extra = []
 stdlib_path = ["dep:molt-runtime-path"]
 stdlib_collections = ["dep:molt-runtime-collections"]
 stdlib_regex = ["dep:molt-runtime-regex"]
-stdlib_text = ["dep:molt-runtime-text"]
+stdlib_text = ["molt-runtime-text/stdlib_text"]
 stdlib_itertools = ["dep:molt-runtime-itertools"]
 stdlib_serial = ["dep:molt-runtime-serial"]
 stdlib_csv = ["stdlib_serial"]
@@ -165,7 +165,7 @@ molt-runtime-math = { path = "../molt-runtime-math", optional = true }
 molt-runtime-path = { path = "../molt-runtime-path", optional = true }
 molt-runtime-collections = { path = "../molt-runtime-collections", optional = true }
 molt-runtime-regex = { path = "../molt-runtime-regex", optional = true }
-molt-runtime-text = { path = "../molt-runtime-text", optional = true }
+molt-runtime-text = { path = "../molt-runtime-text", default-features = false }
 molt-runtime-itertools = { path = "../molt-runtime-itertools", optional = true }
 molt-runtime-serial = { path = "../molt-runtime-serial", optional = true }
 molt-runtime-difflib = { path = "../molt-runtime-difflib", optional = true }
