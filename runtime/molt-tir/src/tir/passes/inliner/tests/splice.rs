@@ -198,22 +198,21 @@ fn splice_void_exception_exit_pads_placeholder_for_continuation_type() {
 
         let mut placeholder_const_seen = false;
         for block in caller.blocks.values() {
-            if let Terminator::Branch { args, .. } = &block.terminator {
-                if args.len() == 1
-                    && block
-                        .ops
-                        .last()
-                        .map(|op| {
-                            let expected = dead_placeholder_const_for_type(&ty, args[0]);
-                            op.opcode == expected.opcode
-                                && op.operands == expected.operands
-                                && op.results == expected.results
-                                && op.attrs == expected.attrs
-                        })
-                        .unwrap_or(false)
-                {
-                    placeholder_const_seen = true;
-                }
+            if let Terminator::Branch { args, .. } = &block.terminator
+                && args.len() == 1
+                && block
+                    .ops
+                    .last()
+                    .map(|op| {
+                        let expected = dead_placeholder_const_for_type(&ty, args[0]);
+                        op.opcode == expected.opcode
+                            && op.operands == expected.operands
+                            && op.results == expected.results
+                            && op.attrs == expected.attrs
+                    })
+                    .unwrap_or(false)
+            {
+                placeholder_const_seen = true;
             }
         }
         assert!(
