@@ -33,3 +33,14 @@ show_error("decode_undefined", lambda: codecs.decode(b"\x81", "cp1252"))
 print("decode_replace", repr(codecs.decode(b"\x81", "cp1252", "replace")))
 show_error("encode_undefined", lambda: codecs.encode("\x81", "cp1252"))
 print("encode_euro", codecs.encode("€", "cp1252"))
+
+print("incremental_decode", codecs.getincrementaldecoder("cp1252")().decode(b"\x80", True))
+print(
+    "incremental_encode",
+    list(codecs.getincrementalencoder("cp1252")().encode("\u20ac", True)),
+)
+
+import encodings.cp1252 as cp1252
+
+print("direct_decode", cp1252.Codec().decode(b"\x80"))
+print("direct_encode", cp1252.Codec().encode("\u20ac"))

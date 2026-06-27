@@ -210,6 +210,23 @@ gates = [
   "python3 -m pytest -q tests/test_gen_intrinsics.py",
 ]
 
+# --- Codec generated tables ----------------------------------------------
+[[rule]]
+name = "codec-tables"
+description = "Text codec registry and generated single-byte charmap tables."
+globs = [
+  "tools/gen_codecs.py",
+  "runtime/molt-runtime-text/src/codec_registry.rs",
+  "runtime/molt-runtime-text/src/charmap_codecs_generated.rs",
+  "runtime/molt-runtime-text/src/codec_aliases_generated.rs",
+  "src/molt/stdlib/encodings/*.py",
+  "tests/test_gen_codecs.py",
+]
+gates = [
+  "python3 tools/gen_codecs.py --check",
+  "python3 -m pytest -q tests/test_gen_codecs.py",
+]
+
 # --- StringPrep runtime leaf crate ---------------------------------------
 [[rule]]
 name = "stringprep-leaf"

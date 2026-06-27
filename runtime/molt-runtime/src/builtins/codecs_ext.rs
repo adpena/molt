@@ -19,8 +19,12 @@
 // and surface them to the Python wrapper via `molt_codecs_lookup_error`.
 
 use crate::object::ops::{DecodeTextError as OpsDecodeTextError, EncodeError as OpsEncodeError};
-use crate::object::ops_encoding::DecodeFailure as OpsDecodeFailure;
+use crate::object::ops_encoding::{
+    DecodeFailure as OpsDecodeFailure, push_xmlcharref_ascii, unicode_escape_codepoint,
+    unicode_name_escape,
+};
 use crate::*;
+use molt_runtime_text::wtf8::{push_backslash_bytes_vec, push_wtf8_codepoint};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicI64, Ordering};
@@ -951,6 +955,60 @@ pub extern "C" fn molt_codecs_charmap_build(table_bits: u64) -> u64 {
 /// `errors_bits`: error mode string ("strict", "ignore", "replace")
 /// `mapping_bits`: dict or None (None = latin-1 identity)
 /// Returns a (str, int) tuple of (decoded_text, bytes_consumed).
+fn charmap_decode_tuple(_py: &PyToken<'_>, decoded: &[u8], consumed: usize) -> u64 {
+    let str_ptr = alloc_string(_py, decoded);
+    if str_ptr.is_null() {
+        return raise_exception::<_>(_py, "MemoryError", "out of memory");
+    }
+    let str_bits = MoltObject::from_ptr(str_ptr).bits();
+    let len_bits = MoltObject::from_int(consumed as i64).bits();
+    let elems = [str_bits, len_bits];
+    let tuple_ptr = crate::alloc_tuple(_py, &elems);
+    if tuple_ptr.is_null() {
+        return raise_exception::<_>(_py, "MemoryError", "out of memory");
+    }
+    MoltObject::from_ptr(tuple_ptr).bits()
+}
+
+fn charmap_decode_undefined(
+    _py: &PyToken<'_>,
+    out: &mut Vec<u8>,
+    errors: &str,
+    byte: u8,
+    pos: usize,
+) -> Result<(), u64> {
+    match errors {
+        "ignore" => Ok(()),
+        "replace" => {
+            push_wtf8_codepoint(out, 0xFFFD);
+            Ok(())
+        }
+        "backslashreplace" => {
+            push_backslash_bytes_vec(out, &[byte]);
+            Ok(())
+        }
+        "surrogateescape" => {
+            push_wtf8_codepoint(out, 0xDC00 + byte as u32);
+            Ok(())
+        }
+        "xmlcharrefreplace" | "namereplace" => Err(raise_exception::<_>(
+            _py,
+            "TypeError",
+            "don't know how to handle UnicodeDecodeError in error callback",
+        )),
+        "strict" | "surrogatepass" => {
+            let msg = format!(
+                "'charmap' codec can't decode byte 0x{byte:02x} in position {pos}: character maps to <undefined>"
+            );
+            Err(raise_exception::<_>(_py, "UnicodeDecodeError", &msg))
+        }
+        other => {
+            let msg = format!("unknown error handler name '{other}'");
+            Err(raise_exception::<_>(_py, "LookupError", &msg))
+        }
+    }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_codecs_charmap_decode(
     input_bits: u64,
@@ -970,69 +1028,128 @@ pub extern "C" fn molt_codecs_charmap_decode(
             string_obj_to_owned(obj_from_bits(errors_bits)).unwrap_or_else(|| "strict".to_owned());
         let mapping_obj = obj_from_bits(mapping_bits);
 
-        // None mapping = latin-1 identity decode
         if mapping_obj.is_none() {
-            let decoded: String = input_vec.iter().map(|&b| b as char).collect();
-            let str_ptr = alloc_string(_py, decoded.as_bytes());
-            if str_ptr.is_null() {
-                return raise_exception::<_>(_py, "MemoryError", "out of memory");
+            let mut decoded = Vec::with_capacity(input_vec.len());
+            for &byte in &input_vec {
+                push_wtf8_codepoint(&mut decoded, byte as u32);
             }
-            let str_bits = MoltObject::from_ptr(str_ptr).bits();
-            let len_bits = MoltObject::from_int(input_vec.len() as i64).bits();
-            let elems = [str_bits, len_bits];
-            let tuple_ptr = crate::alloc_tuple(_py, &elems);
-            if tuple_ptr.is_null() {
-                return raise_exception::<_>(_py, "MemoryError", "out of memory");
+            return charmap_decode_tuple(_py, &decoded, input_vec.len());
+        }
+
+        if let Some(table) = string_obj_to_owned(mapping_obj) {
+            let table_chars: Vec<char> = table.chars().collect();
+            let mut out = Vec::with_capacity(input_vec.len());
+            for (pos, &byte) in input_vec.iter().enumerate() {
+                match table_chars.get(byte as usize).copied() {
+                    Some('\u{FFFE}') | None => {
+                        if let Err(bits) =
+                            charmap_decode_undefined(_py, &mut out, &errors, byte, pos)
+                        {
+                            return bits;
+                        }
+                    }
+                    Some(ch) => push_wtf8_codepoint(&mut out, ch as u32),
+                }
             }
-            return MoltObject::from_ptr(tuple_ptr).bits();
+            return charmap_decode_tuple(_py, &out, input_vec.len());
         }
 
         let map_ptr = match mapping_obj.as_ptr() {
             Some(p) => p,
             None => {
-                return raise_exception::<_>(_py, "TypeError", "mapping must be a dict or None");
+                return raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    "mapping must be a dict, str, bytes, or None",
+                );
             }
         };
 
-        let mut out = String::new();
+        if let Some(mapping_bytes) = unsafe { bytes_like_slice(map_ptr) } {
+            let mapping_vec = mapping_bytes.to_vec();
+            let mut out = Vec::with_capacity(input_vec.len());
+            for (pos, &byte) in input_vec.iter().enumerate() {
+                match mapping_vec.get(byte as usize).copied() {
+                    Some(mapped) => push_wtf8_codepoint(&mut out, mapped as u32),
+                    None => {
+                        if let Err(bits) =
+                            charmap_decode_undefined(_py, &mut out, &errors, byte, pos)
+                        {
+                            return bits;
+                        }
+                    }
+                }
+            }
+            return charmap_decode_tuple(_py, &out, input_vec.len());
+        }
+
+        if unsafe { object_type_id(map_ptr) } != TYPE_ID_DICT {
+            return raise_exception::<_>(
+                _py,
+                "TypeError",
+                "mapping must be a dict, str, bytes, or None",
+            );
+        }
+
+        let mut out = Vec::with_capacity(input_vec.len());
         for (pos, &b) in input_vec.iter().enumerate() {
             let key_bits = MoltObject::from_int(b as i64).bits();
             let mapped = unsafe { crate::dict_get_in_place(_py, map_ptr, key_bits) };
             match mapped {
                 Some(val) => {
                     let val_obj = obj_from_bits(val);
-                    if let Some(s) = string_obj_to_owned(val_obj) {
-                        out.push_str(&s);
-                    } else if let Some(i) = crate::to_i64(val_obj)
-                        && let Some(ch) = char::from_u32(i as u32)
-                    {
-                        out.push(ch);
+                    if val_obj.is_none() {
+                        if let Err(bits) = charmap_decode_undefined(_py, &mut out, &errors, b, pos)
+                        {
+                            return bits;
+                        }
+                    } else if let Some(ptr) = val_obj.as_ptr() {
+                        match unsafe { object_type_id(ptr) } {
+                            TYPE_ID_STRING => {
+                                if let Some(s) = string_obj_to_owned(val_obj) {
+                                    out.extend_from_slice(s.as_bytes());
+                                }
+                            }
+                            TYPE_ID_BYTES | TYPE_ID_BYTEARRAY => {
+                                return raise_exception::<_>(
+                                    _py,
+                                    "TypeError",
+                                    "character mapping must return integer, None or str",
+                                );
+                            }
+                            _ => {
+                                return raise_exception::<_>(
+                                    _py,
+                                    "TypeError",
+                                    "character mapping must return integer, None or str",
+                                );
+                            }
+                        }
+                    } else if let Some(i) = crate::to_i64(val_obj) {
+                        if !(0..=0x10FFFF).contains(&i) || (0xD800..=0xDFFF).contains(&(i as u32)) {
+                            return raise_exception::<_>(
+                                _py,
+                                "TypeError",
+                                "character mapping must be in range(0x110000)",
+                            );
+                        }
+                        push_wtf8_codepoint(&mut out, i as u32);
+                    } else {
+                        return raise_exception::<_>(
+                            _py,
+                            "TypeError",
+                            "character mapping must return integer, None or str",
+                        );
                     }
                 }
-                None => match errors.as_str() {
-                    "ignore" => continue,
-                    "replace" => out.push('\u{FFFD}'),
-                    _ => {
-                        let msg = format!(
-                            "'charmap' codec can't decode byte 0x{b:02x} in position {pos}: character maps to <undefined>"
-                        );
-                        return raise_exception::<_>(_py, "UnicodeDecodeError", &msg);
+                None => {
+                    if let Err(bits) = charmap_decode_undefined(_py, &mut out, &errors, b, pos) {
+                        return bits;
                     }
-                },
+                }
             }
         }
-        let str_ptr = alloc_string(_py, out.as_bytes());
-        if str_ptr.is_null() {
-            return raise_exception::<_>(_py, "MemoryError", "out of memory");
-        }
-        let str_bits = MoltObject::from_ptr(str_ptr).bits();
-        let len_bits = MoltObject::from_int(input_vec.len() as i64).bits();
-        let elems = [str_bits, len_bits];
-        let tuple_ptr = crate::alloc_tuple(_py, &elems);
-        if tuple_ptr.is_null() {
-            return raise_exception::<_>(_py, "MemoryError", "out of memory");
-        }
-        MoltObject::from_ptr(tuple_ptr).bits()
+        charmap_decode_tuple(_py, &out, input_vec.len())
     })
 }
 
@@ -1041,6 +1158,114 @@ pub extern "C" fn molt_codecs_charmap_decode(
 /// `errors_bits`: error mode string
 /// `mapping_bits`: dict or None (None = latin-1 identity)
 /// Returns a (bytes, int) tuple of (encoded_bytes, chars_consumed).
+fn charmap_encode_tuple(_py: &PyToken<'_>, encoded: &[u8], consumed: usize) -> u64 {
+    let bytes_ptr = alloc_bytes(_py, encoded);
+    if bytes_ptr.is_null() {
+        return raise_exception::<_>(_py, "MemoryError", "out of memory");
+    }
+    let bytes_bits = MoltObject::from_ptr(bytes_ptr).bits();
+    let len_bits = MoltObject::from_int(consumed as i64).bits();
+    let elems = [bytes_bits, len_bits];
+    let tuple_ptr = crate::alloc_tuple(_py, &elems);
+    if tuple_ptr.is_null() {
+        return raise_exception::<_>(_py, "MemoryError", "out of memory");
+    }
+    MoltObject::from_ptr(tuple_ptr).bits()
+}
+
+fn charmap_append_encode_value(
+    _py: &PyToken<'_>,
+    out: &mut Vec<u8>,
+    value_bits: u64,
+) -> Result<bool, u64> {
+    let value_obj = obj_from_bits(value_bits);
+    if value_obj.is_none() {
+        return Ok(false);
+    }
+    if let Some(ptr) = value_obj.as_ptr() {
+        match unsafe { object_type_id(ptr) } {
+            TYPE_ID_BYTES | TYPE_ID_BYTEARRAY => {
+                if let Some(slice) = unsafe { bytes_like_slice(ptr) } {
+                    out.extend_from_slice(slice);
+                }
+                return Ok(true);
+            }
+            TYPE_ID_STRING => {
+                return Err(raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    "character mapping must return integer, bytes or None, not str",
+                ));
+            }
+            _ => {
+                return Err(raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    "character mapping must return integer, bytes or None",
+                ));
+            }
+        }
+    }
+    if let Some(i) = crate::to_i64(value_obj) {
+        if !(0..=255).contains(&i) {
+            return Err(raise_exception::<_>(
+                _py,
+                "TypeError",
+                "character mapping must be in range(256)",
+            ));
+        }
+        out.push(i as u8);
+        return Ok(true);
+    }
+    Err(raise_exception::<_>(
+        _py,
+        "TypeError",
+        "character mapping must return integer, bytes or None",
+    ))
+}
+
+fn charmap_lookup_encode_char(
+    _py: &PyToken<'_>,
+    map_ptr: *mut u8,
+    out: &mut Vec<u8>,
+    code: u32,
+) -> Result<bool, u64> {
+    let key = MoltObject::from_int(code as i64).bits();
+    let Some(value_bits) = (unsafe { crate::dict_get_in_place(_py, map_ptr, key) }) else {
+        return Ok(false);
+    };
+    charmap_append_encode_value(_py, out, value_bits)
+}
+
+fn charmap_encode_replacement(
+    _py: &PyToken<'_>,
+    map_ptr: *mut u8,
+    out: &mut Vec<u8>,
+    replacement: &str,
+    pos: usize,
+) -> Result<(), u64> {
+    for repl in replacement.chars() {
+        if !charmap_lookup_encode_char(_py, map_ptr, out, repl as u32)? {
+            return Err(charmap_encode_undefined(_py, repl as u32, pos));
+        }
+    }
+    Ok(())
+}
+
+fn charmap_encode_undefined(_py: &PyToken<'_>, code: u32, pos: usize) -> u64 {
+    let escaped = if code <= 0xFF {
+        format!("\\x{code:02x}")
+    } else if code <= 0xFFFF {
+        format!("\\u{code:04x}")
+    } else {
+        format!("\\U{code:08x}")
+    };
+    let msg = format!(
+        "'charmap' codec can't encode character '{escaped}' in position {pos}: character maps to <undefined>"
+    );
+    raise_exception::<_>(_py, "UnicodeEncodeError", &msg)
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_codecs_charmap_encode(
     input_bits: u64,
@@ -1060,18 +1285,7 @@ pub extern "C" fn molt_codecs_charmap_encode(
         if mapping_obj.is_none() {
             match encode_string_with_errors(input_str.as_bytes(), "latin-1", Some(&errors)) {
                 Ok(encoded) => {
-                    let bytes_ptr = alloc_bytes(_py, &encoded);
-                    if bytes_ptr.is_null() {
-                        return raise_exception::<_>(_py, "MemoryError", "out of memory");
-                    }
-                    let bytes_bits = MoltObject::from_ptr(bytes_ptr).bits();
-                    let len_bits = MoltObject::from_int(input_str.len() as i64).bits();
-                    let elems = [bytes_bits, len_bits];
-                    let tuple_ptr = crate::alloc_tuple(_py, &elems);
-                    if tuple_ptr.is_null() {
-                        return raise_exception::<_>(_py, "MemoryError", "out of memory");
-                    }
-                    return MoltObject::from_ptr(tuple_ptr).bits();
+                    return charmap_encode_tuple(_py, &encoded, input_str.chars().count());
                 }
                 Err(_) => {
                     return raise_exception::<_>(
@@ -1084,80 +1298,64 @@ pub extern "C" fn molt_codecs_charmap_encode(
         }
 
         let mut out: Vec<u8> = Vec::new();
-        let map_ptr = mapping_obj.as_ptr();
+        let Some(map_ptr) = mapping_obj.as_ptr() else {
+            return raise_exception::<_>(_py, "TypeError", "mapping must be a dict or None");
+        };
+        if unsafe { object_type_id(map_ptr) } != TYPE_ID_DICT {
+            return raise_exception::<_>(_py, "TypeError", "mapping must be a dict or None");
+        }
         for (idx, ch) in input_str.chars().enumerate() {
-            let mut found = false;
-            if let Some(mp) = map_ptr {
-                // Try character key first
-                let ch_key_ptr = alloc_string(_py, ch.encode_utf8(&mut [0u8; 4]).as_bytes());
-                if !ch_key_ptr.is_null() {
-                    let ch_key_bits = MoltObject::from_ptr(ch_key_ptr).bits();
-                    let val = unsafe { crate::dict_get_in_place(_py, mp, ch_key_bits) };
-                    crate::dec_ref_bits(_py, ch_key_bits);
-                    if let Some(v) = val {
-                        let v_obj = obj_from_bits(v);
-                        if let Some(b_ptr) = v_obj.as_ptr()
-                            && let Some(b_slice) = unsafe { bytes_like_slice(b_ptr) }
-                        {
-                            out.extend_from_slice(b_slice);
-                            found = true;
-                        }
-                        if !found {
-                            if let Some(i) = crate::to_i64(v_obj) {
-                                out.push((i & 0xFF) as u8);
-                                found = true;
-                            } else if let Some(s) = string_obj_to_owned(v_obj) {
-                                out.extend_from_slice(s.as_bytes().get(..1).unwrap_or(b"?"));
-                                found = true;
-                            }
-                        }
-                    }
-                }
-                // Try ordinal key
-                if !found {
-                    let ord_key = MoltObject::from_int(ch as i64).bits();
-                    let val = unsafe { crate::dict_get_in_place(_py, mp, ord_key) };
-                    if let Some(v) = val {
-                        let v_obj = obj_from_bits(v);
-                        if let Some(b_ptr) = v_obj.as_ptr()
-                            && let Some(b_slice) = unsafe { bytes_like_slice(b_ptr) }
-                        {
-                            out.extend_from_slice(b_slice);
-                            found = true;
-                        }
-                        if !found && let Some(i) = crate::to_i64(v_obj) {
-                            out.push((i & 0xFF) as u8);
-                            found = true;
-                        }
-                    }
-                }
+            let found = match charmap_lookup_encode_char(_py, map_ptr, &mut out, ch as u32) {
+                Ok(found) => found,
+                Err(bits) => return bits,
+            };
+            if found {
+                continue;
             }
-            if !found {
-                match errors.as_str() {
-                    "ignore" => continue,
-                    "replace" => out.push(b'?'),
-                    _ => {
-                        let msg = format!(
-                            "'charmap' codec can't encode character '\\u{:04x}' in position {}: character maps to <undefined>",
-                            ch as u32, idx
-                        );
-                        return raise_exception::<_>(_py, "UnicodeEncodeError", &msg);
+            match errors.as_str() {
+                "ignore" => continue,
+                "replace" => {
+                    if let Err(bits) = charmap_encode_replacement(_py, map_ptr, &mut out, "?", idx)
+                    {
+                        return bits;
                     }
+                }
+                "xmlcharrefreplace" => {
+                    let mut replacement = Vec::new();
+                    push_xmlcharref_ascii(&mut replacement, ch as u32);
+                    let replacement = String::from_utf8(replacement).unwrap_or_default();
+                    if let Err(bits) =
+                        charmap_encode_replacement(_py, map_ptr, &mut out, &replacement, idx)
+                    {
+                        return bits;
+                    }
+                }
+                "backslashreplace" => {
+                    let replacement = unicode_escape_codepoint(ch as u32);
+                    if let Err(bits) =
+                        charmap_encode_replacement(_py, map_ptr, &mut out, &replacement, idx)
+                    {
+                        return bits;
+                    }
+                }
+                "namereplace" => {
+                    let replacement = unicode_name_escape(ch as u32);
+                    if let Err(bits) =
+                        charmap_encode_replacement(_py, map_ptr, &mut out, &replacement, idx)
+                    {
+                        return bits;
+                    }
+                }
+                "strict" | "surrogatepass" | "surrogateescape" => {
+                    return charmap_encode_undefined(_py, ch as u32, idx);
+                }
+                other => {
+                    let msg = format!("unknown error handler name '{other}'");
+                    return raise_exception::<_>(_py, "LookupError", &msg);
                 }
             }
         }
-        let bytes_ptr = alloc_bytes(_py, &out);
-        if bytes_ptr.is_null() {
-            return raise_exception::<_>(_py, "MemoryError", "out of memory");
-        }
-        let bytes_bits = MoltObject::from_ptr(bytes_ptr).bits();
-        let len_bits = MoltObject::from_int(input_str.len() as i64).bits();
-        let elems = [bytes_bits, len_bits];
-        let tuple_ptr = crate::alloc_tuple(_py, &elems);
-        if tuple_ptr.is_null() {
-            return raise_exception::<_>(_py, "MemoryError", "out of memory");
-        }
-        MoltObject::from_ptr(tuple_ptr).bits()
+        charmap_encode_tuple(_py, &out, input_str.chars().count())
     })
 }
 

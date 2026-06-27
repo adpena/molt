@@ -21,6 +21,7 @@ from molt.frontend._types import (
     MoltValue,
     _canonical_intrinsic_runtime_name,
 )
+from molt.compiler_analysis.static_truth import static_if_live_branch
 
 if TYPE_CHECKING:
     from molt.frontend._protocol import _GeneratorProtocol
@@ -55,7 +56,7 @@ class AnalysisCollectStaticMixin(_MixinBase):
             def visit_If(self, node: ast.If) -> None:
                 # CPython does not record annotations from a statically-dead
                 # branch (`if False:`/`if TYPE_CHECKING:`) in `__annotations__`.
-                static_branch = outer._static_if_live_branch(node)
+                static_branch = static_if_live_branch(node)
                 if static_branch is not None:
                     for stmt in static_branch:
                         self.visit(stmt)
@@ -198,7 +199,7 @@ class AnalysisCollectStaticMixin(_MixinBase):
                     self.visit(stmt)
 
             def visit_If(self, node: ast.If) -> None:
-                static_branch = outer._static_if_live_branch(node)
+                static_branch = static_if_live_branch(node)
                 if static_branch is not None:
                     for stmt in static_branch:
                         self.visit(stmt)
@@ -854,60 +855,6 @@ class AnalysisCollectStaticMixin(_MixinBase):
         for node in nodes:
             collector.visit(node)
         return names
-
-    @staticmethod
-    def _is_type_checking_test(expr: ast.expr) -> bool:
-        if isinstance(expr, ast.Name):
-            return expr.id == "TYPE_CHECKING"
-        if isinstance(expr, ast.Attribute):
-            if expr.attr != "TYPE_CHECKING":
-                return False
-            if isinstance(expr.value, ast.Name):
-                return expr.value.id in {"typing", "typing_extensions"}
-        return False
-
-    @staticmethod
-    def _static_test_truthiness(expr: ast.expr) -> bool | None:
-        """Return the compile-time truth value of an `if`/`while` test, or None.
-
-        CPython's compiler eliminates the dead branch of an `if` whose test is a
-        compile-time constant (`if False:`, `if 0:`, `if "":`, `if True:`,
-        `if None:`), so the dead branch never reaches bytecode — names assigned
-        only there stay unbound and references inside it are never emitted. Molt
-        must match this exactly: a `const_str` left inside a never-executed
-        `if False:` body (e.g. the `__annotations__` keys of a
-        `if False:  # TYPE_CHECKING` block) would otherwise leak into the
-        per-app intrinsic manifest and pin runtime intrinsics that the program
-        never resolves.
-
-        `TYPE_CHECKING` is always statically False here: Molt compiles code, it
-        never runs a type checker, so a `if TYPE_CHECKING:` guard's body is dead
-        exactly like `if False:`. Returning False for it unifies the existing
-        TYPE_CHECKING-skip with general constant folding (one code path, not two).
-
-        Returns None when the test is not a compile-time constant — the caller
-        must then emit both branches under a runtime guard.
-        """
-        if AnalysisCollectStaticMixin._is_type_checking_test(expr):
-            return False
-        if isinstance(expr, ast.Constant):
-            # Mirror CPython's constant folding: any literal test value collapses
-            # to its truthiness (None/bool/int/float/str/bytes/tuple-of-consts).
-            return bool(expr.value)
-        return None
-
-    @staticmethod
-    def _static_if_live_branch(node: ast.If) -> list[ast.stmt] | None:
-        """Statically-live branch of `node` when its test is constant, else None.
-
-        Constant-true selects `node.body`; constant-false (including
-        `TYPE_CHECKING`) selects `node.orelse`. None means the test is
-        runtime-conditional and both branches may execute.
-        """
-        truth = AnalysisCollectStaticMixin._static_test_truthiness(node.test)
-        if truth is None:
-            return None
-        return node.body if truth else node.orelse
 
     def _collect_namedexpr_names(self, node: ast.AST) -> list[str]:
         # Source order, deduplicated.  Walrus (:=) targets are synced to the

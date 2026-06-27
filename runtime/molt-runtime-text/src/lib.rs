@@ -15,8 +15,12 @@ pub mod bridge;
 #[path = "../../molt-runtime-core/src/bridge_test_stubs.rs"]
 mod bridge_test_stubs;
 
+pub mod charmap_codecs_generated;
+pub mod codec_aliases_generated;
+pub mod codec_errors;
 pub mod codec_registry;
 #[cfg(feature = "stdlib_text")]
 pub mod html;
 #[cfg(feature = "stdlib_text")]
 pub mod unicodedata_mod;
+pub mod wtf8;

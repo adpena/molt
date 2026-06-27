@@ -15,10 +15,13 @@ The live codebase and executable Cargo metadata remain authoritative.
   `-regex`, `-path`, `-itertools`, `-difflib`, `-logging`, `-http`, `-xml`,
   `-ipaddress`, `-zoneinfo`, `-stringprep`, and `-tk`. Guarded
   `cargo metadata --no-deps` reports these as workspace packages.
-- `molt-runtime-stringprep`, the `html` / `unicodedata` portions of
-  `molt-runtime-text`, `molt-runtime-zoneinfo`, the math-family modules owned by
-  `molt-runtime-math`, XML owned by `molt-runtime-xml`, `difflib` owned by
-  `molt-runtime-difflib`, and `ipaddress` owned by `molt-runtime-ipaddress` are
+- `molt-runtime-stringprep`, the codec identity plus generated alias and
+  single-byte charmap table authority in `molt-runtime-text`, the `html` /
+  `unicodedata`
+  portions of `molt-runtime-text`, `molt-runtime-zoneinfo`, the math-family
+  modules owned by `molt-runtime-math`, XML owned by `molt-runtime-xml`,
+  `difflib` owned by `molt-runtime-difflib`, and `ipaddress` owned by
+  `molt-runtime-ipaddress` are
   completed leaf-ownership examples: their in-facade fallback modules are
   deleted, their generated resolver arms delegate into leaf-owned intrinsic
   sub-registries, their symbol prefixes are link-affecting feature gates, and

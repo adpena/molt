@@ -20,12 +20,18 @@ for the crate-extraction and incremental-build routing plan.
   facade delegates through that leaf sub-registry behind `stdlib_stringprep`.
   Feature-on/feature-off `molt-runtime` checks prove the facade no longer
   carries a duplicate stringprep authority.
-- `molt-runtime-text` now owns the always-on codec identity registry as well as
-  the feature-gated `html` and `unicodedata` implementations. The small
+- `molt-runtime-text` now owns the always-on codec identity registry, generated
+  codec alias table, and generated single-byte charmap tables as well as the
+  feature-gated `html` and `unicodedata` implementations. The small
   `codec_registry` module is a non-optional runtime dependency and is the
-  canonical descriptor source for direct codec labels, Python `encodings`
-  module names, ordinal limits, and text-I/O classes. The heavier html/
-  unicodedata modules remain gated by `stdlib_text`; `molt_html_*` and
+  canonical descriptor source for direct codec labels, Python `encodings` module
+  names, ordinal limits, and text-I/O classes. `tools/gen_codecs.py` filters
+  CPython alias reference data through that registry and derives the named
+  single-byte table set from the same descriptor source; it generates alias rows
+  plus encode/decode maps from the repo-pinned
+  `src/molt/stdlib/encodings/*.py` modules, so `molt-runtime` remains only the
+  caller/error adapter for codec execution. The heavier html/unicodedata modules
+  remain gated by `stdlib_text`; `molt_html_*` and
   `molt_unicodedata_*` resolver arms are gated by `stdlib_text`, and
   feature-on/feature-off runtime checks prove the facade no longer carries a
   duplicate text authority for those modules.

@@ -17,6 +17,7 @@ from molt.frontend._types import (
     MoltValue,
     TryScope,
 )
+from molt.compiler_analysis.static_truth import static_if_live_branch
 
 if TYPE_CHECKING:
     from molt.frontend._protocol import _GeneratorProtocol
@@ -29,7 +30,7 @@ else:
 
 class ControlFlowStatementVisitorMixin(_MixinBase):
     def visit_If(self, node: ast.If) -> None:
-        static_branch = self._static_if_live_branch(node)
+        static_branch = static_if_live_branch(node)
         if static_branch is not None:
             self._emit_static_if_live_branch(static_branch)
             return None

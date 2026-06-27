@@ -339,6 +339,15 @@ def _coerce_codec_entry(search_name: str, entry: object) -> CodecInfo:
     raise TypeError("codec search functions must return 4-tuples")
 
 
+def _encoding_bound_class(base: type, encoding: str) -> type:
+    safe_name = "".join(ch if ch.isalnum() else "_" for ch in encoding)
+    return type(
+        f"{safe_name}_{base.__name__}",
+        (base,),
+        {"_encoding": encoding, "__module__": __name__},
+    )
+
+
 def lookup(encoding: object) -> CodecInfo:
     # Fast path: Rust normalize+validate for known encodings (avoids
     # Python char-by-char _normalize_search_name loop).
@@ -351,6 +360,10 @@ def lookup(encoding: object) -> CodecInfo:
         cached = _CODECS_CACHE.get(canonical)
         if cached is not None:
             return cached
+        incrementalencoder = _encoding_bound_class(IncrementalEncoder, canonical)
+        incrementaldecoder = _encoding_bound_class(IncrementalDecoder, canonical)
+        streamwriter = _encoding_bound_class(StreamWriter, canonical)
+        streamreader = _encoding_bound_class(StreamReader, canonical)
         info = CodecInfo(
             encode=lambda obj, errors="strict", _enc=canonical: _encode_with_consumed(
                 obj, _enc, errors
@@ -358,10 +371,10 @@ def lookup(encoding: object) -> CodecInfo:
             decode=lambda obj, errors="strict", _enc=canonical: _decode_with_consumed(
                 obj, _enc, errors
             ),
-            incrementalencoder=IncrementalEncoder,
-            incrementaldecoder=IncrementalDecoder,
-            streamwriter=StreamWriter,
-            streamreader=StreamReader,
+            incrementalencoder=incrementalencoder,
+            incrementaldecoder=incrementaldecoder,
+            streamwriter=streamwriter,
+            streamreader=streamreader,
             name=canonical,
         )
         _CODECS_CACHE[canonical] = info
