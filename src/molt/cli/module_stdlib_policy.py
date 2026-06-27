@@ -6,6 +6,10 @@ from pathlib import Path
 
 from molt._runtime_feature_gates import link_affecting_feature_gate_for_symbol
 from molt.cli.compiler_metadata import _compiler_root
+from molt.cli.config_resolution import (
+    DEFAULT_STDLIB_PROFILE,
+    MOLT_STDLIB_PROFILE_ENV,
+)
 from molt.cli import module_resolution as _module_resolution
 from molt.cli.output import fail as _fail
 from molt.cli.runtime_features import _runtime_builtin_features_for_profile
@@ -143,7 +147,7 @@ def _enforce_profile_feature_availability(
             target_triple=effective_triple,
         )
     )
-    profile_name = stdlib_profile or "micro"
+    profile_name = stdlib_profile or DEFAULT_STDLIB_PROFILE
     stdlib_root = stdlib_root.resolve()
 
     blocked: dict[str, dict[str, list[str]]] = {}
@@ -216,7 +220,7 @@ _CORE_STDLIB_MODULES_MICRO = (
 def _core_stdlib_module_names_for_profile(
     stdlib_profile: str | None,
 ) -> tuple[str, ...]:
-    if (stdlib_profile or "micro") == "micro":
+    if (stdlib_profile or DEFAULT_STDLIB_PROFILE) == "micro":
         return _CORE_STDLIB_MODULES_MICRO
     return _CORE_STDLIB_MODULES_FULL
 
@@ -224,9 +228,16 @@ def _core_stdlib_module_names_for_profile(
 def _ensure_core_stdlib_modules(
     module_graph: dict[str, Path], stdlib_root: Path
 ) -> None:
-    """Add the profile's unconditional core stdlib modules to the graph."""
+    """Add the profile's unconditional core stdlib modules to the graph.
+
+    The profile is read from ``MOLT_STDLIB_PROFILE``, which `build()` exports
+    from the value resolved by the single config authority
+    (`config_resolution.resolve_stdlib_profile`). Falling back to the same
+    `DEFAULT_STDLIB_PROFILE` constant that the staticlib selector uses keeps the
+    closure and the linked staticlib from disagreeing.
+    """
     core_modules = _core_stdlib_module_names_for_profile(
-        os.environ.get("MOLT_STDLIB_PROFILE", "micro")
+        os.environ.get(MOLT_STDLIB_PROFILE_ENV, DEFAULT_STDLIB_PROFILE)
     )
     for name in core_modules:
         path = _module_resolution._resolve_module_path(name, [stdlib_root])

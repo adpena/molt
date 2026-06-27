@@ -12,7 +12,7 @@ from molt.cli.backend_cache import (
     _module_symbol_name,
 )
 from molt.cli.cache_keys import _json_ir_default
-from molt.cli.config_resolution import ENTRY_OVERRIDE_ENV
+from molt.cli.config_resolution import DEFAULT_STDLIB_PROFILE, ENTRY_OVERRIDE_ENV
 from molt.cli.frontend_integration import _register_global_code_id_with_state
 from molt.cli.models import (
     FallbackPolicy,
@@ -736,13 +736,13 @@ def _reachability_feature_refusal(
     # features the linked archive actually provides on each target.
     profile_features = frozenset(
         _runtime_features._runtime_builtin_features_for_profile(
-            stdlib_profile or "micro",
+            stdlib_profile or DEFAULT_STDLIB_PROFILE,
             target_triple=target_triple,
         )
     )
     return _required_features.reachability_profile_feature_refusal(
         functions,
-        profile_name=stdlib_profile or "micro",
+        profile_name=stdlib_profile or DEFAULT_STDLIB_PROFILE,
         profile_features=profile_features,
     )
 
@@ -779,7 +779,7 @@ def _prepare_backend_ir(
     runtime_feedback_summary: Any | None,
     emit_ir_path: Path | None,
     target_python: TargetPythonVersion,
-    stdlib_profile: str | None = "micro",
+    stdlib_profile: str | None = DEFAULT_STDLIB_PROFILE,
     target: str = "native",
 ) -> tuple[_PreparedBackendIR | None, _CliFailure | None]:
     entry_path: Path | None = None

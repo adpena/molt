@@ -152,6 +152,8 @@ target, `backend` as the effective native backend fact lane, and
 
 Build and execute a Python program. Supports native, WASM (via the canonical Node host shim), Luau (via lune), and MLIR targets.
 
+`molt run` defaults to the fast `dev` profile while `molt build` defaults to the optimized `release` profile — the same convention as `cargo run` / `cargo build --release`. The verb does not lock the profile: pass `--profile dev|release` (or `--release`) to either command to override.
+
 ```bash
 molt run app.py                          # Build and run natively
 molt run app.py --release                # Optimized build and run

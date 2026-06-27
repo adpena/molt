@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from molt.dx import session_scoped_target_dir
+from molt.cli.config_resolution import DEFAULT_STDLIB_PROFILE
 from molt.cli import backend_ir as _backend_ir
 from molt.cli import backend_pipeline as _backend_pipeline
 from molt.cli import frontend_pipeline as _frontend_pipeline
@@ -104,7 +105,7 @@ def _run_build_pipeline(
     wasm_opt_level: str = "Oz",
     precompile: bool = False,
     snapshot: bool = False,
-    stdlib_profile: str | None = "micro",
+    stdlib_profile: str | None = DEFAULT_STDLIB_PROFILE,
     fact_graph_request: _factgraph.FactGraphRequest | None = None,
 ) -> int:
     prepared_frontend_run_ticket = prepared_frontend_pipeline_bundle[0]

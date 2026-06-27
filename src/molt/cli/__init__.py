@@ -77,6 +77,7 @@ from molt.cli.config_resolution import (
     _resolve_build_config,
     _resolve_capabilities_config,
     _resolve_command_config,
+    resolve_stdlib_profile,
 )
 from molt.cli.arg_helpers import (
     _BUILD_ESSENTIAL_FLAGS,
@@ -867,7 +868,7 @@ def build(
     precompile: bool = False,
     wasm_profile: str = "full",
     snapshot: bool = False,
-    stdlib_profile: str | None = "micro",
+    stdlib_profile: str | None = None,
     tree_shake: bool = True,
     lib_paths: list[str] | None = None,
     split_runtime: bool = False,
@@ -884,6 +885,21 @@ def build(
         profile = "release"
     if profile not in {"dev", "release"}:
         return _fail(f"Invalid build profile: {profile}", json_output, command="build")
+    # Resolve `stdlib_profile` through the ONE config authority. The CLI
+    # dispatcher already resolves it before calling `build()`, but direct
+    # library callers may pass `None`; resolving here (honoring the flag value,
+    # `MOLT_STDLIB_PROFILE`, the `[tool.molt.build]` config, and the single
+    # default) guarantees a concrete value that is both passed to the runtime
+    # build and re-exported to the env below, so the module-graph closure reader
+    # and the staticlib selector can never disagree.
+    stdlib_profile, _ = resolve_stdlib_profile(
+        flag=stdlib_profile,
+        build_cfg=(
+            _resolve_build_config(dict(build_config))
+            if build_config is not None
+            else None
+        ),
+    )
     env_updates: dict[str, str] = {}
     # --audit-log: propagate audit config via environment variables for the
     # build pipeline only. Several lower layers intentionally read os.environ as
@@ -907,10 +923,11 @@ def build(
     # so omitting the "full" case silently changes semantics.
     if target in {"wasm", "wasm-freestanding"} and wasm_profile:
         env_updates["MOLT_WASM_PROFILE"] = wasm_profile
-    # --stdlib-profile: propagate to module graph construction so that the
-    # micro profile can exclude heavy core modules from the dependency closure.
-    if stdlib_profile:
-        env_updates["MOLT_STDLIB_PROFILE"] = stdlib_profile
+    # --stdlib-profile: propagate the resolved profile to module-graph
+    # construction so the closure reader (`_ensure_core_stdlib_modules`) and the
+    # runtime-staticlib selector are derived from the same value. `stdlib_profile`
+    # is always concrete here (resolved above), so this export is unconditional.
+    env_updates["MOLT_STDLIB_PROFILE"] = stdlib_profile
     with _scoped_environ_updates(env_updates):
         if file_path and module:
             return _fail(
