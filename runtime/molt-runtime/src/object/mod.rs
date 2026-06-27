@@ -439,8 +439,9 @@ pub(crate) const NEWLINE_KIND_LF: u8 = 1;
 pub(crate) const NEWLINE_KIND_CR: u8 = 1 << 1;
 pub(crate) const NEWLINE_KIND_CRLF: u8 = 1 << 2;
 
-pub(crate) const HEADER_FLAG_HAS_PTRS: u32 = 1;
-pub(crate) const HEADER_FLAG_SKIP_CLASS_DECREF: u32 = 1 << 1;
+pub(crate) const HEADER_FLAG_HAS_PTRS: u32 = molt_codegen_abi::HEADER_FLAG_HAS_PTRS;
+pub(crate) const HEADER_FLAG_SKIP_CLASS_DECREF: u32 =
+    molt_codegen_abi::HEADER_FLAG_SKIP_CLASS_DECREF;
 pub(crate) const HEADER_FLAG_GEN_RUNNING: u32 = 1 << 2;
 pub(crate) const HEADER_FLAG_GEN_STARTED: u32 = 1 << 3;
 pub(crate) const HEADER_FLAG_SPAWN_RETAIN: u32 = 1 << 4;
@@ -456,7 +457,7 @@ pub(crate) const HEADER_FLAG_FUNC_TASK_TRAMPOLINE_KNOWN: u32 = 1 << 13;
 pub(crate) const HEADER_FLAG_FUNC_TASK_TRAMPOLINE_NEEDED: u32 = 1 << 14;
 // CPython-like "immortal" objects: refcount ops are skipped and the object is never freed.
 // Use this only for runtime singletons/cached builtin callables.
-pub(crate) const HEADER_FLAG_IMMORTAL: u32 = 1 << 15;
+pub(crate) const HEADER_FLAG_IMMORTAL: u32 = molt_codegen_abi::HEADER_FLAG_IMMORTAL;
 // Ensure __del__ runs at most once even if the object resurrects itself.
 pub(crate) const HEADER_FLAG_FINALIZER_RAN: u32 = 1 << 16;
 // String content is an ASCII identifier stored in the global intern pool.
@@ -469,7 +470,7 @@ pub(crate) const HEADER_FLAG_INSTANCE_HAS_FINALIZER: u32 = 1 << 18;
 /// Container (list, tuple, dict, set) has at least one element that is a heap
 /// pointer (TAG_PTR).  When this flag is clear, `dec_ref` cleanup can skip
 /// iterating over elements because they are all primitives (int/float/bool/None).
-pub(crate) const HEADER_FLAG_CONTAINS_REFS: u32 = 1 << 19;
+pub(crate) const HEADER_FLAG_CONTAINS_REFS: u32 = molt_codegen_abi::HEADER_FLAG_CONTAINS_REFS;
 
 /// Object was allocated via `molt_alloc` (raw allocation) — deallocation must
 /// use the raw-alloc path rather than type-specific destructors.
@@ -2209,7 +2210,9 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                 // IMMORTAL — already excluded above — and carries debug tracing);
                 // the matching closes below are the authoritative resurrection
                 // checks.
-                (*header_ptr).ref_count.fetch_add(1, AtomicOrdering::Relaxed);
+                (*header_ptr)
+                    .ref_count
+                    .fetch_add(1, AtomicOrdering::Relaxed);
                 // `__del__` runs INLINE at this rc→0 point, exactly as CPython
                 // finalizes at Py_DECREF→0 (prompt timing: `del x; print()` runs
                 // `__del__` before `print`), under a synthetic exception-handler

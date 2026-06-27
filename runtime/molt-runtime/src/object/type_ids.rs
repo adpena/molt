@@ -1,5 +1,5 @@
 pub(crate) const TYPE_ID_STRING: u32 = 200;
-pub(crate) const TYPE_ID_OBJECT: u32 = 100;
+pub(crate) const TYPE_ID_OBJECT: u32 = molt_codegen_abi::TYPE_ID_OBJECT;
 pub(crate) const TYPE_ID_LIST: u32 = 201;
 pub(crate) const TYPE_ID_BYTES: u32 = 202;
 pub(crate) const TYPE_ID_LIST_BUILDER: u32 = 203;
@@ -20,7 +20,7 @@ pub(crate) const TYPE_ID_CONTEXT_MANAGER: u32 = 217;
 pub(crate) const TYPE_ID_FILE_HANDLE: u32 = 218;
 pub(crate) const TYPE_ID_MEMORYVIEW: u32 = 219;
 pub(crate) const TYPE_ID_INTARRAY: u32 = 220;
-pub(crate) const TYPE_ID_FUNCTION: u32 = 221;
+pub(crate) const TYPE_ID_FUNCTION: u32 = molt_codegen_abi::TYPE_ID_FUNCTION;
 pub(crate) const TYPE_ID_BOUND_METHOD: u32 = 222;
 pub(crate) const TYPE_ID_MODULE: u32 = 223;
 pub(crate) const TYPE_ID_TYPE: u32 = 224;
@@ -123,7 +123,7 @@ pub(crate) const TYPE_ID_LIST_INT: u32 = 248;
 /// Specialized list of raw u8 bool values — 0 = False, 1 = True.
 /// 8x more cache-friendly than storing NaN-boxed bools in Vec<u64>.
 /// Created by `[True] * N` and `[False] * N` patterns.
-pub(crate) const TYPE_ID_LIST_BOOL: u32 = 250;
+pub(crate) const TYPE_ID_LIST_BOOL: u32 = molt_codegen_abi::TYPE_ID_LIST_BOOL;
 
 /// Heap-allocated float (used for NaN values to preserve identity semantics).
 /// Non-NaN floats remain inline in the NaN-box; only NaN requires heap allocation

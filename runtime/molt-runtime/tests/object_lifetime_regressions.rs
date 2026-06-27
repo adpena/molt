@@ -3,7 +3,7 @@ use molt_runtime::MoltHeader;
 use std::sync::Once;
 use std::sync::atomic::Ordering;
 
-const HEADER_FLAG_SKIP_CLASS_DECREF: u32 = 1 << 1;
+const HEADER_FLAG_SKIP_CLASS_DECREF: u32 = molt_codegen_abi::HEADER_FLAG_SKIP_CLASS_DECREF;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_isolate_bootstrap() -> u64 {

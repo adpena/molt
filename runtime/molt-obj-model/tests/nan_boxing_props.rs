@@ -5,15 +5,8 @@
 
 use proptest::prelude::*;
 
+use molt_codegen_abi::{CANONICAL_NAN_BITS, INT_MAX_INLINE, INT_MIN_INLINE, QNAN};
 use molt_lang_obj_model::MoltObject;
-
-/// The inline integer range is 47-bit signed: [-(2^46), 2^46 - 1].
-const INT_MIN_INLINE: i64 = -(1i64 << 46);
-const INT_MAX_INLINE: i64 = (1i64 << 46) - 1;
-
-/// The canonical NaN bit pattern produced by `MoltObject::from_float(NaN)`.
-/// Matches the crate-internal `CANONICAL_NAN_BITS`.
-const CANONICAL_NAN_BITS: u64 = 0x7ff0_0000_0000_0001;
 
 proptest! {
     // ------------------------------------------------------------------
@@ -177,7 +170,7 @@ proptest! {
     fn tagged_types_have_qnan_prefix(i in INT_MIN_INLINE..=INT_MAX_INLINE) {
         let int_v = MoltObject::from_int(i);
         // Upper bits must include QNAN
-        prop_assert_eq!(int_v.bits() & 0x7ff8_0000_0000_0000, 0x7ff8_0000_0000_0000);
+        prop_assert_eq!(int_v.bits() & QNAN, QNAN);
     }
 
     /// `from_bits(v.bits())` is identity for any constructed MoltObject.

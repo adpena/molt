@@ -10,14 +10,8 @@
 
 #[cfg(kani)]
 mod kani_proofs {
+    use molt_codegen_abi::{CANONICAL_NAN_BITS, INT_MAX_INLINE, INT_MIN_INLINE, QNAN};
     use molt_lang_obj_model::MoltObject;
-
-    // ---------------------------------------------------------------
-    // Constants (mirrors of crate-internal values for assertion)
-    // ---------------------------------------------------------------
-    const CANONICAL_NAN_BITS: u64 = 0x7ff0_0000_0000_0001;
-    const INT_MIN_INLINE: i64 = -(1i64 << 46);
-    const INT_MAX_INLINE: i64 = (1i64 << 46) - 1;
 
     // =================================================================
     // Float harnesses
@@ -104,7 +98,7 @@ mod kani_proofs {
         let i: i64 = kani::any();
         kani::assume(i >= INT_MIN_INLINE && i <= INT_MAX_INLINE);
         let obj = MoltObject::from_int(i);
-        assert_eq!(obj.bits() & 0x7ff8_0000_0000_0000, 0x7ff8_0000_0000_0000);
+        assert_eq!(obj.bits() & QNAN, QNAN);
     }
 
     // =================================================================
