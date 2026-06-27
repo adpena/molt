@@ -321,17 +321,17 @@ def test_enum_variant_extraction_handles_payloads():
     assert variants == {"Add", "Call", "Phi", "Const", "Last"}, variants
 
 
-def test_large_single_cohesive_region_is_not_structural_god_file(tmp_path: Path):
+def test_large_single_cohesive_region_is_not_kitchen_sink_file(tmp_path: Path):
     src = tmp_path / "runtime" / "molt-backend" / "src"
     src.mkdir(parents=True)
     (src / "cohesive.rs").write_text(_rust_impl("Cohesive", 420), encoding="utf-8")
 
-    findings = SA.probe_structural_god_files(tmp_path, ceiling=100)
+    findings = SA.probe_kitchen_sink_files(tmp_path, ceiling=100)
 
     assert findings == []
 
 
-def test_large_multi_region_rust_file_is_structural_god_file(tmp_path: Path):
+def test_large_multi_region_rust_file_is_kitchen_sink_file(tmp_path: Path):
     src = tmp_path / "runtime" / "molt-backend" / "src"
     src.mkdir(parents=True)
     (src / "mixed.rs").write_text(
@@ -345,16 +345,21 @@ def test_large_multi_region_rust_file_is_structural_god_file(tmp_path: Path):
         encoding="utf-8",
     )
 
-    findings = SA.probe_structural_god_files(tmp_path, ceiling=100)
+    findings = SA.probe_kitchen_sink_files(tmp_path, ceiling=100)
 
     assert len(findings) == 1
-    assert findings[0].probe == "structural_god_file"
+    assert findings[0].probe == "kitchen_sink_file"
     assert findings[0].location.endswith("mixed.rs")
     assert findings[0].metric >= 60
     assert "3 large top-level regions" in findings[0].title
 
+    undecomposed = SA.probe_undecomposed_god_files(tmp_path, ceiling=100)
+    assert len(undecomposed) == 1
+    assert undecomposed[0].probe == "undecomposed_god_file"
+    assert undecomposed[0].location.endswith("mixed.rs")
 
-def test_cfg_test_module_does_not_create_structural_god_file(tmp_path: Path):
+
+def test_cfg_test_module_does_not_create_kitchen_sink_file(tmp_path: Path):
     src = tmp_path / "runtime" / "molt-backend" / "src"
     src.mkdir(parents=True)
     tests_body = "\n".join("    // fixture line" for _ in range(420))
@@ -363,12 +368,12 @@ def test_cfg_test_module_does_not_create_structural_god_file(tmp_path: Path):
         encoding="utf-8",
     )
 
-    findings = SA.probe_structural_god_files(tmp_path, ceiling=100)
+    findings = SA.probe_kitchen_sink_files(tmp_path, ceiling=100)
 
     assert findings == []
 
 
-def test_python_module_regions_drive_structural_god_file(tmp_path: Path):
+def test_python_module_regions_drive_kitchen_sink_file(tmp_path: Path):
     pkg = tmp_path / "src" / "molt"
     pkg.mkdir(parents=True)
     (pkg / "mixed.py").write_text(
@@ -382,7 +387,7 @@ def test_python_module_regions_drive_structural_god_file(tmp_path: Path):
         encoding="utf-8",
     )
 
-    findings = SA.probe_structural_god_files(
+    findings = SA.probe_kitchen_sink_files(
         tmp_path,
         ceiling=100,
         py_ceiling=100,
@@ -394,7 +399,7 @@ def test_python_module_regions_drive_structural_god_file(tmp_path: Path):
     assert "3 large top-level regions" in findings[0].title
 
 
-def test_generated_large_file_is_not_structural_god_file(tmp_path: Path):
+def test_generated_large_file_is_not_kitchen_sink_file(tmp_path: Path):
     src = tmp_path / "runtime" / "molt-backend" / "src"
     src.mkdir(parents=True)
     (src / "generated.rs").write_text(
@@ -409,15 +414,15 @@ def test_generated_large_file_is_not_structural_god_file(tmp_path: Path):
         encoding="utf-8",
     )
 
-    findings = SA.probe_structural_god_files(tmp_path, ceiling=100)
+    findings = SA.probe_kitchen_sink_files(tmp_path, ceiling=100)
 
     assert findings == []
 
 
-def test_structural_god_metrics_are_ratchet_metrics():
+def test_kitchen_sink_metrics_are_ratchet_metrics():
     findings = [
         SA.Finding(
-            probe="structural_god_file",
+            probe="kitchen_sink_file",
             severity="medium",
             title="4 large top-level regions (900 excess lines)",
             location="runtime/example.rs",
@@ -429,9 +434,86 @@ def test_structural_god_metrics_are_ratchet_metrics():
 
     metrics = SA.ratchet_metrics(findings)
 
-    assert metrics["structural_god_files"] == 1
-    assert metrics["max_god_file_structural_score"] == 900
-    assert metrics["god_file_large_regions"] == 4
+    assert metrics["kitchen_sink_files"] == 1
+    assert metrics["max_kitchen_sink_structural_score"] == 900
+    assert metrics["kitchen_sink_large_regions"] == 4
+
+
+def test_cohesive_sibling_package_is_credited_not_ratcheted(tmp_path: Path):
+    src = tmp_path / "runtime" / "molt-backend" / "src" / "lowering"
+    src.mkdir(parents=True)
+    for idx in range(4):
+        (src / f"family_{idx}.rs").write_text(
+            _rust_fn(f"family_{idx}", 120),
+            encoding="utf-8",
+        )
+
+    large = SA.probe_large_source_files(tmp_path, ceiling=100)
+    kitchen = SA.probe_kitchen_sink_files(tmp_path, ceiling=100)
+    undecomposed = SA.probe_undecomposed_god_files(tmp_path, ceiling=100)
+    metrics = SA.ratchet_metrics(large + kitchen + undecomposed)
+
+    assert len(large) == 4
+    assert all("sibling-rich package" in finding.detail for finding in large)
+    assert kitchen == []
+    assert undecomposed == []
+    assert metrics["kitchen_sink_files"] == 0
+    assert metrics["undecomposed_god_files"] == 0
+    assert metrics["max_undecomposed_file_lines"] == 0
+
+
+def test_residual_with_decomposition_directory_is_reported_not_max_ratcheted(
+    tmp_path: Path,
+):
+    src = tmp_path / "runtime" / "molt-backend" / "src"
+    family = src / "lowering"
+    family.mkdir(parents=True)
+    (src / "lowering.rs").write_text(_rust_impl("Residual", 120), encoding="utf-8")
+    for idx in range(4):
+        (family / f"part_{idx}.rs").write_text(
+            _rust_fn(f"part_{idx}", 40),
+            encoding="utf-8",
+        )
+
+    large = SA.probe_large_source_files(tmp_path, ceiling=100)
+    undecomposed = SA.probe_undecomposed_god_files(tmp_path, ceiling=100)
+    metrics = SA.ratchet_metrics(large + undecomposed)
+
+    assert [finding.location for finding in large] == [
+        "runtime/molt-backend/src/lowering.rs"
+    ]
+    assert "decomposition directory `lowering/`" in large[0].detail
+    assert undecomposed == []
+    assert metrics["undecomposed_god_files"] == 0
+    assert metrics["max_undecomposed_file_lines"] == 0
+
+
+def test_honest_debt_union_covers_lone_large_files(tmp_path: Path):
+    src = tmp_path / "runtime" / "molt-backend" / "src"
+    src.mkdir(parents=True)
+    (src / "cohesive.rs").write_text(_rust_impl("Cohesive", 120), encoding="utf-8")
+    (src / "mixed.rs").write_text(
+        "\n".join(
+            [
+                _rust_impl("Alpha", 260),
+                _rust_fn("lower_alpha", 270),
+                _rust_fn("emit_alpha", 280),
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    large = SA.probe_large_source_files(tmp_path, ceiling=100)
+    kitchen = SA.probe_kitchen_sink_files(tmp_path, ceiling=100)
+    undecomposed = SA.probe_undecomposed_god_files(tmp_path, ceiling=100)
+
+    raw_lone = {
+        finding.location
+        for finding in large
+        if "no decomposition context detected" in finding.detail
+    }
+    honest_debt = {finding.location for finding in kitchen + undecomposed}
+    assert raw_lone <= honest_debt
 
 
 def test_native_scalar_plan_authority_ratchets_side_set_clones(tmp_path: Path):
