@@ -6,7 +6,6 @@ pub(super) fn is_preserved_callable_kind(kind: &str) -> bool {
         "builtin_func"
             | "func_new"
             | "func_new_closure"
-            | "call_async"
             | "code_new"
             | "code_slot_set"
             | "code_slots_init"
@@ -206,75 +205,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     self.values.insert(result_id, result);
                     self.value_types.insert(result_id, TirType::DynBox);
                 }
-                true
-            }
-            "call_async" => {
-                let Some(poll_func_name) = op.attrs.get("s_value").and_then(|v| match v {
-                    AttrValue::Str(s) => Some(s.as_str()),
-                    _ => None,
-                }) else {
-                    return false;
-                };
-                let Some(&result_id) = op.results.first() else {
-                    return false;
-                };
-                if poll_func_name == "molt_async_sleep" {
-                    if op.operands.len() > 2 {
-                        return false;
-                    }
-                    let delay_bits = op
-                        .operands
-                        .first()
-                        .map(|&id| self.materialize_dynbox_operand(id))
-                        .unwrap_or_else(|| {
-                            let zero: BasicValueEnum<'ctx> =
-                                self.backend.context.f64_type().const_float(0.0).into();
-                            self.materialize_dynbox_bits(zero, &TirType::F64)
-                        });
-                    let result_bits = op
-                        .operands
-                        .get(1)
-                        .map(|&id| self.materialize_dynbox_operand(id))
-                        .unwrap_or_else(|| {
-                            i64_ty.const_int(nanbox::QNAN | nanbox::TAG_NONE, false)
-                        });
-                    let sleep_fn = self.ensure_runtime_i64_fn("molt_async_sleep", 2);
-                    let result = self
-                        .backend
-                        .builder
-                        .build_call(
-                            sleep_fn,
-                            &[delay_bits.into(), result_bits.into()],
-                            "call_async_sleep",
-                        )
-                        .unwrap()
-                        .try_as_basic_value()
-                        .unwrap_basic();
-                    self.values.insert(result_id, result);
-                    self.value_types.insert(result_id, TirType::DynBox);
-                    return true;
-                }
-
-                let poll_fn = self.ensure_function_symbol(poll_func_name, 1, false);
-                let poll_addr = self
-                    .backend
-                    .builder
-                    .build_ptr_to_int(
-                        poll_fn.as_global_value().as_pointer_value(),
-                        i64_ty,
-                        "call_async_poll_ptr",
-                    )
-                    .unwrap();
-                let task_bits = self.emit_task_new_with_payload(
-                    poll_addr,
-                    (op.operands.len() * 8) as i64,
-                    crate::TASK_KIND_FUTURE,
-                    0,
-                    &op.operands,
-                    "call_async_task_new",
-                );
-                self.values.insert(result_id, task_bits);
-                self.value_types.insert(result_id, TirType::DynBox);
                 true
             }
             "code_new" => {
