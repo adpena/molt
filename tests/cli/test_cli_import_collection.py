@@ -2450,6 +2450,38 @@ def test_collect_imports_module_init_scan_skips_function_body_imports() -> None:
     assert "os" in module_init
 
 
+def test_collect_imports_prunes_type_checking_branches() -> None:
+    tree = ast.parse(
+        "TYPE_CHECKING = False\n"
+        "if TYPE_CHECKING:\n"
+        "    import typing\n"
+        "    import warnings\n"
+        "else:\n"
+        "    import os\n"
+    )
+
+    for mode in ("full", "module_init"):
+        imports = cli_module_import_scanner._collect_imports(
+            tree, import_scan_mode=cast(Any, mode)
+        )
+        assert "os" in imports
+        assert "typing" not in imports
+        assert "warnings" not in imports
+
+
+def test_molt_os_module_init_imports_do_not_pull_typing() -> None:
+    tree = ast.parse((ROOT / "src/molt/stdlib/os.py").read_text(encoding="utf-8"))
+
+    imports = cli_module_import_scanner._collect_imports(
+        tree,
+        module_name="os",
+        import_scan_mode="module_init",
+    )
+
+    assert "abc" in imports
+    assert "typing" not in imports
+
+
 def test_discover_with_core_modules_includes_asyncio_ssl_dependency(
     tmp_path: Path,
 ) -> None:

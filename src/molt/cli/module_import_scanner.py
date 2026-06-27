@@ -11,6 +11,7 @@ from molt.cli.target_python import (
     TargetPythonVersion,
     _DEFAULT_TARGET_PYTHON_VERSION,
 )
+from molt.compiler_analysis.static_truth import static_if_live_branch
 
 
 # Modules whose function-body imports are part of the required static module
@@ -210,7 +211,9 @@ def _resolve_relative_import(
     return base_name or None
 
 
-def _module_init_scan_nodes(tree: ast.AST) -> tuple[ast.AST, ...]:
+def _static_scan_nodes(
+    tree: ast.AST, *, include_function_bodies: bool
+) -> tuple[ast.AST, ...]:
     if not isinstance(tree, ast.Module):
         return tuple(ast.walk(tree))
     nodes: list[ast.AST] = []
@@ -239,12 +242,29 @@ def _module_init_scan_nodes(tree: ast.AST) -> tuple[ast.AST, ...]:
                 visit(node.returns)
             for type_param in getattr(node, "type_params", ()):
                 visit(type_param)
+            if include_function_bodies:
+                for stmt in node.body:
+                    visit(stmt)
             return
         if isinstance(node, ast.Lambda):
             for default in list(node.args.defaults) + [
                 default for default in node.args.kw_defaults if default is not None
             ]:
                 visit(default)
+            if include_function_bodies:
+                visit(node.body)
+            return
+        if isinstance(node, ast.If):
+            visit(node.test)
+            static_branch = static_if_live_branch(node)
+            if static_branch is not None:
+                for stmt in static_branch:
+                    visit(stmt)
+            else:
+                for stmt in node.body:
+                    visit(stmt)
+                for stmt in node.orelse:
+                    visit(stmt)
             return
         for child in ast.iter_child_nodes(node):
             visit(child)
@@ -252,6 +272,24 @@ def _module_init_scan_nodes(tree: ast.AST) -> tuple[ast.AST, ...]:
     for stmt in tree.body:
         visit(stmt)
     return tuple(nodes)
+
+
+def _module_init_scan_nodes(tree: ast.AST) -> tuple[ast.AST, ...]:
+    return _static_scan_nodes(tree, include_function_bodies=False)
+
+
+def _full_static_scan_nodes(tree: ast.AST) -> tuple[ast.AST, ...]:
+    return _static_scan_nodes(tree, include_function_bodies=True)
+
+
+def _scan_nodes_for_import_mode(
+    tree: ast.AST, import_scan_mode: ImportScanMode
+) -> tuple[ast.AST, ...]:
+    return (
+        _full_static_scan_nodes(tree)
+        if import_scan_mode == "full"
+        else _module_init_scan_nodes(tree)
+    )
 
 
 def _collect_imports(
@@ -785,6 +823,15 @@ def _collect_imports(
             for target in node.targets:
                 bindings.record_rebinding_target(target)
             return
+        if isinstance(node, ast.If):
+            _visit(node.test, bindings)
+            static_branch = static_if_live_branch(node)
+            if static_branch is not None:
+                _visit_many(static_branch, bindings)
+            else:
+                _visit_many(node.body, bindings)
+                _visit_many(node.orelse, bindings)
+            return
         if isinstance(node, ast.NamedExpr):
             _visit(node.value, bindings)
             _visit(node.target, bindings)
@@ -910,11 +957,7 @@ def _runtime_import_alias_bindings(
     import_scan_mode: ImportScanMode = "full",
 ) -> dict[str, str]:
     bindings: dict[str, str] = {}
-    scan_nodes = (
-        tuple(ast.walk(tree))
-        if import_scan_mode == "full"
-        else _module_init_scan_nodes(tree)
-    )
+    scan_nodes = _scan_nodes_for_import_mode(tree, import_scan_mode)
 
     def _register_binding(local_name: str, qualified_name: str) -> None:
         if local_name and qualified_name:
@@ -982,11 +1025,7 @@ def _tree_uses_runtime_import_protocol(
         is_package=is_package,
         import_scan_mode=import_scan_mode,
     )
-    scan_nodes = (
-        tuple(ast.walk(tree))
-        if import_scan_mode == "full"
-        else _module_init_scan_nodes(tree)
-    )
+    scan_nodes = _scan_nodes_for_import_mode(tree, import_scan_mode)
     for node in scan_nodes:
         if not isinstance(node, ast.Call):
             continue
@@ -1070,11 +1109,7 @@ def _collect_import_star_modules(
         spec_override,
         spec_override_is_package,
     ) = _infer_module_overrides(tree)
-    scan_nodes = (
-        tuple(ast.walk(tree))
-        if import_scan_mode == "full"
-        else _module_init_scan_nodes(tree)
-    )
+    scan_nodes = _scan_nodes_for_import_mode(tree, import_scan_mode)
     out: list[str] = []
     seen: set[str] = set()
     for node in scan_nodes:
@@ -1221,11 +1256,7 @@ def _module_uses_runtime_import_protocol(
             )
         except SyntaxError:
             return True
-    scan_nodes = (
-        tuple(ast.walk(tree))
-        if import_scan_mode == "full"
-        else _module_init_scan_nodes(tree)
-    )
+    scan_nodes = _scan_nodes_for_import_mode(tree, import_scan_mode)
     for node in scan_nodes:
         if isinstance(node, ast.Import):
             if any(alias.name != "_intrinsics" for alias in node.names):

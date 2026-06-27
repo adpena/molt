@@ -205,6 +205,25 @@ def test_committed_gate_manifest_selects_molt_ir_op_kind_registry(drv):
     assert "python3 tools/audit_op_kinds.py --check" in gates
 
 
+def test_committed_gate_manifest_selects_codec_table_registry(drv):
+    cfg = drv.GateConfig.load(COMMITTED_GATES)
+    gates, matched = cfg.select(["runtime/molt-runtime-text/src/codec_registry.rs"])
+
+    assert [r.name for r in matched] == ["codec-tables"]
+    assert "python3 tools/gen_codecs.py --check" in gates
+    assert "python3 -m pytest -q tests/test_gen_codecs.py" in gates
+
+    gates, matched = cfg.select(["src/molt/stdlib/encodings/cp1252.py"])
+    assert "codec-tables" in {r.name for r in matched}
+    assert "python3 tools/gen_codecs.py --check" in gates
+
+    gates, matched = cfg.select(
+        ["runtime/molt-runtime-text/src/codec_aliases_generated.rs"]
+    )
+    assert [r.name for r in matched] == ["codec-tables"]
+    assert "python3 tools/gen_codecs.py --check" in gates
+
+
 def test_committed_gate_manifest_selects_wasm_host_ratchet(drv):
     cfg = drv.GateConfig.load(COMMITTED_GATES)
     gates, matched = cfg.select(["runtime/molt-wasm-host/src/main.rs"])

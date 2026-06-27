@@ -4,7 +4,7 @@ use crate::object::ops::{
 };
 use crate::object::ops_encoding::DecodeFailure as OpsDecodeFailure;
 use crate::*;
-use molt_runtime_text::codec_registry::ENCODING_ALIASES;
+use molt_runtime_text::codec_registry::PYTHON_ENCODING_ALIASES;
 
 fn codec_arg_to_str(
     _py: &PyToken<'_>,
@@ -41,14 +41,13 @@ fn lookup_arg_to_str(_py: &PyToken<'_>, bits: u64) -> Option<String> {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_encodings_aliases_map() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let mut pairs = Vec::with_capacity(ENCODING_ALIASES.len() * 2);
-        for entry in ENCODING_ALIASES {
+        let mut pairs = Vec::with_capacity(PYTHON_ENCODING_ALIASES.len() * 2);
+        for entry in PYTHON_ENCODING_ALIASES {
             let alias_ptr = alloc_string(_py, entry.alias.as_bytes());
             if alias_ptr.is_null() {
                 return MoltObject::none().bits();
             }
-            let canonical = entry.kind.python_module_name();
-            let canonical_ptr = alloc_string(_py, canonical.as_bytes());
+            let canonical_ptr = alloc_string(_py, entry.module.as_bytes());
             if canonical_ptr.is_null() {
                 return MoltObject::none().bits();
             }

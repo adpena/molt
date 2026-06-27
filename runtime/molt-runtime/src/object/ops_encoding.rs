@@ -1,28 +1,14 @@
 //! String encoding and decoding — extracted from ops.rs for maintainability.
 
 use super::ops_string::{push_wtf8_codepoint, wtf8_from_bytes, wtf8_has_surrogates};
+use molt_runtime_text::charmap_codecs_generated::{
+    decode_single_byte_charmap_with_errors, encode_single_byte_charmap_byte, single_byte_charmap,
+};
+pub(crate) use molt_runtime_text::codec_errors::DecodeFailure;
 pub(crate) use molt_runtime_text::codec_registry::{
     CodecRuntimeClass, EncodingKind, normalize_encoding,
 };
-
-mod charmap_codecs;
-
-use charmap_codecs::{decode_single_byte_charmap_with_errors, encode_single_byte_charmap_byte};
-
-#[derive(Debug)]
-pub(crate) enum DecodeFailure {
-    Byte {
-        pos: usize,
-        byte: u8,
-        message: &'static str,
-    },
-    Range {
-        start: usize,
-        end: usize,
-        message: &'static str,
-    },
-    UnknownErrorHandler(String),
-}
+use molt_runtime_text::wtf8::push_backslash_bytes_vec;
 
 pub(crate) fn encoding_kind_name(kind: EncodingKind) -> &'static str {
     kind.name()
@@ -95,7 +81,7 @@ pub(crate) fn is_surrogate(code: u32) -> bool {
     (0xD800..=0xDFFF).contains(&code)
 }
 
-fn unicode_escape_codepoint(code: u32) -> String {
+pub(crate) fn unicode_escape_codepoint(code: u32) -> String {
     if code <= 0xFF {
         format!("\\x{code:02x}")
     } else if code <= 0xFFFF {
@@ -105,7 +91,7 @@ fn unicode_escape_codepoint(code: u32) -> String {
     }
 }
 
-fn unicode_name_escape(code: u32) -> String {
+pub(crate) fn unicode_name_escape(code: u32) -> String {
     #[cfg(feature = "stdlib_unicode_names")]
     if let Some(ch) = char::from_u32(code)
         && let Some(name) = unicode_names2::name(ch)
@@ -140,16 +126,6 @@ fn push_backslash_bytes(out: &mut String, bytes: &[u8]) {
     }
 }
 
-fn push_backslash_bytes_vec(out: &mut Vec<u8>, bytes: &[u8]) {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    for &byte in bytes {
-        out.push(b'\\');
-        out.push(b'x');
-        out.push(HEX[(byte >> 4) as usize]);
-        out.push(HEX[(byte & 0x0f) as usize]);
-    }
-}
-
 fn push_hex_escape(out: &mut Vec<u8>, prefix: u8, code: u32, width: usize) {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     out.push(b'\\');
@@ -180,7 +156,7 @@ fn xmlcharref_bytes(code: u32, buf: &mut [u8; 16]) -> &[u8] {
     &buf[..2 + digits_len + 1]
 }
 
-fn push_xmlcharref_ascii(out: &mut Vec<u8>, code: u32) {
+pub(crate) fn push_xmlcharref_ascii(out: &mut Vec<u8>, code: u32) {
     let mut buf = [0u8; 16];
     let bytes = xmlcharref_bytes(code, &mut buf);
     out.extend_from_slice(bytes);
@@ -235,6 +211,9 @@ pub(crate) fn encode_string_with_errors(
             }
         };
     let encode_charmap = |kind: EncodingKind| -> Result<Vec<u8>, EncodeError> {
+        let Some(table) = single_byte_charmap(kind) else {
+            unreachable!("single-byte charmap encoder called for non-charmap encoding");
+        };
         let mut out = Vec::new();
         for (idx, cp) in wtf8_from_bytes(bytes).code_points().enumerate() {
             let code = cp.to_u32();
@@ -242,7 +221,7 @@ pub(crate) fn encode_string_with_errors(
                 out.push(code as u8);
                 continue;
             }
-            if let Some(byte) = encode_single_byte_charmap_byte(kind, code) {
+            if let Some(byte) = encode_single_byte_charmap_byte(table, code) {
                 out.push(byte);
                 continue;
             }
