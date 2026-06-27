@@ -2,6 +2,7 @@ pub mod lir;
 pub mod lir_printer;
 pub mod lower_to_lir;
 pub mod mlir_compat;
+pub mod pipeline_cache;
 pub mod tests_roundtrip;
 pub mod verify_lir;
 pub mod verify_lir_repr;

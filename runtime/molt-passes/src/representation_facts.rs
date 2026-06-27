@@ -189,7 +189,7 @@ pub fn value_range_for(
 /// missed promotion is at worst a perf bail (a spurious-but-harmless DecRef on a
 /// value that turns out inline — the runtime `molt_dec_ref_obj` fast-paths
 /// non-pointer tags), never an unsound carrier.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-util"))]
 pub fn raw_i64_safe_values_for(
     tir_func: &TirFunction,
     vr: &crate::tir::passes::value_range::ValueRangeResult,

@@ -91,6 +91,16 @@ change the mechanics. Absorb all eight.
    *between* crate moves: S1 may start on a clean backend tree. (Coordinate only with the LLVM
    lane for S4/S7, per 21b -- verify no `llvm_backend/*` editor is active at S4 start.)
 
+9. **Per-function cached TIR optimization has ONE live authority.** `runtime/molt-tir/src/tir/pipeline_cache.rs`
+   owns SimpleIR->TIR cache keying, batching, warm-hit restoration, cold-miss optimization,
+   artifact encoding, LIR verification policy, and index persistence for both native and WASM.
+   Backends pass target policy plus optional pre-lowering hooks and consume optimized TIR custody;
+   they must not open `CompilationCache` directly for this pipeline. Native, LLVM, and WASM cache
+   flavors use explicit schema salts and include target kind, optimization profile, target-cost
+   fields, OS, OS family, architecture, pointer width, and endianness in the hash body before they
+   store serialized optimized `TirFunction`s. WASM LIR fast outputs are derived from final
+   surviving SimpleIR functions, not from a pre-final cached side channel.
+
 ### 0.1 Doctrine binding (the checklist this doc answers, per DESIGN_DOCTRINE.md)
 - **Killer retired:** the incremental-build killer (a TIR-pass edit rebuilding all 5 backends; a
   185K-line monolith CU). After S8: a TIR-pass edit recompiles `molt-passes` + relinks; a backend
