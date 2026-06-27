@@ -5,7 +5,7 @@ Owner: feature-gate / tree-shaking authority
 Scope: the gratuitous-heavy-import bug class, and its permanent structural cure.
 Companion facts (verified in-tree 2026-06-26):
 - Frontend gate: `src/molt/cli/module_stdlib_policy.py:130` (`_enforce_profile_feature_availability`)
-- Symbol→feature authority: `src/molt/_runtime_feature_gates.py:36` (`RUNTIME_FEATURE_GATES`), `:214` (`LINK_AFFECTING_FEATURES`)
+- Symbol-feature authority: `runtime/molt-runtime/src/intrinsics/categories.toml` owns prefix-to-feature attribution; `runtime/molt-runtime/Cargo.toml` plus cfg-gated runtime modules own link-affecting feature status; `src/molt/_runtime_feature_gates.py` is generated consumer data.
 - Drifted profile model: `src/molt/cli/runtime_features.py:104` (`_ALL_DOMAIN_FEATURES`), `:153` (`_runtime_builtin_features_for_profile`)
 - The reachability fact (already exists, wrong layer): `runtime/molt-tir/src/passes/intrinsics_manifest.rs:61` (`compute_intrinsic_manifest`)
 - Symbol-set authority + fail-closed: `runtime/molt-ir/src/intrinsic_symbols.rs:50` (`runtime_intrinsic_symbols_required`)
@@ -209,7 +209,7 @@ This reuses, unchanged:
 - `compute_intrinsic_manifest` (the reachability closure) —
   `intrinsics_manifest.rs:61`.
 - `link_affecting_feature_gate_for_symbol` (symbol→link-affecting-feature) —
-  `_runtime_feature_gates.py:242`. This is already the exact "does dropping this
+  generated `_runtime_feature_gates.py`. This is the exact "does dropping this
   feature remove the symbol definition" predicate, so it is the correct
   section/no-section classifier. Resolver-only features (`stdlib_logging` etc.)
   correctly contribute nothing (their symbols are always defined), exactly as
@@ -308,7 +308,8 @@ Some structural facts pull intrinsics that **no `const_str` in the reaching
 module shows**, because the dependency is encoded in the runtime, not the Python
 source. The canonical example is already special-cased in prose but not in one
 table: **`asyncio` imports `ssl` eagerly even on micro**, and SSL keeps a
-deliberately always-linkable ABI (`_runtime_feature_gates.py:121-123`). Other
+deliberately always-linkable ABI (no link-affecting gate in generated
+`src/molt/_runtime_feature_gates.py`). Other
 candidates: a runtime-bootstrap intrinsic that the codegen emits implicitly; a
 domain whose intrinsic A always transitively needs intrinsic B at runtime.
 
@@ -727,9 +728,9 @@ Unchanged (correct as-is, gains an authoritative upstream):
 - `runtime/molt-backend/.../app_resolver.rs` (the per-app resolver / dead-strip).
 - `runtime/molt-runtime/src/intrinsics/registry.rs` (the resolver registration).
 - `runtime/molt-runtime/Cargo.toml` feature *groups* (sections are correct).
-- `src/molt/_runtime_feature_gates.py` `RUNTIME_FEATURE_GATES` /
-  `LINK_AFFECTING_FEATURES` (the symbol→section map remains the authority the
-  new fact feeds through).
+- `src/molt/_runtime_feature_gates.py` generated `RUNTIME_FEATURE_GATES` /
+  `LINK_AFFECTING_FEATURES` consumer data, emitted from categories.toml plus
+  Cargo.toml/cfg-gated module facts.
 
 ---
 

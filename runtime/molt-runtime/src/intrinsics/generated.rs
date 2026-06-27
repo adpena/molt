@@ -921,12 +921,6 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         defaults: &[],
     },
     IntrinsicSpec {
-        name: "molt_argparse_parse",
-        symbol: "molt_argparse_parse",
-        arity: 2,
-        defaults: &[],
-    },
-    IntrinsicSpec {
         name: "molt_enum_init_member",
         symbol: "molt_enum_init_member",
         arity: 3,

@@ -66,6 +66,22 @@ prefixes = [
 
 [stdlib.math]
 prefixes = ["math_"]
+feature = "stdlib_math"
+[stdlib.cmath]
+prefixes = ["cmath_"]
+feature = "stdlib_math"
+[stdlib.colorsys]
+prefixes = ["colorsys_"]
+feature = "stdlib_math"
+[stdlib.fractions]
+prefixes = ["fraction_"]
+feature = "stdlib_math"
+[stdlib.random]
+prefixes = ["random_"]
+feature = "stdlib_math"
+[stdlib.statistics]
+prefixes = ["statistics_"]
+feature = "stdlib_math"
 [stdlib.json]
 prefixes = ["json_"]
 [stdlib.time]
@@ -76,12 +92,29 @@ prefixes = ["os_"]
 prefixes = ["socket_"]
 [stdlib.struct]
 prefixes = ["struct_"]
+feature = "stdlib_serial"
 [stdlib.csv]
 prefixes = ["csv_"]
+feature = "stdlib_csv"
 [stdlib.threading]
 prefixes = ["thread_"]
 [stdlib.asyncio]
-prefixes = ["asyncio_", "async_sleep"]
+prefixes = ["asyncio_", "async_sleep", "event_loop_", "pipe_transport_"]
+feature = "stdlib_asyncio"
+feature_prefixes = ["asyncio_", "event_loop_", "pipe_transport_"]
+[stdlib.argparse]
+prefixes = ["argparse_"]
+feature = "stdlib_collections"
+[stdlib.collections]
+prefixes = [
+    "namedtuple_",
+    "ordereddict_",
+    "defaultdict_",
+    "deque_",
+    "counter_",
+    "chainmap_",
+]
+feature = "stdlib_collections"
 [stdlib.subprocess]
 prefixes = ["process_"]
 [stdlib.io]
@@ -90,12 +123,15 @@ prefixes = ["stream_", "file_", "io_wait"]
 prefixes = ["ws_"]
 [stdlib.importlib]
 prefixes = ["importlib_"]
+feature = "stdlib_importlib_extra"
+feature_prefixes = ["importlib_resources_", "importlib_metadata_"]
 [stdlib.bytes]
 prefixes = ["bytes_", "bytearray_"]
 [stdlib.string]
 prefixes = ["string_"]
 [stdlib.stringprep]
 prefixes = ["stringprep_"]
+feature = "stdlib_stringprep"
 [stdlib.buffer]
 prefixes = ["buffer2d_"]
 [stdlib.weakref]
@@ -108,3 +144,161 @@ prefixes = ["cancel_token_", "cancel_current", "cancelled"]
 prefixes = ["lock_"]
 [stdlib.sqlite]
 prefixes = ["sqlite_", "sqlite3_", "db_"]
+feature = "sqlite"
+feature_prefixes = ["sqlite3_"]
+[stdlib.crypto]
+prefixes = [
+    "hash_",
+    "hmac_",
+    "compare_digest",
+    "pbkdf2_",
+    "scrypt",
+    "secrets_",
+]
+feature = "stdlib_crypto"
+[stdlib.compression]
+prefixes = [
+    "bz2_",
+    "lzma_",
+    "deflate_",
+    "inflate_",
+    "gzip_",
+    "tarfile_",
+    "zlib_",
+    "compression_streams_",
+]
+feature = "stdlib_compression"
+[stdlib.serialization]
+prefixes = ["cbor_", "msgpack_"]
+feature = "stdlib_serialization"
+[stdlib.base64]
+prefixes = ["base64_"]
+feature = "stdlib_serial"
+[stdlib.binascii]
+prefixes = ["binascii_"]
+feature = "stdlib_serial"
+[stdlib.configparser]
+prefixes = ["configparser_"]
+feature = "stdlib_serial"
+[stdlib.datetime]
+prefixes = ["datetime_", "date_", "timedelta_", "timezone_"]
+feature = "stdlib_serial"
+[stdlib.uu]
+prefixes = ["uu_codec"]
+feature = "stdlib_serial"
+[stdlib.difflib]
+prefixes = ["difflib_"]
+feature = "stdlib_difflib"
+[stdlib.xml_etree]
+prefixes = ["xml_"]
+feature = "stdlib_xml"
+[stdlib.xml_sax]
+prefixes = ["xml_sax_"]
+feature = "stdlib_xml"
+[stdlib.ast]
+prefixes = ["ast_"]
+feature = "stdlib_ast"
+[stdlib.glob]
+prefixes = ["glob_"]
+feature = "stdlib_fs_extra"
+feature_prefixes = ["glob_glob", "glob_iglob", "glob_pattern"]
+[stdlib.tempfile]
+prefixes = ["tempfile_"]
+feature = "stdlib_fs_extra"
+[stdlib.archive]
+prefixes = ["zipfile_"]
+feature = "stdlib_archive"
+[stdlib.imghdr]
+prefixes = ["imghdr_"]
+feature = "stdlib_archive"
+[stdlib.tk]
+prefixes = ["tk_"]
+feature = "stdlib_tk"
+[stdlib.html]
+prefixes = ["html_"]
+feature = "stdlib_text"
+[stdlib.unicodedata]
+prefixes = ["unicodedata_"]
+feature = "stdlib_text"
+[stdlib.zoneinfo]
+prefixes = ["zoneinfo_"]
+feature = "stdlib_zoneinfo"
+[stdlib.ctypes]
+prefixes = ["ctypes_"]
+feature = "stdlib_http"
+[stdlib.http]
+prefixes = ["http_"]
+feature = "stdlib_http"
+[stdlib.socketserver]
+prefixes = ["socketserver_"]
+feature = "stdlib_http"
+[stdlib.urllib]
+prefixes = ["urllib_"]
+feature = "stdlib_http"
+[stdlib.re]
+prefixes = ["re_"]
+feature = "stdlib_regex"
+feature_prefixes = [
+    "re_finditer_collect",
+    "re_fullmatch_check",
+    "re_match_groupdict",
+    "re_match_groups",
+    "re_match_group",
+    "re_named_backref_advance",
+    "re_negative_",
+    "re_pattern_info",
+    "re_positive_",
+    "re_strip_verbose",
+    "re_sub_callable",
+    "re_compile",
+    "re_execute",
+    "re_escape",
+    "re_split",
+    "re_sub",
+]
+[stdlib.ipaddress]
+prefixes = ["ipaddress_"]
+feature = "stdlib_ipaddress"
+[stdlib.email]
+prefixes = ["email_"]
+feature = "stdlib_email"
+[stdlib.quopri]
+prefixes = ["quopri_"]
+feature = "stdlib_email"
+[stdlib.decimal]
+prefixes = ["decimal_"]
+feature = "stdlib_decimal"
+[stdlib.logging]
+prefixes = ["logging_"]
+feature = "stdlib_logging"
+[stdlib.logging_ext]
+prefixes = [
+    "logging_record_",
+    "logging_formatter_",
+    "logging_handler_",
+    "logging_stream_handler_",
+    "logging_logger_",
+    "logging_manager_",
+    "logging_root_logger",
+    "logging_basic_config",
+    "logging_shutdown",
+    "logging_get_level_name",
+    "logging_add_level_name",
+    "logging_level_to_int",
+]
+feature = "stdlib_logging_ext"
+[stdlib.concurrent]
+prefixes = ["concurrent_"]
+feature = "stdlib_concurrent"
+[stdlib.dbm]
+prefixes = ["dbm_"]
+feature = "stdlib_dbm"
+[stdlib.signal]
+prefixes = ["signal_"]
+feature = "stdlib_signal"
+[stdlib.select]
+prefixes = ["select_"]
+feature = "stdlib_select"
+[stdlib.gpu_primitives]
+prefixes = ["gpu_prim_"]
+feature = "molt_gpu_primitives"
