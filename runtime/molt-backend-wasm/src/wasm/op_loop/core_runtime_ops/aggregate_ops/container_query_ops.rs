@@ -1,5 +1,6 @@
+use super::super::super::result_sink::store_result_or_drop;
 use super::super::super::*;
-use super::{AggregateRuntimeContext, store_or_drop_result};
+use super::AggregateRuntimeContext;
 
 pub(super) fn emit_container_query_op(
     func: &mut Function,
@@ -23,7 +24,7 @@ pub(super) fn emit_container_query_op(
             let import_id =
                 selected_import_id(import_ids, import_key, &ctx.func_ir.name, op.kind.as_str());
             emit_call(func, reloc_enabled, import_id);
-            store_or_drop_result(func, op, locals);
+            store_result_or_drop(func, op, locals);
         }
         "len" => {
             let args = op.args.as_ref().unwrap();
@@ -37,7 +38,7 @@ pub(super) fn emit_container_query_op(
             let import_id =
                 selected_import_id(import_ids, import_key, &ctx.func_ir.name, op.kind.as_str());
             emit_call(func, reloc_enabled, import_id);
-            store_or_drop_result(func, op, locals);
+            store_result_or_drop(func, op, locals);
         }
         _ => return false,
     }

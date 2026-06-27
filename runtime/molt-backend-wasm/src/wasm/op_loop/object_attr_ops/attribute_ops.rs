@@ -1,5 +1,5 @@
+use super::super::result_sink::store_result_or_drop;
 use super::super::*;
-use super::store_or_drop_result;
 
 pub(super) fn emit_attribute_op(
     backend: &mut WasmBackend,
@@ -25,7 +25,7 @@ pub(super) fn emit_attribute_op(
             func.instruction(&Instruction::I32WrapI64);
             func.instruction(&Instruction::I64Const(bytes.len() as i64));
             emit_call(func, reloc_enabled, import_ids["get_attr_ptr"]);
-            store_or_drop_result(func, op, locals);
+            store_result_or_drop(func, op, locals);
         }
         "get_attr_generic_obj" => {
             let args = op.args.as_ref().unwrap();
@@ -44,7 +44,7 @@ pub(super) fn emit_attribute_op(
             func.instruction(&Instruction::I64Const(bytes.len() as i64));
             func.instruction(&Instruction::I64Const(site_bits));
             emit_call(func, reloc_enabled, import_ids["get_attr_object_ic"]);
-            store_or_drop_result(func, op, locals);
+            store_result_or_drop(func, op, locals);
         }
         "get_attr_special_obj" => {
             let args = op.args.as_ref().unwrap();
@@ -57,7 +57,7 @@ pub(super) fn emit_attribute_op(
             func.instruction(&Instruction::I32WrapI64);
             func.instruction(&Instruction::I64Const(bytes.len() as i64));
             emit_call(func, reloc_enabled, import_ids["get_attr_special"]);
-            store_or_drop_result(func, op, locals);
+            store_result_or_drop(func, op, locals);
         }
         "set_attr_generic_ptr" => {
             // The `_generic_ptr` SETATTR form can target a tagged
@@ -82,7 +82,7 @@ pub(super) fn emit_attribute_op(
             func.instruction(&Instruction::I64Const(bytes.len() as i64));
             func.instruction(&Instruction::LocalGet(val));
             emit_call(func, reloc_enabled, import_ids["set_attr_object"]);
-            store_or_drop_result(func, op, locals);
+            store_result_or_drop(func, op, locals);
         }
         "set_attr_generic_obj" => {
             let args = op.args.as_ref().unwrap();
@@ -107,7 +107,7 @@ pub(super) fn emit_attribute_op(
             func.instruction(&Instruction::I64Const(bytes.len() as i64));
             func.instruction(&Instruction::LocalGet(val));
             emit_call(func, reloc_enabled, import_ids["set_attr_object"]);
-            store_or_drop_result(func, op, locals);
+            store_result_or_drop(func, op, locals);
         }
         "del_attr_generic_ptr" => {
             // Mirror the `set_attr_generic_ptr` fix: a tagged
@@ -125,7 +125,7 @@ pub(super) fn emit_attribute_op(
             func.instruction(&Instruction::I32WrapI64);
             func.instruction(&Instruction::I64Const(bytes.len() as i64));
             emit_call(func, reloc_enabled, import_ids["del_attr_object"]);
-            store_or_drop_result(func, op, locals);
+            store_result_or_drop(func, op, locals);
         }
         "del_attr_generic_obj" => {
             let args = op.args.as_ref().unwrap();
@@ -138,7 +138,7 @@ pub(super) fn emit_attribute_op(
             func.instruction(&Instruction::I32WrapI64);
             func.instruction(&Instruction::I64Const(bytes.len() as i64));
             emit_call(func, reloc_enabled, import_ids["del_attr_object"]);
-            store_or_drop_result(func, op, locals);
+            store_result_or_drop(func, op, locals);
         }
         "get_attr_name" => {
             let args = op.args.as_ref().unwrap();
@@ -147,7 +147,7 @@ pub(super) fn emit_attribute_op(
             func.instruction(&Instruction::LocalGet(obj));
             func.instruction(&Instruction::LocalGet(name));
             emit_call(func, reloc_enabled, import_ids["get_attr_name"]);
-            store_or_drop_result(func, op, locals);
+            store_result_or_drop(func, op, locals);
         }
         "get_attr_name_default" => {
             let args = op.args.as_ref().unwrap();
@@ -158,7 +158,7 @@ pub(super) fn emit_attribute_op(
             func.instruction(&Instruction::LocalGet(name));
             func.instruction(&Instruction::LocalGet(default_val));
             emit_call(func, reloc_enabled, import_ids["get_attr_name_default"]);
-            store_or_drop_result(func, op, locals);
+            store_result_or_drop(func, op, locals);
         }
         "has_attr_name" => {
             let args = op.args.as_ref().unwrap();
@@ -167,7 +167,7 @@ pub(super) fn emit_attribute_op(
             func.instruction(&Instruction::LocalGet(obj));
             func.instruction(&Instruction::LocalGet(name));
             emit_call(func, reloc_enabled, import_ids["has_attr_name"]);
-            store_or_drop_result(func, op, locals);
+            store_result_or_drop(func, op, locals);
         }
         "set_attr_name" => {
             let args = op.args.as_ref().unwrap();
@@ -178,7 +178,7 @@ pub(super) fn emit_attribute_op(
             func.instruction(&Instruction::LocalGet(name));
             func.instruction(&Instruction::LocalGet(val));
             emit_call(func, reloc_enabled, import_ids["set_attr_name"]);
-            store_or_drop_result(func, op, locals);
+            store_result_or_drop(func, op, locals);
         }
         "del_attr_name" => {
             let args = op.args.as_ref().unwrap();
@@ -187,7 +187,7 @@ pub(super) fn emit_attribute_op(
             func.instruction(&Instruction::LocalGet(obj));
             func.instruction(&Instruction::LocalGet(name));
             emit_call(func, reloc_enabled, import_ids["del_attr_name"]);
-            store_or_drop_result(func, op, locals);
+            store_result_or_drop(func, op, locals);
         }
         _ => return false,
     }

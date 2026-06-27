@@ -1,7 +1,7 @@
 use super::super::super::class_def_layout::ClassDefLayout;
 use super::super::super::context::CompileFuncContext;
+use super::super::result_sink::{store_non_none_result_or_drop, store_result_or_drop};
 use super::super::*;
-use super::{store_or_drop_non_none_result, store_or_drop_result};
 
 pub(super) fn emit_class_object_op(
     func: &mut Function,
@@ -17,7 +17,7 @@ pub(super) fn emit_class_object_op(
             let name = locals[&args[0]];
             func.instruction(&Instruction::LocalGet(name));
             emit_call(func, reloc_enabled, import_ids["class_new"]);
-            store_or_drop_result(func, op, locals);
+            store_result_or_drop(func, op, locals);
         }
         "class_def" => {
             let args = op.args.as_ref().unwrap();
@@ -82,7 +82,7 @@ pub(super) fn emit_class_object_op(
             func.instruction(&Instruction::I64Const(layout.layout_version()));
             func.instruction(&Instruction::I64Const(layout.flags()));
             emit_call(func, reloc_enabled, import_ids["guarded_class_def"]);
-            store_or_drop_result(func, op, locals);
+            store_result_or_drop(func, op, locals);
             for arg_name in args.iter().rev() {
                 let arg = locals[arg_name];
                 func.instruction(&Instruction::LocalGet(arg));
@@ -96,14 +96,14 @@ pub(super) fn emit_class_object_op(
             func.instruction(&Instruction::LocalGet(class_bits));
             func.instruction(&Instruction::LocalGet(base_bits));
             emit_call(func, reloc_enabled, import_ids["class_set_base"]);
-            store_or_drop_result(func, op, locals);
+            store_result_or_drop(func, op, locals);
         }
         "class_apply_set_name" => {
             let args = op.args.as_ref().unwrap();
             let class_bits = locals[&args[0]];
             func.instruction(&Instruction::LocalGet(class_bits));
             emit_call(func, reloc_enabled, import_ids["class_apply_set_name"]);
-            store_or_drop_result(func, op, locals);
+            store_result_or_drop(func, op, locals);
         }
         "super_new" => {
             let args = op.args.as_ref().unwrap();
@@ -112,28 +112,28 @@ pub(super) fn emit_class_object_op(
             func.instruction(&Instruction::LocalGet(type_bits));
             func.instruction(&Instruction::LocalGet(obj_bits));
             emit_call(func, reloc_enabled, import_ids["super_new"]);
-            store_or_drop_result(func, op, locals);
+            store_result_or_drop(func, op, locals);
         }
         "builtin_type" => {
             let args = op.args.as_ref().unwrap();
             let tag = locals[&args[0]];
             func.instruction(&Instruction::LocalGet(tag));
             emit_call(func, reloc_enabled, import_ids["builtin_type"]);
-            store_or_drop_result(func, op, locals);
+            store_result_or_drop(func, op, locals);
         }
         "type_of" => {
             let args = op.args.as_ref().unwrap();
             let obj = locals[&args[0]];
             func.instruction(&Instruction::LocalGet(obj));
             emit_call(func, reloc_enabled, import_ids["type_of"]);
-            store_or_drop_result(func, op, locals);
+            store_result_or_drop(func, op, locals);
         }
         "class_layout_version" => {
             let args = op.args.as_ref().unwrap();
             let class_bits = locals[&args[0]];
             func.instruction(&Instruction::LocalGet(class_bits));
             emit_call(func, reloc_enabled, import_ids["class_layout_version"]);
-            store_or_drop_result(func, op, locals);
+            store_result_or_drop(func, op, locals);
         }
         "class_set_layout_version" => {
             let args = op.args.as_ref().unwrap();
@@ -142,7 +142,7 @@ pub(super) fn emit_class_object_op(
             func.instruction(&Instruction::LocalGet(class_bits));
             func.instruction(&Instruction::LocalGet(version_bits));
             emit_call(func, reloc_enabled, import_ids["class_set_layout_version"]);
-            store_or_drop_non_none_result(func, op, locals);
+            store_non_none_result_or_drop(func, op, locals);
         }
         "class_merge_layout" => {
             let args = op.args.as_ref().unwrap();
@@ -153,7 +153,7 @@ pub(super) fn emit_class_object_op(
             func.instruction(&Instruction::LocalGet(offsets_bits));
             func.instruction(&Instruction::LocalGet(size_bits));
             emit_call(func, reloc_enabled, import_ids["class_merge_layout"]);
-            store_or_drop_non_none_result(func, op, locals);
+            store_non_none_result_or_drop(func, op, locals);
         }
         "isinstance" => {
             let args = op.args.as_ref().unwrap();
@@ -162,7 +162,7 @@ pub(super) fn emit_class_object_op(
             func.instruction(&Instruction::LocalGet(obj));
             func.instruction(&Instruction::LocalGet(cls));
             emit_call(func, reloc_enabled, import_ids["isinstance"]);
-            store_or_drop_result(func, op, locals);
+            store_result_or_drop(func, op, locals);
         }
         "exception_match_builtin" => {
             let args = op.args.as_ref().unwrap();
@@ -171,7 +171,7 @@ pub(super) fn emit_class_object_op(
             func.instruction(&Instruction::LocalGet(exc));
             func.instruction(&Instruction::I64Const(tag));
             emit_call(func, reloc_enabled, import_ids["exception_match_builtin"]);
-            store_or_drop_result(func, op, locals);
+            store_result_or_drop(func, op, locals);
         }
         "issubclass" => {
             let args = op.args.as_ref().unwrap();
@@ -180,11 +180,11 @@ pub(super) fn emit_class_object_op(
             func.instruction(&Instruction::LocalGet(sub));
             func.instruction(&Instruction::LocalGet(cls));
             emit_call(func, reloc_enabled, import_ids["issubclass"]);
-            store_or_drop_result(func, op, locals);
+            store_result_or_drop(func, op, locals);
         }
         "object_new" => {
             emit_call(func, reloc_enabled, import_ids["object_new"]);
-            store_or_drop_result(func, op, locals);
+            store_result_or_drop(func, op, locals);
         }
         "object_new_bound" => {
             let args = op
@@ -199,7 +199,7 @@ pub(super) fn emit_class_object_op(
             } else {
                 emit_call(func, reloc_enabled, import_ids["object_new_bound"]);
             }
-            store_or_drop_result(func, op, locals);
+            store_result_or_drop(func, op, locals);
         }
         "object_new_bound_stack" => {
             let args = op
@@ -214,7 +214,7 @@ pub(super) fn emit_class_object_op(
             func.instruction(&Instruction::LocalGet(class_bits));
             func.instruction(&Instruction::I64Const(payload_size));
             emit_call(func, reloc_enabled, import_ids["object_new_bound_sized"]);
-            store_or_drop_result(func, op, locals);
+            store_result_or_drop(func, op, locals);
         }
         "object_set_class" => {
             let args = op.args.as_ref().unwrap();
@@ -224,7 +224,7 @@ pub(super) fn emit_class_object_op(
             emit_call(func, reloc_enabled, import_ids["handle_resolve"]);
             func.instruction(&Instruction::LocalGet(class_obj));
             emit_call(func, reloc_enabled, import_ids["object_set_class"]);
-            store_or_drop_result(func, op, locals);
+            store_result_or_drop(func, op, locals);
         }
         _ => return false,
     }
