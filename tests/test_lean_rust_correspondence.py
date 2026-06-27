@@ -10,12 +10,16 @@ Run:
 
 from __future__ import annotations
 
-import re
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+from tools.correspondence_sources import (
+    parse_lean_hex_constants,
+    parse_lean_inductive_variants,
+    parse_rust_unsigned_constants,
+)
 from tests.process_guard_common import run_guarded_test_process
 
 
@@ -45,7 +49,7 @@ if str(SRC) not in sys.path:
 from molt.frontend.lowering.op_kinds_generated import FRONTEND_EFFECT_CLASS  # noqa: E402
 
 
-# ── Parsing helpers ──────────────────────────────────────────────────
+# Parsing helpers
 
 
 def _read(path: Path) -> str:
@@ -55,105 +59,8 @@ def _read(path: Path) -> str:
     return ""
 
 
-def _parse_lean_hex_constants(text: str) -> dict[str, int]:
-    """Extract `def NAME : UInt64 := 0x...` definitions from Lean."""
-    result: dict[str, int] = {}
-    for m in re.finditer(r"def\s+(\w+)\s*:\s*UInt64\s*:=\s*(0x[0-9a-fA-F_]+)", text):
-        result[m.group(1)] = int(m.group(2).replace("_", ""), 16)
-    return result
 
-
-def _parse_rust_u64_constants(text: str) -> dict[str, int]:
-    """Extract unsigned integer Rust constants, resolving simple expressions."""
-    raw: dict[str, str] = {}
-    for m in re.finditer(r"(?:pub\s+)?const\s+(\w+):\s*u(?:32|64)\s*=\s*(.+?);", text):
-        raw[m.group(1)] = m.group(2).strip()
-
-    resolved: dict[str, int] = {}
-    for name, expr in raw.items():
-        resolved[name] = _resolve_rust_expr(expr, raw)
-    return resolved
-
-
-def _resolve_rust_expr(expr: str, raw_consts: dict[str, str]) -> int:
-    """Resolve a Rust constant expression to an integer value."""
-    expr = expr.strip()
-    cast = re.match(r"^(\w+)\s+as\s+u(?:32|64)$", expr)
-    if cast:
-        expr = cast.group(1)
-
-    # Simple hex literal: 0x7ff8_0000_0000_0000
-    if re.match(r"^0x[0-9a-fA-F_]+$", expr):
-        return int(expr.replace("_", ""), 16)
-
-    # Simple decimal literal
-    if expr.isdigit():
-        return int(expr)
-    if re.match(r"^\w+$", expr) and expr in raw_consts:
-        return _resolve_rust_expr(raw_consts[expr], raw_consts)
-
-    # Shift: 1 << 46, 1u64 << VAR, or 1u64 << (VAR - N)
-    m = re.fullmatch(r"1(?:u64)?\s*<<\s*(.+)", expr)
-    if m:
-        return 1 << _resolve_rust_shift_width(m.group(1), raw_consts)
-
-    # (1u64 << VAR) - 1
-    m = re.fullmatch(r"\(1u64\s*<<\s*(.+)\)\s*-\s*1", expr)
-    if m:
-        return (1 << _resolve_rust_shift_width(m.group(1), raw_consts)) - 1
-
-    raise ValueError(f"Cannot parse Rust constant expression: {expr}")
-
-
-def _resolve_rust_shift_width(expr: str, raw_consts: dict[str, str]) -> int:
-    expr = expr.strip()
-    if expr.startswith("(") and expr.endswith(")"):
-        expr = expr[1:-1].strip()
-    m = re.fullmatch(r"(\w+)(?:\s*-\s*(\d+))?", expr)
-    if not m:
-        raise ValueError(f"Cannot parse shift width: {expr}")
-
-    base, decrement = m.group(1), m.group(2)
-    if base.isdigit():
-        width = int(base)
-    elif base in raw_consts:
-        width = _resolve_rust_expr(raw_consts[base], raw_consts)
-    else:
-        raise ValueError(f"Cannot resolve shift variable: {base}")
-
-    if decrement:
-        width -= int(decrement)
-    return width
-
-
-def _parse_lean_inductive_variants(text: str, type_name: str) -> list[str]:
-    """Extract variant names from a Lean `inductive` definition."""
-    pattern = rf"inductive\s+{type_name}\s+where"
-    m = re.search(pattern, text)
-    if not m:
-        return []
-    start = m.end()
-    lines = text[start:].split("\n")
-    variants: list[str] = []
-    for line in lines:
-        stripped = line.strip()
-        if not stripped or stripped.startswith("--"):
-            continue
-        if stripped.startswith("deriving"):
-            break
-        if re.match(
-            r"^(inductive|def|theorem|structure|namespace|end|abbrev|section)\b",
-            stripped,
-        ):
-            break
-        for vm in re.finditer(r"\|\s*\.?(\w+)", stripped):
-            name = vm.group(1)
-            if name not in variants:
-                variants.append(name)
-    return variants
-
-
-# ── NaN-boxing constant tests ────────────────────────────────────────
+# NaN-boxing constant tests
 
 
 # Mapping from Lean constant name -> Rust constant name
@@ -172,12 +79,12 @@ LEAN_TO_RUST_CONST = {
 
 @pytest.fixture(scope="module")
 def lean_nanbox_consts() -> dict[str, int]:
-    return _parse_lean_hex_constants(_read(NANBOX_LEAN))
+    return parse_lean_hex_constants(_read(NANBOX_LEAN))
 
 
 @pytest.fixture(scope="module")
 def rust_nanbox_consts() -> dict[str, int]:
-    return _parse_rust_u64_constants(_read(CODEGEN_ABI_RS))
+    return parse_rust_unsigned_constants(_read(CODEGEN_ABI_RS))
 
 
 class TestNanBoxConstants:
@@ -238,7 +145,7 @@ class TestNanBoxConstants:
             )
 
 
-# ── Operator enum tests ──────────────────────────────────────────────
+# Operator enum tests
 
 
 @pytest.fixture(scope="module")
@@ -262,13 +169,13 @@ class TestBinOpAlignment:
     """BinOp variants in Lean must have corresponding Python op kinds."""
 
     def test_binop_nonempty(self, lean_syntax_text: str) -> None:
-        variants = _parse_lean_inductive_variants(lean_syntax_text, "BinOp")
+        variants = parse_lean_inductive_variants(lean_syntax_text, "BinOp")
         assert len(variants) > 0, "No BinOp variants found in Lean Syntax"
 
     def test_binop_variants_in_python(
         self, lean_syntax_text: str, python_effect_ops: set[str]
     ) -> None:
-        lean_binops = _parse_lean_inductive_variants(lean_syntax_text, "BinOp")
+        lean_binops = parse_lean_inductive_variants(lean_syntax_text, "BinOp")
 
         missing = []
         for v in lean_binops:
@@ -284,13 +191,13 @@ class TestUnOpAlignment:
     """UnOp variants in Lean must have corresponding Python op kinds."""
 
     def test_unop_nonempty(self, lean_syntax_text: str) -> None:
-        variants = _parse_lean_inductive_variants(lean_syntax_text, "UnOp")
+        variants = parse_lean_inductive_variants(lean_syntax_text, "UnOp")
         assert len(variants) > 0, "No UnOp variants found in Lean Syntax"
 
     def test_unop_variants_in_python(
         self, lean_syntax_text: str, python_effect_ops: set[str]
     ) -> None:
-        lean_unops = _parse_lean_inductive_variants(lean_syntax_text, "UnOp")
+        lean_unops = parse_lean_inductive_variants(lean_syntax_text, "UnOp")
 
         # GUARD is a Lean-side type-narrowing primitive not yet surfaced in Python
         acceptable_gaps = {"invert", "guard"}
@@ -307,13 +214,13 @@ class TestValueConstructors:
     """Value constructors in Lean must correspond to Python/Rust representations."""
 
     def test_value_nonempty(self, lean_syntax_text: str) -> None:
-        variants = _parse_lean_inductive_variants(lean_syntax_text, "Value")
+        variants = parse_lean_inductive_variants(lean_syntax_text, "Value")
         assert len(variants) > 0, "No Value variants found in Lean Syntax"
 
     def test_value_constructors_in_rust(self, lean_syntax_text: str) -> None:
         """Each Lean Value constructor should have a Rust MoltObject method."""
         rust_text = _read(OBJ_MODEL_RS)
-        lean_values = _parse_lean_inductive_variants(lean_syntax_text, "Value")
+        lean_values = parse_lean_inductive_variants(lean_syntax_text, "Value")
 
         # Lean -> Rust method mapping
         lean_to_rust_method = {

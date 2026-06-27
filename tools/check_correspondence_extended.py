@@ -17,10 +17,22 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import re
 import subprocess
 import sys
 from pathlib import Path
+
+try:
+    from correspondence_sources import (
+        parse_lean_hex_constants as _parse_lean_hex_constants,
+        parse_lean_inductive_variants as _parse_lean_inductive_variants,
+        parse_rust_unsigned_constants as _parse_rust_u64_constants,
+    )
+except ModuleNotFoundError:  # pragma: no cover - package-style import path
+    from tools.correspondence_sources import (
+        parse_lean_hex_constants as _parse_lean_hex_constants,
+        parse_lean_inductive_variants as _parse_lean_inductive_variants,
+        parse_rust_unsigned_constants as _parse_rust_u64_constants,
+    )
 
 
 def _find_repo_root() -> Path:
@@ -71,98 +83,6 @@ def _read(path: Path) -> str:
     return ""
 
 
-# ── Parsing helpers ──────────────────────────────────────────────────
-
-
-def _parse_lean_hex_constants(text: str) -> dict[str, int]:
-    result: dict[str, int] = {}
-    for m in re.finditer(r"def\s+(\w+)\s*:\s*UInt64\s*:=\s*(0x[0-9a-fA-F_]+)", text):
-        result[m.group(1)] = int(m.group(2).replace("_", ""), 16)
-    return result
-
-
-def _parse_rust_u64_constants(text: str) -> dict[str, int]:
-    raw: dict[str, str] = {}
-    for m in re.finditer(r"(?:pub\s+)?const\s+(\w+):\s*u(?:32|64)\s*=\s*(.+?);", text):
-        raw[m.group(1)] = m.group(2).strip()
-    resolved: dict[str, int] = {}
-    for name, expr in raw.items():
-        try:
-            resolved[name] = _resolve_rust_expr(expr, raw)
-        except ValueError:
-            pass
-    return resolved
-
-
-def _resolve_rust_expr(expr: str, raw_consts: dict[str, str]) -> int:
-    expr = expr.strip()
-    cast = re.match(r"^(\w+)\s+as\s+u(?:32|64)$", expr)
-    if cast:
-        expr = cast.group(1)
-    if re.match(r"^0x[0-9a-fA-F_]+$", expr):
-        return int(expr.replace("_", ""), 16)
-    if expr.isdigit():
-        return int(expr)
-    if re.match(r"^\w+$", expr) and expr in raw_consts:
-        return _resolve_rust_expr(raw_consts[expr], raw_consts)
-    m = re.fullmatch(r"1(?:u64)?\s*<<\s*(.+)", expr)
-    if m:
-        return 1 << _resolve_rust_shift_width(m.group(1), raw_consts)
-    m = re.fullmatch(r"\(1u64\s*<<\s*(.+)\)\s*-\s*1", expr)
-    if m:
-        return (1 << _resolve_rust_shift_width(m.group(1), raw_consts)) - 1
-    raise ValueError(f"Cannot parse: {expr}")
-
-
-def _resolve_rust_shift_width(expr: str, raw_consts: dict[str, str]) -> int:
-    expr = expr.strip()
-    if expr.startswith("(") and expr.endswith(")"):
-        expr = expr[1:-1].strip()
-    m = re.fullmatch(r"(\w+)(?:\s*-\s*(\d+))?", expr)
-    if not m:
-        raise ValueError(f"Cannot parse shift width: {expr}")
-
-    base, decrement = m.group(1), m.group(2)
-    if base.isdigit():
-        width = int(base)
-    elif base in raw_consts:
-        width = _resolve_rust_expr(raw_consts[base], raw_consts)
-    else:
-        raise ValueError(f"Cannot resolve: {base}")
-
-    if decrement:
-        width -= int(decrement)
-    return width
-
-
-def _parse_lean_inductive_variants(text: str, type_name: str) -> list[str]:
-    pattern = rf"inductive\s+{type_name}\s+where"
-    m = re.search(pattern, text)
-    if not m:
-        return []
-    start = m.end()
-    lines = text[start:].split("\n")
-    variants: list[str] = []
-    for line in lines:
-        stripped = line.strip()
-        if not stripped or stripped.startswith("--"):
-            continue
-        if stripped.startswith("deriving"):
-            break
-        if re.match(
-            r"^(inductive|def|theorem|structure|namespace|end|abbrev|section)\b",
-            stripped,
-        ):
-            break
-        for vm in re.finditer(r"\|\s*\.?(\w+)", stripped):
-            name = vm.group(1)
-            if name.endswith("_"):
-                name = name[:-1]
-            if name not in variants:
-                variants.append(name)
-    return variants
-
-
 def _generated_python_effect_classes() -> dict[str, set[str]]:
     classes: dict[str, set[str]] = {
         "pure": set(),
@@ -175,7 +95,7 @@ def _generated_python_effect_classes() -> dict[str, set[str]]:
     return classes
 
 
-# ── Check functions ──────────────────────────────────────────────────
+# Check functions
 
 
 def check_nanbox_constants(verbose: bool) -> bool:
@@ -318,7 +238,8 @@ def check_pure_op_alignment(verbose: bool) -> bool:
         "not_in",
     }
     expected_pure_binops = {"and", "or", "is", "is_not"}
-    expected_pure_unops = {"not", "abs", "neg", "pos"}
+    expected_barrier_unops = {"abs", "neg", "pos", "invert"}
+    expected_pure_unops = {"not"}
 
     for op in expected_barrier_binops:
         if op in [v for v in lean_binops]:
@@ -359,10 +280,24 @@ def check_pure_op_alignment(verbose: bool) -> bool:
             elif verbose:
                 print(green(f"  ok: UnOp.{op} -> {kind} is pure"))
 
+    for op in expected_barrier_unops:
+        if op in [v for v in lean_unops]:
+            kind = op.upper()
+            if kind not in barrier_ops:
+                print(
+                    red(
+                        f"  FAIL: UnOp.{op} in Lean but {kind} is not a frontend barrier"
+                    )
+                )
+                ok = False
+            elif verbose:
+                print(green(f"  ok: UnOp.{op} -> {kind} is a frontend barrier"))
+
     if ok:
         checked = (
             len(expected_barrier_binops)
             + len(expected_pure_binops)
+            + len(expected_barrier_unops)
             + len(expected_pure_unops)
         )
         print(green(f"  {checked} core ops verified against frontend effects"))
@@ -412,7 +347,7 @@ def check_compiler_passes(verbose: bool) -> bool:
     return ok
 
 
-# ── Main ─────────────────────────────────────────────────────────────
+# Main
 
 
 def main() -> int:
