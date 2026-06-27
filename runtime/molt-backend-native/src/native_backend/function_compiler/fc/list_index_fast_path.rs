@@ -61,47 +61,6 @@ pub(in crate::native_backend::function_compiler) fn loop_start_has_index_prelude
     false
 }
 
-#[cfg(feature = "native-backend")]
-pub(in crate::native_backend::function_compiler) fn metadata_only_structured_loop_ops(
-    ops: &[OpIR],
-) -> BTreeSet<usize> {
-    #[derive(Default)]
-    struct PendingLoop {
-        controls: BTreeSet<usize>,
-    }
-
-    let mut pending: Vec<PendingLoop> = Vec::new();
-    let mut metadata_only = BTreeSet::new();
-    for (idx, op) in ops.iter().enumerate() {
-        match op.kind.as_str() {
-            "loop_start" if loop_start_has_index_prelude(ops, idx) => {}
-            "loop_start" | "loop_index_start" => {
-                let mut frame = PendingLoop::default();
-                frame.controls.insert(idx);
-                pending.push(frame);
-            }
-            "loop_break_if_true"
-            | "loop_break_if_false"
-            | "loop_break_if_exception"
-            | "loop_break"
-            | "loop_continue"
-            | "loop_index_next" => {
-                if let Some(frame) = pending.last_mut() {
-                    frame.controls.insert(idx);
-                }
-            }
-            "loop_end" if pending.pop().is_none() => {
-                metadata_only.insert(idx);
-            }
-            _ => {}
-        }
-    }
-    for frame in pending {
-        metadata_only.extend(frame.controls);
-    }
-    metadata_only
-}
-
 /// Scan a loop body (from `start_idx+1` to the matching `loop_end`) and return
 /// the set of list variable names whose data_ptr/len can be hoisted before the
 /// loop.  A variable is hoistable when it is read through `index` and NOT

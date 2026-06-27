@@ -9,9 +9,7 @@ use crate::representation_plan::ScalarRepresentationPlan;
 mod scalar_carriers;
 use scalar_carriers::*;
 mod fc;
-use fc::list_index_fast_path::{
-    ListIndexFastPathState, loop_start_has_index_prelude, metadata_only_structured_loop_ops,
-};
+use fc::list_index_fast_path::{ListIndexFastPathState, loop_start_has_index_prelude};
 
 mod cleanup_roots;
 use cleanup_roots::*;
@@ -884,7 +882,7 @@ impl SimpleBackend {
         }
         // 2. Implementation
         let mut skip_ops: BTreeSet<usize> = BTreeSet::new();
-        let metadata_loop_ops = metadata_only_structured_loop_ops(ops);
+        let metadata_loop_ops = fc::loops::metadata_only_structured_loop_ops(ops);
 
         // -----------------------------------------------------------------
         // Scope arena lifecycle: MLKit/Cyclone region allocator integration.
@@ -1038,74 +1036,17 @@ impl SimpleBackend {
                 preanalyze_alias_source(&ops[op_idx], return_alias_summaries).map(str::to_string);
             let mut output_is_ptr = false;
 
-            // ── Per-iteration dec_ref for loop-body reassigned variables ──
-            // When a variable is assigned inside a loop body, the previous
-            // iteration's value must be dec_ref'd before the new value is
-            // stored.  This mirrors CPython's STORE_FAST semantics where the
-            // old slot occupant is dec_ref'd on reassignment.
-            //
-            // We capture the old SSA Value via use_var *before* the op handler
-            // overwrites it with def_var_named.  After the op handler, we emit
-            // dec_ref_obj for the old value.  On the first iteration the old
-            // value is the None-sentinel (0) we initialized before the loop
-            // header, which molt_dec_ref_obj safely ignores (non-pointer).
-            let loop_reassign_old_val: Option<Value> = if loop_depth > 0
-                // RC drop-insertion substrate (design 20, R1 guard): when the TIR
-                // drop pass processed this function it already inserted the
-                // loop-carried DecRef; the ad-hoc path below would double-drop.
-                && !drop_inserted
-                && !is_block_filled
-                && let Some(ref name) = out_name
-                && name != "none"
-                && !rc_skip_dec.contains(name.as_str())
-                // Only for ops that can produce heap-allocated refcounted
-                // objects — skip constants and loop infrastructure.
-                && !matches!(
-                    op.kind.as_str(),
-                    "const"
-                        | "const_str"
-                        | "const_bytes"
-                        | "const_bigint"
-                        | "const_float"
-                        | "const_none"
-                        | "const_bool"
-                        | "loop_index_start"
-                        | "loop_index_next"
-                        | "loop_break_if_true"
-                        | "loop_break_if_false"
-                        | "loop_break_if_exception"
-                        | "loop_break"
-                        | "loop_continue"
-                        | "loop_start"
-                        | "loop_end"
-                        | "phi"
-                        | "load_var"
-                        | "copy_var"
-                        | "store_var"
-                        | "delete_var"
-                        | "label"
-                        | "state_label"
-                        | "state_switch"
-                        | "state_transition"
-                        // Container-aliasing ops: these return the same
-                        // container pointer, not a new heap allocation.
-                        // dec_ref of the container corrupts cell lists.
-                        | "store_index"
-                        | "index"
-                ) {
-                // Check the precomputed loop_body_out_vars: this variable must
-                // appear in at least one enclosing loop's assignment set.
-                let is_loop_body_var = loop_body_out_vars
-                    .values()
-                    .any(|bv| bv.iter().any(|v| v == name));
-                if is_loop_body_var {
-                    vars.get(name.as_str()).map(|var| builder.use_var(*var))
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
+            let loop_reassign_old_val = fc::loops::capture_loop_reassign_old_value(
+                &op,
+                out_name.as_deref(),
+                loop_depth,
+                drop_inserted,
+                is_block_filled,
+                &rc_skip_dec,
+                &loop_body_out_vars,
+                &vars,
+                &mut builder,
+            );
 
             // Single routing decision for this op, derived from each handler's
             // `HANDLED_KINDS` authority (see `fc::op_family`). The family arms
@@ -2098,16 +2039,12 @@ impl SimpleBackend {
                 }
             }
 
-            // ── Emit dec_ref for the old value of loop-body reassigned vars ──
-            // The old value was captured via use_var before the op handler ran.
-            // Now that def_var_named has stored the new value, dec_ref the old
-            // one.  On the first iteration this is the None-sentinel (0) which
-            // molt_dec_ref_obj treats as a no-op.
-            if let Some(old_val) = loop_reassign_old_val
-                && !is_block_filled
-            {
-                builder.ins().call(local_dec_ref_obj, &[old_val]);
-            }
+            fc::loops::emit_loop_reassign_old_drop(
+                &mut builder,
+                local_dec_ref_obj,
+                loop_reassign_old_val,
+                is_block_filled,
+            );
 
             // IMPORTANT: entry-tracked cleanup must be control-flow safe.
             //
