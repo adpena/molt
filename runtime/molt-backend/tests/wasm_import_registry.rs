@@ -358,6 +358,29 @@ fn auto_profile_registers_direct_runtime_call_targets_as_imports() {
 }
 
 #[test]
+fn auto_profile_registers_manifest_runtime_call_targets_without_molt_prefix() {
+    let wasm = compile_with_profile(
+        ir_with_direct_runtime_call("code_new", 9),
+        WasmProfile::Auto,
+    );
+    let imports = extract_func_imports_with_indices(&wasm);
+    let code_new_import = imports
+        .iter()
+        .find(|(_, module, name, _)| module == "molt_runtime" && name == "code_new")
+        .expect("manifest-known direct runtime call target should be imported");
+    let sigs = extract_func_type_signatures(&wasm);
+    assert_eq!(
+        sigs[code_new_import.3 as usize],
+        (vec![ValType::I64; 9], vec![ValType::I64]),
+        "manifest-known direct runtime call must use its observed arity"
+    );
+    assert!(
+        direct_call_targets(&wasm).contains(&code_new_import.0),
+        "generated wasm must directly call the manifest-known runtime import"
+    );
+}
+
+#[test]
 fn code_new_import_uses_arity_9_signature_and_is_called() {
     let wasm = compile_with_profile(ir_with_code_new(), WasmProfile::Auto);
     let imports = extract_func_imports_with_indices(&wasm);

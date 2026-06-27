@@ -30,13 +30,13 @@ impl WasmBackend {
         // callargs_push_pos + call_bind) into a single allocation-free
         // `call_method_ic` op, and `super().method(args)` into
         // `call_super_method_ic` (CPython LOAD_METHOD/CALL_METHOD parity).
-        // Run as the LAST SimpleIR transformation before reloc import collection
+        // Run as the LAST SimpleIR transformation before runtime import-surface planning
         // and codegen. TIR has first-class IC opcodes, but this backend consumes
         // the final SimpleIR stream, so fusion belongs after the TIR roundtrip
         // and module-phase inliner have produced that stream (identical placement
         // contract to the native backend, which fuses immediately before
         // `compile_func`). The fused op kinds are import dependencies via
-        // OP_IMPORT_DEPS, so this must precede `collect_reloc_required_imports`.
+        // OP_IMPORT_DEPS, so this must precede module-level runtime surface planning.
         // The IC ops are recognized as non-removable by `eliminate_dead_ops`
         // because method dispatch runs arbitrary user code, so the dead-op pass
         // below preserves them.
