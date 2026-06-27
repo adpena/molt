@@ -827,6 +827,18 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
         result: RuntimeCallableResult::I64,
     },
     RuntimeCallableImportSpec {
+        runtime_name: "molt_codecs_decode",
+        import_name: "codecs_decode",
+        arity: 3,
+        result: RuntimeCallableResult::I64,
+    },
+    RuntimeCallableImportSpec {
+        runtime_name: "molt_codecs_encode",
+        import_name: "codecs_encode",
+        arity: 3,
+        result: RuntimeCallableResult::I64,
+    },
+    RuntimeCallableImportSpec {
         runtime_name: "molt_heapq_heapify",
         import_name: "heapq_heapify",
         arity: 1,
@@ -1903,6 +1915,12 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
     RuntimeCallableImportSpec {
         runtime_name: "molt_thread_current_ident",
         import_name: "thread_current_ident",
+        arity: 0,
+        result: RuntimeCallableResult::I64,
+    },
+    RuntimeCallableImportSpec {
+        runtime_name: "molt_thread_current_native_id",
+        import_name: "thread_current_native_id",
         arity: 0,
         result: RuntimeCallableResult::I64,
     },

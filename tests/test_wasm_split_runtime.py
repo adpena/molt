@@ -1905,17 +1905,25 @@ class TestManifestJson:
         assert data["total_size"] == expected
 
     def test_runtime_import_abi_matches_app_wasm(self, split_build_a):
+        from molt.cli.wasm import (
+            _runtime_import_result_kinds_from_manifest,
+            _runtime_import_signatures_from_manifest,
+        )
+
         out_dir, result = split_build_a
         if result.returncode != 0:
             pytest.skip("build failed")
         app_wasm = out_dir / "app.wasm"
         if not app_wasm.exists():
             pytest.skip("app.wasm not produced")
-        expected_signatures = wasm_artifact._wasm_import_function_signatures(
-            app_wasm, module_name="molt_runtime"
+        runtime_import_names = wasm_artifact._collect_wasm_module_import_names(
+            app_wasm, "molt_runtime"
         )
-        expected_result_kinds = wasm_artifact._wasm_import_function_result_kinds(
-            app_wasm, module_name="molt_runtime"
+        expected_signatures = _runtime_import_signatures_from_manifest(
+            runtime_import_names
+        )
+        expected_result_kinds = _runtime_import_result_kinds_from_manifest(
+            runtime_import_names
         )
         if not expected_signatures:
             pytest.skip("app has no runtime imports")
@@ -1923,7 +1931,7 @@ class TestManifestJson:
         abi = self._read_manifest(split_build_a)["abi"]["runtime_imports"]
 
         assert abi["module"] == "molt_runtime"
-        assert abi["names"] == sorted(expected_signatures)
+        assert abi["names"] == sorted(runtime_import_names)
         assert abi["signatures"] == expected_signatures
         assert abi["result_kinds"] == expected_result_kinds
 

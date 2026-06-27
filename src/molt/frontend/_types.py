@@ -23,6 +23,7 @@ from typing import (
     overload,
 )
 
+from molt._wasm_abi_generated import wasm_runtime_callable_arity
 from molt.compat import CompatibilityError, CompatibilityReporter, FallbackPolicy
 from molt.frontend.cfg_analysis import CFGGraph, ControlMaps, build_cfg
 from molt.type_facts import normalize_type_hint
@@ -1020,18 +1021,35 @@ def _ensure_intrinsic_arity_cache() -> dict[str, int]:
     global _INTRINSIC_ARITY_CACHE
     if _INTRINSIC_ARITY_CACHE is None:
         cache: dict[str, int] = {}
-        # Seed from BUILTIN_FUNC_SPECS (runtime name -> arity).
         for spec in BUILTIN_FUNC_SPECS.values():
-            arity = (
-                len(spec.params) + len(spec.pos_or_kw_params) + len(spec.kwonly_params)
-            )
-            if spec.vararg is not None:
-                arity += 1
-            cache[spec.runtime] = arity
+            cache[spec.runtime] = _builtin_func_abi_arity(spec)
         for name, params in _iter_intrinsic_signatures():
             cache.setdefault(name, len(params))
         _INTRINSIC_ARITY_CACHE = cache
     return _INTRINSIC_ARITY_CACHE
+
+
+def _builtin_func_declared_arity(spec: BuiltinFuncSpec) -> int:
+    arity = len(spec.params) + len(spec.pos_or_kw_params) + len(spec.kwonly_params)
+    if spec.vararg is not None:
+        arity += 1
+    return arity
+
+
+def _builtin_func_abi_arity(spec: BuiltinFuncSpec) -> int:
+    """Return the manifest-backed ABI arity for a frontend builtin callable."""
+    declared_arity = _builtin_func_declared_arity(spec)
+    manifest_arity = wasm_runtime_callable_arity(spec.runtime)
+    if manifest_arity is None:
+        raise RuntimeError(
+            f"frontend builtin {spec.runtime} missing from WASM callable ABI manifest"
+        )
+    if manifest_arity != declared_arity:
+        raise RuntimeError(
+            f"frontend builtin {spec.runtime} arity drift: "
+            f"manifest {manifest_arity} vs frontend metadata {declared_arity}"
+        )
+    return manifest_arity
 
 
 def _ensure_intrinsic_defaults_cache() -> dict[str, tuple[object, ...]]:
@@ -1554,6 +1572,7 @@ __all__ = [
     "_INTRINSIC_ARITY_CACHE",
     "_INTRINSIC_SYMBOL_CACHE",
     "_INTRINSIC_DEFAULTS_CACHE",
+    "_builtin_func_abi_arity",
     "_ensure_intrinsic_arity_cache",
     "_ensure_intrinsic_symbol_cache",
     "_ensure_intrinsic_defaults_cache",

@@ -421,6 +421,8 @@ pub(crate) const IMPORT_REGISTRY: &[(&str, u32)] = &[
     ("chan_try_send", 3),
     ("cbor_parse_scalar", 19),
     ("cbor_parse_scalar_obj", 2),
+    ("codecs_decode", 5),
+    ("codecs_encode", 5),
     ("msgpack_parse_scalar", 19),
     ("msgpack_parse_scalar_obj", 2),
     ("vec_max_int", 3),
