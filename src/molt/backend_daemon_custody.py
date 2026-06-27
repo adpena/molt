@@ -503,14 +503,7 @@ def _termination_actions_succeeded(actions: Sequence[Any]) -> bool:
     if len(actions) == 1:
         return False
     final_result = getattr(actions[-1], "result", "")
-    return final_result in {
-        "sent",
-        "missing",
-        "skipped_identity_mismatch",
-        "skipped_host_control_lineage",
-        "skipped_host_control_plane",
-        "skipped_protected_group_member",
-    }
+    return final_result in {"sent", "missing", "skipped_identity_mismatch"}
 
 
 def terminate_backend_daemon_identity(

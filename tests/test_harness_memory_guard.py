@@ -1961,6 +1961,68 @@ def test_repo_process_sentinel_scopes_automatic_kills_to_current_tree(
     assert "--peer" not in events
 
 
+def test_repo_process_sentinel_does_not_churn_codex_helper_descendant(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    harness_memory_guard._TERMINATED_PGIDS.clear()
+    self_pid = os.getpid()
+    helper_pgid = 135790
+    samples = {
+        100: harness_memory_guard.memory_guard.ProcessSample(
+            pid=100,
+            ppid=1,
+            pgid=100,
+            rss_kb=64,
+            command="/Applications/Codex.app/Contents/MacOS/Codex",
+        ),
+        self_pid: harness_memory_guard.memory_guard.ProcessSample(
+            pid=self_pid,
+            ppid=100,
+            pgid=self_pid,
+            rss_kb=64,
+            command=f"{tmp_path}/.venv/bin/python3 -m pytest tests/unit.py",
+        ),
+        helper_pgid: harness_memory_guard.memory_guard.ProcessSample(
+            pid=helper_pgid,
+            ppid=self_pid,
+            pgid=helper_pgid,
+            rss_kb=6 * 1024 * 1024,
+            command=f"git -C {tmp_path} status --short",
+        ),
+    }
+    monkeypatch.setattr(
+        harness_memory_guard.memory_guard,
+        "sample_processes",
+        lambda: samples,
+    )
+    terminated: list[int] = []
+    monkeypatch.setattr(
+        harness_memory_guard.process_sentinel,
+        "terminate_group",
+        _record_terminated_pgids(terminated),
+    )
+    limits = harness_memory_guard.HarnessMemoryLimits(
+        enabled=True,
+        max_process_rss_gb=1,
+        max_total_rss_gb=1,
+        max_global_rss_gb=1,
+        poll_interval=0.01,
+    )
+    sentinel = harness_memory_guard.repo_process_sentinel(
+        repo_root=tmp_path,
+        artifact_root=tmp_path,
+        label="unit-codex-helper-descendant",
+        limits=limits,
+    )
+
+    sentinel.scan_once()
+
+    assert sentinel.tripped is False
+    assert terminated == []
+    assert not sentinel.events_path.exists()
+
+
 def test_repo_process_sentinel_keeps_reparented_observed_child_in_scope(
     monkeypatch,
     tmp_path: Path,

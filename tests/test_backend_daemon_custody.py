@@ -231,6 +231,50 @@ def test_backend_daemon_termination_revalidates_before_sigkill(
     assert signals == [signal.SIGTERM]
 
 
+def test_backend_daemon_termination_keeps_identity_after_protective_fallback_skip(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    target = tmp_path / "target"
+    daemon_root = target / ".molt_state" / "backend_daemon"
+    identity = _identity(tmp_path)
+    identity_path = daemon_root / "molt-backend.dev.alpha.protected.identity.json"
+    custody.write_backend_daemon_identity(identity_path, identity)
+    sample = _daemon_sample(identity)
+    monkeypatch.setattr(custody, "_pid_alive", lambda pid: pid == identity.pid)
+    monkeypatch.setattr(custody, "_load_memory_guard_module", lambda: memory_guard)
+    monkeypatch.setattr(memory_guard, "sample_processes", lambda: {identity.pid: sample})
+    monkeypatch.setattr(memory_guard, "is_host_control_plane_process", lambda _sample: False)
+    monkeypatch.setattr(
+        memory_guard,
+        "terminate_verified_pid",
+        lambda pid, identity_value, *, sampler, grace: (
+            memory_guard.GuardTerminationAction(
+                "process",
+                pid,
+                signal.SIGTERM,
+                "SIGTERM",
+                "still_live",
+            ),
+            memory_guard.GuardTerminationAction(
+                "process",
+                pid,
+                _backend_daemon_force_kill_signal(),
+                memory_guard._signal_name(_backend_daemon_force_kill_signal()),
+                "skipped_host_control_lineage",
+            ),
+        ),
+    )
+
+    terminated = custody.terminate_backend_daemons_for_session(
+        {"MOLT_SESSION_ID": "alpha", "CARGO_TARGET_DIR": str(target)},
+        project_root=tmp_path,
+    )
+
+    assert terminated == ()
+    assert identity_path.exists()
+
+
 def test_backend_daemon_termination_escalates_only_after_verified_grace(
     tmp_path: Path,
     monkeypatch,
