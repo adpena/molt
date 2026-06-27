@@ -1,3 +1,4 @@
+use super::super::multi_return_layout::WasmMultiReturnLayout;
 use super::*;
 
 mod dynamic;
@@ -22,8 +23,7 @@ pub(super) struct CallOpContext<'a, 'ctx, 'm> {
     pub(super) locals: &'a BTreeMap<String, u32>,
     pub(super) const_cache: &'a ConstantCache,
     pub(super) multi_return_candidates: &'a BTreeMap<String, usize>,
-    pub(super) multi_ret_call_locals: &'a BTreeMap<(String, i64), u32>,
-    pub(super) multi_ret_call_vars: &'a BTreeSet<String>,
+    pub(super) multi_return: &'a WasmMultiReturnLayout,
     pub(super) reloc_enabled: bool,
     pub(super) tail_call_eligible: bool,
     pub(super) arena_local: Option<u32>,
@@ -78,8 +78,7 @@ pub(super) fn emit_call_op(
     let locals = call_ctx.locals;
     let const_cache = call_ctx.const_cache;
     let multi_return_candidates = call_ctx.multi_return_candidates;
-    let multi_ret_call_locals = call_ctx.multi_ret_call_locals;
-    let multi_ret_call_vars = call_ctx.multi_ret_call_vars;
+    let multi_return = call_ctx.multi_return;
     let reloc_enabled = call_ctx.reloc_enabled;
     let tail_call_eligible = call_ctx.tail_call_eligible;
     let arena_local = call_ctx.arena_local;
@@ -300,10 +299,12 @@ pub(super) fn emit_call_op(
             emit_call(func, reloc_enabled, func_idx);
             // Multi-value return (Section 3.1): pop N results
             // into dedicated locals for later tuple_index.
-            if multi_ret_call_vars.contains(out_name) {
+            if multi_return.is_promoted_call_tuple(out_name) {
                 let ret_count = multi_return_candidates[target_name];
                 for k in (0..ret_count).rev() {
-                    let local_idx = multi_ret_call_locals[&(out_name.clone(), k as i64)];
+                    let local_idx = multi_return
+                        .promoted_call_value_local(out_name, k as i64)
+                        .expect("multi-return call result local missing");
                     func.instruction(&Instruction::LocalSet(local_idx));
                 }
                 func.instruction(&Instruction::I64Const(0));

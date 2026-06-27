@@ -1,3 +1,4 @@
+use super::super::super::multi_return_layout::WasmMultiReturnLayout;
 use super::super::*;
 
 #[path = "aggregate_ops/callargs_ops.rs"]
@@ -18,11 +19,7 @@ pub(super) struct AggregateRuntimeContext<'a> {
     pub(super) import_ids: &'a TrackedImportIds,
     pub(super) locals: &'a BTreeMap<String, u32>,
     pub(super) scalar_plan: &'a ScalarRepresentationPlan,
-    pub(super) is_multi_return_callee: Option<usize>,
-    pub(super) multi_ret_locals: &'a [u32],
-    pub(super) multi_ret_tuple_vars: &'a BTreeSet<String>,
-    pub(super) multi_ret_call_locals: &'a BTreeMap<(String, i64), u32>,
-    pub(super) multi_ret_call_vars: &'a BTreeSet<String>,
+    pub(super) multi_return: &'a WasmMultiReturnLayout,
     pub(super) reloc_enabled: bool,
     pub(super) op_idx: usize,
 }
@@ -35,11 +32,7 @@ pub(super) fn emit_aggregate_runtime_op(
     import_ids: &TrackedImportIds,
     locals: &BTreeMap<String, u32>,
     scalar_plan: &ScalarRepresentationPlan,
-    is_multi_return_callee: Option<usize>,
-    multi_ret_locals: &[u32],
-    multi_ret_tuple_vars: &BTreeSet<String>,
-    multi_ret_call_locals: &BTreeMap<(String, i64), u32>,
-    multi_ret_call_vars: &BTreeSet<String>,
+    multi_return: &WasmMultiReturnLayout,
     reloc_enabled: bool,
     arena_local: Option<u32>,
     ops: &[OpIR],
@@ -50,11 +43,7 @@ pub(super) fn emit_aggregate_runtime_op(
         import_ids,
         locals,
         scalar_plan,
-        is_multi_return_callee,
-        multi_ret_locals,
-        multi_ret_tuple_vars,
-        multi_ret_call_locals,
-        multi_ret_call_vars,
+        multi_return,
         reloc_enabled,
         op_idx,
     };

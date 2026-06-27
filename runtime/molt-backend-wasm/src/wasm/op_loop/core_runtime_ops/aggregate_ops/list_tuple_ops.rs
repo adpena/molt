@@ -81,14 +81,14 @@ pub(super) fn emit_list_tuple_op(
             // into __multi_ret_N locals instead of heap-allocating
             // when this tuple flows directly to a return in a
             // candidate function.
-            if ctx.is_multi_return_callee.is_some()
-                && ctx.multi_ret_tuple_vars.contains(out_name)
-                && args.len() == ctx.multi_ret_locals.len()
+            let callee_value_locals = ctx.multi_return.callee_value_locals();
+            if ctx.multi_return.is_callee_tuple_var(out_name)
+                && args.len() == callee_value_locals.len()
             {
                 for (k, arg_name) in args.iter().enumerate() {
                     let val = locals[arg_name];
                     func.instruction(&Instruction::LocalGet(val));
-                    func.instruction(&Instruction::LocalSet(ctx.multi_ret_locals[k]));
+                    func.instruction(&Instruction::LocalSet(callee_value_locals[k]));
                 }
                 func.instruction(&Instruction::I64Const(0));
                 func.instruction(&Instruction::LocalSet(out));
@@ -226,9 +226,10 @@ pub(super) fn emit_list_tuple_op(
             // Multi-value return (Section 3.1): if the tuple was
             // produced by a promoted call_internal, the values
             // are already in dedicated locals.
-            if ctx.multi_ret_call_vars.contains(tuple_var) {
+            if ctx.multi_return.is_promoted_call_tuple(tuple_var) {
                 let idx = op.value.unwrap_or(0);
-                if let Some(&src_local) = ctx.multi_ret_call_locals.get(&(tuple_var.clone(), idx)) {
+                if let Some(src_local) = ctx.multi_return.promoted_call_value_local(tuple_var, idx)
+                {
                     func.instruction(&Instruction::LocalGet(src_local));
                     func.instruction(&Instruction::LocalSet(res));
                 } else {
