@@ -32,17 +32,17 @@ use wasm_encoder::{BlockType, Ieee64, Instruction, ValType};
 use std::collections::HashMap;
 
 #[cfg(feature = "wasm-backend")]
-use super::blocks::BlockId;
+use molt_tir::tir::blocks::BlockId;
 #[cfg(feature = "wasm-backend")]
-use super::function::TirFunction;
+use molt_tir::tir::function::TirFunction;
 #[cfg(feature = "wasm-backend")]
-use super::lir::{LirBlock, LirFunction, LirOp, LirRepr, LirTerminator, LirValue};
+use molt_tir::tir::lir::{LirBlock, LirFunction, LirOp, LirRepr, LirTerminator, LirValue};
 #[cfg(feature = "wasm-backend")]
-use super::lower_to_lir::{lower_function_to_lir, lower_function_to_lir_with_inline_proof};
+use molt_tir::tir::lower_to_lir::{lower_function_to_lir, lower_function_to_lir_with_inline_proof};
 #[cfg(feature = "wasm-backend")]
-use super::ops::{AttrValue, OpCode};
+use molt_tir::tir::ops::{AttrValue, OpCode};
 #[cfg(feature = "wasm-backend")]
-use super::values::ValueId;
+use molt_tir::tir::values::ValueId;
 
 #[cfg(feature = "wasm-backend")]
 const QNAN: i64 = 0x7ff8_0000_0000_0000u64 as i64;
@@ -378,11 +378,11 @@ pub fn lower_lir_to_wasm_boxed_i64_abi(func: &LirFunction) -> Option<WasmFunctio
     if func
         .param_types
         .iter()
-        .any(|ty| *ty != super::types::TirType::I64)
+        .any(|ty| *ty != crate::tir::types::TirType::I64)
     {
         return None;
     }
-    if func.return_types.len() != 1 || func.return_types[0] != super::types::TirType::I64 {
+    if func.return_types.len() != 1 || func.return_types[0] != crate::tir::types::TirType::I64 {
         return None;
     }
     let entry = func.blocks.get(&func.entry_block)?;
@@ -2382,7 +2382,7 @@ mod tests {
         ]);
         let vr = crate::representation_plan::value_range_for(&func);
         let lir =
-            super::super::lower_to_lir::lower_function_to_lir_with_inline_proof(&func, &repr, &vr);
+            crate::tir::lower_to_lir::lower_function_to_lir_with_inline_proof(&func, &repr, &vr);
         // Triple refused without an inline-window proof: no op carries
         // lir.checked_overflow.
         let has_triple = lir.blocks.values().flat_map(|b| b.ops.iter()).any(|op| {

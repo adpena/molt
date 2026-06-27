@@ -144,7 +144,7 @@ impl WasmBackend {
             for instruction in &lir_output.instructions {
                 if matches!(
                     instruction,
-                    Instruction::Call(crate::tir::lower_to_wasm::NAMED_RUNTIME_CALL_PLACEHOLDER)
+                    Instruction::Call(crate::lower_to_wasm::NAMED_RUNTIME_CALL_PLACEHOLDER)
                 ) {
                     let name = named_calls.next().unwrap_or_else(|| {
                         panic!(

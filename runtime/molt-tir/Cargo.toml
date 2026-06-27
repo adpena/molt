@@ -22,7 +22,6 @@ rayon = "1.12"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 rmp-serde = "1"
-wasm-encoder = { version = "0.252.0", optional = true }
 
 [features]
 default = []
@@ -30,7 +29,7 @@ default = []
 # compiles identically; molt-backend activates these via molt-tir/<feature>.
 native-backend = ["molt-ir/native-backend", "molt-passes/native-backend"]
 llvm = ["molt-ir/llvm", "molt-passes/llvm"]
-wasm-backend = ["dep:wasm-encoder", "molt-ir/wasm-backend", "molt-passes/wasm-backend"]
+wasm-backend = ["molt-ir/wasm-backend", "molt-passes/wasm-backend"]
 # Exposes the crate-private `#[cfg(test)]` accessor seams (representation-plan,
 # tir-cache, and value-range test helpers) across the crate boundary so
 # molt-backend's own test suites can reach them. molt-backend activates this via

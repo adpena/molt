@@ -150,7 +150,7 @@ export MOLT_SESSION_ID="<unique>" && export CARGO_TARGET_DIR="$PWD/target-<smove
 - **G1 -- 0-warning build, EVERY feature config the move touches.** For S1/S2 (the IR/pass/lower
   split, feature-gated TIR code): build the new crate under each of `--no-default-features`,
   `--features native-backend`, `--features "native-backend llvm"`, `--features wasm-backend`
-  (these gate `wasm-encoder` + conditional TIR code -- see `molt-tir/Cargo.toml:29-31`). For
+  (these gate conditional TIR code; `wasm-encoder` is owned by `molt-backend-wasm`). For
   S3-S8: `cargo clippy -p <crate> --features <each> -- -D warnings` AND `cargo clippy -p
   molt-backend --features native-backend -- -D warnings` + `--features "native-backend llvm"
   --lib` (the llvm gate) + `--features wasm-backend`. NO new warnings vs the pre-move set.
@@ -334,11 +334,11 @@ expose it via molt-passes `test-util` and import it from molt-lower's dev-dep on
 - `runtime/molt-passes/Cargo.toml`: deps `molt-ir = { path = "../molt-ir" }` + `serde`,
   `serde_json`, `rmp-serde`, `rayon`, `sha2` (cache.rs hashing), `libc`. Features: passthrough
   (`native-backend=["molt-ir/native-backend"]`, etc.), `test-util=["molt-ir/test-util"]`.
-- `runtime/molt-lower/Cargo.toml`: deps `molt-passes = { path = "../molt-passes" }` (transitively
-  molt-ir) + `wasm-encoder`(opt, gated by `wasm-backend` -- lower_to_wasm needs it). Features:
-  passthrough; `wasm-backend=["dep:wasm-encoder","molt-passes/wasm-backend"]`;
-  `test-util=["molt-passes/test-util"]`. `[dev-dependencies] molt-passes = { features =
-  ["test-util"] }` (for the relocated round-trip tests).
+- `runtime/molt-lower/Cargo.toml` was superseded by the landed
+  `molt-tir`/`molt-backend-wasm` split: TIR/LIR lowering remains in
+  `molt-tir`, while `lower_to_wasm` and `wasm-encoder` live in
+  `molt-backend-wasm`. Features pass through conditional TIR code without
+  pulling backend instruction encoders into `molt-tir`.
 - `molt-backend/Cargo.toml`: replace `molt-tir = {...}` with `molt-lower = { path =
   "../molt-lower" }` (it transitively re-exports molt-passes + molt-ir). Forward features to
   `molt-lower/<feature>`. `[dev-dependencies]`: `molt-lower = { features = ["test-util"] }`.

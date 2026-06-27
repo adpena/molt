@@ -1,7 +1,6 @@
 pub mod lir;
 pub mod lir_printer;
 pub mod lower_to_lir;
-pub mod lower_to_wasm;
 pub mod mlir_compat;
 pub mod tests_roundtrip;
 pub mod verify_lir;

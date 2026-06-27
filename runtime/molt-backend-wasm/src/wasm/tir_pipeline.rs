@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 
 pub(super) fn run_tir_pipeline(
     ir: &mut SimpleIR,
-    lir_fast_outputs: &mut BTreeMap<String, crate::tir::lower_to_wasm::WasmFunctionOutput>,
+    lir_fast_outputs: &mut BTreeMap<String, crate::lower_to_wasm::WasmFunctionOutput>,
 ) {
     emit_wasm_stage_audit(
         "compile-start",

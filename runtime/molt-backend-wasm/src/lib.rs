@@ -23,15 +23,15 @@ pub use molt_tir::passes::{
     hoist_loop_invariants, inject_runtime_exit, rc_coalescing, rewrite_stateful_loops,
     split_megafunctions,
 };
-pub use molt_tir::simpleir_debug::{
-    DumpIrConfig, dump_ir_matches, dump_ir_ops, should_dump_ir,
-};
+pub use molt_tir::simpleir_debug::{DumpIrConfig, dump_ir_matches, dump_ir_ops, should_dump_ir};
 pub use molt_tir::trampolines::{
     TrampolineKind, TrampolineSpec, externalize_function_with_signature,
     function_requires_value_return,
 };
 pub use molt_tir::{passes, representation_plan, tir};
 
+#[cfg(feature = "wasm-backend")]
+pub mod lower_to_wasm;
 #[cfg(feature = "wasm-backend")]
 pub mod wasm;
 #[cfg(feature = "wasm-backend")]
