@@ -93,77 +93,171 @@ class CallReductionMixin(_MixinBase):
                     self.boxed_local_hints[name] = hint
             return None
         iter_obj = self._emit_iter_new(iterable_val)
+        # `zero`/`one` are loop-invariant index constants for the iter-next pair;
+        # emit them in the preheader (real op stream) so they dominate the body.
         zero = MoltValue(self.next_var(), type_hint="int")
         self.emit(MoltOp(kind="CONST", args=[0], result=zero))
         one = MoltValue(self.next_var(), type_hint="int")
         self.emit(MoltOp(kind="CONST", args=[1], result=one))
 
-        start_val = MoltValue(self.next_var(), type_hint="int")
-        self.emit(MoltOp(kind="CONST", args=[0], result=start_val))
-        acc_cell = MoltValue(self.next_var(), type_hint="list")
-        self.emit(MoltOp(kind="LIST_NEW", args=[start_val], result=acc_cell))
+        # The accumulator is a scalar SSA slot (STORE_VAR/LOAD_VAR), NOT a heap
+        # `list` cell. A loop-carried store_var/load_var slot becomes a typed phi
+        # at the loop header, which the representation plan promotes to a raw
+        # carrier (RawI64Safe for int, FloatUnboxed for float) — exactly the
+        # any/all reducer's `res_slot` idiom. The list-cell form this replaced
+        # trapped the accumulator as a boxed heap value forever (every iteration:
+        # heap load -> NaN-unbox -> add -> NaN-rebox -> heap store).
+        #
+        # The accumulator's loop-carried scalar TYPE must be uniform for the phi
+        # to promote: an int 0 seed + int body -> an int phi, and the
+        # empty-iterable result is then that int 0 seed (CPython `sum(())` is
+        # int 0). When the element is float the seed must also be float for a
+        # uniform FloatUnboxed phi, but CPython STILL returns int 0 for an empty
+        # float generator — so the float lane seeds 0.0 AND tracks a `seen` flag
+        # to restore int 0 when zero elements were consumed.
+        acc_slot = f"__molt_sum_acc_{self.next_var()}"
+        seen_slot = f"__molt_sum_seen_{self.next_var()}"
 
-        self.emit(MoltOp(kind="LOOP_START", args=[], result=MoltValue("none")))
-        pair = self._emit_iter_next_checked(iter_obj)
-        done = MoltValue(self.next_var(), type_hint="bool")
-        self.emit(MoltOp(kind="INDEX", args=[pair, one], result=done))
-        self.emit(
-            MoltOp(kind="LOOP_BREAK_IF_TRUE", args=[done], result=MoltValue("none"))
-        )
-        iter_elem_hint = self._iterable_element_hint(iterable_val) or "Any"
-        item = MoltValue(self.next_var(), type_hint=iter_elem_hint)
-        self.emit(MoltOp(kind="INDEX", args=[pair, zero], result=item))
-        self.locals[target_name] = item
-        self._store_comprehension_local_value(target_name, item)
-        if tuple_target_names is not None:
-            item_vals = [
-                MoltValue(self.next_var(), type_hint="Any") for _ in tuple_target_names
-            ]
+        # Buffer the loop body so the genexpr element's true result type
+        # (`value.type_hint`, the authoritative hint produced by `visit`, never a
+        # separate prediction) selects the accumulator seed type BEFORE the
+        # preheader seed is emitted. The buffered ops are spliced back in order
+        # after the seed; store_var/load_var bind by slot name, so the seed
+        # physically preceding loop_start is the only ordering constraint.
+        saved_ops = self.current_ops
+        body_ops: list[MoltOp] = []
+        self.current_ops = body_ops
+        try:
+            self.emit(MoltOp(kind="LOOP_START", args=[], result=MoltValue("none")))
+            pair = self._emit_iter_next_checked(iter_obj)
+            done = MoltValue(self.next_var(), type_hint="bool")
+            self.emit(MoltOp(kind="INDEX", args=[pair, one], result=done))
+            self.emit(
+                MoltOp(kind="LOOP_BREAK_IF_TRUE", args=[done], result=MoltValue("none"))
+            )
+            iter_elem_hint = self._iterable_element_hint(iterable_val) or "Any"
+            item = MoltValue(self.next_var(), type_hint=iter_elem_hint)
+            self.emit(MoltOp(kind="INDEX", args=[pair, zero], result=item))
+            self.locals[target_name] = item
+            self._store_comprehension_local_value(target_name, item)
+            if tuple_target_names is not None:
+                item_vals = [
+                    MoltValue(self.next_var(), type_hint="Any")
+                    for _ in tuple_target_names
+                ]
+                self.emit(
+                    MoltOp(
+                        kind="UNPACK_SEQUENCE",
+                        args=[item] + item_vals,
+                        result=MoltValue("none"),
+                        metadata={"expected_count": len(tuple_target_names)},
+                    )
+                )
+                for tname, item_val in zip(tuple_target_names, item_vals):
+                    self._store_comprehension_local_value(tname, item_val)
+            for if_node in comp.ifs:
+                cond_val = self.visit(if_node)
+                not_cond = MoltValue(self.next_var(), type_hint="bool")
+                self.emit(MoltOp(kind="NOT", args=[cond_val], result=not_cond))
+                self.emit(MoltOp(kind="IF", args=[not_cond], result=MoltValue("none")))
+                self.emit(
+                    MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none"))
+                )
+                self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
+            value = self.visit(genexpr.elt)
+            if value is None:
+                raise NotImplementedError("Unsupported sum generator expression")
+
+            # Accumulator result type, relative to an int-0 seed: a float element
+            # -> float; an int/bool element -> int; otherwise dynamic (Any).
+            int_seed_probe = MoltValue("", type_hint="int")
+            acc_hint = self._sum_add_result_hint(int_seed_probe, cast(MoltValue, value))
+            acc_is_float = acc_hint == "float"
+            acc_load_hint = acc_hint if acc_hint in {"int", "float"} else "Any"
+
+            acc_val = MoltValue(self.next_var(), type_hint=acc_load_hint)
             self.emit(
                 MoltOp(
-                    kind="UNPACK_SEQUENCE",
-                    args=[item] + item_vals,
-                    result=MoltValue("none"),
-                    metadata={"expected_count": len(tuple_target_names)},
+                    kind="LOAD_VAR",
+                    args=[],
+                    result=acc_val,
+                    metadata={"var": acc_slot},
                 )
             )
-            for tname, item_val in zip(tuple_target_names, item_vals):
-                self._store_comprehension_local_value(tname, item_val)
-        for if_node in comp.ifs:
-            cond_val = self.visit(if_node)
-            not_cond = MoltValue(self.next_var(), type_hint="bool")
-            self.emit(MoltOp(kind="NOT", args=[cond_val], result=not_cond))
-            self.emit(MoltOp(kind="IF", args=[not_cond], result=MoltValue("none")))
+            acc_next = MoltValue(self.next_var(), type_hint=acc_hint)
+            self.emit(MoltOp(kind="ADD", args=[acc_val, value], result=acc_next))
+            self.emit(
+                MoltOp(
+                    kind="STORE_VAR",
+                    args=[acc_next],
+                    result=MoltValue("none"),
+                    metadata={"var": acc_slot},
+                )
+            )
+            if acc_is_float:
+                seen_true = MoltValue(self.next_var(), type_hint="bool")
+                self.emit(MoltOp(kind="CONST_BOOL", args=[True], result=seen_true))
+                self.emit(
+                    MoltOp(
+                        kind="STORE_VAR",
+                        args=[seen_true],
+                        result=MoltValue("none"),
+                        metadata={"var": seen_slot},
+                    )
+                )
+            for name in user_target_names:
+                prior = saved_locals.get(name)
+                if prior is not None:
+                    self.locals[name] = prior
+                else:
+                    self.locals.pop(name, None)
             self.emit(MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none")))
-            self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-        value = self.visit(genexpr.elt)
-        if value is None:
-            raise NotImplementedError("Unsupported sum generator expression")
-        acc_val = MoltValue(self.next_var(), type_hint="Any")
-        self.emit(MoltOp(kind="INDEX", args=[acc_cell, zero], result=acc_val))
-        acc_next = MoltValue(
-            self.next_var(),
-            type_hint=self._sum_add_result_hint(acc_val, cast(MoltValue, value)),
-        )
-        self.emit(MoltOp(kind="ADD", args=[acc_val, value], result=acc_next))
+            self.emit(MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")))
+        finally:
+            self.current_ops = saved_ops
+
+        # Preheader: seed the accumulator slot with the element-matched zero.
+        if acc_is_float:
+            seed_val = MoltValue(self.next_var(), type_hint="float")
+            self.emit(MoltOp(kind="CONST_FLOAT", args=[0.0], result=seed_val))
+        else:
+            seed_val = MoltValue(self.next_var(), type_hint="int")
+            self.emit(MoltOp(kind="CONST", args=[0], result=seed_val))
         self.emit(
             MoltOp(
-                kind="STORE_INDEX",
-                args=[acc_cell, zero, acc_next],
+                kind="STORE_VAR",
+                args=[seed_val],
                 result=MoltValue("none"),
+                metadata={"var": acc_slot},
             )
         )
-        for name in user_target_names:
-            prior = saved_locals.get(name)
-            if prior is not None:
-                self.locals[name] = prior
-            else:
-                self.locals.pop(name, None)
-        self.emit(MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none")))
-        self.emit(MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")))
+        if acc_is_float:
+            seen_init = MoltValue(self.next_var(), type_hint="bool")
+            self.emit(MoltOp(kind="CONST_BOOL", args=[False], result=seen_init))
+            self.emit(
+                MoltOp(
+                    kind="STORE_VAR",
+                    args=[seen_init],
+                    result=MoltValue("none"),
+                    metadata={"var": seen_slot},
+                )
+            )
 
-        result = MoltValue(self.next_var(), type_hint="Any")
-        self.emit(MoltOp(kind="INDEX", args=[acc_cell, zero], result=result))
+        # Splice the buffered loop body in after the preheader seed.
+        self.current_ops.extend(body_ops)
+
+        if acc_is_float:
+            result = self._emit_sum_float_result_with_empty_int(acc_slot, seen_slot)
+        else:
+            result = MoltValue(self.next_var(), type_hint=acc_load_hint)
+            self.emit(
+                MoltOp(
+                    kind="LOAD_VAR",
+                    args=[],
+                    result=result,
+                    metadata={"var": acc_slot},
+                )
+            )
         for name in user_target_names:
             boxed = saved_boxed.get(name)
             hint = saved_boxed_hints.get(name)
@@ -176,6 +270,67 @@ class CallReductionMixin(_MixinBase):
             else:
                 self.boxed_local_hints.pop(name, None)
         self.comp_shadow_locals = outer_comp_shadow_locals
+        return result
+
+    def _emit_sum_float_result_with_empty_int(
+        self, acc_slot: str, seen_slot: str
+    ) -> MoltValue:
+        """Resolve a float-accumulator sum to its CPython result type.
+
+        A float accumulator is seeded ``0.0`` for a uniform ``FloatUnboxed`` phi,
+        but ``sum`` over an EMPTY generator returns the int-0 start in CPython.
+        Select the float accumulator when at least one element was consumed
+        (``seen``), else the int 0 — yielding a result whose dynamic type matches
+        CPython (int for empty, float otherwise).
+        """
+        final_float = MoltValue(self.next_var(), type_hint="float")
+        self.emit(
+            MoltOp(
+                kind="LOAD_VAR",
+                args=[],
+                result=final_float,
+                metadata={"var": acc_slot},
+            )
+        )
+        seen = MoltValue(self.next_var(), type_hint="bool")
+        self.emit(
+            MoltOp(
+                kind="LOAD_VAR",
+                args=[],
+                result=seen,
+                metadata={"var": seen_slot},
+            )
+        )
+        result_slot = f"__molt_sum_result_{self.next_var()}"
+        zero_int = MoltValue(self.next_var(), type_hint="int")
+        self.emit(MoltOp(kind="CONST", args=[0], result=zero_int))
+        self.emit(
+            MoltOp(
+                kind="STORE_VAR",
+                args=[zero_int],
+                result=MoltValue("none"),
+                metadata={"var": result_slot},
+            )
+        )
+        self.emit(MoltOp(kind="IF", args=[seen], result=MoltValue("none")))
+        self.emit(
+            MoltOp(
+                kind="STORE_VAR",
+                args=[final_float],
+                result=MoltValue("none"),
+                metadata={"var": result_slot},
+            )
+        )
+        self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
+        result = MoltValue(self.next_var(), type_hint="Any")
+        self.emit(
+            MoltOp(
+                kind="LOAD_VAR",
+                args=[],
+                result=result,
+                metadata={"var": result_slot},
+            )
+        )
         return result
 
     def _emit_any_all_call(
