@@ -9,7 +9,7 @@
 
 use super::*;
 use crate::builtins::exceptions::molt_exception_class;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
 struct CApiTestGuard {
     _guard: std::sync::MutexGuard<'static, ()>,
@@ -241,6 +241,57 @@ extern "C" fn c_api_test_finalizer_records(self_bits: u64) -> u64 {
             return raise_exception::<u64>(_py, "RuntimeError", "__del__ self missing");
         }
         FINALIZER_CALL_COUNT.fetch_add(1, Ordering::SeqCst);
+        none_bits()
+    })
+}
+
+// --- Weakref-callback finalization-window probes (council #1 P0) ---------
+//
+// These globals let a weakref callback observe the refcount of its target AT
+// CALLBACK TIME. The molt P0 fix guarantees the weakref callback runs inside
+// the finalize+weakref-clear revival window, so the target is provably LIVE
+// (rc >= 1) when the callback fires — never at rc=0. `WEAKREF_CB_TARGET_BITS`
+// carries the target's bits to the callback (the weakref itself resolves to
+// None during the callback, matching CPython), and `WEAKREF_CB_TARGET_RC_AT_FIRE`
+// records the refcount the callback observed.
+static WEAKREF_CB_CALL_COUNT: AtomicUsize = AtomicUsize::new(0);
+static WEAKREF_CB_TARGET_BITS: AtomicU64 = AtomicU64::new(0);
+static WEAKREF_CB_TARGET_RC_AT_FIRE: AtomicU32 = AtomicU32::new(0);
+// When set, the callback RESURRECTS the target by taking a strong reference to
+// it (re-incrementing its refcount) and stashing those bits in
+// `WEAKREF_CB_RESURRECT_SINK` — the canonical "weakref callback resurrects the
+// referent" scenario. At rc=0 (the old bug) this strong ref would alias a
+// being-freed object → UAF; inside the window it is a legal resurrection.
+static WEAKREF_CB_RESURRECT: AtomicU32 = AtomicU32::new(0);
+static WEAKREF_CB_RESURRECT_SINK: AtomicU64 = AtomicU64::new(0);
+
+fn weakref_target_rc(bits: u64) -> u32 {
+    match obj_from_bits(bits).as_ptr() {
+        Some(ptr) => unsafe {
+            (*crate::object::header_from_obj_ptr(ptr))
+                .ref_count
+                .load(Ordering::Acquire)
+        },
+        None => 0,
+    }
+}
+
+extern "C" fn c_api_test_weakref_callback_probe(weak_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        // CPython contract: the weakref is already dead during its own callback.
+        if weak_bits == 0 || obj_from_bits(weak_bits).is_none() {
+            return raise_exception::<u64>(_py, "RuntimeError", "weakref callback arg missing");
+        }
+        WEAKREF_CB_CALL_COUNT.fetch_add(1, Ordering::SeqCst);
+        let target_bits = WEAKREF_CB_TARGET_BITS.load(Ordering::SeqCst);
+        // Record the target's refcount as observed from inside the callback.
+        WEAKREF_CB_TARGET_RC_AT_FIRE.store(weakref_target_rc(target_bits), Ordering::SeqCst);
+        if WEAKREF_CB_RESURRECT.load(Ordering::SeqCst) != 0 {
+            // Resurrect: take a strong reference to the target and stash it. The
+            // window holds the target live, so this is a sound re-strengthen.
+            inc_ref_bits(_py, target_bits);
+            WEAKREF_CB_RESURRECT_SINK.store(target_bits, Ordering::SeqCst);
+        }
         none_bits()
     })
 }
@@ -638,6 +689,169 @@ fn guarded_class_def_arms_and_runs_instance_finalizer() {
         }
         dec_ref_bits(_py, class_bits);
         dec_ref_bits(_py, func_bits);
+    });
+}
+
+// Council #1 P0: a weakref callback must run while its target is LIVE (rc >= 1),
+// inside the finalize+weakref-clear revival window — never at rc=0. Before the
+// fix, `dec_ref_ptr` dropped the finalizer's revival ref before clearing
+// weakrefs, so the callback ran with the target at refcount 0 and any code that
+// re-touched the target's storage was a use-after-free. This drives the exact
+// dec->0 path on a plain (no-`__del__`) instance that carries a weakref with a
+// callback and asserts the callback observed the target at rc >= 1.
+#[test]
+fn weakref_callback_runs_with_live_target_not_rc0() {
+    let _guard = CApiTestGuard::new();
+    crate::with_gil_entry_nopanic!(_py, {
+        WEAKREF_CB_CALL_COUNT.store(0, Ordering::SeqCst);
+        WEAKREF_CB_TARGET_BITS.store(0, Ordering::SeqCst);
+        WEAKREF_CB_TARGET_RC_AT_FIRE.store(0, Ordering::SeqCst);
+        WEAKREF_CB_RESURRECT.store(0, Ordering::SeqCst);
+        WEAKREF_CB_RESURRECT_SINK.store(0, Ordering::SeqCst);
+
+        // A plain class: instances have NO __del__, so the revival window here
+        // is opened SOLELY by the HAS_WEAKREF lifetime-boundary bit.
+        let (class_bits, attr_storage) = create_guarded_test_class(_py, b"WeakTargetA", &[]);
+        let class_ptr = obj_from_bits(class_bits).as_ptr().expect("class ptr");
+        let inst_bits = unsafe { crate::alloc_instance_for_class(_py, class_ptr) };
+        let inst_ptr = obj_from_bits(inst_bits).as_ptr().expect("instance ptr");
+        assert_eq!(
+            unsafe { (*crate::object::header_from_obj_ptr(inst_ptr)).flags }
+                & crate::object::HEADER_FLAG_INSTANCE_HAS_FINALIZER,
+            0,
+            "plain instance must NOT be finalizer-sensitive"
+        );
+
+        // The weakref object is itself a heap instance.
+        let weak_bits = unsafe { crate::alloc_instance_for_class(_py, class_ptr) };
+
+        // The callback records the target refcount it observes at fire time.
+        let cb_ptr = crate::builtins::functions::alloc_runtime_function_obj(
+            _py,
+            crate::builtins::functions::runtime_fn_addr(
+                "c_api_test_weakref_callback_probe",
+                c_api_test_weakref_callback_probe as *const (),
+            ),
+            1,
+        );
+        assert!(!cb_ptr.is_null());
+        let cb_bits = MoltObject::from_ptr(cb_ptr).bits();
+
+        WEAKREF_CB_TARGET_BITS.store(inst_bits, Ordering::SeqCst);
+        let registered = crate::molt_weakref_register(weak_bits, inst_bits, cb_bits);
+        assert!(!obj_from_bits(registered).is_none(), "register returns the weakref");
+        // `molt_weakref_register` returns a fresh strong ref to the weakref; the
+        // test does not keep it, so drop it back.
+        dec_ref_bits(_py, registered);
+
+        assert_ne!(
+            unsafe { (*crate::object::header_from_obj_ptr(inst_ptr)).flags }
+                & crate::object::HEADER_FLAG_HAS_WEAKREF,
+            0,
+            "registering a weakref must stamp the HAS_WEAKREF lifetime-boundary bit"
+        );
+
+        // Drop the sole strong reference to the target: rc -> 0 -> revival window
+        // -> weakref_clear_for_ptr fires the callback. The callback must observe a
+        // LIVE target.
+        dec_ref_bits(_py, inst_bits);
+
+        assert_eq!(
+            WEAKREF_CB_CALL_COUNT.load(Ordering::SeqCst),
+            1,
+            "weakref callback must fire exactly once on the target's death"
+        );
+        assert!(
+            WEAKREF_CB_TARGET_RC_AT_FIRE.load(Ordering::SeqCst) >= 1,
+            "weakref callback must run with the target LIVE (rc >= 1), not at rc=0 \
+             (observed rc={})",
+            WEAKREF_CB_TARGET_RC_AT_FIRE.load(Ordering::SeqCst)
+        );
+
+        // The target was not resurrected, so it is now truly destroyed.
+        dec_ref_bits(_py, weak_bits);
+        dec_ref_bits(_py, cb_bits);
+        for attr_bits in attr_storage.into_iter().step_by(2) {
+            dec_ref_bits(_py, attr_bits);
+        }
+        dec_ref_bits(_py, class_bits);
+    });
+}
+
+// Council #1 P0: a weakref callback that RESURRECTS its target (re-strengthens
+// it) must leave the target alive and intact — exactly the scenario that was a
+// UAF when the callback ran at rc=0. After the resurrecting callback returns,
+// the window's closing dec sees rc>1 and aborts the free; the object stays
+// usable. On the later final drop the object is truly freed, and the weakref is
+// NOT cleared a second time (the callback fired exactly once).
+#[test]
+fn weakref_callback_resurrection_through_window_survives() {
+    let _guard = CApiTestGuard::new();
+    crate::with_gil_entry_nopanic!(_py, {
+        WEAKREF_CB_CALL_COUNT.store(0, Ordering::SeqCst);
+        WEAKREF_CB_TARGET_BITS.store(0, Ordering::SeqCst);
+        WEAKREF_CB_TARGET_RC_AT_FIRE.store(0, Ordering::SeqCst);
+        WEAKREF_CB_RESURRECT.store(1, Ordering::SeqCst);
+        WEAKREF_CB_RESURRECT_SINK.store(0, Ordering::SeqCst);
+
+        let (class_bits, attr_storage) = create_guarded_test_class(_py, b"WeakTargetB", &[]);
+        let class_ptr = obj_from_bits(class_bits).as_ptr().expect("class ptr");
+        let inst_bits = unsafe { crate::alloc_instance_for_class(_py, class_ptr) };
+        let inst_ptr = obj_from_bits(inst_bits).as_ptr().expect("instance ptr");
+        let weak_bits = unsafe { crate::alloc_instance_for_class(_py, class_ptr) };
+
+        let cb_ptr = crate::builtins::functions::alloc_runtime_function_obj(
+            _py,
+            crate::builtins::functions::runtime_fn_addr(
+                "c_api_test_weakref_callback_probe",
+                c_api_test_weakref_callback_probe as *const (),
+            ),
+            1,
+        );
+        assert!(!cb_ptr.is_null());
+        let cb_bits = MoltObject::from_ptr(cb_ptr).bits();
+
+        WEAKREF_CB_TARGET_BITS.store(inst_bits, Ordering::SeqCst);
+        let registered = crate::molt_weakref_register(weak_bits, inst_bits, cb_bits);
+        dec_ref_bits(_py, registered);
+
+        // Drop the sole strong ref: the resurrecting callback fires inside the
+        // window and re-increments the target's refcount. The object must NOT be
+        // freed — it survives into the resurrect sink.
+        dec_ref_bits(_py, inst_bits);
+
+        assert_eq!(WEAKREF_CB_CALL_COUNT.load(Ordering::SeqCst), 1);
+        let sink_bits = WEAKREF_CB_RESURRECT_SINK.load(Ordering::SeqCst);
+        assert_eq!(sink_bits, inst_bits, "callback must have stashed the target");
+        // The resurrected object is alive and usable (its header is intact): a
+        // freed object would fail this load or carry a poisoned type_id.
+        assert_eq!(
+            unsafe { (*crate::object::header_from_obj_ptr(inst_ptr)).type_id },
+            crate::TYPE_ID_OBJECT,
+            "resurrected target must retain a valid object header (no UAF/free)"
+        );
+        assert!(
+            weakref_target_rc(inst_bits) >= 1,
+            "resurrected target must be live after the window closes"
+        );
+
+        // Final drop of the resurrected strong ref: now the object truly dies.
+        // The weakref was already cleared once (registry entry removed), so this
+        // drop must not re-fire the callback nor double-free.
+        WEAKREF_CB_RESURRECT.store(0, Ordering::SeqCst);
+        dec_ref_bits(_py, inst_bits);
+        assert_eq!(
+            WEAKREF_CB_CALL_COUNT.load(Ordering::SeqCst),
+            1,
+            "weakref callback must fire EXACTLY once across resurrection + final death"
+        );
+
+        dec_ref_bits(_py, weak_bits);
+        dec_ref_bits(_py, cb_bits);
+        for attr_bits in attr_storage.into_iter().step_by(2) {
+            dec_ref_bits(_py, attr_bits);
+        }
+        dec_ref_bits(_py, class_bits);
     });
 }
 

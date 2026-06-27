@@ -496,6 +496,22 @@ pub(crate) const HEADER_FLAG_CLASS_HAS_FINALIZER: u32 = 1 << 22;
 /// header-flag test.
 pub(crate) const HEADER_FLAG_FUNC_REQUIRES_BINDER: u32 = 1 << 23;
 
+/// Lifetime-boundary bit: this object has had at least one `weakref` registered
+/// against it, so its `dec_ref_ptr` zero-transition must enter the finalize +
+/// weakref-clear revival window (open a revival ref, run any weakref callbacks
+/// while the object is provably live, then re-check resurrection) rather than
+/// freeing immediately. Set once at `molt_weakref_register` and never cleared:
+/// a weakref may later be dropped, but keeping the flag set only means the
+/// (already cheap) `weakref_clear_for_ptr` lock + revival window run on final
+/// death for an object that DID once expose a weakref — strictly narrower than
+/// the previous unconditional per-`dec→0` weakref lock. This is the single
+/// cached fact that lets non-weakref objects skip both the global weakref lock
+/// and the extra revival inc/dec on the hottest free path, and — together with
+/// `HEADER_FLAG_INSTANCE_HAS_FINALIZER` — is what makes the rc=0 weakref-callback
+/// window structurally unreachable (the window is opened BEFORE any callback can
+/// observe the object).
+pub(crate) const HEADER_FLAG_HAS_WEAKREF: u32 = 1 << 24;
+
 // ---------------------------------------------------------------------------
 // Cold header pool — stores rarely-used per-object metadata (poll_fn, state,
 // extended_size) separately from the hot MoltHeader so that the hot header
@@ -1818,16 +1834,28 @@ pub(crate) unsafe fn inc_ref_n_ptr(_py: &PyToken<'_>, ptr: *mut u8, count: u32) 
     }
 }
 
-unsafe fn maybe_run_object_finalizer(py: &PyToken<'_>, ptr: *mut u8) -> bool {
+/// Run the object's `__del__` finalizer INSIDE an already-open revival window.
+///
+/// CONTRACT: the caller (`dec_ref_ptr`) has already opened the revival window —
+/// the object is live at rc≥1 across this whole call — and owns the single
+/// closing `dec_ref` + resurrection check that follows. This function therefore
+/// does NOT touch the refcount itself; it only runs `__del__` (under the
+/// CPython-faithful exception save/clear/restore + synthetic-handler-frame
+/// dance) and sets `HEADER_FLAG_FINALIZER_RAN` so the finalizer is run at most
+/// once per object lifetime. Objects with no finalizer (or whose finalizer
+/// already ran) return immediately without side effects; the caller's window
+/// still covers the subsequent `weakref_clear_for_ptr`, so a weakref callback
+/// can resurrect through the SAME window even for a `__del__`-free object.
+unsafe fn run_object_del_in_revival_window(py: &PyToken<'_>, ptr: *mut u8) {
     let header_ptr = unsafe { header_from_obj_ptr(ptr) };
     if unsafe { (*header_ptr).type_id } != TYPE_ID_OBJECT {
-        return false;
+        return;
     }
     if (unsafe { (*header_ptr).flags } & HEADER_FLAG_INSTANCE_HAS_FINALIZER) == 0 {
-        return false;
+        return;
     }
     if (unsafe { (*header_ptr).flags } & HEADER_FLAG_FINALIZER_RAN) != 0 {
-        return false;
+        return;
     }
     let cold_idx = unsafe { (*header_ptr).cold_idx };
     // Strip the shared bit: stack-allocated and shared-cold-header
@@ -1838,7 +1866,7 @@ unsafe fn maybe_run_object_finalizer(py: &PyToken<'_>, ptr: *mut u8) -> bool {
         .unwrap_or(0);
     let class_bits = unsafe { object_class_bits_from_state(class_state) };
     if class_bits == 0 || obj_from_bits(class_bits).is_none() {
-        return false;
+        return;
     }
     if let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() {
         let class_name = unsafe {
@@ -1849,11 +1877,11 @@ unsafe fn maybe_run_object_finalizer(py: &PyToken<'_>, ptr: *mut u8) -> bool {
             || class_bits == crate::builtin_classes(py).frame
             || class_name.as_deref() == Some("frame")
         {
-            return false;
+            return;
         }
     }
     let Some(del_name_bits) = crate::attr_name_bits_from_bytes(py, b"__del__") else {
-        return false;
+        return;
     };
     let raw_del_bits = obj_from_bits(class_bits)
         .as_ptr()
@@ -1862,16 +1890,11 @@ unsafe fn maybe_run_object_finalizer(py: &PyToken<'_>, ptr: *mut u8) -> bool {
         });
     dec_ref_bits(py, del_name_bits);
     let Some(raw_del_bits) = raw_del_bits else {
-        return false;
+        return;
     };
     unsafe {
         (*header_ptr).flags |= HEADER_FLAG_FINALIZER_RAN;
     }
-    let self_bits = MoltObject::from_ptr(ptr).bits();
-    // Revive the zero-count object through the standard refcount path while we
-    // resolve/call __del__, so resurrection is possible without raw-header
-    // aliasing against later attribute lookup.
-    inc_ref_bits(py, self_bits);
     // CPython `PyObject_CallFinalizer` runs the finalizer with a CLEAN exception
     // state: `_PyErr_GetRaisedException` FETCHES (saves AND clears) any in-flight
     // exception before `tp_finalize`, then `_PyErr_SetRaisedException` restores it
@@ -1960,12 +1983,10 @@ unsafe fn maybe_run_object_finalizer(py: &PyToken<'_>, ptr: *mut u8) -> bool {
         crate::builtins::exceptions::exception_set_last_bits_raw(py, bits);
         dec_ref_bits(py, bits);
     }
-    let prev = unsafe { (*header_ptr).ref_count.fetch_sub(1, AtomicOrdering::AcqRel) };
-    if prev > 1 {
-        // Object was resurrected by __del__; abort deallocation now.
-        return true;
-    }
-    false
+    // The revival ref opened by the caller stays held: `dec_ref_ptr` performs the
+    // single closing `dec_ref` + resurrection check AFTER `weakref_clear_for_ptr`
+    // runs, so a `__del__`-resurrect and a weakref-callback-resurrect collapse to
+    // the SAME post-window check (CPython's finalize+ClearWeakRefs window).
 }
 
 unsafe fn release_dealloc_tracked_bits_vec(
@@ -2080,16 +2101,17 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
             MoltRefCount::acquire_fence();
             // RC drop-insertion substrate (design 20): the rc=1→0 transition,
             // past the immortal/rooted early-returns above. This is NOT yet a
-            // confirmed deallocation: `maybe_run_object_finalizer` below may run a
-            // `__del__` that RESURRECTS the object (re-incrementing its refcount),
-            // in which case `dec_ref_ptr` returns WITHOUT freeing. Counting the
-            // dealloc here would over-count destructions and make `live = alloc -
-            // dealloc` UNDER-count live objects — an unsound leak gauge under
-            // resurrection (phantom "no leak"). So the dealloc counters are bumped
-            // only AFTER the finalizer-resurrection check passes (see below); the
-            // byte total is the one value that must be read from the header BEFORE
-            // the finalizer runs (a `__del__` can mutate/realloc the object, and
-            // for oversized objects `total_size_from_header_fields` reads the cold
+            // confirmed deallocation: the finalize + weakref-clear revival window
+            // below may run a `__del__` OR a weakref callback that RESURRECTS the
+            // object (re-incrementing its refcount), in which case `dec_ref_ptr`
+            // returns WITHOUT freeing. Counting the dealloc here would over-count
+            // destructions and make `live = alloc - dealloc` UNDER-count live
+            // objects — an unsound leak gauge under resurrection (phantom "no
+            // leak"). So the dealloc counters are bumped only AFTER the revival
+            // window's single resurrection check passes (see below); the byte
+            // total is the one value that must be read from the header BEFORE the
+            // window runs (a `__del__` can mutate/realloc the object, and for
+            // oversized objects `total_size_from_header_fields` reads the cold
             // header's `extended_size`), so snapshot it here into a local and
             // commit it after the destruction is confirmed.
             let dealloc_bytes =
@@ -2160,31 +2182,88 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                     name, freed_fn_ptr, ptr as usize,
                 );
             }
-            // Run a finalizer-sensitive object's `__del__` INLINE at this rc→0
-            // point, exactly as CPython finalizes at Py_DECREF→0 (prompt timing:
-            // `del x; print()` runs `__del__` before `print`). `__del__` executes
-            // under a synthetic exception-handler frame so an uncaught raise inside
-            // it is swallowed (written unraisable), never propagated and never
-            // killing the process — see `maybe_run_object_finalizer` for the #65
-            // root cause. If `__del__` RESURRECTS the object (re-increments its
-            // refcount), `maybe_run_object_finalizer` returns `true` and we abort
-            // the free here (FINALIZER_RAN stays set so it never re-runs — CPython
-            // once semantics); a later final drop re-enters and sees FINALIZER_RAN
-            // set, falling straight through to the free tail. Non-finalizer objects
-            // return `false` immediately and fall through with zero added cost.
-            if maybe_run_object_finalizer(py, ptr) {
-                return;
+            // FINALIZE + WEAKREF-CLEAR REVIVAL WINDOW (council #1 P0 fix).
+            //
+            // CPython's `_Py_Dealloc` runs `tp_finalize` (`__del__`) FIRST and,
+            // only if the object was NOT resurrected by it, then runs
+            // `PyObject_ClearWeakRefs` (the weakref callbacks) and `tp_dealloc`.
+            // Crucially, BOTH the finalizer and the weakref callbacks execute with
+            // the object's storage LIVE: CPython resurrects the object across each
+            // Python-visible step. molt previously dropped the finalizer's
+            // temporary revival ref BEFORE clearing weakrefs, so the callbacks ran
+            // at rc=0 — a callback that re-touched the dying object's storage was a
+            // use-after-free. The fix makes the revival window a first-class step
+            // here in `dec_ref_ptr` (the Python lifetime boundary): ONE revival
+            // ref is held across `__del__` AND, separately, across the weakref
+            // clear, with a resurrection check after EACH Python-visible step. No
+            // Python code ever runs while the object is at rc=0.
+            //
+            // The window is opened ONLY when the object actually participates — it
+            // has a `__del__` finalizer (`INSTANCE_HAS_FINALIZER`) or has ever
+            // exposed a weakref (`HAS_WEAKREF`). Objects with neither (the hot
+            // path: ints, strings, tuples, plain instances) skip the revival
+            // inc/dec AND the global weakref lock entirely and fall straight
+            // through to the free tail with zero added cost.
+            let window_flags =
+                header_flags & (HEADER_FLAG_INSTANCE_HAS_FINALIZER | HEADER_FLAG_HAS_WEAKREF);
+            if window_flags != 0 {
+                // Open the revival window: the object is now live at rc≥1 so no
+                // Python code below can observe (or free) it at rc=0. Use the raw
+                // header increment (not `inc_ref_ptr`, which short-circuits on
+                // IMMORTAL — already excluded above — and carries debug tracing);
+                // the matching closes below are the authoritative resurrection
+                // checks.
+                (*header_ptr).ref_count.fetch_add(1, AtomicOrdering::Relaxed);
+                // `__del__` runs INLINE at this rc→0 point, exactly as CPython
+                // finalizes at Py_DECREF→0 (prompt timing: `del x; print()` runs
+                // `__del__` before `print`), under a synthetic exception-handler
+                // frame so an uncaught raise inside it is swallowed (written
+                // unraisable) rather than killing the process — see
+                // `run_object_del_in_revival_window` for the #65 root cause and the
+                // run-once (`FINALIZER_RAN`) semantics. Non-finalizer objects that
+                // only reach here for the weakref clear return immediately from it.
+                run_object_del_in_revival_window(py, ptr);
+                // After `__del__`, the only live reference should be this window's.
+                // If `__del__` RESURRECTED the object (stashed `self`), the count
+                // is now > 1: CPython aborts dealloc here WITHOUT clearing weakrefs
+                // (a resurrected object keeps its weakrefs, and their callbacks do
+                // NOT fire — `resurrect_with_weakref`/`resurrect_then_final_drop`).
+                // Drop the window ref and return; the object stays alive at rc≥1
+                // and a later final drop re-enters (FINALIZER_RAN already set, so
+                // `__del__` never re-runs; the weakrefs are cleared on that real
+                // death). The mid-window dec/check runs NO Python code, so the
+                // object is never observable at rc=0.
+                if (*header_ptr).ref_count.load(AtomicOrdering::Acquire) > 1 {
+                    (*header_ptr).ref_count.fetch_sub(1, AtomicOrdering::AcqRel);
+                    return;
+                }
+                // `__del__` did not resurrect. Clear weakrefs and run their
+                // callbacks WHILE the object is still live (rc==1) in the same
+                // window — never at rc=0. A callback that re-strengthens the
+                // referent (or otherwise re-increments its refcount) makes the
+                // close below see rc>1 and abort the free, exactly as for a
+                // `__del__` resurrection. `weakref_clear_for_ptr` is a no-op (early
+                // return after the global-lock probe) when no weakref is currently
+                // registered, so a `__del__`-only object pays just that probe.
+                weakref_clear_for_ptr(py, ptr);
+                // Close the window: drop the revival ref. If the weakref callbacks
+                // resurrected the object (rc still > 1 after this sub), abort the
+                // free — the object is alive again and a later final drop re-enters
+                // (the weakrefs were already cleared exactly once).
+                let prev_window = (*header_ptr).ref_count.fetch_sub(1, AtomicOrdering::AcqRel);
+                if prev_window > 1 {
+                    return;
+                }
             }
             // Past the resurrection check: the object is now actually being
             // destroyed. Commit the leak-gauge counters so DEALLOC_COUNT means
             // "objects truly freed", keeping `live = alloc - dealloc` exact
             // (resurrected objects are correctly NOT counted as dealloc'd until
             // their real final drop). `type_id` is the cached entry value; the
-            // byte total was snapshotted before the finalizer ran.
+            // byte total was snapshotted before the window ran.
             profile_hit(py, &DEALLOC_COUNT);
             profile_hit_bytes(py, &DEALLOC_BYTES_TOTAL, dealloc_bytes);
             profile_dealloc_type(py, type_id);
-            weakref_clear_for_ptr(py, ptr);
             match type_id {
                 // Hot path: most-frequently-freed types first
                 TYPE_ID_STRING => {
