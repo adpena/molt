@@ -33,8 +33,16 @@ This is the executable gate for the Month 1 "must-pass" roadmap item.
   custody. Tempfile-backed subprocess capture, suite calibration, wasm diff,
   DX build timing, perf-scoreboard launchers, and CLI smoke probes also stay on
   the shared guard path.
-- Use canonical repo-local roots: `target/`, `tmp/diff`, `.molt_cache/`, and `.uv-cache/`.
-- If `MOLT_EXT_ROOT` is set, place those same roots under it explicitly.
+- For maintainer/agent proof lanes and heavy local differential, conformance,
+  benchmark, or CI-style runs, resolve artifact roots through `molt dx env`,
+  `molt dx run`, or `tools/run_context_env.py --prefer-external-artifacts
+  --dx`; on Windows checkouts on `C:`, use a healthy non-`C:` root unless an
+  explicit emergency override is set.
+- Public users and lightweight local examples may compile in place, use
+  Molt/Cargo defaults, or choose roots with explicit flags/environment
+  variables. Repo-local roots (`target/`, `tmp/diff`, `.molt_cache/`,
+  `.uv-cache/`) are the fallback/user-default shape, not heavy agent-lane
+  guidance.
 - Bench conformance setup must not override explicit canonical artifact env
   vars; unset keys derive from the active artifact root, while explicitly set
   roots remain independent and authoritative.
@@ -96,8 +104,8 @@ Required hardening gate details for IR dedicated probes (part of G3):
 - Preferred environment:
   - `MOLT_DIFF_MEASURE_RSS=1`
   - `MOLT_DIFF_TIMEOUT=180`
-  - `MOLT_DIFF_ROOT=${MOLT_EXT_ROOT:-$PWD}/tmp/diff`
-  - `MOLT_CACHE=${MOLT_EXT_ROOT:-$PWD}/.molt_cache`
+  - `export MOLT_SESSION_ID="<unique-session>"`
+  - `eval "$(python3 tools/run_context_env.py --prefer-external-artifacts --dx --format posix)"`
 - Default harness memory guards must remain active for differential,
   benchmark, conformance, regrtest, CLI build/run, and equivalent long-running
   Molt workflows. The repo process sentinel treats canonical artifact roots

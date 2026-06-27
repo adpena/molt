@@ -1045,14 +1045,19 @@ Build relentlessly with high productivity, velocity, and vision in the spirit an
 
 ## Concurrent Development (Required for Multi-Agent)
 
-`MOLT_SESSION_ID` is available when a workflow needs session-scoped build state, but the canonical repository target root remains `target/`. Export it before any build command when another agent may be active:
+`MOLT_SESSION_ID` is available when a workflow needs session-scoped build state.
+For maintainer/agent proof lanes, the canonical artifact root is resolved by
+the DX environment authority; do not pin heavy local work to repo-local
+`target/` on Windows `C:` unless an explicit emergency override is set. Public
+users may still compile in place, use Molt/Cargo defaults, or pass explicit
+output/cache flags.
 
 ```bash
 export MOLT_SESSION_ID="<unique-name>"  # e.g., "agent-1", "debug-session", UUID
 ```
 
 **What it does:**
-- Keeps build state and daemon/socket isolation session-scoped without changing the canonical `target/` guidance
+- Keeps build state and daemon/socket isolation session-scoped under the active DX artifact root
 - Isolates daemon socket — no kill/restart conflicts between sessions
 - Isolates build state, lock-check caches, and staleness checks — fully independent build lifecycle
 - Disables `cargo clean` — incremental builds only, no binary deletion
@@ -1060,12 +1065,11 @@ export MOLT_SESSION_ID="<unique-name>"  # e.g., "agent-1", "debug-session", UUID
 **Pre-build step** (first build in a new session takes ~5 min for full compile):
 ```bash
 export MOLT_SESSION_ID="agent-1"
-export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-/mnt/e/Molt/target/$MOLT_SESSION_ID}"
+eval "$(python3 tools/run_context_env.py --prefer-external-artifacts --dx --format posix)"
 cargo build --profile release-fast -p molt-backend --features native-backend
 ```
-For Codex/Claude development proof lanes, prefer an external target root when
-available. This is agent custody policy, not a public-user requirement; real
-users may compile in place, use Cargo defaults, or pass an explicit output flag.
+For Codex/Claude development proof lanes, prefer a healthy external target root
+when available. This is agent custody policy, not a public-user requirement.
 
 **Daemon management:**
 - Never use raw `pkill`/PID/socket heuristics for backend-daemon cleanup.
