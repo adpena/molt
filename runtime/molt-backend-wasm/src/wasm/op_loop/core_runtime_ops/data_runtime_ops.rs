@@ -245,20 +245,16 @@ fn emit_scalar_parse_op(
     let args = op.args.as_ref().unwrap();
     let arg_name = &args[0];
     let out_ptr = locals[op.out.as_ref().unwrap()];
-    if let Some(len) = locals.get(&format!("{arg_name}_len")).copied() {
-        let ptr = locals
-            .get(&format!("{arg_name}_ptr"))
-            .copied()
-            .unwrap_or(locals[arg_name]);
+    if let Some(scratch) = locals.try_literal_scratch(arg_name) {
         let tmp_rc = locals["__molt_tmp0"];
 
         func.instruction(&Instruction::I64Const(8));
         emit_call(func, reloc_enabled, import_ids["alloc"]);
         func.instruction(&Instruction::LocalSet(out_ptr));
 
-        func.instruction(&Instruction::LocalGet(ptr));
+        func.instruction(&Instruction::LocalGet(scratch.ptr_local()));
         func.instruction(&Instruction::I32WrapI64);
-        func.instruction(&Instruction::LocalGet(len));
+        func.instruction(&Instruction::LocalGet(scratch.len_local()));
         func.instruction(&Instruction::LocalGet(out_ptr));
         emit_call(func, reloc_enabled, import_ids["handle_resolve"]);
         emit_call(func, reloc_enabled, import_ids[scalar_import]);

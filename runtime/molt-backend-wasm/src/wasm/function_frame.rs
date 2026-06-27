@@ -16,6 +16,22 @@ pub(in crate::wasm) struct WasmFrameLocals {
     slots: BTreeMap<String, u32>,
 }
 
+#[derive(Clone, Copy)]
+pub(in crate::wasm) struct WasmLiteralScratchLocals {
+    ptr_local: u32,
+    len_local: u32,
+}
+
+impl WasmLiteralScratchLocals {
+    pub(in crate::wasm) fn ptr_local(self) -> u32 {
+        self.ptr_local
+    }
+
+    pub(in crate::wasm) fn len_local(self) -> u32 {
+        self.len_local
+    }
+}
+
 impl WasmFrameLocals {
     pub(in crate::wasm) fn new() -> Self {
         Self::default()
@@ -43,6 +59,68 @@ impl WasmFrameLocals {
         Q: Ord + ?Sized,
     {
         self.slots.contains_key(name)
+    }
+
+    pub(in crate::wasm) fn ensure_literal_scratch(
+        &mut self,
+        out_name: &str,
+        local_types: &mut Vec<ValType>,
+        local_count: &mut u32,
+    ) -> WasmLiteralScratchLocals {
+        let ptr_local =
+            self.ensure_internal_i64(Self::literal_ptr_name(out_name), local_types, local_count);
+        let len_local =
+            self.ensure_internal_i64(Self::literal_len_name(out_name), local_types, local_count);
+        WasmLiteralScratchLocals {
+            ptr_local,
+            len_local,
+        }
+    }
+
+    pub(in crate::wasm) fn literal_scratch(&self, out_name: &str) -> WasmLiteralScratchLocals {
+        self.try_literal_scratch(out_name).unwrap_or_else(|| {
+            panic!("wasm literal scratch locals for {out_name} are not allocated")
+        })
+    }
+
+    pub(in crate::wasm) fn try_literal_scratch(
+        &self,
+        out_name: &str,
+    ) -> Option<WasmLiteralScratchLocals> {
+        let ptr_name = Self::literal_ptr_name(out_name);
+        let len_name = Self::literal_len_name(out_name);
+        Some(WasmLiteralScratchLocals {
+            ptr_local: self.get(ptr_name.as_str()).copied()?,
+            len_local: self.get(len_name.as_str()).copied()?,
+        })
+    }
+
+    pub(in crate::wasm) fn is_literal_scratch_name(name: &str) -> bool {
+        name.ends_with("_ptr") || name.ends_with("_len")
+    }
+
+    fn ensure_internal_i64(
+        &mut self,
+        name: String,
+        local_types: &mut Vec<ValType>,
+        local_count: &mut u32,
+    ) -> u32 {
+        if let Some(&idx) = self.get(name.as_str()) {
+            return idx;
+        }
+        let idx = *local_count;
+        self.insert(name, idx);
+        local_types.push(ValType::I64);
+        *local_count += 1;
+        idx
+    }
+
+    fn literal_ptr_name(out_name: &str) -> String {
+        format!("{out_name}_ptr")
+    }
+
+    fn literal_len_name(out_name: &str) -> String {
+        format!("{out_name}_len")
     }
 }
 
@@ -126,6 +204,43 @@ struct WasmDispatchFrameLocals {
     state_remap_value_local: Option<u32>,
 }
 
+#[derive(Clone, Copy)]
+struct FrameLocalAllocationPolicy<'a> {
+    read_vars: &'a BTreeSet<String>,
+    param_set: &'a BTreeSet<String>,
+    coalesced_map: &'a BTreeMap<String, String>,
+    dead_sink_idx: u32,
+}
+
+fn ensure_frame_local(
+    locals: &mut WasmFrameLocals,
+    local_types: &mut Vec<ValType>,
+    local_count: &mut u32,
+    policy: FrameLocalAllocationPolicy<'_>,
+    name: &str,
+    as_dead_out: bool,
+) -> u32 {
+    if let Some(&idx) = locals.get(name) {
+        return idx;
+    }
+    if as_dead_out && !policy.read_vars.contains(name) && !policy.param_set.contains(name) {
+        locals.insert(name.to_string(), policy.dead_sink_idx);
+        return policy.dead_sink_idx;
+    }
+    if let Some(repr) = policy.coalesced_map.get(name)
+        && repr != name
+        && let Some(&repr_idx) = locals.get(repr)
+    {
+        locals.insert(name.to_string(), repr_idx);
+        return repr_idx;
+    }
+    let idx = *local_count;
+    locals.insert(name.to_string(), idx);
+    local_types.push(ValType::I64);
+    *local_count += 1;
+    idx
+}
+
 impl WasmFunctionFramePlan {
     pub(super) fn for_function(func_ir: &FunctionIR, ctx: &CompileFuncContext<'_>) -> Self {
         let mut locals = WasmFrameLocals::new();
@@ -166,40 +281,6 @@ impl WasmFunctionFramePlan {
         local_types.push(ValType::I64);
         local_count += 1;
 
-        // ensure_local with dead-local awareness and coalescing: output-only
-        // variables (never read) are mapped to the shared dead_sink_idx
-        // instead of getting their own WASM local slot.  Coalescable
-        // temporaries with non-overlapping lifetimes share locals via
-        // the coalesced_map.  The `as_dead_out` flag indicates the caller
-        // is allocating an output variable that should be checked against
-        // the read set.
-        let mut ensure_local_inner = |name: &str, as_dead_out: bool| -> u32 {
-            if let Some(&idx) = locals.get(name) {
-                return idx;
-            }
-            // Dead local elimination: if this is an output variable that
-            // is never read and not a function parameter, reuse the
-            // shared dead sink local.
-            if as_dead_out && !read_vars.contains(name) && !param_set.contains(name) {
-                locals.insert(name.to_string(), dead_sink_idx);
-                return dead_sink_idx;
-            }
-            // Local coalescing: if this variable maps to a representative
-            // that already has a local, reuse that local index.
-            if let Some(repr) = coalesced_map.get(name)
-                && repr != name
-                && let Some(&repr_idx) = locals.get(repr)
-            {
-                locals.insert(name.to_string(), repr_idx);
-                return repr_idx;
-            }
-            let idx = local_count;
-            locals.insert(name.to_string(), idx);
-            local_types.push(ValType::I64);
-            local_count += 1;
-            idx
-        };
-
         let mut needs_field_fast = false;
         let mut needs_alloc_resolve = false;
         // Scope arena eligibility: any op marked `arena_eligible` triggers
@@ -214,27 +295,51 @@ impl WasmFunctionFramePlan {
         let mut const_seed_seen: BTreeSet<String> = BTreeSet::new();
         let mut const_seed_locals_all: Vec<(u32, i64)> = Vec::new();
         let mut seeded_runtime_const_ops: Vec<(usize, OpIR)> = Vec::new();
+        let allocation_policy = FrameLocalAllocationPolicy {
+            read_vars: &read_vars,
+            param_set: &param_set,
+            coalesced_map: &coalesced_map,
+            dead_sink_idx,
+        };
         for (op_idx, op) in func_ir.ops.iter().enumerate() {
             if wasm_scalar_integer_fast_path_for_op(&scalar_plan, op) {
                 fast_int_count += 1;
             }
             if let Some(var) = &op.var {
                 let var_is_dead_out = op.kind == "store_var";
-                ensure_local_inner(var, var_is_dead_out);
+                ensure_frame_local(
+                    &mut locals,
+                    &mut local_types,
+                    &mut local_count,
+                    allocation_policy,
+                    var,
+                    var_is_dead_out,
+                );
             }
             if let Some(args) = &op.args {
                 for arg in args {
-                    ensure_local_inner(arg, false);
+                    ensure_frame_local(
+                        &mut locals,
+                        &mut local_types,
+                        &mut local_count,
+                        allocation_policy,
+                        arg,
+                        false,
+                    );
                 }
             }
             if let Some(out) = &op.out {
-                let out_local_idx = ensure_local_inner(out, true);
+                let out_local_idx = ensure_frame_local(
+                    &mut locals,
+                    &mut local_types,
+                    &mut local_count,
+                    allocation_policy,
+                    out,
+                    true,
+                );
                 let is_dead = out_local_idx == dead_sink_idx;
                 if needs_literal_pointer_locals(&op.kind) {
-                    // _ptr and _len locals are used internally by the op
-                    // emission so they always need real (non-sink) locals.
-                    ensure_local_inner(&format!("{out}_ptr"), false);
-                    ensure_local_inner(&format!("{out}_len"), false);
+                    locals.ensure_literal_scratch(out, &mut local_types, &mut local_count);
                 }
                 if !const_seed_seen.contains(out) {
                     let bits = const_seed_bits(op);
@@ -689,5 +794,36 @@ impl WasmFunctionFrame {
         }
         self.const_cache.emit_none(func);
         func.instruction(&Instruction::End);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn literal_scratch_locals_are_owned_and_reused_by_frame_locals() {
+        let mut locals = WasmFrameLocals::new();
+        let mut local_types = Vec::new();
+        let mut local_count = 0;
+
+        let first = locals.ensure_literal_scratch("payload", &mut local_types, &mut local_count);
+        let second = locals.ensure_literal_scratch("payload", &mut local_types, &mut local_count);
+        let looked_up = locals.literal_scratch("payload");
+        let maybe_lookup = locals.try_literal_scratch("payload");
+
+        assert_eq!(first.ptr_local(), 0);
+        assert_eq!(first.len_local(), 1);
+        assert_eq!(second.ptr_local(), first.ptr_local());
+        assert_eq!(second.len_local(), first.len_local());
+        assert_eq!(looked_up.ptr_local(), first.ptr_local());
+        assert_eq!(looked_up.len_local(), first.len_local());
+        assert_eq!(maybe_lookup.map(|scratch| scratch.ptr_local()), Some(0));
+        assert!(locals.try_literal_scratch("missing").is_none());
+        assert!(WasmFrameLocals::is_literal_scratch_name("payload_ptr"));
+        assert!(WasmFrameLocals::is_literal_scratch_name("payload_len"));
+        assert!(!WasmFrameLocals::is_literal_scratch_name("payload"));
+        assert_eq!(local_types, vec![ValType::I64, ValType::I64]);
+        assert_eq!(local_count, 2);
     }
 }

@@ -14,7 +14,7 @@ pub(super) fn collect_live_object_locals_for_call(
         if out_name.is_some_and(|out| out == name) {
             continue;
         }
-        if name.starts_with("__molt_tmp") || name.ends_with("_ptr") || name.ends_with("_len") {
+        if name.starts_with("__molt_tmp") || WasmFrameLocals::is_literal_scratch_name(name) {
             continue;
         }
         if last_use_local.get(name).is_none_or(|last| *last <= rel_idx) {
