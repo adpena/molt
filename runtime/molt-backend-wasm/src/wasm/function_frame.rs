@@ -6,7 +6,6 @@ use super::state_dispatch::NonLinearDispatchLocals;
 use super::*;
 use crate::wasm_abi_generated::WasmConstLiteralPayload;
 use std::borrow::Borrow;
-use std::collections::btree_map::Iter;
 use std::ops::Index;
 
 #[derive(Clone, Default)]
@@ -108,6 +107,7 @@ impl WasmLiteralScratchPolicy {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(in crate::wasm) enum WasmFrameLocalKind {
     Value,
+    NoneSingleton,
     FixedSynthetic(WasmFrameSyntheticLocal),
     LiteralScratchPtr,
     LiteralScratchLen,
@@ -116,8 +116,29 @@ pub(in crate::wasm) enum WasmFrameLocalKind {
 }
 
 impl WasmFrameLocalKind {
-    fn is_call_retention_exempt(self) -> bool {
+    pub(in crate::wasm) fn is_call_retention_exempt(self) -> bool {
         !matches!(self, Self::Value)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in crate::wasm) struct WasmNamedFrameLocal<'a> {
+    name: &'a str,
+    slot: u32,
+    kind: WasmFrameLocalKind,
+}
+
+impl<'a> WasmNamedFrameLocal<'a> {
+    pub(in crate::wasm) fn name(self) -> &'a str {
+        self.name
+    }
+
+    pub(in crate::wasm) fn slot(self) -> u32 {
+        self.slot
+    }
+
+    pub(in crate::wasm) fn kind(self) -> WasmFrameLocalKind {
+        self.kind
     }
 }
 
@@ -168,21 +189,6 @@ impl WasmFrameSyntheticLocal {
             | Self::WasmScopeArena => ValType::I64,
         }
     }
-
-    fn from_name(name: &str) -> Option<Self> {
-        match name {
-            "__dead_sink" => Some(Self::DeadSink),
-            "__molt_tmp0" => Some(Self::MoltTmp0),
-            "__molt_tmp1" => Some(Self::MoltTmp1),
-            "__molt_tmp2" => Some(Self::MoltTmp2),
-            "__molt_tmp3" => Some(Self::MoltTmp3),
-            "__wasm_tmp0" => Some(Self::WasmTmp0),
-            "__wasm_tmp1" => Some(Self::WasmTmp1),
-            "__wasm_alloc_resolve" => Some(Self::WasmAllocResolve),
-            "__wasm_scope_arena" => Some(Self::WasmScopeArena),
-            _ => None,
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -216,7 +222,8 @@ impl WasmFrameLocals {
     }
 
     pub(in crate::wasm) fn insert(&mut self, name: String, slot: u32) -> Option<u32> {
-        self.insert_with_kind(name, slot, WasmFrameLocalKind::Value)
+        let kind = Self::value_kind_for_name(&name);
+        self.insert_with_kind(name, slot, kind)
     }
 
     pub(in crate::wasm) fn get<Q>(&self, name: &Q) -> Option<&u32>
@@ -308,10 +315,6 @@ impl WasmFrameLocals {
     ) -> Option<WasmLiteralScratchLocals> {
         self.try_literal_scratch(out_name)
             .filter(|scratch| scratch.parse_scalar_eligible())
-    }
-
-    pub(in crate::wasm) fn is_literal_scratch_name(name: &str) -> bool {
-        name.ends_with("_ptr") || name.ends_with("_len")
     }
 
     pub(in crate::wasm) fn ensure_synthetic(
@@ -409,37 +412,23 @@ impl WasmFrameLocals {
         self.anonymous_kinds.get(&slot).copied()
     }
 
-    pub(in crate::wasm) fn name_kind(&self, name: &str) -> Option<WasmFrameLocalKind> {
+    pub(in crate::wasm) fn local_kind(&self, name: &str) -> Option<WasmFrameLocalKind> {
         self.name_kinds.get(name).copied()
     }
 
-    pub(in crate::wasm) fn is_synthetic_name(name: &str) -> bool {
-        WasmFrameSyntheticLocal::from_name(name).is_some()
-    }
-
-    pub(in crate::wasm) fn is_reserved_internal_name(name: &str) -> bool {
-        Self::is_synthetic_name(name)
-            || Self::is_literal_scratch_name(name)
-            || name.starts_with("__multi_ret_")
-            || name.starts_with("__multi_call_")
-    }
-
-    pub(in crate::wasm) fn is_call_retention_exempt_name(&self, name: &str) -> bool {
-        name == Self::NONE_NAME
-            || self
-                .name_kind(name)
-                .is_some_and(WasmFrameLocalKind::is_call_retention_exempt)
-    }
-
-    pub(in crate::wasm) fn is_coalescable_value_name(
-        name: &str,
-        read_vars: &BTreeSet<String>,
-        param_set: &BTreeSet<String>,
-    ) -> bool {
-        (name.starts_with("__tmp") || name.starts_with("__v"))
-            && !param_set.contains(name)
-            && read_vars.contains(name)
-            && !Self::is_reserved_internal_name(name)
+    pub(in crate::wasm) fn named_locals(&self) -> impl Iterator<Item = WasmNamedFrameLocal<'_>> {
+        self.slots.iter().map(|(name, &slot)| {
+            let kind = self
+                .name_kinds
+                .get(name)
+                .copied()
+                .unwrap_or(WasmFrameLocalKind::Value);
+            WasmNamedFrameLocal {
+                name: name.as_str(),
+                slot,
+                kind,
+            }
+        })
     }
 
     fn insert_with_kind(
@@ -450,6 +439,14 @@ impl WasmFrameLocals {
     ) -> Option<u32> {
         self.name_kinds.insert(name.clone(), kind);
         self.slots.insert(name, slot)
+    }
+
+    fn value_kind_for_name(name: &str) -> WasmFrameLocalKind {
+        if name == Self::NONE_NAME {
+            WasmFrameLocalKind::NoneSingleton
+        } else {
+            WasmFrameLocalKind::Value
+        }
     }
 
     fn record_literal_scratch_policy(&mut self, out_name: &str, policy: WasmLiteralScratchPolicy) {
@@ -483,6 +480,13 @@ impl WasmFrameLocals {
         local_count: &mut u32,
     ) -> u32 {
         if let Some(&idx) = self.get(name.as_str()) {
+            let existing_kind = self
+                .local_kind(name.as_str())
+                .unwrap_or(WasmFrameLocalKind::Value);
+            assert_eq!(
+                existing_kind, kind,
+                "wasm frame local {name} cannot be reused as {kind:?}; already {existing_kind:?}"
+            );
             return idx;
         }
         let idx = *local_count;
@@ -526,7 +530,7 @@ impl From<BTreeMap<String, u32>> for WasmFrameLocals {
     fn from(slots: BTreeMap<String, u32>) -> Self {
         let name_kinds = slots
             .keys()
-            .map(|name| (name.clone(), WasmFrameLocalKind::Value))
+            .map(|name| (name.clone(), Self::value_kind_for_name(name)))
             .collect();
         Self {
             slots,
@@ -534,15 +538,6 @@ impl From<BTreeMap<String, u32>> for WasmFrameLocals {
             anonymous_kinds: BTreeMap::new(),
             literal_scratch_policies: BTreeMap::new(),
         }
-    }
-}
-
-impl<'a> IntoIterator for &'a WasmFrameLocals {
-    type Item = (&'a String, &'a u32);
-    type IntoIter = Iter<'a, String, u32>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        self.slots.iter()
     }
 }
 
@@ -974,8 +969,11 @@ impl WasmFunctionFramePlan {
                 }
             }
             let mut slot_to_names: BTreeMap<u32, Vec<String>> = BTreeMap::new();
-            for (name, &idx) in &locals {
-                slot_to_names.entry(idx).or_default().push(name.clone());
+            for local in locals.named_locals() {
+                slot_to_names
+                    .entry(local.slot())
+                    .or_default()
+                    .push(local.name().to_string());
             }
             for (slot, _) in &const_seed_locals {
                 if let Some(names) = slot_to_names.get(slot) {
@@ -1210,18 +1208,25 @@ mod tests {
         assert!(locals.try_literal_scratch("missing").is_none());
         assert!(locals.try_parse_scalar_literal_scratch("missing").is_none());
         assert_eq!(
-            locals.name_kind("payload_ptr"),
+            locals.local_kind("payload_ptr"),
             Some(WasmFrameLocalKind::LiteralScratchPtr)
         );
         assert_eq!(
-            locals.name_kind("payload_len"),
+            locals.local_kind("payload_len"),
             Some(WasmFrameLocalKind::LiteralScratchLen)
         );
-        assert!(locals.is_call_retention_exempt_name("payload_ptr"));
-        assert!(locals.is_call_retention_exempt_name("payload_len"));
-        assert!(WasmFrameLocals::is_literal_scratch_name("payload_ptr"));
-        assert!(WasmFrameLocals::is_literal_scratch_name("payload_len"));
-        assert!(!WasmFrameLocals::is_literal_scratch_name("payload"));
+        assert!(
+            locals
+                .named_locals()
+                .find(|local| local.name() == "payload_ptr")
+                .is_some_and(|local| local.kind().is_call_retention_exempt())
+        );
+        assert!(
+            locals
+                .named_locals()
+                .find(|local| local.name() == "payload_len")
+                .is_some_and(|local| local.kind().is_call_retention_exempt())
+        );
         assert_eq!(local_types, vec![ValType::I64, ValType::I64]);
         assert_eq!(local_count, 2);
     }
@@ -1360,26 +1365,63 @@ mod tests {
         );
         assert_eq!(local_count, 6);
 
-        assert!(WasmFrameLocals::is_synthetic_name("__dead_sink"));
-        assert!(WasmFrameLocals::is_synthetic_name("__molt_tmp0"));
-        assert!(WasmFrameLocals::is_synthetic_name("__wasm_tmp0"));
         assert_eq!(
-            locals.name_kind("__molt_tmp0"),
+            locals.local_kind("__molt_tmp0"),
             Some(WasmFrameLocalKind::FixedSynthetic(
                 WasmFrameSyntheticLocal::MoltTmp0
             ))
         );
         assert_eq!(
-            locals.name_kind("__wasm_tmp0"),
+            locals.local_kind("__wasm_tmp0"),
             Some(WasmFrameLocalKind::FixedSynthetic(
                 WasmFrameSyntheticLocal::WasmTmp0
             ))
         );
-        assert!(locals.is_call_retention_exempt_name("__molt_tmp0"));
-        assert!(locals.is_call_retention_exempt_name("__wasm_tmp0"));
-        assert!(locals.is_call_retention_exempt_name("none"));
-        assert!(!WasmFrameLocals::is_synthetic_name("__tmp0"));
-        assert!(!locals.is_call_retention_exempt_name("__tmp0"));
+        assert!(
+            locals
+                .named_locals()
+                .find(|local| local.name() == "__molt_tmp0")
+                .is_some_and(|local| local.kind().is_call_retention_exempt())
+        );
+        assert!(
+            locals
+                .named_locals()
+                .find(|local| local.name() == "__wasm_tmp0")
+                .is_some_and(|local| local.kind().is_call_retention_exempt())
+        );
+        locals.insert(WasmFrameLocals::NONE_NAME.to_string(), 6);
+        assert_eq!(
+            locals.local_kind(WasmFrameLocals::NONE_NAME),
+            Some(WasmFrameLocalKind::NoneSingleton)
+        );
+        assert!(
+            locals
+                .named_locals()
+                .find(|local| local.name() == WasmFrameLocals::NONE_NAME)
+                .is_some_and(|local| local.kind().is_call_retention_exempt())
+        );
+        locals.insert("__tmp0".to_string(), 7);
+        assert_eq!(locals.local_kind("__tmp0"), Some(WasmFrameLocalKind::Value));
+        assert!(
+            locals
+                .named_locals()
+                .find(|local| local.name() == "__tmp0")
+                .is_some_and(|local| !local.kind().is_call_retention_exempt())
+        );
+    }
+
+    #[test]
+    fn frame_locals_from_map_preserves_value_name_kinds() {
+        let locals = WasmFrameLocals::from(BTreeMap::from([
+            (WasmFrameLocals::NONE_NAME.to_string(), 0),
+            ("__tmp0".to_string(), 1),
+        ]));
+
+        assert_eq!(
+            locals.local_kind(WasmFrameLocals::NONE_NAME),
+            Some(WasmFrameLocalKind::NoneSingleton)
+        );
+        assert_eq!(locals.local_kind("__tmp0"), Some(WasmFrameLocalKind::Value));
     }
 
     #[test]
@@ -1449,38 +1491,5 @@ mod tests {
             ]
         );
         assert_eq!(local_count, 12);
-    }
-
-    #[test]
-    fn coalescable_value_names_exclude_frame_owned_scratch() {
-        let read_vars = BTreeSet::from([
-            "__tmp0".to_string(),
-            "__v1".to_string(),
-            "__molt_tmp0".to_string(),
-            "payload_ptr".to_string(),
-        ]);
-        let param_set = BTreeSet::from(["__tmp_param".to_string()]);
-
-        assert!(WasmFrameLocals::is_coalescable_value_name(
-            "__tmp0", &read_vars, &param_set
-        ));
-        assert!(WasmFrameLocals::is_coalescable_value_name(
-            "__v1", &read_vars, &param_set
-        ));
-        assert!(!WasmFrameLocals::is_coalescable_value_name(
-            "__molt_tmp0",
-            &read_vars,
-            &param_set
-        ));
-        assert!(!WasmFrameLocals::is_coalescable_value_name(
-            "payload_ptr",
-            &read_vars,
-            &param_set
-        ));
-        assert!(!WasmFrameLocals::is_coalescable_value_name(
-            "__tmp_param",
-            &read_vars,
-            &param_set
-        ));
     }
 }
