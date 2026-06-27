@@ -19,11 +19,24 @@ OUT_PY = ROOT / "src/molt/_wasm_abi_generated.py"
 OUT_TABLE_LAYOUT_INC = ROOT / "runtime/wasm_table_layout.inc"
 OUT_POLL_INC = ROOT / "runtime/wasm_poll_callables.inc"
 OUT_RESERVED_INC = ROOT / "runtime/wasm_runtime_callables.inc"
+OUT_ALLOWED_IMPORTS = ROOT / "tools/wasm_allowed_imports.txt"
 WASM_VAL_TYPES = {
     "i32": "I32",
     "i64": "I64",
     "f32": "F32",
     "f64": "F64",
+}
+STRIP_IMPORT_CATEGORIES = {
+    "essential",
+    "io_stdout",
+    "io_filesystem",
+    "process",
+    "database",
+    "websocket",
+    "socket",
+    "time",
+    "indirect_call",
+    "table",
 }
 
 
@@ -296,6 +309,70 @@ def load_manifest(path: Path = MANIFEST) -> dict:
         raise WasmAbiManifestError(
             "reserved runtime callable indices must be contiguous from zero"
         )
+    link_allowed = data.get("link_allowed_import", [])
+    if not isinstance(link_allowed, list):
+        raise WasmAbiManifestError("link_allowed_import must be a list of tables")
+    seen_link_allowed: set[str] = set()
+    for idx, entry in enumerate(link_allowed):
+        if not isinstance(entry, dict):
+            raise WasmAbiManifestError(f"link_allowed_import entry {idx} must be a table")
+        name = entry.get("name")
+        if not isinstance(name, str) or not name:
+            raise WasmAbiManifestError(
+                f"link_allowed_import entry {idx} has invalid name"
+            )
+        if name in seen_link_allowed:
+            raise WasmAbiManifestError(f"duplicate linker allowlist import {name!r}")
+        seen_link_allowed.add(name)
+
+    def validate_strip_rule(
+        section: str, idx: int, entry: object, *, prefix_rule: bool
+    ) -> None:
+        if not isinstance(entry, dict):
+            raise WasmAbiManifestError(f"{section} entry {idx} must be a table")
+        module = entry.get("module")
+        key = entry.get("prefix" if prefix_rule else "name")
+        category = entry.get("category")
+        description = entry.get("description")
+        if not isinstance(module, str) or not module:
+            raise WasmAbiManifestError(f"{section} entry {idx} has invalid module")
+        if not isinstance(key, str) or not key:
+            field = "prefix" if prefix_rule else "name"
+            raise WasmAbiManifestError(f"{section} entry {idx} has invalid {field}")
+        if not isinstance(category, str) or category not in STRIP_IMPORT_CATEGORIES:
+            raise WasmAbiManifestError(
+                f"{section} entry {idx} has invalid category {category!r}"
+            )
+        if not isinstance(description, str) or not description:
+            raise WasmAbiManifestError(
+                f"{section} entry {idx} has invalid description"
+            )
+
+    strip_rules = data.get("strip_import_rule", [])
+    if not isinstance(strip_rules, list):
+        raise WasmAbiManifestError("strip_import_rule must be a list of tables")
+    seen_strip_rules: set[tuple[str, str]] = set()
+    for idx, entry in enumerate(strip_rules):
+        validate_strip_rule("strip_import_rule", idx, entry, prefix_rule=False)
+        key = (entry["module"], entry["name"])
+        if key in seen_strip_rules:
+            raise WasmAbiManifestError(f"duplicate strip import rule {key!r}")
+        seen_strip_rules.add(key)
+
+    strip_prefix_rules = data.get("strip_import_prefix_rule", [])
+    if not isinstance(strip_prefix_rules, list):
+        raise WasmAbiManifestError(
+            "strip_import_prefix_rule must be a list of tables"
+        )
+    seen_strip_prefix_rules: set[tuple[str, str]] = set()
+    for idx, entry in enumerate(strip_prefix_rules):
+        validate_strip_rule(
+            "strip_import_prefix_rule", idx, entry, prefix_rule=True
+        )
+        key = (entry["module"], entry["prefix"])
+        if key in seen_strip_prefix_rules:
+            raise WasmAbiManifestError(f"duplicate strip import prefix rule {key!r}")
+        seen_strip_prefix_rules.add(key)
     return data
 
 
@@ -522,6 +599,28 @@ def render_py(data: dict) -> str:
         "WASM_RESERVED_RUNTIME_CALLABLE_COUNT: int = "
         "len(WASM_RESERVED_RUNTIME_CALLABLES)\n\n"
     )
+    lines.append("WASM_LINK_ALLOWED_IMPORTS: tuple[str, ...] = (\n")
+    for entry in data.get("link_allowed_import", []):
+        lines.append(f'    "{entry["name"]}",\n')
+    lines.append(")\n\n")
+    lines.append(
+        "WASM_STRIP_IMPORT_RULES: tuple[tuple[str, str, str, str], ...] = (\n"
+    )
+    for entry in data.get("strip_import_rule", []):
+        lines.append(
+            f'    ("{entry["module"]}", "{entry["name"]}", '
+            f'"{entry["category"]}", "{entry["description"]}"),\n'
+        )
+    lines.append(")\n\n")
+    lines.append(
+        "WASM_STRIP_IMPORT_PREFIX_RULES: tuple[tuple[str, str, str, str], ...] = (\n"
+    )
+    for entry in data.get("strip_import_prefix_rule", []):
+        lines.append(
+            f'    ("{entry["module"]}", "{entry["prefix"]}", '
+            f'"{entry["category"]}", "{entry["description"]}"),\n'
+        )
+    lines.append(")\n\n")
     lines.append("PURE_PROFILE_SKIP_PREFIXES: tuple[str, ...] = (\n")
     for entry in data.get("pure_skip_prefix", []):
         lines.append(f'    "{entry["prefix"]}",\n')
@@ -574,6 +673,13 @@ def render_reserved_inc(data: dict) -> str:
     return "".join(lines)
 
 
+def render_allowed_imports(data: dict) -> str:
+    lines = [_header("#")]
+    for entry in data.get("link_allowed_import", []):
+        lines.append(f'{entry["name"]}\n')
+    return "".join(lines)
+
+
 def _check(path: Path, rendered: str) -> bool:
     if not path.exists():
         print(f"MISSING generated file: {path}", file=sys.stderr)
@@ -599,6 +705,7 @@ def main(argv: list[str]) -> int:
     rendered_table_layout_inc = render_table_layout_inc(data)
     rendered_poll_inc = render_poll_inc(data)
     rendered_reserved_inc = render_reserved_inc(data)
+    rendered_allowed_imports = render_allowed_imports(data)
     if args.check:
         return (
             0
@@ -607,6 +714,7 @@ def main(argv: list[str]) -> int:
             and _check(OUT_TABLE_LAYOUT_INC, rendered_table_layout_inc)
             and _check(OUT_POLL_INC, rendered_poll_inc)
             and _check(OUT_RESERVED_INC, rendered_reserved_inc)
+            and _check(OUT_ALLOWED_IMPORTS, rendered_allowed_imports)
             else 1
         )
     OUT_RS.write_text(rendered_rs, encoding="utf-8", newline="\n")
@@ -614,6 +722,9 @@ def main(argv: list[str]) -> int:
     OUT_TABLE_LAYOUT_INC.write_text(rendered_table_layout_inc, encoding="utf-8", newline="\n")
     OUT_POLL_INC.write_text(rendered_poll_inc, encoding="utf-8", newline="\n")
     OUT_RESERVED_INC.write_text(rendered_reserved_inc, encoding="utf-8", newline="\n")
+    OUT_ALLOWED_IMPORTS.write_text(
+        rendered_allowed_imports, encoding="utf-8", newline="\n"
+    )
     return 0
 
 

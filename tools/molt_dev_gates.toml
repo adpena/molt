@@ -173,6 +173,8 @@ name = "wasm-abi-registry"
 description = "WASM ABI registry: manifest-owned imports, runtime-surface matchers, and generated sync."
 globs = [
   "tools/gen_wasm_abi.py",
+  "tools/wasm_allowed_imports.txt",
+  "tools/wasm_strip_unused.py",
   "runtime/molt-backend-wasm/src/wasm_abi_manifest.toml",
   "runtime/molt-backend-wasm/src/wasm_abi_generated.rs",
   "runtime/molt-backend-wasm/src/wasm_imports.rs",
