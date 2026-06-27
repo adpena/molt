@@ -1,6 +1,7 @@
 use super::super::*;
 use super::common::unknown_widget_subcommand_message;
 use super::generic::handle_generic_widget_path_command;
+use super::listbox::handle_listbox_widget_path_command;
 use super::menu::handle_menu_widget_path_command;
 
 pub(in crate::tk) fn handle_widget_path_command(
@@ -27,6 +28,11 @@ pub(in crate::tk) fn handle_widget_path_command(
         return Ok(bits);
     }
     if let Some(bits) = handle_menu_widget_path_command(py, handle, widget_path, &subcommand, args)?
+    {
+        return Ok(bits);
+    }
+    if let Some(bits) =
+        handle_listbox_widget_path_command(py, handle, widget_path, &subcommand, args)?
     {
         return Ok(bits);
     }
