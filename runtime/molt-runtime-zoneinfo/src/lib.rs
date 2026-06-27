@@ -10,5 +10,8 @@
 
 /// FFI bridge to molt-runtime internal functions (resolved at link time).
 pub mod bridge;
+#[cfg(test)]
+#[path = "../../molt-runtime-core/src/bridge_test_stubs.rs"]
+mod bridge_test_stubs;
 
 pub mod zoneinfo;

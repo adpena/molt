@@ -263,6 +263,14 @@ def _build_checks() -> list[Check]:
     )
     checks.append(
         Check(
+            name="runtime-bridge-test-stubs",
+            tier=1,
+            cmd=_uv_run(str(TOOLS / "check_runtime_bridge_test_stubs.py")),
+            timeout=30,
+        )
+    )
+    checks.append(
+        Check(
             # Fail closed if the canonical perf gate is ever un-wired from main
             # again (a gate that never fires certifies nothing -- the TIER-0
             # proxy-measurement meta-bug).
