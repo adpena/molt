@@ -4,6 +4,7 @@ pub mod bolt;
 pub mod cache;
 pub mod call_facts;
 pub mod call_graph;
+pub mod call_targets;
 pub mod cfg;
 pub mod deopt;
 pub mod dominators;

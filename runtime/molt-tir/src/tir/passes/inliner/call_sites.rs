@@ -1,6 +1,7 @@
 use std::collections::{BTreeSet, HashSet};
 
 use crate::tir::blocks::{BlockId, TirBlock};
+use crate::tir::call_targets::is_gpu_runtime_symbol;
 use crate::tir::function::TirFunction;
 use crate::tir::ops::{AttrValue, OpCode, TirOp};
 use crate::tir::values::ValueId;
@@ -10,21 +11,6 @@ fn s_value(op: &TirOp) -> Option<&str> {
         Some(AttrValue::Str(s)) => Some(s.as_str()),
         _ => None,
     }
-}
-
-/// The fixed runtime-intrinsic `s_value` symbols that lift to `OpCode::Call` but
-/// are runtime-helper calls (gpu_*), never user-defined functions. They are not
-/// inlinable call sites (there is no module-defined body to inline). Mirrors the
-/// call-graph's `is_gpu_runtime_symbol`.
-fn is_gpu_runtime_symbol(symbol: &str) -> bool {
-    matches!(
-        symbol,
-        "molt_gpu_thread_id"
-            | "molt_gpu_block_id"
-            | "molt_gpu_block_dim"
-            | "molt_gpu_grid_dim"
-            | "molt_gpu_barrier"
-    )
 }
 
 /// One statically-resolvable, inlinable call site inside a caller block.
