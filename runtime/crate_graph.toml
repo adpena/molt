@@ -1,0 +1,316 @@
+# Declared crate-graph DAG -- the single source of truth for the recompile
+# blast-radius ratchet (doc 56 FACT-A / Phase 1a; 21b "Target crate graph").
+#
+# WHAT THIS FILE IS
+# -----------------
+# Every workspace crate is assigned a `layer` (an integer rung in the build
+# DAG). Dependencies flow STRICTLY DOWNWARD: a crate at layer N may depend only
+# on crates at a STRICTLY LOWER layer (N-1, N-2, ...). Two crates at the SAME
+# layer must be independent (no edge between them) unless the edge is explicitly
+# listed in `[[allowed_same_layer_edges]]`.
+#
+# The layer numbers are the longest-path depth of each crate in the CURRENT
+# (verified-acyclic) workspace dependency graph, so the declared DAG is exactly
+# the structural reality at seed time (doc 56 Phase 1a: "seed it with the current
+# pre-fan-out reality"). Because every edge already points strictly downward, a
+# future edge that shortcuts UPWARD (re-coupling a lower layer to a higher one)
+# or couples two SIBLINGS becomes a detectable back-edge.
+#
+# This makes the 21b/21f layering an enforced FACT, not a design aspiration:
+#   * `molt-ir` is the vocabulary fixpoint (layer 0) -- it must NEVER recompile
+#     when a pass or backend changes, so it must have zero workspace deps.
+#   * `molt-codegen-abi` is the NaN-box/type-id ABI fixpoint (layer 0).
+#   * `molt-passes` (layer 1) depends only on the vocabulary.
+#   * `molt-tir` (layer 2) is today's lowering+plan crate (the future
+#     `molt-lower`); it depends on passes (transitively the vocabulary).
+#   * the 5 backend crates (layer 3) are leaf consumers of lowering+ABI; they
+#     must be independent of each other (the single documented exception,
+#     native -> llvm, is listed below and becomes live when `molt-backend-llvm`
+#     is extracted in 21f S4).
+#   * `molt-backend` (layer 4) is the thin driver -- the ONE crate allowed to
+#     fan in every backend.
+#   * the runtime satellite stack is a parallel DAG in the same rungs:
+#     obj-model (L1) <- runtime-core (L2) <- stdlib satellites (L3) <-
+#     molt-runtime (L4) <- {embed, ffi, wasm-host} (L5).
+#
+# tools/build_graph_audit.py reads this file + `cargo metadata` (NO compile) and
+#   1. asserts every normal/build dependency edge respects the layer ordering
+#      (`crate_layer_backedges` must stay 0), and
+#   2. records each crate's recompile blast radius (the count of crates that
+#      transitively depend on it) and ratchets `max_crate_blast_radius` plus the
+#      per-crate radius map so a new re-coupling edge that widens any crate's
+#      downstream cone fails CI.
+#
+# An intentional new cross-layer edge is a deliberate, reviewed change here (move
+# a crate's layer, or add an `[[allowed_same_layer_edges]]` entry) -- the ratchet
+# forces the coupling to be explicit, never silent. That is the feature, not a
+# bug.
+#
+# AUTHORITY: this declares INTENT; the measured graph comes from `cargo metadata`
+# over the ROOT workspace `Cargo.toml` (never runtime/Cargo.toml -- that nested
+# workspace is not what cargo resolves from the repo root). Dev-dependencies are
+# excluded from the lib-recompile cone (a dev edge only rebuilds the dependent's
+# test target, not its lib) but are still required to respect the layering so a
+# test-only edge can never silently become the seed of a production cycle.
+
+schema_version = 1
+
+# ---------------------------------------------------------------------------
+# Layer 0 -- vocabulary / ABI / primitive fixpoints (zero workspace deps).
+# These are the roots of the DAG; they never recompile when anything above
+# them changes. Adding ANY workspace dep to a layer-0 crate is a back-edge.
+# ---------------------------------------------------------------------------
+
+[[crate]]
+name = "molt-ir"
+layer = 0
+role = "TIR vocabulary + SimpleIR transport + Repr vocab + std-leaf facts"
+
+[[crate]]
+name = "molt-codegen-abi"
+layer = 0
+role = "NaN-box / header-layout / type-id ABI shared by every backend"
+
+[[crate]]
+name = "molt-db"
+layer = 0
+role = "embedded storage primitive (runtime + worker leaf)"
+
+[[crate]]
+name = "molt-gpu"
+layer = 0
+role = "gpu/tensor primitive consumed by the runtime"
+
+[[crate]]
+name = "molt-harness"
+layer = 0
+role = "test/bench harness primitive"
+
+[[crate]]
+name = "molt-runtime-protobuf"
+layer = 0
+role = "protobuf codec primitive"
+
+[[crate]]
+name = "molt-snapshot"
+layer = 0
+role = "snapshot primitive"
+
+[[crate]]
+name = "molt-tier"
+layer = 0
+role = "tiering primitive"
+
+# ---------------------------------------------------------------------------
+# Layer 1 -- direct consumers of the layer-0 fixpoints.
+# ---------------------------------------------------------------------------
+
+[[crate]]
+name = "molt-passes"
+layer = 1
+role = "TIR transforms + analyses + pass orchestration (deps molt-ir only)"
+
+[[crate]]
+name = "molt-lang-obj-model"
+layer = 1
+role = "object-model vocabulary (deps molt-codegen-abi); root of the runtime stack"
+
+[[crate]]
+name = "molt-worker"
+layer = 1
+role = "worker over molt-db"
+
+# ---------------------------------------------------------------------------
+# Layer 2 -- lowering + plan logic, the cpython ABI surface, and runtime core.
+# molt-tir is today's lowering crate (the future molt-lower of 21f S2): it has a
+# hard production dependency on molt-passes (ValueRangeResult, drop-insertion
+# attrs), so it sits ABOVE passes.
+# ---------------------------------------------------------------------------
+
+[[crate]]
+name = "molt-tir"
+layer = 2
+role = "TIR->{LIR,SimpleIR,WASM-IR} lowering + representation-plan logic"
+
+[[crate]]
+name = "molt-lang-cpython-abi"
+layer = 2
+role = "CPython ABI surface over the object model"
+
+[[crate]]
+name = "molt-runtime-core"
+layer = 2
+role = "runtime core consumed by every stdlib satellite (deps obj-model)"
+
+# ---------------------------------------------------------------------------
+# Layer 3 -- leaf codegen backends + the stdlib runtime satellites.
+# The 5 backend crates are leaf consumers of lowering (molt-tir) + ABI
+# (molt-codegen-abi). They MUST be independent of each other; the single
+# documented exception (native -> llvm, 21b flag #2) is whitelisted below and
+# becomes live when molt-backend-llvm is extracted (21f S4).
+# Each stdlib satellite depends on molt-runtime-core (L2) + molt-lang-obj-model
+# (L1), so they share this rung.
+# ---------------------------------------------------------------------------
+
+[[crate]]
+name = "molt-backend-native"
+layer = 3
+role = "native (Cranelift) backend + fc/ codegen tree"
+
+[[crate]]
+name = "molt-backend-wasm"
+layer = 3
+role = "WASM backend (encoder + import planning)"
+
+[[crate]]
+name = "molt-backend-luau"
+layer = 3
+role = "Luau backend"
+
+[[crate]]
+name = "molt-backend-rust"
+layer = 3
+role = "Rust-source backend"
+
+[[crate]]
+name = "molt-runtime-asyncio"
+layer = 3
+role = "stdlib satellite"
+
+[[crate]]
+name = "molt-runtime-collections"
+layer = 3
+role = "stdlib satellite"
+
+[[crate]]
+name = "molt-runtime-compression"
+layer = 3
+role = "stdlib satellite"
+
+[[crate]]
+name = "molt-runtime-crypto"
+layer = 3
+role = "stdlib satellite"
+
+[[crate]]
+name = "molt-runtime-difflib"
+layer = 3
+role = "stdlib satellite"
+
+[[crate]]
+name = "molt-runtime-http"
+layer = 3
+role = "stdlib satellite"
+
+[[crate]]
+name = "molt-runtime-ipaddress"
+layer = 3
+role = "stdlib satellite"
+
+[[crate]]
+name = "molt-runtime-itertools"
+layer = 3
+role = "stdlib satellite"
+
+[[crate]]
+name = "molt-runtime-logging"
+layer = 3
+role = "stdlib satellite"
+
+[[crate]]
+name = "molt-runtime-math"
+layer = 3
+role = "stdlib satellite"
+
+[[crate]]
+name = "molt-runtime-net"
+layer = 3
+role = "stdlib satellite"
+
+[[crate]]
+name = "molt-runtime-path"
+layer = 3
+role = "stdlib satellite"
+
+[[crate]]
+name = "molt-runtime-regex"
+layer = 3
+role = "stdlib satellite"
+
+[[crate]]
+name = "molt-runtime-serial"
+layer = 3
+role = "stdlib satellite"
+
+[[crate]]
+name = "molt-runtime-stringprep"
+layer = 3
+role = "stdlib satellite"
+
+[[crate]]
+name = "molt-runtime-text"
+layer = 3
+role = "stdlib satellite"
+
+[[crate]]
+name = "molt-runtime-tk"
+layer = 3
+role = "stdlib satellite"
+
+[[crate]]
+name = "molt-runtime-xml"
+layer = 3
+role = "stdlib satellite"
+
+[[crate]]
+name = "molt-runtime-zoneinfo"
+layer = 3
+role = "stdlib satellite"
+
+# ---------------------------------------------------------------------------
+# Layer 4 -- the thin backend driver (the ONE crate allowed to know every
+# backend) and the runtime fan-in.
+# ---------------------------------------------------------------------------
+
+[[crate]]
+name = "molt-backend"
+layer = 4
+role = "thin backend driver + daemon bin; fans in every backend crate"
+
+[[crate]]
+name = "molt-runtime"
+layer = 4
+role = "runtime fan-in over every stdlib satellite + obj-model/db/gpu"
+
+# ---------------------------------------------------------------------------
+# Layer 5 -- runtime embedders / host surfaces over molt-runtime.
+# ---------------------------------------------------------------------------
+
+[[crate]]
+name = "molt-embed"
+layer = 5
+role = "runtime embedder over molt-runtime"
+
+[[crate]]
+name = "molt-ffi"
+layer = 5
+role = "FFI surface over molt-runtime + obj-model"
+
+[[crate]]
+name = "molt-wasm-host"
+layer = 5
+role = "WASM host over molt-runtime + obj-model"
+
+# ---------------------------------------------------------------------------
+# Allowed same-layer edges -- the documented exceptions to "siblings must be
+# independent". Each entry is a deliberate, reviewed coupling. The ONLY current
+# exception is the future native -> llvm edge (21b flag #2: native is the one
+# backend that depends on another). It is listed ahead of the llvm extraction so
+# the edge lands green when 21f S4 introduces molt-backend-llvm at layer 3.
+# Format: from = depending crate, to = dependency crate (both at the same layer).
+# ---------------------------------------------------------------------------
+
+[[allowed_same_layer_edges]]
+from = "molt-backend-native"
+to = "molt-backend-llvm"
+reason = "21b flag #2: native depends on llvm (one-way, feature-gated); llvm -> native stays zero"

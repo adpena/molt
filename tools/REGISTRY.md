@@ -22,6 +22,7 @@ this file is the human/agent-readable index of the whole tool surface.
 
 ### Verify / drift-gates (wired in ci_gate tier-1 — fail closed)
 - `tools/structural_audit.py --check` - duplicate-authority / kitchen-sink and undecomposed-god-file ratchet.
+- `tools/build_graph_audit.py --check` - recompile-blast-radius ratchet (doc 56 FACT-A): fails if a cross-crate dep re-couples a layer (back-edge) or widens a crate's downstream recompile cone past `tools/build_graph_baseline.json`. Declared DAG = `runtime/crate_graph.toml`; reads `cargo metadata` only (no compile). `--write-board` -> `docs/design/foundation/BUILD_GRAPH_BOARD.md`.
 - `tools/check_runtime_symbol_owners.py` - one `#[no_mangle] extern "C"` owner per runtime satellite symbol.
 - `tools/check_perf_gate_wiring.py` — the canonical perf gate must fire on main.
 - `tools/check_ratio_direction.py` — no raw `t/t` ratio outside the signed authority.
