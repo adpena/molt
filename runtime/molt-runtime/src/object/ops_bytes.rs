@@ -1237,7 +1237,14 @@ fn bytes_align_impl(
         let total = width as usize;
         let pad = total.saturating_sub(hay_bytes.len());
         let (left_pad, right_pad) = match kind {
-            BytesAlignKind::Center => (pad / 2, pad - (pad / 2)),
+            // CPython `bytes`/`bytearray.center` share `stringlib_center`
+            // (Objects/stringlib/transmogrify.h): `left = marg / 2 +
+            // (marg & width & 1)`, so the extra fill goes on the right unless
+            // BOTH the total padding and the target width are odd.
+            BytesAlignKind::Center => {
+                let left = pad / 2 + (pad & total & 1);
+                (left, pad - left)
+            }
             BytesAlignKind::Left => (0, pad),
             BytesAlignKind::Right => (pad, 0),
         };
