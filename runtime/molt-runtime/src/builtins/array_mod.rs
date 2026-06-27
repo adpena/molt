@@ -17,7 +17,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use crate::builtins::numbers::index_i64_with_overflow;
+use crate::builtins::numbers::{index_i64_with_overflow, sequence_index_i64_with_type_error};
 use crate::object::native_handle::{native_handle_arc, native_handle_new};
 use crate::object::ops::string_obj_to_owned;
 use crate::object::ops_sys::{collect_slice_indices, normalize_slice_indices, slice_error};
@@ -381,6 +381,18 @@ fn repeat_count_from_bits(_py: &PyToken<'_>, count_bits: u64) -> Option<i64> {
     )
 }
 
+fn array_subscript_index_from_bits(_py: &PyToken<'_>, index_bits: u64) -> Option<i64> {
+    sequence_index_i64_with_type_error(_py, index_bits, "array indices must be integers")
+}
+
+fn array_index_arg_from_bits(_py: &PyToken<'_>, index_bits: u64) -> Option<i64> {
+    let err = format!(
+        "'{}' object cannot be interpreted as an integer",
+        crate::class_name_for_error(crate::type_of_bits(_py, index_bits))
+    );
+    index_i64_with_overflow(_py, index_bits, &err, None)
+}
+
 fn elem_from_bits(_py: &PyToken<'_>, tc: Typecode, value_bits: u64) -> Result<ArrayElem, u64> {
     let obj = obj_from_bits(value_bits);
     if tc.is_float() {
@@ -691,8 +703,8 @@ pub extern "C" fn molt_array_getitem(handle_bits: u64, index_bits: u64) -> u64 {
                 }
             }
         }
-        let Some(idx_raw) = to_i64(index_obj) else {
-            return raise_exception::<u64>(_py, "TypeError", "array indices must be integers");
+        let Some(idx_raw) = array_subscript_index_from_bits(_py, index_bits) else {
+            return MoltObject::none().bits();
         };
         let len = handle.len() as i64;
         let idx = if idx_raw < 0 { len + idx_raw } else { idx_raw };
@@ -800,8 +812,8 @@ pub extern "C" fn molt_array_setitem(handle_bits: u64, index_bits: u64, value_bi
 
         with_array_mut(_py, handle_bits, |_py, handle| {
             let tc = handle.typecode;
-            let Some(idx_raw) = to_i64(index_obj) else {
-                return raise_exception::<u64>(_py, "TypeError", "array indices must be integers");
+            let Some(idx_raw) = array_subscript_index_from_bits(_py, index_bits) else {
+                return MoltObject::none().bits();
             };
             let len = handle.len() as i64;
             let idx = if idx_raw < 0 { len + idx_raw } else { idx_raw };
@@ -861,8 +873,8 @@ pub extern "C" fn molt_array_delitem(handle_bits: u64, index_bits: u64) -> u64 {
                     return MoltObject::none().bits();
                 }
             }
-            let Some(idx_raw) = to_i64(index_obj) else {
-                return raise_exception::<u64>(_py, "TypeError", "array indices must be integers");
+            let Some(idx_raw) = array_subscript_index_from_bits(_py, index_bits) else {
+                return MoltObject::none().bits();
             };
             let len = handle.len() as i64;
             let idx = if idx_raw < 0 { len + idx_raw } else { idx_raw };
@@ -1011,7 +1023,9 @@ pub extern "C" fn molt_array_pop(handle_bits: u64, index_bits: u64) -> u64 {
             if len == 0 {
                 return raise_exception::<u64>(_py, "IndexError", "pop from empty array");
             }
-            let idx_raw = to_i64(obj_from_bits(index_bits)).unwrap_or(-1);
+            let Some(idx_raw) = array_index_arg_from_bits(_py, index_bits) else {
+                return MoltObject::none().bits();
+            };
             let idx = if idx_raw < 0 { len + idx_raw } else { idx_raw };
             if idx < 0 || idx >= len {
                 return raise_exception::<u64>(_py, "IndexError", "pop index out of range");
@@ -1029,8 +1043,8 @@ pub extern "C" fn molt_array_insert(handle_bits: u64, index_bits: u64, value_bit
     crate::with_gil_entry_nopanic!(_py, {
         with_array_mut(_py, handle_bits, |_py, handle| {
             let tc = handle.typecode;
-            let Some(idx_raw) = to_i64(obj_from_bits(index_bits)) else {
-                return raise_exception::<u64>(_py, "TypeError", "array indices must be integers");
+            let Some(idx_raw) = array_index_arg_from_bits(_py, index_bits) else {
+                return MoltObject::none().bits();
             };
             let elem = match elem_from_bits(_py, tc, value_bits) {
                 Ok(e) => e,

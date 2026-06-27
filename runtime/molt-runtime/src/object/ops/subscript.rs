@@ -186,11 +186,10 @@ pub extern "C" fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
                         }
                         let mut pos = memoryview_offset(ptr);
                         for (dim, &elem_bits) in elems.iter().enumerate() {
-                            let Some(idx) = index_i64_with_overflow(
+                            let Some(idx) = sequence_index_i64_with_type_error(
                                 _py,
                                 elem_bits,
                                 "memoryview: invalid slice key",
-                                None,
                             ) else {
                                 return MoltObject::none().bits();
                             };
@@ -264,11 +263,10 @@ pub extern "C" fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
                             "multi-dimensional sub-views are not implemented",
                         );
                     }
-                    let Some(idx) = index_i64_with_overflow(
+                    let Some(idx) = sequence_index_i64_with_type_error(
                         _py,
                         key_bits,
                         "memoryview: invalid slice key",
-                        None,
                     ) else {
                         return MoltObject::none().bits();
                     };
@@ -378,23 +376,23 @@ pub extern "C" fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
                         }
                         return MoltObject::from_ptr(out_ptr).bits();
                     }
-                    let type_err = if type_id == TYPE_ID_STRING {
-                        format!(
-                            "string indices must be integers, not '{}'",
-                            type_name(_py, key)
-                        )
-                    } else if type_id == TYPE_ID_BYTES {
-                        format!(
-                            "byte indices must be integers or slices, not {}",
-                            type_name(_py, key)
-                        )
+                    let idx = if type_id == TYPE_ID_BYTEARRAY {
+                        sequence_index_i64(_py, key_bits, "bytearray")
                     } else {
-                        format!(
-                            "bytearray indices must be integers or slices, not {}",
-                            type_name(_py, key)
-                        )
+                        let type_err = if type_id == TYPE_ID_STRING {
+                            format!(
+                                "string indices must be integers, not '{}'",
+                                type_name(_py, key)
+                            )
+                        } else {
+                            format!(
+                                "byte indices must be integers or slices, not {}",
+                                type_name(_py, key)
+                            )
+                        };
+                        sequence_index_i64_with_type_error(_py, key_bits, &type_err)
                     };
-                    let Some(idx) = index_i64_with_overflow(_py, key_bits, &type_err, None) else {
+                    let Some(idx) = idx else {
                         return MoltObject::none().bits();
                     };
                     if type_id == TYPE_ID_STRING {
@@ -481,25 +479,15 @@ pub extern "C" fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
                         }
                         return MoltObject::from_ptr(out_ptr).bits();
                     }
-                    let idx = if let Some(i) = to_i64(key) {
-                        i
-                    } else {
-                        let key_type = type_name(_py, key);
-                        if debug_index_enabled() {
-                            eprintln!(
-                                "molt index type-error op=get container=list key_type={} key_bits=0x{:x} key_float={:?}",
-                                key_type,
-                                key_bits,
-                                key.as_float()
-                            );
-                        }
-                        let type_err =
-                            format!("list indices must be integers or slices, not {}", key_type);
-                        let Some(i) = index_i64_with_overflow(_py, key_bits, &type_err, None)
-                        else {
-                            return MoltObject::none().bits();
-                        };
-                        i
+                    // CPython sequence subscript requires the integer protocol
+                    // (`__index__`): int / bool / int-subclass / object with
+                    // `__index__`. A float — even an integral `2.0` — has no
+                    // `nb_index` and must raise TypeError, never be truncated.
+                    // `sequence_index_i64` is the single authority enforcing this;
+                    // never reintroduce `to_i64` here (it accepts integral floats
+                    // and silently diverges from CPython).
+                    let Some(idx) = sequence_index_i64(_py, key_bits, "list") else {
+                        return MoltObject::none().bits();
                     };
                     let len = list_len(ptr) as i64;
                     let mut i = idx;
@@ -569,25 +557,10 @@ pub extern "C" fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
                         }
                         return MoltObject::from_ptr(out_ptr).bits();
                     }
-                    let idx = if let Some(i) = to_i64(key) {
-                        i
-                    } else {
-                        let key_type = type_name(_py, key);
-                        if debug_index_enabled() {
-                            eprintln!(
-                                "molt index type-error op=get container=tuple key_type={} key_bits=0x{:x} key_float={:?}",
-                                key_type,
-                                key_bits,
-                                key.as_float()
-                            );
-                        }
-                        let type_err =
-                            format!("tuple indices must be integers or slices, not {}", key_type);
-                        let Some(i) = index_i64_with_overflow(_py, key_bits, &type_err, None)
-                        else {
-                            return MoltObject::none().bits();
-                        };
-                        i
+                    // `__index__`-only key coercion (see the list branch above):
+                    // float keys raise TypeError, they are not truncated.
+                    let Some(idx) = sequence_index_i64(_py, key_bits, "tuple") else {
+                        return MoltObject::none().bits();
                     };
                     let len = tuple_len(ptr) as i64;
                     let mut i = idx;
@@ -612,8 +585,13 @@ pub extern "C" fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
                     return val;
                 }
                 if type_id == TYPE_ID_RANGE {
+                    // `__index__`-only key coercion: `index_i64_integral_bits`
+                    // accepts int / bool / int-subclass but rejects float, so a
+                    // float key falls through to the bigint fallback below, which
+                    // raises the standard TypeError. A bare bigint / `__index__`
+                    // object also routes to the fallback (correct, just colder).
                     if let Some((start_i64, stop_i64, step_i64)) = range_components_i64(ptr)
-                        && let Some(mut idx_i64) = to_i64(key)
+                        && let Some(mut idx_i64) = index_i64_integral_bits(key_bits)
                     {
                         if idx_i64 < 0 {
                             let len = range_len_i128(start_i64, stop_i64, step_i64);
@@ -647,11 +625,7 @@ pub extern "C" fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
                             "range object index out of range",
                         );
                     }
-                    let type_err = format!(
-                        "range indices must be integers or slices, not {}",
-                        type_name(_py, key)
-                    );
-                    let Some(mut idx) = index_bigint_from_obj(_py, key_bits, &type_err) else {
+                    let Some(mut idx) = sequence_index_bigint(_py, key_bits, "range") else {
                         return MoltObject::none().bits();
                     };
                     let Some((start, stop, step)) = range_components_bigint(ptr) else {
@@ -892,7 +866,8 @@ pub extern "C" fn molt_ord_at(obj_bits: u64, key_bits: u64) -> u64 {
                         "string indices must be integers, not '{}'",
                         type_name(_py, key)
                     );
-                    let Some(idx) = index_i64_with_overflow(_py, key_bits, &type_err, None) else {
+                    let Some(idx) = sequence_index_i64_with_type_error(_py, key_bits, &type_err)
+                    else {
                         return MoltObject::none().bits();
                     };
                     let bytes = std::slice::from_raw_parts(string_bytes(ptr), string_len(ptr));
@@ -1054,25 +1029,10 @@ pub extern "C" fn molt_store_index(obj_bits: u64, key_bits: u64, val_bits: u64) 
                         }
                         return obj_bits;
                     }
-                    let idx = if let Some(i) = to_i64(key) {
-                        i
-                    } else {
-                        let key_type = type_name(_py, key);
-                        if debug_index_enabled() {
-                            eprintln!(
-                                "molt index type-error op=set container=list key_type={} key_bits=0x{:x} key_float={:?}",
-                                key_type,
-                                key_bits,
-                                key.as_float()
-                            );
-                        }
-                        let type_err =
-                            format!("list indices must be integers or slices, not {}", key_type);
-                        let Some(i) = index_i64_with_overflow(_py, key_bits, &type_err, None)
-                        else {
-                            return MoltObject::none().bits();
-                        };
-                        i
+                    // `__index__`-only key coercion (see `molt_index`): assigning
+                    // through a float key (`L[2.0] = x`) raises TypeError.
+                    let Some(idx) = sequence_index_i64(_py, key_bits, "list") else {
+                        return MoltObject::none().bits();
                     };
                     if debug_store_index_enabled() {
                         let val_obj = obj_from_bits(val_bits);
@@ -1197,11 +1157,9 @@ pub extern "C" fn molt_store_index(obj_bits: u64, key_bits: u64, val_bits: u64) 
                         }
                         return obj_bits;
                     }
-                    let type_err = format!(
-                        "bytearray indices must be integers or slices, not {}",
-                        type_name(_py, key)
-                    );
-                    let Some(idx) = index_i64_with_overflow(_py, key_bits, &type_err, None) else {
+                    // `__index__`-only key coercion (see `molt_index`): a float
+                    // key raises TypeError, it is not truncated.
+                    let Some(idx) = sequence_index_i64(_py, key_bits, "bytearray") else {
                         return MoltObject::none().bits();
                     };
                     let len = bytes_len(ptr) as i64;
@@ -1330,11 +1288,10 @@ pub extern "C" fn molt_store_index(obj_bits: u64, key_bits: u64, val_bits: u64) 
                         }
                         let mut pos = memoryview_offset(ptr);
                         for (dim, &elem_bits) in elems.iter().enumerate() {
-                            let Some(idx) = index_i64_with_overflow(
+                            let Some(idx) = sequence_index_i64_with_type_error(
                                 _py,
                                 elem_bits,
                                 "memoryview: invalid slice key",
-                                None,
                             ) else {
                                 return MoltObject::none().bits();
                             };
@@ -1472,11 +1429,10 @@ pub extern "C" fn molt_store_index(obj_bits: u64, key_bits: u64, val_bits: u64) 
                             "sub-views are not implemented",
                         );
                     }
-                    let Some(idx) = index_i64_with_overflow(
+                    let Some(idx) = sequence_index_i64_with_type_error(
                         _py,
                         key_bits,
                         "memoryview: invalid slice key",
-                        None,
                     ) else {
                         return MoltObject::none().bits();
                     };
@@ -1655,18 +1611,9 @@ pub extern "C" fn molt_del_index(obj_bits: u64, key_bits: u64) -> u64 {
                         }
                         return obj_bits;
                     }
-                    let key_type = type_name(_py, key);
-                    if debug_index_enabled() {
-                        eprintln!(
-                            "molt index type-error op=del container=list key_type={} key_bits=0x{:x} key_float={:?}",
-                            key_type,
-                            key_bits,
-                            key.as_float()
-                        );
-                    }
-                    let type_err =
-                        format!("list indices must be integers or slices, not {}", key_type);
-                    let Some(idx) = index_i64_with_overflow(_py, key_bits, &type_err, None) else {
+                    // `__index__`-only key coercion (see `molt_index`): deleting
+                    // through a float key (`del L[2.0]`) raises TypeError.
+                    let Some(idx) = sequence_index_i64(_py, key_bits, "list") else {
                         return MoltObject::none().bits();
                     };
                     let len = list_len(ptr) as i64;
@@ -1722,11 +1669,9 @@ pub extern "C" fn molt_del_index(obj_bits: u64, key_bits: u64) -> u64 {
                         }
                         return obj_bits;
                     }
-                    let type_err = format!(
-                        "bytearray indices must be integers or slices, not {}",
-                        type_name(_py, key)
-                    );
-                    let Some(idx) = index_i64_with_overflow(_py, key_bits, &type_err, None) else {
+                    // `__index__`-only key coercion (see `molt_index`): a float
+                    // key raises TypeError, it is not truncated.
+                    let Some(idx) = sequence_index_i64(_py, key_bits, "bytearray") else {
                         return MoltObject::none().bits();
                     };
                     let len = bytes_len(ptr) as i64;

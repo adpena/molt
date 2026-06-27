@@ -511,8 +511,9 @@ pub(crate) use crate::builtins::numbers::{
     bigint_to_inline, compare_numbers, complex_bits, complex_from_obj_lossy,
     complex_from_obj_strict, complex_ptr_from_bits, complex_ref, float_pair_from_obj,
     float_subclass_value_bits_raw, index_bigint_from_obj, index_i64_from_obj,
-    index_i64_with_overflow, inline_int_from_i128, int_bits_from_bigint, int_bits_from_i64,
-    int_bits_from_i128, int_subclass_value_bits_raw, round_float_ndigits, round_half_even,
+    index_i64_integral_bits, index_i64_with_overflow, inline_int_from_i128, int_bits_from_bigint,
+    int_bits_from_i64, int_bits_from_i128, int_subclass_value_bits_raw, round_float_ndigits,
+    round_half_even, sequence_index_bigint, sequence_index_i64, sequence_index_i64_with_type_error,
     split_maxsplit_from_obj, to_bigint, to_f64, to_i64,
 };
 pub use crate::builtins::operator::*;
