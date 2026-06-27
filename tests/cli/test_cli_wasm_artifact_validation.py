@@ -11,7 +11,6 @@ from pathlib import Path
 import pytest
 import molt.cli as cli
 from molt.cli import backend_binary as cli_backend_binary
-from molt.cli import build_pipeline as cli_build_pipeline
 from tests.cli.process_guard import run_cli_test_process
 
 RUNTIME_FINGERPRINTS = importlib.import_module("molt.cli.runtime_fingerprints")
@@ -102,7 +101,10 @@ def test_ensure_runtime_wasm_recovers_from_invalid_primary_artifact(
         raising=True,
     )
     monkeypatch.setattr(
-        cli_build_pipeline, "_artifact_needs_rebuild", lambda *args, **kwargs: True, raising=True
+        RUNTIME_BUILD,
+        "_runtime_artifact_fingerprint_matches",
+        lambda *args, **kwargs: False,
+        raising=True,
     )
     monkeypatch.setattr(
         RUNTIME_BUILD,
@@ -198,7 +200,10 @@ def test_ensure_runtime_wasm_uses_fallback_profile_when_release_artifacts_invali
         raising=True,
     )
     monkeypatch.setattr(
-        cli_build_pipeline, "_artifact_needs_rebuild", lambda *args, **kwargs: True, raising=True
+        RUNTIME_BUILD,
+        "_runtime_artifact_fingerprint_matches",
+        lambda *args, **kwargs: False,
+        raising=True,
     )
     monkeypatch.setattr(
         RUNTIME_BUILD,
@@ -400,7 +405,11 @@ def test_ensure_runtime_wasm_rebuilds_prebuilt_missing_shared_import_abi(
         "_artifact_newer_than_sources",
         lambda artifact, sources: Path(artifact) == cargo_runtime,
     )
-    monkeypatch.setattr(cli_build_pipeline, "_artifact_needs_rebuild", lambda *args, **kwargs: True)
+    monkeypatch.setattr(
+        RUNTIME_BUILD,
+        "_runtime_artifact_fingerprint_matches",
+        lambda *args, **kwargs: False,
+    )
     monkeypatch.setattr(RUNTIME_BUILD, "_inspect_wasm_binary", lambda path: "valid")
     monkeypatch.setattr(RUNTIME_BUILD, "_is_valid_runtime_wasm_artifact", lambda path: True)
     monkeypatch.setattr(
@@ -488,7 +497,10 @@ def test_ensure_runtime_wasm_full_profile_fingerprint_matches_cargo_features(
         RUNTIME_BUILD, "_read_runtime_fingerprint", lambda path: None, raising=True
     )
     monkeypatch.setattr(
-        cli_build_pipeline, "_artifact_needs_rebuild", lambda *args, **kwargs: True, raising=True
+        RUNTIME_BUILD,
+        "_runtime_artifact_fingerprint_matches",
+        lambda *args, **kwargs: False,
+        raising=True,
     )
     monkeypatch.setattr(
         cli_backend_binary, "_artifact_newer_than_sources", lambda *args, **kwargs: False, raising=True
@@ -852,7 +864,10 @@ def test_ensure_runtime_wasm_reloc_requests_staticlib_build(
         raising=True,
     )
     monkeypatch.setattr(
-        cli_build_pipeline, "_artifact_needs_rebuild", lambda *args, **kwargs: True, raising=True
+        RUNTIME_BUILD,
+        "_runtime_artifact_fingerprint_matches",
+        lambda *args, **kwargs: False,
+        raising=True,
     )
     monkeypatch.setattr(
         RUNTIME_BUILD, "_write_runtime_fingerprint", lambda *args, **kwargs: None, raising=True
@@ -937,7 +952,11 @@ def test_ensure_runtime_wasm_reloc_requests_staticlib_build(
     assert "--lib" in cmd
     assert "--crate-type=staticlib" in cmd
     cargo_rustflags = captured["env"].get("RUSTFLAGS", "")
-    assert "--export-if-defined=molt_reloc_required_export" in cargo_rustflags
+    assert "--export-if-defined=molt_reloc_required_export" not in cargo_rustflags
+    assert "-C link-arg=@" in cargo_rustflags
+    response_path = Path(cargo_rustflags.split("-C link-arg=@", 1)[1].split()[0])
+    response_text = response_path.read_text(encoding="utf-8")
+    assert "--export-if-defined=molt_reloc_required_export" in response_text
     assert captured["export_link_args"] == export_flags
     assert captured["linked_staticlib_path"] == (
         target_root / "wasm32-wasip1" / "release-fast" / "libmolt_runtime.a"
@@ -1027,7 +1046,10 @@ def test_ensure_runtime_wasm_defaults_cargo_incremental_off_and_preserves_explic
         raising=True,
     )
     monkeypatch.setattr(
-        cli_build_pipeline, "_artifact_needs_rebuild", lambda *args, **kwargs: True, raising=True
+        RUNTIME_BUILD,
+        "_runtime_artifact_fingerprint_matches",
+        lambda *args, **kwargs: False,
+        raising=True,
     )
     monkeypatch.setattr(
         RUNTIME_BUILD, "_write_runtime_fingerprint", lambda *args, **kwargs: None, raising=True

@@ -523,14 +523,16 @@ flag, environment variable, or developer wrapper.
 
 Use the DX resolver (`molt dx env`, `molt dx run`, `tools/dev.py`, or
 `tools/run_context_env.py --prefer-external-artifacts`) before build/test/bench
-work. On Windows checkouts on `C:`, the resolver fails closed unless it can
-place artifacts on a healthy non-`C:` root such as `E:\Molt`; macOS/Linux use
-the configured external candidates. The resolver owns `MOLT_EXT_ROOT`,
-`CARGO_TARGET_DIR`, `MOLT_DIFF_CARGO_TARGET_DIR`, `MOLT_CACHE`, diff/tmp roots,
-`UV_CACHE_DIR`, `UV_PROJECT_ENVIRONMENT`, `PIP_CACHE_DIR`,
-`PYTHONPYCACHEPREFIX`, `TMPDIR`, `TMP`, and `TEMP`. Default Cargo output is
-session-scoped as `$MOLT_EXT_ROOT/target/sessions/$MOLT_SESSION_ID`; explicit
-`CARGO_TARGET_DIR` remains an operator-owned override.
+work. On Windows checkouts on `C:`, maintainer/agent wrappers must opt into the
+hard gate with `MOLT_REQUIRE_EXTERNAL_ARTIFACTS=1` unless an emergency override
+is active; `prefer_external_artifacts` and `MOLT_PREFER_EXTERNAL_ARTIFACTS=1`
+select a healthy external root when one is available but are not public compile
+location bans. macOS/Linux use the configured external candidates. The resolver
+owns `MOLT_EXT_ROOT`, `CARGO_TARGET_DIR`, `MOLT_DIFF_CARGO_TARGET_DIR`,
+`MOLT_CACHE`, diff/tmp roots, `UV_CACHE_DIR`, `UV_PROJECT_ENVIRONMENT`,
+`PIP_CACHE_DIR`, `PYTHONPYCACHEPREFIX`, `TMPDIR`, `TMP`, and `TEMP`. Default
+Cargo output is session-scoped as `$MOLT_EXT_ROOT/target/sessions/$MOLT_SESSION_ID`;
+explicit `CARGO_TARGET_DIR` remains an operator-owned override.
 
 Raw `cargo` commands do NOT honor `MOLT_SESSION_ID` by themselves. For any
 direct cargo invocation, export the DX env first. If you bypass the DX env, keep

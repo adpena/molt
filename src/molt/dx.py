@@ -195,13 +195,10 @@ def _requires_external_artifacts(
     *,
     prefer_external: bool,
 ) -> bool:
+    del repo_root, prefer_external
     if _env_bool(env, ("MOLT_ALLOW_C_DRIVE_ARTIFACTS",), default=False):
         return False
-    if _env_bool(env, ("MOLT_REQUIRE_EXTERNAL_ARTIFACTS",), default=False):
-        return True
-    if not prefer_external or os.name != "nt":
-        return False
-    return repo_root.resolve().drive.upper() == "C:"
+    return _env_bool(env, ("MOLT_REQUIRE_EXTERNAL_ARTIFACTS",), default=False)
 
 
 def _allow_c_drive_artifacts(env: Mapping[str, str]) -> bool:

@@ -1,3 +1,6 @@
+use super::frame::{
+    collect_live_object_locals_for_call, release_live_object_locals, retain_live_object_locals,
+};
 use super::*;
 
 pub(super) fn emit_dynamic_call_op(
@@ -19,10 +22,6 @@ pub(super) fn emit_dynamic_call_op(
     let last_use_local = call_ctx.last_use_local;
     let rel_idx = call_ctx.rel_idx;
     let op_idx = call_ctx.op_idx;
-    let live_object_locals_for_call = |rel_idx: usize, out_name: Option<&String>| -> Vec<u32> {
-        collect_live_object_locals_for_call(locals, last_use_local, rel_idx, out_name)
-    };
-
     match op.kind.as_str() {
         "call_guarded" => {
             let target_name = op.s_value.as_ref().unwrap();
@@ -219,11 +218,13 @@ pub(super) fn emit_dynamic_call_op(
         }
         "call_func" => {
             let args_names = op.args.as_ref().unwrap();
-            let live_object_locals = live_object_locals_for_call(rel_idx, op.out.as_ref());
-            for local_idx in &live_object_locals {
-                func.instruction(&Instruction::LocalGet(*local_idx));
-                emit_call(func, reloc_enabled, import_ids["inc_ref_obj"]);
-            }
+            let live_object_locals = collect_live_object_locals_for_call(
+                locals,
+                last_use_local,
+                rel_idx,
+                op.out.as_ref(),
+            );
+            retain_live_object_locals(func, import_ids, reloc_enabled, &live_object_locals);
             if args_names.len() == 3 && runtime_lookup_only_vars.contains(&args_names[0]) {
                 let name_bits = locals[&args_names[1]];
                 let namespace_bits = locals[&args_names[2]];
@@ -232,10 +233,7 @@ pub(super) fn emit_dynamic_call_op(
                 func.instruction(&Instruction::LocalGet(namespace_bits));
                 emit_call(func, reloc_enabled, import_ids["require_intrinsic_runtime"]);
                 func.instruction(&Instruction::LocalSet(out));
-                for local_idx in live_object_locals.iter().rev() {
-                    func.instruction(&Instruction::LocalGet(*local_idx));
-                    emit_call(func, reloc_enabled, import_ids["dec_ref_obj"]);
-                }
+                release_live_object_locals(func, import_ids, reloc_enabled, &live_object_locals);
                 return CallOpEmission::Handled;
             }
             // Outlined: spill args to linear memory, then delegate
@@ -266,18 +264,17 @@ pub(super) fn emit_dynamic_call_op(
             func.instruction(&Instruction::I64Const(code_id));
             emit_call(func, reloc_enabled, import_ids["call_func_dispatch"]);
             func.instruction(&Instruction::LocalSet(out));
-            for local_idx in live_object_locals.iter().rev() {
-                func.instruction(&Instruction::LocalGet(*local_idx));
-                emit_call(func, reloc_enabled, import_ids["dec_ref_obj"]);
-            }
+            release_live_object_locals(func, import_ids, reloc_enabled, &live_object_locals);
         }
         "invoke_ffi" => {
             let args_names = op.args.as_ref().unwrap();
-            let live_object_locals = live_object_locals_for_call(rel_idx, op.out.as_ref());
-            for local_idx in &live_object_locals {
-                func.instruction(&Instruction::LocalGet(*local_idx));
-                emit_call(func, reloc_enabled, import_ids["inc_ref_obj"]);
-            }
+            let live_object_locals = collect_live_object_locals_for_call(
+                locals,
+                last_use_local,
+                rel_idx,
+                op.out.as_ref(),
+            );
+            retain_live_object_locals(func, import_ids, reloc_enabled, &live_object_locals);
             let func_bits = locals[&args_names[0]];
             let out = locals[op.out.as_ref().unwrap()];
             let callargs_tmp = locals["__molt_tmp0"];
@@ -311,21 +308,20 @@ pub(super) fn emit_dynamic_call_op(
             func.instruction(&Instruction::I64Const(box_bool(require_bridge_cap)));
             emit_call(func, reloc_enabled, import_ids["invoke_ffi_ic"]);
             func.instruction(&Instruction::LocalSet(out));
-            for local_idx in live_object_locals.iter().rev() {
-                func.instruction(&Instruction::LocalGet(*local_idx));
-                emit_call(func, reloc_enabled, import_ids["dec_ref_obj"]);
-            }
+            release_live_object_locals(func, import_ids, reloc_enabled, &live_object_locals);
         }
         "call_bind" | "call_indirect" => {
             let args_names = op.args.as_ref().unwrap();
             let func_bits = locals[&args_names[0]];
             let builder_ptr = locals[&args_names[1]];
             let out = op.out.as_ref().and_then(|name| locals.get(name).copied());
-            let live_object_locals = live_object_locals_for_call(rel_idx, op.out.as_ref());
-            for local_idx in &live_object_locals {
-                func.instruction(&Instruction::LocalGet(*local_idx));
-                emit_call(func, reloc_enabled, import_ids["inc_ref_obj"]);
-            }
+            let live_object_locals = collect_live_object_locals_for_call(
+                locals,
+                last_use_local,
+                rel_idx,
+                op.out.as_ref(),
+            );
+            retain_live_object_locals(func, import_ids, reloc_enabled, &live_object_locals);
             let call_site_label = if op.kind == "call_indirect" {
                 "call_indirect"
             } else {
@@ -349,20 +345,19 @@ pub(super) fn emit_dynamic_call_op(
             } else {
                 func.instruction(&Instruction::Drop);
             }
-            for local_idx in live_object_locals.iter().rev() {
-                func.instruction(&Instruction::LocalGet(*local_idx));
-                emit_call(func, reloc_enabled, import_ids["dec_ref_obj"]);
-            }
+            release_live_object_locals(func, import_ids, reloc_enabled, &live_object_locals);
         }
         "call_method" => {
             let args_names = op.args.as_ref().unwrap();
             let method_bits = locals[&args_names[0]];
             let out = locals[op.out.as_ref().unwrap()];
-            let live_object_locals = live_object_locals_for_call(rel_idx, op.out.as_ref());
-            for local_idx in &live_object_locals {
-                func.instruction(&Instruction::LocalGet(*local_idx));
-                emit_call(func, reloc_enabled, import_ids["inc_ref_obj"]);
-            }
+            let live_object_locals = collect_live_object_locals_for_call(
+                locals,
+                last_use_local,
+                rel_idx,
+                op.out.as_ref(),
+            );
+            retain_live_object_locals(func, import_ids, reloc_enabled, &live_object_locals);
 
             // Fast-path: dispatch known bound-method patterns
             // directly without callargs allocation or IC lookup.
@@ -446,10 +441,7 @@ pub(super) fn emit_dynamic_call_op(
                 emit_call(func, reloc_enabled, import_ids["call_bind_ic"]);
             }
             func.instruction(&Instruction::LocalSet(out));
-            for local_idx in live_object_locals.iter().rev() {
-                func.instruction(&Instruction::LocalGet(*local_idx));
-                emit_call(func, reloc_enabled, import_ids["dec_ref_obj"]);
-            }
+            release_live_object_locals(func, import_ids, reloc_enabled, &live_object_locals);
         }
         _ => return CallOpEmission::NotHandled,
     }
