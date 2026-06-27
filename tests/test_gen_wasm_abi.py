@@ -140,6 +140,11 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
     assert imports["future_features"]["runtime_name"] == "molt_future_features"
     assert imports["site_help0"]["callable_arity"] == 0
     assert imports["site_help1"]["callable_arity"] == 1
+    assert imports["load_intrinsic_runtime"]["runtime_name"] == (
+        "molt_load_intrinsic_runtime"
+    )
+    assert imports["load_intrinsic_runtime"]["callable_arity"] == 2
+    assert imports["runtime_active_runtime"]["callable_arity"] == 0
 
     rendered_rs = _rendered_rs(gen, data)
     rendered_runtime_rs = gen.render_runtime_callables_rs(data)
