@@ -1,6 +1,7 @@
 use super::constant_ops::{ConstantOpContext, emit_constant_op};
 use super::context::CompileFuncContext;
 use super::control_flow::ControlKind;
+use super::function_frame::WasmFunctionFrame;
 use super::multi_return_layout::WasmMultiReturnLayout;
 use super::*;
 
@@ -32,23 +33,32 @@ pub(super) struct WasmFunctionEmitContext<'a, 'ctx> {
     pub(super) table_base: u32,
     pub(super) import_ids: &'a TrackedImportIds,
     pub(super) closure_functions: &'a BTreeSet<String>,
-    pub(super) runtime_lookup_only_vars: &'a BTreeSet<String>,
-    pub(super) seeded_runtime_const_op_indices: &'a BTreeSet<usize>,
     pub(super) exception_handler_region_indices: &'a BTreeSet<usize>,
-    pub(super) locals: &'a BTreeMap<String, u32>,
-    pub(super) const_cache: &'a ConstantCache,
-    pub(super) scalar_plan: &'a ScalarRepresentationPlan,
+    pub(super) frame: &'a WasmFunctionFrame,
     pub(super) multi_return_candidates: &'a BTreeMap<String, usize>,
-    pub(super) multi_return: &'a WasmMultiReturnLayout,
     pub(super) func_index: u32,
     pub(super) reloc_enabled: bool,
     pub(super) native_eh_enabled: bool,
-    pub(super) tail_call_eligible: bool,
-    pub(super) arena_local: Option<u32>,
     pub(super) tail_call_count: &'a Cell<usize>,
 }
 
 impl<'a, 'ctx> WasmFunctionEmitContext<'a, 'ctx> {
+    pub(super) fn locals(&self) -> &BTreeMap<String, u32> {
+        self.frame.locals()
+    }
+
+    pub(super) fn const_cache(&self) -> &ConstantCache {
+        self.frame.const_cache()
+    }
+
+    pub(super) fn scalar_plan(&self) -> &ScalarRepresentationPlan {
+        self.frame.scalar_plan()
+    }
+
+    pub(super) fn arena_local(&self) -> Option<u32> {
+        self.frame.arena_local()
+    }
+
     pub(super) fn emit_ops(
         &mut self,
         func: &mut Function,
@@ -68,19 +78,20 @@ impl<'a, 'ctx> WasmFunctionEmitContext<'a, 'ctx> {
         let table_base = self.table_base;
         let import_ids = self.import_ids;
         let closure_functions = self.closure_functions;
-        let runtime_lookup_only_vars = self.runtime_lookup_only_vars;
-        let seeded_runtime_const_op_indices = self.seeded_runtime_const_op_indices;
         let exception_handler_region_indices = self.exception_handler_region_indices;
-        let locals = self.locals;
-        let const_cache = self.const_cache;
-        let scalar_plan = self.scalar_plan;
+        let frame = self.frame;
+        let runtime_lookup_only_vars = frame.runtime_lookup_only_vars();
+        let seeded_runtime_const_op_indices = frame.seeded_runtime_const_op_indices();
+        let locals = frame.locals();
+        let const_cache = frame.const_cache();
+        let scalar_plan = frame.scalar_plan();
         let multi_return_candidates = self.multi_return_candidates;
-        let multi_return = self.multi_return;
+        let multi_return = frame.multi_return();
         let func_index = self.func_index;
         let reloc_enabled = self.reloc_enabled;
         let native_eh_enabled = self.native_eh_enabled;
-        let tail_call_eligible = self.tail_call_eligible;
-        let arena_local = self.arena_local;
+        let tail_call_eligible = frame.tail_call_eligible();
+        let arena_local = frame.arena_local();
         let tail_call_count = self.tail_call_count;
 
         let last_use_local: BTreeMap<String, usize> = {

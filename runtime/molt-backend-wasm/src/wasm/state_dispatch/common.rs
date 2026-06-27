@@ -56,11 +56,11 @@ pub(super) fn emit_stateful_resume_prelude(
         .self_ptr_local
         .expect("self ptr local missing for stateful wasm");
     let self_param = *op_emitter
-        .locals
+        .locals()
         .get("self_param")
         .expect("self_param missing for stateful wasm");
     let self_local = *op_emitter
-        .locals
+        .locals()
         .get("self")
         .expect("self local missing for stateful wasm");
     let resume = plan
@@ -78,7 +78,7 @@ pub(super) fn emit_stateful_resume_prelude(
     func.instruction(&Instruction::LocalGet(self_param));
     func.instruction(&Instruction::I64Const(POINTER_MASK as i64));
     func.instruction(&Instruction::I64And);
-    op_emitter.const_cache.emit_qnan_tag_ptr(func);
+    op_emitter.const_cache().emit_qnan_tag_ptr(func);
     func.instruction(&Instruction::I64Or);
     func.instruction(&Instruction::LocalSet(self_local));
 
@@ -153,7 +153,7 @@ pub(super) fn emit_dispatch_if(
     depth: u32,
 ) {
     let args = op.args.as_ref().unwrap();
-    let cond = op_emitter.locals[&args[0]];
+    let cond = op_emitter.locals()[&args[0]];
     let else_idx = plan.control_maps.else_for_if.get(&idx).copied();
     let end_idx = plan
         .control_maps
@@ -169,7 +169,7 @@ pub(super) fn emit_dispatch_if(
         end_idx + 1
     };
     let truthy_import =
-        if wasm_scalar_truthiness_fast_path_for_name(op_emitter.scalar_plan, &args[0]) {
+        if wasm_scalar_truthiness_fast_path_for_name(op_emitter.scalar_plan(), &args[0]) {
             "is_truthy_int"
         } else {
             "is_truthy"
@@ -194,7 +194,7 @@ pub(super) fn emit_dispatch_loop_break_cond(
     invert: bool,
 ) {
     let args = op.args.as_ref().unwrap();
-    let cond = op_emitter.locals[&args[0]];
+    let cond = op_emitter.locals()[&args[0]];
     let end_idx = loop_break_target(plan, op_emitter.func_ir, idx, op.kind.as_str());
     let end_block = end_idx + 1;
     let next_block = idx + 1;
@@ -341,7 +341,7 @@ pub(super) fn require_stateful(mode: DispatchMode, func_ir: &FunctionIR, idx: us
 }
 
 pub(super) fn emit_arena_free(func: &mut Function, op_emitter: &WasmFunctionEmitContext<'_, '_>) {
-    if let Some(arena_idx) = op_emitter.arena_local {
+    if let Some(arena_idx) = op_emitter.arena_local() {
         func.instruction(&Instruction::LocalGet(arena_idx));
         emit_call(
             func,
@@ -360,7 +360,7 @@ pub(super) fn emit_dispatch_trailing_return(
     func.instruction(&Instruction::Br(0));
     func.instruction(&Instruction::End);
     if mode == DispatchMode::Stateful {
-        op_emitter.const_cache.emit_none(func);
+        op_emitter.const_cache().emit_none(func);
         func.instruction(&Instruction::LocalSet(locals.return_local));
         func.instruction(&Instruction::End);
         emit_arena_free(func, op_emitter);
@@ -369,7 +369,7 @@ pub(super) fn emit_dispatch_trailing_return(
         func.instruction(&Instruction::End);
     } else {
         emit_arena_free(func, op_emitter);
-        op_emitter.const_cache.emit_none(func);
+        op_emitter.const_cache().emit_none(func);
         func.instruction(&Instruction::Return);
         func.instruction(&Instruction::End);
     }

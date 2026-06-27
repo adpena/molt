@@ -90,7 +90,7 @@ fn emit_non_linear_dispatch(
                 }
                 "aiter" if mode == DispatchMode::Stateful => {
                     let args = op.args.as_ref().unwrap();
-                    let iter = op_emitter.locals[&args[0]];
+                    let iter = op_emitter.locals()[&args[0]];
                     func.instruction(&Instruction::LocalGet(iter));
                     emit_call(
                         func,
@@ -98,7 +98,7 @@ fn emit_non_linear_dispatch(
                         op_emitter.import_ids["aiter"],
                     );
                     func.instruction(&Instruction::LocalSet(
-                        op_emitter.locals[op.out.as_ref().unwrap()],
+                        op_emitter.locals()[op.out.as_ref().unwrap()],
                     ));
                 }
                 "state_transition" => {
@@ -144,8 +144,8 @@ fn emit_non_linear_dispatch(
                 }
                 "loop_index_start" => {
                     let args = op.args.as_ref().unwrap();
-                    let start = op_emitter.locals[&args[0]];
-                    let out = op_emitter.locals[op.out.as_ref().unwrap()];
+                    let start = op_emitter.locals()[&args[0]];
+                    let out = op_emitter.locals()[op.out.as_ref().unwrap()];
                     func.instruction(&Instruction::LocalGet(start));
                     func.instruction(&Instruction::LocalSet(out));
                     emit_set_state_and_br(func, locals.state_local, idx + 1, depth);
@@ -210,7 +210,7 @@ fn emit_non_linear_dispatch(
                 }
                 "br_if" => {
                     let args = op.args.as_ref().unwrap();
-                    let cond = op_emitter.locals[&args[0]];
+                    let cond = op_emitter.locals()[&args[0]];
                     let target_label = op.value.unwrap_or_else(|| {
                         dispatch_control_panic(&func_ir.name, idx, "br_if missing label")
                     });
@@ -242,7 +242,7 @@ fn emit_non_linear_dispatch(
                     let ret_local = op
                         .var
                         .as_ref()
-                        .and_then(|name| op_emitter.locals.get(name).copied());
+                        .and_then(|name| op_emitter.locals().get(name).copied());
                     if let Some(local_idx) = ret_local {
                         func.instruction(&Instruction::LocalGet(local_idx));
                     } else {
