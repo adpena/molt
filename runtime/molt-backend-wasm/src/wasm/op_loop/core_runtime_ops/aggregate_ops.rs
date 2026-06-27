@@ -908,18 +908,6 @@ pub(super) fn emit_aggregate_runtime_op(
                 func.instruction(&Instruction::Drop);
             }
         }
-        "is_bound_method" => {
-            let args = op.args.as_ref().unwrap();
-            let obj = locals[&args[0]];
-            func.instruction(&Instruction::LocalGet(obj));
-            emit_call(func, reloc_enabled, import_ids["is_bound_method"]);
-            if let Some(out) = op.out.as_ref() {
-                let res = locals[out];
-                func.instruction(&Instruction::LocalSet(res));
-            } else {
-                func.instruction(&Instruction::Drop);
-            }
-        }
         "is_callable" => {
             let args = op.args.as_ref().unwrap();
             let obj = locals[&args[0]];

@@ -461,7 +461,7 @@ pub(crate) const OP_IMPORT_DEPS: &[(&str, &[&str])] = &[
             "task_register_token_owned",
         ],
     ),
-    ("del_attr_generic_ptr", &["del_attr_ptr", "handle_resolve"]),
+    ("del_attr_generic_ptr", &["del_attr_object"]),
     ("dict_new", &["dict_new", "dict_set"]),
     ("frozenset_new", &["frozenset_add", "frozenset_new"]),
     (
@@ -550,7 +550,7 @@ pub(crate) const OP_IMPORT_DEPS: &[(&str, &[&str])] = &[
     ("object_set_class", &["handle_resolve", "object_set_class"]),
     ("process_spawn", &["process_poll", "process_spawn"]),
     ("set_attr_generic_obj", &["set_attr_object"]),
-    ("set_attr_generic_ptr", &["handle_resolve", "set_attr_ptr"]),
+    ("set_attr_generic_ptr", &["set_attr_object"]),
     ("set_new", &["set_add", "set_new"]),
     (
         "state_transition",
