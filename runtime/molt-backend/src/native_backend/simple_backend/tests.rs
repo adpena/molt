@@ -1,15 +1,10 @@
 use super::{
     DEFERRED_CODEGEN_FLUSH_FUNCTION_LIMIT, DEFERRED_CODEGEN_FLUSH_OP_BUDGET,
-    NativeBackendModuleContext, SimpleBackend, TIR_OPTIMIZATION_BASELINE_MEMORY_BYTES,
-    TIR_OPTIMIZATION_BATCH_FUNCTION_LIMIT, TIR_OPTIMIZATION_BATCH_OP_BUDGET,
-    TIR_OPTIMIZATION_WAVE_FUNCTIONS_PER_THREAD, TIR_OPTIMIZATION_WAVE_OPS_PER_THREAD,
-    TIR_OPTIMIZATION_WORKER_MEMORY_BYTES, TirOptimizationWorkItem, TrampolineKey,
-    analyze_native_backend_ir, assert_requested_llvm_backend_available, compute_function_has_ret,
-    drain_cleanup_entry_tracked, drain_cleanup_entry_tracked_with_authority,
-    drain_cleanup_tracked_dedup_with_authority, merge_closure_functions, merge_function_arities,
-    merge_function_has_ret, merge_leaf_functions, merge_task_kinds,
-    partition_tir_optimization_work_items, partition_tir_optimization_work_items_with_limits,
-    should_flush_deferred_codegen, tir_optimization_resource_plan_from_limits,
+    NativeBackendModuleContext, SimpleBackend, TrampolineKey, analyze_native_backend_ir,
+    assert_requested_llvm_backend_available, compute_function_has_ret, drain_cleanup_entry_tracked,
+    drain_cleanup_entry_tracked_with_authority, drain_cleanup_tracked_dedup_with_authority,
+    merge_closure_functions, merge_function_arities, merge_function_has_ret, merge_leaf_functions,
+    merge_task_kinds, preprocess_backend_tir_input, should_flush_deferred_codegen,
 };
 use crate::TrampolineKind;
 use crate::ir::{FunctionIR, OpIR, SimpleIR};
@@ -143,51 +138,56 @@ fn compile_function_to_clif_text(functions: Vec<FunctionIR>, target_name: &str) 
 /// routes to the generic-by-name attribute load.
 
 fn roundtrip_function_through_tir(func: &FunctionIR) -> FunctionIR {
-    let mut tir = crate::tir::lower_from_simple::lower_to_tir(func);
-    crate::tir::type_refine::refine_types(&mut tir);
-    let _stats = crate::tir::passes::run_pipeline(
-        &mut tir,
-        &crate::tir::target_info::TargetInfo::native_release_fast(),
+    let mut functions = vec![func.clone()];
+    let cache_dir = test_tir_pipeline_cache_dir();
+    let run = crate::tir::pipeline_cache::run_cached_tir_pipeline(
+        &mut functions,
+        crate::tir::pipeline_cache::TirPipelineRunOptions {
+            target_info: crate::tir::target_info::TargetInfo::native_release_fast(),
+            cache_flavor: crate::tir::pipeline_cache::TirPipelineCacheFlavor::Native,
+            cache_dir: Some(cache_dir.clone()),
+            process_externs: false,
+            verify_lir: true,
+            tir_dump: false,
+            tir_stats: false,
+            progress_prefix: None,
+            resource_plan: crate::tir::pipeline_cache::tir_optimization_resource_plan_from_limits(
+                1, None,
+            ),
+        },
+        preprocess_backend_tir_input,
     );
-    crate::tir::type_refine::refine_types(&mut tir);
-    let lir = crate::tir::lower_to_lir::lower_function_to_lir_for_repr_fact_extraction(&tir);
-    if let Err(errors) = crate::tir::verify_lir::verify_lir_function(&lir) {
-        panic!("LIR verification failed after TIR optimization: {errors:#?}");
-    }
-    #[cfg(debug_assertions)]
-    {
-        let repr_violations = crate::tir::verify_lir_repr::verify_register_passable(&lir);
-        if !repr_violations.is_empty() {
-            eprintln!(
-                "[LIR-repr] {} register-passable violation(s) in '{}': {:?}",
-                repr_violations.len(),
-                func.name,
-                repr_violations,
-            );
-        }
-    }
-    let ops = crate::tir::lower_to_simple::lower_to_simple_ir(&tir);
     assert!(
-        crate::tir::lower_to_simple::validate_labels(&ops),
-        "TIR roundtrip must preserve all referenced labels: {ops:#?}"
+        run.optimized_tir_by_name.contains_key(&func.name),
+        "shared TIR runner must return optimized TIR custody for '{}'",
+        func.name
     );
-    FunctionIR {
-        name: func.name.clone(),
-        params: func.params.clone(),
-        ops,
-        param_types: func.param_types.clone(),
-        source_file: func.source_file.clone(),
-        is_extern: false,
-    }
+    let _ = std::fs::remove_dir_all(cache_dir);
+    let roundtripped = functions.pop().expect("roundtrip function missing");
+    assert!(
+        crate::tir::lower_to_simple::validate_labels(&roundtripped.ops),
+        "TIR runner roundtrip must preserve all referenced labels: {:#?}",
+        roundtripped.ops
+    );
+    roundtripped
+}
+
+fn test_tir_pipeline_cache_dir() -> std::path::PathBuf {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    std::env::temp_dir().join(format!(
+        "molt-tir-pipeline-cache-test-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ))
 }
 
 mod cleanup;
 mod codegen_regressions;
 mod compile_pipeline;
+mod deferred_codegen;
 mod fail_closed_codegen;
 mod ir_rewrites;
 mod llvm_backend;
 mod module_metadata;
 mod tir_analysis;
-mod tir_optimization;
 mod trampolines;

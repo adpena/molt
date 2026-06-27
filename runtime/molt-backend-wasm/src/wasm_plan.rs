@@ -365,6 +365,23 @@ pub(crate) fn prepare_lir_wasm_fast_output(
     }
 }
 
+pub(crate) fn compute_lir_wasm_fast_outputs_from_final_ir(
+    ir: &SimpleIR,
+) -> BTreeMap<String, crate::lower_to_wasm::WasmFunctionOutput> {
+    let mut outputs = BTreeMap::new();
+    for func_ir in &ir.functions {
+        if func_ir.is_extern || !is_production_lir_wasm_fast_path_name(&func_ir.name) {
+            continue;
+        }
+        let mut tir_func = crate::tir::lower_from_simple::lower_to_tir(func_ir);
+        crate::tir::type_refine::refine_types(&mut tir_func);
+        if let Some(output) = prepare_lir_wasm_fast_output(&tir_func) {
+            outputs.insert(func_ir.name.clone(), output);
+        }
+    }
+    outputs
+}
+
 pub(crate) fn is_production_lir_wasm_fast_path_name(func_name: &str) -> bool {
     func_name.contains("____molt_globals_builtin__")
 }

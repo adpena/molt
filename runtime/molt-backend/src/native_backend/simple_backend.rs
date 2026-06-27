@@ -20,8 +20,6 @@ pub(crate) use value_encoding::*;
 mod module_metadata;
 pub use module_metadata::NativeBackendModuleContext;
 pub(crate) use module_metadata::*;
-mod tir_optimization;
-use tir_optimization::*;
 mod block_builder;
 pub(crate) use block_builder::*;
 mod refcount;
@@ -36,9 +34,15 @@ mod control_frames;
 pub(crate) use control_frames::*;
 mod config;
 mod deferred_codegen;
-pub(crate) use deferred_codegen::DeferredDefine;
+#[cfg(test)]
+pub(crate) use deferred_codegen::{
+    DEFERRED_CODEGEN_FLUSH_FUNCTION_LIMIT, DEFERRED_CODEGEN_FLUSH_OP_BUDGET,
+};
+pub(crate) use deferred_codegen::{DeferredDefine, should_flush_deferred_codegen};
 mod app_resolver;
 mod compile_driver;
+#[cfg(test)]
+pub(crate) use compile_driver::preprocess_backend_tir_input;
 mod trampolines;
 
 /// Output of a native compilation pass.
