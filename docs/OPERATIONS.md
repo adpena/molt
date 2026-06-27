@@ -511,7 +511,10 @@ uv run --python 3.12 python -u tests/molt_diff.py tests/differential/basic/exec_
 - **Bootstrap command**: `uv run --python 3.12 python -m molt.cli dx env`
   reports the same canonical DX facts on Windows, macOS, and Linux, and
   `uv run --python 3.12 python -m molt.cli dx run -- <command>` runs a command
-  under those facts without shell activation. The resolver configures:
+  under those facts without shell activation. This is the maintainer/agent
+  development and proof-lane bootstrap, not a public compile requirement; real
+  users may compile in place, use default Molt/Cargo locations, or pass explicit
+  target/output flags. The resolver configures:
   - `MOLT_EXT_ROOT=<artifact-root>` (repo-local by default, or caller-provided external root)
   - `MOLT_CACHE=$MOLT_EXT_ROOT/.molt_cache`
   - `CARGO_TARGET_DIR=$MOLT_EXT_ROOT/target`
@@ -520,7 +523,11 @@ uv run --python 3.12 python -u tests/molt_diff.py tests/differential/basic/exec_
   - `UV_CACHE_DIR=$MOLT_EXT_ROOT/.uv-cache` and `TMPDIR=$MOLT_EXT_ROOT/tmp`
   - `SCCACHE_DIR=$MOLT_EXT_ROOT/.sccache` and `SCCACHE_CACHE_SIZE=<policy default>`
   - `MOLT_USE_SCCACHE=1`, `MOLT_DIFF_ALLOW_RUSTC_WRAPPER=1`, and `CARGO_INCREMENTAL=0` for better cross-agent cacheability
-- **Artifact root policy**: throughput bootstrap now prefers `MOLT_EXT_ROOT` when set and otherwise uses canonical repo-local roots. Use an external root when you want shared artifacts across machines or larger local capacity.
+- **Artifact root policy**: throughput bootstrap now prefers `MOLT_EXT_ROOT`
+  when set and otherwise uses canonical repo-local roots. Maintainer/agent
+  proof lanes should use an external root when available for shared artifacts,
+  larger local capacity, and Windows `C:` self-protection. Do not present that
+  as a required public CLI default.
 - **Cache retention**: the DX resolver emits `MOLT_CACHE_MAX_GB` and
   `MOLT_CACHE_MAX_AGE_DAYS`; the POSIX compatibility wrapper
   `tools/throughput_env.sh --apply` still runs `tools/molt_cache_prune.py`
