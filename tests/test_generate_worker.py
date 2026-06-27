@@ -267,7 +267,9 @@ def test_generate_split_worker_uses_phased_call_indirect_routing() -> None:
         },
     )
 
-    assert "const indirectName = `molt_call_indirect${arity}`;" in content
+    assert 'const callIndirectImportNames = ["molt_call_indirect0"' in content
+    assert "for (const indirectName of callIndirectImportNames) {" in content
+    assert "hostEnv[indirectName] = (fnIndex, ...args) => {" in content
     assert "const idx = Number(fnIndex);" in content
     assert "const dispatchIdx = remapLegacyRuntimeSharedIdx(idx);" in content
     assert "const directName = `__molt_table_ref_${dispatchIdx}`;" in content
@@ -307,14 +309,7 @@ def test_generate_split_worker_builds_runtime_import_wrappers_from_app_surface()
         shared_memory_initial_pages=8,
         shared_table_initial=16,
         shared_table_base=32,
-        runtime_import_result_kinds={
-            "function_set_builtin": "i64",
-            "string_from_bytes": "i32",
-        },
-        runtime_import_signatures={
-            "function_set_builtin": {"params": ["i64"], "result": "i64"},
-            "string_from_bytes": {"params": ["i32", "i64", "i32"], "result": "i32"},
-        },
+        runtime_import_names={"function_set_builtin", "string_from_bytes"},
         app_table_ref_signatures={
             "__molt_table_ref_1": {"params": ["i64"], "result": "i64"}
         },
@@ -494,31 +489,21 @@ def _signature_fixture_wasm() -> bytes:
     )
 
 
-def test_wasm_import_function_result_kinds_reads_wasm_bytes(tmp_path) -> None:
-    from molt.wasm_artifact import _wasm_import_function_result_kinds
+def test_runtime_import_signatures_are_manifest_backed() -> None:
+    from molt.cli.wasm import (
+        _runtime_import_result_kinds_from_manifest,
+        _runtime_import_signatures_from_manifest,
+    )
 
-    wasm_path = tmp_path / "app.wasm"
-    wasm_path.write_bytes(_signature_fixture_wasm())
+    import_names = {"function_set_builtin", "string_from_bytes"}
 
-    assert _wasm_import_function_result_kinds(
-        wasm_path, module_name="molt_runtime"
-    ) == {
-        "molt_function_set_builtin": "i64",
-        "molt_string_from_bytes": "i32",
-        "molt_resource_on_free": "nil",
+    assert _runtime_import_result_kinds_from_manifest(import_names) == {
+        "function_set_builtin": "i64",
+        "string_from_bytes": "i32",
     }
-
-
-def test_wasm_import_function_signatures_reads_wasm_bytes(tmp_path) -> None:
-    from molt.wasm_artifact import _wasm_import_function_signatures
-
-    wasm_path = tmp_path / "app.wasm"
-    wasm_path.write_bytes(_signature_fixture_wasm())
-
-    assert _wasm_import_function_signatures(wasm_path, module_name="molt_runtime") == {
-        "molt_function_set_builtin": {"params": ["i64"], "result": "i64"},
-        "molt_string_from_bytes": {"params": ["i32", "i64", "i32"], "result": "i32"},
-        "molt_resource_on_free": {"params": [], "result": "nil"},
+    assert _runtime_import_signatures_from_manifest(import_names) == {
+        "function_set_builtin": {"params": ["i64"], "result": "i64"},
+        "string_from_bytes": {"params": ["i32", "i64", "i32"], "result": "i32"},
     }
 
 

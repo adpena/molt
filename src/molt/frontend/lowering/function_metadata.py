@@ -18,6 +18,7 @@ from molt.frontend._types import (
     MOLT_BIND_KIND_OPEN,
     MoltOp,
     MoltValue,
+    _builtin_func_abi_arity,
 )
 from molt.frontend.sema import (
     FunctionKind,
@@ -517,9 +518,7 @@ class FunctionMetadataMixin(_MixinBase):
 
     def _emit_builtin_function(self, func_id: str) -> MoltValue:
         spec = BUILTIN_FUNC_SPECS[func_id]
-        arity = len(spec.params) + len(spec.pos_or_kw_params) + len(spec.kwonly_params)
-        if spec.vararg is not None:
-            arity += 1
+        arity = _builtin_func_abi_arity(spec)
         func_val = MoltValue(self.next_var(), type_hint="function")
         self.emit(
             MoltOp(

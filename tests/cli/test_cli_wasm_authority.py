@@ -38,8 +38,6 @@ _CLI_REEXPORTED_WASM_BINARY_READER_NAMES = (
 )
 
 _WASM_SIGNATURE_READER_NAMES = (
-    "_wasm_import_function_result_kinds",
-    "_wasm_import_function_signatures",
     "_wasm_export_function_signatures",
 )
 

@@ -3,14 +3,17 @@ from __future__ import annotations
 import importlib
 import json
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Iterable, Mapping
 
 import molt.wasm_artifact as _wasm_artifact
 from molt._wasm_abi_generated import (
+    WASM_CALL_INDIRECT_IMPORTS,
     WASM_LEGACY_TABLE_BASE,
     WASM_RUNTIME_IMPORT_FALLBACK_SPECS,
     WASM_RESERVED_RUNTIME_CALLABLE_BASE,
     WASM_RESERVED_RUNTIME_CALLABLE_COUNT,
+    wasm_import_result_kind,
+    wasm_import_signature,
 )
 
 __all__ = (
@@ -18,6 +21,8 @@ __all__ = (
     "_export_wasm_table_refs",
     "_generate_split_worker_js",
     "_generate_split_wrangler_jsonc",
+    "_runtime_import_result_kinds_from_manifest",
+    "_runtime_import_signatures_from_manifest",
 )
 
 
@@ -104,13 +109,44 @@ def _effective_split_worker_table_base(
     return wasm_table_base
 
 
+def _runtime_import_signatures_from_manifest(
+    import_names: Iterable[str],
+) -> dict[str, dict[str, object]]:
+    signatures: dict[str, dict[str, object]] = {}
+    for import_name in sorted(set(import_names)):
+        signature = wasm_import_signature(import_name)
+        if signature is None:
+            raise ValueError(
+                f"runtime import {import_name!r} missing from WASM ABI manifest"
+            )
+        params, results = signature
+        signatures[import_name] = {
+            "params": list(params),
+            "result": "nil" if not results else ", ".join(results),
+        }
+    return signatures
+
+
+def _runtime_import_result_kinds_from_manifest(
+    import_names: Iterable[str],
+) -> dict[str, str]:
+    result_kinds: dict[str, str] = {}
+    for import_name in sorted(set(import_names)):
+        result_kind = wasm_import_result_kind(import_name)
+        if result_kind is None:
+            raise ValueError(
+                f"runtime import {import_name!r} missing from WASM ABI manifest"
+            )
+        result_kinds[import_name] = result_kind
+    return result_kinds
+
+
 def _generate_split_worker_js(
     *,
     shared_memory_initial_pages: int,
     shared_table_initial: int,
     shared_table_base: int | None,
-    runtime_import_result_kinds: Mapping[str, str] | None = None,
-    runtime_import_signatures: Mapping[str, Mapping[str, object]] | None = None,
+    runtime_import_names: Iterable[str] | None = None,
     app_table_ref_signatures: Mapping[str, Mapping[str, object]] | None = None,
     runtime_table_ref_signatures: Mapping[str, Mapping[str, object]] | None = None,
 ) -> str:
@@ -120,12 +156,20 @@ def _generate_split_worker_js(
     CDN independently of the app module.  Both modules share linear memory
     through WASI imports.
     """
+    runtime_import_names = tuple(runtime_import_names or ())
+    runtime_import_result_kinds = _runtime_import_result_kinds_from_manifest(
+        runtime_import_names
+    )
+    runtime_import_signatures = _runtime_import_signatures_from_manifest(
+        runtime_import_names
+    )
     runtime_import_result_kinds_json = json.dumps(
-        dict(runtime_import_result_kinds or {}), sort_keys=True
+        runtime_import_result_kinds, sort_keys=True
     )
     runtime_import_signatures_json = json.dumps(
-        dict(runtime_import_signatures or {}), sort_keys=True
+        runtime_import_signatures, sort_keys=True
     )
+    call_indirect_imports_json = json.dumps(list(WASM_CALL_INDIRECT_IMPORTS))
     runtime_import_fallbacks_json = json.dumps(
         {
             import_name: {
@@ -232,6 +276,7 @@ export default {
     const runtimeImportResultKinds = __MOLT_RUNTIME_IMPORT_RESULT_KINDS__;
     const runtimeImportSignatures = __MOLT_RUNTIME_IMPORT_SIGNATURES__;
     const runtimeImportFallbacks = __MOLT_RUNTIME_IMPORT_FALLBACKS__;
+    const callIndirectImportNames = __MOLT_CALL_INDIRECT_IMPORTS__;
     const appTableRefSignatures = __MOLT_APP_TABLE_REF_SIGNATURES__;
     const runtimeTableRefSignatures = __MOLT_RUNTIME_TABLE_REF_SIGNATURES__;
     const LEGACY_WASM_TABLE_BASE = __MOLT_LEGACY_WASM_TABLE_BASE__;
@@ -994,9 +1039,8 @@ export default {
       molt_gpu_webgpu_dispatch_host() { return -38; },
     };
 
-    for (let arity = 0; arity <= 13; arity++) {
-      hostEnv[`molt_call_indirect${arity}`] = (fnIndex, ...args) => {
-        const indirectName = `molt_call_indirect${arity}`;
+    for (const indirectName of callIndirectImportNames) {
+      hostEnv[indirectName] = (fnIndex, ...args) => {
         const idx = Number(fnIndex);
         const dispatchIdx = remapLegacyRuntimeSharedIdx(idx);
         const directName = `__molt_table_ref_${dispatchIdx}`;
@@ -1127,6 +1171,10 @@ export default {
         .replace(
             "__MOLT_RUNTIME_IMPORT_FALLBACKS__",
             runtime_import_fallbacks_json,
+        )
+        .replace(
+            "__MOLT_CALL_INDIRECT_IMPORTS__",
+            call_indirect_imports_json,
         )
         .replace(
             "__MOLT_APP_TABLE_REF_SIGNATURES__",
