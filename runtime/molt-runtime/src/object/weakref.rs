@@ -55,6 +55,54 @@ pub(crate) fn weakref_clear_for_ptr(_py: &PyToken<'_>, target_ptr: *mut u8) {
         dec_ref_bits(_py, cb_bits);
         dec_ref_bits(_py, weak_bits);
     }
+    // RE-DRAIN ORPHANS RE-REGISTERED DURING CALLBACKS.
+    //
+    // The callback loop above ran with the registry lock released (it must, so a
+    // callback can re-enter the registry without deadlocking the non-reentrant
+    // Mutex). A callback that calls `weakref.ref(<the dying target>)` therefore
+    // re-inserts a fresh `by_target[target_slot]` entry and a `by_ref` entry whose
+    // `target` field points at THIS object — which the caller (`dec_ref_ptr`'s
+    // revival window) is about to free. The original `by_target.remove` above only
+    // captured the snapshot present at entry, so without this pass the new entry
+    // would survive as an orphan keyed on the freed address: a later object that
+    // reuses the exact address would have `weakref_clear_for_ptr` mis-fire this
+    // stale callback as if the unrelated object had died (a wrong-target callback),
+    // and `weakref()` on the orphan would briefly resolve through the reused slot.
+    //
+    // CPython forbids this at the source: a weakref created against an object whose
+    // `tp_dealloc`/`ClearWeakRefs` is in progress cannot remain attached. Mirror
+    // that: drop any `by_target[target_slot]` entry re-created during the callbacks
+    // and null each referenced `by_ref` entry's target (so it resolves to None and
+    // never fires) — WITHOUT running these new callbacks (the object is dead). This
+    // is keyed on the same bare address; since the object is freed immediately
+    // after we return, no live weakref can legitimately point at it.
+    let orphan_callbacks: Vec<u64> = {
+        let mut registry = runtime_state(_py).weakrefs.lock().unwrap();
+        let mut drop_cbs: Vec<u64> = Vec::new();
+        if let Some(orphans) = registry.by_target.remove(&target_slot) {
+            for weak_slot in orphans {
+                if let Some(entry) = registry.by_ref.get_mut(&weak_slot) {
+                    entry.target = PtrSlot(ptr::null_mut());
+                    let cb_bits = entry.callback_bits;
+                    entry.callback_bits = MoltObject::none().bits();
+                    if !obj_from_bits(cb_bits).is_none() {
+                        // The callback was inc_ref'd at registration
+                        // (`molt_weakref_register`); it will never fire, so the
+                        // registration ref must be released — but NOT while holding
+                        // the registry lock (the callback object's own dealloc can
+                        // re-enter `weakref_clear_for_ptr` and the non-reentrant
+                        // Mutex would deadlock, the same reason the callback loop
+                        // above runs lock-free). Defer to after the lock is dropped.
+                        drop_cbs.push(cb_bits);
+                    }
+                }
+            }
+        }
+        drop_cbs
+    };
+    for cb_bits in orphan_callbacks {
+        dec_ref_bits(_py, cb_bits);
+    }
 }
 
 pub(crate) fn weakref_collect_for_gc(_py: &PyToken<'_>) -> usize {

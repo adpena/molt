@@ -1751,12 +1751,22 @@ pub(crate) unsafe fn inc_ref_ptr(_py: &PyToken<'_>, ptr: *mut u8) {
         }
         let header_ptr = ptr.sub(std::mem::size_of::<MoltHeader>()) as *mut MoltHeader;
         let type_id = (*header_ptr).type_id;
-        debug_assert!(
-            type_id > 0 && type_id <= 255,
-            "inc_ref_ptr: invalid type_id {} at ptr {:?} — likely use-after-free",
-            type_id,
-            ptr
-        );
+        // Type-id validity is a MEMORY-SAFETY boundary, not a debug concern: a
+        // header whose `type_id` is out of the valid heap range means `ptr` does
+        // not point at a live molt object (use-after-free, wild pointer, or
+        // corrupted header). Touching its `flags`/`ref_count` below — and later
+        // routing it through the dealloc switch keyed on `type_id` — would be UB.
+        // Fail closed in ALL profiles via the single canonical validator
+        // (`is_valid_heap_type_id`), never a stripped `debug_assert!` with a
+        // duplicate looser range that drifts from the authority.
+        if !is_valid_heap_type_id(type_id) {
+            eprintln!(
+                "molt fatal: invalid object header in inc_ref ptr=0x{:x} type_id={} \
+                 (use-after-free or corrupted header)",
+                ptr as usize, type_id
+            );
+            std::process::abort();
+        }
         if ((*header_ptr).flags & HEADER_FLAG_IMMORTAL) != 0 {
             return;
         }
@@ -1810,6 +1820,17 @@ pub(crate) unsafe fn inc_ref_n_ptr(_py: &PyToken<'_>, ptr: *mut u8, count: u32) 
             return;
         }
         let header_ptr = ptr.sub(std::mem::size_of::<MoltHeader>()) as *mut MoltHeader;
+        // Type-id validity is a MEMORY-SAFETY boundary (mirror `inc_ref_ptr`):
+        // a corrupted/freed header must not have its `flags`/`ref_count` touched.
+        let type_id = (*header_ptr).type_id;
+        if !is_valid_heap_type_id(type_id) {
+            eprintln!(
+                "molt fatal: invalid object header in inc_ref_n ptr=0x{:x} type_id={} \
+                 (use-after-free or corrupted header)",
+                ptr as usize, type_id
+            );
+            std::process::abort();
+        }
         if ((*header_ptr).flags & HEADER_FLAG_IMMORTAL) != 0 {
             return;
         }
@@ -2017,6 +2038,22 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
         }
         let header_ptr = ptr.sub(std::mem::size_of::<MoltHeader>()) as *mut MoltHeader;
         let type_id = (*header_ptr).type_id;
+        // Type-id validity is a MEMORY-SAFETY boundary (see `inc_ref_ptr`). This
+        // `type_id` drives the dealloc switch below (reading type-specific inner
+        // pointers and freeing the backing memory), so an out-of-range value —
+        // use-after-free, wild pointer, or corrupted header — would corrupt
+        // unrelated memory. Fail closed in ALL profiles via the single canonical
+        // validator before reading any other header field. `molt_dec_ref_obj`
+        // already guards the bits-based entry; this closes the ptr-based hot path
+        // it short-circuits past, so both DecRef entry points share one authority.
+        if !is_valid_heap_type_id(type_id) {
+            eprintln!(
+                "molt fatal: invalid object header in dec_ref ptr=0x{:x} type_id={} \
+                 (use-after-free or corrupted header)",
+                ptr as usize, type_id
+            );
+            std::process::abort();
+        }
         let header_flags = (*header_ptr).flags;
         let header_size_class = (*header_ptr).size_class;
         let header_cold_idx = (*header_ptr).cold_idx;
@@ -2252,6 +2289,27 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                 let prev_window = (*header_ptr).ref_count.fetch_sub(1, AtomicOrdering::AcqRel);
                 if prev_window > 1 {
                     return;
+                }
+                // DEFENSE-IN-DEPTH (P2): the revival window above ran arbitrary
+                // Python (`__del__` and/or weakref callbacks) against this object's
+                // LIVE storage. The dealloc switch below is keyed on `type_id`,
+                // which was cached at function entry BEFORE that window; it selects
+                // type-specific inner-pointer offsets and the backing-memory free.
+                // In molt's subset nothing can legitimately retag a live object's
+                // `type_id` (no ctypes header writes, no `__class__` reassignment
+                // that changes the runtime type tag), so this MUST still hold. If a
+                // finalizer/callback corrupted the header, re-reading proves it here
+                // and aborts BEFORE we free with a mismatched layout (a silent
+                // wrong-layout free is memory corruption, not a recoverable error).
+                let type_id_after_window = (*header_ptr).type_id;
+                if type_id_after_window != type_id {
+                    eprintln!(
+                        "molt fatal: object type_id changed across finalize/weakref \
+                         window ptr=0x{:x} before={} after={} (header corrupted by a \
+                         finalizer or weakref callback)",
+                        ptr as usize, type_id, type_id_after_window
+                    );
+                    std::process::abort();
                 }
             }
             // Past the resurrection check: the object is now actually being
