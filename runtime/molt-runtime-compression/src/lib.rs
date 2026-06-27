@@ -4,6 +4,10 @@
 //! so they can be excluded from micro/edge builds without recompiling the core runtime.
 
 pub mod bridge;
+#[cfg(test)]
+#[path = "../../molt-runtime-core/src/bridge_test_stubs.rs"]
+mod bridge_test_stubs;
+
 pub mod bz2;
 pub mod compression_common;
 pub mod gzip;

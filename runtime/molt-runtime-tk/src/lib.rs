@@ -6,6 +6,10 @@
 #[cfg(feature = "tk")]
 #[allow(dead_code)]
 pub(crate) mod bridge;
+#[cfg(test)]
+#[path = "../../molt-runtime-core/src/bridge_test_stubs.rs"]
+mod bridge_test_stubs;
+
 #[cfg(feature = "tk")]
 #[allow(dead_code)]
 pub mod tk;
