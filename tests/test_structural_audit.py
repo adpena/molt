@@ -104,7 +104,7 @@ def test_tooling_gaps_credit_fact_graph_when_both_halves_exist(tmp_path: Path):
     tools = tmp_path / "tools"
     tools.mkdir()
     (tools / "fact_graph_dump.py").write_text("", encoding="utf-8")
-    fact_graph = tmp_path / "runtime" / "molt-tir" / "src" / "tir"
+    fact_graph = tmp_path / "runtime" / "molt-passes" / "src" / "tir"
     fact_graph.mkdir(parents=True)
     (fact_graph / "fact_graph.rs").write_text("", encoding="utf-8")
 
@@ -176,6 +176,24 @@ def test_debt_probe_counts_comments_and_rust_macros(tmp_path: Path):
         "runtime/molt-runtime/src/lib.rs:2",
         "src/molt/feature.py:1",
     }
+
+
+def test_debt_probe_ignores_bare_upstream_stdlib_xxx_not_owned_debt(tmp_path: Path):
+    stdlib = tmp_path / "src" / "molt" / "stdlib"
+    stdlib.mkdir(parents=True)
+    (stdlib / "_pyio.py").write_text(
+        "# XXX Should this return the number of bytes written???\n"
+        "# XXX: this is a bit of a hack; keep counting owned debt words\n"
+        "# FIXME: replace with generated parser facts\n",
+        encoding="utf-8",
+    )
+
+    findings = SA.probe_debt_markers(tmp_path)
+    metrics = SA.ratchet_metrics(findings)
+
+    assert metrics["debt_markers_total"] == 2
+    assert findings[0].location == "src/molt/stdlib/_pyio.py:2"
+    assert findings[0].detail == "L2:hack, L3:FIXME"
 
 
 # --- 2. robustness of the scanning helpers --------------------------------
@@ -520,7 +538,7 @@ def test_native_scalar_plan_authority_ratchets_side_set_clones(tmp_path: Path):
     target = (
         tmp_path
         / "runtime"
-        / "molt-backend"
+        / "molt-backend-native"
         / "src"
         / "native_backend"
         / "function_compiler"
@@ -557,7 +575,7 @@ def test_native_scalar_plan_authority_allows_direct_plan_predicates(tmp_path: Pa
     target = (
         tmp_path
         / "runtime"
-        / "molt-backend"
+        / "molt-backend-native"
         / "src"
         / "native_backend"
         / "function_compiler"
