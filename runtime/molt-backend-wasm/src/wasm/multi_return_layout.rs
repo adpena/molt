@@ -196,11 +196,11 @@ mod tests {
         assert!(layout.is_callee_tuple_var("pair"));
         assert_eq!(layout.callee_value_locals(), &[2, 3]);
         assert_eq!(
-            locals.name_kind("__multi_ret_0"),
+            locals.local_kind("__multi_ret_0"),
             Some(WasmFrameLocalKind::MultiReturnCalleeValue)
         );
         assert_eq!(
-            locals.name_kind("__multi_ret_1"),
+            locals.local_kind("__multi_ret_1"),
             Some(WasmFrameLocalKind::MultiReturnCalleeValue)
         );
         assert_eq!(local_types, vec![ValType::I64, ValType::I64]);
@@ -234,11 +234,11 @@ mod tests {
         assert_eq!(layout.promoted_call_value_local("pair", 0), Some(0));
         assert_eq!(layout.promoted_call_value_local("pair", 1), Some(1));
         assert_eq!(
-            locals.name_kind("__multi_call_pair_0"),
+            locals.local_kind("__multi_call_pair_0"),
             Some(WasmFrameLocalKind::MultiReturnCallValue)
         );
         assert_eq!(
-            locals.name_kind("__multi_call_pair_1"),
+            locals.local_kind("__multi_call_pair_1"),
             Some(WasmFrameLocalKind::MultiReturnCallValue)
         );
         assert_eq!(local_types, vec![ValType::I64, ValType::I64]);
