@@ -479,7 +479,9 @@ Read these first instead of rediscovering project structure:
   non-`C:` drive such as `E:\Molt`; macOS/Linux use the configured external
   candidate roots. This is a development self-protection rule, not a user-facing
   compile contract: real users may build in place, use Cargo defaults, or pass
-  their own target/output flags.
+  their own target/output flags. Do not make external artifact placement a
+  required public CLI default unless the user explicitly opts in with a flag,
+  environment variable, or developer wrapper.
 - Canonical developer env defaults come from `molt dx env`, `molt dx run`,
   `tools/dev.py`, or `tools/run_context_env.py --prefer-external-artifacts`;
   do not hand-roll raw `cargo`/`uv` commands without first exporting those facts.
