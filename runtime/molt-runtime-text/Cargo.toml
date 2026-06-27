@@ -7,7 +7,9 @@ license = "Apache-2.0"
 description = "Text/encoding intrinsics for the Molt runtime (unicodedata, html)"
 
 [features]
-stdlib_unicode_names = ["dep:unicode_names2"]
+default = ["stdlib_text"]
+stdlib_text = []
+stdlib_unicode_names = ["stdlib_text", "dep:unicode_names2"]
 
 [dependencies]
 # Core runtime types used by the text implementations
