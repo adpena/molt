@@ -105,8 +105,6 @@ PYTEST_PROCESS_TOKENS = (
     "python3 -m pytest",
 )
 
-HOST_CONTROL_PLANE_TOKENS = memory_guard.HOST_CONTROL_PLANE_TOKENS
-
 INSPECTION_COMMAND_TOKENS = (
     "tools/process_sentinel.py",
     "process_sentinel.py",
@@ -368,6 +366,51 @@ def _owned_process_ids(
     return owned
 
 
+def _explicitly_owned_molt_process_ids(
+    samples: Mapping[int, memory_guard.ProcessSample],
+    *,
+    root: Path,
+    self_pid: int | None,
+    owned_pids: set[int],
+    known_process_identities: Mapping[int, memory_guard.ProcessIdentity] | None,
+) -> set[int]:
+    """Return explicit custody PIDs that are also proven Molt cleanup roots.
+
+    A repo sentinel can observe every child of the harness process, including
+    shell, Git, editor, and Codex helper descendants. Explicit custody proves a
+    PID belongs to the current tree; it does not by itself prove that the PID is
+    a Molt cleanup target. The first live sample must have a Molt cleanup
+    signature, or the PID must still match an identity from a previously
+    accepted Molt group. Descendants are kept only inside the explicit PID set.
+    """
+
+    if not owned_pids:
+        return set()
+    known = known_process_identities or {}
+    roots: set[int] = set()
+    for pid in owned_pids:
+        sample = samples.get(pid)
+        if sample is None:
+            continue
+        known_identity = known.get(pid)
+        if (
+            known_identity is not None
+            and memory_guard.process_identity(sample) == known_identity
+        ) or is_molt_process(sample, root=root, self_pid=self_pid):
+            roots.add(pid)
+    owned = set(roots)
+    changed = True
+    while changed:
+        changed = False
+        for sample in samples.values():
+            if sample.pid in owned or sample.pid not in owned_pids:
+                continue
+            if sample.ppid in owned:
+                owned.add(sample.pid)
+                changed = True
+    return owned
+
+
 def _windows_snapshot_helper_tree_ids(
     samples: Mapping[int, memory_guard.ProcessSample],
 ) -> set[int]:
@@ -451,7 +494,13 @@ def process_groups(
         self_pgid=self_pgid,
     )
     owned = (
-        set(owned_pids)
+        _explicitly_owned_molt_process_ids(
+            samples,
+            root=root,
+            self_pid=self_pid,
+            owned_pids=set(owned_pids),
+            known_process_identities=known_process_identities,
+        )
         if owned_pids is not None
         else _owned_process_ids(
             samples,

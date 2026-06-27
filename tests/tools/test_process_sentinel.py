@@ -525,6 +525,52 @@ def test_process_groups_explicit_custody_excludes_repo_scoped_shell() -> None:
     assert explicit == []
 
 
+def test_process_groups_explicit_custody_requires_molt_cleanup_identity() -> None:
+    module = _load_process_sentinel()
+    root = Path("/repo/molt")
+    samples = {
+        100: module.memory_guard.ProcessSample(
+            pid=100,
+            ppid=1,
+            pgid=100,
+            rss_kb=100,
+            command="/Applications/Codex.app/Contents/MacOS/Codex",
+        ),
+        999: module.memory_guard.ProcessSample(
+            pid=999,
+            ppid=100,
+            pgid=999,
+            rss_kb=100,
+            command="/repo/molt/tools/process_sentinel.py --once --kill-all",
+        ),
+        200: module.memory_guard.ProcessSample(
+            pid=200,
+            ppid=999,
+            pgid=200,
+            rss_kb=100,
+            command="git -C /repo/molt status --short",
+        ),
+        300: module.memory_guard.ProcessSample(
+            pid=300,
+            ppid=999,
+            pgid=300,
+            rss_kb=100,
+            command="/repo/molt/target/dev-fast/molt-backend --owned",
+        ),
+    }
+
+    groups = module.process_groups(
+        samples,
+        root=root,
+        self_pid=999,
+        self_pgid=999,
+        owned_pids={200, 300},
+    )
+
+    assert [group.pgid for group in groups] == [300]
+    assert groups[0].pids == [300]
+
+
 def test_process_groups_exclude_windows_snapshot_helper_descendants(
     monkeypatch,
 ) -> None:
