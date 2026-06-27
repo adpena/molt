@@ -1,10 +1,11 @@
 use super::{
     DEFERRED_CODEGEN_FLUSH_FUNCTION_LIMIT, DEFERRED_CODEGEN_FLUSH_OP_BUDGET,
-    NativeBackendModuleContext, SimpleBackend, TrampolineKey, analyze_native_backend_ir,
-    assert_requested_llvm_backend_available, compute_function_has_ret, drain_cleanup_entry_tracked,
-    drain_cleanup_entry_tracked_with_authority, drain_cleanup_tracked_dedup_with_authority,
-    merge_closure_functions, merge_function_arities, merge_function_has_ret, merge_leaf_functions,
-    merge_task_kinds, preprocess_backend_tir_input, should_flush_deferred_codegen,
+    NativeBackendModuleContext, NativeRcAuthority, SimpleBackend, TrampolineKey,
+    analyze_native_backend_ir, assert_requested_llvm_backend_available, compute_function_has_ret,
+    drain_cleanup_entry_tracked, drain_cleanup_entry_tracked_with_authority,
+    drain_cleanup_tracked_dedup_with_authority, merge_closure_functions, merge_function_arities,
+    merge_function_has_ret, merge_leaf_functions, merge_task_kinds, preprocess_backend_tir_input,
+    should_flush_deferred_codegen,
 };
 use crate::TrampolineKind;
 use crate::ir::{FunctionIR, OpIR, SimpleIR};

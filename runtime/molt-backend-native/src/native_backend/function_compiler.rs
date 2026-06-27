@@ -212,7 +212,7 @@ impl SimpleBackend {
         } else {
             crate::passes::compute_rc_coalesce_skips(&func_ir.ops, &last_use)
         };
-        let native_rc_tracking_enabled = !drop_inserted;
+        let rc_authority = NativeRcAuthority::from_drop_inserted(drop_inserted);
         let returns_value = has_ret || stateful;
 
         if returns_value {
@@ -1040,7 +1040,7 @@ impl SimpleBackend {
                 &op,
                 out_name.as_deref(),
                 loop_depth,
-                drop_inserted,
+                rc_authority,
                 is_block_filled,
                 &rc_skip_dec,
                 &loop_body_out_vars,
@@ -1480,7 +1480,7 @@ impl SimpleBackend {
                         &label_blocks,
                         &mut reachable_blocks,
                         &mut is_block_filled,
-                        native_rc_tracking_enabled,
+                        rc_authority,
                         returns_value,
                         &mut self.module,
                         &mut self.import_ids,
@@ -1529,7 +1529,7 @@ impl SimpleBackend {
                         emit_traces,
                         has_frame_slot,
                         is_block_filled,
-                        native_rc_tracking_enabled,
+                        rc_authority,
                         !loop_stack.is_empty(),
                         &mut self.module,
                         &mut self.import_ids,
@@ -1594,8 +1594,7 @@ impl SimpleBackend {
                         emit_traces,
                         has_frame_slot,
                         returns_value,
-                        drop_inserted,
-                        native_rc_tracking_enabled,
+                        rc_authority,
                         &mut self.module,
                         &mut self.import_ids,
                         &mut builder,
@@ -1776,7 +1775,7 @@ impl SimpleBackend {
                         &label_blocks,
                         &mut reachable_blocks,
                         &mut is_block_filled,
-                        native_rc_tracking_enabled,
+                        rc_authority,
                         &mut self.module,
                         &mut self.import_ids,
                         &mut builder,
@@ -1850,7 +1849,7 @@ impl SimpleBackend {
                         &mut if_stack,
                         &mut skip_ops,
                         &mut is_block_filled,
-                        native_rc_tracking_enabled,
+                        rc_authority,
                         scalar_fast_paths_enabled,
                         &maybe_debug_seal,
                         local_dec_ref_obj,
@@ -1888,7 +1887,7 @@ impl SimpleBackend {
                         &mut skip_ops,
                         &mut loop_depth,
                         &mut is_block_filled,
-                        native_rc_tracking_enabled,
+                        rc_authority,
                         scalar_fast_paths_enabled,
                         debug_loop_cfg.as_deref(),
                         debug_block_origins.as_deref(),
@@ -1933,7 +1932,7 @@ impl SimpleBackend {
                         profile_enabled_val,
                         local_inc_ref_obj,
                         local_dec_ref_obj,
-                        native_rc_tracking_enabled,
+                        rc_authority,
                         scalar_fast_paths_enabled,
                         &nbc,
                     );
@@ -1998,8 +1997,7 @@ impl SimpleBackend {
                         master_return_block,
                         &mut is_block_filled,
                         returns_value,
-                        drop_inserted,
-                        native_rc_tracking_enabled,
+                        rc_authority,
                         scalar_fast_paths_enabled,
                         debug_block_origins.as_deref(),
                         &maybe_debug_seal,
@@ -2102,7 +2100,7 @@ impl SimpleBackend {
                     _ => None,
                 };
                 let cleanup = drain_cleanup_entry_tracked_with_authority(
-                    native_rc_tracking_enabled,
+                    rc_authority,
                     &mut tracked_obj_vars,
                     &mut entry_vars,
                     &last_use,
@@ -2115,7 +2113,7 @@ impl SimpleBackend {
                     builder.ins().call(local_dec_ref_obj, &[val]);
                 }
                 let cleanup = drain_cleanup_entry_tracked_with_authority(
-                    native_rc_tracking_enabled,
+                    rc_authority,
                     &mut tracked_vars,
                     &mut entry_vars,
                     &last_use,
@@ -2195,7 +2193,7 @@ impl SimpleBackend {
                 // the tracking holds a second reference on loop-carried
                 // accumulators and the TIR `DecRef(old)` only takes rc 2→1, never
                 // freeing it (the O(n) residual leak the activation must close).
-                && !drop_inserted
+                && rc_authority.native_value_tracking_enabled()
                 && op.kind != "delete_var"
                 && !slot_backed_join_slots.contains_key(name.as_str())
                 && let Some(block) = builder.current_block()
@@ -2244,7 +2242,7 @@ impl SimpleBackend {
 
         // Finalize Master Return Block
         if !is_block_filled {
-            if !native_rc_tracking_enabled {
+            if !rc_authority.native_value_tracking_enabled() {
                 block_tracked_obj.clear();
                 block_tracked_ptr.clear();
                 tracked_vars.clear();
@@ -2312,7 +2310,7 @@ impl SimpleBackend {
         // dec-refs"). Running this teardown too would double-free the returned
         // accumulator (a use-after-free in the caller) — so it is suppressed and
         // the TIR drops are the sole authority.
-        if !drop_inserted {
+        if rc_authority.native_value_tracking_enabled() {
             for (name, slot) in slot_backed_join_slots.iter() {
                 // Raw-backed slots hold raw i64 scalars — never heap pointers,
                 // never refcounted, nothing to release.

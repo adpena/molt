@@ -39,7 +39,7 @@ fn authority_disabled_tracked_drain_clears_without_cleanup() {
     let mut already_decrefed = BTreeSet::new();
 
     let cleanup = drain_cleanup_tracked_dedup_with_authority(
-        false,
+        NativeRcAuthority::TirDropInsertion,
         &mut names,
         &last_use,
         &alias_roots,
@@ -62,7 +62,7 @@ fn authority_disabled_entry_drain_clears_without_cleanup() {
     let mut already_decrefed = BTreeSet::new();
 
     let cleanup = drain_cleanup_entry_tracked_with_authority(
-        false,
+        NativeRcAuthority::TirDropInsertion,
         &mut names,
         &mut entry_vars,
         &last_use,
@@ -76,4 +76,18 @@ fn authority_disabled_entry_drain_clears_without_cleanup() {
     assert!(names.is_empty());
     assert!(entry_vars.is_empty());
     assert!(already_decrefed.is_empty());
+}
+
+#[test]
+fn authority_from_drop_inserted_selects_single_rc_owner() {
+    assert_eq!(
+        NativeRcAuthority::from_drop_inserted(true),
+        NativeRcAuthority::TirDropInsertion
+    );
+    assert_eq!(
+        NativeRcAuthority::from_drop_inserted(false),
+        NativeRcAuthority::NativeValueTracking
+    );
+    assert!(!NativeRcAuthority::TirDropInsertion.native_value_tracking_enabled());
+    assert!(NativeRcAuthority::NativeValueTracking.native_value_tracking_enabled());
 }
