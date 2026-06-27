@@ -6,10 +6,6 @@ pub mod pipeline_cache;
 pub mod tests_roundtrip;
 pub mod verify_lir;
 pub mod verify_lir_repr;
-pub mod wasm_component;
-pub mod wasm_split;
-pub mod wasm_streaming;
-
 pub use molt_ir::tir::{
     blocks, call_targets, cfg, dominators, effect_proof, function, op_kinds_generated, ops,
     printer, serialize, ssa, types, values, verify,

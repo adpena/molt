@@ -351,7 +351,10 @@ Molt's compilation cache (`tir/cache.rs`) uses content-addressed storage. The ca
 
 Compiled WASM modules are stored in R2 with this key. When a new isolate starts on the same edge node, it checks R2 before compiling. Cache hit rate at steady state should exceed 99% -- only new deployments trigger fresh compilation.
 
-The WASM split plan (`tir/wasm_split.rs`) separates modules into core, stdlib, and user code. The core module (~300KB) is bundled with the worker. Stdlib modules are loaded on demand from R2. User code modules are compiled per-deployment and cached.
+WASM split modules must be derived from backend-emitted artifact facts, not TIR name
+heuristics. If the product split returns, the core, stdlib, and user-code boundaries are
+computed from real reachability, import/export/type sections, and post-link/post-opt
+section bytes; the retired `tir/wasm_split.rs` estimate path is not a shipped capability.
 
 ---
 
