@@ -9,7 +9,11 @@ import sys
 import time
 from typing import Iterator
 
-from molt.dx import DEFAULT_SCCACHE_CACHE_SIZE, development_artifact_env
+from molt.dx import (
+    DEFAULT_SCCACHE_CACHE_SIZE,
+    development_artifact_env,
+    development_artifacts_requested,
+)
 from molt.cli.build_locks import _release_file_lock, _try_acquire_file_lock
 from molt.cli.command_runtime import _run_completed_command
 from molt.cli.project_roots import _find_molt_root
@@ -46,14 +50,7 @@ def _maybe_enable_sccache(env: dict[str, str]) -> None:
 
 def _cargo_build_env() -> dict[str, str]:
     env = os.environ.copy()
-    if any(
-        env.get(key, "").strip()
-        for key in (
-            "MOLT_REQUIRE_EXTERNAL_ARTIFACTS",
-            "MOLT_PREFER_EXTERNAL_ARTIFACTS",
-            "MOLT_USE_EXTERNAL_ARTIFACTS",
-        )
-    ):
+    if development_artifacts_requested(env):
         root = _find_molt_root(Path.cwd()) or Path.cwd()
         env = development_artifact_env(
             root,

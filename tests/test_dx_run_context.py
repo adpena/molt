@@ -9,6 +9,7 @@ from molt.dx import (
     DX_ENV_KEYS,
     DxProject,
     RunContext,
+    development_artifacts_requested,
     render_env,
 )
 from tools import run_context_env
@@ -205,6 +206,14 @@ def test_run_context_require_external_artifacts_forces_candidate(
     assert env["CARGO_TARGET_DIR"] == str(
         external_root.resolve() / "target" / "sessions" / env["MOLT_SESSION_ID"]
     )
+
+
+def test_development_artifacts_requested_is_explicit_dev_control_plane() -> None:
+    assert not development_artifacts_requested({})
+    assert not development_artifacts_requested({"MOLT_REQUIRE_EXTERNAL_ARTIFACTS": ""})
+    assert development_artifacts_requested({"MOLT_REQUIRE_EXTERNAL_ARTIFACTS": "1"})
+    assert development_artifacts_requested({"MOLT_PREFER_EXTERNAL_ARTIFACTS": "true"})
+    assert development_artifacts_requested({"MOLT_USE_EXTERNAL_ARTIFACTS": "yes"})
 
 
 def test_run_context_rejects_explicit_c_drive_canonical_root(
