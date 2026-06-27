@@ -122,6 +122,26 @@ def _execute_lazy_op(op: LazyOp, shape: tuple) -> list:
     return _dispatch_op(op.op, src_data, src_shapes, op.arg, numel, shape)
 
 
+# Element-wise binary kernels for the CPU reference executor. Operands are
+# already broadcast to the output extent before these are applied.
+_BINARY_OPS = {
+    "ADD": lambda a, b: a + b,
+    "SUB": lambda a, b: a - b,
+    "MUL": lambda a, b: a * b,
+    "IDIV": lambda a, b: int(a) // int(b) if int(b) != 0 else 0,
+    "MOD": lambda a, b: int(a) % int(b) if int(b) != 0 else 0,
+    "MAX": max,
+    "CMPLT": lambda a, b: 1.0 if a < b else 0.0,
+    "CMPEQ": lambda a, b: 1.0 if a == b else 0.0,
+    "CMPNE": lambda a, b: 1.0 if a != b else 0.0,
+    "AND": lambda a, b: float(int(a) & int(b)),
+    "OR": lambda a, b: float(int(a) | int(b)),
+    "XOR": lambda a, b: float(int(a) ^ int(b)),
+    "SHL": lambda a, b: float(int(a) << int(b)),
+    "SHR": lambda a, b: float(int(a) >> int(b)),
+}
+
+
 def _dispatch_op(
     op_name: str,
     srcs: list,
@@ -157,49 +177,17 @@ def _dispatch_op(
     if op_name == "CAST":
         return list(srcs[0])  # CPU reference: no actual type conversion
 
-    # Binary ops
-    if op_name == "ADD":
-        a, b = _broadcast_pair(srcs[0], srcs[1], numel)
-        return [a[i] + b[i] for i in range(numel)]
-    if op_name == "SUB":
-        a, b = _broadcast_pair(srcs[0], srcs[1], numel)
-        return [a[i] - b[i] for i in range(numel)]
-    if op_name == "MUL":
-        a, b = _broadcast_pair(srcs[0], srcs[1], numel)
-        return [a[i] * b[i] for i in range(numel)]
-    if op_name == "IDIV":
-        a, b = _broadcast_pair(srcs[0], srcs[1], numel)
-        return [int(a[i]) // int(b[i]) if int(b[i]) != 0 else 0 for i in range(numel)]
-    if op_name == "MOD":
-        a, b = _broadcast_pair(srcs[0], srcs[1], numel)
-        return [int(a[i]) % int(b[i]) if int(b[i]) != 0 else 0 for i in range(numel)]
-    if op_name == "MAX":
-        a, b = _broadcast_pair(srcs[0], srcs[1], numel)
-        return [max(a[i], b[i]) for i in range(numel)]
-    if op_name == "CMPLT":
-        a, b = _broadcast_pair(srcs[0], srcs[1], numel)
-        return [1.0 if a[i] < b[i] else 0.0 for i in range(numel)]
-    if op_name == "CMPEQ":
-        a, b = _broadcast_pair(srcs[0], srcs[1], numel)
-        return [1.0 if a[i] == b[i] else 0.0 for i in range(numel)]
-    if op_name == "CMPNE":
-        a, b = _broadcast_pair(srcs[0], srcs[1], numel)
-        return [1.0 if a[i] != b[i] else 0.0 for i in range(numel)]
-    if op_name == "AND":
-        a, b = _broadcast_pair(srcs[0], srcs[1], numel)
-        return [float(int(a[i]) & int(b[i])) for i in range(numel)]
-    if op_name == "OR":
-        a, b = _broadcast_pair(srcs[0], srcs[1], numel)
-        return [float(int(a[i]) | int(b[i])) for i in range(numel)]
-    if op_name == "XOR":
-        a, b = _broadcast_pair(srcs[0], srcs[1], numel)
-        return [float(int(a[i]) ^ int(b[i])) for i in range(numel)]
-    if op_name == "SHL":
-        a, b = _broadcast_pair(srcs[0], srcs[1], numel)
-        return [float(int(a[i]) << int(b[i])) for i in range(numel)]
-    if op_name == "SHR":
-        a, b = _broadcast_pair(srcs[0], srcs[1], numel)
-        return [float(int(a[i]) >> int(b[i])) for i in range(numel)]
+    # Binary ops. Operands are broadcast to the output ``shape`` using
+    # NumPy-style right-aligned broadcasting (size-1 / missing leading dims are
+    # stretched). ``src_shapes`` carries each operand's shape so that
+    # multi-axis broadcasts such as ``(1, C, 1, 1)`` against ``(N, C, H, W)``
+    # (e.g. GroupNorm/BatchNorm affine) resolve correctly in this CPU reference.
+    binary_fn = _BINARY_OPS.get(op_name)
+    if binary_fn is not None:
+        a, b = _broadcast_pair(
+            srcs[0], srcs[1], numel, src_shapes[0], src_shapes[1], shape
+        )
+        return [binary_fn(a[i], b[i]) for i in range(numel)]
 
     # Ternary
     if op_name == "WHERE":
@@ -222,17 +210,88 @@ def _dispatch_op(
     raise ValueError(f"Unknown op: {op_name}")
 
 
-def _broadcast_pair(a: list | float, b: list | float, numel: int) -> tuple:
-    """Broadcast a scalar or list to match numel."""
-    if isinstance(a, (int, float)):
-        a = [float(a)] * numel
-    if isinstance(b, (int, float)):
-        b = [float(b)] * numel
-    if len(a) == 1 and numel > 1:
-        a = a * numel
-    if len(b) == 1 and numel > 1:
-        b = b * numel
-    return a, b
+def _strides_for(shape: tuple) -> list:
+    """Row-major (C-contiguous) strides for ``shape``."""
+    strides = [1] * len(shape)
+    acc = 1
+    for i in range(len(shape) - 1, -1, -1):
+        strides[i] = acc
+        acc *= shape[i]
+    return strides
+
+
+def _broadcast_to_shape(data, src_shape: tuple, out_shape: tuple, out_numel: int):
+    """Expand ``data`` (flat, row-major over ``src_shape``) to ``out_shape``.
+
+    Implements NumPy-style right-aligned broadcasting: source dims of size 1 (or
+    absent leading dims) are stretched by using a stride of 0 along that axis.
+    Returns a flat list of length ``out_numel``.
+    """
+    if not out_shape:
+        # Scalar output.
+        return [float(data[0]) if not isinstance(data, (int, float)) else float(data)]
+
+    ndim = len(out_shape)
+    src_shape = tuple(src_shape)
+    # Right-align the source shape against the output shape.
+    padded = (1,) * (ndim - len(src_shape)) + src_shape
+    base_strides = _strides_for(padded)
+    # Zero out strides on broadcast (size-1) source axes.
+    eff_strides = [
+        0 if padded[axis] == 1 and out_shape[axis] != 1 else base_strides[axis]
+        for axis in range(ndim)
+    ]
+
+    out = [0.0] * out_numel
+    coord = [0] * ndim
+    src_index = 0
+    for flat in range(out_numel):
+        out[flat] = data[src_index]
+        # Increment the mixed-radix coordinate (last axis fastest) and update
+        # the source index by the effective (broadcast-aware) strides.
+        axis = ndim - 1
+        while axis >= 0:
+            coord[axis] += 1
+            src_index += eff_strides[axis]
+            if coord[axis] < out_shape[axis]:
+                break
+            coord[axis] = 0
+            src_index -= eff_strides[axis] * out_shape[axis]
+            axis -= 1
+    return out
+
+
+def _broadcast_pair(
+    a,
+    b,
+    numel: int,
+    a_shape: tuple = None,
+    b_shape: tuple = None,
+    out_shape: tuple = None,
+) -> tuple:
+    """Broadcast two operands to the output extent (``numel`` / ``out_shape``).
+
+    Scalars and exact-length / length-1 operands take the fast path. When the
+    operand and output shapes are known and differ by more than a trailing
+    size-1 axis, full NumPy-style broadcasting is applied via
+    :func:`_broadcast_to_shape`.
+    """
+
+    def _expand(value, value_shape):
+        if isinstance(value, (int, float)):
+            return [float(value)] * numel
+        if len(value) == numel:
+            return value
+        if len(value) == 1:
+            return value * numel
+        if out_shape is not None and value_shape is not None:
+            return _broadcast_to_shape(value, value_shape, out_shape, numel)
+        # No shape information: fall back to repetition when evenly divisible.
+        if numel % len(value) == 0:
+            return value * (numel // len(value))
+        raise ValueError(f"cannot broadcast operand of length {len(value)} to {numel}")
+
+    return _expand(a, a_shape), _expand(b, b_shape)
 
 
 def _reduce_op(

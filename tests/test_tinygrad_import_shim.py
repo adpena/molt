@@ -89,6 +89,64 @@ def test_tinygrad_import_public_tensor_where_and_dtype_custody() -> None:
     assert widened.dtype is dtypes.int64
 
 
+def test_tinygrad_true_division_upcasts_integers_to_float() -> None:
+    """`int / int` must be true division producing a float tensor.
+
+    Upstream tinygrad `Tensor.div` runs with `upcast=True` by default, casting
+    both operands to `least_upper_float` before dividing, so integer inputs
+    yield a float result. Documented example
+    (https://docs.tinygrad.org/tensor/elementwise — `div`):
+
+        Tensor([1, 4, 10]).div(Tensor([2, 3, 4])).numpy() -> [0.5, 1.333.., 2.5]
+
+    A prior molt regression stored the float quotient back into an integer
+    buffer, truncating `int / int` to `[0, 1, 2]` (a silent wrong answer). This
+    locks the float-upcast contract across every division path: tensor/tensor,
+    tensor/scalar, and scalar/tensor (`__rtruediv__`).
+    """
+    from tinygrad import Tensor, dtypes
+
+    # tensor / tensor — the documented upstream example.
+    tt = Tensor([1, 4, 10], dtype=dtypes.int32) / Tensor([2, 3, 4], dtype=dtypes.int32)
+    assert tt.dtype is dtypes.float64
+    assert tt.to_list() == pytest.approx([0.5, 4.0 / 3.0, 2.5])
+
+    # tensor / python-int scalar.
+    ts = Tensor([1, 4, 10], dtype=dtypes.int32) / 2
+    assert ts.dtype is dtypes.float64
+    assert ts.to_list() == pytest.approx([0.5, 2.0, 5.0])
+
+    # python-int scalar / tensor (__rtruediv__) — previously truncated to int.
+    st = 7 / Tensor([2, 4, 8], dtype=dtypes.int32)
+    assert st.dtype is dtypes.float64
+    assert st.to_list() == pytest.approx([3.5, 1.75, 0.875])
+
+    # mixed-width integer division also upcasts to float.
+    mixed = Tensor([1, 4, 10], dtype=dtypes.int64) / Tensor([2, 3, 4], dtype=dtypes.int32)
+    assert mixed.dtype is dtypes.float64
+    assert mixed.to_list() == pytest.approx([0.5, 4.0 / 3.0, 2.5])
+
+    # float division is unchanged and preserves float32 precision.
+    ff = (
+        Tensor([1.0, 4.0, 10.0], dtype=dtypes.float32)
+        / Tensor([2.0, 3.0, 4.0], dtype=dtypes.float32)
+    )
+    assert ff.dtype is dtypes.float32
+    assert ff._buf.format_char == "f"
+    assert ff.to_list() == pytest.approx([0.5, 4.0 / 3.0, 2.5], abs=1e-6)
+
+    # add/sub/mul on integers must NOT over-promote — only division upcasts.
+    assert (
+        Tensor([1, 2, 3], dtype=dtypes.int32) + Tensor([4, 5, 6], dtype=dtypes.int32)
+    ).dtype is dtypes.int32
+    assert (
+        Tensor([1, 2, 3], dtype=dtypes.int32) * Tensor([4, 5, 6], dtype=dtypes.int32)
+    ).dtype is dtypes.int32
+    assert (
+        Tensor([4, 5, 6], dtype=dtypes.int32) - Tensor([1, 2, 3], dtype=dtypes.int32)
+    ).dtype is dtypes.int32
+
+
 def test_tinygrad_public_movement_views_match_upstream_surface() -> None:
     from tinygrad import Tensor, dtypes
 
@@ -863,6 +921,67 @@ def test_tinygrad_nn_groupnorm_matches_upstream_composition() -> None:
     )
 
 
+def test_tinygrad_nn_conv2d_supports_groups_dilation_and_explicit_padding() -> None:
+    # Regression: the shim Conv2d previously raised NotImplementedError for
+    # groups/dilation != 1 and could not accept an explicit 2N-tuple padding.
+    from tinygrad import Tensor, nn
+
+    x = Tensor.arange(2 * 5 * 5).reshape(1, 2, 5, 5).float()
+    conv = nn.Conv2d(2, 4, 3, dilation=2, groups=2, padding="same")
+    assert conv(x).shape == (1, 4, 5, 5)
+    assert conv.weight.shape == (4, 1, 3, 3)
+
+    # explicit (left, right, top, bottom) padding now resolves like upstream
+    w = Tensor.ones(1, 1, 2, 2)
+    y = Tensor.arange(16).reshape(1, 1, 4, 4).float()
+    assert y.conv2d(w, padding=(1, 1, 2, 2)).shape == (1, 1, 7, 5)
+
+
+def test_tinygrad_nn_conv_transpose2d_matches_canonical_sample() -> None:
+    from tinygrad import Tensor, nn
+
+    layer = nn.ConvTranspose2d(1, 1, 2, bias=False)
+    layer.weight = Tensor.ones(1, 1, 2, 2)
+    x = Tensor.arange(9).reshape(1, 1, 3, 3).float()
+    assert layer(x).tolist() == [
+        [
+            [
+                [0.0, 1.0, 3.0, 2.0],
+                [3.0, 8.0, 12.0, 7.0],
+                [9.0, 20.0, 24.0, 13.0],
+                [6.0, 13.0, 15.0, 8.0],
+            ]
+        ]
+    ]
+    # weight layout is (in_channels, out_channels // groups, kH, kW)
+    grouped = nn.ConvTranspose2d(4, 6, 3, groups=2)
+    assert grouped.weight.shape == (4, 3, 3, 3)
+
+
+def test_tinygrad_nn_norm_layers_are_exposed_and_consistent() -> None:
+    from tinygrad import Tensor, nn
+
+    for name in (
+        "GroupNorm",
+        "InstanceNorm",
+        "BatchNorm",
+        "BatchNorm2d",
+        "BatchNorm3d",
+        "LayerNorm2d",
+        "ConvTranspose2d",
+    ):
+        assert hasattr(nn, name), name
+    assert nn.BatchNorm is nn.BatchNorm2d is nn.BatchNorm3d
+
+    # InstanceNorm(C) == GroupNorm(C, C)
+    x = Tensor.arange(2 * 3 * 2 * 2).reshape(2, 3, 2, 2).float()
+    assert _flatten_numeric(
+        nn.InstanceNorm(3, affine=False)(x).tolist()
+    ) == pytest.approx(
+        _flatten_numeric(nn.GroupNorm(3, 3, affine=False)(x).tolist())
+    )
+
+
 def test_molt_tinygrad_stdlib_nn_contract_matches_supported_upstream_surface() -> None:
     with tinygrad_stdlib_context("nn") as modules:
         Tensor = modules["tensor"].Tensor
@@ -912,6 +1031,39 @@ def test_molt_tinygrad_stdlib_nn_contract_matches_supported_upstream_surface() -
         expected = y.reshape(1, 2, -1).layernorm(eps=norm.eps).reshape(y.shape)
         assert _flatten_numeric(norm(y).tolist()) == pytest.approx(
             _flatten_numeric(expected.tolist())
+        )
+
+        # conv2d accepts explicit 2N-tuple (left, right, top, bottom) padding.
+        explicit = Tensor(list(range(16))).reshape(1, 1, 4, 4).conv2d(
+            Tensor.ones(1, 1, 2, 2), padding=(1, 1, 2, 2)
+        )
+        assert [list(explicit.shape)] == [[1, 1, 7, 5]]
+
+        # GroupNorm WITH affine exercises the (1, C, 1, 1) broadcast path.
+        affine = nn.GroupNorm(2, 4)
+        affine.weight = Tensor([1.0, 1.5, -1.0, 0.5])
+        affine.bias = Tensor([0.0, 1.0, 2.0, -2.0])
+        affine_expected = (
+            y.reshape(1, 2, -1).layernorm(eps=affine.eps).reshape(y.shape)
+            * affine.weight.reshape(1, -1, 1, 1)
+            + affine.bias.reshape(1, -1, 1, 1)
+        )
+        assert _flatten_numeric(affine(y).tolist()) == pytest.approx(
+            _flatten_numeric(affine_expected.tolist())
+        )
+
+        # InstanceNorm(C) == GroupNorm(C, C); BatchNorm2d/LayerNorm2d exposed.
+        assert _flatten_numeric(
+            nn.InstanceNorm(4, affine=False)(y).tolist()
+        ) == pytest.approx(
+            _flatten_numeric(nn.GroupNorm(4, 4, affine=False)(y).tolist())
+        )
+        assert hasattr(nn, "BatchNorm2d")
+        assert nn.BatchNorm is nn.BatchNorm2d is nn.BatchNorm3d
+        ln2d = nn.LayerNorm2d(4)
+        ln_expected = nn.LayerNorm(4)(y.permute(0, 2, 3, 1)).permute(0, 3, 1, 2)
+        assert _flatten_numeric(ln2d(y).tolist()) == pytest.approx(
+            _flatten_numeric(ln_expected.tolist())
         )
 
 

@@ -1545,6 +1545,262 @@ def test_nn_layernorm_uses_tensor_layernorm(monkeypatch):
     assert seen["eps"] == layer.eps
 
 
+# ── conv padding / conv_transpose2d / norm-layer parity (tinygrad contract) ──
+
+
+def _flat(values):
+    out = []
+
+    def _walk(node):
+        if isinstance(node, list):
+            for item in node:
+                _walk(item)
+        else:
+            out.append(node)
+
+    _walk(values)
+    return out
+
+
+def test_tensor_conv2d_explicit_4tuple_padding_does_not_crash():
+    # Regression: tinygrad conv2d accepts a 2N-tuple explicit padding
+    # (left, right, top, bottom). This previously raised
+    # "ValueError: too many values to unpack (expected 2)".
+    from molt.gpu.tensor import Tensor
+
+    x = Tensor.arange(16).reshape(1, 1, 4, 4).float()
+    w = Tensor.ones(1, 1, 2, 2)
+    # (pl, pr, pt, pb) = (1, 1, 2, 2) -> H pads (2, 2), W pads (1, 1)
+    out = x.conv2d(w, padding=(1, 1, 2, 2))
+    assert out.shape == (1, 1, 7, 5)
+    # asymmetric explicit padding
+    out2 = x.conv2d(w, padding=(1, 0, 2, 3))
+    assert out2.shape == (1, 1, 8, 4)
+
+
+def test_tensor_conv2d_padding_orderings_match_explicit_pad_reference():
+    # int / per-dim / 2N padding must all resolve like upstream
+    # flat_to_grouped(resolve_pool_pads(...)).
+    from molt.gpu.tensor import Tensor
+
+    def ref(xN, wN, pads):
+        (h0, h1), (w0, w1) = pads
+        H, W = len(xN[0][0]), len(xN[0][0][0])
+        KH, KW = len(wN[0][0]), len(wN[0][0][0])
+        OH = H + h0 + h1 - (KH - 1) - 1 + 1
+        OW = W + w0 + w1 - (KW - 1) - 1 + 1
+        out = [[[[0.0] * OW for _ in range(OH)] for _ in range(1)] for _ in range(1)]
+        for oh in range(OH):
+            for ow in range(OW):
+                acc = 0.0
+                for fh in range(KH):
+                    ih = oh - h0 + fh
+                    if ih < 0 or ih >= H:
+                        continue
+                    for fw in range(KW):
+                        iw = ow - w0 + fw
+                        if iw < 0 or iw >= W:
+                            continue
+                        acc += xN[0][0][ih][iw] * wN[0][0][fh][fw]
+                out[0][0][oh][ow] = acc
+        return out
+
+    xN = [[[[float(i * 4 + j) for j in range(4)] for i in range(4)]]]
+    wN = [[[[1.0, 2.0], [3.0, 4.0]]]]
+    x = Tensor(xN)
+    w = Tensor(wN)
+
+    # per-dim (pad_H, pad_W) = (1, 2) -> H (1,1), W (2,2)
+    assert _flat(x.conv2d(w, padding=(1, 2)).tolist()) == pytest.approx(
+        _flat(ref(xN, wN, ((1, 1), (2, 2))))
+    )
+    # 2N explicit (pl, pr, pt, pb) = (2, 0, 1, 3) -> H (1,3), W (2,0)
+    assert _flat(x.conv2d(w, padding=(2, 0, 1, 3)).tolist()) == pytest.approx(
+        _flat(ref(xN, wN, ((1, 3), (2, 0))))
+    )
+    # scalar 1 -> H (1,1), W (1,1)
+    assert _flat(x.conv2d(w, padding=1).tolist()) == pytest.approx(
+        _flat(ref(xN, wN, ((1, 1), (1, 1))))
+    )
+
+
+def test_tensor_conv_transpose2d_matches_canonical_tinygrad_sample():
+    # Canonical example from the tinygrad ConvTranspose2d docstring.
+    from molt.gpu.tensor import Tensor
+
+    x = Tensor.arange(9).reshape(1, 1, 3, 3).float()
+    w = Tensor.ones(1, 1, 2, 2)
+    assert x.conv_transpose2d(w).tolist() == [
+        [
+            [
+                [0.0, 1.0, 3.0, 2.0],
+                [3.0, 8.0, 12.0, 7.0],
+                [9.0, 20.0, 24.0, 13.0],
+                [6.0, 13.0, 15.0, 8.0],
+            ]
+        ]
+    ]
+
+
+def test_tensor_conv_transpose2d_stride_padding_output_padding():
+    from molt.gpu.tensor import Tensor
+
+    x = Tensor.arange(9).reshape(1, 1, 3, 3).float()
+    w = Tensor.ones(1, 1, 2, 2)
+    # out = (in-1)*stride - (pB+pA) + dilation*(k-1) + output_padding + 1
+    # stride=2, output_padding=1: (3-1)*2 - 0 + 1*(2-1) + 1 + 1 = 7
+    out = x.conv_transpose2d(w, stride=2, output_padding=1)
+    assert out.shape == (1, 1, 7, 7)
+    # stride=2, padding=1: (3-1)*2 - 2 + 1 + 0 + 1 = 4
+    out2 = x.conv_transpose2d(w, stride=2, padding=1)
+    assert out2.shape == (1, 1, 4, 4)
+
+
+def test_nn_conv2d_supports_groups_and_dilation_and_same_padding():
+    # Regression: tinygrad Conv2d (both surfaces) must accept groups != 1,
+    # dilation != 1, and padding='same' (non-strided).
+    from molt.gpu.nn import Conv2d
+    from molt.gpu.tensor import Tensor
+
+    x = Tensor.arange(2 * 5 * 5).reshape(1, 2, 5, 5).float()
+    conv = Conv2d(2, 4, 3, padding="same", dilation=2, groups=2)
+    assert conv(x).shape == (1, 4, 5, 5)
+    assert conv.weight.shape == (4, 1, 3, 3)
+
+
+def test_nn_conv_transpose2d_layer_forwards_and_inits_weight_shape():
+    from molt.gpu.nn import ConvTranspose2d
+    from molt.gpu.tensor import Tensor
+
+    layer = ConvTranspose2d(2, 6, (3, 2), stride=2, groups=2, output_padding=1)
+    # weight layout (in_channels, out_channels // groups, kH, kW)
+    assert layer.weight.shape == (2, 3, 3, 2)
+
+    seen = {}
+
+    def fake_ct(self, weight, bias=None, groups=1, stride=1, dilation=1,
+                padding=0, output_padding=0):
+        seen.update(
+            weight=weight, bias=bias, groups=groups, stride=stride,
+            dilation=dilation, padding=padding, output_padding=output_padding,
+        )
+        return self
+
+    import molt.gpu.tensor as tensor_mod
+
+    orig = tensor_mod.Tensor.conv_transpose2d
+    tensor_mod.Tensor.conv_transpose2d = fake_ct
+    try:
+        x = Tensor.arange(2 * 4 * 4).reshape(1, 2, 4, 4).float()
+        layer(x)
+    finally:
+        tensor_mod.Tensor.conv_transpose2d = orig
+    assert seen["weight"] is layer.weight
+    assert seen["groups"] == 2
+    assert seen["output_padding"] == 1
+
+
+def test_nn_groupnorm_matches_reference_math():
+    import math
+
+    from molt.gpu.nn import GroupNorm
+    from molt.gpu.tensor import Tensor
+
+    xN = [
+        [[[float((c * 6 + h * 3 + w))] for w in range(3)] for h in range(2)]
+        for c in range(4)
+    ]
+    xN = [xN]  # (1, 4, 2, 3)
+    gamma = [1.0, 1.5, -1.0, 0.5]
+    beta = [0.0, 1.0, 2.0, -2.0]
+    gn = GroupNorm(2, 4, eps=1e-5)
+    gn.weight = Tensor(gamma)
+    gn.bias = Tensor(beta)
+    got = _flat(gn(Tensor(xN)).tolist())
+
+    # reference: normalize each (group of 2 channels) jointly over spatial
+    cpg = 2
+    ref = []
+    flat_x = xN[0]
+    for g in range(2):
+        vals = []
+        for c in range(g * cpg, (g + 1) * cpg):
+            for h in range(2):
+                for w in range(3):
+                    vals.append(flat_x[c][h][w][0])
+        m = sum(vals) / len(vals)
+        v = sum((t - m) ** 2 for t in vals) / len(vals)
+        inv = 1.0 / math.sqrt(v + 1e-5)
+        for c in range(g * cpg, (g + 1) * cpg):
+            for h in range(2):
+                for w in range(3):
+                    ref.append((flat_x[c][h][w][0] - m) * inv * gamma[c] + beta[c])
+    assert got == pytest.approx(ref, abs=1e-5)
+
+
+def test_nn_groupnorm_affine_false_is_pure_normalization():
+    from molt.gpu.nn import GroupNorm
+    from molt.gpu.tensor import Tensor
+
+    x = Tensor.arange(16).reshape(1, 4, 2, 2).float()
+    norm = GroupNorm(2, 4, affine=False)
+    expected = (
+        x.reshape(1, 2, -1).layernorm(eps=norm.eps).reshape(*x.shape)
+    )
+    assert _flat(norm(x).tolist()) == pytest.approx(_flat(expected.tolist()))
+
+
+def test_nn_instancenorm_equals_groupnorm_per_channel():
+    from molt.gpu.nn import GroupNorm, InstanceNorm
+    from molt.gpu.tensor import Tensor
+
+    x = Tensor.arange(2 * 3 * 2 * 2).reshape(2, 3, 2, 2).float()
+    inn = InstanceNorm(3, affine=False)
+    gn = GroupNorm(3, 3, affine=False)  # num_groups == num_channels
+    assert _flat(inn(x).tolist()) == pytest.approx(_flat(gn(x).tolist()))
+
+
+def test_nn_batchnorm2d_inference_uses_running_stats():
+    import math
+
+    from molt.gpu.nn import BatchNorm2d
+    from molt.gpu.tensor import Tensor
+
+    x = Tensor.arange(2 * 2 * 2).reshape(1, 2, 2, 2).float()
+    bn = BatchNorm2d(2, eps=1e-5)
+    bn.load_weights(
+        weight=Tensor([2.0, 0.5]),
+        bias=Tensor([1.0, -1.0]),
+        running_mean=Tensor([1.0, 3.0]),
+        running_var=Tensor([4.0, 1.0]),
+    )
+    got = _flat(bn(x).tolist())
+    gamma = [2.0, 0.5]
+    beta = [1.0, -1.0]
+    rm = [1.0, 3.0]
+    rv = [4.0, 1.0]
+    ref = []
+    for c in range(2):
+        inv = 1.0 / math.sqrt(rv[c] + 1e-5)
+        for h in range(2):
+            for w in range(2):
+                val = x.tolist()[0][c][h][w]
+                ref.append((val - rm[c]) * inv * gamma[c] + beta[c])
+    assert got == pytest.approx(ref, abs=1e-5)
+    assert BatchNorm2d is __import__("molt.gpu.nn", fromlist=["BatchNorm"]).BatchNorm
+
+
+def test_nn_layernorm2d_normalizes_channel_dim():
+    from molt.gpu.nn import LayerNorm, LayerNorm2d
+    from molt.gpu.tensor import Tensor
+
+    x = Tensor.arange(1 * 3 * 2 * 2).reshape(1, 3, 2, 2).float()
+    ln2d = LayerNorm2d(3)
+    base = LayerNorm(3)
+    expected = base(x.permute(0, 2, 3, 1)).permute(0, 3, 1, 2)
+    assert _flat(ln2d(x).tolist()) == pytest.approx(_flat(expected.tolist()))
+
+
 def test_transformer_multihead_attention_uses_tensor_sdpa(monkeypatch):
     import molt.gpu.transformer as transformer_mod
     from molt.gpu.tensor import Tensor

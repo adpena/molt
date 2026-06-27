@@ -215,6 +215,89 @@ class GroupNorm:
         return x * self.weight.reshape(*affine_shape) + self.bias.reshape(*affine_shape)
 
 
+class InstanceNorm:
+    """Applies Instance Normalization over a mini-batch of inputs.
+
+    Equivalent to :class:`GroupNorm` with ``num_groups == num_features``: each
+    channel is normalized independently across the spatial dims, per sample.
+    """
+
+    def __init__(
+        self, num_features: int, eps: float = 1e-5, affine: bool = True
+    ) -> None:
+        self.num_features, self.eps = num_features, eps
+        self.weight = Tensor.ones(num_features) if affine else None
+        self.bias = Tensor.zeros(num_features) if affine else None
+
+    def __call__(self, x: Tensor) -> Tensor:
+        x = (
+            x.reshape(x.shape[0], self.num_features, -1)
+            .layernorm(eps=self.eps)
+            .reshape(x.shape)
+        )
+        if self.weight is None or self.bias is None:
+            return x
+        affine_shape = (1, -1, *[1] * (x.ndim - 2))
+        return x * self.weight.reshape(*affine_shape) + self.bias.reshape(*affine_shape)
+
+
+class LayerNorm2d(LayerNorm):
+    """LayerNorm over the channel dim of an ``(N, C, H, W)`` tensor.
+
+    Matches ``tinygrad.nn.LayerNorm2d``: permute channels last, apply
+    :class:`LayerNorm`, permute back.
+    """
+
+    def __call__(self, x: Tensor) -> Tensor:
+        return super().__call__(x.permute(0, 2, 3, 1)).permute(0, 3, 1, 2)
+
+
+class BatchNorm2d:
+    """2D batch normalization (inference), matching ``tinygrad.nn.BatchNorm``.
+
+    In inference mode the layer normalizes each channel by the stored
+    ``running_mean``/``running_var`` and applies the affine ``weight``/``bias``:
+    ``y = (x - mean) * rsqrt(var + eps) * weight + bias`` broadcast over the
+    spatial dims. Freshly constructed it uses the tinygrad defaults
+    (``running_mean=0``, ``running_var=1``).
+    """
+
+    def __init__(
+        self,
+        sz: int,
+        eps: float = 1e-5,
+        affine: bool = True,
+        track_running_stats: bool = True,
+        momentum: float = 0.1,
+    ) -> None:
+        self.sz, self.eps, self.momentum = sz, eps, momentum
+        self.track_running_stats = track_running_stats
+        self.weight = Tensor.ones(sz) if affine else None
+        self.bias = Tensor.zeros(sz) if affine else None
+        self.running_mean = Tensor.zeros(sz) if track_running_stats else None
+        self.running_var = Tensor.ones(sz) if track_running_stats else None
+
+    def __call__(self, x: Tensor) -> Tensor:
+        if self.running_mean is None or self.running_var is None:
+            raise RuntimeError(
+                "BatchNorm2d inference requires running_mean/running_var"
+            )
+        shape_mask = (1, -1, *[1] * (x.ndim - 2))
+        mean = self.running_mean.reshape(*shape_mask)
+        inv_std = (self.running_var + self.eps).sqrt().reciprocal().reshape(*shape_mask)
+        out = (x - mean) * inv_std
+        if self.weight is not None:
+            out = out * self.weight.reshape(*shape_mask)
+        if self.bias is not None:
+            out = out + self.bias.reshape(*shape_mask)
+        return out
+
+
+# ``tinygrad`` exposes BatchNorm under several aliases.
+BatchNorm = BatchNorm2d
+BatchNorm3d = BatchNorm2d
+
+
 class Embedding:
     """Embedding lookup table."""
 
@@ -232,6 +315,11 @@ __all__ = [
     "ConvTranspose2d",
     "Linear",
     "LayerNorm",
+    "LayerNorm2d",
     "GroupNorm",
+    "InstanceNorm",
+    "BatchNorm",
+    "BatchNorm2d",
+    "BatchNorm3d",
     "Embedding",
 ]
