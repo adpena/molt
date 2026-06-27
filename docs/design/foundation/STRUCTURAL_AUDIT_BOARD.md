@@ -13,11 +13,11 @@ Product board for the molt structural sweep — the first instrument of the Molt
 | critical_hand_classifications | 0 |
 | handset_classifications | 0 |
 | debt_markers_total | 361 |
-| god_files | 0 |
-| max_god_file_lines | 0 |
-| structural_god_files | 0 |
-| max_god_file_structural_score | 0 |
-| god_file_large_regions | 0 |
+| kitchen_sink_files | 0 |
+| max_kitchen_sink_structural_score | 0 |
+| kitchen_sink_large_regions | 0 |
+| undecomposed_god_files | 0 |
+| max_undecomposed_file_lines | 0 |
 | native_scalar_plan_authority_violations | 0 |
 | repr_name_scalar_authority_violations | 0 |
 | duplicate_authorities | 0 |
@@ -31,7 +31,7 @@ Product board for the molt structural sweep — the first instrument of the Molt
 | low | debt_marker | `runtime/molt-backend-mlir/src/tir_to_mlir.rs:559` | 4 debt/workaround markers |
 | low | debt_marker | `src/molt/stdlib/xml/etree/ElementPath.py:251` | 4 debt/workaround markers |
 | low | debt_marker | `src/molt/stdlib/xml/etree/ElementTree.py:241` | 4 debt/workaround markers |
-| low | debt_marker | `runtime/molt-backend/src/luau_backend/source_postprocess.…` | 2 debt/workaround markers |
+| low | debt_marker | `runtime/molt-backend/src/luau_backend/source_postprocess/…` | 2 debt/workaround markers |
 | low | debt_marker | `runtime/molt-runtime-serial/src/binascii.rs:1211` | 2 debt/workaround markers |
 | low | debt_marker | `runtime/molt-tier/src/lib.rs:228` | 2 debt/workaround markers |
 | low | debt_marker | `src/molt/gpu/distributed.py:79` | 2 debt/workaround markers |
@@ -66,7 +66,7 @@ Product board for the molt structural sweep — the first instrument of the Molt
 | low | 4 debt/workaround markers | `runtime/molt-backend-mlir/src/tir_to_mlir.rs:559` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 4 debt/workaround markers | `src/molt/stdlib/xml/etree/ElementPath.py:251` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 4 debt/workaround markers | `src/molt/stdlib/xml/etree/ElementTree.py:241` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
-| low | 2 debt/workaround markers | `runtime/molt-backend/src/luau_backend/source_postprocess.rs:2205` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
+| low | 2 debt/workaround markers | `runtime/molt-backend/src/luau_backend/source_postprocess/control_fl…` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 2 debt/workaround markers | `runtime/molt-runtime-serial/src/binascii.rs:1211` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 2 debt/workaround markers | `runtime/molt-tier/src/lib.rs:228` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 2 debt/workaround markers | `src/molt/gpu/distributed.py:79` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
