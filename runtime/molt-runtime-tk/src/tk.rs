@@ -40,6 +40,7 @@ mod state;
 #[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 mod tcl;
 mod tix_commands;
+mod trace_commands;
 mod ttk;
 mod ttk_treeview;
 mod widget_create;
@@ -58,6 +59,7 @@ use parsing::*;
 use state::*;
 #[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 use tcl::*;
+use trace_commands::*;
 use ttk::*;
 use ttk_treeview::*;
 use widgets::*;
