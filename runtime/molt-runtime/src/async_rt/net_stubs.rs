@@ -222,14 +222,6 @@ pub extern "C" fn molt_socket_has_ipv6() -> u64 {
     net_error!()
 }
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_socket_inet_ntop(_: u64, _: u64) -> u64 {
-    net_error!()
-}
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_socket_inet_pton(_: u64, _: u64) -> u64 {
-    net_error!()
-}
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_socket_getaddrinfo(_: u64, _: u64, _: u64, _: u64, _: u64, _: u64) -> u64 {
     net_error!()
 }
@@ -277,22 +269,6 @@ pub extern "C" fn molt_socket_gethostbyname_ex(_: u64) -> u64 {
     net_error!()
 }
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_socket_htonl(_: u64) -> u64 {
-    net_error!()
-}
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_socket_htons(_: u64) -> u64 {
-    net_error!()
-}
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_socket_ntohl(_: u64) -> u64 {
-    net_error!()
-}
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_socket_ntohs(_: u64) -> u64 {
-    net_error!()
-}
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_socket_if_nameindex() -> u64 {
     net_error!()
 }
@@ -302,14 +278,6 @@ pub extern "C" fn molt_socket_if_nametoindex(_: u64) -> u64 {
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_socket_if_indextoname(_: u64) -> u64 {
-    net_error!()
-}
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_socket_cmsg_len(_: u64) -> u64 {
-    net_error!()
-}
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_socket_cmsg_space(_: u64) -> u64 {
     net_error!()
 }
 #[unsafe(no_mangle)]
