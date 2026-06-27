@@ -31,7 +31,7 @@
 
 **Deferred (addressed by the existing decomposition):** `molt-runtime` is already substantially decomposed — the workspace shows 18 extracted leaf crates (`molt-runtime-crypto`, `-net`, `-asyncio`, `-math`, `-path`, `-collections`, `-regex`, `-text`, `-itertools`, `-serial`, `-difflib`, `-logging`, `-http`, `-stringprep`, `-xml`, `-ipaddress`, `-zoneinfo`, `-compression`). The residual `molt-runtime` monolith (still ~344K lines per the design doc) retains the core object model, `builtins/` directory, `object/` directory, and the intrinsic registry. The generated intrinsic resolver source split has landed: `intrinsics/generated.rs` retains the parser-facing `INTRINSICS` manifest table and delegates to per-category modules under `intrinsics/generated_resolvers/`. Native still uses the per-app resolver to keep the whole-registry static resolver unreachable in shipped binaries; test/WASM builds retain the composed resolver path.
 
-**The intrinsic registry split:** the source-file split is complete for resolver bodies. The remaining structural arc is per-crate sub-registries: as runtime leaves take ownership of their intrinsic implementations, their generated resolver modules should move with the leaf crate and the `molt-runtime` facade should compose them through one thin resolver.
+**The intrinsic registry split:** the source-file split is complete for resolver bodies. The per-crate sub-registry arc is now live: `molt-runtime-serial` and `molt-runtime-crypto` own generated resolver modules for their intrinsic implementations, and the `molt-runtime` facade composes them through one thin feature-gated resolver. Remaining runtime leaves should follow that pattern instead of keeping hand-written bridge wrappers in `molt-runtime`.
 
 ### Why thin LTO is correct for the daemon
 
@@ -161,7 +161,7 @@ llvm = ["dep:inkwell"]
 
 ### Phase 4 Components: `intrinsics/generated.rs` Split (Landed Source Split)
 
-**Current state:** `runtime/molt-runtime/src/intrinsics/generated.rs` is the canonical generated `INTRINSICS` manifest table and re-exports the composed resolver. `tools/gen_intrinsics.py` now also generates `runtime/molt-runtime/src/intrinsics/generated_resolvers/`, with one resolver module per category from `manifest.pyi` + `categories.toml`.
+**Current state:** `runtime/molt-runtime/src/intrinsics/generated.rs` is the canonical generated `INTRINSICS` manifest table and re-exports the composed resolver. `tools/gen_intrinsics.py` now also generates `runtime/molt-runtime/src/intrinsics/generated_resolvers/`, with one resolver module per category from `manifest.pyi` + `categories.toml`. Leaf-owned categories generate their address-taking resolver modules into the leaf crate itself, currently including serial modules and the crypto module group.
 
 **End-state:** per-category resolver files are the stepping stone. The final crate-composition state moves category resolver ownership into the corresponding runtime leaf crate and leaves `molt-runtime` as a thin facade over leaf-owned sub-registries plus the combined manifest surface required by frontend/WASM tooling.
 
@@ -373,7 +373,7 @@ Phase 1 (LTO change) is the only phase with a realistic runtime perf risk — th
 ### Blocked-By
 
 - Phase 3 (crate extraction) is blocked until Phase 2 (function_compiler split) is stable. The split reduces the blast-radius of getting the crate boundary wrong.
-- Phase 4 source splitting is no longer blocked. The remaining dependency is per-crate sub-registry ownership as runtime leaf crates take over their intrinsic implementations.
+- Phase 4 source splitting is no longer blocked. Per-crate sub-registry ownership has landed for serial and crypto; the remaining dependency is moving each extracted runtime leaf's resolver authority with its intrinsic implementations.
 - Phase 3 is blocked-by Phase E e1 activation (currently HELD per MEMORY.md): the driver wiring of `run_module_pipeline` into production codegen depends on `SimpleBackend`'s call path, which Phase 3 moves to `molt-backend-native`. Land Phase 3 AFTER Phase E e1 is stable, or land Phase 3 first with a careful baton-pass that Phase E e1 needs to update import paths in `main.rs`.
 
 ### Unblocks
@@ -479,7 +479,8 @@ Each phase is a complete structural piece that can land independently and leave 
 - [x] Run `cargo check --manifest-path runtime/Cargo.toml -p molt-runtime --lib`.
 - [x] Run `cargo check --manifest-path runtime/Cargo.toml -p molt-runtime --lib --no-default-features --features stdlib_micro`.
 - [x] Run `cargo check -p molt-backend --profile dev-fast`.
-- [ ] Continue from source-file split to per-crate sub-registries as runtime leaf extraction lands.
+- [x] Move serial and crypto generated resolvers into leaf-owned sub-registries and leave `molt-runtime` as the feature-gated composition facade.
+- [ ] Continue from source-file split to per-crate sub-registries for the remaining runtime leaves as their implementation authority moves.
 
 ## Rebuild Dependency Graph (Post-All-Phases)
 

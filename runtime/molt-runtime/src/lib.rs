@@ -485,10 +485,6 @@ pub use crate::builtins::functools::*;
 pub use crate::builtins::graphlib::*;
 #[cfg(feature = "stdlib_compression")]
 pub use crate::builtins::gzip::*;
-#[cfg(feature = "stdlib_crypto")]
-pub use crate::builtins::hashlib::*;
-#[cfg(feature = "stdlib_crypto")]
-pub use crate::builtins::hmac::*;
 pub use crate::builtins::inspect::*;
 pub use crate::builtins::io::*;
 pub(crate) use crate::builtins::io::{
@@ -520,8 +516,6 @@ pub use crate::builtins::platform::*;
 pub use crate::builtins::platform_mod::*;
 pub use crate::builtins::pprint_ext::*;
 pub use crate::builtins::punycode::*;
-#[cfg(feature = "stdlib_crypto")]
-pub use crate::builtins::secrets::*;
 pub use crate::builtins::select::*;
 pub use crate::builtins::shutil::*;
 pub use crate::builtins::signal_ext::*;

@@ -16,4 +16,5 @@ mod bridge_test_stubs;
 
 pub mod hashlib;
 pub mod hmac;
+pub mod intrinsics_generated;
 pub mod secrets;

@@ -346,6 +346,33 @@ def test_serial_resolvers_are_leaf_owned() -> None:
         assert f"molt_runtime_serial::{rust_module}::{symbol}" in leaf
 
 
+def test_crypto_resolver_is_leaf_owned_with_per_symbol_paths() -> None:
+    resolver_root = ROOT / "runtime/molt-runtime/src/intrinsics/generated_resolvers"
+    leaf_root = ROOT / "runtime/molt-runtime-crypto/src/intrinsics_generated"
+    facade = (resolver_root / "crypto_resolver.rs").read_text()
+    leaf_index = (leaf_root / "mod.rs").read_text()
+    leaf = (leaf_root / "crypto_resolver.rs").read_text()
+
+    assert "pub mod crypto_resolver;" in leaf_index
+    assert '#[cfg(feature = "stdlib_crypto")]' in facade
+    assert (
+        "molt_runtime_crypto::intrinsics_generated"
+        "::crypto_resolver::resolve_symbol_with"
+    ) in facade
+    assert "crate::molt_hash_new as *const ()" not in facade
+    assert "crate::builtins::functions::runtime_fn_addr" in facade
+
+    cases = {
+        "hashlib": ("molt_hash_new", "molt_pbkdf2_hmac", "molt_scrypt"),
+        "hmac": ("molt_hmac_new", "molt_compare_digest"),
+        "secrets": ("molt_secrets_token_bytes",),
+    }
+    for rust_module, symbols in cases.items():
+        for symbol in symbols:
+            assert f"crate::{rust_module}::{symbol} as *const ()" in leaf
+            assert f"molt_runtime_crypto::{rust_module}::{symbol}" in leaf
+
+
 def test_rustfmt_uses_shared_memory_guard(monkeypatch, tmp_path: Path) -> None:
     module = _load_gen_intrinsics_module()
     calls: list[dict[str, object]] = []
