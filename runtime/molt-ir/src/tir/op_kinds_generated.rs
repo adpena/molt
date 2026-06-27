@@ -430,7 +430,6 @@ pub fn opcode_canonical_kind_table(opcode: OpCode) -> &'static str {
         OpCode::ScfFor => "for",
         OpCode::ScfWhile => "while",
         OpCode::ScfYield => "yield",
-        OpCode::Deopt => "deopt",
     }
 }
 
@@ -550,7 +549,6 @@ pub fn opcode_ssa_s_value_attr_key_table(opcode: OpCode) -> Option<&'static str>
         OpCode::ScfFor => None,
         OpCode::ScfWhile => None,
         OpCode::ScfYield => None,
-        OpCode::Deopt => None,
     }
 }
 
@@ -1068,7 +1066,6 @@ pub const ALL_OPCODES: &[OpCode] = &[
     OpCode::ScfFor,
     OpCode::ScfWhile,
     OpCode::ScfYield,
-    OpCode::Deopt,
 ];
 
 /// Whether an `OpCode` may raise an exception (DCE must preserve it even
@@ -1187,7 +1184,6 @@ pub fn opcode_may_throw_table(opcode: OpCode) -> bool {
         OpCode::ScfFor => false,
         OpCode::ScfWhile => false,
         OpCode::ScfYield => false,
-        OpCode::Deopt => false,
     }
 }
 
@@ -1306,7 +1302,6 @@ pub fn opcode_is_side_effecting_table(opcode: OpCode) -> bool {
         OpCode::ScfFor => false,
         OpCode::ScfWhile => false,
         OpCode::ScfYield => false,
-        OpCode::Deopt => true,
     }
 }
 
@@ -1451,7 +1446,6 @@ pub fn opcode_effects_table(opcode: OpCode) -> OpcodeEffects {
         OpCode::ScfFor => OPCODE_EFFECTS_IMPURE,
         OpCode::ScfWhile => OPCODE_EFFECTS_IMPURE,
         OpCode::ScfYield => OPCODE_EFFECTS_IMPURE,
-        OpCode::Deopt => OPCODE_EFFECTS_IMPURE,
     }
 }
 
@@ -1579,7 +1573,6 @@ pub fn opcode_call_role_table(opcode: OpCode) -> CallOpcodeRole {
         OpCode::ScfFor => CallOpcodeRole::NotCall,
         OpCode::ScfWhile => CallOpcodeRole::NotCall,
         OpCode::ScfYield => CallOpcodeRole::NotCall,
-        OpCode::Deopt => CallOpcodeRole::NotCall,
     }
 }
 
@@ -1719,7 +1712,6 @@ pub fn opcode_fixed_result_count_table(opcode: OpCode) -> Option<usize> {
         OpCode::ScfFor => None,
         OpCode::ScfWhile => None,
         OpCode::ScfYield => None,
-        OpCode::Deopt => Some(0),
     }
 }
 
@@ -1950,7 +1942,6 @@ pub fn opcode_fuzz_tir_operand_count_table(opcode: OpCode) -> Option<usize> {
         OpCode::ScfFor => None,
         OpCode::ScfWhile => None,
         OpCode::ScfYield => None,
-        OpCode::Deopt => None,
     }
 }
 
@@ -2069,7 +2060,6 @@ pub fn opcode_fuzz_tir_attr_payload_rule_table(opcode: OpCode) -> FuzzTirAttrPay
         OpCode::ScfFor => FuzzTirAttrPayloadRule::None,
         OpCode::ScfWhile => FuzzTirAttrPayloadRule::None,
         OpCode::ScfYield => FuzzTirAttrPayloadRule::None,
-        OpCode::Deopt => FuzzTirAttrPayloadRule::None,
     }
 }
 
@@ -2227,7 +2217,6 @@ pub fn opcode_operand_independent_result_type_table(
         OpCode::ScfFor => None,
         OpCode::ScfWhile => None,
         OpCode::ScfYield => None,
-        OpCode::Deopt => None,
     }
 }
 
@@ -2367,7 +2356,6 @@ pub fn opcode_type_refine_attr_result_type_rule_table(
         OpCode::ScfFor => TypeRefineAttrResultTypeRule::None,
         OpCode::ScfWhile => TypeRefineAttrResultTypeRule::None,
         OpCode::ScfYield => TypeRefineAttrResultTypeRule::None,
-        OpCode::Deopt => TypeRefineAttrResultTypeRule::None,
     }
 }
 
@@ -2509,7 +2497,6 @@ pub fn opcode_type_refine_operand_type_rule_table(opcode: OpCode) -> TypeRefineO
         OpCode::ScfFor => TypeRefineOperandTypeRule::None,
         OpCode::ScfWhile => TypeRefineOperandTypeRule::None,
         OpCode::ScfYield => TypeRefineOperandTypeRule::None,
-        OpCode::Deopt => TypeRefineOperandTypeRule::None,
     }
 }
 
@@ -2641,7 +2628,6 @@ pub fn opcode_sccp_constant_seed_rule_table(opcode: OpCode) -> SccpConstantSeedR
         OpCode::ScfFor => SccpConstantSeedRule::None,
         OpCode::ScfWhile => SccpConstantSeedRule::None,
         OpCode::ScfYield => SccpConstantSeedRule::None,
-        OpCode::Deopt => SccpConstantSeedRule::None,
     }
 }
 
@@ -2786,7 +2772,6 @@ pub fn opcode_sccp_constant_eval_rule_table(opcode: OpCode) -> SccpConstantEvalR
         OpCode::ScfFor => SccpConstantEvalRule::None,
         OpCode::ScfWhile => SccpConstantEvalRule::None,
         OpCode::ScfYield => SccpConstantEvalRule::None,
-        OpCode::Deopt => SccpConstantEvalRule::None,
     }
 }
 
@@ -2923,7 +2908,6 @@ pub fn opcode_value_range_transfer_rule_table(opcode: OpCode) -> ValueRangeTrans
         OpCode::ScfFor => ValueRangeTransferRule::None,
         OpCode::ScfWhile => ValueRangeTransferRule::None,
         OpCode::ScfYield => ValueRangeTransferRule::None,
-        OpCode::Deopt => ValueRangeTransferRule::None,
     }
 }
 
@@ -3058,7 +3042,6 @@ pub fn opcode_value_range_const_fold_rule_table(opcode: OpCode) -> ValueRangeCon
         OpCode::ScfFor => ValueRangeConstFoldRule::None,
         OpCode::ScfWhile => ValueRangeConstFoldRule::None,
         OpCode::ScfYield => ValueRangeConstFoldRule::None,
-        OpCode::Deopt => ValueRangeConstFoldRule::None,
     }
 }
 
@@ -3187,7 +3170,6 @@ pub fn opcode_value_range_cond_narrow_rule_table(opcode: OpCode) -> ValueRangeCo
         OpCode::ScfFor => ValueRangeCondNarrowRule::None,
         OpCode::ScfWhile => ValueRangeCondNarrowRule::None,
         OpCode::ScfYield => ValueRangeCondNarrowRule::None,
-        OpCode::Deopt => ValueRangeCondNarrowRule::None,
     }
 }
 
@@ -3320,7 +3302,6 @@ pub fn opcode_value_range_container_length_rule_table(
         OpCode::ScfFor => ValueRangeContainerLengthRule::None,
         OpCode::ScfWhile => ValueRangeContainerLengthRule::None,
         OpCode::ScfYield => ValueRangeContainerLengthRule::None,
-        OpCode::Deopt => ValueRangeContainerLengthRule::None,
     }
 }
 
@@ -3450,7 +3431,6 @@ pub fn opcode_range_devirt_role_table(opcode: OpCode) -> RangeDevirtRole {
         OpCode::ScfFor => RangeDevirtRole::None,
         OpCode::ScfWhile => RangeDevirtRole::None,
         OpCode::ScfYield => RangeDevirtRole::None,
-        OpCode::Deopt => RangeDevirtRole::None,
     }
 }
 
@@ -4155,12 +4135,6 @@ pub fn opcode_vectorize_facts_table(opcode: OpCode) -> VectorizeOpcodeFacts {
             loop_header_marker: false,
             annotation_target: false,
         },
-        OpCode::Deopt => VectorizeOpcodeFacts {
-            body_action: VectorizeBodyAction::Reject,
-            reduction_rule: VectorReductionRule::None,
-            loop_header_marker: false,
-            annotation_target: false,
-        },
     }
 }
 
@@ -4291,7 +4265,6 @@ pub fn opcode_lir_verify_rule_table(opcode: OpCode) -> LirVerifyRule {
         OpCode::ScfFor => LirVerifyRule::None,
         OpCode::ScfWhile => LirVerifyRule::None,
         OpCode::ScfYield => LirVerifyRule::None,
-        OpCode::Deopt => LirVerifyRule::None,
     }
 }
 
@@ -4423,7 +4396,6 @@ pub fn opcode_repr_raw_i64_full_deopt_seed_rule_table(
         OpCode::ScfFor => ReprRawI64FullDeoptSeedRule::None,
         OpCode::ScfWhile => ReprRawI64FullDeoptSeedRule::None,
         OpCode::ScfYield => ReprRawI64FullDeoptSeedRule::None,
-        OpCode::Deopt => ReprRawI64FullDeoptSeedRule::None,
     }
 }
 
@@ -4558,7 +4530,6 @@ pub fn opcode_repr_projectable_bool_result_rule_table(
         OpCode::ScfFor => ReprProjectableBoolResultRule::None,
         OpCode::ScfWhile => ReprProjectableBoolResultRule::None,
         OpCode::ScfYield => ReprProjectableBoolResultRule::None,
-        OpCode::Deopt => ReprProjectableBoolResultRule::None,
     }
 }
 
@@ -4692,7 +4663,6 @@ pub fn opcode_repr_projectable_float_result_rule_table(
         OpCode::ScfFor => ReprProjectableFloatResultRule::None,
         OpCode::ScfWhile => ReprProjectableFloatResultRule::None,
         OpCode::ScfYield => ReprProjectableFloatResultRule::None,
-        OpCode::Deopt => ReprProjectableFloatResultRule::None,
     }
 }
 
@@ -4849,7 +4819,6 @@ pub fn opcode_counted_loop_comparison_role_table(opcode: OpCode) -> CountedLoopC
         OpCode::ScfFor => CountedLoopComparisonRole::None,
         OpCode::ScfWhile => CountedLoopComparisonRole::None,
         OpCode::ScfYield => CountedLoopComparisonRole::None,
-        OpCode::Deopt => CountedLoopComparisonRole::None,
     }
 }
 
@@ -4968,7 +4937,6 @@ pub fn opcode_counted_loop_inverted_comparison_table(opcode: OpCode) -> Option<O
         OpCode::ScfFor => None,
         OpCode::ScfWhile => None,
         OpCode::ScfYield => None,
-        OpCode::Deopt => None,
     }
 }
 
@@ -5107,7 +5075,6 @@ pub fn opcode_gvn_numbering_role_table(opcode: OpCode) -> GvnNumberingRole {
         OpCode::ScfFor => GvnNumberingRole::Never,
         OpCode::ScfWhile => GvnNumberingRole::Never,
         OpCode::ScfYield => GvnNumberingRole::Never,
-        OpCode::Deopt => GvnNumberingRole::Never,
     }
 }
 
@@ -5280,7 +5247,6 @@ pub fn opcode_gvn_value_key_spec_table(opcode: OpCode) -> Option<GvnValueKeySpec
         OpCode::ScfFor => None,
         OpCode::ScfWhile => None,
         OpCode::ScfYield => None,
-        OpCode::Deopt => None,
     }
 }
 
@@ -5401,7 +5367,6 @@ pub fn opcode_is_proven_result_type_seed_table(opcode: OpCode) -> bool {
         OpCode::ScfFor => false,
         OpCode::ScfWhile => false,
         OpCode::ScfYield => false,
-        OpCode::Deopt => false,
     }
 }
 
@@ -5520,7 +5485,6 @@ pub fn opcode_is_alias_rc_barrier_table(opcode: OpCode) -> bool {
         OpCode::ScfFor => false,
         OpCode::ScfWhile => false,
         OpCode::ScfYield => false,
-        OpCode::Deopt => false,
     }
 }
 
@@ -5639,7 +5603,6 @@ pub fn opcode_is_alias_heap_barrier_table(opcode: OpCode) -> bool {
         OpCode::ScfFor => false,
         OpCode::ScfWhile => false,
         OpCode::ScfYield => false,
-        OpCode::Deopt => false,
     }
 }
 
@@ -5759,7 +5722,6 @@ pub fn opcode_is_escape_alloc_site_table(opcode: OpCode) -> bool {
         OpCode::ScfFor => false,
         OpCode::ScfWhile => false,
         OpCode::ScfYield => false,
-        OpCode::Deopt => false,
     }
 }
 
@@ -5879,7 +5841,6 @@ pub fn opcode_is_polyhedral_loop_header_table(opcode: OpCode) -> bool {
         OpCode::ScfFor => true,
         OpCode::ScfWhile => false,
         OpCode::ScfYield => false,
-        OpCode::Deopt => false,
     }
 }
 
@@ -5999,7 +5960,6 @@ pub fn opcode_is_polyhedral_affine_body_table(opcode: OpCode) -> bool {
         OpCode::ScfFor => true,
         OpCode::ScfWhile => false,
         OpCode::ScfYield => true,
-        OpCode::Deopt => false,
     }
 }
 
@@ -6119,7 +6079,6 @@ pub fn opcode_is_refcount_heap_exposure_table(opcode: OpCode) -> bool {
         OpCode::ScfFor => false,
         OpCode::ScfWhile => false,
         OpCode::ScfYield => false,
-        OpCode::Deopt => false,
     }
 }
 
@@ -6273,7 +6232,6 @@ pub fn opcode_refcount_balance_role_table(opcode: OpCode) -> RefcountBalanceRole
         OpCode::ScfFor => RefcountBalanceRole::NotRefcountBalance,
         OpCode::ScfWhile => RefcountBalanceRole::NotRefcountBalance,
         OpCode::ScfYield => RefcountBalanceRole::NotRefcountBalance,
-        OpCode::Deopt => RefcountBalanceRole::NotRefcountBalance,
     }
 }
 
@@ -6394,7 +6352,6 @@ pub fn opcode_is_lowered_state_machine_body_table(opcode: OpCode) -> bool {
         OpCode::ScfFor => false,
         OpCode::ScfWhile => false,
         OpCode::ScfYield => false,
-        OpCode::Deopt => false,
     }
 }
 
@@ -6514,7 +6471,6 @@ pub fn opcode_is_drop_insertion_suspension_point_table(opcode: OpCode) -> bool {
         OpCode::ScfFor => false,
         OpCode::ScfWhile => false,
         OpCode::ScfYield => false,
-        OpCode::Deopt => false,
     }
 }
 
@@ -6634,7 +6590,6 @@ pub fn opcode_is_drop_insertion_return_deferral_barrier_table(opcode: OpCode) ->
         OpCode::ScfFor => false,
         OpCode::ScfWhile => false,
         OpCode::ScfYield => false,
-        OpCode::Deopt => false,
     }
 }
 
@@ -6759,7 +6714,6 @@ pub fn opcode_is_fusion_barrier_table(opcode: OpCode) -> bool {
         OpCode::ScfFor => false,
         OpCode::ScfWhile => false,
         OpCode::ScfYield => false,
-        OpCode::Deopt => false,
     }
 }
 
@@ -6901,7 +6855,6 @@ pub fn opcode_generator_fusion_poll_role_table(opcode: OpCode) -> GeneratorFusio
         OpCode::ScfFor => GeneratorFusionPollRole::Neutral,
         OpCode::ScfWhile => GeneratorFusionPollRole::Neutral,
         OpCode::ScfYield => GeneratorFusionPollRole::Neutral,
-        OpCode::Deopt => GeneratorFusionPollRole::Neutral,
     }
 }
 
@@ -7031,7 +6984,6 @@ pub fn opcode_generator_fusion_iter_use_role_table(opcode: OpCode) -> GeneratorF
         OpCode::ScfFor => GeneratorFusionIterUseRole::None,
         OpCode::ScfWhile => GeneratorFusionIterUseRole::None,
         OpCode::ScfYield => GeneratorFusionIterUseRole::None,
-        OpCode::Deopt => GeneratorFusionIterUseRole::None,
     }
 }
 
@@ -7153,7 +7105,6 @@ pub fn opcode_is_state_machine_table(opcode: OpCode) -> bool {
         OpCode::ScfFor => false,
         OpCode::ScfWhile => false,
         OpCode::ScfYield => false,
-        OpCode::Deopt => false,
     }
 }
 
@@ -7313,7 +7264,6 @@ pub fn opcode_module_concurrency_marker_source_facts_table(
         OpCode::ScfFor => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
         OpCode::ScfWhile => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
         OpCode::ScfYield => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
-        OpCode::Deopt => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
     }
 }
 
@@ -7443,7 +7393,6 @@ pub fn opcode_module_slot_access_role_table(opcode: OpCode) -> ModuleSlotAccessR
         OpCode::ScfFor => ModuleSlotAccessRole::None,
         OpCode::ScfWhile => ModuleSlotAccessRole::None,
         OpCode::ScfYield => ModuleSlotAccessRole::None,
-        OpCode::Deopt => ModuleSlotAccessRole::None,
     }
 }
 
@@ -7574,7 +7523,6 @@ pub fn opcode_tir_verify_attr_rule_table(opcode: OpCode) -> TirVerifyAttrRule {
         OpCode::ScfFor => TirVerifyAttrRule::None,
         OpCode::ScfWhile => TirVerifyAttrRule::None,
         OpCode::ScfYield => TirVerifyAttrRule::None,
-        OpCode::Deopt => TirVerifyAttrRule::None,
     }
 }
 
@@ -7704,7 +7652,6 @@ pub fn opcode_sroa_const_immediate_rule_table(opcode: OpCode) -> SroaConstImmedi
         OpCode::ScfFor => SroaConstImmediateRule::None,
         OpCode::ScfWhile => SroaConstImmediateRule::None,
         OpCode::ScfYield => SroaConstImmediateRule::None,
-        OpCode::Deopt => SroaConstImmediateRule::None,
     }
 }
 
@@ -7836,7 +7783,6 @@ pub fn opcode_strength_reduction_rule_table(opcode: OpCode) -> StrengthReduction
         OpCode::ScfFor => StrengthReductionRule::None,
         OpCode::ScfWhile => StrengthReductionRule::None,
         OpCode::ScfYield => StrengthReductionRule::None,
-        OpCode::Deopt => StrengthReductionRule::None,
     }
 }
 
@@ -7967,7 +7913,6 @@ pub fn opcode_scev_expr_rule_table(opcode: OpCode) -> ScevExprRule {
         OpCode::ScfFor => ScevExprRule::None,
         OpCode::ScfWhile => ScevExprRule::None,
         OpCode::ScfYield => ScevExprRule::None,
-        OpCode::Deopt => ScevExprRule::None,
     }
 }
 
@@ -8089,7 +8034,6 @@ pub fn opcode_is_overflow_peel_guard_compare_table(opcode: OpCode) -> bool {
         OpCode::ScfFor => false,
         OpCode::ScfWhile => false,
         OpCode::ScfYield => false,
-        OpCode::Deopt => false,
     }
 }
 
@@ -8212,7 +8156,6 @@ pub fn opcode_is_overflow_peel_body_pure_table(opcode: OpCode) -> bool {
         OpCode::ScfFor => false,
         OpCode::ScfWhile => false,
         OpCode::ScfYield => false,
-        OpCode::Deopt => false,
     }
 }
 
@@ -8333,7 +8276,6 @@ pub fn opcode_sets_exception_handling_table(opcode: OpCode) -> bool {
         OpCode::ScfFor => false,
         OpCode::ScfWhile => false,
         OpCode::ScfYield => false,
-        OpCode::Deopt => false,
     }
 }
 
@@ -8453,7 +8395,6 @@ pub fn opcode_is_exception_handler_region_table(opcode: OpCode) -> bool {
         OpCode::ScfFor => false,
         OpCode::ScfWhile => false,
         OpCode::ScfYield => false,
-        OpCode::Deopt => false,
     }
 }
 
@@ -8573,7 +8514,6 @@ pub fn opcode_is_structured_scf_marker_table(opcode: OpCode) -> bool {
         OpCode::ScfFor => true,
         OpCode::ScfWhile => true,
         OpCode::ScfYield => true,
-        OpCode::Deopt => false,
     }
 }
 
@@ -8695,7 +8635,6 @@ pub fn opcode_requires_i64_overflow_box_dispatch_table(opcode: OpCode) -> bool {
         OpCode::ScfFor => false,
         OpCode::ScfWhile => false,
         OpCode::ScfYield => false,
-        OpCode::Deopt => false,
     }
 }
 
@@ -8815,7 +8754,6 @@ pub fn opcode_supports_i64_checked_overflow_triple_table(opcode: OpCode) -> bool
         OpCode::ScfFor => false,
         OpCode::ScfWhile => false,
         OpCode::ScfYield => false,
-        OpCode::Deopt => false,
     }
 }
 
@@ -8938,7 +8876,6 @@ pub fn opcode_uses_boxed_runtime_inplace_dispatch_table(opcode: OpCode) -> bool 
         OpCode::ScfFor => false,
         OpCode::ScfWhile => false,
         OpCode::ScfYield => false,
-        OpCode::Deopt => false,
     }
 }
 
@@ -9060,7 +8997,6 @@ pub fn opcode_requires_i64_zero_divisor_guard_table(opcode: OpCode) -> bool {
         OpCode::ScfFor => false,
         OpCode::ScfWhile => false,
         OpCode::ScfYield => false,
-        OpCode::Deopt => false,
     }
 }
 
@@ -9180,7 +9116,6 @@ pub fn opcode_requires_i64_shift_count_guard_table(opcode: OpCode) -> bool {
         OpCode::ScfFor => false,
         OpCode::ScfWhile => false,
         OpCode::ScfYield => false,
-        OpCode::Deopt => false,
     }
 }
 
@@ -9300,7 +9235,6 @@ pub fn opcode_has_exception_label_attr_table(opcode: OpCode) -> bool {
         OpCode::ScfFor => false,
         OpCode::ScfWhile => false,
         OpCode::ScfYield => false,
-        OpCode::Deopt => false,
     }
 }
 
@@ -9420,7 +9354,6 @@ pub fn opcode_is_exception_transfer_edge_table(opcode: OpCode) -> bool {
         OpCode::ScfFor => false,
         OpCode::ScfWhile => false,
         OpCode::ScfYield => false,
-        OpCode::Deopt => false,
     }
 }
 
@@ -9547,7 +9480,6 @@ pub fn opcode_exception_region_nesting_role_table(opcode: OpCode) -> ExceptionRe
         OpCode::ScfFor => ExceptionRegionNestingRole::None,
         OpCode::ScfWhile => ExceptionRegionNestingRole::None,
         OpCode::ScfYield => ExceptionRegionNestingRole::None,
-        OpCode::Deopt => ExceptionRegionNestingRole::None,
     }
 }
 
@@ -9674,7 +9606,6 @@ pub fn opcode_alias_typed_slot_role_table(opcode: OpCode) -> AliasTypedSlotRole 
         OpCode::ScfFor => AliasTypedSlotRole::NotTypedSlot,
         OpCode::ScfWhile => AliasTypedSlotRole::NotTypedSlot,
         OpCode::ScfYield => AliasTypedSlotRole::NotTypedSlot,
-        OpCode::Deopt => AliasTypedSlotRole::NotTypedSlot,
     }
 }
 
@@ -9801,7 +9732,6 @@ pub fn opcode_alias_transparent_alias_role_table(opcode: OpCode) -> AliasTranspa
         OpCode::ScfFor => AliasTransparentAliasRole::NotTransparentAlias,
         OpCode::ScfWhile => AliasTransparentAliasRole::NotTransparentAlias,
         OpCode::ScfYield => AliasTransparentAliasRole::NotTransparentAlias,
-        OpCode::Deopt => AliasTransparentAliasRole::NotTransparentAlias,
     }
 }
 
@@ -9933,7 +9863,6 @@ pub fn opcode_alias_memory_region_table(opcode: OpCode) -> AliasMemoryRegionClas
         OpCode::ScfFor => AliasMemoryRegionClass::GenericHeap,
         OpCode::ScfWhile => AliasMemoryRegionClass::GenericHeap,
         OpCode::ScfYield => AliasMemoryRegionClass::GenericHeap,
-        OpCode::Deopt => AliasMemoryRegionClass::GenericHeap,
     }
 }
 
@@ -10064,7 +9993,6 @@ pub fn opcode_alias_slot_observation_table(opcode: OpCode) -> AliasSlotObservati
         OpCode::ScfFor => AliasSlotObservation::ConservativeObserver,
         OpCode::ScfWhile => AliasSlotObservation::ConservativeObserver,
         OpCode::ScfYield => AliasSlotObservation::ConservativeObserver,
-        OpCode::Deopt => AliasSlotObservation::ConservativeObserver,
     }
 }
 
@@ -10290,7 +10218,6 @@ pub fn opcode_pass_delta_facts_table(opcode: OpCode) -> PassDeltaOpcodeFacts {
         OpCode::ScfFor => PASS_DELTA_OPCODE_FACTS_NONE,
         OpCode::ScfWhile => PASS_DELTA_OPCODE_FACTS_NONE,
         OpCode::ScfYield => PASS_DELTA_OPCODE_FACTS_NONE,
-        OpCode::Deopt => PASS_DELTA_OPCODE_FACTS_NONE,
     }
 }
 
@@ -10416,7 +10343,6 @@ pub fn opcode_literal_payload_kind_table(opcode: OpCode) -> Option<LiteralPayloa
         OpCode::ScfFor => None,
         OpCode::ScfWhile => None,
         OpCode::ScfYield => None,
-        OpCode::Deopt => None,
     }
 }
 
@@ -10547,7 +10473,6 @@ pub fn opcode_canonicalize_commutative_domain_table(
         OpCode::ScfFor => None,
         OpCode::ScfWhile => None,
         OpCode::ScfYield => None,
-        OpCode::Deopt => None,
     }
 }
 
@@ -10666,7 +10591,6 @@ pub fn opcode_swapped_comparison_for_canonicalize_table(opcode: OpCode) -> Optio
         OpCode::ScfFor => None,
         OpCode::ScfWhile => None,
         OpCode::ScfYield => None,
-        OpCode::Deopt => None,
     }
 }
 
@@ -11077,7 +11001,6 @@ pub fn opcode_canonicalize_binary_rules_table(opcode: OpCode) -> &'static [Canon
         OpCode::ScfFor => &[],
         OpCode::ScfWhile => &[],
         OpCode::ScfYield => &[],
-        OpCode::Deopt => &[],
     }
 }
 
@@ -11325,7 +11248,6 @@ pub fn opcode_operand_ownership_table(opcode: OpCode, operand_idx: usize) -> Ope
         OpCode::ScfFor => OperandOwnership::Borrowed,
         OpCode::ScfWhile => OperandOwnership::Borrowed,
         OpCode::ScfYield => OperandOwnership::Borrowed,
-        OpCode::Deopt => OperandOwnership::Borrowed,
     }
 }
 
@@ -11514,7 +11436,6 @@ pub fn opcode_result_absorbs_operand_ownership_table(opcode: OpCode) -> bool {
         OpCode::ScfFor => false,
         OpCode::ScfWhile => false,
         OpCode::ScfYield => false,
-        OpCode::Deopt => false,
     }
 }
 
@@ -11688,7 +11609,6 @@ pub fn opcode_result_validity_table(opcode: OpCode, result_idx: usize) -> Result
         OpCode::ScfFor => ResultValidity::AlwaysValid,
         OpCode::ScfWhile => ResultValidity::AlwaysValid,
         OpCode::ScfYield => ResultValidity::AlwaysValid,
-        OpCode::Deopt => ResultValidity::AlwaysValid,
     }
 }
 
@@ -11832,7 +11752,6 @@ pub fn opcode_explicit_release_operands_table(
         OpCode::ScfFor => ExplicitReleaseOperands::None,
         OpCode::ScfWhile => ExplicitReleaseOperands::None,
         OpCode::ScfYield => ExplicitReleaseOperands::None,
-        OpCode::Deopt => ExplicitReleaseOperands::None,
     }
 }
 

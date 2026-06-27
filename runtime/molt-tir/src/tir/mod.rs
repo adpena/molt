@@ -15,9 +15,9 @@ pub use molt_ir::tir::{
     printer, serialize, ssa, types, values, verify,
 };
 pub use molt_passes::tir::{
-    analysis, bolt, cache, call_facts, call_graph, deopt, drop_phase, exception_regions,
-    fact_graph, lower_from_simple, lower_to_simple, module_phase, numeric_facts, parallel,
-    pass_delta, pass_manager, passes, simple_value_names, target_info, type_refine,
+    analysis, bolt, cache, call_facts, call_graph, drop_phase, exception_regions, fact_graph,
+    lower_from_simple, lower_to_simple, module_phase, numeric_facts, parallel, pass_delta,
+    pass_manager, passes, simple_value_names, target_info, type_refine,
 };
 
 // Re-export primary types for convenience.

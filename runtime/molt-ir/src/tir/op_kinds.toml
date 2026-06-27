@@ -3122,15 +3122,6 @@ result_arity = "variable"
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 
-[[opcode]]
-name = "Deopt"
-may_throw = false
-side_effecting = true
-purity = "impure"
-result_arity = "zero"
-operand_ownership = "all_borrowed"
-result_absorbs_operands = false
-
 # ===========================================================================
 # kind_to_opcode mapper (ssa.rs). OpCode-equivalence groups: canonical = the
 # JSON wire kind, aliases = alternate spellings that map identically (the

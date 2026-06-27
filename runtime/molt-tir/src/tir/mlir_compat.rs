@@ -180,7 +180,6 @@ def Molt_AddOp : Molt_Op<"add", [Pure]> { let arguments = (ins AnyType:$lhs, Any
 def Molt_BoxOp : Molt_Op<"box", [Pure]> { let arguments = (ins AnyType:$value); let results = (outs I64:$boxed); }
 def Molt_UnboxOp : Molt_Op<"unbox", [Pure]> { let arguments = (ins I64:$boxed); let results = (outs AnyType:$value); }
 def Molt_CallOp : Molt_Op<"call"> { let arguments = (ins StrAttr:$callee, Variadic<AnyType>:$operands); let results = (outs AnyType:$result); }
-def Molt_DeoptOp : Molt_Op<"deopt"> { let arguments = (ins StrAttr:$target_func, Variadic<AnyType>:$live_values); }
 def MoltGpu_LaunchOp : MoltGpu_Op<"launch"> { let regions = (region SizedRegion<1>:$body); }
 def MoltGpu_ThreadIdOp : MoltGpu_Op<"thread_id", [Pure]> { let results = (outs I64:$id); }
 "#.to_string()
@@ -338,7 +337,6 @@ fn mlir_opcode(op: &OpCode) -> &'static str {
         OpCode::ScfFor => "for",
         OpCode::ScfWhile => "while",
         OpCode::ScfYield => "yield",
-        OpCode::Deopt => "deopt",
         OpCode::WarnStderr => "warn_stderr",
     }
 }

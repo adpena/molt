@@ -341,7 +341,6 @@ pub fn print_opcode(op: &OpCode) -> &'static str {
         OpCode::ScfFor => "for",
         OpCode::ScfWhile => "while",
         OpCode::ScfYield => "yield",
-        OpCode::Deopt => "deopt",
         OpCode::WarnStderr => "warn_stderr",
     }
 }
@@ -583,7 +582,6 @@ mod tests {
         assert_eq!(print_opcode(&OpCode::Add), "add");
         assert_eq!(print_opcode(&OpCode::ConstInt), "const_int");
         assert_eq!(print_opcode(&OpCode::BuildList), "build_list");
-        assert_eq!(print_opcode(&OpCode::Deopt), "deopt");
     }
 
     #[test]

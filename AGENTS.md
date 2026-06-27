@@ -293,8 +293,11 @@ Read these first instead of rediscovering project structure:
     representation_plan.rs` for residual SimpleIR-name projection and
     backend-facing scalar/container representation plans.
   - `runtime/molt-backend/src/native_backend/`,
-    `runtime/molt-backend/src/llvm_backend/`, `runtime/molt-backend/src/wasm.rs`,
-    and `runtime/molt-backend/src/luau.rs` for backend-specific lowering.
+    `runtime/molt-backend/src/llvm_backend/`,
+    `runtime/molt-backend-wasm/src/`, and `runtime/molt-backend/src/luau.rs`
+    for backend-specific lowering. `molt-backend` only reexports the WASM
+    facade behind `wasm-backend`; do not add new WASM encoder or ABI authority
+    under `runtime/molt-backend/src/`.
   - `runtime/molt-runtime/src/intrinsics/manifest.pyi`,
     `runtime/molt-runtime/src/intrinsics/generated.rs`, and
     `src/molt/_intrinsics.pyi` for intrinsic authority.

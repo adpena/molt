@@ -2,8 +2,6 @@
 #![allow(clippy::too_many_arguments)] // refactoring signatures risks breaking callers
 #![allow(clippy::type_complexity)] // complex return types in TIR CFG helpers
 
-use std::fmt::Write as _;
-
 // Immutable IR/data lives in molt-ir; pass/fact orchestration and SimpleIR<->TIR
 // round-tripping live in molt-passes behind molt-tir re-exports; backend
 // projection and representation planning live in molt-tir. Keep backend-local
@@ -14,6 +12,15 @@ pub use molt_ir::{
     process_diagnostics, repr, stdlib_module_symbols,
 };
 pub use molt_tir::{passes, representation_plan, tir};
+#[cfg(any(feature = "native-backend", feature = "llvm"))]
+pub(crate) use molt_tir::simpleir_debug::{
+    dump_ir_matches, dump_ir_ops, should_dump_ir,
+};
+#[cfg(any(feature = "native-backend", feature = "llvm"))]
+pub(crate) use molt_tir::trampolines::{
+    TrampolineKind, TrampolineSpec, function_requires_value_return,
+};
+pub use molt_tir::trampolines::externalize_function_with_signature;
 
 pub use molt_ir::intrinsic_symbols::{
     runtime_intrinsic_symbols_from_env, runtime_intrinsic_symbols_required,
@@ -65,27 +72,7 @@ pub mod luau;
 #[cfg(feature = "rust-backend")]
 pub mod rust;
 #[cfg(feature = "wasm-backend")]
-pub mod wasm;
-#[cfg(feature = "wasm-backend")]
-mod wasm_abi;
-#[cfg(feature = "wasm-backend")]
-mod wasm_abi_generated;
-#[cfg(feature = "wasm-backend")]
-mod wasm_binary;
-#[cfg(feature = "wasm-backend")]
-mod wasm_data;
-#[cfg(feature = "wasm-backend")]
-mod wasm_dispatch;
-#[cfg(feature = "wasm-backend")]
-mod wasm_import_tracking;
-#[cfg(feature = "wasm-backend")]
-mod wasm_imports;
-#[cfg(feature = "wasm-backend")]
-mod wasm_options;
-#[cfg(feature = "wasm-backend")]
-mod wasm_plan;
-#[cfg(feature = "wasm-backend")]
-mod wasm_values;
+pub use molt_backend_wasm::wasm;
 
 #[cfg(feature = "egraphs")]
 pub mod egraph_simplify;
@@ -116,212 +103,7 @@ pub(crate) fn stable_ic_site_id(func_name: &str, op_idx: usize, lane: &str) -> i
     id as i64
 }
 
-struct DumpIrConfig {
-    mode: String,
-    filter: Option<String>,
-}
-
-pub(crate) fn should_dump_ir() -> Option<DumpIrConfig> {
-    let raw = std::env::var("MOLT_DUMP_IR").ok()?;
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    let lower = trimmed.to_ascii_lowercase();
-    let (mode, filter) = if let Some((left, right)) = trimmed.split_once(':') {
-        let left_trim = left.trim();
-        let right_trim = right.trim();
-        let mode = if left_trim.eq_ignore_ascii_case("full") {
-            "full"
-        } else {
-            "control"
-        };
-        let filter = if right_trim.is_empty() {
-            None
-        } else {
-            Some(right_trim.to_string())
-        };
-        (mode.to_string(), filter)
-    } else if lower == "full" || lower == "control" || lower == "1" || lower == "all" {
-        let mode = if lower == "full" { "full" } else { "control" };
-        (mode.to_string(), None)
-    } else {
-        ("control".to_string(), Some(trimmed.to_string()))
-    };
-    Some(DumpIrConfig { mode, filter })
-}
-
-pub(crate) fn dump_ir_matches(config: &DumpIrConfig, func_name: &str) -> bool {
-    let Some(filter) = config.filter.as_ref() else {
-        return true;
-    };
-    if filter == "1" || filter.eq_ignore_ascii_case("all") {
-        return true;
-    }
-    func_name == filter || func_name.contains(filter)
-}
-
-pub(crate) fn dump_ir_ops(func_ir: &FunctionIR, mode: &str) {
-    let mut out = String::new();
-    let full = mode.eq_ignore_ascii_case("full");
-    let mut last_written = 0usize;
-    for (idx, op) in func_ir.ops.iter().enumerate() {
-        if !full {
-            let kind = op.kind.as_str();
-            let is_control = matches!(
-                kind,
-                "if" | "else"
-                    | "end_if"
-                    | "phi"
-                    | "label"
-                    | "state_label"
-                    | "jump"
-                    | "br_if"
-                    | "loop_start"
-                    | "loop_end"
-                    | "loop_break_if_true"
-                    | "loop_break_if_false"
-                    | "loop_break_if_exception"
-                    | "loop_break"
-                    | "loop_continue"
-                    | "ret"
-            );
-            if !is_control {
-                continue;
-            }
-        }
-        let mut detail = Vec::new();
-        if let Some(out_name) = &op.out {
-            detail.push(format!("out={out_name}"));
-        }
-        if let Some(var) = &op.var {
-            detail.push(format!("var={var}"));
-        }
-        if let Some(args) = &op.args {
-            detail.push(format!("args=[{}]", args.join(", ")));
-        }
-        if let Some(val) = op.value {
-            detail.push(format!("value={val}"));
-        }
-        if let Some(val) = op.f_value {
-            detail.push(format!("f_value={val}"));
-        }
-        if let Some(val) = &op.s_value {
-            detail.push(format!("s_value={val}"));
-        }
-        if let Some(bytes) = &op.bytes {
-            detail.push(format!("bytes_len={}", bytes.len()));
-        }
-        if let Some(fast_int) = op.fast_int {
-            detail.push(format!("fast_int={fast_int}"));
-        }
-        let _ = writeln!(out, "{idx:04}: {:<20} {}", op.kind, detail.join(" "));
-        last_written = idx;
-    }
-    if last_written == 0 && func_ir.ops.is_empty() {
-        return;
-    }
-    eprintln!("IR ops for {} (mode={}):\n{}", func_ir.name, mode, out);
-    if std::env::var("MOLT_DUMP_IR_FILE").as_deref() == Ok("1") {
-        let _ = std::fs::create_dir_all("logs");
-        let sanitized = func_ir
-            .name
-            .chars()
-            .map(|ch| match ch {
-                'a'..='z' | 'A'..='Z' | '0'..='9' | '_' | '-' => ch,
-                _ => '_',
-            })
-            .collect::<String>();
-        let path = std::path::Path::new("logs").join(format!("ir_dump_{sanitized}.log"));
-        let _ = std::fs::write(path, &out);
-    }
-}
-
-#[derive(
-    Clone, Copy, Hash, Eq, PartialEq, Ord, PartialOrd, Debug, serde::Deserialize, serde::Serialize,
-)]
-#[cfg_attr(
-    not(any(feature = "native-backend", feature = "wasm-backend")),
-    allow(dead_code)
-)]
-pub(crate) enum TrampolineKind {
-    Plain,
-    Generator,
-    Coroutine,
-    AsyncGen,
-}
-
-#[derive(Clone, Copy)]
-#[cfg_attr(
-    not(any(feature = "native-backend", feature = "wasm-backend")),
-    allow(dead_code)
-)]
-pub(crate) struct TrampolineSpec {
-    pub(crate) arity: usize,
-    pub(crate) has_closure: bool,
-    pub(crate) kind: TrampolineKind,
-    pub(crate) closure_size: i64,
-    /// Whether the target function returns a value. Trampolines use this
-    /// to set the correct import signature — functions with ret_void only
-    /// don't have a return in their signature.
-    #[cfg_attr(
-        not(any(feature = "native-backend", feature = "llvm")),
-        allow(dead_code)
-    )]
-    pub(crate) target_has_ret: bool,
-}
-
-const EXTERN_SIGNATURE_RETURN_VALUE: &str = "__molt_extern_signature_return";
-
-fn function_body_requires_value_return(func: &FunctionIR) -> bool {
-    func.ops.iter().any(|op| {
-        matches!(
-            op.kind.as_str(),
-            "ret"
-                | "state_switch"
-                | "state_transition"
-                | "state_yield"
-                | "chan_send_yield"
-                | "chan_recv_yield"
-        )
-    })
-}
-
-pub fn externalize_function_with_signature(func: &mut FunctionIR) {
-    let returns_value = function_body_requires_value_return(func);
-    func.is_extern = true;
-    func.ops = if returns_value {
-        vec![
-            OpIR {
-                kind: "missing".to_string(),
-                out: Some(EXTERN_SIGNATURE_RETURN_VALUE.to_string()),
-                ..OpIR::default()
-            },
-            OpIR {
-                kind: "ret".to_string(),
-                args: Some(vec![EXTERN_SIGNATURE_RETURN_VALUE.to_string()]),
-                ..OpIR::default()
-            },
-        ]
-    } else {
-        vec![OpIR {
-            kind: "ret_void".to_string(),
-            ..OpIR::default()
-        }]
-    };
-}
-
-pub(crate) fn function_requires_value_return(func: &FunctionIR) -> bool {
-    if func.is_extern {
-        assert!(
-            !func.ops.is_empty(),
-            "extern function `{}` is missing return-signature metadata",
-            func.name
-        );
-    }
-    function_body_requires_value_return(func)
-}
-
+#[cfg(any(feature = "native-backend", feature = "llvm"))]
 pub(crate) fn env_setting(var: &str) -> Option<String> {
     std::env::var(var)
         .ok()

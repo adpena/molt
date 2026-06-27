@@ -133,7 +133,7 @@ Sibling frontend files are tiny (`cfg_analysis.py` 416, `tv_hooks.py` 260) — t
 | File / subtree | Lines | Crate-cut target |
 |----------------|-------|-------------------|
 | `native_backend/function_compiler.rs` | 39,043 | `molt-backend-native` (split into families first, move #1) |
-| `wasm.rs` | 17,441 | `molt-backend-wasm` |
+| `runtime/molt-backend-wasm/src/wasm.rs` | 4,418 | extracted WASM facade in `molt-backend-wasm` |
 | `luau.rs` (+luau_ir 1,038 +luau_lower) | 12,278 (14,272 incl. ir/lower) | `molt-backend-luau` |
 | `llvm_backend/lowering.rs` | 10,656 | `molt-backend-native` (bundled w/ Cranelift) |
 | `tir/lower_to_simple.rs` | 7,274 | `molt-tir` |
@@ -144,7 +144,7 @@ Sibling frontend files are tiny (`cfg_analysis.py` 416, `tv_hooks.py` 260) — t
 | **subtree: `tir/`** | **72,041** | **`molt-tir`** (clean lower layer) |
 | **subtree: `native_backend/`** | **45,429** | **`molt-backend-native`** |
 | **subtree: `llvm_backend/`** | **12,821** | **`molt-backend-native`** |
-| **subtree: wasm (wasm.rs+imports+lower_to_wasm)** | **21,352** | **`molt-backend-wasm`** |
+| **subtree: `runtime/molt-backend-wasm/src/`** | **extracted** | **WASM codegen, ABI manifest/generated registry, import planning, binary patching** |
 
 **Rust runtime (`runtime/molt-runtime/src/`, 346,220 LOC):**
 

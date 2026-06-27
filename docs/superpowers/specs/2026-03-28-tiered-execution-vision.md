@@ -41,7 +41,7 @@ This is not theoretical. The shared capability manifest already exists (`molt.ca
 │    - Pre-emptive DoS guards: compile-time elision of pow/repeat/    │
 │      shift overflow checks when operands are provably bounded       │
 │    - Deoptimization: speculative type assumptions with fallback     │
-│      to generic code on guard failure (tir/deopt.rs)                │
+│      through a future first-class guard-exit ABI                    │
 │                                                                      │
 │  Tier-Up Controller                                                  │
 │    - Per-function call counters (atomic u32, cache-line aligned)    │
@@ -103,7 +103,7 @@ Molt's Typed Intermediate Representation is the compilation backbone. Functions 
               └────────────┴────────────┘
 ```
 
-The key insight for tiered execution: **Monty's type profiling data feeds directly into Molt's type refinement.** When Monty observes that `def process(items)` has been called 100 times and `items` was always `list[dict[str, int]]`, that type profile becomes a speculative type assumption in TIR. The unboxing pass can then eliminate NaN-boxing for the entire function body. If the assumption is ever violated, the deoptimization framework (`tir/deopt.rs`) transfers control back to Monty with materialized live values.
+The key insight for tiered execution: **Monty's type profiling data feeds directly into Molt's type refinement.** When Monty observes that `def process(items)` has been called 100 times and `items` was always `list[dict[str, int]]`, that type profile becomes a speculative type assumption in TIR. The unboxing pass can then eliminate NaN-boxing for the entire function body. If the assumption is ever violated, a future first-class deoptimization ABI must transfer control back to Monty with materialized live values.
 
 ### 2.2 The Type System Bridge
 
@@ -405,7 +405,7 @@ The WASM split plan (`tir/wasm_split.rs`) separates modules into core, stdlib, a
 - Swap is a single atomic write to the dispatch table entry
 - In-flight calls to the old version complete normally (no interruption)
 - New calls go to the compiled version
-- Deoptimization path: if a compiled function hits a `DeoptPoint` (`tir/deopt.rs`), it materializes live values into a `DeoptState` struct and calls back into Monty's eval loop at the corresponding bytecode offset
+- Deoptimization path: if a compiled function hits a future guard-exit safepoint, it materializes live values through the shared tiering ABI and calls back into Monty's eval loop at the corresponding bytecode offset
 - **Deliverable:** Seamless tier-up visible only in latency metrics
 
 ### Phase 5: Serialized Type Information Exchange

@@ -799,7 +799,6 @@ def test_verify_result_arity_delegates_to_generated_table() -> None:
         "ModuleDelGlobal": "zero",
         "ModuleDelGlobalIfPresent": "zero",
         "WarnStderr": "zero",
-        "Deopt": "zero",
         "Call": "variable",
         "CallMethod": "variable",
         "CallMethodIc": "variable",

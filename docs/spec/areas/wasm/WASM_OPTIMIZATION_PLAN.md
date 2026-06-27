@@ -8,9 +8,10 @@
 
 ## 0. Current Architecture Summary
 
-Molt's WASM backend is a custom code emitter rooted at `runtime/molt-backend/src/wasm.rs`.
-That file is now a hub for decomposed backend modules rather than the historical
-monolith. The backend directly produces WASM bytecode using the `wasm_encoder`
+Molt's WASM backend is a custom code emitter rooted at
+`runtime/molt-backend-wasm/src/wasm.rs`. That crate is the WASM codegen and ABI
+authority; `molt-backend` only reexports its public facade behind the
+`wasm-backend` feature. The backend directly produces WASM bytecode using the `wasm_encoder`
 crate. It does **not** use Cranelift for WASM output -- instead it emits WASM
 instructions directly from Molt's IR (`SimpleIR` / `OpIR`). This is a significant
 architectural distinction from the native backend, which uses Cranelift's
@@ -276,7 +277,7 @@ families and emits deterministic traps for unsupported use.
 Source .py
   |
   v
-molt-backend/src/wasm.rs  -->  output.wasm (relocatable object)
+runtime/molt-backend-wasm/src/wasm.rs  -->  output.wasm (relocatable object)
   |
   v
 wasm-ld (link with molt_runtime.wasm)  -->  output_linked.wasm
@@ -613,7 +614,7 @@ Results must be recorded in `bench/results/` and summarized through the generate
 - `docs/architecture/wasm-import-stripping.md` -- Import stripping analysis
 
 ### Implementation Files
-- `runtime/molt-backend/src/wasm.rs` -- WASM code emitter (9740 lines)
+- `runtime/molt-backend-wasm/src/wasm.rs` -- WASM code emitter facade
 - `runtime/molt-wasm-host/src/main.rs` -- Wasmtime host runner (4551 lines)
 - `runtime/molt-wasm-host/Cargo.toml` -- wasmtime 41.0.3, wasmtime-wasi 41.0.3
 - `tools/bench_wasm.py` -- WASM benchmark harness

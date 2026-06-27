@@ -88,7 +88,6 @@ Product board for the molt structural sweep — the first instrument of the Molt
 | low | 1 debt/workaround markers | `runtime/molt-runtime/tests/test_builtins.rs:76` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 1 debt/workaround markers | `runtime/molt-passes/src/tir/bolt.rs:129` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 1 debt/workaround markers | `runtime/molt-passes/src/tir/call_facts.rs:52` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
-| low | 1 debt/workaround markers | `runtime/molt-passes/src/tir/deopt.rs:42` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 1 debt/workaround markers | `runtime/molt-passes/src/tir/passes/escape_analysis.rs:346` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 1 debt/workaround markers | `runtime/molt-passes/src/tir/passes/module_slot_promotion.rs:947` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 1 debt/workaround markers | `runtime/molt-passes/src/tir/passes/vectorize.rs:494` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
