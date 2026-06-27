@@ -11,8 +11,6 @@ use crate::wasm_binary::{
     strip_unused_imports, validate_wasm_sections,
 };
 use crate::wasm_data::{DataSegmentRef, WasmDataSegments};
-#[cfg(test)]
-use crate::wasm_dispatch::br_table_state_remap_params;
 use crate::wasm_dispatch::{dispatch_control_panic, has_non_linear_control_flow};
 use crate::wasm_import_tracking::{TrackedImportIds, selected_import_id};
 pub use crate::wasm_options::{WasmCompileOptions, WasmProfile};

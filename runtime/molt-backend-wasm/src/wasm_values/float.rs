@@ -5,7 +5,7 @@ use wasm_encoder::{BlockType, Function, Instruction, ValType};
 /// Uses `scratch_local` (an i64 local) as temporary storage.
 /// Expects: stack = [..., f64_val]
 /// Produces: stack = [..., i64_boxed] where NaN is replaced with CANONICAL_NAN_BITS.
-pub(crate) fn emit_f64_to_i64_canonical(func: &mut wasm_encoder::Function, scratch_local: u32) {
+pub(crate) fn emit_f64_to_i64_canonical(func: &mut Function, scratch_local: u32) {
     // Reinterpret f64 to i64 raw bits, save in scratch
     func.instruction(&Instruction::I64ReinterpretF64);
     func.instruction(&Instruction::LocalTee(scratch_local));
