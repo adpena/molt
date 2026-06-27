@@ -82,6 +82,40 @@ def load_manifest(path: Path = MANIFEST) -> dict:
                     f"duplicate poll table slot {poll_table_slot}"
                 )
             seen_poll_slots.add(poll_table_slot)
+
+    op_import_deps = data.get("op_import_dep", [])
+    if not isinstance(op_import_deps, list):
+        raise WasmAbiManifestError("op_import_dep must be a list of tables")
+    seen_op_import_kinds: set[str] = set()
+    for idx, entry in enumerate(op_import_deps):
+        if not isinstance(entry, dict):
+            raise WasmAbiManifestError(f"op_import_dep entry {idx} must be a table")
+        kind = entry.get("kind")
+        deps = entry.get("deps")
+        if not isinstance(kind, str) or not kind:
+            raise WasmAbiManifestError(f"op_import_dep entry {idx} has invalid kind")
+        if kind in seen_op_import_kinds:
+            raise WasmAbiManifestError(f"duplicate op_import_dep kind {kind!r}")
+        seen_op_import_kinds.add(kind)
+        if not isinstance(deps, list):
+            raise WasmAbiManifestError(
+                f"op_import_dep {kind!r} must define deps as a list"
+            )
+        seen_deps: set[str] = set()
+        for dep_idx, dep in enumerate(deps):
+            if not isinstance(dep, str) or not dep:
+                raise WasmAbiManifestError(
+                    f"op_import_dep {kind!r} has invalid dep at index {dep_idx}"
+                )
+            if dep in seen_deps:
+                raise WasmAbiManifestError(
+                    f"op_import_dep {kind!r} repeats import {dep!r}"
+                )
+            seen_deps.add(dep)
+            if dep not in seen_imports:
+                raise WasmAbiManifestError(
+                    f"op_import_dep {kind!r} references unknown import {dep!r}"
+                )
     expected_poll_slots = set(range(1, len(seen_poll_slots) + 1))
     if seen_poll_slots != expected_poll_slots:
         raise WasmAbiManifestError("poll table slots must be contiguous from one")
@@ -167,6 +201,18 @@ def render_rs(data: dict) -> str:
     lines.append("pub(crate) const IMPORT_REGISTRY: &[(&str, u32)] = &[\n")
     for entry in data["import"]:
         lines.append(f'    ("{entry["name"]}", {entry["type"]}),\n')
+    lines.append("];\n\n")
+    lines.append("pub(crate) const OP_IMPORT_DEPS: &[(&str, &[&str])] = &[\n")
+    for entry in data.get("op_import_dep", []):
+        kind = entry["kind"]
+        deps = entry["deps"]
+        if not deps:
+            lines.append(f'    ("{kind}", &[]),\n')
+            continue
+        lines.append(f'    ("{kind}", &[\n')
+        for dep in deps:
+            lines.append(f'        "{dep}",\n')
+        lines.append("    ]),\n")
     lines.append("];\n\n")
     poll_imports = sorted(
         (

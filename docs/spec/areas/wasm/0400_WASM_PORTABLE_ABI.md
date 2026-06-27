@@ -134,9 +134,9 @@ This surface is implemented by:
 - Rust host in the server
 
 `runtime/molt-backend-wasm/src/wasm_abi_manifest.toml` is the executable authority
-for Molt runtime import names, static type indices, and backend Pure-profile
-skip prefixes. `tools/gen_wasm_abi.py` renders the checked-in Rust and Python
-consumers:
+for Molt runtime import names, static type indices, backend Pure-profile skip
+prefixes, and op-to-import dependency planning. `tools/gen_wasm_abi.py` renders
+the checked-in Rust and Python consumers:
 
 - `runtime/molt-backend-wasm/src/wasm_abi_generated.rs` for backend import emission.
 - `src/molt/_wasm_abi_generated.py` for runtime-export validation and tools.
