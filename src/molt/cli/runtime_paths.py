@@ -78,14 +78,24 @@ def _cargo_target_root_cached(
 ) -> Path:
     project_root = Path(project_root_str)
     if not cargo_target_override:
+        # MOLT_TARGET_ROOT relocates the session-target BASE off the project
+        # drive (e.g. an external drive, so C: never fills) while preserving
+        # per-session isolation. It is absolute, so worktree agents — whose
+        # project_root is the worktree, not the main repo — relocate too. Read
+        # here rather than threaded as an arg so EVERY caller of this single
+        # seam (cargo target, build-state, runtime-lib, daemon paths) relocates
+        # uniformly; MOLT_TARGET_ROOT is a process-stable env set at startup, so
+        # the lru_cache stays correct. Default base: <project_root>/target.
+        molt_target_root = os.environ.get("MOLT_TARGET_ROOT")
+        if molt_target_root:
+            base = Path(molt_target_root).expanduser()
+            if not base.is_absolute():
+                base = (project_root / base).absolute()
+        else:
+            base = project_root / "target"
         if session_id is not None:
-            return (
-                project_root
-                / "target"
-                / "sessions"
-                / _session_artifact_component(session_id)
-            )
-        return project_root / "target"
+            return base / "sessions" / _session_artifact_component(session_id)
+        return base
     path = Path(cargo_target_override).expanduser()
     if not path.is_absolute():
         path = (Path(cwd_str) / path).absolute()

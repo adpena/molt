@@ -508,15 +508,25 @@ Rules:
 export MOLT_SESSION_ID="agent-1"  # MUST come before any molt or cargo command
 ```
 
-Each session gets its own `target/sessions/<id>/` cargo directory (the CLI's
-`_session_target_dir`). The **molt CLI** routes all builds, path resolution,
-staleness checks, and cache lookups through it automatically. **Raw `cargo`
-commands do NOT honor `MOLT_SESSION_ID`** — they fall through to the shared
-`target/` and will lock-collide with (and silently kill) concurrent agents'
-builds. For any direct cargo invocation also export:
+**ALL build artifacts go on the external drive, NEVER C:.** `MOLT_TARGET_ROOT`
+(set persistently to `E:\molt-target`) is the base of the session-target tree.
+The molt CLI reads it in `runtime_paths._cargo_target_root` (one seam), so EVERY
+build path — cargo target, build-state, runtime-lib, daemon socket, main checkout
+AND worktree agents — lands on `$MOLT_TARGET_ROOT/sessions/<id>` and C: never
+fills. It is absolute, so worktree agents (whose project_root is the worktree)
+relocate too. Default base if unset: `<project_root>/target` (solo dev fallback).
+C: filled to 0.5% once because targets lived on it — do not regress this.
+
+Each session gets its own `sessions/<id>/` cargo directory under that base (the
+CLI's `_session_target_dir`). The **molt CLI** routes all builds, path
+resolution, staleness checks, and cache lookups through it automatically. **Raw
+`cargo` commands do NOT honor `MOLT_SESSION_ID`** — they fall through to the
+shared `target/` and will lock-collide with (and silently kill) concurrent
+agents' builds. For any direct cargo invocation also export (honoring the
+external-drive root):
 
 ```bash
-export CARGO_TARGET_DIR="$PWD/target/sessions/$MOLT_SESSION_ID"
+export CARGO_TARGET_DIR="${MOLT_TARGET_ROOT:-$PWD/target}/sessions/$MOLT_SESSION_ID"
 ```
 
 This gives each session:
