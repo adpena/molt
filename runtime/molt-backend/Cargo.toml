@@ -9,6 +9,8 @@ license = "Apache-2.0"
 molt-ir = { path = "../molt-ir" }
 molt-tir = { path = "../molt-tir" }
 molt-codegen-abi = { path = "../molt-codegen-abi" }
+molt-backend-luau = { path = "../molt-backend-luau", optional = true, default-features = false }
+molt-backend-rust = { path = "../molt-backend-rust", optional = true, default-features = false }
 molt-backend-wasm = { path = "../molt-backend-wasm", optional = true, default-features = false }
 libc = "0.2"
 tikv-jemallocator = { version = "0.7", optional = true }
@@ -65,7 +67,7 @@ jemalloc = ["dep:tikv-jemallocator"]
 egraphs = ["egg"]
 llvm = ["dep:inkwell", "molt-ir/llvm", "molt-tir/llvm"]
 polly = ["llvm"]
-luau-backend = []
+luau-backend = ["dep:molt-backend-luau", "molt-backend-luau/luau-backend"]
 native-backend = [
     "dep:cranelift-codegen",
     "dep:cranelift-frontend",
@@ -76,7 +78,7 @@ native-backend = [
     "molt-tir/native-backend",
 ]
 cbor = ["dep:ciborium"]
-rust-backend = []
+rust-backend = ["dep:molt-backend-rust", "molt-backend-rust/rust-backend"]
 mlx = ["dep:mlx-rs"]
 wasm-backend = [
     "dep:molt-backend-wasm",
@@ -96,10 +98,6 @@ required-features = ["native-backend"]
 [[test]]
 name = "native_batch_worker_spawn"
 required-features = ["native-backend"]
-
-[[test]]
-name = "rust_transpiler_preview"
-required-features = ["rust-backend"]
 
 [[test]]
 name = "wasm_fastcall_lowering"

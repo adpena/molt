@@ -2,11 +2,14 @@
 
 # Luau Lowering Plan for `OpCode::CheckedAdd`
 
-**Status (2026-06-23): implemented.** Current authority: `runtime/molt-backend/src/luau.rs`
-emits `checked_add` via the conditional `molt_checked_i64_add` helper,
-`runtime/molt-passes/src/tir/lower_to_simple.rs` round-trips `OpCode::CheckedAdd`
-as SimpleIR `checked_add`, `test_compile_checked_lowers_checked_add_helper`
-guards checked Luau emission, and
+**Status (2026-06-23): implemented.** Current authority:
+`runtime/molt-backend-luau/src/luau/op_scalar_kernels.rs` emits
+`checked_add` via the conditional `molt_checked_i64_add` helper, and
+`runtime/molt-backend-luau/src/luau/compile_pipeline.rs` owns the helper
+prelude. `runtime/molt-passes/src/tir/lower_to_simple.rs` round-trips
+`OpCode::CheckedAdd` as SimpleIR `checked_add`,
+`test_compile_checked_lowers_checked_add_helper` guards checked Luau emission,
+and
 `docs/spec/areas/compiler/luau_support_matrix.generated.md` lists `checked_add`
 as `implemented-exact`. The original recon below is retained for the semantic
 rationale; line anchors and "today" statements from 2026-06-04 are historical
@@ -34,13 +37,23 @@ runs the shared TIR module phase before checked text emission. `CheckedAdd`
 therefore reaches Luau as SimpleIR `checked_add`; the backend consumes it through
 the f64 helper contract instead of target-gating the portable TIR transform.
 
-### SimpleIR op dispatch in `emit_op` (luau.rs:1209–4592)
+### SimpleIR op dispatch in `emit_op`
 
-`emit_op` is a `match op.kind.as_str()` covering every known SimpleIR op kind as string literals. The default arm at `luau.rs:4580–4590` emits `local {out} = nil -- [unsupported op: {kind}]`, which survives text emission but is caught by `compile_checked` → `validate_luau_source`, which rejects outputs containing `[unsupported op:` markers. This is the fail-closed gate.
+Current dispatch lives in `runtime/molt-backend-luau/src/luau/op_emitter.rs`;
+it delegates scalar operations to the split scalar modules. The historical
+2026-06-04 recon found the same authority in the old monolithic
+`luau.rs:1209-4592`. The default arm in `op_emitter.rs` emits
+`local {out} = nil -- [unsupported op: {kind}]`, which survives text emission
+but is caught by `compile_checked` -> `validate_luau_source`, which rejects
+outputs containing `[unsupported op:` markers. This is the fail-closed gate.
 
 ### Integer arithmetic lowering in the Luau backend
 
-All Python integer arithmetic (`add`, `sub`, `mul`, etc.) is handled at `luau.rs:1447–1569`. The `"add"` arm (`luau.rs:1447`) checks `scalar_plan.op_prefers_integer_runtime_lane(op)` — when numeric, emits `local {out}: number = {lhs} + {rhs}` as direct Luau f64 arithmetic.
+Python integer arithmetic (`add`, `sub`, `mul`, etc.) now lives in the split
+scalar emitters under `runtime/molt-backend-luau/src/luau/`. The `"add"` arm in
+`op_scalar_exprs.rs` checks `scalar_plan.op_prefers_integer_runtime_lane(op)` -
+when numeric, emits `local {out}: number = {lhs} + {rhs}` as direct Luau f64
+arithmetic.
 
 **Luau's number model:** All numbers are IEEE 754 f64. There are no i64 integers. `math.floor`, `//`, and `%` simulate integer semantics within the 53-bit mantissa range (2^53). Python integers with exact values up to 2^53 are represented exactly; values between 2^53 and 2^63-1 lose precision (wrong digits in lower bits); values ≥ 2^63 are inf or lose all integer meaning. The 2^47 NaN-box inline limit of native/WASM is irrelevant for Luau — Luau uses f64 natively throughout.
 
@@ -69,7 +82,7 @@ OpCode::IterNextUnboxed => {
 
 The two outputs are packed into the single-output `OpIR` using `out` (for one result) and `var` (for the second). No new `OpIR` fields are needed; this is the established contract.
 
-**Luau emission** (`luau.rs:4391–4410`):
+**Luau emission** (`runtime/molt-backend-luau/src/luau/op_iteration.rs`):
 ```rust
 "iter_next_unboxed" => {
     // Call iterator; materialize tmp table; unpack into done+value locals.
@@ -140,10 +153,10 @@ Because the PLAN doc's `overflow_peel` was explicitly designed as a portable TIR
 | File | Current authority |
 |---|---|
 | `runtime/molt-passes/src/tir/lower_to_simple.rs` | `OpCode::CheckedAdd` lowers to SimpleIR `checked_add` with `var` as sum and `out` as overflow flag; guarded by `checked_add_two_result_round_trip_survives_relift`. |
-| `runtime/molt-backend/src/luau.rs` | `emit_op` handles `checked_add` with Luau multi-return destructuring from `molt_checked_i64_add`; guarded by `test_compile_checked_lowers_checked_add_helper`. |
-| `docs/spec/areas/compiler/luau_support_matrix.generated.md` | Generated from `luau.rs`; lists `checked_add` as `implemented-exact`. |
+| `runtime/molt-backend-luau/src/luau/op_scalar_kernels.rs` + `runtime/molt-backend-luau/src/luau/compile_pipeline.rs` | `emit_op` delegates `checked_add` to the scalar-kernel emitter, which uses Luau multi-return destructuring from `molt_checked_i64_add`; the helper prelude is emitted conditionally and guarded by `test_compile_checked_lowers_checked_add_helper` in `runtime/molt-backend-luau/src/luau/tests/numeric_async.rs`. |
+| `docs/spec/areas/compiler/luau_support_matrix.generated.md` | Generated from the current Luau backend support scan; lists `checked_add` as `implemented-exact`. |
 
-**The `emit_op` arm for `"checked_add"` in `luau.rs`:**
+**The `emit_op` arm for `"checked_add"` in `runtime/molt-backend-luau/src/luau/op_scalar_kernels.rs`:**
 ```rust
 "checked_add" => {
     let args = op.args.as_deref().unwrap_or(&[]);
@@ -179,8 +192,13 @@ Per the PLAN doc's warning and the MEMORY.md lesson from import-error parity wor
 
 ## 8. Essential Files
 
-- `runtime/molt-backend/src/luau.rs` — `emit_op` dispatch, conditional helper prelude,
-  and `test_compile_checked_lowers_checked_add_helper`.
+- `runtime/molt-backend-luau/src/luau/op_emitter.rs` - `emit_op` dispatch.
+- `runtime/molt-backend-luau/src/luau/op_scalar_kernels.rs` - `checked_add`
+  lowering.
+- `runtime/molt-backend-luau/src/luau/compile_pipeline.rs` - conditional helper
+  prelude.
+- `runtime/molt-backend-luau/src/luau/tests/numeric_async.rs` -
+  `test_compile_checked_lowers_checked_add_helper`.
 - `runtime/molt-backend/src/main.rs` — Luau lifts source-emission IR through the
   shared TIR module pipeline before checked source emission.
 - `runtime/molt-passes/src/tir/lower_to_simple.rs` — exhaustive `OpCode` lowering

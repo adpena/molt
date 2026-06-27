@@ -530,7 +530,8 @@ integration tests reach. The wasm `[[test]]` entries (molt-backend/Cargo.toml:79
 `molt-backend-wasm/tests/` (they test the encoder). Full G1-G7; **G3 on `--target wasm`.** **[seq:
 S2,S3]; [parallel] with S4/S6/S7** (disjoint files:
 runtime/molt-backend-wasm/src/** vs llvm_backend/ vs native_backend/ vs
-luau*/rust.rs). Touches molt-backend/lib.rs+Cargo.toml -> serialize those edits
+runtime/molt-backend-luau/src/** + runtime/molt-backend-rust/src/**). Touches
+molt-backend/lib.rs+Cargo.toml -> serialize those edits
 (S8 join).
 
 ---
@@ -542,20 +543,23 @@ only `representation_plan::ScalarRepresentationPlan`). 21b: "easiest; can preced
 touch)."
 
 ### 8.1 Exact partition
-- **`molt-backend-luau`:** `git mv` `molt-backend/src/{luau.rs (~677 KB), luau_ir.rs (~36 KB),
-  luau_lower.rs (~37 KB), luau_json_prelude.luau}` -> `runtime/molt-backend-luau/src/`. Paths ->
+- **`molt-backend-luau`:** current live home is
+  `runtime/molt-backend-luau/src/{luau.rs, luau_ir.rs, luau_lower.rs,
+  luau_json_prelude.luau, luau/**, luau_backend/**}`. Paths ->
   `molt_lower::{tir::type_refine::refine_types, tir::target_info::*, tir::passes::*,
   tir::lower_to_simple::*, tir::lower_from_simple::*, tir::drop_phase::*}` (the verified luau
   surface -- ~7 items; NO NaN-box -> no molt-codegen-abi dep).
-- **`molt-backend-rust`:** `git mv` `molt-backend/src/rust.rs` (~217 KB) ->
-  `runtime/molt-backend-rust/src/`. Path -> `molt_lower::representation_plan::ScalarRepresentationPlan`
-  (the SOLE molt-lower item it names).
+- **`molt-backend-rust`:** current live home is
+  `runtime/molt-backend-rust/src/{rust.rs, rust/**}`. Path ->
+  `molt_lower::representation_plan::ScalarRepresentationPlan` (the SOLE
+  molt-lower item it names).
 - **`egraph_simplify.rs`** is referenced ONLY by `molt-backend/src/lib.rs`
-  (`#[cfg(feature="egraphs")] pub mod egraph_simplify;`) -- NOT by rust.rs (verified). 21b
+  (`#[cfg(feature="egraphs")] pub mod egraph_simplify;`) -- NOT by
+  `runtime/molt-backend-rust/src/rust.rs` (verified). 21b
   parenthesizes it "(+ opt egraph_simplify.rs)" with molt-backend-rust, but the current consumer
   is the driver. **Decision: KEEP `egraph_simplify.rs` in molt-backend (driver) for now; do NOT
   fabricate a molt-backend-rust dep on it.** Flag a follow-up to move it into molt-backend-rust
-  under an `egraphs` feature IF/WHEN rust.rs consumes it.
+  under an `egraphs` feature IF/WHEN `runtime/molt-backend-rust/src/rust.rs` consumes it.
 
 ### 8.2 Cargo.toml / wiring
 - `molt-backend-luau/Cargo.toml`: deps `molt-lower`; features `luau-backend=["molt-lower/..."]`
@@ -571,7 +575,8 @@ touch)."
 ### 8.3 Gates / parallelization
 Widen `luau::LuauBackend`, `rust::RustBackend` (+ whatever the `rust_transpiler_preview` + luau
 `[[test]]` reach; move those `[[test]]` entries to the new crates). Full G1-G7; G3 on `--target
-luau` + `--target rust`. **[seq: S2]; [parallel] with S4/S5** -- luau/rust files are disjoint from
+luau` + `--target rust`. **[seq: S2]; [parallel] with S4/S5** -- the
+`molt-backend-luau` and `molt-backend-rust` crate trees are disjoint from
 llvm/wasm/native. Two crates but ONE move (commit each crate separately, both green). Lowest risk
 -> good first-after-S2 parallel lane (may even precede S3/S4 since it touches no ABI).
 
@@ -711,7 +716,8 @@ S1 (molt-ir)            [FOUNDATION GATE -- serial, single agent; nothing starts
 ```
 
 **Independence:** S4/S5/S6/S7 each `git mv` a DISJOINT source subtree (`llvm_backend/` /
-`runtime/molt-backend-wasm/src/**` / `luau*`+`rust.rs` / `native_backend/`) and create a DISJOINT new
+`runtime/molt-backend-wasm/src/**` / `runtime/molt-backend-luau/src/**` +
+`runtime/molt-backend-rust/src/**` / `native_backend/`) and create a DISJOINT new
 crate -> new-crate creation is fully independent. **Serialization points (shared files):** every
 backend move ALSO edits `molt-backend/src/lib.rs` (the `pub mod X` -> `pub use molt_backend_X`
 line), `molt-backend/Cargo.toml` (the dep+feature line), and ROOT `Cargo.toml` members. These

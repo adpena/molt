@@ -25,8 +25,6 @@ pub use molt_ir::intrinsic_symbols::{
 };
 #[cfg(feature = "llvm")]
 pub mod llvm_backend;
-pub mod luau_ir;
-pub mod luau_lower;
 #[cfg(feature = "native-backend")]
 mod native_backend;
 pub use crate::ir::{FunctionIR, OpIR, PgoProfileIR, SimpleIR, validate_simple_ir};
@@ -71,9 +69,9 @@ pub use molt_ir::stdlib_module_symbols::{
 };
 
 #[cfg(feature = "luau-backend")]
-pub mod luau;
+pub use molt_backend_luau::luau;
 #[cfg(feature = "rust-backend")]
-pub mod rust;
+pub use molt_backend_rust::rust;
 #[cfg(feature = "wasm-backend")]
 pub use molt_backend_wasm::wasm;
 

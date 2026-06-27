@@ -336,10 +336,11 @@ Read these first instead of rediscovering project structure:
     backend-facing scalar/container representation plans.
   - `runtime/molt-backend/src/native_backend/`,
     `runtime/molt-backend/src/llvm_backend/`,
-    `runtime/molt-backend-wasm/src/`, and `runtime/molt-backend/src/luau.rs`
-    for backend-specific lowering. `molt-backend` only reexports the WASM
-    facade behind `wasm-backend`; do not add new WASM encoder or ABI authority
-    under `runtime/molt-backend/src/`.
+    `runtime/molt-backend-wasm/src/`, `runtime/molt-backend-luau/src/`, and
+    `runtime/molt-backend-rust/src/` for backend-specific lowering.
+    `molt-backend` reexports backend leaf facades behind feature flags; do not
+    add new backend encoder, source-emission, or ABI authority under
+    `runtime/molt-backend/src/`.
   - `runtime/molt-runtime/src/intrinsics/manifest.pyi`,
     `runtime/molt-runtime/src/intrinsics/generated.rs`, and
     `src/molt/_intrinsics.pyi` for intrinsic authority.

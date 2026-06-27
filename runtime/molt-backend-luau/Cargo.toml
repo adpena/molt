@@ -1,0 +1,17 @@
+[package]
+name = "molt-backend-luau"
+version = "0.1.0"
+publish = false
+edition = "2024"
+license = "Apache-2.0"
+
+[dependencies]
+molt-ir = { path = "../molt-ir" }
+molt-tir = { path = "../molt-tir" }
+
+[dev-dependencies]
+serde_json = "1.0"
+
+[features]
+default = []
+luau-backend = []

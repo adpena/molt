@@ -8,7 +8,7 @@
 
 ## 0. Context and Existing State
 
-Molt already has a working Rust transpilation backend at `runtime/molt-backend/src/rust.rs`. This backend transpiles `SimpleIR` into standalone Rust source files using a dynamically-typed `MoltValue` enum that mirrors Python's runtime type system. Every variable is `MoltValue`, every use clones, and all operations dispatch through match arms at runtime.
+Molt already has a working Rust transpilation backend at `runtime/molt-backend-rust/src/rust.rs`, with `molt-backend` re-exporting it behind the `rust-backend` feature for the CLI driver. This backend transpiles `SimpleIR` into standalone Rust source files using a dynamically-typed `MoltValue` enum that mirrors Python's runtime type system. Every variable is `MoltValue`, every use clones, and all operations dispatch through match arms at runtime.
 
 This document defines the path from the current **correct-first dynamic** backend to a **performance-optimized, type-specialized** Rust backend that produces idiomatic Rust leveraging Molt's type inference, escape analysis, and specialization infrastructure.
 
