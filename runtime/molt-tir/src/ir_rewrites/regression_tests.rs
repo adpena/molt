@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    elide_useless_try_blocks, elide_useless_try_blocks_for_function, rewrite_phi_to_store_load,
+};
+use crate::{FunctionIR, OpIR};
 
 fn op_shapes(
     ops: &[OpIR],

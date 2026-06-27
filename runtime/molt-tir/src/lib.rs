@@ -10,6 +10,7 @@
 #![allow(clippy::type_complexity)] // complex return types in TIR CFG helpers
 #![allow(clippy::should_implement_trait)] // generated op_kind enum `from_str` parsers are deliberate, not std FromStr impls
 
+pub mod ir_rewrites;
 pub mod passes;
 pub mod representation_plan;
 pub mod simpleir_debug;
