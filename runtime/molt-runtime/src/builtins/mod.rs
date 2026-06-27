@@ -27,8 +27,6 @@ pub(crate) mod contextlib;
 pub(crate) mod contextvars;
 pub(crate) mod copy_mod;
 pub(crate) mod dbm_dumb;
-#[cfg(not(feature = "stdlib_difflib"))]
-pub(crate) mod difflib;
 pub(crate) mod enum_ext;
 pub(crate) mod exceptions;
 pub(crate) mod fcntl;
@@ -58,8 +56,6 @@ pub(crate) mod inspect;
 pub(crate) mod io;
 pub(crate) mod io_path;
 pub(crate) mod io_path_utils;
-#[cfg(not(feature = "stdlib_ipaddress"))]
-pub(crate) mod ipaddress;
 #[cfg(not(feature = "stdlib_itertools"))]
 pub(crate) mod itertools;
 pub(crate) mod json;

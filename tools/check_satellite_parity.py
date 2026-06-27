@@ -84,8 +84,6 @@ PAIRS: dict[str, tuple[str, str]] = {
         "molt-runtime-http/src/functions_logging.rs",
     ),
     "itertools": ("builtins/itertools.rs", "molt-runtime-itertools/src/itertools.rs"),
-    "difflib": ("builtins/difflib.rs", "molt-runtime-difflib/src/difflib.rs"),
-    "ipaddress": ("builtins/ipaddress.rs", "molt-runtime-ipaddress/src/ipaddress.rs"),
     "os_ext": ("builtins/os_ext.rs", "molt-runtime-path/src/os_ext.rs"),
     "pathlib": ("builtins/pathlib.rs", "molt-runtime-path/src/pathlib.rs"),
 }

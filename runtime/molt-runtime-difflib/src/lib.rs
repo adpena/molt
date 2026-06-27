@@ -15,3 +15,4 @@ pub mod bridge;
 mod bridge_test_stubs;
 
 pub mod difflib;
+pub mod intrinsics_generated;

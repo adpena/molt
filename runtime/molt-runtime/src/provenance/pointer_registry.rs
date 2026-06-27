@@ -9,15 +9,6 @@ pub(crate) fn opaque_handle_bits(ptr: *mut u8) -> u64 {
     MoltObject::from_int(addr as i64).bits()
 }
 
-#[cfg(not(feature = "stdlib_ipaddress"))]
-pub(crate) fn opaque_handle_ptr_from_bits(bits: u64) -> Option<*mut u8> {
-    let addr = MoltObject::from_bits(bits).as_int()?;
-    if addr < 0 {
-        return None;
-    }
-    molt_obj_model::resolve_ptr(addr as u64)
-}
-
 pub(crate) fn resolve_ptr(addr: u64) -> Option<*mut u8> {
     molt_obj_model::resolve_ptr(addr)
 }
