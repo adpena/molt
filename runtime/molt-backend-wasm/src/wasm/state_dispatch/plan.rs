@@ -1,4 +1,5 @@
 use super::super::control_flow::{DispatchControlMaps, build_dispatch_control_maps};
+use super::super::function_frame::WasmFrameControlMode;
 use super::*;
 
 pub(in crate::wasm) struct NonLinearDispatchPlan {
@@ -29,12 +30,12 @@ impl NonLinearDispatchPlan {
         backend: &mut WasmBackend,
         func_ir: &FunctionIR,
         reloc_enabled: bool,
-        stateful: bool,
-        jumpful: bool,
+        control_mode: WasmFrameControlMode,
     ) -> Option<Self> {
-        if !stateful && !jumpful {
+        if matches!(control_mode, WasmFrameControlMode::Plain) {
             return None;
         }
+        let stateful = control_mode.is_stateful();
 
         let (block_starts, block_for_op) = build_dispatch_blocks(&func_ir.ops);
         let block_map_bytes = build_dispatch_block_map(&block_for_op);
