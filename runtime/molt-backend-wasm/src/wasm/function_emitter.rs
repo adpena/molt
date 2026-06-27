@@ -8,7 +8,6 @@ use super::state_dispatch::{
     exception_handler_region_indices,
 };
 use super::*;
-use crate::wasm_lir_fast_output::emit_lir_fast_output_body;
 use crate::wasm_plan::is_production_lir_wasm_fast_path_name;
 
 impl WasmBackend {
@@ -48,15 +47,7 @@ impl WasmBackend {
                 );
             }
             let mut func = Function::new_with_locals_types(lir_output.locals.clone());
-            // Resolve NAMED runtime calls: the k-th placeholder pairs with
-            // runtime_calls[k] (positional — instruction indexes shift under
-            // the LIR peephole pass, so the pairing is by order, not index).
-            emit_lir_fast_output_body(
-                &func_ir.name,
-                lir_output,
-                |name| ctx.import_ids[name],
-                &mut func,
-            );
+            lir_output.emit_into(&func_ir.name, |name| ctx.import_ids[name], &mut func);
             self.codes.function(&func);
             return;
         }

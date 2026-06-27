@@ -24,7 +24,7 @@ pub(super) struct WasmRuntimeSurfacePlan {
 impl WasmRuntimeSurfacePlan {
     pub(super) fn build(
         ir: &SimpleIR,
-        lir_fast_outputs: &BTreeMap<String, crate::wasm_lir_fast_output::WasmFunctionOutput>,
+        lir_fast_outputs: &BTreeMap<String, crate::wasm::body::WasmBody>,
         task_kinds: &BTreeMap<String, TrampolineKind>,
         options: &WasmCompileOptions,
     ) -> Self {
@@ -343,7 +343,7 @@ impl WasmRuntimeSurfacePlan {
 
     fn finish_auto_required_imports(
         &mut self,
-        lir_fast_outputs: &BTreeMap<String, crate::wasm_lir_fast_output::WasmFunctionOutput>,
+        lir_fast_outputs: &BTreeMap<String, crate::wasm::body::WasmBody>,
         task_kinds: &BTreeMap<String, TrampolineKind>,
     ) {
         let Some(required) = self.auto_required_imports.as_mut() else {
@@ -380,7 +380,7 @@ impl WasmRuntimeSurfacePlan {
                 .map(|spec| spec.import_name.to_string()),
         );
         for output in lir_fast_outputs.values() {
-            required.extend(output.runtime_calls.iter().map(|name| name.to_string()));
+            required.extend(output.runtime_imports().map(str::to_string));
         }
     }
 

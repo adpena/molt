@@ -1,6 +1,13 @@
 use super::lir_context::LirLowerCtx;
 use super::lir_ops::{ArithOp, BitwiseOp, CmpOp, UnaryOp};
-use super::prelude::*;
+use molt_codegen_abi::{
+    INLINE_INT_BIAS, INLINE_INT_LIMIT, INT_MASK, INT_MAX_INLINE as INLINE_INT_MAX,
+    INT_MIN_INLINE as INLINE_INT_MIN, QNAN_TAG_BOOL_I64, QNAN_TAG_INT_I64, box_none_bits,
+};
+use molt_tir::tir::lir::{LirOp, LirRepr};
+use molt_tir::tir::ops::AttrValue;
+use molt_tir::tir::values::ValueId;
+use wasm_encoder::{BlockType, Instruction, ValType};
 
 pub(super) fn emit_lir_binary_arith(ctx: &mut LirLowerCtx, op: &LirOp, arith: ArithOp) {
     let tir_op = &op.tir_op;
@@ -41,7 +48,7 @@ pub(super) fn emit_lir_binary_arith(ctx: &mut LirLowerCtx, op: &LirOp, arith: Ar
         // are value-range-proven inside the 47-bit inline window.
         emit_box_inline_i64(ctx, lhs);
         emit_box_inline_i64(ctx, rhs);
-        ctx.instructions.push(Instruction::Call(0));
+        ctx.emit_bail_to_generic_path();
         ctx.emit_set(overflow_box);
         ctx.instructions.push(Instruction::I32Const(1));
         ctx.emit_set(overflow_flag);
@@ -126,10 +133,9 @@ pub(super) fn emit_lir_binary_arith(ctx: &mut LirLowerCtx, op: &LirOp, arith: Ar
         }
         _ => {
             // Heterogeneous / boxed operands: dispatch through the runtime
-            // helper with both operands NaN-boxed (overflow-safely — a
-            // raw-i64 operand may be full-range). A NAMED runtime call keeps
-            // the function in the LIR fast lane (Call(0) is the
-            // reject-this-function bail sentinel).
+            // helper with both operands NaN-boxed. A named runtime call keeps
+            // the function in the LIR fast lane; typed bail markers are reserved
+            // for operations that must fall back to the generic emitter.
             emit_get_boxed_for_repr(ctx, lhs);
             emit_get_boxed_for_repr(ctx, rhs);
             ctx.emit_runtime_call(match arith {
@@ -173,10 +179,11 @@ pub(super) fn emit_get_boxed_for_repr(ctx: &mut LirLowerCtx, v: ValueId) {
             ctx.instructions.push(Instruction::I64Or);
         }
         LirRepr::F64 => {
-            // Box the unboxed f64 via the runtime float-box helper (placeholder
-            // call index, resolved at link time like every other runtime call).
+            // Box the unboxed f64 via the runtime float-box helper. The body
+            // stores the runtime import name until module emission resolves the
+            // call index.
             ctx.emit_get(v);
-            ctx.instructions.push(Instruction::Call(0));
+            ctx.emit_bail_to_generic_path();
         }
         LirRepr::DynBox | LirRepr::Ref64 => ctx.emit_get(v),
     }
@@ -201,7 +208,7 @@ pub(super) fn emit_lir_unary_arith(ctx: &mut LirLowerCtx, op: &LirOp, _unary: Un
         }
         _ => {
             ctx.emit_get(src);
-            ctx.instructions.push(Instruction::Call(0));
+            ctx.emit_bail_to_generic_path();
             ctx.emit_set(dst);
             return;
         }
@@ -306,8 +313,8 @@ pub(super) fn emit_lir_comparison(ctx: &mut LirLowerCtx, op: &LirOp, cmp: CmpOp)
             });
         }
         _ => {
-            // Boxed dispatch through the NAMED runtime comparison (keeps the
-            // function in the LIR fast lane; Call(0) is the bail sentinel).
+            // Boxed dispatch through the named runtime comparison keeps the
+            // function in the LIR fast lane.
             // The helper returns a NaN-BOXED bool (i64); a Bool1 destination
             // local is i32, so extract bit 0 and wrap.
             emit_get_boxed_for_repr(ctx, lhs);
@@ -361,9 +368,9 @@ pub(super) fn emit_lir_bitwise(ctx: &mut LirLowerCtx, op: &LirOp, bw: BitwiseOp)
 /// **only** when both operands are proven raw-i64 carriers (`LirRepr::I64`).
 /// Otherwise — a `MaybeBigInt`/`DynBox` operand — dispatch through the runtime
 /// helper with both operands NaN-boxed (finding #3: a bare `I64*` on a NaN-boxed
-/// word is a miscompile). On the production fast path the runtime `Call(0)` bails
-/// to the IntFastLane-guarded slow path; on the generic path it is the resolved
-/// runtime dispatch.
+/// word is a miscompile). The typed body distinguishes named runtime dispatch
+/// from generic-path bail markers, so production never infers semantics from a
+/// synthetic call index.
 ///
 /// `require_raw_result` additionally gates the raw lane on the **result** being a
 /// raw carrier (`LirRepr::I64`). `I64And`/`I64Or`/`I64Xor` never overflow and the
@@ -394,7 +401,7 @@ pub(super) fn emit_lir_i64_binary_or_boxed(
     } else {
         emit_get_boxed_for_repr(ctx, lhs);
         emit_get_boxed_for_repr(ctx, rhs);
-        ctx.instructions.push(Instruction::Call(0));
+        ctx.emit_bail_to_generic_path();
     }
     ctx.emit_set(dst);
 }
@@ -464,7 +471,7 @@ pub(super) fn emit_return_boxed_i64(ctx: &mut LirLowerCtx, value: ValueId) {
         }
         LirRepr::F64 => {
             ctx.emit_get(value);
-            ctx.instructions.push(Instruction::Call(0));
+            ctx.emit_bail_to_generic_path();
         }
     }
 }

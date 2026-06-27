@@ -711,7 +711,7 @@ fn class_def_pins_spilled_refs_across_guarded_helper() {
 }
 
 #[test]
-fn explicit_trace_ops_lower_to_wasm_runtime_imports() {
+fn explicit_trace_ops_emit_wasm_runtime_imports() {
     let mut enter = op("trace_enter_slot");
     enter.value = Some(7);
 
