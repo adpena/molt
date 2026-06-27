@@ -1,8 +1,7 @@
-"""Anti-drift guard for the runtime feature-gate classification (task #70).
+"""Anti-drift guards for generated runtime feature-gate classification.
 
-``src/molt/_runtime_feature_gates.py`` is the single source of truth shared by
-``tools/gen_intrinsics.py`` (runtime resolver `#[cfg]` generation) and the
-frontend's compile-time profile-availability refusal. The refusal must fire only
+``src/molt/_runtime_feature_gates.py`` is generated from categories.toml,
+Cargo.toml, and cfg-gated runtime modules. The refusal must fire only
 for *link-affecting* features — those whose Cargo gate, when disabled, removes
 intrinsic *symbol definitions* from the archive — and never for resolver-only
 features (empty `[]` Cargo groups) whose ``#[unsafe(no_mangle)]`` definitions are
@@ -84,7 +83,7 @@ def test_link_affecting_features_match_runtime_crate_ground_truth() -> None:
         "LINK_AFFECTING_FEATURES drifted from the runtime crate. "
         f"missing (now link-affecting in the crate): {sorted(derived - LINK_AFFECTING_FEATURES)}; "
         f"stale (no longer link-affecting): {sorted(LINK_AFFECTING_FEATURES - derived)}. "
-        "Update src/molt/_runtime_feature_gates.py LINK_AFFECTING_FEATURES."
+        "Update Cargo.toml/cfg-gated modules, then regenerate intrinsics."
     )
 
 

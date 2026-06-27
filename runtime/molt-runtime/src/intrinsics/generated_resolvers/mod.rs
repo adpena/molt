@@ -41,6 +41,7 @@ mod fractions_resolver;
 mod functools_resolver;
 mod gc_resolver;
 mod glob_resolver;
+mod gpu_primitives_resolver;
 mod graphlib_resolver;
 mod heapq_resolver;
 mod html_resolver;
@@ -56,6 +57,7 @@ mod keyword_resolver;
 mod linecache_resolver;
 mod locale_resolver;
 mod lock_resolver;
+mod logging_ext_resolver;
 mod logging_resolver;
 mod math_resolver;
 mod memoryview_resolver;
@@ -242,6 +244,9 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
     if let Some(v) = glob_resolver::resolve_symbol(symbol) {
         return Some(v);
     }
+    if let Some(v) = gpu_primitives_resolver::resolve_symbol(symbol) {
+        return Some(v);
+    }
     if let Some(v) = graphlib_resolver::resolve_symbol(symbol) {
         return Some(v);
     }
@@ -288,6 +293,9 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         return Some(v);
     }
     if let Some(v) = logging_resolver::resolve_symbol(symbol) {
+        return Some(v);
+    }
+    if let Some(v) = logging_ext_resolver::resolve_symbol(symbol) {
         return Some(v);
     }
     if let Some(v) = math_resolver::resolve_symbol(symbol) {

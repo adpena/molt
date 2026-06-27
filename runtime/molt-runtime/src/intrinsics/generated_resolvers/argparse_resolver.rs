@@ -2,69 +2,16 @@
 #[inline(never)]
 #[cold]
 pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
-    match symbol {
-        #[cfg(feature = "stdlib_collections")]
-        "molt_argparse_parse" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_argparse_parse",
-            crate::molt_argparse_parse as *const (),
-        )),
-        #[cfg(feature = "stdlib_collections")]
-        "molt_argparse_add_argument" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_argparse_add_argument",
-            crate::molt_argparse_add_argument as *const (),
-        )),
-        #[cfg(feature = "stdlib_collections")]
-        "molt_argparse_add_mutually_exclusive" => {
-            Some(crate::builtins::functions::runtime_fn_addr(
-                "crate::molt_argparse_add_mutually_exclusive",
-                crate::molt_argparse_add_mutually_exclusive as *const (),
-            ))
-        }
-        #[cfg(feature = "stdlib_collections")]
-        "molt_argparse_add_parser" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_argparse_add_parser",
-            crate::molt_argparse_add_parser as *const (),
-        )),
-        #[cfg(feature = "stdlib_collections")]
-        "molt_argparse_add_subparsers" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_argparse_add_subparsers",
-            crate::molt_argparse_add_subparsers as *const (),
-        )),
-        #[cfg(feature = "stdlib_collections")]
-        "molt_argparse_error" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_argparse_error",
-            crate::molt_argparse_error as *const (),
-        )),
-        #[cfg(feature = "stdlib_collections")]
-        "molt_argparse_format_help" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_argparse_format_help",
-            crate::molt_argparse_format_help as *const (),
-        )),
-        #[cfg(feature = "stdlib_collections")]
-        "molt_argparse_format_usage" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_argparse_format_usage",
-            crate::molt_argparse_format_usage as *const (),
-        )),
-        #[cfg(feature = "stdlib_collections")]
-        "molt_argparse_group_add_argument" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_argparse_group_add_argument",
-            crate::molt_argparse_group_add_argument as *const (),
-        )),
-        #[cfg(feature = "stdlib_collections")]
-        "molt_argparse_parse_args" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_argparse_parse_args",
-            crate::molt_argparse_parse_args as *const (),
-        )),
-        #[cfg(feature = "stdlib_collections")]
-        "molt_argparse_parser_drop" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_argparse_parser_drop",
-            crate::molt_argparse_parser_drop as *const (),
-        )),
-        #[cfg(feature = "stdlib_collections")]
-        "molt_argparse_parser_new" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_argparse_parser_new",
-            crate::molt_argparse_parser_new as *const (),
-        )),
-        _ => None,
+    #[cfg(feature = "stdlib_collections")]
+    {
+        molt_runtime_collections::intrinsics_generated::argparse_resolver::resolve_symbol_with(
+            symbol,
+            crate::builtins::functions::runtime_fn_addr,
+        )
+    }
+    #[cfg(not(feature = "stdlib_collections"))]
+    {
+        let _ = symbol;
+        None
     }
 }

@@ -69,7 +69,7 @@ This crate provides:
 	  select behavior, and pad/shrink/flip/contiguous view movement through the
 	  public API. The suite's Molt runner is executable with the full-stdlib
 	  static-package command. Fresh 2026-06-20 evidence builds the adapter, fixes
-	  the post-JSON `argparse.Namespace` return-cleanup double drop. Direct
+	  the leaf `argparse.Namespace` return-cleanup double drop. Direct
 	  rebuilt-binary evidence covered the then-four default public-API workloads.
 	  The current CPython adapter source now enumerates five default public-API
 	  workloads, including `attention_core`, and the pinned upstream CPython probe

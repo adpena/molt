@@ -16,3 +16,4 @@ mod bridge_test_stubs;
 
 pub mod argparse;
 pub mod collections_ext;
+pub mod intrinsics_generated;

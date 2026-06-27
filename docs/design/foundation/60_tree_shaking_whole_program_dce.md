@@ -247,10 +247,11 @@ applied to *reachability edges*, *roots*, and *backend keep policy*.
   only whole-program tier — and it currently emits **all** functions (`luau.rs:86-90`).
   §3 F4 makes Luau emit only `reachability.live`, making the fact correctness-critical
   there (no linker backstop) per doc 65 Rung 7.
-- **Satellite tier (21e).** Crate-granularity: `LINK_AFFECTING_FEATURES`
-  (`_runtime_feature_gates.py:176`) + `RUNTIME_FEATURE_GATES` (`:36`, symbol-prefix →
-  `stdlib_*` feature) decide *which satellite crates* link into a tier (doc 21e §1.3).
-  This is the coarse dual of symbol shaking (§5).
+- **Satellite tier (21e).** Crate-granularity feature attribution comes from
+  `runtime/molt-runtime/src/intrinsics/categories.toml`; link-affecting status
+  comes from `runtime/molt-runtime/Cargo.toml` plus cfg-gated runtime modules;
+  `src/molt/_runtime_feature_gates.py` is generated consumer data. This is the
+  coarse dual of symbol shaking (§5).
 
 ### 2.3 The DCE/reachability passes (the intra-function complement, already sound)
 
@@ -694,8 +695,8 @@ dropped-live-symbol differential failures (the correctness floor / the equivalen
   largest offender). The new fact lands as a focused `reachability_fact.rs` module, never in
   a god-file (doc 21b precise-visibility discipline).
 - **Doc 21e (satellite dedup).** This arc's *symbol*-granularity shake and 21e's
-  *crate*-granularity gate (`LINK_AFFECTING_FEATURES` `:176`, `RUNTIME_FEATURE_GATES` `:36`)
-  are duals. Phase 5 closes the loop: the reachability fact tells the tier-feature gate
+  *crate*-granularity gate (categories.toml feature attribution plus generated
+  `_runtime_feature_gates.py` consumer data) are duals. Phase 5 closes the loop: the reachability fact tells the tier-feature gate
   whether a satellite crate has any live symbol, so a tier links a satellite ONLY when
   needed — making 21e's "link only what's used" *fact-driven* instead of feature-flag-
   curated. This arc must not disturb 21e's parity guard (`check_satellite_parity.py`): it
