@@ -254,10 +254,51 @@ pub fn molt_iter_next(_py: &CoreGilToken, iter_bits: u64) -> Option<u64> {
 
 unsafe extern "C" {
     fn __molt_path_has_capability(name_ptr: *const u8, name_len: usize) -> i32;
+    fn __molt_path_audit_capability_decision(
+        operation_ptr: *const u8,
+        operation_len: usize,
+        capability_ptr: *const u8,
+        capability_len: usize,
+        arg_kind: u32,
+        arg_ptr: *const u8,
+        arg_len: usize,
+        allowed: i32,
+    );
 }
 
 pub fn has_capability(_py: &CoreGilToken, name: &str) -> bool {
     unsafe { __molt_path_has_capability(name.as_ptr(), name.len()) != 0 }
+}
+
+pub enum AuditArg {
+    None,
+    Path(String),
+}
+
+pub fn audit_capability(
+    _py: &CoreGilToken,
+    operation: &str,
+    capability: &str,
+    arg: AuditArg,
+) -> bool {
+    let allowed = has_capability(_py, capability);
+    let (arg_kind, arg_ptr, arg_len) = match &arg {
+        AuditArg::None => (0, std::ptr::null(), 0),
+        AuditArg::Path(path) => (1, path.as_ptr(), path.len()),
+    };
+    unsafe {
+        __molt_path_audit_capability_decision(
+            operation.as_ptr(),
+            operation.len(),
+            capability.as_ptr(),
+            capability.len(),
+            arg_kind,
+            arg_ptr,
+            arg_len,
+            i32::from(allowed),
+        );
+    }
+    allowed
 }
 
 // ---------------------------------------------------------------------------

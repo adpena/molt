@@ -123,7 +123,10 @@ Hard constraints / watch-items:
   rebuilds. `molt-runtime-stringprep`, `molt-runtime-math`,
   `molt-runtime-xml`, `molt-runtime-difflib`, and `molt-runtime-ipaddress` now
   own generated per-crate intrinsic sub-registries, with the `molt-runtime`
-  category resolvers reduced to feature-gated facade delegates. The remaining
+  category resolvers reduced to feature-gated facade delegates. `molt-runtime-path`
+  now owns an event-specific audit bridge for `os_ext` and `pathlib`, replacing
+  the old generic `path.has_capability` side effect and restoring the capability
+  gates that were missing from fourteen leaf `os` operations. The remaining
   structural target is moving the other category resolvers into **per-crate
   intrinsic sub-registries** composed by a thin facade resolver. This
   simultaneously:

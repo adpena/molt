@@ -286,6 +286,29 @@ pub extern "C" fn __molt_path_has_capability(name_ptr: *const u8, name_len: usiz
     1
 }
 
+#[unsafe(no_mangle)]
+pub extern "C" fn __molt_path_audit_capability_decision(
+    operation_ptr: *const u8,
+    operation_len: usize,
+    capability_ptr: *const u8,
+    capability_len: usize,
+    arg_kind: u32,
+    arg_ptr: *const u8,
+    arg_len: usize,
+    allowed: i32,
+) {
+    let _ = (
+        operation_ptr,
+        operation_len,
+        capability_ptr,
+        capability_len,
+        arg_kind,
+        arg_ptr,
+        arg_len,
+        allowed,
+    );
+}
+
 unexpected_u64!(__molt_path_molt_object_hash(bits: u64));
 
 #[unsafe(no_mangle)]

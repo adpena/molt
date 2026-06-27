@@ -226,6 +226,7 @@ aborting_bridge_stub!(__molt_path_alloc_dict_with_pairs);
 aborting_bridge_stub!(__molt_path_alloc_list);
 aborting_bridge_stub!(__molt_path_alloc_string);
 aborting_bridge_stub!(__molt_path_alloc_tuple);
+aborting_bridge_stub!(__molt_path_audit_capability_decision);
 aborting_bridge_stub!(__molt_path_bytes_like_slice);
 aborting_bridge_stub!(__molt_path_dec_ref_bits);
 aborting_bridge_stub!(__molt_path_exception_pending);
