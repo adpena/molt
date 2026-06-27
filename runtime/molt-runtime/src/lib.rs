@@ -43,6 +43,8 @@ pub extern "C" fn molt_isolate_import(_name_bits: u64) -> u64 {
 }
 
 mod async_rt;
+#[cfg(not(feature = "stdlib_path"))]
+mod bridge;
 #[cfg(any(
     feature = "stdlib_collections",
     feature = "stdlib_compression",

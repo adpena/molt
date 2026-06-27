@@ -66,8 +66,10 @@ pub(crate) mod modules;
 pub(crate) mod numbers;
 pub(crate) mod operator;
 #[cfg(not(feature = "stdlib_path"))]
+#[path = "../../../molt-runtime-path/src/os_ext.rs"]
 pub(crate) mod os_ext;
 #[cfg(not(feature = "stdlib_path"))]
+#[path = "../../../molt-runtime-path/src/pathlib.rs"]
 pub(crate) mod pathlib;
 pub(crate) mod platform;
 pub(crate) mod platform_mod;
