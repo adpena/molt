@@ -28,6 +28,9 @@ def test_wasm_abi_generated_files_are_in_sync() -> None:
     )
     assert gen.OUT_POLL_INC.read_text(encoding="utf-8") == gen.render_poll_inc(data)
     assert gen.OUT_RESERVED_INC.read_text(encoding="utf-8") == gen.render_reserved_inc(data)
+    assert gen.OUT_ALLOWED_IMPORTS.read_text(
+        encoding="utf-8"
+    ) == gen.render_allowed_imports(data)
 
 
 def test_wasm_abi_manifest_owns_static_type_section() -> None:
@@ -184,3 +187,48 @@ def test_wasm_abi_manifest_owns_split_runtime_table_prefix() -> None:
     assert "POLL_TABLE_FUNCS" in rendered_rs
     assert "WASM_LEGACY_TABLE_BASE" in rendered_py
     assert "WASM_RESERVED_RUNTIME_CALLABLE_BASE" in rendered_py
+
+
+def test_wasm_abi_manifest_owns_host_import_policy() -> None:
+    gen = _load_gen_wasm_abi()
+    data = gen.load_manifest()
+
+    allowed = [entry["name"] for entry in data["link_allowed_import"]]
+    assert "fd_write" in allowed
+    assert "__indirect_function_table" in allowed
+    assert "molt_call_indirect0" in allowed
+    assert "molt_call_indirect13" in allowed
+    assert "molt_cbor_parse_scalar" in allowed
+    assert len(allowed) == len(set(allowed))
+
+    strip_rules = {
+        (entry["module"], entry["name"]): entry
+        for entry in data["strip_import_rule"]
+    }
+    assert strip_rules[("wasi_snapshot_preview1", "fd_write")]["category"] == (
+        "io_stdout"
+    )
+    assert strip_rules[("env", "molt_socket_connect_host")]["category"] == "socket"
+    assert strip_rules[("env", "__indirect_function_table")]["category"] == "table"
+
+    prefix_rules = {
+        (entry["module"], entry["prefix"]): entry
+        for entry in data["strip_import_prefix_rule"]
+    }
+    assert prefix_rules[("env", "molt_call_indirect")]["category"] == (
+        "indirect_call"
+    )
+
+    rendered_py = gen.render_py(data)
+    assert "WASM_LINK_ALLOWED_IMPORTS" in rendered_py
+    assert "WASM_STRIP_IMPORT_RULES" in rendered_py
+    assert "WASM_STRIP_IMPORT_PREFIX_RULES" in rendered_py
+
+    allowlist = gen.OUT_ALLOWED_IMPORTS.read_text(encoding="utf-8")
+    assert allowlist == gen.render_allowed_imports(data)
+    assert "# DO NOT EDIT BY HAND." in allowlist
+
+    strip_tool = (ROOT / "tools/wasm_strip_unused.py").read_text(encoding="utf-8")
+    assert "WASM_STRIP_IMPORT_RULES" in strip_tool
+    assert "WASM_STRIP_IMPORT_PREFIX_RULES" in strip_tool
+    assert "molt_process_write_host" not in strip_tool

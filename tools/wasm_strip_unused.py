@@ -20,7 +20,6 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
-import re
 import shutil
 import sys
 from dataclasses import dataclass, field
@@ -52,7 +51,7 @@ class ImportCategory(str, Enum):
     """Functional category of a WASM import."""
 
     ESSENTIAL = "essential"  # Required for any execution (memory, table, args, clock)
-    IO_STDOUT = "io_stdout"  # fd_write to stdout/stderr — used by print()
+    IO_STDOUT = "io_stdout"  # fd_write to stdout/stderr - used by print()
     IO_FILESYSTEM = "io_filesystem"  # Filesystem read/write/stat/dir ops
     PROCESS = "process"  # Process spawn/kill/wait/poll
     DATABASE = "database"  # DB exec/query/poll
@@ -61,276 +60,20 @@ class ImportCategory(str, Enum):
     TIME = "time"  # Timezone/offset (beyond clock_time_get)
     PURE_PROFILE = "pure_profile"  # molt_runtime import omitted by backend Pure
     INDIRECT_CALL = (
-        "indirect_call"  # molt_call_indirectN — required for function pointers
+        "indirect_call"  # molt_call_indirectN - required for function pointers
     )
     TABLE = "table"  # __indirect_function_table
 
 
-# Maps (module, name_prefix_or_exact) → category
+# Generated from wasm_abi_manifest.toml by tools/gen_wasm_abi.py.
 IMPORT_RULES: list[tuple[str, str, ImportCategory, str]] = [
-    # === Essential (never strip) ===
-    (
-        "wasi_snapshot_preview1",
-        "args_sizes_get",
-        ImportCategory.ESSENTIAL,
-        "Argument count query",
-    ),
-    (
-        "wasi_snapshot_preview1",
-        "args_get",
-        ImportCategory.ESSENTIAL,
-        "Argument retrieval",
-    ),
-    (
-        "wasi_snapshot_preview1",
-        "environ_sizes_get",
-        ImportCategory.ESSENTIAL,
-        "Environment size query",
-    ),
-    (
-        "wasi_snapshot_preview1",
-        "environ_get",
-        ImportCategory.ESSENTIAL,
-        "Environment retrieval",
-    ),
-    (
-        "wasi_snapshot_preview1",
-        "clock_time_get",
-        ImportCategory.ESSENTIAL,
-        "Wall-clock / monotonic time",
-    ),
-    ("wasi_snapshot_preview1", "random_get", ImportCategory.ESSENTIAL, "CSPRNG bytes"),
-    ("wasi_snapshot_preview1", "proc_exit", ImportCategory.ESSENTIAL, "Process exit"),
-    (
-        "wasi_snapshot_preview1",
-        "sched_yield",
-        ImportCategory.ESSENTIAL,
-        "Cooperative yield",
-    ),
-    (
-        "env",
-        "__indirect_function_table",
-        ImportCategory.TABLE,
-        "Indirect call dispatch table",
-    ),
-    # === IO: stdout/stderr (needed for print()) ===
-    (
-        "wasi_snapshot_preview1",
-        "fd_write",
-        ImportCategory.IO_STDOUT,
-        "Write to fd (stdout/stderr)",
-    ),
-    (
-        "wasi_snapshot_preview1",
-        "fd_read",
-        ImportCategory.IO_STDOUT,
-        "Read from fd (stdin stub)",
-    ),
-    (
-        "wasi_snapshot_preview1",
-        "fd_close",
-        ImportCategory.IO_STDOUT,
-        "Close file descriptor",
-    ),
-    (
-        "wasi_snapshot_preview1",
-        "fd_seek",
-        ImportCategory.IO_STDOUT,
-        "Seek file descriptor",
-    ),
-    (
-        "wasi_snapshot_preview1",
-        "fd_tell",
-        ImportCategory.IO_STDOUT,
-        "Tell file descriptor position",
-    ),
-    (
-        "wasi_snapshot_preview1",
-        "fd_prestat_get",
-        ImportCategory.IO_STDOUT,
-        "Preopened fd stat",
-    ),
-    (
-        "wasi_snapshot_preview1",
-        "fd_prestat_dir_name",
-        ImportCategory.IO_STDOUT,
-        "Preopened fd dir name",
-    ),
-    # === IO: filesystem (pure-computation never uses) ===
-    (
-        "wasi_snapshot_preview1",
-        "fd_readdir",
-        ImportCategory.IO_FILESYSTEM,
-        "Read directory entries",
-    ),
-    (
-        "wasi_snapshot_preview1",
-        "fd_filestat_get",
-        ImportCategory.IO_FILESYSTEM,
-        "File stat by fd",
-    ),
-    (
-        "wasi_snapshot_preview1",
-        "fd_filestat_set_size",
-        ImportCategory.IO_FILESYSTEM,
-        "Truncate file",
-    ),
-    (
-        "wasi_snapshot_preview1",
-        "path_open",
-        ImportCategory.IO_FILESYSTEM,
-        "Open file by path",
-    ),
-    (
-        "wasi_snapshot_preview1",
-        "path_rename",
-        ImportCategory.IO_FILESYSTEM,
-        "Rename path",
-    ),
-    (
-        "wasi_snapshot_preview1",
-        "path_readlink",
-        ImportCategory.IO_FILESYSTEM,
-        "Read symlink",
-    ),
-    (
-        "wasi_snapshot_preview1",
-        "path_unlink_file",
-        ImportCategory.IO_FILESYSTEM,
-        "Delete file",
-    ),
-    (
-        "wasi_snapshot_preview1",
-        "path_create_directory",
-        ImportCategory.IO_FILESYSTEM,
-        "Create directory",
-    ),
-    (
-        "wasi_snapshot_preview1",
-        "path_remove_directory",
-        ImportCategory.IO_FILESYSTEM,
-        "Remove directory",
-    ),
-    (
-        "wasi_snapshot_preview1",
-        "path_filestat_get",
-        ImportCategory.IO_FILESYSTEM,
-        "File stat by path",
-    ),
-    (
-        "wasi_snapshot_preview1",
-        "poll_oneoff",
-        ImportCategory.IO_FILESYSTEM,
-        "Poll for I/O events",
-    ),
-    # === Process ===
-    (
-        "env",
-        "molt_process_write_host",
-        ImportCategory.PROCESS,
-        "Write to child process stdin",
-    ),
-    (
-        "env",
-        "molt_process_close_stdin_host",
-        ImportCategory.PROCESS,
-        "Close child stdin pipe",
-    ),
-    (
-        "env",
-        "molt_process_terminate_host",
-        ImportCategory.PROCESS,
-        "Terminate child process",
-    ),
-    ("env", "molt_getpid_host", ImportCategory.PROCESS, "Get current process ID"),
-    ("env", "molt_process_kill_host", ImportCategory.PROCESS, "Kill child process"),
-    ("env", "molt_process_wait_host", ImportCategory.PROCESS, "Wait for child process"),
-    ("env", "molt_process_spawn_host", ImportCategory.PROCESS, "Spawn child process"),
-    (
-        "env",
-        "molt_process_stdio_host",
-        ImportCategory.PROCESS,
-        "Access child stdio pipes",
-    ),
-    ("env", "molt_process_host_poll", ImportCategory.PROCESS, "Poll process events"),
-    # === Database ===
-    ("env", "molt_db_exec_host", ImportCategory.DATABASE, "Execute DB statement"),
-    ("env", "molt_db_query_host", ImportCategory.DATABASE, "Query DB"),
-    ("env", "molt_db_host_poll", ImportCategory.DATABASE, "Poll DB events"),
-    # === WebSocket ===
-    ("env", "molt_ws_recv_host", ImportCategory.WEBSOCKET, "Receive WebSocket message"),
-    ("env", "molt_ws_send_host", ImportCategory.WEBSOCKET, "Send WebSocket message"),
-    ("env", "molt_ws_close_host", ImportCategory.WEBSOCKET, "Close WebSocket"),
-    ("env", "molt_ws_connect_host", ImportCategory.WEBSOCKET, "Connect WebSocket"),
-    ("env", "molt_ws_poll_host", ImportCategory.WEBSOCKET, "Poll WebSocket events"),
-    # === Socket ===
-    ("env", "molt_socket_wait_host", ImportCategory.SOCKET, "Socket wait"),
-    ("env", "molt_os_close_host", ImportCategory.SOCKET, "OS handle close"),
-    ("env", "molt_socket_accept_host", ImportCategory.SOCKET, "Accept connection"),
-    ("env", "molt_socket_bind_host", ImportCategory.SOCKET, "Bind socket"),
-    ("env", "molt_socket_clone_host", ImportCategory.SOCKET, "Clone socket handle"),
-    ("env", "molt_socket_close_host", ImportCategory.SOCKET, "Close socket"),
-    ("env", "molt_socket_connect_host", ImportCategory.SOCKET, "Connect socket"),
-    (
-        "env",
-        "molt_socket_connect_ex_host",
-        ImportCategory.SOCKET,
-        "Connect socket (extended)",
-    ),
-    ("env", "molt_socket_detach_host", ImportCategory.SOCKET, "Detach socket"),
-    ("env", "molt_socket_getaddrinfo_host", ImportCategory.SOCKET, "DNS resolution"),
-    ("env", "molt_socket_gethostname_host", ImportCategory.SOCKET, "Get hostname"),
-    ("env", "molt_socket_getpeername_host", ImportCategory.SOCKET, "Get peer address"),
-    (
-        "env",
-        "molt_socket_getservbyname_host",
-        ImportCategory.SOCKET,
-        "Resolve service by name",
-    ),
-    (
-        "env",
-        "molt_socket_getservbyport_host",
-        ImportCategory.SOCKET,
-        "Resolve service by port",
-    ),
-    (
-        "env",
-        "molt_socket_getsockname_host",
-        ImportCategory.SOCKET,
-        "Get socket address",
-    ),
-    ("env", "molt_socket_getsockopt_host", ImportCategory.SOCKET, "Get socket option"),
-    ("env", "molt_socket_has_ipv6_host", ImportCategory.SOCKET, "Check IPv6 support"),
-    ("env", "molt_socket_listen_host", ImportCategory.SOCKET, "Listen on socket"),
-    ("env", "molt_socket_new_host", ImportCategory.SOCKET, "Create socket"),
-    ("env", "molt_socket_recv_host", ImportCategory.SOCKET, "Receive from socket"),
-    ("env", "molt_socket_recvfrom_host", ImportCategory.SOCKET, "Receive with address"),
-    ("env", "molt_socket_recvmsg_host", ImportCategory.SOCKET, "Receive message"),
-    ("env", "molt_socket_send_host", ImportCategory.SOCKET, "Send to socket"),
-    ("env", "molt_socket_sendmsg_host", ImportCategory.SOCKET, "Send message"),
-    ("env", "molt_socket_sendto_host", ImportCategory.SOCKET, "Send to address"),
-    ("env", "molt_socket_setsockopt_host", ImportCategory.SOCKET, "Set socket option"),
-    ("env", "molt_socket_shutdown_host", ImportCategory.SOCKET, "Shutdown socket"),
-    ("env", "molt_socket_socketpair_host", ImportCategory.SOCKET, "Create socket pair"),
-    ("env", "molt_socket_poll_host", ImportCategory.SOCKET, "Poll socket events"),
-    # === Time (timezone) ===
-    ("env", "molt_time_timezone_host", ImportCategory.TIME, "Get timezone"),
-    ("env", "molt_time_local_offset_host", ImportCategory.TIME, "Get local UTC offset"),
-    ("env", "molt_time_tzname_host", ImportCategory.TIME, "Get timezone name"),
+    (module, name, ImportCategory(category), description)
+    for module, name, category, description in _WASM_ABI.WASM_STRIP_IMPORT_RULES
 ]
-
-# Categories that are safe to strip for pure-computation modules
-STRIPPABLE_CATEGORIES = {
-    ImportCategory.IO_FILESYSTEM,
-    ImportCategory.PROCESS,
-    ImportCategory.DATABASE,
-    ImportCategory.WEBSOCKET,
-    ImportCategory.SOCKET,
-    ImportCategory.TIME,
-    ImportCategory.PURE_PROFILE,
-}
-
-CALL_INDIRECT_RE = re.compile(r"^molt_call_indirect\d+")
+IMPORT_PREFIX_RULES: list[tuple[str, str, ImportCategory, str]] = [
+    (module, prefix, ImportCategory(category), description)
+    for module, prefix, category, description in _WASM_ABI.WASM_STRIP_IMPORT_PREFIX_RULES
+]
 
 
 @dataclass
@@ -532,12 +275,12 @@ def _classify_import(info: ImportInfo) -> None:
         info.strippable = True
         return
 
-    # Check for indirect call handlers first
-    if info.module == "env" and CALL_INDIRECT_RE.match(info.name):
-        info.category = ImportCategory.INDIRECT_CALL
-        info.description = "Indirect function call dispatch"
-        info.strippable = False
-        return
+    for rule_mod, prefix, category, description in IMPORT_PREFIX_RULES:
+        if info.module == rule_mod and info.name.startswith(prefix):
+            info.category = category
+            info.description = description
+            info.strippable = category in STRIPPABLE_CATEGORIES
+            return
 
     # Match against known rules
     for rule_mod, rule_name, category, description in IMPORT_RULES:
