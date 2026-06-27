@@ -295,12 +295,14 @@ Read these first instead of rediscovering project structure:
     parsing, command verification, health-probe verification, legacy `.pid`
     cleanup, and the only authorized daemon signal/escalation primitive used by
     CLI and benchmark cleanup paths.
-  - `tools/structural_audit.py --check` for the automated god-file,
-    structural-god-file, duplicate-authority, and structural-debt ratchet. It is
-    a default tier-1 CI gate through `tools/ci_gate.py`; it tracks both raw file
-    size and multi-region extraction pressure, so do not add or grow monoliths
-    and do not repin `tools/structural_audit_baseline.json` unless a maintainer
-    explicitly accepts the structural debt with a concrete retirement plan.
+  - `tools/structural_audit.py --check` for the automated kitchen-sink,
+    undecomposed-god-file, duplicate-authority, and structural-debt ratchet. It
+    is a default tier-1 CI gate through `tools/ci_gate.py`; raw large-file size
+    is board triage only, while CI gates concern-mixing files and lone
+    undecomposed monoliths. Do not add or grow monoliths, and do not repin
+    `tools/structural_audit_baseline.json` unless a maintainer explicitly
+    accepts a metric correction or structural debt with a concrete retirement
+    plan.
   - `tools/memory_guard.py`, `tools/harness_memory_guard.py`,
     `tools/process_sentinel.py`, and `tools/guarded_exec.py` for memory/RSS
     custody, protected host/control-plane process-group filtering, guarded

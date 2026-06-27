@@ -2,8 +2,8 @@
 that underpins both correctness and performance ("one authority per invariant";
 retire classes of wrongness/slowness via first-class GENERATED, checkable facts;
 rustc-gated exhaustive matches make drift impossible). Author: portfolio-architect.
-Date: 2026-06-23. Status: DESIGN ONLY / EXECUTABLE PLAN — no code written in the
-session that produced it; the lead integrates. Every load-bearing claim is anchored
+Date: 2026-06-23. Status: EXECUTABLE PLAN; Phase 0 metric correction implemented 2026-06-26.
+Original session was design-only; Phase 0 is now integrated, and later phases still require current code verification. Every load-bearing claim is anchored
 to a file:line verified against the worktree at authoring time; code beats this doc —
 re-verify before acting. Composes with: 25 (op-kind registry), 46 (semantic control
 plane), 47 (CallFacts), 51 (10-year roadmap — names this "SEMANTIC FACT PLANE"), 52
@@ -13,14 +13,14 @@ is the first 53-69 doc, taking 59 per the assignment (50-69 band, 59 requested +
 
 # 59 — The Semantic Fact Plane: one generated authority per invariant
 
-> **Status: EXECUTABLE PLAN (design only).** This is the meta-architecture doc 51 §1
+> **Status: EXECUTABLE PLAN; Phase 0 implemented.** This is the meta-architecture doc 51 §1
 > calls the cure ("a SEMANTIC FACT PLANE") and doc 52 §C.3 #13 calls the 50-year
 > institution ("every IR fact has a generated producer/consumer/transport contract
 > with drift detection — the op_kinds model extended to all fact families"). It does
 > not introduce a *new* fact family; it makes the *machinery* for fact families a
 > first-class, generated, CI-gated, idempotent institution, and it fixes the one
 > structural defect in that machinery discovered in execution: the
-> `structural_audit` `god_files` count metric penalizes correct decomposition.
+> `structural_audit` Phase 0 now uses kitchen-sink and undecomposed metrics so correct decomposition is credited.
 
 ---
 
@@ -45,8 +45,10 @@ row exists.
 | `handset_classifications` | `matches!(x, OpCode::A \| B \| …)` ≥3-opcode implicit-false set | **0** (29 today; was 48) |
 | `critical_hand_classifications` | the above in an RC/alias/escape/codegen file | **0** (1 today; was 6) |
 | `debt_markers_total` | TODO/FIXME/HACK/WORKAROUND/"for now" | monotone down (526 today) |
-| `god_files` | files over the decomposition ceiling | **redefined** (see §6) — a *concern-mixing* count, driven to 0 by decomposition, never inflated by it |
-| `max_god_file_lines` | the single worst file | monotone down on the worst offender; **decomposition products excluded from the regression test** (see §6) |
+| `kitchen_sink_files` | files over the decomposition ceiling with concern-mixing top-level regions | **0**; driven down by extracting mixed authorities, never inflated by cohesive decomposition products |
+| `undecomposed_god_files` | files over the decomposition ceiling with no sibling decomposition package/stem directory | **0**; a lone monolith remains red until the decomposition package exists |
+| `max_undecomposed_file_lines` | the largest over-ceiling file with no decomposition context | monotone down; decomposition residuals remain board-visible but are excluded from this regression metric |
+| `large_source_file` findings | raw over-ceiling source size | board-only triage; not a ratchet metric |
 
 When every row is green AND the green is *load-bearing* (the gate consumes generated
 facts, not heuristics — doc 46 rule #1), molt has a **semantic nervous system**
@@ -509,24 +511,20 @@ oracle are the *products*. The composition (doc 51 §1, §5; doc 46 §4):
 Each phase is a **complete structural piece** (CLAUDE.md unit-of-work rule). The arc
 is lane C; phases are non-overlapping files so multiple agents can run them (§9).
 
-### Phase 0 — UNBLOCK the ratchet (F4 metric fix). *Highest priority — the ratchet is RED today.*
-- **Why first:** the `structural_audit --check` gate is currently RED
-  (`god_files 53→57`) and will stay red as decomposition proceeds, so it provides no
-  signal and blocks honest landings. Fix the metric before anything else so the gate
-  is trustworthy again.
-- **Do:** implement §6.2 — replace `probe_god_files`'s ratchet contribution with
-  `undecomposed_god_files` + `kitchen_sink_files`; change `max_god_file_lines` to
-  `max_undecomposed_file_lines` with the decomposition-residual exclusion; keep the
-  human board's size ranking. Add the directory-shape detection (sibling-rich
-  decomposition packages). Extend `tests/test_structural_audit.py` per §6.3.
-- **Files:** `tools/structural_audit.py` (`probe_god_files` `:371`, `ratchet_metrics`
-  `:629`, `_RATCHET_DOWN` `:658`, `format_board` `:718`),
-  `tests/test_structural_audit.py`, `tools/structural_audit_baseline.json` (re-pin
-  ONCE as a metric correction, §6.3), `STRUCTURAL_AUDIT_BOARD.md` (regenerate).
-- **Gate:** `python3 tools/structural_audit.py --check` GREEN; `pytest -q
-  tests/test_structural_audit.py` GREEN (including the new "metric finds debt" + "metric
-  credits decomposition" + "honest-debt invariant" tests); the before/after bucket
-  table recorded in the commit.
+### Phase 0 - COMPLETE: structural_audit metric correction (F4)
+- **Landed:** `tools/structural_audit.py` now separates raw large-file board triage
+  (`large_source_file`) from ratcheted structural debt (`kitchen_sink_files`,
+  `undecomposed_god_files`, `max_undecomposed_file_lines`, plus kitchen-sink region
+  pressure). Cohesive sibling-rich decomposition products and residuals with a
+  decomposition directory no longer regress CI merely for being over a raw line ceiling.
+- **Tests:** `tests/test_structural_audit.py` proves the metric still finds a lone
+  concern-mixing file, credits cohesive sibling packages, reports residual files without
+  max-undecomposed regression, and preserves the honest-debt union for lone large files.
+- **Generated state:** `tools/structural_audit_baseline.json` was regenerated once as a
+  metric correction, and `docs/design/foundation/STRUCTURAL_AUDIT_BOARD.md` was
+  regenerated from the corrected authority.
+- **Gate:** `python3 tools/structural_audit.py --check` and `pytest -q
+  tests/test_structural_audit.py` are the closure proof for this phase.
 
 ### Phase 1 — The Generator Manifest + meta-gate (F1, F5).
 - **Do:** author `tools/generator_manifest.toml` with a row per existing `gen_*.py`

@@ -23,21 +23,25 @@ A god-file (a large file mixing many concerns) is a DUAL killer, not a style nit
   whole-crate recompiles, defeating incremental builds (a TIR-pass edit rebuilding all 5
   backends — see 21b). The blast-radius serializes the build pipeline.
 
-**Therefore:** god-file elimination is RELEASE-BLOCKING. The `structural_audit` ratchet
-(`god_files`, `max_god_file_lines`) enforces it monotonically. The decomposition program is the
-spine, and each split targets a specific killer: **21a function-split** → the codegen-unit
-killer; **21b crate-split** (molt-ir ← molt-passes ← molt-lower, per-backend crates) → the
-incremental-build killer; **21c/21d package-splits** (frontend mixins, cli/ package) → the
-ownership-collision killer; **21e satellite dedup** → the dual-maintenance killer. Every other
-plan in the portfolio must REDUCE god-files (or, with explicit justification, not grow them).
+**Therefore:** god-file elimination is RELEASE-BLOCKING. The `structural_audit`
+ratchet now gates concern-mixing and undecomposed debt (`kitchen_sink_files`,
+`undecomposed_god_files`, and `max_undecomposed_file_lines`) while reporting raw
+large-file size as board triage only. The decomposition program is the spine,
+and each split targets a specific killer: **21a function-split** -> the
+codegen-unit killer; **21b crate-split** (molt-ir <- molt-passes <- molt-lower,
+per-backend crates) -> the incremental-build killer; **21c/21d package-splits**
+(frontend mixins, cli/ package) -> the ownership-collision killer; **21e
+satellite dedup** -> the dual-maintenance killer. Every other plan in the
+portfolio must REDUCE concern-mixing and undecomposed god-files (or, with
+explicit justification, not grow them).
 
-> Metric note (see 59): the current `god_files` COUNT metric penalizes correct decomposition
-> (cohesive `fc/` family handlers, `cli/` and `visitors/` modules each count as "god-files"),
-> so the ratchet can never green even when decomposition is correct. 59 must fix this by
-> crediting cohesive decomposition products / tracking max + concern-mixing rather than raw
-> count-over-threshold — WITHOUT hiding real kitchen-sink debt and WITHOUT re-pinning the
-> baseline. A god-file is a CONCERN-MIXING file, not merely a large cohesive one.
-
+> Metric note (see 59): the old `god_files` count-over-threshold metric
+> penalized correct decomposition by treating cohesive `fc/`, `cli/`,
+> `visitors/`, and backend lowering modules as regressions. The gate now
+> credits sibling-rich decomposition products and residuals with decomposition
+> directories while still failing on true kitchen-sink files and lone
+> undecomposed monoliths. A god-file is a CONCERN-MIXING file, not merely a
+> large cohesive one.
 ## 2. Design as a Pythonista Rustacean
 
 molt is **Python's semantics + ergonomics delivered with Rust's systems rigor.** Every design
