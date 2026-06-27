@@ -1,5 +1,6 @@
+use super::lir_context::LirLowerCtx;
 use super::lir_ops::{ArithOp, BitwiseOp, CmpOp, UnaryOp};
-use super::*;
+use super::prelude::*;
 
 pub(super) fn emit_lir_binary_arith(ctx: &mut LirLowerCtx, op: &LirOp, arith: ArithOp) {
     let tir_op = &op.tir_op;

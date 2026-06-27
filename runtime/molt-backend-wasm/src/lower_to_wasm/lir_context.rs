@@ -1,4 +1,4 @@
-use super::*;
+use super::prelude::*;
 use molt_tir::tir::lir::LirValue;
 
 pub(super) fn lir_repr_to_val(repr: LirRepr) -> ValType {
