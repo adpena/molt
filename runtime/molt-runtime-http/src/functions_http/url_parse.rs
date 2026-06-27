@@ -298,29 +298,6 @@ pub(super) fn urllib_parse_qsl_impl(
     Ok(pairs)
 }
 
-pub(crate) fn urllib_request_attr_optional(
-    _py: &molt_runtime_core::CoreGilToken,
-    obj_bits: u64,
-    name: &[u8],
-) -> Result<Option<u64>, u64> {
-    let Some(name_bits) = attr_name_bits_from_bytes(_py, name) else {
-        return Err(MoltObject::none().bits());
-    };
-    let missing = missing_bits(_py);
-    let value_bits = molt_getattr_builtin(obj_bits, name_bits, missing);
-    dec_ref_bits(_py, name_bits);
-    if exception_pending(_py) {
-        if clear_attribute_error_if_pending(_py) {
-            return Ok(None);
-        }
-        return Err(MoltObject::none().bits());
-    }
-    if value_bits == missing {
-        return Ok(None);
-    }
-    Ok(Some(value_bits))
-}
-
 pub(super) fn urllib_request_pending_exception_kind_name(
     _py: &molt_runtime_core::CoreGilToken,
 ) -> Option<String> {

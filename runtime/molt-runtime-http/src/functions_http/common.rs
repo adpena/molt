@@ -4,15 +4,6 @@ use super::*;
 // Helper functions (originally in builtins/functions.rs)
 // ---------------------------------------------------------------------------
 
-pub(crate) fn alloc_string_bits(_py: &CoreGilToken, value: &str) -> Option<u64> {
-    let ptr = alloc_string(_py, value.as_bytes());
-    if ptr.is_null() {
-        None
-    } else {
-        Some(MoltObject::from_ptr(ptr).bits())
-    }
-}
-
 pub(super) fn alloc_string_tuple(_py: &CoreGilToken, values: &[String]) -> u64 {
     let mut item_bits: Vec<u64> = Vec::with_capacity(values.len());
     for value in values {
