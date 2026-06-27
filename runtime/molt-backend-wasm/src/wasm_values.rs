@@ -10,9 +10,8 @@ pub(crate) use fast_lane::{
 };
 pub(crate) use float::emit_f64_to_i64_canonical;
 pub(crate) use int_box::{
-    emit_box_bool_from_i32, emit_box_int_from_local, emit_box_int_from_local_opt,
-    emit_inline_int_range_check, emit_unbox_int_local_trusted, emit_unbox_int_local_trusted_opt,
-    emit_unbox_int_local_trusted_tee, emit_unbox_int_local_trusted_tee_opt,
+    emit_box_bool_from_i32, emit_box_int_from_local_opt, emit_inline_int_range_check,
+    emit_unbox_int_local_trusted_opt, emit_unbox_int_local_trusted_tee_opt,
 };
 pub(crate) use molt_codegen_abi::{
     INT_MASK, POINTER_MASK, box_bool_bits as box_bool, box_float_bits as box_float,

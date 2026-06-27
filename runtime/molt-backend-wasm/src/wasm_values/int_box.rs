@@ -8,7 +8,7 @@ use wasm_encoder::{Function, Instruction};
 /// type information / `fast_int`), we can skip the `AND INT_MASK` step.
 /// The left-shift by `INT_SHIFT` (17) already discards the upper QNAN+tag
 /// bits, so the mask is redundant.  Saves 2 instructions per operand.
-pub(crate) fn emit_unbox_int_local_trusted(
+fn emit_unbox_int_local_trusted(
     func: &mut Function,
     src_local: u32,
     dst_local: u32,
@@ -34,7 +34,7 @@ pub(crate) fn emit_unbox_int_local_trusted(
 /// `local.set`, leaving the unboxed value on the operand stack.  This
 /// eliminates a subsequent `local.get` when the caller needs the value
 /// immediately after storing it.
-pub(crate) fn emit_unbox_int_local_trusted_tee(
+fn emit_unbox_int_local_trusted_tee(
     func: &mut Function,
     src_local: u32,
     dst_local: u32,
@@ -118,7 +118,7 @@ pub(crate) fn emit_box_int_from_local_opt(
     }
 }
 
-pub(crate) fn emit_box_int_from_local(func: &mut Function, src_local: u32) {
+fn emit_box_int_from_local(func: &mut Function, src_local: u32) {
     func.instruction(&Instruction::LocalGet(src_local));
     func.instruction(&Instruction::I64Const(INT_MASK as i64));
     func.instruction(&Instruction::I64And);
