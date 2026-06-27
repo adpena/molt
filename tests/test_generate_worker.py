@@ -363,7 +363,23 @@ def test_generate_split_worker_builds_runtime_import_wrappers_from_app_surface()
     assert "const runtimeAbiExports = (exports) => {" not in content
 
 
-def test_effective_split_worker_table_base_prefers_app_inferred_base() -> None:
+def test_effective_split_worker_table_base_uses_backend_authority() -> None:
+    from molt.cli import _effective_split_worker_table_base
+
+    assert (
+        _effective_split_worker_table_base(
+            wasm_table_base=4096,
+            runtime_table_min=315,
+            app_table_ref_signatures={
+                "__molt_table_ref_4096": {"params": ["i64"], "result": "i64"},
+                "__molt_table_ref_4189": {"params": ["i64"], "result": "i64"},
+            },
+        )
+        == 4096
+    )
+
+
+def test_effective_split_worker_table_base_does_not_infer_fallback() -> None:
     from molt.cli import _effective_split_worker_table_base
 
     assert (
@@ -372,45 +388,110 @@ def test_effective_split_worker_table_base_prefers_app_inferred_base() -> None:
             runtime_table_min=315,
             app_table_ref_signatures={
                 "__molt_table_ref_4130": {"params": ["i64"], "result": "i64"},
-                "__molt_table_ref_4189": {"params": ["i64"], "result": "i64"},
             },
         )
-        == 4130
+        is None
     )
 
 
-def test_wasm_import_function_result_kinds_parses_objdump_output(
-    monkeypatch, tmp_path
-) -> None:
-    import subprocess
+def test_effective_split_worker_table_base_rejects_export_mismatch() -> None:
+    import pytest
 
-    from molt.cli import _wasm_import_function_result_kinds
+    from molt.cli import _effective_split_worker_table_base
 
-    wasm_path = tmp_path / "app.wasm"
-    wasm_path.write_bytes(b"\x00asm\x01\x00\x00\x00")
-
-    monkeypatch.setattr(
-        "molt.cli.shutil.which", lambda name: "/opt/homebrew/bin/wasm-objdump"
-    )
-
-    def fake_run(*args, **kwargs):
-        return subprocess.CompletedProcess(
-            args[0],
-            0,
-            stdout=(
-                "Type[3]:\n"
-                " - type[0] (i64) -> i64\n"
-                " - type[1] (i32, i64, i32) -> i32\n"
-                " - type[2] () -> nil\n"
-                "Import[3]:\n"
-                " - func[10] sig=0 <molt_runtime.molt_function_set_builtin> <- molt_runtime.molt_function_set_builtin\n"
-                " - func[11] sig=1 <molt_runtime.molt_string_from_bytes> <- molt_runtime.molt_string_from_bytes\n"
-                " - func[12] sig=2 <molt_runtime.molt_resource_on_free> <- molt_runtime.molt_resource_on_free\n"
-            ),
-            stderr="",
+    with pytest.raises(ValueError, match="disagrees"):
+        _effective_split_worker_table_base(
+            wasm_table_base=4096,
+            runtime_table_min=315,
+            app_table_ref_signatures={
+                "__molt_table_ref_4130": {"params": ["i64"], "result": "i64"},
+            },
         )
 
-    monkeypatch.setattr("molt.cli.wasm._run_completed_command", fake_run)
+
+def _wasm_vec(items: list[bytes]) -> bytes:
+    import molt.wasm_artifact as wasm_artifact
+
+    return wasm_artifact._write_wasm_varuint(len(items)) + b"".join(items)
+
+
+def _wasm_function_type(params: list[int], results: list[int]) -> bytes:
+    import molt.wasm_artifact as wasm_artifact
+
+    return (
+        b"\x60"
+        + wasm_artifact._write_wasm_varuint(len(params))
+        + bytes(params)
+        + wasm_artifact._write_wasm_varuint(len(results))
+        + bytes(results)
+    )
+
+
+def _wasm_function_import(module: str, name: str, type_index: int) -> bytes:
+    import molt.wasm_artifact as wasm_artifact
+
+    return (
+        wasm_artifact._write_wasm_string(module)
+        + wasm_artifact._write_wasm_string(name)
+        + b"\x00"
+        + wasm_artifact._write_wasm_varuint(type_index)
+    )
+
+
+def _wasm_function_export(name: str, function_index: int) -> bytes:
+    import molt.wasm_artifact as wasm_artifact
+
+    return (
+        wasm_artifact._write_wasm_string(name)
+        + b"\x00"
+        + wasm_artifact._write_wasm_varuint(function_index)
+    )
+
+
+def _signature_fixture_wasm() -> bytes:
+    import molt.wasm_artifact as wasm_artifact
+
+    type_payload = _wasm_vec(
+        [
+            _wasm_function_type([0x7E], [0x7E]),
+            _wasm_function_type([0x7F, 0x7E, 0x7F], [0x7F]),
+            _wasm_function_type([], []),
+        ]
+    )
+    import_payload = _wasm_vec(
+        [
+            _wasm_function_import("molt_runtime", "molt_function_set_builtin", 0),
+            _wasm_function_import("molt_runtime", "molt_string_from_bytes", 1),
+            _wasm_function_import("molt_runtime", "molt_resource_on_free", 2),
+        ]
+    )
+    function_payload = _wasm_vec(
+        [
+            wasm_artifact._write_wasm_varuint(0),
+            wasm_artifact._write_wasm_varuint(1),
+        ]
+    )
+    export_payload = _wasm_vec(
+        [
+            _wasm_function_export("__molt_table_ref_7", 3),
+            _wasm_function_export("__molt_table_ref_8", 4),
+        ]
+    )
+    return wasm_artifact._build_wasm_sections(
+        [
+            (1, type_payload),
+            (2, import_payload),
+            (3, function_payload),
+            (7, export_payload),
+        ]
+    )
+
+
+def test_wasm_import_function_result_kinds_reads_wasm_bytes(tmp_path) -> None:
+    from molt.wasm_artifact import _wasm_import_function_result_kinds
+
+    wasm_path = tmp_path / "app.wasm"
+    wasm_path.write_bytes(_signature_fixture_wasm())
 
     assert _wasm_import_function_result_kinds(
         wasm_path, module_name="molt_runtime"
@@ -421,38 +502,11 @@ def test_wasm_import_function_result_kinds_parses_objdump_output(
     }
 
 
-def test_wasm_import_function_signatures_parses_objdump_output(
-    monkeypatch, tmp_path
-) -> None:
-    import subprocess
-
-    from molt.cli import _wasm_import_function_signatures
+def test_wasm_import_function_signatures_reads_wasm_bytes(tmp_path) -> None:
+    from molt.wasm_artifact import _wasm_import_function_signatures
 
     wasm_path = tmp_path / "app.wasm"
-    wasm_path.write_bytes(b"\x00asm\x01\x00\x00\x00")
-
-    monkeypatch.setattr(
-        "molt.cli.shutil.which", lambda name: "/opt/homebrew/bin/wasm-objdump"
-    )
-
-    def fake_run(*args, **kwargs):
-        return subprocess.CompletedProcess(
-            args[0],
-            0,
-            stdout=(
-                "Type[3]:\n"
-                " - type[0] (i64) -> i64\n"
-                " - type[1] (i32, i64, i32) -> i32\n"
-                " - type[2] () -> nil\n"
-                "Import[3]:\n"
-                " - func[10] sig=0 <molt_runtime.molt_function_set_builtin> <- molt_runtime.molt_function_set_builtin\n"
-                " - func[11] sig=1 <molt_runtime.molt_string_from_bytes> <- molt_runtime.molt_string_from_bytes\n"
-                " - func[12] sig=2 <molt_runtime.molt_resource_on_free> <- molt_runtime.molt_resource_on_free\n"
-            ),
-            stderr="",
-        )
-
-    monkeypatch.setattr("molt.cli.wasm._run_completed_command", fake_run)
+    wasm_path.write_bytes(_signature_fixture_wasm())
 
     assert _wasm_import_function_signatures(wasm_path, module_name="molt_runtime") == {
         "molt_function_set_builtin": {"params": ["i64"], "result": "i64"},
@@ -461,52 +515,24 @@ def test_wasm_import_function_signatures_parses_objdump_output(
     }
 
 
-def test_wasm_export_function_signatures_parses_objdump_output(
-    monkeypatch, tmp_path
-) -> None:
-    import subprocess
-
-    from molt.cli import _wasm_export_function_signatures
+def test_wasm_export_function_signatures_reads_wasm_bytes(tmp_path) -> None:
+    from molt.wasm_artifact import _wasm_export_function_signatures
 
     wasm_path = tmp_path / "runtime.wasm"
-    wasm_path.write_bytes(b"\x00asm\x01\x00\x00\x00")
-
-    monkeypatch.setattr(
-        "molt.cli.shutil.which", lambda name: "/opt/homebrew/bin/wasm-objdump"
-    )
-
-    def fake_run(*args, **kwargs):
-        return subprocess.CompletedProcess(
-            args[0],
-            0,
-            stdout=(
-                "Type[2]:\n"
-                " - type[0] (i64, i64, i64) -> i64\n"
-                " - type[1] (i32) -> i32\n"
-                "Function[2]:\n"
-                " - func[17] sig=0 <__molt_table_ref_999>\n"
-                " - func[18] sig=1 <__molt_table_ref_111>\n"
-                "Export[2]:\n"
-                ' - func[17] <__molt_table_ref_999> -> "__molt_table_ref_7"\n'
-                ' - func[18] <__molt_table_ref_111> -> "__molt_table_ref_8"\n'
-            ),
-            stderr="",
-        )
-
-    monkeypatch.setattr("molt.cli.wasm._run_completed_command", fake_run)
+    wasm_path.write_bytes(_signature_fixture_wasm())
 
     assert _wasm_export_function_signatures(
         wasm_path, export_name_prefix="__molt_table_ref_"
     ) == {
-        "__molt_table_ref_7": {"params": ["i64", "i64", "i64"], "result": "i64"},
-        "__molt_table_ref_8": {"params": ["i32"], "result": "i32"},
+        "__molt_table_ref_7": {"params": ["i64"], "result": "i64"},
+        "__molt_table_ref_8": {"params": ["i32", "i64", "i32"], "result": "i32"},
     }
 
 
 def test_export_wasm_table_refs_adds_exports_for_active_slots(tmp_path) -> None:
-    from molt.cli import (
+    from molt.cli import _export_wasm_table_refs
+    from molt.wasm_artifact import (
         _build_wasm_sections,
-        _export_wasm_table_refs,
         _parse_wasm_sections,
         _read_wasm_string,
         _read_wasm_varuint,

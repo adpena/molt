@@ -835,27 +835,10 @@ from molt.cli.native_binary import (
     _validate_native_binary_format,
 )
 from molt.cli.wasm import (
-    _build_wasm_sections,
-    _collect_wasm_active_table_function_slots,
-    _collect_wasm_export_names,
-    _collect_wasm_module_import_names,
     _effective_split_worker_table_base,
     _export_wasm_table_refs,
-    _infer_wasm_table_base_from_export_names,
-    _parse_wasm_sections,
-    _read_wasm_data_end,
-    _read_wasm_memory_min_bytes,
-    _read_wasm_ref_func_expr,
-    _read_wasm_table_min,
-    _skip_wasm_init_expr,
     _generate_split_worker_js,
     _generate_split_wrangler_jsonc,
-    _wasm_export_function_signatures,
-    _wasm_import_function_result_kinds,
-    _wasm_import_function_signatures,
-    _wasm_import_minima,
-    _write_wasm_string,
-    _write_wasm_varuint,
 )
 
 _HASH_SEED_SENTINEL_ENV = "MOLT_HASH_SEED_APPLIED"

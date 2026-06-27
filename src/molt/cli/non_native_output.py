@@ -31,10 +31,12 @@ from molt.cli.runtime_wasm_validation import (
     _validate_wasm_structural,
 )
 from molt.cli.wasm import (
-    _collect_wasm_module_import_names,
     _effective_split_worker_table_base,
     _generate_split_worker_js,
     _generate_split_wrangler_jsonc,
+)
+from molt.wasm_artifact import (
+    _collect_wasm_module_import_names,
     _wasm_export_function_signatures,
     _wasm_import_function_result_kinds,
     _wasm_import_function_signatures,
@@ -493,11 +495,18 @@ def _prepare_non_native_build_result(
             runtime_table_ref_signatures = _wasm_export_function_signatures(
                 rt_wasm, export_name_prefix="__molt_table_ref_"
             )
-            effective_wasm_table_base = _effective_split_worker_table_base(
-                wasm_table_base=wasm_table_base,
-                runtime_table_min=rt_table_min,
-                app_table_ref_signatures=app_table_ref_signatures,
-            )
+            try:
+                effective_wasm_table_base = _effective_split_worker_table_base(
+                    wasm_table_base=wasm_table_base,
+                    runtime_table_min=rt_table_min,
+                    app_table_ref_signatures=app_table_ref_signatures,
+                )
+            except ValueError as exc:
+                return None, _fail(
+                    f"Split-runtime wasm_table_base metadata mismatch: {exc}",
+                    json_output,
+                    command="build",
+                )
 
             manifest_data = {
                 "version": 2,

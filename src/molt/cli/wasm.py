@@ -2,14 +2,21 @@ from __future__ import annotations
 
 import importlib
 import json
-import re
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping
 
+import molt.wasm_artifact as _wasm_artifact
 from molt._wasm_abi_generated import (
     WASM_LEGACY_TABLE_BASE,
     WASM_RESERVED_RUNTIME_CALLABLE_BASE,
     WASM_RESERVED_RUNTIME_CALLABLE_COUNT,
+)
+
+__all__ = (
+    "_effective_split_worker_table_base",
+    "_export_wasm_table_refs",
+    "_generate_split_worker_js",
+    "_generate_split_wrangler_jsonc",
 )
 
 
@@ -17,254 +24,29 @@ def _cli_module() -> Any:
     return importlib.import_module("molt.cli")
 
 
-def _run_completed_command(*args: Any, **kwargs: Any) -> Any:
-    return _cli_module()._run_completed_command(*args, **kwargs)
-
-
-def _which(executable: str) -> str | None:
-    return _cli_module().shutil.which(executable)
-
-
 def _atomic_write_bytes(path: Path, data: bytes) -> None:
     _cli_module()._atomic_write_bytes(path, data)
 
 
-def _read_wasm_varuint(data: bytes, offset: int) -> tuple[int, int]:
-    result = 0
-    shift = 0
-    while True:
-        if offset >= len(data):
-            raise ValueError("Unexpected EOF while reading wasm varuint")
-        byte = data[offset]
-        offset += 1
-        result |= (byte & 0x7F) << shift
-        if byte & 0x80 == 0:
-            return result, offset
-        shift += 7
-    raise AssertionError("unreachable")
-
-
-def _read_wasm_string(data: bytes, offset: int) -> tuple[str, int]:
-    length, offset = _read_wasm_varuint(data, offset)
-    end = offset + length
-    if end > len(data):
-        raise ValueError("Unexpected EOF while reading wasm string")
-    return data[offset:end].decode("utf-8"), end
-
-
-def _write_wasm_varuint(value: int) -> bytes:
-    if value < 0:
-        raise ValueError("wasm varuint must be non-negative")
-    out = bytearray()
-    while True:
-        byte = value & 0x7F
-        value >>= 7
-        if value:
-            out.append(byte | 0x80)
-        else:
-            out.append(byte)
-            return bytes(out)
-
-
-def _write_wasm_string(value: str) -> bytes:
-    encoded = value.encode("utf-8")
-    return _write_wasm_varuint(len(encoded)) + encoded
-
-
-def _parse_wasm_sections(data: bytes) -> list[tuple[int, bytes]]:
-    if len(data) < 8 or data[:4] != b"\x00asm":
-        raise ValueError("Invalid wasm binary")
-    offset = 8
-    sections: list[tuple[int, bytes]] = []
-    while offset < len(data):
-        section_id = data[offset]
-        offset += 1
-        section_size, offset = _read_wasm_varuint(data, offset)
-        section_end = offset + section_size
-        if section_end > len(data):
-            raise ValueError("Invalid wasm section length")
-        sections.append((section_id, data[offset:section_end]))
-        offset = section_end
-    return sections
-
-
-def _build_wasm_sections(sections: Sequence[tuple[int, bytes]]) -> bytes:
-    out = bytearray(b"\x00asm\x01\x00\x00\x00")
-    for section_id, payload in sections:
-        out.append(section_id)
-        out.extend(_write_wasm_varuint(len(payload)))
-        out.extend(payload)
-    return bytes(out)
-
-
-def _skip_wasm_init_expr(data: bytes, offset: int) -> tuple[int, int | None]:
-    opcode = data[offset]
-    offset += 1
-    value: int | None = None
-    if opcode == 0x41:  # i32.const
-        value, offset = _read_wasm_varuint(data, offset)
-    elif opcode == 0x23:  # global.get
-        _, offset = _read_wasm_varuint(data, offset)
-    else:
-        raise ValueError(f"Unsupported wasm init expr opcode 0x{opcode:02x}")
-    if offset >= len(data) or data[offset] != 0x0B:
-        raise ValueError("Malformed wasm init expr")
-    return offset + 1, value
-
-
-def _read_wasm_ref_func_expr(data: bytes, offset: int) -> tuple[int, int | None]:
-    opcode = data[offset]
-    offset += 1
-    func_index: int | None = None
-    if opcode == 0xD2:  # ref.func
-        func_index, offset = _read_wasm_varuint(data, offset)
-    elif opcode == 0xD0:  # ref.null
-        offset += 1
-    else:
-        raise ValueError(f"Unsupported wasm element expr opcode 0x{opcode:02x}")
-    if offset >= len(data) or data[offset] != 0x0B:
-        raise ValueError("Malformed wasm ref.func expr")
-    return offset + 1, func_index
-
-
-def _collect_wasm_active_table_function_slots(data: bytes) -> dict[int, int]:
-    sections = _parse_wasm_sections(data)
-    slots: dict[int, int] = {}
-    for section_id, payload in sections:
-        if section_id != 9:
-            continue
-        offset = 0
-        count, offset = _read_wasm_varuint(payload, offset)
-        for _ in range(count):
-            flags, offset = _read_wasm_varuint(payload, offset)
-            table_index = 0
-            base_offset: int | None = None
-            if flags == 0:
-                offset, base_offset = _skip_wasm_init_expr(payload, offset)
-                if offset < len(payload) and payload[offset] == 0x00:
-                    offset += 1
-                elem_count, offset = _read_wasm_varuint(payload, offset)
-                for elem_index in range(elem_count):
-                    func_index, offset = _read_wasm_varuint(payload, offset)
-                    if base_offset is not None:
-                        slots[base_offset + elem_index] = func_index
-            elif flags == 1:
-                if offset < len(payload) and payload[offset] == 0x00:
-                    offset += 1
-                elem_count, offset = _read_wasm_varuint(payload, offset)
-                for _ in range(elem_count):
-                    _, offset = _read_wasm_varuint(payload, offset)
-            elif flags == 2:
-                table_index, offset = _read_wasm_varuint(payload, offset)
-                offset, base_offset = _skip_wasm_init_expr(payload, offset)
-                if offset < len(payload) and payload[offset] == 0x00:
-                    offset += 1
-                elem_count, offset = _read_wasm_varuint(payload, offset)
-                for elem_index in range(elem_count):
-                    func_index, offset = _read_wasm_varuint(payload, offset)
-                    if table_index == 0 and base_offset is not None:
-                        slots[base_offset + elem_index] = func_index
-            elif flags == 3:
-                if offset < len(payload) and payload[offset] == 0x00:
-                    offset += 1
-                elem_count, offset = _read_wasm_varuint(payload, offset)
-                for _ in range(elem_count):
-                    _, offset = _read_wasm_varuint(payload, offset)
-            elif flags == 4:
-                offset, base_offset = _skip_wasm_init_expr(payload, offset)
-                offset += 1  # reftype
-                elem_count, offset = _read_wasm_varuint(payload, offset)
-                for elem_index in range(elem_count):
-                    offset, func_index = _read_wasm_ref_func_expr(payload, offset)
-                    if func_index is not None and base_offset is not None:
-                        slots[base_offset + elem_index] = func_index
-            elif flags == 5:
-                offset += 1  # reftype
-                elem_count, offset = _read_wasm_varuint(payload, offset)
-                for _ in range(elem_count):
-                    offset, _ = _read_wasm_ref_func_expr(payload, offset)
-            elif flags == 6:
-                table_index, offset = _read_wasm_varuint(payload, offset)
-                offset, base_offset = _skip_wasm_init_expr(payload, offset)
-                offset += 1  # reftype
-                elem_count, offset = _read_wasm_varuint(payload, offset)
-                for elem_index in range(elem_count):
-                    offset, func_index = _read_wasm_ref_func_expr(payload, offset)
-                    if (
-                        table_index == 0
-                        and func_index is not None
-                        and base_offset is not None
-                    ):
-                        slots[base_offset + elem_index] = func_index
-            elif flags == 7:
-                offset += 1  # reftype
-                elem_count, offset = _read_wasm_varuint(payload, offset)
-                for _ in range(elem_count):
-                    offset, _ = _read_wasm_ref_func_expr(payload, offset)
-            else:
-                raise ValueError(f"Unsupported wasm element flags {flags}")
-    return slots
-
-
-def _collect_wasm_export_names(path: Path) -> set[str]:
-    try:
-        data = path.read_bytes()
-    except OSError:
-        return set()
-    if len(data) < 8 or data[:4] != b"\0asm" or data[4:8] != b"\x01\x00\x00\x00":
-        return set()
-    offset = 8
-    result: set[str] = set()
-    try:
-        while offset < len(data):
-            section_id = data[offset]
-            offset += 1
-            size, offset = _read_wasm_varuint(data, offset)
-            end = offset + size
-            if end > len(data):
-                raise ValueError("Unexpected EOF while reading section")
-            payload = data[offset:end]
-            offset = end
-            if section_id != 7:
-                continue
-            cursor = 0
-            count, cursor = _read_wasm_varuint(payload, cursor)
-            for _ in range(count):
-                name, cursor = _read_wasm_string(payload, cursor)
-                if cursor >= len(payload):
-                    raise ValueError("Unexpected EOF while reading export")
-                kind = payload[cursor]
-                cursor += 1
-                _, cursor = _read_wasm_varuint(payload, cursor)
-                if kind == 0:
-                    result.add(name)
-            break
-    except ValueError:
-        return set()
-    return result
-
-
 def _export_wasm_table_refs(path: Path) -> None:
     data = path.read_bytes()
-    sections = _parse_wasm_sections(data)
-    slot_to_func = _collect_wasm_active_table_function_slots(data)
+    sections = _wasm_artifact._parse_wasm_sections(data)
+    slot_to_func = _wasm_artifact._collect_wasm_active_table_function_slots(data)
     if not slot_to_func:
         return
 
     exports: list[tuple[str, int, int]] = []
     existing_names: set[str] = set()
-    new_sections: list[tuple[int, bytes]] = []
     for section_id, payload in sections:
         if section_id != 7:
-            new_sections.append((section_id, payload))
             continue
         offset = 0
-        count, offset = _read_wasm_varuint(payload, offset)
+        count, offset = _wasm_artifact._read_wasm_varuint(payload, offset)
         for _ in range(count):
-            name, offset = _read_wasm_string(payload, offset)
+            name, offset = _wasm_artifact._read_wasm_string(payload, offset)
             kind = payload[offset]
             offset += 1
-            index, offset = _read_wasm_varuint(payload, offset)
+            index, offset = _wasm_artifact._read_wasm_varuint(payload, offset)
             exports.append((name, kind, index))
             existing_names.add(name)
 
@@ -278,11 +60,11 @@ def _export_wasm_table_refs(path: Path) -> None:
 
     export_payload = bytearray()
     merged = exports + additions
-    export_payload.extend(_write_wasm_varuint(len(merged)))
+    export_payload.extend(_wasm_artifact._write_wasm_varuint(len(merged)))
     for name, kind, index in merged:
-        export_payload.extend(_write_wasm_string(name))
+        export_payload.extend(_wasm_artifact._write_wasm_string(name))
         export_payload.append(kind)
-        export_payload.extend(_write_wasm_varuint(index))
+        export_payload.extend(_wasm_artifact._write_wasm_varuint(index))
 
     inserted = False
     rebuilt_sections: list[tuple[int, bytes]] = []
@@ -297,501 +79,7 @@ def _export_wasm_table_refs(path: Path) -> None:
         rebuilt_sections.append((section_id, payload))
     if not inserted:
         rebuilt_sections.append((7, bytes(export_payload)))
-    _atomic_write_bytes(path, _build_wasm_sections(rebuilt_sections))
-
-
-def _wasm_import_minima(path: Path) -> tuple[int | None, int | None]:
-    data = path.read_bytes()
-    if len(data) < 8 or data[:4] != b"\x00asm":
-        raise ValueError(f"Invalid wasm binary: {path}")
-
-    memory_min: int | None = None
-    table_min: int | None = None
-    offset = 8
-    while offset < len(data):
-        section_id = data[offset]
-        offset += 1
-        section_size, offset = _read_wasm_varuint(data, offset)
-        section_end = offset + section_size
-        if section_end > len(data):
-            raise ValueError(f"Invalid wasm section length in {path}")
-        if section_id == 2:
-            count, cursor = _read_wasm_varuint(data, offset)
-            for _ in range(count):
-                module_name, cursor = _read_wasm_string(data, cursor)
-                field_name, cursor = _read_wasm_string(data, cursor)
-                kind = data[cursor]
-                cursor += 1
-                if kind == 0:
-                    _, cursor = _read_wasm_varuint(data, cursor)
-                elif kind == 1:
-                    cursor += 1  # elemtype
-                    flags, cursor = _read_wasm_varuint(data, cursor)
-                    minimum, cursor = _read_wasm_varuint(data, cursor)
-                    if flags & 0x1:
-                        _, cursor = _read_wasm_varuint(data, cursor)
-                    if (
-                        module_name == "env"
-                        and field_name == "__indirect_function_table"
-                    ):
-                        table_min = minimum
-                elif kind == 2:
-                    flags, cursor = _read_wasm_varuint(data, cursor)
-                    minimum, cursor = _read_wasm_varuint(data, cursor)
-                    if flags & 0x1:
-                        _, cursor = _read_wasm_varuint(data, cursor)
-                    if module_name == "env" and field_name == "memory":
-                        memory_min = minimum
-                elif kind == 3:
-                    cursor += 2
-                elif kind == 4:
-                    cursor += 1
-                    _, cursor = _read_wasm_varuint(data, cursor)
-                else:
-                    raise ValueError(f"Unknown wasm import kind {kind} in {path}")
-            break
-        offset = section_end
-    return memory_min, table_min
-
-
-def _read_wasm_varint(data: bytes, offset: int, bits: int) -> tuple[int, int]:
-    result = 0
-    shift = 0
-    byte = 0
-    while True:
-        if offset >= len(data):
-            raise ValueError("Unexpected EOF while reading varint")
-        byte = data[offset]
-        offset += 1
-        result |= (byte & 0x7F) << shift
-        shift += 7
-        if byte & 0x80 == 0:
-            break
-        if shift > bits + 7:
-            raise ValueError("varint too large")
-    if shift < bits and (byte & 0x40):
-        result |= -1 << shift
-    return result, offset
-
-
-def _read_wasm_const_expr_i32(data: bytes, offset: int) -> tuple[int, int]:
-    if offset >= len(data):
-        raise ValueError("Unexpected EOF while reading const expr")
-    opcode = data[offset]
-    offset += 1
-    if opcode == 0x41:  # i32.const
-        value, offset = _read_wasm_varint(data, offset, 32)
-    elif opcode == 0x42:  # i64.const
-        value, offset = _read_wasm_varint(data, offset, 64)
-    else:
-        raise ValueError("Unsupported const expr opcode")
-    if offset >= len(data) or data[offset] != 0x0B:
-        raise ValueError("Invalid const expr terminator")
-    offset += 1
-    return value, offset
-
-
-def _read_wasm_table_min(path: Path) -> int | None:
-    try:
-        data = path.read_bytes()
-    except OSError:
-        return None
-    if len(data) < 8 or data[:4] != b"\0asm" or data[4:8] != b"\x01\x00\x00\x00":
-        return None
-    offset = 8
-    try:
-        while offset < len(data):
-            section_id = data[offset]
-            offset += 1
-            size, offset = _read_wasm_varuint(data, offset)
-            end = offset + size
-            if end > len(data):
-                raise ValueError("Unexpected EOF while reading section")
-            if section_id != 2:
-                offset = end
-                continue
-            payload = data[offset:end]
-            offset = end
-            cursor = 0
-            count, cursor = _read_wasm_varuint(payload, cursor)
-            for _ in range(count):
-                module, cursor = _read_wasm_string(payload, cursor)
-                name, cursor = _read_wasm_string(payload, cursor)
-                if cursor >= len(payload):
-                    raise ValueError("Unexpected EOF while reading import")
-                kind = payload[cursor]
-                cursor += 1
-                if kind == 0:
-                    _, cursor = _read_wasm_varuint(payload, cursor)
-                elif kind == 1:
-                    if cursor >= len(payload):
-                        raise ValueError("Unexpected EOF while reading table type")
-                    cursor += 1
-                    flags, cursor = _read_wasm_varuint(payload, cursor)
-                    minimum, cursor = _read_wasm_varuint(payload, cursor)
-                    if flags & 0x1:
-                        _, cursor = _read_wasm_varuint(payload, cursor)
-                    if module == "env" and name == "__indirect_function_table":
-                        return minimum
-                elif kind == 2:
-                    flags, cursor = _read_wasm_varuint(payload, cursor)
-                    _, cursor = _read_wasm_varuint(payload, cursor)
-                    if flags & 0x1:
-                        _, cursor = _read_wasm_varuint(payload, cursor)
-                elif kind == 3:
-                    if cursor + 2 > len(payload):
-                        raise ValueError("Unexpected EOF while reading global type")
-                    cursor += 2
-                else:
-                    raise ValueError("Unknown import kind")
-    except ValueError:
-        return None
-    return None
-
-
-def _read_wasm_data_end(path: Path) -> int | None:
-    try:
-        data = path.read_bytes()
-    except OSError:
-        return None
-    if len(data) < 8 or data[:4] != b"\0asm" or data[4:8] != b"\x01\x00\x00\x00":
-        return None
-    offset = 8
-    max_end = None
-    try:
-        while offset < len(data):
-            section_id = data[offset]
-            offset += 1
-            size, offset = _read_wasm_varuint(data, offset)
-            end = offset + size
-            if end > len(data):
-                raise ValueError("Unexpected EOF while reading section")
-            if section_id != 11:
-                offset = end
-                continue
-            payload = data[offset:end]
-            offset = end
-            cursor = 0
-            count, cursor = _read_wasm_varuint(payload, cursor)
-            for _ in range(count):
-                if cursor >= len(payload):
-                    raise ValueError("Unexpected EOF while reading data segment")
-                flags = payload[cursor]
-                cursor += 1
-                is_passive = flags & 0x1
-                has_memidx = flags & 0x2
-                if has_memidx:
-                    _, cursor = _read_wasm_varuint(payload, cursor)
-                if is_passive:
-                    size_bytes, cursor = _read_wasm_varuint(payload, cursor)
-                    cursor += size_bytes
-                    continue
-                offset_val, cursor = _read_wasm_const_expr_i32(payload, cursor)
-                size_bytes, cursor = _read_wasm_varuint(payload, cursor)
-                cursor += size_bytes
-                if offset_val < 0:
-                    continue
-                end_val = offset_val + size_bytes
-                if max_end is None or end_val > max_end:
-                    max_end = end_val
-    except ValueError:
-        return None
-    return max_end
-
-
-def _read_wasm_memory_min_bytes(path: Path) -> int | None:
-    try:
-        data = path.read_bytes()
-    except OSError:
-        return None
-    if len(data) < 8 or data[:4] != b"\0asm" or data[4:8] != b"\x01\x00\x00\x00":
-        return None
-    offset = 8
-    memory_pages: int | None = None
-    try:
-        while offset < len(data):
-            section_id = data[offset]
-            offset += 1
-            size, offset = _read_wasm_varuint(data, offset)
-            end = offset + size
-            if end > len(data):
-                raise ValueError("Unexpected EOF while reading section")
-            payload = data[offset:end]
-            offset = end
-            cursor = 0
-            if section_id == 2:
-                count, cursor = _read_wasm_varuint(payload, cursor)
-                for _ in range(count):
-                    module, cursor = _read_wasm_string(payload, cursor)
-                    name, cursor = _read_wasm_string(payload, cursor)
-                    if cursor >= len(payload):
-                        raise ValueError("Unexpected EOF while reading import")
-                    kind = payload[cursor]
-                    cursor += 1
-                    if kind == 0:
-                        _, cursor = _read_wasm_varuint(payload, cursor)
-                    elif kind == 1:
-                        if cursor >= len(payload):
-                            raise ValueError("Unexpected EOF while reading table type")
-                        cursor += 1
-                        flags, cursor = _read_wasm_varuint(payload, cursor)
-                        _, cursor = _read_wasm_varuint(payload, cursor)
-                        if flags & 0x1:
-                            _, cursor = _read_wasm_varuint(payload, cursor)
-                    elif kind == 2:
-                        flags, cursor = _read_wasm_varuint(payload, cursor)
-                        minimum, cursor = _read_wasm_varuint(payload, cursor)
-                        if flags & 0x1:
-                            _, cursor = _read_wasm_varuint(payload, cursor)
-                        if module == "env" and name == "memory":
-                            memory_pages = max(memory_pages or 0, minimum)
-                    elif kind == 3:
-                        if cursor + 2 > len(payload):
-                            raise ValueError("Unexpected EOF while reading global type")
-                        cursor += 2
-                    else:
-                        raise ValueError("Unknown import kind")
-            elif section_id == 5:
-                count, cursor = _read_wasm_varuint(payload, cursor)
-                for _ in range(count):
-                    flags, cursor = _read_wasm_varuint(payload, cursor)
-                    minimum, cursor = _read_wasm_varuint(payload, cursor)
-                    if flags & 0x1:
-                        _, cursor = _read_wasm_varuint(payload, cursor)
-                    memory_pages = max(memory_pages or 0, minimum)
-    except ValueError:
-        return None
-    if memory_pages is None:
-        return None
-    return memory_pages * 65536
-
-
-def _collect_wasm_module_import_names(path: Path, module_name: str) -> set[str]:
-    try:
-        data = path.read_bytes()
-    except OSError:
-        return set()
-    if len(data) < 8 or data[:4] != b"\0asm" or data[4:8] != b"\x01\x00\x00\x00":
-        return set()
-    offset = 8
-    result: set[str] = set()
-    try:
-        while offset < len(data):
-            section_id = data[offset]
-            offset += 1
-            size, offset = _read_wasm_varuint(data, offset)
-            end = offset + size
-            if end > len(data):
-                raise ValueError("Unexpected EOF while reading section")
-            payload = data[offset:end]
-            offset = end
-            if section_id != 2:
-                continue
-            cursor = 0
-            count, cursor = _read_wasm_varuint(payload, cursor)
-            for _ in range(count):
-                module, cursor = _read_wasm_string(payload, cursor)
-                name, cursor = _read_wasm_string(payload, cursor)
-                if cursor >= len(payload):
-                    raise ValueError("Unexpected EOF while reading import")
-                kind = payload[cursor]
-                cursor += 1
-                if kind == 0:
-                    _, cursor = _read_wasm_varuint(payload, cursor)
-                elif kind == 1:
-                    if cursor >= len(payload):
-                        raise ValueError("Unexpected EOF while reading table type")
-                    cursor += 1
-                    flags, cursor = _read_wasm_varuint(payload, cursor)
-                    _, cursor = _read_wasm_varuint(payload, cursor)
-                    if flags & 0x1:
-                        _, cursor = _read_wasm_varuint(payload, cursor)
-                elif kind == 2:
-                    flags, cursor = _read_wasm_varuint(payload, cursor)
-                    _, cursor = _read_wasm_varuint(payload, cursor)
-                    if flags & 0x1:
-                        _, cursor = _read_wasm_varuint(payload, cursor)
-                elif kind == 3:
-                    if cursor + 2 > len(payload):
-                        raise ValueError("Unexpected EOF while reading global type")
-                    cursor += 2
-                elif kind == 4:
-                    cursor += 1
-                    _, cursor = _read_wasm_varuint(payload, cursor)
-                else:
-                    raise ValueError(f"Unknown import kind {kind}")
-                if module == module_name:
-                    result.add(name)
-            break
-    except ValueError:
-        return set()
-    return result
-
-
-def _wasm_import_function_result_kinds(
-    path: Path, *, module_name: str
-) -> dict[str, str]:
-    wasm_objdump = _which("wasm-objdump")
-    if wasm_objdump is None:
-        return {}
-    result = _run_completed_command(
-        [wasm_objdump, "-x", str(path)],
-        capture_output=True,
-        env=None,
-        cwd=path.parent,
-        memory_guard_prefix="MOLT_BUILD",
-    )
-    text = (result.stdout or "") + ("\n" + result.stderr if result.stderr else "")
-    if not text:
-        return {}
-
-    type_kinds: dict[int, str] = {}
-    for line in text.splitlines():
-        match = re.match(r"\s*-\s*type\[(\d+)\]\s+\(.*\)\s+->\s+(.+)", line)
-        if not match:
-            continue
-        type_kinds[int(match.group(1))] = match.group(2).strip()
-
-    result_kinds: dict[str, str] = {}
-    import_re = re.compile(
-        rf"\s*-\s*func\[\d+\]\s+sig=(\d+)\s+<{re.escape(module_name)}\.([^>]+)>\s+<-\s+{re.escape(module_name)}\.[^\s]+"
-    )
-    for line in text.splitlines():
-        match = import_re.match(line)
-        if not match:
-            continue
-        sig = int(match.group(1))
-        name = match.group(2)
-        result_kind = type_kinds.get(sig)
-        if result_kind:
-            result_kinds[name] = result_kind
-    return result_kinds
-
-
-def _wasm_import_function_signatures(
-    path: Path, *, module_name: str
-) -> dict[str, dict[str, object]]:
-    wasm_objdump = _which("wasm-objdump")
-    if wasm_objdump is None:
-        return {}
-    result = _run_completed_command(
-        [wasm_objdump, "-x", str(path)],
-        capture_output=True,
-        env=None,
-        cwd=path.parent,
-        memory_guard_prefix="MOLT_BUILD",
-    )
-    text = (result.stdout or "") + ("\n" + result.stderr if result.stderr else "")
-    if not text:
-        return {}
-
-    type_signatures: dict[int, tuple[list[str], str]] = {}
-    for line in text.splitlines():
-        match = re.match(r"\s*-\s*type\[(\d+)\]\s+\((.*)\)\s+->\s+(.+)", line)
-        if not match:
-            continue
-        type_index = int(match.group(1))
-        raw_params = match.group(2).strip()
-        params = [part.strip() for part in raw_params.split(",") if part.strip()]
-        result_kind = match.group(3).strip()
-        type_signatures[type_index] = (params, result_kind)
-
-    signatures: dict[str, dict[str, object]] = {}
-    import_re = re.compile(
-        rf"\s*-\s*func\[\d+\]\s+sig=(\d+)\s+<{re.escape(module_name)}\.([^>]+)>\s+<-\s+{re.escape(module_name)}\.[^\s]+"
-    )
-    for line in text.splitlines():
-        match = import_re.match(line)
-        if not match:
-            continue
-        sig = int(match.group(1))
-        name = match.group(2)
-        signature = type_signatures.get(sig)
-        if signature is None:
-            continue
-        params, result_kind = signature
-        signatures[name] = {"params": params, "result": result_kind}
-    return signatures
-
-
-def _wasm_export_function_signatures(
-    path: Path, *, export_name_prefix: str
-) -> dict[str, dict[str, object]]:
-    wasm_objdump = _which("wasm-objdump")
-    if wasm_objdump is None:
-        return {}
-    result = _run_completed_command(
-        [wasm_objdump, "-x", str(path)],
-        capture_output=True,
-        env=None,
-        cwd=path.parent,
-        memory_guard_prefix="MOLT_BUILD",
-    )
-    text = (result.stdout or "") + ("\n" + result.stderr if result.stderr else "")
-    if not text:
-        return {}
-
-    type_signatures: dict[int, tuple[list[str], str]] = {}
-    for line in text.splitlines():
-        match = re.match(r"\s*-\s*type\[(\d+)\]\s+\((.*)\)\s+->\s+(.+)", line)
-        if not match:
-            continue
-        type_index = int(match.group(1))
-        raw_params = match.group(2).strip()
-        params = [part.strip() for part in raw_params.split(",") if part.strip()]
-        result_kind = match.group(3).strip()
-        type_signatures[type_index] = (params, result_kind)
-
-    func_type_indices: dict[int, int] = {}
-    for line in text.splitlines():
-        match = re.match(r"\s*-\s*func\[(\d+)\]\s+sig=(\d+)", line)
-        if not match:
-            continue
-        func_type_indices[int(match.group(1))] = int(match.group(2))
-
-    export_signatures: dict[str, dict[str, object]] = {}
-    export_re = re.compile(r'\s*-\s*func\[(\d+)\]\s+<[^>]+>\s+->\s+"([^"]+)"')
-    for line in text.splitlines():
-        match = export_re.match(line)
-        if not match:
-            continue
-        func_index = int(match.group(1))
-        export_name = match.group(2)
-        if not export_name.startswith(export_name_prefix):
-            continue
-        type_index = func_type_indices.get(func_index)
-        if type_index is None:
-            continue
-        signature = type_signatures.get(type_index)
-        if signature is None:
-            continue
-        params, result_kind = signature
-        export_signatures[export_name] = {
-            "params": params,
-            "result": result_kind,
-        }
-    return export_signatures
-
-
-def _infer_wasm_table_base_from_export_names(
-    export_signatures: Mapping[str, Mapping[str, object]],
-    *,
-    export_name_prefix: str,
-) -> int | None:
-    slots: list[int] = []
-    for name in export_signatures:
-        if not name.startswith(export_name_prefix):
-            continue
-        raw = name[len(export_name_prefix) :]
-        try:
-            slot = int(raw)
-        except ValueError:
-            continue
-        if slot > 0:
-            slots.append(slot)
-    if not slots:
-        return None
-    return min(slots)
+    _atomic_write_bytes(path, _wasm_artifact._build_wasm_sections(rebuilt_sections))
 
 
 def _effective_split_worker_table_base(
@@ -800,15 +88,19 @@ def _effective_split_worker_table_base(
     runtime_table_min: int | None,
     app_table_ref_signatures: Mapping[str, Mapping[str, object]],
 ) -> int | None:
-    if wasm_table_base is not None:
-        return wasm_table_base
-    inferred = _infer_wasm_table_base_from_export_names(
+    _ = runtime_table_min
+    if wasm_table_base is None:
+        return None
+    inferred = _wasm_artifact._infer_wasm_table_base_from_export_names(
         app_table_ref_signatures,
         export_name_prefix="__molt_table_ref_",
     )
-    if inferred is not None:
-        return inferred
-    return runtime_table_min
+    if inferred is not None and inferred != wasm_table_base:
+        raise ValueError(
+            "backend wasm_table_base "
+            f"{wasm_table_base} disagrees with table-ref export base {inferred}"
+        )
+    return wasm_table_base
 
 
 def _generate_split_worker_js(

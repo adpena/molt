@@ -1,0 +1,15 @@
+{
+  "event": "unexpected_git_reset_to_main",
+  "timestamp_local": "2026-06-27T12:49:49-05:00",
+  "cwd": "C:/Users/adpen/OneDrive/Documents/molt",
+  "observed_reflog": "3d4bb3c22 HEAD@{2026-06-27 12:49:49 -0500}: reset: moving to main",
+  "impact": [
+    "staged WASM artifact authority WIP disappeared from the index and working tree",
+    "pre-existing partner WIP that had been visible in git status was no longer present afterward"
+  ],
+  "recovery": [
+    "inspected git status, reflog, stash list, and lost-found blobs",
+    "recovered staged WIP from dangling blobs and reapplied the final small patches",
+    "did not kill or clean any Codex, Claude, shell host, or control-plane process"
+  ]
+}
