@@ -1685,19 +1685,26 @@ def main(argv: list[str] | None = None) -> int:
     metrics = ratchet_metrics(findings)
     baseline_path = root / BASELINE_PATH_REL
 
+    wrote_artifact = False
+
     if args.update_baseline:
+        baseline_path.parent.mkdir(parents=True, exist_ok=True)
         baseline_path.write_text(
             json.dumps(metrics, indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )
         print(f"baseline updated: {baseline_path}")
-        return 0
+        wrote_artifact = True
 
     if args.write_board:
         board_path = root / BOARD_PATH_REL
+        board_path.parent.mkdir(parents=True, exist_ok=True)
         board_path.write_text(
             format_board(findings, metrics, root=root) + "\n", encoding="utf-8"
         )
         print(f"board written: {board_path}")
+        wrote_artifact = True
+
+    if wrote_artifact and not args.json and not args.check:
         return 0
 
     if args.json:

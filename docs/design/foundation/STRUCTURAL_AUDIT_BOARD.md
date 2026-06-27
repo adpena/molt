@@ -12,7 +12,7 @@ Product board for the molt structural sweep — the first instrument of the Molt
 | hand_classified_matches | 0 |
 | critical_hand_classifications | 0 |
 | handset_classifications | 0 |
-| debt_markers_total | 346 |
+| debt_markers_total | 343 |
 | kitchen_sink_files | 0 |
 | max_kitchen_sink_structural_score | 0 |
 | kitchen_sink_large_regions | 0 |
@@ -26,16 +26,16 @@ Product board for the molt structural sweep — the first instrument of the Molt
 
 | sev | risk class | where | what |
 | --- | --- | --- | --- |
+| low | large_source_file | `src/molt/gpu/tensor.py` | 2648 lines (ceiling 2500) |
 | low | debt_marker | `src/molt/stdlib/email/message.py:34` | 5 debt/workaround markers |
 | low | debt_marker | `src/molt/stdlib/xml/etree/ElementPath.py:251` | 4 debt/workaround markers |
 | low | debt_marker | `src/molt/stdlib/xml/etree/ElementTree.py:241` | 4 debt/workaround markers |
-| low | debt_marker | `runtime/molt-backend-mlir/src/tir_to_mlir/ops.rs:379` | 3 debt/workaround markers |
 | low | debt_marker | `runtime/molt-backend-luau/src/luau_backend/source_postpro…` | 2 debt/workaround markers |
 | low | debt_marker | `runtime/molt-runtime-serial/src/binascii.rs:1211` | 2 debt/workaround markers |
 | low | debt_marker | `runtime/molt-tier/src/lib.rs:228` | 2 debt/workaround markers |
 | low | debt_marker | `src/molt/gpu/distributed.py:79` | 2 debt/workaround markers |
 | low | debt_marker | `src/molt/stdlib/zlib.py:268` | 2 debt/workaround markers |
-| low | debt_marker | `runtime/molt-backend-mlir/src/tir_to_mlir/terminators.rs:…` | 1 debt/workaround markers |
+| low | debt_marker | `runtime/molt-backend-mlir/src/tir_to_mlir/ops.rs:486` | 1 debt/workaround markers |
 | low | debt_marker | `runtime/molt-backend-native/src/llvm_backend/lowering/val…` | 1 debt/workaround markers |
 | low | debt_marker | `runtime/molt-backend-native/src/native_backend/function_c…` | 1 debt/workaround markers |
 | low | debt_marker | `runtime/molt-cpython-abi/src/api/abstract_number.rs:267` | 1 debt/workaround markers |
@@ -57,20 +57,25 @@ Product board for the molt structural sweep — the first instrument of the Molt
 
 ## Full findings by probe
 
-### debt_marker (329)
+### large_source_file (1)
+
+| sev | what | where | action |
+| --- | --- | --- | --- |
+| low | 2648 lines (ceiling 2500) | `src/molt/gpu/tensor.py` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
+
+### debt_marker (328)
 
 | sev | what | where | action |
 | --- | --- | --- | --- |
 | low | 5 debt/workaround markers | `src/molt/stdlib/email/message.py:34` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 4 debt/workaround markers | `src/molt/stdlib/xml/etree/ElementPath.py:251` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 4 debt/workaround markers | `src/molt/stdlib/xml/etree/ElementTree.py:241` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
-| low | 3 debt/workaround markers | `runtime/molt-backend-mlir/src/tir_to_mlir/ops.rs:379` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 2 debt/workaround markers | `runtime/molt-backend-luau/src/luau_backend/source_postprocess/contr…` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 2 debt/workaround markers | `runtime/molt-runtime-serial/src/binascii.rs:1211` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 2 debt/workaround markers | `runtime/molt-tier/src/lib.rs:228` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 2 debt/workaround markers | `src/molt/gpu/distributed.py:79` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 2 debt/workaround markers | `src/molt/stdlib/zlib.py:268` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
-| low | 1 debt/workaround markers | `runtime/molt-backend-mlir/src/tir_to_mlir/terminators.rs:151` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
+| low | 1 debt/workaround markers | `runtime/molt-backend-mlir/src/tir_to_mlir/ops.rs:486` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 1 debt/workaround markers | `runtime/molt-backend-native/src/llvm_backend/lowering/value_materia…` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 1 debt/workaround markers | `runtime/molt-backend-native/src/native_backend/function_compiler.rs…` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 1 debt/workaround markers | `runtime/molt-cpython-abi/src/api/abstract_number.rs:267` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
@@ -101,7 +106,8 @@ Product board for the molt structural sweep — the first instrument of the Molt
 | low | 1 debt/workaround markers | `src/molt/stdlib/_curses_panel.py:13` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 1 debt/workaround markers | `src/molt/stdlib/_dbm.py:13` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 1 debt/workaround markers | `src/molt/stdlib/_gdbm.py:13` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
-| … | _289 more_ | | run `--json` for full list |
+| low | 1 debt/workaround markers | `src/molt/stdlib/_interpchannels.py:13` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
+| … | _288 more_ | | run `--json` for full list |
 
 ### registry_reconciliation (1)
 
