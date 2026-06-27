@@ -61,14 +61,13 @@ Two load-bearing structural discoveries that REFINE doc 21:
   recompile the 40 passes. (`ir_rewrites.rs` belongs HERE, not the orchestrator — flag #4.)
 
 **`molt-codegen-abi`** *(the shared NaN-box / value-encoding ABI)*
-- Contents: NaN-box consts `QNAN`/`TAG_*` (today `native_backend_consts.rs`), `NanBoxConsts`,
-  helpers `unbox_int`/`box_int`/`pending_bits`/`stable_ic_site_id` (today loose in
-  `molt-backend/lib.rs`).
+- Contents: NaN-box consts `QNAN`/`TAG_*`, header-layout facts, type-id ABI facts,
+  `NanBoxConsts`, and helpers `unbox_int`/`box_int`/`pending_bits`/
+  `stable_ic_site_id`.
 - Depends-on: `molt-ir` only (~300 LOC).
-- Seam: THREE backends share it (native 48×, llvm 29×, wasm 34×) and wasm currently
-  DUPLICATES it (`wasm.rs:17` redefines `QNAN`). A tiny shared crate kills the duplication
-  and lets each backend import the ABI without depending on a sibling backend. (New — doc 21
-  left these loose; the duplication is the evidence it must exist.)
+- Seam: THREE backends share it (native 48x, llvm 29x, wasm 34x); WASM formerly
+  duplicated `QNAN`, and the shared crate is now the ABI authority each backend imports
+  without depending on a sibling backend.
 
 ### Layer 3 — per-backend codegen (the fan-out)
 **`molt-backend-llvm`** — `llvm_backend/{mod, lowering, types, pgo, runtime_imports}.rs`;
