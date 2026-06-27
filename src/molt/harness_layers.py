@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
+from molt.dx import development_artifact_env
 from molt.harness_report import LayerResult, LayerStatus
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -57,15 +58,12 @@ def _merged_env(env: dict[str, str] | None = None) -> dict[str, str]:
     run_env = os.environ.copy()
     if env:
         run_env.update(env)
-    run_env["MOLT_EXT_ROOT"] = str(_REPO_ROOT)
-    run_env["CARGO_TARGET_DIR"] = str(_REPO_ROOT / "target")
-    run_env["MOLT_DIFF_CARGO_TARGET_DIR"] = run_env["CARGO_TARGET_DIR"]
-    run_env["MOLT_CACHE"] = str(_REPO_ROOT / ".molt_cache")
-    run_env["MOLT_DIFF_ROOT"] = str(_REPO_ROOT / "tmp" / "diff")
-    run_env["MOLT_DIFF_TMPDIR"] = str(_REPO_ROOT / "tmp")
-    run_env["UV_CACHE_DIR"] = str(_REPO_ROOT / ".uv-cache")
-    run_env["TMPDIR"] = str(_REPO_ROOT / "tmp")
-    return run_env
+    return development_artifact_env(
+        _REPO_ROOT,
+        run_env,
+        session_prefix="harness",
+        create_dirs=False,
+    )
 
 
 def harness_memory_limits(

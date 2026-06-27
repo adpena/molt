@@ -68,24 +68,26 @@ def _check_call_guarded(
         raise subprocess.CalledProcessError(result.returncode, cmd)
 
 
-def _uv_project_env_dir() -> Path:
-    return DX.project_env_dir()
+def _uv_project_env_dir(env: dict[str, str] | None = None) -> Path:
+    if env is None:
+        return DX.project_env_dir()
+    return DX.uv_project_env_dir(env)
 
 
-def _uv_project_python() -> Path:
-    return DX.project_python()
+def _uv_project_python(env: dict[str, str] | None = None) -> Path:
+    return DX.project_python(env)
 
 
 def _uv_project_env_matches_python(
     requested: str | None,
     env: dict[str, str] | None = None,
 ) -> bool:
-    project_python = _uv_project_python()
+    guard_env = _canonical_harness_env(env or os.environ)
+    project_python = _uv_project_python(guard_env)
     if not project_python.exists():
         return False
     if not requested:
         return True
-    guard_env = _canonical_harness_env(env or os.environ)
     limits = harness_memory_guard.limits_from_env("MOLT_TEST_SUITE", guard_env)
     try:
         result = harness_memory_guard.guarded_completed_process(
@@ -200,24 +202,30 @@ def _dx_commands() -> dict[str, object]:
     return DX.commands()
 
 
-def _format_dx_command(command: str) -> str:
-    return DX.format_command(command)
+def _format_dx_command(command: str, env: Mapping[str, str] | None = None) -> str:
+    return DX.format_command(command, env)
 
 
-def _split_command(command: object, name: str) -> list[str]:
-    return DX.split_command(command, name)
+def _split_command(
+    command: object,
+    name: str,
+    env: Mapping[str, str] | None = None,
+) -> list[str]:
+    return DX.split_command(command, name, env)
 
 
 def _split_command_sequence(
     command: object,
     name: str,
     *,
+    env: Mapping[str, str] | None = None,
     commands: dict[str, object] | None = None,
     stack: tuple[str, ...] = (),
 ) -> list[list[str]]:
     return DX.split_command_sequence(
         command,
         name,
+        env=env,
         commands=commands,
         stack=stack,
     )
@@ -231,7 +239,7 @@ def _run_repo_cmd(cmd: list[str], env: dict[str, str], *, tty: bool) -> None:
 
 def _run_dx_command(name: str, env: dict[str, str], *, tty: bool) -> None:
     command = _dx_commands().get(name)
-    for split in _split_command_sequence(command, name):
+    for split in _split_command_sequence(command, name, env=env):
         _run_repo_cmd(split, env, tty=tty)
 
 
@@ -243,11 +251,11 @@ def _run_dx_command_with_args(
     tty: bool,
 ) -> None:
     command = _dx_commands().get(name)
-    _run_repo_cmd([*_split_command(command, name), *extra_args], env, tty=tty)
+    _run_repo_cmd([*_split_command(command, name, env), *extra_args], env, tty=tty)
 
 
-def _require_project_python() -> Path:
-    return DX.require_project_python("repo gates")
+def _require_project_python(env: Mapping[str, str]) -> Path:
+    return DX.require_project_python("repo gates", env)
 
 
 def _print_canonical_env(env: dict[str, str]) -> None:
@@ -314,16 +322,16 @@ def _parse_gates_args(args: list[str]) -> tuple[bool, Path]:
 def _run_dx_gates(args: list[str], *, tty: bool) -> None:
     allow_dirty, summary_path = _parse_gates_args(args)
     env = _canonical_env()
-    _require_project_python()
+    _require_project_python(env)
     commands = _dx_commands()
     gates = commands.get("gates")
     if gates is None:
         gate_commands = [
-            _split_command(commands.get(name), name)
+            _split_command(commands.get(name), name, env)
             for name in ("build", "backend", "compliance")
         ]
     else:
-        gate_commands = _split_command_sequence(gates, "gates")
+        gate_commands = _split_command_sequence(gates, "gates", env=env)
     limits = harness_memory_guard.limits_from_env("MOLT_TEST_SUITE", env)
     memory_guard = {
         "MOLT_TEST_SUITE": harness_memory_guard.limits_summary(limits),
@@ -449,15 +457,16 @@ def main() -> None:
     elif cmd[0] == "security":
         _run_dx_command("security", _canonical_env(), tty=use_tty)
     elif cmd[0] == "compliance":
-        _require_project_python()
-        _run_dx_command("compliance", _canonical_env(), tty=use_tty)
+        env = _canonical_env()
+        _require_project_python(env)
+        _run_dx_command("compliance", env, tty=use_tty)
     elif cmd[0] == "backend":
         _run_dx_command("backend", _canonical_env(), tty=use_tty)
     elif cmd[0] == "gates":
         _run_dx_gates(cmd[1:], tty=use_tty)
     elif cmd[0] == "bench":
         env = _canonical_env()
-        project_python = _require_project_python()
+        project_python = _require_project_python(env)
         if cmd[1:]:
             _run_repo_cmd(
                 [str(project_python), "-m", "molt.cli", "bench", *cmd[1:]],
@@ -468,8 +477,12 @@ def main() -> None:
             _run_dx_command("bench-smoke", env, tty=use_tty)
     elif cmd[0] == "lint":
         env = _canonical_env()
-        _require_project_python()
-        for lint_cmd in _split_command_sequence(_dx_commands().get("lint"), "lint"):
+        _require_project_python(env)
+        for lint_cmd in _split_command_sequence(
+            _dx_commands().get("lint"),
+            "lint",
+            env=env,
+        ):
             _run_repo_cmd(lint_cmd, env, tty=use_tty)
     elif cmd[0] == "test":
         env = os.environ.copy()

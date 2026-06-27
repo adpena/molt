@@ -9,7 +9,7 @@ import sys
 import time
 from typing import Iterator
 
-from molt.dx import DEFAULT_SCCACHE_CACHE_SIZE
+from molt.dx import DEFAULT_SCCACHE_CACHE_SIZE, development_artifact_env
 from molt.cli.build_locks import _release_file_lock, _try_acquire_file_lock
 from molt.cli.command_runtime import _run_completed_command
 from molt.cli.project_roots import _find_molt_root
@@ -46,6 +46,22 @@ def _maybe_enable_sccache(env: dict[str, str]) -> None:
 
 def _cargo_build_env() -> dict[str, str]:
     env = os.environ.copy()
+    if any(
+        env.get(key, "").strip()
+        for key in (
+            "MOLT_REQUIRE_EXTERNAL_ARTIFACTS",
+            "MOLT_PREFER_EXTERNAL_ARTIFACTS",
+            "MOLT_USE_EXTERNAL_ARTIFACTS",
+        )
+    ):
+        root = _find_molt_root(Path.cwd()) or Path.cwd()
+        env = development_artifact_env(
+            root,
+            env,
+            session_prefix="cargo-build",
+            session_id=env.get("MOLT_SESSION_ID") or f"cargo-build-{os.getpid()}",
+            create_dirs=True,
+        )
     env.setdefault("CARGO_INCREMENTAL", "0")
     if sys.executable:
         env.setdefault("MOLT_BUILD_PYTHON", sys.executable)
@@ -104,6 +120,14 @@ def _run_cargo_with_sccache_retry(
 
 
 def _build_slot_dir() -> Path:
+    tmp_root = (
+        os.environ.get("MOLT_DIFF_TMPDIR", "").strip()
+        or os.environ.get("TMPDIR", "").strip()
+        or os.environ.get("TMP", "").strip()
+        or os.environ.get("TEMP", "").strip()
+    )
+    if tmp_root:
+        return Path(tmp_root).expanduser() / "molt-build-slots"
     ext_root = os.environ.get("MOLT_EXT_ROOT", "").strip()
     if ext_root:
         return Path(ext_root).expanduser() / "tmp" / "molt-build-slots"

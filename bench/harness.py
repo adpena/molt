@@ -52,12 +52,16 @@ DEFAULT_RESULTS_DIR = BENCH_DIR / "results"
 DEFAULT_OUTPUT = DEFAULT_RESULTS_DIR / "harness.json"
 DEFAULT_BASELINE = DEFAULT_RESULTS_DIR / "harness-baseline.json"
 TOOLS_ROOT = REPO_ROOT / "tools"
+SRC_ROOT = REPO_ROOT / "src"
 
 if str(TOOLS_ROOT) not in sys.path:
     sys.path.insert(0, str(TOOLS_ROOT))
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
 
 import harness_memory_guard  # noqa: E402
 import perf_authority  # noqa: E402
+from molt.dx import development_artifact_env  # noqa: E402
 
 BENCH_MEMORY_PREFIX = "MOLT_BENCH"
 
@@ -190,23 +194,13 @@ def run_cmd(cmd: list, timeout_s: float, cwd: Optional[Path] = None):
 
 
 def _base_env() -> dict[str, str]:
-    env = os.environ.copy()
-    existing_pythonpath = env.get("PYTHONPATH")
-    src_root = str(REPO_ROOT / "src")
-    env["PYTHONPATH"] = (
-        f"{src_root}{os.pathsep}{existing_pythonpath}"
-        if existing_pythonpath
-        else src_root
+    return development_artifact_env(
+        REPO_ROOT,
+        os.environ,
+        session_prefix="bench-harness",
+        session_id=os.environ.get("MOLT_SESSION_ID") or f"bench-harness-{os.getpid()}",
+        create_dirs=True,
     )
-    env["MOLT_EXT_ROOT"] = str(REPO_ROOT)
-    env["CARGO_TARGET_DIR"] = str(REPO_ROOT / "target")
-    env["MOLT_DIFF_CARGO_TARGET_DIR"] = env["CARGO_TARGET_DIR"]
-    env["MOLT_CACHE"] = str(REPO_ROOT / ".molt_cache")
-    env["MOLT_DIFF_ROOT"] = str(REPO_ROOT / "tmp" / "diff")
-    env["MOLT_DIFF_TMPDIR"] = str(REPO_ROOT / "tmp")
-    env["UV_CACHE_DIR"] = str(REPO_ROOT / ".uv-cache")
-    env["TMPDIR"] = str(REPO_ROOT / "tmp")
-    return env
 
 
 def resolve_molt_cli(explicit_path: str | None) -> str:

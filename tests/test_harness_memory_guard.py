@@ -443,7 +443,9 @@ def test_canonical_harness_env_installs_repo_local_defaults(tmp_path: Path) -> N
     )
 
     assert env["MOLT_EXT_ROOT"] == str(tmp_path.resolve())
-    assert env["CARGO_TARGET_DIR"] == str(tmp_path / "target")
+    assert env["CARGO_TARGET_DIR"] == str(
+        tmp_path / "target" / "sessions" / env["MOLT_SESSION_ID"]
+    )
     assert env["MOLT_DIFF_CARGO_TARGET_DIR"] == env["CARGO_TARGET_DIR"]
     assert env["MOLT_CACHE"] == str(tmp_path / ".molt_cache")
     assert env["MOLT_DIFF_ROOT"] == str(tmp_path / "tmp" / "diff")
@@ -451,6 +453,31 @@ def test_canonical_harness_env_installs_repo_local_defaults(tmp_path: Path) -> N
     assert env["UV_CACHE_DIR"] == str(tmp_path / ".uv-cache")
     assert env["TMPDIR"] == str(tmp_path / "tmp")
     assert env["MOLT_SESSION_ID"].startswith("guard-")
+
+
+def test_canonical_harness_env_honors_dx_external_artifact_policy(
+    tmp_path: Path,
+) -> None:
+    repo_root = tmp_path / "repo"
+    external_root = tmp_path / "external-drive" / "Molt"
+    repo_root.mkdir()
+    (repo_root / "pyproject.toml").write_text(
+        "[tool.molt.dx]\nprefer_external_artifacts = true\n",
+        encoding="utf-8",
+    )
+
+    env = harness_memory_guard.canonical_harness_env(
+        {
+            "MOLT_EXTERNAL_ARTIFACT_ROOTS": str(external_root),
+            "MOLT_EXTERNAL_MIN_FREE_GB": "0",
+        },
+        repo_root=repo_root,
+    )
+
+    assert env["MOLT_EXT_ROOT"] == str(external_root.resolve())
+    assert env["CARGO_TARGET_DIR"] == str(
+        external_root.resolve() / "target" / "sessions" / env["MOLT_SESSION_ID"]
+    )
 
 
 def test_canonical_harness_env_preserves_caller_session(tmp_path: Path) -> None:

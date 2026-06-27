@@ -508,25 +508,29 @@ Rules:
 export MOLT_SESSION_ID="agent-1"  # MUST come before any molt or cargo command
 ```
 
-**ALL build artifacts go on the external drive, NEVER C:.** `MOLT_TARGET_ROOT`
-(set persistently to `E:\molt-target`) is the base of the session-target tree.
-The molt CLI reads it in `runtime_paths._cargo_target_root` (one seam), so EVERY
-build path — cargo target, build-state, runtime-lib, daemon socket, main checkout
-AND worktree agents — lands on `$MOLT_TARGET_ROOT/sessions/<id>` and C: never
-fills. It is absolute, so worktree agents (whose project_root is the worktree)
-relocate too. Default base if unset: `<project_root>/target` (solo dev fallback).
-C: filled to 0.5% once because targets lived on it — do not regress this.
+**Molt developer build artifacts go on an external drive, never `C:`.** This is
+a development self-protection rule for agents and local Molt maintainers, not a
+user-facing compile contract. Real users may build in place, use Cargo defaults,
+or pass their own target/output flags.
 
-Each session gets its own `sessions/<id>/` cargo directory under that base (the
-CLI's `_session_target_dir`). The **molt CLI** routes all builds, path
-resolution, staleness checks, and cache lookups through it automatically. **Raw
-`cargo` commands do NOT honor `MOLT_SESSION_ID`** — they fall through to the
-shared `target/` and will lock-collide with (and silently kill) concurrent
-agents' builds. For any direct cargo invocation also export (honoring the
-external-drive root):
+Use the DX resolver (`molt dx env`, `molt dx run`, `tools/dev.py`, or
+`tools/run_context_env.py --prefer-external-artifacts`) before build/test/bench
+work. On Windows checkouts on `C:`, the resolver fails closed unless it can
+place artifacts on a healthy non-`C:` root such as `E:\Molt`; macOS/Linux use
+the configured external candidates. The resolver owns `MOLT_EXT_ROOT`,
+`CARGO_TARGET_DIR`, `MOLT_DIFF_CARGO_TARGET_DIR`, `MOLT_CACHE`, diff/tmp roots,
+`UV_CACHE_DIR`, `UV_PROJECT_ENVIRONMENT`, `PIP_CACHE_DIR`,
+`PYTHONPYCACHEPREFIX`, `TMPDIR`, `TMP`, and `TEMP`. Default Cargo output is
+session-scoped as `$MOLT_EXT_ROOT/target/sessions/$MOLT_SESSION_ID`; explicit
+`CARGO_TARGET_DIR` remains an operator-owned override.
+
+Raw `cargo` commands do NOT honor `MOLT_SESSION_ID` by themselves. For any
+direct cargo invocation, export the DX env first. If you bypass the DX env, keep
+session isolation inside the external target root:
 
 ```bash
-export CARGO_TARGET_DIR="${MOLT_TARGET_ROOT:-$PWD/target}/sessions/$MOLT_SESSION_ID"
+eval "$(python3 tools/run_context_env.py --prefer-external-artifacts --dx --format posix)"
+export CARGO_TARGET_DIR="${MOLT_EXT_ROOT:?}/target/sessions/$MOLT_SESSION_ID"
 ```
 
 This gives each session:
@@ -537,6 +541,7 @@ This gives each session:
 
 The first build in a new session takes approximately 5 minutes (full compile). Subsequent builds are incremental.
 
-Without `MOLT_SESSION_ID`, all sessions share the default `target/` directory (solo dev mode).
+Without `MOLT_SESSION_ID`, all sessions share the selected `CARGO_TARGET_DIR`
+(solo dev mode).
 
 Agents **MUST** use `export MOLT_SESSION_ID="unique-name"` at the start of every command to ensure isolation.
