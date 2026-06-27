@@ -889,7 +889,7 @@ def extract_native_family_dispatch_slices() -> dict[str, list[tuple[str, str]]]:
     rows: dict[str, list[tuple[str, str]]] = {}
     for match in re.finditer(
         r"\(\s*NativeOpFamily::(?P<family>[A-Za-z0-9_]+)\s*,\s*"
-        r"super::(?P<module>[A-Za-z0-9_]+)::(?P<const>[A-Z0-9_]+)\s*\)",
+        r"super::(?P<module>[A-Za-z0-9_]+)::(?P<const>[A-Z0-9_]+)\s*,?\s*\)",
         text,
     ):
         rows.setdefault(match.group("family"), []).append(
