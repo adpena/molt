@@ -247,10 +247,10 @@ impl ValueRangeResult {
             return true;
         }
         let bound_val = self.resolve(bound_val);
-        if !self
+        if self
             .len_of
             .get(&bound_val)
-            .is_some_and(|bound_container| self.resolve(*bound_container) == container)
+            .is_none_or(|bound_container| self.resolve(*bound_container) != container)
         {
             return false;
         }
@@ -1229,11 +1229,9 @@ fn back_edge_update_value(
     found
 }
 
-/// The range an induction variable `{s0, +, k}` takes over a loop body.
-///
-
-/// Narrow body ranges from the loop's exit-test guard `Lt(i, n)` / `Le(i, n)`
-/// and record symbolic `i < len(c)` facts for the symbolic bound proof.
+/// Narrow the range an induction variable `{s0, +, k}` takes over a loop body
+/// from the loop's exit-test guard `Lt(i, n)` / `Le(i, n)`, and record symbolic
+/// `i < len(c)` facts for the symbolic bound proof.
 ///
 /// The guard's `then` successor must be inside the loop body: only then does
 /// the body execute under the guard-true condition. We narrow `var`'s range in

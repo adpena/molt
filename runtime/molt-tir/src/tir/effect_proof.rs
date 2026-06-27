@@ -86,17 +86,17 @@ mod tests {
 
     #[test]
     fn static_module_class_binding_validates_same_simple_ir_and_tir_family() {
-        let proof = Some(STATIC_MODULE_CLASS_BINDING_EFFECT_PROOF);
+        let proof = STATIC_MODULE_CLASS_BINDING_EFFECT_PROOF;
 
         assert_eq!(
-            simple_ir_effect_proof("module_cache_get", proof),
+            simple_ir_effect_proof("module_cache_get", Some(proof)),
             Some(EffectProof::StaticModuleClassBinding)
         );
         assert_eq!(
-            simple_ir_effect_proof("module_get_attr", proof),
+            simple_ir_effect_proof("module_get_attr", Some(proof)),
             Some(EffectProof::StaticModuleClassBinding)
         );
-        assert_eq!(simple_ir_effect_proof("call", proof), None);
+        assert_eq!(simple_ir_effect_proof("call", Some(proof)), None);
 
         let op = TirOp {
             dialect: Dialect::Molt,
@@ -105,7 +105,7 @@ mod tests {
             results: Vec::new(),
             attrs: [(
                 EFFECT_PROOF_ATTR.to_string(),
-                AttrValue::Str(proof.unwrap().to_string()),
+                AttrValue::Str(proof.to_string()),
             )]
             .into_iter()
             .collect(),

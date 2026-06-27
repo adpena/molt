@@ -517,10 +517,9 @@ fn unique_loop_guard_cmp_cond(cond_block: &crate::tir::blocks::TirBlock) -> Opti
     for op in &cond_block.ops {
         if opcode_counted_loop_comparison_role_table(op.opcode).is_ordered()
             && op.results.len() == 1
+            && guard.replace(op.results[0]).is_some()
         {
-            if guard.replace(op.results[0]).is_some() {
-                return None;
-            }
+            return None;
         }
     }
     guard
