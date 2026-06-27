@@ -1,8 +1,20 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import importlib.util
 import re
 import sys
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+_WASM_ABI_GENERATED = REPO_ROOT / "src/molt/_wasm_abi_generated.py"
+_WASM_ABI_SPEC = importlib.util.spec_from_file_location(
+    "molt_tools_wasm_abi_generated", _WASM_ABI_GENERATED
+)
+if _WASM_ABI_SPEC is None or _WASM_ABI_SPEC.loader is None:
+    raise RuntimeError(f"cannot load generated WASM ABI data: {_WASM_ABI_GENERATED}")
+_WASM_ABI = importlib.util.module_from_spec(_WASM_ABI_SPEC)
+_WASM_ABI_SPEC.loader.exec_module(_WASM_ABI)
 
 
 WASM_MAGIC = b"\x00asm"
@@ -42,57 +54,15 @@ CALL_INDIRECT_RE = re.compile(r"molt_call_indirect(\d+)")
 
 CALL_INDIRECT_MANGLED_RE = re.compile(r"molt_call_indirect(\d+)(?=\d{2}h[0-9a-fA-F]+E)")
 
-_OUTPUT_RUNTIME_EXPORT_ALIASES = (
-    "molt_isolate_bootstrap",
-    "molt_isolate_import",
-)
+_OUTPUT_RUNTIME_EXPORT_ALIASES = _WASM_ABI.WASM_OUTPUT_RUNTIME_EXPORT_ALIASES
 
-_OUTPUT_EXPORT_ALIAS_PREFIX = "__molt_export_alias__"
+_OUTPUT_EXPORT_ALIAS_PREFIX = _WASM_ABI.WASM_OUTPUT_EXPORT_ALIAS_PREFIX
 
-_INTERNAL_OUTPUT_EXPORT_PREFIXES = (
-    "molt_module_chunk_",
-    "genexpr_",
-    "listcomp_",
-    "dictcomp_",
-    "setcomp_",
-    "lambda_",
-)
+_INTERNAL_OUTPUT_EXPORT_PREFIXES = _WASM_ABI.WASM_INTERNAL_OUTPUT_EXPORT_PREFIXES
 
 _EMPTY_FUNC_BODY = bytes([0x00, 0x0B])
 
-_ESSENTIAL_EXPORTS = frozenset(
-    {
-        "molt_alloc",
-        "molt_bytes_as_ptr",
-        "molt_bytes_from_bytes",
-        "molt_dec_ref_obj",
-        "molt_exception_kind",
-        "molt_exception_last",
-        "molt_exception_message",
-        "molt_exception_pending",
-        "molt_exception_pending_fast",
-        "molt_handle_resolve",
-        "molt_header_size",
-        "memory",
-        "molt_memory",
-        "molt_host_init",
-        "molt_list_builder_append",
-        "molt_list_builder_finish",
-        "molt_list_builder_new",
-        "molt_main",
-        "molt_object_repr",
-        "molt_scratch_alloc",
-        "molt_scratch_free",
-        "molt_string_as_ptr",
-        "molt_string_from_bytes",
-        "molt_table_init",
-        "molt_table",
-        "molt_traceback_format_exc",
-        "molt_type_tag_of_bits",
-        "molt_set_wasm_table_base",
-        "__indirect_function_table",
-    }
-)
+_ESSENTIAL_EXPORTS = _WASM_ABI.WASM_ESSENTIAL_EXPORTS
 
 _TRAP_STUB_BODY = bytes([0x00, 0x00, 0x0B])
 

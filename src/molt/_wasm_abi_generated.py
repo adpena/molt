@@ -1381,6 +1381,56 @@ WASM_RESERVED_RUNTIME_CALLABLES: tuple[tuple[int, str, str, int], ...] = (
 
 WASM_RESERVED_RUNTIME_CALLABLE_COUNT: int = len(WASM_RESERVED_RUNTIME_CALLABLES)
 
+WASM_OUTPUT_EXPORT_ALIAS_PREFIX: str = "__molt_export_alias__"
+
+WASM_OUTPUT_RUNTIME_EXPORT_ALIASES: tuple[str, ...] = (
+    "molt_isolate_bootstrap",
+    "molt_isolate_import",
+)
+
+WASM_INTERNAL_OUTPUT_EXPORT_PREFIXES: tuple[str, ...] = (
+    "molt_module_chunk_",
+    "genexpr_",
+    "listcomp_",
+    "dictcomp_",
+    "setcomp_",
+    "lambda_",
+)
+
+WASM_ESSENTIAL_EXPORTS: frozenset[str] = frozenset(
+    {
+        "molt_alloc",
+        "molt_bytes_as_ptr",
+        "molt_bytes_from_bytes",
+        "molt_dec_ref_obj",
+        "molt_exception_kind",
+        "molt_exception_last",
+        "molt_exception_message",
+        "molt_exception_pending",
+        "molt_exception_pending_fast",
+        "molt_handle_resolve",
+        "molt_header_size",
+        "memory",
+        "molt_memory",
+        "molt_host_init",
+        "molt_list_builder_append",
+        "molt_list_builder_finish",
+        "molt_list_builder_new",
+        "molt_main",
+        "molt_object_repr",
+        "molt_scratch_alloc",
+        "molt_scratch_free",
+        "molt_string_as_ptr",
+        "molt_string_from_bytes",
+        "molt_table_init",
+        "molt_table",
+        "molt_traceback_format_exc",
+        "molt_type_tag_of_bits",
+        "molt_set_wasm_table_base",
+        "__indirect_function_table",
+    }
+)
+
 WASM_LINK_ALLOWED_IMPORTS: tuple[str, ...] = (
     "args_sizes_get",
     "args_get",
