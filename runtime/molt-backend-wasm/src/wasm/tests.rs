@@ -341,9 +341,9 @@ fn wasm_compiles_exception_stack_depth_bookkeeping_family() {
         ("exception_stack_exit", (1, 1)),
         ("exception_stack_set_depth", (1, 1)),
     ] {
-        let type_idx = *import_types
-            .get(name)
-            .unwrap_or_else(|| panic!("{name} runtime import must be registered; imports={import_types:?}"));
+        let type_idx = *import_types.get(name).unwrap_or_else(|| {
+            panic!("{name} runtime import must be registered; imports={import_types:?}")
+        });
         assert_eq!(
             sigs[type_idx as usize], expected_sig,
             "{name} import ABI signature mismatch (params, results)"
