@@ -1,10 +1,9 @@
-use super::constant_ops::emit_seeded_runtime_const_op;
 use super::context::CompileFuncContext;
 use super::control_flow::ControlKind;
-use super::local_layout::WasmLocalLayout;
+use super::function_frame::{WasmFrameControlMode, WasmFunctionFramePlan};
 use super::op_loop::WasmFunctionEmitContext;
 use super::state_dispatch::{
-    NonLinearDispatchLocals, NonLinearDispatchPlan, emit_jumpful_dispatch, emit_stateful_dispatch,
+    NonLinearDispatchPlan, emit_jumpful_dispatch, emit_stateful_dispatch,
     exception_handler_region_indices,
 };
 use super::*;
@@ -57,114 +56,30 @@ impl WasmBackend {
         let table_base = ctx.table_base;
         let import_ids = ctx.import_ids;
         let closure_functions = ctx.closure_functions;
-        let local_layout = WasmLocalLayout::for_function(func_ir, ctx);
-        let WasmLocalLayout {
-            locals,
-            local_types,
-            runtime_lookup_only_vars,
-            scalar_plan,
-            stateful,
-            jumpful,
-            tail_call_eligible,
-            arena_local,
-            self_ptr_local,
-            state_local,
-            block_map_base_local,
-            return_local,
-            state_remap_base_local,
-            state_remap_value_local,
-            const_cache,
-            const_seed_locals,
-            seeded_runtime_const_ops,
-            seeded_runtime_const_op_indices,
-            multi_return,
-        } = local_layout;
+        let frame_plan = WasmFunctionFramePlan::for_function(func_ir, ctx);
+        let (mut func, frame) = frame_plan.into_function_and_frame();
         let multi_return_candidates = ctx.multi_return_candidates;
-        let mut func = Function::new_with_locals_types(local_types);
-        if std::env::var("MOLT_DEBUG_WASM_LOCALS_FUNC").ok().as_deref()
-            == Some(func_ir.name.as_str())
-        {
-            eprintln!("WASM_DEBUG_FUNC {}", func_ir.name);
-            for (idx, op) in func_ir.ops.iter().enumerate() {
-                let mut mentioned: Vec<String> = Vec::new();
-                if let Some(args) = &op.args {
-                    mentioned.extend(args.iter().cloned());
-                }
-                if let Some(var) = &op.var {
-                    mentioned.push(var.clone());
-                }
-                if let Some(out) = &op.out {
-                    mentioned.push(out.clone());
-                }
-                mentioned.sort();
-                mentioned.dedup();
-                let mapped: Vec<String> = mentioned
-                    .into_iter()
-                    .filter_map(|name| locals.get(&name).map(|slot| format!("{name}->{slot}")))
-                    .collect();
-                eprintln!(
-                    "WASM_DEBUG_OP {} kind={} var={:?} out={:?} args={:?} locals={:?}",
-                    idx, op.kind, op.var, op.out, op.args, mapped
-                );
-            }
-        }
+        frame.emit_debug_local_map(func_ir);
         let mut control_stack: Vec<ControlKind> = Vec::new();
         let mut try_stack: Vec<usize> = Vec::new();
         let mut label_stack: Vec<i64> = Vec::new();
         let mut label_depths: BTreeMap<i64, usize> = BTreeMap::new();
 
         let dispatch_plan =
-            NonLinearDispatchPlan::build(self, func_ir, reloc_enabled, stateful, jumpful);
-        let dispatch_locals = if stateful || jumpful {
-            Some(NonLinearDispatchLocals {
-                state_local: state_local.expect("state local missing for dispatch wasm"),
-                block_map_base_local: block_map_base_local
-                    .expect("block map base local missing for dispatch wasm"),
-                return_local: return_local.expect("stateful/jumpful missing return local"),
-                self_ptr_local,
-                state_remap_base_local,
-                state_remap_value_local,
-            })
-        } else {
-            None
-        };
+            NonLinearDispatchPlan::build(self, func_ir, reloc_enabled, frame.control_mode());
+        let dispatch_locals = frame.dispatch_locals();
         if let (Some(plan), Some(locals)) = (dispatch_plan.as_ref(), dispatch_locals) {
             plan.emit_table_bases(self, func_index, &mut func, reloc_enabled, locals);
         }
-        if stateful || jumpful {
-            for (_, op) in &seeded_runtime_const_ops {
-                emit_seeded_runtime_const_op(
-                    self,
-                    &mut func,
-                    op,
-                    &locals,
-                    func_index,
-                    reloc_enabled,
-                    import_ids,
-                    ctx.const_str_scratch_segment,
-                );
-            }
-            // Seed dispatch locals from their first literal assignment so control-flow
-            // edge threading cannot observe a raw wasm zero (0.0 bits) for an
-            // otherwise integer/none local before its defining block executes.
-            for (local_idx, bits) in const_seed_locals.iter().copied() {
-                func.instruction(&Instruction::I64Const(bits));
-                func.instruction(&Instruction::LocalSet(local_idx));
-            }
-        }
-
-        // Initialize constant materialization cache (once per function entry).
-        const_cache.emit_init(&mut func);
-
-        // Scope arena setup: invoke `molt_arena_new` once at function entry
-        // and stash the handle in the reserved local. Mirrors the native
-        // backend's MLKit-style region lifecycle so NoEscape allocations
-        // bypass the global allocator and the entire arena is freed in O(1)
-        // before each return.
-        if let Some(idx) = arena_local {
-            emit_call(&mut func, reloc_enabled, import_ids["arena_new"]);
-            func.instruction(&Instruction::LocalSet(idx));
-        }
+        frame.emit_dispatch_seed_initializers(
+            self,
+            &mut func,
+            func_index,
+            reloc_enabled,
+            import_ids,
+            ctx.const_str_scratch_segment,
+        );
+        frame.emit_entry_initializers(&mut func, reloc_enabled, import_ids);
 
         // Capture native_eh_enabled before the closure to avoid borrowing self.
         // Native EH requires non-relocatable output (wasm-ld doesn't support EH relocations)
@@ -187,99 +102,98 @@ impl WasmBackend {
             table_base,
             import_ids,
             closure_functions,
-            runtime_lookup_only_vars: &runtime_lookup_only_vars,
-            seeded_runtime_const_op_indices: &seeded_runtime_const_op_indices,
+            runtime_lookup_only_vars: frame.runtime_lookup_only_vars(),
+            seeded_runtime_const_op_indices: frame.seeded_runtime_const_op_indices(),
             exception_handler_region_indices: &exception_handler_region_indices,
-            locals: &locals,
-            const_cache: &const_cache,
-            scalar_plan: &scalar_plan,
+            locals: frame.locals(),
+            const_cache: frame.const_cache(),
+            scalar_plan: frame.scalar_plan(),
             multi_return_candidates,
-            multi_return: &multi_return,
+            multi_return: frame.multi_return(),
             func_index,
             reloc_enabled,
             native_eh_enabled,
-            tail_call_eligible,
-            arena_local,
+            tail_call_eligible: frame.tail_call_eligible(),
+            arena_local: frame.arena_local(),
             tail_call_count: &tail_call_count,
         };
 
-        if stateful {
-            let plan = dispatch_plan
-                .as_ref()
-                .expect("dispatch plan missing for stateful wasm");
-            emit_stateful_dispatch(
-                &mut func,
-                &mut op_emitter,
-                plan,
-                dispatch_locals.expect("dispatch locals missing for stateful wasm"),
-            );
-        } else if jumpful {
-            let plan = dispatch_plan
-                .as_ref()
-                .expect("dispatch plan missing for jumpful wasm");
-            emit_jumpful_dispatch(
-                &mut func,
-                &mut op_emitter,
-                plan,
-                dispatch_locals.expect("dispatch locals missing for jumpful wasm"),
-            );
-        } else {
-            let func = &mut func;
-            let mut jump_labels: BTreeSet<i64> = BTreeSet::new();
-            let mut label_order: Vec<i64> = Vec::new();
-            for op in &func_ir.ops {
-                match op.kind.as_str() {
-                    "jump" => {
-                        if let Some(label_id) = op.value {
-                            jump_labels.insert(label_id);
+        match frame.control_mode() {
+            WasmFrameControlMode::Stateful => {
+                let plan = dispatch_plan
+                    .as_ref()
+                    .expect("dispatch plan missing for stateful wasm");
+                emit_stateful_dispatch(
+                    &mut func,
+                    &mut op_emitter,
+                    plan,
+                    dispatch_locals.expect("dispatch locals missing for stateful wasm"),
+                );
+            }
+            WasmFrameControlMode::Jumpful => {
+                let plan = dispatch_plan
+                    .as_ref()
+                    .expect("dispatch plan missing for jumpful wasm");
+                emit_jumpful_dispatch(
+                    &mut func,
+                    &mut op_emitter,
+                    plan,
+                    dispatch_locals.expect("dispatch locals missing for jumpful wasm"),
+                );
+            }
+            WasmFrameControlMode::Plain => {
+                let func = &mut func;
+                let mut jump_labels: BTreeSet<i64> = BTreeSet::new();
+                let mut label_order: Vec<i64> = Vec::new();
+                for op in &func_ir.ops {
+                    match op.kind.as_str() {
+                        "jump" => {
+                            if let Some(label_id) = op.value {
+                                jump_labels.insert(label_id);
+                            }
                         }
-                    }
-                    "label" => {
-                        if let Some(label_id) = op.value {
-                            label_order.push(label_id);
+                        "label" => {
+                            if let Some(label_id) = op.value {
+                                label_order.push(label_id);
+                            }
                         }
+                        _ => {}
                     }
-                    _ => {}
                 }
-            }
-            let label_ids: Vec<i64> = label_order
-                .into_iter()
-                .filter(|label_id| jump_labels.contains(label_id))
-                .collect();
-            if !label_ids.is_empty() {
-                for label_id in label_ids.iter().rev() {
-                    func.instruction(&Instruction::Block(BlockType::Empty));
-                    control_stack.push(ControlKind::Block);
-                    label_depths.insert(*label_id, control_stack.len() - 1);
-                    label_stack.push(*label_id);
+                let label_ids: Vec<i64> = label_order
+                    .into_iter()
+                    .filter(|label_id| jump_labels.contains(label_id))
+                    .collect();
+                if !label_ids.is_empty() {
+                    for label_id in label_ids.iter().rev() {
+                        func.instruction(&Instruction::Block(BlockType::Empty));
+                        control_stack.push(ControlKind::Block);
+                        label_depths.insert(*label_id, control_stack.len() - 1);
+                        label_stack.push(*label_id);
+                    }
                 }
+                op_emitter.emit_ops(
+                    func,
+                    &func_ir.ops,
+                    &mut control_stack,
+                    &mut try_stack,
+                    &mut label_stack,
+                    &mut label_depths,
+                    0,
+                );
+                while !label_stack.is_empty() {
+                    label_stack.pop();
+                    func.instruction(&Instruction::End);
+                    control_stack.pop();
+                }
+                // Plain functions can legally rely on Python's implicit `None`
+                // return. Match the stateful/jumpful lowering paths instead of
+                // falling off the end of an i64-returning WASM function.
+                // Free the per-function ScopeArena before falling off the end —
+                // explicit `ret` ops free their own arena, but implicit-`None`
+                // fallthrough still needs the symmetric teardown.
+                frame.emit_implicit_return(func, reloc_enabled, import_ids);
             }
-            op_emitter.emit_ops(
-                func,
-                &func_ir.ops,
-                &mut control_stack,
-                &mut try_stack,
-                &mut label_stack,
-                &mut label_depths,
-                0,
-            );
-            while !label_stack.is_empty() {
-                label_stack.pop();
-                func.instruction(&Instruction::End);
-                control_stack.pop();
-            }
-            // Plain functions can legally rely on Python's implicit `None`
-            // return. Match the stateful/jumpful lowering paths instead of
-            // falling off the end of an i64-returning WASM function.
-            // Free the per-function ScopeArena before falling off the end —
-            // explicit `ret` ops free their own arena, but implicit-`None`
-            // fallthrough still needs the symmetric teardown.
-            if let Some(arena_idx) = arena_local {
-                func.instruction(&Instruction::LocalGet(arena_idx));
-                emit_call(func, reloc_enabled, import_ids["arena_free"]);
-            }
-            const_cache.emit_none(func);
-            func.instruction(&Instruction::End);
         }
 
         drop(op_emitter);
