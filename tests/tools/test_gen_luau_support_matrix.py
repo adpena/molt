@@ -159,3 +159,66 @@ def test_check_mode_detects_stale_generated_output(tmp_path: Path) -> None:
     rc = mod.main(["--source", str(source), "--output", str(output), "--check"])
 
     assert rc == 1
+
+
+def test_build_output_aggregates_decomposed_emitter_directory(tmp_path: Path) -> None:
+    mod = _load_module()
+    source_dir = tmp_path / "luau"
+    source_dir.mkdir()
+    (source_dir / "op_alpha.rs").write_text(
+        """
+        impl LuauBackend {
+            pub(super) fn emit_alpha_op(&mut self, op: &OpIR) -> bool {
+                match op.kind.as_str() {
+                    "alpha_exact" => { self.emit_line("local out = 1"); }
+                    _ => return false,
+                }
+                true
+            }
+        }
+        """,
+        encoding="utf-8",
+    )
+    (source_dir / "op_beta.rs").write_text(
+        """
+        impl LuauBackend {
+            pub(super) fn emit_beta_op(&mut self, op: &OpIR) -> bool {
+                match op.kind.as_str() {
+                    "beta_rejected" => {
+                        self.emit_line("local out = nil -- [unsupported op: beta_rejected]");
+                    }
+                    kind if kind.starts_with("vec_fixture_") => {
+                        self.emit_line("local out = {acc, false} -- [vectorized: kind]");
+                    }
+                    _ => return false,
+                }
+                true
+            }
+        }
+        """,
+        encoding="utf-8",
+    )
+    tests_dir = source_dir / "tests"
+    tests_dir.mkdir()
+    (tests_dir / "ignored.rs").write_text(
+        """
+        impl LuauBackend {
+            pub(super) fn emit_ignored_op(&mut self, op: &OpIR) -> bool {
+                match op.kind.as_str() {
+                    "ignored_test_only" => { self.emit_line("local out = 1"); }
+                    _ => return false,
+                }
+                true
+            }
+        }
+        """,
+        encoding="utf-8",
+    )
+
+    output = mod.build_output(source_dir)
+
+    assert "**Source:**" in output
+    assert "`alpha_exact` | `implemented-exact`" in output
+    assert "`beta_rejected` | `compile-error`" in output
+    assert "`vec_fixture_*` | `implemented-exact`" in output
+    assert "ignored_test_only" not in output

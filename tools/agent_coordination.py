@@ -302,14 +302,16 @@ PROOF_LANE_RULES = (
         shared_target_root="target",
         priority="P1",
         path_prefixes=(
-            "runtime/molt-backend/src/luau.rs",
+            "runtime/molt-backend-luau/src/luau.rs",
+            "runtime/molt-backend-luau/src/luau/",
+            "runtime/molt-backend-luau/src/luau_backend/",
             "tools/gen_luau_support_matrix.py",
             "tests/tools/test_gen_luau_support_matrix.py",
             "docs/spec/areas/compiler/luau_support_matrix.generated.md",
         ),
         commands=(
             "uv run --python 3.12 python -m pytest -q tests/tools/test_gen_luau_support_matrix.py -p no:cacheprovider",
-            "cargo test -p molt-backend --features luau-backend test_compile_checked_lowers_call_async_poll_target_directly -- --nocapture",
+            "cargo test -p molt-backend-luau --features luau-backend test_compile_checked_lowers_call_async_poll_target_directly -- --nocapture",
         ),
         reason="Luau support claims need generated matrix coverage plus feature-enabled backend tests",
     ),

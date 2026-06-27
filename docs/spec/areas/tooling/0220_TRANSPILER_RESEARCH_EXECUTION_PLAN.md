@@ -11,8 +11,8 @@ Turn external transpiler/compiler research into production changes for Molt `--t
 ## Scope
 
 - In scope:
-  - Rust source transpiler backend (`runtime/molt-backend/src/rust.rs`)
-  - Luau transpiler backend (`runtime/molt-backend/src/luau.rs`)
+  - Rust source transpiler backend (`runtime/molt-backend-rust/src/rust.rs`)
+  - Luau transpiler backend (`runtime/molt-backend-luau/src/luau.rs` and `runtime/molt-backend-luau/src/luau/`)
   - Build/test harness reliability for transpiler correctness suites
   - Validation and benchmark automation for transpiler lanes
 - Out of scope:

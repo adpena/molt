@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Generate the Luau backend OpIR support matrix.
 
-The matrix is derived from `runtime/molt-backend/src/luau.rs` so support
-claims stay tied to the actual emitter. It classifies each `emit_op` match arm
-into a small set of gateable statuses.
+The matrix is derived from the Luau backend's `op_emitter.rs` so support claims
+stay tied to the actual emitter. It classifies each `emit_op` match arm into a
+small set of gateable statuses.
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_SOURCE = ROOT / "runtime" / "molt-backend" / "src" / "luau.rs"
+DEFAULT_SOURCE = ROOT / "runtime" / "molt-backend-luau" / "src" / "luau"
 DEFAULT_OUTPUT = (
     ROOT / "docs" / "spec" / "areas" / "compiler" / "luau_support_matrix.generated.md"
 )
@@ -116,6 +116,9 @@ _ARM_START_RE = re.compile(
 )
 _STRING_RE = re.compile(r'"([^"]+)"')
 _STARTS_WITH_RE = re.compile(r'kind\.starts_with\("([^"]+)"\)')
+_EMIT_OP_FN_RE = re.compile(
+    r"\bfn\s+emit[A-Za-z0-9_]*\s*\(\s*&mut\s+self\s*,\s*op:\s*&OpIR\s*\)"
+)
 
 
 def _find_matching_brace(text: str, open_idx: int) -> int:
@@ -229,19 +232,31 @@ def _brace_delta(line: str) -> int:
     return code.count("{") - code.count("}")
 
 
-def _extract_emit_op_match(text: str) -> str:
-    marker = "fn emit_op(&mut self, op: &OpIR)"
-    start = text.find(marker)
-    if start < 0:
-        raise ValueError("could not find LuauBackend::emit_op")
-    match_start = text.find("match op.kind.as_str()", start)
-    if match_start < 0:
-        raise ValueError("could not find emit_op match on op.kind")
-    open_idx = text.find("{", match_start)
-    if open_idx < 0:
-        raise ValueError("could not find emit_op match body")
-    close_idx = _find_matching_brace(text, open_idx)
-    return text[open_idx + 1 : close_idx]
+def _extract_emit_op_matches(text: str) -> list[str]:
+    """Return op-kind match bodies from Luau emitter functions.
+
+    The Luau backend is decomposed by op family. The support matrix is an
+    authority over that whole emitter cluster, so it must follow every
+    `emit_*_op(&mut self, op: &OpIR)` function rather than a single façade.
+    """
+    matches: list[str] = []
+    for fn_match in _EMIT_OP_FN_RE.finditer(text):
+        fn_open_idx = text.find("{", fn_match.end())
+        if fn_open_idx < 0:
+            continue
+        fn_close_idx = _find_matching_brace(text, fn_open_idx)
+        cursor = fn_open_idx
+        while True:
+            match_start = text.find("match op.kind.as_str()", cursor, fn_close_idx)
+            if match_start < 0:
+                break
+            open_idx = text.find("{", match_start, fn_close_idx)
+            if open_idx < 0:
+                break
+            close_idx = _find_matching_brace(text, open_idx)
+            matches.append(text[open_idx + 1 : close_idx])
+            cursor = close_idx + 1
+    return matches
 
 
 def _ops_from_pattern(pattern: str) -> list[str]:
@@ -339,17 +354,30 @@ def _classify(op: str, body: str) -> Row:
 
 
 def collect_rows_from_text(text: str) -> list[Row]:
-    match_text = _extract_emit_op_match(text)
     by_op: dict[str, Row] = {}
-    for ops, body in _iter_arms(match_text):
-        for op in ops:
-            by_op[op] = _classify(op, body)
+    match_texts = _extract_emit_op_matches(text)
+    if not match_texts:
+        raise ValueError("could not find Luau emitter op-kind match arms")
+    for match_text in match_texts:
+        for ops, body in _iter_arms(match_text):
+            for op in ops:
+                by_op[op] = _classify(op, body)
 
     rows = sorted(by_op.values(), key=lambda row: row.op)
     bad_statuses = sorted({row.status for row in rows} - STATUSES)
     if bad_statuses:
         raise ValueError(f"unknown statuses produced: {', '.join(bad_statuses)}")
     return rows
+
+
+def _source_files(source: Path) -> list[Path]:
+    if source.is_dir():
+        return sorted(
+            path
+            for path in source.rglob("*.rs")
+            if "tests" not in path.relative_to(source).parts
+        )
+    return [source]
 
 
 def _render(rows: list[Row], source: Path) -> str:
@@ -396,7 +424,9 @@ def _render(rows: list[Row], source: Path) -> str:
 
 
 def build_output(source: Path) -> str:
-    text = source.read_text(encoding="utf-8")
+    text = "\n".join(
+        path.read_text(encoding="utf-8") for path in _source_files(source)
+    )
     return _render(collect_rows_from_text(text), source)
 
 

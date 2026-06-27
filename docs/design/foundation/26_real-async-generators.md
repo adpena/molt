@@ -50,7 +50,7 @@ The running/started flags live in `MoltHeader.flags` (`HEADER_FLAG_GEN_RUNNING`,
 
 **StateSwitch in WASM** (`/Users/adpena/Projects/molt/runtime/molt-backend/src/wasm.rs`): threaded through the relooper. `build_dispatch_control_maps` at line 1005 treats `state_label` identically to regular `label` for the relooper shape graph. The WASM relooper models the state dispatch as a structured `br_table` on a loop variable.
 
-**StateSwitch in Luau** (`/Users/adpena/Projects/molt/runtime/molt-backend/src/luau.rs:1770`): `state_label` emits a Luau label; the state switch becomes an `if/elseif` chain on the state integer.
+**StateSwitch in Luau** (`/Users/adpena/Projects/molt/runtime/molt-backend-luau/src/luau/`): `state_label` emits a Luau label; the state switch becomes an `if/elseif` chain on the state integer.
 
 ### 1.3 Runtime Execution Model
 

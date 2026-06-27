@@ -1,7 +1,8 @@
 # Luau Backend Optimization Guide
 
-Status: **Living document** | Last updated: 2026-03-12
-Backend source: `runtime/molt-backend/src/luau.rs` (~5200 lines)
+Status: **Living document** | Last updated: 2026-06-27
+Backend source: `runtime/molt-backend-luau/src/luau.rs` plus the
+`runtime/molt-backend-luau/src/luau/` emitter family modules
 Formal models: `formal/lean/MoltTIR/Backend/Luau*.lean` (5 files), `formal/quint/molt_luau_transpiler.qnt`
 
 ---
@@ -464,8 +465,10 @@ historical workaround patterns as accepted support lanes.
 ## References
 
 ### Internal
-- `runtime/molt-backend/src/luau.rs` -- backend implementation
-- `runtime/molt-backend/src/luau_json_prelude.luau` -- JSON serializer
+- `runtime/molt-backend-luau/src/luau.rs` -- backend facade and shared emitter state
+- `runtime/molt-backend-luau/src/luau/` -- op-family source emitters
+- `runtime/molt-backend-luau/src/luau_backend/` -- source rewrites, validation, and postprocess passes
+- `runtime/molt-backend-luau/src/luau_json_prelude.luau` -- JSON serializer
 - `formal/lean/MoltTIR/Backend/LuauSyntax.lean` -- Luau AST
 - `formal/lean/MoltTIR/Backend/LuauEmit.lean` -- translation functions
 - `formal/lean/MoltTIR/Backend/LuauSemantics.lean` -- evaluation model

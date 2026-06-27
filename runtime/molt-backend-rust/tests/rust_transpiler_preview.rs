@@ -1,7 +1,7 @@
 #![cfg(feature = "rust-backend")]
 
-use molt_backend::rust::RustBackend;
-use molt_backend::{FunctionIR, OpIR, SimpleIR};
+use molt_backend_rust::rust::RustBackend;
+use molt_backend_rust::{FunctionIR, OpIR, SimpleIR};
 
 fn op(kind: &str) -> OpIR {
     OpIR {

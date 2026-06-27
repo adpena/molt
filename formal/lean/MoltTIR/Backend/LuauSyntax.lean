@@ -1,8 +1,9 @@
 /-
   MoltTIR.Backend.LuauSyntax -- Luau target AST for the Molt transpiler backend.
 
-  Models the subset of Luau syntax that the Molt backend emits
-  (runtime/molt-backend/src/luau.rs, ~4300 lines). This is a structured
+  Models the subset of Luau syntax that the Molt Luau backend emits
+  (runtime/molt-backend-luau/src/luau.rs plus the src/luau/ emitter family).
+  This is a structured
   representation of emitted Luau source, used as the target language
   in the translation correctness proofs.
 

@@ -14,7 +14,7 @@ must be treated as repro candidates until covered by fresh CPython-vs-Lune tests
 
 ## Bug 1: Global variable access produces broken subscript/method expressions
 
-**Location:** `molt-backend/src/luau.rs` — `module_get_global` path
+**Location:** `runtime/molt-backend-luau/src/luau/op_objects.rs` - `module_get_global` path
 
 **Symptom:** When a Python function accesses a module-level `global` variable,
 molt emits:
@@ -46,7 +46,9 @@ not document a workaround as an accepted support path.
 
 ## Bug 2: List `type_hint` not propagated through function parameters or subscript results
 
-**Location:** `molt-backend/src/luau.rs` — `type_hint` propagation logic
+**Location:** `runtime/molt-backend-luau/src/luau/function_body.rs` and
+`runtime/molt-backend-luau/src/luau/op_lists.rs` - typed parameter annotation
+and list-method lowering
 
 **Symptom:** `type_hint="list"` is only set when a variable is assigned
 directly from a `[]` literal in the same function scope. If a list is:
@@ -70,7 +72,8 @@ def build(pool: list[list[int]], i: int) -> None:
    `list[list[T]]` subscript yields `type_hint="list"`)
 
 **Current status:** Function parameter list hints are covered by
-`test_param_type_hint_list_propagation` in `runtime/molt-backend/src/luau.rs`.
+`test_luau_repr_authority_typed_list_call_method_dispatch` in
+`runtime/molt-backend-luau/src/luau/tests/class_attrs.rs`.
 Nested-list propagation still requires fresh end-to-end differential coverage.
 
 ---
@@ -79,7 +82,9 @@ Nested-list propagation still requires fresh end-to-end differential coverage.
 
 ## Bug 3: `math.floor` (and other stdlib attribute accesses) not resolved
 
-**Location:** `molt-backend/src/luau.rs` — module attribute resolution for `math`
+**Location:** `runtime/molt-backend-luau/src/luau/op_objects.rs` and
+`runtime/molt-backend-luau/src/luau/compile_pipeline.rs` - module attribute
+resolution and math module bridge
 
 **Symptom:** `math.floor(x)` inside a function emits a `MODULE_GET_ATTR` call
 through the module cache mechanism rather than mapping directly to Luau's
@@ -98,7 +103,9 @@ bridge and add CPython-vs-Lune coverage for each admitted math attribute.
 
 ## Bug 4: `if/elif/else` chains with nil-reset pattern — goto emitted as comment
 
-**Location:** `molt-backend/src/luau.rs` — control flow emission for if/elif/else
+**Location:** `runtime/molt-backend-luau/src/luau/op_control.rs` and
+`runtime/molt-backend-luau/src/luau_backend/source_postprocess/control_flow.rs`
+- control flow emission and goto/label post-processing for if/elif/else
 
 **Symptom:** When molt emits `if/elif/else` chains that need a goto-based
 fallthrough (to implement Python's fall-through semantics for elif branches
@@ -116,14 +123,15 @@ comment bug fires, only the first matching branch's assignments are visible.
 elif chains instead of emitting goto as a comment.
 
 **Current status:** Goto/label emission as comments has regression coverage in
-`runtime/molt-backend/src/luau.rs`; complex multi-branch value propagation still
-requires fresh differential coverage.
+`runtime/molt-backend-luau/src/luau/tests/core.rs`; complex multi-branch value
+propagation still requires fresh differential coverage.
 
 ---
 
 ## Bug 5: Tuple returns produce nil in callers
 
-**Location:** `molt-backend/src/luau.rs` — multiple return value handling
+**Location:** `runtime/molt-backend-luau/src/luau/op_returns.rs` - multiple
+return value handling
 
 **Symptom:** Python functions returning tuples (e.g., `return x, y, z`) emit
 correct Luau multi-return syntax, but callers that destructure the result

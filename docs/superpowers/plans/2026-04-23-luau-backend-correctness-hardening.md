@@ -6,7 +6,7 @@
 
 **Architecture:** The immediate slice hardens the existing string-emitting backend while creating gates that make unsupported semantics explicit. The long-term migration moves emission and optimization authority into structured `LuauIR`, backed by generated support matrices, correspondence checks, Lune differential tests, `luau-analyze`, and benchmark evidence.
 
-**Tech Stack:** Rust (`runtime/molt-backend`), Python CLI/tests/tools, Lean/Quint formal surfaces, Lune/Luau analyzer, repository documentation under `docs/spec`.
+**Tech Stack:** Rust (`runtime/molt-backend-luau` leaf backend plus the `runtime/molt-backend` driver facade), Python CLI/tests/tools, Lean/Quint formal surfaces, Lune/Luau analyzer, repository documentation under `docs/spec`.
 
 ---
 
@@ -14,8 +14,8 @@
 
 **Files:**
 - Modify: `runtime/molt-backend/src/main.rs`
-- Modify: `runtime/molt-backend/src/luau.rs`
-- Test: `runtime/molt-backend/src/luau.rs`
+- Modify: `runtime/molt-backend-luau/src/luau.rs` and `runtime/molt-backend-luau/src/luau/`
+- Test: `runtime/molt-backend-luau/src/luau/`
 
 - [ ] **Step 1: Write failing tests**
 
@@ -53,14 +53,14 @@ Run the same targeted Cargo test command. Expected: PASS.
 
 Run:
 ```bash
-git add runtime/molt-backend/src/main.rs runtime/molt-backend/src/luau.rs
+git add runtime/molt-backend/src/main.rs runtime/molt-backend-luau/src/luau.rs runtime/molt-backend-luau/src/luau/
 ```
 
 ### Task 2: Reject All Semantic Stub Markers
 
 **Files:**
-- Modify: `runtime/molt-backend/src/luau.rs`
-- Test: `runtime/molt-backend/src/luau.rs`
+- Modify: `runtime/molt-backend-luau/src/luau.rs` and `runtime/molt-backend-luau/src/luau/`
+- Test: `runtime/molt-backend-luau/src/luau/`
 
 - [ ] **Step 1: Write failing tests**
 
@@ -88,7 +88,7 @@ Run the targeted validation tests and then all Luau backend unit tests.
 
 Run:
 ```bash
-git add runtime/molt-backend/src/luau.rs
+git add runtime/molt-backend-luau/src/luau.rs runtime/molt-backend-luau/src/luau/
 ```
 
 ### Task 3: Proof-Code Correspondence Green
@@ -143,7 +143,7 @@ git add formal/lean/MoltTIR/Backend/LuauEmit.lean formal/lean/MoltTIR/Backend/Lu
 
 - [ ] **Step 1: Generate current op support table**
 
-Parse `runtime/molt-backend/src/luau.rs` op arms and emit support categories:
+Parse `runtime/molt-backend-luau/src/luau.rs` and `runtime/molt-backend-luau/src/luau/` op arms and emit support categories:
 `implemented-exact`, `implemented-target-limited`, `compile-error`, `runtime-capability-error`, `not-admitted`, `unknown`.
 
 - [ ] **Step 2: Add strict checker mode**
@@ -203,10 +203,10 @@ git add tests/luau/test_luau_differential.py tests/luau/test_molt_luau_correctne
 ### Task 6: Structured LuauIR Migration
 
 **Files:**
-- Modify: `runtime/molt-backend/src/luau_ir.rs`
-- Modify: `runtime/molt-backend/src/luau_lower.rs`
-- Modify: `runtime/molt-backend/src/luau.rs`
-- Test: `runtime/molt-backend/src/luau_lower.rs`
+- Modify: `runtime/molt-backend-luau/src/luau_ir.rs`
+- Modify: `runtime/molt-backend-luau/src/luau_lower.rs`
+- Modify: `runtime/molt-backend-luau/src/luau.rs` and `runtime/molt-backend-luau/src/luau/`
+- Test: `runtime/molt-backend-luau/src/luau_lower.rs`
 
 - [ ] **Step 1: Pick one op family**
 
@@ -228,7 +228,7 @@ Run targeted Rust unit tests and Luau differential tests.
 
 Run:
 ```bash
-git add runtime/molt-backend/src/luau_ir.rs runtime/molt-backend/src/luau_lower.rs runtime/molt-backend/src/luau.rs
+git add runtime/molt-backend-luau/src/luau_ir.rs runtime/molt-backend-luau/src/luau_lower.rs runtime/molt-backend-luau/src/luau.rs runtime/molt-backend-luau/src/luau/
 ```
 
 ### Task 7: Luau Performance Baseline and Optimization Gates
