@@ -345,6 +345,18 @@ def test_math_leaf_intrinsic_modules_refuse_on_micro_profile() -> None:
     assert "colorsys" in message
 
 
+def test_xml_leaf_intrinsic_modules_refuse_on_micro_profile() -> None:
+    rc, message = _run_pass(
+        [("xml.etree.ElementTree", STDLIB_ROOT / "xml" / "etree" / "ElementTree.py")],
+        "micro",
+        "native",
+    )
+    assert rc is not None and rc != 0
+    assert message is not None
+    assert "stdlib_xml" in message
+    assert "xml.etree.ElementTree" in message
+
+
 def test_modules_outside_stdlib_root_are_ignored() -> None:
     # User modules (not under stdlib_root) are not feature-gated stdlib and must
     # be skipped even if their path does not resolve under the stdlib tree.

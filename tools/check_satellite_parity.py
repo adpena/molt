@@ -88,8 +88,6 @@ PAIRS: dict[str, tuple[str, str]] = {
     "ipaddress": ("builtins/ipaddress.rs", "molt-runtime-ipaddress/src/ipaddress.rs"),
     "os_ext": ("builtins/os_ext.rs", "molt-runtime-path/src/os_ext.rs"),
     "pathlib": ("builtins/pathlib.rs", "molt-runtime-path/src/pathlib.rs"),
-    "xml_etree": ("builtins/xml_etree.rs", "molt-runtime-xml/src/xml_etree.rs"),
-    "xml_sax": ("builtins/xml_sax.rs", "molt-runtime-xml/src/xml_sax.rs"),
 }
 
 # --- access-layer normalization (must stay byte-for-byte in sync with the
