@@ -8,8 +8,6 @@ use super::super::state::{
     TkMenuEntryState, TkWidgetState, alloc_string_bits, app_mut_from_registry,
     app_tcl_error_locked, clear_value_map_refs, tk_registry, value_map_set_bits,
 };
-#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
-use super::super::tcl::get;
 use super::super::trace_commands::call_tk_command_from_strings;
 use super::common::alloc_empty_string_bits;
 use crate::bridge::inc_ref_bits;

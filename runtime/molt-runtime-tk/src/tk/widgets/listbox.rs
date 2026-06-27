@@ -8,8 +8,6 @@ use super::super::state::{
     TkWidgetState, app_mut_from_registry, app_tcl_error_locked, clear_value_map_refs, tk_registry,
     value_map_set_bits,
 };
-#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
-use super::super::tcl::{get, new};
 use super::common::{
     alloc_empty_string_bits, alloc_empty_tuple_bits, evaluate_index_compare,
     unknown_widget_subcommand_message,

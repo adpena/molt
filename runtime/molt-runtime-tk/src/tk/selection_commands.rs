@@ -1,7 +1,5 @@
 use super::args::{get_string_arg, raise_tcl_for_handle};
 use super::state::{alloc_string_bits, app_mut_from_registry, app_tcl_error_locked, tk_registry};
-#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
-use super::tcl::new;
 use molt_runtime_core::prelude::{MoltObject, PyToken};
 
 pub(super) fn handle_clipboard_command(

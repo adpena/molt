@@ -6,8 +6,6 @@ use super::state::{
     TkAppState, TkTraceRegistration, alloc_string_bits, app_mut_from_registry,
     app_tcl_error_locked, tk_registry,
 };
-#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
-use super::tcl::{get, new};
 use crate::bridge::{dec_ref_bits, inc_ref_bits};
 use molt_runtime_core::prelude::{MoltObject, PyToken, obj_from_bits};
 

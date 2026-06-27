@@ -31,7 +31,7 @@ use super::state::{
     has_platform_preflight_blockers, wm_state_for_path, wm_state_for_path_mut,
 };
 #[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
-use super::tcl::{get, new, tcl_find_executable_arg};
+use super::tcl::tcl_find_executable_arg;
 use super::trace_commands::{
     bump_variable_version, collect_trace_callbacks_for_operation, normalize_trace_mode_name,
     split_array_variable_reference, trace_callback_command_words, trace_mode_matches,
