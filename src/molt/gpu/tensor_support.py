@@ -335,6 +335,29 @@ _INT_FORMAT_RANK = {
 
 
 
+def _div_result_dtype_and_format(
+    lhs: "Tensor", rhs_tensor: "Tensor | None"
+) -> tuple[type, str]:
+    """Result dtype/format for true division (``__truediv__``).
+
+    Upstream tinygrad ``Tensor.div`` runs with ``upcast=True`` by default, which
+    casts both operands to ``least_upper_float`` of their dtypes before dividing,
+    so integer inputs produce a *float* result (true division), e.g.
+    ``Tensor([1, 4, 10]).div(Tensor([2, 3, 4]))`` -> ``[0.5, 1.333.., 2.5]``
+    (docs.tinygrad.org/tensor/elementwise — ``div`` example). Division therefore
+    never preserves an integer storage dtype, unlike add/sub/mul.
+
+    The float precision follows :func:`_preferred_float_format`: float32 only when
+    every float-typed operand is already float32, otherwise the float64 default.
+    A Python scalar operand is a weak operand (like upstream's weak-typed const)
+    and contributes no precision constraint, so the caller passes ``None`` for
+    ``rhs_tensor`` and the format follows the tensor operand's float precision.
+    """
+    if rhs_tensor is None:
+        return _float, _preferred_float_format(lhs)
+    return _float, _preferred_float_format(lhs, rhs_tensor)
+
+
 def _where_result_dtype_and_format(lhs: "Tensor", rhs: "Tensor") -> tuple[type, str]:
     if lhs._dtype is _float or rhs._dtype is _float:
         float_tensors = tuple(
