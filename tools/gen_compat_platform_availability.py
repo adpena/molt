@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import datetime as _dt
 import re
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -160,10 +161,30 @@ def main() -> int:
     parser.add_argument(
         "--write", action="store_true", help="Write output file in-place"
     )
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="exit 1 if the generated availability doc is stale (CI mode); do not write",
+    )
     args = parser.parse_args()
 
     rows = _collect_rows()
     output = _render(rows)
+
+    if args.check:
+        if not OUT_PATH.exists():
+            print(f"MISSING generated file: {OUT_PATH}", file=sys.stderr)
+            return 1
+        if OUT_PATH.read_text(encoding="utf-8") != output:
+            print(
+                f"STALE generated file: {OUT_PATH}\n"
+                "  run `python3 tools/gen_compat_platform_availability.py --write` "
+                "to regenerate",
+                file=sys.stderr,
+            )
+            return 1
+        print("compat platform availability doc: in sync")
+        return 0
 
     if args.write:
         OUT_PATH.parent.mkdir(parents=True, exist_ok=True)

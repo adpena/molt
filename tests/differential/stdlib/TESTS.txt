@@ -324,6 +324,7 @@ tests/differential/stdlib/cmath_basic.py
 tests/differential/stdlib/cmd_basic.py
 tests/differential/stdlib/code_basic.py
 tests/differential/stdlib/codecs_basic.py
+tests/differential/stdlib/codecs_charmap_generic.py
 tests/differential/stdlib/codecs_error_handlers_basic.py
 tests/differential/stdlib/codecs_lookup_precedence_typeerror.py
 tests/differential/stdlib/codeop_basic.py
@@ -1094,6 +1095,7 @@ tests/differential/stdlib/csv_extrasaction_validation.py
 tests/differential/stdlib/csv_field_size_limit_error.py
 tests/differential/stdlib/csv_get_dialect_unhashable.py
 tests/differential/stdlib/csv_large_field_size.py
+tests/differential/stdlib/csv_logging_runtime_ready_link_coexist.py
 tests/differential/stdlib/csv_malformed_unterminated_quote.py
 tests/differential/stdlib/csv_newline_quoting.py
 tests/differential/stdlib/csv_none_fields.py
@@ -1136,12 +1138,19 @@ tests/differential/stdlib/decimal_compare_context.py
 tests/differential/stdlib/decimal_context_rounding.py
 tests/differential/stdlib/decimal_ctor_context_invariance.py
 tests/differential/stdlib/decimal_edge_matrix.py
+tests/differential/stdlib/decimal_emin_emax_classification.py
 tests/differential/stdlib/decimal_exp_quantize_signals.py
 tests/differential/stdlib/decimal_flags_clear.py
+tests/differential/stdlib/decimal_hash_modular.py
 tests/differential/stdlib/decimal_negative_zero_compare_total.py
+tests/differential/stdlib/decimal_next_plus_minus_emin.py
+tests/differential/stdlib/decimal_normalize_fma_bounds.py
 tests/differential/stdlib/decimal_quantize_rounding.py
+tests/differential/stdlib/decimal_quantize_scaleb_bounds.py
 tests/differential/stdlib/decimal_quantize_traps.py
 tests/differential/stdlib/decimal_rounding_modes.py
+tests/differential/stdlib/decimal_subnormal_custom_context.py
+tests/differential/stdlib/decimal_to_integral_value_vs_exact.py
 tests/differential/stdlib/decimal_traps_signals.py
 tests/differential/stdlib/decimal_tuple_normalize.py
 tests/differential/stdlib/deque_cross_thread_visibility.py
@@ -1176,6 +1185,7 @@ tests/differential/stdlib/fnmatch_basic.py
 tests/differential/stdlib/fnmatch_intrinsic_runtime.py
 tests/differential/stdlib/fractions_arithmetic.py
 tests/differential/stdlib/fractions_basic.py
+tests/differential/stdlib/fractions_hash_modular.py
 tests/differential/stdlib/fractions_ops.py
 tests/differential/stdlib/frame_object_fields.py
 tests/differential/stdlib/ftplib_basic.py
@@ -1445,6 +1455,7 @@ tests/differential/stdlib/io_bytesio_basic.py
 tests/differential/stdlib/io_bytesio_getbuffer.py
 tests/differential/stdlib/io_isatty_regular_file.py
 tests/differential/stdlib/io_newline_windows_crlf.py
+tests/differential/stdlib/io_stdout_buffer_exit_flush.py
 tests/differential/stdlib/io_stringio_newline.py
 tests/differential/stdlib/io_stringio_seek_tell.py
 tests/differential/stdlib/io_text_encoding_charmap.py
@@ -1593,6 +1604,7 @@ tests/differential/stdlib/multiprocessing_pool_timeout.py
 tests/differential/stdlib/multiprocessing_shared_value_array.py
 tests/differential/stdlib/multiprocessing_start_method.py
 tests/differential/stdlib/netrc_basic.py
+tests/differential/stdlib/numeric_cross_type_hash_invariant.py
 tests/differential/stdlib/opcode_basic.py
 tests/differential/stdlib/opcode_tables_basic.py
 tests/differential/stdlib/operator_attrgetter_basic.py

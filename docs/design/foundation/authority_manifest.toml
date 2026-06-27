@@ -1,6 +1,16 @@
 # Machine-checked routing for planning and long-horizon authority documents.
 # `tools/check_docs_architecture.py` consumes this file; update it when a new
 # planning authority supersedes or constrains the existing roadmap stack.
+#
+# F5 cross-link (doc 59 — the semantic fact plane). This file routes PLANNING
+# authority (which design doc governs which invariant). Its runtime/compiler
+# analog is the GENERATOR MANIFEST `tools/generator_manifest.toml` (consumed by
+# `tools/check_generator_manifest.py`), which routes SEMANTIC authority: which
+# generated file is the one authority for an IR/codegen invariant, how it is
+# gated, and which closed enum domains must have exhaustive-or-audited matches.
+# Together they answer "where is the authority for invariant X?" — read the
+# generator manifest for op-effects/op-kinds/closed-domain facts, this file for
+# the design docs that constrain them.
 
 [[authority]]
 path = "docs/design/foundation/00_integrated_parallel_program.md"

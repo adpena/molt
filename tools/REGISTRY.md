@@ -28,6 +28,13 @@ this file is the human/agent-readable index of the whole tool surface.
 - `tools/check_ratio_direction.py` — no raw `t/t` ratio outside the signed authority.
 - `tools/check_perf_freshness.py` — no stale/unstamped perf doc with citable numbers.
 - `tools/audit_op_kinds.py` / `tools/gen_op_kinds.py --check` — op-kind authority + drift.
+- `tools/check_generator_manifest.py --check` — the semantic-fact-plane meta-gate
+  (doc 59): every generated authority is registered in `tools/generator_manifest.toml`
+  + `--check`-gated, no orphan `@generated` files, and no NEW silent-default `match`
+  over a closed enum domain (`OpCode`/`Terminator` — the dispatch-handler-mirror-hazard
+  class; down-only ratchet in `generator_manifest_baseline.json`). The generator
+  manifest is THE authority for "what is a generated authority and how is it gated";
+  add a row before building any new `gen_*.py`.
 - `cargo test op_family` — native dispatch↔handler disjointness (drift unexpressible).
 
 ### Measure / perf (the CANONICAL source of truth — cite only these)
