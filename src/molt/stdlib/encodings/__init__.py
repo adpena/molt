@@ -29,7 +29,6 @@ Written by Marc-Andre Lemburg (mal@lemburg.com).
 """  # "
 
 import codecs
-import importlib as _importlib
 import sys
 from . import aliases
 
@@ -168,17 +167,18 @@ if sys.platform == "win32":
     # WideCharToMultiByte() and MultiByteToWideChar() functions with CP_ACP.
     # Python does not support custom code pages.
     def _alias_mbcs(encoding):
-        winapi_spec = _importlib.util.find_spec("_winapi")
-        if winapi_spec is None:
+        try:
+            _winapi = __import__("_winapi")
+        except ImportError:
             return None
-        _winapi = _importlib.import_module("_winapi")
         ansi_code_page = "cp%s" % _winapi.GetACP()
         if encoding != ansi_code_page:
             return None
-        mbcs_spec = _importlib.util.find_spec("encodings.mbcs")
-        if mbcs_spec is None:
+        try:
+            mbcs = __import__("encodings.mbcs", fromlist=_import_tail, level=0)
+        except ImportError:
             return None
-        return _importlib.import_module("encodings.mbcs").getregentry()
+        return mbcs.getregentry()
 
     codecs.register(_alias_mbcs)
 

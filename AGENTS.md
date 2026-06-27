@@ -99,6 +99,43 @@ touching code, docs, tests, benchmarks, or roadmap state.
   migrate non-overlapping files while the main agent lands the authority move.
   Do not use subagents to multiply proof lanes or produce status theater.
 
+## Anomaly Crux Protocol: Question The Question
+
+When weird behavior appears, do not answer only the first-order question. Zoom
+out before patching, widening proof, or accepting a profile/workflow refusal as
+the task. Ask what fact, authority, import edge, IR node, runtime feature gate,
+binary artifact, or ownership boundary made the weird behavior possible.
+
+- Treat anomalies as architecture evidence. A failed proof lane, surprising
+  dependency pull, unexpected feature gate, silent fallback, timeout, generated
+  drift, or profile refusal is a prompt to find the missing or duplicated
+  authority, not merely an instruction to rerun with a larger profile.
+- Always identify the crux before acting: the smallest fact that, if corrected,
+  collapses the confusing behavior across consumers. Then rip through that
+  authority class instead of stacking local fixes.
+- Ask "why this question?" as well as "what is the answer?" Example: if a
+  codec-only proof pulls `stdlib_regex`, the question is not just how to enable
+  regex; it is which import edge, stdlib bootstrap dependency, feature gate, or
+  tree-shaking boundary caused a codec path to require regex, and whether that
+  edge is semantically necessary.
+- Prefer structural deforestation over profile inflation. Remove avoidable
+  intermediate objects, import edges, generated duplicates, facade fallbacks,
+  and heavyweight runtime features from hot or minimal paths when semantics do
+  not require them.
+- Use subagents for crux-finding on independent axes: one can map import/feature
+  graph causes, another can check upstream/OSS semantics, and another can audit
+  data layout or binary-size impact. Do not use subagents to create more status
+  chatter or redundant proof loops.
+- When an anomaly involves compatibility, verify against primary sources
+  (current repo authority first, then upstream CPython/OSS docs or source where
+  relevant) before narrowing or broadening support claims.
+- Current Molt regex crux: a codec-only proof pulling `stdlib_regex` means the
+  module graph has overreached. The known failure mode is
+  `codecs -> os -> TYPE_CHECKING typing -> warnings -> re`, amplified by broad
+  `typing` scans. Fix the static import facts, constant-guard pruning, and
+  tree-shaking authority before widening profiles or treating regex as a codec
+  dependency.
+
 ## Comprehensive Analysis Spine: AST To Binary Closure
 
 - Every compiler/runtime change must bridge micro facts to macro architecture.

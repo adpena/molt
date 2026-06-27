@@ -2309,21 +2309,7 @@ pub(super) fn wtf8_has_surrogates(bytes: &[u8]) -> bool {
 }
 
 pub(super) fn push_wtf8_codepoint(out: &mut Vec<u8>, code: u32) {
-    if code <= 0x7F {
-        out.push(code as u8);
-    } else if code <= 0x7FF {
-        out.push(0xC0 | ((code >> 6) as u8));
-        out.push(0x80 | (code as u8 & 0x3F));
-    } else if code <= 0xFFFF {
-        out.push(0xE0 | ((code >> 12) as u8));
-        out.push(0x80 | (((code >> 6) as u8) & 0x3F));
-        out.push(0x80 | (code as u8 & 0x3F));
-    } else {
-        out.push(0xF0 | ((code >> 18) as u8));
-        out.push(0x80 | (((code >> 12) as u8) & 0x3F));
-        out.push(0x80 | (((code >> 6) as u8) & 0x3F));
-        out.push(0x80 | (code as u8 & 0x3F));
-    }
+    molt_runtime_text::wtf8::push_wtf8_codepoint(out, code);
 }
 
 fn utf8_char_width(first: u8) -> usize {
