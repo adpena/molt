@@ -21,6 +21,135 @@ use super::list_index_fast_path::{
 };
 use super::var_get_boxed_overflow_safe_fn;
 
+#[cfg(feature = "native-backend")]
+/// Return stale structured loop marker ops that must not be lowered after TIR
+/// has linearized their control flow into labels/branches.
+pub(in crate::native_backend::function_compiler) fn metadata_only_structured_loop_ops(
+    ops: &[OpIR],
+) -> BTreeSet<usize> {
+    #[derive(Default)]
+    struct PendingLoop {
+        controls: BTreeSet<usize>,
+    }
+
+    let mut pending: Vec<PendingLoop> = Vec::new();
+    let mut metadata_only = BTreeSet::new();
+    for (idx, op) in ops.iter().enumerate() {
+        match op.kind.as_str() {
+            "loop_start" if loop_start_has_index_prelude(ops, idx) => {}
+            "loop_start" | "loop_index_start" => {
+                let mut frame = PendingLoop::default();
+                frame.controls.insert(idx);
+                pending.push(frame);
+            }
+            "loop_break_if_true"
+            | "loop_break_if_false"
+            | "loop_break_if_exception"
+            | "loop_break"
+            | "loop_continue"
+            | "loop_index_next" => {
+                if let Some(frame) = pending.last_mut() {
+                    frame.controls.insert(idx);
+                }
+            }
+            "loop_end" if pending.pop().is_none() => {
+                metadata_only.insert(idx);
+            }
+            _ => {}
+        }
+    }
+    for frame in pending {
+        metadata_only.extend(frame.controls);
+    }
+    metadata_only
+}
+
+#[cfg(feature = "native-backend")]
+#[allow(clippy::too_many_arguments)]
+/// Capture the old slot value before a loop-body assignment overwrites it.
+/// The parent epilogue later drops that old value, matching CPython
+/// STORE_FAST semantics for reassignment while staying disabled when TIR drop
+/// insertion is the sole RC authority.
+pub(in crate::native_backend::function_compiler) fn capture_loop_reassign_old_value(
+    op: &OpIR,
+    out_name: Option<&str>,
+    loop_depth: i32,
+    drop_inserted: bool,
+    is_block_filled: bool,
+    rc_skip_dec: &std::collections::HashSet<String>,
+    loop_body_out_vars: &BTreeMap<usize, Vec<String>>,
+    vars: &BTreeMap<String, Variable>,
+    builder: &mut FunctionBuilder<'_>,
+) -> Option<Value> {
+    if loop_depth <= 0 || drop_inserted || is_block_filled {
+        return None;
+    }
+    let name = out_name?;
+    if name == "none"
+        || rc_skip_dec.contains(name)
+        || !loop_reassign_old_value_may_need_drop(op.kind.as_str())
+    {
+        return None;
+    }
+    let is_loop_body_var = loop_body_out_vars
+        .values()
+        .any(|body_vars| body_vars.iter().any(|var| var == name));
+    if !is_loop_body_var {
+        return None;
+    }
+    vars.get(name).map(|var| builder.use_var(*var))
+}
+
+#[cfg(feature = "native-backend")]
+/// Emit the delayed drop for a loop-carried reassignment old value after the
+/// op handler has stored the replacement value.
+pub(in crate::native_backend::function_compiler) fn emit_loop_reassign_old_drop(
+    builder: &mut FunctionBuilder<'_>,
+    local_dec_ref_obj: FuncRef,
+    old_value: Option<Value>,
+    is_block_filled: bool,
+) {
+    if let Some(old_value) = old_value
+        && !is_block_filled
+    {
+        builder.ins().call(local_dec_ref_obj, &[old_value]);
+    }
+}
+
+#[cfg(feature = "native-backend")]
+fn loop_reassign_old_value_may_need_drop(kind: &str) -> bool {
+    !matches!(
+        kind,
+        "const"
+            | "const_str"
+            | "const_bytes"
+            | "const_bigint"
+            | "const_float"
+            | "const_none"
+            | "const_bool"
+            | "loop_index_start"
+            | "loop_index_next"
+            | "loop_break_if_true"
+            | "loop_break_if_false"
+            | "loop_break_if_exception"
+            | "loop_break"
+            | "loop_continue"
+            | "loop_start"
+            | "loop_end"
+            | "phi"
+            | "load_var"
+            | "copy_var"
+            | "store_var"
+            | "delete_var"
+            | "label"
+            | "state_label"
+            | "state_switch"
+            | "state_transition"
+            | "store_index"
+            | "index"
+    )
+}
+
 /// Cranelift codegen handlers for structured loop lowering.
 ///
 /// Extracted from compile_func_inner's per-op dispatch (M1.10). Loop
