@@ -33,7 +33,9 @@ For `--target wasm --split-runtime`, the packaging contract is:
 - `output.wasm` is the raw rewritten app module emitted before split packaging.
 - `app.wasm` must be smaller than `output.wasm`; it is expected to go through
   split-app deforestation (`_post_link_optimize`) plus wasm-opt when enabled.
-- `molt_runtime.wasm` must be tree-shaken against the app import surface.
+- `molt_runtime.wasm` must be tree-shaken against the canonical shared-runtime
+  export surface, not the app import subset, so the CDN-cached runtime stays
+  byte-identical across apps. Per-app shrinkage belongs in `app.wasm`.
 - If any of those assumptions stop holding, treat it as a real regression in
   the split-runtime pipeline rather than “normal wasm variance”.
 

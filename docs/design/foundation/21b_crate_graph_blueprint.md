@@ -52,9 +52,13 @@ Two load-bearing structural discoveries that REFINE doc 21:
 ### Layer 2 — lowering / ABI
 **`molt-lower`** *(TIR → {LIR, SimpleIR, WASM-IR} lowering + codegen-facing repr plan)*
 - Contents: `tir/{lower_from_simple, lower_to_simple, lower_to_lir, lower_to_wasm, lir,
-  verify_lir, verify_lir_repr, target_info, mlir_compat, wasm_component, wasm_split,
-  wasm_streaming}.rs` + `representation_plan.rs` *logic* (`ScalarRepresentationPlan`,
+  verify_lir, verify_lir_repr, target_info, mlir_compat}.rs` +
+  `representation_plan.rs` *logic* (`ScalarRepresentationPlan`,
   `LlvmReprFacts`, `value_range_for`) + `ir_rewrites.rs`.
+- Retired surface: the old TIR `wasm_component`/`wasm_split`/`wasm_streaming` estimate
+  modules are no longer a lowering-layer member. WASM split/component/streaming authority
+  belongs in emitted-artifact facts in the WASM backend/linker/optimizer path, not TIR
+  name heuristics.
 - Depends-on: `molt-passes` (transitively `molt-ir`). ~24K LOC.
 - Seam: hard production dep on passes (`ValueRangeResult`, drop-insertion attrs) → must sit
   above passes; isolating it means a Cranelift/WASM author editing lowering doesn't
