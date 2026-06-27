@@ -393,7 +393,17 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                 builder.block_params(merge_block)[0]
             };
             if let Some(out__) = op.out.as_ref() {
-                def_var_named(&mut *builder, vars, out__, res);
+                def_var_from_numeric_result(
+                    &mut *module,
+                    &mut *import_ids,
+                    &mut *builder,
+                    &mut *import_refs,
+                    vars,
+                    representation_plan,
+                    nbc,
+                    out__,
+                    res,
+                );
             }
         }
         "floordiv" | "inplace_floordiv" => {
@@ -658,7 +668,17 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                 builder.block_params(merge_block)[0]
             };
             if let Some(out__) = op.out.as_ref() {
-                def_var_named(&mut *builder, vars, out__, res);
+                def_var_from_numeric_result(
+                    &mut *module,
+                    &mut *import_ids,
+                    &mut *builder,
+                    &mut *import_refs,
+                    vars,
+                    representation_plan,
+                    nbc,
+                    out__,
+                    res,
+                );
             }
         }
         "mod" | "inplace_mod" => {
@@ -909,7 +929,17 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                 builder.block_params(merge_block)[0]
             };
             if let Some(out__) = op.out.as_ref() {
-                def_var_named(&mut *builder, vars, out__, res);
+                def_var_from_numeric_result(
+                    &mut *module,
+                    &mut *import_ids,
+                    &mut *builder,
+                    &mut *import_refs,
+                    vars,
+                    representation_plan,
+                    nbc,
+                    out__,
+                    res,
+                );
             }
         }
         "floor_div" | "binop_floor_div" => {
@@ -1010,7 +1040,17 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                 builder.inst_results(call)[0]
             };
             if let Some(out__) = op.out.as_ref() {
-                def_var_named(&mut *builder, vars, out__, res);
+                def_var_from_numeric_result(
+                    &mut *module,
+                    &mut *import_ids,
+                    &mut *builder,
+                    &mut *import_refs,
+                    vars,
+                    representation_plan,
+                    nbc,
+                    out__,
+                    res,
+                );
             }
         }
         "pow" | "inplace_pow" => {
@@ -1266,7 +1306,17 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                 builder.inst_results(call)[0]
             };
             if let Some(out__) = op.out.as_ref() {
-                def_var_named(&mut *builder, vars, out__, res);
+                def_var_from_numeric_result(
+                    &mut *module,
+                    &mut *import_ids,
+                    &mut *builder,
+                    &mut *import_refs,
+                    vars,
+                    representation_plan,
+                    nbc,
+                    out__,
+                    res,
+                );
             }
         }
         "pow_mod" => {
@@ -1315,7 +1365,17 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
             let call = builder.ins().call(local_callee, &[*lhs, *rhs, *modulus]);
             let res = builder.inst_results(call)[0];
             if let Some(out__) = op.out.as_ref() {
-                def_var_named(&mut *builder, vars, out__, res);
+                def_var_from_numeric_result(
+                    &mut *module,
+                    &mut *import_ids,
+                    &mut *builder,
+                    &mut *import_refs,
+                    vars,
+                    representation_plan,
+                    nbc,
+                    out__,
+                    res,
+                );
             }
         }
         "round" => {
@@ -1366,7 +1426,17 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                 .call(local_callee, &[*val, *ndigits, *has_ndigits]);
             let res = builder.inst_results(call)[0];
             if let Some(out__) = op.out.as_ref() {
-                def_var_named(&mut *builder, vars, out__, res);
+                def_var_from_numeric_result(
+                    &mut *module,
+                    &mut *import_ids,
+                    &mut *builder,
+                    &mut *import_refs,
+                    vars,
+                    representation_plan,
+                    nbc,
+                    out__,
+                    res,
+                );
             }
         }
         "trunc" => {
@@ -1393,7 +1463,17 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
             let call = builder.ins().call(local_callee, &[*val]);
             let res = builder.inst_results(call)[0];
             if let Some(out__) = op.out.as_ref() {
-                def_var_named(&mut *builder, vars, out__, res);
+                def_var_from_numeric_result(
+                    &mut *module,
+                    &mut *import_ids,
+                    &mut *builder,
+                    &mut *import_refs,
+                    vars,
+                    representation_plan,
+                    nbc,
+                    out__,
+                    res,
+                );
             }
         }
         _ => unreachable!("non-division arithmetic op routed to handle_arith_division_op"),
