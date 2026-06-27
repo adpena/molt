@@ -5,9 +5,10 @@
 //! access layer; this module provides that API by calling runtime internals
 //! directly instead of crossing the satellite extern-C boundary.
 
+#![allow(dead_code)]
+
 use crate::audit::{AuditArgs, audit_capability_decision};
 use crate::object::ops::string_obj_to_owned as runtime_string_obj_to_owned;
-use crate::*;
 use molt_runtime_core::prelude::*;
 
 // ---------------------------------------------------------------------------
@@ -163,7 +164,18 @@ pub fn molt_iter(_py: &CoreGilToken, bits: u64) -> u64 {
 }
 
 pub fn molt_iter_next(_py: &CoreGilToken, iter_bits: u64) -> Option<u64> {
-    crate::object::ops_iter::molt_iter_next(iter_bits)
+    let result = crate::object::ops_iter::molt_iter_next(iter_bits);
+    if result == MoltObject::none().bits() {
+        crate::with_gil_entry_nopanic!(py, {
+            if crate::exception_pending(py) {
+                None
+            } else {
+                Some(result)
+            }
+        })
+    } else {
+        Some(result)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -211,5 +223,5 @@ pub fn path_from_bits(_py: &CoreGilToken, bits: u64) -> Result<std::path::PathBu
 }
 
 pub fn type_name(_py: &CoreGilToken, obj: MoltObject) -> String {
-    crate::with_gil_entry_nopanic!(py, { crate::type_name(py, obj) })
+    crate::with_gil_entry_nopanic!(py, { crate::type_name(py, obj).into_owned() })
 }
