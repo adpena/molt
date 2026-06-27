@@ -1,3 +1,6 @@
+use super::constant_ops::{
+    const_seed_bits, needs_literal_pointer_locals, needs_seeded_runtime_const,
+};
 use super::context::CompileFuncContext;
 use super::*;
 
@@ -268,20 +271,14 @@ impl WasmLocalLayout {
             if let Some(out) = &op.out {
                 let out_local_idx = ensure_local_inner(out, true);
                 let is_dead = out_local_idx == dead_sink_idx;
-                if op.kind == "const_str" || op.kind == "const_bytes" || op.kind == "const_bigint" {
+                if needs_literal_pointer_locals(&op.kind) {
                     // _ptr and _len locals are used internally by the op
                     // emission so they always need real (non-sink) locals.
                     ensure_local_inner(&format!("{out}_ptr"), false);
                     ensure_local_inner(&format!("{out}_len"), false);
                 }
                 if !const_seed_seen.contains(out) {
-                    let bits = match op.kind.as_str() {
-                        "const" => op.value.map(box_int),
-                        "const_bool" => op.value.map(box_bool),
-                        "const_float" => op.f_value.map(box_float),
-                        "const_none" => Some(box_none()),
-                        _ => None,
-                    };
+                    let bits = const_seed_bits(op);
                     if let Some(bits) = bits {
                         // Skip seeding dead locals -- the value is never
                         // observed so there is no point initializing it.
@@ -289,15 +286,7 @@ impl WasmLocalLayout {
                             const_seed_seen.insert(out.clone());
                             const_seed_locals_all.push((out_local_idx, bits));
                         }
-                    } else if matches!(
-                        op.kind.as_str(),
-                        "const_str"
-                            | "const_bytes"
-                            | "const_bigint"
-                            | "const_not_implemented"
-                            | "const_ellipsis"
-                    ) && !is_dead
-                    {
+                    } else if needs_seeded_runtime_const(&op.kind) && !is_dead {
                         const_seed_seen.insert(out.clone());
                         seeded_runtime_const_ops.push((op_idx, op.clone()));
                     }

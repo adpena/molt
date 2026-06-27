@@ -13,20 +13,18 @@ use crate::wasm_binary::{
 use crate::wasm_data::{DataSegmentRef, WasmDataSegments};
 #[cfg(test)]
 use crate::wasm_dispatch::br_table_state_remap_params;
-use crate::wasm_dispatch::{
-    build_dense_state_remap_table, build_dispatch_block_map, build_dispatch_blocks,
-    build_dispatch_control_maps, build_sparse_state_remap_entries, build_state_resume_maps,
-    dispatch_control_panic, emit_sparse_state_remap_lookup, has_non_linear_control_flow,
-};
+use crate::wasm_dispatch::{dispatch_control_panic, has_non_linear_control_flow};
 use crate::wasm_import_tracking::{TrackedImportIds, selected_import_id};
 pub use crate::wasm_options::{WasmCompileOptions, WasmProfile};
 mod compile_pipeline;
+mod constant_ops;
 mod context;
 mod data_segments;
 mod function_emitter;
 mod local_layout;
 mod module_abi;
 mod op_loop;
+mod state_dispatch;
 mod tir_pipeline;
 mod trampoline_analysis;
 mod trampolines;

@@ -1,3 +1,4 @@
+use super::constant_ops::{ConstantOpContext, emit_constant_op};
 use super::context::CompileFuncContext;
 use super::*;
 
@@ -247,137 +248,24 @@ impl<'a, 'ctx> WasmFunctionEmitContext<'a, 'ctx> {
                 continue;
             }
 
+            if emit_constant_op(
+                ConstantOpContext {
+                    backend,
+                    ctx,
+                    import_ids,
+                    locals,
+                    const_cache,
+                    func_index,
+                    reloc_enabled,
+                },
+                func,
+                op,
+                &mut known_raw_ints,
+            ) {
+                continue;
+            }
+
             match op.kind.as_str() {
-                "const" => {
-                    let val = op.value.unwrap();
-                    func.instruction(&Instruction::I64Const(box_int(val)));
-                    let local_idx = locals[op.out.as_ref().unwrap()];
-                    func.instruction(&Instruction::LocalSet(local_idx));
-                    // Record the known raw value for this local so
-                    // subsequent fast_int unbox can be elided.
-                    known_raw_ints.insert(local_idx, val);
-                }
-                "const_bool" => {
-                    let val = op.value.unwrap();
-                    func.instruction(&Instruction::I64Const(box_bool(val)));
-                    let local_idx = locals[op.out.as_ref().unwrap()];
-                    func.instruction(&Instruction::LocalSet(local_idx));
-                }
-                "const_float" => {
-                    let val = op.f_value.expect("Float value not found");
-                    func.instruction(&Instruction::I64Const(box_float(val)));
-                    let local_idx = locals[op.out.as_ref().unwrap()];
-                    func.instruction(&Instruction::LocalSet(local_idx));
-                }
-                "const_none" => {
-                    const_cache.emit_none(func);
-                    let local_idx = locals[op.out.as_ref().unwrap()];
-                    func.instruction(&Instruction::LocalSet(local_idx));
-                }
-                "const_not_implemented" => {
-                    emit_call(func, reloc_enabled, import_ids["not_implemented"]);
-                    let local_idx = locals[op.out.as_ref().unwrap()];
-                    func.instruction(&Instruction::LocalSet(local_idx));
-                }
-                "const_ellipsis" => {
-                    emit_call(func, reloc_enabled, import_ids["ellipsis"]);
-                    let local_idx = locals[op.out.as_ref().unwrap()];
-                    func.instruction(&Instruction::LocalSet(local_idx));
-                }
-                "const_str" => {
-                    let out_name = op.out.as_ref().unwrap();
-                    let bytes = op
-                        .bytes
-                        .as_deref()
-                        .unwrap_or_else(|| op.s_value.as_ref().unwrap().as_bytes());
-                    let data = backend.add_data_segment(reloc_enabled, bytes);
-
-                    let ptr_local = locals[&format!("{out_name}_ptr")];
-                    let len_local = locals[&format!("{out_name}_len")];
-                    backend.emit_data_ptr(reloc_enabled, func_index, func, data);
-                    func.instruction(&Instruction::LocalSet(ptr_local));
-                    func.instruction(&Instruction::I64Const(bytes.len() as i64));
-                    func.instruction(&Instruction::LocalSet(len_local));
-
-                    // Use the fixed scratch slot in linear memory instead
-                    // of heap-allocating an 8-byte buffer per const_str.
-                    // This eliminates the per-string alloc(8) call, the
-                    // handle_resolve round-trip, and the leaked
-                    // intermediate object — saving ~48 bytes of heap per
-                    // string constant and reducing heap pressure that can
-                    // push the allocator into the output data region in
-                    // the split-runtime layout.
-                    let scratch_seg = ctx.const_str_scratch_segment;
-
-                    // string_from_bytes(data_ptr: i32, len: i64, out: i32) -> i32
-                    func.instruction(&Instruction::LocalGet(ptr_local));
-                    func.instruction(&Instruction::I32WrapI64);
-                    func.instruction(&Instruction::LocalGet(len_local));
-                    backend.emit_data_ptr_i32(reloc_enabled, func_index, func, scratch_seg);
-                    emit_call(func, reloc_enabled, import_ids["string_from_bytes"]);
-                    func.instruction(&Instruction::Drop);
-
-                    // Load the string handle written by string_from_bytes.
-                    let out_local = locals[out_name];
-                    backend.emit_data_ptr_i32(reloc_enabled, func_index, func, scratch_seg);
-                    func.instruction(&Instruction::I64Load(wasm_encoder::MemArg {
-                        align: 3,
-                        offset: 0,
-                        memory_index: 0,
-                    }));
-                    func.instruction(&Instruction::LocalSet(out_local));
-                }
-                "const_bigint" => {
-                    let s = op.s_value.as_ref().unwrap();
-                    let out_name = op.out.as_ref().unwrap();
-                    let bytes = s.as_bytes();
-                    let data = backend.add_data_segment(reloc_enabled, bytes);
-
-                    let ptr_local = locals[&format!("{out_name}_ptr")];
-                    let len_local = locals[&format!("{out_name}_len")];
-                    backend.emit_data_ptr(reloc_enabled, func_index, func, data);
-                    func.instruction(&Instruction::LocalSet(ptr_local));
-                    func.instruction(&Instruction::I64Const(bytes.len() as i64));
-                    func.instruction(&Instruction::LocalSet(len_local));
-
-                    func.instruction(&Instruction::LocalGet(ptr_local));
-                    func.instruction(&Instruction::I32WrapI64);
-                    func.instruction(&Instruction::LocalGet(len_local));
-                    emit_call(func, reloc_enabled, import_ids["bigint_from_str"]);
-                    let out_local = locals[out_name];
-                    func.instruction(&Instruction::LocalSet(out_local));
-                }
-                "const_bytes" => {
-                    let bytes = op.bytes.as_ref().expect("Bytes not found");
-                    let out_name = op.out.as_ref().unwrap();
-                    let data = backend.add_data_segment(reloc_enabled, bytes);
-
-                    let ptr_local = locals[&format!("{out_name}_ptr")];
-                    let len_local = locals[&format!("{out_name}_len")];
-                    backend.emit_data_ptr(reloc_enabled, func_index, func, data);
-                    func.instruction(&Instruction::LocalSet(ptr_local));
-                    func.instruction(&Instruction::I64Const(bytes.len() as i64));
-                    func.instruction(&Instruction::LocalSet(len_local));
-
-                    // Use fixed scratch slot (same as const_str).
-                    let scratch_seg = ctx.const_str_scratch_segment;
-
-                    func.instruction(&Instruction::LocalGet(ptr_local));
-                    func.instruction(&Instruction::I32WrapI64);
-                    func.instruction(&Instruction::LocalGet(len_local));
-                    backend.emit_data_ptr_i32(reloc_enabled, func_index, func, scratch_seg);
-                    emit_call(func, reloc_enabled, import_ids["bytes_from_bytes"]);
-                    func.instruction(&Instruction::Drop);
-
-                    let out_local = locals[out_name];
-                    backend.emit_data_ptr_i32(reloc_enabled, func_index, func, scratch_seg);
-                    func.instruction(&Instruction::I64Load(wasm_encoder::MemArg {
-                        align: 3,
-                        offset: 0,
-                        memory_index: 0,
-                    }));
-                    func.instruction(&Instruction::LocalSet(out_local));
-                }
                 "ret" => {
                     let ret_var = op.var.as_ref();
                     // Multi-value return (Section 3.1): push individual
