@@ -562,7 +562,7 @@ falls back to the host process version when a target is selected.
 | `MOLT_WASM_RUNTIME_DIR` | Directory for WASM runtime artifacts. |
 | `MOLT_WASM_CARGO_PROFILE` | Cargo profile for WASM runtime build. |
 | `MOLT_WASM_LINKED` | Set to `0` to disable linked WASM output. |
-| `MOLT_EXT_ROOT` | Root directory for extension modules. |
+| `MOLT_EXT_ROOT` | Developer/DX artifact root used for caches, target dirs, diff roots, and benchmark scratch space. |
 
 ### Frontend / Midend
 

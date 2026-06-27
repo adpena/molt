@@ -68,7 +68,10 @@ Target: remove infra-induced false negatives and lock contention in transpiler t
 
 Plan:
 - Prefer direct interpreter invocation (`sys.executable -m molt.cli`) inside transpiler tests.
-- Keep build artifacts and tmp on external volume only.
+- Keep maintainer/agent heavy build artifacts and tmp under the DX-resolved
+  artifact root; on Windows checkouts on `C:`, prefer a healthy non-`C:` root
+  unless an explicit emergency override is set. Public users may compile in
+  place, use Molt/Cargo defaults, or choose roots with explicit flags/env vars.
 - Make build timeouts configurable (`MOLT_RUST_BUILD_TIMEOUT`, `MOLT_LUAU_BUILD_TIMEOUT`).
 
 Promotion bar:
@@ -192,7 +195,10 @@ Gate:
 
 ## Required Validation Commands
 
-Always run with canonical artifact roots (`MOLT_EXT_ROOT` when set, otherwise repo-local canonical paths).
+Maintainer/agent validation lanes should first resolve canonical artifact roots
+through `molt dx env`, `molt dx run`, or `tools/run_context_env.py
+--prefer-external-artifacts --dx`. Repo-local roots are local fallback/user
+defaults, not heavy proof-lane guidance on constrained internal disks.
 
 - Rust targeted correctness:
   - `uv run --python 3.12 python3 -m pytest -q tests/rust/test_molt_rust_correctness.py -k "bubble_sort or matrix_multiply or collatz"`

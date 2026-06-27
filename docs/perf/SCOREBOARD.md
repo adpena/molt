@@ -289,7 +289,7 @@ absolute-vs-CPython-floor and gates on it.
 
 ```bash
 export MOLT_SESSION_ID=perfscore
-export CARGO_TARGET_DIR="$PWD/target/sessions/perfscore"
+eval "$(python3 tools/run_context_env.py --prefer-external-artifacts --dx --format posix)"
 
 # Self-test: 1 benchmark × 1 backend, proves the pipeline + schema.
 uv run --python 3.12 python3 tools/perf_scoreboard.py --self-test

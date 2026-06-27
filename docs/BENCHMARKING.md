@@ -769,8 +769,8 @@ When enabled for `target=native`, Molt appends `-C target-cpu=native` to `RUSTFL
 ### Suggested Throughput Baseline Command
 
 ```bash
-MOLT_CACHE=$PWD/.molt_cache \
-CARGO_TARGET_DIR=$PWD/target \
+export MOLT_SESSION_ID="bench-baseline"
+eval "$(python3 tools/run_context_env.py --prefer-external-artifacts --dx --format posix)"
 MOLT_USE_SCCACHE=1 \
 uv run --python 3.12 python3 -m molt.cli build examples/hello.py --build-profile dev --cache-report
 ```
@@ -781,10 +781,12 @@ Use the dedicated matrix harness to compare single-agent vs concurrent throughpu
 across profile and wrapper modes:
 
 ```bash
+export MOLT_SESSION_ID="throughput-matrix"
+eval "$(python3 tools/run_context_env.py --prefer-external-artifacts --dx --format posix)"
 uv run --python 3.12 python3 tools/throughput_matrix.py \
   --concurrency 2 \
   --timeout-sec 75 \
-  --shared-target-dir "$PWD/target" \
+  --shared-target-dir "$CARGO_TARGET_DIR" \
   --run-diff \
   --diff-jobs 2 \
   --diff-timeout-sec 180
@@ -794,7 +796,9 @@ uv run --python 3.12 python3 tools/throughput_matrix.py \
 - Results include a machine-readable `gate_status` block (thresholds, observed
   counts, violations, pass/fail).
 - Use `--fail-on-gate` to return exit code `2` when `gate_status.passed=false`.
-- Default output root uses `MOLT_EXT_ROOT` when set, otherwise canonical repo-local roots.
+- Default output root uses the active DX artifact root. Repo-local `$PWD`
+  examples are local fallback/user-default examples, not heavy proof-lane
+  guidance on constrained internal disks.
 - Diff matrix runs always set `MOLT_DIFF_MEASURE_RSS=1` and inherit the adaptive
   child rlimit from `tests/molt_diff.py`; pass `--diff-child-rlimit-gb <n>`
   only for a deliberate narrower-cap investigation.
