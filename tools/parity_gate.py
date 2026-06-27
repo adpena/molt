@@ -1,14 +1,27 @@
-"""CPython parity enforcement gate for Molt.
+"""CPython parity enforcement gate for Molt — a thin CLI over the ONE oracle.
 
-Three-tier comparison:
-  Tier 1 (STRICT)   — byte-identical output required (default, blocks merge on failure)
-  Tier 2 (RELAXED)  — normalized comparison: memory addresses, refcount values stripped
-  Tier 3 (EXCLUDED) — expected divergence, comparison skipped
+Three-tier comparison (now a MODE of the single comparison law in
+tools/compat/comparison.py, doc 66 Phase 0 — this tool no longer owns a second
+comparison implementation):
+  Tier 1 (STRICT)   — byte-identical output required (ComparisonMode.EXACT)
+  Tier 2 (RELAXED)  — normalized comparison: memory addresses, refcount values
+                      stripped (ComparisonMode.RELAXED)
+  Tier 3 (EXCLUDED) — expected divergence, comparison skipped (the
+                      intentional_divergence matrix status)
 
 Tier detection via marker in test file:
   # molt-parity: relaxed   → Tier 2
   # molt-parity: excluded  → Tier 3
   (no marker)              → Tier 1
+
+Before doc 66 this file re-implemented its own `compare` / `_normalize_relaxed`,
+a SECOND source of truth for the parity comparison law that could drift from
+tests/molt_diff.py. That dual truth is deleted: the tiers map onto the one law's
+modes, so STRICT here and the default molt_diff comparison are guaranteed
+identical. For the full multi-backend differential (and the cross-backend
+divergence sub-oracle) use `tests/molt_diff.py --target ...`; this gate remains
+the lightweight `molt run`-based STRICT/RELAXED/EXCLUDED tier check over a
+directory.
 
 Usage:
     python3 tools/parity_gate.py [directory]
@@ -34,6 +47,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from tools import harness_memory_guard  # noqa: E402
+from tools.compat import comparison as compat_comparison  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -42,12 +56,6 @@ from tools import harness_memory_guard  # noqa: E402
 TIMEOUT_SECONDS = 120
 
 _PARITY_MARKER_RE = re.compile(r"^\s*#\s*molt-parity\s*:\s*(\w+)", re.MULTILINE)
-
-# Relaxed normalization patterns
-_ADDR_RE = re.compile(r"\b0x[0-9a-fA-F]+\b")
-_REFCOUNT_RE = re.compile(r"\brefcount\s*=\s*\d+", re.IGNORECASE)
-# Memory address patterns like <object at 0x...> or id=0x...
-_OBJ_ADDR_RE = re.compile(r"(at|id=)\s*0x[0-9a-fA-F]+")
 
 # Markers that suggest the test imports something Molt cannot handle
 _IMPORT_ERROR_MARKERS = (
@@ -115,11 +123,12 @@ def classify_tier(path: Path) -> int:
 
 
 def _normalize_relaxed(text: str) -> str:
-    """Normalize output for Tier 2 (RELAXED) comparison."""
-    text = _ADDR_RE.sub("0xADDR", text)
-    text = _OBJ_ADDR_RE.sub(r"\g<1> 0xADDR", text)
-    text = _REFCOUNT_RE.sub("refcount=<N>", text)
-    return text
+    """Normalize output for Tier 2 (RELAXED) comparison.
+
+    Delegates to the single comparison law (doc 66 Phase 0); the address/refcount
+    normalization that used to live here is now `comparison.normalize_relaxed`.
+    """
+    return compat_comparison.normalize_relaxed(text)
 
 
 # ---------------------------------------------------------------------------
@@ -310,35 +319,36 @@ def compare(
         base.message = "molt missing import (skipped)"
         return base
 
-    # Compare outputs
-    if tier == TIER_STRICT:
-        stdout_match = cpython_out == molt_out
-        rc_match = cpython_rc == molt_rc
-        if stdout_match and rc_match:
-            base.status = "pass"
-        else:
-            base.status = "fail"
-            parts: list[str] = []
-            if not stdout_match:
-                parts.append("stdout mismatch")
-            if not rc_match:
-                parts.append(f"exit code cpython={cpython_rc} molt={molt_rc}")
-            base.message = "; ".join(parts)
-
-    elif tier == TIER_RELAXED:
-        norm_cpython = _normalize_relaxed(cpython_out)
-        norm_molt = _normalize_relaxed(molt_out)
-        rc_match = cpython_rc == molt_rc
-        if norm_cpython == norm_molt and rc_match:
-            base.status = "pass"
-        else:
-            base.status = "warn"
-            parts = []
-            if norm_cpython != norm_molt:
-                parts.append("stdout mismatch (normalized)")
-            if not rc_match:
-                parts.append(f"exit code cpython={cpython_rc} molt={molt_rc}")
-            base.message = "; ".join(parts)
+    # Compare outputs through the ONE comparison law (doc 66 Phase 0). The tier
+    # selects the stdout mode; parity_gate has always compared stdout + exit code
+    # only (stderr ignored), so stderr_mode is "ignore". A STRICT mismatch is a
+    # blocking fail; a RELAXED mismatch is a non-blocking warn (unchanged
+    # semantics, single implementation).
+    mode = (
+        compat_comparison.ComparisonMode.EXACT
+        if tier == TIER_STRICT
+        else compat_comparison.ComparisonMode.RELAXED
+    )
+    verdict = compat_comparison.compare_outputs(
+        compat_comparison.Outputs(cpython_out, cpython_err, cpython_rc),
+        compat_comparison.Outputs(molt_out, molt_err, molt_rc),
+        mode=mode,
+        stderr_mode="ignore",
+        exit_law=compat_comparison.ExitLaw.EXACT,
+    )
+    if verdict.equal:
+        base.status = "pass"
+    else:
+        parts: list[str] = []
+        if not verdict.stdout_ok:
+            parts.append(
+                "stdout mismatch" if tier == TIER_STRICT
+                else "stdout mismatch (normalized)"
+            )
+        if not verdict.exit_ok:
+            parts.append(f"exit code cpython={cpython_rc} molt={molt_rc}")
+        base.status = "fail" if tier == TIER_STRICT else "warn"
+        base.message = "; ".join(parts)
 
     return base
 

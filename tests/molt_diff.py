@@ -40,6 +40,8 @@ from tools import (  # noqa: E402  (must follow the sys.path self-bootstrap abov
 )
 from molt.dx import CANONICAL_RUN_ENV_KEYS, DX_ENV_KEYS, development_artifact_env  # noqa: E402
 from molt import backend_daemon_custody as daemon_custody  # noqa: E402
+from tools.compat import backends as compat_backends  # noqa: E402
+from tools.compat import comparison as compat_comparison  # noqa: E402
 
 _DYLD_GUARD_MARKER = "dyld_guard.json"
 _DIFF_ARTIFACT_ENV_READY = False
@@ -398,61 +400,15 @@ def _normalize_output(text: str, normalize: set[str]) -> str:
     return text
 
 
-_STDOUT_NUMERIC_TOKEN_RE = re.compile(
-    r"(?<![A-Za-z0-9_])[-+]?(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][-+]?\d+)?(?![A-Za-z0-9_])"
-)
-_STDOUT_SPACING_RE = re.compile(r"\s+")
-
-
-def _canonicalize_stdout(text: str, mode: str) -> str:
-    normalized = mode.strip().lower()
-    if normalized in {"", "exact"}:
-        return text
-    if normalized == "pyperformance":
-        lines: list[str] = []
-        for raw_line in text.splitlines():
-            line = raw_line.strip()
-            if not line:
-                continue
-            line = _STDOUT_NUMERIC_TOKEN_RE.sub("<num>", line)
-            line = _STDOUT_SPACING_RE.sub(" ", line)
-            lines.append(line)
-        return "\n".join(lines)
-    return text
-
-
-_EXCEPTION_SIGNATURE_RE = re.compile(
-    r"^(?P<etype>[A-Za-z_][A-Za-z0-9_.]*)(?:: (?P<message>.*))?$"
-)
-
-
-def _extract_exception_signature(stderr: str) -> tuple[str, str] | None:
-    lines = [line.strip() for line in stderr.splitlines() if line.strip()]
-    for line in reversed(lines):
-        match = _EXCEPTION_SIGNATURE_RE.match(line)
-        if match is None:
-            continue
-        etype = match.group("etype")
-        message = match.group("message") or ""
-        return etype, message
-    return None
-
-
-def _stderr_matches(cpython_stderr: str, molt_stderr: str, mode: str) -> bool:
-    normalized = mode.strip().lower()
-    if normalized in {"", "ignore"}:
-        return True
-    if normalized in {"match", "exact"}:
-        return cpython_stderr == molt_stderr
-    if normalized in {"traceback", "exception", "exception_signature"}:
-        cpython_sig = _extract_exception_signature(cpython_stderr)
-        molt_sig = _extract_exception_signature(molt_stderr)
-        if cpython_sig is None or molt_sig is None:
-            return cpython_stderr == molt_stderr
-        # Frame/path formatting may differ across engines (especially wasm),
-        # but exception type/message must remain exact.
-        return cpython_sig == molt_sig
-    return cpython_stderr == molt_stderr
+# The CPython-parity comparison law lives in ONE place: tools/compat/comparison.py
+# (doc 66 Phase 0). These names are thin re-exports so the in-file comparison
+# sites and external consumers (tools/wasm_diff.py) keep working while routing
+# through the single law. There is no second comparison implementation in the
+# tree after this extraction; tests/test_compat_comparison.py proves the law
+# behaves byte-identically to the inlined version it replaced.
+_canonicalize_stdout = compat_comparison.canonicalize_stdout
+_extract_exception_signature = compat_comparison.extract_exception_signature
+_stderr_matches = compat_comparison.stderr_matches
 
 
 def _truthy_flag(values: list[str]) -> bool:
@@ -603,16 +559,25 @@ def _record_diff_result(record: dict[str, object]) -> None:
     path = _diff_results_jsonl_path()
     if path is None:
         return
+    # Per-backend rows (doc 66) ride along on the aggregate record under the
+    # transient "backend_rows" key; they are emitted as their own JSONL lines so
+    # the suite-honesty ratchet can dimension a failure by backend exactly as it
+    # dimensions native today. Strip the key from the aggregate line so the
+    # existing single-row honesty schema is unchanged.
+    backend_rows = record.pop("backend_rows", None) if isinstance(record, dict) else None
     # A raw_status of None means an exception escaped before any status was
     # assigned; record it explicitly as "error" so the honesty ratchet treats an
     # unexpected crash as a hard, visible outcome rather than a missing line.
     if record.get("raw_status") is None:
         record = {**record, "raw_status": "error", "resolved_status": "error"}
+    lines: list[str] = [json.dumps(record, sort_keys=True)]
+    if isinstance(backend_rows, list):
+        for row in backend_rows:
+            lines.append(json.dumps(row, sort_keys=True))
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        line = json.dumps(record, sort_keys=True) + "\n"
         with path.open("a", encoding="utf-8") as handle:
-            handle.write(line)
+            handle.write("\n".join(lines) + "\n")
     except OSError:
         pass
 
@@ -2121,12 +2086,19 @@ def _open_log_file(path: Path | None):
         handle.close()
 
 
-def _diff_worker(file_path: str, python_exe: str, build_profile: str) -> dict[str, str]:
+def _diff_worker(
+    file_path: str,
+    python_exe: str,
+    build_profile: str,
+    targets: tuple[str, ...] = ("native",),
+) -> dict[str, str]:
     _install_worker_orphan_guard()
     buffer_out = io.StringIO()
     buffer_err = io.StringIO()
     with contextlib.redirect_stdout(buffer_out), contextlib.redirect_stderr(buffer_err):
-        status = diff_test(file_path, python_exe, build_profile=build_profile)
+        status = diff_test(
+            file_path, python_exe, build_profile=build_profile, targets=targets
+        )
     return {
         "path": file_path,
         "status": status,
@@ -2172,14 +2144,19 @@ class _TeeStream(io.TextIOBase):
 
 
 def _diff_run_single(
-    file_path: str, python_exe: str, build_profile: str
+    file_path: str,
+    python_exe: str,
+    build_profile: str,
+    targets: tuple[str, ...] = ("native",),
 ) -> dict[str, str]:
     buffer_out = io.StringIO()
     buffer_err = io.StringIO()
     out_stream = _TeeStream(sys.stdout, buffer_out)
     err_stream = _TeeStream(sys.stderr, buffer_err)
     with contextlib.redirect_stdout(out_stream), contextlib.redirect_stderr(err_stream):
-        status = diff_test(file_path, python_exe, build_profile=build_profile)
+        status = diff_test(
+            file_path, python_exe, build_profile=build_profile, targets=targets
+        )
     return {
         "path": file_path,
         "status": status,
@@ -3734,8 +3711,390 @@ def _print_rss_top(
             )
 
 
-def diff_test(file_path, python_exe=sys.executable, build_profile: str = "dev"):
-    """Run one differential test and return its RESOLVED status string.
+# ---------------------------------------------------------------------------
+# Multi-backend differential machinery (doc 66 FACT 2)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class _BackendOutcome:
+    """One backend's NORMALIZED outcome for a test: (stdout, stderr, rc).
+
+    `stdout` is None when the backend never produced output (build failure
+    before execution). Already passed through `_normalize_output` so the
+    comparison law sees the same canonical text the single-backend path used.
+    """
+
+    stdout: str | None
+    stderr: str
+    returncode: int
+
+
+# Distinct sentinels the per-backend runner returns for the two early-exit
+# conditions that are not a normal outcome: an OOM (retry-or-abort, mirrors the
+# historical native behavior) and an unavailable toolchain (LOUD uncalibrated).
+class _Sentinel:
+    __slots__ = ("name",)
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return f"<{self.name}>"
+
+
+_OOM_SENTINEL = _Sentinel("oom")
+_UNCALIBRATED_SENTINEL = _Sentinel("uncalibrated")
+
+
+def _is_compile_error(err: str) -> bool:
+    return any(tag in err for tag in ("SyntaxError", "IndentationError", "TabError"))
+
+
+_COMPAT_BACKEND_REGISTRY: dict[str, compat_backends.BackendAdapter] | None = None
+
+
+def _compat_backend_registry() -> dict[str, compat_backends.BackendAdapter]:
+    """The backend adapter registry, wiring native to this module's run_molt.
+
+    Built lazily (and cached) so the native adapter binds to the real run_molt
+    without an import cycle.
+    """
+    global _COMPAT_BACKEND_REGISTRY
+    if _COMPAT_BACKEND_REGISTRY is None:
+        _COMPAT_BACKEND_REGISTRY = compat_backends.build_registry(run_molt)
+    return _COMPAT_BACKEND_REGISTRY
+
+
+def _run_native_backend(
+    file_path: str,
+    build_profile: str,
+    molt_extra_env: dict[str, str],
+) -> tuple[str | None, str, int]:
+    """Run the NATIVE backend with the full dyld/daemon/OOM retry pipeline.
+
+    This is the historical single-backend path, unchanged in behavior; it is the
+    native adapter's implementation and is kept native-specific because the
+    daemon custody, dyld-quarantine, and isolated-retry machinery are all
+    native-shaped. Returns RAW (un-normalized) (stdout, stderr, rc); the caller
+    normalizes once for every backend.
+    """
+    molt_out, molt_err, molt_ret = run_molt(
+        file_path, build_profile, extra_env=molt_extra_env
+    )
+    saw_dyld_retry = False
+    if _diff_retry_dyld_default() and _is_dyld_unknown_imports(molt_err):
+        _mark_dyld_guard(file_path)
+        saw_dyld_retry = True
+        print(
+            "[RETRY] "
+            f"{file_path} encountered dyld unknown imports format; "
+            "retrying with backend daemon disabled (cache preserved)."
+        )
+        retry_out, retry_err, retry_ret = run_molt(
+            file_path,
+            build_profile,
+            daemon_enabled=False,
+            no_cache=False,
+            extra_env=molt_extra_env,
+        )
+        molt_out, molt_err, molt_ret = retry_out, retry_err, retry_ret
+        if _is_dyld_unknown_imports(molt_err):
+            print(
+                "[RETRY] "
+                f"{file_path} persistent dyld failure; retrying with "
+                "daemon disabled and --no-cache on shared target."
+            )
+            retry_out, retry_err, retry_ret = run_molt(
+                file_path,
+                build_profile,
+                daemon_enabled=False,
+                no_cache=True,
+            )
+            molt_out, molt_err, molt_ret = retry_out, retry_err, retry_ret
+        if _is_dyld_unknown_imports(molt_err) and _diff_force_rebuild_on_dyld():
+            print(
+                "[RETRY] "
+                f"{file_path} persistent dyld failure; retrying with "
+                "daemon disabled, --no-cache, and --rebuild."
+            )
+            retry_out, retry_err, retry_ret = run_molt(
+                file_path,
+                build_profile,
+                daemon_enabled=False,
+                no_cache=True,
+                rebuild=True,
+            )
+            molt_out, molt_err, molt_ret = retry_out, retry_err, retry_ret
+        if _is_dyld_unknown_imports(molt_err) and _diff_retry_isolated_default():
+            use_local_retry = _diff_dyld_local_fallback()
+            print(
+                "[RETRY] "
+                f"{file_path} persistent dyld failure; retrying with isolated "
+                f"{'local /tmp ' if use_local_retry else ''}"
+                "target/build-state, daemon off, and --rebuild."
+            )
+            with _isolated_retry_env(local_tmp=use_local_retry) as isolated_env:
+                retry_out, retry_err, retry_ret = run_molt(
+                    file_path,
+                    build_profile,
+                    daemon_enabled=False,
+                    no_cache=True,
+                    rebuild=True,
+                    extra_env=isolated_env,
+                )
+            molt_out, molt_err, molt_ret = retry_out, retry_err, retry_ret
+    if saw_dyld_retry and _diff_disable_daemon_on_dyld():
+        os.environ["MOLT_BACKEND_DAEMON"] = "0"
+        os.environ["MOLT_DIFF_FORCE_NO_CACHE"] = "1"
+        if _diff_force_rebuild_on_dyld():
+            os.environ["MOLT_DIFF_FORCE_REBUILD"] = "1"
+        if _diff_quarantine_on_dyld():
+            use_local_quarantine = _diff_dyld_local_fallback()
+            target_dir, state_dir, activated = _activate_dyld_quarantine_target(
+                use_local=use_local_quarantine
+            )
+            if activated:
+                print(
+                    "[WARN] dyld unknown imports format detected; forcing "
+                    "MOLT_BACKEND_DAEMON=0 and quarantining remaining tests to "
+                    f"{'local ' if use_local_quarantine else ''}"
+                    f"target={target_dir} state={state_dir} (rebuild forced)."
+                )
+        else:
+            print(
+                "[WARN] dyld unknown imports format detected; forcing "
+                "MOLT_BACKEND_DAEMON=0, --no-cache, and --rebuild for "
+                "remaining tests in this run (shared target retained)."
+            )
+    if molt_out is None and _is_backend_daemon_build_error(molt_err):
+        print(
+            "[RETRY] "
+            f"{file_path} backend daemon/cache build failure; retrying with "
+            "daemon disabled (cache preserved)."
+        )
+        retry_out, retry_err, retry_ret = run_molt(
+            file_path,
+            build_profile,
+            daemon_enabled=False,
+            no_cache=False,
+        )
+        molt_out, molt_err, molt_ret = retry_out, retry_err, retry_ret
+        if (
+            molt_out is None
+            and _is_backend_daemon_build_error(molt_err)
+            and _diff_retry_isolated_default()
+        ):
+            print(
+                "[RETRY] "
+                f"{file_path} persistent backend daemon/cache failure; retrying with "
+                "isolated target/build-state and --no-cache."
+            )
+            with _isolated_retry_env() as isolated_env:
+                retry_out, retry_err, retry_ret = run_molt(
+                    file_path,
+                    build_profile,
+                    daemon_enabled=False,
+                    no_cache=True,
+                    extra_env=isolated_env,
+                )
+            molt_out, molt_err, molt_ret = retry_out, retry_err, retry_ret
+        if molt_out is None and _is_backend_daemon_build_error(molt_err):
+            os.environ["MOLT_BACKEND_DAEMON"] = "0"
+            print(
+                "[WARN] Persistent backend daemon/cache failure detected; "
+                "forcing MOLT_BACKEND_DAEMON=0 for remaining tests in this run."
+            )
+    if molt_out is None and _is_timeout_error(molt_err) and _diff_retry_isolated_default():
+        print(
+            "[RETRY] "
+            f"{file_path} build timeout; retrying with isolated target/build-state."
+        )
+        with _isolated_retry_env() as isolated_env:
+            retry_out, retry_err, retry_ret = run_molt(
+                file_path,
+                build_profile,
+                daemon_enabled=False,
+                no_cache=True,
+                extra_env=isolated_env,
+            )
+        molt_out, molt_err, molt_ret = retry_out, retry_err, retry_ret
+    return molt_out, molt_err, molt_ret
+
+
+def _run_backend_for_diff(
+    *,
+    backend: str,
+    file_path: str,
+    build_profile: str,
+    molt_extra_env: dict[str, str],
+    normalize: set[str],
+    record: dict[str, object],
+) -> "_BackendOutcome | _Sentinel":
+    """Produce one backend's normalized outcome, or a sentinel.
+
+    Returns `_OOM_SENTINEL` (caller aborts the whole test as OOM, mirroring the
+    historical native behavior) or `_UNCALIBRATED_SENTINEL` (toolchain absent —
+    LOUD skip of this backend only). Otherwise a normalized `_BackendOutcome`.
+    """
+    if backend == "native":
+        raw_out, raw_err, raw_ret = _run_native_backend(
+            file_path, build_profile, molt_extra_env
+        )
+        # Pass the native outcome through the SAME fault-injection seam the other
+        # backends use, so the synthetic-divergence proof works uniformly on
+        # every backend (the seam is inert unless MOLT_COMPAT_FAULT_INJECT names
+        # this backend). Native keeps its rich retry pipeline above; only the
+        # final outcome is routed through the seam, symmetric with the adapters.
+        result = compat_backends._apply_fault_injection(
+            backend,
+            compat_backends.BackendResult(
+                stdout=raw_out,
+                stderr=raw_err,
+                returncode=raw_ret,
+                build_failed=raw_out is None,
+            ),
+        )
+        raw_out, raw_err, raw_ret = result.stdout, result.stderr, result.returncode
+    else:
+        registry = _compat_backend_registry()
+        adapter = registry.get(backend)
+        if adapter is None:
+            raise ValueError(f"unknown differential backend {backend!r}")
+        avail = adapter.availability()
+        if not avail.available:
+            print(
+                f"[UNCALIBRATED] {file_path} ({backend}: {avail.reason})"
+            )
+            return _UNCALIBRATED_SENTINEL
+        diff_caps = _diff_capabilities(os.environ)
+        result = adapter.build_and_run(
+            file_path,
+            build_profile,
+            extra_env=molt_extra_env,
+            capabilities=diff_caps,
+        )
+        # The fault-injection seam applies at exactly ONE layer (here), uniformly
+        # for every backend, so adapters stay pure build+run.
+        result = compat_backends._apply_fault_injection(backend, result)
+        raw_out, raw_err, raw_ret = result.stdout, result.stderr, result.returncode
+
+    if _should_retry_oom(raw_ret, raw_err):
+        return _OOM_SENTINEL
+
+    norm_out = _normalize_output(raw_out, normalize) if raw_out is not None else None
+    norm_err = _normalize_output(raw_err, normalize)
+    return _BackendOutcome(stdout=norm_out, stderr=norm_err, returncode=raw_ret)
+
+
+def _cross_backend_divergence(
+    per_backend: dict[str, "_BackendOutcome"],
+    *,
+    stdout_mode: str,
+    stderr_mode: str,
+) -> str | None:
+    """Return a detail string if any two backends disagree, else None.
+
+    The cross-backend divergence sub-oracle (doc 66 FACT 2): every backend that
+    produced output must agree with every other under the SAME comparison law
+    used against CPython. Build-failed backends are excluded from this check
+    (their CPython verdict already covers them); a divergence among the rest is a
+    molt-internal backend fork and is always a FAIL.
+    """
+    ran = {
+        name: outcome
+        for name, outcome in per_backend.items()
+        if outcome.stdout is not None
+    }
+    if len(ran) < 2:
+        return None
+    names = list(ran)
+    reference_name = names[0]
+    reference = ran[reference_name]
+    mismatches: list[str] = []
+    for name in names[1:]:
+        candidate = ran[name]
+        verdict = compat_comparison.compare_outputs(
+            compat_comparison.Outputs(
+                reference.stdout, reference.stderr, reference.returncode
+            ),
+            compat_comparison.Outputs(
+                candidate.stdout, candidate.stderr, candidate.returncode
+            ),
+            mode=stdout_mode,
+            stderr_mode=stderr_mode,
+        )
+        if not verdict.equal:
+            mismatches.append(
+                f"{reference_name} != {name} ({verdict.detail}); "
+                f"{reference_name} stdout={reference.stdout!r:.120} rc={reference.returncode}; "
+                f"{name} stdout={candidate.stdout!r:.120} rc={candidate.returncode}"
+            )
+    if not mismatches:
+        return None
+    return " | ".join(mismatches)
+
+
+def _emit_backend_pass(file_path: str, backend: str, *, single: bool) -> None:
+    if single:
+        print(f"[PASS] {file_path}")
+    else:
+        print(f"[PASS] {file_path} ({backend})")
+
+
+def _emit_backend_fail(
+    file_path: str,
+    backend: str,
+    cp_out: str,
+    cp_err: str,
+    cp_ret: int,
+    outcome: "_BackendOutcome",
+    detail: str,
+) -> None:
+    if outcome.stdout is None:
+        print(f"[FAIL] Molt failed to build {file_path} ({backend})")
+        print(outcome.stderr)
+        return
+    print(f"[FAIL] {file_path} ({backend}) mismatch{(': ' + detail) if detail else ''}")
+    print(f"  CPython stdout: {cp_out!r}")
+    print(f"  Molt    stdout: {outcome.stdout!r}")
+    print(f"  CPython return: {cp_ret} stderr: {cp_err!r}")
+    print(f"  Molt    return: {outcome.returncode} stderr: {outcome.stderr!r}")
+
+
+def _record_backend_result(
+    record: dict[str, object],
+    file_path: str,
+    backend: str,
+    raw_status: str,
+    expect_molt_fail: bool,
+) -> None:
+    """Append a per-backend honesty row so the (test x backend) matrix is fed.
+
+    The aggregate `record` keeps the overall test status (consumed by the
+    existing single-row honesty sink); this emits an ADDITIONAL row tagged with
+    the backend + cpython_version so tools/check_suite_honesty.py can dimension
+    the failure by backend exactly as it dimensions native today.
+    """
+    backend_rows = record.setdefault("backend_rows", [])
+    assert isinstance(backend_rows, list)
+    backend_rows.append(
+        {
+            "file": _normalize_repo_relative(file_path),
+            "backend": backend,
+            "raw_status": raw_status,
+            "expect_molt_fail": expect_molt_fail,
+        }
+    )
+
+
+def diff_test(
+    file_path,
+    python_exe=sys.executable,
+    build_profile: str = "dev",
+    targets: tuple[str, ...] = ("native",),
+):
+    """Run one differential test across `targets` and return its RESOLVED status.
 
     The resolved status applies the expected-failure (xfail/xpass) overlay so the
     nightly suite stays green for by-design exclusions. The SUITE-HONESTY ratchet
@@ -3746,6 +4105,14 @@ def diff_test(file_path, python_exe=sys.executable, build_profile: str = "dev"):
     surfaced here, at the single chokepoint that computes it, and appended to the
     optional results sink keyed by MOLT_DIFF_RESULTS_JSONL. The sink is off by
     default and never alters the returned (resolved) status.
+
+    MULTI-BACKEND (doc 66): `targets` selects which backend(s) to validate
+    (native / wasm / llvm / luau). Each backend is compared against CPython under
+    the ONE comparison law (tools/compat/comparison.py); when two or more
+    backends ran, they are also compared against EACH OTHER (the cross-backend
+    divergence sub-oracle). The test FAILS if any backend disagrees with CPython
+    OR any two backends disagree with each other — so a backend-specific
+    divergence that was previously invisible (single-backend native) is caught.
     """
     # Mutable record the inner finalizer fills in; emitted once on every exit
     # path (skip / oom / pass / fail). raw_status is authoritative for honesty.
@@ -3820,205 +4187,104 @@ def diff_test(file_path, python_exe=sys.executable, build_profile: str = "dev"):
             record["resolved_status"] = "skip"
             return "skip"
         molt_extra_env = _molt_sys_env_for_python_exe(python_exe)
-        molt_out, molt_err, molt_ret = run_molt(
-            file_path, build_profile, extra_env=molt_extra_env
-        )
-        saw_dyld_retry = False
-        if _diff_retry_dyld_default() and _is_dyld_unknown_imports(molt_err):
-            _mark_dyld_guard(file_path)
-            saw_dyld_retry = True
-            print(
-                "[RETRY] "
-                f"{file_path} encountered dyld unknown imports format; "
-                "retrying with backend daemon disabled (cache preserved)."
-            )
-            retry_out, retry_err, retry_ret = run_molt(
-                file_path,
-                build_profile,
-                daemon_enabled=False,
-                no_cache=False,
-                extra_env=molt_extra_env,
-            )
-            molt_out, molt_err, molt_ret = retry_out, retry_err, retry_ret
-            if _is_dyld_unknown_imports(molt_err):
-                print(
-                    "[RETRY] "
-                    f"{file_path} persistent dyld failure; retrying with "
-                    "daemon disabled and --no-cache on shared target."
-                )
-                retry_out, retry_err, retry_ret = run_molt(
-                    file_path,
-                    build_profile,
-                    daemon_enabled=False,
-                    no_cache=True,
-                )
-                molt_out, molt_err, molt_ret = retry_out, retry_err, retry_ret
-            if _is_dyld_unknown_imports(molt_err) and _diff_force_rebuild_on_dyld():
-                print(
-                    "[RETRY] "
-                    f"{file_path} persistent dyld failure; retrying with "
-                    "daemon disabled, --no-cache, and --rebuild."
-                )
-                retry_out, retry_err, retry_ret = run_molt(
-                    file_path,
-                    build_profile,
-                    daemon_enabled=False,
-                    no_cache=True,
-                    rebuild=True,
-                )
-                molt_out, molt_err, molt_ret = retry_out, retry_err, retry_ret
-            if _is_dyld_unknown_imports(molt_err) and _diff_retry_isolated_default():
-                use_local_retry = _diff_dyld_local_fallback()
-                print(
-                    "[RETRY] "
-                    f"{file_path} persistent dyld failure; retrying with isolated "
-                    f"{'local /tmp ' if use_local_retry else ''}"
-                    "target/build-state, daemon off, and --rebuild."
-                )
-                with _isolated_retry_env(local_tmp=use_local_retry) as isolated_env:
-                    retry_out, retry_err, retry_ret = run_molt(
-                        file_path,
-                        build_profile,
-                        daemon_enabled=False,
-                        no_cache=True,
-                        rebuild=True,
-                        extra_env=isolated_env,
-                    )
-                molt_out, molt_err, molt_ret = retry_out, retry_err, retry_ret
-        if saw_dyld_retry and _diff_disable_daemon_on_dyld():
-            os.environ["MOLT_BACKEND_DAEMON"] = "0"
-            os.environ["MOLT_DIFF_FORCE_NO_CACHE"] = "1"
-            if _diff_force_rebuild_on_dyld():
-                os.environ["MOLT_DIFF_FORCE_REBUILD"] = "1"
-            if _diff_quarantine_on_dyld():
-                use_local_quarantine = _diff_dyld_local_fallback()
-                target_dir, state_dir, activated = _activate_dyld_quarantine_target(
-                    use_local=use_local_quarantine
-                )
-                if activated:
-                    print(
-                        "[WARN] dyld unknown imports format detected; forcing "
-                        "MOLT_BACKEND_DAEMON=0 and quarantining remaining tests to "
-                        f"{'local ' if use_local_quarantine else ''}"
-                        f"target={target_dir} state={state_dir} (rebuild forced)."
-                    )
-            else:
-                print(
-                    "[WARN] dyld unknown imports format detected; forcing "
-                    "MOLT_BACKEND_DAEMON=0, --no-cache, and --rebuild for "
-                    "remaining tests in this run (shared target retained)."
-                )
-        if molt_out is None and _is_backend_daemon_build_error(molt_err):
-            print(
-                "[RETRY] "
-                f"{file_path} backend daemon/cache build failure; retrying with "
-                "daemon disabled (cache preserved)."
-            )
-            retry_out, retry_err, retry_ret = run_molt(
-                file_path,
-                build_profile,
-                daemon_enabled=False,
-                no_cache=False,
-            )
-            molt_out, molt_err, molt_ret = retry_out, retry_err, retry_ret
-            if (
-                molt_out is None
-                and _is_backend_daemon_build_error(molt_err)
-                and _diff_retry_isolated_default()
-            ):
-                print(
-                    "[RETRY] "
-                    f"{file_path} persistent backend daemon/cache failure; retrying with "
-                    "isolated target/build-state and --no-cache."
-                )
-                with _isolated_retry_env() as isolated_env:
-                    retry_out, retry_err, retry_ret = run_molt(
-                        file_path,
-                        build_profile,
-                        daemon_enabled=False,
-                        no_cache=True,
-                        extra_env=isolated_env,
-                    )
-                molt_out, molt_err, molt_ret = retry_out, retry_err, retry_ret
-            if molt_out is None and _is_backend_daemon_build_error(molt_err):
-                os.environ["MOLT_BACKEND_DAEMON"] = "0"
-                print(
-                    "[WARN] Persistent backend daemon/cache failure detected; "
-                    "forcing MOLT_BACKEND_DAEMON=0 for remaining tests in this run."
-                )
-        if _should_retry_oom(molt_ret, molt_err):
-            print(f"[OOM] {file_path}")
-            record["raw_status"] = "oom"
-            record["resolved_status"] = "oom"
-            return "oom"
-
         cp_out = _normalize_output(cp_out, normalize)
         cp_err = _normalize_output(cp_err, normalize)
-        if molt_out is not None:
-            molt_out = _normalize_output(molt_out, normalize)
-        molt_err = _normalize_output(molt_err, normalize)
 
-        if molt_out is None:
-            if _is_timeout_error(molt_err) and _diff_retry_isolated_default():
-                print(
-                    "[RETRY] "
-                    f"{file_path} build timeout; retrying with isolated target/build-state."
+        # The CPython oracle, the meta gating, the comparison law, and the
+        # cross-backend divergence check are all backend-INDEPENDENT (doc 66
+        # FACT 2). Only HOW a backend produces (stdout, stderr, rc) differs, and
+        # that lives in the backend adapter. `native` keeps the full dyld/daemon/
+        # OOM retry pipeline (it is native-shaped); other backends use their
+        # adapter's guarded build+run.
+        per_backend: dict[str, _BackendOutcome] = {}
+        for backend in targets:
+            outcome = _run_backend_for_diff(
+                backend=backend,
+                file_path=file_path,
+                build_profile=build_profile,
+                molt_extra_env=molt_extra_env,
+                normalize=normalize,
+                record=record,
+            )
+            if outcome is _OOM_SENTINEL:
+                print(f"[OOM] {file_path} ({backend})")
+                record["raw_status"] = "oom"
+                record["resolved_status"] = "oom"
+                return "oom"
+            if outcome is _UNCALIBRATED_SENTINEL:
+                # Toolchain for this backend is unavailable: a LOUD uncalibrated
+                # cell, never a silent skip and never a false pass. It does not
+                # block the other backends' verdicts.
+                continue
+            per_backend[backend] = outcome
+
+        if not per_backend:
+            # Every requested backend was uncalibrated (no toolchain). Surface a
+            # measured, non-green outcome rather than a silent pass.
+            print(f"[UNCALIBRATED] {file_path} (no requested backend available)")
+            record["raw_status"] = "uncalibrated"
+            record["resolved_status"] = "uncalibrated"
+            return "uncalibrated"
+
+        # --- Per-backend verdict vs CPython (the single comparison law) -------
+        def _verdict(outcome: "_BackendOutcome") -> tuple[bool, str]:
+            """(ok, detail) for one backend vs CPython under the one law."""
+            if outcome.stdout is None:
+                # Build failure. Mirror the historical parity case: a CPython
+                # compile error that Molt also rejects at build time is a PASS.
+                if (
+                    cp_ret != 0
+                    and _is_compile_error(cp_err)
+                    and _is_compile_error(outcome.stderr)
+                ):
+                    return True, ""
+                return False, "molt failed to build"
+            verdict = compat_comparison.compare_outputs(
+                compat_comparison.Outputs(cp_out, cp_err, cp_ret),
+                compat_comparison.Outputs(
+                    outcome.stdout, outcome.stderr, outcome.returncode
+                ),
+                mode=stdout_mode,
+                stderr_mode=stderr_mode,
+            )
+            return verdict.equal, verdict.detail
+
+        any_cpython_fail = False
+        backend_status: dict[str, str] = {}
+        for backend, outcome in per_backend.items():
+            ok, detail = _verdict(outcome)
+            backend_status[backend] = "pass" if ok else "fail"
+            if ok:
+                _emit_backend_pass(file_path, backend, single=len(targets) == 1)
+            else:
+                any_cpython_fail = True
+                _emit_backend_fail(
+                    file_path, backend, cp_out, cp_err, cp_ret, outcome, detail
                 )
-                with _isolated_retry_env() as isolated_env:
-                    retry_out, retry_err, retry_ret = run_molt(
-                        file_path,
-                        build_profile,
-                        daemon_enabled=False,
-                        no_cache=True,
-                        extra_env=isolated_env,
-                    )
-                molt_out, molt_err, molt_ret = retry_out, retry_err, retry_ret
-                if molt_out is not None:
-                    cp_out = _normalize_output(cp_out, normalize)
-                    cp_err = _normalize_output(cp_err, normalize)
-                    molt_out = _normalize_output(molt_out, normalize)
-                    molt_err = _normalize_output(molt_err, normalize)
-                    stderr_ok = _stderr_matches(cp_err, molt_err, stderr_mode)
-                    cp_cmp = _canonicalize_stdout(cp_out, stdout_mode)
-                    molt_cmp = _canonicalize_stdout(molt_out, stdout_mode)
-                    if cp_cmp == molt_cmp and cp_ret == molt_ret and stderr_ok:
-                        print(f"[PASS] {file_path}")
-                        return _finalize_status("pass")
-                    print(f"[FAIL] {file_path} mismatch")
-                    print(f"  CPython stdout: {cp_out!r}")
-                    print(f"  Molt    stdout: {molt_out!r}")
-                    print(f"  CPython return: {cp_ret} stderr: {cp_err!r}")
-                    print(f"  Molt    return: {molt_ret} stderr: {molt_err!r}")
-                    return _finalize_status("fail")
+            # Per-backend honesty row so the matrix join (test x backend) is fed
+            # for every backend that ran, not just the aggregate.
+            _record_backend_result(
+                record, file_path, backend, "pass" if ok else "fail", expect_molt_fail
+            )
 
-            def is_compile_error(err: str) -> bool:
-                return any(
-                    tag in err
-                    for tag in ("SyntaxError", "IndentationError", "TabError")
-                )
-
-            if cp_ret != 0 and is_compile_error(cp_err) and is_compile_error(molt_err):
-                print(f"[PASS] {file_path}")
-                return _finalize_status("pass")
-
-            print(f"[FAIL] Molt failed to build {file_path}")
-            print(molt_err)
+        # --- Cross-backend divergence sub-oracle (doc 66 FACT 2) --------------
+        # When >=2 backends produced output, they must agree with EACH OTHER
+        # under the same law. A divergence here is a molt-internal backend fork
+        # that requires zero CPython runs to localize, and is the direct witness
+        # of a "semantic authority is shared" violation. It is a FAIL even if
+        # (pathologically) every backend also disagreed with CPython the same
+        # way — backends disagreeing among themselves is never acceptable.
+        divergence_detail = _cross_backend_divergence(
+            per_backend, stdout_mode=stdout_mode, stderr_mode=stderr_mode
+        )
+        if divergence_detail is not None:
+            print(f"[FAIL] {file_path} CROSS-BACKEND DIVERGENCE")
+            print(f"  {divergence_detail}")
             return _finalize_status("fail")
 
-        stderr_ok = _stderr_matches(cp_err, molt_err, stderr_mode)
-        cp_cmp = _canonicalize_stdout(cp_out, stdout_mode)
-        molt_cmp = _canonicalize_stdout(molt_out, stdout_mode)
-
-        if cp_cmp == molt_cmp and cp_ret == molt_ret and stderr_ok:
-            print(f"[PASS] {file_path}")
-            return _finalize_status("pass")
-        else:
-            print(f"[FAIL] {file_path} mismatch")
-            print(f"  CPython stdout: {cp_out!r}")
-            print(f"  Molt    stdout: {molt_out!r}")
-            print(f"  CPython return: {cp_ret} stderr: {cp_err!r}")
-            print(f"  Molt    return: {molt_ret} stderr: {molt_err!r}")
+        if any_cpython_fail:
             return _finalize_status("fail")
+        return _finalize_status("pass")
 
     try:
         return _impl()
@@ -4031,6 +4297,7 @@ def run_diff(
     python_exe: str,
     build_profile: str = "dev",
     *,
+    targets: tuple[str, ...] = ("native",),
     jobs: int | None = None,
     log_dir: Path | None = None,
     log_file: Path | None = None,
@@ -4123,7 +4390,7 @@ def run_diff(
             with _open_log_file(log_aggregate) as aggregate_handle:
                 for file_path in test_files:
                     payload = _diff_run_single(
-                        str(file_path), python_exe, build_profile
+                        str(file_path), python_exe, build_profile, targets
                     )
                     path = payload["path"]
                     status = payload["status"]
@@ -4184,7 +4451,11 @@ def run_diff(
                 with executor_ctx as executor:
                     futures = {
                         executor.submit(
-                            _diff_worker, str(file_path), python_exe, build_profile
+                            _diff_worker,
+                            str(file_path),
+                            python_exe,
+                            build_profile,
+                            targets,
                         ): str(file_path)
                         for file_path in test_files
                     }
@@ -4269,7 +4540,7 @@ def run_diff(
                 echo=True,
             )
         for path in oom_paths:
-            retry_payload = _diff_run_single(path, python_exe, build_profile)
+            retry_payload = _diff_run_single(path, python_exe, build_profile, targets)
             status_by_path[path] = retry_payload["status"]
             outputs[path] = retry_payload
     discovered = len(status_by_path)
@@ -4436,6 +4707,19 @@ if __name__ == "__main__":
         ),
     )
     parser.add_argument(
+        "--target",
+        action="append",
+        default=[],
+        help=(
+            "Backend(s) to validate against CPython: native (default), wasm, "
+            "llvm, luau, or 'all'. Repeatable and comma-separated "
+            "(e.g. --target native,wasm). When two or more backends run, they "
+            "are ALSO compared against each other (cross-backend divergence is a "
+            "FAIL). A backend whose toolchain is unavailable is reported as a "
+            "loud 'uncalibrated', never a silent skip."
+        ),
+    )
+    parser.add_argument(
         "--stdlib-profile",
         choices=["micro", "full"],
         default=None,
@@ -4509,6 +4793,11 @@ if __name__ == "__main__":
     if args.stdlib_profile is not None:
         os.environ["MOLT_DIFF_STDLIB_PROFILE"] = args.stdlib_profile
     build_profile = args.build_profile or _diff_build_profile()
+    try:
+        backend_targets = tuple(compat_backends.normalize_targets(args.target))
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(2)
 
     log_dir = Path(args.log_dir).expanduser() if args.log_dir else None
     log_file = Path(args.log_file).expanduser() if args.log_file else None
@@ -4544,6 +4833,7 @@ if __name__ == "__main__":
                 targets,
                 python_exe,
                 build_profile=build_profile,
+                targets=backend_targets,
                 jobs=args.jobs,
                 log_dir=log_dir,
                 log_file=log_file,
@@ -4567,6 +4857,7 @@ if __name__ == "__main__":
             Path("temp_test.py"),
             python_exe,
             build_profile=build_profile,
+            targets=backend_targets,
             jobs=args.jobs,
             log_dir=log_dir,
             log_file=log_file,
