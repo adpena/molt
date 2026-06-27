@@ -11,19 +11,19 @@ pub(super) fn emit_state_transition(
     depth: u32,
 ) {
     let args = op.args.as_ref().unwrap();
-    let future = op_emitter.locals[&args[0]];
+    let future = op_emitter.locals()[&args[0]];
     let (slot_bits, pending_state) = if args.len() == 2 {
-        (None, op_emitter.locals[&args[1]])
+        (None, op_emitter.locals()[&args[1]])
     } else {
         (
-            Some(op_emitter.locals[&args[1]]),
-            op_emitter.locals[&args[2]],
+            Some(op_emitter.locals()[&args[1]]),
+            op_emitter.locals()[&args[2]],
         )
     };
     let pending_state_name = if args.len() == 2 { &args[1] } else { &args[2] };
     let pending_target_idx = pending_encoded_target(plan, pending_state_name);
     let next_state_id = op.value.unwrap();
-    let out = op_emitter.locals[op.out.as_ref().unwrap()];
+    let out = op_emitter.locals()[op.out.as_ref().unwrap()];
     let next_block = idx + 1;
     let return_depth = depth + 2;
 
@@ -99,7 +99,7 @@ pub(super) fn emit_state_yield(
     idx: usize,
 ) {
     let args = op.args.as_ref().unwrap();
-    let pair = op_emitter.locals[&args[0]];
+    let pair = op_emitter.locals()[&args[0]];
     let resume_state_id = op.value.unwrap();
     let resume_encoded = plan
         .state_resume
@@ -139,12 +139,12 @@ pub(super) fn emit_chan_send_yield(
     depth: u32,
 ) {
     let args = op.args.as_ref().unwrap();
-    let chan = op_emitter.locals[&args[0]];
-    let val = op_emitter.locals[&args[1]];
-    let pending_state = op_emitter.locals[&args[2]];
+    let chan = op_emitter.locals()[&args[0]];
+    let val = op_emitter.locals()[&args[1]];
+    let pending_state = op_emitter.locals()[&args[2]];
     let pending_target_idx = pending_encoded_target(plan, &args[2]);
     let next_state_id = op.value.unwrap();
-    let out = op_emitter.locals[op.out.as_ref().unwrap()];
+    let out = op_emitter.locals()[op.out.as_ref().unwrap()];
     emit_prepare_pending_yield(
         func,
         op_emitter,
@@ -173,11 +173,11 @@ pub(super) fn emit_chan_recv_yield(
     depth: u32,
 ) {
     let args = op.args.as_ref().unwrap();
-    let chan = op_emitter.locals[&args[0]];
-    let pending_state = op_emitter.locals[&args[1]];
+    let chan = op_emitter.locals()[&args[0]];
+    let pending_state = op_emitter.locals()[&args[1]];
     let pending_target_idx = pending_encoded_target(plan, &args[1]);
     let next_state_id = op.value.unwrap();
-    let out = op_emitter.locals[op.out.as_ref().unwrap()];
+    let out = op_emitter.locals()[op.out.as_ref().unwrap()];
     emit_prepare_pending_yield(
         func,
         op_emitter,
