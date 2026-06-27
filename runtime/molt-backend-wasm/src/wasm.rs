@@ -30,7 +30,6 @@ mod op_loop;
 mod state_dispatch;
 mod tir_pipeline;
 mod trampoline_analysis;
-mod trampolines;
 use crate::wasm_plan::{
     DEFAULT_GPU_INTRINSIC_MANIFEST_NAMES, compute_lir_wasm_fast_outputs_from_final_ir,
     detect_multi_return_candidates, emit_wasm_stage_audit, gpu_runtime_call_symbol,

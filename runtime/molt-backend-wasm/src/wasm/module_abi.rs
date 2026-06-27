@@ -7,6 +7,7 @@ use runtime_surface::WasmRuntimeSurfacePlan;
 mod callable_table;
 mod imports;
 mod runtime_surface;
+mod trampoline_emit;
 
 impl WasmBackend {
     pub(super) fn emit_wasm_module(
