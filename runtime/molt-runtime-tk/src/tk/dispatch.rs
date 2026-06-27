@@ -22,6 +22,8 @@ use super::tix_commands::{
 #[cfg(any(target_arch = "wasm32", not(feature = "native-tcl")))]
 use super::widget_create::{handle_widget_create_command, is_widget_constructor_command};
 #[cfg(any(target_arch = "wasm32", not(feature = "native-tcl")))]
+use super::widgets::menu::handle_menu_popup_command;
+#[cfg(any(target_arch = "wasm32", not(feature = "native-tcl")))]
 use super::winfo_commands::handle_winfo_command;
 #[cfg(any(target_arch = "wasm32", not(feature = "native-tcl")))]
 use super::wm_commands::handle_wm_command;
@@ -231,45 +233,6 @@ pub(super) fn native_loadtk_command(py: &PyToken, handle: i64, args: &[u64]) -> 
     }
 }
 
-pub(super) fn handle_tk_popup_command(py: &PyToken, handle: i64, args: &[u64]) -> Result<u64, u64> {
-    if args.len() != 4 && args.len() != 5 {
-        return Err(raise_tcl_for_handle(
-            py,
-            handle,
-            "tk_popup expects menu path, x, y, and optional entry index",
-        ));
-    }
-    let menu_path = get_string_arg(py, handle, args[1], "tk_popup menu path")?;
-    let x = parse_i64_arg(py, handle, args[2], "tk_popup x")?;
-    let y = parse_i64_arg(py, handle, args[3], "tk_popup y")?;
-    let mut registry = tk_registry().lock().unwrap();
-    let app = app_mut_from_registry(py, &mut registry, handle)?;
-    let Some(widget) = app.widgets.get_mut(&menu_path) else {
-        return Err(app_tcl_error_locked(
-            py,
-            app,
-            format!("bad window path name \"{menu_path}\""),
-        ));
-    };
-    if widget.widget_command != "menu" {
-        return Err(app_tcl_error_locked(
-            py,
-            app,
-            format!("widget \"{menu_path}\" is not a menu"),
-        ));
-    }
-    widget.menu_posted_at = Some((x, y));
-    if args.len() == 5 {
-        widget.menu_active_index = parse_menu_existing_index_bits(
-            args[4],
-            widget.menu_entries.len(),
-            widget.menu_active_index,
-        );
-    }
-    app.last_error = None;
-    Ok(MoltObject::none().bits())
-}
-
 /// Single-lock resolution of a `tk.call` command on the native (libtcl) path.
 /// One registry lock acquisition gathers everything the hot path needs:
 /// whether the command names a bound Python callback, whether it names a file
@@ -397,7 +360,7 @@ pub(super) fn tk_call_dispatch(py: &PyToken, handle: i64, args: &[u64]) -> Resul
         match command.as_str() {
             "tk_messageBox" | "tk_getOpenFile" | "tk_getSaveFile" | "tk_chooseDirectory"
             | "tk_chooseColor" => handle_headless_commondialog_command(py, handle, args),
-            "tk_popup" => handle_tk_popup_command(py, handle, args),
+            "tk_popup" => handle_menu_popup_command(py, handle, args),
             "tk_dialog" => handle_headless_tk_dialog_command(py, handle, args),
             "set" => handle_set_command(py, handle, args),
             "unset" => handle_unset_command(py, handle, args),
