@@ -3,11 +3,12 @@ use std::env;
 use std::fs;
 use std::io::{self, Read};
 
+use molt_backend::SimpleIR;
 use molt_backend::tir::lir::{LirFunction, LirRepr};
 use molt_backend::tir::ops::{AttrValue, OpCode, TirOp};
 use molt_backend::tir::types::TirType;
 use molt_backend::tir::values::ValueId;
-use molt_backend::{SimpleIR, rewrite_annotate_stubs};
+use molt_tir::ir_rewrites::{rewrite_annotate_stubs, rewrite_phi_to_store_load};
 use serde_json::{Value, json};
 
 #[derive(Default)]
@@ -149,7 +150,7 @@ fn read_input() -> Result<String, String> {
 }
 
 fn rewrite_phi(func: &mut molt_backend::FunctionIR) {
-    molt_backend::rewrite_phi_to_store_load(&mut func.ops);
+    rewrite_phi_to_store_load(&mut func.ops);
 }
 
 fn collect_function_stats(func: &LirFunction) -> FunctionStats {

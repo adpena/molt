@@ -8,9 +8,7 @@ use super::{
 };
 use crate::TrampolineKind;
 use crate::ir::{FunctionIR, OpIR, SimpleIR};
-use crate::ir_rewrites::{elide_useless_try_blocks, elide_useless_try_blocks_for_function};
 use crate::passes::ReturnAliasSummary;
-use crate::rewrite_phi_to_store_load;
 use cranelift_codegen::ir::Value;
 use cranelift_codegen::ir::types;
 use cranelift_module::Module;
@@ -186,7 +184,6 @@ mod codegen_regressions;
 mod compile_pipeline;
 mod deferred_codegen;
 mod fail_closed_codegen;
-mod ir_rewrites;
 mod llvm_backend;
 mod module_metadata;
 mod tir_analysis;

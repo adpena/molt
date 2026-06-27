@@ -595,3 +595,7 @@ mod tests {
         assert_eq!(ops[2].args.as_ref(), Some(&args(&["slot"])));
     }
 }
+
+#[cfg(test)]
+#[path = "ir_rewrites/regression_tests.rs"]
+mod regression_tests;
