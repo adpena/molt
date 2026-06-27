@@ -1,46 +1,41 @@
-<!-- Update 2026-06-27: the math-family, XML, difflib, and ipaddress fallback
-lanes have been deleted. The path satellite now owns the event-specific
-capability audit bridge, so `os_ext`/`pathlib` leaf code no longer emits generic
-`path.has_capability` events or skips gates for process/env/path operations.
-The live satellite parity guard tracks 4 remaining dual-path pairs with a
-residual ceiling of 886: functions_logging=89, itertools=273, os_ext=277,
-pathlib=247. cmath_mod, colorsys, fractions, math, random_mod, xml_etree,
-xml_sax, difflib, and ipaddress are no longer PAIRS entries. Their leaf crates
-own the Rust implementations and generated leaf resolver modules. -->
+<!-- Update 2026-06-27: every tracked in-tree/satellite two-copy runtime stdlib
+pair has been deleted or single-sourced. The live satellite parity guard tracks
+0 remaining dual-path pairs with residual ceiling 0. Reduced builds now compile
+leaf-owned satellite source by direct include where a reduced-tier fallback is
+still needed: `functions_logging`, `itertools`, `os_ext`, and `pathlib` all use
+the leaf crate source instead of a second in-tree implementation. -->
 
 <!-- Foundation blueprint 21e. Architect: portfolio-architect (Plan agent), 2026-06-24.
 Executable plan for decomposition move #4 — the molt-runtime satellite dedup arc (R.2 + R.3).
 Supersedes doc 21 §1.4/§2.4 prose AND the missing memory/recovery/baton_move_R_satellite_drift.md
-(this doc is the authoritative R-arc record). Verified against live HEAD 2d788293a. Design only. -->
+(this doc is the authoritative R-arc record). The original execution plan is
+retained below as archived context; the live 2026-06-27 status is zero tracked
+dual-path pairs with a zero residual ceiling. -->
 
-# 21e — molt-runtime Satellite Dedup Arc (R.2 + R.3), executable plan
+# 21e — molt-runtime Satellite Dedup Arc (R.2 + R.3), zero-pair status
 
-## PREFACE — premise drifted from doc 21 (verified live, absorb before executing)
-1. **24 pairs, not 28.** `builtins/mod.rs` has 24 `#[cfg(not(feature="stdlib_*"))]` gates; `tools/check_satellite_parity.py` PAIRS has 24. `zoneinfo` already deleted (`e4f9300bf`) — one R.3-style deletion already landed (the template). ~3 others were never dual-path (leaf-only — see #6).
-2. **The R.1 parity guard is RED at committed HEAD.** `python tools/check_satellite_parity.py` fails: ipaddress 0→6, fractions 0→2, os_ext 286→345, decimal 2→12; total residual **2193 > ceiling 2116**. Committed drift (confirmed via git stash — satellite files unmodified vs HEAD). **R.2/R.3 cannot start on a red oracle → this is Step R.0.**
-3. **doc 21's "12 pairs at zero residual" is stale** — live baseline shows **7** zero-residual: cmath_mod, difflib, fractions, functions_zipfile, ipaddress, xml_etree, xml_sax. doc 21's named list is wrong (stringprep/html/unicodedata/zoneinfo no longer in PAIRS; http has 381 residual). Always use live `--verbose`, never doc 21's list.
-4. **The R.2 access-unification abstraction ALREADY EXISTS and is piloted.** `molt-runtime-core` provides `CoreGilToken (= PyToken)`, `with_core_gil!`, `with_gil_entry_body!`, `RuntimeVtable`, `prelude`. **`molt-runtime-serial` is a working `RuntimeVtable` pilot.** R.2 is therefore "generalize the serial vtable pattern to the other 15 satellites," NOT green-field — far lower risk than doc 21 implies.
+## PREFACE — live status after completion
+1. **Zero tracked dual-path pairs.** `tools/check_satellite_parity.py` has an empty `PAIRS` table and `tools/satellite_parity_baseline.json` has residual ceiling 0.
+2. **The parity guard is green at zero.** `python tools/check_satellite_parity.py --verbose` reports 0 pairs and total residual 0. Any future in-tree/satellite pair is new authority debt and must be declared explicitly.
+3. **Reduced-tier fallbacks are single-source.** The remaining fallback paths that still need reduced-tier source (`functions_logging`, `itertools`, `os_ext`, and `pathlib`) compile leaf-owned Rust source by direct `#[path]` include rather than keeping a second in-tree implementation.
+4. **The R.2 access-unification abstraction still matters for future satellites.** `molt-runtime-core` provides `CoreGilToken (= PyToken)`, `with_core_gil!`, `with_gil_entry_body!`, `RuntimeVtable`, and `prelude`; `molt-runtime-serial` remains the RuntimeVtable pilot.
 5. **The recovery baton `memory/recovery/baton_move_R_satellite_drift.md` does not exist** (only genthrow_51/, takeover_20260609/). Every cross-ref to it dangles. 21e supersedes it.
-6. **Scope boundary:** net, asyncio, collections, stringprep, text are LEAF-ONLY (no in-tree mod fallback) → out of scope. Only the 24 dual-path PAIRS are in scope.
+6. **The historical sections below are an archive, not a live work queue.** Use the live guard, checked-in source, and current generated artifacts before deriving new work from old residual counts.
 
 ## 1. CURRENT-STATE MAP (verified)
-### 1.1 Live remaining pairs after R.3 deletions and path-audit reconciliation
+### 1.1 Live remaining pairs after R.3 deletions
 
 As of 2026-06-27, `python tools/check_satellite_parity.py --verbose` reports:
 
 | pair | residual | satellite | remaining structural work |
 |---|--:|---|---|
-| functions_logging | 89 | logging/http family | reconcile logging extension state and delete/own the remaining fallback lane |
-| itertools | 273 | itertools | reconcile iterator/runtime-state drift before any deletion |
-| os_ext | 277 | path | remaining drift is dir-fd helper locality, WASM/sysconf/list-allocation source shape, and source spelling around the new path audit bridge |
-| pathlib | 247 | path | remaining drift is mostly source spelling around the new path audit helper; behavior now uses event-specific `pathlib.*` audit names |
+| none | 0 | n/a | PAIRS is empty; reintroducing a two-copy pair is new debt and must be justified as an explicit authority decision |
 
-The current ratchet ceiling is 886. `os_ext`/`pathlib` are still dual-path and
-must not be deleted until residual reaches zero, but the access-policy authority
-behind the path satellite is now event-specific rather than the old generic
-`path.has_capability` bridge side effect.
+The current ratchet ceiling is 0. The remaining reduced-tier fallbacks are
+single-source `#[path]` direct includes of satellite-owned Rust files, not
+separate in-tree implementations.
 
-### 1.1 Historical 24-pair map from the initial 21e audit
+### 1.1 Historical 24-pair map from the initial 21e audit (archived)
 | pair | residual | satellite | gate |
 |---|--:|---|---|
 | cmath_mod,difflib,functions_zipfile,xml_etree,xml_sax | 0 | math/difflib/serial/xml/xml | resp. |
@@ -53,10 +48,10 @@ behind the path satellite is now event-specific rather than the old generic
 | itertools 273, pathlib 277 | | itertools/path | resp. |
 | os_ext | **345**(was 286) | path | not stdlib_path |
 | functions_http | 381 | http | not stdlib_http |
-(Bold = drifted past baseline → currently failing.)
+(Archived counts from the initial audit. They are not current status.)
 
-### 1.2 Dual-path mechanism
-Same downstream symbol namespace fed by one of two sources per feature: in-tree (`#[cfg(not(feature="stdlib_X"))] pub(crate) mod X;` in builtins/mod.rs + `pub use crate::builtins::X::*` in lib.rs) vs satellite (`#[cfg(feature="stdlib_X")] pub use molt_runtime_X::X::*` in lib.rs:752+). Both re-export into the SAME molt-runtime namespace → resolver/callers identical, only the source crate differs by feature. An R.3 deletion is a pure source swap, no resolver changes (zoneinfo precedent confirms).
+### 1.2 Historical dual-path mechanism
+The original failure mode was the same downstream symbol namespace fed by one of two sources per feature: in-tree (`#[cfg(not(feature="stdlib_X"))] pub(crate) mod X;` in builtins/mod.rs + `pub use crate::builtins::X::*` in lib.rs) vs satellite (`#[cfg(feature="stdlib_X")] pub use molt_runtime_X::X::*`). The tracked copy pairs are now gone. Current reduced-tier fallbacks must stay single-source direct includes or leaf-only routes; reintroducing a second physical implementation is new debt.
 
 ### 1.3 Tier → copy mapping
 Feature chain micro ⊂ edge ⊂ standard ⊂ server ⊂ full; default profile = micro (cli). `default=["stdlib_full",...]` → the default native build already activates every satellite, so R.3's "default includes the satellite" is already satisfied for default; the real constraint is the REDUCED tiers (micro/edge/standard) that omit satellites for binary size, plus the WASM feature set. Deleting an in-tree copy forces its satellite ON in those tiers (zoneinfo added stdlib_zoneinfo to categories.toml feature attribution and regenerated _runtime_feature_gates.py).
@@ -71,7 +66,7 @@ Feature chain micro ⊂ edge ⊂ standard ⊂ server ⊂ full; default profile =
 
 ### 1.6 The R.1 guard invariant (R.2/R.3 must preserve): tools/check_satellite_parity.py + tests/satellite_parity.rs. Per pair: normalize access-layer diffs (_strip_use_blocks, GIL macros→__GIL__!, tokens→__TOK__, strip crate::/bridge::/molt_runtime_core:: prefixes, collapse unsafe{}, strip #[cfg(test)]+comments), compare sorted line-multiset symmetric difference. FAIL if any pair's residual > baseline, content-hash differs at equal count, a pair is missing, or total > ratchet_ceiling (one-way ratchet). R.2 changes to canonical access spelling MUST update the normalizer in the SAME commit. `tools/check_runtime_symbol_owners.py` is the sibling satellite-link guard: every `#[no_mangle] extern "C"` symbol may have only one satellite-crate owner under `stdlib_full`, so accidental cross-satellite duplicates fail before the linker.
 
-## 2. R.0 — UNBLOCK THE GUARD (prerequisite, do first)
+## 2. R.0 — UNBLOCK THE GUARD (archived; complete for tracked pairs)
 Reconciliation in the spirit of R.1 (NOT new R.2/R.3). Steps (each its own commit; guard-green at end):
 1. Triage the 4 regressions: `check_satellite_parity.py --show <pair>` for ipaddress, fractions, os_ext, decimal (`<`=in-tree-only, `>`=satellite-only).
 2. Port each one-sided fix into the OTHER copy (behavior-preserving; the guard is the oracle, the differential suite tests/differential/stdlib/ is the proof — run on BOTH tiers: default=satellite, MOLT_STDLIB_PROFILE=micro=in-tree). Never pick a side blindly. Add a differential regression passing on both tiers.
@@ -79,7 +74,7 @@ Reconciliation in the spirit of R.1 (NOT new R.2/R.3). Steps (each its own commi
 4. Gate: `cargo test -p molt-runtime --features stdlib_full --test satellite_parity` green; the 4 pairs at committed counts or lower.
 Parallelizable: 4 reconciliations touch disjoint pairs → 4 workers; the baseline re-ratchet is one serializing commit.
 
-## 3. R.2 — ACCESS-LAYER UNIFICATION (one source compiles in both contexts)
+## 3. R.2 — ACCESS-LAYER UNIFICATION (archived design pattern)
 **Design decision: generalize the serial RuntimeVtable; do NOT invent a new shim.** The single source of truth per module is the SATELLITE file, written against a UNIFIED ACCESS FACADE that cfg-resolves to (a) RuntimeVtable FFI dispatch standalone, (b) direct `crate::` calls when compiled inside molt-runtime. Vtable is the right target: collapses the FFI surface (serial 1 extern getter + 66 fn-ptrs vs http 56 no_mangle), already takes `&PyToken`.
 
 Three pieces (all build on existing code):
@@ -102,24 +97,40 @@ After R.2, files are identical modulo a single cfg-selected facade import → pr
 Order: **serial family first** (already on vtable — only needs facade + unified macro: csv/structs/configparser/datetime/base64_mod/binascii/functions_email/functions_zipfile/decimal); prove single-source on functions_zipfile (residual 0). Then per-symbol satellites simplest→hardest by no_mangle count: difflib→ipaddress→logging→text→itertools→regex→crypto/path/collections→http/math.
 Per-step gate (every commit): `check_satellite_parity.py` green (residual not grown; extend normalizer in the SAME commit if canonical spelling changes + re-ratchet); `tools/check_runtime_symbol_owners.py` green (no duplicate satellite owners); `cargo build -p molt-runtime --no-default-features --features stdlib_micro` AND `--features stdlib_full` both compile; `cargo build -p molt-runtime-<crate>` standalone; differential suite green on BOTH tiers; nm/symbol check (per-symbol externs → one vtable getter; the satellite-side G5).
 
-## 4. R.3 — PER-SATELLITE DEDUP (delete the in-tree copy, no compat shim)
+## 4. R.3 — PER-SATELLITE DEDUP (archived recipe; tracked pairs complete)
 **Two shapes (zoneinfo precedent `e4f9300bf` = outright delete, recommended):**
 - **Option A (outright delete, recommended):** delete builtins/X.rs; remove the `#[cfg(not())] mod X;` + the `not()` re-export (keep only the `feature` re-export); make stdlib_X mandatory for the tiers that used the in-tree copy (add to stdlib_micro/edge/standard as needed + categories.toml feature attribution + generated _runtime_feature_gates.py + resolver output); update the CLI profile-feature gate (_enforce_profile_feature_availability/CAPABILITY_PROFILES in cli/__init__.py + tests/cli/test_cli_profile_feature_refusal.py); remove the pair from PAIRS + re-ratchet (total drops by its residual, must be 0).
 - **Option B (`#[path]` single-source):** in-tree `mod X` becomes `#[cfg(not(feature="stdlib_X"))] #[path="../../../molt-runtime-X/src/X.rs"] mod X;` (needs R.2's facade). Keeps source single without forcing the satellite into micro.
 - **Decision rule:** A for light modules; B for modules whose satellite drags heavy deps (rustls/mio/serde_json) into micro/edge. Check `cargo tree -f '{p} {f}'` first (doc 21's feature-unification trap).
 
-### 4.2 R.3 ordering (lowest-risk first; HARD PRECONDITION: residual 0 before any deletion)
-1. functions_zipfile (0, serial) — validates the recipe. 2. Other zero-residual: cmath_mod, difflib, ipaddress(post-R.0), fractions(post-R.0), xml_etree, xml_sax. 3. Low-residual after reconciliation to 0: binascii, base64_mod, datetime, colorsys, functions_email, regex. 4. High-residual (reconcile to 0 first): functions_logging, structs, csv, math, configparser, random_mod, itertools(re-verify post-267df44e9), pathlib, os_ext(post-R.0), functions_http(reconcile the stdlib_net-gated blocks). 5. decimal LAST + bespoke.
-Per-step gate: guard green + pair removed from PAIRS + ceiling ratcheted down; both build contexts compile (reduced tier + stdlib_full + WASM if applicable); differential green every tier; binary-size delta measured (A should be ≤0; if a satellite drags heavy deps into a reduced tier, use B); `cargo tree` diff (no unintended feature flip); no new duplication (grep).
+### 4.2 R.3 ordering (closed for tracked pairs)
+The tracked R.3 pair list is complete: PAIRS is empty and the residual ceiling is
+0. Future satellite decomposition work must start by proving whether a proposed
+fallback is a single-source direct include or a new two-copy authority. A new
+two-copy authority must be added to PAIRS intentionally, guarded immediately,
+and retired back to zero before it can be treated as stable architecture.
 
-## 5. ORDERING SUMMARY
+Per-step gate for any future reintroduction: guard green + pair removed from
+PAIRS + ceiling ratcheted back to zero; both build contexts compile (reduced
+tier + stdlib_full + WASM if applicable); differential green every tier; binary
+size and cargo-tree deltas measured when a reduced tier changes; no new
+duplication.
+
+## 5. HISTORICAL ORDERING SUMMARY
 R.0 fix red guard (ipaddress/fractions/os_ext/decimal + re-ratchet) [4+1 commits] → R.2a access facade + unified macro [1] → R.2b serial family through facade [3-5] → R.2c single-source functions_zipfile [1] → R.2d per-symbol satellites to vtable simplest→hardest [~15] → R.3 per-pair dedup residual-0, light/zero first, decimal last [~24]. R.0 unblocks the oracle; R.2 precedes every R.3 (one source must satisfy both ABIs first); serial pilots R.2 (already on the target vtable). **Swarm parallelism:** R.2d + R.3 parcel per-crate EXCEPT shared serializing files — check_satellite_parity.py (PAIRS, normalizer) + satellite_parity_baseline.json (one owner re-ratchets), lib.rs re-export block + builtins/mod.rs (merge contention), the RuntimeVtable struct (additive, coordinate).
 
 ## 6. RISKS
-Guard already red → R.0 first. Reconcile-by-picking-a-side drops behavior → guard is oracle, differential on BOTH tiers is proof, never delete a copy with residual>0. Two bridge architectures → generalize the proven serial vtable, not a third shim. Normalizer must track canonical spelling → update GIL_MACROS/PREFIXES/RT_WRAPPER_EQUIVALENTS/TOKEN_TYPES in the same commit. One source two ABIs → the access facade is the seam (standalone=extern vtable, in-tree=direct); validate both builds every commit. Heavy-dep leak into micro → cargo tree before each deletion, Option B for heavy. decimal mpdec split → bespoke, last. itertools RuntimeState slots → re-verify post-267df44e9. functions_http residual is mostly stdlib_net-gated ctypes/urllib → reconcile into satellite respecting the net gate. Shared serializing files → one baseline owner. Dangling baton → 21e supersedes it.
+Current risks: accidental reintroduction of a two-copy fallback, direct-include
+bridge facade growth, and reduced/full build skew around the shared leaf source.
+The guard is green and zero-pair; if a future pair is added, PAIRS plus the
+baseline must move in the same change and retire back to zero. Validate both
+reduced and full builds whenever a direct-include fallback or satellite bridge
+helper changes. If `runtime/molt-runtime/src/bridge.rs` grows another helper
+family, split it behind submodules while keeping the `crate::bridge::*` facade
+for leaf sources.
 
 ## 7. ALREADY DONE (do not redo)
-R.1 landed: guard (230789ab5), csv reconcile (3b2ac0129), doc correction (8ded12e06), itertools slot-scoping (267df44e9), binascii/http sweep (f95225814), satellite clippy gate (ff22a06c7). R.3 deletions have landed for zoneinfo (e4f9300bf, the template), the math family, XML, difflib, and ipaddress. Path access reconciliation has landed an event-specific audit bridge for `molt-runtime-path`; remaining `os_ext`/`pathlib` drift is no longer a missing capability-gate or generic-audit problem. R.2 abstraction partially exists: molt-runtime-core (CoreGilToken/with_core_gil!/with_gil_entry_body!/RuntimeVtable/prelude); molt-runtime-serial is the working vtable pilot. Differential infra exists.
+R.1 landed: guard (230789ab5), csv reconcile (3b2ac0129), doc correction (8ded12e06), itertools slot-scoping (267df44e9), binascii/http sweep (f95225814), satellite clippy gate (ff22a06c7). R.3 deletions have landed for zoneinfo (e4f9300bf, the template), the math family, XML, difflib, ipaddress, path (`os_ext`/`pathlib` via direct include), `functions_logging`, and `itertools`. The guard's tracked dual-authority surface is now empty with residual ceiling 0. R.2 abstraction partially exists: molt-runtime-core (CoreGilToken/with_core_gil!/with_gil_entry_body!/RuntimeVtable/prelude); molt-runtime-serial is the working vtable pilot. Differential infra exists.
 
 ## Critical files
 tools/check_satellite_parity.py (oracle: PAIRS/normalizer/ratchet); runtime/molt-runtime-core/src/lib.rs (R.2 facade home — add `access`); runtime/molt-runtime-serial/src/bridge.rs + runtime/molt-runtime/src/serial_bridge.rs (the RuntimeVtable pilot); runtime/molt-runtime/src/{lib.rs,builtins/mod.rs} (dual-path re-export wiring); runtime/molt-runtime/Cargo.toml + runtime/molt-runtime/src/intrinsics/categories.toml + generated src/molt/_runtime_feature_gates.py + src/molt/cli/__init__.py (tier/feature gating, zoneinfo precedent e4f9300bf).

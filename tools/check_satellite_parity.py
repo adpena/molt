@@ -2,42 +2,36 @@
 """Fail-closed parity guard for runtime stdlib in-tree <-> satellite
 module pairs.
 
-Background (the P0 this guard exists to kill)
+Background (the P0 this guard exists to keep extinct)
 ---------------------------------------------
-molt still has several feature-gated stdlib modules in TWO physical copies:
+Molt used to ship feature-gated stdlib modules in two physical copies:
 
   * an IN-TREE copy under runtime/molt-runtime/src/builtins/<mod>.rs, gated
-    `#[cfg(not(feature = "stdlib_X"))]`, which is the SOLE compiled source for
-    the reduced build tiers (`--stdlib-profile micro`, `stdlib_edge`, and the
-    WASM feature set — see src/molt/cli.py), and
+    `#[cfg(not(feature = "stdlib_X"))]`, which was the SOLE compiled source for
+    reduced build tiers, and
   * a SATELLITE copy under runtime/molt-runtime-X/src/<mod>.rs, which is the
-    compiled source for the DEFAULT native build (`stdlib_full`).
+    compiled source for full native builds.
 
-The two copies are NOT one logic in two namespaces. They are two runtime-access
-implementations of the same behavior: the in-tree copy calls molt-runtime
-internals DIRECTLY (`use crate::{...}`, the `PyToken` GIL token, the
-`crate::with_gil_entry_nopanic!` macro); the satellite reaches the same
-internals through an `extern "C"` FFI BRIDGE (`use crate::bridge::*` +
-`molt_runtime_core::prelude::*`, the `CoreGilToken` token, `with_core_gil!`).
-
-Because there is no single source of truth, a behavioral fix landed in only one
-copy makes SHIPPED BEHAVIOR DIFFER BY BUILD TIER — exactly the silent-miscompile
-bug-class the decomposition program (docs/design/foundation/21) set out to kill.
-All original pairs had bidirectionally drifted before this guard existed; see
-memory/recovery/baton_move_R_satellite_drift.md for the full inventory.
+Those copies were not one logic in two namespaces. They were two runtime-access
+implementations of the same behavior, so a behavioral fix could land in only one
+copy and make SHIPPED BEHAVIOR DIFFER BY BUILD TIER. The decomposition program
+has now removed every tracked dual-authority pair; PAIRS is intentionally empty
+and the committed ratchet ceiling is zero. Keeping this guard alive makes any
+future reintroduction of a two-copy fallback an explicit, fail-closed authority
+decision instead of silent drift.
 
 What this guard does
 --------------------
-For each pair it NORMALIZES away the by-design access-layer differences
+For each listed pair it NORMALIZES away the by-design access-layer differences
 (imports, doc comments, the GIL macro/token, bridge path prefixes, single-line
 `unsafe {}` wrappers, trailing comments) and then compares the residual
 line-MULTISET (sorted, so pure reordering is ignored). The residual is the
 genuine semantic-drift surface.
 
-It is a CONTRACT, not a sync script: it never edits source. It loads a committed
-baseline (this file's SATELLITE_PARITY_BASELINE) recording, per pair, the
-allowed residual size and a SHA-256 of the sorted residual content. The guard
-FAILS (exit 1) when, for any pair:
+It is a CONTRACT, not a sync script: it never edits source. The committed
+baseline records the allowed residual size and content hash per pair. With the
+current empty PAIRS table, the expected total is zero. The guard FAILS (exit 1)
+when, for any pair:
 
   * the residual count EXCEEDS the baselined count (NEW drift), or
   * the residual content HASH differs from the baseline while the count is
@@ -45,11 +39,9 @@ FAILS (exit 1) when, for any pair:
   * a pair is missing/unreadable, or
   * the baseline total exceeds the committed ratchet ceiling RATCHET_CEILING.
 
-Reconciling a pair (porting a one-sided fix so both copies embody the same
-behavior) SHRINKS its residual; you then regenerate the baseline with
-`--update-baseline`, which can only lower RATCHET_CEILING (the guard refuses to
-raise it). This makes the baseline a one-way ratchet toward zero drift, and
-makes any NEW drift a hard test failure.
+Reconciling a pair shrinks its residual; regenerating the baseline with
+`--update-baseline` can only lower RATCHET_CEILING (the guard refuses to raise
+it). Now that the ceiling is zero, any new drift is a hard test failure.
 
 Usage
 -----
@@ -72,12 +64,11 @@ ROOT = Path(__file__).resolve().parents[1]
 RUNTIME = ROOT / "runtime"
 INTREE_DIR = RUNTIME / "molt-runtime" / "src"
 
-# The remaining feature-gated in-tree <-> satellite module pairs. The key is a stable
-# short name; values are the in-tree path (relative to molt-runtime/src) and the
-# satellite path (relative to runtime/). Derived from the
-# `#[cfg(not(feature = "stdlib_*"))]` gates in builtins/mod.rs and verified
-# against the on-disk crates. Leaf-owned modules with no in-tree fallback are
-# deliberately absent; adding them back would reintroduce a second authority.
+# The remaining feature-gated in-tree <-> satellite module pairs. This is empty
+# by design: reduced builds now either compile leaf-owned satellite source by
+# direct include or have no fallback lane. Adding a pair here is an explicit
+# declaration that a second physical authority exists and must be ratcheted back
+# to zero.
 PAIRS: dict[str, tuple[str, str]] = {}
 
 # --- access-layer normalization (must stay byte-for-byte in sync with the
