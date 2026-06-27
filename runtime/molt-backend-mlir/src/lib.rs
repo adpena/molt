@@ -18,8 +18,8 @@ mod pipeline;
 mod tir_to_mlir;
 
 pub use pipeline::{
-    MlirCompileOptions, MlirCompileResult, MlirOptLevel, compile_via_mlir,
-    create_optimized_module, jit_execute_i64,
+    MlirCompileOptions, MlirCompileResult, MlirOptLevel, compile_via_mlir, create_optimized_module,
+    jit_execute_i64,
 };
 
 use melior::{
@@ -112,7 +112,11 @@ mod tests {
     }
 
     fn make_cond_func() -> TirFunction {
-        let mut f = TirFunction::new("cond".into(), vec![TirType::I64, TirType::I64], TirType::I64);
+        let mut f = TirFunction::new(
+            "cond".into(),
+            vec![TirType::I64, TirType::I64],
+            TirType::I64,
+        );
         let cmp_val = f.fresh_value();
         let tb = f.fresh_block();
         let eb = f.fresh_block();
@@ -224,6 +228,55 @@ mod tests {
         func
     }
 
+    fn make_pow_func() -> TirFunction {
+        let mut func = TirFunction::new(
+            "pow_i64".into(),
+            vec![TirType::I64, TirType::I64],
+            TirType::I64,
+        );
+        let out = func.fresh_value();
+        func.value_types.insert(out, TirType::I64);
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::Pow,
+            operands: vec![ValueId(0), ValueId(1)],
+            results: vec![out],
+            attrs: AttrDict::new(),
+            source_span: None,
+        });
+        entry.terminator = Terminator::Return { values: vec![out] };
+        func
+    }
+
+    fn make_float_floordiv_func() -> TirFunction {
+        let mut func = TirFunction::new(
+            "floordiv_f64".into(),
+            vec![TirType::F64, TirType::F64],
+            TirType::F64,
+        );
+        let out = func.fresh_value();
+        func.value_types.insert(out, TirType::F64);
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::FloorDiv,
+            operands: vec![ValueId(0), ValueId(1)],
+            results: vec![out],
+            attrs: AttrDict::new(),
+            source_span: None,
+        });
+        entry.terminator = Terminator::Return { values: vec![out] };
+        func
+    }
+
+    fn make_unreachable_func() -> TirFunction {
+        let mut func = TirFunction::new("unreachable_i64".into(), vec![], TirType::I64);
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.terminator = Terminator::Unreachable;
+        func
+    }
+
     #[test]
     fn test_context_creation() {
         let _ctx = create_mlir_context();
@@ -268,6 +321,34 @@ mod tests {
         assert!(text.contains("arith.addi"));
         assert!(text.contains("arith.subi"));
         assert!(text.contains("arith.muli"));
+    }
+
+    #[test]
+    fn test_pow_fails_closed_instead_of_multiplying() {
+        let ctx = create_mlir_context();
+        let err = tir_to_mlir(&make_pow_func(), &ctx).unwrap_err();
+        assert!(err.contains("MLIR lowering refuses OpCode::Pow"));
+        assert!(err.contains("checked boxed-runtime MLIR ABI"));
+    }
+
+    #[test]
+    fn test_float_floordiv_uses_math_floor() {
+        let ctx = create_mlir_context();
+        let module = tir_to_mlir(&make_float_floordiv_func(), &ctx).unwrap();
+        assert!(module.as_operation().verify());
+        let text = module_to_string(&module);
+        assert!(text.contains("arith.divf"));
+        assert!(text.contains("math.floor"));
+    }
+
+    #[test]
+    fn test_unreachable_emits_fail_closed_assert() {
+        let ctx = create_mlir_context();
+        let module = tir_to_mlir(&make_unreachable_func(), &ctx).unwrap();
+        assert!(module.as_operation().verify());
+        let text = module_to_string(&module);
+        assert!(text.contains("cf.assert"));
+        assert!(text.contains("reached TIR unreachable terminator"));
     }
 
     #[test]
