@@ -4,7 +4,11 @@ import functools
 import os
 from pathlib import Path
 
-from molt.dx import development_artifact_env, session_scoped_target_dir
+from molt.dx import (
+    development_artifact_env,
+    development_artifacts_requested,
+    session_scoped_target_dir,
+)
 
 _RUNTIME_STDLIB_PROFILE_ALIASES = {
     "micro": "stdlib_micro",
@@ -85,14 +89,7 @@ def _cargo_target_root_cached(
 
 def _cargo_target_root(project_root: Path) -> Path:
     cargo_target_dir = os.environ.get("CARGO_TARGET_DIR")
-    if not cargo_target_dir and any(
-        os.environ.get(key, "").strip()
-        for key in (
-            "MOLT_REQUIRE_EXTERNAL_ARTIFACTS",
-            "MOLT_PREFER_EXTERNAL_ARTIFACTS",
-            "MOLT_USE_EXTERNAL_ARTIFACTS",
-        )
-    ):
+    if not cargo_target_dir and development_artifacts_requested(os.environ):
         env = development_artifact_env(
             project_root,
             os.environ,
