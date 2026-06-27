@@ -1291,6 +1291,18 @@ WASM_RUNTIME_CALLABLE_IMPORTS: tuple[tuple[str, str, int, str], ...] = (
     ("molt_ws_wait_new", "ws_wait_new", 3, "i64"),
 )
 
+WASM_CONST_OP_POLICIES: tuple[tuple[str, str, str | None, str, bool, bool, str, str], ...] = (
+    ("const", "int", None, "none", False, False, "set_int", "lower"),
+    ("const_bool", "bool", None, "none", False, False, "clear", "lower"),
+    ("const_float", "float", None, "none", False, False, "clear", "lower"),
+    ("const_none", "none_value", None, "none", False, False, "clear", "lower"),
+    ("const_not_implemented", "none", "not_implemented", "none", True, False, "clear", "bail_generic"),
+    ("const_ellipsis", "none", "ellipsis", "none", True, False, "clear", "bail_generic"),
+    ("const_str", "none", "string_from_bytes", "string", True, True, "clear", "placeholder_zero"),
+    ("const_bigint", "none", "bigint_from_str", "bigint_decimal", True, False, "clear", "bail_generic"),
+    ("const_bytes", "none", "bytes_from_bytes", "bytes", True, True, "clear", "placeholder_zero"),
+)
+
 WASM_REQUIRED_RUNTIME_IMPORT_PREFIXES: tuple[str, ...] = (
     "os_",
     "path_",
@@ -1433,6 +1445,64 @@ WASM_ESSENTIAL_EXPORTS: frozenset[str] = frozenset(
         "molt_set_wasm_table_base",
         "__indirect_function_table",
     }
+)
+
+WASM_RUNTIME_HOST_EXPORTS: frozenset[str] = frozenset(
+    {
+        "molt_alloc",
+        "molt_bytes_from_bytes",
+        "molt_dec_ref_obj",
+        "molt_exception_kind",
+        "molt_exception_last",
+        "molt_exception_message",
+        "molt_gpu_broadcast_binary_contiguous",
+        "molt_gpu_linear_contiguous",
+        "molt_gpu_linear_split_last_dim_contiguous",
+        "molt_gpu_linear_squared_relu_gate_interleaved_contiguous",
+        "molt_gpu_matmul_contiguous",
+        "molt_gpu_permute_contiguous",
+        "molt_gpu_repeat_axis_contiguous",
+        "molt_gpu_rms_norm_last_axis_contiguous",
+        "molt_gpu_rope_apply_contiguous",
+        "molt_gpu_softmax_last_axis_contiguous",
+        "molt_gpu_squared_relu_gate_interleaved_contiguous",
+        "molt_gpu_tensor__tensor_concat_first_dim",
+        "molt_gpu_tensor__tensor_scatter_rows",
+        "molt_gpu_tensor__tensor_take_rows",
+        "molt_gpu_tensor__zeros",
+        "molt_gpu_tensor_from_buffer",
+        "molt_gpu_tensor_from_parts",
+        "molt_handle_resolve",
+        "molt_header_size",
+        "molt_object_repr",
+        "molt_profile_dump",
+        "molt_runtime_shutdown",
+        "molt_scratch_alloc",
+        "molt_scratch_free",
+        "molt_set_wasm_table_base",
+        "molt_string_as_ptr",
+        "molt_string_from_bytes",
+        "molt_traceback_format_exc",
+        "molt_type_tag_of_bits",
+    }
+)
+
+WASM_RUNTIME_IMPORT_FALLBACK_EXPORTS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("fast_list_append", ("molt_call_bind_ic", "molt_callargs_new", "molt_callargs_push_pos")),
+    ("fast_str_join", ("molt_call_bind_ic", "molt_callargs_new", "molt_callargs_push_pos")),
+    ("fast_dict_get", ("molt_call_bind_ic", "molt_callargs_new", "molt_callargs_push_pos")),
+    ("dict_setitem", ("molt_dict_set",)),
+    ("dict_getitem", ("molt_dict_getitem_borrowed",)),
+    ("tuple_getitem", ("molt_tuple_getitem_borrowed",)),
+)
+
+WASM_RUNTIME_IMPORT_FALLBACK_SPECS: tuple[tuple[str, str, int | None, tuple[str, ...]], ...] = (
+    ("fast_list_append", "call_bind_ic", 1, ("molt_call_bind_ic", "molt_callargs_new", "molt_callargs_push_pos")),
+    ("fast_str_join", "call_bind_ic", 1, ("molt_call_bind_ic", "molt_callargs_new", "molt_callargs_push_pos")),
+    ("fast_dict_get", "call_bind_ic", 2, ("molt_call_bind_ic", "molt_callargs_new", "molt_callargs_push_pos")),
+    ("dict_setitem", "direct_export", None, ("molt_dict_set",)),
+    ("dict_getitem", "direct_export", None, ("molt_dict_getitem_borrowed",)),
+    ("tuple_getitem", "direct_export", None, ("molt_tuple_getitem_borrowed",)),
 )
 
 WASM_LINK_ALLOWED_IMPORTS: tuple[str, ...] = (

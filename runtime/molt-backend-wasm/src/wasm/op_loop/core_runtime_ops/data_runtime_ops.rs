@@ -245,7 +245,7 @@ fn emit_scalar_parse_op(
     let args = op.args.as_ref().unwrap();
     let arg_name = &args[0];
     let out_ptr = locals[op.out.as_ref().unwrap()];
-    if let Some(scratch) = locals.try_literal_scratch(arg_name) {
+    if let Some(scratch) = locals.try_parse_scalar_literal_scratch(arg_name) {
         let tmp_rc = locals.synthetic(WasmFrameSyntheticLocal::MoltTmp0);
 
         func.instruction(&Instruction::I64Const(8));

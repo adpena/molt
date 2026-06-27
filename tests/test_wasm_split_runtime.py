@@ -1773,6 +1773,8 @@ class TestWorkerJsContent:
         ), "worker.js must synthesize runtime imports from the app import surface"
         assert "const runtimeImportSignatures =" in content
         assert "const runtimeImportResultKinds =" in content
+        assert "const runtimeImportFallbacks =" in content
+        assert "runtimeFallback(entry.name)" in content
         assert "molt_string_from_bytes" in content
 
     def test_worker_sets_runtime_table_base(self, split_build_a):

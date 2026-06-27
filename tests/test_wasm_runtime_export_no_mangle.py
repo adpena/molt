@@ -27,9 +27,9 @@ from pathlib import Path
 
 from molt._wasm_abi_generated import (
     WASM_IMPORT_REGISTRY,
+    WASM_RUNTIME_HOST_EXPORTS,
     WASM_RESERVED_RUNTIME_CALLABLES,
 )
-from molt._wasm_runtime_exports import _HOST_RUNTIME_EXPORTS
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 RUNTIME_ROOT = REPO_ROOT / "runtime"
@@ -46,7 +46,7 @@ _ATTR_OR_DOC_RE = re.compile(r"^\s*(#\[|///|//!|//|\*|/\*|\*/)|^\s*$")
 def _required_export_symbols() -> set[str]:
     """The molt_-prefixed runtime symbols the WASM link contract requires."""
 
-    required: set[str] = set(_HOST_RUNTIME_EXPORTS)
+    required: set[str] = set(WASM_RUNTIME_HOST_EXPORTS)
     required |= {f"molt_{name}" for name in WASM_IMPORT_REGISTRY}
     # WASM_RESERVED_RUNTIME_CALLABLES entries are (index, runtime_name, import_name, arity).
     required |= {entry[1] for entry in WASM_RESERVED_RUNTIME_CALLABLES}

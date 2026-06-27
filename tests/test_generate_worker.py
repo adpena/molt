@@ -333,6 +333,11 @@ def test_generate_split_worker_builds_runtime_import_wrappers_from_app_surface()
         'const runtimeImportSignatures = {"function_set_builtin": {"params": ["i64"], "result": "i64"}, "string_from_bytes": {"params": ["i32", "i64", "i32"], "result": "i32"}};'
         in content
     )
+    assert "const runtimeImportFallbacks =" in content
+    assert '"fast_dict_get": {"call_arity": 2' in content
+    assert '"strategy": "call_bind_ic"' in content
+    assert '"dict_getitem": {"call_arity": null' in content
+    assert '"exports": ["molt_dict_getitem_borrowed"]' in content
     assert (
         'const appTableRefSignatures = {"__molt_table_ref_1": {"params": ["i64"], "result": "i64"}};'
         in content
@@ -345,6 +350,8 @@ def test_generate_split_worker_builds_runtime_import_wrappers_from_app_surface()
     assert "const NONE_BITS = QNAN | TAG_NONE;" in content
     assert "const resultKind = runtimeImportResultKinds[entry.name] || null;" in content
     assert "const signature = runtimeImportSignatures[entry.name] || null;" in content
+    assert "fn = runtimeFallback(entry.name);" in content
+    assert 'entry.name === "fast_dict_get"' not in content
     assert (
         "? args.map((value, index) => normalizeValueForKind(value, signature.params[index] || null))"
         in content

@@ -21,6 +21,7 @@ OUT_RS_FILES = {
     "mod.rs": OUT_RS_DIR / "mod.rs",
     "static_types.rs": OUT_RS_DIR / "static_types.rs",
     "imports.rs": OUT_RS_DIR / "imports.rs",
+    "const_policy.rs": OUT_RS_DIR / "const_policy.rs",
     "runtime_surface.rs": OUT_RS_DIR / "runtime_surface.rs",
     "runtime_callables.rs": OUT_RS_DIR / "runtime_callables.rs",
     "pure_profile.rs": OUT_RS_DIR / "pure_profile.rs",
@@ -47,6 +48,28 @@ STRIP_IMPORT_CATEGORIES = {
     "time",
     "indirect_call",
     "table",
+}
+CONST_POLICY_INLINE_SEEDS = {
+    "none",
+    "int",
+    "bool",
+    "float",
+    "none_value",
+}
+CONST_POLICY_LITERAL_PAYLOADS = {
+    "none",
+    "string",
+    "bigint_decimal",
+    "bytes",
+}
+CONST_POLICY_RAW_INT_EFFECTS = {
+    "set_int",
+    "clear",
+}
+CONST_POLICY_LIR_FAST = {
+    "lower",
+    "placeholder_zero",
+    "bail_generic",
 }
 
 
@@ -207,6 +230,87 @@ def load_manifest(path: Path = MANIFEST) -> dict:
                 raise WasmAbiManifestError(
                     f"op_import_dep {kind!r} references unknown import {dep!r}"
                 )
+
+    const_op_policies = data.get("const_op_policy", [])
+    if not isinstance(const_op_policies, list):
+        raise WasmAbiManifestError("const_op_policy must be a list of tables")
+    seen_const_policy_kinds: set[str] = set()
+    op_deps_by_kind = {entry["kind"]: entry["deps"] for entry in op_import_deps}
+    for idx, entry in enumerate(const_op_policies):
+        if not isinstance(entry, dict):
+            raise WasmAbiManifestError(f"const_op_policy entry {idx} must be a table")
+        kind = entry.get("kind")
+        if not isinstance(kind, str) or not kind:
+            raise WasmAbiManifestError(f"const_op_policy entry {idx} has invalid kind")
+        if kind in seen_const_policy_kinds:
+            raise WasmAbiManifestError(f"duplicate const_op_policy kind {kind!r}")
+        seen_const_policy_kinds.add(kind)
+
+        inline_seed = entry.get("inline_seed", "none")
+        if inline_seed not in CONST_POLICY_INLINE_SEEDS:
+            raise WasmAbiManifestError(
+                f"const_op_policy {kind!r} has invalid inline_seed {inline_seed!r}"
+            )
+        literal_payload = entry.get("literal_payload", "none")
+        if literal_payload not in CONST_POLICY_LITERAL_PAYLOADS:
+            raise WasmAbiManifestError(
+                f"const_op_policy {kind!r} has invalid literal_payload {literal_payload!r}"
+            )
+        raw_int_effect = entry.get("raw_int_effect", "clear")
+        if raw_int_effect not in CONST_POLICY_RAW_INT_EFFECTS:
+            raise WasmAbiManifestError(
+                f"const_op_policy {kind!r} has invalid raw_int_effect {raw_int_effect!r}"
+            )
+        lir_fast = entry.get("lir_fast", "bail_generic")
+        if lir_fast not in CONST_POLICY_LIR_FAST:
+            raise WasmAbiManifestError(
+                f"const_op_policy {kind!r} has invalid lir_fast {lir_fast!r}"
+            )
+        materializer_import = entry.get("materializer_import")
+        if materializer_import is not None:
+            if not isinstance(materializer_import, str) or not materializer_import:
+                raise WasmAbiManifestError(
+                    f"const_op_policy {kind!r} has invalid materializer_import"
+                )
+            if materializer_import not in seen_imports:
+                raise WasmAbiManifestError(
+                    f"const_op_policy {kind!r} references unknown import "
+                    f"{materializer_import!r}"
+                )
+            if materializer_import not in op_deps_by_kind.get(kind, []):
+                raise WasmAbiManifestError(
+                    f"const_op_policy {kind!r} materializer_import "
+                    f"{materializer_import!r} must appear in op_import_dep deps"
+                )
+
+        parse_scalar_literal = entry.get("parse_scalar_literal", False)
+        if not isinstance(parse_scalar_literal, bool):
+            raise WasmAbiManifestError(
+                f"const_op_policy {kind!r} parse_scalar_literal must be a bool"
+            )
+        dispatch_seed = entry.get("dispatch_runtime_seed", materializer_import is not None)
+        if not isinstance(dispatch_seed, bool):
+            raise WasmAbiManifestError(
+                f"const_op_policy {kind!r} dispatch_runtime_seed must be a bool"
+            )
+        if literal_payload == "none" and parse_scalar_literal:
+            raise WasmAbiManifestError(
+                f"const_op_policy {kind!r} cannot parse scalar literals without payload"
+            )
+        if literal_payload != "none" and materializer_import is None:
+            raise WasmAbiManifestError(
+                f"const_op_policy {kind!r} literal payload requires materializer_import"
+            )
+        if dispatch_seed and materializer_import is None:
+            raise WasmAbiManifestError(
+                f"const_op_policy {kind!r} dispatch runtime seed requires materializer_import"
+            )
+        entry["inline_seed"] = inline_seed
+        entry["literal_payload"] = literal_payload
+        entry["raw_int_effect"] = raw_int_effect
+        entry["lir_fast"] = lir_fast
+        entry["parse_scalar_literal"] = parse_scalar_literal
+        entry["dispatch_runtime_seed"] = dispatch_seed
     expected_poll_slots = set(range(1, len(seen_poll_slots) + 1))
     if seen_poll_slots != expected_poll_slots:
         raise WasmAbiManifestError("poll table slots must be contiguous from one")
@@ -385,6 +489,73 @@ def load_manifest(path: Path = MANIFEST) -> dict:
         raise WasmAbiManifestError(
             "output_export_policy internal prefixes must not overlap the alias prefix"
         )
+
+    runtime_export_policy = data.get("runtime_export_policy")
+    if not isinstance(runtime_export_policy, dict):
+        raise WasmAbiManifestError("manifest must define [runtime_export_policy]")
+    host_exports = _validate_string_list(
+        "runtime_export_policy",
+        "host_exports",
+        runtime_export_policy.get("host_exports"),
+    )
+    for name in host_exports:
+        if not name.startswith("molt_"):
+            raise WasmAbiManifestError(
+                f"runtime_export_policy host export {name!r} must start with 'molt_'"
+            )
+
+    fallback_entries = data.get("runtime_import_fallback", [])
+    if not isinstance(fallback_entries, list):
+        raise WasmAbiManifestError("runtime_import_fallback must be a list of tables")
+    seen_fallback_imports: set[str] = set()
+    for idx, entry in enumerate(fallback_entries):
+        if not isinstance(entry, dict):
+            raise WasmAbiManifestError(
+                f"runtime_import_fallback entry {idx} must be a table"
+            )
+        import_name = entry.get("import")
+        if not isinstance(import_name, str) or not import_name:
+            raise WasmAbiManifestError(
+                f"runtime_import_fallback entry {idx} has invalid import"
+            )
+        if import_name in seen_fallback_imports:
+            raise WasmAbiManifestError(
+                f"duplicate runtime import fallback {import_name!r}"
+            )
+        if import_name not in seen_imports:
+            raise WasmAbiManifestError(
+                f"runtime import fallback {import_name!r} is not a known import"
+            )
+        seen_fallback_imports.add(import_name)
+        strategy = entry.get("strategy")
+        if strategy not in {"call_bind_ic", "direct_export"}:
+            raise WasmAbiManifestError(
+                f"runtime import fallback {import_name!r} has invalid strategy "
+                f"{strategy!r}"
+            )
+        call_arity = entry.get("call_arity")
+        if strategy == "call_bind_ic":
+            if not isinstance(call_arity, int) or call_arity < 0:
+                raise WasmAbiManifestError(
+                    f"runtime import fallback {import_name!r} must define "
+                    "non-negative call_arity for call_bind_ic"
+                )
+        elif call_arity is not None:
+            raise WasmAbiManifestError(
+                f"runtime import fallback {import_name!r} cannot define "
+                "call_arity for direct_export"
+            )
+        exports = _validate_string_list(
+            "runtime_import_fallback",
+            "exports",
+            entry.get("exports"),
+        )
+        for export_name in exports:
+            if not export_name.startswith("molt_"):
+                raise WasmAbiManifestError(
+                    f"runtime import fallback {import_name!r} export "
+                    f"{export_name!r} must start with 'molt_'"
+                )
     link_allowed = data.get("link_allowed_import", [])
     if not isinstance(link_allowed, list):
         raise WasmAbiManifestError("link_allowed_import must be a list of tables")
@@ -500,15 +671,28 @@ def _py_tuple(vals: list[str]) -> str:
     return "(" + ", ".join(f'"{val}"' for val in vals) + ")"
 
 
+def _rust_pascal_variant(value: str) -> str:
+    return "".join(part.capitalize() for part in value.split("_"))
+
+
+def _rust_option_str(value: str | None) -> str:
+    return "None" if value is None else f'Some("{value}")'
+
+
 def _render_rs_mod() -> str:
     lines: list[str] = [_header("//")]
     lines.extend(
         [
+            "mod const_policy;\n",
             "mod imports;\n",
             "mod pure_profile;\n",
             "mod runtime_callables;\n",
             "mod runtime_surface;\n",
             "mod static_types;\n\n",
+            "pub(crate) use const_policy::{\n",
+            "    wasm_const_op_policy, WasmConstInlineSeed, WasmConstLirFastPolicy,\n",
+            "    WasmConstLiteralPayload, WasmConstOpPolicySpec, WasmConstRawIntEffect,\n",
+            "};\n",
             "pub(crate) use imports::{IMPORT_REGISTRY, OP_IMPORT_DEPS};\n",
             "pub(crate) use pure_profile::pure_profile_skips_import;\n",
             "pub(crate) use runtime_callables::{\n",
@@ -518,6 +702,88 @@ def _render_rs_mod() -> str:
             "pub(crate) use static_types::{\n",
             "    STATIC_FUNC_TYPES, STATIC_TYPE_COUNT,\n",
             "};\n",
+        ]
+    )
+    return "".join(lines)
+
+
+def _render_rs_const_policy(data: dict) -> str:
+    lines: list[str] = [_header("//")]
+    lines.extend(
+        [
+            "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
+            "pub(crate) enum WasmConstInlineSeed {\n",
+            "    None,\n",
+            "    Int,\n",
+            "    Bool,\n",
+            "    Float,\n",
+            "    NoneValue,\n",
+            "}\n\n",
+            "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
+            "pub(crate) enum WasmConstLiteralPayload {\n",
+            "    None,\n",
+            "    String,\n",
+            "    BigintDecimal,\n",
+            "    Bytes,\n",
+            "}\n\n",
+            "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
+            "pub(crate) enum WasmConstRawIntEffect {\n",
+            "    SetInt,\n",
+            "    Clear,\n",
+            "}\n\n",
+            "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
+            "pub(crate) enum WasmConstLirFastPolicy {\n",
+            "    Lower,\n",
+            "    PlaceholderZero,\n",
+            "    BailGeneric,\n",
+            "}\n\n",
+            "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
+            "pub(crate) struct WasmConstOpPolicySpec {\n",
+            "    pub(crate) kind: &'static str,\n",
+            "    pub(crate) inline_seed: WasmConstInlineSeed,\n",
+            "    pub(crate) materializer_import: Option<&'static str>,\n",
+            "    pub(crate) literal_payload: WasmConstLiteralPayload,\n",
+            "    pub(crate) dispatch_runtime_seed: bool,\n",
+            "    pub(crate) parse_scalar_literal: bool,\n",
+            "    pub(crate) raw_int_effect: WasmConstRawIntEffect,\n",
+            "    pub(crate) lir_fast: WasmConstLirFastPolicy,\n",
+            "}\n\n",
+            "pub(crate) const WASM_CONST_OP_POLICIES: &[WasmConstOpPolicySpec] = &[\n",
+        ]
+    )
+    for entry in data.get("const_op_policy", []):
+        inline_seed = _rust_pascal_variant(entry["inline_seed"])
+        literal_payload = _rust_pascal_variant(entry["literal_payload"])
+        raw_int_effect = _rust_pascal_variant(entry["raw_int_effect"])
+        lir_fast = _rust_pascal_variant(entry["lir_fast"])
+        dispatch_seed = "true" if entry["dispatch_runtime_seed"] else "false"
+        parse_scalar = "true" if entry["parse_scalar_literal"] else "false"
+        lines.extend(
+            [
+                "    WasmConstOpPolicySpec {\n",
+                f'        kind: "{entry["kind"]}",\n',
+                f"        inline_seed: WasmConstInlineSeed::{inline_seed},\n",
+                "        materializer_import: "
+                f"{_rust_option_str(entry.get('materializer_import'))},\n",
+                f"        literal_payload: WasmConstLiteralPayload::{literal_payload},\n",
+                f"        dispatch_runtime_seed: {dispatch_seed},\n",
+                f"        parse_scalar_literal: {parse_scalar},\n",
+                f"        raw_int_effect: WasmConstRawIntEffect::{raw_int_effect},\n",
+                f"        lir_fast: WasmConstLirFastPolicy::{lir_fast},\n",
+                "    },\n",
+            ]
+        )
+    lines.extend(
+        [
+            "];\n\n",
+            "#[inline]\n",
+            "pub(crate) fn wasm_const_op_policy(\n",
+            "    kind: &str,\n",
+            ") -> Option<&'static WasmConstOpPolicySpec> {\n",
+            "    WASM_CONST_OP_POLICIES\n",
+            "        .iter()\n",
+            "        .find(|policy| policy.kind == kind)\n",
+            "}\n\n",
         ]
     )
     return "".join(lines)
@@ -584,6 +850,54 @@ def _render_rs_runtime_surface(data: dict) -> str:
     lines.append("pub(crate) const REQUIRED_RUNTIME_IMPORT_SINGLETONS: &[&str] = &[\n")
     for entry in data.get("runtime_required_import_singleton", []):
         lines.append(f'    "{entry["name"]}",\n')
+    lines.append("];\n\n")
+    lines.extend(
+        [
+            "#[allow(dead_code)]\n",
+            "pub(crate) const RUNTIME_HOST_EXPORTS: &[&str] = &[\n",
+        ]
+    )
+    for name in data["runtime_export_policy"]["host_exports"]:
+        lines.append(f'    "{name}",\n')
+    lines.append("];\n\n")
+    lines.extend(
+        [
+            "#[allow(dead_code)]\n",
+            "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
+            "pub(crate) struct RuntimeImportFallbackSpec {\n",
+            "    pub(crate) import_name: &'static str,\n",
+            "    pub(crate) strategy: &'static str,\n",
+            "    pub(crate) call_arity: Option<usize>,\n",
+            "    pub(crate) fallback_exports: &'static [&'static str],\n",
+            "}\n\n",
+            "#[allow(dead_code)]\n",
+            "pub(crate) const RUNTIME_IMPORT_FALLBACK_EXPORTS: &[RuntimeImportFallbackSpec] = &[\n",
+        ]
+    )
+    for entry in data.get("runtime_import_fallback", []):
+        lines.extend(
+            [
+                "    RuntimeImportFallbackSpec {\n",
+                f'        import_name: "{entry["import"]}",\n',
+                f'        strategy: "{entry["strategy"]}",\n',
+                "        call_arity: "
+                + (
+                    f"Some({entry['call_arity']})"
+                    if "call_arity" in entry
+                    else "None"
+                )
+                + ",\n",
+                "        fallback_exports: &[\n",
+            ]
+        )
+        for export_name in entry["exports"]:
+            lines.append(f'            "{export_name}",\n')
+        lines.extend(
+            [
+                "        ],\n",
+                "    },\n",
+            ]
+        )
     lines.append("];\n\n")
     lines.extend(
         [
@@ -670,6 +984,7 @@ def _render_rs_pure_profile(data: dict) -> str:
 def render_rs_modules(data: dict) -> dict[str, str]:
     modules = {
         "mod.rs": _render_rs_mod(),
+        "const_policy.rs": _render_rs_const_policy(data),
         "static_types.rs": _render_rs_static_types(data),
         "imports.rs": _render_rs_imports(data),
         "runtime_surface.rs": _render_rs_runtime_surface(data),
@@ -724,6 +1039,19 @@ def render_py(data: dict) -> str:
             f'{entry["callable_arity"]}, "{result}"),\n'
         )
     lines.append(")\n\n")
+    lines.append(
+        "WASM_CONST_OP_POLICIES: tuple[tuple[str, str, str | None, str, bool, bool, str, str], ...] = (\n"
+    )
+    for entry in data.get("const_op_policy", []):
+        materializer = entry.get("materializer_import")
+        materializer_repr = "None" if materializer is None else f'"{materializer}"'
+        lines.append(
+            f'    ("{entry["kind"]}", "{entry["inline_seed"]}", {materializer_repr}, '
+            f'"{entry["literal_payload"]}", {entry["dispatch_runtime_seed"]}, '
+            f'{entry["parse_scalar_literal"]}, "{entry["raw_int_effect"]}", '
+            f'"{entry["lir_fast"]}"),\n'
+        )
+    lines.append(")\n\n")
     lines.append("WASM_REQUIRED_RUNTIME_IMPORT_PREFIXES: tuple[str, ...] = (\n")
     for entry in data.get("runtime_required_import_prefix", []):
         lines.append(f'    "{entry["prefix"]}",\n')
@@ -770,6 +1098,31 @@ def render_py(data: dict) -> str:
     for name in output_export_policy["essential_exports"]:
         lines.append(f'        "{name}",\n')
     lines.append("    }\n")
+    lines.append(")\n\n")
+    lines.append("WASM_RUNTIME_HOST_EXPORTS: frozenset[str] = frozenset(\n")
+    lines.append("    {\n")
+    for name in data["runtime_export_policy"]["host_exports"]:
+        lines.append(f'        "{name}",\n')
+    lines.append("    }\n")
+    lines.append(")\n\n")
+    lines.append(
+        "WASM_RUNTIME_IMPORT_FALLBACK_EXPORTS: tuple[tuple[str, tuple[str, ...]], ...] = (\n"
+    )
+    for entry in data.get("runtime_import_fallback", []):
+        lines.append(
+            f'    ("{entry["import"]}", {_py_tuple(entry["exports"])}),\n'
+        )
+    lines.append(")\n\n")
+    lines.append(
+        "WASM_RUNTIME_IMPORT_FALLBACK_SPECS: tuple[tuple[str, str, int | None, tuple[str, ...]], ...] = (\n"
+    )
+    for entry in data.get("runtime_import_fallback", []):
+        call_arity = entry.get("call_arity")
+        call_arity_repr = "None" if call_arity is None else str(call_arity)
+        lines.append(
+            f'    ("{entry["import"]}", "{entry["strategy"]}", '
+            f"{call_arity_repr}, {_py_tuple(entry['exports'])}),\n"
+        )
     lines.append(")\n\n")
     lines.append("WASM_LINK_ALLOWED_IMPORTS: tuple[str, ...] = (\n")
     for entry in data.get("link_allowed_import", []):
