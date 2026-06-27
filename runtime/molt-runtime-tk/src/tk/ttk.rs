@@ -349,13 +349,6 @@ pub(super) fn handle_treeview_widget_path_command(
     let Some(treeview) = widget.treeview.as_mut() else {
         return Ok(None);
     };
-    if treeview_subcommand_is_noop_generic_fallback(subcommand) {
-        return Err(raise_tcl_for_handle(
-            py,
-            handle,
-            unknown_widget_subcommand_message(widget_path, subcommand),
-        ));
-    }
 
     match subcommand {
         "bbox" => {
@@ -1451,7 +1444,14 @@ pub(super) fn handle_treeview_widget_path_command(
                 }
             }
         }
-        _ => {}
+        "configure" | "cget" | "destroy" | "state" | "instate" | "xview" | "yview" => {}
+        _ => {
+            return Err(app_tcl_error_locked(
+                py,
+                app,
+                unknown_widget_subcommand_message(widget_path, subcommand),
+            ));
+        }
     }
     Ok(None)
 }

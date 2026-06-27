@@ -481,29 +481,6 @@ pub(super) fn parse_notebook_index_strict(value: &str, len: usize) -> Result<i64
     Err(format!("invalid tab identifier \"{value}\""))
 }
 
-pub(super) fn treeview_subcommand_is_noop_generic_fallback(subcommand: &str) -> bool {
-    matches!(
-        subcommand,
-        "add"
-            | "addtag"
-            | "dtag"
-            | "scan"
-            | "itemconfigure"
-            | "entryconfigure"
-            | "paneconfigure"
-            | "image_configure"
-            | "window_configure"
-            | "activate"
-            | "tk_popup"
-            | "post"
-            | "unpost"
-            | "invoke"
-            | "edit"
-            | "replace"
-            | "dump"
-    )
-}
-
 pub(super) fn first_missing_treeview_item<'a>(
     treeview: &TkTreeviewState,
     items: &'a [String],
