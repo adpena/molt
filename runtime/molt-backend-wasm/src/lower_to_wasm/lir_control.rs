@@ -2,45 +2,53 @@ use super::lir_context::LirLowerCtx;
 use super::lir_scalar::{emit_box_none, emit_return_boxed_i64};
 use super::prelude::*;
 
-pub(super) fn emit_lir_terminator(ctx: &mut LirLowerCtx, term: &LirTerminator) {
+#[derive(Clone, Copy)]
+pub(super) enum LirReturnAbi {
+    Native,
+    BoxedI64,
+}
+
+pub(super) fn emit_lir_terminator(
+    ctx: &mut LirLowerCtx,
+    term: &LirTerminator,
+    return_abi: LirReturnAbi,
+) {
     match term {
         LirTerminator::Return { values } => {
-            if let Some(&val) = values.first() {
-                ctx.emit_get(val);
-            }
-            ctx.instructions.push(Instruction::Return);
+            emit_lir_return(ctx, values, return_abi);
         }
         LirTerminator::Unreachable => ctx.instructions.push(Instruction::Unreachable),
         _ => ctx.instructions.push(Instruction::Unreachable),
     }
 }
 
-pub(super) fn emit_lir_terminator_boxed_i64_abi(ctx: &mut LirLowerCtx, term: &LirTerminator) {
-    match term {
-        LirTerminator::Return { values } => {
+fn emit_lir_return(ctx: &mut LirLowerCtx, values: &[ValueId], return_abi: LirReturnAbi) {
+    match return_abi {
+        LirReturnAbi::Native => {
+            if let Some(&val) = values.first() {
+                ctx.emit_get(val);
+            }
+        }
+        LirReturnAbi::BoxedI64 => {
             if let Some(&val) = values.first() {
                 emit_return_boxed_i64(ctx, val);
             } else {
                 emit_box_none(ctx);
             }
-            ctx.instructions.push(Instruction::Return);
         }
-        LirTerminator::Unreachable => ctx.instructions.push(Instruction::Unreachable),
-        _ => ctx.instructions.push(Instruction::Unreachable),
     }
+    ctx.instructions.push(Instruction::Return);
 }
 
 pub(super) fn emit_lir_terminator_multiblock(
     ctx: &mut LirLowerCtx,
     term: &LirTerminator,
     num_blocks: usize,
+    return_abi: LirReturnAbi,
 ) {
     match term {
         LirTerminator::Return { values } => {
-            if let Some(&val) = values.first() {
-                ctx.emit_get(val);
-            }
-            ctx.instructions.push(Instruction::Return);
+            emit_lir_return(ctx, values, return_abi);
         }
         LirTerminator::Unreachable => ctx.instructions.push(Instruction::Unreachable),
         LirTerminator::Branch { target, args } => {
@@ -123,24 +131,6 @@ pub(super) fn emit_lir_terminator_multiblock(
                 ctx.func.name
             );
         }
-    }
-}
-
-pub(super) fn emit_lir_terminator_multiblock_boxed_i64_abi(
-    ctx: &mut LirLowerCtx,
-    term: &LirTerminator,
-    num_blocks: usize,
-) {
-    match term {
-        LirTerminator::Return { values } => {
-            if let Some(&val) = values.first() {
-                emit_return_boxed_i64(ctx, val);
-            } else {
-                emit_box_none(ctx);
-            }
-            ctx.instructions.push(Instruction::Return);
-        }
-        other => emit_lir_terminator_multiblock(ctx, other, num_blocks),
     }
 }
 
