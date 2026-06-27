@@ -4674,6 +4674,614 @@ name = "env_snapshot"
 [[runtime_required_import_singleton]]
 name = "errno_constants"
 
+# Linker allowlist for undefined host symbols accepted by wasm-ld when linking
+# app/runtime WASM artifacts. Generated into tools/wasm_allowed_imports.txt.
+
+[[link_allowed_import]]
+name = "args_sizes_get"
+
+[[link_allowed_import]]
+name = "args_get"
+
+[[link_allowed_import]]
+name = "environ_sizes_get"
+
+[[link_allowed_import]]
+name = "environ_get"
+
+[[link_allowed_import]]
+name = "random_get"
+
+[[link_allowed_import]]
+name = "clock_time_get"
+
+[[link_allowed_import]]
+name = "proc_exit"
+
+[[link_allowed_import]]
+name = "sched_yield"
+
+[[link_allowed_import]]
+name = "fd_read"
+
+[[link_allowed_import]]
+name = "fd_write"
+
+[[link_allowed_import]]
+name = "fd_seek"
+
+[[link_allowed_import]]
+name = "fd_tell"
+
+[[link_allowed_import]]
+name = "fd_close"
+
+[[link_allowed_import]]
+name = "fd_prestat_get"
+
+[[link_allowed_import]]
+name = "fd_prestat_dir_name"
+
+[[link_allowed_import]]
+name = "path_open"
+
+[[link_allowed_import]]
+name = "path_rename"
+
+[[link_allowed_import]]
+name = "path_readlink"
+
+[[link_allowed_import]]
+name = "path_unlink_file"
+
+[[link_allowed_import]]
+name = "path_create_directory"
+
+[[link_allowed_import]]
+name = "path_remove_directory"
+
+[[link_allowed_import]]
+name = "path_filestat_get"
+
+[[link_allowed_import]]
+name = "fd_filestat_get"
+
+[[link_allowed_import]]
+name = "fd_filestat_set_size"
+
+[[link_allowed_import]]
+name = "fd_readdir"
+
+[[link_allowed_import]]
+name = "poll_oneoff"
+
+[[link_allowed_import]]
+name = "__indirect_function_table"
+
+[[link_allowed_import]]
+name = "molt_call_indirect0"
+
+[[link_allowed_import]]
+name = "molt_call_indirect1"
+
+[[link_allowed_import]]
+name = "molt_call_indirect2"
+
+[[link_allowed_import]]
+name = "molt_call_indirect3"
+
+[[link_allowed_import]]
+name = "molt_call_indirect4"
+
+[[link_allowed_import]]
+name = "molt_call_indirect5"
+
+[[link_allowed_import]]
+name = "molt_call_indirect6"
+
+[[link_allowed_import]]
+name = "molt_call_indirect7"
+
+[[link_allowed_import]]
+name = "molt_call_indirect8"
+
+[[link_allowed_import]]
+name = "molt_call_indirect9"
+
+[[link_allowed_import]]
+name = "molt_call_indirect10"
+
+[[link_allowed_import]]
+name = "molt_call_indirect11"
+
+[[link_allowed_import]]
+name = "molt_call_indirect12"
+
+[[link_allowed_import]]
+name = "molt_call_indirect13"
+
+[[link_allowed_import]]
+name = "molt_cbor_parse_scalar"
+
+[[link_allowed_import]]
+name = "molt_cbor_parse_scalar_obj"
+
+[[link_allowed_import]]
+name = "molt_deflate_raw"
+
+[[link_allowed_import]]
+name = "molt_inflate_raw"
+
+[[link_allowed_import]]
+name = "molt_msgpack_parse_scalar"
+
+[[link_allowed_import]]
+name = "molt_msgpack_parse_scalar_obj"
+
+# Host import classification for tools/wasm_strip_unused.py.
+
+[[strip_import_prefix_rule]]
+module = "env"
+prefix = "molt_call_indirect"
+category = "indirect_call"
+description = "Indirect function call dispatch"
+
+[[strip_import_rule]]
+module = "wasi_snapshot_preview1"
+name = "args_sizes_get"
+category = "essential"
+description = "Argument count query"
+
+[[strip_import_rule]]
+module = "wasi_snapshot_preview1"
+name = "args_get"
+category = "essential"
+description = "Argument retrieval"
+
+[[strip_import_rule]]
+module = "wasi_snapshot_preview1"
+name = "environ_sizes_get"
+category = "essential"
+description = "Environment size query"
+
+[[strip_import_rule]]
+module = "wasi_snapshot_preview1"
+name = "environ_get"
+category = "essential"
+description = "Environment retrieval"
+
+[[strip_import_rule]]
+module = "wasi_snapshot_preview1"
+name = "clock_time_get"
+category = "essential"
+description = "Wall-clock / monotonic time"
+
+[[strip_import_rule]]
+module = "wasi_snapshot_preview1"
+name = "random_get"
+category = "essential"
+description = "CSPRNG bytes"
+
+[[strip_import_rule]]
+module = "wasi_snapshot_preview1"
+name = "proc_exit"
+category = "essential"
+description = "Process exit"
+
+[[strip_import_rule]]
+module = "wasi_snapshot_preview1"
+name = "sched_yield"
+category = "essential"
+description = "Cooperative yield"
+
+[[strip_import_rule]]
+module = "env"
+name = "__indirect_function_table"
+category = "table"
+description = "Indirect call dispatch table"
+
+[[strip_import_rule]]
+module = "wasi_snapshot_preview1"
+name = "fd_write"
+category = "io_stdout"
+description = "Write to fd (stdout/stderr)"
+
+[[strip_import_rule]]
+module = "wasi_snapshot_preview1"
+name = "fd_read"
+category = "io_stdout"
+description = "Read from fd (stdin stub)"
+
+[[strip_import_rule]]
+module = "wasi_snapshot_preview1"
+name = "fd_close"
+category = "io_stdout"
+description = "Close file descriptor"
+
+[[strip_import_rule]]
+module = "wasi_snapshot_preview1"
+name = "fd_seek"
+category = "io_stdout"
+description = "Seek file descriptor"
+
+[[strip_import_rule]]
+module = "wasi_snapshot_preview1"
+name = "fd_tell"
+category = "io_stdout"
+description = "Tell file descriptor position"
+
+[[strip_import_rule]]
+module = "wasi_snapshot_preview1"
+name = "fd_prestat_get"
+category = "io_stdout"
+description = "Preopened fd stat"
+
+[[strip_import_rule]]
+module = "wasi_snapshot_preview1"
+name = "fd_prestat_dir_name"
+category = "io_stdout"
+description = "Preopened fd dir name"
+
+[[strip_import_rule]]
+module = "wasi_snapshot_preview1"
+name = "fd_readdir"
+category = "io_filesystem"
+description = "Read directory entries"
+
+[[strip_import_rule]]
+module = "wasi_snapshot_preview1"
+name = "fd_filestat_get"
+category = "io_filesystem"
+description = "File stat by fd"
+
+[[strip_import_rule]]
+module = "wasi_snapshot_preview1"
+name = "fd_filestat_set_size"
+category = "io_filesystem"
+description = "Truncate file"
+
+[[strip_import_rule]]
+module = "wasi_snapshot_preview1"
+name = "path_open"
+category = "io_filesystem"
+description = "Open file by path"
+
+[[strip_import_rule]]
+module = "wasi_snapshot_preview1"
+name = "path_rename"
+category = "io_filesystem"
+description = "Rename path"
+
+[[strip_import_rule]]
+module = "wasi_snapshot_preview1"
+name = "path_readlink"
+category = "io_filesystem"
+description = "Read symlink"
+
+[[strip_import_rule]]
+module = "wasi_snapshot_preview1"
+name = "path_unlink_file"
+category = "io_filesystem"
+description = "Delete file"
+
+[[strip_import_rule]]
+module = "wasi_snapshot_preview1"
+name = "path_create_directory"
+category = "io_filesystem"
+description = "Create directory"
+
+[[strip_import_rule]]
+module = "wasi_snapshot_preview1"
+name = "path_remove_directory"
+category = "io_filesystem"
+description = "Remove directory"
+
+[[strip_import_rule]]
+module = "wasi_snapshot_preview1"
+name = "path_filestat_get"
+category = "io_filesystem"
+description = "File stat by path"
+
+[[strip_import_rule]]
+module = "wasi_snapshot_preview1"
+name = "poll_oneoff"
+category = "io_filesystem"
+description = "Poll for I/O events"
+
+[[strip_import_rule]]
+module = "env"
+name = "molt_process_write_host"
+category = "process"
+description = "Write to child process stdin"
+
+[[strip_import_rule]]
+module = "env"
+name = "molt_process_close_stdin_host"
+category = "process"
+description = "Close child stdin pipe"
+
+[[strip_import_rule]]
+module = "env"
+name = "molt_process_terminate_host"
+category = "process"
+description = "Terminate child process"
+
+[[strip_import_rule]]
+module = "env"
+name = "molt_getpid_host"
+category = "process"
+description = "Get current process ID"
+
+[[strip_import_rule]]
+module = "env"
+name = "molt_process_kill_host"
+category = "process"
+description = "Kill child process"
+
+[[strip_import_rule]]
+module = "env"
+name = "molt_process_wait_host"
+category = "process"
+description = "Wait for child process"
+
+[[strip_import_rule]]
+module = "env"
+name = "molt_process_spawn_host"
+category = "process"
+description = "Spawn child process"
+
+[[strip_import_rule]]
+module = "env"
+name = "molt_process_stdio_host"
+category = "process"
+description = "Access child stdio pipes"
+
+[[strip_import_rule]]
+module = "env"
+name = "molt_process_host_poll"
+category = "process"
+description = "Poll process events"
+
+[[strip_import_rule]]
+module = "env"
+name = "molt_db_exec_host"
+category = "database"
+description = "Execute DB statement"
+
+[[strip_import_rule]]
+module = "env"
+name = "molt_db_query_host"
+category = "database"
+description = "Query DB"
+
+[[strip_import_rule]]
+module = "env"
+name = "molt_db_host_poll"
+category = "database"
+description = "Poll DB events"
+
+[[strip_import_rule]]
+module = "env"
+name = "molt_ws_recv_host"
+category = "websocket"
+description = "Receive WebSocket message"
+
+[[strip_import_rule]]
+module = "env"
+name = "molt_ws_send_host"
+category = "websocket"
+description = "Send WebSocket message"
+
+[[strip_import_rule]]
+module = "env"
+name = "molt_ws_close_host"
+category = "websocket"
+description = "Close WebSocket"
+
+[[strip_import_rule]]
+module = "env"
+name = "molt_ws_connect_host"
+category = "websocket"
+description = "Connect WebSocket"
+
+[[strip_import_rule]]
+module = "env"
+name = "molt_ws_poll_host"
+category = "websocket"
+description = "Poll WebSocket events"
+
+[[strip_import_rule]]
+module = "env"
+name = "molt_socket_wait_host"
+category = "socket"
+description = "Socket wait"
+
+[[strip_import_rule]]
+module = "env"
+name = "molt_os_close_host"
+category = "socket"
+description = "OS handle close"
+
+[[strip_import_rule]]
+module = "env"
+name = "molt_socket_accept_host"
+category = "socket"
+description = "Accept connection"
+
+[[strip_import_rule]]
+module = "env"
+name = "molt_socket_bind_host"
+category = "socket"
+description = "Bind socket"
+
+[[strip_import_rule]]
+module = "env"
+name = "molt_socket_clone_host"
+category = "socket"
+description = "Clone socket handle"
+
+[[strip_import_rule]]
+module = "env"
+name = "molt_socket_close_host"
+category = "socket"
+description = "Close socket"
+
+[[strip_import_rule]]
+module = "env"
+name = "molt_socket_connect_host"
+category = "socket"
+description = "Connect socket"
+
+[[strip_import_rule]]
+module = "env"
+name = "molt_socket_connect_ex_host"
+category = "socket"
+description = "Connect socket (extended)"
+
+[[strip_import_rule]]
+module = "env"
+name = "molt_socket_detach_host"
+category = "socket"
+description = "Detach socket"
+
+[[strip_import_rule]]
+module = "env"
+name = "molt_socket_getaddrinfo_host"
+category = "socket"
+description = "DNS resolution"
+
+[[strip_import_rule]]
+module = "env"
+name = "molt_socket_gethostname_host"
+category = "socket"
+description = "Get hostname"
+
+[[strip_import_rule]]
+module = "env"
+name = "molt_socket_getpeername_host"
+category = "socket"
+description = "Get peer address"
+
+[[strip_import_rule]]
+module = "env"
+name = "molt_socket_getservbyname_host"
+category = "socket"
+description = "Resolve service by name"
+
+[[strip_import_rule]]
+module = "env"
+name = "molt_socket_getservbyport_host"
+category = "socket"
+description = "Resolve service by port"
+
+[[strip_import_rule]]
+module = "env"
+name = "molt_socket_getsockname_host"
+category = "socket"
+description = "Get socket address"
+
+[[strip_import_rule]]
+module = "env"
+name = "molt_socket_getsockopt_host"
+category = "socket"
+description = "Get socket option"
+
+[[strip_import_rule]]
+module = "env"
+name = "molt_socket_has_ipv6_host"
+category = "socket"
+description = "Check IPv6 support"
+
+[[strip_import_rule]]
+module = "env"
+name = "molt_socket_listen_host"
+category = "socket"
+description = "Listen on socket"
+
+[[strip_import_rule]]
+module = "env"
+name = "molt_socket_new_host"
+category = "socket"
+description = "Create socket"
+
+[[strip_import_rule]]
+module = "env"
+name = "molt_socket_recv_host"
+category = "socket"
+description = "Receive from socket"
+
+[[strip_import_rule]]
+module = "env"
+name = "molt_socket_recvfrom_host"
+category = "socket"
+description = "Receive with address"
+
+[[strip_import_rule]]
+module = "env"
+name = "molt_socket_recvmsg_host"
+category = "socket"
+description = "Receive message"
+
+[[strip_import_rule]]
+module = "env"
+name = "molt_socket_send_host"
+category = "socket"
+description = "Send to socket"
+
+[[strip_import_rule]]
+module = "env"
+name = "molt_socket_sendmsg_host"
+category = "socket"
+description = "Send message"
+
+[[strip_import_rule]]
+module = "env"
+name = "molt_socket_sendto_host"
+category = "socket"
+description = "Send to address"
+
+[[strip_import_rule]]
+module = "env"
+name = "molt_socket_setsockopt_host"
+category = "socket"
+description = "Set socket option"
+
+[[strip_import_rule]]
+module = "env"
+name = "molt_socket_shutdown_host"
+category = "socket"
+description = "Shutdown socket"
+
+[[strip_import_rule]]
+module = "env"
+name = "molt_socket_socketpair_host"
+category = "socket"
+description = "Create socket pair"
+
+[[strip_import_rule]]
+module = "env"
+name = "molt_socket_poll_host"
+category = "socket"
+description = "Poll socket events"
+
+[[strip_import_rule]]
+module = "env"
+name = "molt_time_timezone_host"
+category = "time"
+description = "Get timezone"
+
+[[strip_import_rule]]
+module = "env"
+name = "molt_time_local_offset_host"
+category = "time"
+description = "Get local UTC offset"
+
+[[strip_import_rule]]
+module = "env"
+name = "molt_time_tzname_host"
+category = "time"
+description = "Get timezone name"
+
 # Canonical op -> WASM import dependency planner.
 # Generated Rust consumers are produced by tools/gen_wasm_abi.py.
 

@@ -135,11 +135,14 @@ This surface is implemented by:
 
 `runtime/molt-backend-wasm/src/wasm_abi_manifest.toml` is the executable authority
 for Molt runtime import names, the static function type table and its indices,
-backend Pure-profile skip prefixes, and op-to-import dependency planning.
-`tools/gen_wasm_abi.py` renders the checked-in Rust and Python consumers:
+backend Pure-profile skip prefixes, linker host-import allowlists, strip-tool
+host import classification, and op-to-import dependency planning.
+`tools/gen_wasm_abi.py` renders the checked-in Rust, Python, and linker
+consumers:
 
 - `runtime/molt-backend-wasm/src/wasm_abi_generated.rs` for backend import emission.
 - `src/molt/_wasm_abi_generated.py` for runtime-export validation and tools.
+- `tools/wasm_allowed_imports.txt` for `wasm-ld --allow-undefined-file`.
 
 Do not add host import names by parsing Rust or hand-editing generated outputs.
 Update the manifest and regenerate.
