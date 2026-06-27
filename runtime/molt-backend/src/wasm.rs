@@ -19,7 +19,6 @@ use crate::wasm_dispatch::{
     dispatch_control_panic, emit_sparse_state_remap_lookup, has_non_linear_control_flow,
 };
 use crate::wasm_import_tracking::{TrackedImportIds, selected_import_id};
-use crate::wasm_imports::collect_reloc_required_imports;
 pub use crate::wasm_options::{WasmCompileOptions, WasmProfile};
 mod compile_pipeline;
 mod context;

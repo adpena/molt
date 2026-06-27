@@ -27,13 +27,8 @@ impl WasmBackend {
         // In pure mode, IO/ASYNC/TIME imports are omitted entirely. Any code path
         // that references a skipped import will trigger a clear compile-time panic.
         let is_pure = self.options.wasm_profile == WasmProfile::Pure;
-        let runtime_surface = WasmRuntimeSurfacePlan::build(
-            &ir,
-            &lir_fast_outputs,
-            &task_kinds,
-            &self.import_ids,
-            &self.options,
-        );
+        let runtime_surface =
+            WasmRuntimeSurfacePlan::build(&ir, &lir_fast_outputs, &task_kinds, &self.options);
         let auto_required = runtime_surface.auto_required_imports.clone();
         let is_skipped_import = |name: &str| -> bool {
             is_pure && crate::wasm_abi_generated::pure_profile_skips_import(name)

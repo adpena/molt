@@ -1,16 +1,29 @@
 # WASM Import Stripping for Pure-Computation Modules
 
 > **UPDATE 2026-03-20:** Import stripping for freestanding deployment is now implemented via `tools/wasm_stub_wasi.py` (post-link WASI import replacement with unreachable stubs). See `--target wasm-freestanding`.
+> **UPDATE 2026-06-27:** Runtime import discovery is no longer a monolithic
+> `wasm.rs` scan. The generated ABI manifest owns import names/types,
+> `wasm_imports.rs` owns static op dependency data, and
+> `wasm/module_abi/runtime_surface.rs` is the single IR-scanning planner for
+> Auto/reloc import requirements, direct runtime-call arity, builtin trampolines,
+> and per-module intrinsic manifests.
 
 **Date:** 2026-03-07
-**Context:** Molt WASM codegen (`molt-backend/src/wasm.rs`) emits a monolithic import surface. This document describes what is emitted, what is unnecessary for pure-computation modules, and how to strip it.
+**Context:** Molt WASM codegen (`molt-backend/src/wasm.rs`) now routes import
+surface decisions through generated ABI data and the module-level runtime surface
+planner. This document records the import-stripping contract and the legacy
+motivation for pure-computation modules.
 
 ## 1. Current Import Surface
 
 The compiled `generator.wasm` (13.1 MB) declares **90 imports** across three namespaces:
 
-### `molt_runtime` (internal runtime — ~624 `add_import` calls in wasm.rs)
-All runtime host functions are unconditionally registered in `wasm.rs` lines 1006-1800+. These cover:
+### `molt_runtime` (internal runtime)
+Runtime host functions are declared from the generated ABI registry
+(`runtime/molt-backend/src/wasm_abi_generated.rs`). In Auto/reloc mode,
+`runtime/molt-backend/src/wasm/module_abi/runtime_surface.rs` computes the
+pre-emission requirement set from IR, `OP_IMPORT_DEPS`, direct runtime calls,
+task/generator facts, and backend-lowered runtime calls. These cover:
 - **Core:** `runtime_init`, `runtime_shutdown`, `alloc`, `print_obj`, `print_newline`
 - **Arithmetic/comparison:** `add`, `sub`, `mul`, `div`, `lt`, `gt`, `eq`, etc.
 - **Collections:** `list_*`, `dict_*`, `set_*`, `tuple_*`, `string_*`
@@ -48,12 +61,12 @@ The remaining 30 imports (core runtime, arithmetic, IO/stdout, indirect calls, e
 
 ## 3. Recommended Approach
 
-### Option A: Build flag in `wasm.rs` (compiler-side, recommended)
+### Option A: Compiler-side profile/import planning (recommended)
 
 > **UPDATE 2026-03-20:** This option is now implemented (ddc8ea4c). `--wasm-profile pure` performs compile-time stripping of IO/ASYNC/TIME category imports, emitting `unreachable` for stripped call sites. Combined with `wasm-opt --remove-unused-module-elements` post-link, this achieves 30-50% size reduction for pure-compute modules.
 
-Add a `--wasm-profile` flag with values like `full` (default) and `pure`:
-- In `pure` mode, skip the `add_import` calls for process/db/ws/socket/time categories.
+Use the `--wasm-profile` flag with values like `full` (default) and `pure`:
+- In `pure` mode, skip process/db/ws/socket/time categories in the module ABI import planner.
 - Guard the corresponding `emit_call` sites to emit `unreachable` instead of `call $import_idx` for omitted imports.
 - Run `wasm-opt --remove-unused-module-elements` as a post-emit step to DCE any code that transitively referenced stripped imports.
 
@@ -83,5 +96,7 @@ Or use the existing `tools/wasm_strip_unused.py` (already in the repo) which can
 
 - Existing analysis: `docs/architecture/wasm-import-analysis.md` (2026-03-06)
 - Existing strip tool: `tools/wasm_strip_unused.py`
-- WASM codegen imports: `runtime/molt-backend/src/wasm.rs` lines 1006-1800+
+- WASM import registry: `runtime/molt-backend/src/wasm_abi_manifest.toml`
+- WASM import dependency data: `runtime/molt-backend/src/wasm_imports.rs`
+- WASM runtime surface planner: `runtime/molt-backend/src/wasm/module_abi/runtime_surface.rs`
 - Browser host stubs: `strata/` or site `molt-wasm-host.ts`

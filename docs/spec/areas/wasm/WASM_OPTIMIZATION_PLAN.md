@@ -8,7 +8,13 @@
 
 ## 0. Current Architecture Summary
 
-Molt's WASM backend is a custom code emitter (`runtime/molt-backend/src/wasm.rs`, ~9740 lines) that directly produces WASM bytecode using the `wasm_encoder` crate. It does **not** use Cranelift for WASM output -- instead it emits WASM instructions directly from Molt's IR (`SimpleIR` / `OpIR`). This is a significant architectural distinction from the native backend, which uses Cranelift's `ObjectModule`.
+Molt's WASM backend is a custom code emitter rooted at `runtime/molt-backend/src/wasm.rs`.
+That file is now a hub for decomposed backend modules rather than the historical
+monolith. The backend directly produces WASM bytecode using the `wasm_encoder`
+crate. It does **not** use Cranelift for WASM output -- instead it emits WASM
+instructions directly from Molt's IR (`SimpleIR` / `OpIR`). This is a significant
+architectural distinction from the native backend, which uses Cranelift's
+`ObjectModule`.
 
 The WASM host (`runtime/molt-wasm-host/src/main.rs`, ~4550 lines) runs on wasmtime 41.0.3 with WASI Preview 1 support. It provides 620+ host-imported intrinsic functions under the `molt_runtime` namespace, plus WASI syscalls and indirect call trampolines.
 
@@ -16,7 +22,11 @@ Key characteristics of the current implementation:
 - **Direct WASM emission**: Custom `WasmBackend` struct builds WASM modules section by section (types, imports, functions, code, data, tables, exports).
 - **NaN-boxed object model**: Same 64-bit NaN-boxing scheme as native, with i64 as the universal value type.
 - **Relocatable object output**: Emits linking sections and relocation entries for `wasm-ld` to combine with the pre-compiled runtime `.wasm`.
-- **Monolithic import surface**: All 620+ runtime imports are registered unconditionally regardless of what the program uses.
+- **Generated and planned import surface**: `wasm_abi_manifest.toml` generates
+  the import registry/types, `wasm_imports.rs` owns static op dependency data,
+  and `wasm/module_abi/runtime_surface.rs` performs the single IR scan for
+  Auto/reloc required imports, direct runtime-call arity, builtin trampolines,
+  and per-module intrinsic manifests.
 - **State machine lowering**: Generators, coroutines, and async generators use dispatch-block state machines with dense/sparse remap tables.
 - **Deterministic output**: BTreeMap used everywhere for iteration-order stability; NaN canonicalization available via `MOLT_DETERMINISTIC=1`.
 
