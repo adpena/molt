@@ -1,7 +1,9 @@
 //! String encoding and decoding — extracted from ops.rs for maintainability.
 
 use super::ops_string::{push_wtf8_codepoint, wtf8_from_bytes, wtf8_has_surrogates};
-pub(crate) use molt_runtime_text::codec_registry::{EncodingKind, normalize_encoding};
+pub(crate) use molt_runtime_text::codec_registry::{
+    CodecRuntimeClass, EncodingKind, normalize_encoding,
+};
 
 mod charmap_codecs;
 
@@ -218,38 +220,7 @@ pub(crate) fn encode_string_with_errors(
             "strict"
         }
     };
-    let error_encoding = match kind {
-        EncodingKind::Utf8Sig => "utf-8",
-        EncodingKind::Cp1252
-        | EncodingKind::Cp437
-        | EncodingKind::Cp850
-        | EncodingKind::Cp860
-        | EncodingKind::Cp862
-        | EncodingKind::Cp863
-        | EncodingKind::Cp865
-        | EncodingKind::Cp866
-        | EncodingKind::Cp874
-        | EncodingKind::Cp1250
-        | EncodingKind::Cp1251
-        | EncodingKind::Cp1253
-        | EncodingKind::Cp1254
-        | EncodingKind::Cp1255
-        | EncodingKind::Cp1256
-        | EncodingKind::Cp1257
-        | EncodingKind::Koi8R
-        | EncodingKind::Koi8U
-        | EncodingKind::Iso8859_2
-        | EncodingKind::Iso8859_3
-        | EncodingKind::Iso8859_4
-        | EncodingKind::Iso8859_5
-        | EncodingKind::Iso8859_6
-        | EncodingKind::Iso8859_7
-        | EncodingKind::Iso8859_8
-        | EncodingKind::Iso8859_10
-        | EncodingKind::Iso8859_15
-        | EncodingKind::MacRoman => "charmap",
-        _ => kind.name(),
-    };
+    let error_encoding = kind.encode_error_label();
     let invalid_char_err =
         |encoding: &'static str, code: u32, pos: usize, limit: u32| -> EncodeError {
             if let Some(name) = unknown_handler.as_ref() {
@@ -361,44 +332,17 @@ pub(crate) fn encode_string_with_errors(
                 other => Err(EncodeError::UnknownErrorHandler(other.to_string())),
             }
         };
-    match kind {
-        EncodingKind::Utf8 => encode_utf8(handler, bytes, &mut out),
-        EncodingKind::Utf8Sig => {
+    match kind.runtime_class() {
+        CodecRuntimeClass::Utf8 => encode_utf8(handler, bytes, &mut out),
+        CodecRuntimeClass::Utf8Sig => {
             let encoded = encode_utf8(handler, bytes, &mut out)?;
             let mut with_bom = Vec::with_capacity(encoded.len() + 3);
             with_bom.extend_from_slice(&[0xEF, 0xBB, 0xBF]);
             with_bom.extend_from_slice(&encoded);
             Ok(with_bom)
         }
-        EncodingKind::Cp1252
-        | EncodingKind::Cp437
-        | EncodingKind::Cp850
-        | EncodingKind::Cp860
-        | EncodingKind::Cp862
-        | EncodingKind::Cp863
-        | EncodingKind::Cp865
-        | EncodingKind::Cp866
-        | EncodingKind::Cp874
-        | EncodingKind::Cp1250
-        | EncodingKind::Cp1251
-        | EncodingKind::Cp1253
-        | EncodingKind::Cp1254
-        | EncodingKind::Cp1255
-        | EncodingKind::Cp1256
-        | EncodingKind::Cp1257
-        | EncodingKind::Koi8R
-        | EncodingKind::Koi8U
-        | EncodingKind::Iso8859_2
-        | EncodingKind::Iso8859_3
-        | EncodingKind::Iso8859_4
-        | EncodingKind::Iso8859_5
-        | EncodingKind::Iso8859_6
-        | EncodingKind::Iso8859_7
-        | EncodingKind::Iso8859_8
-        | EncodingKind::Iso8859_10
-        | EncodingKind::Iso8859_15
-        | EncodingKind::MacRoman => encode_charmap(kind),
-        EncodingKind::Latin1 | EncodingKind::Ascii => {
+        CodecRuntimeClass::Charmap => encode_charmap(kind),
+        CodecRuntimeClass::Latin1 | CodecRuntimeClass::Ascii => {
             let limit = kind.ordinal_limit();
             for (idx, cp) in wtf8_from_bytes(bytes).code_points().enumerate() {
                 let code = cp.to_u32();
@@ -435,7 +379,7 @@ pub(crate) fn encode_string_with_errors(
             }
             Ok(out)
         }
-        EncodingKind::UnicodeEscape => {
+        CodecRuntimeClass::UnicodeEscape => {
             for cp in wtf8_from_bytes(bytes).code_points() {
                 let code = cp.to_u32();
                 match code {
@@ -451,7 +395,7 @@ pub(crate) fn encode_string_with_errors(
             }
             Ok(out)
         }
-        EncodingKind::Utf16 | EncodingKind::Utf16LE | EncodingKind::Utf16BE => {
+        CodecRuntimeClass::Utf16 | CodecRuntimeClass::Utf16LE | CodecRuntimeClass::Utf16BE => {
             let (endian, with_bom) = match kind {
                 EncodingKind::Utf16 => (native_endian(), true),
                 EncodingKind::Utf16LE => (Endian::Little, false),
@@ -510,7 +454,7 @@ pub(crate) fn encode_string_with_errors(
             }
             Ok(out)
         }
-        EncodingKind::Utf32 | EncodingKind::Utf32LE | EncodingKind::Utf32BE => {
+        CodecRuntimeClass::Utf32 | CodecRuntimeClass::Utf32LE | CodecRuntimeClass::Utf32BE => {
             let (endian, with_bom) = match kind {
                 EncodingKind::Utf32 => (native_endian(), true),
                 EncodingKind::Utf32LE => (Endian::Little, false),
@@ -1221,12 +1165,12 @@ fn decode_bytes_with_errors(
     kind: EncodingKind,
     errors: &str,
 ) -> Result<(Vec<u8>, String), (DecodeFailure, String)> {
-    match kind {
-        EncodingKind::Utf8 => match decode_utf8_bytes_with_errors(bytes, errors) {
+    match kind.runtime_class() {
+        CodecRuntimeClass::Utf8 => match decode_utf8_bytes_with_errors(bytes, errors) {
             Ok(text) => Ok((text, "utf-8".to_string())),
             Err(err) => Err((err, "utf-8".to_string())),
         },
-        EncodingKind::Utf8Sig => {
+        CodecRuntimeClass::Utf8Sig => {
             let data =
                 if bytes.len() >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF {
                     &bytes[3..]
@@ -1238,62 +1182,37 @@ fn decode_bytes_with_errors(
                 Err(err) => Err((err, "utf-8".to_string())),
             }
         }
-        EncodingKind::Cp1252
-        | EncodingKind::Cp437
-        | EncodingKind::Cp850
-        | EncodingKind::Cp860
-        | EncodingKind::Cp862
-        | EncodingKind::Cp863
-        | EncodingKind::Cp865
-        | EncodingKind::Cp866
-        | EncodingKind::Cp874
-        | EncodingKind::Cp1250
-        | EncodingKind::Cp1251
-        | EncodingKind::Cp1253
-        | EncodingKind::Cp1254
-        | EncodingKind::Cp1255
-        | EncodingKind::Cp1256
-        | EncodingKind::Cp1257
-        | EncodingKind::Koi8R
-        | EncodingKind::Koi8U
-        | EncodingKind::Iso8859_2
-        | EncodingKind::Iso8859_3
-        | EncodingKind::Iso8859_4
-        | EncodingKind::Iso8859_5
-        | EncodingKind::Iso8859_6
-        | EncodingKind::Iso8859_7
-        | EncodingKind::Iso8859_8
-        | EncodingKind::Iso8859_10
-        | EncodingKind::Iso8859_15
-        | EncodingKind::MacRoman => {
+        CodecRuntimeClass::Charmap => {
             match decode_single_byte_charmap_with_errors(bytes, kind, errors) {
                 Ok(text) => Ok((text, "charmap".to_string())),
                 Err(err) => Err((err, "charmap".to_string())),
             }
         }
-        EncodingKind::Ascii => match decode_ascii_with_errors(bytes, errors) {
+        CodecRuntimeClass::Ascii => match decode_ascii_with_errors(bytes, errors) {
             Ok(text) => Ok((text, "ascii".to_string())),
             Err(err) => Err((err, "ascii".to_string())),
         },
-        EncodingKind::Latin1 => {
+        CodecRuntimeClass::Latin1 => {
             let mut out = Vec::with_capacity(bytes.len());
             for &byte in bytes {
                 push_wtf8_codepoint(&mut out, byte as u32);
             }
             Ok((out, "latin-1".to_string()))
         }
-        EncodingKind::UnicodeEscape => match decode_unicode_escape_with_errors(bytes, errors) {
-            Ok(text) => Ok((text, "unicodeescape".to_string())),
-            Err(err) => Err((err, "unicodeescape".to_string())),
-        },
-        EncodingKind::Utf16 | EncodingKind::Utf16LE | EncodingKind::Utf16BE => {
+        CodecRuntimeClass::UnicodeEscape => {
+            match decode_unicode_escape_with_errors(bytes, errors) {
+                Ok(text) => Ok((text, "unicodeescape".to_string())),
+                Err(err) => Err((err, "unicodeescape".to_string())),
+            }
+        }
+        CodecRuntimeClass::Utf16 | CodecRuntimeClass::Utf16LE | CodecRuntimeClass::Utf16BE => {
             let (endian, label, offset) = utf16_decode_config(bytes, kind);
             match decode_utf16_with_errors(bytes, errors, endian, offset) {
                 Ok(text) => Ok((text, label)),
                 Err(err) => Err((err, label)),
             }
         }
-        EncodingKind::Utf32 | EncodingKind::Utf32LE | EncodingKind::Utf32BE => {
+        CodecRuntimeClass::Utf32 | CodecRuntimeClass::Utf32LE | CodecRuntimeClass::Utf32BE => {
             let (endian, label, offset) = utf32_decode_config(bytes, kind);
             match decode_utf32_with_errors(bytes, errors, endian, offset) {
                 Ok(text) => Ok((text, label)),
