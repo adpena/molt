@@ -16,9 +16,10 @@
 > **One-line thesis.** molt already ships *seven* hand-tuned Cargo profiles and a
 > sophisticated per-crate opt-level policy, and it already has three size-measurement
 > scripts — but **size is not gated, monomorphization bloat is completely uncontrolled
-> (no `share-generics`, no polymorphization, the #1 Rust binary-size killer), the WASM
-> split/component/streaming code is estimate-only stubs disconnected from product
-> codegen, and the size budgets are scattered magic constants (35MB native / 20MB / 16MB
+> (no `share-generics`, no polymorphization, the #1 Rust binary-size killer), the
+> now-retired WASM split/component/streaming TIR stubs exposed how easily estimate-only
+> code can masquerade as product authority, and the size budgets are scattered magic
+> constants (35MB native / 20MB / 16MB
 > WASM) rather than a per-`(backend × profile × tier)` scoreboard with history.** This arc
 > retires the class **"silent size drift"** the way doc 64 retires "silent perf drift":
 > by making artifact footprint a *projection of the same measurement plane*, gated per
@@ -57,11 +58,12 @@ cause — not a number a human eyeballs in a one-off `nm` dump.** Concretely:
    monomorphic bodies only on the hot lanes doc 65_perf_compression_ladder Rung 4 names).
    The class retired: **"the generic-instantiation explosion nobody attributed."**
 4. **WASM size has a real split/tree-shake pipeline, not an 8-bytes-per-op estimate.**
-   `wasm_split.rs`/`wasm_component.rs`/`wasm_streaming.rs` either become product-wired
-   (driven by the real emitted module + the `--gc-sections`/`wasm-opt -Oz --converge`
-   contract of doc 0931) or are explicitly demoted to "research stub, not on the size
-   path" so they stop masquerading as a shipped capability. The compressed-WASM cell is
-   gated against the Cloudflare 3MB ceiling per tier.
+   The estimate-only TIR split/component/streaming stubs are retired from the compiled
+   product surface. Future split/component/streaming work must be product-wired from
+   emitted-WASM artifact facts: real reachability, import/export/type sections,
+   post-link/post-`wasm-opt` section bytes, compressed size-board rows, and the
+   `--gc-sections`/`wasm-opt -Oz --converge` contract of doc 0931. The
+   compressed-WASM cell is gated against the Cloudflare 3MB ceiling per tier.
 5. **The dylib/static tradeoff is a measured, per-deployment decision.** The runtime is
    `staticlib`+`rlib`+`cdylib` today; the arc adds the *measured* "N independent molt
    binaries on one host" crossover where a shared dylib wins total footprint, recorded as
@@ -91,7 +93,7 @@ the tree at HEAD (2026-06-24):
 | Symbol feature-gate map | `runtime/molt-runtime/src/intrinsics/categories.toml` + generated `src/molt/_runtime_feature_gates.py` | TOML owns symbol-prefix to `stdlib_*` feature attribution; Cargo.toml/cfg-gated modules own `LINK_AFFECTING_FEATURES`; the generated Python module feeds resolver generation and frontend compile-time refusal | This is the **tree-shaking substrate arc 60 builds on**; this arc *measures* what each gate saves and feeds it to the Size board |
 | Linker contract | `docs/spec/areas/compiler/0931_LINKER_OPTIMIZATION_CONTRACT.md` | `--gc-sections`/`--export-if-defined`/no-ICF-while-fn-addrs-are-identities rules; "add size dashboards… raw/gzip/function-count/data-segment/export-count" as high-value work | Names the dashboard as TODO; **this arc IS that dashboard, as a board projection** |
 | Size/cold-start spec | `docs/spec/areas/perf/0604_BINARY_SIZE_AND_COLD_START.md` | the metric definitions (stripped+unstripped, raw+gzip+brotli, `llvm-size`/`cargo bloat`/`cargo llvm-lines`/`twiggy`), 10% regression rule | **All of it is prose** — no tool implements `cargo bloat`/`llvm-lines`/`twiggy`/`brotli`; this arc operationalizes the spec |
-| WASM split/component/streaming | `runtime/molt-tir/src/tir/wasm_split.rs`, `wasm_component.rs`, `wasm_streaming.rs` | **estimate-only stubs** (`ops*8` byte heuristic; WIT generation; hot/cold manifest) — name-prefix categorization, NOT wired to real emitted modules or product output | **Decision point (§3.5):** product-wire to the real module + linker, OR demote to research-stub so they stop implying a shipped split capability |
+| WASM split/component/streaming | Retired from `runtime/molt-tir/src/tir/` on 2026-06-27 | The former code was **estimate-only stubs** (`ops*8` byte heuristic; WIT generation; hot/cold manifest) — name-prefix categorization, NOT wired to real emitted modules or product output | **Decision landed (§3.5):** no TIR pseudo-authority remains. Future product work must derive split/component/streaming facts from real backend-emitted WASM artifacts and linker/optimizer output |
 | The measurement plane | `docs/design/foundation/64_perf_scoreboards_and_harness.md` + `tools/perf_scoreboard.py` | `PerfCell` already carries `binary_size_kib`, `compile_time_s`, `molt_peak_rss_mib`, cold/warm split; `BoardProjection` abstraction; `bench/scoreboard/{...}.json` budget files incl. `cold_start_budget.json` | **The Size board is the missing sixth projection.** This arc adds it over the *same* cell stream — does not build a parallel loop |
 
 > **Refusal recorded (deletes a bad plan).** The naive plan — "write a new size CI script
@@ -146,10 +148,11 @@ Work backward from §0 to the mechanisms that make it inevitable.
          *derived* decision, not a guess.
 
 - **END:** "WASM size has a real split/tree-shake pipeline."
-  → **requires** the stubs to either consume the *real* emitted `TirModule` byte sizes
-     (post-`wasm-opt`, post-`--gc-sections`) or be demoted. **FACT NEEDED:** a
-     decision (§3.5) + if product-wired, a `WasmSplitPlan` driven by real reachability
-     (the existing `reachability.rs` pass), not name prefixes.
+  → **requires** no TIR pseudo-authority. The former stubs are retired; any product split
+     must consume real emitted WASM artifact facts (post-`wasm-opt`,
+     post-`--gc-sections`, section/import/export/type metadata, compressed bytes).
+     **FACT NEEDED:** if product-wired, a split plan driven by real reachability (the
+     existing `reachability.rs` pass) and emitted artifact measurements, not name prefixes.
 
 - **END:** "the dylib/static tradeoff is measured."
   → **requires** a `cdylib`-shared-runtime size lane alongside the `staticlib` lane, and
@@ -323,25 +326,22 @@ on stripped-only (the current default) can pass a cell that fails in production.
 retired:** "an optimization that shrank uncompressed bytes but grew the compressed
 artifact" (real — opt choices that add entropy can do this).
 
-### 3.5 DECISION: WASM split/component/streaming — product-wire or demote (retires "stub masquerading as capability")
+### 3.5 DECISION: WASM split/component/streaming stubs retired (retires "stub masquerading as capability")
 
-`wasm_split.rs`/`wasm_component.rs`/`wasm_streaming.rs` are estimate-only
+`wasm_split.rs`/`wasm_component.rs`/`wasm_streaming.rs` were removed from
+`runtime/molt-tir/src/tir/` on 2026-06-27. They were estimate-only
 (`ops.len() * 8` byte heuristic, name-prefix categorization, no connection to the real
-emitted module or the linker). Leaving them as-is is the "sharp edge left for later" the
-zero-workaround policy forbids — they *look* like a shipped split capability. **The arc
-forces the decision (Phase 4):**
-- **Product-wire (preferred IF the size win is real):** drive `WasmSplitPlan` from the
-  real `reachability.rs` reachability set and the *actual* post-`wasm-opt` section bytes,
-  emit a genuine multi-module split (core + on-demand stdlib) validated against the doc
-  0931 export contract, and gate the core-module compressed size per tier. This is the
-  structurally correct realization of the streaming/split idea.
-- **Demote to research-stub (IF measurement shows split does not beat monolithic-`-Oz` +
-  `--gc-sections` for the target deployments):** move them under a clearly-labeled
-  `research/` path with a doc note "not on the size path; superseded by tree-shaking
-  (arc 60) + wasm-opt -Oz", so they stop implying a shipped capability.
-The decision is **evidence-driven** (measure split-core vs monolithic-shaken compressed
-size on the real edge probe), never assumed. **Class retired:** "estimate-only code that
-masquerades as a product size mechanism."
+emitted module or the linker), so leaving them in the compiled crate made the size path
+look more product-wired than it was. **The decision has landed: no TIR pseudo-authority.**
+
+Future split/component/streaming work has one valid path: product-wire from the real
+backend artifact stream. That means reachability from `reachability.rs`, actual
+post-link/post-`wasm-opt` section bytes, import/export/type metadata, compressed size
+rows, and the doc 0931 export contract. The evidence question remains valid — measure
+split-core vs monolithic-shaken compressed size on the real edge probe — but the
+measurement must start from emitted artifacts, never from TIR function names or op-count
+estimates. **Class retired:** "estimate-only code that masquerades as a product size
+mechanism."
 
 ### 3.6 FACT: dylib/static crossover — retires "the linkage choice is folklore"
 
@@ -428,16 +428,17 @@ deliberate over-3MB-gzip WASM-micro fixture FAILs the absolute-budget gate.
 
 1. **Measure** split-core-vs-monolithic-shaken compressed size on the real edge probe
    (hello-world + a representative Workers handler) at `stdlib_micro`/`stdlib_edge`.
-2. **Decide** per §3.5: product-wire (drive `WasmSplitPlan` from `reachability.rs` + real
-   post-opt section bytes, validate against doc 0931 export contract) OR demote to
-   `research/` with a doc note. **No third option** (leaving the stub as-is is forbidden).
+2. **Product-wire only from real artifacts** per §3.5: the TIR stubs are retired, so the
+   split decision must drive from `reachability.rs` + real post-opt section bytes and
+   validate against doc 0931 export contract. **No third option** (reintroducing a TIR
+   name-prefix or op-count estimate is forbidden).
 3. **Add the measured `wasm-opt -Oz --converge` lane** (doc 0931 "high-value work #1") as
    a Size-board input with before/after export-contract verification (the contract's
    reproducible before/after check).
 4. **Gate** the compressed-WASM cell against the per-tier 3MB ceiling.
-**Gate:** the decision is recorded with the measurement that drove it; if product-wired,
-the split output validates + passes the doc-0931 linked-Falcon/Tinygrad smoke; the
-`--converge` lane records its byte delta + export-contract match.
+**Gate:** the retired-stub guard stays green; if product-wired, the split output
+validates + passes the doc-0931 linked-Falcon/Tinygrad smoke; the `--converge` lane
+records its byte delta + export-contract match.
 
 ### Phase 5 — Per-tier footprint evidence + dylib/static crossover lane
 
@@ -576,7 +577,7 @@ cold-erasure).
 | 3a | `tools/size_levers.py` | yes (size-profile rebuild, measure) | blocked-by 1 |
 | 3b | `tools/mono_census.py` | yes (cargo bloat/llvm-lines run) | blocked-by 1 |
 | 3c | `runtime/molt-runtime/src/**` (cold-family erasure) | **yes (representation fix)** | blocked-by 3b + doc65 ladder + doc64 P5; serialize build |
-| 4 | `runtime/molt-tir/src/tir/wasm_split.rs`+`wasm_streaming.rs`+`wasm_component.rs` (wire or demote); `tools/wasm_optimize.py` (+converge lane measured) | **yes (if product-wire)** | blocked-by 1; serialize build |
+| 4 | Retired TIR stubs stay absent; product split work must live in backend emitted-WASM artifact facts + `tools/wasm_optimize.py` (+converge lane measured) | **yes (if product-wire)** | blocked-by 1; serialize build |
 | 5 | `tools/perf_measure.py` (tier/linkage sweep specs); per-tier board rows | no (measurement) | blocked-by 1 |
 | 6 | `tools/size_causality.py` (or extend `perf_causality.py`) | no | blocked-by 3b + doc64 P5 |
 | 7 | `tools/ci_gate.py`, `.github/workflows/perf-validation.yml`, `pr_trust_gate.yml` | no | blocked-by 1-2 |
@@ -615,8 +616,9 @@ gated.
 
 ### Risk 5: WASM split stubs stay half-wired ("sharp edge left for later")
 **Band-aid (rejected):** leave `wasm_split.rs` as an estimate-only stub.
-**Structural fix:** §3.5 forces a binary decision (product-wire from real reachability OR
-demote to `research/`), evidence-driven; no third "leave it" option.
+**Structural fix:** §3.5 retired the TIR stubs entirely. Product split work may return
+only as backend-emitted artifact facts driven by real reachability, sections, imports,
+exports, compressed bytes, and the export contract; no third "leave it" or estimate path.
 
 ### Risk 6: The size win regresses correctness (drops a required export / changes semantics)
 **Band-aid (rejected):** a test-specific export allowlist (doc 0931 disallowed).
@@ -686,10 +688,12 @@ Performance-Constitution dimension in fact, not just in the constitution.**
 - Tree-shaking substrate (arc 60 seam, Phase 5/6):
   `runtime/molt-runtime/src/intrinsics/categories.toml` prefix feature facts +
   generated `src/molt/_runtime_feature_gates.py` consumer data.
-- WASM split/component/streaming stubs to wire-or-demote (Phase 4):
-  `runtime/molt-tir/src/tir/wasm_split.rs` (`plan_split` name-prefix heuristic 16-36,
-  `estimate_sizes` `ops*8` 39-64), `wasm_streaming.rs`, `wasm_component.rs`; the real
-  reachability source: `runtime/molt-passes/src/tir/passes/reachability.rs`.
+- WASM split/component/streaming stubs retired (Phase 4):
+  `runtime/molt-tir/src/tir/wasm_split.rs`, `wasm_streaming.rs`, and
+  `wasm_component.rs` are deleted and guarded against reintroduction. The real
+  reachability source for any future product split is
+  `runtime/molt-passes/src/tir/passes/reachability.rs`; emitted artifact facts belong in
+  the WASM backend/linker/optimizer path, not in TIR name heuristics.
 - wasm-opt converge lane (Phase 4): `tools/wasm_optimize.py` `_DEFAULT_FEATURE_FLAGS`
   (45-56, the load-bearing `--disable-gc`/`--disable-custom-descriptors` set);
   `tools/wasm_link.py` (`--gc-sections`, rec-group flatten); doc 0931 "high-value work #1".

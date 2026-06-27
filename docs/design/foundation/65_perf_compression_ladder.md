@@ -625,9 +625,9 @@ address-taken analysis. **Consumers:** tree-shaking / DCE, the WASM hermetic bui
 this is the **fourth-dimension** scoreboard (doc 51 §2: warm + cold + RSS + binary
 simultaneously world-class). **Composition:** C-lane. **Depends on** the fact substrate
 (per-attr liveness needs Rung 4 shapes + Rung 2 call targets to know what is reachable).
-Composes with doc 06 (function layout), the WASM split/streaming machinery
-(`tir/wasm_split.rs`, `wasm_streaming.rs`), and doc 08 (build speed — compile-time is
-the +1 dimension).
+Composes with doc 06 (function layout), the emitted-WASM artifact facts that replace the
+retired TIR split/streaming stubs, and doc 08 (build speed — compile-time is the +1
+dimension).
 
 ---
 

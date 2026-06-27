@@ -317,8 +317,10 @@ deps molt-ir) and `molt-lower` (TIR->{LIR,SimpleIR,WASM-IR} lowering + repr-plan
 - `tir/lower_from_simple.rs` (1,408), `tir/lower_to_simple.rs` (8,187), `tir/lower_to_lir.rs`
   (1,095), `tir/lower_to_wasm.rs` (2,469), `tir/lir.rs` (143), `tir/verify_lir.rs` (1,489),
   `tir/verify_lir_repr.rs` (184), `tir/target_info.rs` (609 -- 0 passes/lower refs; 21b assigns
-  to lower as the target/profile descriptor lowering consumes), `tir/mlir_compat.rs` (464),
-  `tir/wasm_component.rs` (104), `tir/wasm_split.rs` (146), `tir/wasm_streaming.rs` (112).
+  to lower as the target/profile descriptor lowering consumes), `tir/mlir_compat.rs` (464).
+- Retired from the lower partition: `tir/wasm_component.rs`, `tir/wasm_split.rs`, and
+  `tir/wasm_streaming.rs`. They were estimate-only WASM stubs, not a production lowering
+  surface; future split/component/streaming work belongs in backend emitted-artifact facts.
 - **`representation_plan.rs` (residual ~6,000 lines after S1's vocab extract) -> `molt-lower/src/
   representation_plan.rs`** -- the plan LOGIC (`ScalarRepresentationPlan`, `LlvmReprFacts`,
   `repr_by_value_for`, `value_range_for` which calls `passes::{value_range,scev}`,
