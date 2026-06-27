@@ -12,6 +12,10 @@
 
 #[cfg(kani)]
 mod object_proofs {
+    use molt_codegen_abi::{
+        HEADER_FLAG_HAS_PTRS, HEADER_FLAG_IMMORTAL, HEADER_FLAG_SKIP_CLASS_DECREF,
+        HEADER_SIZE_BYTES, TYPE_ID_FUNCTION, TYPE_ID_OBJECT,
+    };
     use std::sync::atomic::{AtomicU32, Ordering};
 
     // ---------------------------------------------------------------
@@ -53,33 +57,29 @@ mod object_proofs {
     struct MoltHeader {
         type_id: u32,
         ref_count: MoltRefCount,
-        poll_fn: u64,
-        state: i64,
-        size: usize,
-        flags: u64,
+        flags: u32,
+        size_class: u16,
+        cold_idx: u32,
+        reserved: u32,
     }
 
     // Header flags — must match the real constants in object/mod.rs.
-    const HEADER_FLAG_HAS_PTRS: u64 = 1;
-    const HEADER_FLAG_SKIP_CLASS_DECREF: u64 = 1 << 1;
-    const HEADER_FLAG_GEN_RUNNING: u64 = 1 << 2;
-    const HEADER_FLAG_GEN_STARTED: u64 = 1 << 3;
-    const HEADER_FLAG_SPAWN_RETAIN: u64 = 1 << 4;
-    const HEADER_FLAG_CANCEL_PENDING: u64 = 1 << 5;
-    const HEADER_FLAG_BLOCK_ON: u64 = 1 << 6;
-    const HEADER_FLAG_TASK_QUEUED: u64 = 1 << 7;
-    const HEADER_FLAG_TASK_RUNNING: u64 = 1 << 8;
-    const HEADER_FLAG_TASK_WAKE_PENDING: u64 = 1 << 9;
-    const HEADER_FLAG_TASK_DONE: u64 = 1 << 10;
-    const HEADER_FLAG_TRACEBACK_SUPPRESSED: u64 = 1 << 11;
-    const HEADER_FLAG_COROUTINE: u64 = 1 << 12;
-    const HEADER_FLAG_FUNC_TASK_TRAMPOLINE_KNOWN: u64 = 1 << 13;
-    const HEADER_FLAG_FUNC_TASK_TRAMPOLINE_NEEDED: u64 = 1 << 14;
-    const HEADER_FLAG_IMMORTAL: u64 = 1 << 15;
-    const HEADER_FLAG_FINALIZER_RAN: u64 = 1 << 16;
+    const HEADER_FLAG_GEN_RUNNING: u32 = 1 << 2;
+    const HEADER_FLAG_GEN_STARTED: u32 = 1 << 3;
+    const HEADER_FLAG_SPAWN_RETAIN: u32 = 1 << 4;
+    const HEADER_FLAG_CANCEL_PENDING: u32 = 1 << 5;
+    const HEADER_FLAG_BLOCK_ON: u32 = 1 << 6;
+    const HEADER_FLAG_TASK_QUEUED: u32 = 1 << 7;
+    const HEADER_FLAG_TASK_RUNNING: u32 = 1 << 8;
+    const HEADER_FLAG_TASK_WAKE_PENDING: u32 = 1 << 9;
+    const HEADER_FLAG_TASK_DONE: u32 = 1 << 10;
+    const HEADER_FLAG_TRACEBACK_SUPPRESSED: u32 = 1 << 11;
+    const HEADER_FLAG_COROUTINE: u32 = 1 << 12;
+    const HEADER_FLAG_FUNC_TASK_TRAMPOLINE_KNOWN: u32 = 1 << 13;
+    const HEADER_FLAG_FUNC_TASK_TRAMPOLINE_NEEDED: u32 = 1 << 14;
+    const HEADER_FLAG_FINALIZER_RAN: u32 = 1 << 16;
 
     // Type IDs — must match the real constants in object/type_ids.rs.
-    const TYPE_ID_OBJECT: u32 = 100;
     const TYPE_ID_STRING: u32 = 200;
     const TYPE_ID_LIST: u32 = 201;
     const TYPE_ID_BYTES: u32 = 202;
@@ -101,7 +101,6 @@ mod object_proofs {
     const TYPE_ID_FILE_HANDLE: u32 = 218;
     const TYPE_ID_MEMORYVIEW: u32 = 219;
     const TYPE_ID_INTARRAY: u32 = 220;
-    const TYPE_ID_FUNCTION: u32 = 221;
     const TYPE_ID_BOUND_METHOD: u32 = 222;
     const TYPE_ID_MODULE: u32 = 223;
     const TYPE_ID_TYPE: u32 = 224;
@@ -183,7 +182,7 @@ mod object_proofs {
     ];
 
     /// All header flags as a static array for bit-independence checks.
-    const ALL_FLAGS: [u64; 17] = [
+    const ALL_FLAGS: [u32; 17] = [
         HEADER_FLAG_HAS_PTRS,
         HEADER_FLAG_SKIP_CLASS_DECREF,
         HEADER_FLAG_GEN_RUNNING,
@@ -229,13 +228,14 @@ mod object_proofs {
     // 1. HEADER LAYOUT PROOFS
     // ===============================================================
 
-    /// MoltHeader size matches the sum of its fields' sizes with C layout padding.
-    /// Fields: type_id (u32) + ref_count (u32) + poll_fn (u64) + state (i64) + size (usize) + flags (u64).
-    /// With #[repr(C)] on a 64-bit target: 4 + 4 + 8 + 8 + 8 + 8 = 40 bytes.
+    /// MoltHeader size matches the shared codegen/runtime ABI.
     #[kani::proof]
     #[kani::unwind(1)]
-    fn header_size_is_40_bytes() {
-        assert_eq!(std::mem::size_of::<MoltHeader>(), 40);
+    fn header_size_matches_shared_abi() {
+        assert_eq!(
+            std::mem::size_of::<MoltHeader>(),
+            HEADER_SIZE_BYTES as usize
+        );
     }
 
     /// MoltHeader alignment is 8 (the max alignment of any field).
@@ -252,10 +252,10 @@ mod object_proofs {
         let header = MoltHeader {
             type_id: 0xDEAD_BEEF,
             ref_count: MoltRefCount::new(0),
-            poll_fn: 0,
-            state: 0,
-            size: 0,
             flags: 0,
+            size_class: 0,
+            cold_idx: 0,
+            reserved: 0,
         };
         let base = &header as *const MoltHeader as *const u8;
         let type_id_ptr = &header.type_id as *const u32 as *const u8;
@@ -270,10 +270,10 @@ mod object_proofs {
         let header = MoltHeader {
             type_id: 0,
             ref_count: MoltRefCount::new(0x1234_5678),
-            poll_fn: 0,
-            state: 0,
-            size: 0,
             flags: 0,
+            size_class: 0,
+            cold_idx: 0,
+            reserved: 0,
         };
         let base = &header as *const MoltHeader as *const u8;
         let rc_ptr = &header.ref_count as *const MoltRefCount as *const u8;
@@ -281,21 +281,21 @@ mod object_proofs {
         assert_eq!(offset, 4);
     }
 
-    /// The poll_fn field sits at offset 8.
+    /// The flags field sits at offset 8.
     #[kani::proof]
     #[kani::unwind(1)]
-    fn poll_fn_at_offset_8() {
+    fn flags_at_offset_8() {
         let header = MoltHeader {
             type_id: 0,
             ref_count: MoltRefCount::new(0),
-            poll_fn: 0,
-            state: 0,
-            size: 0,
             flags: 0,
+            size_class: 0,
+            cold_idx: 0,
+            reserved: 0,
         };
         let base = &header as *const MoltHeader as *const u8;
-        let pf_ptr = &header.poll_fn as *const u64 as *const u8;
-        let offset = pf_ptr as usize - base as usize;
+        let flags_ptr = &header.flags as *const u32 as *const u8;
+        let offset = flags_ptr as usize - base as usize;
         assert_eq!(offset, 8);
     }
 
@@ -307,10 +307,10 @@ mod object_proofs {
         let header = MoltHeader {
             type_id: 42,
             ref_count: MoltRefCount::new(1),
-            poll_fn: 0,
-            state: 0,
-            size: 0,
             flags: 0,
+            size_class: 0,
+            cold_idx: 0,
+            reserved: 0,
         };
         let header_ptr = &header as *const MoltHeader as *mut u8;
         let obj_ptr = unsafe { header_ptr.add(std::mem::size_of::<MoltHeader>()) };
@@ -370,7 +370,7 @@ mod object_proofs {
     #[kani::proof]
     #[kani::unwind(1)]
     fn immortal_flag_preserves_other_bits() {
-        let flags: u64 = kani::any();
+        let flags: u32 = kani::any();
         // Assume IMMORTAL is not already set.
         kani::assume(flags & HEADER_FLAG_IMMORTAL == 0);
 
@@ -393,10 +393,10 @@ mod object_proofs {
         let header = MoltHeader {
             type_id: TYPE_ID_OBJECT,
             ref_count: MoltRefCount::new(init_rc),
-            poll_fn: 0,
-            state: 0,
-            size: 0,
             flags: HEADER_FLAG_IMMORTAL,
+            size_class: 0,
+            cold_idx: 0,
+            reserved: 0,
         };
 
         // Model of inc_ref_ptr:
@@ -414,10 +414,10 @@ mod object_proofs {
         let header = MoltHeader {
             type_id: TYPE_ID_OBJECT,
             ref_count: MoltRefCount::new(init_rc),
-            poll_fn: 0,
-            state: 0,
-            size: 0,
             flags: HEADER_FLAG_IMMORTAL,
+            size_class: 0,
+            cold_idx: 0,
+            reserved: 0,
         };
 
         // Model of dec_ref_ptr:
@@ -436,10 +436,10 @@ mod object_proofs {
         let header = MoltHeader {
             type_id: TYPE_ID_STRING,
             ref_count: MoltRefCount::new(init_rc),
-            poll_fn: 0,
-            state: 0,
-            size: 0,
             flags: 0,
+            size_class: 0,
+            cold_idx: 0,
+            reserved: 0,
         };
 
         // Model: not immortal, so inc_ref adds 1, dec_ref subtracts 1.
@@ -607,10 +607,10 @@ mod object_proofs {
         let header = MoltHeader {
             type_id: TYPE_ID_NOT_IMPLEMENTED,
             ref_count: MoltRefCount::new(init_rc),
-            poll_fn: 0,
-            state: 0,
-            size: 0,
             flags: 0,
+            size_class: 0,
+            cold_idx: 0,
+            reserved: 0,
         };
 
         // Model of dec_ref_ptr: early return when type_id == NOT_IMPLEMENTED.
@@ -627,7 +627,7 @@ mod object_proofs {
     #[kani::proof]
     #[kani::unwind(1)]
     fn finalizer_flag_idempotent() {
-        let flags: u64 = kani::any();
+        let flags: u32 = kani::any();
         let once = flags | HEADER_FLAG_FINALIZER_RAN;
         let twice = once | HEADER_FLAG_FINALIZER_RAN;
         assert_eq!(once, twice);

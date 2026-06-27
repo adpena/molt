@@ -140,7 +140,7 @@ native-backend = ["dep:cranelift-codegen", ...]
 llvm = ["dep:inkwell"]
 ```
 
-**Move:** `runtime/molt-backend/src/native_backend/` directory becomes `runtime/molt-backend-native/src/native_backend/`. `runtime/molt-backend/src/llvm_backend/` becomes `runtime/molt-backend-native/src/llvm_backend/`. `runtime/molt-backend/src/native_backend_consts.rs` moves to `runtime/molt-backend-native/src/`.
+**Move:** `runtime/molt-backend/src/native_backend/` directory becomes `runtime/molt-backend-native/src/native_backend/`. `runtime/molt-backend/src/llvm_backend/` becomes `runtime/molt-backend-native/src/llvm_backend/`. Shared NaN-box, header-layout, and type-id ABI facts stay in `runtime/molt-codegen-abi/`; do not recreate or move backend-local `native_backend_consts.rs`.
 
 **Preserve in `molt-backend` (core):**
 - `tir/` (all of it: passes, analysis, pass_manager, module_phase, parallel, etc.)
@@ -455,7 +455,7 @@ Each phase is a complete structural piece that can land independently and leave 
 - [ ] Create `/Users/adpena/Projects/molt/runtime/molt-backend-native/src/lib.rs` as the new entry point re-exporting `SimpleBackend`, `CompileOutput`, `NativeBackendModuleContext`.
 - [ ] Move `runtime/molt-backend/src/native_backend/` → `runtime/molt-backend-native/src/native_backend/`.
 - [ ] Move `runtime/molt-backend/src/llvm_backend/` → `runtime/molt-backend-native/src/llvm_backend/`.
-- [ ] Move `runtime/molt-backend/src/native_backend_consts.rs` → `runtime/molt-backend-native/src/`.
+- [ ] Preserve shared NaN-box, header-layout, and type-id ABI facts in `runtime/molt-codegen-abi/`; do not recreate `runtime/molt-backend/src/native_backend_consts.rs` in the native crate.
 - [ ] Remove `#[cfg(feature = "native-backend")] mod native_backend;` and related `pub use` re-exports from `runtime/molt-backend/src/lib.rs`.
 - [ ] Remove `native-backend` feature from `runtime/molt-backend/Cargo.toml` `[features]`; move Cranelift deps to `molt-backend-native/Cargo.toml`.
 - [ ] Update `Cargo.toml` workspace `members` to include `"runtime/molt-backend-native"`.

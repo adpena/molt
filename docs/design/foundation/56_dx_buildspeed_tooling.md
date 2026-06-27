@@ -398,8 +398,9 @@ move-only commit with G1–G6:
   `molt-ir` blast-radius does NOT include passes/backends.
 - **4.S2** Split residual → `molt-passes` ← `molt-lower` (`ir_rewrites.rs`
   migrates into `molt-lower` per 21b flag #4). [seq:S1]
-- **4.S3** Extract `molt-codegen-abi` (NaN-box consts from `native_backend_consts.rs`
-  + helpers from `molt-backend/lib.rs`; rewrite `wasm.rs:17` `QNAN` dup to import).
+- **4.S3** Extract `molt-codegen-abi` (NaN-box, header-layout, and type-id ABI
+  facts formerly in backend-local constants + helpers from `molt-backend/lib.rs`;
+  rewrite WASM value-encoding duplicates to import the shared authority).
   **[∥]** S2 (only needs `molt-ir`). G3 byte-identical gates the wasm de-dup.
 - **4.S4** Extract `molt-backend-llvm` (leaf). [seq:S2,S3]; **coordinate the
   active LLVM lane** (21 §0.3 — never extract a crate from under an active editor;

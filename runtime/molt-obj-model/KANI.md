@@ -84,11 +84,11 @@ cargo kani --tests --harness int_roundtrip
 
 | Harness                              | Property                                                            |
 |--------------------------------------|---------------------------------------------------------------------|
-| `header_size_is_40_bytes`            | `MoltHeader` is exactly 40 bytes (matches C ABI expectations)       |
+| `header_size_matches_shared_abi`     | `MoltHeader` matches `molt-codegen-abi::HEADER_SIZE_BYTES`          |
 | `header_alignment_is_8`             | `MoltHeader` alignment is 8 (max field alignment)                   |
 | `type_id_at_offset_zero`            | `type_id` field sits at byte offset 0                               |
 | `refcount_at_offset_4`              | `ref_count` field sits at byte offset 4                             |
-| `poll_fn_at_offset_8`               | `poll_fn` field sits at byte offset 8                               |
+| `flags_at_offset_8`                 | `flags` field sits at byte offset 8                                 |
 | `header_from_obj_ptr_roundtrip`     | `obj_ptr - HEADER_SIZE` recovers the original header pointer        |
 | `type_ids_are_unique`               | All 49 type IDs are distinct                                        |
 | `header_flags_are_independent`      | All 17 flags occupy distinct single-bit positions (no overlap)      |
