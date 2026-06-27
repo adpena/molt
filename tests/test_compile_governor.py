@@ -1,10 +1,32 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
 
 import tools.compile_governor as compile_governor
+
+
+def test_load_1m_returns_none_when_getloadavg_absent(monkeypatch) -> None:
+    """os.getloadavg does not exist on Windows. _load_1m must return None (the
+    caller's "no load signal" contract), not let AttributeError escape and abort
+    every needs_rust ci_gate check inside compile_slot."""
+    monkeypatch.delattr(os, "getloadavg", raising=False)
+    assert compile_governor._load_1m() is None
+
+
+def test_load_1m_returns_none_on_oserror(monkeypatch) -> None:
+    def boom():
+        raise OSError("load average unobtainable")
+
+    monkeypatch.setattr(os, "getloadavg", boom, raising=False)
+    assert compile_governor._load_1m() is None
+
+
+def test_load_1m_reads_first_component_when_available(monkeypatch) -> None:
+    monkeypatch.setattr(os, "getloadavg", lambda: (1.5, 2.0, 3.0), raising=False)
+    assert compile_governor._load_1m() == pytest.approx(1.5)
 
 
 @pytest.mark.skipif(

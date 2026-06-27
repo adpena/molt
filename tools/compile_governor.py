@@ -148,8 +148,17 @@ def _count_active_compile_processes() -> int | None:
 
 
 def _load_1m() -> float | None:
+    # os.getloadavg() is absent on Windows (AttributeError) and may fail with
+    # OSError on platforms where the load average is unobtainable. In both cases
+    # the 1-minute load signal is simply unavailable; the caller already treats
+    # None as "no load-pressure signal" (load_1m is not None guard). Catching
+    # only OSError let the AttributeError escape on Windows and abort every
+    # needs_rust ci_gate check inside compile_slot.
+    getloadavg = getattr(os, "getloadavg", None)
+    if getloadavg is None:
+        return None
     try:
-        return float(os.getloadavg()[0])
+        return float(getloadavg()[0])
     except OSError:
         return None
 
