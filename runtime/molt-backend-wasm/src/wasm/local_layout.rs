@@ -3,6 +3,7 @@ use super::constant_ops::{
 };
 use super::context::CompileFuncContext;
 use super::local_analysis::{LocalVariableAnalysis, analyze_local_variables};
+use super::multi_return_layout::WasmMultiReturnLayout;
 use super::*;
 
 pub(super) struct WasmLocalLayout {
@@ -24,11 +25,7 @@ pub(super) struct WasmLocalLayout {
     pub(super) const_seed_locals: Vec<(u32, i64)>,
     pub(super) seeded_runtime_const_ops: Vec<(usize, OpIR)>,
     pub(super) seeded_runtime_const_op_indices: BTreeSet<usize>,
-    pub(super) is_multi_return_callee: Option<usize>,
-    pub(super) multi_ret_locals: Vec<u32>,
-    pub(super) multi_ret_tuple_vars: BTreeSet<String>,
-    pub(super) multi_ret_call_locals: BTreeMap<(String, i64), u32>,
-    pub(super) multi_ret_call_vars: BTreeSet<String>,
+    pub(super) multi_return: WasmMultiReturnLayout,
 }
 
 impl WasmLocalLayout {
@@ -402,83 +399,13 @@ impl WasmLocalLayout {
             }
         }
 
-        // --- Multi-value return optimization locals (Section 3.1) ---
-        let multi_return_candidates = ctx.multi_return_candidates;
-        let is_multi_return_callee = multi_return_candidates.get(&func_ir.name).copied();
-
-        let mut multi_ret_locals: Vec<u32> = Vec::new();
-        let mut multi_ret_tuple_vars: BTreeSet<String> = BTreeSet::new();
-        if let Some(ret_count) = is_multi_return_callee {
-            for i in 0..ret_count {
-                let name = format!("__multi_ret_{i}");
-                if let std::collections::btree_map::Entry::Vacant(e) = locals.entry(name) {
-                    e.insert(local_count);
-                    local_types.push(ValType::I64);
-                    multi_ret_locals.push(local_count);
-                    local_count += 1;
-                }
-            }
-            for op in &func_ir.ops {
-                if op.kind == "tuple_new"
-                    && let Some(args) = &op.args
-                    && args.len() == ret_count
-                    && let Some(out) = &op.out
-                {
-                    multi_ret_tuple_vars.insert(out.clone());
-                }
-            }
-        }
-
-        let mut multi_ret_call_locals: BTreeMap<(String, i64), u32> = BTreeMap::new();
-        let mut multi_ret_call_vars: BTreeSet<String> = BTreeSet::new();
-        for (op_idx, op) in func_ir.ops.iter().enumerate() {
-            if op.kind != "call_internal" {
-                continue;
-            }
-            let Some(callee) = op.s_value.as_ref() else {
-                continue;
-            };
-            let Some(&ret_count) = multi_return_candidates.get(callee) else {
-                continue;
-            };
-            let Some(result_var) = op.out.as_ref() else {
-                continue;
-            };
-            let mut valid = true;
-            for k in 0..ret_count {
-                let j = op_idx + 1 + k;
-                if j >= func_ir.ops.len() {
-                    valid = false;
-                    break;
-                }
-                let next_op = &func_ir.ops[j];
-                if next_op.kind != "tuple_index" {
-                    valid = false;
-                    break;
-                }
-                let Some(args) = next_op.args.as_ref() else {
-                    valid = false;
-                    break;
-                };
-                if args.len() < 2 || args[0] != *result_var {
-                    valid = false;
-                    break;
-                }
-            }
-            if !valid {
-                continue;
-            }
-            multi_ret_call_vars.insert(result_var.clone());
-            for k in 0..ret_count {
-                let name = format!("__multi_call_{result_var}_{k}");
-                if !locals.contains_key(&name) {
-                    locals.insert(name.clone(), local_count);
-                    local_types.push(ValType::I64);
-                    local_count += 1;
-                }
-                multi_ret_call_locals.insert((result_var.clone(), k as i64), locals[&name]);
-            }
-        }
+        let multi_return = WasmMultiReturnLayout::build(
+            func_ir,
+            ctx.multi_return_candidates,
+            &mut locals,
+            &mut local_types,
+            &mut local_count,
+        );
 
         let _ = local_count;
         Self {
@@ -500,11 +427,7 @@ impl WasmLocalLayout {
             const_seed_locals,
             seeded_runtime_const_ops,
             seeded_runtime_const_op_indices,
-            is_multi_return_callee,
-            multi_ret_locals,
-            multi_ret_tuple_vars,
-            multi_ret_call_locals,
-            multi_ret_call_vars,
+            multi_return,
         }
     }
 }
