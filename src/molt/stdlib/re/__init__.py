@@ -6,22 +6,27 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 from typing import Any, Iterator
 import warnings as _warnings
 
+# Reachability-driven feature elimination
+# (docs/design/foundation/feature_reachability_tree_shaking.md, Option b): the
+# regex intrinsic handles are bound lazily inside the functions that use them,
+# NOT eagerly in the always-run module body. The frontend lowers
+# ``_require_intrinsic("molt_re_compile")`` to a ``builtin_func`` op that directly
+# link-references the ``molt_re_compile`` symbol; binding every handle at module
+# top-level made all ~15 regex symbols a hard link dependency the instant ``re``
+# is imported (even transitively via ``warnings``/``typing``, even when no regex
+# operation is ever executed), forcing the ``stdlib_regex`` feature (an
+# undefined-symbol link failure) onto lean profiles. Moving each binding into
+# its single consuming function makes the symbol reach the reached SimpleIR only
+# on a code path that actually performs that regex operation, so
+# ``molt.cli.required_features`` (which scans the reached SimpleIR for
+# ``builtin_func``/``const_str`` intrinsic names) requires ``stdlib_regex`` only
+# when a regex op is genuinely reached, and an ``import re`` with no reached regex
+# call links zero ``molt_re_*`` symbols.
+#
+# The module-body probe stays: ``molt_stdlib_probe`` is a core, ungated,
+# always-linkable intrinsic that marks ``re`` as a real intrinsic-backed stdlib
+# module for the import-policy classifier; it carries no regex link dependency.
 _require_intrinsic("molt_stdlib_probe")
-_molt_re_compile = _require_intrinsic("molt_re_compile")
-_molt_re_execute = _require_intrinsic("molt_re_execute")
-_molt_re_finditer_collect = _require_intrinsic("molt_re_finditer_collect")
-_molt_re_pattern_info = _require_intrinsic("molt_re_pattern_info")
-_molt_re_strip_verbose = _require_intrinsic("molt_re_strip_verbose")
-_molt_re_fullmatch_check = _require_intrinsic("molt_re_fullmatch_check")
-_molt_re_expand_replacement = _require_intrinsic("molt_re_expand_replacement")
-_molt_re_group_values = _require_intrinsic("molt_re_group_values")
-_molt_re_split = _require_intrinsic("molt_re_split")
-_molt_re_sub = _require_intrinsic("molt_re_sub")
-_molt_re_escape = _require_intrinsic("molt_re_escape")
-_molt_re_sub_callable = _require_intrinsic("molt_re_sub_callable")
-_molt_re_match_group = _require_intrinsic("molt_re_match_group")
-_molt_re_match_groups = _require_intrinsic("molt_re_match_groups")
-_molt_re_match_groupdict = _require_intrinsic("molt_re_match_groupdict")
 
 __all__ = [
     "NOFLAG",
@@ -133,6 +138,7 @@ class Match:
         self._group_spans = group_spans
 
     def group(self, *indices: int | str) -> Any:
+        _molt_re_match_group = _require_intrinsic("molt_re_match_group")
         if not indices:
             indices = (0,)
         match_tuple = (self._start, self._end, self._group_spans)
@@ -141,10 +147,12 @@ class Match:
         )
 
     def groups(self, default: Any = None) -> tuple[Any, ...]:
+        _molt_re_match_groups = _require_intrinsic("molt_re_match_groups")
         match_tuple = (self._start, self._end, self._group_spans)
         return _molt_re_match_groups(self._string, match_tuple, default)
 
     def groupdict(self, default: Any = None) -> dict[str, Any]:
+        _molt_re_match_groupdict = _require_intrinsic("molt_re_match_groupdict")
         match_tuple = (self._start, self._end, self._group_spans)
         return _molt_re_match_groupdict(
             self._string, match_tuple, default, self._pattern.groupindex
@@ -265,6 +273,7 @@ class Pattern:
     def finditer(
         self, string: str, pos: int = 0, endpos: int | None = None
     ) -> Iterator[Match]:
+        _molt_re_finditer_collect = _require_intrinsic("molt_re_finditer_collect")
         text = _ensure_text(string)
         start, end = _clamp_span(len(text), pos, endpos)
         raw = _molt_re_finditer_collect(self._handle, text, start, end)
@@ -287,6 +296,7 @@ class Pattern:
         return results
 
     def split(self, string: str, maxsplit: int = 0) -> list[str | Any]:
+        _molt_re_split = _require_intrinsic("molt_re_split")
         text = _ensure_text(string)
         return _molt_re_split(self._handle, text, maxsplit)
 
@@ -302,6 +312,7 @@ class Pattern:
             return _subn_callable(self, repl, text, count=count)
         if not isinstance(repl, str):
             repl = str(repl)
+        _molt_re_sub = _require_intrinsic("molt_re_sub")
         return _molt_re_sub(self._handle, repl, text, count)
 
     def __repr__(self) -> str:
@@ -310,6 +321,7 @@ class Pattern:
     def _execute(
         self, string: str, pos: int, endpos: int | None, mode: str
     ) -> Match | None:
+        _molt_re_execute = _require_intrinsic("molt_re_execute")
         text = _ensure_text(string)
         start, end = _clamp_span(len(text), pos, endpos)
         raw = _molt_re_execute(self._handle, text, start, end, mode)
@@ -340,6 +352,7 @@ def _clamp_span(length: int, pos: int, endpos: int | None) -> tuple[int, int]:
 
 
 def _match_group_values(match_obj: Match) -> tuple[object, ...]:
+    _molt_re_group_values = _require_intrinsic("molt_re_group_values")
     group0 = (match_obj._start, match_obj._end)
     all_spans = (group0,) + match_obj._group_spans
     return _molt_re_group_values(match_obj._string, all_spans)
@@ -350,6 +363,7 @@ def _expand_replacement(repl: object, match_obj: Match) -> str:
         return str(repl(match_obj))
     if not isinstance(repl, str):
         repl = str(repl)
+    _molt_re_expand_replacement = _require_intrinsic("molt_re_expand_replacement")
     return _molt_re_expand_replacement(repl, _match_group_values(match_obj))
 
 
@@ -362,8 +376,11 @@ def _compile(pattern: str, flags: int) -> Pattern:
         flags |= UNICODE
     effective_pattern = pattern
     if flags & VERBOSE:
+        _molt_re_strip_verbose = _require_intrinsic("molt_re_strip_verbose")
         effective_pattern = _molt_re_strip_verbose(pattern, flags)
+    _molt_re_compile = _require_intrinsic("molt_re_compile")
     handle = _molt_re_compile(effective_pattern, flags)
+    _molt_re_pattern_info = _require_intrinsic("molt_re_pattern_info")
     info = _molt_re_pattern_info(handle)
     groups, groupindex, effective_flags, warn_pos = info[0], info[1], info[2], info[3]
     if warn_pos is not None:
@@ -469,9 +486,7 @@ def subn(
 
 def escape(pattern: object) -> str:
     """Escape special characters in pattern."""
+    _molt_re_escape = _require_intrinsic("molt_re_escape")
     if not isinstance(pattern, str):
         pattern = str(pattern)
     return _molt_re_escape(pattern)
-
-
-globals().pop("_require_intrinsic", None)

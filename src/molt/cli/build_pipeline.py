@@ -191,6 +191,7 @@ def _run_build_pipeline(
                 emit_ir_path=output_layout.emit_ir_path,
                 target_python=prepared_build_config.target_python,
                 stdlib_profile=stdlib_profile,
+                target=target,
             )
         )
         if prepared_backend_ir_error is not None:
