@@ -82,6 +82,7 @@ def test_wasm_abi_manifest_owns_op_import_deps() -> None:
     assert "OP_IMPORT_DEPS" in gen.render_rs(data)
     assert "module_cache_del" not in op_deps["__structural__"]
     assert op_deps["module_cache_del"] == ["module_cache_del"]
+    assert op_deps["print"] == ["print_obj"]
     assert op_deps["object_new_bound"] == []
     assert op_deps["object_new_bound_stack"] == ["object_new_bound_sized"]
 

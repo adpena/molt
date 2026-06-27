@@ -16,7 +16,7 @@ fn op(kind: &str) -> OpIR {
 }
 
 fn use_value(name: &str) -> OpIR {
-    let mut op = op("print_obj");
+    let mut op = op("print");
     op.args = Some(vec![name.to_string()]);
     op
 }

@@ -4682,6 +4682,12 @@ deps = [
 ]
 
 [[op_import_dep]]
+kind = "print"
+deps = [
+  "print_obj",
+]
+
+[[op_import_dep]]
 kind = "eq"
 deps = [
   "eq",
