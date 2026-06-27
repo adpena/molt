@@ -1,3 +1,4 @@
+use super::variables::is_variable;
 use super::*;
 use std::collections::HashMap;
 impl<'a> SsaContext<'a> {

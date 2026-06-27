@@ -1,5 +1,7 @@
 use std::collections::{HashSet, VecDeque};
 
+use super::super::is_structural;
+use super::variables::is_variable;
 use super::*;
 
 impl<'a> SsaContext<'a> {
