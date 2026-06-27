@@ -186,6 +186,35 @@ def test_run_context_rejects_windows_c_drive_artifact_root_by_default(
         )
 
 
+def test_run_context_prefers_external_without_rejecting_explicit_user_output_root(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    repo_root = tmp_path / "repo"
+    user_output_root = repo_root / "build" / "wasm" / "case"
+    repo_root.mkdir()
+    monkeypatch.setattr(dx.os, "name", "nt")
+    monkeypatch.setattr(dx, "_is_windows_c_drive_path", lambda _path: True)
+
+    env = RunContext(
+        repo_root,
+        session_prefix="test",
+        prefer_external_artifacts=True,
+    ).canonical_env(
+        {
+            "MOLT_EXT_ROOT": str(user_output_root),
+            "MOLT_EXTERNAL_MIN_FREE_GB": "0",
+        },
+        create_dirs=False,
+    )
+
+    resolved_output_root = user_output_root.resolve()
+    assert env["MOLT_EXT_ROOT"] == str(resolved_output_root)
+    assert env["CARGO_TARGET_DIR"] == str(
+        resolved_output_root / "target" / "sessions" / env["MOLT_SESSION_ID"]
+    )
+
+
 def test_run_context_require_external_artifacts_forces_candidate(
     tmp_path: Path,
 ) -> None:
