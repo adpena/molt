@@ -1,3 +1,4 @@
+use super::super::control_flow::dispatch_control_panic;
 use super::*;
 
 pub(in crate::wasm) fn exception_handler_region_indices(ops: &[OpIR]) -> BTreeSet<usize> {

@@ -1,7 +1,7 @@
 use crate::OpIR;
 use std::collections::{BTreeMap, BTreeSet};
 
-pub(crate) fn has_non_linear_control_flow(ops: &[OpIR]) -> bool {
+pub(in crate::wasm) fn has_non_linear_control_flow(ops: &[OpIR]) -> bool {
     ops.iter().any(|op| {
         matches!(
             op.kind.as_str(),
@@ -40,16 +40,16 @@ pub(crate) fn has_non_linear_control_flow(ops: &[OpIR]) -> bool {
 }
 
 #[derive(Default)]
-pub(crate) struct DispatchControlMaps {
-    pub(crate) label_to_index: BTreeMap<i64, usize>,
-    pub(crate) else_for_if: BTreeMap<usize, usize>,
-    pub(crate) end_for_if: BTreeMap<usize, usize>,
-    pub(crate) end_for_else: BTreeMap<usize, usize>,
-    pub(crate) loop_continue_target: BTreeMap<usize, usize>,
-    pub(crate) loop_break_target: BTreeMap<usize, usize>,
+pub(in crate::wasm) struct DispatchControlMaps {
+    pub(in crate::wasm) label_to_index: BTreeMap<i64, usize>,
+    pub(in crate::wasm) else_for_if: BTreeMap<usize, usize>,
+    pub(in crate::wasm) end_for_if: BTreeMap<usize, usize>,
+    pub(in crate::wasm) end_for_else: BTreeMap<usize, usize>,
+    pub(in crate::wasm) loop_continue_target: BTreeMap<usize, usize>,
+    pub(in crate::wasm) loop_break_target: BTreeMap<usize, usize>,
 }
 
-pub(crate) fn dispatch_control_panic(
+pub(in crate::wasm) fn dispatch_control_panic(
     function_name: &str,
     op_idx: usize,
     message: impl std::fmt::Display,
@@ -57,7 +57,7 @@ pub(crate) fn dispatch_control_panic(
     panic!("invalid WASM dispatch control in function `{function_name}` op {op_idx}: {message}")
 }
 
-pub(crate) fn build_dispatch_control_maps(
+pub(in crate::wasm) fn build_dispatch_control_maps(
     ops: &[OpIR],
     include_state_labels: bool,
     function_name: &str,
@@ -256,5 +256,34 @@ mod tests {
     )]
     fn dispatch_control_rejects_loop_break_without_loop() {
         build_dispatch_control_maps(&[op("loop_break", None)], false, "break_without_loop");
+    }
+    fn op_with_io(kind: &str, args: Option<Vec<&str>>, out: Option<&str>) -> OpIR {
+        OpIR {
+            kind: kind.to_string(),
+            args: args.map(|a| a.into_iter().map(String::from).collect()),
+            out: out.map(String::from),
+            ..OpIR::default()
+        }
+    }
+
+    #[test]
+    fn non_linear_control_flow_detection_handles_jumpful_functions() {
+        let ops = vec![
+            op_with_io("const", None, Some("v0")),
+            op_with_io("check_exception", None, None),
+            op_with_io("jump", None, None),
+            op_with_io("label", None, None),
+        ];
+        assert!(has_non_linear_control_flow(&ops));
+    }
+
+    #[test]
+    fn non_linear_control_flow_detection_ignores_straight_line_ops() {
+        let ops = vec![
+            op_with_io("const", None, Some("v0")),
+            op_with_io("add", Some(vec!["v0", "v1"]), Some("v2")),
+            op_with_io("tuple_new", Some(vec!["v2"]), Some("v3")),
+        ];
+        assert!(!has_non_linear_control_flow(&ops));
     }
 }

@@ -224,27 +224,6 @@ fn dead_local_all_outputs_dead() {
     assert!(read_vars.is_empty(), "no variable is ever read");
 }
 
-#[test]
-fn non_linear_control_flow_detection_handles_jumpful_functions() {
-    let ops = vec![
-        make_op("const", None, None, Some("v0")),
-        make_op("check_exception", None, None, None),
-        make_op("jump", None, None, None),
-        make_op("label", None, None, None),
-    ];
-    assert!(has_non_linear_control_flow(&ops));
-}
-
-#[test]
-fn non_linear_control_flow_detection_ignores_straight_line_ops() {
-    let ops = vec![
-        make_op("const", None, None, Some("v0")),
-        make_op("add", Some(vec!["v0", "v1"]), None, Some("v2")),
-        make_op("tuple_new", Some(vec!["v2"]), None, Some("v3")),
-    ];
-    assert!(!has_non_linear_control_flow(&ops));
-}
-
 /// Extract `(param_count, result_count)` for every func type in a module's
 /// type section, in section order.
 fn wasm_function_import_names(wasm: &[u8]) -> Vec<String> {

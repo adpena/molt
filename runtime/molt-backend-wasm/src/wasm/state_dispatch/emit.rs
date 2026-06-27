@@ -1,3 +1,4 @@
+use super::super::control_flow::dispatch_control_panic;
 use super::block_layout::emit_dispatch_block_lookup;
 use super::common::{
     emit_arena_free, emit_conditional_state_branch, emit_dispatch_check_exception,
