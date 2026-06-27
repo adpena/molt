@@ -395,56 +395,6 @@ pub(super) fn emit_aggregate_runtime_op(
                 func.instruction(&Instruction::Drop);
             }
         }
-        "string_split_ws_dict_inc" => {
-            let args = op.args.as_ref().unwrap();
-            let line = locals[&args[0]];
-            let dict = locals[&args[1]];
-            let delta = locals[&args[2]];
-            func.instruction(&Instruction::LocalGet(line));
-            func.instruction(&Instruction::LocalGet(dict));
-            func.instruction(&Instruction::LocalGet(delta));
-            emit_call(func, reloc_enabled, import_ids["string_split_ws_dict_inc"]);
-            if let Some(out) = op.out.as_ref() {
-                let res = locals[out];
-                func.instruction(&Instruction::LocalSet(res));
-            } else {
-                func.instruction(&Instruction::Drop);
-            }
-        }
-        "taq_ingest_line" => {
-            let args = op.args.as_ref().unwrap();
-            let dict = locals[&args[0]];
-            let line = locals[&args[1]];
-            let bucket_size = locals[&args[2]];
-            func.instruction(&Instruction::LocalGet(dict));
-            func.instruction(&Instruction::LocalGet(line));
-            func.instruction(&Instruction::LocalGet(bucket_size));
-            emit_call(func, reloc_enabled, import_ids["taq_ingest_line"]);
-            if let Some(out) = op.out.as_ref() {
-                let res = locals[out];
-                func.instruction(&Instruction::LocalSet(res));
-            } else {
-                func.instruction(&Instruction::Drop);
-            }
-        }
-        "string_split_sep_dict_inc" => {
-            let args = op.args.as_ref().unwrap();
-            let line = locals[&args[0]];
-            let sep = locals[&args[1]];
-            let dict = locals[&args[2]];
-            let delta = locals[&args[3]];
-            func.instruction(&Instruction::LocalGet(line));
-            func.instruction(&Instruction::LocalGet(sep));
-            func.instruction(&Instruction::LocalGet(dict));
-            func.instruction(&Instruction::LocalGet(delta));
-            emit_call(func, reloc_enabled, import_ids["string_split_sep_dict_inc"]);
-            if let Some(out) = op.out.as_ref() {
-                let res = locals[out];
-                func.instruction(&Instruction::LocalSet(res));
-            } else {
-                func.instruction(&Instruction::Drop);
-            }
-        }
         "dict_pop" => {
             let args = op.args.as_ref().unwrap();
             let dict = locals[&args[0]];
