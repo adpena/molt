@@ -1,9 +1,11 @@
 use super::context::CompileFuncContext;
 use super::trampoline_analysis::WasmTrampolineAnalysis;
 use super::*;
+use imports::WasmRuntimeImportEmission;
 use runtime_surface::WasmRuntimeSurfacePlan;
 
 mod callable_table;
+mod imports;
 mod runtime_surface;
 
 impl WasmBackend {
@@ -24,100 +26,11 @@ impl WasmBackend {
 
         emit_static_type_section(&mut self.types);
 
-        // Build the set of import name prefixes to skip in "pure" profile mode.
-        // In pure mode, IO/ASYNC/TIME imports are omitted entirely. Any code path
-        // that references a skipped import will trigger a clear compile-time panic.
-        let is_pure = self.options.wasm_profile == WasmProfile::Pure;
-        let runtime_surface =
-            WasmRuntimeSurfacePlan::build(&ir, &lir_fast_outputs, &task_kinds, &self.options);
-        let auto_required = runtime_surface.auto_required_imports.clone();
-        let is_skipped_import = |name: &str| -> bool {
-            is_pure && crate::wasm_abi_generated::pure_profile_skips_import(name)
-        };
-
-        let mut import_idx = 0;
-        let mut add_import = |name: &str, ty: u32, ids: &mut TrackedImportIds| {
-            if matches!(
-                std::env::var("MOLT_DEBUG_WASM_IMPORTS").ok().as_deref(),
-                Some("1")
-            ) && name == "task_new"
-            {
-                eprintln!(
-                    "WASM_IMPORTS add_import name=task_new skipped_prefix={} auto_required_contains={}",
-                    is_skipped_import(name),
-                    auto_required
-                        .as_ref()
-                        .is_none_or(|required| required.contains(name))
-                );
-            }
-            if is_skipped_import(name) {
-                // In pure mode, skip IO/ASYNC/TIME imports entirely.
-                // The import is not registered in the WASM module, so the
-                // resulting binary has no dependency on these host functions.
-                // Insert a sentinel value so that `import_ids["name"]` lookups
-                // succeed (no panic), and `emit_call` emits `unreachable`.
-                ids.insert(name.to_string(), u32::MAX);
-                return;
-            }
-            // In auto mode, skip imports not in the required set.
-            if let Some(ref required) = auto_required
-                && !required.contains(name)
-            {
-                ids.insert(name.to_string(), u32::MAX);
-                return;
-            }
-            self.imports
-                .import("molt_runtime", name, EntityType::Function(ty));
-            ids.insert(name.to_string(), import_idx);
-            import_idx += 1;
-        };
-        let mut simple_i64_import_type_map: BTreeMap<usize, u32> = BTreeMap::from([
-            (0, 0),
-            (1, 2),
-            (2, 3),
-            (3, 5),
-            (4, 7),
-            (5, 12),
-            (6, 9),
-            (7, 10),
-            (8, 28),
-            (9, 35),
-            (10, 36),
-            (11, 37),
-            (12, 38),
-        ]);
-
-        // Host Imports - driven by static registry (see wasm_imports.rs).
-        for &(name, type_idx) in crate::wasm_imports::IMPORT_REGISTRY {
-            add_import(name, type_idx, &mut self.import_ids);
-        }
-
         let reloc_enabled = self.options.reloc_enabled;
-
-        let auto_import_names = runtime_surface.auto_import_names(&self.import_ids);
-        let mut next_type_idx = STATIC_TYPE_COUNT;
-        for &arity in auto_import_names.iter().map(|(_, arity)| arity) {
-            if let std::collections::btree_map::Entry::Vacant(entry) =
-                simple_i64_import_type_map.entry(arity)
-            {
-                self.types.function(
-                    std::iter::repeat_n(ValType::I64, arity),
-                    std::iter::once(ValType::I64),
-                );
-                entry.insert(next_type_idx);
-                next_type_idx += 1;
-            }
-        }
-        for (import_name, arity) in auto_import_names {
-            add_import(
-                import_name.as_str(),
-                *simple_i64_import_type_map
-                    .get(&arity)
-                    .unwrap_or_else(|| panic!("missing simple i64 import type for arity {arity}")),
-                &mut self.import_ids,
-            );
-        }
-        self.func_count = import_idx;
+        let WasmRuntimeImportEmission {
+            runtime_surface,
+            mut next_type_idx,
+        } = self.emit_runtime_import_surface(&ir, &lir_fast_outputs, &task_kinds);
         let WasmRuntimeSurfacePlan {
             max_func_arity,
             max_call_arity,
