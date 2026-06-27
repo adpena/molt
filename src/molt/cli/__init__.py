@@ -556,7 +556,6 @@ from molt.cli.runtime_paths import (
     _runtime_staticlib_target_is_windows,
     _runtime_wasm_artifact_path,
     _runtime_wasm_artifact_path_cached,
-    _session_artifact_component,
 )
 from molt.cli.runtime_fingerprints import (
     _artifact_content_looks_valid,

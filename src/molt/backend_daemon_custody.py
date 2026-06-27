@@ -11,6 +11,8 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
+from molt.dx import session_artifact_component
+
 IDENTITY_SCHEMA = "molt.backend_daemon.identity.v1"
 
 HealthProbe = Callable[[Path, float | None], tuple[bool, Mapping[str, Any] | None]]
@@ -34,10 +36,6 @@ class BackendDaemonIdentity:
 class BackendDaemonIdentityRecord:
     identity: BackendDaemonIdentity
     path: Path
-
-
-def backend_daemon_session_artifact_component(session_id: str) -> str:
-    return "".join(c if c.isalnum() or c in "-_" else "_" for c in session_id)[:32]
 
 
 def backend_daemon_identity_payload(
@@ -170,7 +168,7 @@ def iter_backend_daemon_identity_records(
     session_id: str | None = None,
 ) -> tuple[BackendDaemonIdentityRecord, ...]:
     if session_id is not None:
-        session_label = backend_daemon_session_artifact_component(session_id.strip())
+        session_label = session_artifact_component(session_id.strip())
     else:
         session_label = ""
     pattern = (

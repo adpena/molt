@@ -6,6 +6,8 @@ import os
 from pathlib import Path
 import sys
 
+import pytest
+
 from tools import check_memory_guard_wiring
 from tools import check_subprocess_guard_coverage
 from tools import memory_guard
@@ -584,6 +586,7 @@ def test_windows_pytest_cache_dir_arg_uses_canonical_tmp_cache(
         pytest_memory_guard_bootstrap, "_is_windows_process_model", lambda: True
     )
     monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path / "artifact-root"))
+    monkeypatch.setenv("MOLT_ALLOW_C_DRIVE_ARTIFACTS", "1")
     args = ["tests/test_one.py", "-q"]
 
     assert pytest_memory_guard_bootstrap.install_windows_pytest_cache_dir_arg(args)
@@ -619,7 +622,11 @@ def test_windows_pytest_cache_dir_config_uses_canonical_tmp_cache(
     monkeypatch.setattr(
         pytest_memory_guard_bootstrap, "_is_windows_process_model", lambda: True
     )
+    monkeypatch.setattr(
+        pytest_memory_guard_bootstrap, "_is_windows_c_drive_path", lambda _path: True
+    )
     monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path / "artifact-root"))
+    monkeypatch.setenv("MOLT_ALLOW_C_DRIVE_ARTIFACTS", "1")
 
     class Config:
         _inicfg = {}
@@ -635,19 +642,22 @@ def test_windows_pytest_cache_dir_config_uses_canonical_tmp_cache(
     assert "cache_dir" not in Config._inicache
 
 
-def test_windows_pytest_artifact_base_skips_unhealthy_local_appdata(
+def test_windows_pytest_artifact_base_skips_unhealthy_external_candidate(
     monkeypatch, tmp_path
 ) -> None:
-    local_appdata = tmp_path / "local-appdata"
-    temp = tmp_path / "temp"
-    monkeypatch.setenv("LOCALAPPDATA", str(local_appdata))
-    monkeypatch.setenv("TEMP", str(temp))
-    monkeypatch.delenv("TMP", raising=False)
+    unhealthy = tmp_path / "unhealthy" / "Molt" / "tmp"
+    healthy = tmp_path / "healthy" / "Molt" / "tmp"
     monkeypatch.delenv("MOLT_EXT_ROOT", raising=False)
+    monkeypatch.delenv("MOLT_ALLOW_C_DRIVE_ARTIFACTS", raising=False)
+    monkeypatch.setattr(
+        pytest_memory_guard_bootstrap,
+        "_default_windows_pytest_artifact_roots",
+        lambda: (unhealthy, healthy),
+    )
 
     def fake_accepts_child_dirs(path: Path, *, create_dirs: bool) -> bool:
         del create_dirs
-        return path != local_appdata / "Molt" / "tmp"
+        return path != unhealthy
 
     monkeypatch.setattr(
         pytest_memory_guard_bootstrap,
@@ -655,9 +665,39 @@ def test_windows_pytest_artifact_base_skips_unhealthy_local_appdata(
         fake_accepts_child_dirs,
     )
 
-    assert pytest_memory_guard_bootstrap._windows_pytest_artifact_base() == (
-        temp / "Molt" / "tmp"
+    assert pytest_memory_guard_bootstrap._windows_pytest_artifact_base() == healthy
+
+
+def test_windows_pytest_artifact_base_uses_configured_external_candidates(
+    monkeypatch, tmp_path
+) -> None:
+    artifact_root = tmp_path / "configured" / "Molt"
+    monkeypatch.delenv("MOLT_EXT_ROOT", raising=False)
+    monkeypatch.setenv("MOLT_EXTERNAL_ARTIFACT_ROOTS", str(artifact_root))
+    monkeypatch.delenv("MOLT_ALLOW_C_DRIVE_ARTIFACTS", raising=False)
+    monkeypatch.setattr(
+        pytest_memory_guard_bootstrap, "_is_windows_c_drive_path", lambda _path: False
     )
+
+    assert pytest_memory_guard_bootstrap._windows_pytest_artifact_base() == (
+        artifact_root / "tmp"
+    )
+
+
+def test_windows_pytest_artifact_base_rejects_c_drive_ext_root(
+    monkeypatch, tmp_path
+) -> None:
+    monkeypatch.setattr(
+        pytest_memory_guard_bootstrap, "_is_windows_process_model", lambda: True
+    )
+    monkeypatch.setattr(
+        pytest_memory_guard_bootstrap, "_is_windows_c_drive_path", lambda _path: True
+    )
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path / "artifact-root"))
+    monkeypatch.delenv("MOLT_ALLOW_C_DRIVE_ARTIFACTS", raising=False)
+
+    with pytest.raises(RuntimeError, match="must not be placed on C"):
+        pytest_memory_guard_bootstrap._windows_pytest_artifact_base()
 
 
 def test_pytest_user_temp_root_matches_pytest_tmpdir_authority(tmp_path) -> None:
@@ -677,6 +717,7 @@ def test_windows_pytest_custody_roots_prepare_readable_defaults(
         pytest_memory_guard_bootstrap, "_is_windows_process_model", lambda: True
     )
     monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path / "artifact-root"))
+    monkeypatch.setenv("MOLT_ALLOW_C_DRIVE_ARTIFACTS", "1")
     monkeypatch.delenv("PYTEST_DEBUG_TEMPROOT", raising=False)
 
     assert pytest_memory_guard_bootstrap.install_windows_pytest_custody_roots()
@@ -697,6 +738,7 @@ def test_windows_pytest_custody_roots_preserve_explicit_temproot(
         pytest_memory_guard_bootstrap, "_is_windows_process_model", lambda: True
     )
     monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path / "artifact-root"))
+    monkeypatch.setenv("MOLT_ALLOW_C_DRIVE_ARTIFACTS", "1")
     explicit = tmp_path / "explicit-temproot"
     monkeypatch.setenv("PYTEST_DEBUG_TEMPROOT", str(explicit))
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from molt.dx import session_scoped_target_dir
 from molt.cli import backend_ir as _backend_ir
 from molt.cli import backend_pipeline as _backend_pipeline
 from molt.cli import frontend_pipeline as _frontend_pipeline
@@ -40,7 +41,6 @@ from molt.cli.output import (
 )
 from molt.cli.runtime_paths import (
     _molt_session_id,
-    _session_artifact_component,
 )
 from molt.cli.extension_manifest import (
     _abi_version_error as _abi_version_error,
@@ -78,7 +78,7 @@ def _session_target_dir(project_root: Path) -> Path | None:
     sid = _molt_session_id()
     if sid is None:
         return None
-    return project_root / "target" / "sessions" / _session_artifact_component(sid)
+    return session_scoped_target_dir(project_root / "target", sid)
 
 
 def _run_build_pipeline(
