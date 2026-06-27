@@ -163,9 +163,21 @@ class DebtMarkerHit:
     marker: str
 
 
+@dataclass(frozen=True)
+class LargeSourceFile:
+    path: Path
+    rel: str
+    text: str
+    line_count: int
+    ceiling: int
+    suffix: str
+
+
 _LARGE_SOURCE_REGION_LINES = 250
 _STRUCTURAL_GOD_MIN_LARGE_REGIONS = 3
 _STRUCTURAL_GOD_MIXED_KIND_MIN_SCORE = 500
+_DECOMPOSITION_PACKAGE_MIN_SIBLINGS = 4
+_COHESIVE_DECOMPOSITION_CEILING_FACTOR = 1.5
 
 
 # --- robust Rust scanning -------------------------------------------------
@@ -522,6 +534,66 @@ def _region_summary(regions: list[SourceRegion], limit: int = 6) -> str:
     return "; ".join(parts)
 
 
+def _large_source_files(
+    root: Path,
+    ceiling: int = 4000,
+    py_ceiling: int = 2500,
+) -> list[LargeSourceFile]:
+    files: list[LargeSourceFile] = []
+    for suffix, lang_ceiling in ((".rs", ceiling), (".py", py_ceiling)):
+        for path in _iter_source_files(root, (suffix,)):
+            if _is_generated(path):
+                continue
+            try:
+                text = path.read_text(errors="replace")
+            except OSError:
+                continue
+            line_count = _line_count(text)
+            if line_count < lang_ceiling:
+                continue
+            files.append(
+                LargeSourceFile(
+                    path=path,
+                    rel=path.relative_to(root).as_posix(),
+                    text=text,
+                    line_count=line_count,
+                    ceiling=lang_ceiling,
+                    suffix=suffix,
+                )
+            )
+    return files
+
+
+def _source_sibling_count(root: Path, directory: Path, suffix: str) -> int:
+    if not directory.is_dir():
+        return 0
+    count = 0
+    for path in directory.iterdir():
+        if not path.is_file() or path.suffix != suffix:
+            continue
+        if _is_excluded(path, root) or _is_generated(path):
+            continue
+        count += 1
+    return count
+
+
+def _decomposition_context(item: LargeSourceFile, root: Path) -> str | None:
+    same_dir_siblings = _source_sibling_count(root, item.path.parent, item.suffix)
+    if same_dir_siblings >= _DECOMPOSITION_PACKAGE_MIN_SIBLINGS:
+        return f"sibling-rich package ({same_dir_siblings} {item.suffix} files)"
+
+    stem_dir = item.path.with_suffix("")
+    stem_dir_siblings = _source_sibling_count(root, stem_dir, item.suffix)
+    if stem_dir_siblings >= _DECOMPOSITION_PACKAGE_MIN_SIBLINGS:
+        return f"decomposition directory `{stem_dir.name}/` ({stem_dir_siblings} {item.suffix} files)"
+
+    return None
+
+
+def _cohesive_decomposition_ceiling(item: LargeSourceFile) -> int:
+    return int(item.ceiling * _COHESIVE_DECOMPOSITION_CEILING_FACTOR)
+
+
 def probe_semantic_fallthroughs(root: Path) -> list[Finding]:
     """Hand-maintained semantic classifications over OpCode/kind that drift
     silently: `match {.. _ => default}` and `matches!(x, OpCode::A | B | ..)`.
@@ -626,97 +698,130 @@ def probe_semantic_fallthroughs(root: Path) -> list[Finding]:
     return findings
 
 
-def probe_god_files(root: Path, ceiling: int = 4000) -> list[Finding]:
-    """Non-generated source files large enough to be decomposition candidates."""
-    findings: list[Finding] = []
-    for suffix, lang_ceiling in ((".rs", ceiling), (".py", 2500)):
-        for path in _iter_source_files(root, (suffix,)):
-            if _is_generated(path):
-                continue
-            try:
-                n = path.read_text(errors="replace").count("\n") + 1
-            except OSError:
-                continue
-            if n < lang_ceiling:
-                continue
-            rel = path.relative_to(root).as_posix()
-            sev = (
-                "high"
-                if n >= lang_ceiling * 3
-                else "medium"
-                if n >= lang_ceiling * 1.5
-                else "low"
-            )
-            findings.append(
-                Finding(
-                    probe="god_file",
-                    severity=sev,
-                    title=f"{n} lines (ceiling {lang_ceiling})",
-                    location=rel,
-                    detail=f"{n} lines — {n // lang_ceiling}× the {suffix} decomposition ceiling",
-                    suggested_action="extract cohesive submodules along legible seams "
-                    "(Lattner: one responsibility per file)",
-                    class_retired="god-object-extension-fear",
-                    metric=n,
-                )
-            )
-    return findings
-
-
-def probe_structural_god_files(
+def probe_large_source_files(
     root: Path,
     ceiling: int = 4000,
     py_ceiling: int = 2500,
 ) -> list[Finding]:
-    """Oversized files with multiple large top-level extraction regions."""
+    """Board-only size signal for large files.
+
+    Raw line count remains useful triage, but it is not a ratchet: a correct
+    decomposition can temporarily increase the number of cohesive large files.
+    The CI gate ratchets concern-mixing and undecomposed debt instead.
+    """
     findings: list[Finding] = []
-    for suffix, lang_ceiling in ((".rs", ceiling), (".py", py_ceiling)):
-        for path in _iter_source_files(root, (suffix,)):
-            if _is_generated(path):
-                continue
-            try:
-                text = path.read_text(errors="replace")
-            except OSError:
-                continue
-            line_count = _line_count(text)
-            if line_count < lang_ceiling:
-                continue
-            large_regions = _large_source_regions(_top_level_regions(path, text))
-            if not _is_structural_god_region_set(large_regions):
-                continue
-            score = _structural_god_score(large_regions)
-            rel = path.relative_to(root).as_posix()
-            large_region_count = len(large_regions)
-            sev = (
-                "high"
-                if score >= lang_ceiling and large_region_count >= 4
-                else "medium"
-                if score >= lang_ceiling // 2 or large_region_count >= 4
-                else "low"
+    for item in _large_source_files(root, ceiling=ceiling, py_ceiling=py_ceiling):
+        context = _decomposition_context(item, root)
+        sev = (
+            "high"
+            if item.line_count >= item.ceiling * 3
+            else "medium"
+            if item.line_count >= item.ceiling * 1.5
+            else "low"
+        )
+        findings.append(
+            Finding(
+                probe="large_source_file",
+                severity=sev,
+                title=f"{item.line_count} lines (ceiling {item.ceiling})",
+                location=item.rel,
+                detail=(
+                    f"{item.line_count} lines; "
+                    f"{context or 'no decomposition context detected'}"
+                ),
+                suggested_action=(
+                    "use as a human size triage signal only; CI ratchets "
+                    "kitchen_sink_file and undecomposed_god_file"
+                ),
+                class_retired="raw-size-triage-only",
+                metric=item.line_count,
             )
-            findings.append(
-                Finding(
-                    probe="structural_god_file",
-                    severity=sev,
-                    title=(
-                        f"{large_region_count} large top-level regions "
-                        f"({score} excess lines)"
-                    ),
-                    location=rel,
-                    detail=(
-                        f"{line_count} lines; "
-                        f"large_regions={_region_summary(large_regions)}"
-                    ),
-                    suggested_action=(
-                        "extract the large top-level regions into cohesive modules; "
-                        "do not add more authority to this file"
-                    ),
-                    class_retired="multi-region-god-file",
-                    metric=float(score),
-                )
-            )
+        )
     return findings
 
+def probe_kitchen_sink_files(
+    root: Path,
+    ceiling: int = 4000,
+    py_ceiling: int = 2500,
+) -> list[Finding]:
+    """Oversized files with concern-mixing top-level regions."""
+    findings: list[Finding] = []
+    for item in _large_source_files(root, ceiling=ceiling, py_ceiling=py_ceiling):
+        large_regions = _large_source_regions(_top_level_regions(item.path, item.text))
+        if not _is_structural_god_region_set(large_regions):
+            continue
+        score = _structural_god_score(large_regions)
+        large_region_count = len(large_regions)
+        sev = (
+            "high"
+            if score >= item.ceiling and large_region_count >= 4
+            else "medium"
+            if score >= item.ceiling // 2 or large_region_count >= 4
+            else "low"
+        )
+        context = _decomposition_context(item, root)
+        findings.append(
+            Finding(
+                probe="kitchen_sink_file",
+                severity=sev,
+                title=(
+                    f"{large_region_count} large top-level regions "
+                    f"({score} excess lines)"
+                ),
+                location=item.rel,
+                detail=(
+                    f"{item.line_count} lines; "
+                    f"{context or 'no decomposition context detected'}; "
+                    f"large_regions={_region_summary(large_regions)}"
+                ),
+                suggested_action=(
+                    "extract the mixed top-level regions into cohesive modules; "
+                    "do not add more authority to this concern-mixing file"
+                ),
+                class_retired="multi-region-kitchen-sink",
+                metric=float(score),
+            )
+        )
+    return findings
+
+
+def probe_undecomposed_god_files(
+    root: Path,
+    ceiling: int = 4000,
+    py_ceiling: int = 2500,
+) -> list[Finding]:
+    """Oversized source files with no sibling decomposition context."""
+    findings: list[Finding] = []
+    for item in _large_source_files(root, ceiling=ceiling, py_ceiling=py_ceiling):
+        context = _decomposition_context(item, root)
+        if context is not None:
+            continue
+        sev = (
+            "high"
+            if item.line_count >= item.ceiling * 3
+            else "medium"
+            if item.line_count >= item.ceiling * 1.5
+            else "low"
+        )
+        findings.append(
+            Finding(
+                probe="undecomposed_god_file",
+                severity=sev,
+                title=f"{item.line_count} undecomposed lines (ceiling {item.ceiling})",
+                location=item.rel,
+                detail=(
+                    f"{item.line_count} lines; no sibling decomposition package "
+                    "or stem directory detected"
+                ),
+                suggested_action=(
+                    "create a cohesive decomposition package and move every "
+                    "sibling concern needed to delete the monolith lane"
+                ),
+                class_retired="lone-undecomposed-god-file",
+                metric=float(item.line_count),
+            )
+        )
+    return findings
 
 _COMMENT_DEBT_RE = re.compile(
     r"\b(TODO|FIXME|HACK|XXX|WORKAROUND|KLUDGE)\b|"
@@ -1227,8 +1332,9 @@ def probe_registry_reconciliation(root: Path) -> list[Finding]:
 
 PROBES = (
     probe_semantic_fallthroughs,
-    probe_god_files,
-    probe_structural_god_files,
+    probe_large_source_files,
+    probe_kitchen_sink_files,
+    probe_undecomposed_god_files,
     probe_debt_markers,
     probe_native_scalar_plan_authority,
     probe_repr_name_scalar_authority,
@@ -1263,8 +1369,8 @@ def ratchet_metrics(findings: list[Finding]) -> dict[str, float]:
     match_cls = [f for f in sem if f.title.startswith("hand-classified")]
     handsets = [f for f in sem if f.title.startswith("`matches!`")]
     debt = [f for f in findings if f.probe == "debt_marker"]
-    god = [f for f in findings if f.probe == "god_file"]
-    structural_god = [f for f in findings if f.probe == "structural_god_file"]
+    kitchen_sink = [f for f in findings if f.probe == "kitchen_sink_file"]
+    undecomposed = [f for f in findings if f.probe == "undecomposed_god_file"]
     native_scalar_plan = [
         f for f in findings if f.probe == "native_scalar_plan_authority"
     ]
@@ -1272,6 +1378,17 @@ def ratchet_metrics(findings: list[Finding]) -> dict[str, float]:
         f for f in findings if f.probe == "repr_name_scalar_authority"
     ]
     dup = [f for f in findings if f.probe == "duplicate_authority"]
+    kitchen_sink_files = float(len(kitchen_sink))
+    max_kitchen_sink_structural_score = float(
+        max((f.metric for f in kitchen_sink), default=0)
+    )
+    kitchen_sink_large_regions = float(
+        sum(_large_region_count_from_title(f.title) for f in kitchen_sink)
+    )
+    undecomposed_god_files = float(len(undecomposed))
+    max_undecomposed_file_lines = float(
+        max((f.metric for f in undecomposed), default=0)
+    )
     return {
         # the hand-maintained-opcode-fact surface (match classifiers w/ silent default)
         "hand_classified_matches": float(len(match_cls)),
@@ -1282,15 +1399,11 @@ def ratchet_metrics(findings: list[Finding]) -> dict[str, float]:
         # hand-maintained opcode SETS via matches! (≥3 opcodes) in any file
         "handset_classifications": float(len(handsets)),
         "debt_markers_total": float(sum(int(f.metric) for f in debt)),
-        "god_files": float(len(god)),
-        "max_god_file_lines": float(max((f.metric for f in god), default=0)),
-        "structural_god_files": float(len(structural_god)),
-        "max_god_file_structural_score": float(
-            max((f.metric for f in structural_god), default=0)
-        ),
-        "god_file_large_regions": float(
-            sum(_large_region_count_from_title(f.title) for f in structural_god)
-        ),
+        "kitchen_sink_files": kitchen_sink_files,
+        "max_kitchen_sink_structural_score": max_kitchen_sink_structural_score,
+        "kitchen_sink_large_regions": kitchen_sink_large_regions,
+        "undecomposed_god_files": undecomposed_god_files,
+        "max_undecomposed_file_lines": max_undecomposed_file_lines,
         "native_scalar_plan_authority_violations": float(
             sum(int(f.metric) for f in native_scalar_plan)
         ),
