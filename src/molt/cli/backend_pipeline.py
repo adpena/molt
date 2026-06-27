@@ -11,7 +11,7 @@ from molt.cli import frontend_pipeline as _frontend_pipeline
 from molt.cli.backend_execution import _write_backend_ir_lease
 from molt.compiler_analysis import backend_ir_binary_image_analysis_payload
 from molt.cli.command_runtime import _run_subprocess_captured_to_tempfiles
-from molt.cli.config_resolution import ENTRY_OVERRIDE_ENV
+from molt.cli.config_resolution import DEFAULT_STDLIB_PROFILE, ENTRY_OVERRIDE_ENV
 from molt.cli.external_native import _external_native_artifact_output_custody_error
 from molt.cli.models import (
     BuildProfile,
@@ -54,7 +54,7 @@ def _run_backend_pipeline(
     wasm_opt_level: str = "Oz",
     precompile: bool = False,
     snapshot: bool = False,
-    stdlib_profile: str | None = "micro",
+    stdlib_profile: str | None = DEFAULT_STDLIB_PROFILE,
     fact_graph_request: _factgraph.FactGraphRequest | None = None,
 ) -> int:
     (

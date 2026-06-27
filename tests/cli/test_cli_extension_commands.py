@@ -420,8 +420,16 @@ def test_extension_build_emits_wheel_and_manifest(tmp_path: Path, monkeypatch) -
         cargo_profile: str,
         project_root: Path,
         cargo_timeout: float | None,
+        stdlib_profile: str | None = None,
     ) -> bool:
-        del target_triple, json_output, cargo_profile, project_root, cargo_timeout
+        del (
+            target_triple,
+            json_output,
+            cargo_profile,
+            project_root,
+            cargo_timeout,
+            stdlib_profile,
+        )
         runtime_lib.parent.mkdir(parents=True, exist_ok=True)
         runtime_lib.write_bytes(b"runtime")
         return True
@@ -516,10 +524,12 @@ def test_extension_build_cross_target_uses_target_runtime(
         cargo_profile: str,
         project_root: Path,
         cargo_timeout: float | None,
+        stdlib_profile: str | None = None,
     ) -> bool:
         del json_output, cargo_profile, project_root, cargo_timeout
         seen["runtime_target"] = target_triple
         seen["runtime_lib"] = runtime_lib
+        seen["stdlib_profile"] = stdlib_profile
         runtime_lib.parent.mkdir(parents=True, exist_ok=True)
         runtime_lib.write_bytes(b"runtime")
         return True
@@ -557,9 +567,14 @@ def test_extension_build_cross_target_uses_target_runtime(
     )
     assert rc == 0
     assert seen["runtime_target"] == target
+    # The resolved stdlib profile (default "micro" here) must be threaded into
+    # the runtime-staticlib build AND the archive path, so the extension lane
+    # cannot link a profile that disagrees with what was built.
+    assert seen["stdlib_profile"] == "micro"
     runtime_lib = seen["runtime_lib"]
     assert isinstance(runtime_lib, Path)
     assert f"/{target}/" in runtime_lib.as_posix()
+    assert "stdlib_micro" in runtime_lib.name
     assert any(
         cmd[:2] == ["zig", "cc"] and "-target" in cmd and "-c" in cmd
         for cmd in commands
@@ -604,8 +619,9 @@ def test_extension_numpy_build_audit_publish_dry_run_matrix(
         cargo_profile: str,
         project_root: Path,
         cargo_timeout: float | None,
+        stdlib_profile: str | None = None,
     ) -> bool:
-        del json_output, cargo_profile, project_root, cargo_timeout
+        del json_output, cargo_profile, project_root, cargo_timeout, stdlib_profile
         seen["runtime_target"] = target_triple
         runtime_lib.parent.mkdir(parents=True, exist_ok=True)
         runtime_lib.write_bytes(b"runtime")

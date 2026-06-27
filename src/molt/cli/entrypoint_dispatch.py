@@ -20,7 +20,7 @@ from molt.cli.build_output_layout import (
     _BUILD_PROFILE_CHOICES,
     _DEPLOY_PROFILE_DEFAULTS,
 )
-from molt.cli.config_resolution import _coerce_bool
+from molt.cli.config_resolution import _coerce_bool, resolve_stdlib_profile
 from molt.cli.deps import deps, install, install_add, vendor
 from molt.cli.dx_cli import handle_dx_command
 from molt.cli.extension_audit import extension_audit
@@ -241,25 +241,27 @@ def _dispatch_entrypoint_command(
         wasm_profile_raw = getattr(args, "wasm_profile", "full")
         wasm_profile = wasm_profile_raw if isinstance(wasm_profile_raw, str) else "full"
         stdlib_profile_raw = getattr(args, "stdlib_profile", None)
-        stdlib_profile = (
+        stdlib_profile_flag = (
             stdlib_profile_raw if isinstance(stdlib_profile_raw, str) else None
         )
-        # When `--stdlib-profile` is not given on the command line, honor the
-        # `MOLT_STDLIB_PROFILE` environment variable as the single canonical
-        # source of truth. The module-graph construction reads this env var
-        # directly (`_ensure_core_stdlib_modules`, the core-module closure), so
-        # the runtime-staticlib build profile MUST be derived from the same
-        # signal; otherwise the two diverge: an env-only `full` request pulls
-        # full-profile modules (e.g. `hashlib`) into the dependency closure
-        # while the staticlib is still built `micro`, leaving the full-profile
-        # crypto intrinsics (`molt_pbkdf2_hmac`, `molt_scrypt`, ...) undefined
-        # and the link failing on `_..._molt_trampoline_*_import`. The explicit
-        # arg still wins over the env; the env wins over the deploy-profile
-        # default and the `micro` fallback below.
-        if stdlib_profile is None:
-            env_stdlib_profile = os.environ.get("MOLT_STDLIB_PROFILE")
-            if env_stdlib_profile in ("full", "micro"):
-                stdlib_profile = env_stdlib_profile
+        deploy_defaults_for_profile = (
+            _DEPLOY_PROFILE_DEFAULTS.get(deploy_profile)
+            if deploy_profile is not None
+            else None
+        )
+        # `stdlib_profile` is resolved through the ONE config authority
+        # (`config_resolution.resolve_stdlib_profile`). The module-graph closure
+        # reads `MOLT_STDLIB_PROFILE` directly (`_ensure_core_stdlib_modules`),
+        # while the runtime-staticlib selector consumes this resolved value;
+        # routing both through one resolver + one default (and re-exporting the
+        # result to the env inside `build()`) is what makes a closure/staticlib
+        # desync (env-only `full` vs a `micro` staticlib -> link failure on
+        # undefined `molt_pbkdf2_hmac`/`molt_scrypt`) unexpressible.
+        stdlib_profile, _stdlib_profile_source = resolve_stdlib_profile(
+            flag=stdlib_profile_flag,
+            build_cfg=build_cfg,
+            deploy_defaults=deploy_defaults_for_profile,
+        )
 
         if deploy_profile and deploy_profile in _DEPLOY_PROFILE_DEFAULTS:
             defaults = _DEPLOY_PROFILE_DEFAULTS[deploy_profile]
@@ -279,12 +281,6 @@ def _dispatch_entrypoint_command(
                 default_wasm_profile = defaults.get("wasm_profile")
                 if isinstance(default_wasm_profile, str):
                     wasm_profile = default_wasm_profile
-            if stdlib_profile is None and "stdlib_profile" in defaults:
-                default_stdlib_profile = defaults.get("stdlib_profile")
-                if isinstance(default_stdlib_profile, str):
-                    stdlib_profile = default_stdlib_profile
-        if stdlib_profile is None:
-            stdlib_profile = "micro"
 
         # `--target llvm` is an alias for "native binary, LLVM backend": the
         # LLVM backend emits host-native objects, so the runtime staticlib and

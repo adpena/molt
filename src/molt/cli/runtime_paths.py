@@ -4,6 +4,7 @@ import functools
 import os
 from pathlib import Path
 
+from molt.cli.config_resolution import DEFAULT_STDLIB_PROFILE
 from molt.dx import (
     development_artifact_env,
     development_artifacts_requested,
@@ -17,7 +18,7 @@ _RUNTIME_STDLIB_PROFILE_ALIASES = {
 
 
 def _normalize_runtime_stdlib_profile(stdlib_profile: str | None) -> str:
-    profile = stdlib_profile or "micro"
+    profile = stdlib_profile or DEFAULT_STDLIB_PROFILE
     if profile not in _RUNTIME_STDLIB_PROFILE_ALIASES:
         raise ValueError("stdlib_profile must be 'micro' or 'full'")
     return profile
@@ -167,7 +168,7 @@ def _runtime_lib_path(
     project_root: Path,
     cargo_profile: str,
     target_triple: str | None,
-    stdlib_profile: str | None = "micro",
+    stdlib_profile: str | None = DEFAULT_STDLIB_PROFILE,
 ) -> Path:
     return _runtime_lib_path_cached(
         os.fspath(project_root),

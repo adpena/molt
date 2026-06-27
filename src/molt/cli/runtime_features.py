@@ -7,7 +7,7 @@ from typing import Collection
 
 from molt.cli.capability_spec import _dedupe_preserve_order
 from molt.cli.compiler_metadata import _compiler_root
-from molt.cli.config_resolution import _coerce_bool
+from molt.cli.config_resolution import DEFAULT_STDLIB_PROFILE, _coerce_bool
 
 
 @functools.lru_cache(maxsize=32)
@@ -230,7 +230,7 @@ def _runtime_builtin_features_for_profile(
     *,
     target_triple: str | None,
 ) -> list[str]:
-    effective_profile = stdlib_profile or "micro"
+    effective_profile = stdlib_profile or DEFAULT_STDLIB_PROFILE
     if target_triple is not None and target_triple.startswith("wasm32"):
         # Phase 0b: the WASM archive is built from a coarser, separate feature
         # plan (``_wasm_runtime_feature_plan`` only ever links ``stdlib_micro``
@@ -330,7 +330,7 @@ def _wasm_runtime_feature_plan(
     builtin_features: Collection[str],
     resolved_modules: set[str] | frozenset[str] | None,
 ) -> tuple[bool, tuple[str, ...], tuple[str, ...]]:
-    effective_profile = stdlib_profile or "micro"
+    effective_profile = stdlib_profile or DEFAULT_STDLIB_PROFILE
     if effective_profile == "micro":
         cargo_features = tuple(
             _dedupe_preserve_order(

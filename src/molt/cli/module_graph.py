@@ -14,6 +14,10 @@ from molt.cli import module_graph_discovery as _graph_discovery
 from molt.cli import module_import_scanner as _module_import_scanner
 from molt.cli import module_resolution as _module_resolution
 from molt.cli import module_source as _module_source
+from molt.cli.config_resolution import (
+    DEFAULT_STDLIB_PROFILE,
+    MOLT_STDLIB_PROFILE_ENV,
+)
 from molt.cli import module_stdlib_policy as _module_stdlib_policy
 from molt.cli.models import (
     _EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN,
@@ -550,7 +554,7 @@ def _augment_module_graph_for_entry_and_runtime(
     stub_skip_modules = STUB_MODULES - entry_imports
     stub_parents = STUB_PARENT_MODULES - entry_imports
     core_module_names = _module_stdlib_policy._core_stdlib_module_names_for_profile(
-        os.environ.get("MOLT_STDLIB_PROFILE", "micro")
+        os.environ.get(MOLT_STDLIB_PROFILE_ENV, DEFAULT_STDLIB_PROFILE)
     )
     core_paths = [
         path

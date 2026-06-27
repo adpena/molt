@@ -40,7 +40,13 @@ from molt.cli.command_runtime import (
     _resolve_timeout_env,
     _run_completed_command,
 )
-from molt.cli.config_resolution import _config_value
+from molt.cli.config_resolution import (
+    DEFAULT_STDLIB_PROFILE,
+    STDLIB_PROFILE_CHOICES,
+    _config_value,
+    _resolve_build_config,
+    resolve_stdlib_profile,
+)
 from molt.cli.deps import _load_toml, _normalize_name
 from molt.cli.env_overrides import temporary_env_overrides as _temporary_env_overrides
 from molt.cli.env_paths import _base_env
@@ -1178,10 +1184,10 @@ def diff(
 def _normalize_internal_batch_stdlib_profile(
     params: Mapping[str, Any],
 ) -> tuple[str | None, str | None]:
-    raw = params.get("stdlib_profile", "micro")
+    raw = params.get("stdlib_profile", DEFAULT_STDLIB_PROFILE)
     if not isinstance(raw, str):
         return None, "stdlib_profile must be a string"
-    if raw not in {"micro", "full"}:
+    if raw not in STDLIB_PROFILE_CHOICES:
         return None, "stdlib_profile must be 'micro' or 'full'"
     return raw, None
 
@@ -1520,6 +1526,16 @@ def extension_build(
     pyproject = _load_toml(project_root / "pyproject.toml")
     project_meta = pyproject.get("project")
     extension_meta = _config_value(pyproject, ["tool", "molt", "extension"])
+    # Resolve the runtime stdlib profile through the ONE config authority so the
+    # extension's runtime staticlib honors `MOLT_STDLIB_PROFILE` and
+    # `[tool.molt.build].stdlib-profile` exactly like `molt build` does. The
+    # archive-path selection and the staticlib build below must receive the same
+    # value or they desync (one builds/links `micro` while the other expects
+    # `full`).
+    extension_stdlib_profile, _ = resolve_stdlib_profile(
+        flag=None,
+        build_cfg=_resolve_build_config(pyproject),
+    )
     errors: list[str] = []
     warnings: list[str] = []
 
@@ -1705,6 +1721,7 @@ def extension_build(
         molt_root,
         runtime_cargo_profile,
         runtime_target_triple,
+        extension_stdlib_profile,
     )
     if not _ensure_runtime_lib(
         runtime_lib,
@@ -1713,6 +1730,7 @@ def extension_build(
         runtime_cargo_profile,
         molt_root,
         cargo_timeout,
+        extension_stdlib_profile,
     ):
         return _fail("Runtime build failed", json_output, command="extension-build")
 

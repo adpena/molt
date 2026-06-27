@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from molt.cli import build_inputs as _build_inputs
+from molt.cli.config_resolution import DEFAULT_STDLIB_PROFILE
 from molt.cli.backend_cache import (
     _backend_cache_artifact_path,
     _encode_stdlib_module_symbols,
@@ -48,7 +49,7 @@ def _build_cache_variant(
     codegen_env: str,
     linked: bool,
     target_python: TargetPythonVersion,
-    stdlib_profile: str | None = "micro",
+    stdlib_profile: str | None = DEFAULT_STDLIB_PROFILE,
     partition_mode: bool = False,
     backend_binary_identity: str = "",
     external_static_packages_digest: str = "",
@@ -130,7 +131,7 @@ def _prepare_backend_cache_setup(
     entry_module: str,
     module_graph_metadata: _ModuleGraphMetadata,
     target_python: TargetPythonVersion,
-    stdlib_profile: str | None = "micro",
+    stdlib_profile: str | None = DEFAULT_STDLIB_PROFILE,
     native_artifact_plan: _ExternalPackageNativeArtifactPlan = (
         _EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN
     ),

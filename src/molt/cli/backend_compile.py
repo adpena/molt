@@ -42,7 +42,7 @@ from molt.cli.backend_execution import (
 )
 from molt.cli.build_locks import _build_lock
 from molt.cli.command_runtime import _run_subprocess_captured_to_tempfiles
-from molt.cli.config_resolution import ENTRY_OVERRIDE_ENV
+from molt.cli.config_resolution import DEFAULT_STDLIB_PROFILE, ENTRY_OVERRIDE_ENV
 from molt.cli.models import (
     BuildProfile,
     _BackendCacheSetup,
@@ -101,7 +101,7 @@ def _prepare_backend_setup(
     entry_module: str,
     module_graph_metadata: _ModuleGraphMetadata,
     target_python: TargetPythonVersion,
-    stdlib_profile: str | None = "micro",
+    stdlib_profile: str | None = DEFAULT_STDLIB_PROFILE,
     native_artifact_plan: _ExternalPackageNativeArtifactPlan = (
         _EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN
     ),
@@ -196,7 +196,7 @@ def _prepare_backend_runtime_context(
     runtime_cargo_profile: str,
     cargo_timeout: float | None,
     molt_root: Path,
-    stdlib_profile: str | None = "micro",
+    stdlib_profile: str | None = DEFAULT_STDLIB_PROFILE,
     resolved_modules: set[str] | frozenset[str] | None = None,
     target_triple: str | None = None,
 ) -> tuple[_PreparedBackendRuntimeContext | None, _CliFailure | None]:
