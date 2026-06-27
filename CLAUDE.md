@@ -250,13 +250,13 @@ CPython-red benchmarks; PyPy/Codon deltas known; regressions zero or explicitly 
 owner and structural fix."
 
 **Automated god-file ratchet:** `tools/structural_audit.py --check` is the
-default detector for god files, structural god files, duplicate authorities, and
-structural-debt growth, and `tools/ci_gate.py --tier 1` runs it by default. It
-tracks both raw size and multiple large top-level extraction regions. Do not
-create or grow monoliths as an implementation shortcut. Split authority into
-coherent modules/packages, and never repin
-`tools/structural_audit_baseline.json` without explicit maintainer acceptance
-plus a retirement plan.
+default detector for kitchen-sink files, undecomposed god-files, duplicate
+authorities, and structural-debt growth, and `tools/ci_gate.py --tier 1` runs it
+by default. Raw large-file size is board triage only; CI gates concern-mixing
+files and lone undecomposed monoliths. Do not create or grow monoliths as an
+implementation shortcut. Split authority into coherent modules/packages, and
+never repin `tools/structural_audit_baseline.json` without explicit maintainer
+acceptance plus a metric-correction or retirement plan.
 
 ## Council Operating Doctrine (2026-06-08, binding)
 
