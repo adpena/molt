@@ -190,7 +190,10 @@ def _canonical_harness_env(
     *,
     create_dirs: bool = True,
 ) -> dict[str, str]:
-    dx_env = DX.dx_env(env, create_dirs=create_dirs)
+    base_env = dict(os.environ if env is None else env)
+    if os.name == "nt" and ROOT.resolve().drive.upper() == "C:":
+        base_env.setdefault("MOLT_REQUIRE_EXTERNAL_ARTIFACTS", "1")
+    dx_env = DX.dx_env(base_env, create_dirs=create_dirs)
     return harness_memory_guard.canonical_harness_env(dx_env, repo_root=ROOT)
 
 

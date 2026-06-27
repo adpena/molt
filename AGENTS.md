@@ -480,13 +480,15 @@ Read these first instead of rediscovering project structure:
   - remove no-longer-needed artifacts at the end of a task unless they are required for reproducible evidence or are part of the intended checked-in output.
 - Molt maintainer/agent builds, tests, benchmarks, and proof lanes must use the
   DX resolver instead of raw repo-local defaults. On Windows checkouts on `C:`,
-  `prefer_external_artifacts` makes the resolver fail closed unless it can place
-  build/test artifacts on a healthy non-`C:` drive such as `E:\Molt`;
-  macOS/Linux use the configured external candidate roots. This is development
-  self-protection for people and agents working on Molt itself. Do not make
-  external artifact placement a required public CLI default, installer
-  behavior, or user documentation promise unless a user explicitly opts in with
-  a flag, environment variable, or developer wrapper.
+  maintainer/agent wrappers must opt into the hard gate with
+  `MOLT_REQUIRE_EXTERNAL_ARTIFACTS=1` unless an emergency override is active;
+  `prefer_external_artifacts` and `MOLT_PREFER_EXTERNAL_ARTIFACTS=1` select a
+  healthy external root when one is available but are not public compile
+  location bans. macOS/Linux use the configured external candidate roots. This
+  is development self-protection for people and agents working on Molt itself.
+  Do not make external artifact placement a required public CLI default,
+  installer behavior, or user documentation promise unless a user explicitly
+  opts in with a flag, environment variable, or developer wrapper.
 - Canonical developer env defaults come from `molt dx env`, `molt dx run`,
   `tools/dev.py`, or `tools/run_context_env.py --prefer-external-artifacts`;
   do not hand-roll raw `cargo`/`uv` commands without first exporting those facts.
@@ -497,7 +499,7 @@ Read these first instead of rediscovering project structure:
   selected artifact root. Default Cargo output is session-scoped as
   `<MOLT_EXT_ROOT>/target/sessions/<MOLT_SESSION_ID>`; explicit
   `CARGO_TARGET_DIR` remains an operator-owned override.
-- DX wrappers prefer healthy external artifact roots before the internal disk when configured (`prefer_external_artifacts`, `MOLT_PREFER_EXTERNAL_ARTIFACTS=1`, or `tools/run_context_env.py --prefer-external-artifacts`). Windows defaults probe non-`C:` drive roots (`D:\Molt`, `E:\Molt`, ...); POSIX defaults are `/Volumes/VertigoDataTier/Molt` then `/Volumes/APDataStore/Molt`; override with `MOLT_EXTERNAL_ARTIFACT_ROOTS` and tune health gating with `MOLT_EXTERNAL_MIN_FREE_GB`.
+- DX wrappers prefer healthy external artifact roots before the internal disk when configured (`prefer_external_artifacts`, `MOLT_PREFER_EXTERNAL_ARTIFACTS=1`, or `tools/run_context_env.py --prefer-external-artifacts`). Windows defaults probe non-`C:` drive roots (`D:\Molt`, `E:\Molt`, ...); POSIX defaults are `/Volumes/VertigoDataTier/Molt` then `/Volumes/APDataStore/Molt`; override with `MOLT_EXTERNAL_ARTIFACT_ROOTS` and tune health gating with `MOLT_EXTERNAL_MIN_FREE_GB`. Set `MOLT_REQUIRE_EXTERNAL_ARTIFACTS=1` only for maintainer/agent lanes that must fail closed instead of falling back.
 - `MOLT_ALLOW_C_DRIVE_ARTIFACTS=1` is an explicit emergency override for
   developer machines only. Do not set it in normal agent work, CI, proof lanes,
   or benchmark runs.

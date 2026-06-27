@@ -1,7 +1,9 @@
 use super::super::multi_return_layout::WasmMultiReturnLayout;
 use super::*;
 
+mod direct;
 mod dynamic;
+mod frame;
 use std::collections::HashSet;
 
 pub(super) enum CallOpEmission {
@@ -37,100 +39,30 @@ pub(super) struct CallOpContext<'a, 'ctx, 'm> {
     pub(super) try_stack_is_empty: bool,
 }
 
-fn collect_live_object_locals_for_call(
-    locals: &BTreeMap<String, u32>,
-    last_use_local: &BTreeMap<String, usize>,
-    rel_idx: usize,
-    out_name: Option<&String>,
-) -> Vec<u32> {
-    let mut live = BTreeSet::new();
-    for (name, &local_idx) in locals {
-        if name == "none" {
-            continue;
-        }
-        if out_name.is_some_and(|out| out == name) {
-            continue;
-        }
-        if name.starts_with("__molt_tmp") || name.ends_with("_ptr") || name.ends_with("_len") {
-            continue;
-        }
-        if last_use_local.get(name).is_none_or(|last| *last <= rel_idx) {
-            continue;
-        }
-        live.insert(local_idx);
-    }
-    live.into_iter().collect()
-}
-
 pub(super) fn emit_call_op(
     call_ctx: &mut CallOpContext<'_, '_, '_>,
     func: &mut Function,
     op: &OpIR,
 ) -> CallOpEmission {
-    let func_ir = call_ctx.func_ir;
-    let ctx = call_ctx.ctx;
     let func_map = call_ctx.func_map;
-    let func_indices = call_ctx.func_indices;
     let trampoline_map = call_ctx.trampoline_map;
     let table_base = call_ctx.table_base;
     let import_ids = call_ctx.import_ids;
     let runtime_lookup_only_vars = call_ctx.runtime_lookup_only_vars;
     let locals = call_ctx.locals;
     let const_cache = call_ctx.const_cache;
-    let multi_return_candidates = call_ctx.multi_return_candidates;
-    let multi_return = call_ctx.multi_return;
     let reloc_enabled = call_ctx.reloc_enabled;
-    let tail_call_eligible = call_ctx.tail_call_eligible;
-    let arena_local = call_ctx.arena_local;
-    let tail_call_count = call_ctx.tail_call_count;
-    let ops = call_ctx.ops;
-    let last_use_local = call_ctx.last_use_local;
     let rc_skip_inc = call_ctx.rc_skip_inc;
     let rc_skip_dec = call_ctx.rc_skip_dec;
     let rel_idx = call_ctx.rel_idx;
-    let try_stack_is_empty = call_ctx.try_stack_is_empty;
-    let live_object_locals_for_call = |rel_idx: usize, out_name: Option<&String>| -> Vec<u32> {
-        collect_live_object_locals_for_call(locals, last_use_local, rel_idx, out_name)
-    };
+
+    match direct::emit_direct_call_op(call_ctx, func, op) {
+        CallOpEmission::Handled => return CallOpEmission::Handled,
+        CallOpEmission::HandledAndSkipNext => return CallOpEmission::HandledAndSkipNext,
+        CallOpEmission::NotHandled => {}
+    }
 
     match op.kind.as_str() {
-        "call_async" => {
-            let payload_len = op.args.as_ref().map(|args| args.len()).unwrap_or(0);
-            let target_name = op.s_value.as_ref().expect("call_async target missing");
-            let table_slot = *func_map
-                .get(target_name)
-                .unwrap_or_else(|| panic!("call_async table target not found: {target_name}"));
-            let table_idx = table_base + table_slot;
-            emit_table_index_i64(func, reloc_enabled, table_idx);
-            func.instruction(&Instruction::I64Const((payload_len * 8) as i64));
-            func.instruction(&Instruction::I64Const(TASK_KIND_FUTURE));
-            emit_call(func, reloc_enabled, import_ids["task_new"]);
-            let res = if let Some(out) = op.out.as_ref() {
-                let r = locals[out];
-                func.instruction(&Instruction::LocalSet(r));
-                r
-            } else {
-                func.instruction(&Instruction::Drop);
-                0
-            };
-            if let Some(args) = op.args.as_ref() {
-                for (idx, arg) in args.iter().enumerate() {
-                    let arg_val = locals[arg];
-                    func.instruction(&Instruction::LocalGet(res));
-                    emit_call(func, reloc_enabled, import_ids["handle_resolve"]);
-                    func.instruction(&Instruction::I32Const((idx * 8) as i32));
-                    func.instruction(&Instruction::I32Add);
-                    func.instruction(&Instruction::LocalGet(arg_val));
-                    func.instruction(&Instruction::I64Store(wasm_encoder::MemArg {
-                        align: 3,
-                        offset: 0,
-                        memory_index: 0,
-                    }));
-                    func.instruction(&Instruction::LocalGet(arg_val));
-                    emit_call(func, reloc_enabled, import_ids["inc_ref_obj"]);
-                }
-            }
-        }
         "gpu_thread_id" | "gpu_block_id" | "gpu_block_dim" | "gpu_grid_dim" | "gpu_barrier" => {
             let runtime_name =
                 gpu_runtime_call_symbol(op.kind.as_str()).expect("gpu runtime symbol");
@@ -138,189 +70,6 @@ pub(super) fn emit_call_op(
             let out = locals[op.out.as_ref().expect("gpu op result missing")];
             emit_call(func, reloc_enabled, import_ids[import_name]);
             func.instruction(&Instruction::LocalSet(out));
-        }
-        "call" => {
-            let target_name = op.s_value.as_ref().unwrap();
-            let args_names = op.args.as_ref().unwrap();
-            let out = locals[op.out.as_ref().unwrap()];
-            let live_object_locals = live_object_locals_for_call(rel_idx, op.out.as_ref());
-            for local_idx in &live_object_locals {
-                func.instruction(&Instruction::LocalGet(*local_idx));
-                emit_call(func, reloc_enabled, import_ids["inc_ref_obj"]);
-            }
-            let returns_alias_param = ctx
-                .return_alias_summaries
-                .get(target_name)
-                .and_then(|summary| match summary {
-                    crate::passes::ReturnAliasSummary::Param(param_idx)
-                        if *param_idx < args_names.len() =>
-                    {
-                        Some(*param_idx)
-                    }
-                    _ => None,
-                })
-                .is_some();
-            if returns_alias_param
-                && std::env::var("MOLT_DEBUG_WASM_RETURN_ALIAS").as_deref() == Ok("1")
-            {
-                eprintln!(
-                    "[molt wasm return-alias] kind=call caller={} callee={}",
-                    func_ir.name, target_name
-                );
-            }
-            let func_idx = *func_indices.get(target_name).unwrap_or_else(|| {
-                panic!(
-                    "call target not found: '{}' in func '{}'",
-                    target_name, func_ir.name
-                )
-            });
-            let bootstrap_call = func_idx == import_ids["runtime_init"];
-            if bootstrap_call {
-                for arg_name in args_names {
-                    let arg = locals[arg_name];
-                    func.instruction(&Instruction::LocalGet(arg));
-                }
-                emit_call(func, reloc_enabled, func_idx);
-                func.instruction(&Instruction::LocalSet(out));
-                return CallOpEmission::Handled;
-            }
-            // Direct call: push args, call function, store result.
-            // The recursion guard + trace_enter/exit overhead
-            // was causing the return value to be lost (the
-            // if/else block left `out` as None even on the
-            // success path in some WASM engines).  Module chunk
-            // calls and devirtualized calls now use a flat
-            // sequence; CHECK_EXCEPTION after the call catches
-            // any exception the callee raises.
-            for arg_name in args_names {
-                let arg = locals[arg_name];
-                func.instruction(&Instruction::LocalGet(arg));
-            }
-            emit_call(func, reloc_enabled, func_idx);
-            if returns_alias_param {
-                func.instruction(&Instruction::LocalTee(out));
-                emit_call(func, reloc_enabled, import_ids["inc_ref_obj"]);
-            } else {
-                func.instruction(&Instruction::LocalSet(out));
-            }
-            for local_idx in live_object_locals.iter().rev() {
-                func.instruction(&Instruction::LocalGet(*local_idx));
-                emit_call(func, reloc_enabled, import_ids["dec_ref_obj"]);
-            }
-        }
-        "call_internal" => {
-            let target_name = op.s_value.as_ref().unwrap();
-            let args_names = op.args.as_ref().unwrap();
-            let out_name = op.out.as_ref().unwrap();
-            let out = locals[out_name];
-            let live_object_locals = live_object_locals_for_call(rel_idx, op.out.as_ref());
-            for local_idx in &live_object_locals {
-                func.instruction(&Instruction::LocalGet(*local_idx));
-                emit_call(func, reloc_enabled, import_ids["inc_ref_obj"]);
-            }
-            let returns_alias_param = ctx
-                .return_alias_summaries
-                .get(target_name)
-                .and_then(|summary| match summary {
-                    crate::passes::ReturnAliasSummary::Param(param_idx)
-                        if *param_idx < args_names.len() =>
-                    {
-                        Some(*param_idx)
-                    }
-                    _ => None,
-                })
-                .is_some();
-            if returns_alias_param
-                && std::env::var("MOLT_DEBUG_WASM_RETURN_ALIAS").as_deref() == Ok("1")
-            {
-                eprintln!(
-                    "[molt wasm return-alias] kind=call_internal caller={} callee={}",
-                    func_ir.name, target_name
-                );
-            }
-            let func_idx = *func_indices
-                .get(target_name)
-                .expect("call_internal target not found");
-
-            // --- Tail call detection (WASM tail calls proposal §3.5) ---
-            // A call_internal is in tail position when:
-            //   1. The function is eligible (non-stateful)
-            //   2. The very next op is `ret`
-            //   3. The ret's var matches this call's output
-            //   4. There are no cleanup ops (dec_ref) between call and return
-            //   5. We are not inside a try block (return_call would
-            //      skip the exception handler)
-            //   6. Caller and callee have the same arity — return_call
-            //      requires the stack to match the callee's full param
-            //      list, which differs from call+return.
-            let is_tail_call = tail_call_eligible
-                            && try_stack_is_empty
-                            && rel_idx + 1 < ops.len()
-                            && ops[rel_idx + 1].kind == "ret"
-                            && ops[rel_idx + 1].var.as_deref() == Some(out_name.as_str())
-                            // Exclude calls to multi-return candidates: return_call
-                            // would forward N values but the caller's type signature
-                            // expects a single i64 return, causing an ABI mismatch.
-                            && !multi_return_candidates.contains_key(target_name)
-                            // Exclude chunk calls: the stub may pass fewer args than
-                            // the chunk expects, causing return_call stack underflow.
-                            && !target_name.contains("__molt_chunk_")
-                            // Exclude calls where caller arity != callee param count.
-                            // return_call requires exactly the callee's param count
-                            // on the stack; a regular call+return handles mismatches.
-                            && args_names.len() == func_ir.params.len();
-
-            // Scope arena teardown before tail call: once
-            // `return_call` replaces the current frame, the
-            // arena handle local disappears — so we must free
-            // the arena while it is still live. We do this
-            // before pushing the callee args so the operand
-            // stack discipline stays correct (`arena_free`
-            // consumes exactly its own argument).
-            if is_tail_call && let Some(arena_idx) = arena_local {
-                func.instruction(&Instruction::LocalGet(arena_idx));
-                emit_call(func, reloc_enabled, import_ids["arena_free"]);
-            }
-
-            for arg_name in args_names {
-                let arg = locals[arg_name];
-                func.instruction(&Instruction::LocalGet(arg));
-            }
-
-            if is_tail_call {
-                // Emit return_call: callee's return value becomes
-                // our return value without growing the WASM stack.
-                emit_return_call(func, reloc_enabled, func_idx);
-                tail_call_count.set(tail_call_count.get() + 1);
-                // Skip the next op (ret) since return_call subsumes it.
-                return CallOpEmission::HandledAndSkipNext;
-            }
-
-            emit_call(func, reloc_enabled, func_idx);
-            // Multi-value return (Section 3.1): pop N results
-            // into dedicated locals for later tuple_index.
-            if multi_return.is_promoted_call_tuple(out_name) {
-                let ret_count = multi_return_candidates[target_name];
-                for k in (0..ret_count).rev() {
-                    let local_idx = multi_return
-                        .promoted_call_value_local(out_name, k as i64)
-                        .expect("multi-return call result local missing");
-                    func.instruction(&Instruction::LocalSet(local_idx));
-                }
-                func.instruction(&Instruction::I64Const(0));
-                func.instruction(&Instruction::LocalSet(out));
-            } else {
-                if returns_alias_param {
-                    func.instruction(&Instruction::LocalTee(out));
-                    emit_call(func, reloc_enabled, import_ids["inc_ref_obj"]);
-                } else {
-                    func.instruction(&Instruction::LocalSet(out));
-                }
-            }
-            for local_idx in live_object_locals.iter().rev() {
-                func.instruction(&Instruction::LocalGet(*local_idx));
-                emit_call(func, reloc_enabled, import_ids["dec_ref_obj"]);
-            }
         }
         "inc_ref" | "borrow" => {
             if !rc_skip_inc.contains(&rel_idx) {
@@ -341,7 +90,6 @@ pub(super) fn emit_call_op(
             } else if let Some(out_name) = op.out.as_ref()
                 && out_name != "none"
             {
-                // RC coalesced: still alias output to input.
                 let args_names = op.args.as_ref().unwrap();
                 let src_name = args_names.first().unwrap();
                 let src = locals[src_name];
@@ -393,10 +141,6 @@ pub(super) fn emit_call_op(
             if let Some(out_name) = op.out.as_ref()
                 && out_name != "none"
             {
-                // These ops create a second live alias of the
-                // source object bits. Take a new ref for the
-                // destination so later cleanup of the source
-                // name cannot invalidate the alias.
                 func.instruction(&Instruction::LocalGet(src));
                 emit_call(func, reloc_enabled, import_ids["inc_ref_obj"]);
                 let out = locals[out_name];
@@ -413,9 +157,6 @@ pub(super) fn emit_call_op(
             func.instruction(&Instruction::LocalGet(src));
             if let Some(out_name) = op.out.as_ref() {
                 if out_name != "none" {
-                    // Output aliases input bits — inc_ref to prevent
-                    // use-after-free when the input name is dec_ref'd
-                    // independently by tracking/check_exception cleanup.
                     emit_call(func, reloc_enabled, import_ids["inc_ref_obj"]);
                     func.instruction(&Instruction::LocalGet(src));
                     let out = locals[out_name];

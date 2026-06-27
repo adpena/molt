@@ -267,6 +267,38 @@ def test_build_wasm_linked_treats_symlinked_ext_root_as_repo_local(
     assert env["CARGO_TARGET_DIR"].startswith(str(root / "target" / "pytest_wasm"))
 
 
+def test_build_wasm_linked_marks_repo_local_output_as_output_not_required_external(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "repo"
+    root.mkdir()
+    src = tmp_path / "probe.py"
+    src.write_text("print('hi')\n")
+    recorded: dict[str, Any] = {}
+
+    def _fake_run(*args, **kwargs):  # type: ignore[no-untyped-def]
+        recorded["args"] = list(args[0])
+        recorded["env"] = dict(kwargs["env"])
+        out_dir = Path(args[0][args[0].index("--out-dir") + 1])
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / "output_linked.wasm").write_bytes(b"\x00asm")
+        return subprocess.CompletedProcess(args[0], 0, "", "")
+
+    monkeypatch.delenv("MOLT_EXT_ROOT", raising=False)
+    monkeypatch.delenv("MOLT_REQUIRE_EXTERNAL_ARTIFACTS", raising=False)
+    monkeypatch.setattr(wasm_runner, "_run_wasm_test_process", _fake_run)
+    output = wasm_runner.build_wasm_linked(root, src, tmp_path)
+
+    assert output.exists()
+    env = cast(dict[str, str], recorded["env"])
+    assert Path(env["MOLT_EXT_ROOT"]).is_relative_to(root / "build" / "wasm")
+    assert Path(env["CARGO_TARGET_DIR"]).is_relative_to(
+        Path(env["MOLT_EXT_ROOT"]) / "target"
+    )
+    assert "MOLT_REQUIRE_EXTERNAL_ARTIFACTS" not in env
+
+
 def test_wasm_test_target_dir_uses_stable_local_lane(
     monkeypatch,
     tmp_path: Path,

@@ -1101,7 +1101,11 @@ def _ensure_runtime_wasm(
     )
     if reloc:
         link_flags = runtime_exports
-        cargo_link_flags = runtime_exports
+        cargo_link_flags = _wasm_link_args_response_rustflags(
+            root,
+            label=f"runtime.{_resolve_wasm_cargo_profile(cargo_profile)}.reloc",
+            link_flags=link_flags,
+        )
     else:
         # Shared-runtime ABI: import the host-provided memory and table, and
         # allow the table to grow for app-specific call_indirect slots.
