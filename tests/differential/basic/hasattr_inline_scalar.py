@@ -1,13 +1,12 @@
-"""Purpose: differential coverage for hasattr/getattr on inline NaN-boxed scalar
-receivers (inline int, bool, inline float) plus heap scalars (bigint, str).
+"""Purpose: differential coverage for hasattr/getattr on scalar receivers:
+inline int, bool, inline float, heap bigint, heap NaN-float, plus str control.
 
 Regression for the bug where ``hasattr(42, "bit_length")`` returned False: the
 inline-scalar receiver path in ``molt_has_attr_name`` only handled ``__class__``
 and never consulted the int/bool/float method tables that ``getattr`` already
-used. ``hasattr``, ``getattr``, and ``getattr(_, default)`` now route every
-inline scalar through one shared resolver, so they can never disagree about which
-attributes a scalar exposes. The heap bigint branch was likewise made symmetric
-with heap float (it gained the ``int``-class + ``object`` fallback).
+used. ``hasattr``, ``getattr``, ``getattr(_, default)``, direct attribute access,
+and ``object.__getattribute__`` now route every numeric scalar through one shared
+resolver, so they can never disagree about which attributes a scalar exposes.
 """
 
 
@@ -62,6 +61,12 @@ for nm in float_present:
 for nm in ["bit_length", "no_such_attr", "upper"]:
     print("float-absent", nm, hasattr(2.5, nm))
 
+nan_value = float("nan")
+for nm in float_present:
+    print("heap-float", nm, hasattr(nan_value, nm))
+for nm in ["bit_length", "no_such_attr", "upper"]:
+    print("heap-float-absent", nm, hasattr(nan_value, nm))
+
 print("str upper", hasattr("hi", "upper"))
 print("str len", hasattr("hi", "__len__"))
 print("str absent", hasattr("hi", "bit_length"))
@@ -85,6 +90,7 @@ probe_names = [
     "__sizeof__", "__reduce__", "nonexistent_attr_xyz", "upper", "__len__",
 ]
 for obj, label in [(42, "int"), (True, "bool"), (3.0, "float"),
+                   (nan_value, "heap-float"),
                    (10 ** 100, "big"), ("hi", "str")]:
     for nm in probe_names:
         print("agree", label, nm, agree(obj, nm))
@@ -103,6 +109,8 @@ print(True.bit_length())
 print((3.5).is_integer())
 print((4.0).is_integer())
 print((3.0).hex())
+print(nan_value.is_integer())
+print(nan_value.hex())
 print(big.bit_length())
 print(getattr(42, "bit_length")())
 print(getattr(7, "__add__")(3))
@@ -111,7 +119,16 @@ print(callable(getattr(42, "bit_length", "DFLT")))
 print(callable(getattr(42, "__init__", "DFLT")))
 print(callable(getattr(3.0, "is_integer", "DFLT")))
 print(callable(getattr(3.0, "__init__", "DFLT")))
+print(callable(getattr(nan_value, "is_integer", "DFLT")))
+print(callable(getattr(nan_value, "__init__", "DFLT")))
 print(callable(getattr(True, "bit_length", "DFLT")))
 print(callable(getattr(big, "__init__", "DFLT")))
 print(getattr(42, "missing_attr_zzz", "DFLT"))
 print(getattr(3.0, "missing_attr_zzz", "DFLT"))
+print(getattr(nan_value, "missing_attr_zzz", "DFLT"))
+
+print(object.__getattribute__(42, "bit_length")())
+print(object.__getattribute__(True, "bit_length")())
+print(object.__getattribute__(3.0, "is_integer")())
+print(object.__getattribute__(nan_value, "is_integer")())
+print(object.__getattribute__(big, "bit_length")())
