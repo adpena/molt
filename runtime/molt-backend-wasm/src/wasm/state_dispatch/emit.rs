@@ -1,7 +1,8 @@
+use super::block_layout::emit_dispatch_block_lookup;
 use super::common::{
-    emit_arena_free, emit_conditional_state_branch, emit_dispatch_block_lookup,
-    emit_dispatch_check_exception, emit_dispatch_if, emit_dispatch_loop_break_cond,
-    emit_dispatch_trailing_return, emit_set_state_and_br, emit_stateful_resume_prelude,
+    emit_arena_free, emit_conditional_state_branch, emit_dispatch_check_exception,
+    emit_dispatch_if, emit_dispatch_loop_break_cond, emit_dispatch_trailing_return,
+    emit_set_state_and_br, emit_stateful_resume_prelude,
     exception_handler_region_indices_from_label_map, label_target, loop_break_target,
     require_stateful,
 };
