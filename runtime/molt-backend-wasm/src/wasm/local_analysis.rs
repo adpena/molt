@@ -1,4 +1,3 @@
-use super::WasmFrameLocals;
 use super::control_flow::has_non_linear_control_flow;
 use crate::{FunctionIR, OpIR};
 use std::collections::{BTreeMap, BTreeSet};
@@ -137,7 +136,11 @@ fn is_coalescable_local(
     read_vars: &BTreeSet<String>,
     param_set: &BTreeSet<String>,
 ) -> bool {
-    WasmFrameLocals::is_coalescable_value_name(name, read_vars, param_set)
+    is_optimizer_temp_value_name(name) && !param_set.contains(name) && read_vars.contains(name)
+}
+
+fn is_optimizer_temp_value_name(name: &str) -> bool {
+    name.starts_with("__tmp") || name.starts_with("__v")
 }
 
 fn defined_and_used_value_vars(ops: &[OpIR]) -> (BTreeSet<String>, BTreeSet<String>) {
