@@ -1247,6 +1247,65 @@ def render_py(data: dict) -> str:
             f'{entry["callable_arity"]}, "{result}"),\n'
         )
     lines.append(")\n\n")
+    lines.extend(
+        [
+            "WASM_RUNTIME_CALLABLE_IMPORT_BY_RUNTIME: dict[str, tuple[str, int, str]] = {\n",
+            "    runtime_name: (import_name, arity, result)\n",
+            "    for runtime_name, import_name, arity, result in WASM_RUNTIME_CALLABLE_IMPORTS\n",
+            "}\n\n",
+            "WASM_RUNTIME_CALLABLE_IMPORT_BY_IMPORT: dict[str, tuple[str, int, str]] = {\n",
+            "    import_name: (runtime_name, arity, result)\n",
+            "    for runtime_name, import_name, arity, result in WASM_RUNTIME_CALLABLE_IMPORTS\n",
+            "}\n\n",
+            "def wasm_runtime_callable_spec(runtime_name: str) -> tuple[str, int, str] | None:\n",
+            "    return WASM_RUNTIME_CALLABLE_IMPORT_BY_RUNTIME.get(runtime_name)\n\n",
+            "def wasm_runtime_callable_import_name(runtime_name: str) -> str | None:\n",
+            "    spec = wasm_runtime_callable_spec(runtime_name)\n",
+            "    return None if spec is None else spec[0]\n\n",
+            "def wasm_runtime_callable_arity(runtime_name: str) -> int | None:\n",
+            "    spec = wasm_runtime_callable_spec(runtime_name)\n",
+            "    return None if spec is None else spec[1]\n\n",
+            "def wasm_runtime_callable_result(runtime_name: str) -> str | None:\n",
+            "    spec = wasm_runtime_callable_spec(runtime_name)\n",
+            "    return None if spec is None else spec[2]\n\n",
+        ]
+    )
+    lines.append(
+        "WASM_IMPORT_SIGNATURES: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (\n"
+    )
+    static_types = data["static_type"]
+    for entry in data["import"]:
+        signature = static_types[entry["type"]]
+        lines.append(
+            f'    ("{entry["name"]}", {_py_tuple(signature["params"])}, '
+            f'{_py_tuple(signature["results"])}),\n'
+        )
+    lines.append(")\n\n")
+    lines.extend(
+        [
+            "WASM_IMPORT_SIGNATURE_BY_NAME: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {\n",
+            "    name: (params, results)\n",
+            "    for name, params, results in WASM_IMPORT_SIGNATURES\n",
+            "}\n\n",
+            "def wasm_import_signature(import_name: str) -> tuple[tuple[str, ...], tuple[str, ...]] | None:\n",
+            "    return WASM_IMPORT_SIGNATURE_BY_NAME.get(import_name)\n\n",
+            "def wasm_import_result_kind(import_name: str) -> str | None:\n",
+            "    signature = wasm_import_signature(import_name)\n",
+            "    if signature is None:\n",
+            "        return None\n",
+            "    results = signature[1]\n",
+            "    return \"nil\" if not results else \", \".join(results)\n\n",
+        ]
+    )
+    call_indirect_imports = [
+        entry["name"]
+        for entry in data.get("link_allowed_import", [])
+        if entry["name"].startswith("molt_call_indirect")
+    ]
+    lines.append("WASM_CALL_INDIRECT_IMPORTS: tuple[str, ...] = (\n")
+    for name in call_indirect_imports:
+        lines.append(f'    "{name}",\n')
+    lines.append(")\n\n")
     lines.append(
         "WASM_CONST_OP_POLICIES: tuple[tuple[str, str, str | None, str, bool, bool, str, str], ...] = (\n"
     )

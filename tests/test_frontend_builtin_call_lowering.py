@@ -3,7 +3,9 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+from molt._wasm_abi_generated import wasm_runtime_callable_arity
 from molt.frontend import MoltOp, MoltValue, SimpleTIRGenerator, compile_to_tir
+from molt.frontend._types import BUILTIN_FUNC_SPECS, _builtin_func_abi_arity
 
 
 def _op_field(op: dict[str, object] | MoltOp, field: str) -> object:
@@ -26,6 +28,13 @@ def _value_name(value: object) -> object:
     if isinstance(value, MoltValue):
         return value.name
     return value
+
+
+def test_frontend_builtin_func_specs_are_wasm_manifest_backed() -> None:
+    for func_id, spec in BUILTIN_FUNC_SPECS.items():
+        manifest_arity = wasm_runtime_callable_arity(spec.runtime)
+        assert manifest_arity is not None, func_id
+        assert _builtin_func_abi_arity(spec) == manifest_arity
 
 
 def _first_builtin_call_kind(source: str, runtime_name: str) -> str:
@@ -1964,6 +1973,15 @@ def test_source_import_statements_use_import_transaction_details() -> None:
     )
 
     details = _import_transaction_details(main_ops)
+    transaction_arities = {
+        op.get("value")
+        for op in main_ops
+        if op.get("kind") == "builtin_func"
+        and op.get("s_value") == "molt_importlib_import_transaction"
+    }
+    assert transaction_arities == {
+        wasm_runtime_callable_arity("molt_importlib_import_transaction")
+    }
     assert ("json", (), 0) in details
     assert ("json.tool", (), 0) in details
     assert ("pkg", ("child",), 0) in details

@@ -829,36 +829,6 @@ def _read_wasm_function_export_map(
     }
 
 
-def _wasm_import_function_signatures(
-    path: Path, *, module_name: str
-) -> dict[str, dict[str, object]]:
-    sections = _parse_wasm_file_sections(path)
-    type_signatures = _read_wasm_type_signatures(sections)
-    imports, _ = _read_wasm_import_function_type_indices(sections)
-
-    signatures: dict[str, dict[str, object]] = {}
-    for module, name, type_index in imports:
-        if module != module_name:
-            continue
-        signature = type_signatures.get(type_index)
-        if signature is None:
-            raise ValueError(f"Missing wasm type index {type_index} for import {name}")
-        params, result_kind = signature
-        signatures[name] = {"params": list(params), "result": result_kind}
-    return signatures
-
-
-def _wasm_import_function_result_kinds(
-    path: Path, *, module_name: str
-) -> dict[str, str]:
-    return {
-        name: str(signature["result"])
-        for name, signature in _wasm_import_function_signatures(
-            path, module_name=module_name
-        ).items()
-    }
-
-
 def _wasm_export_function_signatures(
     path: Path, *, export_name_prefix: str
 ) -> dict[str, dict[str, object]]:

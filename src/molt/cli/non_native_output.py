@@ -34,12 +34,12 @@ from molt.cli.wasm import (
     _effective_split_worker_table_base,
     _generate_split_worker_js,
     _generate_split_wrangler_jsonc,
+    _runtime_import_result_kinds_from_manifest,
+    _runtime_import_signatures_from_manifest,
 )
 from molt.wasm_artifact import (
     _collect_wasm_module_import_names,
     _wasm_export_function_signatures,
-    _wasm_import_function_result_kinds,
-    _wasm_import_function_signatures,
     _wasm_import_minima,
 )
 
@@ -474,11 +474,14 @@ def _prepare_non_native_build_result(
             rt_size = rt_wasm.stat().st_size
             app_memory_min, app_table_min = _wasm_import_minima(app_wasm)
             rt_memory_min, rt_table_min = _wasm_import_minima(rt_wasm)
-            app_runtime_import_result_kinds = _wasm_import_function_result_kinds(
-                app_wasm, module_name="molt_runtime"
+            app_runtime_import_names = _collect_wasm_module_import_names(
+                app_wasm, "molt_runtime"
             )
-            app_runtime_import_signatures = _wasm_import_function_signatures(
-                app_wasm, module_name="molt_runtime"
+            app_runtime_import_result_kinds = (
+                _runtime_import_result_kinds_from_manifest(app_runtime_import_names)
+            )
+            app_runtime_import_signatures = _runtime_import_signatures_from_manifest(
+                app_runtime_import_names
             )
             shared_memory_initial_pages = max(
                 app_memory_min or 0,
@@ -518,7 +521,7 @@ def _prepare_non_native_build_result(
                 "abi": {
                     "runtime_imports": {
                         "module": "molt_runtime",
-                        "names": sorted(app_runtime_import_signatures),
+                        "names": sorted(app_runtime_import_names),
                         "signatures": app_runtime_import_signatures,
                         "result_kinds": app_runtime_import_result_kinds,
                     },
@@ -552,8 +555,7 @@ def _prepare_non_native_build_result(
                     shared_memory_initial_pages=shared_memory_initial_pages,
                     shared_table_initial=shared_table_initial,
                     shared_table_base=effective_wasm_table_base,
-                    runtime_import_result_kinds=app_runtime_import_result_kinds,
-                    runtime_import_signatures=app_runtime_import_signatures,
+                    runtime_import_names=app_runtime_import_names,
                     app_table_ref_signatures=app_table_ref_signatures,
                     runtime_table_ref_signatures=runtime_table_ref_signatures,
                 ),

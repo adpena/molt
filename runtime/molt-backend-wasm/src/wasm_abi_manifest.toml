@@ -2093,6 +2093,18 @@ name = "cbor_parse_scalar_obj"
 type = 2
 
 [[import]]
+name = "codecs_decode"
+type = 5
+runtime_name = "molt_codecs_decode"
+callable_arity = 3
+
+[[import]]
+name = "codecs_encode"
+type = 5
+runtime_name = "molt_codecs_encode"
+callable_arity = 3
+
+[[import]]
 name = "msgpack_parse_scalar"
 type = 19
 
@@ -4163,6 +4175,8 @@ callable_arity = 0
 [[import]]
 name = "thread_current_native_id"
 type = 0
+runtime_name = "molt_thread_current_native_id"
+callable_arity = 0
 
 [[import]]
 name = "thread_drop"

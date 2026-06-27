@@ -148,10 +148,22 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
     )
     assert imports["load_intrinsic_runtime"]["callable_arity"] == 2
     assert imports["runtime_active_runtime"]["callable_arity"] == 0
+    assert imports["codecs_decode"]["runtime_name"] == "molt_codecs_decode"
+    assert imports["codecs_decode"]["callable_arity"] == 3
+    assert imports["codecs_encode"]["runtime_name"] == "molt_codecs_encode"
+    assert imports["codecs_encode"]["callable_arity"] == 3
+    assert imports["thread_current_native_id"]["runtime_name"] == (
+        "molt_thread_current_native_id"
+    )
+    assert imports["thread_current_native_id"]["callable_arity"] == 0
 
     rendered_rs = _rendered_rs(gen, data)
     rendered_runtime_rs = gen.render_runtime_callables_rs(data)
+    rendered_py = gen.render_py(data)
     assert "RUNTIME_CALLABLE_IMPORTS" in rendered_rs
+    assert "WASM_RUNTIME_CALLABLE_IMPORT_BY_RUNTIME" in rendered_py
+    assert "def wasm_runtime_callable_arity" in rendered_py
+    assert "def wasm_runtime_callable_result" in rendered_py
     assert "RuntimeCallableResult::Void" in rendered_rs
     assert "ReservedRuntimeCallableSpec" in rendered_rs
     assert "RESERVED_RUNTIME_CALLABLE_SPECS" in rendered_rs
@@ -175,6 +187,28 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
     assert "wasm_poll_callables.inc" not in function_abi
     assert '"molt_type_call" => Some' not in function_abi
     assert "molt_async_sleep_poll as *const" not in function_abi
+
+
+def test_wasm_abi_manifest_owns_python_runtime_import_signatures() -> None:
+    gen = _load_gen_wasm_abi()
+    data = gen.load_manifest()
+    static_types = data["static_type"]
+    imports = {entry["name"]: entry for entry in data["import"]}
+
+    def signature(import_name: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        import_entry = imports[import_name]
+        static_type = static_types[import_entry["type"]]
+        return tuple(static_type["params"]), tuple(static_type["results"])
+
+    assert signature("function_set_builtin") == (("i64",), ("i64",))
+    assert signature("string_from_bytes") == (("i32", "i64", "i32"), ("i32",))
+    assert signature("codecs_decode") == (("i64", "i64", "i64"), ("i64",))
+
+    rendered_py = gen.render_py(data)
+    assert "WASM_IMPORT_SIGNATURES" in rendered_py
+    assert "WASM_IMPORT_SIGNATURE_BY_NAME" in rendered_py
+    assert "def wasm_import_signature" in rendered_py
+    assert "def wasm_import_result_kind" in rendered_py
 
 
 def test_wasm_abi_manifest_owns_op_import_deps() -> None:
@@ -347,6 +381,7 @@ def test_wasm_abi_manifest_owns_host_import_policy() -> None:
 
     rendered_py = gen.render_py(data)
     assert "WASM_LINK_ALLOWED_IMPORTS" in rendered_py
+    assert "WASM_CALL_INDIRECT_IMPORTS" in rendered_py
     assert "WASM_STRIP_IMPORT_RULES" in rendered_py
     assert "WASM_STRIP_IMPORT_PREFIX_RULES" in rendered_py
 

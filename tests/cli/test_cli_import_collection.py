@@ -11867,10 +11867,14 @@ def test_prepare_non_native_build_result_split_runtime_reuses_shared_runtime_sur
     )
     monkeypatch.setattr(cli_non_native_output, "_wasm_import_minima", lambda _path: (1, 1))
     monkeypatch.setattr(
-        cli_non_native_output, "_wasm_import_function_result_kinds", lambda *args, **kwargs: {}
+        cli_non_native_output,
+        "_runtime_import_result_kinds_from_manifest",
+        lambda _names: {},
     )
     monkeypatch.setattr(
-        cli_non_native_output, "_wasm_import_function_signatures", lambda *args, **kwargs: {}
+        cli_non_native_output,
+        "_runtime_import_signatures_from_manifest",
+        lambda _names: {},
     )
     monkeypatch.setattr(
         cli_non_native_output, "_wasm_export_function_signatures", lambda *args, **kwargs: {}
@@ -11930,10 +11934,14 @@ def test_prepare_non_native_build_result_split_runtime_does_not_export_runtime_t
     )
     monkeypatch.setattr(cli_non_native_output, "_wasm_import_minima", lambda _path: (1, 1))
     monkeypatch.setattr(
-        cli_non_native_output, "_wasm_import_function_result_kinds", lambda *args, **kwargs: {}
+        cli_non_native_output,
+        "_runtime_import_result_kinds_from_manifest",
+        lambda _names: {},
     )
     monkeypatch.setattr(
-        cli_non_native_output, "_wasm_import_function_signatures", lambda *args, **kwargs: {}
+        cli_non_native_output,
+        "_runtime_import_signatures_from_manifest",
+        lambda _names: {},
     )
     monkeypatch.setattr(
         cli_non_native_output, "_wasm_export_function_signatures", lambda *args, **kwargs: {}
