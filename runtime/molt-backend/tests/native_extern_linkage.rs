@@ -1,5 +1,5 @@
-use cranelift_object::object::{Object, ObjectSymbol};
 use molt_backend::{FunctionIR, OpIR, SimpleBackend, SimpleIR};
+use object::{Object, ObjectSymbol};
 
 fn op(kind: &str) -> OpIR {
     OpIR {
@@ -54,7 +54,7 @@ fn extern_calls_compile_without_exporting_undefined_stdlib_symbols() {
     let output = backend.compile(ir);
 
     assert!(!output.bytes.is_empty());
-    let file = cranelift_object::object::File::parse(&*output.bytes).expect("parse object");
+    let file = object::File::parse(&*output.bytes).expect("parse object");
     assert!(
         !file
             .symbols()
@@ -108,7 +108,7 @@ fn externalized_value_returning_stdlib_call_emits_undefined_import_object() {
     let output = backend.compile(ir);
 
     assert!(!output.bytes.is_empty());
-    let file = cranelift_object::object::File::parse(&*output.bytes).expect("parse object");
+    let file = object::File::parse(&*output.bytes).expect("parse object");
     let symbols: Vec<String> = file
         .symbols()
         .filter_map(|symbol| symbol.name().ok().map(str::to_string))

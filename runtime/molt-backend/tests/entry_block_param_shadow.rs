@@ -1,5 +1,5 @@
-use cranelift_object::object::{Object, ObjectSymbol};
 use molt_backend::{FunctionIR, OpIR, SimpleBackend, SimpleIR};
+use object::{Object, ObjectSymbol};
 
 fn op(kind: &str) -> OpIR {
     OpIR {
@@ -42,8 +42,7 @@ fn compile_standalone(ir: SimpleIR) -> molt_backend::CompileOutput {
 /// defined (non-undefined) Export symbol — a trap-stubbed function never
 /// reaches this state because codegen aborts first.
 fn assert_function_compiled(bytes: &[u8], func_name: &str) {
-    let file = cranelift_object::object::File::parse(bytes)
-        .expect("backend must emit a parseable object file");
+    let file = object::File::parse(bytes).expect("backend must emit a parseable object file");
     let defined = file.symbols().any(|symbol| {
         symbol_matches(symbol.name().ok(), func_name)
             && symbol.is_definition()

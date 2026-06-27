@@ -2721,8 +2721,7 @@ mod tests {
             !bytes.is_empty(),
             "empty stdlib cache path must publish a real object file"
         );
-        cranelift_object::object::File::parse(&*bytes)
-            .expect("empty stdlib cache must be a parseable object");
+        object::File::parse(&*bytes).expect("empty stdlib cache must be a parseable object");
 
         let _ = std::fs::remove_dir_all(&tmp_dir);
     }
@@ -2853,7 +2852,7 @@ mod tests {
             !stdlib_bytes.is_empty(),
             "daemon empty stdlib cache must publish a real object"
         );
-        cranelift_object::object::File::parse(&*stdlib_bytes)
+        object::File::parse(&*stdlib_bytes)
             .expect("daemon empty stdlib cache must be a parseable object");
         assert_eq!(
             std::fs::read_to_string(stdlib_cache_count_sidecar_path(&stdlib))
