@@ -85,6 +85,7 @@ use super::ip_summary::ModuleSummaries;
 mod call_sites;
 mod clone_body;
 mod eligibility;
+mod exception_labels;
 mod splice;
 #[cfg(test)]
 mod tests;
