@@ -689,6 +689,10 @@ pub fn fill_os_random(buf: &mut [u8]) -> Result<(), FillOsRandomError> {
     }
 }
 
+pub fn time_local_offset_host(secs: i64) -> i64 {
+    unsafe { (vt().time_local_offset_host)(secs) }
+}
+
 // ---------------------------------------------------------------------------
 // Dict helpers (configparser-specific)
 // ---------------------------------------------------------------------------

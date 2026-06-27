@@ -671,6 +671,16 @@ extern "C" fn bridge_fill_os_random(buf_ptr: *mut u8, buf_len: usize) -> i32 {
     }
 }
 
+#[cfg(target_arch = "wasm32")]
+extern "C" fn bridge_time_local_offset_host(secs: i64) -> i64 {
+    unsafe { crate::molt_time_local_offset_host(secs) }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+extern "C" fn bridge_time_local_offset_host(_secs: i64) -> i64 {
+    0
+}
+
 // ---------------------------------------------------------------------------
 // Dict helpers (configparser-specific)
 // ---------------------------------------------------------------------------
@@ -844,6 +854,7 @@ static RUNTIME_VTABLE: RuntimeVtable = RuntimeVtable {
     molt_sorted_builtin: bridge_molt_sorted_builtin,
     molt_mul: bridge_molt_mul,
     fill_os_random: bridge_fill_os_random,
+    time_local_offset_host: bridge_time_local_offset_host,
     alloc_list_with_capacity: bridge_alloc_list_with_capacity,
     attr_name_bits_from_bytes: bridge_attr_name_bits_from_bytes,
     call_class_init_with_args: bridge_call_class_init_with_args,
