@@ -9,7 +9,7 @@ use std::sync::Mutex;
 
 use molt_backend::wasm::{WasmBackend, WasmCompileOptions, WasmProfile};
 use molt_backend::{FunctionIR, OpIR, SimpleIR};
-use wasmparser::{Parser, Payload, TypeRef};
+use wasmparser::{ExternalKind, Parser, Payload, TypeRef};
 
 static ENV_LOCK: Mutex<()> = Mutex::new(());
 
@@ -61,6 +61,20 @@ fn hello_world_ir() -> SimpleIR {
             name: "molt_main".to_string(),
             params: vec![],
             ops: vec![const_str, print, op("print_newline"), op("ret_void")],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+        }],
+        profile: None,
+    }
+}
+
+fn empty_main_ir() -> SimpleIR {
+    SimpleIR {
+        functions: vec![FunctionIR {
+            name: "molt_main".to_string(),
+            params: vec![],
+            ops: vec![op("ret_void")],
             param_types: None,
             source_file: None,
             is_extern: false,
@@ -230,6 +244,31 @@ fn import_names(wasm: &[u8]) -> BTreeSet<String> {
     names
 }
 
+fn function_export_names(wasm: &[u8]) -> BTreeSet<String> {
+    let mut names = BTreeSet::new();
+    for payload in Parser::new(0).parse_all(wasm) {
+        if let Payload::ExportSection(section) = payload.expect("valid payload") {
+            for export in section.into_iter() {
+                let export = export.expect("valid export");
+                if export.kind == ExternalKind::Func {
+                    names.insert(export.name.to_string());
+                }
+            }
+        }
+    }
+    names
+}
+
+fn custom_section_names(wasm: &[u8]) -> BTreeSet<String> {
+    let mut names = BTreeSet::new();
+    for payload in Parser::new(0).parse_all(wasm) {
+        if let Payload::CustomSection(section) = payload.expect("valid payload") {
+            names.insert(section.name().to_string());
+        }
+    }
+    names
+}
+
 // -----------------------------------------------------------------------
 // Auto profile tests
 // -----------------------------------------------------------------------
@@ -266,7 +305,7 @@ fn auto_hello_world_includes_used_structural_imports() {
 #[test]
 fn auto_reloc_preserves_reserved_runtime_callable_imports() {
     let wasm = compile_with_options(
-        hello_world_ir(),
+        empty_main_ir(),
         WasmCompileOptions {
             wasm_profile: WasmProfile::Auto,
             reloc_enabled: true,
@@ -290,6 +329,39 @@ fn auto_reloc_preserves_reserved_runtime_callable_imports() {
             "{name} should be present as a linked-wasm structural import"
         );
     }
+}
+
+#[test]
+fn auto_reloc_exports_table_init_refs_and_elem_relocs() {
+    let wasm = compile_with_options(
+        empty_main_ir(),
+        WasmCompileOptions {
+            wasm_profile: WasmProfile::Auto,
+            reloc_enabled: true,
+            ..WasmCompileOptions::default()
+        },
+    );
+    let exports = function_export_names(&wasm);
+    assert!(
+        exports.contains("molt_table_init"),
+        "relocatable wasm must export table initializer; exports={exports:?}"
+    );
+    assert!(
+        exports.contains("molt_main"),
+        "relocatable wasm must export wrapped molt_main; exports={exports:?}"
+    );
+    assert!(
+        exports
+            .iter()
+            .any(|name| name.starts_with("__molt_table_ref_")),
+        "relocatable wasm must export table ref symbols; exports={exports:?}"
+    );
+
+    let custom_sections = custom_section_names(&wasm);
+    assert!(
+        custom_sections.contains("reloc.ELEM"),
+        "relocatable wasm must carry element relocations; custom_sections={custom_sections:?}"
+    );
 }
 
 #[test]
