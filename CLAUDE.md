@@ -502,18 +502,23 @@ Rules:
 
 ## Concurrent Development (MOLT_SESSION_ID)
 
-`MOLT_SESSION_ID` **must be set BEFORE any build command**. Every agent must export it at the start of every shell command:
+This section is for Molt repo development, maintainer proof lanes, and
+agent/subagent work. It is not the public `molt build` contract: real users may
+compile in place, rely on Molt/Cargo defaults, or pass explicit output/target
+flags.
+
+`MOLT_SESSION_ID` **must be set BEFORE any maintainer/agent build command**. Every agent must export it at the start of every shell command:
 
 ```bash
 export MOLT_SESSION_ID="agent-1"  # MUST come before any molt or cargo command
 ```
 
-**Molt developer build artifacts go on an external drive, never `C:`.** This is
-a development self-protection rule for agents and local Molt maintainers, not a
-user-facing compile contract. Real users may build in place, use Cargo defaults,
-or pass their own target/output flags. Do not make external artifact placement a
-required public CLI default unless the user explicitly opts in with a flag,
-environment variable, or developer wrapper.
+**Molt maintainer/agent build artifacts go on an external drive, never `C:` when
+the resolver can provide one.** This is a development self-protection rule for
+agents and local Molt maintainers, not a user-facing compile contract. Do not
+make external artifact placement a required public CLI default, installer
+behavior, or user documentation promise unless a user explicitly opts in with a
+flag, environment variable, or developer wrapper.
 
 Use the DX resolver (`molt dx env`, `molt dx run`, `tools/dev.py`, or
 `tools/run_context_env.py --prefer-external-artifacts`) before build/test/bench

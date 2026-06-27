@@ -461,6 +461,10 @@ Read these first instead of rediscovering project structure:
   with non-colliding structural work that improves the same end-state.
 
 ## Hard Gate: Canonical Artifact Locations And Cleanup (Non-Negotiable, Urgent)
+- This section governs Molt repo development, maintainer proof lanes, and
+  agent/subagent work. It is not the public `molt build` contract. Real users
+  may compile in place, use Molt/Cargo defaults, or choose locations with
+  explicit CLI flags and environment variables.
 - Developer build artifacts, caches, tmp files, logs, benchmark outputs, and debugging outputs MUST live in canonical locations selected by the DX resolver rather than ad hoc paths scattered across the tree.
 - Developer canonical roots:
   - `<MOLT_EXT_ROOT>/target` for Cargo artifacts and shared build state.
@@ -474,15 +478,15 @@ Read these first instead of rediscovering project structure:
   - reuse canonical directories instead of creating per-command ad hoc output roots;
   - prune stale artifacts regularly, especially large logs, old benchmark bundles, scratch tmp trees, and abandoned debug outputs;
   - remove no-longer-needed artifacts at the end of a task unless they are required for reproducible evidence or are part of the intended checked-in output.
-- Molt developer builds/tests must use the DX resolver instead of raw repo-local
-  defaults. On Windows checkouts on `C:`, `prefer_external_artifacts` makes the
-  resolver fail closed unless it can place build/test artifacts on a healthy
-  non-`C:` drive such as `E:\Molt`; macOS/Linux use the configured external
-  candidate roots. This is a development self-protection rule, not a user-facing
-  compile contract: real users may build in place, use Cargo defaults, or pass
-  their own target/output flags. Do not make external artifact placement a
-  required public CLI default unless the user explicitly opts in with a flag,
-  environment variable, or developer wrapper.
+- Molt maintainer/agent builds, tests, benchmarks, and proof lanes must use the
+  DX resolver instead of raw repo-local defaults. On Windows checkouts on `C:`,
+  `prefer_external_artifacts` makes the resolver fail closed unless it can place
+  build/test artifacts on a healthy non-`C:` drive such as `E:\Molt`;
+  macOS/Linux use the configured external candidate roots. This is development
+  self-protection for people and agents working on Molt itself. Do not make
+  external artifact placement a required public CLI default, installer
+  behavior, or user documentation promise unless a user explicitly opts in with
+  a flag, environment variable, or developer wrapper.
 - Canonical developer env defaults come from `molt dx env`, `molt dx run`,
   `tools/dev.py`, or `tools/run_context_env.py --prefer-external-artifacts`;
   do not hand-roll raw `cargo`/`uv` commands without first exporting those facts.

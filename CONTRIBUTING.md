@@ -6,11 +6,18 @@ Molt expects production-grade changes, not opportunistic patches.
 
 1. Read [AGENTS.md](AGENTS.md), [docs/CANONICALS.md](docs/CANONICALS.md), and [docs/ROOT_LAYOUT.md](docs/ROOT_LAYOUT.md) before changing behavior, structure, or docs.
 2. Keep work on `main` unless explicit user approval says otherwise.
-3. Use canonical artifact roots only:
-   - `target/` for Cargo/build state
+3. Use canonical artifact roots only. Public users may compile in place, use
+   default Molt/Cargo locations, or pass explicit output/target flags; the
+   external artifact-root policy is for maintainer/agent development and proof
+   lanes only.
+   - DX-selected `<MOLT_EXT_ROOT>/target` for maintainer/agent Cargo/build
+     state when the resolver provides it; repo-local `target/` remains the
+     ordinary fallback/default location.
    - `bench/results/` for benchmark outputs
    - `logs/` for durable logs
-   - `tmp/` for scratch and quarantine material
+   - DX-selected `<MOLT_EXT_ROOT>/tmp` for maintainer/agent scratch and
+     quarantine material when the resolver provides it; repo-local `tmp/`
+     remains the ordinary fallback/default location.
 4. Update docs in the same change when structure, workflow, or semantics move.
 5. Remove dead files, duplicate paths, and stale references instead of preserving legacy layout.
 6. Start every nontrivial change by naming one narrow aperture: the invariant,
