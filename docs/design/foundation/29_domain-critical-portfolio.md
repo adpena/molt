@@ -36,7 +36,7 @@ The audit covers molt at commit `951938075` (branch `main`). The runtime crate t
 
 **PEP 734 / subinterpreters.** `src/molt/stdlib/_interpreters.py` and `_interpchannels.py` are pure RuntimeError stubs (`TODO(stdlib-parity, milestone:SL3, priority:P1, status:planned)`). No design document.
 
-**Memory model.** The current model is: GIL-held = all object mutations are serialized. The AtomicU32 refcount is correctly ordered for the GIL + cpython-abi signal-handler case. Free-threading would require every mutable object to carry an `ObjectLock` (the stub in `object/gil.rs`) and every mutation site to acquire it — this is a large structural change touching `dict_compact`, `list`, `set`, and every builder function.
+**Memory model.** The current model is: GIL-held = all object mutations are serialized. The AtomicU32 refcount is correctly ordered for the GIL + cpython-abi signal-handler case. Free-threading would require every mutable object to carry an `ObjectLock` (the stub in `object/gil.rs`) and every mutation site to acquire it — this is a large structural change touching live dict, list, set, and every builder function.
 
 ### Frontier Definition
 

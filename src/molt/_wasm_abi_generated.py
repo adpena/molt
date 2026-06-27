@@ -306,7 +306,6 @@ WASM_IMPORT_REGISTRY: tuple[str, ...] = (
     "list_fill_new",
     "list_int_setitem",
     "list_int_setitem_nogil",
-    "list_int_setitem_raw",
     "list_copy",
     "list_count",
     "list_extend",

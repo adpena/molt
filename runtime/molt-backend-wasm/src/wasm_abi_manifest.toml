@@ -1456,10 +1456,6 @@ name = "list_int_setitem_nogil"
 type = 5
 
 [[import]]
-name = "list_int_setitem_raw"
-type = 5
-
-[[import]]
 name = "list_copy"
 type = 2
 

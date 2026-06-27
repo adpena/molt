@@ -391,7 +391,6 @@ aborting_bridge_stub!(molt_list_int_getitem_nogil);
 aborting_bridge_stub!(molt_list_int_getitem_raw);
 aborting_bridge_stub!(molt_list_int_getitem_raw_checked);
 aborting_bridge_stub!(molt_list_int_setitem_nogil);
-aborting_bridge_stub!(molt_list_int_setitem_raw);
 aborting_bridge_stub!(molt_list_pop);
 aborting_bridge_stub!(molt_missing);
 aborting_bridge_stub!(molt_none);
