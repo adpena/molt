@@ -5,6 +5,7 @@ from pathlib import Path
 import sys
 
 from molt import backend_daemon_custody as custody
+from molt.dx import session_artifact_component
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -48,7 +49,7 @@ def _write_session_identity(
     *,
     session_id: str = "alpha-session",
 ) -> Path:
-    session_label = custody.backend_daemon_session_artifact_component(session_id)
+    session_label = session_artifact_component(session_id)
     identity_path = (
         daemon_root / f"molt-backend.dev-fast.{session_label}.deadbeef.identity.json"
     )
