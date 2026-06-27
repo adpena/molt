@@ -2,107 +2,16 @@
 #[inline(never)]
 #[cold]
 pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
-    match symbol {
-        #[cfg(feature = "stdlib_crypto")]
-        "molt_hash_new" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_hash_new",
-            crate::molt_hash_new as *const (),
-        )),
-        #[cfg(feature = "stdlib_crypto")]
-        "molt_hash_update" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_hash_update",
-            crate::molt_hash_update as *const (),
-        )),
-        #[cfg(feature = "stdlib_crypto")]
-        "molt_hash_copy" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_hash_copy",
-            crate::molt_hash_copy as *const (),
-        )),
-        #[cfg(feature = "stdlib_crypto")]
-        "molt_hash_digest" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_hash_digest",
-            crate::molt_hash_digest as *const (),
-        )),
-        #[cfg(feature = "stdlib_crypto")]
-        "molt_hash_drop" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_hash_drop",
-            crate::molt_hash_drop as *const (),
-        )),
-        #[cfg(feature = "stdlib_crypto")]
-        "molt_hmac_new" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_hmac_new",
-            crate::molt_hmac_new as *const (),
-        )),
-        #[cfg(feature = "stdlib_crypto")]
-        "molt_hmac_update" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_hmac_update",
-            crate::molt_hmac_update as *const (),
-        )),
-        #[cfg(feature = "stdlib_crypto")]
-        "molt_hmac_copy" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_hmac_copy",
-            crate::molt_hmac_copy as *const (),
-        )),
-        #[cfg(feature = "stdlib_crypto")]
-        "molt_hmac_digest" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_hmac_digest",
-            crate::molt_hmac_digest as *const (),
-        )),
-        #[cfg(feature = "stdlib_crypto")]
-        "molt_hmac_drop" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_hmac_drop",
-            crate::molt_hmac_drop as *const (),
-        )),
-        #[cfg(feature = "stdlib_crypto")]
-        "molt_compare_digest" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_compare_digest",
-            crate::molt_compare_digest as *const (),
-        )),
-        #[cfg(feature = "stdlib_crypto")]
-        "molt_pbkdf2_hmac" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_pbkdf2_hmac",
-            crate::molt_pbkdf2_hmac as *const (),
-        )),
-        #[cfg(feature = "stdlib_crypto")]
-        "molt_scrypt" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_scrypt",
-            crate::molt_scrypt as *const (),
-        )),
-        #[cfg(feature = "stdlib_crypto")]
-        "molt_secrets_below" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_secrets_below",
-            crate::molt_secrets_below as *const (),
-        )),
-        #[cfg(feature = "stdlib_crypto")]
-        "molt_secrets_choice" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_secrets_choice",
-            crate::molt_secrets_choice as *const (),
-        )),
-        #[cfg(feature = "stdlib_crypto")]
-        "molt_secrets_compare_digest" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_secrets_compare_digest",
-            crate::molt_secrets_compare_digest as *const (),
-        )),
-        #[cfg(feature = "stdlib_crypto")]
-        "molt_secrets_randbits" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_secrets_randbits",
-            crate::molt_secrets_randbits as *const (),
-        )),
-        #[cfg(feature = "stdlib_crypto")]
-        "molt_secrets_token_bytes" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_secrets_token_bytes",
-            crate::molt_secrets_token_bytes as *const (),
-        )),
-        #[cfg(feature = "stdlib_crypto")]
-        "molt_secrets_token_hex" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_secrets_token_hex",
-            crate::molt_secrets_token_hex as *const (),
-        )),
-        #[cfg(feature = "stdlib_crypto")]
-        "molt_secrets_token_urlsafe" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_secrets_token_urlsafe",
-            crate::molt_secrets_token_urlsafe as *const (),
-        )),
-        _ => None,
+    #[cfg(feature = "stdlib_crypto")]
+    {
+        molt_runtime_crypto::intrinsics_generated::crypto_resolver::resolve_symbol_with(
+            symbol,
+            crate::builtins::functions::runtime_fn_addr,
+        )
+    }
+    #[cfg(not(feature = "stdlib_crypto"))]
+    {
+        let _ = symbol;
+        None
     }
 }

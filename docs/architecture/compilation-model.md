@@ -123,7 +123,7 @@ molt build app.py  # where app.py uses `import math`
 | `molt-runtime-math` | `_math` module | math intrinsics and numeric helpers | live leaf |
 | `molt-runtime-text` | str/bytes/codecs clusters | Text and codec helpers | live leaf |
 | `molt-runtime-serial` | `_json`, `_csv`, `_struct` target area | Serialization/deserialization helpers | live leaf |
-| `molt-runtime-crypto` | `_hashlib`, `_hmac` target area | Hashing, HMAC, PBKDF2 helpers | live leaf |
+| `molt-runtime-crypto` | `_hashlib`, `_hmac`, `secrets` target area | Hashing, HMAC, PBKDF2, scrypt, and secrets helpers plus the leaf-owned crypto intrinsic resolver | live leaf |
 | `molt-runtime-compression` | `_bz2`, `_lzma`, `zlib` target area | Compression/decompression helpers | live leaf |
 | `molt-runtime-net` / `molt-runtime-http` | `_socket`, `_ssl`, HTTP target area | Network and HTTP helpers | live leaf |
 | `molt-runtime-asyncio` | `_asyncio` target area | Event loop, tasks, futures, streams | live leaf |
@@ -218,7 +218,7 @@ Only stdlib crates that the user imports are linked. The linker's
 
 ### Phase 3: Split stdlib into crates
 - Continue moving runtime authority into existing leaf crates such as
-  `molt-runtime-math`, `molt-runtime-serial`, and `molt-runtime-text`
+  `molt-runtime-math`, `molt-runtime-crypto`, `molt-runtime-serial`, and `molt-runtime-text`
 - Each crate produces its own .a file
 - Linker only includes crates the user imports
 
