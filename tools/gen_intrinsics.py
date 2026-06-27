@@ -36,6 +36,8 @@ IPADDRESS_LEAF_RESOLVERS_DIR = (
     ROOT / "runtime/molt-runtime-ipaddress/src/intrinsics_generated"
 )
 IPADDRESS_LEAF_RESOLVER_INDEX = IPADDRESS_LEAF_RESOLVERS_DIR / "mod.rs"
+TK_LEAF_RESOLVERS_DIR = ROOT / "runtime/molt-runtime-tk/src/intrinsics_generated"
+TK_LEAF_RESOLVER_INDEX = TK_LEAF_RESOLVERS_DIR / "mod.rs"
 LEAF_RESOLVER_REGISTRIES = {
     "stringprep": {
         "output": ROOT / "runtime/molt-runtime-stringprep/src/intrinsics_generated.rs",
@@ -122,6 +124,14 @@ LEAF_RESOLVER_REGISTRIES = {
         "crate_resolver_path": "molt_runtime_ipaddress::intrinsics_generated::ipaddress_resolver",
         "symbol_path_prefix": "molt_runtime_ipaddress::ipaddress",
         "function_path_prefix": "crate::ipaddress",
+    },
+    "tk": {
+        "output": TK_LEAF_RESOLVERS_DIR / "tk_resolver.rs",
+        "module_index": TK_LEAF_RESOLVER_INDEX,
+        "crate_path": "molt_runtime_tk",
+        "crate_resolver_path": "molt_runtime_tk::intrinsics_generated::tk_resolver",
+        "symbol_path_prefix": "molt_runtime_tk::intrinsics",
+        "function_path_prefix": "crate::intrinsics",
     },
 }
 OUT_BACKEND_OVERRIDES_RS = (

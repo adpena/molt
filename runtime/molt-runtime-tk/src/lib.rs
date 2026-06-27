@@ -15,3 +15,7 @@ mod bridge_test_stubs;
 pub mod tk;
 #[cfg(feature = "tk")]
 pub mod tkinter_core;
+#[cfg(feature = "tk")]
+pub mod intrinsics;
+#[cfg(feature = "tk")]
+pub mod intrinsics_generated;
