@@ -50,7 +50,7 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
     if_stack: &mut Vec<IfFrame>,
     skip_ops: &mut BTreeSet<usize>,
     is_block_filled: &mut bool,
-    native_rc_tracking_enabled: bool,
+    rc_authority: NativeRcAuthority,
     scalar_fast_paths_enabled: bool,
     maybe_debug_seal: &dyn Fn(&str, usize, Block),
     local_dec_ref_obj: FuncRef,
@@ -295,7 +295,7 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                 .expect("if requires an active block");
             let mut carry_obj = block_tracked_obj.remove(&origin_block).unwrap_or_default();
             let cleanup_obj = drain_cleanup_tracked_dedup_with_authority(
-                native_rc_tracking_enabled,
+                rc_authority,
                 &mut carry_obj,
                 last_use,
                 alias_roots,
@@ -315,7 +315,7 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
             }
             let mut carry_ptr = block_tracked_ptr.remove(&origin_block).unwrap_or_default();
             let cleanup_ptr = drain_cleanup_tracked_dedup_with_authority(
-                native_rc_tracking_enabled,
+                rc_authority,
                 &mut carry_ptr,
                 last_use,
                 alias_roots,
@@ -668,7 +668,7 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                         .collect();
                     let mut carry_obj = block_tracked_obj.remove(&block).unwrap_or_default();
                     let cleanup = drain_cleanup_tracked_dedup_with_authority(
-                        native_rc_tracking_enabled,
+                        rc_authority,
                         &mut carry_obj,
                         last_use,
                         alias_roots,
@@ -702,7 +702,7 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
 
                     let mut carry_ptr = block_tracked_ptr.remove(&block).unwrap_or_default();
                     let cleanup = drain_cleanup_tracked_dedup_with_authority(
-                        native_rc_tracking_enabled,
+                        rc_authority,
                         &mut carry_ptr,
                         last_use,
                         alias_roots,
@@ -860,7 +860,7 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                             .collect();
                         let mut carry_obj = block_tracked_obj.remove(&block).unwrap_or_default();
                         let cleanup = drain_cleanup_tracked_dedup_with_authority(
-                            native_rc_tracking_enabled,
+                            rc_authority,
                             &mut carry_obj,
                             last_use,
                             alias_roots,
@@ -894,7 +894,7 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
 
                         let mut carry_ptr = block_tracked_ptr.remove(&block).unwrap_or_default();
                         let cleanup = drain_cleanup_tracked_dedup_with_authority(
-                            native_rc_tracking_enabled,
+                            rc_authority,
                             &mut carry_ptr,
                             last_use,
                             alias_roots,
@@ -1020,7 +1020,7 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                             .collect();
                         let mut carry_obj = block_tracked_obj.remove(&block).unwrap_or_default();
                         let cleanup = drain_cleanup_tracked_dedup_with_authority(
-                            native_rc_tracking_enabled,
+                            rc_authority,
                             &mut carry_obj,
                             last_use,
                             alias_roots,
@@ -1054,7 +1054,7 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
 
                         let mut carry_ptr = block_tracked_ptr.remove(&block).unwrap_or_default();
                         let cleanup = drain_cleanup_tracked_dedup_with_authority(
-                            native_rc_tracking_enabled,
+                            rc_authority,
                             &mut carry_ptr,
                             last_use,
                             alias_roots,
@@ -1191,7 +1191,7 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                     if let Some(block) = builder.current_block() {
                         let mut carry_obj = block_tracked_obj.remove(&block).unwrap_or_default();
                         let cleanup = drain_cleanup_tracked_dedup_with_authority(
-                            native_rc_tracking_enabled,
+                            rc_authority,
                             &mut carry_obj,
                             last_use,
                             alias_roots,
@@ -1218,7 +1218,7 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
 
                         let mut carry_ptr = block_tracked_ptr.remove(&block).unwrap_or_default();
                         let cleanup = drain_cleanup_tracked_dedup_with_authority(
-                            native_rc_tracking_enabled,
+                            rc_authority,
                             &mut carry_ptr,
                             last_use,
                             alias_roots,

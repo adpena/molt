@@ -34,8 +34,7 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
     emit_traces: bool,
     has_frame_slot: bool,
     returns_value: bool,
-    drop_inserted: bool,
-    native_rc_tracking_enabled: bool,
+    rc_authority: NativeRcAuthority,
     module: &mut ObjectModule,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
@@ -138,7 +137,7 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
             let mut arg_cleanup = Vec::new();
             let mut arg_cleanup_names = BTreeSet::new();
             let mut arg_cleanup_roots = BTreeSet::new();
-            if !drop_inserted {
+            if rc_authority.native_value_tracking_enabled() {
                 for (name, value) in args_names.iter().zip(args.iter()) {
                     if param_name_set.contains(name.as_str()) {
                         continue;
@@ -166,7 +165,7 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
                 .expect("call requires an active block");
             let mut origin_obj_live = block_tracked_obj.remove(&origin_block).unwrap_or_default();
             let origin_obj_cleanup = drain_cleanup_tracked_dedup_with_authority(
-                native_rc_tracking_enabled,
+                rc_authority,
                 &mut origin_obj_live,
                 last_use,
                 alias_roots,
@@ -176,7 +175,7 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
             );
             let mut origin_ptr_live = block_tracked_ptr.remove(&origin_block).unwrap_or_default();
             let origin_ptr_cleanup = drain_cleanup_tracked_dedup_with_authority(
-                native_rc_tracking_enabled,
+                rc_authority,
                 &mut origin_ptr_live,
                 last_use,
                 alias_roots,

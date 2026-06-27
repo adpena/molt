@@ -63,8 +63,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
     master_return_block: Block,
     is_block_filled: &mut bool,
     returns_value: bool,
-    drop_inserted: bool,
-    native_rc_tracking_enabled: bool,
+    rc_authority: NativeRcAuthority,
     scalar_fast_paths_enabled: bool,
     debug_block_origins: Option<&str>,
     maybe_debug_seal: &dyn Fn(&str, usize, Block),
@@ -99,7 +98,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
 
     match op.kind.as_str() {
         "ret" => {
-            if !native_rc_tracking_enabled {
+            if !rc_authority.native_value_tracking_enabled() {
                 block_tracked_obj.clear();
                 block_tracked_ptr.clear();
                 tracked_vars.clear();
@@ -382,7 +381,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
             *is_block_filled = true;
         }
         "ret_void" => {
-            if !native_rc_tracking_enabled {
+            if !rc_authority.native_value_tracking_enabled() {
                 block_tracked_obj.clear();
                 block_tracked_ptr.clear();
                 tracked_vars.clear();
@@ -463,7 +462,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
             if let Some(block) = builder.current_block() {
                 let mut carry_obj = block_tracked_obj.remove(&block).unwrap_or_default();
                 let cleanup = drain_cleanup_tracked_dedup_with_authority(
-                    native_rc_tracking_enabled,
+                    rc_authority,
                     &mut carry_obj,
                     last_use,
                     alias_roots,
@@ -502,7 +501,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
 
                 let mut carry_ptr = block_tracked_ptr.remove(&block).unwrap_or_default();
                 let cleanup = drain_cleanup_tracked_dedup_with_authority(
-                    native_rc_tracking_enabled,
+                    rc_authority,
                     &mut carry_ptr,
                     last_use,
                     alias_roots,
@@ -707,7 +706,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
             // successor. Carry all live tracked values into both.
             let mut carry_obj = block_tracked_obj.remove(&origin_block).unwrap_or_default();
             let cleanup = drain_cleanup_tracked_dedup_with_authority(
-                native_rc_tracking_enabled,
+                rc_authority,
                 &mut carry_obj,
                 last_use,
                 alias_roots,
@@ -737,7 +736,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
             }
             let mut carry_ptr = block_tracked_ptr.remove(&origin_block).unwrap_or_default();
             let cleanup = drain_cleanup_tracked_dedup_with_authority(
-                native_rc_tracking_enabled,
+                rc_authority,
                 &mut carry_ptr,
                 last_use,
                 alias_roots,
@@ -1021,7 +1020,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                     // unbalanced reference per iteration (inc not matched by
                     // the TIR drop), re-opening the O(n) loop-accumulator leak
                     // (the string-concat / bigint-accumulator headline case).
-                    if drop_inserted {
+                    if !rc_authority.native_value_tracking_enabled() {
                         builder.ins().stack_store(*val, slot, 0);
                         return OpFlow::Continue;
                     }
@@ -1083,7 +1082,10 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                 // (the Phase-5 native-RC retirement — see the activation note
                 // in `pass_manager::build_default_pipeline` and design 20
                 // §4.1). The guard here is dormant until the pass is wired.
-                if in_loop && store_uses_boxed_transport && !drop_inserted {
+                if in_loop
+                    && store_uses_boxed_transport
+                    && rc_authority.native_value_tracking_enabled()
+                {
                     // inc_ref the new value so it survives loop iterations.
                     // No dec_ref for old — drain_cleanup_tracked handles
                     // final cleanup at function return (lifetimes extended
@@ -1191,7 +1193,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                     remove_tracked_name(tracked, name);
                 }
             }
-            if !drop_inserted {
+            if rc_authority.native_value_tracking_enabled() {
                 builder.ins().call(local_dec_ref_obj, &[old_val]);
             }
             return OpFlow::Continue;
@@ -1265,7 +1267,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                     // freed — the headline O(n) loop-accumulator leak. Skip
                     // it; the load yields a borrowed alias the TIR pass tracks
                     // in alias-root space.
-                    if !drop_inserted {
+                    if rc_authority.native_value_tracking_enabled() {
                         emit_inc_ref_obj(&mut *builder, val, local_inc_ref_obj, nbc);
                     }
                     if let Some(out_name) = op.out.as_ref().as_ref() {
@@ -1442,7 +1444,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                     // freed — the headline O(n) loop-accumulator leak. Skip
                     // it; the load yields a borrowed alias the TIR pass tracks
                     // in alias-root space.
-                    if !drop_inserted {
+                    if rc_authority.native_value_tracking_enabled() {
                         emit_inc_ref_obj(&mut *builder, val, local_inc_ref_obj, nbc);
                     }
                     if let Some(out_name) = op.out.as_ref().as_ref() {

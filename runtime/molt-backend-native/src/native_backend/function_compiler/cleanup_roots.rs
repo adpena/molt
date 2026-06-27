@@ -168,7 +168,7 @@ pub(in crate::native_backend::function_compiler) fn protect_cleanup_names(
 #[cfg(feature = "native-backend")]
 #[allow(clippy::too_many_arguments)]
 pub(in crate::native_backend::function_compiler) fn drain_dead_block_temps_for_suspend(
-    native_rc_tracking_enabled: bool,
+    rc_authority: NativeRcAuthority,
     builder: &mut FunctionBuilder,
     block_tracked_obj: &mut BTreeMap<Block, Vec<String>>,
     block_tracked_ptr: &mut BTreeMap<Block, Vec<String>>,
@@ -188,7 +188,7 @@ pub(in crate::native_backend::function_compiler) fn drain_dead_block_temps_for_s
             continue;
         };
         let cleanup = drain_cleanup_tracked_dedup_with_authority(
-            native_rc_tracking_enabled,
+            rc_authority,
             names,
             last_use,
             alias_roots,
