@@ -1,8 +1,10 @@
-<!-- Update 2026-06-26: the math-family fallback lane has been deleted. The live
-satellite parity guard now tracks 8 remaining dual-path pairs with a residual
-ceiling of 902; cmath_mod, colorsys, fractions, math, and random_mod are no
-longer PAIRS entries. molt-runtime-math owns math/cmath/colorsys/fractions/
-random/statistics implementations and generated leaf resolver modules. -->
+<!-- Update 2026-06-27: the math-family and XML fallback lanes have been
+deleted. The live satellite parity guard now tracks 6 remaining dual-path pairs
+with a residual ceiling of 902; cmath_mod, colorsys, fractions, math,
+random_mod, xml_etree, and xml_sax are no longer PAIRS entries. molt-runtime-math
+owns math/cmath/colorsys/fractions/random/statistics implementations and
+generated leaf resolver modules; molt-runtime-xml owns XML implementations and
+the generated xml_etree leaf resolver module. -->
 
 <!-- Foundation blueprint 21e. Architect: portfolio-architect (Plan agent), 2026-06-24.
 Executable plan for decomposition move #4 — the molt-runtime satellite dedup arc (R.2 + R.3).
@@ -99,7 +101,7 @@ R.0 fix red guard (ipaddress/fractions/os_ext/decimal + re-ratchet) [4+1 commits
 Guard already red → R.0 first. Reconcile-by-picking-a-side drops behavior → guard is oracle, differential on BOTH tiers is proof, never delete a copy with residual>0. Two bridge architectures → generalize the proven serial vtable, not a third shim. Normalizer must track canonical spelling → update GIL_MACROS/PREFIXES/RT_WRAPPER_EQUIVALENTS/TOKEN_TYPES in the same commit. One source two ABIs → the access facade is the seam (standalone=extern vtable, in-tree=direct); validate both builds every commit. Heavy-dep leak into micro → cargo tree before each deletion, Option B for heavy. decimal mpdec split → bespoke, last. itertools RuntimeState slots → re-verify post-267df44e9. functions_http residual is mostly stdlib_net-gated ctypes/urllib → reconcile into satellite respecting the net gate. Shared serializing files → one baseline owner. Dangling baton → 21e supersedes it.
 
 ## 7. ALREADY DONE (do not redo)
-R.1 landed: guard (230789ab5), csv reconcile (3b2ac0129), doc correction (8ded12e06), itertools slot-scoping (267df44e9), binascii/http sweep (f95225814), satellite clippy gate (ff22a06c7). One R.3 deletion landed: zoneinfo (e4f9300bf, the template). R.2 abstraction partially exists: molt-runtime-core (CoreGilToken/with_core_gil!/with_gil_entry_body!/RuntimeVtable/prelude); molt-runtime-serial is the working vtable pilot. Differential infra exists.
+R.1 landed: guard (230789ab5), csv reconcile (3b2ac0129), doc correction (8ded12e06), itertools slot-scoping (267df44e9), binascii/http sweep (f95225814), satellite clippy gate (ff22a06c7). R.3 deletions have landed for zoneinfo (e4f9300bf, the template), the math family, and XML. R.2 abstraction partially exists: molt-runtime-core (CoreGilToken/with_core_gil!/with_gil_entry_body!/RuntimeVtable/prelude); molt-runtime-serial is the working vtable pilot. Differential infra exists.
 
 ## Critical files
 tools/check_satellite_parity.py (oracle: PAIRS/normalizer/ratchet); runtime/molt-runtime-core/src/lib.rs (R.2 facade home — add `access`); runtime/molt-runtime-serial/src/bridge.rs + runtime/molt-runtime/src/serial_bridge.rs (the RuntimeVtable pilot); runtime/molt-runtime/src/{lib.rs,builtins/mod.rs} (dual-path re-export wiring); runtime/molt-runtime/Cargo.toml + src/molt/_runtime_feature_gates.py + src/molt/cli/__init__.py (tier/feature gating, zoneinfo precedent e4f9300bf).

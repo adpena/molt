@@ -111,7 +111,7 @@ mod warnings_resolver;
 mod weakref_resolver;
 mod websocket_resolver;
 mod wsgiref_resolver;
-mod xml_resolver;
+mod xml_etree_resolver;
 mod xmlrpc_resolver;
 mod zoneinfo_resolver;
 
@@ -452,7 +452,7 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
     if let Some(v) = wsgiref_resolver::resolve_symbol(symbol) {
         return Some(v);
     }
-    if let Some(v) = xml_resolver::resolve_symbol(symbol) {
+    if let Some(v) = xml_etree_resolver::resolve_symbol(symbol) {
         return Some(v);
     }
     if let Some(v) = xmlrpc_resolver::resolve_symbol(symbol) {
