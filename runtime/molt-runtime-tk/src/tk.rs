@@ -40,6 +40,7 @@ mod state;
 mod tcl;
 mod tix_commands;
 mod ttk;
+mod ttk_treeview;
 mod widget_create;
 mod widgets;
 mod winfo_commands;
@@ -56,6 +57,7 @@ use state::*;
 #[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 use tcl::*;
 use ttk::*;
+use ttk_treeview::*;
 use widgets::*;
 
 pub use callback_intrinsics::*;
