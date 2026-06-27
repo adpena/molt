@@ -199,6 +199,34 @@ def test_runtime_manifest_declares_vfs_bundle_tar_feature() -> None:
     assert "vfs_bundle_tar" in runtime_manifest["features"]
 
 
+def test_runtime_tk_native_feature_is_owned_by_leaf_crate() -> None:
+    runtime_manifest_path = ROOT / "runtime" / "molt-runtime" / "Cargo.toml"
+    tk_manifest_path = ROOT / "runtime" / "molt-runtime-tk" / "Cargo.toml"
+    with runtime_manifest_path.open("rb") as handle:
+        runtime_manifest = tomllib.load(handle)
+    with tk_manifest_path.open("rb") as handle:
+        tk_manifest = tomllib.load(handle)
+
+    runtime_features = runtime_manifest["features"]
+    tk_dependency = runtime_manifest["dependencies"]["molt-runtime-tk"]
+    native_target_deps = runtime_manifest["target"][
+        'cfg(not(target_arch = "wasm32"))'
+    ]["dependencies"]
+
+    assert tk_dependency["default-features"] is False
+    assert "libloading" not in runtime_manifest["dependencies"]
+    assert "libloading" not in native_target_deps
+    assert runtime_features["stdlib_tk"] == [
+        "dep:molt-runtime-tk",
+        "molt-runtime-tk/tk",
+    ]
+    assert runtime_features["molt_tk_native"] == [
+        "stdlib_tk",
+        "molt-runtime-tk/native-tcl",
+    ]
+    assert tk_manifest["features"]["native-tcl"] == ["tk", "dep:libloading"]
+
+
 def test_runtime_micro_profile_includes_core_non_network_intrinsics() -> None:
     runtime_manifest_path = ROOT / "runtime" / "molt-runtime" / "Cargo.toml"
     with runtime_manifest_path.open("rb") as handle:
