@@ -4,7 +4,7 @@
 //! internal `pub(crate)` function.  The path crate declares matching
 //! `extern "C"` imports and they are resolved at link time.
 
-use crate::audit::{AuditArgs, AuditDecision, AuditEvent, audit_emit};
+use crate::audit::{AuditArgs, audit_capability_decision_owned};
 use crate::object::ops::string_obj_to_owned as _string_obj_to_owned;
 use crate::*;
 
@@ -289,23 +289,47 @@ pub extern "C" fn __molt_path_has_capability(name_ptr: *const u8, name_len: usiz
             std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len))
         };
         let allowed = has_capability(_py, name);
-        {
-            let decision = if allowed {
-                AuditDecision::Allowed
-            } else {
-                AuditDecision::Denied {
-                    reason: format!("missing {name} capability"),
-                }
-            };
-            audit_emit(AuditEvent::new(
-                "path.has_capability",
-                "path.has_capability",
-                AuditArgs::Custom(name.to_string()),
-                decision,
-                module_path!().to_string(),
-            ));
-        }
         if allowed { 1 } else { 0 }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn __molt_path_audit_capability_decision(
+    operation_ptr: *const u8,
+    operation_len: usize,
+    capability_ptr: *const u8,
+    capability_len: usize,
+    arg_kind: u32,
+    arg_ptr: *const u8,
+    arg_len: usize,
+    allowed: i32,
+) {
+    crate::with_gil_entry_nopanic!(_py, {
+        let operation = unsafe {
+            std::str::from_utf8_unchecked(std::slice::from_raw_parts(operation_ptr, operation_len))
+        };
+        let capability = unsafe {
+            std::str::from_utf8_unchecked(std::slice::from_raw_parts(
+                capability_ptr,
+                capability_len,
+            ))
+        };
+        let args = match arg_kind {
+            0 => AuditArgs::None,
+            1 => {
+                let path = unsafe {
+                    std::str::from_utf8_unchecked(std::slice::from_raw_parts(arg_ptr, arg_len))
+                };
+                AuditArgs::Path(path.to_string())
+            }
+            _ => AuditArgs::Custom(format!("invalid path audit arg kind {arg_kind}")),
+        };
+        audit_capability_decision_owned(
+            operation.to_string(),
+            capability.to_string(),
+            args,
+            allowed != 0,
+        );
     })
 }
 

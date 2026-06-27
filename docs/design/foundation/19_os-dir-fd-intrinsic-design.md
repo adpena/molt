@@ -135,6 +135,16 @@ A `to_cstring` helper (PathBuf → CString, raising on interior NUL) joins the h
 
 ---
 
+When this pattern is implemented in `molt-runtime-path`, do not reintroduce a
+raw `has_capability` branch or a generic `path.has_capability` audit event. Use
+the path leaf bridge helper instead:
+
+```rust
+if !audit_capability(_py, "os.stat_at", "fs.read", AuditArg::None) {
+    return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
+}
+```
+
 ## WASI Story
 
 WASI preview-1 is *natively* dir-fd-relative: all FS ops are `*at`-style against preopened directory fds — structurally the same model. BUT a wasm app cannot dynamically `os.open(dir, O_DIRECTORY)` to mint general dir fds (preopens are start-time grants), and reaching the raw `path_filestat_get`-family calls means bypassing `std::fs`. **Decision:** WASM stubs raise `OSError(ENOSYS)` (not `NotImplementedError`) for v1. WASI preview-2's `wasi:filesystem` resource handles map cleanly to dir_fd ints — documented as the correct future path.

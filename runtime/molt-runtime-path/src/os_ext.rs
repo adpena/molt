@@ -83,7 +83,7 @@ fn str_bits(_py: &CoreGilToken, s: &str) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_listdir(path_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
-        if !has_capability(_py, "fs.read") {
+        if !audit_capability(_py, "os.listdir", "fs.read", AuditArg::None) {
             return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
         }
         let path = match require_path(_py, path_bits, "path") {
@@ -133,7 +133,7 @@ pub extern "C" fn molt_os_listdir(path_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_scandir(path_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
-        if !has_capability(_py, "fs.read") {
+        if !audit_capability(_py, "os.scandir", "fs.read", AuditArg::None) {
             return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
         }
         let dir_path = match require_path(_py, path_bits, "path") {
@@ -220,7 +220,7 @@ pub extern "C" fn molt_os_scandir(path_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_walk(top_bits: u64, topdown_bits: u64, followlinks_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
-        if !has_capability(_py, "fs.read") {
+        if !audit_capability(_py, "os.walk", "fs.read", AuditArg::None) {
             return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
         }
         let top = match require_path(_py, top_bits, "top") {
@@ -364,6 +364,9 @@ fn walk_dir_collect(
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_getcwd() -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
+        if !audit_capability(_py, "os.getcwd", "fs.read", AuditArg::None) {
+            return raise_exception::<u64>(_py, "PermissionError", "missing fs.read capability");
+        }
         match std::env::current_dir() {
             Ok(path) => {
                 let text = path.to_string_lossy();
@@ -378,7 +381,7 @@ pub extern "C" fn molt_os_getcwd() -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_chdir(path_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
-        if !has_capability(_py, "fs.write") {
+        if !audit_capability(_py, "os.chdir", "fs.write", AuditArg::None) {
             return raise_exception::<_>(_py, "PermissionError", "missing fs.write capability");
         }
         let path = match require_path(_py, path_bits, "path") {
@@ -396,7 +399,7 @@ pub extern "C" fn molt_os_chdir(path_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_mkdir(path_bits: u64, mode_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
-        if !has_capability(_py, "fs.write") {
+        if !audit_capability(_py, "os.mkdir", "fs.write", AuditArg::None) {
             return raise_exception::<_>(_py, "PermissionError", "missing fs.write capability");
         }
         let path = match require_path(_py, path_bits, "path") {
@@ -427,7 +430,7 @@ pub extern "C" fn molt_os_mkdir(path_bits: u64, mode_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_rmdir(path_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
-        if !has_capability(_py, "fs.write") {
+        if !audit_capability(_py, "os.rmdir", "fs.write", AuditArg::None) {
             return raise_exception::<_>(_py, "PermissionError", "missing fs.write capability");
         }
         let path = match require_path(_py, path_bits, "path") {
@@ -445,7 +448,7 @@ pub extern "C" fn molt_os_rmdir(path_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_removedirs(path_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
-        if !has_capability(_py, "fs.write") {
+        if !audit_capability(_py, "os.removedirs", "fs.write", AuditArg::None) {
             return raise_exception::<_>(_py, "PermissionError", "missing fs.write capability");
         }
         let path = match require_path(_py, path_bits, "path") {
@@ -478,7 +481,7 @@ pub extern "C" fn molt_os_removedirs(path_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_access(path_bits: u64, mode_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
-        if !has_capability(_py, "fs.read") {
+        if !audit_capability(_py, "os.access", "fs.read", AuditArg::None) {
             return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
         }
         let path = match require_path(_py, path_bits, "path") {
@@ -529,7 +532,7 @@ pub extern "C" fn molt_os_access(path_bits: u64, mode_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_chmod(path_bits: u64, mode_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
-        if !has_capability(_py, "fs.write") {
+        if !audit_capability(_py, "os.chmod", "fs.write", AuditArg::None) {
             return raise_exception::<_>(_py, "PermissionError", "missing fs.write capability");
         }
         let path = match require_path(_py, path_bits, "path") {
@@ -569,7 +572,7 @@ pub extern "C" fn molt_os_chmod(path_bits: u64, mode_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_link(src_bits: u64, dst_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
-        if !has_capability(_py, "fs.write") {
+        if !audit_capability(_py, "os.link", "fs.write", AuditArg::None) {
             return raise_exception::<_>(_py, "PermissionError", "missing fs.write capability");
         }
         let src = match require_path(_py, src_bits, "src") {
@@ -601,7 +604,7 @@ pub extern "C" fn molt_os_link(_src_bits: u64, _dst_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_symlink(src_bits: u64, dst_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
-        if !has_capability(_py, "fs.write") {
+        if !audit_capability(_py, "os.symlink", "fs.write", AuditArg::None) {
             return raise_exception::<_>(_py, "PermissionError", "missing fs.write capability");
         }
         let src = match require_path(_py, src_bits, "src") {
@@ -653,7 +656,7 @@ pub extern "C" fn molt_os_symlink(_src_bits: u64, _dst_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_readlink(path_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
-        if !has_capability(_py, "fs.read") {
+        if !audit_capability(_py, "os.readlink", "fs.read", AuditArg::None) {
             return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
         }
         let path = match require_path(_py, path_bits, "path") {
@@ -672,7 +675,7 @@ pub extern "C" fn molt_os_readlink(path_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_truncate(path_bits: u64, length_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
-        if !has_capability(_py, "fs.write") {
+        if !audit_capability(_py, "os.truncate", "fs.write", AuditArg::None) {
             return raise_exception::<_>(_py, "PermissionError", "missing fs.write capability");
         }
         let path = match require_path(_py, path_bits, "path") {
@@ -715,6 +718,9 @@ pub extern "C" fn molt_os_truncate(_path_bits: u64, _length_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_getpid() -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
+        if !audit_capability(_py, "os.getpid", "process", AuditArg::None) {
+            return raise_exception::<u64>(_py, "PermissionError", "missing process capability");
+        }
         #[cfg(unix)]
         {
             MoltObject::from_int(unsafe { libc::getpid() } as i64).bits()
@@ -731,6 +737,9 @@ pub extern "C" fn molt_os_getpid() -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_getppid() -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
+        if !audit_capability(_py, "os.getppid", "process", AuditArg::None) {
+            return raise_exception::<u64>(_py, "PermissionError", "missing process capability");
+        }
         #[cfg(unix)]
         {
             MoltObject::from_int(unsafe { libc::getppid() } as i64).bits()
@@ -760,6 +769,9 @@ pub extern "C" fn molt_os_getppid() -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_getuid() -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
+        if !audit_capability(_py, "os.getuid", "process", AuditArg::None) {
+            return raise_exception::<u64>(_py, "PermissionError", "missing process capability");
+        }
         #[cfg(unix)]
         {
             MoltObject::from_int(unsafe { libc::getuid() } as i64).bits()
@@ -784,6 +796,9 @@ pub extern "C" fn molt_os_getuid() -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_getgid() -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
+        if !audit_capability(_py, "os.getgid", "process", AuditArg::None) {
+            return raise_exception::<u64>(_py, "PermissionError", "missing process capability");
+        }
         #[cfg(unix)]
         {
             MoltObject::from_int(unsafe { libc::getgid() } as i64).bits()
@@ -808,6 +823,9 @@ pub extern "C" fn molt_os_getgid() -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_geteuid() -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
+        if !audit_capability(_py, "os.geteuid", "process", AuditArg::None) {
+            return raise_exception::<u64>(_py, "PermissionError", "missing process capability");
+        }
         #[cfg(unix)]
         {
             MoltObject::from_int(unsafe { libc::geteuid() } as i64).bits()
@@ -832,6 +850,9 @@ pub extern "C" fn molt_os_geteuid() -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_getegid() -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
+        if !audit_capability(_py, "os.getegid", "process", AuditArg::None) {
+            return raise_exception::<u64>(_py, "PermissionError", "missing process capability");
+        }
         #[cfg(unix)]
         {
             MoltObject::from_int(unsafe { libc::getegid() } as i64).bits()
@@ -856,6 +877,9 @@ pub extern "C" fn molt_os_getegid() -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_getlogin() -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
+        if !audit_capability(_py, "os.getlogin", "env.read", AuditArg::None) {
+            return raise_exception::<u64>(_py, "PermissionError", "missing env.read capability");
+        }
         #[cfg(unix)]
         {
             // getlogin() returns a pointer to a static buffer; not thread-safe
@@ -906,6 +930,9 @@ pub extern "C" fn molt_os_getlogin() -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_cpu_count() -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
+        if !audit_capability(_py, "os.cpu_count", "process", AuditArg::None) {
+            return raise_exception::<u64>(_py, "PermissionError", "missing process capability");
+        }
         let n = num_cpus::get();
         MoltObject::from_int(n as i64).bits()
     })
@@ -955,6 +982,9 @@ pub extern "C" fn molt_os_get_terminal_size(_fd_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_getloadavg() -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
+        if !audit_capability(_py, "os.getloadavg", "process", AuditArg::None) {
+            return raise_exception::<u64>(_py, "PermissionError", "missing process capability");
+        }
         #[cfg(unix)]
         {
             let mut avgs: [f64; 3] = [0.0; 3];
@@ -994,6 +1024,9 @@ pub extern "C" fn molt_os_getloadavg() -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_uname() -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
+        if !audit_capability(_py, "os.uname", "process", AuditArg::None) {
+            return raise_exception::<u64>(_py, "PermissionError", "missing process capability");
+        }
         #[cfg(unix)]
         {
             let mut name: libc::utsname = unsafe { std::mem::zeroed() };
@@ -1056,6 +1089,9 @@ pub extern "C" fn molt_os_uname() -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_umask(mask_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
+        if !audit_capability(_py, "os.umask", "fs.write", AuditArg::None) {
+            return raise_exception::<u64>(_py, "PermissionError", "missing fs.write capability");
+        }
         let mask = to_i64(obj_from_bits(mask_bits)).unwrap_or(0o022) as u32;
         #[cfg(unix)]
         {
@@ -1216,7 +1252,7 @@ pub extern "C" fn molt_os_path_commonprefix(paths_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_path_getsize(path_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
-        if !has_capability(_py, "fs.read") {
+        if !audit_capability(_py, "os.path.getsize", "fs.read", AuditArg::None) {
             return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
         }
         let path = match require_path(_py, path_bits, "path") {
@@ -1234,7 +1270,7 @@ pub extern "C" fn molt_os_path_getsize(path_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_path_getmtime(path_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
-        if !has_capability(_py, "fs.read") {
+        if !audit_capability(_py, "os.path.getmtime", "fs.read", AuditArg::None) {
             return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
         }
         let path = match require_path(_py, path_bits, "path") {
@@ -1255,7 +1291,7 @@ pub extern "C" fn molt_os_path_getmtime(path_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_path_getatime(path_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
-        if !has_capability(_py, "fs.read") {
+        if !audit_capability(_py, "os.path.getatime", "fs.read", AuditArg::None) {
             return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
         }
         let path = match require_path(_py, path_bits, "path") {
@@ -1276,7 +1312,7 @@ pub extern "C" fn molt_os_path_getatime(path_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_path_getctime(path_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
-        if !has_capability(_py, "fs.read") {
+        if !audit_capability(_py, "os.path.getctime", "fs.read", AuditArg::None) {
             return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
         }
         let path = match require_path(_py, path_bits, "path") {
@@ -1307,7 +1343,7 @@ pub extern "C" fn molt_os_path_getctime(path_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_path_samefile(path1_bits: u64, path2_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
-        if !has_capability(_py, "fs.read") {
+        if !audit_capability(_py, "os.path.samefile", "fs.read", AuditArg::None) {
             return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
         }
         let p1 = match require_path(_py, path1_bits, "path1") {
@@ -1451,7 +1487,7 @@ pub extern "C" fn molt_os_pathsep() -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_dup2(fd_bits: u64, fd2_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
-        if !has_capability(_py, "fs.write") {
+        if !audit_capability(_py, "os.dup2", "fs.write", AuditArg::None) {
             return raise_exception::<_>(_py, "PermissionError", "missing fs.write capability");
         }
         let Some(fd) = to_i64(obj_from_bits(fd_bits)) else {
@@ -1486,7 +1522,7 @@ pub extern "C" fn molt_os_dup2(fd_bits: u64, fd2_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_lseek(fd_bits: u64, pos_bits: u64, how_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
-        if !has_capability(_py, "fs.read") {
+        if !audit_capability(_py, "os.lseek", "fs.read", AuditArg::None) {
             return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
         }
         let Some(fd) = to_i64(obj_from_bits(fd_bits)) else {
@@ -1537,7 +1573,7 @@ pub extern "C" fn molt_os_lseek(fd_bits: u64, pos_bits: u64, how_bits: u64) -> u
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_ftruncate(fd_bits: u64, length_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
-        if !has_capability(_py, "fs.write") {
+        if !audit_capability(_py, "os.ftruncate", "fs.write", AuditArg::None) {
             return raise_exception::<_>(_py, "PermissionError", "missing fs.write capability");
         }
         let Some(fd) = to_i64(obj_from_bits(fd_bits)) else {
@@ -1622,7 +1658,7 @@ pub extern "C" fn molt_os_fdopen(_fd_bits: u64, _mode_bits: u64, _closefd_bits: 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_kill(pid_bits: u64, sig_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
-        if !has_capability(_py, "process") {
+        if !audit_capability(_py, "os.kill", "process", AuditArg::None) {
             return raise_exception::<_>(_py, "PermissionError", "missing process capability");
         }
         let Some(pid) = to_i64(obj_from_bits(pid_bits)) else {
@@ -1660,7 +1696,7 @@ pub extern "C" fn molt_os_kill(pid_bits: u64, sig_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_waitpid(pid_bits: u64, options_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
-        if !has_capability(_py, "process") {
+        if !audit_capability(_py, "os.waitpid", "process", AuditArg::None) {
             return raise_exception::<_>(_py, "PermissionError", "missing process capability");
         }
         let Some(pid) = to_i64(obj_from_bits(pid_bits)) else {
@@ -1708,6 +1744,9 @@ pub extern "C" fn molt_os_waitpid(pid_bits: u64, options_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_getpgrp() -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
+        if !audit_capability(_py, "os.getpgrp", "process", AuditArg::None) {
+            return raise_exception::<u64>(_py, "PermissionError", "missing process capability");
+        }
         #[cfg(target_arch = "wasm32")]
         {
             raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "getpgrp")
@@ -1728,7 +1767,7 @@ pub extern "C" fn molt_os_getpgrp() -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_setpgrp() -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
-        if !has_capability(_py, "process") {
+        if !audit_capability(_py, "os.setpgrp", "process", AuditArg::None) {
             return raise_exception::<_>(_py, "PermissionError", "missing process capability");
         }
         #[cfg(target_arch = "wasm32")]
@@ -1759,7 +1798,7 @@ pub extern "C" fn molt_os_setpgrp() -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_setsid() -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
-        if !has_capability(_py, "process") {
+        if !audit_capability(_py, "os.setsid", "process", AuditArg::None) {
             return raise_exception::<_>(_py, "PermissionError", "missing process capability");
         }
         #[cfg(target_arch = "wasm32")]
@@ -1935,7 +1974,7 @@ pub extern "C" fn molt_os_sysconf_names() -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_path_realpath(path_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
-        if !has_capability(_py, "fs.read") {
+        if !audit_capability(_py, "os.path.realpath", "fs.read", AuditArg::None) {
             return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
         }
         let path = match require_path(_py, path_bits, "path") {
@@ -1956,7 +1995,7 @@ pub extern "C" fn molt_os_path_realpath(path_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_utime(path_bits: u64, atime_bits: u64, mtime_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
-        if !has_capability(_py, "fs.write") {
+        if !audit_capability(_py, "os.utime", "fs.write", AuditArg::None) {
             return raise_exception::<_>(_py, "PermissionError", "missing fs.write capability");
         }
         let path = match require_path(_py, path_bits, "path") {
@@ -2338,7 +2377,7 @@ fn at_resolve_dir_fd(_py: &CoreGilToken, dir_fd_bits: u64) -> Result<libc::c_int
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_readlink_at(path_bits: u64, dir_fd_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
-        if !has_capability(_py, "fs.read") {
+        if !audit_capability(_py, "os.readlink_at", "fs.read", AuditArg::None) {
             return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
         }
         let path = match require_path(_py, path_bits, "path") {
@@ -2403,7 +2442,7 @@ pub extern "C" fn molt_os_readlink_at(_p: u64, _d: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_symlink_at(src_bits: u64, dst_bits: u64, dir_fd_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
-        if !has_capability(_py, "fs.write") {
+        if !audit_capability(_py, "os.symlink_at", "fs.write", AuditArg::None) {
             return raise_exception::<_>(_py, "PermissionError", "missing fs.write capability");
         }
         let src = match require_path(_py, src_bits, "src") {
@@ -2470,7 +2509,7 @@ pub extern "C" fn molt_os_utime_at(
     follow_symlinks_bits: u64,
 ) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
-        if !has_capability(_py, "fs.write") {
+        if !audit_capability(_py, "os.utime_at", "fs.write", AuditArg::None) {
             return raise_exception::<_>(_py, "PermissionError", "missing fs.write capability");
         }
         let path = match require_path(_py, path_bits, "path") {
@@ -2611,7 +2650,7 @@ pub extern "C" fn molt_os_sendfile(
     count_bits: u64,
 ) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
-        if !has_capability(_py, "fs.read") {
+        if !audit_capability(_py, "os.sendfile", "fs.read", AuditArg::None) {
             return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
         }
         let Some(out_fd) = to_i64(obj_from_bits(out_fd_bits)) else {
@@ -2800,6 +2839,9 @@ pub extern "C" fn molt_os_fspath(path_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_environ() -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
+        if !audit_capability(_py, "os.environ", "env.read", AuditArg::None) {
+            return raise_exception::<u64>(_py, "PermissionError", "missing env.read capability");
+        }
         let vars: Vec<(String, String)> = std::env::vars().collect();
         let mut pairs: Vec<u64> = Vec::with_capacity(vars.len() * 2);
         let mut owned: Vec<u64> = Vec::with_capacity(vars.len() * 2);
@@ -2842,7 +2884,7 @@ pub extern "C" fn molt_os_environ() -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_makedirs(path_bits: u64, mode_bits: u64, exist_ok_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
-        if !has_capability(_py, "fs.write") {
+        if !audit_capability(_py, "os.makedirs", "fs.write", AuditArg::None) {
             return raise_exception::<_>(_py, "PermissionError", "missing fs.write capability");
         }
         let path = match require_path(_py, path_bits, "name") {
