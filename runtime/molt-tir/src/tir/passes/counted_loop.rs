@@ -74,9 +74,9 @@ use std::collections::{HashMap, HashSet};
 use crate::tir::blocks::{BlockId, LoopBreakKind, LoopRole, Terminator};
 use crate::tir::dominators::{self, CfgEdgePolicy};
 use crate::tir::function::TirFunction;
+use crate::tir::numeric_facts::ordered_comparison_trip_count;
 use crate::tir::op_kinds_generated::{
-    CountedLoopComparisonRole, opcode_counted_loop_comparison_role_table,
-    opcode_counted_loop_inverted_comparison_table,
+    opcode_counted_loop_comparison_role_table, opcode_counted_loop_inverted_comparison_table,
 };
 use crate::tir::ops::{AttrValue, OpCode};
 use crate::tir::values::ValueId;
@@ -399,7 +399,7 @@ pub fn recognize_counted_loop(func: &TirFunction, header: BlockId) -> Option<Cou
         return None;
     };
 
-    let trip_count = compute_trip_count(cmp_role, start, stop, step)?;
+    let trip_count = ordered_comparison_trip_count(cmp_role, start, stop, step)?;
     trace!(
         "RECOGNIZED: iv_idx={} start={} stop={} step={} trip={}",
         iv_arg_index, start, stop, step, trip_count
@@ -574,36 +574,6 @@ fn branch_args_to(term: &Terminator, target: BlockId) -> Option<&[ValueId]> {
         }
         _ => None,
     }
-}
-
-/// Compute the static trip count for `start (cmp) stop` stepping by `step`.
-/// Returns `None` only on the unreachable `step == 0` / non-comparison case
-/// (already filtered by the caller); a zero-iteration loop returns `Some(0)`.
-fn compute_trip_count(
-    cmp_role: CountedLoopComparisonRole,
-    start: i64,
-    stop: i64,
-    step: i64,
-) -> Option<i64> {
-    if !cmp_role.is_ordered() || step == 0 {
-        return None;
-    }
-    let inclusive_adjustment = if cmp_role.is_inclusive() { 1 } else { 0 };
-    let trip = if cmp_role.requires_positive_step() {
-        if start > stop || (start == stop && !cmp_role.is_inclusive()) {
-            0
-        } else {
-            let diff = stop - start + inclusive_adjustment;
-            (diff + step - 1) / step
-        }
-    } else if start < stop || (start == stop && !cmp_role.is_inclusive()) {
-        0
-    } else {
-        let neg_step = -step;
-        let diff = start - stop + inclusive_adjustment;
-        (diff + neg_step - 1) / neg_step
-    };
-    Some(trip)
 }
 
 /// The set of blocks that make up the loop region between `header` and the

@@ -105,10 +105,10 @@ fn is_hoistable(op: &TirOp, vr: &ValueRangeResult) -> bool {
 fn throw_condition_disproven(op: &TirOp, vr: &ValueRangeResult) -> bool {
     if opcode_requires_i64_shift_count_guard_table(op.opcode) {
         // Count operand proven in the valid machine-shift range [0, 63].
-        return op.operands.get(1).is_some_and(|&count| {
-            let r = vr.range_of(count);
-            r.lo >= 0 && r.hi <= 63
-        });
+        return op
+            .operands
+            .get(1)
+            .is_some_and(|&count| vr.range_of(count).proves_i64_shift_count());
     }
     if opcode_requires_i64_zero_divisor_guard_table(op.opcode) {
         // Divisor proven to exclude zero.
