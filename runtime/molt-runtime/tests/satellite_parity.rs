@@ -1,22 +1,15 @@
-//! Fail-closed parity guard for the runtime stdlib in-tree <-> satellite pairs.
-//! The PAIRS table contains only domains that still have two live source
-//! authorities; completed leaf-only domains are deliberately absent.
+//! Fail-closed parity guard for runtime stdlib in-tree <-> satellite pairs.
 //!
-//! molt ships every feature-gated stdlib module in TWO physical copies: an
-//! in-tree copy under `runtime/molt-runtime/src/builtins/<mod>.rs` (the SOLE
-//! compiled source for the reduced build tiers — `--stdlib-profile micro`,
-//! `stdlib_edge`, and the WASM feature set) and a satellite copy under
-//! `runtime/molt-runtime-X/src/<mod>.rs` (compiled for the DEFAULT native
-//! build). The two are the same behavior reached through two access models
-//! (direct `crate::` calls vs an `extern "C"` FFI bridge). When a behavioral
-//! fix lands in only one copy, shipped behavior DIFFERS BY BUILD TIER — the
-//! silent-miscompile bug-class that docs/design/foundation/21 set out to kill.
+//! The tracked two-copy stdlib authority class is intentionally extinct:
+//! `tools/check_satellite_parity.py` has an empty PAIRS table and
+//! `tools/satellite_parity_baseline.json` has a zero residual ceiling. Reduced
+//! builds now either compile leaf-owned satellite source by direct include or
+//! have no fallback lane.
 //!
-//! This test runs `tools/check_satellite_parity.py`, which normalizes away the
-//! by-design access-layer differences and FAILS on any drift beyond the
-//! committed `tools/satellite_parity_baseline.json` ratchet. It is the CI
-//! contract that makes new drift a test failure. See the Python script's
-//! docstring and `memory/recovery/baton_move_R_satellite_drift.md`.
+//! This test keeps the zero-pair invariant executable. If a future change
+//! reintroduces an in-tree <-> satellite pair, the Python guard normalizes away
+//! by-design access-layer differences and fails on any residual drift beyond the
+//! committed ratchet.
 
 use std::path::PathBuf;
 use std::process::Command;
