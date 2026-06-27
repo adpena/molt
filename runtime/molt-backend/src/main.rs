@@ -14,7 +14,7 @@ use molt_backend::luau::LuauBackend;
 #[cfg(feature = "rust-backend")]
 use molt_backend::rust::RustBackend;
 #[cfg(feature = "wasm-backend")]
-use molt_backend::wasm::{WasmBackend, WasmCompileOptions};
+use molt_backend::{WasmBackend, WasmCompileOptions};
 use molt_tir::ir_rewrites::rewrite_annotate_stubs;
 #[cfg(any(unix, test))]
 use serde_json::Value as JsonValue;

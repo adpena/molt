@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use molt_backend::wasm::WasmBackend;
+use molt_backend::WasmBackend;
 use molt_backend::{FunctionIR, OpIR, SimpleIR};
 use wasmparser::{Operator, Parser, Payload, TypeRef};
 

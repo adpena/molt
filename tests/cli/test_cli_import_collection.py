@@ -5709,19 +5709,64 @@ def test_backend_source_paths_are_feature_aware() -> None:
         path.relative_to(ROOT).as_posix()
         for path in CACHE_FINGERPRINTS._backend_source_paths(ROOT, ("rust-backend",))
     }
+    luau_paths = {
+        path.relative_to(ROOT).as_posix()
+        for path in CACHE_FINGERPRINTS._backend_source_paths(ROOT, ("luau-backend",))
+    }
+    llvm_paths = {
+        path.relative_to(ROOT).as_posix()
+        for path in CACHE_FINGERPRINTS._backend_source_paths(ROOT, ("llvm",))
+    }
 
-    # Source-path tracking is intentionally feature-agnostic now: the whole
-    # backend src/ tree is watched so new files are covered automatically.
-    expected = {
+    common = {
         "runtime/molt-backend/src",
         "runtime/molt-backend/Cargo.toml",
         "runtime/molt-backend/build.rs",
+        "runtime/molt-ir/src",
+        "runtime/molt-ir/Cargo.toml",
+        "runtime/molt-ir/build.rs",
+        "runtime/molt-passes/src",
+        "runtime/molt-passes/Cargo.toml",
+        "runtime/molt-passes/build.rs",
+        "runtime/molt-tir/src",
+        "runtime/molt-tir/Cargo.toml",
+        "runtime/molt-tir/build.rs",
         "Cargo.toml",
         "Cargo.lock",
     }
-    assert native_paths == expected
-    assert wasm_paths == expected
-    assert rust_paths == expected
+    codegen_abi = {
+        "runtime/molt-codegen-abi/src",
+        "runtime/molt-codegen-abi/Cargo.toml",
+        "runtime/molt-codegen-abi/build.rs",
+    }
+    native_leaf = {
+        "runtime/molt-backend-native/src",
+        "runtime/molt-backend-native/Cargo.toml",
+        "runtime/molt-backend-native/build.rs",
+    }
+    wasm_leaf = {
+        "runtime/molt-backend-wasm/src",
+        "runtime/molt-backend-wasm/Cargo.toml",
+        "runtime/molt-backend-wasm/build.rs",
+    }
+    rust_leaf = {
+        "runtime/molt-backend-rust/src",
+        "runtime/molt-backend-rust/Cargo.toml",
+        "runtime/molt-backend-rust/build.rs",
+    }
+    luau_leaf = {
+        "runtime/molt-backend-luau/src",
+        "runtime/molt-backend-luau/Cargo.toml",
+        "runtime/molt-backend-luau/build.rs",
+    }
+
+    assert native_paths == common | native_leaf | codegen_abi
+    assert wasm_paths == common | wasm_leaf | codegen_abi
+    assert rust_paths == common | rust_leaf
+    assert luau_paths == common | luau_leaf
+    assert llvm_paths == common | native_leaf | codegen_abi
+    assert "runtime/molt-backend-wasm/src" not in native_paths
+    assert "runtime/molt-backend-native/src" not in wasm_paths
 
 
 def test_backend_bin_path_is_cached(
