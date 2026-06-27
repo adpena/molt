@@ -131,8 +131,6 @@ pub use molt_runtime_xml;
 #[cfg(feature = "stdlib_zoneinfo")]
 pub use molt_runtime_zoneinfo;
 #[cfg(feature = "stdlib_tk")]
-mod gui;
-#[cfg(feature = "stdlib_tk")]
 mod tk_bridge;
 #[cfg(feature = "stdlib_tk")]
 pub use molt_runtime_tk;
@@ -546,8 +544,6 @@ pub use crate::builtins::sys_ext::*;
 pub use crate::builtins::tarfile::*;
 #[cfg(feature = "stdlib_fs_extra")]
 pub use crate::builtins::tempfile_mod::*;
-#[cfg(feature = "stdlib_tk")]
-pub use crate::builtins::tkinter_core::*;
 pub(crate) use crate::builtins::type_ops::{
     ClassInfoProtocol, RuntimeClassInfo, class_bases_vec, class_mro_ref, class_mro_vec,
     collect_runtime_classinfo, isinstance_bits, isinstance_runtime, issubclass_bits,
@@ -577,8 +573,6 @@ pub(crate) use crate::call::function::{
 };
 pub(crate) use crate::call::lookup_call_attr;
 pub(crate) use crate::constants::*;
-#[cfg(feature = "stdlib_tk")]
-pub use crate::gui::tk::*;
 pub use crate::intrinsics::capabilities::*;
 pub(crate) use crate::object::accessors::{
     object_field_get_ptr_raw, object_field_set_ptr_raw, resolve_obj_ptr,
