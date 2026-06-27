@@ -63,6 +63,106 @@ pub(crate) const REQUIRED_RUNTIME_IMPORT_SINGLETONS: &[&str] = &[
     "errno_constants",
 ];
 
+#[allow(dead_code)]
+pub(crate) const RUNTIME_HOST_EXPORTS: &[&str] = &[
+    "molt_alloc",
+    "molt_bytes_from_bytes",
+    "molt_dec_ref_obj",
+    "molt_exception_kind",
+    "molt_exception_last",
+    "molt_exception_message",
+    "molt_gpu_broadcast_binary_contiguous",
+    "molt_gpu_linear_contiguous",
+    "molt_gpu_linear_split_last_dim_contiguous",
+    "molt_gpu_linear_squared_relu_gate_interleaved_contiguous",
+    "molt_gpu_matmul_contiguous",
+    "molt_gpu_permute_contiguous",
+    "molt_gpu_repeat_axis_contiguous",
+    "molt_gpu_rms_norm_last_axis_contiguous",
+    "molt_gpu_rope_apply_contiguous",
+    "molt_gpu_softmax_last_axis_contiguous",
+    "molt_gpu_squared_relu_gate_interleaved_contiguous",
+    "molt_gpu_tensor__tensor_concat_first_dim",
+    "molt_gpu_tensor__tensor_scatter_rows",
+    "molt_gpu_tensor__tensor_take_rows",
+    "molt_gpu_tensor__zeros",
+    "molt_gpu_tensor_from_buffer",
+    "molt_gpu_tensor_from_parts",
+    "molt_handle_resolve",
+    "molt_header_size",
+    "molt_object_repr",
+    "molt_profile_dump",
+    "molt_runtime_shutdown",
+    "molt_scratch_alloc",
+    "molt_scratch_free",
+    "molt_set_wasm_table_base",
+    "molt_string_as_ptr",
+    "molt_string_from_bytes",
+    "molt_traceback_format_exc",
+    "molt_type_tag_of_bits",
+];
+
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct RuntimeImportFallbackSpec {
+    pub(crate) import_name: &'static str,
+    pub(crate) strategy: &'static str,
+    pub(crate) call_arity: Option<usize>,
+    pub(crate) fallback_exports: &'static [&'static str],
+}
+
+#[allow(dead_code)]
+pub(crate) const RUNTIME_IMPORT_FALLBACK_EXPORTS: &[RuntimeImportFallbackSpec] = &[
+    RuntimeImportFallbackSpec {
+        import_name: "fast_list_append",
+        strategy: "call_bind_ic",
+        call_arity: Some(1),
+        fallback_exports: &[
+            "molt_call_bind_ic",
+            "molt_callargs_new",
+            "molt_callargs_push_pos",
+        ],
+    },
+    RuntimeImportFallbackSpec {
+        import_name: "fast_str_join",
+        strategy: "call_bind_ic",
+        call_arity: Some(1),
+        fallback_exports: &[
+            "molt_call_bind_ic",
+            "molt_callargs_new",
+            "molt_callargs_push_pos",
+        ],
+    },
+    RuntimeImportFallbackSpec {
+        import_name: "fast_dict_get",
+        strategy: "call_bind_ic",
+        call_arity: Some(2),
+        fallback_exports: &[
+            "molt_call_bind_ic",
+            "molt_callargs_new",
+            "molt_callargs_push_pos",
+        ],
+    },
+    RuntimeImportFallbackSpec {
+        import_name: "dict_setitem",
+        strategy: "direct_export",
+        call_arity: None,
+        fallback_exports: &["molt_dict_set"],
+    },
+    RuntimeImportFallbackSpec {
+        import_name: "dict_getitem",
+        strategy: "direct_export",
+        call_arity: None,
+        fallback_exports: &["molt_dict_getitem_borrowed"],
+    },
+    RuntimeImportFallbackSpec {
+        import_name: "tuple_getitem",
+        strategy: "direct_export",
+        call_arity: None,
+        fallback_exports: &["molt_tuple_getitem_borrowed"],
+    },
+];
+
 #[inline]
 pub(crate) fn runtime_surface_requires_direct_import(kind: &str) -> bool {
     REQUIRED_RUNTIME_IMPORT_PREFIXES

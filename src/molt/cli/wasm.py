@@ -8,6 +8,7 @@ from typing import Any, Mapping
 import molt.wasm_artifact as _wasm_artifact
 from molt._wasm_abi_generated import (
     WASM_LEGACY_TABLE_BASE,
+    WASM_RUNTIME_IMPORT_FALLBACK_SPECS,
     WASM_RESERVED_RUNTIME_CALLABLE_BASE,
     WASM_RESERVED_RUNTIME_CALLABLE_COUNT,
 )
@@ -125,6 +126,17 @@ def _generate_split_worker_js(
     runtime_import_signatures_json = json.dumps(
         dict(runtime_import_signatures or {}), sort_keys=True
     )
+    runtime_import_fallbacks_json = json.dumps(
+        {
+            import_name: {
+                "strategy": strategy,
+                "call_arity": call_arity,
+                "exports": list(exports),
+            }
+            for import_name, strategy, call_arity, exports in WASM_RUNTIME_IMPORT_FALLBACK_SPECS
+        },
+        sort_keys=True,
+    )
     app_table_ref_signatures_json = json.dumps(
         dict(app_table_ref_signatures or {}), sort_keys=True
     )
@@ -219,6 +231,7 @@ export default {
     const NONE_BITS = QNAN | TAG_NONE;
     const runtimeImportResultKinds = __MOLT_RUNTIME_IMPORT_RESULT_KINDS__;
     const runtimeImportSignatures = __MOLT_RUNTIME_IMPORT_SIGNATURES__;
+    const runtimeImportFallbacks = __MOLT_RUNTIME_IMPORT_FALLBACKS__;
     const appTableRefSignatures = __MOLT_APP_TABLE_REF_SIGNATURES__;
     const runtimeTableRefSignatures = __MOLT_RUNTIME_TABLE_REF_SIGNATURES__;
     const LEGACY_WASM_TABLE_BASE = __MOLT_LEGACY_WASM_TABLE_BASE__;
@@ -798,9 +811,6 @@ export default {
       const callBindIc = runtimeInstance.exports.molt_call_bind_ic;
       const callargsNew = runtimeInstance.exports.molt_callargs_new;
       const callargsPushPos = runtimeInstance.exports.molt_callargs_push_pos;
-      const dictSet = runtimeInstance.exports.molt_dict_set;
-      const dictGetitemBorrowed = runtimeInstance.exports.molt_dict_getitem_borrowed;
-      const tupleGetitemBorrowed = runtimeInstance.exports.molt_tuple_getitem_borrowed;
       const makeCallBindFallback = (arity) => {
         if (
           typeof callBindIc !== "function" ||
@@ -817,6 +827,24 @@ export default {
           return callBindIc(boxInt(0), methodBits, builderBits);
         };
       };
+      const runtimeFallback = (importName) => {
+        const manifestImportName = importName.startsWith("molt_")
+          ? importName.slice(5)
+          : importName;
+        const fallback = runtimeImportFallbacks[manifestImportName] || null;
+        if (!fallback || !Array.isArray(fallback.exports) || fallback.exports.length === 0) {
+          return null;
+        }
+        if (fallback.strategy === "call_bind_ic") {
+          if (typeof fallback.call_arity !== "number") return null;
+          return makeCallBindFallback(fallback.call_arity);
+        }
+        if (fallback.strategy === "direct_export" && fallback.exports.length === 1) {
+          const candidate = runtimeInstance.exports[fallback.exports[0]];
+          return typeof candidate === "function" ? candidate : null;
+        }
+        return null;
+      };
       for (const entry of WebAssembly.Module.imports(module)) {
         if (entry.module !== "molt_runtime") continue;
         const exportName = entry.name.startsWith("molt_")
@@ -824,19 +852,7 @@ export default {
           : `molt_${entry.name}`;
         let fn = runtimeInstance.exports[exportName];
         if (typeof fn !== "function") {
-          if (entry.name === "fast_list_append") {
-            fn = makeCallBindFallback(1);
-          } else if (entry.name === "fast_str_join") {
-            fn = makeCallBindFallback(1);
-          } else if (entry.name === "fast_dict_get") {
-            fn = makeCallBindFallback(2);
-          } else if (entry.name === "dict_setitem") {
-            fn = typeof dictSet === "function" ? dictSet : null;
-          } else if (entry.name === "dict_getitem") {
-            fn = typeof dictGetitemBorrowed === "function" ? dictGetitemBorrowed : null;
-          } else if (entry.name === "tuple_getitem") {
-            fn = typeof tupleGetitemBorrowed === "function" ? tupleGetitemBorrowed : null;
-          }
+          fn = runtimeFallback(entry.name);
         }
         if (typeof fn !== "function") {
           throw new Error(`molt_runtime missing export ${exportName}`);
@@ -1107,6 +1123,10 @@ export default {
         .replace(
             "__MOLT_RUNTIME_IMPORT_SIGNATURES__",
             runtime_import_signatures_json,
+        )
+        .replace(
+            "__MOLT_RUNTIME_IMPORT_FALLBACKS__",
+            runtime_import_fallbacks_json,
         )
         .replace(
             "__MOLT_APP_TABLE_REF_SIGNATURES__",
