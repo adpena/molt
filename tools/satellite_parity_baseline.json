@@ -25,14 +25,6 @@
     "pathlib": {
       "count": 259,
       "sha256": "7fa82c2128e0fd1229d9a6952602f8ff55e73146423c5594dffb4dff5ad2d4e6"
-    },
-    "xml_etree": {
-      "count": 0,
-      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-    },
-    "xml_sax": {
-      "count": 0,
-      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     }
   }
 }

@@ -73,6 +73,9 @@ RUNTIME_FEATURE_GATES: tuple[tuple[str, str], ...] = (
     ("molt_math_", "stdlib_math"),
     ("molt_random_", "stdlib_math"),
     ("molt_statistics_", "stdlib_math"),
+    # XML-family intrinsics live only in molt-runtime-xml. Disabled profiles
+    # must refuse imports instead of relying on deleted in-core fallback copies.
+    ("molt_xml_", "stdlib_xml"),
     # ast
     ("molt_ast_", "stdlib_ast"),
     # collections + argparse live in the extracted collections crate.
@@ -243,6 +246,7 @@ LINK_AFFECTING_FEATURES: frozenset[str] = frozenset(
         "stdlib_stringprep",
         "stdlib_text",
         "stdlib_tk",
+        "stdlib_xml",
         "stdlib_zoneinfo",
     }
 )
