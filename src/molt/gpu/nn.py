@@ -18,7 +18,44 @@ Usage:
 """
 
 import math
-from .tensor import Tensor, ones, zeros, randn, _product
+from .tensor import Tensor, ones, zeros, randn, uniform, _product
+
+
+def _make_pair(value) -> tuple[int, int]:
+    """Resolve a 2D conv hyper-parameter to ``(height, width)``."""
+    if isinstance(value, tuple):
+        if len(value) != 2:
+            raise ValueError(f"expected 2 values, got {value!r}")
+        return value
+    if isinstance(value, list):
+        if len(value) != 2:
+            raise ValueError(f"expected 2 values, got {value!r}")
+        return (value[0], value[1])
+    return (value, value)
+
+
+def _resolve_same_padding(padding, kernel_size, stride, dilation):
+    """Convert ``padding='same'`` to an explicit flat ``(l, r, t, b)`` tuple.
+
+    Matches tinygrad ``Conv2d``: only ``'same'`` is supported, it is invalid for
+    strided convolutions, and per-axis pads are split
+    ``(d*(k-1)//2, d*(k-1) - d*(k-1)//2)`` over the kernel dims in REVERSED order
+    (so the flattened result is in the ``(left, right, top, bottom)`` flat
+    convention consumed by ``conv2d``).
+    """
+    if padding.lower() != "same":
+        raise ValueError(
+            f"Invalid padding string {padding!r}, only 'same' is supported"
+        )
+    if _make_pair(stride) != (1, 1):
+        raise ValueError("padding='same' is not supported for strided convolutions")
+    kh, kw = _make_pair(kernel_size)
+    dh, dw = _make_pair(dilation)
+    pad = []
+    for d, k in ((dw, kw), (dh, kh)):  # kernel_size[::-1]
+        total = d * (k - 1)
+        pad.append((total // 2, total - total // 2))
+    return tuple(value for pair in pad for value in pair)
 
 
 # ── Activation layers ─────────────────────────────────────────────────
@@ -194,6 +231,8 @@ class Conv2d:
             if isinstance(kernel_size, tuple)
             else (kernel_size, kernel_size)
         )
+        if isinstance(padding, str):
+            padding = _resolve_same_padding(padding, self.kernel_size, stride, dilation)
         self.stride = stride
         self.dilation = dilation
         self.groups = groups
@@ -246,6 +285,68 @@ class Conv2d:
             f"kernel_size={self.kernel_size}, stride={self.stride}, "
             f"padding={self.padding}, dilation={self.dilation}, "
             f"groups={self.groups}, bias={self.has_bias})"
+        )
+
+
+class ConvTranspose2d(Conv2d):
+    """2D transposed convolution with tinygrad-compatible constructor shape.
+
+    Mirrors ``tinygrad.nn.ConvTranspose2d``: the weight is laid out
+    ``(in_channels, out_channels // groups, kH, kW)`` and the layer additionally
+    accepts ``output_padding``.
+    """
+
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        kernel_size: int | tuple[int, int],
+        stride=1,
+        padding=0,
+        output_padding=0,
+        dilation=1,
+        groups=1,
+        bias=True,
+    ):
+        super().__init__(
+            in_channels,
+            out_channels,
+            kernel_size,
+            stride=stride,
+            padding=padding,
+            dilation=dilation,
+            groups=groups,
+            bias=bias,
+        )
+        kh, kw = self.kernel_size
+        scale = 1.0 / math.sqrt(in_channels * kh * kw)
+        self.weight = uniform(
+            in_channels,
+            out_channels // groups,
+            kh,
+            kw,
+            low=-scale,
+            high=scale,
+        )
+        self.output_padding = output_padding
+
+    def __call__(self, x: Tensor) -> Tensor:
+        return x.conv_transpose2d(
+            self.weight,
+            self.bias,
+            self.groups,
+            self.stride,
+            self.dilation,
+            self.padding,
+            self.output_padding,
+        )
+
+    def __repr__(self):
+        return (
+            f"ConvTranspose2d({self.in_channels}, {self.out_channels}, "
+            f"kernel_size={self.kernel_size}, stride={self.stride}, "
+            f"padding={self.padding}, output_padding={self.output_padding}, "
+            f"dilation={self.dilation}, groups={self.groups}, bias={self.has_bias})"
         )
 
 
@@ -462,27 +563,36 @@ class LayerNorm:
         return f"LayerNorm({self.normalized_shape})"
 
 
+class LayerNorm2d(LayerNorm):
+    """LayerNorm over the channel dim of an ``(N, C, H, W)`` tensor.
+
+    Matches ``tinygrad.nn.LayerNorm2d``: permute channels last, apply
+    :class:`LayerNorm`, permute back.
+    """
+
+    def __call__(self, x: Tensor) -> Tensor:
+        return super().__call__(x.permute(0, 2, 3, 1)).permute(0, 3, 1, 2)
+
+    def __repr__(self):
+        return f"LayerNorm2d({self.normalized_shape})"
+
+
 class GroupNorm:
-    """Group normalization, matching tinygrad ``nn.GroupNorm``.
+    """Group normalization, matching ``tinygrad.nn.GroupNorm``.
 
-    Splits the channel dimension into ``num_groups`` groups, normalizes each
-    group with a layernorm over the (group, spatial) elements, then applies an
-    optional per-channel affine transform.
-
-    Args:
-        num_groups: number of groups to separate the channels into
-        num_channels: number of channels expected in the input
-        eps: numerical stability term (default: 1e-5)
-        affine: if True, learn a per-channel weight and bias (default: True)
+    Splits ``num_channels`` into ``num_groups`` groups and normalizes each group
+    (jointly across the channels in the group and all spatial dims) per sample.
+    With ``affine=True`` a per-channel scale/shift is applied afterwards.
     """
 
     def __init__(
-        self,
-        num_groups: int,
-        num_channels: int,
-        eps: float = 1e-5,
-        affine: bool = True,
+        self, num_groups: int, num_channels: int, eps: float = 1e-5, affine: bool = True
     ):
+        if num_channels % num_groups != 0:
+            raise ValueError(
+                f"num_channels ({num_channels}) must be divisible by "
+                f"num_groups ({num_groups})"
+            )
         self.num_groups = num_groups
         self.num_channels = num_channels
         self.eps = eps
@@ -490,20 +600,15 @@ class GroupNorm:
         self.bias = zeros(num_channels) if affine else None
 
     def __call__(self, x: Tensor) -> Tensor:
-        # Reshape so a layernorm over the last axis normalizes each group, then
-        # restore the original shape.
         x = (
             x.reshape(x.shape[0], self.num_groups, -1)
             .layernorm(eps=self.eps)
-            .reshape(x.shape)
+            .reshape(*x.shape)
         )
         if self.weight is None or self.bias is None:
             return x
-        # Broadcast the per-channel affine params over the spatial dims.
         affine_shape = (1, -1, *[1] * (x.ndim - 2))
-        return x * self.weight.reshape(*affine_shape) + self.bias.reshape(
-            *affine_shape
-        )
+        return x * self.weight.reshape(*affine_shape) + self.bias.reshape(*affine_shape)
 
     def load_weights(self, weight=None, bias=None):
         if weight is not None:
@@ -520,10 +625,127 @@ class GroupNorm:
         return params
 
     def __repr__(self):
-        return (
-            f"GroupNorm({self.num_groups}, {self.num_channels}, "
-            f"eps={self.eps}, affine={self.weight is not None})"
+        return f"GroupNorm({self.num_groups}, {self.num_channels}, eps={self.eps})"
+
+
+class InstanceNorm:
+    """Instance normalization, matching ``tinygrad.nn.InstanceNorm``.
+
+    Equivalent to :class:`GroupNorm` with ``num_groups == num_features``: each
+    channel is normalized independently across spatial dims, per sample.
+    """
+
+    def __init__(self, num_features: int, eps: float = 1e-5, affine: bool = True):
+        self.num_features = num_features
+        self.eps = eps
+        self.weight = ones(num_features) if affine else None
+        self.bias = zeros(num_features) if affine else None
+
+    def __call__(self, x: Tensor) -> Tensor:
+        x = (
+            x.reshape(x.shape[0], self.num_features, -1)
+            .layernorm(eps=self.eps)
+            .reshape(*x.shape)
         )
+        if self.weight is None or self.bias is None:
+            return x
+        affine_shape = (1, -1, *[1] * (x.ndim - 2))
+        return x * self.weight.reshape(*affine_shape) + self.bias.reshape(*affine_shape)
+
+    def load_weights(self, weight=None, bias=None):
+        if weight is not None:
+            self.weight = weight if isinstance(weight, Tensor) else Tensor(weight)
+        if bias is not None:
+            self.bias = bias if isinstance(bias, Tensor) else Tensor(bias)
+
+    def parameters(self) -> list:
+        params = []
+        if self.weight is not None:
+            params.append(self.weight)
+        if self.bias is not None:
+            params.append(self.bias)
+        return params
+
+    def __repr__(self):
+        return f"InstanceNorm({self.num_features}, eps={self.eps})"
+
+
+class BatchNorm2d:
+    """2D batch normalization (inference mode), matching ``tinygrad.nn.BatchNorm``.
+
+    In inference mode the layer normalizes each channel by the stored
+    ``running_mean``/``running_var`` and applies the affine ``weight``/``bias``:
+    ``y = (x - mean) * rsqrt(var + eps) * weight + bias`` broadcast over the
+    spatial dims. Until ``load_weights`` populates the running stats this acts as
+    a plain (eps-stabilised) normalization against zero mean / unit variance,
+    matching the freshly-constructed tinygrad defaults
+    (``running_mean=0``, ``running_var=1``).
+    """
+
+    def __init__(
+        self,
+        sz: int,
+        eps: float = 1e-5,
+        affine: bool = True,
+        track_running_stats: bool = True,
+        momentum: float = 0.1,
+    ):
+        self.sz = sz
+        self.eps = eps
+        self.track_running_stats = track_running_stats
+        self.momentum = momentum
+        self.weight = ones(sz) if affine else None
+        self.bias = zeros(sz) if affine else None
+        self.running_mean = zeros(sz) if track_running_stats else None
+        self.running_var = ones(sz) if track_running_stats else None
+
+    def __call__(self, x: Tensor) -> Tensor:
+        if self.running_mean is None or self.running_var is None:
+            raise RuntimeError(
+                "BatchNorm2d inference requires running_mean/running_var "
+                "(track_running_stats=False is training-only)"
+            )
+        shape_mask = (1, -1, *[1] * (x.ndim - 2))
+        mean = self.running_mean.reshape(*shape_mask)
+        inv_std = (self.running_var + self.eps).rsqrt().reshape(*shape_mask)
+        out = (x - mean) * inv_std
+        if self.weight is not None:
+            out = out * self.weight.reshape(*shape_mask)
+        if self.bias is not None:
+            out = out + self.bias.reshape(*shape_mask)
+        return out
+
+    def load_weights(self, weight=None, bias=None, running_mean=None, running_var=None):
+        if weight is not None:
+            self.weight = weight if isinstance(weight, Tensor) else Tensor(weight)
+        if bias is not None:
+            self.bias = bias if isinstance(bias, Tensor) else Tensor(bias)
+        if running_mean is not None:
+            self.running_mean = (
+                running_mean
+                if isinstance(running_mean, Tensor)
+                else Tensor(running_mean)
+            )
+        if running_var is not None:
+            self.running_var = (
+                running_var if isinstance(running_var, Tensor) else Tensor(running_var)
+            )
+
+    def parameters(self) -> list:
+        params = []
+        if self.weight is not None:
+            params.append(self.weight)
+        if self.bias is not None:
+            params.append(self.bias)
+        return params
+
+    def __repr__(self):
+        return f"BatchNorm2d({self.sz}, eps={self.eps})"
+
+
+# ``tinygrad`` exposes BatchNorm under several aliases.
+BatchNorm = BatchNorm2d
+BatchNorm3d = BatchNorm2d
 
 
 class Dropout:

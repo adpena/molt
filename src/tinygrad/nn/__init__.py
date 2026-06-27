@@ -1,19 +1,49 @@
-"""tinygrad.nn compatibility surface backed by Molt."""
+"""tinygrad.nn compatibility surface backed by Molt.
+
+This module is the CPython-importable ``tinygrad.nn`` surface. Its layers mirror
+upstream ``tinygrad.nn`` exactly — same constructor signatures, the same
+``Tensor.uniform``/``Tensor.ones``/``Tensor.zeros`` initialization, and the same
+forward math — so code written against tinygrad behaves identically here. The
+normalization layers are shared with :mod:`molt.gpu.nn` (the single eager-lane
+authority for that math); ``Conv2d``/``ConvTranspose2d``/``Linear``/``Embedding``
+keep tinygrad-faithful initialization here because the public init samples are a
+tested contract.
+"""
 
 import math
 
-from molt.gpu.nn import GroupNorm, Sequential
+from molt.gpu.nn import (
+    BatchNorm,
+    BatchNorm2d,
+    BatchNorm3d,
+    GroupNorm,
+    InstanceNorm,
+    LayerNorm2d,
+    Sequential,
+)
 from molt.gpu.tensor import Tensor
 
 
 def _pair(value):
     if isinstance(value, tuple):
+        if len(value) != 2:
+            raise ValueError(f"expected 2 values, got {value!r}")
         return value
+    if isinstance(value, list):
+        if len(value) != 2:
+            raise ValueError(f"expected 2 values, got {value!r}")
+        return (value[0], value[1])
     return (value, value)
 
 
 class Conv2d:
-    """tinygrad-compatible Conv2d layer."""
+    """tinygrad-compatible Conv2d layer.
+
+    Matches ``tinygrad.nn.Conv2d``: supports ``groups``, ``dilation``, integer /
+    per-dim / explicit ``2N``-tuple padding, and ``padding='same'`` (non-strided
+    only). Weight/bias use ``Tensor.uniform(low=-scale, high=scale)`` with
+    ``scale = 1/sqrt(in_channels * prod(kernel_size))``.
+    """
 
     def __init__(
         self,
@@ -26,30 +56,30 @@ class Conv2d:
         groups=1,
         bias=True,
     ):
-        if groups != 1:
-            raise NotImplementedError("tinygrad Conv2d groups != 1 not implemented yet")
-        if dilation != 1:
-            raise NotImplementedError(
-                "tinygrad Conv2d dilation != 1 not implemented yet"
-            )
+        self.kernel_size = _pair(kernel_size)
         if isinstance(padding, str):
             if padding.lower() != "same":
                 raise ValueError(
                     f"Invalid padding string {padding!r}, only 'same' is supported"
                 )
-            stride_pair = _pair(stride)
-            if stride_pair != (1, 1):
+            if _pair(stride) != (1, 1):
                 raise ValueError(
                     "padding='same' is not supported for strided convolutions"
                 )
-            kh, kw = _pair(kernel_size)
-            padding = (kh // 2, kw // 2)
+            kh, kw = self.kernel_size
+            dh, dw = _pair(dilation)
+            # Upstream: split (d*(k-1)//2, d*(k-1) - d*(k-1)//2) over kernel dims
+            # in reversed order, flattened to the (left, right, top, bottom) form.
+            pad = []
+            for d, k in ((dw, kw), (dh, kh)):
+                total = d * (k - 1)
+                pad.append((total // 2, total - total // 2))
+            padding = tuple(value for pair in pad for value in pair)
 
         self.in_channels = in_channels
         self.out_channels = out_channels
-        self.kernel_size = _pair(kernel_size)
         self.stride = _pair(stride)
-        self.padding = _pair(padding)
+        self.padding = padding
         self.dilation = dilation
         self.groups = groups
 
@@ -96,6 +126,68 @@ class Conv2d:
         return (
             f"Conv2d({self.in_channels}, {self.out_channels}, kernel_size={self.kernel_size}, "
             f"stride={self.stride}, padding={self.padding})"
+        )
+
+
+class ConvTranspose2d(Conv2d):
+    """tinygrad-compatible ConvTranspose2d layer.
+
+    Matches ``tinygrad.nn.ConvTranspose2d``: weight is laid out
+    ``(in_channels, out_channels // groups, kH, kW)`` with
+    ``Tensor.uniform(low=-scale, high=scale)`` init, plus an ``output_padding``
+    argument forwarded to :meth:`Tensor.conv_transpose2d`.
+    """
+
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        kernel_size,
+        stride=1,
+        padding=0,
+        output_padding=0,
+        dilation=1,
+        groups=1,
+        bias=True,
+    ):
+        super().__init__(
+            in_channels,
+            out_channels,
+            kernel_size,
+            stride=stride,
+            padding=padding,
+            dilation=dilation,
+            groups=groups,
+            bias=bias,
+        )
+        kh, kw = self.kernel_size
+        scale = 1.0 / math.sqrt(in_channels * kh * kw)
+        self.weight = Tensor.uniform(
+            in_channels,
+            out_channels // groups,
+            kh,
+            kw,
+            low=-scale,
+            high=scale,
+        )
+        self.output_padding = output_padding
+
+    def __call__(self, x: Tensor) -> Tensor:
+        return x.conv_transpose2d(
+            self.weight,
+            self.bias,
+            self.groups,
+            self.stride,
+            self.dilation,
+            self.padding,
+            self.output_padding,
+        )
+
+    def __repr__(self) -> str:
+        return (
+            f"ConvTranspose2d({self.in_channels}, {self.out_channels}, "
+            f"kernel_size={self.kernel_size}, stride={self.stride}, "
+            f"padding={self.padding}, output_padding={self.output_padding})"
         )
 
 
@@ -218,10 +310,16 @@ class RMSNorm:
 
 
 __all__ = [
+    "BatchNorm",
+    "BatchNorm2d",
+    "BatchNorm3d",
     "Conv2d",
+    "ConvTranspose2d",
     "Embedding",
     "GroupNorm",
+    "InstanceNorm",
     "LayerNorm",
+    "LayerNorm2d",
     "Linear",
     "RMSNorm",
     "Sequential",
