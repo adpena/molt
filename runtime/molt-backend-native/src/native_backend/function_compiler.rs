@@ -1162,6 +1162,45 @@ impl SimpleBackend {
                         fc::OpFlow::Proceed => {}
                     }
                 }
+                // Bitwise/shift binary operators are split from scalar add/sub/mul
+                // so arithmetic lowering stays a set of smaller codegen units.
+                _ if op_family == Some(fc::NativeOpFamily::BitwiseShift) => {
+                    let __flow = fc::bitwise_shift::handle_bitwise_shift_op(
+                        &op,
+                        &mut self.module,
+                        &mut self.import_ids,
+                        &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &vars,
+                        representation_plan,
+                        scalar_fast_paths_enabled,
+                        &nbc,
+                    );
+                    match __flow {
+                        fc::OpFlow::Continue => continue,
+                        fc::OpFlow::Proceed => {}
+                    }
+                }
+                // Matrix operators are runtime-backed binary ops, not scalar
+                // arithmetic; keep their routing authority out of fc::arith.
+                _ if op_family == Some(fc::NativeOpFamily::MatrixOps) => {
+                    let __flow = fc::matrix_ops::handle_matrix_op(
+                        &op,
+                        &mut self.module,
+                        &mut self.import_ids,
+                        &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &vars,
+                        representation_plan,
+                        &nbc,
+                    );
+                    match __flow {
+                        fc::OpFlow::Continue => continue,
+                        fc::OpFlow::Proceed => {}
+                    }
+                }
                 // Division/modulo/power/rounding arithmetic family extracted
                 // from fc::arith so quotient/remainder codegen is its own
                 // function-level rustc codegen unit and kind authority.

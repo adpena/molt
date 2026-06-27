@@ -56,6 +56,8 @@ use std::sync::OnceLock;
 pub(in crate::native_backend::function_compiler) enum NativeOpFamily {
     Arith,
     ArithDivision,
+    BitwiseShift,
+    MatrixOps,
     Sequence,
     Generators,
     ScalarBuiltins,
@@ -118,6 +120,11 @@ pub(in crate::native_backend::function_compiler) const FAMILY_DISPATCH_TABLE: &[
         NativeOpFamily::ArithDivision,
         super::arith_division::HANDLED_KINDS,
     ),
+    (
+        NativeOpFamily::BitwiseShift,
+        super::bitwise_shift::HANDLED_KINDS,
+    ),
+    (NativeOpFamily::MatrixOps, super::matrix_ops::HANDLED_KINDS),
     // `vec_*` reductions: handled by `handle_arith_op` via delegation to
     // `fc::vec_reductions`. Their authority lives ONLY in
     // `vec_reductions::HANDLED_KINDS`; routing them to `Arith` here is what lets
@@ -387,6 +394,55 @@ mod tests {
             assert!(
                 !arith_kinds.contains(kind),
                 "arith_division kind `{kind}` must not also live in arith::HANDLED_KINDS",
+            );
+        }
+    }
+
+    /// Bitwise/shift kinds have their own codegen unit and kind authority;
+    /// keeping them out of `arith::HANDLED_KINDS` prevents scalar add/sub/mul
+    /// from growing back into the full binary-operator bucket.
+    #[test]
+    fn bitwise_shift_kinds_route_to_bitwise_shift() {
+        assert!(
+            !super::super::bitwise_shift::HANDLED_KINDS.is_empty(),
+            "bitwise_shift::HANDLED_KINDS must enumerate bitwise/shift kinds",
+        );
+        let arith_kinds: HashSet<&str> =
+            super::super::arith::HANDLED_KINDS.iter().copied().collect();
+        for &kind in super::super::bitwise_shift::HANDLED_KINDS {
+            assert_eq!(
+                native_op_family(kind),
+                Some(NativeOpFamily::BitwiseShift),
+                "bitwise/shift kind `{kind}` must route to the BitwiseShift handler",
+            );
+            assert!(
+                !arith_kinds.contains(kind),
+                "bitwise/shift kind `{kind}` must not also live in arith::HANDLED_KINDS",
+            );
+        }
+    }
+
+    /// Matrix operators are runtime-backed binary operators, but not scalar
+    /// arithmetic. Keep them in a distinct family so `arith.rs` remains the
+    /// scalar add/sub/mul authority.
+    #[test]
+    fn matrix_kinds_route_to_matrix_ops() {
+        assert_eq!(
+            super::super::matrix_ops::HANDLED_KINDS,
+            ["matmul", "inplace_matmul"],
+            "matrix_ops::HANDLED_KINDS should stay the two @ operator spellings",
+        );
+        let arith_kinds: HashSet<&str> =
+            super::super::arith::HANDLED_KINDS.iter().copied().collect();
+        for &kind in super::super::matrix_ops::HANDLED_KINDS {
+            assert_eq!(
+                native_op_family(kind),
+                Some(NativeOpFamily::MatrixOps),
+                "matrix kind `{kind}` must route to the MatrixOps handler",
+            );
+            assert!(
+                !arith_kinds.contains(kind),
+                "matrix kind `{kind}` must not also live in arith::HANDLED_KINDS",
             );
         }
     }
