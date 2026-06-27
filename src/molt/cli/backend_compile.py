@@ -22,7 +22,10 @@ from molt.cli.backend_cache import (
     _try_cached_backend_candidates,
 )
 from molt.cli.backend_daemon_config import _backend_daemon_enabled
-from molt.cli.backend_daemon_logs import _backend_daemon_log_mark, _backend_daemon_log_since
+from molt.cli.backend_daemon_logs import (
+    _backend_daemon_log_mark,
+    _backend_daemon_log_since,
+)
 from molt.cli.backend_daemon_startup import _backend_daemon_start_timeout
 from molt.cli.backend_diagnostics import _env_requests_backend_diagnostics
 from molt.cli.backend_execution import (
@@ -54,15 +57,26 @@ from molt.cli.models import (
     _PreparedBackendSetup,
     _RuntimeArtifactState,
 )
-from molt.cli.output import fail as _fail, subprocess_output_text as _subprocess_output_text
+from molt.cli.output import (
+    fail as _fail,
+    subprocess_output_text as _subprocess_output_text,
+)
 from molt.cli.runtime_build import (
     _ensure_runtime_wasm_artifact,
     _initialize_runtime_artifact_state,
     _maybe_start_native_runtime_lib_ready_async,
 )
-from molt.cli.runtime_intrinsic_symbols import _stage_runtime_intrinsic_symbols_for_native_codegen
+from molt.cli.runtime_intrinsic_symbols import (
+    _stage_runtime_intrinsic_symbols_for_native_codegen,
+)
 from molt.cli.target_python import TargetPythonVersion
-from molt.cli.wasm import _read_wasm_data_end, _read_wasm_memory_min_bytes, _read_wasm_table_min
+from molt.wasm_artifact import (
+    _read_wasm_data_end,
+    _read_wasm_memory_min_bytes,
+    _read_wasm_table_min,
+)
+
+
 def _prepare_backend_setup(
     *,
     is_rust_transpile: bool,
@@ -173,6 +187,7 @@ def _prepare_backend_setup(
         cache_candidates=list(cache_setup.cache_candidates),
     ), None
 
+
 def _prepare_backend_runtime_context(
     *,
     prepared_backend_setup: _PreparedBackendSetup,
@@ -251,6 +266,7 @@ def _prepare_backend_runtime_context(
         function_cache_path=prepared_backend_setup.function_cache_path,
         stdlib_object_path=prepared_backend_setup.stdlib_object_path,
     ), None
+
 
 def _prepare_backend_dispatch(
     *,
@@ -483,6 +499,7 @@ def _prepare_backend_dispatch(
         daemon_ready=daemon_ready,
         backend_daemon_config_digest=daemon_config_digest,
     ), None
+
 
 def _execute_backend_compile(
     *,
@@ -954,6 +971,7 @@ def _execute_backend_compile(
         backend_daemon_cache_tier=backend_daemon_cache_tier,
         backend_daemon_health=backend_daemon_health,
     ), None
+
 
 def _prepare_backend_compile(
     *,

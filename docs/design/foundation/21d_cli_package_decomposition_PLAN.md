@@ -49,14 +49,16 @@ module; `_*_CACHE_SCHEMA_VERSION` ints → cache module; `_DEAD_FUNCTION_ELIM_RE
 module (keep co-located; docs 09/13 mandate the Python BFS mirror the Rust DFE).
 
 **1e. External name-pins (must not break):**
-- 18 test-pinned `from molt.cli import _X` names (verified list): `_MICRO_BASE_RUNTIME_FEATURES`,
+- 15 test-pinned `from molt.cli import _X` names (verified list): `_MICRO_BASE_RUNTIME_FEATURES`,
   `_VALID_AUDIT_SINKS`, `_backend_codegen_env_digest`, `_build_cache_variant`,
   `_build_isolate_import_ops`, `_download_artifact`, `_effective_split_worker_table_base`,
   `_generate_snapshot_header`, `_generate_split_worker_js`, `_generate_split_wrangler_jsonc`,
   `_is_private_ip`, `_isolate_import_module_order`, `_parse_audit_log_flag`, `_parse_io_mode_flag`,
-  `_parse_type_gate_flag`, `_wasm_export_function_signatures`,
-  `_wasm_import_function_result_kinds`, `_wasm_import_function_signatures` → all re-exported from
-  the package `__init__`.
+  `_parse_type_gate_flag` -> all re-exported from the package `__init__`.
+- WASM binary/artifact facts are no longer CLI pins. `_wasm_export_function_signatures`,
+  `_wasm_import_function_result_kinds`, `_wasm_import_function_signatures`, and sibling binary
+  readers live in `molt.wasm_artifact`; internal consumers and tests must import them there rather
+  than rebuilding a `molt.cli` or `molt.cli.wasm` shadow API.
 - 3 monkeypatches of `molt.cli.subprocess.run` → `__init__` keeps `import subprocess`/`shutil`/`os`
   so `molt.cli.<name>` targets resolve; re-verify `test_generate_worker.py` after the wasm phase.
 - `cli.py:LINE` references in docs 06/08/09/13/17/18/20/22/24 are docs, not code — accepted stale
