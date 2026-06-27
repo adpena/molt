@@ -68,7 +68,7 @@ fn is_primitive_type(ty: &crate::tir::types::TirType) -> bool {
     )
 }
 
-fn attr_for_gvn_value_key<'a>(op: &'a TirOp, spec: GvnValueKeySpec) -> Option<&'a AttrValue> {
+fn attr_for_gvn_value_key(op: &TirOp, spec: GvnValueKeySpec) -> Option<&AttrValue> {
     spec.attrs.iter().find_map(|attr| op.attrs.get(*attr))
 }
 
@@ -291,20 +291,20 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
                     };
 
                     if !numberable {
-                        if numbering_role.is_value_keyed_constant() {
-                            if let Some(constant_key) = gvn_value_key(op) {
-                                let key = ValueKey {
-                                    opcode: op.opcode,
-                                    operands: Vec::new(),
-                                    attr_key: Some(constant_key),
-                                };
-                                let leader = local_const_key_to_leader
-                                    .get(&key)
-                                    .copied()
-                                    .unwrap_or(result);
-                                local_const_key_to_leader.entry(key).or_insert(result);
-                                local_value_number.insert(result, leader);
-                            }
+                        if numbering_role.is_value_keyed_constant()
+                            && let Some(constant_key) = gvn_value_key(op)
+                        {
+                            let key = ValueKey {
+                                opcode: op.opcode,
+                                operands: Vec::new(),
+                                attr_key: Some(constant_key),
+                            };
+                            let leader = local_const_key_to_leader
+                                .get(&key)
+                                .copied()
+                                .unwrap_or(result);
+                            local_const_key_to_leader.entry(key).or_insert(result);
+                            local_value_number.insert(result, leader);
                         }
                         let prior = value_number.insert(result, result);
                         vn_undo.push((result, prior));
