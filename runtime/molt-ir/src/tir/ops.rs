@@ -327,8 +327,6 @@ pub enum OpCode {
     ScfFor,
     ScfWhile,
     ScfYield,
-    // Deoptimization
-    Deopt,
 }
 
 /// Attribute value for operation metadata.

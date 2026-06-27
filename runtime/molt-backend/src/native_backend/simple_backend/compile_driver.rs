@@ -1,4 +1,5 @@
 use super::*;
+use std::fmt::Write as _;
 
 #[cfg(feature = "native-backend")]
 impl SimpleBackend {

@@ -548,7 +548,6 @@ pub fn analyze(func: &TirFunction) -> HashMap<ValueId, EscapeState> {
                 // Reads a scalar version stamp out of the function object; the
                 // function operand is only borrowed (read), never captured.
                 | OpCode::FunctionDefaultsVersion
-                | OpCode::Deopt
                 | OpCode::WarnStderr
                 | OpCode::TryStart
                 | OpCode::TryEnd

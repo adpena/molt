@@ -67,7 +67,7 @@ The following table specifies the ownership state of the **result** of each majo
 | `IncRef` | None | Owned-now (op increments the ref; result remains a borrowed alias but is now safe to hold across a barrier) |
 | `DecRef` | None | Releases ownership |
 | `OrdAt` | Inline i64 (no heap) | Borrowed |
-| `WarnStderr`, `Deopt` | None | Borrowed |
+| `WarnStderr` | None | Borrowed |
 | `ScfIf`, `ScfFor`, `ScfWhile`, `ScfYield` | Varies by region | Borrowed |
 
 ### 1.3 Generator and Async Suspension Points

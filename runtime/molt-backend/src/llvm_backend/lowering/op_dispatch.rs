@@ -1165,33 +1165,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 }
             }
 
-            // -- Deopt: transfer execution back to interpreter --
-            OpCode::Deopt => {
-                let i64_ty = self.backend.context.i64_type();
-                let frame_bits = if !op.operands.is_empty() {
-                    let v = self.resolve(op.operands[0]);
-                    self.ensure_i64(v)
-                } else {
-                    i64_ty.const_int(0, false)
-                };
-                let deopt_fn = self
-                    .backend
-                    .module
-                    .get_function("molt_deopt_transfer")
-                    .unwrap();
-                let result = self
-                    .backend
-                    .builder
-                    .build_call(deopt_fn, &[frame_bits.into()], "deopt")
-                    .unwrap()
-                    .try_as_basic_value()
-                    .unwrap_basic();
-                if let Some(&result_id) = op.results.first() {
-                    self.values.insert(result_id, result);
-                    self.value_types.insert(result_id, TirType::DynBox);
-                }
-            }
-
             // Exception region markers. LLVM still uses polling-based Molt
             // exceptions, but the runtime expects a handler frame to be
             // established around try regions so raise/catch semantics match

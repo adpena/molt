@@ -70,7 +70,8 @@ if func.has_exception_handling {
 Same issue — still on the wide flag (confirmed reading lines 86-100). Also NOT yet fixed.
 
 However, neither fix matters yet because of the deeper issue: there is no TypeGuard producer in the production pipeline. Searching all files that reference `OpCode::TypeGuard` confirms:
-- `deopt.rs`: reads TypeGuard ops as "deopt points" — not a generator
+- The removed deoptimization skeleton used to read TypeGuard ops as bailout points, but it was never
+  a TypeGuard generator.
 - `type_refine.rs`: reads TypeGuard ops to propagate proven types (lines 44-49, 613-614) — not a generator
 - `ssa.rs`:1860: deserialization string→OpCode table — not a generator
 - `lower_to_simple.rs`:1660: lowers TypeGuard as a no-op copy-var — not a generator
@@ -418,7 +419,7 @@ Verification gate: run IV-SR on a function, then confirm that `drop_insertion` p
 
 ### Risk 6: TypeGuard round-trip soundness through lower_to_simple (HIGH for Phase 2)
 
-`lower_to_simple.rs`:1660 currently lowers `TypeGuard` as a `copy_var` — an unconditional no-op regardless of whether `block_versioning` fired. If `type_guard_gen` emits a TypeGuard for an isinstance call that was NOT eliminated by block_versioning, the copy_var lowering silently discards the isinstance check. This is a pre-existing latent bug in the existing deopt subsystem (`deopt.rs` emits TypeGuard ops but they all go through `lower_to_simple` as copy_var). Phase 2 must include a fix to `lower_to_simple.rs`:1660: an un-versioned TypeGuard surviving the pipeline must lower to an actual isinstance check (CallBuiltin path), not a copy.
+`lower_to_simple.rs`:1660 currently lowers `TypeGuard` as a `copy_var` — an unconditional no-op regardless of whether `block_versioning` fired. If `type_guard_gen` emits a TypeGuard for an isinstance call that was NOT eliminated by block_versioning, the copy_var lowering silently discards the isinstance check. Phase 2 must include a fix to `lower_to_simple.rs`:1660: an un-versioned TypeGuard surviving the pipeline must lower to an actual isinstance check (CallBuiltin path), not a copy.
 
 ### Risk 7: branchless_count has_exception_handling gate (minor, independent)
 

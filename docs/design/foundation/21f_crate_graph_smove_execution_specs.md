@@ -292,7 +292,7 @@ deps molt-ir) and `molt-lower` (TIR->{LIR,SimpleIR,WASM-IR} lowering + repr-plan
 - `tir/pass_manager.rs` (1,040), `tir/module_phase.rs` (725) [orchestration].
 - The analyses/facts 21b assigns to passes: `tir/call_facts.rs` (1,050), `tir/call_graph.rs`
   (924), `tir/type_refine.rs` (3,650 -- it consumes passes (6 refs) and is consumed by passes +
-  lowering; it is an analysis -> passes layer, fact verified), `tir/deopt.rs` (161),
+  lowering; it is an analysis -> passes layer, fact verified),
   `tir/exception_regions.rs` (2,249), `tir/drop_phase.rs` (631), `tir/parallel.rs` (249),
   `tir/cache.rs` (1,001 -- 0 passes/lower refs but assigned to passes by 21b; it is the
   compilation cache the pass pipeline drives), `tir/bolt.rs` (203).
@@ -481,28 +481,25 @@ molt-lower, so this crate is a clean consumer of molt-lower output). Deps `molt-
 `molt-codegen-abi` + `wasm-encoder`/`wasmparser`.
 
 ### 7.1 Exact partition
-`git mv` `molt-backend/src/wasm.rs` (the encoder, ~936 KB) + `molt-backend/src/wasm_imports.rs`
-(~57 KB) -> `runtime/molt-backend-wasm/src/{wasm.rs,wasm_imports.rs}` + a `lib.rs` (`pub mod wasm;
-mod wasm_imports;` mirroring molt-backend lib.rs:67-70). Rewrite paths: the heavy molt-lower
-surface `wasm.rs` consumes (verified) -> `molt_lower::{...}`: `tir::lower_to_wasm::{WasmFunctionOutput,
-NAMED_RUNTIME_CALL_PLACEHOLDER, lower_tir_to_wasm_boxed_i}`, `tir::lower_to_simple::{lower_to_simple_ir,
-validate_labels}`, `tir::lower_from_simple::{lower_to_tir, lower_functions_to_tir_module}`,
-`tir::type_refine::refine_types`, `tir::cache::CompilationCache`, `tir::{serialize, printer,
-target_info, function::{TirFunction,TirModule}, op_kinds_generated, run_module_pipeline}`,
-`passes::{run_pipeline, ReturnAliasSummary, compute_rc_coalesce_skips,
-compute_return_alias_summaries, fuse_method_dispatch, hoist_loop_invariants,
-split_megafunctions_with_filter}`, `representation_plan::{repr_by_value_for, value_range_for}`.
-NaN-box consts (the post-S3 deduped block at wasm.rs:19) -> `molt_codegen_abi::{...}`.
+The live partition is the full WASM authority cluster, not the older
+`wasm.rs`/`wasm_imports.rs` slice: `runtime/molt-backend-wasm/src/{wasm.rs,
+wasm_abi.rs,wasm_abi_generated.rs,wasm_abi_manifest.toml,wasm_binary.rs,
+wasm_data.rs,wasm_dispatch.rs,wasm_import_tracking.rs,wasm_imports.rs,
+wasm_options.rs,wasm_plan.rs,wasm_values.rs,wasm/**}`. Shared SimpleIR debug
+and trampoline metadata live in `molt-tir`; `molt-backend` keeps no private WASM
+encoder or ABI modules.
 
 ### 7.2 Cargo.toml / wiring
-- `runtime/molt-backend-wasm/Cargo.toml`: deps `molt-lower`, `molt-codegen-abi`, `wasm-encoder`(
-  opt), `wasmparser`(opt), `serde`/`serde_json`/`sha2`. Features: `wasm-backend = ["dep:wasm-encoder",
-  "dep:wasmparser", "molt-lower/wasm-backend"]`, `test-util=["molt-lower/test-util"]`.
+- `runtime/molt-backend-wasm/Cargo.toml`: deps `molt-ir`, `molt-tir`,
+  `wasm-encoder`(opt), and `wasmparser`(opt). Features:
+  `wasm-backend = ["dep:wasm-encoder", "dep:wasmparser",
+  "molt-ir/wasm-backend", "molt-tir/wasm-backend"]`,
+  `test-util=["molt-ir/test-util", "molt-tir/test-util"]`.
 - `molt-backend/Cargo.toml`: `molt-backend-wasm = { path = "...", optional = true }`;
   `wasm-backend = ["dep:molt-backend-wasm", "molt-backend-wasm/wasm-backend"]`. Delete the inline
   `wasm-encoder`/`wasmparser` deps if the driver no longer uses them.
-- `molt-backend/src/lib.rs`: `#[cfg(feature="wasm-backend")] pub mod wasm; mod wasm_imports;`
-  (:67-70) -> `#[cfg(feature="wasm-backend")] pub use molt_backend_wasm::wasm;` (preserves
+- `molt-backend/src/lib.rs`: `#[cfg(feature="wasm-backend")] pub use
+  molt_backend_wasm::wasm;` (preserves
   `molt_backend::wasm::{WasmBackend, WasmCompileOptions}` that main.rs:16 imports).
 
 ### 7.3 Visibility / gates / parallelization
@@ -511,8 +508,9 @@ integration tests reach. The wasm `[[test]]` entries (molt-backend/Cargo.toml:79
 `wasm_compilation`, `wasm_import_registry`, `wasm_import_filtering`, `wasm_data_segments`,
 `wasm_type_section`, `wasm_fastcall_lowering`, `jumpful_malformed_control`) MOVE to
 `molt-backend-wasm/tests/` (they test the encoder). Full G1-G7; **G3 on `--target wasm`.** **[seq:
-S2,S3]; [parallel] with S4/S6/S7** (disjoint files: wasm.rs/wasm_imports.rs vs llvm_backend/ vs
-native_backend/ vs luau*/rust.rs). Touches molt-backend/lib.rs+Cargo.toml -> serialize those edits
+S2,S3]; [parallel] with S4/S6/S7** (disjoint files:
+runtime/molt-backend-wasm/src/** vs llvm_backend/ vs native_backend/ vs
+luau*/rust.rs). Touches molt-backend/lib.rs+Cargo.toml -> serialize those edits
 (S8 join).
 
 ---
@@ -693,7 +691,7 @@ S1 (molt-ir)            [FOUNDATION GATE -- serial, single agent; nothing starts
 ```
 
 **Independence:** S4/S5/S6/S7 each `git mv` a DISJOINT source subtree (`llvm_backend/` /
-`wasm.rs`+`wasm_imports.rs` / `luau*`+`rust.rs` / `native_backend/`) and create a DISJOINT new
+`runtime/molt-backend-wasm/src/**` / `luau*`+`rust.rs` / `native_backend/`) and create a DISJOINT new
 crate -> new-crate creation is fully independent. **Serialization points (shared files):** every
 backend move ALSO edits `molt-backend/src/lib.rs` (the `pub mod X` -> `pub use molt_backend_X`
 line), `molt-backend/Cargo.toml` (the dep+feature line), and ROOT `Cargo.toml` members. These

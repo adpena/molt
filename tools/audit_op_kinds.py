@@ -106,7 +106,7 @@ NATIVE_FC_DIR = ROOT / "runtime/molt-backend/src/native_backend/function_compile
 # effects or control metadata and must be claimed by a handler slice.
 LOWER_TO_SIMPLE_RS = tir_path("lower_to_simple.rs")
 LOWER_TO_SIMPLE_OP_LOWERING_RS = tir_path("lower_to_simple/op_lowering.rs")
-WASM_RS = ROOT / "runtime/molt-backend/src/wasm.rs"
+WASM_RS = ROOT / "runtime/molt-backend-wasm/src/wasm.rs"
 RUNTIME_SRC_ROOTS = tuple(
     sorted(
         path / "src"

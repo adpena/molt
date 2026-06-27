@@ -2789,6 +2789,7 @@ dependencies = [
  "libc",
  "metal",
  "mlx-rs",
+ "molt-backend-wasm",
  "molt-ir",
  "molt-tir",
  "objc",
@@ -2803,6 +2804,16 @@ dependencies = [
  "wasmparser 0.252.0",
  "wgpu",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "molt-backend-wasm"
+version = "0.1.0"
+dependencies = [
+ "molt-ir",
+ "molt-tir",
+ "wasm-encoder 0.252.0",
+ "wasmparser 0.252.0",
 ]
 
 [[package]]

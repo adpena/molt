@@ -8,6 +8,7 @@ license = "Apache-2.0"
 [dependencies]
 molt-ir = { path = "../molt-ir" }
 molt-tir = { path = "../molt-tir" }
+molt-backend-wasm = { path = "../molt-backend-wasm", optional = true, default-features = false }
 libc = "0.2"
 tikv-jemallocator = { version = "0.7", optional = true }
 cranelift-codegen = { version = "0.133.1", optional = true, default-features = false, features = ["host-arch", "std", "unwind"] }
@@ -21,8 +22,6 @@ serde_json = "1.0"
 sha2 = "0.11"
 rmp-serde = "1"
 ciborium = { version = "0.2", optional = true }
-wasm-encoder = { version = "0.252.0", optional = true }
-wasmparser = { version = "0.252.0", optional = true }
 egg = { version = "0.11", optional = true }
 inkwell = { version = "0.9", features = ["llvm22-1"], optional = true }
 wgpu = { version = "29", optional = true }
@@ -35,6 +34,8 @@ mlx-rs = { version = "0.25", optional = true }
 # reach the crate-private accessor seams (representation-plan / tir-cache /
 # value-range) that molt-tir exposes only under #[cfg(any(test, feature = "test-util"))].
 molt-tir = { path = "../molt-tir", features = ["test-util"] }
+wasm-encoder = "0.252.0"
+wasmparser = "0.252.0"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 metal = { version = "0.33", optional = true }
@@ -76,7 +77,12 @@ native-backend = [
 cbor = ["dep:ciborium"]
 rust-backend = []
 mlx = ["dep:mlx-rs"]
-wasm-backend = ["dep:wasm-encoder", "dep:wasmparser", "molt-ir/wasm-backend", "molt-tir/wasm-backend"]
+wasm-backend = [
+    "dep:molt-backend-wasm",
+    "molt-backend-wasm/wasm-backend",
+    "molt-ir/wasm-backend",
+    "molt-tir/wasm-backend",
+]
 
 [[test]]
 name = "jumpful_malformed_control"

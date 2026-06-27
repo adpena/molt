@@ -1390,20 +1390,6 @@ pub fn declare_runtime_functions<'ctx>(ctx: &'ctx Context, module: &Module<'ctx>
         add_memory_read(ctx, func);
     }
 
-    // ── Deopt ──
-    // molt_deopt_transfer(frame: u64) -> u64
-    // Transfers control to the interpreter — NOT willreturn (may not
-    // return to this compiled code path).
-    {
-        let fn_ty = i64_ty.fn_type(&[i64_ty.into()], false);
-        let func = module.add_function(
-            "molt_deopt_transfer",
-            fn_ty,
-            Some(inkwell::module::Linkage::External),
-        );
-        add_nounwind(ctx, func);
-    }
-
     // ── SCF dialect runtime helpers ──
     // These are called when SCF ops survive lowering (not yet fully desugared).
     // All execute user-provided closures with arbitrary side effects.
@@ -1900,7 +1886,6 @@ mod tests {
             "molt_delitem_method",
             "molt_yield",
             "molt_yield_from",
-            "molt_deopt_transfer",
             "molt_scf_for",
             "molt_scf_while",
             "molt_scf_yield",
