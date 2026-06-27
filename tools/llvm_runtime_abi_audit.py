@@ -39,7 +39,9 @@ if str(ROOT) not in sys.path:
 from tools.op_kinds.paths import OUT_RS as OP_KINDS_GENERATED_RS  # noqa: E402
 
 SERIALIZATION_PY = ROOT / "src/molt/frontend/lowering/serialization.py"
-RUNTIME_IMPORTS_RS = ROOT / "runtime/molt-backend/src/llvm_backend/runtime_imports.rs"
+RUNTIME_IMPORTS_RS = (
+    ROOT / "runtime/molt-backend-native/src/llvm_backend/runtime_imports.rs"
+)
 
 ABI_I64_RETURNS = {"u64", "i64"}
 ABI_VOID_RETURNS = {"", "()", "void"}

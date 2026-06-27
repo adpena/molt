@@ -2778,26 +2778,20 @@ name = "molt-backend"
 version = "0.1.0"
 dependencies = [
  "ciborium",
- "cranelift-codegen",
- "cranelift-frontend",
- "cranelift-module",
- "cranelift-native",
- "cranelift-object",
  "cudarc",
  "egg",
- "inkwell",
  "libc",
  "metal",
  "mlx-rs",
  "molt-backend-luau",
+ "molt-backend-native",
  "molt-backend-rust",
  "molt-backend-wasm",
- "molt-codegen-abi",
  "molt-ir",
  "molt-tir",
  "objc",
+ "object 0.39.1",
  "pollster",
- "rayon",
  "rmp-serde",
  "serde",
  "serde_json",
@@ -2816,6 +2810,25 @@ dependencies = [
  "molt-ir",
  "molt-tir",
  "serde_json",
+]
+
+[[package]]
+name = "molt-backend-native"
+version = "0.1.0"
+dependencies = [
+ "cranelift-codegen",
+ "cranelift-frontend",
+ "cranelift-module",
+ "cranelift-native",
+ "cranelift-object",
+ "inkwell",
+ "libc",
+ "llvm-sys",
+ "molt-codegen-abi",
+ "molt-ir",
+ "molt-tir",
+ "rayon",
+ "serde",
 ]
 
 [[package]]

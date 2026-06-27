@@ -580,7 +580,7 @@ def test_audit_native_arms_include_extracted_op_family_authority() -> None:
     audit = _audit()
     native_arms = audit.extract_native_simpleir_arm_kinds()
     memory_consts = audit.extract_rust_str_slice_consts(
-        ROOT / "runtime/molt-backend/src/native_backend/function_compiler/fc/memory.rs",
+        ROOT / "runtime/molt-backend-native/src/native_backend/function_compiler/fc/memory.rs",
         {"HANDLED_KINDS"},
     )
 
@@ -653,7 +653,9 @@ def test_guarded_field_init_has_one_wire_spelling() -> None:
     assert res.rows[current].native_arm
     assert res.rows[current].wasm_arm
 
-    llvm_lowering = _read_rs_module_cluster(ROOT / "runtime/molt-backend/src/llvm_backend/lowering.rs")
+    llvm_lowering = _read_rs_module_cluster(
+        ROOT / "runtime/molt-backend-native/src/llvm_backend/lowering.rs"
+    )
     assert f'Some("{current}")' in llvm_lowering
     assert f'Some("{rejected}")' not in llvm_lowering
 
@@ -3641,7 +3643,9 @@ def test_llvm_boxed_runtime_inplace_dispatch_delegates_to_generated_table() -> N
     gen = _gen()
     data = gen.load_table()
     rendered = gen.render_rs(data)
-    llvm_lowering = _read_rs_module_cluster(ROOT / "runtime/molt-backend/src/llvm_backend/lowering.rs")
+    llvm_lowering = _read_rs_module_cluster(
+        ROOT / "runtime/molt-backend-native/src/llvm_backend/lowering.rs"
+    )
 
     expected = {"InplaceAdd", "InplaceSub", "InplaceMul"}
     assert set(data["boxed_runtime_inplace_dispatch_opcodes"]) == expected

@@ -9,6 +9,7 @@ members = [
     "runtime/molt-runtime-tk",
     "runtime/molt-obj-model",
     "runtime/molt-backend",
+    "runtime/molt-backend-native",
     "runtime/molt-backend-luau",
     "runtime/molt-backend-rust",
     "runtime/molt-backend-wasm",
@@ -58,6 +59,10 @@ debug = 1
 # debug builds. debug = 0 on large transitive deps to cut link time and
 # artifact size.
 [profile.dev.package.molt-backend]
+opt-level = 1
+debug = 0
+
+[profile.dev.package.molt-backend-native]
 opt-level = 1
 debug = 0
 
@@ -186,6 +191,10 @@ codegen-units = 256
 lto = "off"
 
 [profile.dev-fast.package.molt-backend]
+opt-level = 1
+debug = 0
+
+[profile.dev-fast.package.molt-backend-native]
 opt-level = 1
 debug = 0
 

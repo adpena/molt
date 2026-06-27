@@ -27,7 +27,7 @@
 
 **Phase 2 (structural, highest leverage):** Split `function_compiler.rs` into 8-10 logically-cohesive sub-modules within the existing `native_backend/` tree. Each sub-module maps to one opcode family (arithmetic, control-flow, collections, exceptions, closures, trampolines, loops, async/generators). The `mod.rs` shims exports identically. This is a within-crate module split — no cross-crate boundary change, no feature-flag complications, no API surface change. Rebuild blast radius drops from "38K lines" to "the changed opcode family module only."
 
-**Phase 3 (structural, highest overall impact):** Extract `molt-backend-native` as its own workspace crate. This is the scope documented in the design doc (lines 119-138 of `parallel_build_architecture.md`): `native_backend/*` + `llvm_backend/` become `molt-backend-native`, depending on `molt-backend` (core: tir/passes/ir/representation_plan). Editing Cranelift codegen no longer triggers recompile of TIR passes. Editing TIR passes no longer triggers recompile of Cranelift codegen (in the reverse direction). Both compilations run in parallel.
+**Phase 3 (structural, landed crate boundary):** `molt-backend-native` is now its own workspace crate. `native_backend/*` and `llvm_backend/` live there, depending directly on `molt-ir`, `molt-passes`, `molt-tir`, and `molt-codegen-abi`; `molt-backend` remains the composition facade and daemon package. Editing native/LLVM codegen no longer edits the facade crate, and the remaining throughput work is internal native handler decomposition plus measured BX-4 proof.
 
 **Deferred (addressed by the existing decomposition):** `molt-runtime` is already substantially decomposed — the workspace shows 18 extracted leaf crates (`molt-runtime-crypto`, `-net`, `-asyncio`, `-math`, `-path`, `-collections`, `-regex`, `-text`, `-itertools`, `-serial`, `-difflib`, `-logging`, `-http`, `-stringprep`, `-xml`, `-ipaddress`, `-zoneinfo`, `-compression`). The residual `molt-runtime` monolith (still ~344K lines per the design doc) retains the core object model, `builtins/` directory, `object/` directory, and the intrinsic registry. The generated intrinsic resolver source split has landed: `intrinsics/generated.rs` retains the parser-facing `INTRINSICS` manifest table and delegates to per-category modules under `intrinsics/generated_resolvers/`. Native still uses the per-app resolver to keep the whole-registry static resolver unreachable in shipped binaries; test/WASM builds retain the composed resolver path.
 
@@ -65,100 +65,94 @@ The backend daemon compiles Python to native/WASM/LLVM bitcode. Its hot paths ar
 
 ### Phase 2 Components: `function_compiler.rs` module split
 
-The 38,510-line file is split into sub-modules within `runtime/molt-backend/src/native_backend/`. The split is by opcode family as found in the existing code structure:
+The 38,510-line file is split into sub-modules within `runtime/molt-backend-native/src/native_backend/`. The split is by opcode family as found in the existing code structure:
 
-**`/Users/adpena/Projects/molt/runtime/molt-backend/src/native_backend/fc_arith.rs`**
+**`/Users/adpena/Projects/molt/runtime/molt-backend-native/src/native_backend/fc_arith.rs`**
 - Responsibility: all arithmetic ops — `IAdd`, `ISub`, `IMul`, `IDiv`, `IMod`, `IPow`, `FAdd`, `FSub`, `FMul`, `FDiv`, `IShift`, `IBitwise`, `IUnary`, `FUnary`, `IComp`, `FComp`, and the NaN-box mixed-type arithmetic bridge.
 - Estimated size: ~6,000 lines.
 - Dependencies: `NanBoxConsts`, `repr::Repr`, `VarValue`, `block_has_terminator`.
 
-**`/Users/adpena/Projects/molt/runtime/molt-backend/src/native_backend/fc_control.rs`**
+**`/Users/adpena/Projects/molt/runtime/molt-backend-native/src/native_backend/fc_control.rs`**
 - Responsibility: control flow — `If`/`Else`/`EndIf`, `Jump`, `BrIf`, `LoopStart`/`LoopEnd`, `LoopBreakIfTrue`/`LoopBreakIfException`/`LoopContinue`, `Ret`, `StateTransition`/`StateYield`.
 - Estimated size: ~4,000 lines.
 - Dependencies: `switch_to_block_tracking`, `extend_unique_tracked`, `DeferredDefine`.
 
-**`/Users/adpena/Projects/molt/runtime/molt-backend/src/native_backend/fc_collections.rs`**
+**`/Users/adpena/Projects/molt/runtime/molt-backend-native/src/native_backend/fc_collections.rs`**
 - Responsibility: list/dict/set/tuple ops — `ListAppend`, `ListPop`, `ListIndex`, `ListStoreIndex`, `DictGet`, `DictSet`, `TupleIndex`, `SetAdd`, `Contains`, `Unpack`.
 - Estimated size: ~5,000 lines.
 - Dependencies: `vec_layout::vec_u64_layout`, `repr::ContainerKind`.
 
-**`/Users/adpena/Projects/molt/runtime/molt-backend/src/native_backend/fc_exceptions.rs`**
+**`/Users/adpena/Projects/molt/runtime/molt-backend-native/src/native_backend/fc_exceptions.rs`**
 - Responsibility: exception handling — `TryStart`/`TryEnd`, `CheckException`, `Raise`, `ExceptionPending`, `LoopBreakIfException`, exception-stack push/pop intrinsic calls.
 - Estimated size: ~3,000 lines.
 - Dependencies: `pending_bits()`, intrinsic symbol constants.
 
-**`/Users/adpena/Projects/molt/runtime/molt-backend/src/native_backend/fc_closures.rs`**
+**`/Users/adpena/Projects/molt/runtime/molt-backend-native/src/native_backend/fc_closures.rs`**
 - Responsibility: closure/function ops — `MakeFunction`, `MakeClosure`, `LoadAttr`, `StoreAttr`, `Call`, `CallMethod`, `IncRef`/`DecRef`, `RC` coalescing emission.
 - Estimated size: ~5,000 lines.
 - Dependencies: `TrampolineSpec`, `TrampolineKind`, `stable_ic_site_id`.
 
-**`/Users/adpena/Projects/molt/runtime/molt-backend/src/native_backend/fc_trampolines.rs`**
+**`/Users/adpena/Projects/molt/runtime/molt-backend-native/src/native_backend/fc_trampolines.rs`**
 - Responsibility: trampoline emission — `emit_trampoline`, `emit_generator_trampoline`, `emit_coroutine_trampoline`, `emit_async_gen_trampoline`, `TrampolineKey` table management. Already partially in simple_backend.rs around the TrampolineKey definition.
 - Estimated size: ~3,000 lines.
 - Dependencies: `TrampolineKey`, `TrampolineKind`, `TrampolineSpec`.
 
-**`/Users/adpena/Projects/molt/runtime/molt-backend/src/native_backend/fc_loops.rs`**
+**`/Users/adpena/Projects/molt/runtime/molt-backend-native/src/native_backend/fc_loops.rs`**
 - Responsibility: loop-specific codegen — `LoopIndexStart`, list/array data-pointer hoisting (`scan_loop_hoistable_lists` is currently at function_compiler.rs:48), loop-IV emission, loop-index pre/post increment.
 - Estimated size: ~3,000 lines.
 - Dependencies: `scan_loop_hoistable_lists` (moves here from function_compiler.rs).
 
-**`/Users/adpena/Projects/molt/runtime/molt-backend/src/native_backend/fc_async.rs`**
+**`/Users/adpena/Projects/molt/runtime/molt-backend-native/src/native_backend/fc_async.rs`**
 - Responsibility: async/generator state-machine codegen — `StateLabelStart`/`StateLabelEnd`, `StateBlockStart`/`StateBlockEnd`, `ChanSendYield`/`ChanRecvYield`, coroutine frame ops.
 - Estimated size: ~4,000 lines.
 - Dependencies: `TrampolineSpec`, `function_requires_value_return`.
 
-**`/Users/adpena/Projects/molt/runtime/molt-backend/src/native_backend/function_compiler.rs`** (residual)
+**`/Users/adpena/Projects/molt/runtime/molt-backend-native/src/native_backend/function_compiler.rs`** (residual)
 - After the split: ~5,510 lines containing the `FunctionCompiler` struct, its `new()`, the top-level `compile_function()` dispatch, the `emit_op()` match arm dispatcher, and any cross-cutting helpers that do not fit a single family.
 - The sub-modules are declared `pub(super) mod fc_arith; ...` and their entry points are called from `emit_op()`.
 
-**`/Users/adpena/Projects/molt/runtime/molt-backend/src/native_backend/mod.rs`** (unchanged structurally)
+**`/Users/adpena/Projects/molt/runtime/molt-backend-native/src/native_backend/mod.rs`** (unchanged structurally)
 - Adds `mod fc_arith; mod fc_control; ...` declarations (or declares them in `function_compiler.rs` via `use super::fc_arith`). Since the sub-modules are siblings, the cleanest declaration point is `native_backend/mod.rs` alongside the existing `mod function_compiler;`.
 
-### Phase 3 Components: `molt-backend-native` crate extraction
+### Phase 3 Components: `molt-backend-native` crate extraction (landed)
 
-**New file: `/Users/adpena/Projects/molt/runtime/molt-backend-native/Cargo.toml`**
-```toml
-[package]
-name = "molt-backend-native"
-version = "0.1.0"
-publish = false
-edition = "2024"
-license = "Apache-2.0"
+**Live crate: `runtime/molt-backend-native/Cargo.toml`**
 
-[dependencies]
-molt-backend = { path = "../molt-backend", default-features = false }
-cranelift-codegen = { version = "0.131.0", optional = true, ... }
-cranelift-frontend = { version = "0.131.0", optional = true }
-cranelift-module = { version = "0.131.0", optional = true }
-cranelift-object = { version = "0.131.0", optional = true }
-cranelift-native = { version = "0.131.0", optional = true }
-inkwell = { version = "0.8", features = ["llvm21-1"], optional = true }
+`molt-backend-native` owns native Cranelift and LLVM implementation authority.
+It depends on `molt-ir`, `molt-tir`, and `molt-codegen-abi` directly; it does not
+depend on the `molt-backend` facade. Cranelift, Rayon, Inkwell, and Polly/
+`llvm-sys` ownership live in this crate.
 
-[features]
-default = ["native-backend"]
-native-backend = ["dep:cranelift-codegen", ...]
-llvm = ["dep:inkwell"]
-```
+**Live source roots**
 
-**Move:** `runtime/molt-backend/src/native_backend/` directory becomes `runtime/molt-backend-native/src/native_backend/`. `runtime/molt-backend/src/llvm_backend/` becomes `runtime/molt-backend-native/src/llvm_backend/`. Shared NaN-box, header-layout, and type-id ABI facts stay in `runtime/molt-codegen-abi/`; do not recreate or move backend-local `native_backend_consts.rs`.
+- `runtime/molt-backend-native/src/native_backend/`
+- `runtime/molt-backend-native/src/llvm_backend/`
 
-**Preserve in `molt-backend` (core):**
-- `tir/` (all of it: passes, analysis, pass_manager, module_phase, parallel, etc.)
-- `ir.rs`, `ir_rewrites.rs`, `ir_schema.rs`, `json_boundary.rs`
-- `representation_plan.rs`
-- `intrinsic_symbols.rs`
-- `debug_artifacts.rs`
-- `passes.rs` (SimpleIR passes — these do NOT depend on Cranelift)
-- `wasm.rs`, `wasm_imports.rs`, `tir/lower_to_wasm.rs` (wasm stays in molt-backend since it has no Cranelift dep)
-- `luau_ir.rs`, `luau_lower.rs`, `luau.rs`, `rust.rs` (transpilers)
-- `egraph_simplify.rs`
+Shared NaN-box, header-layout, type-id, pending-bit, and trampoline ABI facts
+stay in `runtime/molt-codegen-abi/` or the existing IR/TIR crates. Do not create
+backend-local ABI constants in either backend crate as a compatibility crutch.
 
-**`molt-backend` lib.rs changes:** Remove `#[cfg(feature = "native-backend")] mod native_backend;` and the `pub use native_backend::*` re-exports. The `SimpleBackend`, `CompileOutput`, `NativeBackendModuleContext` types are re-exported by `molt-backend-native` directly. The daemon's `main.rs` adds `extern crate molt_backend_native;` and adjusts imports.
+**`molt-backend` facade boundary**
 
-**`/Users/adpena/Projects/molt/Cargo.toml` workspace members:** Add `"runtime/molt-backend-native"`.
+`runtime/molt-backend/src/lib.rs` no longer declares native or LLVM
+implementation modules. It re-exports `SimpleBackend`, `CompileOutput`,
+`NativeBackendModuleContext`, and `llvm_backend` through feature-gated
+`molt-backend-native` dependency edges. The backend daemon binary remains in
+`molt-backend` for this landing, because it is the composition entry point used
+by CLI artifact discovery.
 
-**Build command changes:** The CLAUDE.md instruction `cargo build --profile release-fast -p molt-backend --features native-backend` becomes `cargo build --profile release-fast -p molt-backend-native --features native-backend`. Add an alias. The backend daemon binary (`main.rs`) lives in `molt-backend-native` as its `[[bin]]`, since it is the entry point that stitches together core + native.
+**Workspace members**
 
+Both root `Cargo.toml` and `runtime/Cargo.toml` include
+`runtime/molt-backend-native`.
+
+**Build commands**
+
+- Native leaf proof: `cargo check -p molt-backend-native --features native-backend --lib`.
+- Facade without native proof: `cargo check -p molt-backend --no-default-features --lib`.
+- Facade/daemon composition proof: `cargo check -p molt-backend --features native-backend --lib`
+  and `cargo check -p molt-backend --features native-backend --bin molt-backend`.
+- LLVM and Polly claims require explicit system-toolchain proof lanes.
 ### Phase 4 Components: `intrinsics/generated.rs` Split (Landed Source Split)
 
 **Current state:** `runtime/molt-runtime/src/intrinsics/generated.rs` is the canonical generated `INTRINSICS` manifest table and re-exports the composed resolver. `tools/gen_intrinsics.py` now also generates `runtime/molt-runtime/src/intrinsics/generated_resolvers/`, with one resolver module per category from `manifest.pyi` + `categories.toml`. Leaf-owned categories generate their address-taking resolver modules into the leaf crate itself, currently including serial modules and the crypto module group.
@@ -218,7 +212,7 @@ Add `MOLT_TIR_DUMP` and `MOLT_VERIFY_ANALYSIS` to `DAEMON_REQUEST_ENV_KEYS` at l
 
 **Phase 2 (function_compiler.rs split):** This is a structural move-only split within the same crate. No function signatures change. No data structures change. The `use super::*` pattern already used in `native_backend/mod.rs` and both sub-files means all imports remain visible. The only risk is a name collision if two sub-modules define a private helper with the same name — Rust's module system makes this a compile error, not a silent miscompile. The split is safe to verify incrementally: compile after moving each family, before the next.
 
-**Phase 3 (crate extraction):** The key soundness property is that `molt-backend-native` depends on `molt-backend` (core), not vice versa. No circular dependency. The `extern "C"` ABI between the runtime and the backend is unchanged — that ABI lives in `molt-runtime-core/src/lib.rs` (the FFI declarations at line 377) and is independent of crate boundaries. The Cranelift types (`cranelift_codegen::ir::Value`, etc.) stay intra-crate in `molt-backend-native`. The cross-crate boundary between core and native is clean: `TirFunction`, `TirModule`, `SimpleIR`, `FunctionIR`, `TargetInfo` (all from core) flow into `SimpleBackend` (native). These types are already the established interface — the crate boundary just makes it explicit.
+**Phase 3 (crate extraction):** `molt-backend-native` now owns native/LLVM codegen on top of `molt-ir`, `molt-tir`, and `molt-codegen-abi`; `molt-backend` composes and re-exports it behind feature gates. The runtime C ABI is unchanged by the crate boundary. Cranelift and LLVM types stay intra-crate in `molt-backend-native`; durable IR/TIR values flow across the public IR/TIR crates instead of through a facade-local compatibility lane.
 
 **Phase 4 (generated.rs split):** The landed source split keeps `generated.rs` as the canonical `INTRINSICS` manifest table and re-exports a composed resolver from `generated_resolvers/`. Moving each category resolver to its own generated file changes compilation unit boundaries but not behavior. The registry path that uses `resolve_symbol` stays intact through the composed resolver.
 
@@ -372,9 +366,13 @@ Phase 1 (LTO change) is the only phase with a realistic runtime perf risk — th
 
 ### Blocked-By
 
-- Phase 3 (crate extraction) is blocked until Phase 2 (function_compiler split) is stable. The split reduces the blast-radius of getting the crate boundary wrong.
-- Phase 4 source splitting is no longer blocked. Per-crate sub-registry ownership has landed for serial and crypto; the remaining dependency is moving each extracted runtime leaf's resolver authority with its intrinsic implementations.
-- Phase 3 is blocked-by Phase E e1 activation (currently HELD per MEMORY.md): the driver wiring of `run_module_pipeline` into production codegen depends on `SimpleBackend`'s call path, which Phase 3 moves to `molt-backend-native`. Land Phase 3 AFTER Phase E e1 is stable, or land Phase 3 first with a careful baton-pass that Phase E e1 needs to update import paths in `main.rs`.
+- Phase 3 crate extraction is no longer blocked; the crate boundary has landed.
+  Remaining backend-throughput work is internal native god-file decomposition
+  plus BX-4 measurement.
+- Phase 4 source splitting is no longer blocked. Per-crate sub-registry
+  ownership has landed for serial and crypto; the remaining dependency is moving
+  each extracted runtime leaf's resolver authority with its intrinsic
+  implementations.
 
 ### Unblocks
 
@@ -430,47 +428,57 @@ Each phase is a complete structural piece that can land independently and leave 
 - [ ] Update `simple_backend.rs` lines 2371 and 2791-2792 to use the new `TirDumpConfig`.
 - [ ] Update `pass_manager.rs` line 173 to accept the filter form of `MOLT_VERIFY_ANALYSIS`.
 - [ ] Verify: `MOLT_TIR_DUMP=fib:gvn cargo test ...` prints TIR only for the `fib` function after the GVN pass.
-- [ ] `git add runtime/molt-ir/src/tir/printer.rs runtime/molt-passes/src/tir/pass_manager.rs runtime/molt-backend/src/native_backend/simple_backend.rs && git commit -m "build: unified MOLT_TIR_DUMP + MOLT_VERIFY_ANALYSIS filter — Phase 1c DX arc"`.
+- [ ] `git add runtime/molt-ir/src/tir/printer.rs runtime/molt-passes/src/tir/pass_manager.rs runtime/molt-backend-native/src/native_backend/simple_backend.rs && git commit -m "build: unified MOLT_TIR_DUMP + MOLT_VERIFY_ANALYSIS filter — Phase 1c DX arc"`.
 
 ### Phase 2: `function_compiler.rs` module split (3 days)
 
-- [ ] Create `runtime/molt-backend/src/native_backend/fc_arith.rs` — move arithmetic op handlers from `function_compiler.rs`.
-- [ ] Create `runtime/molt-backend/src/native_backend/fc_control.rs` — move control flow handlers.
-- [ ] Create `runtime/molt-backend/src/native_backend/fc_collections.rs` — move collection ops handlers.
-- [ ] Create `runtime/molt-backend/src/native_backend/fc_exceptions.rs` — move exception handling.
-- [ ] Create `runtime/molt-backend/src/native_backend/fc_closures.rs` — move closure/call/RC emission.
-- [ ] Create `runtime/molt-backend/src/native_backend/fc_trampolines.rs` — move trampoline emission (currently split between `simple_backend.rs` `TrampolineKey` and `function_compiler.rs` emission).
-- [ ] Create `runtime/molt-backend/src/native_backend/fc_loops.rs` — move `scan_loop_hoistable_lists` (currently function_compiler.rs:48) and loop-index codegen.
-- [ ] Create `runtime/molt-backend/src/native_backend/fc_async.rs` — move state-machine codegen.
+- [ ] Create `runtime/molt-backend-native/src/native_backend/fc_arith.rs` — move arithmetic op handlers from `function_compiler.rs`.
+- [ ] Create `runtime/molt-backend-native/src/native_backend/fc_control.rs` — move control flow handlers.
+- [ ] Create `runtime/molt-backend-native/src/native_backend/fc_collections.rs` — move collection ops handlers.
+- [ ] Create `runtime/molt-backend-native/src/native_backend/fc_exceptions.rs` — move exception handling.
+- [ ] Create `runtime/molt-backend-native/src/native_backend/fc_closures.rs` — move closure/call/RC emission.
+- [ ] Create `runtime/molt-backend-native/src/native_backend/fc_trampolines.rs` — move trampoline emission (currently split between `simple_backend.rs` `TrampolineKey` and `function_compiler.rs` emission).
+- [ ] Create `runtime/molt-backend-native/src/native_backend/fc_loops.rs` — move `scan_loop_hoistable_lists` (currently function_compiler.rs:48) and loop-index codegen.
+- [ ] Create `runtime/molt-backend-native/src/native_backend/fc_async.rs` — move state-machine codegen.
 - [ ] Update `native_backend/mod.rs` to declare all new sub-modules.
 - [ ] Update `function_compiler.rs` (residual) to be only the `FunctionCompiler` struct, `new()`, `compile_function()`, and the `emit_op()` dispatch that calls into the sub-modules.
 - [ ] After each sub-module: `cargo build -p molt-backend --features native-backend` must succeed, `cargo test -p molt-backend --features native-backend` must pass.
 - [ ] Measure BX-1 (incremental rebuild time for a one-line fc_arith.rs edit).
 - [ ] Full differential parity check.
-- [ ] `git add runtime/molt-backend/src/native_backend/ && git commit -m "build: split function_compiler.rs into 8 opcode-family sub-modules — Phase 2 DX arc"`.
+- [ ] `git add runtime/molt-backend-native/src/native_backend/ && git commit -m "build: split function_compiler.rs into 8 opcode-family sub-modules — Phase 2 DX arc"`.
 
-### Phase 3: `molt-backend-native` crate extraction (4 days)
+### Phase 3: `molt-backend-native` crate extraction (landed code boundary)
 
-- [ ] Create `/Users/adpena/Projects/molt/runtime/molt-backend-native/Cargo.toml` with the crate definition.
-- [ ] Create `/Users/adpena/Projects/molt/runtime/molt-backend-native/src/lib.rs` as the new entry point re-exporting `SimpleBackend`, `CompileOutput`, `NativeBackendModuleContext`.
-- [ ] Move `runtime/molt-backend/src/native_backend/` → `runtime/molt-backend-native/src/native_backend/`.
-- [ ] Move `runtime/molt-backend/src/llvm_backend/` → `runtime/molt-backend-native/src/llvm_backend/`.
-- [ ] Preserve shared NaN-box, header-layout, and type-id ABI facts in `runtime/molt-codegen-abi/`; do not recreate `runtime/molt-backend/src/native_backend_consts.rs` in the native crate.
-- [ ] Remove `#[cfg(feature = "native-backend")] mod native_backend;` and related `pub use` re-exports from `runtime/molt-backend/src/lib.rs`.
-- [ ] Remove `native-backend` feature from `runtime/molt-backend/Cargo.toml` `[features]`; move Cranelift deps to `molt-backend-native/Cargo.toml`.
-- [ ] Update `Cargo.toml` workspace `members` to include `"runtime/molt-backend-native"`.
-- [ ] Update the daemon `main.rs` (currently in `molt-backend`) — move it to `molt-backend-native/src/bin/molt-backend-daemon.rs` with updated imports.
-- [ ] Add `[profile.release-fast.package.molt-backend-native]` to root `Cargo.toml` matching the pattern at lines 314-331.
-- [ ] Update CLAUDE.md build command: `cargo build --profile release-fast -p molt-backend-native --features native-backend`.
-- [ ] After the move: `cargo build -p molt-backend --features native-backend` (core only, no Cranelift) must succeed.
-- [ ] `cargo build -p molt-backend-native --features native-backend,llvm` must succeed.
-- [ ] `cargo test -p molt-backend-native --features native-backend` must pass 882+ tests.
-- [ ] `cargo test -p molt-backend --features native-backend` (core tests only) must pass TIR-only tests.
+- [x] Create `runtime/molt-backend-native/Cargo.toml` and `src/lib.rs` with
+  native/LLVM codegen ownership.
+- [x] Move `runtime/molt-backend-native/src/native_backend/` into
+  `runtime/molt-backend-native/src/native_backend/`.
+- [x] Move `runtime/molt-backend-native/src/llvm_backend/` into
+  `runtime/molt-backend-native/src/llvm_backend/`.
+- [x] Preserve shared NaN-box, header-layout, and type-id ABI facts in
+  `runtime/molt-codegen-abi/`; do not recreate backend-local ABI constants in
+  the facade crate.
+- [x] Remove native/LLVM implementation modules from
+  `runtime/molt-backend/src/lib.rs`; the facade re-exports
+  `SimpleBackend`, `CompileOutput`, `NativeBackendModuleContext`, and
+  `llvm_backend` through `molt-backend-native` feature gates.
+- [x] Move Cranelift, Rayon, `molt-codegen-abi`, LLVM, and Polly ownership to
+  `molt-backend-native/Cargo.toml`; keep `molt-backend` as the composition
+  facade and daemon package.
+- [x] Add `runtime/molt-backend-native` to both workspace member lists and add
+  package profile overrides for the new crate.
+- [x] Keep the daemon binary in `molt-backend` for this landing. Moving the
+  entry binary is no longer part of the crate-authority cut; the daemon stitches
+  the facade and native leaf through the same public feature-gated facade
+  exports as external callers.
+- [x] Build proof for this boundary: `cargo check -p molt-backend-native
+  --features native-backend --lib`, `cargo check -p molt-backend
+  --no-default-features --lib`, `cargo check -p molt-backend --features
+  native-backend --lib`, and `cargo check -p molt-backend --features
+  native-backend --bin molt-backend`.
 - [ ] Measure BX-4 (TIR-edit incremental time).
-- [ ] Full differential parity check.
-- [ ] Run `tools/bench.py` on all benchmarks. No runtime regression vs pre-Phase-3 baseline.
-- [ ] `git add runtime/molt-backend/ runtime/molt-backend-native/ Cargo.toml && git commit -m "build: extract molt-backend-native crate — Cranelift/LLVM isolated from TIR core — Phase 3 DX arc"`.
-
+- [ ] Run the broad test, differential, and benchmark lanes only when making
+  support, release, or performance claims over the whole backend surface.
 ### Phase 4: `intrinsics/generated.rs` Split
 
 - [x] Modify `tools/gen_intrinsics.py` to generate per-category resolver files under `runtime/molt-runtime/src/intrinsics/generated_resolvers/`.

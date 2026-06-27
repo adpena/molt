@@ -22,7 +22,8 @@ the implementation. For forward-looking priorities, use
 
 - Native AOT compilation is real and active.
 - Native Cranelift codegen decomposition is active at function-boundary
-  granularity: `native_backend/function_compiler/fc/` owns extracted op-family
+  granularity:
+  `runtime/molt-backend-native/src/native_backend/function_compiler/fc/` owns extracted op-family
   handlers for scalar builtin runtime calls (`id`, `ord`, fused `ord_at`,
   `chr`), sequence/iterator lowering (`len`, range/tuple/unpack/iterator
   operations), dict mutation (`dict_set`, `dict_update_missing`), exception

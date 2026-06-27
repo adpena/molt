@@ -89,16 +89,20 @@ SERIALIZATION_MODULES = (
     SERIALIZATION_DIR / "serialization_object_attr_ops.py",
 )
 SSA_RS = OP_KIND_TIR_SRC / "ssa.rs"
-LLVM_RS = ROOT / "runtime/molt-backend/src/llvm_backend/lowering.rs"
-LLVM_RUNTIME_IMPORTS_RS = ROOT / "runtime/molt-backend/src/llvm_backend/runtime_imports.rs"
+LLVM_RS = ROOT / "runtime/molt-backend-native/src/llvm_backend/lowering.rs"
+LLVM_RUNTIME_IMPORTS_RS = (
+    ROOT / "runtime/molt-backend-native/src/llvm_backend/runtime_imports.rs"
+)
 LLVM_PRESERVED_OPS_RS = (
-    ROOT / "runtime/molt-backend/src/llvm_backend/lowering/preserved_ops.rs"
+    ROOT / "runtime/molt-backend-native/src/llvm_backend/lowering/preserved_ops.rs"
 )
 LLVM_PRESERVED_OPS_DIR = LLVM_PRESERVED_OPS_RS.with_suffix("")
 LLVM_VEC_REDUCTIONS_RS = LLVM_PRESERVED_OPS_DIR / "vector_reductions.rs"
 ALIAS_RS = tir_path("passes/alias_analysis.rs")
-NATIVE_RS = ROOT / "runtime/molt-backend/src/native_backend/function_compiler.rs"
-NATIVE_FC_DIR = ROOT / "runtime/molt-backend/src/native_backend/function_compiler/fc"
+NATIVE_RS = ROOT / "runtime/molt-backend-native/src/native_backend/function_compiler.rs"
+NATIVE_FC_DIR = (
+    ROOT / "runtime/molt-backend-native/src/native_backend/function_compiler/fc"
+)
 # The SSA -> SimpleIR lowering. `fn lower_op` is the per-OpCode authority for
 # whether a kind's lowered SimpleIR op carries a result (`out: Some`) or is a
 # no-result statement op (`out` absent / `None`). This remains a report fact, but

@@ -1,0 +1,44 @@
+[package]
+name = "molt-backend-native"
+version = "0.1.0"
+publish = false
+edition = "2024"
+license = "Apache-2.0"
+
+[dependencies]
+molt-ir = { path = "../molt-ir" }
+molt-tir = { path = "../molt-tir" }
+molt-codegen-abi = { path = "../molt-codegen-abi" }
+libc = "0.2"
+llvm-sys = { version = "221.0.1", optional = true }
+cranelift-codegen = { version = "0.133.1", optional = true, default-features = false, features = ["host-arch", "std", "unwind"] }
+cranelift-frontend = { version = "0.133.1", optional = true }
+cranelift-module = { version = "0.133.1", optional = true }
+cranelift-object = { version = "0.133.1", optional = true }
+cranelift-native = { version = "0.133.1", optional = true }
+rayon = "1.12"
+serde = { version = "1.0", features = ["derive"] }
+inkwell = { version = "0.9", features = ["llvm22-1"], optional = true }
+
+[dev-dependencies]
+molt-tir = { path = "../molt-tir", features = ["test-util"] }
+
+[target.'cfg(target_arch = "aarch64")'.dependencies]
+cranelift-codegen = { version = "0.133.1", optional = true, default-features = false, features = ["x86"] }
+
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+cranelift-codegen = { version = "0.133.1", optional = true, default-features = false, features = ["arm64"] }
+
+[features]
+default = ["native-backend"]
+native-backend = [
+    "dep:cranelift-codegen",
+    "dep:cranelift-frontend",
+    "dep:cranelift-module",
+    "dep:cranelift-object",
+    "dep:cranelift-native",
+    "molt-ir/native-backend",
+    "molt-tir/native-backend",
+]
+llvm = ["dep:inkwell", "molt-ir/llvm", "molt-tir/llvm"]
+polly = ["llvm", "dep:llvm-sys"]
