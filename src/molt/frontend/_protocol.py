@@ -1356,6 +1356,10 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         self, func_id: str, node: ast.Call, needs_bind: bool
     ) -> MoltValue: ...
 
+    def _emit_sum_float_result_with_empty_int(
+        self, acc_slot: str, seen_slot: str
+    ) -> MoltValue: ...
+
     def _emit_sync_try_except_split(
         self,
         node: ast.Try,
