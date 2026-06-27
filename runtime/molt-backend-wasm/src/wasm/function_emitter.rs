@@ -7,6 +7,7 @@ use super::state_dispatch::{
     exception_handler_region_indices,
 };
 use super::*;
+use crate::wasm_lir_fast_output::emit_lir_fast_output_body;
 use crate::wasm_plan::is_production_lir_wasm_fast_path_name;
 
 impl WasmBackend {
@@ -49,33 +50,11 @@ impl WasmBackend {
             // Resolve NAMED runtime calls: the k-th placeholder pairs with
             // runtime_calls[k] (positional — instruction indexes shift under
             // the LIR peephole pass, so the pairing is by order, not index).
-            let mut named_calls = lir_output.runtime_calls.iter();
-            for instruction in &lir_output.instructions {
-                if matches!(
-                    instruction,
-                    Instruction::Call(crate::lower_to_wasm::NAMED_RUNTIME_CALL_PLACEHOLDER)
-                ) {
-                    let name = named_calls.next().unwrap_or_else(|| {
-                        panic!(
-                            "LIR fast output for '{}' has more named-call placeholders than runtime_calls entries",
-                            func_ir.name
-                        )
-                    });
-                    let import_index = ctx.import_ids[name];
-                    assert!(
-                        import_index != u32::MAX,
-                        "LIR fast output for '{}' calls runtime import '{name}' which was skipped/pruned from the import set",
-                        func_ir.name
-                    );
-                    func.instruction(&Instruction::Call(import_index));
-                    continue;
-                }
-                func.instruction(instruction);
-            }
-            assert!(
-                named_calls.next().is_none(),
-                "LIR fast output for '{}' has unconsumed runtime_calls entries",
-                func_ir.name
+            emit_lir_fast_output_body(
+                &func_ir.name,
+                lir_output,
+                |name| ctx.import_ids[name],
+                &mut func,
             );
             self.codes.function(&func);
             return;

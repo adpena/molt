@@ -28,6 +28,10 @@
 #[cfg(feature = "wasm-backend")]
 use wasm_encoder::{BlockType, Ieee64, Instruction, ValType};
 
+#[cfg(all(test, feature = "wasm-backend"))]
+use crate::wasm_lir_fast_output::assert_named_runtime_call_pairing;
+#[cfg(feature = "wasm-backend")]
+use crate::wasm_lir_fast_output::{NAMED_RUNTIME_CALL_PLACEHOLDER, WasmFunctionOutput};
 #[cfg(feature = "wasm-backend")]
 use std::collections::HashMap;
 
@@ -50,39 +54,6 @@ use molt_tir::tir::lower_to_lir::{lower_function_to_lir, lower_function_to_lir_w
 use molt_tir::tir::ops::{AttrValue, OpCode};
 #[cfg(feature = "wasm-backend")]
 use molt_tir::tir::values::ValueId;
-
-// ---------------------------------------------------------------------------
-// Output struct
-// ---------------------------------------------------------------------------
-
-/// The result of lowering a single TIR function to WASM.
-#[cfg(feature = "wasm-backend")]
-#[derive(Debug, Clone)]
-pub struct WasmFunctionOutput {
-    /// WASM parameter types.
-    pub param_types: Vec<ValType>,
-    /// WASM result types.
-    pub result_types: Vec<ValType>,
-    /// Local variable types (excludes parameters).
-    pub locals: Vec<ValType>,
-    /// WASM instruction sequence (function body).
-    pub instructions: Vec<Instruction<'static>>,
-    /// Runtime imports this body calls, in EMISSION ORDER. Each entry pairs
-    /// positionally with one `Instruction::Call(NAMED_RUNTIME_CALL_PLACEHOLDER)`
-    /// in `instructions`; the module assembler walks the stream and replaces
-    /// the k-th placeholder with the import index of `runtime_calls[k]`.
-    /// Positional (not index-keyed) because the peephole pass rewrites the
-    /// stream and shifts instruction indexes. Distinct from the `Call(0)`
-    /// BAIL sentinel (reject-this-function) and the `u32::MAX`
-    /// skipped-import sentinel.
-    pub runtime_calls: Vec<&'static str>,
-}
-
-/// Placeholder callee index for a NAMED runtime call recorded in
-/// [`WasmFunctionOutput::runtime_calls`]. Resolved to a real import index by
-/// the module assembler. `u32::MAX - 1` so it can never collide with the
-/// `Call(0)` bail sentinel or the `u32::MAX` skipped-import sentinel.
-pub const NAMED_RUNTIME_CALL_PLACEHOLDER: u32 = u32::MAX - 1;
 
 // ---------------------------------------------------------------------------
 // Main entry point
@@ -1780,16 +1751,7 @@ mod tests {
             "WASM LIR fast lane must consume shared DecRef through dec_ref_obj; got {:?}",
             output.runtime_calls
         );
-        let placeholders = output
-            .instructions
-            .iter()
-            .filter(|i| matches!(i, Instruction::Call(NAMED_RUNTIME_CALL_PLACEHOLDER)))
-            .count();
-        assert_eq!(
-            placeholders,
-            output.runtime_calls.len(),
-            "named-call placeholders must pair 1:1 with runtime_calls entries"
-        );
+        assert_named_runtime_call_pairing("drop_ref", &output);
     }
 
     #[test]
@@ -1821,16 +1783,7 @@ mod tests {
             "WASM LIR fast lane must consume DelBoundary through dec_ref_obj; got {:?}",
             output.runtime_calls
         );
-        let placeholders = output
-            .instructions
-            .iter()
-            .filter(|i| matches!(i, Instruction::Call(NAMED_RUNTIME_CALL_PLACEHOLDER)))
-            .count();
-        assert_eq!(
-            placeholders,
-            output.runtime_calls.len(),
-            "named-call placeholders must pair 1:1 with runtime_calls entries"
-        );
+        assert_named_runtime_call_pairing("del_boundary_release", &output);
     }
 
     #[test]
@@ -2402,18 +2355,7 @@ mod tests {
             "both full-range raw operands must box through the int_from_i64 cold path; got {:?}",
             output.runtime_calls
         );
-        // And the placeholder pairing invariant holds: one placeholder per
-        // recorded name.
-        let placeholders = output
-            .instructions
-            .iter()
-            .filter(|i| matches!(i, Instruction::Call(NAMED_RUNTIME_CALL_PLACEHOLDER)))
-            .count();
-        assert_eq!(
-            placeholders,
-            output.runtime_calls.len(),
-            "named-call placeholders must pair 1:1 with runtime_calls entries"
-        );
+        assert_named_runtime_call_pairing("add_two_params", &output);
     }
 
     /// Count occurrences of the inline-int NaN-box packing
