@@ -1,3 +1,4 @@
+use super::super::control_flow::{DispatchControlMaps, build_dispatch_control_maps};
 use super::*;
 
 pub(in crate::wasm) struct NonLinearDispatchPlan {

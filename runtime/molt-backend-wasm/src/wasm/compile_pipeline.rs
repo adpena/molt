@@ -1,3 +1,4 @@
+use super::control_flow::has_non_linear_control_flow;
 use super::*;
 
 impl WasmBackend {

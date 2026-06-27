@@ -1,5 +1,6 @@
 use super::constant_ops::{ConstantOpContext, emit_constant_op};
 use super::context::CompileFuncContext;
+use super::control_flow::dispatch_control_panic;
 use super::*;
 
 mod builder_ops;
@@ -436,7 +437,7 @@ impl<'a, 'ctx> WasmFunctionEmitContext<'a, 'ctx> {
                     //
                     // Reads the same sacrosanct `exception_pending` flag the
                     // WASM `check_exception` lowering uses, compares `!= 0`,
-                    // and breaks to the enclosing Block that wraps the Loop —
+                    // and breaks to the enclosing Block that wraps the Loop â€”
                     // identical depth resolution to `loop_break_if_true`.  The
                     // still-pending exception then rides up the lazy-return
                     // path to the caller's handler.
