@@ -30,12 +30,15 @@ def test_wasm_abi_generated_files_are_in_sync() -> None:
     assert set(rendered_rs_modules) == set(gen.OUT_RS_FILES)
     for name, rendered in rendered_rs_modules.items():
         assert gen.OUT_RS_FILES[name].read_text(encoding="utf-8") == rendered
+    assert gen.OUT_RUNTIME_CALLABLES_RS.read_text(
+        encoding="utf-8"
+    ) == gen.render_runtime_callables_rs(data)
     assert gen.OUT_PY.read_text(encoding="utf-8") == gen.render_py(data)
     assert gen.OUT_TABLE_LAYOUT_INC.read_text(encoding="utf-8") == gen.render_table_layout_inc(
         data
     )
-    assert gen.OUT_POLL_INC.read_text(encoding="utf-8") == gen.render_poll_inc(data)
-    assert gen.OUT_RESERVED_INC.read_text(encoding="utf-8") == gen.render_reserved_inc(data)
+    for removed_path in gen.REMOVED_GENERATED_FILES:
+        assert not removed_path.exists()
     assert gen.OUT_ALLOWED_IMPORTS.read_text(
         encoding="utf-8"
     ) == gen.render_allowed_imports(data)
@@ -139,8 +142,31 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
     assert imports["site_help1"]["callable_arity"] == 1
 
     rendered_rs = _rendered_rs(gen, data)
+    rendered_runtime_rs = gen.render_runtime_callables_rs(data)
     assert "RUNTIME_CALLABLE_IMPORTS" in rendered_rs
     assert "RuntimeCallableResult::Void" in rendered_rs
+    assert "ReservedRuntimeCallableSpec" in rendered_rs
+    assert "RESERVED_RUNTIME_CALLABLE_SPECS" in rendered_rs
+    assert "RESERVED_RUNTIME_CALLABLE_COUNT" in rendered_rs
+    assert "runtime_callable_key_from_symbol_name" in rendered_runtime_rs
+    assert "runtime_callable_target_ptr" in rendered_runtime_rs
+    assert "RUNTIME_POLL_CALLABLE_KEY_BASE" in rendered_runtime_rs
+    assert '"molt_type_call" => Some(RUNTIME_CALLABLE_KEY_BASE + 0)' in rendered_runtime_rs
+    assert "1 => Some(crate::molt_async_sleep_poll as *const ())" in rendered_runtime_rs
+
+    wasm_abi = (
+        ROOT / "runtime/molt-backend-wasm/src/wasm_abi.rs"
+    ).read_text(encoding="utf-8")
+    assert "wasm_runtime_callables.inc" not in wasm_abi
+    assert "macro_rules! entry_list" not in wasm_abi
+
+    function_abi = (
+        ROOT / "runtime/molt-runtime/src/builtins/functions/function_abi.rs"
+    ).read_text(encoding="utf-8")
+    assert "wasm_runtime_callables.inc" not in function_abi
+    assert "wasm_poll_callables.inc" not in function_abi
+    assert '"molt_type_call" => Some' not in function_abi
+    assert "molt_async_sleep_poll as *const" not in function_abi
 
 
 def test_wasm_abi_manifest_owns_op_import_deps() -> None:

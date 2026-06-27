@@ -2,45 +2,14 @@ use std::iter::ExactSizeIterator;
 use wasm_encoder::{TypeSection, ValType};
 
 pub(crate) use crate::wasm_abi_generated::{
-    POLL_TABLE_FUNCS, RUNTIME_CALLABLE_IMPORTS, RuntimeCallableResult, STATIC_FUNC_TYPES,
-    STATIC_TYPE_COUNT,
+    POLL_TABLE_FUNCS, RESERVED_RUNTIME_CALLABLE_COUNT, RESERVED_RUNTIME_CALLABLE_SPECS,
+    RUNTIME_CALLABLE_IMPORTS, RuntimeCallableResult, STATIC_FUNC_TYPES, STATIC_TYPE_COUNT,
 };
 pub(crate) use molt_codegen_abi::{
     GENERATOR_CONTROL_BYTES as GEN_CONTROL_SIZE, TASK_KIND_COROUTINE, TASK_KIND_FUTURE,
     TASK_KIND_GENERATOR,
 };
 pub(crate) const RELOC_TABLE_BASE_DEFAULT: u32 = 4096;
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct ReservedRuntimeCallableSpec {
-    pub(crate) index: u32,
-    pub(crate) runtime_name: &'static str,
-    pub(crate) import_name: &'static str,
-    pub(crate) arity: usize,
-}
-
-pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec] = &{
-    macro_rules! entry_list {
-        ($(($idx:expr, $sym:ident, $import:literal, $arity:expr))+) => {
-            [
-                $(
-                    ReservedRuntimeCallableSpec {
-                        index: $idx,
-                        runtime_name: stringify!($sym),
-                        import_name: $import,
-                        arity: $arity,
-                    },
-                )+
-            ]
-        };
-    }
-    include!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../wasm_runtime_callables.inc"
-    ))
-};
-pub(crate) const RESERVED_RUNTIME_CALLABLE_COUNT: u32 =
-    RESERVED_RUNTIME_CALLABLE_SPECS.len() as u32;
 
 // ---------------------------------------------------------------------------
 // WASM Exception Handling (WASM_OPTIMIZATION_PLAN.md Section 3.6)

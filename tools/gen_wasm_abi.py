@@ -26,11 +26,16 @@ OUT_RS_FILES = {
     "runtime_callables.rs": OUT_RS_DIR / "runtime_callables.rs",
     "pure_profile.rs": OUT_RS_DIR / "pure_profile.rs",
 }
+OUT_RUNTIME_CALLABLES_RS = (
+    ROOT / "runtime/molt-runtime/src/builtins/functions/wasm_callables_generated.rs"
+)
 OUT_PY = ROOT / "src/molt/_wasm_abi_generated.py"
 OUT_TABLE_LAYOUT_INC = ROOT / "runtime/wasm_table_layout.inc"
-OUT_POLL_INC = ROOT / "runtime/wasm_poll_callables.inc"
-OUT_RESERVED_INC = ROOT / "runtime/wasm_runtime_callables.inc"
 OUT_ALLOWED_IMPORTS = ROOT / "tools/wasm_allowed_imports.txt"
+REMOVED_GENERATED_FILES = (
+    ROOT / "runtime/wasm_poll_callables.inc",
+    ROOT / "runtime/wasm_runtime_callables.inc",
+)
 WASM_VAL_TYPES = {
     "i32": "I32",
     "i64": "I64",
@@ -696,7 +701,9 @@ def _render_rs_mod() -> str:
             "pub(crate) use imports::{IMPORT_REGISTRY, OP_IMPORT_DEPS};\n",
             "pub(crate) use pure_profile::pure_profile_skips_import;\n",
             "pub(crate) use runtime_callables::{\n",
-            "    POLL_TABLE_FUNCS, RUNTIME_CALLABLE_IMPORTS, RuntimeCallableResult,\n",
+            "    POLL_TABLE_FUNCS, RESERVED_RUNTIME_CALLABLE_COUNT,\n",
+            "    RESERVED_RUNTIME_CALLABLE_SPECS, RUNTIME_CALLABLE_IMPORTS,\n",
+            "    RuntimeCallableResult,\n",
             "};\n",
             "pub(crate) use runtime_surface::runtime_surface_requires_direct_import;\n",
             "pub(crate) use static_types::{\n",
@@ -959,7 +966,172 @@ def _render_rs_runtime_callables(data: dict) -> str:
             ]
         )
     lines.append("];\n\n")
+    lines.extend(
+        [
+            "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
+            "pub(crate) struct ReservedRuntimeCallableSpec {\n",
+            "    pub(crate) index: u32,\n",
+            "    pub(crate) runtime_name: &'static str,\n",
+            "    pub(crate) import_name: &'static str,\n",
+            "    pub(crate) arity: usize,\n",
+            "}\n\n",
+            "pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec] = &[\n",
+        ]
+    )
+    for entry in data.get("reserved_runtime_callable", []):
+        lines.extend(
+            [
+                "    ReservedRuntimeCallableSpec {\n",
+                f"        index: {entry['index']},\n",
+                f'        runtime_name: "{entry["runtime_name"]}",\n',
+                f'        import_name: "{entry["import_name"]}",\n',
+                f"        arity: {entry['callable_arity']},\n",
+                "    },\n",
+            ]
+        )
+    lines.extend(
+        [
+            "];\n\n",
+            "pub(crate) const RESERVED_RUNTIME_CALLABLE_COUNT: u32 =\n",
+            "    RESERVED_RUNTIME_CALLABLE_SPECS.len() as u32;\n\n",
+        ]
+    )
     return "".join(lines)
+
+
+def render_runtime_callables_rs(data: dict) -> str:
+    lines: list[str] = [_header("//")]
+    poll_imports = sorted(
+        (
+            (entry["poll_table_slot"], entry["name"])
+            for entry in data["import"]
+            if "poll_table_slot" in entry
+        ),
+        key=lambda item: item[0],
+    )
+    reserved_callables = sorted(
+        data.get("reserved_runtime_callable", []),
+        key=lambda entry: entry["index"],
+    )
+    lines.extend(
+        [
+            "#![allow(dead_code)]\n\n",
+            "use super::*;\n\n",
+            "pub(crate) const RUNTIME_CALLABLE_KEY_BASE: u64 = 0xFFFF_FF00_0000_0000;\n",
+            "pub(crate) const RUNTIME_POLL_CALLABLE_KEY_BASE: u64 =\n",
+            "    RUNTIME_CALLABLE_KEY_BASE + 0x100;\n\n",
+            "#[cfg(target_arch = \"wasm32\")]\n",
+            "pub(crate) const RESERVED_WASM_RUNTIME_CALLABLE_BASE: u64 = ",
+            f"1 + {len(poll_imports)};\n",
+            "#[cfg(target_arch = \"wasm32\")]\n",
+            "pub(crate) const RESERVED_WASM_RUNTIME_CALLABLE_COUNT: u64 = ",
+            f"{len(reserved_callables)};\n",
+            "#[cfg(target_arch = \"wasm32\")]\n",
+            "pub(crate) const RESERVED_WASM_RUNTIME_TRAMPOLINE_BASE: u64 =\n",
+            "    RESERVED_WASM_RUNTIME_CALLABLE_BASE + RESERVED_WASM_RUNTIME_CALLABLE_COUNT;\n\n",
+            "#[inline]\n",
+            "pub(crate) fn runtime_callable_key_from_symbol_name(symbol_name: &str) -> Option<u64> {\n",
+            "    runtime_reserved_callable_key_from_symbol_name(symbol_name)\n",
+            "        .or_else(|| runtime_poll_callable_key_from_symbol_name(symbol_name))\n",
+            "}\n\n",
+            "#[inline]\n",
+            "fn runtime_reserved_callable_key_from_symbol_name(symbol_name: &str) -> Option<u64> {\n",
+            "    match symbol_name {\n",
+        ]
+    )
+    for entry in reserved_callables:
+        lines.append(
+            f'        "{entry["runtime_name"]}" => '
+            f"Some(RUNTIME_CALLABLE_KEY_BASE + {entry['index']}),\n"
+        )
+    lines.extend(
+        [
+            "        _ => None,\n",
+            "    }\n",
+            "}\n\n",
+            "#[inline]\n",
+            "fn runtime_poll_callable_key_from_symbol_name(symbol_name: &str) -> Option<u64> {\n",
+            "    match symbol_name {\n",
+        ]
+    )
+    for slot, import_name in poll_imports:
+        lines.append(
+            f'        "molt_{import_name}" => '
+            f"Some(RUNTIME_POLL_CALLABLE_KEY_BASE + {slot}),\n"
+        )
+    lines.extend(
+        [
+            "        _ => None,\n",
+            "    }\n",
+            "}\n\n",
+            "#[inline]\n",
+            "pub(crate) fn runtime_callable_target_ptr(fn_ptr: u64) -> Option<*const ()> {\n",
+            "    runtime_reserved_callable_target_ptr(fn_ptr)\n",
+            "        .or_else(|| runtime_poll_callable_target_ptr(fn_ptr))\n",
+            "}\n\n",
+            "#[inline]\n",
+            "fn runtime_reserved_callable_target_ptr(fn_ptr: u64) -> Option<*const ()> {\n",
+            "    match fn_ptr.checked_sub(RUNTIME_CALLABLE_KEY_BASE)? {\n",
+        ]
+    )
+    for entry in reserved_callables:
+        lines.append(
+            f"        {entry['index']} => Some({entry['runtime_name']} as *const ()),\n"
+        )
+    lines.extend(
+        [
+            "        _ => None,\n",
+            "    }\n",
+            "}\n\n",
+            "#[inline]\n",
+            "fn runtime_poll_callable_target_ptr(fn_ptr: u64) -> Option<*const ()> {\n",
+            "    match fn_ptr.checked_sub(RUNTIME_POLL_CALLABLE_KEY_BASE)? {\n",
+        ]
+    )
+    for slot, import_name in poll_imports:
+        lines.append(
+            f"        {slot} => Some(crate::molt_{import_name} as *const ()),\n"
+        )
+    lines.extend(
+        [
+            "        _ => None,\n",
+            "    }\n",
+            "}\n\n",
+            "#[cfg(target_arch = \"wasm32\")]\n",
+            "pub(crate) fn reserved_wasm_runtime_callable_info(\n",
+            "    fn_ptr: u64,\n",
+            ") -> Option<(u64, &'static str, &'static str, usize)> {\n",
+        ]
+    )
+    for entry in reserved_callables:
+        lines.extend(
+            [
+                f"    if fn_ptr == fn_addr!({entry['runtime_name']}) {{\n",
+                "        return Some((\n",
+                f"            {entry['index']},\n",
+                f'            "{entry["runtime_name"]}",\n',
+                f'            "{entry["import_name"]}",\n',
+                f"            {entry['callable_arity']},\n",
+                "        ));\n",
+                "    }\n",
+            ]
+        )
+    lines.extend(
+        [
+            "    None\n",
+            "}\n\n",
+            "#[cfg(test)]\n",
+            "pub(crate) fn assert_reserved_runtime_symbols_resolve() {\n",
+        ]
+    )
+    for entry in reserved_callables:
+        lines.append(f"    let _ = {entry['runtime_name']} as *const ();\n")
+    lines.extend(
+        [
+            "}\n",
+        ]
+    )
+    return _rustfmt("wasm_callables_generated.rs", "".join(lines))
 
 
 def _render_rs_pure_profile(data: dict) -> str:
@@ -1169,35 +1341,6 @@ def render_table_layout_inc(data: dict) -> str:
     return "".join(lines)
 
 
-def render_poll_inc(data: dict) -> str:
-    lines = [_header("//")]
-    poll_imports = sorted(
-        (
-            (entry["poll_table_slot"], entry["name"])
-            for entry in data["import"]
-            if "poll_table_slot" in entry
-        ),
-        key=lambda item: item[0],
-    )
-    lines.append("entry_list! {\n")
-    for slot, import_name in poll_imports:
-        lines.append(f'    ({slot}, molt_{import_name}, "{import_name}")\n')
-    lines.append("}\n")
-    return "".join(lines)
-
-
-def render_reserved_inc(data: dict) -> str:
-    lines = [_header("//")]
-    lines.append("entry_list! {\n")
-    for entry in data.get("reserved_runtime_callable", []):
-        lines.append(
-            f'    ({entry["index"]}, {entry["runtime_name"]}, '
-            f'"{entry["import_name"]}", {entry["callable_arity"]})\n'
-        )
-    lines.append("}\n")
-    return "".join(lines)
-
-
 def render_allowed_imports(data: dict) -> str:
     lines = [_header("#")]
     for entry in data.get("link_allowed_import", []):
@@ -1213,6 +1356,17 @@ def _check(path: Path, rendered: str) -> bool:
         print(
             f"STALE generated file: {path}\n"
             "  run `python tools/gen_wasm_abi.py` to regenerate.",
+            file=sys.stderr,
+        )
+        return False
+    return True
+
+
+def _check_absent(path: Path) -> bool:
+    if path.exists():
+        print(
+            f"STALE removed generated file: {path}\n"
+            "  run `python tools/gen_wasm_abi.py` to remove it.",
             file=sys.stderr,
         )
         return False
@@ -1278,30 +1432,32 @@ def main(argv: list[str]) -> int:
 
     data = load_manifest()
     rendered_rs_modules = render_rs_modules(data)
+    rendered_runtime_callables_rs = render_runtime_callables_rs(data)
     rendered_py = render_py(data)
     rendered_table_layout_inc = render_table_layout_inc(data)
-    rendered_poll_inc = render_poll_inc(data)
-    rendered_reserved_inc = render_reserved_inc(data)
     rendered_allowed_imports = render_allowed_imports(data)
     if args.check:
         return (
             0
             if _check_rs_modules(rendered_rs_modules)
+            and _check(OUT_RUNTIME_CALLABLES_RS, rendered_runtime_callables_rs)
             and _check(OUT_PY, rendered_py)
             and _check(OUT_TABLE_LAYOUT_INC, rendered_table_layout_inc)
-            and _check(OUT_POLL_INC, rendered_poll_inc)
-            and _check(OUT_RESERVED_INC, rendered_reserved_inc)
             and _check(OUT_ALLOWED_IMPORTS, rendered_allowed_imports)
+            and all(_check_absent(path) for path in REMOVED_GENERATED_FILES)
             else 1
         )
     _write_rs_modules(rendered_rs_modules)
+    OUT_RUNTIME_CALLABLES_RS.write_text(
+        rendered_runtime_callables_rs, encoding="utf-8", newline="\n"
+    )
     OUT_PY.write_text(rendered_py, encoding="utf-8", newline="\n")
     OUT_TABLE_LAYOUT_INC.write_text(rendered_table_layout_inc, encoding="utf-8", newline="\n")
-    OUT_POLL_INC.write_text(rendered_poll_inc, encoding="utf-8", newline="\n")
-    OUT_RESERVED_INC.write_text(rendered_reserved_inc, encoding="utf-8", newline="\n")
     OUT_ALLOWED_IMPORTS.write_text(
         rendered_allowed_imports, encoding="utf-8", newline="\n"
     )
+    for path in REMOVED_GENERATED_FILES:
+        path.unlink(missing_ok=True)
     return 0
 
 
