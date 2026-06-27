@@ -182,11 +182,37 @@ fn molt_gil() -> &'static Mutex<()> {
     &PREINIT_GIL
 }
 
+/// Which of the three structurally-distinct acquisition lanes produced a
+/// [`GilGuard`].  The lane determines what `Drop` must undo, so encoding it as
+/// an explicit enum makes the three states mutually exclusive (no contradictory
+/// `bool` combinations) and keeps the zero-overhead lane provably free of TLS
+/// access.
+#[cfg(not(target_arch = "wasm32"))]
+enum GilGuardLane {
+    /// This guard performed the `GIL_DEPTH` 0->1 transition and therefore owns
+    /// the mutex guard stored in `GIL_GUARD` TLS.  `Drop` decrements `GIL_DEPTH`
+    /// and, on the 1->0 transition, releases the mutex from TLS.
+    MainLock,
+    /// Re-entrant acquisition while the GIL was already held by the *only*
+    /// GIL-capable thread (`GIL_THREAD_COUNT <= 1` and `GIL_DEPTH > 0`).  The
+    /// depth gate (0<->1, the sole transition that locks/unlocks the mutex) is
+    /// owned by an OUTER `MainLock` guard, so this re-entry changes nothing the
+    /// runtime can observe: `gil_held()` already short-circuits to `true` on
+    /// `GIL_THREAD_COUNT == 1`, and the outer guard keeps `GIL_DEPTH >= 1` for
+    /// its whole lifetime.  Bumping `GIL_DEPTH` here would be pure bookkeeping
+    /// with no consumer, so both `new()` and `Drop` touch NO TLS at all.  This
+    /// is the hot-path lane taken by every `molt_inc_ref`/`molt_dec_ref`/
+    /// `molt_raise`/`molt_exception_*` FFI entry in a single-threaded program.
+    ReentrantNoop,
+    /// TLS-destroyed fallback (teardown): nesting is tracked via the
+    /// `GIL_FALLBACK_*` atomics instead of `GIL_DEPTH`.
+    Fallback,
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) struct GilGuard {
-    _marker: (),
     fallback_guard: Option<MutexGuard<'static, ()>>,
-    fallback_depth: bool,
+    lane: GilGuardLane,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -197,31 +223,35 @@ pub(crate) struct PyToken<'gil> {
 #[cfg(not(target_arch = "wasm32"))]
 impl GilGuard {
     pub(crate) fn new() -> Self {
-        // Fast path: when only one thread has ever touched the GIL and we are
-        // already inside a GIL-protected region (depth > 0), we can skip the
-        // mutex lock and GIL_GUARD TLS entirely.  This is safe because:
-        //   - depth > 0 means the mutex is already held by this thread
-        //   - thread_count == 1 means no other thread can race us
-        //   - we still increment/decrement GIL_DEPTH via TLS for correct
-        //     nesting, so all code that checks gil_held() sees the right value
-        //   - first entry (depth == 0) always takes the full path, ensuring
-        //     the mutex guard is stored in GIL_GUARD TLS for proper teardown
+        // Zero-overhead re-entrant fast path: when only one thread has ever
+        // touched the GIL (`GIL_THREAD_COUNT <= 1`) AND we are already inside a
+        // GIL-protected region (`GIL_DEPTH > 0`), this acquisition is a pure
+        // no-op.  It performs NO `GIL_DEPTH` mutation — neither here nor in
+        // `Drop` — because nothing the runtime can observe depends on the
+        // re-entrant nesting count:
+        //   - `GIL_THREAD_COUNT == 1` makes `gil_held()` short-circuit to `true`
+        //     regardless of the exact depth value, so every `gil_assert()` /
+        //     `gil_held()` check still sees the GIL as held.
+        //   - The mutex lock/unlock is gated solely on the `GIL_DEPTH` 0<->1
+        //     transition, which is owned by the OUTERMOST guard (the `MainLock`
+        //     that took the full path below, or the runtime guard installed by
+        //     `hold_runtime_gil`).  That outer guard keeps `GIL_DEPTH >= 1` for
+        //     its entire lifetime, so a re-entry can never reach the 1->0 edge.
+        //   - `GilReleaseGuard` reads the *current* depth, drives it to 0, and
+        //     restores it on drop; leaving the depth at the outer level (instead
+        //     of an inflated nesting count) keeps that capture/restore exact.
+        // Eliminating the two `GIL_DEPTH.try_with` TLS round-trips (one in
+        // `new`, one in `Drop`) per acquisition is the dominant win on the
+        // exception/refcount FFI hot path, where every `molt_inc_ref`,
+        // `molt_dec_ref`, `molt_raise`, and `molt_exception_*` call enters here.
         if GIL_THREAD_COUNT.load(AtomicOrdering::Relaxed) <= 1 {
-            match GIL_DEPTH.try_with(|depth| {
-                let current = depth.get();
-                if current > 0 {
-                    // Reentrant acquisition on the single thread — fast path.
-                    depth.set(current + 1);
-                    true
-                } else {
-                    false
-                }
-            }) {
+            match GIL_DEPTH.try_with(|depth| depth.get() > 0) {
                 Ok(true) => {
+                    // Re-entrant on the single GIL thread: depth gate already
+                    // owned by an outer guard. Touch no TLS; drop is a no-op.
                     return Self {
-                        _marker: (),
                         fallback_guard: None,
-                        fallback_depth: false,
+                        lane: GilGuardLane::ReentrantNoop,
                     };
                 }
                 Ok(false) => { /* depth == 0, fall through to full path */ }
@@ -255,9 +285,8 @@ impl GilGuard {
             }
         }
         Self {
-            _marker: (),
             fallback_guard: None,
-            fallback_depth: false,
+            lane: GilGuardLane::MainLock,
         }
     }
 
@@ -271,18 +300,16 @@ impl GilGuard {
         if owner == tid {
             GIL_FALLBACK_DEPTH.fetch_add(1, AtomicOrdering::AcqRel);
             return Self {
-                _marker: (),
                 fallback_guard: None,
-                fallback_depth: true,
+                lane: GilGuardLane::Fallback,
             };
         }
         let guard = molt_gil().lock().unwrap_or_else(|e| e.into_inner());
         GIL_FALLBACK_OWNER.store(tid, AtomicOrdering::Release);
         GIL_FALLBACK_DEPTH.store(1, AtomicOrdering::Release);
         Self {
-            _marker: (),
             fallback_guard: Some(guard),
-            fallback_depth: true,
+            lane: GilGuardLane::Fallback,
         }
     }
 }
@@ -290,28 +317,34 @@ impl GilGuard {
 #[cfg(not(target_arch = "wasm32"))]
 impl Drop for GilGuard {
     fn drop(&mut self) {
-        if self.fallback_depth {
-            let depth = GIL_FALLBACK_DEPTH.fetch_sub(1, AtomicOrdering::AcqRel);
-            let next = depth.saturating_sub(1);
-            if next == 0 {
-                GIL_FALLBACK_OWNER.store(0, AtomicOrdering::Release);
-                let _ = self.fallback_guard.take();
+        match self.lane {
+            // Re-entrant single-threaded acquisition: `new()` touched no TLS and
+            // owns no mutex/depth obligation, so there is nothing to undo.
+            GilGuardLane::ReentrantNoop => {}
+            GilGuardLane::Fallback => {
+                let depth = GIL_FALLBACK_DEPTH.fetch_sub(1, AtomicOrdering::AcqRel);
+                let next = depth.saturating_sub(1);
+                if next == 0 {
+                    GIL_FALLBACK_OWNER.store(0, AtomicOrdering::Release);
+                    let _ = self.fallback_guard.take();
+                }
             }
-            return;
-        }
-        let should_release = match GIL_DEPTH.try_with(|depth| {
-            let current = depth.get();
-            let next = current.saturating_sub(1);
-            depth.set(next);
-            next == 0
-        }) {
-            Ok(should_release) => should_release,
-            Err(_) => return,
-        };
-        if should_release {
-            let _ = GIL_GUARD.try_with(|slot| {
-                let _ = slot.borrow_mut().take();
-            });
+            GilGuardLane::MainLock => {
+                let should_release = match GIL_DEPTH.try_with(|depth| {
+                    let current = depth.get();
+                    let next = current.saturating_sub(1);
+                    depth.set(next);
+                    next == 0
+                }) {
+                    Ok(should_release) => should_release,
+                    Err(_) => return,
+                };
+                if should_release {
+                    let _ = GIL_GUARD.try_with(|slot| {
+                        let _ = slot.borrow_mut().take();
+                    });
+                }
+            }
         }
     }
 }
@@ -491,41 +524,82 @@ mod tests {
         let _ = super::RUNTIME_GIL_GUARD.try_with(|slot| {
             let _ = slot.borrow_mut().take();
         });
-        let _ = super::GIL_THREAD_REGISTERED.try_with(|registered| {
-            if registered.replace(false) {
-                let _ = super::GIL_THREAD_COUNT.fetch_update(
-                    super::AtomicOrdering::AcqRel,
-                    super::AtomicOrdering::Acquire,
-                    |count| count.checked_sub(1),
-                );
-            }
-        });
+        // Deregister THIS thread, then HARD-reset the live-thread counter to 0.
+        // Tests are serialized by `TEST_MUTEX` and each spawns+joins its own
+        // worker within the test, so no other GIL thread is legitimately live at
+        // reset time.  A dead sibling-test worker can, however, leave its
+        // registration count un-decremented (its `GilThreadRegistrationGuard`
+        // drop runs `try_with` during TLS teardown, which may no-op).  A stale
+        // count > 1 would silently disable the single-threaded zero-overhead
+        // fast path under test even though the process is effectively
+        // single-threaded — so force a clean slate: the next `GilGuard::new()`
+        // performs a true first-acquire (registers this thread, depth 0->1).
+        let _ = super::GIL_THREAD_REGISTERED.try_with(|registered| registered.set(false));
+        super::GIL_THREAD_COUNT.store(0, super::AtomicOrdering::SeqCst);
         let _ = GIL_DEPTH.try_with(|depth| depth.set(0));
     }
 
+    /// The outermost guard owns the `GIL_DEPTH` 0->1 mutex gate; re-entrant
+    /// acquisitions on the single GIL thread are zero-overhead no-ops that keep
+    /// the GIL logically held WITHOUT inflating the depth counter, and the gate
+    /// returns to its starting level (releasing the mutex exactly once) after
+    /// every guard drops.
     #[test]
-    fn gil_depth_tracks_nesting() {
+    fn gil_reentrant_acquisition_is_zero_overhead_noop() {
         let _guard = crate::TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         reset_gil_test_state();
         let start = GIL_DEPTH.with(|depth| depth.get());
+        // Single-threaded precondition for the no-op fast path.
+        assert!(super::GIL_THREAD_COUNT.load(super::AtomicOrdering::SeqCst) <= 1);
 
         {
+            // Outermost guard performs the 0->1 transition and takes the mutex.
             let _g1 = GilGuard::new();
             let depth1 = GIL_DEPTH.with(|depth| depth.get());
-            assert_eq!(depth1, start + 1);
+            assert_eq!(depth1, start + 1, "outer guard owns the depth gate");
             assert!(gil_held());
+            // The mutex must actually be held now: a non-reentrant try_lock fails.
+            assert!(
+                super::molt_gil().try_lock().is_err(),
+                "outer guard must hold the GIL mutex",
+            );
             {
+                // Re-entrant acquisition on the single GIL thread: NO depth bump,
+                // NO extra mutex work — a pure no-op — yet the GIL stays held.
                 let _g2 = GilGuard::new();
                 let depth2 = GIL_DEPTH.with(|depth| depth.get());
-                assert_eq!(depth2, start + 2);
+                assert_eq!(
+                    depth2, depth1,
+                    "re-entrant acquisition must NOT mutate GIL_DEPTH",
+                );
+                assert!(gil_held());
+                {
+                    // Deeper nesting is equally a no-op.
+                    let _g3 = GilGuard::new();
+                    let depth3 = GIL_DEPTH.with(|depth| depth.get());
+                    assert_eq!(depth3, depth1, "deeper re-entry stays a no-op");
+                    assert!(gil_held());
+                }
+                // Dropping a no-op guard must not perturb the gate.
+                assert_eq!(GIL_DEPTH.with(|depth| depth.get()), depth1);
                 assert!(gil_held());
             }
+            // Dropping the inner no-op guards left the outer gate untouched.
             let depth1_after = GIL_DEPTH.with(|depth| depth.get());
             assert_eq!(depth1_after, start + 1);
+            assert!(gil_held());
         }
 
+        // The outer guard's drop performed the 1->0 transition and released the
+        // mutex exactly once.
         let final_depth = GIL_DEPTH.with(|depth| depth.get());
-        assert_eq!(final_depth, start);
+        assert_eq!(final_depth, start, "depth restored after all guards drop");
+        let reacquired = super::molt_gil().try_lock();
+        assert!(
+            reacquired.is_ok(),
+            "GIL mutex must be free after the outer guard drops",
+        );
+        drop(reacquired);
     }
 
     #[test]
