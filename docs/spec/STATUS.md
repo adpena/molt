@@ -1163,7 +1163,7 @@ the implementation. For forward-looking priorities, use
 		  ownership, and deque retained-handle ownership fixes. Fresh 2026-06-20
 		  guarded evidence now builds the full-stdlib adapter, gets past the
 		  `tinygrad/uop/ops.py:1586` teardown invalid-header abort, and fixes the
-		  post-JSON `argparse.Namespace` return-cleanup double drop.
+		  leaf `argparse.Namespace` return-cleanup double drop.
 		  Direct rebuilt-adapter evidence covered the then-four default
 		  public-API workloads. The current CPython adapter source now enumerates
 		  five default public-API workloads, including `attention_core`, and the

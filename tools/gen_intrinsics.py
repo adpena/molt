@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """Generate intrinsics registry artifacts from the canonical manifest."""
 
 from __future__ import annotations
@@ -6,7 +6,6 @@ from __future__ import annotations
 import argparse
 from collections import OrderedDict
 import difflib
-import importlib.util
 from pathlib import Path
 import re
 import sys
@@ -24,6 +23,7 @@ if str(ROOT) not in sys.path:
 MANIFEST = ROOT / "runtime/molt-runtime/src/intrinsics/manifest.pyi"
 CATEGORIES_TOML = ROOT / "runtime/molt-runtime/src/intrinsics/categories.toml"
 OUT_PYI = ROOT / "src/molt/_intrinsics.pyi"
+OUT_RUNTIME_FEATURE_GATES_PY = ROOT / "src/molt/_runtime_feature_gates.py"
 OUT_RS = ROOT / "runtime/molt-runtime/src/intrinsics/generated.rs"
 OUT_RS_RESOLVERS_DIR = ROOT / "runtime/molt-runtime/src/intrinsics/generated_resolvers"
 MATH_LEAF_RESOLVERS_DIR = ROOT / "runtime/molt-runtime-math/src/intrinsics_generated"
@@ -38,6 +38,10 @@ IPADDRESS_LEAF_RESOLVERS_DIR = (
 IPADDRESS_LEAF_RESOLVER_INDEX = IPADDRESS_LEAF_RESOLVERS_DIR / "mod.rs"
 TK_LEAF_RESOLVERS_DIR = ROOT / "runtime/molt-runtime-tk/src/intrinsics_generated"
 TK_LEAF_RESOLVER_INDEX = TK_LEAF_RESOLVERS_DIR / "mod.rs"
+COLLECTIONS_LEAF_RESOLVERS_DIR = (
+    ROOT / "runtime/molt-runtime-collections/src/intrinsics_generated"
+)
+COLLECTIONS_LEAF_RESOLVER_INDEX = COLLECTIONS_LEAF_RESOLVERS_DIR / "mod.rs"
 LEAF_RESOLVER_REGISTRIES = {
     "stringprep": {
         "output": ROOT / "runtime/molt-runtime-stringprep/src/intrinsics_generated.rs",
@@ -133,6 +137,26 @@ LEAF_RESOLVER_REGISTRIES = {
         "symbol_path_prefix": "molt_runtime_tk::intrinsics",
         "function_path_prefix": "crate::intrinsics",
     },
+    "argparse": {
+        "output": COLLECTIONS_LEAF_RESOLVERS_DIR / "argparse_resolver.rs",
+        "module_index": COLLECTIONS_LEAF_RESOLVER_INDEX,
+        "crate_path": "molt_runtime_collections",
+        "crate_resolver_path": (
+            "molt_runtime_collections::intrinsics_generated::argparse_resolver"
+        ),
+        "symbol_path_prefix": "molt_runtime_collections::argparse",
+        "function_path_prefix": "crate::argparse",
+    },
+    "collections": {
+        "output": COLLECTIONS_LEAF_RESOLVERS_DIR / "collections_resolver.rs",
+        "module_index": COLLECTIONS_LEAF_RESOLVER_INDEX,
+        "crate_path": "molt_runtime_collections",
+        "crate_resolver_path": (
+            "molt_runtime_collections::intrinsics_generated::collections_resolver"
+        ),
+        "symbol_path_prefix": "molt_runtime_collections::collections_ext",
+        "function_path_prefix": "crate::collections_ext",
+    },
 }
 OUT_BACKEND_OVERRIDES_RS = (
     ROOT / "runtime/molt-backend/src/intrinsic_symbol_overrides.rs"
@@ -155,33 +179,47 @@ def _load_harness_memory_guard():
     return _HARNESS_MEMORY_GUARD
 
 
-# The symbol-prefix -> Cargo-feature gate mapping is the single source of truth
-# shared with the frontend's compile-time profile-availability refusal. It lives
-# in the shipped `molt` package (`src/molt/_runtime_feature_gates.py`) so the
-# build-time gate generation here depends on the shipped data — not the reverse.
-# Load it by file path to avoid importing the `molt` package (and its
-# `__init__` side effects) from this standalone dev tool.
-def _load_runtime_feature_gates():
-    gates_path = ROOT / "src/molt/_runtime_feature_gates.py"
-    spec = importlib.util.spec_from_file_location(
-        "molt_gen_intrinsics_feature_gates", gates_path
+# Cargo.toml/cfg-gated Rust modules define whether a feature removes symbol
+# definitions from the linked runtime; categories.toml defines symbol-prefix
+# feature attribution. This generator emits the shipped Python lookup module.
+def _cfg_gated_mod_features(rust_source: str) -> set[str]:
+    """Features that cfg-gate a Rust `mod` declaration."""
+    pattern = re.compile(
+        r'#\[cfg\(feature\s*=\s*"([^"]+)"\)\]\s*\n'
+        r"\s*(?:pub\s+|pub\(crate\)\s+)?mod\b"
     )
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"cannot load feature-gate table: {gates_path}")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    return set(pattern.findall(rust_source))
 
 
-_FEATURE_GATES_MODULE = _load_runtime_feature_gates()
+def _feature_expands_to_dep(name: str, features: dict, seen: set[str]) -> bool:
+    """True iff *name* transitively enables an optional dependency."""
+    if name in seen:
+        return False
+    seen.add(name)
+    for item in features.get(name, []):
+        if item.startswith("dep:") or "/" in item:
+            return True
+        if item in features and _feature_expands_to_dep(item, features, seen):
+            return True
+    return False
 
-# Re-exported under the historical names so callers/tests in this module keep
-# working. Ordering matters: longest prefix wins (resolved by
-# `feature_gate_for_symbol`).
-_SYMBOL_FEATURE_GATES: list[tuple[str, str]] = list(
-    _FEATURE_GATES_MODULE.RUNTIME_FEATURE_GATES
-)
-_feature_gate_for_symbol = _FEATURE_GATES_MODULE.feature_gate_for_symbol
+
+def _mechanically_derived_link_affecting_features(
+    feature_gates: list[tuple[str, str]],
+) -> tuple[str, ...]:
+    runtime_crate = ROOT / "runtime/molt-runtime"
+    cargo = tomllib.loads((runtime_crate / "Cargo.toml").read_text())
+    features = cargo.get("features", {})
+    mod_features = _cfg_gated_mod_features(
+        (runtime_crate / "src/builtins/mod.rs").read_text()
+    ) | _cfg_gated_mod_features((runtime_crate / "src/lib.rs").read_text())
+    dep_features = {
+        feature
+        for feature in features
+        if _feature_expands_to_dep(feature, features, set())
+    }
+    gate_features = {feature for _prefix, feature in feature_gates}
+    return tuple(sorted((mod_features | dep_features) & gate_features))
 
 
 _DEF_RE = re.compile(
@@ -357,7 +395,7 @@ def _validate_symbols(entries: list[IntrinsicEntry]) -> None:
     src_roots = sorted(path for path in runtime_root.glob("*/src") if path.is_dir())
     rs_files = [rs for src_root in src_roots for rs in src_root.rglob("*.rs")]
     corpus = "\n".join(path.read_text(encoding="utf-8") for path in rs_files)
-    # Single-pass: extract all function names defined in the corpus — O(n+m)
+    # Single-pass: extract all function names defined in the corpus â€” O(n+m)
     # instead of O(n*m) regex searches per symbol
     defined_fns = set(re.findall(r"\bfn\s+(\w+)", corpus))
     missing = [entry.symbol for entry in entries if entry.symbol not in defined_fns]
@@ -406,78 +444,51 @@ def _load_categories() -> tuple[
     return builtin_symbols, internal_prefixes, stdlib_modules
 
 
+def _load_runtime_feature_gates_from_categories() -> list[tuple[str, str]]:
+    """Return symbol-prefix feature gates declared in categories.toml."""
+    raw = CATEGORIES_TOML.read_bytes()
+    data = tomllib.loads(raw.decode())
+    gates: list[tuple[str, str]] = []
+    for _mod_name, mod_data in data.get("stdlib", {}).items():
+        feature = mod_data.get("feature")
+        if not isinstance(feature, str) or not feature:
+            continue
+        raw_prefixes = mod_data.get("feature_prefixes", mod_data.get("prefixes", []))
+        for prefix in raw_prefixes:
+            gates.append((f"molt_{prefix}", feature))
+    return gates
+
+
+_SYMBOL_FEATURE_GATES: list[tuple[str, str]] = (
+    _load_runtime_feature_gates_from_categories()
+)
+
+
+def _feature_gate_for_symbol(symbol: str) -> str | None:
+    """Return the Cargo feature gate for *symbol*, if categories declare one."""
+    best: tuple[int, str] | None = None
+    for prefix, feature in _SYMBOL_FEATURE_GATES:
+        if symbol.startswith(prefix):
+            prefix_len = len(prefix)
+            if best is None or prefix_len > best[0]:
+                best = (prefix_len, feature)
+    return best[1] if best is not None else None
+
+
 # Additional prefix-to-module mapping for modules NOT yet in categories.toml.
 # These are checked *after* categories.toml rules so the TOML file wins.
 _EXTRA_PREFIX_MODULES: list[tuple[str, str]] = [
-    ("molt_math_", "math"),
-    ("molt_json_", "json"),
-    ("molt_os_", "os"),
-    ("molt_socket_", "socket"),
-    ("molt_asyncio_", "asyncio"),
-    ("molt_async_sleep", "asyncio"),
-    ("molt_datetime_", "datetime"),
-    ("molt_re_", "re"),
-    ("molt_http_", "http"),
-    ("molt_decimal_", "decimal"),
     ("molt_pathlib_", "pathlib"),
-    ("molt_signal_", "signal"),
-    ("molt_logging_", "logging"),
-    ("molt_csv_", "csv"),
     ("molt_hashlib_", "hashlib"),
-    ("molt_hash_", "crypto"),
-    ("molt_hmac_", "crypto"),
-    ("molt_compare_digest", "crypto"),
-    ("molt_pbkdf2_", "crypto"),
-    ("molt_scrypt", "crypto"),
-    ("molt_secrets_", "crypto"),
-    ("molt_zlib_", "compression"),
-    ("molt_bz2_", "compression"),
-    ("molt_lzma_", "compression"),
-    ("molt_deflate_", "compression"),
-    ("molt_inflate_", "compression"),
-    ("molt_gzip_", "compression"),
-    ("molt_tarfile_", "compression"),
-    ("molt_compression_streams_", "compression"),
     ("molt_ssl_", "ssl"),
-    ("molt_struct_", "struct"),
-    ("molt_thread_", "threading"),
-    ("molt_process_", "subprocess"),
-    ("molt_stream_", "io"),
-    ("molt_file_", "io"),
-    ("molt_io_wait", "io"),
-    ("molt_ws_", "websocket"),
-    ("molt_importlib_", "importlib"),
-    ("molt_bytes_", "bytes"),
-    ("molt_bytearray_", "bytes"),
-    ("molt_string_", "string"),
-    ("molt_buffer2d_", "buffer"),
-    ("molt_weakref_", "weakref"),
     ("molt_weakkeydict_", "weakref"),
     ("molt_weakvaluedict_", "weakref"),
     ("molt_weakset_", "weakref"),
-    ("molt_contextlib_", "contextlib"),
-    ("molt_cancel_token_", "cancel"),
-    ("molt_cancel_current", "cancel"),
-    ("molt_cancelled", "cancel"),
-    ("molt_lock_", "lock"),
-    ("molt_sqlite_", "sqlite"),
-    ("molt_sqlite3_", "sqlite"),
-    ("molt_db_", "sqlite"),
-    ("molt_tk_", "tk"),
     ("molt_atexit_", "atexit"),
-    ("molt_time_", "time"),
-    ("molt_random_", "random"),
     ("molt_itertools_", "itertools"),
     ("molt_functools_", "functools"),
     ("molt_enum_", "enum"),
     ("molt_dataclasses_", "dataclasses"),
-    ("molt_collections_abc_runtime", "collections"),
-    ("molt_namedtuple_", "collections"),
-    ("molt_ordereddict_", "collections"),
-    ("molt_defaultdict_", "collections"),
-    ("molt_deque_", "collections"),
-    ("molt_counter_", "collections"),
-    ("molt_chainmap_", "collections"),
     ("molt_heapq_", "heapq"),
     ("molt_bisect_", "bisect"),
     ("molt_insort_", "bisect"),
@@ -489,67 +500,38 @@ _EXTRA_PREFIX_MODULES: list[tuple[str, str]] = [
     ("molt_traceback_", "traceback"),
     ("molt_linecache_", "linecache"),
     ("molt_tokenize_", "tokenize"),
-    ("molt_ast_", "ast"),
     ("molt_sys_", "sys"),
     ("molt_platform_", "platform"),
     ("molt_locale_", "locale"),
     ("molt_codecs_", "codecs"),
     ("molt_encodings_", "codecs"),
-    ("molt_unicodedata_", "unicodedata"),
-    ("molt_email_", "email"),
-    ("molt_urllib_", "urllib"),
-    ("molt_html_", "html"),
-    ("molt_xml_sax_", "xml_sax"),
-    ("molt_xml_", "xml_etree"),
     ("molt_pprint_", "pprint"),
     ("molt_textwrap_", "textwrap"),
-    ("molt_difflib_", "difflib"),
     ("molt_shutil_", "shutil"),
     ("molt_shlex_", "shlex"),
     ("molt_fnmatch", "fnmatch"),
-    ("molt_glob_", "glob"),
-    ("molt_tempfile_", "tempfile"),
-    ("molt_zipfile_", "archive"),
     ("molt_zipapp_", "archive"),
-    ("molt_cbor_", "serialization"),
-    ("molt_msgpack_", "serialization"),
     ("molt_pickle_", "serialization"),
     ("molt_uuid_", "uuid"),
-    ("molt_binascii_", "binascii"),
-    ("molt_base64_", "base64"),
-    ("molt_quopri_", "quopri"),
-    ("molt_uu_codec", "uu"),
-    ("molt_ipaddress_", "ipaddress"),
-    ("molt_select_", "select"),
-    ("molt_socketserver_", "socketserver"),
     ("molt_socketpair", "socket"),
-    ("molt_concurrent_", "concurrent"),
     ("molt_multiprocessing_", "multiprocessing"),
     ("molt_subprocess_", "subprocess"),
     ("molt_queue_", "queue"),
     ("molt_gc_", "gc"),
-    ("molt_ctypes_", "ctypes"),
-    ("molt_cmath_", "cmath"),
-    ("molt_statistics_", "statistics"),
-    ("molt_fraction_", "fractions"),
     ("molt_array_", "array"),
     ("molt_memoryview_", "memoryview"),
     ("molt_operator_", "operator"),
     ("molt_keyword_", "keyword"),
     ("molt_opcode_", "opcode"),
     ("molt_site_", "site"),
-    ("molt_configparser_", "configparser"),
     ("molt_gettext_", "gettext"),
-    ("molt_argparse_", "argparse"),
     ("molt_codeop_", "codeop"),
     ("molt_compileall_", "compileall"),
     ("molt_py_compile_", "py_compile"),
     ("molt_runpy_", "runpy"),
     ("molt_pkgutil_", "pkgutil"),
-    ("molt_imghdr_", "imghdr"),
     ("molt_stat_", "stat"),
     ("molt_fcntl_", "fcntl"),
-    ("molt_zoneinfo_", "zoneinfo"),
     ("molt_graphlib_", "graphlib"),
     ("molt_punycode_", "punycode"),
     ("molt_this_", "this"),
@@ -557,11 +539,7 @@ _EXTRA_PREFIX_MODULES: list[tuple[str, str]] = [
     ("molt_xmlrpc_", "xmlrpc"),
     ("molt_tomllib_", "tomllib"),
     ("molt_symtable_", "symtable"),
-    ("molt_colorsys_", "colorsys"),
-    ("molt_dbm_", "dbm"),
-    ("molt_pipe_transport_", "asyncio"),
     ("molt_protocol_", "asyncio"),
-    ("molt_event_loop_", "asyncio"),
     ("molt_event_", "asyncio"),
     ("molt_future_", "asyncio"),
     ("molt_asyncgen_", "asyncio"),
@@ -580,18 +558,7 @@ _EXTRA_PREFIX_MODULES: list[tuple[str, str]] = [
     ("molt_stringio_", "io"),
     ("molt_bytesio_", "io"),
     ("molt_buffered_", "io"),
-    ("molt_http_client", "http"),
-    ("molt_http_server", "http"),
-    ("molt_http_cookiejar", "http"),
-    ("molt_http_cookies", "http"),
-    ("molt_http_message", "http"),
-    ("molt_http_parse", "http"),
-    ("molt_http_status", "http"),
-    ("molt_logging_config", "logging"),
     ("molt_path_", "pathlib"),
-    ("molt_timedelta_", "datetime"),
-    ("molt_timezone_", "datetime"),
-    ("molt_date_", "datetime"),
     ("molt_token_payload", "tokenize"),
     ("molt_repr_from", "reprlib"),
 ]
@@ -985,6 +952,52 @@ def _write_pyi(raw_manifest: str) -> None:
     _write_text_if_changed(OUT_PYI, header + body)
 
 
+def _write_runtime_feature_gates_py() -> None:
+    link_affecting = _mechanically_derived_link_affecting_features(
+        _SYMBOL_FEATURE_GATES
+    )
+    lines: list[str] = []
+    lines.append(
+        '"""Generated runtime intrinsic symbol-prefix feature gates.\n\n'
+        "Source authorities:\n"
+        "- runtime/molt-runtime/src/intrinsics/categories.toml owns "
+        "symbol-prefix feature attribution.\n"
+        "- runtime/molt-runtime/Cargo.toml and cfg-gated runtime modules own "
+        "whether disabling a feature removes linked symbols.\n"
+        '"""\n\n'
+    )
+    lines.append("# @generated by tools/gen_intrinsics.py. DO NOT EDIT.\n\n")
+    lines.append("from __future__ import annotations\n\n")
+    lines.append("RUNTIME_FEATURE_GATES: tuple[tuple[str, str], ...] = (\n")
+    for prefix, feature in _SYMBOL_FEATURE_GATES:
+        lines.append(f'    ("{prefix}", "{feature}"),\n')
+    lines.append(")\n\n")
+    lines.append("LINK_AFFECTING_FEATURES: frozenset[str] = frozenset(\n")
+    lines.append("    {\n")
+    for feature in link_affecting:
+        lines.append(f'        "{feature}",\n')
+    lines.append("    }\n")
+    lines.append(")\n\n\n")
+    lines.append("def feature_gate_for_symbol(symbol: str) -> str | None:\n")
+    lines.append("    \"\"\"Return the Cargo feature gate for *symbol*, or None.\"\"\"\n")
+    lines.append("    best: tuple[int, str] | None = None\n")
+    lines.append("    for prefix, feature in RUNTIME_FEATURE_GATES:\n")
+    lines.append("        if symbol.startswith(prefix):\n")
+    lines.append("            prefix_len = len(prefix)\n")
+    lines.append("            if best is None or prefix_len > best[0]:\n")
+    lines.append("                best = (prefix_len, feature)\n")
+    lines.append("    return best[1] if best is not None else None\n\n\n")
+    lines.append("def link_affecting_feature_gate_for_symbol(symbol: str) -> str | None:\n")
+    lines.append(
+        "    \"\"\"Return *symbol*'s feature only when disabling it breaks link.\"\"\"\n"
+    )
+    lines.append("    feature = feature_gate_for_symbol(symbol)\n")
+    lines.append("    if feature is None or feature not in LINK_AFFECTING_FEATURES:\n")
+    lines.append("        return None\n")
+    lines.append("    return feature\n")
+    _write_text_if_changed(OUT_RUNTIME_FEATURE_GATES_PY, "".join(lines))
+
+
 def _remove_backend_overrides_rs() -> None:
     if _CHECK_MODE and OUT_BACKEND_OVERRIDES_RS.exists():
         _record_check_diff(
@@ -1005,6 +1018,7 @@ def main(argv: list[str] | None = None) -> int:
 
     raw, entries = _load_manifest()
     _validate_symbols(entries)
+    _write_runtime_feature_gates_py()
     _write_generated_rs(entries)
     _write_pyi(raw)
     _remove_backend_overrides_rs()
