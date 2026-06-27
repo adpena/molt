@@ -1,13 +1,16 @@
 use super::args::{clear_last_error, get_string_arg, raise_tcl_for_handle, set_last_error};
-use super::callbacks::{
-    cleanup_after_tokens, invoke_filehandler_command, next_ready_filehandler_commands,
-    tokens_for_after_command,
-};
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
+use super::callbacks::{cleanup_after_tokens, tokens_for_after_command};
+use super::callbacks::{invoke_filehandler_command, next_ready_filehandler_commands};
+#[cfg(any(target_arch = "wasm32", not(feature = "native-tcl")))]
 use super::commands::{
     handle_after_command, handle_expr_command, handle_loadtk_command, handle_tkwait_command,
-    handle_update_command, invoke_callback, lookup_bound_callback, run_event_callback,
+    handle_update_command, lookup_bound_callback,
 };
+use super::commands::{invoke_callback, run_event_callback};
+#[cfg(any(target_arch = "wasm32", not(feature = "native-tcl")))]
 use super::dialogs::{handle_headless_commondialog_command, handle_headless_tk_dialog_command};
+#[cfg(any(target_arch = "wasm32", not(feature = "native-tcl")))]
 use super::event_commands::{handle_bind_command, handle_bindtags_command, handle_event_command};
 #[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 use super::native::{
@@ -15,16 +18,23 @@ use super::native::{
     take_pending_tcl_callbacks,
 };
 use super::parsing::parse_tcl_script_commands;
-use super::state::{TkAppState, TkEvent, app_mut_from_registry, app_tcl_error_locked, tk_registry};
 #[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
-use super::tcl::{TclApi, TclTypePtrs, ensure_owner_thread, eval, get, new};
-use super::trace_commands::{
-    call_tk_command_from_strings, handle_set_command, handle_trace_command, handle_unset_command,
-};
+use super::state::app_tcl_error_locked;
+use super::state::{TkAppState, TkEvent, app_mut_from_registry, tk_registry};
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
+use super::tcl::{TclApi, TclTypePtrs};
+use super::trace_commands::call_tk_command_from_strings;
+#[cfg(any(target_arch = "wasm32", not(feature = "native-tcl")))]
+use super::trace_commands::{handle_set_command, handle_trace_command, handle_unset_command};
+#[cfg(any(target_arch = "wasm32", not(feature = "native-tcl")))]
 use super::ttk::{handle_ttk_notebook_enable_traversal, handle_ttk_style_command};
+#[cfg(any(target_arch = "wasm32", not(feature = "native-tcl")))]
 use super::widgets::path::handle_widget_path_command;
-use crate::bridge::{dec_ref_bits, exception_pending, inc_ref_bits, string_obj_to_owned, to_i64};
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
+use crate::bridge::inc_ref_bits;
+use crate::bridge::{dec_ref_bits, exception_pending, string_obj_to_owned, to_i64};
 use molt_runtime_core::prelude::{MoltObject, PyToken, obj_from_bits};
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 use std::collections::HashSet;
 
 #[cfg(any(target_arch = "wasm32", not(feature = "native-tcl")))]

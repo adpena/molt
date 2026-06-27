@@ -4,8 +4,6 @@ use super::state::{
     app_mut_from_registry, app_tcl_error_locked, clear_value_map_refs, tk_registry,
     value_map_set_bits,
 };
-#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
-use super::tcl::get;
 use super::widgets::common::alloc_empty_string_bits;
 use crate::bridge::{dec_ref_bits, inc_ref_bits};
 use molt_runtime_core::prelude::{MoltObject, PyToken};

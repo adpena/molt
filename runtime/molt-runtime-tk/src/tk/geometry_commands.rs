@@ -7,8 +7,6 @@ use super::parsing::{
 use super::state::{
     TkWidgetState, app_mut_from_registry, app_tcl_error_locked, tk_registry, value_map_set_bits,
 };
-#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
-use super::tcl::{get, new};
 use molt_runtime_core::prelude::{MoltObject, PyToken};
 use std::collections::HashMap;
 
