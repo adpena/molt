@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use crate::ir::OpIR;
 
+use super::super::call_targets::gpu_runtime_symbol_for_simple_kind;
 use super::super::op_kinds_generated::{
     kind_to_opcode_table, opcode_ssa_s_value_attr_key_table,
     simpleir_kind_preserves_original_kind_for_ssa,
@@ -297,15 +298,4 @@ impl<'a> SsaContext<'a> {
 /// (`tools/audit_op_kinds.py --check`) keep statically total for known kinds.
 fn kind_to_opcode(kind: &str) -> OpCode {
     kind_to_opcode_table(kind).unwrap_or(OpCode::Copy)
-}
-
-fn gpu_runtime_symbol_for_simple_kind(kind: &str) -> Option<&'static str> {
-    match kind {
-        "gpu_thread_id" => Some("molt_gpu_thread_id"),
-        "gpu_block_id" => Some("molt_gpu_block_id"),
-        "gpu_block_dim" => Some("molt_gpu_block_dim"),
-        "gpu_grid_dim" => Some("molt_gpu_grid_dim"),
-        "gpu_barrier" => Some("molt_gpu_barrier"),
-        _ => None,
-    }
 }

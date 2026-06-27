@@ -82,6 +82,7 @@ use std::collections::BTreeMap;
 
 use super::analysis::{Analysis, AnalysisId};
 use super::call_graph::CallGraph;
+use super::call_targets::is_gpu_runtime_symbol;
 use super::function::{TirFunction, TirModule};
 use super::op_kinds_generated::{CallOpcodeRole, opcode_call_role_table};
 use super::ops::{AttrValue, TirOp};
@@ -512,20 +513,6 @@ fn target_for_module(op: &TirOp, call_graph: &CallGraph) -> CallTargetFact {
         CallOpcodeRole::DynamicMethod | CallOpcodeRole::RuntimeBuiltin => CallTargetFact::Opaque,
         CallOpcodeRole::CopyOriginalKind | CallOpcodeRole::NotCall => CallTargetFact::Opaque,
     }
-}
-
-/// The fixed gpu_* runtime-intrinsic `s_value` symbols that lift to `Call` but are
-/// runtime-helper calls, never user functions. Mirrors `call_graph`'s and the
-/// inliner's identical carve-out (one predicate, three readers).
-fn is_gpu_runtime_symbol(symbol: &str) -> bool {
-    matches!(
-        symbol,
-        "molt_gpu_thread_id"
-            | "molt_gpu_block_id"
-            | "molt_gpu_block_dim"
-            | "molt_gpu_grid_dim"
-            | "molt_gpu_barrier"
-    )
 }
 
 /// Compute the precise [`CallFacts`] for one call op, using the whole-program

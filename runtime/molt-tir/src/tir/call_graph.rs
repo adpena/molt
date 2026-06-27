@@ -69,6 +69,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 
+use super::call_targets::is_gpu_runtime_symbol;
 use super::function::TirModule;
 use super::op_kinds_generated::{
     CallOpcodeRole, opcode_call_role_table, simpleir_kind_is_call_graph_user_call,
@@ -156,23 +157,6 @@ fn classify_call_op(op: &TirOp, defined: &BTreeSet<String>) -> Option<CallEdge> 
         // reference, not as a call out of the enclosing function.
         CallOpcodeRole::RuntimeBuiltin | CallOpcodeRole::NotCall => None,
     }
-}
-
-/// The fixed runtime-intrinsic symbols the gpu_* SimpleIR ops carry as their
-/// `s_value` after the SSA lift folds them into `OpCode::Call` (see
-/// `tir::ssa::gpu_runtime_symbol_for_simple_kind`). A `Call` to one of these is
-/// a runtime-helper call, not a user-level call edge, so it must not disqualify
-/// leaf-ness — matching the legacy SimpleIR leaf scan, which never treated the
-/// gpu_* op kinds as user-level calls.
-fn is_gpu_runtime_symbol(symbol: &str) -> bool {
-    matches!(
-        symbol,
-        "molt_gpu_thread_id"
-            | "molt_gpu_block_id"
-            | "molt_gpu_block_dim"
-            | "molt_gpu_grid_dim"
-            | "molt_gpu_barrier"
-    )
 }
 
 /// If `op` is an [`OpCode::AllocTask`] referencing a poll function defined in
