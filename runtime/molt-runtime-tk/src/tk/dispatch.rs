@@ -457,7 +457,7 @@ pub(super) fn tk_call_dispatch(py: &PyToken, handle: i64, args: &[u64]) -> Resul
             }
             _ => {
                 if command.starts_with('.') {
-                    return handle_widget_path_command(py, handle, &command, args);
+                    return widgets::path::handle_widget_path_command(py, handle, &command, args);
                 }
                 if command_is_image_instance(py, handle, &command)? {
                     return handle_image_instance_command(py, handle, &command, args);
