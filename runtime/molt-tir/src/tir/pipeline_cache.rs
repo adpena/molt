@@ -7,11 +7,12 @@
 //! directly for this pipeline.
 
 use rayon::prelude::*;
+use std::collections::{BTreeMap, HashSet};
 
 use crate::{FunctionIR, OpIR};
 
 use super::cache::{CompilationCache, backend_cache_dir};
-use super::function::TirFunction;
+use super::function::{TirFunction, TirModule};
 use super::target_info::TargetInfo;
 
 pub const TIR_OPTIMIZATION_BATCH_FUNCTION_LIMIT: usize = 128;
@@ -68,6 +69,59 @@ pub struct TirPipelineRunOptions<'a> {
     pub tir_stats: bool,
     pub progress_prefix: Option<&'a str>,
     pub resource_plan: TirOptimizationResourcePlan,
+}
+
+pub type TirSimpleIrModuleStageObserver<'a> =
+    &'a mut dyn for<'stage> FnMut(TirSimpleIrModulePipelineStage<'stage>);
+
+pub enum TirSimpleIrModulePipelineStage<'a> {
+    BeforeModuleLower {
+        functions: &'a [FunctionIR],
+    },
+    AfterModuleLower {
+        module: &'a TirModule,
+    },
+    AfterModulePipeline {
+        module: &'a TirModule,
+        changed_functions: usize,
+        elapsed_ms: u128,
+    },
+    AfterModuleBackconvert {
+        functions: &'a [FunctionIR],
+        changed_functions: usize,
+    },
+}
+
+pub struct TirSimpleIrModulePipelineOptions<'a> {
+    pub target_info: &'a TargetInfo,
+    pub module_name: &'a str,
+    pub non_inlinable: &'a HashSet<String>,
+    pub missing_tir_context: &'a str,
+    pub backconvert_context: &'a str,
+    pub stage_observer: Option<TirSimpleIrModuleStageObserver<'a>>,
+}
+
+pub struct TirSimpleIrModulePipelineRun {
+    pub module_analysis: super::module_phase::ModuleAnalysis,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum TirOwnedModulePipelineMode {
+    ModulePhase,
+    TerminalDropsOnly,
+}
+
+pub struct TirOwnedModulePipelineOptions<'a> {
+    pub target_info: &'a TargetInfo,
+    pub module_name: &'a str,
+    pub non_inlinable: &'a HashSet<String>,
+    pub missing_tir_context: &'a str,
+    pub mode: TirOwnedModulePipelineMode,
+}
+
+pub struct TirOwnedModulePipelineRun {
+    pub tir_functions: Vec<(bool, TirFunction)>,
+    pub module_analysis: Option<super::module_phase::ModuleAnalysis>,
 }
 
 struct TirOptimizationInput {
@@ -470,6 +524,208 @@ where
     TirPipelineRun {
         optimized_tir_by_name,
         uncached_count,
+    }
+}
+
+pub fn run_simple_ir_module_pipeline_from_cached_tir(
+    functions: &mut [FunctionIR],
+    optimized_tir_by_name: &mut BTreeMap<String, TirFunction>,
+    mut options: TirSimpleIrModulePipelineOptions<'_>,
+) -> TirSimpleIrModulePipelineRun {
+    emit_simple_ir_module_stage(
+        &mut options.stage_observer,
+        TirSimpleIrModulePipelineStage::BeforeModuleLower { functions },
+    );
+    let (mut module, idx_map) = take_local_tir_module_from_cached_tir(
+        functions,
+        optimized_tir_by_name,
+        options.module_name,
+        options.missing_tir_context,
+    );
+    emit_simple_ir_module_stage(
+        &mut options.stage_observer,
+        TirSimpleIrModulePipelineStage::AfterModuleLower { module: &module },
+    );
+    let module_pipeline_start = std::time::Instant::now();
+    let module_analysis = super::module_phase::run_module_pipeline(
+        &mut module,
+        options.target_info,
+        options.non_inlinable,
+    );
+    let module_pipeline_elapsed_ms = module_pipeline_start.elapsed().as_millis();
+    emit_simple_ir_module_stage(
+        &mut options.stage_observer,
+        TirSimpleIrModulePipelineStage::AfterModulePipeline {
+            module: &module,
+            changed_functions: module_analysis.changed_functions.len(),
+            elapsed_ms: module_pipeline_elapsed_ms,
+        },
+    );
+    backconvert_changed_tir_module_to_simple_ir(
+        functions,
+        &module,
+        &idx_map,
+        &module_analysis.changed_functions,
+        options.backconvert_context,
+    );
+    emit_simple_ir_module_stage(
+        &mut options.stage_observer,
+        TirSimpleIrModulePipelineStage::AfterModuleBackconvert {
+            functions,
+            changed_functions: module_analysis.changed_functions.len(),
+        },
+    );
+    TirSimpleIrModulePipelineRun { module_analysis }
+}
+
+pub fn finalize_simple_ir_drops_from_cached_tir(
+    functions: &mut [FunctionIR],
+    target_info: &TargetInfo,
+    optimized_tir_by_name: &mut BTreeMap<String, TirFunction>,
+) {
+    super::drop_phase::finalize_simple_ir_drops_with_tir_custody(
+        functions,
+        target_info,
+        optimized_tir_by_name,
+    );
+}
+
+pub fn run_owned_module_pipeline_from_cached_tir(
+    functions: &[FunctionIR],
+    optimized_tir_by_name: &mut BTreeMap<String, TirFunction>,
+    options: TirOwnedModulePipelineOptions<'_>,
+) -> TirOwnedModulePipelineRun {
+    let mut tir_functions = take_ordered_tir_functions_from_cached_tir(
+        functions,
+        optimized_tir_by_name,
+        options.missing_tir_context,
+    );
+    let module_analysis = match options.mode {
+        TirOwnedModulePipelineMode::ModulePhase => {
+            let mut externs: Vec<TirFunction> = Vec::new();
+            let mut module = TirModule {
+                name: options.module_name.to_string(),
+                functions: Vec::new(),
+            };
+            for (is_extern, tir_func) in tir_functions.into_iter() {
+                if is_extern {
+                    externs.push(tir_func);
+                } else {
+                    module.functions.push(tir_func);
+                }
+            }
+            let module_analysis = super::module_phase::run_module_pipeline(
+                &mut module,
+                options.target_info,
+                options.non_inlinable,
+            );
+            tir_functions = Vec::with_capacity(externs.len() + module.functions.len());
+            tir_functions.extend(externs.into_iter().map(|func| (true, func)));
+            tir_functions.extend(module.functions.into_iter().map(|func| (false, func)));
+            Some(module_analysis)
+        }
+        TirOwnedModulePipelineMode::TerminalDropsOnly => {
+            for (is_extern, tir_func) in tir_functions.iter_mut() {
+                if !*is_extern {
+                    let _ =
+                        super::drop_phase::finalize_function_drops(tir_func, options.target_info);
+                }
+            }
+            None
+        }
+    };
+    TirOwnedModulePipelineRun {
+        tir_functions,
+        module_analysis,
+    }
+}
+
+fn emit_simple_ir_module_stage(
+    stage_observer: &mut Option<TirSimpleIrModuleStageObserver<'_>>,
+    stage: TirSimpleIrModulePipelineStage<'_>,
+) {
+    if let Some(observer) = stage_observer.as_mut() {
+        (*observer)(stage);
+    }
+}
+
+fn take_local_tir_module_from_cached_tir(
+    functions: &[FunctionIR],
+    optimized_tir_by_name: &mut BTreeMap<String, TirFunction>,
+    module_name: &str,
+    missing_tir_context: &str,
+) -> (TirModule, Vec<usize>) {
+    let mut tir_functions = Vec::new();
+    let mut idx_map = Vec::new();
+    for (idx, func_ir) in functions.iter().enumerate() {
+        if func_ir.is_extern {
+            continue;
+        }
+        let tir_func = optimized_tir_by_name
+            .remove(&func_ir.name)
+            .unwrap_or_else(|| {
+                panic!(
+                    "{missing_tir_context} did not return optimized TIR for '{}'",
+                    func_ir.name
+                )
+            });
+        tir_functions.push(tir_func);
+        idx_map.push(idx);
+    }
+    (
+        TirModule {
+            name: module_name.to_string(),
+            functions: tir_functions,
+        },
+        idx_map,
+    )
+}
+
+fn take_ordered_tir_functions_from_cached_tir(
+    functions: &[FunctionIR],
+    optimized_tir_by_name: &mut BTreeMap<String, TirFunction>,
+    missing_tir_context: &str,
+) -> Vec<(bool, TirFunction)> {
+    functions
+        .iter()
+        .map(|func_ir| {
+            let tir_func = if func_ir.is_extern {
+                super::lower_from_simple::lower_to_tir(func_ir)
+            } else {
+                optimized_tir_by_name
+                    .remove(&func_ir.name)
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "{missing_tir_context} did not return optimized TIR for '{}'",
+                            func_ir.name
+                        )
+                    })
+            };
+            (func_ir.is_extern, tir_func)
+        })
+        .collect()
+}
+
+fn backconvert_changed_tir_module_to_simple_ir(
+    functions: &mut [FunctionIR],
+    module: &TirModule,
+    idx_map: &[usize],
+    changed_functions: &[String],
+    backconvert_context: &str,
+) {
+    let changed: HashSet<&str> = changed_functions.iter().map(String::as_str).collect();
+    for (pos, &orig_idx) in idx_map.iter().enumerate() {
+        let tir_func = &module.functions[pos];
+        if !changed.contains(tir_func.name.as_str()) {
+            continue;
+        }
+        let ops = super::lower_to_simple::lower_to_simple_ir(tir_func);
+        debug_assert!(
+            super::lower_to_simple::validate_labels(&ops),
+            "{backconvert_context} back-conversion emitted invalid labels for '{}'",
+            tir_func.name
+        );
+        functions[orig_idx].ops = ops;
     }
 }
 

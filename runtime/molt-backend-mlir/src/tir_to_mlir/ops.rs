@@ -364,10 +364,11 @@ pub(super) fn emit_tir_op<'c, 'a>(
         }
 
         (_, OpCode::Pow) => {
-            if let Some(&result_id) = op.results.first() {
-                let result = emit_pow(op, value_map, result_id)?;
-                value_map.insert(result_id, result);
-            }
+            let result_id = op.results.first().copied().ok_or_else(|| {
+                "MLIR lowering refuses malformed OpCode::Pow with no result slot".to_string()
+            })?;
+            let result = emit_pow(op, value_map, result_id)?;
+            value_map.insert(result_id, result);
         }
 
         // ---- Call ----

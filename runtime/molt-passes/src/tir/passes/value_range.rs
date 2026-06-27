@@ -967,6 +967,21 @@ fn transfer_op_range(op: &TirOp, result: &ValueRangeResult) -> Option<IntRange> 
                 Some(IntRange::mod_range(r(1)))
             }
         }
+        ValueRangeTransferRule::FloorDiv if op.operands.len() == 2 => {
+            // Constant divisor (the common `i // 3` loop-IV case) takes Python
+            // sign-of-divisor floor semantics; else a sign-uniform, non-zero
+            // divisor range. `//` rounds toward -inf, so the dividend's whole
+            // range — not just its magnitude — drives the bound.
+            if let Some(cd) = c(1) {
+                if cd == 0 {
+                    Some(IntRange::FULL_I64) // ZeroDivisionError — no value.
+                } else {
+                    Some(r(0).floordiv_const(cd))
+                }
+            } else {
+                Some(r(0).floordiv_range(r(1)))
+            }
+        }
         ValueRangeTransferRule::Shr if op.operands.len() == 2 => match c(1) {
             Some(s) => Some(r(0).shr_const(s)),
             None => Some(IntRange::FULL_I64),
@@ -1711,6 +1726,90 @@ mod tests {
         assert!(
             !vr.fits_inline_int47(shl_res),
             "9<<45 exceeds 2^46-1 — must NOT be proven inline"
+        );
+    }
+
+    /// `for i in range(stop): q = i // divisor`, with `q` derived in the loop
+    /// body. Returns the func, the IV, and the floordiv result value.
+    fn range_loop_with_floordiv(stop: i64, divisor: i64) -> (TirFunction, ValueId, ValueId) {
+        let (mut func, body, _a, iv) = range_loop_vr(64, stop);
+        let d = func.fresh_value();
+        let q = func.fresh_value();
+        let block = func.blocks.get_mut(&body).unwrap();
+        let mut new_ops = vec![cint(d, divisor), op(OpCode::FloorDiv, vec![iv, d], vec![q])];
+        new_ops.append(&mut block.ops);
+        block.ops = new_ops;
+        (func, iv, q)
+    }
+
+    #[test]
+    fn e2e_floordiv_const_proven_inline() {
+        // (a) for i in range(1000): i // 3 ∈ [0, 333] ⊂ inline-int47, so the
+        // result keeps the raw-i64 lane instead of boxing to MaybeBigInt — the
+        // perf unlock for the numeric-loop class.
+        let (func, iv, q) = range_loop_with_floordiv(1000, 3);
+        let scev = compute_scev(&func);
+        let vr = compute_value_range(&func, &scev);
+        assert_eq!(vr.range_of(iv), IntRange::new(0, 999), "IV body range");
+        assert_eq!(vr.range_of(q), IntRange::new(0, 333), "999 // 3 == 333");
+        assert!(
+            vr.fits_inline_int47(q),
+            "i // 3 over [0, 999] must be proven inline (raw lane fires)"
+        );
+    }
+
+    #[test]
+    fn e2e_floordiv_negative_dividend_floor_exact() {
+        // (b) for i in range(10): q = (-i) // 3. The IV is [0, 9] ⇒ -i ∈ [-9, 0],
+        // and Python floor division rounds toward -inf, so (-i) // 3 ∈ [-3, 0]
+        // (a truncating divide would mis-bound the low end). Exact negative-
+        // dividend rounding through the real transfer keeps the bound sound.
+        let (mut func, body, _a, iv) = range_loop_vr(64, 10);
+        let neg = func.fresh_value();
+        let d = func.fresh_value();
+        let q = func.fresh_value();
+        let block = func.blocks.get_mut(&body).unwrap();
+        let mut new_ops = vec![
+            cint(d, 3),
+            op(OpCode::Neg, vec![iv], vec![neg]),
+            op(OpCode::FloorDiv, vec![neg, d], vec![q]),
+        ];
+        new_ops.append(&mut block.ops);
+        block.ops = new_ops;
+        let scev = compute_scev(&func);
+        let vr = compute_value_range(&func, &scev);
+        assert_eq!(vr.range_of(neg), IntRange::new(-9, 0), "-i over i ∈ [0, 9]");
+        assert_eq!(
+            vr.range_of(q),
+            IntRange::new(-3, 0),
+            "(-i) // 3 floors toward -inf to [-3, 0]"
+        );
+        assert!(vr.fits_inline_int47(q));
+    }
+
+    #[test]
+    fn e2e_floordiv_divisor_spanning_zero_not_proven() {
+        // (c) for i in range(10): q = i // k, where k is an opaque (unranged)
+        // value. Its range is FULL (spans 0), so the divisor is not provably
+        // non-zero/sign-uniform ⇒ NO range proof for q. Fail-closed: a possible
+        // ZeroDivisionError or sign flip must never yield a tight bound (a false
+        // bound here is the inline-int47 truncation P0).
+        let (mut func, body, _a, iv) = range_loop_vr(64, 10);
+        let k = func.fresh_value(); // opaque: never given a ConstInt def.
+        let q = func.fresh_value();
+        let block = func.blocks.get_mut(&body).unwrap();
+        let mut new_ops = vec![op(OpCode::FloorDiv, vec![iv, k], vec![q])];
+        new_ops.append(&mut block.ops);
+        block.ops = new_ops;
+        let scev = compute_scev(&func);
+        let vr = compute_value_range(&func, &scev);
+        assert!(
+            vr.range_of(q).is_full(),
+            "opaque (zero-spanning) divisor ⇒ no proof"
+        );
+        assert!(
+            !vr.fits_inline_int47(q),
+            "unproven floordiv result must stay boxed"
         );
     }
 

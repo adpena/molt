@@ -1132,6 +1132,7 @@ value_range_transfer_rules = [
     { opcode = "Add", rule = "add" },
     { opcode = "Sub", rule = "sub" },
     { opcode = "Mul", rule = "mul" },
+    { opcode = "FloorDiv", rule = "floordiv" },
     { opcode = "Neg", rule = "neg" },
     { opcode = "BitAnd", rule = "bit_and" },
     { opcode = "BitOr", rule = "bit_or" },
@@ -4052,6 +4053,34 @@ reason = "pre-specialization: OpCode::Gt is the nothrow typed lane, but a pre-sp
 kind = "GE"
 reason = "pre-specialization: OpCode::Ge is the nothrow typed lane, but a pre-spec `a >= b` may lower to a boxed __ge__ which raises"
 
+# FRONTEND-SPECIFIC (a') unary-operator pre-specialization: the unary analogues
+# of the binary arithmetic/bitwise family above. The typed OpCode (Neg/Pos/
+# BitNot) is nothrow, but the frontend emits the unary op BEFORE type
+# specialization, so a pre-spec `-a` / `+a` / `~a` / `abs(a)` may lower to the
+# boxed molt_neg / molt_pos / molt_invert / molt_abs_builtin path that dispatches
+# __neg__/__pos__/__invert__/__abs__ and raises `TypeError: bad operand type for
+# unary -/+/~ / abs()` on an unsupported operand type. Without this barrier the
+# frontend dead-trivial-const pass classifies a dead-result `-"x"` / `abs("x")`
+# as a removable "pure" op and silently deletes the raise (the abs("x") parity
+# bug). ABS has no first-class mapper opcode (it lowers to a Copy carrying
+# `_original_kind = "ABS"`); INVERT is the frontend spelling whose typed lane is
+# the `bit_not` wire kind.
+[[frontend_raising_kind]]
+kind = "NEG"
+reason = "pre-specialization: OpCode::Neg is the nothrow typed lane, but a pre-spec `-a` may lower to boxed molt_neg / __neg__ which raises TypeError on an unsupported operand type"
+
+[[frontend_raising_kind]]
+kind = "POS"
+reason = "pre-specialization: OpCode::Pos is the nothrow typed lane, but a pre-spec `+a` may lower to boxed molt_pos / __pos__ which raises TypeError on an unsupported operand type"
+
+[[frontend_raising_kind]]
+kind = "INVERT"
+reason = "pre-specialization: the typed bit_not lane (OpCode::BitNot) is nothrow, but a pre-spec `~a` may lower to boxed molt_invert / __invert__ which raises TypeError on an unsupported operand type"
+
+[[frontend_raising_kind]]
+kind = "ABS"
+reason = "frontend intrinsic: a pre-spec `abs(a)` lowers to molt_abs_builtin / __abs__ which raises TypeError on an operand type without __abs__ (no first-class mapper opcode; lowers to Copy with _original_kind = ABS)"
+
 # FRONTEND-SPECIFIC (b) preserved-Copy / no-[[kind]]-row: frontend-internal
 # op.kinds that serialization rewrites to a may-throw wire kind with no
 # first-class mapper opcode. The inplace_* arith family serializes to
@@ -4127,11 +4156,6 @@ reason = "frontend-internal: serializes to wire `set_attr_generic_ptr` (StoreAtt
 # [[simpleir_control_kind]]. Rows here are frontend-only facts or explicit
 # pre-serialization overrides such as CONST_STR and LOAD_VAR.
 # ---------------------------------------------------------------------------
-
-[[frontend_effect_kind]]
-kind = "ABS"
-effect = "pure"
-reason = "frontend intrinsic: abs result is pure at this pre-serialization kind"
 
 [[frontend_effect_kind]]
 kind = "CONST_ELLIPSIS"

@@ -1293,6 +1293,51 @@ fn range_loop_iv_is_raw_i64_safe_from_value_range() {
     );
 }
 
+/// PERF: a bounded `for i in range(12): i // 3` floor-division result is proven
+/// `RawI64Safe` through the value-keyed carrier authority. The value-range
+/// `FloorDiv` transfer bounds `i // 3` over `i ∈ [0, 11]` to `[0, 3] ⊂
+/// inline-int47`, so the result keeps the bare-i64 lane instead of boxing to
+/// `MaybeBigInt`. This is the value-keyed half of the floordiv carrier proof
+/// (its SimpleIR→name half is `name_scalar_kind`'s `floordiv ⇒ Int`
+/// classification); together they let `floordiv_const_loop_iv.py`'s
+/// carrier-aware fallback store fire instead of the boxed runtime call. A
+/// non-power-of-two divisor is the case strength-reduction does NOT rewrite to a
+/// shift, so it exercises the `FloorDiv` transfer specifically.
+#[test]
+fn range_loop_floordiv_const_is_raw_i64_safe_from_value_range() {
+    let (mut func, iv, _next) = range_loop_tir(0, 12);
+    let d = func.fresh_value();
+    let q = func.fresh_value();
+    func.value_types.insert(d, TirType::I64);
+    func.value_types.insert(q, TirType::I64);
+    // Prepend `d = 3; q = i // 3` to the loop body — the block carrying the
+    // `no_signed_wrap` IV update.
+    let body_id = *func
+        .blocks
+        .iter()
+        .find(|(_, b)| {
+            b.ops
+                .iter()
+                .any(|o| o.opcode == TirOpCode::Add && o.attrs.get("no_signed_wrap").is_some())
+        })
+        .map(|(id, _)| id)
+        .expect("loop body with the nsw IV update");
+    let block = func.blocks.get_mut(&body_id).unwrap();
+    let mut new_ops = vec![
+        tir_cint(d, 3),
+        tir_op(TirOpCode::FloorDiv, vec![iv, d], vec![q]),
+    ];
+    new_ops.append(&mut block.ops);
+    block.ops = new_ops;
+
+    let vr = value_range_for(&func);
+    let repr = repr_by_value_for(&func, Some(&vr));
+    assert!(
+        is_inline_safe(&repr, q),
+        "i // 3 over i ∈ [0,11] ⇒ [0,3] ⊂ inline-int47 must be proven RawI64Safe"
+    );
+}
+
 /// SOUNDNESS (the 2bf51b760 truncation bug-class): an induction variable
 /// whose proven range exceeds 2^46 must NOT be RawI64Safe — it could be a
 /// heap BigInt, so it stays `MaybeBigInt` and uses the boxed path. This is

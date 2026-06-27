@@ -1,4 +1,12 @@
-use super::*;
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
+use libloading::Library;
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
+use std::ffi::{CString, c_char, c_int, c_void};
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
+use std::path::{Path, PathBuf};
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
+use std::ptr;
+use std::sync::OnceLock;
 
 pub(super) const TCL_OK: c_int = 0;
 

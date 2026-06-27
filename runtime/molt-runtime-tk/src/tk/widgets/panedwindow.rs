@@ -1,5 +1,20 @@
-use super::super::*;
-use super::common::*;
+use super::super::args::get_string_arg;
+use super::super::parsing::{
+    alloc_tuple_from_strings, option_map_to_tuple, parse_simple_end_or_int_index,
+    parse_simple_end_or_int_index_bits, parse_widget_option_name_arg, parse_widget_option_pairs,
+};
+use super::super::state::{
+    TkAppState, TkWidgetState, app_mut_from_registry, app_tcl_error_locked, clear_value_map_refs,
+    tk_registry, value_map_set_bits,
+};
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
+use super::super::tcl::{get, new};
+use super::common::{
+    alloc_empty_string_bits, alloc_widget_coord_bits, unknown_widget_subcommand_message,
+};
+use crate::bridge::inc_ref_bits;
+use molt_runtime_core::prelude::{MoltObject, PyToken};
+use std::collections::HashMap;
 
 pub(in crate::tk) fn handle_panedwindow_widget_path_command(
     py: &PyToken,

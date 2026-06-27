@@ -462,6 +462,70 @@ class LayerNorm:
         return f"LayerNorm({self.normalized_shape})"
 
 
+class GroupNorm:
+    """Group normalization, matching tinygrad ``nn.GroupNorm``.
+
+    Splits the channel dimension into ``num_groups`` groups, normalizes each
+    group with a layernorm over the (group, spatial) elements, then applies an
+    optional per-channel affine transform.
+
+    Args:
+        num_groups: number of groups to separate the channels into
+        num_channels: number of channels expected in the input
+        eps: numerical stability term (default: 1e-5)
+        affine: if True, learn a per-channel weight and bias (default: True)
+    """
+
+    def __init__(
+        self,
+        num_groups: int,
+        num_channels: int,
+        eps: float = 1e-5,
+        affine: bool = True,
+    ):
+        self.num_groups = num_groups
+        self.num_channels = num_channels
+        self.eps = eps
+        self.weight = ones(num_channels) if affine else None
+        self.bias = zeros(num_channels) if affine else None
+
+    def __call__(self, x: Tensor) -> Tensor:
+        # Reshape so a layernorm over the last axis normalizes each group, then
+        # restore the original shape.
+        x = (
+            x.reshape(x.shape[0], self.num_groups, -1)
+            .layernorm(eps=self.eps)
+            .reshape(x.shape)
+        )
+        if self.weight is None or self.bias is None:
+            return x
+        # Broadcast the per-channel affine params over the spatial dims.
+        affine_shape = (1, -1, *[1] * (x.ndim - 2))
+        return x * self.weight.reshape(*affine_shape) + self.bias.reshape(
+            *affine_shape
+        )
+
+    def load_weights(self, weight=None, bias=None):
+        if weight is not None:
+            self.weight = weight if isinstance(weight, Tensor) else Tensor(weight)
+        if bias is not None:
+            self.bias = bias if isinstance(bias, Tensor) else Tensor(bias)
+
+    def parameters(self) -> list:
+        params = []
+        if self.weight is not None:
+            params.append(self.weight)
+        if self.bias is not None:
+            params.append(self.bias)
+        return params
+
+    def __repr__(self):
+        return (
+            f"GroupNorm({self.num_groups}, {self.num_channels}, "
+            f"eps={self.eps}, affine={self.weight is not None})"
+        )
+
+
 class Dropout:
     """Dropout layer — no-op in inference mode."""
 

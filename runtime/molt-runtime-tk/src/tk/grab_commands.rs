@@ -1,4 +1,6 @@
-use super::*;
+use super::args::{get_string_arg, raise_tcl_for_handle};
+use super::state::{alloc_string_bits, app_mut_from_registry, app_tcl_error_locked, tk_registry};
+use molt_runtime_core::prelude::{MoltObject, PyToken};
 
 pub(super) fn handle_grab_command(py: &PyToken, handle: i64, args: &[u64]) -> Result<u64, u64> {
     if args.len() < 2 {

@@ -1,4 +1,14 @@
-use super::*;
+use super::args::{clear_last_error, get_string_arg, raise_tcl_for_handle};
+use super::parsing::parse_bool_arg;
+use super::state::{
+    app_mut_from_registry, app_tcl_error_locked, clear_value_map_refs, tk_registry,
+    value_map_set_bits,
+};
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
+use super::tcl::get;
+use super::widgets::common::alloc_empty_string_bits;
+use crate::bridge::{dec_ref_bits, inc_ref_bits};
+use molt_runtime_core::prelude::{MoltObject, PyToken};
 
 pub(super) fn handle_option_command(py: &PyToken, handle: i64, args: &[u64]) -> Result<u64, u64> {
     if args.len() < 2 {

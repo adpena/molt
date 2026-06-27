@@ -1,4 +1,17 @@
-use super::*;
+use super::args::{get_string_arg, raise_tcl_for_handle};
+use super::parsing::{
+    alloc_int_tuple2_bits, alloc_tuple_from_strings, option_map_query_or_empty,
+    option_map_to_tuple, parse_bool_arg, parse_i64_arg, parse_widget_option_name_arg,
+    parse_widget_option_pairs,
+};
+use super::state::{
+    TkWmState, alloc_string_bits, app_mut_from_registry, app_tcl_error_locked, tk_registry,
+    value_map_set_bits, wm_state_for_path,
+};
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
+use super::tcl::get;
+use super::widgets::common::alloc_empty_string_bits;
+use molt_runtime_core::prelude::{MoltObject, PyToken};
 
 pub(super) fn handle_wm_command(py: &PyToken, handle: i64, args: &[u64]) -> Result<u64, u64> {
     if args.len() < 3 {

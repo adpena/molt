@@ -6,7 +6,7 @@ this document describes the production direction and calls out the current gaps.
 See [parallel_build_architecture.md](../design/parallel_build_architecture.md)
 for the crate-extraction and incremental-build routing plan.
 
-## Live State Snapshot (2026-06-20)
+## Live State Snapshot (2026-06-27)
 
 - Runtime leaf crates already exist and are wired from
   `runtime/molt-runtime/Cargo.toml`, including core, collections, math, text,
@@ -30,7 +30,10 @@ for the crate-extraction and incremental-build routing plan.
   single-byte table set from the same descriptor source; it generates alias rows
   plus encode/decode maps from the repo-pinned
   `src/molt/stdlib/encodings/*.py` modules, so `molt-runtime` remains only the
-  caller/error adapter for codec execution. The heavier html/unicodedata modules
+  caller/error adapter for codec execution. The `codec-tables` dev gate watches
+  the generator, generated tables, Python encoding modules, and that runtime
+  consumer so the old facade-owned charmap shim cannot reappear silently. The
+  heavier html/unicodedata modules
   remain gated by `stdlib_text`; `molt_html_*` and
   `molt_unicodedata_*` resolver arms are gated by `stdlib_text`, and
   feature-on/feature-off runtime checks prove the facade no longer carries a

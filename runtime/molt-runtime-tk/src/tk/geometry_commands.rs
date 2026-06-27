@@ -1,4 +1,16 @@
-use super::*;
+use super::args::{get_string_arg, raise_tcl_for_handle};
+use super::parsing::{
+    alloc_int_tuple2_bits, alloc_tuple_from_strings, ensure_layout_membership,
+    option_map_query_or_empty, option_map_to_tuple, parse_bool_arg, parse_widget_option_name_arg,
+    parse_widget_option_pairs, remove_widget_from_layout_lists,
+};
+use super::state::{
+    TkWidgetState, app_mut_from_registry, app_tcl_error_locked, tk_registry, value_map_set_bits,
+};
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
+use super::tcl::{get, new};
+use molt_runtime_core::prelude::{MoltObject, PyToken};
+use std::collections::HashMap;
 
 pub(super) fn widget_layout_options_mut<'a>(
     widget: &'a mut TkWidgetState,

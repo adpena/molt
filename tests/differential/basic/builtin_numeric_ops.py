@@ -17,6 +17,25 @@ try:
 except TypeError as exc:
     print(f"abs-type:{exc}")
 
+# Dead-result unary operators on a non-numeric must STILL raise TypeError. The
+# result of each expression statement is discarded, so the frontend dead-code
+# pass must not classify NEG/POS/INVERT/ABS as removable "pure" ops and silently
+# delete the raise (the abs("x") parity bug, mirrored across the unary family).
+try:
+    -"x"
+except TypeError as exc:
+    print(f"neg-type:{exc}")
+
+try:
+    +"x"
+except TypeError as exc:
+    print(f"pos-type:{exc}")
+
+try:
+    ~"x"
+except TypeError as exc:
+    print(f"invert-type:{exc}")
+
 print(divmod(7, 3))
 print(divmod(-7, 3))
 print(divmod(7, -3))

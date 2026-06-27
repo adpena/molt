@@ -133,15 +133,17 @@ impl SimpleBackend {
             }
         }
 
-        let mut optimized_tir_by_name = BTreeMap::new();
-        if !use_llvm {
-            let native_tti = crate::tir::target_info::TargetInfo::native_from_simd_caps(
+        let native_tti = (!use_llvm).then(|| {
+            crate::tir::target_info::TargetInfo::native_from_simd_caps(
                 crate::tir::target_info::SimdCaps::detect_host(),
-            );
+            )
+        });
+        let mut optimized_tir_by_name = BTreeMap::new();
+        if let Some(native_tti) = native_tti.as_ref() {
             optimized_tir_by_name = crate::tir::pipeline_cache::run_cached_tir_pipeline(
                 &mut ir.functions,
                 crate::tir::pipeline_cache::TirPipelineRunOptions {
-                    target_info: native_tti,
+                    target_info: native_tti.clone(),
                     cache_flavor: crate::tir::pipeline_cache::TirPipelineCacheFlavor::Native,
                     cache_dir: None,
                     process_externs: false,
@@ -206,31 +208,9 @@ impl SimpleBackend {
                 // every unchanged function keeps its byte-identical
                 // per-function output.
                 // Rollback: MOLT_DISABLE_INLINING=1 (guard in run_inliner).
-                let native_tti = crate::tir::target_info::TargetInfo::native_from_simd_caps(
-                    crate::tir::target_info::SimdCaps::detect_host(),
-                );
-                let mut tir_functions = Vec::new();
-                let mut idx_map = Vec::new();
-                for (idx, func_ir) in ir.functions.iter().enumerate() {
-                    if func_ir.is_extern {
-                        continue;
-                    }
-                    let tir_func =
-                        optimized_tir_by_name
-                            .remove(&func_ir.name)
-                            .unwrap_or_else(|| {
-                                panic!(
-                                    "native TIR cache runner did not return optimized TIR for '{}'",
-                                    func_ir.name
-                                )
-                            });
-                    tir_functions.push(tir_func);
-                    idx_map.push(idx);
-                }
-                let mut tir_module = crate::tir::function::TirModule {
-                    name: "native_module".to_string(),
-                    functions: tir_functions,
-                };
+                let native_tti = native_tti
+                    .as_ref()
+                    .expect("native TIR target info missing for Cranelift path");
                 // Functions the shared-stdlib partition will externalize into
                 // `stdlib_shared.o` have external linkage: the inliner must keep
                 // the external reference rather than fork a private copy of a body
@@ -243,25 +223,19 @@ impl SimpleBackend {
                 };
                 let non_inlinable: std::collections::HashSet<String> =
                     external_symbols.into_iter().collect();
-                let module_analysis =
-                    crate::tir::run_module_pipeline(&mut tir_module, &native_tti, &non_inlinable);
-                let changed: std::collections::HashSet<&str> = module_analysis
-                    .changed_functions
-                    .iter()
-                    .map(String::as_str)
-                    .collect();
-                for (pos, &orig_idx) in idx_map.iter().enumerate() {
-                    let tir_func = &tir_module.functions[pos];
-                    if changed.contains(tir_func.name.as_str()) {
-                        let ops = crate::tir::lower_to_simple::lower_to_simple_ir(tir_func);
-                        debug_assert!(
-                            crate::tir::lower_to_simple::validate_labels(&ops),
-                            "E1: inlined back-conversion emitted invalid labels for '{}'",
-                            tir_func.name
-                        );
-                        ir.functions[orig_idx].ops = ops;
-                    }
-                }
+                let _module_run =
+                    crate::tir::pipeline_cache::run_simple_ir_module_pipeline_from_cached_tir(
+                        &mut ir.functions,
+                        &mut optimized_tir_by_name,
+                        crate::tir::pipeline_cache::TirSimpleIrModulePipelineOptions {
+                            target_info: native_tti,
+                            module_name: "native_module",
+                            non_inlinable: &non_inlinable,
+                            missing_tir_context: "native TIR cache runner",
+                            backconvert_context: "native TIR module pipeline",
+                            stage_observer: None,
+                        },
+                    );
             }
         }
         //  RC drop insertion: terminal phase for the skip_ir_passes path
@@ -279,12 +253,12 @@ impl SimpleBackend {
         // (the non-skip path likewise drops in the module phase, before splitting).
         // The LLVM lane has its own module phase below and is excluded here.
         if self.skip_ir_passes && !use_llvm {
-            let native_tti = crate::tir::target_info::TargetInfo::native_from_simd_caps(
-                crate::tir::target_info::SimdCaps::detect_host(),
-            );
-            crate::tir::drop_phase::finalize_simple_ir_drops_with_tir_custody(
+            let native_tti = native_tti
+                .as_ref()
+                .expect("native TIR target info missing for Cranelift skip path");
+            crate::tir::pipeline_cache::finalize_simple_ir_drops_from_cached_tir(
                 &mut ir.functions,
-                &native_tti,
+                native_tti,
                 &mut optimized_tir_by_name,
             );
         }
@@ -440,31 +414,6 @@ impl SimpleBackend {
                     preprocess_backend_tir_input,
                 )
                 .optimized_tir_by_name;
-            let mut tir_funcs: Vec<(bool, crate::tir::function::TirFunction)> = ir
-                .functions
-                .iter()
-                .map(|func| {
-                    let tir_func = if func.is_extern {
-                        // Extern functions (e.g. shared-stdlib-partition symbols
-                        // externalized by `externalize_shared_stdlib_partition`) have
-                        // had their bodies cleared: they are declaration-only and live
-                        // in `stdlib_shared.o`. They are declared below for call
-                        // resolution but never defined, so the shared cached runner
-                        // skips them and this path lowers only the signature.
-                        crate::tir::lower_from_simple::lower_to_tir(func)
-                    } else {
-                        llvm_optimized_tir_by_name
-                            .remove(&func.name)
-                            .unwrap_or_else(|| {
-                                panic!(
-                                    "LLVM TIR cache runner did not return optimized TIR for '{}'",
-                                    func.name
-                                )
-                            })
-                    };
-                    (func.is_extern, tir_func)
-                })
-                .collect();
 
             //  Whole-program module phase (Tier-2 E1 inliner activation, LLVM)
             // This is the LLVM lane's parity point with native/wasm: it runs the
@@ -488,54 +437,24 @@ impl SimpleBackend {
             // sees contains only locally-owned bodies, so the `non_inlinable` set
             // is empty here (the native lane needs it only because its module
             // phase runs *before* externalization).
-            if !self.skip_ir_passes {
-                use crate::tir::function::TirModule;
-
-                let mut externs: Vec<crate::tir::function::TirFunction> = Vec::new();
-                let mut module = TirModule {
-                    name: "llvm_module".to_string(),
-                    functions: Vec::new(),
-                };
-                for (is_extern, tir_func) in tir_funcs.into_iter() {
-                    if is_extern {
-                        externs.push(tir_func);
-                    } else {
-                        module.functions.push(tir_func);
-                    }
-                }
-
-                // Inlines bottom-up and re-optimizes merged callers; leaves every
-                // changed body fully type-refined (see `run_inliner`). Rollback:
-                // MOLT_DISABLE_INLINING=1 (guard in run_inliner).
-                let _module_analysis = crate::tir::run_module_pipeline(
-                    &mut module,
-                    &llvm_tti,
-                    &std::collections::HashSet::new(),
+            let non_inlinable = std::collections::HashSet::new();
+            let owned_tir_run =
+                crate::tir::pipeline_cache::run_owned_module_pipeline_from_cached_tir(
+                    &ir.functions,
+                    &mut llvm_optimized_tir_by_name,
+                    crate::tir::pipeline_cache::TirOwnedModulePipelineOptions {
+                        target_info: &llvm_tti,
+                        module_name: "llvm_module",
+                        non_inlinable: &non_inlinable,
+                        missing_tir_context: "LLVM TIR cache runner",
+                        mode: if self.skip_ir_passes {
+                            crate::tir::pipeline_cache::TirOwnedModulePipelineMode::TerminalDropsOnly
+                        } else {
+                            crate::tir::pipeline_cache::TirOwnedModulePipelineMode::ModulePhase
+                        },
+                    },
                 );
-
-                // Reassemble the lowering list: extern declarations first, then
-                // the merged non-extern bodies. Declaration and lowering order is
-                // immaterial  LLVM resolves calls by name and functions lower
-                // independently.
-                tir_funcs = Vec::with_capacity(externs.len() + module.functions.len());
-                tir_funcs.extend(externs.into_iter().map(|f| (true, f)));
-                tir_funcs.extend(module.functions.into_iter().map(|f| (false, f)));
-            } else {
-                // skip_ir_passes (LLVM batched / stdlib-cache path): the
-                // whole-program module phase  which runs the terminal drop
-                // finalizer over its TIR module  is skipped. Drop insertion is a
-                // per-function correctness concern, so it still runs here on the
-                // per-function-pipeline output, the last transform in this mode.
-                // (The non-skip branch above ran drops inside `run_module_pipeline`.)
-                // Funnels through the same `finalize_function_drops` entry as the
-                // module/SimpleIR finalizers (uniform refine + double-process guard).
-                for (is_extern, tir_func) in tir_funcs.iter_mut() {
-                    if !*is_extern {
-                        let _ =
-                            crate::tir::drop_phase::finalize_function_drops(tir_func, &llvm_tti);
-                    }
-                }
-            }
+            let tir_funcs = owned_tir_run.tir_functions;
 
             llvm.function_return_types = tir_funcs
                 .iter()

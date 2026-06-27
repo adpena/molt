@@ -1,4 +1,45 @@
-use super::*;
+use super::args::{
+    clear_last_error, get_string_arg, get_string_arg_allow_none, parse_optional_f64_arg,
+    parse_optional_i64_arg, raise_tcl_for_handle,
+};
+use super::callbacks::next_after_token;
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
+use super::dialogs::{
+    app_interp_eval_list, cleanup_native_simpledialog, tk_dispatch_string_command,
+};
+use super::dialogs::{
+    commondialog_is_supported_command, dispatch_commondialog_via_tk_call,
+    filedialog_is_supported_command, parse_commondialog_options, parse_simpledialog_f64,
+    parse_simpledialog_i64, raise_unsupported_commondialog_command,
+    raise_unsupported_filedialog_command,
+};
+use super::dispatch::{
+    app_has_pending_after_work, dispatch_next_pending_event, parse_do_one_event_flags,
+    tk_call_dispatch,
+};
+use super::native::pump_tcl_events;
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
+use super::native::{build_native_tk_app, eval_tcl_without_gil, option_use_tk};
+use super::parsing::{
+    alloc_tuple_bits, alloc_tuple_from_strings, parse_bool_text, parse_tcl_script_commands,
+};
+use super::state::{
+    TK_DONT_WAIT_FLAG, TkAppState, TkOperation, alloc_string_bits, app_mut_from_registry,
+    app_tcl_error_locked, clear_widget_refs, drop_app_state_refs, parse_app_handle,
+    raise_invalid_handle_error, raise_tcl_error, require_tk_app_new, require_tk_operation,
+    tk_gate_state, tk_registry,
+};
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
+use super::tcl::{TclObj, get, new};
+use super::trace_commands::bump_variable_versions_for_reference;
+use crate::bridge::{
+    dec_ref_bits, decode_value_list, is_truthy, raise_exception_u64, string_obj_to_owned, to_f64,
+    to_i64,
+};
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
+use molt_runtime_core::prelude::GilReleaseGuard;
+use molt_runtime_core::prelude::{MoltObject, obj_from_bits};
+use std::time::Duration;
 
 pub extern "C" fn molt_tk_available() -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {

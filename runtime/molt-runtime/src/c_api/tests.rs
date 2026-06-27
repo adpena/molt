@@ -739,7 +739,10 @@ fn weakref_callback_runs_with_live_target_not_rc0() {
 
         WEAKREF_CB_TARGET_BITS.store(inst_bits, Ordering::SeqCst);
         let registered = crate::molt_weakref_register(weak_bits, inst_bits, cb_bits);
-        assert!(!obj_from_bits(registered).is_none(), "register returns the weakref");
+        assert!(
+            !obj_from_bits(registered).is_none(),
+            "register returns the weakref"
+        );
         // `molt_weakref_register` returns a fresh strong ref to the weakref; the
         // test does not keep it, so drop it back.
         dec_ref_bits(_py, registered);
@@ -822,7 +825,10 @@ fn weakref_callback_resurrection_through_window_survives() {
 
         assert_eq!(WEAKREF_CB_CALL_COUNT.load(Ordering::SeqCst), 1);
         let sink_bits = WEAKREF_CB_RESURRECT_SINK.load(Ordering::SeqCst);
-        assert_eq!(sink_bits, inst_bits, "callback must have stashed the target");
+        assert_eq!(
+            sink_bits, inst_bits,
+            "callback must have stashed the target"
+        );
         // The resurrected object is alive and usable (its header is intact): a
         // freed object would fail this load or carry a poisoned type_id.
         assert_eq!(

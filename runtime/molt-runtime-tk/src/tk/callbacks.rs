@@ -1,4 +1,23 @@
-use super::*;
+use super::args::{clear_last_error, set_last_error};
+use super::commands::invoke_callback;
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
+use super::dialogs::app_interp_eval_list;
+use super::native::{register_tcl_callback_proc, unregister_tcl_callback_proc};
+use super::parsing::alloc_tuple_from_strings;
+use super::state::{
+    TK_FILE_EVENT_EXCEPTION, TK_FILE_EVENT_READABLE, TK_FILE_EVENT_WRITABLE, TkAppState, TkEvent,
+    TkFileHandlerRegistration, app_mut_from_registry, app_tcl_error_locked, tk_registry,
+};
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
+use super::tcl::{eval, get, new};
+use crate::bridge::{
+    dec_ref_bits, exception_pending, inc_ref_bits, is_callable_bits, raise_exception_u64,
+    string_obj_to_owned, to_i64,
+};
+use molt_runtime_core::prelude::{MoltObject, PyToken, obj_from_bits};
+use std::collections::HashSet;
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
+use std::ffi::c_int;
 
 pub(super) fn next_after_token(next_after_id: &mut u64) -> String {
     *next_after_id = next_after_id.saturating_add(1);

@@ -2409,21 +2409,20 @@ name = "molt-backend"
 version = "0.1.0"
 dependencies = [
  "ciborium",
- "cranelift-codegen",
- "cranelift-frontend",
- "cranelift-module",
- "cranelift-native",
- "cranelift-object",
  "cudarc",
  "egg",
- "inkwell",
  "libc",
  "metal",
  "mlx-rs",
+ "molt-backend-luau",
+ "molt-backend-native",
+ "molt-backend-rust",
+ "molt-backend-wasm",
+ "molt-ir",
  "molt-tir",
  "objc",
+ "object",
  "pollster",
- "rayon",
  "rmp-serde",
  "serde",
  "serde_json",
@@ -2434,6 +2433,57 @@ dependencies = [
  "wgpu",
  "windows-sys 0.61.2",
 ]
+
+[[package]]
+name = "molt-backend-luau"
+version = "0.1.0"
+dependencies = [
+ "molt-ir",
+ "molt-tir",
+ "serde_json",
+]
+
+[[package]]
+name = "molt-backend-native"
+version = "0.1.0"
+dependencies = [
+ "cranelift-codegen",
+ "cranelift-frontend",
+ "cranelift-module",
+ "cranelift-native",
+ "cranelift-object",
+ "inkwell",
+ "libc",
+ "llvm-sys",
+ "molt-codegen-abi",
+ "molt-ir",
+ "molt-tir",
+ "rayon",
+ "serde",
+]
+
+[[package]]
+name = "molt-backend-rust"
+version = "0.1.0"
+dependencies = [
+ "molt-ir",
+ "molt-tir",
+]
+
+[[package]]
+name = "molt-backend-wasm"
+version = "0.1.0"
+dependencies = [
+ "molt-codegen-abi",
+ "molt-ir",
+ "molt-tir",
+ "wasm-encoder 0.252.0",
+ "wasmparser 0.252.0",
+]
+
+[[package]]
+name = "molt-codegen-abi"
+version = "0.1.0"
 
 [[package]]
 name = "molt-db"
@@ -2460,6 +2510,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "molt-ir"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "rmp-serde",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "molt-lang-cpython-abi"
 version = "0.1.0"
 dependencies = [
@@ -2476,7 +2536,21 @@ name = "molt-lang-obj-model"
 version = "0.1.0"
 dependencies = [
  "criterion",
+ "molt-codegen-abi",
  "proptest",
+]
+
+[[package]]
+name = "molt-passes"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "molt-ir",
+ "rayon",
+ "rmp-serde",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
 ]
 
 [[package]]
@@ -2501,6 +2575,7 @@ dependencies = [
  "metal",
  "mimalloc",
  "mio",
+ "molt-codegen-abi",
  "molt-db",
  "molt-gpu",
  "molt-lang-cpython-abi",
@@ -2791,11 +2866,12 @@ name = "molt-tir"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "molt-ir",
+ "molt-passes",
  "rayon",
  "rmp-serde",
  "serde",
  "serde_json",
- "wasm-encoder 0.252.0",
 ]
 
 [[package]]

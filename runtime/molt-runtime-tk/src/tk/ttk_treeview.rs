@@ -1,4 +1,24 @@
-use super::*;
+use super::args::{get_string_arg, raise_tcl_for_handle};
+use super::event_commands::remove_bind_script_command_invocations;
+use super::parsing::{
+    TREEVIEW_COLUMN_OPTIONS, TREEVIEW_HEADING_OPTIONS, TREEVIEW_ITEM_OPTIONS, TREEVIEW_TAG_OPTIONS,
+    alloc_tuple_bits, alloc_tuple_from_strings, first_missing_treeview_item,
+    normalize_widget_option_name, option_allowed, option_map_to_tuple, parse_i64_arg,
+    parse_treeview_column_offset, parse_treeview_index_strict, parse_treeview_item_list_arg,
+    parse_treeview_tags, parse_widget_option_name_arg, treeview_hit_item_by_y,
+    treeview_insert_into_parent, treeview_item_is_descendant_of, treeview_remove_from_parent,
+    treeview_remove_item, treeview_set_pairs_to_tuple, treeview_visible_items,
+};
+use super::state::{
+    TkTreeviewItem, alloc_string_bits, app_mut_from_registry, app_tcl_error_locked,
+    clear_value_map_refs, tk_registry, value_map_set_bits,
+};
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
+use super::tcl::{get, new};
+use super::widgets::common::unknown_widget_subcommand_message;
+use crate::bridge::{dec_ref_bits, inc_ref_bits};
+use molt_runtime_core::prelude::{MoltObject, PyToken};
+use std::collections::{HashMap, HashSet};
 
 pub(super) fn handle_treeview_widget_path_command(
     py: &PyToken,

@@ -14,8 +14,6 @@ use crate::tir::type_refine::refine_types;
 use crate::tir::types::TirType;
 use crate::tir::values::ValueId;
 
-#[cfg(test)]
-pub(crate) use molt_passes::representation_facts::raw_i64_safe_values_for;
 pub use molt_passes::representation_facts::{
     native_projectable_scalar_reprs_for, repr_by_value_for, value_range_for,
 };
