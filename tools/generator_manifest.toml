@@ -1,0 +1,292 @@
+# The Generator Manifest — the ONE authority for "what is a generated authority
+# and how is it gated" (doc 59 §3 F1/F5; the semantic fact plane meta-gate).
+#
+# Consumed by `tools/check_generator_manifest.py --check` (the meta-gate) and
+# cross-referenced by `tools/structural_audit.py` for the authoritative
+# generated-file list (replacing the `_is_generated` heuristic — an authority
+# replaces a heuristic, doc 46 rule #1).
+#
+# This file makes three classes of structural failure machine-checkable:
+#   1. a `@generated` / DO-NOT-EDIT file with no committed, registered generator
+#      (an "orphan generated file" — structural debt by the project's own
+#      definition, gen_protocol.py:25);
+#   2. a generator that is not CI `--check`-gated (so its output can drift
+#      silently between regenerations);
+#   3. a `match` over a CLOSED enum domain (OpCode, Terminator, …) that silently
+#      defaults or misses an arm — the dispatch-handler-mirror-hazard bug class
+#      that has bitten main (e.g. an arm ⊄ HANDLED_KINDS loud-panic).
+#
+# Every `[[generator]]` row is one generated authority. Every `[[closed_domain]]`
+# row is one enum whose hand-written matches must be exhaustive-or-audited. Every
+# `[[orphan_generated]]` row is a generated, committed file whose producer is NOT
+# a `tools/gen_*.py` script (e.g. a Rust build-side generator), allowlisted so it
+# is not mistaken for an orphan.
+#
+# === The add-a-fact / add-a-generator workflow (doc 59 §5) ===================
+# When you add a new `gen_*.py`:
+#   1. add a [[generator]] row (tool, outputs, source);
+#   2. give it a `--check` flag and set check_mode = true;
+#   3. wire a CI `--check` step UNLESS its source is not reproducible in a vanilla
+#      CI checkout (live interpreters, an external/gitignored corpus); in that
+#      case set ci_checkable = false and record ci_skip_reason;
+#   4. prove idempotence (gen-twice byte-identical) and set idempotent = true;
+#   5. add a byte-equality sync test and set sync_test, OR record sync_test_reason
+#      if byte-identity is not the gate (e.g. an import-only Protocol shim);
+#   6. if it renders an exhaustive match over a Rust enum, add the enum to
+#      `closed_domains` AND a matching [[closed_domain]] row.
+# The meta-gate enforces 2/3/4/5; rustc + the closed-domain auditor enforce 6.
+#
+# Field contract (per [[generator]] row):
+#   check_mode      bool  — the generator supports `--check`. MUST be true for a
+#                           non-discovery authority (the meta-gate fails otherwise).
+#   ci_checkable    bool  — default true. false ⇒ the source is not reproducible
+#                           in a vanilla CI checkout; ci_skip_reason is REQUIRED
+#                           and the gate does not demand a ci.yml --check step.
+#   ci_skip_reason  str   — REQUIRED iff ci_checkable = false. The auditable
+#                           justification (never a silent exemption).
+#   idempotent      bool  — gen-twice is byte-identical (the meta-gate proves it
+#                           with --check-idempotence when ci_checkable).
+#   sync_test       str   — the pytest pinning the output, or
+#   sync_test_reason str  — why byte-identity is not the gate.
+
+schema_version = 1
+
+# Repo-relative source roots scanned for orphan `@generated` files. Mirrors
+# tools/structural_audit.py _SOURCE_ROOTS so the two authorities agree.
+generated_scan_roots = ["runtime", "src", "tools"]
+
+# ===========================================================================
+# Generators (one row per tools/gen_*.py)
+# ===========================================================================
+
+[[generator]]
+tool = "tools/gen_op_kinds.py"
+outputs = [
+  "runtime/molt-ir/src/tir/op_kinds_generated.rs",
+  "src/molt/frontend/lowering/op_kinds_generated.py",
+]
+source = "runtime/molt-ir/src/tir/op_kinds.toml"
+check_mode = true
+check_command = "tools/gen_op_kinds.py --check"
+idempotent = true
+sync_test = "tests/test_gen_op_kinds.py"
+# The two Rust enums this generator renders as EXHAUSTIVE (no-wildcard) matches.
+# A new variant fails to compile until it is classified in op_kinds.toml.
+closed_domains = ["OpCode", "Terminator"]
+discovery_only = false
+
+[[generator]]
+tool = "tools/gen_wasm_abi.py"
+outputs = [
+  "runtime/molt-backend-wasm/src/wasm_abi_generated.rs",
+  "src/molt/_wasm_abi_generated.py",
+  "runtime/wasm_table_layout.inc",
+  "runtime/wasm_poll_callables.inc",
+  "runtime/wasm_runtime_callables.inc",
+  "tools/wasm_allowed_imports.txt",
+]
+source = "runtime/molt-backend-wasm/src/wasm_abi_manifest.toml"
+check_mode = true
+check_command = "tools/gen_wasm_abi.py --check"
+idempotent = true
+sync_test = "tests/test_gen_wasm_abi.py"
+closed_domains = []
+discovery_only = false
+
+[[generator]]
+tool = "tools/gen_intrinsics.py"
+outputs = [
+  "src/molt/_intrinsics.pyi",
+  "src/molt/_runtime_feature_gates.py",
+  "runtime/molt-runtime/src/intrinsics/generated.rs",
+]
+# The generator also writes a large family of per-module resolver files under
+# runtime/molt-runtime*/src/intrinsics_generated*/ ; those carry the standard
+# @generated header and are covered by the header-marker orphan scan + this
+# generator's own --check freshness, so they need not all be enumerated here.
+source = "runtime/molt-runtime/src/intrinsics/manifest.pyi"
+check_mode = true
+check_command = "tools/gen_intrinsics.py --check"
+idempotent = true
+sync_test = "tests/test_gen_intrinsics.py"
+closed_domains = []
+discovery_only = false
+
+[[generator]]
+tool = "tools/gen_codecs.py"
+outputs = [
+  "runtime/molt-runtime-text/src/charmap_codecs_generated.rs",
+  "runtime/molt-runtime-text/src/codec_aliases_generated.rs",
+]
+source = "runtime/molt-runtime-text/src/codec_registry.rs"
+check_mode = true
+check_command = "tools/gen_codecs.py --check"
+idempotent = true
+sync_test = "tests/test_gen_codecs.py"
+closed_domains = []
+discovery_only = false
+
+[[generator]]
+tool = "tools/gen_gpu_op_contract.py"
+outputs = ["runtime/molt-gpu/op_contract.toml"]
+source = "runtime/molt-gpu/src/ops.rs + pinned tinygrad 0.13.0 AST"
+check_mode = true
+check_command = "tools/gen_gpu_op_contract.py --check"
+# Reconciles against a PINNED off-the-shelf tinygrad checkout under
+# bench/friends/repos/tinygrad_off_the_shelf/ which is untracked/absent in a
+# vanilla CI checkout; --check there fails with "pinned source missing". The
+# tinygrad-fidelity contract (CLAUDE.md top priority) is gated by the sync test
+# where the pinned source is present, not by docs-gates CI.
+ci_checkable = false
+ci_skip_reason = "reconciles against the untracked pinned tinygrad checkout (bench/friends/repos/tinygrad_off_the_shelf/), absent in a vanilla CI checkout"
+idempotent = true
+sync_test = "tests/test_gen_gpu_op_contract.py"
+closed_domains = []
+discovery_only = false
+
+[[generator]]
+tool = "tools/gen_stringprep_tables.py"
+outputs = ["runtime/molt-runtime-stringprep/src/tables.rs"]
+source = "stringprep (CPython oracle module)"
+check_mode = true
+check_command = "tools/gen_stringprep_tables.py --check"
+idempotent = true
+sync_test = "tests/test_gen_stringprep_tables.py"
+closed_domains = []
+discovery_only = false
+
+[[generator]]
+tool = "tools/gen_protocol.py"
+outputs = [
+  "src/molt/frontend/_protocol.py",
+  "src/molt/frontend/_protocol_attrs.py",
+]
+source = "src/molt/frontend (SimpleTIRGenerator class surface, live introspection)"
+check_mode = true
+check_command = "tools/gen_protocol.py --check"
+idempotent = true
+# gen_protocol renders an import-only Protocol shim; byte-identity is NOT the
+# semantic gate (the superset-coverage invariant is — gen_protocol.py:25-30).
+# The composition test pins that invariant; --check pins freshness.
+sync_test = "tests/test_frontend_package_composition.py"
+sync_test_reason = "import-only Protocol shim; the superset-coverage invariant (not byte identity) is the gate, pinned by test_frontend_package_composition.py; --check pins freshness"
+closed_domains = []
+discovery_only = false
+
+[[generator]]
+tool = "tools/gen_luau_support_matrix.py"
+outputs = ["docs/spec/areas/compiler/luau_support_matrix.generated.md"]
+source = "runtime/molt-backend-luau/src/luau"
+check_mode = true
+check_command = "tools/gen_luau_support_matrix.py --check"
+idempotent = true
+# Freshness is gated by the CI --check step (the rendered doc must match the live
+# Luau emitter arms); there is no separate byte-equality pytest.
+sync_test_reason = "CI --check step is the freshness gate (rendered support matrix vs live emitter arms); no separate byte-equality pytest"
+closed_domains = []
+discovery_only = false
+
+[[generator]]
+tool = "tools/gen_compat_platform_availability.py"
+outputs = [
+  "docs/spec/areas/compat/surfaces/stdlib/stdlib_platform_availability.generated.md",
+]
+source = "docs/python_documentation (CPython library reference text)"
+check_mode = true
+check_command = "tools/gen_compat_platform_availability.py --check"
+# The input corpus (docs/python_documentation/) is a large, gitignored external
+# CPython documentation tree absent from a vanilla checkout; a CI --check there
+# would render 0 rows and false-fail. The render also embeds a generation
+# timestamp, so it is not byte-idempotent. CI freshness is therefore not gated;
+# the doc is regenerated when the CPython doc corpus is refreshed locally.
+ci_checkable = false
+ci_skip_reason = "input is the gitignored docs/python_documentation/ corpus (absent in CI); output embeds a generation timestamp (not byte-idempotent)"
+idempotent = false
+sync_test_reason = "external gitignored doc corpus + timestamped output; byte-identity is not a CI-reproducible gate"
+closed_domains = []
+discovery_only = false
+
+[[generator]]
+tool = "tools/gen_diff_lanes.py"
+outputs = [
+  "tests/differential/basic/CORE_TESTS.txt",
+  "tests/differential/stdlib/TESTS.txt",
+  "tests/differential/pyperformance/TESTS.txt",
+]
+source = "tests/differential/COVERAGE_INDEX.yaml"
+check_mode = true
+check_command = "tools/gen_diff_lanes.py --check"
+idempotent = true
+# Freshness is gated by the CI --check step (the lane manifests must match the
+# coverage index + on-disk tests); there is no separate byte-equality pytest.
+sync_test_reason = "CI --check step is the freshness gate (lane manifests vs COVERAGE_INDEX.yaml + on-disk tests); no separate byte-equality pytest"
+closed_domains = []
+discovery_only = false
+
+[[generator]]
+tool = "tools/gen_stdlib_module_union.py"
+outputs = [
+  "tools/stdlib_module_union.py",
+  "tools/stdlib_module_union_3_12.py",
+  "tools/stdlib_module_union_3_13.py",
+  "tools/stdlib_module_union_3_14.py",
+]
+source = "sys.stdlib_module_names (CPython 3.12/3.13/3.14, live)"
+check_mode = true
+check_command = "tools/gen_stdlib_module_union.py --check"
+# Requires THREE live CPython interpreters (3.12/3.13/3.14) on PATH; a vanilla
+# docs-gates CI job has only the .python-version interpreter, so a hard CI
+# --check would skip/false-fail. The baseline is an upstream-CPython snapshot
+# regenerated when a Python minor version is added, not a render of in-repo
+# source — so its freshness is interpreter-gated, not CI-gated.
+ci_checkable = false
+ci_skip_reason = "needs live CPython 3.12/3.13/3.14 interpreters absent from the docs-gates CI job; baseline is an upstream snapshot, not in-repo source"
+idempotent = true
+sync_test_reason = "interpreter-gated upstream snapshot; --check runs only where all three CPython interpreters are present"
+closed_domains = []
+discovery_only = false
+
+# ===========================================================================
+# Closed domains — the enums whose hand-written matches MUST be exhaustive or
+# carry an explicitly-audited default (doc 59 §3 F2). For each, the auditor:
+#   (i)  parses the live enum to get the authoritative variant set;
+#   (ii) scans every hand-written `match`/`matches!` over that domain in the
+#        owned source roots and proves each either covers all variants, OR has a
+#        top-level default that is fail-loud (panic/Err/unreachable — fail-CLOSED,
+#        the correct dispatch pattern) or is explicitly listed in audited_defaults.
+# The generated authority that renders each domain is also re-checked: its render
+# must have no wildcard arm (rustc then refuses an unclassified variant — the
+# authority, vs. the parser which is only discovery; doc 59 §3 F2 firewall).
+# ===========================================================================
+
+[[closed_domain]]
+name = "OpCode"
+enum_file = "runtime/molt-ir/src/tir/ops.rs"
+enum_name = "OpCode"
+# The generator that renders this domain exhaustively (no-wildcard match), and
+# the table that drives that render.
+owned_by = "tools/gen_op_kinds.py"
+source_table = "runtime/molt-ir/src/tir/op_kinds.toml"
+# Sites with a deliberate top-level `_ =>` that is NOT a missed classification.
+# Each must be justified. (Empty: every silent-default OpCode classifier was
+# migrated to a generated predicate — doc 59 Phase 4 ratchet at 0.)
+audited_defaults = []
+
+[[closed_domain]]
+name = "Terminator"
+enum_file = "runtime/molt-ir/src/tir/blocks.rs"
+enum_name = "Terminator"
+owned_by = "tools/gen_op_kinds.py"
+source_table = "runtime/molt-ir/src/tir/op_kinds.toml"
+audited_defaults = []
+
+# ===========================================================================
+# Orphan-generated allowlist — generated, committed files whose producer is NOT
+# a tools/gen_*.py script. Without this, the orphan scan would false-flag them.
+# Each row names the real producer so the file stays accountable.
+# ===========================================================================
+
+[[orphan_generated]]
+path = "runtime/molt-ffi/src/header.rs"
+producer = "molt-ffi crate (Rust build-side generator)"
+reason = "emitted by the molt-ffi crate's own codegen, not a tools/ generator; checked in for the C ABI header"

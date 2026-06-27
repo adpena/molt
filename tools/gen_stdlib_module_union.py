@@ -191,7 +191,9 @@ def _format_facade_module(
     union_py_submodules: tuple[str, ...],
     union_py_subpackages: tuple[str, ...],
 ) -> str:
-    module_stems = {version: _version_module_stem(output, version) for version in versions}
+    module_stems = {
+        version: _version_module_stem(output, version) for version in versions
+    }
     return "\n".join(
         [
             '"""',
@@ -220,10 +222,10 @@ def _format_facade_module(
             "",
             "def _load_version_data(version: str) -> _ModuleType:",
             "    stem = _VERSION_MODULE_STEMS[version]",
-            "    path = _Path(__file__).with_name(f\"{stem}.py\")",
+            '    path = _Path(__file__).with_name(f"{stem}.py")',
             "    spec = _importlib_util.spec_from_file_location(stem, path)",
             "    if spec is None or spec.loader is None:",
-            "        raise ImportError(f\"cannot load stdlib union data for {version}: {path}\")",
+            '        raise ImportError(f"cannot load stdlib union data for {version}: {path}")',
             "    module = _importlib_util.module_from_spec(spec)",
             "    spec.loader.exec_module(module)",
             "    return module",
@@ -345,6 +347,14 @@ def main() -> int:
         default=OUT_PATH,
         help="Output path for generated baseline module.",
     )
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help=(
+            "exit 1 if a generated baseline is stale (CI mode); do not write. "
+            "Requires the selected CPython interpreters to be available."
+        ),
+    )
     args = parser.parse_args()
 
     versions = tuple(dict.fromkeys(args.pythons or DEFAULT_PYTHONS))
@@ -368,6 +378,23 @@ def main() -> int:
         by_version_py_modules=by_version_py_modules,
         by_version_py_packages=by_version_py_packages,
     )
+
+    if args.check:
+        ok = True
+        for path, text in rendered.items():
+            if not path.exists():
+                print(f"MISSING generated file: {path}", file=sys.stderr)
+                ok = False
+            elif path.read_text(encoding="utf-8") != text:
+                print(
+                    f"STALE generated file: {path}\n"
+                    "  run `python3 tools/gen_stdlib_module_union.py` to regenerate",
+                    file=sys.stderr,
+                )
+                ok = False
+        if ok:
+            print("stdlib module union baseline: in sync")
+        return 0 if ok else 1
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     for path, text in rendered.items():

@@ -89,12 +89,53 @@ def _is_excluded(path: Path, root: Path) -> bool:
     return any(frag in rel_str for frag in _EXCLUDE_PATH_FRAGMENTS)
 
 
+_MANIFEST_OUTPUTS_CACHE: set[str] | None = None
+
+
+def _manifest_declared_outputs(root: Path | None = None) -> set[str]:
+    """The authoritative set of generated-file outputs declared in
+    tools/generator_manifest.toml (doc 59 F1). Consulted by `_is_generated` so the
+    "this file is generated, skip it" exclusion is backed by an AUTHORITY, not only
+    a header heuristic (doc 46 rule #1). Lazily parsed + cached; absent/malformed
+    manifest degrades to the heuristic (structural_audit must run standalone)."""
+    global _MANIFEST_OUTPUTS_CACHE
+    if _MANIFEST_OUTPUTS_CACHE is not None:
+        return _MANIFEST_OUTPUTS_CACHE
+    outputs: set[str] = set()
+    base = root or ROOT_DEFAULT
+    manifest = base / "tools" / "generator_manifest.toml"
+    try:
+        import tomllib
+
+        data = tomllib.loads(manifest.read_text(encoding="utf-8"))
+        for row in data.get("generator", []):
+            for out in row.get("outputs", []):
+                if isinstance(out, str):
+                    outputs.add(out)
+        for row in data.get("orphan_generated", []):
+            p = row.get("path")
+            if isinstance(p, str):
+                outputs.add(p)
+    except (OSError, ValueError):
+        outputs = set()
+    _MANIFEST_OUTPUTS_CACHE = outputs
+    return outputs
+
+
 def _is_generated(path: Path) -> bool:
     name = path.name
     if name.endswith("_generated.rs") or name.endswith("_generated.py"):
         return True
     if path.as_posix().endswith("intrinsics/generated.rs"):
         return True
+    # Authoritative manifest list (doc 59 F1) — a declared generated output is
+    # generated even if its @generated header were ever stripped.
+    try:
+        rel = path.resolve().relative_to(ROOT_DEFAULT).as_posix()
+        if rel in _manifest_declared_outputs():
+            return True
+    except (ValueError, OSError):
+        pass
     try:
         head = path.read_text(errors="replace")[:400]
     except OSError:

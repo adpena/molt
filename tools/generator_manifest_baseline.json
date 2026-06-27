@@ -1,0 +1,63 @@
+{
+  "_comment": "Down-only ratchet for closed-domain silent-default consumer matches (tools/check_generator_manifest.py). Counts may only DECREASE: a new silent default over a closed enum domain is the dispatch-handler-mirror-hazard class and fails CI. Retire a site by covering all variants, making the default fail-loud, routing through a generated *_table() predicate, or adding its file to the domain's audited_defaults in generator_manifest.toml. Never re-pin UP.",
+  "closed_domain_silent_defaults": {
+    "OpCode": 0,
+    "Terminator": 42
+  },
+  "backlog_sites": {
+    "OpCode": [],
+    "Terminator": [
+      "runtime/molt-backend-native/src/llvm_backend/lowering.rs:548",
+      "runtime/molt-backend-wasm/src/lower_to_wasm/lir_control.rs:16",
+      "runtime/molt-ir/src/tir/ssa.rs:1501",
+      "runtime/molt-ir/src/tir/ssa.rs:1930",
+      "runtime/molt-ir/src/tir/ssa.rs:492",
+      "runtime/molt-passes/src/tir/lower_to_simple/runner.rs:354",
+      "runtime/molt-passes/src/tir/lower_to_simple/runner.rs:726",
+      "runtime/molt-passes/src/tir/lower_to_simple/runner.rs:733",
+      "runtime/molt-passes/src/tir/lower_to_simple/structured.rs:126",
+      "runtime/molt-passes/src/tir/lower_to_simple/structured.rs:181",
+      "runtime/molt-passes/src/tir/lower_to_simple/structured.rs:426",
+      "runtime/molt-passes/src/tir/passes/block_versioning.rs:431",
+      "runtime/molt-passes/src/tir/passes/block_versioning.rs:559",
+      "runtime/molt-passes/src/tir/passes/counted_loop.rs:205",
+      "runtime/molt-passes/src/tir/passes/counted_loop.rs:435",
+      "runtime/molt-passes/src/tir/passes/counted_loop.rs:538",
+      "runtime/molt-passes/src/tir/passes/deforestation.rs:261",
+      "runtime/molt-passes/src/tir/passes/generator_fusion.rs:1806",
+      "runtime/molt-passes/src/tir/passes/generator_fusion.rs:2024",
+      "runtime/molt-passes/src/tir/passes/generator_fusion.rs:811",
+      "runtime/molt-passes/src/tir/passes/iter_devirt.rs:333",
+      "runtime/molt-passes/src/tir/passes/iter_devirt.rs:426",
+      "runtime/molt-passes/src/tir/passes/iter_devirt.rs:482",
+      "runtime/molt-passes/src/tir/passes/licm.rs:134",
+      "runtime/molt-passes/src/tir/passes/licm.rs:244",
+      "runtime/molt-passes/src/tir/passes/liveness.rs:155",
+      "runtime/molt-passes/src/tir/passes/loop_unroll.rs:594",
+      "runtime/molt-passes/src/tir/passes/loop_unroll.rs:635",
+      "runtime/molt-passes/src/tir/passes/loop_unroll.rs:654",
+      "runtime/molt-passes/src/tir/passes/module_slot_promotion.rs:1208",
+      "runtime/molt-passes/src/tir/passes/module_slot_promotion.rs:1248",
+      "runtime/molt-passes/src/tir/passes/module_slot_promotion.rs:774",
+      "runtime/molt-passes/src/tir/passes/overflow_peel.rs:369",
+      "runtime/molt-passes/src/tir/passes/overflow_peel.rs:410",
+      "runtime/molt-passes/src/tir/passes/overflow_peel.rs:839",
+      "runtime/molt-passes/src/tir/passes/range_devirt.rs:363",
+      "runtime/molt-passes/src/tir/passes/range_devirt.rs:443",
+      "runtime/molt-passes/src/tir/passes/range_devirt.rs:500",
+      "runtime/molt-passes/src/tir/passes/scev.rs:275",
+      "runtime/molt-passes/src/tir/passes/scev.rs:687",
+      "runtime/molt-passes/src/tir/type_refine/guards.rs:183",
+      "runtime/molt-tir/src/tir/mlir_compat.rs:189"
+    ]
+  },
+  "correction": {
+    "reason": "comment/string-blanking scanner fix surfaced 2 previously-hidden real Terminator silent-default sites (40->42); the prior 40 was a buggy under-count, not a lower bar",
+    "raised": {
+      "Terminator": [
+        42,
+        40
+      ]
+    }
+  }
+}

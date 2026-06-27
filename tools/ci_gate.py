@@ -287,6 +287,18 @@ def _build_checks() -> list[Check]:
     )
     checks.append(
         Check(
+            # The semantic-fact-plane meta-gate (doc 59 Phases 1-3): every
+            # generated authority is registered + --check-gated, no orphan
+            # generated files, and no NEW silent-default `match` over a closed
+            # enum domain (the dispatch-handler-mirror-hazard class).
+            name="generator-manifest-meta-gate",
+            tier=1,
+            cmd=_uv_run(str(TOOLS / "check_generator_manifest.py"), "--check"),
+            timeout=60,
+        )
+    )
+    checks.append(
+        Check(
             name="runtime-bridge-test-stubs",
             tier=1,
             cmd=_uv_run(str(TOOLS / "check_runtime_bridge_test_stubs.py")),
