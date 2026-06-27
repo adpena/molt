@@ -18,6 +18,7 @@ RUNTIME_FEATURES = importlib.import_module("molt.cli.runtime_features")
 RUNTIME_BUILD = importlib.import_module("molt.cli.runtime_build")
 RUNTIME_FINGERPRINTS = importlib.import_module("molt.cli.runtime_fingerprints")
 RUNTIME_PATHS = importlib.import_module("molt.cli.runtime_paths")
+CARGO_EXECUTION = importlib.import_module("molt.cli.cargo_execution")
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -232,6 +233,24 @@ def test_cargo_target_root_uses_dx_external_session_target_when_required(
     assert cli._cargo_target_root(tmp_path) == (
         external_root.resolve() / "target" / "sessions" / "agent-one"
     )
+
+
+def test_cargo_build_env_preserves_public_cargo_defaults_without_dev_request(
+    monkeypatch,
+) -> None:
+    for key in (
+        "MOLT_EXT_ROOT",
+        "CARGO_TARGET_DIR",
+        "MOLT_REQUIRE_EXTERNAL_ARTIFACTS",
+        "MOLT_PREFER_EXTERNAL_ARTIFACTS",
+        "MOLT_USE_EXTERNAL_ARTIFACTS",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+    env = CARGO_EXECUTION._cargo_build_env()
+
+    assert "MOLT_EXT_ROOT" not in env
+    assert "CARGO_TARGET_DIR" not in env
 
 
 def test_runtime_fingerprint_path_is_stdlib_profile_qualified(tmp_path: Path) -> None:

@@ -53,6 +53,11 @@ DEFAULT_WINDOWS_EXTERNAL_ARTIFACT_DIRNAME = "Molt"
 DEFAULT_SCCACHE_CACHE_SIZE = "10G"
 DEFAULT_MOLT_CACHE_MAX_GB = "30"
 DEFAULT_MOLT_CACHE_MAX_AGE_DAYS = "30"
+DEVELOPMENT_ARTIFACT_REQUEST_ENV_KEYS = (
+    "MOLT_REQUIRE_EXTERNAL_ARTIFACTS",
+    "MOLT_PREFER_EXTERNAL_ARTIFACTS",
+    "MOLT_USE_EXTERNAL_ARTIFACTS",
+)
 TRUE_VALUES = {"1", "true", "yes", "on"}
 FALSE_VALUES = {"0", "false", "no", "off"}
 
@@ -110,6 +115,17 @@ def _env_float(
     except ValueError:
         return default
     return parsed if parsed >= 0 else default
+
+
+def development_artifacts_requested(env: Mapping[str, str]) -> bool:
+    """Return whether a development wrapper requested guarded artifact custody.
+
+    This is intentionally a development control-plane predicate. Public compile
+    paths keep Cargo/default output behavior unless the operator set one of
+    these Molt development knobs or an explicit output/target flag.
+    """
+
+    return _env_bool(env, DEVELOPMENT_ARTIFACT_REQUEST_ENV_KEYS, default=False)
 
 
 def _looks_like_ambient_tmpdir(raw: str) -> bool:

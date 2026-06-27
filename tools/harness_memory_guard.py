@@ -44,6 +44,7 @@ from molt.dx import (  # noqa: E402
     CANONICAL_RUN_ENV_KEYS as _CANONICAL_RUN_ENV_KEYS,
     DxProject,
     RunContext,
+    development_artifacts_requested,
 )
 
 CANONICAL_ROOT_ENV_KEYS = _CANONICAL_ROOT_ENV_KEYS
@@ -290,15 +291,7 @@ def _effective_env(env: Mapping[str, str] | None) -> Mapping[str, str]:
 
 
 def _harness_prefers_external_artifacts(root: Path, env: Mapping[str, str]) -> bool:
-    if _env_bool(
-        env,
-        (
-            "MOLT_REQUIRE_EXTERNAL_ARTIFACTS",
-            "MOLT_PREFER_EXTERNAL_ARTIFACTS",
-            "MOLT_USE_EXTERNAL_ARTIFACTS",
-        ),
-        default=False,
-    ):
+    if development_artifacts_requested(env):
         return True
     try:
         return bool(DxProject(root).load_config().get("prefer_external_artifacts"))
