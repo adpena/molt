@@ -921,6 +921,67 @@ def test_tinygrad_nn_groupnorm_matches_upstream_composition() -> None:
     )
 
 
+def test_tinygrad_nn_conv2d_supports_groups_dilation_and_explicit_padding() -> None:
+    # Regression: the shim Conv2d previously raised NotImplementedError for
+    # groups/dilation != 1 and could not accept an explicit 2N-tuple padding.
+    from tinygrad import Tensor, nn
+
+    x = Tensor.arange(2 * 5 * 5).reshape(1, 2, 5, 5).float()
+    conv = nn.Conv2d(2, 4, 3, dilation=2, groups=2, padding="same")
+    assert conv(x).shape == (1, 4, 5, 5)
+    assert conv.weight.shape == (4, 1, 3, 3)
+
+    # explicit (left, right, top, bottom) padding now resolves like upstream
+    w = Tensor.ones(1, 1, 2, 2)
+    y = Tensor.arange(16).reshape(1, 1, 4, 4).float()
+    assert y.conv2d(w, padding=(1, 1, 2, 2)).shape == (1, 1, 7, 5)
+
+
+def test_tinygrad_nn_conv_transpose2d_matches_canonical_sample() -> None:
+    from tinygrad import Tensor, nn
+
+    layer = nn.ConvTranspose2d(1, 1, 2, bias=False)
+    layer.weight = Tensor.ones(1, 1, 2, 2)
+    x = Tensor.arange(9).reshape(1, 1, 3, 3).float()
+    assert layer(x).tolist() == [
+        [
+            [
+                [0.0, 1.0, 3.0, 2.0],
+                [3.0, 8.0, 12.0, 7.0],
+                [9.0, 20.0, 24.0, 13.0],
+                [6.0, 13.0, 15.0, 8.0],
+            ]
+        ]
+    ]
+    # weight layout is (in_channels, out_channels // groups, kH, kW)
+    grouped = nn.ConvTranspose2d(4, 6, 3, groups=2)
+    assert grouped.weight.shape == (4, 3, 3, 3)
+
+
+def test_tinygrad_nn_norm_layers_are_exposed_and_consistent() -> None:
+    from tinygrad import Tensor, nn
+
+    for name in (
+        "GroupNorm",
+        "InstanceNorm",
+        "BatchNorm",
+        "BatchNorm2d",
+        "BatchNorm3d",
+        "LayerNorm2d",
+        "ConvTranspose2d",
+    ):
+        assert hasattr(nn, name), name
+    assert nn.BatchNorm is nn.BatchNorm2d is nn.BatchNorm3d
+
+    # InstanceNorm(C) == GroupNorm(C, C)
+    x = Tensor.arange(2 * 3 * 2 * 2).reshape(2, 3, 2, 2).float()
+    assert _flatten_numeric(
+        nn.InstanceNorm(3, affine=False)(x).tolist()
+    ) == pytest.approx(
+        _flatten_numeric(nn.GroupNorm(3, 3, affine=False)(x).tolist())
+    )
+
+
 def test_molt_tinygrad_stdlib_nn_contract_matches_supported_upstream_surface() -> None:
     with tinygrad_stdlib_context("nn") as modules:
         Tensor = modules["tensor"].Tensor
@@ -970,6 +1031,39 @@ def test_molt_tinygrad_stdlib_nn_contract_matches_supported_upstream_surface() -
         expected = y.reshape(1, 2, -1).layernorm(eps=norm.eps).reshape(y.shape)
         assert _flatten_numeric(norm(y).tolist()) == pytest.approx(
             _flatten_numeric(expected.tolist())
+        )
+
+        # conv2d accepts explicit 2N-tuple (left, right, top, bottom) padding.
+        explicit = Tensor(list(range(16))).reshape(1, 1, 4, 4).conv2d(
+            Tensor.ones(1, 1, 2, 2), padding=(1, 1, 2, 2)
+        )
+        assert [list(explicit.shape)] == [[1, 1, 7, 5]]
+
+        # GroupNorm WITH affine exercises the (1, C, 1, 1) broadcast path.
+        affine = nn.GroupNorm(2, 4)
+        affine.weight = Tensor([1.0, 1.5, -1.0, 0.5])
+        affine.bias = Tensor([0.0, 1.0, 2.0, -2.0])
+        affine_expected = (
+            y.reshape(1, 2, -1).layernorm(eps=affine.eps).reshape(y.shape)
+            * affine.weight.reshape(1, -1, 1, 1)
+            + affine.bias.reshape(1, -1, 1, 1)
+        )
+        assert _flatten_numeric(affine(y).tolist()) == pytest.approx(
+            _flatten_numeric(affine_expected.tolist())
+        )
+
+        # InstanceNorm(C) == GroupNorm(C, C); BatchNorm2d/LayerNorm2d exposed.
+        assert _flatten_numeric(
+            nn.InstanceNorm(4, affine=False)(y).tolist()
+        ) == pytest.approx(
+            _flatten_numeric(nn.GroupNorm(4, 4, affine=False)(y).tolist())
+        )
+        assert hasattr(nn, "BatchNorm2d")
+        assert nn.BatchNorm is nn.BatchNorm2d is nn.BatchNorm3d
+        ln2d = nn.LayerNorm2d(4)
+        ln_expected = nn.LayerNorm(4)(y.permute(0, 2, 3, 1)).permute(0, 3, 1, 2)
+        assert _flatten_numeric(ln2d(y).tolist()) == pytest.approx(
+            _flatten_numeric(ln_expected.tolist())
         )
 
 
