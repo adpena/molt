@@ -46,17 +46,7 @@ pub(in crate::tk) fn handle_listbox_widget_path_command(
                 widget.list_items.insert(insert_index, *value_bits);
                 insert_index += 1;
             }
-            if inserted_count > 0 && !widget.list_selection.is_empty() {
-                let mut shifted = HashSet::with_capacity(widget.list_selection.len());
-                for index in widget.list_selection.drain() {
-                    if index >= original_insert_index {
-                        shifted.insert(index + inserted_count);
-                    } else {
-                        shifted.insert(index);
-                    }
-                }
-                widget.list_selection = shifted;
-            }
+            listbox_shift_selection_for_insert(widget, original_insert_index, inserted_count);
             listbox_shift_item_options_for_insert(widget, original_insert_index, inserted_count);
             app.last_error = None;
             Ok(Some(MoltObject::none().bits()))
@@ -97,17 +87,7 @@ pub(in crate::tk) fn handle_listbox_widget_path_command(
                     for bits in widget.list_items.drain(first..=end) {
                         dec_ref_bits(py, bits);
                     }
-                    if !widget.list_selection.is_empty() {
-                        let mut shifted = HashSet::with_capacity(widget.list_selection.len());
-                        for index in widget.list_selection.drain() {
-                            if index < first {
-                                shifted.insert(index);
-                            } else if index > end {
-                                shifted.insert(index - removed_count);
-                            }
-                        }
-                        widget.list_selection = shifted;
-                    }
+                    listbox_reindex_selection_after_delete(widget, first, end, removed_count);
                     listbox_reindex_item_options_after_delete(py, widget, first, end);
                 }
             }
@@ -250,6 +230,154 @@ pub(in crate::tk) fn handle_listbox_widget_path_command(
             )
             .map(Some)
         }
+        "selection" => {
+            if args.len() < 3 {
+                app.last_error = None;
+                return Ok(Some(MoltObject::none().bits()));
+            }
+            let op = get_string_arg(py, handle, args[2], "selection subcommand")?;
+            match op.as_str() {
+                "anchor" => {
+                    if args.len() != 4 {
+                        return Err(app_tcl_error_locked(
+                            py,
+                            app,
+                            "selection anchor expects one index argument",
+                        ));
+                    }
+                    let Some(index) =
+                        parse_listbox_index_bits(args[3], widget.list_items.len(), false)
+                    else {
+                        return Err(app_tcl_error_locked(
+                            py,
+                            app,
+                            "selection anchor index must be an integer or end",
+                        ));
+                    };
+                    widget.selection_anchor = Some(index);
+                    app.last_error = None;
+                    Ok(Some(MoltObject::none().bits()))
+                }
+                "set" => {
+                    if args.len() != 4 && args.len() != 5 {
+                        return Err(app_tcl_error_locked(
+                            py,
+                            app,
+                            "selection set expects first and optional last index",
+                        ));
+                    }
+                    let Some(first) =
+                        parse_listbox_index_bits(args[3], widget.list_items.len(), false)
+                    else {
+                        return Err(app_tcl_error_locked(
+                            py,
+                            app,
+                            "selection set first index must be an integer or end",
+                        ));
+                    };
+                    let last = if args.len() == 5 {
+                        let Some(last) =
+                            parse_listbox_index_bits(args[4], widget.list_items.len(), false)
+                        else {
+                            return Err(app_tcl_error_locked(
+                                py,
+                                app,
+                                "selection set last index must be an integer or end",
+                            ));
+                        };
+                        last
+                    } else {
+                        first
+                    };
+                    listbox_select_range(widget, first, last);
+                    app.last_error = None;
+                    Ok(Some(MoltObject::none().bits()))
+                }
+                "clear" => {
+                    if args.len() != 4 && args.len() != 5 {
+                        return Err(app_tcl_error_locked(
+                            py,
+                            app,
+                            "selection clear expects first and optional last index",
+                        ));
+                    }
+                    let Some(first) =
+                        parse_listbox_index_bits(args[3], widget.list_items.len(), false)
+                    else {
+                        return Err(app_tcl_error_locked(
+                            py,
+                            app,
+                            "selection clear first index must be an integer or end",
+                        ));
+                    };
+                    let last = if args.len() == 5 {
+                        let Some(last) =
+                            parse_listbox_index_bits(args[4], widget.list_items.len(), false)
+                        else {
+                            return Err(app_tcl_error_locked(
+                                py,
+                                app,
+                                "selection clear last index must be an integer or end",
+                            ));
+                        };
+                        last
+                    } else {
+                        first
+                    };
+                    listbox_clear_range(widget, first, last);
+                    app.last_error = None;
+                    Ok(Some(MoltObject::none().bits()))
+                }
+                "includes" => {
+                    if args.len() != 4 {
+                        return Err(app_tcl_error_locked(
+                            py,
+                            app,
+                            "selection includes expects one index argument",
+                        ));
+                    }
+                    let Some(index) =
+                        parse_listbox_index_bits(args[3], widget.list_items.len(), false)
+                    else {
+                        return Err(app_tcl_error_locked(
+                            py,
+                            app,
+                            "selection includes index must be an integer or end",
+                        ));
+                    };
+                    app.last_error = None;
+                    Ok(Some(
+                        MoltObject::from_bool(widget.list_selection.contains(&index)).bits(),
+                    ))
+                }
+                "present" => {
+                    app.last_error = None;
+                    Ok(Some(
+                        MoltObject::from_bool(!widget.list_selection.is_empty()).bits(),
+                    ))
+                }
+                "get" => {
+                    let mut selected: Vec<usize> = widget.list_selection.iter().copied().collect();
+                    selected.sort_unstable();
+                    if let Some(index) = selected
+                        .into_iter()
+                        .find(|idx| *idx < widget.list_items.len())
+                        && let Some(bits) = widget.list_items.get(index).copied()
+                    {
+                        inc_ref_bits(py, bits);
+                        app.last_error = None;
+                        return Ok(Some(bits));
+                    }
+                    app.last_error = None;
+                    alloc_empty_string_bits(py).map(Some)
+                }
+                _ => Err(app_tcl_error_locked(
+                    py,
+                    app,
+                    unknown_widget_subcommand_message(widget_path, &format!("selection {op}")),
+                )),
+            }
+        }
         "itemcget" => {
             if args.len() != 4 {
                 return Err(app_tcl_error_locked(
@@ -379,8 +507,200 @@ fn is_listbox_widget_subcommand(subcommand: &str) -> bool {
             | "nearest"
             | "compare"
             | "curselection"
+            | "selection"
             | "itemcget"
             | "itemconfigure"
             | "activate"
     )
+}
+
+fn listbox_shift_selection_for_insert(
+    widget: &mut TkWidgetState,
+    insert_index: usize,
+    inserted_count: usize,
+) {
+    if inserted_count == 0 || widget.list_selection.is_empty() {
+        return;
+    }
+    let mut shifted = HashSet::with_capacity(widget.list_selection.len());
+    for index in widget.list_selection.drain() {
+        if index >= insert_index {
+            shifted.insert(index + inserted_count);
+        } else {
+            shifted.insert(index);
+        }
+    }
+    widget.list_selection = shifted;
+}
+
+fn listbox_reindex_selection_after_delete(
+    widget: &mut TkWidgetState,
+    first: usize,
+    end: usize,
+    removed_count: usize,
+) {
+    if widget.list_selection.is_empty() {
+        return;
+    }
+    let mut shifted = HashSet::with_capacity(widget.list_selection.len());
+    for index in widget.list_selection.drain() {
+        if index < first {
+            shifted.insert(index);
+        } else if index > end {
+            shifted.insert(index - removed_count);
+        }
+    }
+    widget.list_selection = shifted;
+}
+
+fn listbox_select_range(widget: &mut TkWidgetState, first: usize, last: usize) {
+    if widget.list_items.is_empty() {
+        return;
+    }
+    let end = last.min(widget.list_items.len() - 1);
+    if end >= first {
+        for idx in first..=end {
+            widget.list_selection.insert(idx);
+        }
+    }
+}
+
+fn listbox_clear_range(widget: &mut TkWidgetState, first: usize, last: usize) {
+    let end = last.max(first);
+    widget
+        .list_selection
+        .retain(|index| *index < first || *index > end);
+}
+
+fn listbox_shift_item_options_for_insert(
+    widget: &mut TkWidgetState,
+    insert_index: usize,
+    inserted_count: usize,
+) {
+    if inserted_count == 0 {
+        return;
+    }
+    if !widget.list_item_options.is_empty() {
+        let mut shifted = HashMap::with_capacity(widget.list_item_options.len());
+        for (index, options) in widget.list_item_options.drain() {
+            let target = if index >= insert_index {
+                index.saturating_add(inserted_count)
+            } else {
+                index
+            };
+            shifted.insert(target, options);
+        }
+        widget.list_item_options = shifted;
+    }
+    if let Some(active_index) = widget.list_active_index
+        && active_index >= insert_index
+    {
+        widget.list_active_index = Some(active_index.saturating_add(inserted_count));
+    }
+}
+
+fn listbox_reindex_item_options_after_delete(
+    py: &PyToken,
+    widget: &mut TkWidgetState,
+    first: usize,
+    end: usize,
+) {
+    if first > end {
+        return;
+    }
+    let removed_count = end - first + 1;
+    if widget.list_item_options.is_empty() {
+        if let Some(active_index) = widget.list_active_index {
+            widget.list_active_index = if active_index < first {
+                Some(active_index)
+            } else if active_index > end {
+                Some(active_index - removed_count)
+            } else {
+                None
+            };
+        }
+        return;
+    }
+    let mut shifted = HashMap::with_capacity(widget.list_item_options.len());
+    for (index, mut options) in widget.list_item_options.drain() {
+        if index < first {
+            shifted.insert(index, options);
+            continue;
+        }
+        if index > end {
+            shifted.insert(index - removed_count, options);
+            continue;
+        }
+        clear_value_map_refs(py, &mut options);
+    }
+    widget.list_item_options = shifted;
+    if let Some(active_index) = widget.list_active_index {
+        widget.list_active_index = if active_index < first {
+            Some(active_index)
+        } else if active_index > end {
+            Some(active_index - removed_count)
+        } else {
+            None
+        };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn listbox_with_len(len: usize) -> TkWidgetState {
+        TkWidgetState {
+            widget_command: "listbox".to_string(),
+            list_items: (0..len).map(|idx| idx as u64).collect(),
+            ..TkWidgetState::default()
+        }
+    }
+
+    fn sorted_indices(indices: &HashSet<usize>) -> Vec<usize> {
+        let mut out: Vec<usize> = indices.iter().copied().collect();
+        out.sort_unstable();
+        out
+    }
+
+    #[test]
+    fn listbox_state_reindexing_keeps_selection_active_and_options_coherent() {
+        let py = PyToken::new();
+        let mut widget = listbox_with_len(6);
+        widget.list_selection = HashSet::from([1, 3]);
+        widget.list_active_index = Some(3);
+        widget.list_item_options.insert(2, HashMap::new());
+        widget.list_item_options.insert(4, HashMap::new());
+
+        listbox_shift_selection_for_insert(&mut widget, 2, 2);
+        listbox_shift_item_options_for_insert(&mut widget, 2, 2);
+
+        assert_eq!(sorted_indices(&widget.list_selection), vec![1, 5]);
+        assert_eq!(widget.list_active_index, Some(5));
+        assert!(widget.list_item_options.contains_key(&4));
+        assert!(widget.list_item_options.contains_key(&6));
+
+        listbox_select_range(&mut widget, 2, 4);
+        listbox_clear_range(&mut widget, 3, 3);
+        assert_eq!(sorted_indices(&widget.list_selection), vec![1, 2, 4, 5]);
+
+        listbox_reindex_selection_after_delete(&mut widget, 2, 4, 3);
+        listbox_reindex_item_options_after_delete(&py, &mut widget, 2, 4);
+
+        assert_eq!(sorted_indices(&widget.list_selection), vec![1, 2]);
+        assert_eq!(widget.list_active_index, Some(2));
+        assert!(!widget.list_item_options.contains_key(&4));
+        assert!(widget.list_item_options.contains_key(&3));
+    }
+
+    #[test]
+    fn listbox_insert_shifts_active_index_without_item_options() {
+        let mut widget = listbox_with_len(3);
+        widget.list_active_index = Some(2);
+
+        listbox_shift_item_options_for_insert(&mut widget, 1, 2);
+
+        assert_eq!(widget.list_active_index, Some(4));
+        assert!(widget.list_item_options.is_empty());
+    }
 }
