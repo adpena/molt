@@ -2,7 +2,8 @@ use std::iter::ExactSizeIterator;
 use wasm_encoder::{TypeSection, ValType};
 
 pub(crate) use crate::wasm_abi_generated::{
-    POLL_TABLE_FUNCS, RUNTIME_CALLABLE_IMPORTS, RuntimeCallableResult,
+    POLL_TABLE_FUNCS, RUNTIME_CALLABLE_IMPORTS, RuntimeCallableResult, STATIC_FUNC_TYPES,
+    STATIC_TYPE_COUNT,
 };
 pub(crate) use molt_codegen_abi::{
     GENERATOR_CONTROL_BYTES as GEN_CONTROL_SIZE, TASK_KIND_COROUTINE, TASK_KIND_FUTURE,
@@ -112,88 +113,10 @@ impl TypeSectionExt for TypeSection {
     }
 }
 
-#[derive(Clone, Copy)]
-struct StaticFuncType {
-    params: &'static [ValType],
-    results: &'static [ValType],
-}
-
-const fn static_func_type(
-    params: &'static [ValType],
-    results: &'static [ValType],
-) -> StaticFuncType {
-    StaticFuncType { params, results }
-}
-
-const I64: ValType = ValType::I64;
-const I32: ValType = ValType::I32;
-
-const STATIC_FUNC_TYPES: [StaticFuncType; 51] = [
-    static_func_type(&[], &[I64]),
-    static_func_type(&[I64], &[]),
-    static_func_type(&[I64], &[I64]),
-    static_func_type(&[I64, I64], &[I64]),
-    static_func_type(&[I64, I64, I64], &[I32]),
-    static_func_type(&[I64, I64, I64], &[I64]),
-    static_func_type(&[I64, I64], &[]),
-    static_func_type(&[I64, I64, I64, I64], &[I64]),
-    static_func_type(&[], &[]),
-    static_func_type(&[I64, I64, I64, I64, I64, I64], &[I64]),
-    static_func_type(&[I64, I64, I64, I64, I64, I64, I64], &[I64]),
-    static_func_type(&[I64, I64, I64, I64], &[I32]),
-    static_func_type(&[I64, I64, I64, I64, I64], &[I64]),
-    static_func_type(&[I64], &[I32]),
-    static_func_type(&[I32], &[I64]),
-    static_func_type(&[I32], &[]),
-    static_func_type(&[I32, I64], &[I64]),
-    static_func_type(&[I32, I64, I64], &[I64]),
-    static_func_type(&[I64, I32, I64], &[I64]),
-    static_func_type(&[I32, I64, I32], &[I32]),
-    static_func_type(&[I64, I32, I32], &[I32]),
-    static_func_type(&[I32, I64, I64, I64, I32, I64], &[I64]),
-    static_func_type(&[I32, I64, I64, I64, I64, I32, I64], &[I64]),
-    static_func_type(&[I32, I32, I64], &[I64]),
-    static_func_type(&[I32, I32, I64, I64], &[I64]),
-    static_func_type(&[I64, I32, I64, I64], &[I64]),
-    static_func_type(&[I32, I64, I32, I64], &[I32]),
-    static_func_type(&[I32, I32], &[I64]),
-    static_func_type(&[I64, I64, I64, I64, I64, I64, I64, I64], &[I64]),
-    static_func_type(&[I64, I64, I64, I64, I64, I64], &[I64]),
-    static_func_type(&[I64, I64, I64], &[]),
-    static_func_type(&[I64, I64], &[I64, I64]),
-    static_func_type(&[I64, I64, I64], &[I64, I64, I64]),
-    static_func_type(&[I64], &[I64, I64]),
-    static_func_type(&[], &[I64, I64]),
-    static_func_type(&[I64, I64, I64, I64, I64, I64, I64, I64, I64], &[I64]),
-    static_func_type(&[I64, I64, I64, I64, I64, I64, I64, I64, I64, I64], &[I64]),
-    static_func_type(
-        &[I64, I64, I64, I64, I64, I64, I64, I64, I64, I64, I64],
-        &[I64],
-    ),
-    static_func_type(
-        &[I64, I64, I64, I64, I64, I64, I64, I64, I64, I64, I64, I64],
-        &[I64],
-    ),
-    static_func_type(&[I32, I64], &[]),
-    static_func_type(&[I64, I32, I64, I32, I64, I64, I64, I64], &[I64]),
-    static_func_type(&[I64, I64, I32, I64], &[I64]),
-    static_func_type(&[I64, I64, I32, I64, I64], &[I64]),
-    static_func_type(&[I64, I64, I32, I64, I64, I64], &[I64]),
-    static_func_type(&[I64, I64, I32, I64, I64, I64, I64], &[I64]),
-    static_func_type(&[I64, I64, I32, I64, I64, I64, I64, I64], &[I64]),
-    static_func_type(&[I64, I64, I64, I32, I64], &[I64]),
-    static_func_type(&[I64, I64, I64, I32, I64, I64], &[I64]),
-    static_func_type(&[I64, I64, I64, I32, I64, I64, I64], &[I64]),
-    static_func_type(&[I64, I64, I64, I32, I64, I64, I64, I64], &[I64]),
-    static_func_type(&[I64, I64, I64, I32, I64, I64, I64, I64, I64], &[I64]),
-];
-
 /// First dynamic type index; must equal the count of all statically-defined types.
 ///
-/// Static signatures occupy indices `0..STATIC_TYPE_COUNT`. Dynamic user arity
-/// signatures and wrapper signatures must start after that fixed set.
-pub(crate) const STATIC_TYPE_COUNT: u32 = STATIC_FUNC_TYPES.len() as u32;
-
+/// Static signatures occupy manifest indices `0..STATIC_TYPE_COUNT`. Dynamic
+/// user arity signatures and wrapper signatures must start after that fixed set.
 pub(crate) fn emit_static_type_section(types: &mut TypeSection) {
     for static_type in STATIC_FUNC_TYPES {
         types.function(

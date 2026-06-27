@@ -30,6 +30,35 @@ def test_wasm_abi_generated_files_are_in_sync() -> None:
     assert gen.OUT_RESERVED_INC.read_text(encoding="utf-8") == gen.render_reserved_inc(data)
 
 
+def test_wasm_abi_manifest_owns_static_type_section() -> None:
+    gen = _load_gen_wasm_abi()
+    data = gen.load_manifest()
+    static_types = data["static_type"]
+
+    assert len(static_types) == 51
+    assert static_types[0] == {"params": [], "results": ["i64"]}
+    assert static_types[1] == {"params": ["i64"], "results": []}
+    assert static_types[31] == {"params": ["i64", "i64"], "results": ["i64", "i64"]}
+    assert static_types[32] == {
+        "params": ["i64", "i64", "i64"],
+        "results": ["i64", "i64", "i64"],
+    }
+    assert all(entry["type"] < len(static_types) for entry in data["import"])
+
+    rendered_rs = gen.render_rs(data)
+    rendered_py = gen.render_py(data)
+    assert "STATIC_FUNC_TYPES" in rendered_rs
+    assert "STATIC_TYPE_COUNT: u32 = 51" in rendered_rs
+    assert "WASM_STATIC_TYPES" in rendered_py
+    assert "WASM_STATIC_TYPE_COUNT: int = 51" in rendered_py
+
+    wasm_abi = (
+        ROOT / "runtime/molt-backend-wasm/src/wasm_abi.rs"
+    ).read_text(encoding="utf-8")
+    assert "static_func_type(" not in wasm_abi
+    assert "const STATIC_FUNC_TYPES" not in wasm_abi
+
+
 def test_wasm_abi_manifest_feeds_runtime_export_registry() -> None:
     gen = _load_gen_wasm_abi()
     data = gen.load_manifest()

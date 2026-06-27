@@ -19,10 +19,34 @@ OUT_PY = ROOT / "src/molt/_wasm_abi_generated.py"
 OUT_TABLE_LAYOUT_INC = ROOT / "runtime/wasm_table_layout.inc"
 OUT_POLL_INC = ROOT / "runtime/wasm_poll_callables.inc"
 OUT_RESERVED_INC = ROOT / "runtime/wasm_runtime_callables.inc"
+WASM_VAL_TYPES = {
+    "i32": "I32",
+    "i64": "I64",
+    "f32": "F32",
+    "f64": "F64",
+}
 
 
 class WasmAbiManifestError(ValueError):
     pass
+
+
+def _validate_val_type_list(
+    entry_kind: str, entry_idx: int, field: str, value: object
+) -> list[str]:
+    if not isinstance(value, list):
+        raise WasmAbiManifestError(
+            f"{entry_kind} entry {entry_idx} field {field!r} must be a list"
+        )
+    vals: list[str] = []
+    for val_idx, val in enumerate(value):
+        if not isinstance(val, str) or val not in WASM_VAL_TYPES:
+            raise WasmAbiManifestError(
+                f"{entry_kind} entry {entry_idx} field {field!r} has invalid "
+                f"WASM value type at index {val_idx}: {val!r}"
+            )
+        vals.append(val)
+    return vals
 
 
 def load_manifest(path: Path = MANIFEST) -> dict:
@@ -33,6 +57,26 @@ def load_manifest(path: Path = MANIFEST) -> dict:
     legacy_table_base = table_layout.get("legacy_table_base")
     if not isinstance(legacy_table_base, int) or legacy_table_base <= 0:
         raise WasmAbiManifestError("[table_layout].legacy_table_base must be positive")
+    static_types = data.get("static_type")
+    if not isinstance(static_types, list) or not static_types:
+        raise WasmAbiManifestError("manifest must define static_type entries")
+    for idx, entry in enumerate(static_types):
+        if not isinstance(entry, dict):
+            raise WasmAbiManifestError(f"static_type entry {idx} must be a table")
+        entry["params"] = _validate_val_type_list(
+            "static_type", idx, "params", entry.get("params")
+        )
+        entry["results"] = _validate_val_type_list(
+            "static_type", idx, "results", entry.get("results")
+        )
+    if len(static_types) <= 1 or static_types[1] != {
+        "params": ["i64"],
+        "results": [],
+    }:
+        raise WasmAbiManifestError(
+            "static_type index 1 must remain the (i64) -> () exception-tag ABI"
+        )
+    static_type_count = len(static_types)
     imports = data.get("import")
     if not isinstance(imports, list) or not imports:
         raise WasmAbiManifestError("manifest must define at least one [[import]]")
@@ -51,6 +95,11 @@ def load_manifest(path: Path = MANIFEST) -> dict:
         seen_imports.add(name)
         if not isinstance(type_idx, int) or type_idx < 0:
             raise WasmAbiManifestError(f"import {name!r} has invalid type index")
+        if type_idx >= static_type_count:
+            raise WasmAbiManifestError(
+                f"import {name!r} references static type index {type_idx}, "
+                f"but only {static_type_count} static types are declared"
+            )
         runtime_name = entry.get("runtime_name")
         callable_arity = entry.get("callable_arity")
         callable_result = entry.get("callable_result", "i64")
@@ -258,8 +307,52 @@ def _header(comment: str) -> str:
     )
 
 
+def _rust_val_type(val: str) -> str:
+    return f"ValType::{WASM_VAL_TYPES[val]}"
+
+
+def _rust_val_slice(vals: list[str]) -> str:
+    if not vals:
+        return "&[]"
+    return "&[" + ", ".join(_rust_val_type(val) for val in vals) + "]"
+
+
+def _py_tuple(vals: list[str]) -> str:
+    if not vals:
+        return "()"
+    if len(vals) == 1:
+        return f'("{vals[0]}",)'
+    return "(" + ", ".join(f'"{val}"' for val in vals) + ")"
+
+
 def render_rs(data: dict) -> str:
     lines: list[str] = [_header("//")]
+    lines.append("use wasm_encoder::ValType;\n\n")
+    lines.extend(
+        [
+            "#[derive(Clone, Copy)]\n",
+            "pub(crate) struct StaticFuncTypeSpec {\n",
+            "    pub(crate) params: &'static [ValType],\n",
+            "    pub(crate) results: &'static [ValType],\n",
+            "}\n\n",
+            "pub(crate) const STATIC_FUNC_TYPES: &[StaticFuncTypeSpec] = &[\n",
+        ]
+    )
+    for entry in data["static_type"]:
+        lines.extend(
+            [
+                "    StaticFuncTypeSpec {\n",
+                f"        params: {_rust_val_slice(entry['params'])},\n",
+                f"        results: {_rust_val_slice(entry['results'])},\n",
+                "    },\n",
+            ]
+        )
+    lines.extend(
+        [
+            "];\n\n",
+            f"pub(crate) const STATIC_TYPE_COUNT: u32 = {len(data['static_type'])};\n\n",
+        ]
+    )
     lines.append("pub(crate) const IMPORT_REGISTRY: &[(&str, u32)] = &[\n")
     for entry in data["import"]:
         lines.append(f'    ("{entry["name"]}", {entry["type"]}),\n')
@@ -358,6 +451,15 @@ def render_rs(data: dict) -> str:
 
 def render_py(data: dict) -> str:
     lines: list[str] = [_header("#")]
+    lines.append(
+        "WASM_STATIC_TYPES: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (\n"
+    )
+    for entry in data["static_type"]:
+        lines.append(
+            f"    ({_py_tuple(entry['params'])}, {_py_tuple(entry['results'])}),\n"
+        )
+    lines.append(")\n\n")
+    lines.append(f"WASM_STATIC_TYPE_COUNT: int = {len(data['static_type'])}\n\n")
     lines.append("WASM_IMPORT_REGISTRY: tuple[str, ...] = (\n")
     for entry in data["import"]:
         lines.append(f'    "{entry["name"]}",\n')

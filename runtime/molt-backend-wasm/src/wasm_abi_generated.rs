@@ -2,6 +2,223 @@
 // runtime/molt-backend-wasm/src/wasm_abi_manifest.toml
 // DO NOT EDIT BY HAND.
 
+use wasm_encoder::ValType;
+
+#[derive(Clone, Copy)]
+pub(crate) struct StaticFuncTypeSpec {
+    pub(crate) params: &'static [ValType],
+    pub(crate) results: &'static [ValType],
+}
+
+pub(crate) const STATIC_FUNC_TYPES: &[StaticFuncTypeSpec] = &[
+    StaticFuncTypeSpec {
+        params: &[],
+        results: &[ValType::I64],
+    },
+    StaticFuncTypeSpec {
+        params: &[ValType::I64],
+        results: &[],
+    },
+    StaticFuncTypeSpec {
+        params: &[ValType::I64],
+        results: &[ValType::I64],
+    },
+    StaticFuncTypeSpec {
+        params: &[ValType::I64, ValType::I64],
+        results: &[ValType::I64],
+    },
+    StaticFuncTypeSpec {
+        params: &[ValType::I64, ValType::I64, ValType::I64],
+        results: &[ValType::I32],
+    },
+    StaticFuncTypeSpec {
+        params: &[ValType::I64, ValType::I64, ValType::I64],
+        results: &[ValType::I64],
+    },
+    StaticFuncTypeSpec {
+        params: &[ValType::I64, ValType::I64],
+        results: &[],
+    },
+    StaticFuncTypeSpec {
+        params: &[ValType::I64, ValType::I64, ValType::I64, ValType::I64],
+        results: &[ValType::I64],
+    },
+    StaticFuncTypeSpec {
+        params: &[],
+        results: &[],
+    },
+    StaticFuncTypeSpec {
+        params: &[ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64],
+        results: &[ValType::I64],
+    },
+    StaticFuncTypeSpec {
+        params: &[ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64],
+        results: &[ValType::I64],
+    },
+    StaticFuncTypeSpec {
+        params: &[ValType::I64, ValType::I64, ValType::I64, ValType::I64],
+        results: &[ValType::I32],
+    },
+    StaticFuncTypeSpec {
+        params: &[ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64],
+        results: &[ValType::I64],
+    },
+    StaticFuncTypeSpec {
+        params: &[ValType::I64],
+        results: &[ValType::I32],
+    },
+    StaticFuncTypeSpec {
+        params: &[ValType::I32],
+        results: &[ValType::I64],
+    },
+    StaticFuncTypeSpec {
+        params: &[ValType::I32],
+        results: &[],
+    },
+    StaticFuncTypeSpec {
+        params: &[ValType::I32, ValType::I64],
+        results: &[ValType::I64],
+    },
+    StaticFuncTypeSpec {
+        params: &[ValType::I32, ValType::I64, ValType::I64],
+        results: &[ValType::I64],
+    },
+    StaticFuncTypeSpec {
+        params: &[ValType::I64, ValType::I32, ValType::I64],
+        results: &[ValType::I64],
+    },
+    StaticFuncTypeSpec {
+        params: &[ValType::I32, ValType::I64, ValType::I32],
+        results: &[ValType::I32],
+    },
+    StaticFuncTypeSpec {
+        params: &[ValType::I64, ValType::I32, ValType::I32],
+        results: &[ValType::I32],
+    },
+    StaticFuncTypeSpec {
+        params: &[ValType::I32, ValType::I64, ValType::I64, ValType::I64, ValType::I32, ValType::I64],
+        results: &[ValType::I64],
+    },
+    StaticFuncTypeSpec {
+        params: &[ValType::I32, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I32, ValType::I64],
+        results: &[ValType::I64],
+    },
+    StaticFuncTypeSpec {
+        params: &[ValType::I32, ValType::I32, ValType::I64],
+        results: &[ValType::I64],
+    },
+    StaticFuncTypeSpec {
+        params: &[ValType::I32, ValType::I32, ValType::I64, ValType::I64],
+        results: &[ValType::I64],
+    },
+    StaticFuncTypeSpec {
+        params: &[ValType::I64, ValType::I32, ValType::I64, ValType::I64],
+        results: &[ValType::I64],
+    },
+    StaticFuncTypeSpec {
+        params: &[ValType::I32, ValType::I64, ValType::I32, ValType::I64],
+        results: &[ValType::I32],
+    },
+    StaticFuncTypeSpec {
+        params: &[ValType::I32, ValType::I32],
+        results: &[ValType::I64],
+    },
+    StaticFuncTypeSpec {
+        params: &[ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64],
+        results: &[ValType::I64],
+    },
+    StaticFuncTypeSpec {
+        params: &[ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64],
+        results: &[ValType::I64],
+    },
+    StaticFuncTypeSpec {
+        params: &[ValType::I64, ValType::I64, ValType::I64],
+        results: &[],
+    },
+    StaticFuncTypeSpec {
+        params: &[ValType::I64, ValType::I64],
+        results: &[ValType::I64, ValType::I64],
+    },
+    StaticFuncTypeSpec {
+        params: &[ValType::I64, ValType::I64, ValType::I64],
+        results: &[ValType::I64, ValType::I64, ValType::I64],
+    },
+    StaticFuncTypeSpec {
+        params: &[ValType::I64],
+        results: &[ValType::I64, ValType::I64],
+    },
+    StaticFuncTypeSpec {
+        params: &[],
+        results: &[ValType::I64, ValType::I64],
+    },
+    StaticFuncTypeSpec {
+        params: &[ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64],
+        results: &[ValType::I64],
+    },
+    StaticFuncTypeSpec {
+        params: &[ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64],
+        results: &[ValType::I64],
+    },
+    StaticFuncTypeSpec {
+        params: &[ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64],
+        results: &[ValType::I64],
+    },
+    StaticFuncTypeSpec {
+        params: &[ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64],
+        results: &[ValType::I64],
+    },
+    StaticFuncTypeSpec {
+        params: &[ValType::I32, ValType::I64],
+        results: &[],
+    },
+    StaticFuncTypeSpec {
+        params: &[ValType::I64, ValType::I32, ValType::I64, ValType::I32, ValType::I64, ValType::I64, ValType::I64, ValType::I64],
+        results: &[ValType::I64],
+    },
+    StaticFuncTypeSpec {
+        params: &[ValType::I64, ValType::I64, ValType::I32, ValType::I64],
+        results: &[ValType::I64],
+    },
+    StaticFuncTypeSpec {
+        params: &[ValType::I64, ValType::I64, ValType::I32, ValType::I64, ValType::I64],
+        results: &[ValType::I64],
+    },
+    StaticFuncTypeSpec {
+        params: &[ValType::I64, ValType::I64, ValType::I32, ValType::I64, ValType::I64, ValType::I64],
+        results: &[ValType::I64],
+    },
+    StaticFuncTypeSpec {
+        params: &[ValType::I64, ValType::I64, ValType::I32, ValType::I64, ValType::I64, ValType::I64, ValType::I64],
+        results: &[ValType::I64],
+    },
+    StaticFuncTypeSpec {
+        params: &[ValType::I64, ValType::I64, ValType::I32, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64],
+        results: &[ValType::I64],
+    },
+    StaticFuncTypeSpec {
+        params: &[ValType::I64, ValType::I64, ValType::I64, ValType::I32, ValType::I64],
+        results: &[ValType::I64],
+    },
+    StaticFuncTypeSpec {
+        params: &[ValType::I64, ValType::I64, ValType::I64, ValType::I32, ValType::I64, ValType::I64],
+        results: &[ValType::I64],
+    },
+    StaticFuncTypeSpec {
+        params: &[ValType::I64, ValType::I64, ValType::I64, ValType::I32, ValType::I64, ValType::I64, ValType::I64],
+        results: &[ValType::I64],
+    },
+    StaticFuncTypeSpec {
+        params: &[ValType::I64, ValType::I64, ValType::I64, ValType::I32, ValType::I64, ValType::I64, ValType::I64, ValType::I64],
+        results: &[ValType::I64],
+    },
+    StaticFuncTypeSpec {
+        params: &[ValType::I64, ValType::I64, ValType::I64, ValType::I32, ValType::I64, ValType::I64, ValType::I64, ValType::I64, ValType::I64],
+        results: &[ValType::I64],
+    },
+];
+
+pub(crate) const STATIC_TYPE_COUNT: u32 = 51;
+
 pub(crate) const IMPORT_REGISTRY: &[(&str, u32)] = &[
     ("alloc", 2),
     ("alloc_class", 3),
