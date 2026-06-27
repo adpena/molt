@@ -27,7 +27,6 @@ mod commands;
 mod dialogs;
 mod dispatch;
 mod focus_commands;
-mod generic_widgets;
 mod geometry_commands;
 mod grab_commands;
 mod intrinsics;
@@ -41,6 +40,7 @@ mod tcl;
 mod tix_commands;
 mod ttk;
 mod widget_create;
+mod widgets;
 mod winfo_commands;
 mod wm_commands;
 
@@ -49,13 +49,13 @@ use callbacks::*;
 use commands::*;
 use dialogs::*;
 use dispatch::*;
-use generic_widgets::*;
 use native::*;
 use parsing::*;
 use state::*;
 #[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 use tcl::*;
 use ttk::*;
+use widgets::*;
 
 pub use intrinsics::*;
 
