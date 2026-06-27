@@ -12,7 +12,7 @@ Product board for the molt structural sweep — the first instrument of the Molt
 | hand_classified_matches | 0 |
 | critical_hand_classifications | 0 |
 | handset_classifications | 0 |
-| debt_markers_total | 361 |
+| debt_markers_total | 346 |
 | kitchen_sink_files | 0 |
 | max_kitchen_sink_structural_score | 0 |
 | kitchen_sink_large_regions | 0 |
@@ -26,21 +26,21 @@ Product board for the molt structural sweep — the first instrument of the Molt
 
 | sev | risk class | where | what |
 | --- | --- | --- | --- |
-| low | debt_marker | `src/molt/stdlib/_pyio.py:421` | 6 debt/workaround markers |
-| low | debt_marker | `src/molt/stdlib/email/message.py:34` | 6 debt/workaround markers |
-| low | debt_marker | `runtime/molt-backend-mlir/src/tir_to_mlir.rs:559` | 4 debt/workaround markers |
+| low | debt_marker | `src/molt/stdlib/email/message.py:34` | 5 debt/workaround markers |
 | low | debt_marker | `src/molt/stdlib/xml/etree/ElementPath.py:251` | 4 debt/workaround markers |
 | low | debt_marker | `src/molt/stdlib/xml/etree/ElementTree.py:241` | 4 debt/workaround markers |
-| low | debt_marker | `runtime/molt-backend/src/luau_backend/source_postprocess/…` | 2 debt/workaround markers |
+| low | debt_marker | `runtime/molt-backend-mlir/src/tir_to_mlir/ops.rs:379` | 3 debt/workaround markers |
+| low | debt_marker | `runtime/molt-backend-luau/src/luau_backend/source_postpro…` | 2 debt/workaround markers |
 | low | debt_marker | `runtime/molt-runtime-serial/src/binascii.rs:1211` | 2 debt/workaround markers |
 | low | debt_marker | `runtime/molt-tier/src/lib.rs:228` | 2 debt/workaround markers |
 | low | debt_marker | `src/molt/gpu/distributed.py:79` | 2 debt/workaround markers |
-| low | debt_marker | `src/molt/stdlib/email/charset.py:103` | 2 debt/workaround markers |
 | low | debt_marker | `src/molt/stdlib/zlib.py:268` | 2 debt/workaround markers |
-| low | debt_marker | `runtime/molt-backend/src/llvm_backend/lowering/value_mate…` | 1 debt/workaround markers |
-| low | debt_marker | `runtime/molt-backend/src/native_backend/function_compiler…` | 1 debt/workaround markers |
+| low | debt_marker | `runtime/molt-backend-mlir/src/tir_to_mlir/terminators.rs:…` | 1 debt/workaround markers |
+| low | debt_marker | `runtime/molt-backend-native/src/llvm_backend/lowering/val…` | 1 debt/workaround markers |
+| low | debt_marker | `runtime/molt-backend-native/src/native_backend/function_c…` | 1 debt/workaround markers |
 | low | debt_marker | `runtime/molt-cpython-abi/src/api/abstract_number.rs:267` | 1 debt/workaround markers |
 | low | debt_marker | `runtime/molt-cpython-abi/src/api/object.rs:602` | 1 debt/workaround markers |
+| low | debt_marker | `runtime/molt-cpython-abi/src/api/strings.rs:411` | 1 debt/workaround markers |
 
 ## TOP DELETION CANDIDATES (0) — replace, don't just delete
 
@@ -57,41 +57,40 @@ Product board for the molt structural sweep — the first instrument of the Molt
 
 ## Full findings by probe
 
-### debt_marker (336)
+### debt_marker (329)
 
 | sev | what | where | action |
 | --- | --- | --- | --- |
-| low | 6 debt/workaround markers | `src/molt/stdlib/_pyio.py:421` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
-| low | 6 debt/workaround markers | `src/molt/stdlib/email/message.py:34` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
-| low | 4 debt/workaround markers | `runtime/molt-backend-mlir/src/tir_to_mlir.rs:559` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
+| low | 5 debt/workaround markers | `src/molt/stdlib/email/message.py:34` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 4 debt/workaround markers | `src/molt/stdlib/xml/etree/ElementPath.py:251` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 4 debt/workaround markers | `src/molt/stdlib/xml/etree/ElementTree.py:241` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
-| low | 2 debt/workaround markers | `runtime/molt-backend/src/luau_backend/source_postprocess/control_fl…` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
+| low | 3 debt/workaround markers | `runtime/molt-backend-mlir/src/tir_to_mlir/ops.rs:379` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
+| low | 2 debt/workaround markers | `runtime/molt-backend-luau/src/luau_backend/source_postprocess/contr…` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 2 debt/workaround markers | `runtime/molt-runtime-serial/src/binascii.rs:1211` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 2 debt/workaround markers | `runtime/molt-tier/src/lib.rs:228` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 2 debt/workaround markers | `src/molt/gpu/distributed.py:79` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
-| low | 2 debt/workaround markers | `src/molt/stdlib/email/charset.py:103` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 2 debt/workaround markers | `src/molt/stdlib/zlib.py:268` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
-| low | 1 debt/workaround markers | `runtime/molt-backend/src/llvm_backend/lowering/value_materializatio…` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
-| low | 1 debt/workaround markers | `runtime/molt-backend/src/native_backend/function_compiler.rs:2502` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
+| low | 1 debt/workaround markers | `runtime/molt-backend-mlir/src/tir_to_mlir/terminators.rs:151` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
+| low | 1 debt/workaround markers | `runtime/molt-backend-native/src/llvm_backend/lowering/value_materia…` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
+| low | 1 debt/workaround markers | `runtime/molt-backend-native/src/native_backend/function_compiler.rs…` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 1 debt/workaround markers | `runtime/molt-cpython-abi/src/api/abstract_number.rs:267` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 1 debt/workaround markers | `runtime/molt-cpython-abi/src/api/object.rs:602` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 1 debt/workaround markers | `runtime/molt-cpython-abi/src/api/strings.rs:411` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 1 debt/workaround markers | `runtime/molt-cpython-abi/src/api/typeobj.rs:35` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 1 debt/workaround markers | `runtime/molt-gpu/src/device/ane.rs:107` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
+| low | 1 debt/workaround markers | `runtime/molt-passes/src/tir/bolt.rs:129` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
+| low | 1 debt/workaround markers | `runtime/molt-passes/src/tir/call_facts.rs:52` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
+| low | 1 debt/workaround markers | `runtime/molt-passes/src/tir/passes/escape_analysis.rs:346` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
+| low | 1 debt/workaround markers | `runtime/molt-passes/src/tir/passes/module_slot_promotion.rs:947` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
+| low | 1 debt/workaround markers | `runtime/molt-passes/src/tir/passes/vectorize.rs:494` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 1 debt/workaround markers | `runtime/molt-runtime-asyncio/src/lib.rs:86` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 1 debt/workaround markers | `runtime/molt-runtime-net/src/lib.rs:6` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 1 debt/workaround markers | `runtime/molt-runtime-regex/src/regex/matcher.rs:390` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 1 debt/workaround markers | `runtime/molt-runtime/src/async_rt/channels.rs:1202` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 1 debt/workaround markers | `runtime/molt-runtime/src/builtins/io_path_utils.rs:1360` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 1 debt/workaround markers | `runtime/molt-runtime/tests/test_builtins.rs:76` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
-| low | 1 debt/workaround markers | `runtime/molt-passes/src/tir/bolt.rs:129` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
-| low | 1 debt/workaround markers | `runtime/molt-passes/src/tir/call_facts.rs:52` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
-| low | 1 debt/workaround markers | `runtime/molt-passes/src/tir/passes/escape_analysis.rs:346` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
-| low | 1 debt/workaround markers | `runtime/molt-passes/src/tir/passes/module_slot_promotion.rs:947` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
-| low | 1 debt/workaround markers | `runtime/molt-passes/src/tir/passes/vectorize.rs:494` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
-| low | 1 debt/workaround markers | `src/molt/cli/runtime_build.py:1513` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
-| low | 1 debt/workaround markers | `src/molt/harness_layers.py:644` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
+| low | 1 debt/workaround markers | `src/molt/cli/runtime_build.py:1517` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
+| low | 1 debt/workaround markers | `src/molt/harness_layers.py:642` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 1 debt/workaround markers | `src/molt/stdlib/_aix_support.py:13` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 1 debt/workaround markers | `src/molt/stdlib/_android_support.py:13` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 1 debt/workaround markers | `src/molt/stdlib/_apple_support.py:13` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
@@ -99,10 +98,13 @@ Product board for the molt structural sweep — the first instrument of the Molt
 | low | 1 debt/workaround markers | `src/molt/stdlib/_colorize.py:13` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 1 debt/workaround markers | `src/molt/stdlib/_crypt.py:13` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 1 debt/workaround markers | `src/molt/stdlib/_curses.py:13` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
-| … | _296 more_ | | run `--json` for full list |
+| low | 1 debt/workaround markers | `src/molt/stdlib/_curses_panel.py:13` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
+| low | 1 debt/workaround markers | `src/molt/stdlib/_dbm.py:13` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
+| low | 1 debt/workaround markers | `src/molt/stdlib/_gdbm.py:13` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
+| … | _289 more_ | | run `--json` for full list |
 
 ### registry_reconciliation (1)
 
 | sev | what | where | action |
 | --- | --- | --- | --- |
-| info | OpCode variants=111 · [[opcode]] rows≈44 | `runtime/molt-tir/src/tir/{ops.rs,op_kinds.toml}` | no action unless a NEW non-exhaustive opcode classifier appears (probe semantic_ |
+| info | OpCode variants=110 · [[opcode]] rows≈44 | `runtime/molt-ir/src/tir/{ops.rs,op_kinds.toml}` | no action unless a NEW non-exhaustive opcode classifier appears (probe semantic_ |

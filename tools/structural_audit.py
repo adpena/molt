@@ -1007,6 +1007,8 @@ def _debt_marker_hits(path: Path, text: str) -> list[DebtMarkerHit]:
     hits: list[DebtMarkerHit] = []
     for line, comment in comment_segments:
         for match in _COMMENT_DEBT_RE.finditer(comment):
+            if _is_stdlib_upstream_advisory_marker(path, comment, match):
+                continue
             hits.append(DebtMarkerHit(line=line, marker=match.group(0)))
     if code_text:
         for match in _CODE_DEBT_RE.finditer(code_text):
@@ -1017,6 +1019,24 @@ def _debt_marker_hits(path: Path, text: str) -> list[DebtMarkerHit]:
                 )
             )
     return sorted(hits, key=lambda hit: (hit.line, hit.marker.lower()))
+
+
+def _is_stdlib_upstream_advisory_marker(
+    path: Path, comment: str, match: re.Match[str]
+) -> bool:
+    """Ignore CPython-style ``XXX`` notes in vendored stdlib mirrors.
+
+    The debt ratchet is for Molt-owned workaround and implementation debt. A
+    large fraction of ``src/molt/stdlib`` mirrors upstream CPython files, whose
+    old ``XXX`` editorial questions are not Molt compatibility lanes. Keep
+    counting any owned debt token in the same comment through its own regex
+    match; only suppress the advisory ``XXX`` token itself.
+    """
+    rel = path.as_posix()
+    if "/src/molt/stdlib/" not in f"/{rel}":
+        return False
+    marker = match.group(0)
+    return marker.upper() == "XXX"
 
 
 def probe_debt_markers(root: Path) -> list[Finding]:
