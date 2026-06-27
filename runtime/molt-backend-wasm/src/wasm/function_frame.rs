@@ -7,6 +7,77 @@ use super::local_analysis::{LocalVariableAnalysis, analyze_local_variables};
 use super::multi_return_layout::WasmMultiReturnLayout;
 use super::state_dispatch::NonLinearDispatchLocals;
 use super::*;
+use std::borrow::Borrow;
+use std::collections::btree_map::{Entry, Iter};
+use std::ops::Index;
+
+#[derive(Clone, Default)]
+pub(in crate::wasm) struct WasmFrameLocals {
+    slots: BTreeMap<String, u32>,
+}
+
+impl WasmFrameLocals {
+    pub(in crate::wasm) fn new() -> Self {
+        Self::default()
+    }
+
+    pub(in crate::wasm) fn insert(&mut self, name: String, slot: u32) -> Option<u32> {
+        self.slots.insert(name, slot)
+    }
+
+    pub(in crate::wasm) fn entry(&mut self, name: String) -> Entry<'_, String, u32> {
+        self.slots.entry(name)
+    }
+
+    pub(in crate::wasm) fn get<Q>(&self, name: &Q) -> Option<&u32>
+    where
+        String: Borrow<Q>,
+        Q: Ord + ?Sized,
+    {
+        self.slots.get(name)
+    }
+
+    pub(in crate::wasm) fn contains_key<Q>(&self, name: &Q) -> bool
+    where
+        String: Borrow<Q>,
+        Q: Ord + ?Sized,
+    {
+        self.slots.contains_key(name)
+    }
+}
+
+impl From<BTreeMap<String, u32>> for WasmFrameLocals {
+    fn from(slots: BTreeMap<String, u32>) -> Self {
+        Self { slots }
+    }
+}
+
+impl<'a> IntoIterator for &'a WasmFrameLocals {
+    type Item = (&'a String, &'a u32);
+    type IntoIter = Iter<'a, String, u32>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.slots.iter()
+    }
+}
+
+impl Index<&str> for WasmFrameLocals {
+    type Output = u32;
+
+    fn index(&self, name: &str) -> &Self::Output {
+        self.slots
+            .get(name)
+            .unwrap_or_else(|| panic!("wasm frame local {name} is not allocated"))
+    }
+}
+
+impl Index<&String> for WasmFrameLocals {
+    type Output = u32;
+
+    fn index(&self, name: &String) -> &Self::Output {
+        &self[name.as_str()]
+    }
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(in crate::wasm) enum WasmFrameControlMode {
@@ -31,7 +102,7 @@ pub(super) struct WasmFunctionFramePlan {
 }
 
 pub(super) struct WasmFunctionFrame {
-    locals: BTreeMap<String, u32>,
+    locals: WasmFrameLocals,
     runtime_lookup_only_vars: BTreeSet<String>,
     scalar_plan: ScalarRepresentationPlan,
     control_mode: WasmFrameControlMode,
@@ -57,7 +128,7 @@ struct WasmDispatchFrameLocals {
 
 impl WasmFunctionFramePlan {
     pub(super) fn for_function(func_ir: &FunctionIR, ctx: &CompileFuncContext<'_>) -> Self {
-        let mut locals = BTreeMap::new();
+        let mut locals = WasmFrameLocals::new();
         let mut local_count = 0;
         let mut local_types = Vec::new();
 
@@ -497,7 +568,7 @@ impl WasmFunctionFrame {
         })
     }
 
-    pub(super) fn locals(&self) -> &BTreeMap<String, u32> {
+    pub(super) fn locals(&self) -> &WasmFrameLocals {
         &self.locals
     }
 

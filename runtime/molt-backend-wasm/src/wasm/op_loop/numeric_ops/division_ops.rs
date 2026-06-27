@@ -5,7 +5,7 @@ pub(super) fn emit_division_numeric_op(
     func: &mut Function,
     op: &OpIR,
     import_ids: &TrackedImportIds,
-    locals: &BTreeMap<String, u32>,
+    locals: &WasmFrameLocals,
     const_cache: &ConstantCache,
     scalar_plan: &ScalarRepresentationPlan,
     reloc_enabled: bool,

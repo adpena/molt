@@ -8,7 +8,7 @@ pub(super) fn emit_class_object_op(
     op: &OpIR,
     ctx: &CompileFuncContext<'_>,
     import_ids: &TrackedImportIds,
-    locals: &BTreeMap<String, u32>,
+    locals: &WasmFrameLocals,
     reloc_enabled: bool,
 ) -> bool {
     match op.kind.as_str() {
