@@ -1544,11 +1544,6 @@ pub extern "C" fn molt_xmlrpc_runtime_ready() -> u64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_datetime_runtime_ready() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { MoltObject::from_bool(true).bits() })
-}
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_tomllib_runtime_ready() -> u64 {
     crate::with_gil_entry_nopanic!(_py, { MoltObject::from_bool(true).bits() })
 }

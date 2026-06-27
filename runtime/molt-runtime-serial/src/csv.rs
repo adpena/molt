@@ -12,6 +12,11 @@ const QUOTE_NONE: i64 = 3;
 const QUOTE_STRINGS: i64 = 4;
 const QUOTE_NOTNULL: i64 = 5;
 
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_csv_runtime_ready() -> u64 {
+    molt_runtime_core::with_gil_entry!(_py, MoltObject::from_bool(true).bits())
+}
+
 // ── Default field-size limit (131072, matching CPython) ───────────────────────
 const DEFAULT_FIELD_SIZE_LIMIT: i64 = 131_072;
 

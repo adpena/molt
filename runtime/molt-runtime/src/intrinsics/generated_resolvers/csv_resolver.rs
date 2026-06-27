@@ -2,137 +2,16 @@
 #[inline(never)]
 #[cold]
 pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
-    match symbol {
-        #[cfg(feature = "stdlib_csv")]
-        "molt_csv_runtime_ready" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_csv_runtime_ready",
-            crate::molt_csv_runtime_ready as *const (),
-        )),
-        #[cfg(feature = "stdlib_csv")]
-        "molt_csv_dict_project" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_csv_dict_project",
-            crate::molt_csv_dict_project as *const (),
-        )),
-        #[cfg(feature = "stdlib_csv")]
-        "molt_csv_field_size_limit" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_csv_field_size_limit",
-            crate::molt_csv_field_size_limit as *const (),
-        )),
-        #[cfg(feature = "stdlib_csv")]
-        "molt_csv_get_dialect" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_csv_get_dialect",
-            crate::molt_csv_get_dialect as *const (),
-        )),
-        #[cfg(feature = "stdlib_csv")]
-        "molt_csv_has_header" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_csv_has_header",
-            crate::molt_csv_has_header as *const (),
-        )),
-        #[cfg(feature = "stdlib_csv")]
-        "molt_csv_list_dialects" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_csv_list_dialects",
-            crate::molt_csv_list_dialects as *const (),
-        )),
-        #[cfg(feature = "stdlib_csv")]
-        "molt_csv_quote_all" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_csv_quote_all",
-            crate::molt_csv_quote_all as *const (),
-        )),
-        #[cfg(feature = "stdlib_csv")]
-        "molt_csv_quote_minimal" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_csv_quote_minimal",
-            crate::molt_csv_quote_minimal as *const (),
-        )),
-        #[cfg(feature = "stdlib_csv")]
-        "molt_csv_quote_none" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_csv_quote_none",
-            crate::molt_csv_quote_none as *const (),
-        )),
-        #[cfg(feature = "stdlib_csv")]
-        "molt_csv_quote_nonnumeric" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_csv_quote_nonnumeric",
-            crate::molt_csv_quote_nonnumeric as *const (),
-        )),
-        #[cfg(feature = "stdlib_csv")]
-        "molt_csv_quote_notnull" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_csv_quote_notnull",
-            crate::molt_csv_quote_notnull as *const (),
-        )),
-        #[cfg(feature = "stdlib_csv")]
-        "molt_csv_quote_strings" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_csv_quote_strings",
-            crate::molt_csv_quote_strings as *const (),
-        )),
-        #[cfg(feature = "stdlib_csv")]
-        "molt_csv_register_dialect" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_csv_register_dialect",
-            crate::molt_csv_register_dialect as *const (),
-        )),
-        #[cfg(feature = "stdlib_csv")]
-        "molt_csv_reader_drop" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_csv_reader_drop",
-            crate::molt_csv_reader_drop as *const (),
-        )),
-        #[cfg(feature = "stdlib_csv")]
-        "molt_csv_reader_new" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_csv_reader_new",
-            crate::molt_csv_reader_new as *const (),
-        )),
-        #[cfg(feature = "stdlib_csv")]
-        "molt_csv_reader_parse_line" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_csv_reader_parse_line",
-            crate::molt_csv_reader_parse_line as *const (),
-        )),
-        #[cfg(feature = "stdlib_csv")]
-        "molt_csv_sniff" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_csv_sniff",
-            crate::molt_csv_sniff as *const (),
-        )),
-        #[cfg(feature = "stdlib_csv")]
-        "molt_csv_unregister_dialect" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_csv_unregister_dialect",
-            crate::molt_csv_unregister_dialect as *const (),
-        )),
-        #[cfg(feature = "stdlib_csv")]
-        "molt_csv_writer_drop" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_csv_writer_drop",
-            crate::molt_csv_writer_drop as *const (),
-        )),
-        #[cfg(feature = "stdlib_csv")]
-        "molt_csv_writer_new" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_csv_writer_new",
-            crate::molt_csv_writer_new as *const (),
-        )),
-        #[cfg(feature = "stdlib_csv")]
-        "molt_csv_writer_writerow" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_csv_writer_writerow",
-            crate::molt_csv_writer_writerow as *const (),
-        )),
-        #[cfg(feature = "stdlib_csv")]
-        "molt_csv_writer_writerows" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_csv_writer_writerows",
-            crate::molt_csv_writer_writerows as *const (),
-        )),
-        #[cfg(feature = "stdlib_csv")]
-        "molt_csv_normalize_row" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_csv_normalize_row",
-            crate::molt_csv_normalize_row as *const (),
-        )),
-        #[cfg(feature = "stdlib_csv")]
-        "molt_csv_dialect_lookup_name" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_csv_dialect_lookup_name",
-            crate::molt_csv_dialect_lookup_name as *const (),
-        )),
-        #[cfg(feature = "stdlib_csv")]
-        "molt_csv_validate_dialect" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_csv_validate_dialect",
-            crate::molt_csv_validate_dialect as *const (),
-        )),
-        #[cfg(feature = "stdlib_csv")]
-        "molt_csv_validate_fmtparams" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_csv_validate_fmtparams",
-            crate::molt_csv_validate_fmtparams as *const (),
-        )),
-        _ => None,
+    #[cfg(feature = "stdlib_csv")]
+    {
+        molt_runtime_serial::intrinsics_generated::csv_resolver::resolve_symbol_with(
+            symbol,
+            crate::builtins::functions::runtime_fn_addr,
+        )
+    }
+    #[cfg(not(feature = "stdlib_csv"))]
+    {
+        let _ = symbol;
+        None
     }
 }

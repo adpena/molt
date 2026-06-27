@@ -2,37 +2,16 @@
 #[inline(never)]
 #[cold]
 pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
-    match symbol {
-        #[cfg(feature = "stdlib_serial")]
-        "molt_struct_pack" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_struct_pack",
-            crate::molt_struct_pack as *const (),
-        )),
-        #[cfg(feature = "stdlib_serial")]
-        "molt_struct_unpack" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_struct_unpack",
-            crate::molt_struct_unpack as *const (),
-        )),
-        #[cfg(feature = "stdlib_serial")]
-        "molt_struct_calcsize" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_struct_calcsize",
-            crate::molt_struct_calcsize as *const (),
-        )),
-        #[cfg(feature = "stdlib_serial")]
-        "molt_struct_pack_into" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_struct_pack_into",
-            crate::molt_struct_pack_into as *const (),
-        )),
-        #[cfg(feature = "stdlib_serial")]
-        "molt_struct_unpack_from" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_struct_unpack_from",
-            crate::molt_struct_unpack_from as *const (),
-        )),
-        #[cfg(feature = "stdlib_serial")]
-        "molt_struct_iter_unpack" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_struct_iter_unpack",
-            crate::molt_struct_iter_unpack as *const (),
-        )),
-        _ => None,
+    #[cfg(feature = "stdlib_serial")]
+    {
+        molt_runtime_serial::intrinsics_generated::struct_resolver::resolve_symbol_with(
+            symbol,
+            crate::builtins::functions::runtime_fn_addr,
+        )
+    }
+    #[cfg(not(feature = "stdlib_serial"))]
+    {
+        let _ = symbol;
+        None
     }
 }

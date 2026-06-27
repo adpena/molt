@@ -24,6 +24,11 @@ unsafe extern "C" {
     fn windows_mktime64(tm: *mut libc::tm) -> libc::time_t;
 }
 
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_datetime_runtime_ready() -> u64 {
+    molt_runtime_core::with_gil_entry!(_py, MoltObject::from_bool(true).bits())
+}
+
 // ---------------------------------------------------------------------------
 // Calendar helper types
 // ---------------------------------------------------------------------------

@@ -42,6 +42,8 @@ COLLECTIONS_LEAF_RESOLVERS_DIR = (
     ROOT / "runtime/molt-runtime-collections/src/intrinsics_generated"
 )
 COLLECTIONS_LEAF_RESOLVER_INDEX = COLLECTIONS_LEAF_RESOLVERS_DIR / "mod.rs"
+SERIAL_LEAF_RESOLVERS_DIR = ROOT / "runtime/molt-runtime-serial/src/intrinsics_generated"
+SERIAL_LEAF_RESOLVER_INDEX = SERIAL_LEAF_RESOLVERS_DIR / "mod.rs"
 LEAF_RESOLVER_REGISTRIES = {
     "stringprep": {
         "output": ROOT / "runtime/molt-runtime-stringprep/src/intrinsics_generated.rs",
@@ -156,6 +158,112 @@ LEAF_RESOLVER_REGISTRIES = {
         ),
         "symbol_path_prefix": "molt_runtime_collections::collections_ext",
         "function_path_prefix": "crate::collections_ext",
+    },
+    "archive": {
+        "output": SERIAL_LEAF_RESOLVERS_DIR / "archive_resolver.rs",
+        "module_index": SERIAL_LEAF_RESOLVER_INDEX,
+        "crate_path": "molt_runtime_serial",
+        "crate_resolver_path": (
+            "molt_runtime_serial::intrinsics_generated::archive_resolver"
+        ),
+        "symbol_path_prefix": "molt_runtime_serial::zipfile",
+        "function_path_prefix": "crate::zipfile",
+    },
+    "base64": {
+        "output": SERIAL_LEAF_RESOLVERS_DIR / "base64_resolver.rs",
+        "module_index": SERIAL_LEAF_RESOLVER_INDEX,
+        "crate_path": "molt_runtime_serial",
+        "crate_resolver_path": (
+            "molt_runtime_serial::intrinsics_generated::base64_resolver"
+        ),
+        "symbol_path_prefix": "molt_runtime_serial::base64_mod",
+        "function_path_prefix": "crate::base64_mod",
+    },
+    "binascii": {
+        "output": SERIAL_LEAF_RESOLVERS_DIR / "binascii_resolver.rs",
+        "module_index": SERIAL_LEAF_RESOLVER_INDEX,
+        "crate_path": "molt_runtime_serial",
+        "crate_resolver_path": (
+            "molt_runtime_serial::intrinsics_generated::binascii_resolver"
+        ),
+        "symbol_path_prefix": "molt_runtime_serial::binascii",
+        "function_path_prefix": "crate::binascii",
+    },
+    "configparser": {
+        "output": SERIAL_LEAF_RESOLVERS_DIR / "configparser_resolver.rs",
+        "module_index": SERIAL_LEAF_RESOLVER_INDEX,
+        "crate_path": "molt_runtime_serial",
+        "crate_resolver_path": (
+            "molt_runtime_serial::intrinsics_generated::configparser_resolver"
+        ),
+        "symbol_path_prefix": "molt_runtime_serial::configparser",
+        "function_path_prefix": "crate::configparser",
+    },
+    "csv": {
+        "output": SERIAL_LEAF_RESOLVERS_DIR / "csv_resolver.rs",
+        "module_index": SERIAL_LEAF_RESOLVER_INDEX,
+        "crate_path": "molt_runtime_serial",
+        "crate_resolver_path": "molt_runtime_serial::intrinsics_generated::csv_resolver",
+        "symbol_path_prefix": "molt_runtime_serial::csv",
+        "function_path_prefix": "crate::csv",
+    },
+    "datetime": {
+        "output": SERIAL_LEAF_RESOLVERS_DIR / "datetime_resolver.rs",
+        "module_index": SERIAL_LEAF_RESOLVER_INDEX,
+        "crate_path": "molt_runtime_serial",
+        "crate_resolver_path": (
+            "molt_runtime_serial::intrinsics_generated::datetime_resolver"
+        ),
+        "symbol_path_prefix": "molt_runtime_serial::datetime",
+        "function_path_prefix": "crate::datetime",
+    },
+    "decimal": {
+        "output": SERIAL_LEAF_RESOLVERS_DIR / "decimal_resolver.rs",
+        "module_index": SERIAL_LEAF_RESOLVER_INDEX,
+        "crate_path": "molt_runtime_serial",
+        "crate_resolver_path": (
+            "molt_runtime_serial::intrinsics_generated::decimal_resolver"
+        ),
+        "symbol_path_prefix": "molt_runtime_serial::decimal",
+        "function_path_prefix": "crate::decimal",
+    },
+    "email": {
+        "output": SERIAL_LEAF_RESOLVERS_DIR / "email_resolver.rs",
+        "module_index": SERIAL_LEAF_RESOLVER_INDEX,
+        "crate_path": "molt_runtime_serial",
+        "crate_resolver_path": (
+            "molt_runtime_serial::intrinsics_generated::email_resolver"
+        ),
+        "symbol_path_prefix": "molt_runtime_serial::email",
+        "function_path_prefix": "crate::email",
+    },
+    "quopri": {
+        "output": SERIAL_LEAF_RESOLVERS_DIR / "quopri_resolver.rs",
+        "module_index": SERIAL_LEAF_RESOLVER_INDEX,
+        "crate_path": "molt_runtime_serial",
+        "crate_resolver_path": (
+            "molt_runtime_serial::intrinsics_generated::quopri_resolver"
+        ),
+        "symbol_path_prefix": "molt_runtime_serial::email",
+        "function_path_prefix": "crate::email",
+    },
+    "struct": {
+        "output": SERIAL_LEAF_RESOLVERS_DIR / "struct_resolver.rs",
+        "module_index": SERIAL_LEAF_RESOLVER_INDEX,
+        "crate_path": "molt_runtime_serial",
+        "crate_resolver_path": (
+            "molt_runtime_serial::intrinsics_generated::struct_resolver"
+        ),
+        "symbol_path_prefix": "molt_runtime_serial::structs",
+        "function_path_prefix": "crate::structs",
+    },
+    "uu": {
+        "output": SERIAL_LEAF_RESOLVERS_DIR / "uu_resolver.rs",
+        "module_index": SERIAL_LEAF_RESOLVER_INDEX,
+        "crate_path": "molt_runtime_serial",
+        "crate_resolver_path": "molt_runtime_serial::intrinsics_generated::uu_resolver",
+        "symbol_path_prefix": "molt_runtime_serial::binascii",
+        "function_path_prefix": "crate::binascii",
     },
 }
 OUT_BACKEND_OVERRIDES_RS = (
@@ -510,7 +618,6 @@ _EXTRA_PREFIX_MODULES: list[tuple[str, str]] = [
     ("molt_shutil_", "shutil"),
     ("molt_shlex_", "shlex"),
     ("molt_fnmatch", "fnmatch"),
-    ("molt_zipapp_", "archive"),
     ("molt_pickle_", "serialization"),
     ("molt_uuid_", "uuid"),
     ("molt_socketpair", "socket"),

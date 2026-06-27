@@ -2,53 +2,16 @@
 #[inline(never)]
 #[cold]
 pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
-    match symbol {
-        #[cfg(feature = "stdlib_archive")]
-        "molt_zipfile_crc32" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_zipfile_crc32",
-            crate::molt_zipfile_crc32 as *const (),
-        )),
-        #[cfg(feature = "stdlib_archive")]
-        "molt_zipfile_parse_central_directory" => {
-            Some(crate::builtins::functions::runtime_fn_addr(
-                "crate::molt_zipfile_parse_central_directory",
-                crate::molt_zipfile_parse_central_directory as *const (),
-            ))
-        }
-        #[cfg(feature = "stdlib_archive")]
-        "molt_zipfile_build_zip64_extra" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_zipfile_build_zip64_extra",
-            crate::molt_zipfile_build_zip64_extra as *const (),
-        )),
-        #[cfg(feature = "stdlib_archive")]
-        "molt_zipfile_path_implied_dirs" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_zipfile_path_implied_dirs",
-            crate::molt_zipfile_path_implied_dirs as *const (),
-        )),
-        #[cfg(feature = "stdlib_archive")]
-        "molt_zipfile_path_resolve_dir" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_zipfile_path_resolve_dir",
-            crate::molt_zipfile_path_resolve_dir as *const (),
-        )),
-        #[cfg(feature = "stdlib_archive")]
-        "molt_zipfile_path_is_child" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_zipfile_path_is_child",
-            crate::molt_zipfile_path_is_child as *const (),
-        )),
-        #[cfg(feature = "stdlib_archive")]
-        "molt_zipfile_path_translate_glob" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_zipfile_path_translate_glob",
-            crate::molt_zipfile_path_translate_glob as *const (),
-        )),
-        #[cfg(feature = "stdlib_archive")]
-        "molt_zipfile_normalize_member_path" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_zipfile_normalize_member_path",
-            crate::molt_zipfile_normalize_member_path as *const (),
-        )),
-        "molt_zipapp_runtime_ready" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_zipapp_runtime_ready",
-            crate::molt_zipapp_runtime_ready as *const (),
-        )),
-        _ => None,
+    #[cfg(feature = "stdlib_archive")]
+    {
+        molt_runtime_serial::intrinsics_generated::archive_resolver::resolve_symbol_with(
+            symbol,
+            crate::builtins::functions::runtime_fn_addr,
+        )
+    }
+    #[cfg(not(feature = "stdlib_archive"))]
+    {
+        let _ = symbol;
+        None
     }
 }
