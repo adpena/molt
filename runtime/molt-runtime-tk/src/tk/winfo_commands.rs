@@ -4,8 +4,6 @@ use super::parsing::{
     parse_winfo_rgb_components, tk_widget_class_name, widget_option_i64_default,
 };
 use super::state::{alloc_string_bits, app_mut_from_registry, app_tcl_error_locked, tk_registry};
-#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
-use super::tcl::{get, new};
 use super::widgets::common::alloc_empty_string_bits;
 use molt_runtime_core::prelude::{MoltObject, PyToken};
 

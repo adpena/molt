@@ -2,6 +2,7 @@ use super::args::{
     clear_last_error, get_string_arg, get_string_arg_allow_none, parse_optional_f64_arg,
     parse_optional_i64_arg, raise_tcl_for_handle,
 };
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 use super::callbacks::next_after_token;
 #[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 use super::dialogs::{
@@ -23,14 +24,16 @@ use super::native::{build_native_tk_app, eval_tcl_without_gil, option_use_tk};
 use super::parsing::{
     alloc_tuple_bits, alloc_tuple_from_strings, parse_bool_text, parse_tcl_script_commands,
 };
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
+use super::state::raise_tcl_error;
 use super::state::{
     TK_DONT_WAIT_FLAG, TkAppState, TkOperation, alloc_string_bits, app_mut_from_registry,
     app_tcl_error_locked, clear_widget_refs, drop_app_state_refs, parse_app_handle,
-    raise_invalid_handle_error, raise_tcl_error, require_tk_app_new, require_tk_operation,
-    tk_gate_state, tk_registry,
+    raise_invalid_handle_error, require_tk_app_new, require_tk_operation, tk_gate_state,
+    tk_registry,
 };
 #[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
-use super::tcl::{TclObj, get, new};
+use super::tcl::TclObj;
 use super::trace_commands::bump_variable_versions_for_reference;
 use crate::bridge::{
     dec_ref_bits, decode_value_list, is_truthy, raise_exception_u64, string_obj_to_owned, to_f64,

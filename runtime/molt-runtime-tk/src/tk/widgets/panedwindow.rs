@@ -7,13 +7,12 @@ use super::super::state::{
     TkAppState, TkWidgetState, app_mut_from_registry, app_tcl_error_locked, clear_value_map_refs,
     tk_registry, value_map_set_bits,
 };
-#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
-use super::super::tcl::{get, new};
 use super::common::{
     alloc_empty_string_bits, alloc_widget_coord_bits, unknown_widget_subcommand_message,
 };
 use crate::bridge::inc_ref_bits;
 use molt_runtime_core::prelude::{MoltObject, PyToken};
+#[cfg(test)]
 use std::collections::HashMap;
 
 pub(in crate::tk) fn handle_panedwindow_widget_path_command(

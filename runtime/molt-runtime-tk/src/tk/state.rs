@@ -2,7 +2,7 @@ use super::callbacks::clear_filehandler_registration_locked;
 #[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 use super::native::unregister_all_tcl_callback_procs;
 #[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
-use super::tcl::{TclInterpreter, eval, get, new};
+use super::tcl::TclInterpreter;
 use crate::bridge::{
     alloc_string_result, dec_ref_bits, has_capability, inc_ref_bits, raise_exception_u64, to_i64,
 };

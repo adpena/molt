@@ -13,8 +13,6 @@ use super::state::{
     TkAppState, TkEvent, TkExprLiteral, TkRegistry, alloc_string_bits, app_mut_from_registry,
     app_tcl_error_locked, tk_registry,
 };
-#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
-use super::tcl::{get, new};
 use super::trace_commands::{call_tk_command_from_strings, variable_version};
 use crate::bridge::{
     call_callable_args, call_callable0, dec_ref_bits, exception_pending, inc_ref_bits, to_f64,

@@ -7,16 +7,12 @@ use super::super::parsing::{
 use super::super::state::{
     alloc_string_bits, app_mut_from_registry, app_tcl_error_locked, tk_registry,
 };
-#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
-use super::super::tcl::{get, new};
 use super::super::trace_commands::call_tk_command_from_strings;
 use super::common::{
     alloc_empty_string_bits, alloc_empty_tuple_bits, alloc_widget_bbox_bits,
     alloc_widget_view_bits, clamp_text_widget_indices, evaluate_index_compare,
     unknown_widget_subcommand_message,
 };
-use super::selection::handle_selection_subcommand;
-use super::text::{handle_mark_subcommand, handle_tag_subcommand};
 use molt_runtime_core::prelude::{MoltObject, PyToken};
 
 use super::selection;
