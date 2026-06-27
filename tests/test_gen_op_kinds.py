@@ -337,6 +337,42 @@ def test_generated_mapper_matches_table() -> None:
     )
 
 
+def _opcode_default_canonical_kind(name: str) -> str:
+    first_pass = re.sub(r"(.)([A-Z][a-z]+)", r"\1_\2", name)
+    snake = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", first_pass).lower()
+    return snake.removeprefix("scf_")
+
+
+def test_generated_opcode_canonical_kind_matches_table() -> None:
+    """Backends get their `OpCode` spelling from the generated registry."""
+    gen = _gen()
+    data = gen.load_table()
+
+    expected: dict[str, str] = {}
+    for row in data["kind"]:
+        opcode = row.get("mapper_opcode")
+        if opcode is not None and opcode not in expected:
+            expected[opcode] = row["canonical"]
+    for row in data["opcode"]:
+        expected.setdefault(row["name"], _opcode_default_canonical_kind(row["name"]))
+
+    generated_source = OUT_RS.read_text(encoding="utf-8")
+    match_block = re.search(
+        r"pub fn opcode_canonical_kind_table\(opcode: OpCode\) -> &'static str \{\n"
+        r"\s+match opcode \{\n(?P<body>.*?)\n\s+\}\n\}",
+        generated_source,
+        flags=re.S,
+    )
+    assert match_block is not None
+    generated = dict(
+        re.findall(
+            r"OpCode::([A-Za-z0-9_]+)\s*=>\s*\"([^\"]+)\"",
+            match_block.group("body"),
+        )
+    )
+    assert generated == expected
+
+
 def test_simpleir_control_kind_tables_match_registry_and_consumers() -> None:
     """CFG/pre-SSA/SSA-only SimpleIR control facts are registry-owned."""
     gen = _gen()

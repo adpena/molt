@@ -4,8 +4,8 @@
 #
 # This table is the ONE place the cross-component op-"kind"-string vocabulary
 # lives. tools/gen_op_kinds.py renders it into:
-#   - runtime/molt-tir/src/tir/op_kinds_generated.rs  (mapper + classifier
-#     + per-OpCode effect-oracle arms), and
+#   - runtime/molt-tir/src/tir/op_kinds_generated.rs  (mapper + canonical
+#     OpCode spelling + classifier + per-OpCode effect-oracle arms), and
 #   - src/molt/frontend/lowering/op_kinds_generated.py    (canonical spellings
 #     + frontend pre-serialization effect classes).
 # tests/test_gen_op_kinds.py re-renders in memory and asserts equality with the
@@ -30,7 +30,9 @@
 #                  default (e.g. `Index`'s container is interior-borrowed, its
 #                  key merely borrowed).
 #   - [[kind]]     — the kind_to_opcode mapper: OpCode-equivalence groups
-#                  (canonical + aliases, the |-grouped arms).
+#                  (canonical + aliases, the |-grouped arms). The first
+#                  canonical spelling for each mapped OpCode also feeds the
+#                  generated OpCode→backend-op-name table.
 #   - [[simpleir_control_kind]] — SimpleIR CFG/SSA/pre-SSA control facts for
 #                  kinds consumed structurally before kind_to_opcode. These rows
 #                  generate tir::is_structural, cfg.rs block-boundary helpers,

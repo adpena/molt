@@ -10,7 +10,8 @@ bug class (see ``docs/design/foundation/25_op_kind_registry.md`` and
 ONE table into every consumer so the tables can never drift:
 
   - ``runtime/molt-tir/src/tir/op_kinds_generated.rs`` — the data tables the
-    backend's ``kind_to_opcode`` mapper, the ``CopyLowering`` classifier
+    backend's ``kind_to_opcode`` mapper, the reverse canonical
+    ``OpCode``→backend-op-name table, the ``CopyLowering`` classifier
     (``copy_kind_mints_fresh_owned_ref`` / ``classify_copy_kind`` /
     ``copy_kind_is_explicit_no_heap_move``), the generated ``ALL_OPCODES``
     enum-domain iterator, and the per-OpCode effect oracle
