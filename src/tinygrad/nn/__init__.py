@@ -2,7 +2,7 @@
 
 import math
 
-from molt.gpu.nn import Sequential
+from molt.gpu.nn import GroupNorm, Sequential
 from molt.gpu.tensor import Tensor
 
 
@@ -220,6 +220,7 @@ class RMSNorm:
 __all__ = [
     "Conv2d",
     "Embedding",
+    "GroupNorm",
     "LayerNorm",
     "Linear",
     "RMSNorm",

@@ -1,5 +1,18 @@
-use super::super::*;
-use super::common::*;
+use super::super::args::get_string_arg;
+use super::super::event_commands::remove_bind_script_command_invocations;
+use super::super::parsing::{
+    alloc_tuple_from_strings, parse_text_index_bits, parse_widget_option_name_arg, text_char_count,
+};
+use super::super::state::{TkWidgetState, alloc_string_bits};
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
+use super::super::tcl::{get, new};
+use super::common::{
+    alloc_empty_string_bits, alloc_empty_tuple_bits, clamp_text_widget_indices,
+    ensure_text_tag_order_entry, normalize_text_tag_ranges, unknown_widget_subcommand_message,
+    widget_tcl_error,
+};
+use molt_runtime_core::prelude::{MoltObject, PyToken};
+use std::collections::{HashMap, HashSet};
 
 pub(super) fn handle_mark_subcommand(
     py: &PyToken,

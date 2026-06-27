@@ -1034,6 +1034,140 @@ unsafe fn type_attr_lookup_ptr_inner(
     }
 }
 
+/// Which builtin scalar class a receiver belongs to, for [`resolve_scalar_method`].
+///
+/// `Bool` is distinct from `Int` only for class selection (`bool`'s own class vs
+/// `int`'s); its *methods* come from the int method table because, per CPython,
+/// `bool` inherits `int`.
+#[derive(Clone, Copy)]
+enum ScalarKind {
+    Int,
+    Bool,
+    Float,
+}
+
+/// Resolve `name` as a bound method on a numeric/bool scalar receiver
+/// `self_bits` of the given `kind`, returning an owned bound-method reference, or
+/// `None` when neither the scalar's own type nor `object` exposes such a method.
+///
+/// This is the single source of truth for scalar method resolution. Every scalar
+/// attribute path routes through it — inline int/bool/float (via
+/// [`resolve_inline_scalar_attr`]) and heap bigint/float (in [`attr_lookup_ptr`])
+/// — so `getattr`, `getattr(_, default)`, `hasattr`, and direct attribute access
+/// can never disagree about which methods a scalar exposes, regardless of whether
+/// the value is an inline NaN-boxed immediate or heap-allocated. The lookup order
+/// (curated own-type methods → own class → `object`) mirrors the MRO so inherited
+/// dunders such as `object.__init__`/`object.__hash__` resolve on scalars.
+/// Bind a curated builtin class attribute `attr_bits` (as returned by
+/// `int_method_bits`/`float_method_bits`/`builtin_class_method_bits`) to a scalar
+/// receiver `self_bits` whose own class is `class_bits`, mirroring the descriptor
+/// protocol for the kinds those tables can yield:
+/// * a `classmethod` (e.g. `int.from_bytes`) binds to the class — passing it to
+///   `molt_bound_method_new` directly would raise "bound method expects callable
+///   object" because a classmethod object is not itself callable;
+/// * a `staticmethod` yields the bare underlying function;
+/// * a plain function binds to the receiver value.
+///
+/// Inline scalars have no heap instance pointer, so [`attr::descriptor_bind`]
+/// (which binds plain functions to a heap `instance_ptr`) cannot be used here;
+/// this is the scalar-value analogue, matching the classmethod/staticmethod idiom
+/// already used for builtin-class dict descriptors elsewhere in this module.
+fn bind_scalar_class_attr(
+    _py: &PyToken<'_>,
+    attr_bits: u64,
+    self_bits: u64,
+    class_bits: u64,
+) -> u64 {
+    if let Some(attr_ptr) = maybe_ptr_from_bits(attr_bits) {
+        match unsafe { object_type_id(attr_ptr) } {
+            TYPE_ID_CLASSMETHOD => {
+                let func_bits = unsafe { classmethod_func_bits(attr_ptr) };
+                return molt_bound_method_new(func_bits, class_bits);
+            }
+            TYPE_ID_STATICMETHOD => {
+                let func_bits = unsafe { staticmethod_func_bits(attr_ptr) };
+                inc_ref_bits(_py, func_bits);
+                return func_bits;
+            }
+            _ => {}
+        }
+    }
+    molt_bound_method_new(attr_bits, self_bits)
+}
+
+fn resolve_scalar_method(
+    _py: &PyToken<'_>,
+    self_bits: u64,
+    kind: ScalarKind,
+    name: &str,
+) -> Option<u64> {
+    let builtins = builtin_classes(_py);
+    let class_bits = match kind {
+        ScalarKind::Int => builtins.int,
+        ScalarKind::Bool => builtins.bool,
+        ScalarKind::Float => builtins.float,
+    };
+    // Direct (curated) method table. `bool` shares int's methods.
+    let direct = match kind {
+        ScalarKind::Int | ScalarKind::Bool => int_method_bits(_py, name),
+        ScalarKind::Float => float_method_bits(_py, name),
+    };
+    if let Some(func_bits) = direct {
+        return Some(bind_scalar_class_attr(
+            _py, func_bits, self_bits, class_bits,
+        ));
+    }
+    // Class-based fallback: the scalar's own class (which also exposes
+    // classmethods such as `int.from_bytes`), then `object` for the universally
+    // inherited dunders. Each result is bound through the descriptor protocol so
+    // classmethods bind to the class rather than tripping `molt_bound_method_new`.
+    if let Some(func_bits) = builtin_class_method_bits(_py, class_bits, name) {
+        return Some(bind_scalar_class_attr(
+            _py, func_bits, self_bits, class_bits,
+        ));
+    }
+    if let Some(func_bits) = builtin_class_method_bits(_py, builtins.object, name) {
+        return Some(bind_scalar_class_attr(
+            _py, func_bits, self_bits, class_bits,
+        ));
+    }
+    None
+}
+
+/// Resolve `attr_name` on an inline (non-heap) NaN-boxed scalar receiver — an
+/// inline int, bool, or inline float. Returns the attribute as an owned
+/// reference (the receiver's class for `__class__`, otherwise a bound method), or
+/// `None` when the scalar type exposes no such attribute.
+///
+/// Precondition: `obj_bits` is an immediate scalar — the caller has already
+/// confirmed `maybe_ptr_from_bits(obj_bits)` is `None` (heap scalars route
+/// through [`attr_lookup_ptr`] instead). Shared by every inline-scalar attribute
+/// path — `molt_get_attr_name`, `molt_get_attr_name_default`,
+/// `molt_has_attr_name`, `molt_get_attr_object`, and `molt_object_getattribute`
+/// — so none can diverge on which attributes an inline scalar exposes.
+pub(crate) fn resolve_inline_scalar_attr(
+    _py: &PyToken<'_>,
+    obj_bits: u64,
+    attr_name: &str,
+) -> Option<u64> {
+    if attr_name == "__class__" {
+        let class_bits = type_of_bits(_py, obj_bits);
+        inc_ref_bits(_py, class_bits);
+        return Some(class_bits);
+    }
+    let obj = obj_from_bits(obj_bits);
+    let kind = if obj.is_float() {
+        ScalarKind::Float
+    } else if obj.is_bool() {
+        ScalarKind::Bool
+    } else if obj.is_int() {
+        ScalarKind::Int
+    } else {
+        return None;
+    };
+    resolve_scalar_method(_py, obj_bits, kind, attr_name)
+}
+
 #[unsafe(no_mangle)]
 pub(crate) unsafe fn attr_lookup_ptr(
     _py: &PyToken<'_>,
@@ -1081,28 +1215,21 @@ pub(crate) unsafe fn attr_lookup_ptr(
         }
         if type_id == TYPE_ID_BIGINT {
             let name = string_obj_to_owned(obj_from_bits(attr_bits))?;
-            if let Some(func_bits) = int_method_bits(_py, name.as_str()) {
-                let self_bits = MoltObject::from_ptr(obj_ptr).bits();
-                return Some(molt_bound_method_new(func_bits, self_bits));
+            let self_bits = MoltObject::from_ptr(obj_ptr).bits();
+            if let Some(bits) =
+                resolve_scalar_method(_py, self_bits, ScalarKind::Int, name.as_str())
+            {
+                return Some(bits);
             }
         }
         // Heap-allocated NaN float: dispatch to float methods.
         if type_id == TYPE_ID_FLOAT {
             let name = string_obj_to_owned(obj_from_bits(attr_bits))?;
-            if let Some(func_bits) = float_method_bits(_py, name.as_str()) {
-                let self_bits = MoltObject::from_ptr(obj_ptr).bits();
-                return Some(molt_bound_method_new(func_bits, self_bits));
-            }
-            // Fall through to class-based resolution for inherited methods
-            let builtins = builtin_classes(_py);
-            if let Some(func_bits) = builtin_class_method_bits(_py, builtins.float, name.as_str()) {
-                let self_bits = MoltObject::from_ptr(obj_ptr).bits();
-                return Some(molt_bound_method_new(func_bits, self_bits));
-            }
-            if let Some(func_bits) = builtin_class_method_bits(_py, builtins.object, name.as_str())
+            let self_bits = MoltObject::from_ptr(obj_ptr).bits();
+            if let Some(bits) =
+                resolve_scalar_method(_py, self_bits, ScalarKind::Float, name.as_str())
             {
-                let self_bits = MoltObject::from_ptr(obj_ptr).bits();
-                return Some(molt_bound_method_new(func_bits, self_bits));
+                return Some(bits);
             }
         }
         if type_id == TYPE_ID_BOUND_METHOD {
@@ -3241,45 +3368,8 @@ pub unsafe extern "C" fn molt_get_attr_object(
                 }
                 return molt_get_attr_generic(ptr, attr_name_ptr, attr_name_len_bits);
             }
-            if (obj.is_int() || obj.is_bool())
-                && let Some(func_bits) = int_method_bits(_py, attr_name)
-            {
-                let bound_bits = molt_bound_method_new(func_bits, obj_bits);
-                return bound_bits as i64;
-            }
-            if obj.is_float()
-                && let Some(func_bits) = float_method_bits(_py, attr_name)
-            {
-                let bound_bits = molt_bound_method_new(func_bits, obj_bits);
-                return bound_bits as i64;
-            }
-            // Inline int/float/bool: fall back to class-based resolution
-            // so that inherited methods (e.g. object.__init__) are found.
-            // Check the specific type first, then fall through to `object`.
-            {
-                let builtins = builtin_classes(_py);
-                let class_bits = if obj.is_float() {
-                    builtins.float
-                } else if obj.is_bool() {
-                    builtins.bool
-                } else if obj.is_int() {
-                    builtins.int
-                } else {
-                    0
-                };
-                if class_bits != 0 {
-                    if let Some(func_bits) = builtin_class_method_bits(_py, class_bits, attr_name) {
-                        let bound_bits = molt_bound_method_new(func_bits, obj_bits);
-                        return bound_bits as i64;
-                    }
-                    // Inherited from object (base of all builtin numeric types).
-                    if let Some(func_bits) =
-                        builtin_class_method_bits(_py, builtins.object, attr_name)
-                    {
-                        let bound_bits = molt_bound_method_new(func_bits, obj_bits);
-                        return bound_bits as i64;
-                    }
-                }
+            if let Some(val) = resolve_inline_scalar_attr(_py, obj_bits, attr_name) {
+                return val as i64;
             }
             attr_error(_py, type_name(_py, obj), attr_name)
         })
@@ -3540,47 +3630,10 @@ pub extern "C" fn molt_get_attr_name(obj_bits: u64, name_bits: u64) -> u64 {
                     obj_bits,
                 ) as u64;
             }
+            if let Some(val) = resolve_inline_scalar_attr(_py, obj_bits, &attr_name) {
+                return val;
+            }
             let obj = obj_from_bits(obj_bits);
-            if attr_name == "__class__" {
-                let class_bits = type_of_bits(_py, obj_bits);
-                inc_ref_bits(_py, class_bits);
-                return class_bits;
-            }
-            if (obj.is_int() || obj.is_bool())
-                && let Some(func_bits) = int_method_bits(_py, &attr_name)
-            {
-                return molt_bound_method_new(func_bits, obj_bits);
-            }
-            if obj.is_float()
-                && let Some(func_bits) = float_method_bits(_py, &attr_name)
-            {
-                return molt_bound_method_new(func_bits, obj_bits);
-            }
-            // Inline int/float/bool: fall back to class-based resolution
-            // so that inherited methods (e.g. object.__init__) are found.
-            {
-                let builtins = builtin_classes(_py);
-                let class_bits = if obj.is_float() {
-                    builtins.float
-                } else if obj.is_bool() {
-                    builtins.bool
-                } else if obj.is_int() {
-                    builtins.int
-                } else {
-                    0
-                };
-                if class_bits != 0 {
-                    if let Some(func_bits) = builtin_class_method_bits(_py, class_bits, &attr_name)
-                    {
-                        return molt_bound_method_new(func_bits, obj_bits);
-                    }
-                    if let Some(func_bits) =
-                        builtin_class_method_bits(_py, builtins.object, &attr_name)
-                    {
-                        return molt_bound_method_new(func_bits, obj_bits);
-                    }
-                }
-            }
             attr_error_with_obj(_py, type_name(_py, obj), &attr_name, obj_bits) as u64
         }
     })
@@ -3658,21 +3711,8 @@ pub extern "C" fn molt_get_attr_name_default(
                 inc_ref_bits(_py, default_bits);
                 return default_bits;
             }
-            let obj = obj_from_bits(obj_bits);
-            if attr_name == "__class__" {
-                let class_bits = type_of_bits(_py, obj_bits);
-                inc_ref_bits(_py, class_bits);
-                return class_bits;
-            }
-            if (obj.is_int() || obj.is_bool())
-                && let Some(func_bits) = int_method_bits(_py, &attr_name)
-            {
-                return molt_bound_method_new(func_bits, obj_bits);
-            }
-            if obj.is_float()
-                && let Some(func_bits) = float_method_bits(_py, &attr_name)
-            {
-                return molt_bound_method_new(func_bits, obj_bits);
+            if let Some(val) = resolve_inline_scalar_attr(_py, obj_bits, &attr_name) {
+                return val;
             }
         }
         inc_ref_bits(_py, default_bits);
@@ -3723,7 +3763,12 @@ pub extern "C" fn molt_has_attr_name(obj_bits: u64, name_bits: u64) -> u64 {
                 }
                 return MoltObject::from_bool(false).bits();
             }
-            if attr_name == "__class__" {
+            // Inline (non-heap) scalar receiver — int/bool/float. Route through the
+            // same resolver `getattr` uses so `hasattr` can never disagree with it;
+            // the freshly materialized bound method is released immediately,
+            // mirroring CPython's `hasattr` discarding the value `getattr` returns.
+            if let Some(attr_bits) = resolve_inline_scalar_attr(_py, obj_bits, &attr_name) {
+                dec_ref_bits(_py, attr_bits);
                 return MoltObject::from_bool(true).bits();
             }
         }

@@ -1,4 +1,34 @@
-use super::*;
+use super::args::{clear_last_error, set_last_error};
+use super::callbacks::{
+    invoke_filehandler_command, remove_after_events_for_tokens, tokens_for_after_command,
+    unregister_after_command_token,
+};
+use super::commands::invoke_callback;
+use super::state::{
+    TkAppState, alloc_string_bits, app_mut_from_registry, app_tcl_error_locked, raise_tcl_error,
+    tk_registry,
+};
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
+use super::tcl::{
+    TCL_OK, TclApi, TclInterpreter, TclObj, TclObjHeader, TclObjKind, TclTypePtrs, TclWideInt,
+    decr_ref_count_obj, do_one_event, ensure_owner_thread, eval, get, get_elements,
+    incr_ref_count_obj, new, new_list, scalar_from_interp, tcl_result_string,
+};
+use crate::bridge::{
+    clear_exception, dec_ref_bits, decode_value_list, dict_order, exception_pending,
+    format_obj_str, inc_ref_bits, int_from_obj, is_truthy, object_type_id, raise_exception_u64,
+    string_obj_to_owned, to_f64, to_i64,
+};
+use molt_runtime_core::prelude::{
+    MoltObject, PyToken, obj_from_bits, rt_bytes_as_slice, rt_int, rt_none, rt_str,
+    rt_string_from_bytes, rt_tuple,
+};
+use molt_runtime_core::type_ids::TYPE_ID_DICT;
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
+use std::ffi::{CString, c_int, c_void};
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
+use std::ptr;
+use std::sync::OnceLock;
 
 #[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 pub(super) fn option_use_tk(py: &PyToken, options_bits: u64) -> bool {

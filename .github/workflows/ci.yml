@@ -183,10 +183,29 @@ jobs:
       - name: Clippy (molt-backend)
         run: python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo clippy -p molt-backend --features native-backend -- -D warnings
 
+      - name: Clippy (molt-ir)
+        # molt-ir owns the immutable IR/TIR vocabulary, op-kind registry, SSA
+        # op-lowering, and effect-proof facts extracted out of molt-tir (doc 21).
+        # It holds midend invariants the whole compiler depends on. `cargo clippy
+        # -p molt-tir` does NOT lint molt-ir's own code (clippy lints only the
+        # selected crate, not its dependencies), so without this step the
+        # extraction would have silently dropped the bulk of the midend off the
+        # zero-warning ratchet. Gate it identically to molt-tir/molt-backend.
+        run: python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo clippy -p molt-ir --all-targets --all-features -- -D warnings
+
+      - name: Clippy (molt-passes)
+        # molt-passes owns the TIR pass/fact/orchestration layer (value-range,
+        # gvn, counted-loop, strength-reduction, the inliner, representation
+        # facts) extracted out of molt-tir. These are the pass contracts the
+        # "Clippy (molt-tir)" step below was written to protect; after the
+        # extraction they live here, so this step keeps them on the same ratchet.
+        run: python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo clippy -p molt-passes --all-targets --all-features -- -D warnings
+
       - name: Clippy (molt-tir)
-        # TIR owns the compiler's midend invariants and pass contracts; keep
+        # TIR owns the residual lowering/representation-planning midend; keep
         # its test targets and feature-gated utilities on the same zero-warning
-        # ratchet as the backend that consumes them.
+        # ratchet as the backend that consumes them. The pass and IR-vocabulary
+        # halves of the midend are gated by the molt-passes/molt-ir steps above.
         run: python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo clippy -p molt-tir --all-targets --all-features -- -D warnings
 
       - name: Clippy (runtime satellites)

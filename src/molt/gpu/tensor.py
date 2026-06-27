@@ -437,6 +437,56 @@ def tensor_linear_squared_relu_gate_interleaved(
     return _tensor_from_buffer(out_buf, out_shape, result_dtype)
 
 
+def _conv_pair(value, name: str) -> tuple[int, int]:
+    """Normalize a stride/dilation/output_padding argument to a 2-tuple.
+
+    Mirrors tinygrad's ``make_pair``: an int broadcasts to both spatial dims; a
+    length-2 sequence is used as-is.
+    """
+    if isinstance(value, bool):
+        raise TypeError(f"{name} must be an int or length-2 sequence")
+    if isinstance(value, int):
+        return (value, value)
+    if isinstance(value, (list, tuple)):
+        seq = tuple(int(v) for v in value)
+        if len(seq) != 2:
+            raise ValueError(
+                f"{name} must be an int or length-2 sequence, got {value!r}"
+            )
+        return seq
+    raise TypeError(f"{name} must be an int or length-2 sequence")
+
+
+def _resolve_pool_pads(padding, spatial_ndim: int) -> tuple[tuple[int, int], ...]:
+    """Normalize a conv/pool ``padding`` argument to per-side ``(begin, end)``
+    pairs, one per spatial dimension (in dimension order).
+
+    Matches tinygrad ``resolve_pool_pads`` semantics:
+      * an int applies symmetrically to every side;
+      * a sequence of length ``spatial_ndim`` gives one symmetric pad per dim;
+      * a sequence of length ``2 * spatial_ndim`` gives explicit per-side pads in
+        last-dimension-first ``(begin, end)`` order (PyTorch ``F.pad`` order), so
+        the pairs are reversed to land in dimension order.
+    """
+    if isinstance(padding, bool):
+        raise TypeError("padding must be an int or tuple")
+    if isinstance(padding, int):
+        return tuple((padding, padding) for _ in range(spatial_ndim))
+    if not isinstance(padding, (list, tuple)):
+        raise TypeError("padding must be an int or tuple")
+    padding = tuple(int(p) for p in padding)
+    if len(padding) == spatial_ndim:
+        return tuple((p, p) for p in padding)
+    if len(padding) == spatial_ndim * 2:
+        pairs = tuple(
+            (padding[i], padding[i + 1]) for i in range(0, len(padding), 2)
+        )
+        return tuple(reversed(pairs))
+    raise ValueError(
+        f"padding must have length {spatial_ndim} or {spatial_ndim * 2}, got {padding}"
+    )
+
+
 def tensor_conv2d(
     x: "Tensor",
     weight: "Tensor",
@@ -445,6 +495,7 @@ def tensor_conv2d(
     stride=1,
     dilation=1,
     padding=0,
+    dtype=None,
 ) -> "Tensor":
     if not isinstance(x, Tensor) or not isinstance(weight, Tensor):
         return NotImplemented
@@ -457,9 +508,9 @@ def tensor_conv2d(
     if bias is not None and not isinstance(bias, Tensor):
         return NotImplemented
 
-    sh, sw = stride if isinstance(stride, tuple) else (stride, stride)
-    dh, dw = dilation if isinstance(dilation, tuple) else (dilation, dilation)
-    ph, pw = padding if isinstance(padding, tuple) else (padding, padding)
+    sh, sw = _conv_pair(stride, "stride")
+    dh, dw = _conv_pair(dilation, "dilation")
+    (pad_top, pad_bottom), (pad_left, pad_right) = _resolve_pool_pads(padding, 2)
 
     batch, in_c, in_h, in_w = x.shape
     out_c, weight_in_c, kh, kw = weight.shape
@@ -474,8 +525,12 @@ def tensor_conv2d(
     if bias is not None and bias.shape != (out_c,):
         raise ValueError(f"conv2d bias shape mismatch: {bias.shape} vs ({out_c},)")
 
-    out_h = (in_h + 2 * ph - dh * (kh - 1) - 1) // sh + 1
-    out_w = (in_w + 2 * pw - dw * (kw - 1) - 1) // sw + 1
+    out_h = (in_h + pad_top + pad_bottom - dh * (kh - 1) - 1) // sh + 1
+    out_w = (in_w + pad_left + pad_right - dw * (kw - 1) - 1) // sw + 1
+    if out_h < 0 or out_w < 0:
+        raise ValueError(
+            f"conv2d output shape is invalid: {(batch, out_c, out_h, out_w)}"
+        )
 
     x_data = x._data_list()
     w_data = weight._data_list()
@@ -495,11 +550,11 @@ def tensor_conv2d(
                     for local_ic in range(weight_in_c):
                         ic = ic_base + local_ic
                         for fh in range(kh):
-                            ih = oh * sh - ph + fh * dh
+                            ih = oh * sh - pad_top + fh * dh
                             if ih < 0 or ih >= in_h:
                                 continue
                             for fw in range(kw):
-                                iw = ow * sw - pw + fw * dw
+                                iw = ow * sw - pad_left + fw * dw
                                 if iw < 0 or iw >= in_w:
                                     continue
                                 x_idx = ((b * in_c + ic) * in_h + ih) * in_w + iw
@@ -511,6 +566,101 @@ def tensor_conv2d(
                         acc += b_data[oc]
                     out_idx = ((b * out_c + oc) * out_h + oh) * out_w + ow
                     out[out_idx] = acc
+
+    out_dtype = dtype if dtype is not None else x._dtype
+    return Tensor(out, shape=(batch, out_c, out_h, out_w), dtype=out_dtype)
+
+
+def tensor_conv_transpose2d(
+    x: "Tensor",
+    weight: "Tensor",
+    bias: "Tensor | None" = None,
+    groups: int = 1,
+    stride=1,
+    dilation=1,
+    padding=0,
+    output_padding=0,
+) -> "Tensor":
+    if not isinstance(x, Tensor) or not isinstance(weight, Tensor):
+        return NotImplemented
+    if x.ndim == 3:
+        x = x.reshape(1, *x.shape)
+    if x.ndim != 4:
+        raise ValueError(f"conv_transpose2d input must be 3D or 4D, got {x.shape}")
+    if weight.ndim != 4:
+        raise ValueError(f"conv_transpose2d weight must be 4D, got {weight.shape}")
+    if bias is not None and not isinstance(bias, Tensor):
+        return NotImplemented
+
+    sh, sw = _conv_pair(stride, "stride")
+    dh, dw = _conv_pair(dilation, "dilation")
+    out_pad_h, out_pad_w = _conv_pair(output_padding, "output_padding")
+    (pad_top, pad_bottom), (pad_left, pad_right) = _resolve_pool_pads(padding, 2)
+
+    # Transposed-conv weight layout is (in_channels, out_channels_per_group, kh, kw).
+    batch, in_c, in_h, in_w = x.shape
+    weight_in_c, out_channels_per_group, kh, kw = weight.shape
+    if groups <= 0:
+        raise ValueError("conv_transpose2d groups must be positive")
+    if weight_in_c != in_c:
+        raise ValueError(
+            f"conv_transpose2d weight input channels mismatch: {weight.shape} vs input {x.shape}"
+        )
+    if in_c % groups != 0:
+        raise ValueError("conv_transpose2d input channels must be divisible by groups")
+    out_c = out_channels_per_group * groups
+    if bias is not None and bias.shape != (out_c,):
+        raise ValueError(
+            f"conv_transpose2d bias shape mismatch: {bias.shape} vs ({out_c},)"
+        )
+
+    out_h = (in_h - 1) * sh - pad_top - pad_bottom + dh * (kh - 1) + out_pad_h + 1
+    out_w = (in_w - 1) * sw - pad_left - pad_right + dw * (kw - 1) + out_pad_w + 1
+    if out_h < 0 or out_w < 0:
+        raise ValueError(
+            f"conv_transpose2d output shape is invalid: {(batch, out_c, out_h, out_w)}"
+        )
+
+    x_data = x._data_list()
+    w_data = weight._data_list()
+    out = [0.0] * (batch * out_c * out_h * out_w)
+    in_channels_per_group = in_c // groups
+
+    # Scatter: each input element is spread across the output via the kernel.
+    for b in range(batch):
+        for ic in range(in_c):
+            group = ic // in_channels_per_group
+            for ih in range(in_h):
+                for iw in range(in_w):
+                    x_idx = ((b * in_c + ic) * in_h + ih) * in_w + iw
+                    x_val = x_data[x_idx]
+                    for local_oc in range(out_channels_per_group):
+                        oc = group * out_channels_per_group + local_oc
+                        for fh in range(kh):
+                            oh = ih * sh - pad_top + fh * dh
+                            if oh < 0 or oh >= out_h:
+                                continue
+                            for fw in range(kw):
+                                ow = iw * sw - pad_left + fw * dw
+                                if ow < 0 or ow >= out_w:
+                                    continue
+                                w_idx = (
+                                    (ic * out_channels_per_group + local_oc) * kh + fh
+                                ) * kw + fw
+                                out_idx = (
+                                    (b * out_c + oc) * out_h + oh
+                                ) * out_w + ow
+                                out[out_idx] += x_val * w_data[w_idx]
+
+    if bias is not None:
+        b_data = bias._data_list()
+        plane = out_h * out_w
+        for b in range(batch):
+            for oc in range(out_c):
+                base = (b * out_c + oc) * plane
+                bv = b_data[oc]
+                for i in range(plane):
+                    out[base + i] += bv
 
     return Tensor(out, shape=(batch, out_c, out_h, out_w), dtype=x._dtype)
 
@@ -1149,6 +1299,10 @@ class Tensor:
         return zeros(*shape)
 
     @staticmethod
+    def ones(*shape) -> "Tensor":
+        return ones(*shape)
+
+    @staticmethod
     def manual_seed(seed=0) -> None:
         _TINYGRAD_RNG_STATE[0] = _u32(seed)
         _TINYGRAD_RNG_STATE[1] = 0
@@ -1593,6 +1747,7 @@ class Tensor:
         stride=1,
         dilation=1,
         padding=0,
+        dtype=None,
     ) -> "Tensor":
         return tensor_conv2d(
             self,
@@ -1602,6 +1757,28 @@ class Tensor:
             stride=stride,
             dilation=dilation,
             padding=padding,
+            dtype=dtype,
+        )
+
+    def conv_transpose2d(
+        self,
+        weight,
+        bias=None,
+        groups: int = 1,
+        stride=1,
+        dilation=1,
+        padding=0,
+        output_padding=0,
+    ) -> "Tensor":
+        return tensor_conv_transpose2d(
+            self,
+            weight,
+            bias=bias,
+            groups=groups,
+            stride=stride,
+            dilation=dilation,
+            padding=padding,
+            output_padding=output_padding,
         )
 
     def split_last_dim(self, sizes) -> tuple["Tensor", ...]:

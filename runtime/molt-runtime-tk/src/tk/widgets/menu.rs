@@ -1,5 +1,19 @@
-use super::super::*;
-use super::common::*;
+use super::super::args::{get_string_arg, raise_tcl_for_handle};
+use super::super::parsing::{
+    menu_item_type_supported, option_map_to_tuple, parse_command_words, parse_i64_arg,
+    parse_menu_existing_index_bits, parse_menu_insert_index_bits, parse_widget_option_name_arg,
+    parse_widget_option_pairs,
+};
+use super::super::state::{
+    TkMenuEntryState, TkWidgetState, alloc_string_bits, app_mut_from_registry,
+    app_tcl_error_locked, clear_value_map_refs, tk_registry, value_map_set_bits,
+};
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
+use super::super::tcl::get;
+use super::super::trace_commands::call_tk_command_from_strings;
+use super::common::alloc_empty_string_bits;
+use crate::bridge::inc_ref_bits;
+use molt_runtime_core::prelude::{MoltObject, PyToken};
 
 pub(in crate::tk) fn handle_menu_widget_path_command(
     py: &PyToken,

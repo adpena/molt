@@ -134,6 +134,7 @@ _VALUE_RANGE_TRANSFER_RULES = {
     "add": "Add",
     "sub": "Sub",
     "mul": "Mul",
+    "floordiv": "FloorDiv",
     "neg": "Neg",
     "bit_and": "BitAnd",
     "bit_or": "BitOr",

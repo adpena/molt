@@ -221,6 +221,54 @@ impl IntRange {
         }
     }
 
+    /// Python floor division `self // d` by a *constant* divisor `d != 0`.
+    /// Python `//` rounds toward negative infinity (unlike Rust/C truncation),
+    /// so `-7 // 3 == -3` and `7 // -3 == -3`. As a function of the dividend,
+    /// `x // d` is monotone — non-decreasing when `d > 0`, non-increasing when
+    /// `d < 0` — so the result interval is the hull of the two endpoint
+    /// quotients, computed exactly in i128. `from_i128` then saturates the lone
+    /// `i64::MIN // -1` overflow (the only two-i64 floordiv leaving i64) to the
+    /// i64 extreme, far outside any inline window. Sound for *any* dividend
+    /// sign. `d == 0` raises (no value) — caller must exclude it.
+    pub(crate) fn floordiv_const(self, d: i64) -> IntRange {
+        debug_assert!(d != 0, "zero divisor excluded by caller (ZeroDivisionError)");
+        let d = d as i128;
+        let a = floor_div_i128(self.lo as i128, d);
+        let b = floor_div_i128(self.hi as i128, d);
+        // Monotone in the dividend ⇒ the two endpoints bracket the whole result
+        // set; min/max absorbs the sign of `d` without a separate branch.
+        IntRange::from_i128(a.min(b), a.max(b))
+    }
+
+    /// Python floor division `self // divisor` with a *non-constant* divisor
+    /// whose range is `divisor`. Sound only when the divisor is provably
+    /// non-zero AND sign-uniform: a range straddling 0 admits a zero divisor
+    /// (`ZeroDivisionError`) or a sign flip, neither boundable, so it returns
+    /// `FULL_I64` — never a false tight range (the inline-int47 truncation P0).
+    ///
+    /// Over a zero-free, sign-uniform divisor box, `x / y` is monotone in each
+    /// variable separately (`∂/∂x = 1/y` has the fixed sign of `y`;
+    /// `∂/∂y = -x/y²` has a fixed sign for each fixed `x`), so its extrema — and,
+    /// because `floor` is monotone, the extrema of `x // y` — occur at the four
+    /// `{lo,hi}×{lo,hi}` corners. The result is the hull of those corner
+    /// quotients.
+    pub(crate) fn floordiv_range(self, divisor: IntRange) -> IntRange {
+        // Provably positive (`lo >= 1`) or provably negative (`hi <= -1`); a
+        // range that could contain 0 is unprovable.
+        if !(divisor.lo >= 1 || divisor.hi <= -1) {
+            return IntRange::FULL_I64;
+        }
+        let corners = [
+            floor_div_i128(self.lo as i128, divisor.lo as i128),
+            floor_div_i128(self.lo as i128, divisor.hi as i128),
+            floor_div_i128(self.hi as i128, divisor.lo as i128),
+            floor_div_i128(self.hi as i128, divisor.hi as i128),
+        ];
+        let lo = *corners.iter().min().unwrap();
+        let hi = *corners.iter().max().unwrap();
+        IntRange::from_i128(lo, hi)
+    }
+
     /// Python arithmetic right shift `self >> s` by a *constant* `s >= 0`.
     /// `x >> s == floor(x / 2^s)`, which is monotone non-decreasing in `x`, so
     /// the interval maps to `[floor(lo / 2^s), floor(hi / 2^s)]`. Computed in
@@ -239,12 +287,12 @@ impl IntRange {
             );
         }
         let div = 1i128 << s;
-        let floor_div = |x: i128| -> i128 {
-            let q = x / div;
-            let r = x % div;
-            if r != 0 && (x < 0) { q - 1 } else { q }
-        };
-        IntRange::from_i128(floor_div(self.lo as i128), floor_div(self.hi as i128))
+        // `div = 2^s > 0`, so the shared floor primitive's `(x<0) != (d<0)` sign
+        // rule collapses to `x < 0` here — `x >> s == floor(x / 2^s)`.
+        IntRange::from_i128(
+            floor_div_i128(self.lo as i128, div),
+            floor_div_i128(self.hi as i128, div),
+        )
     }
 
     /// Python left shift `self << s` by a *constant* `s >= 0`:
@@ -526,16 +574,7 @@ pub fn py_i64_floordiv(x: i64, y: i64) -> Option<i64> {
     if y == 0 {
         return None;
     }
-    let x = x as i128;
-    let y = y as i128;
-    let q = x / y;
-    let r = x % y;
-    let floor_q = if r != 0 && ((x < 0) != (y < 0)) {
-        q - 1
-    } else {
-        q
-    };
-    checked_i128_to_i64(floor_q)
+    checked_i128_to_i64(floor_div_i128(x as i128, y as i128))
 }
 
 /// Python integer modulo for i64 operands. The remainder has the divisor's sign.
@@ -546,14 +585,28 @@ pub fn py_i64_mod(x: i64, y: i64) -> Option<i64> {
     }
     let x128 = x as i128;
     let y128 = y as i128;
-    let q = x128 / y128;
-    let r = x128 % y128;
-    let floor_q = if r != 0 && ((x128 < 0) != (y128 < 0)) {
+    let floor_q = floor_div_i128(x128, y128);
+    checked_i128_to_i64(x128 - floor_q * y128)
+}
+
+/// Exact mathematical floor division `floor(x / d)` over i128 — Python `//`
+/// semantics (round toward negative infinity), versus Rust `/` which truncates
+/// toward zero. The two disagree only when the quotient is negative and
+/// inexact, where the true floor is one below the truncated value. `d != 0`
+/// required. This is the single sign-correction site shared by every interval
+/// transfer that floors a quotient ([`IntRange::floordiv_const`],
+/// [`IntRange::floordiv_range`], [`IntRange::shr_const`]) and by the scalar
+/// [`py_i64_floordiv`] / [`py_i64_mod`] folders, so the rule can never drift
+/// between them.
+fn floor_div_i128(x: i128, d: i128) -> i128 {
+    debug_assert!(d != 0, "floor_div_i128 requires a non-zero divisor");
+    let q = x / d;
+    let r = x % d;
+    if r != 0 && ((x < 0) != (d < 0)) {
         q - 1
     } else {
         q
-    };
-    checked_i128_to_i64(x128 - floor_q * y128)
+    }
 }
 
 fn ceil_div_positive(numer: i128, denom: i128) -> i128 {
@@ -782,6 +835,92 @@ mod tests {
         assert!(IntRange::new(-1, 1).shl_const(70).is_full());
         // 0 << anything == 0.
         assert_eq!(IntRange::point(0).shl_const(200), IntRange::point(0));
+    }
+
+    #[test]
+    fn transfer_floordiv_const_python_floor_sign() {
+        // Positive divisor: monotone non-decreasing in the dividend.
+        // [0, 999] // 3 = [0, 333] (999 // 3 == 333) — the `i // 3` loop-IV case.
+        assert_eq!(
+            IntRange::new(0, 999).floordiv_const(3),
+            IntRange::new(0, 333)
+        );
+        // Negative dividend floors toward -inf, NOT toward zero:
+        // -7 // 3 == -3 (truncating division would give -2).
+        assert_eq!(IntRange::new(-7, -7).floordiv_const(3), IntRange::point(-3));
+        // Zero-crossing dividend: [-7, 7] // 3 = [-3, 2].
+        assert_eq!(IntRange::new(-7, 7).floordiv_const(3), IntRange::new(-3, 2));
+        // Negative divisor: monotone non-increasing ⇒ endpoints swap.
+        // [1, 10] // -3 = [-4, -1] (1 // -3 == -1, 10 // -3 == -4).
+        assert_eq!(
+            IntRange::new(1, 10).floordiv_const(-3),
+            IntRange::new(-4, -1)
+        );
+        // Both negative ⇒ positive quotient, floored: -7 // -3 == 2.
+        assert_eq!(IntRange::point(-7).floordiv_const(-3), IntRange::point(2));
+        // Divide by ±1 is identity / negation.
+        assert_eq!(IntRange::new(-5, 9).floordiv_const(1), IntRange::new(-5, 9));
+        assert_eq!(IntRange::new(-5, 9).floordiv_const(-1), IntRange::new(-9, 5));
+    }
+
+    #[test]
+    fn transfer_floordiv_const_matches_cpython_scalar() {
+        // The interval transfer at a POINT must equal the CPython-verified scalar
+        // floor (`py_i64_floordiv`, checked against Python edges in
+        // `python_i64_floor_div_and_mod_match_python_edges`), over a grid
+        // spanning both signs of dividend and divisor. This ties the interval
+        // arithmetic to ground-truth Python `//` semantics — a single shared
+        // `floor_div_i128` primitive backs both, so they cannot drift.
+        for x in -25i64..=25 {
+            for d in [-7i64, -3, -2, -1, 1, 2, 3, 7] {
+                let expect = py_i64_floordiv(x, d).expect("non-zero divisor, in range");
+                assert_eq!(
+                    IntRange::point(x).floordiv_const(d),
+                    IntRange::point(expect),
+                    "point({x}) // {d}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn transfer_floordiv_const_min_over_neg_one_saturates_non_inline() {
+        // i64::MIN // -1 == 2^63 escapes i64 upward (the only two-i64 floordiv
+        // that leaves i64); from_i128 saturates to i64::MAX — soundly at/above
+        // the true value — and it must NOT be proven inline.
+        let r = IntRange::point(i64::MIN).floordiv_const(-1);
+        assert_eq!(r, IntRange::point(i64::MAX));
+        assert!(!r.fits_inline_int47());
+    }
+
+    #[test]
+    fn transfer_floordiv_range_sign_uniform() {
+        // Positive divisor box: the max quotient is at the SMALLEST divisor.
+        // [0, 100] // [2, 5] = [0, 50] (100 // 2 == 50).
+        assert_eq!(
+            IntRange::new(0, 100).floordiv_range(IntRange::new(2, 5)),
+            IntRange::new(0, 50)
+        );
+        // Negative divisor box: [10, 20] // [-5, -2] = [-10, -2].
+        assert_eq!(
+            IntRange::new(10, 20).floordiv_range(IntRange::new(-5, -2)),
+            IntRange::new(-10, -2)
+        );
+        // A divisor range straddling 0 (possible ZeroDivisionError or sign flip)
+        // is unprovable ⇒ FULL, never a false tight bound (the inline-int47
+        // truncation P0).
+        assert!(
+            IntRange::new(0, 100)
+                .floordiv_range(IntRange::new(-1, 5))
+                .is_full()
+        );
+        // A divisor range that merely touches 0 at an endpoint is equally
+        // unprovable (the zero divisor itself raises).
+        assert!(
+            IntRange::new(0, 100)
+                .floordiv_range(IntRange::new(0, 5))
+                .is_full()
+        );
     }
 
     #[test]

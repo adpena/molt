@@ -1,4 +1,15 @@
-use super::*;
+use super::args::{clear_last_error, get_string_arg, raise_tcl_for_handle};
+use super::callbacks::remove_trace_registration;
+use super::dispatch::tk_call_dispatch;
+use super::parsing::{alloc_tuple_bits, parse_tcl_script_commands};
+use super::state::{
+    TkAppState, TkTraceRegistration, alloc_string_bits, app_mut_from_registry,
+    app_tcl_error_locked, tk_registry,
+};
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
+use super::tcl::{get, new};
+use crate::bridge::{dec_ref_bits, inc_ref_bits};
+use molt_runtime_core::prelude::{MoltObject, PyToken, obj_from_bits};
 
 pub(super) fn normalize_trace_mode_name(mode_name: &str) -> Result<String, String> {
     let mut has_array = false;

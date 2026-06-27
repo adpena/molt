@@ -249,6 +249,27 @@ mod tests {
         func
     }
 
+    fn make_malformed_pow_func() -> TirFunction {
+        let mut func = TirFunction::new(
+            "malformed_pow_i64".into(),
+            vec![TirType::I64, TirType::I64],
+            TirType::I64,
+        );
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::Pow,
+            operands: vec![ValueId(0), ValueId(1)],
+            results: vec![],
+            attrs: AttrDict::new(),
+            source_span: None,
+        });
+        entry.terminator = Terminator::Return {
+            values: vec![ValueId(0)],
+        };
+        func
+    }
+
     fn make_float_floordiv_func() -> TirFunction {
         let mut func = TirFunction::new(
             "floordiv_f64".into(),
@@ -329,6 +350,13 @@ mod tests {
         let err = tir_to_mlir(&make_pow_func(), &ctx).unwrap_err();
         assert!(err.contains("MLIR lowering refuses OpCode::Pow"));
         assert!(err.contains("checked boxed-runtime MLIR ABI"));
+    }
+
+    #[test]
+    fn test_malformed_pow_fails_closed_without_result_slot() {
+        let ctx = create_mlir_context();
+        let err = tir_to_mlir(&make_malformed_pow_func(), &ctx).unwrap_err();
+        assert!(err.contains("malformed OpCode::Pow with no result slot"));
     }
 
     #[test]

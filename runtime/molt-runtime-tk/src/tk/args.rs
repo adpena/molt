@@ -1,4 +1,8 @@
-use super::*;
+use super::state::{raise_tcl_error, tk_registry};
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
+use super::tcl::new;
+use crate::bridge::{string_obj_to_owned, to_f64, to_i64};
+use molt_runtime_core::prelude::{PyToken, obj_from_bits};
 
 pub(super) fn clear_last_error(handle: i64) {
     let mut registry = tk_registry().lock().unwrap();

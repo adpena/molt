@@ -1,4 +1,18 @@
-use super::*;
+use super::args::{clear_last_error, get_string_arg, get_text_arg, raise_tcl_for_handle};
+use super::dispatch::tk_call_dispatch;
+use super::parsing::{
+    alloc_tuple_from_strings, parse_bool_arg, parse_i64_arg, parse_widget_option_pairs,
+};
+use super::state::{
+    TkAppState, alloc_string_bits, app_mut_from_registry, app_tcl_error_locked, tk_registry,
+};
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
+use super::tcl::{TclObj, eval, new, new_list};
+use crate::bridge::{dec_ref_bits, decode_value_list, dict_order, object_type_id};
+use molt_runtime_core::prelude::{MoltObject, PyToken, obj_from_bits};
+use molt_runtime_core::type_ids::TYPE_ID_DICT;
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
+use std::path::Path;
 
 pub(super) fn normalize_commondialog_option_name(name: &str) -> String {
     if name.starts_with('-') {

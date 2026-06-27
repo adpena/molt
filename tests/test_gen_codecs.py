@@ -39,7 +39,9 @@ def test_charmap_codec_tables_cover_declared_codecs() -> None:
 def test_charmap_codec_set_is_derived_from_text_registry() -> None:
     gen = _load_gen_codecs()
     registry = gen.REGISTRY.read_text(encoding="utf-8")
-    assert tuple(codec.kind for codec in gen.CHARMAP_CODECS) == gen._charmap_kinds(registry)
+    assert tuple(codec.kind for codec in gen.CHARMAP_CODECS) == gen._charmap_kinds(
+        registry
+    )
 
 
 def test_charmap_codec_tables_are_ascii_compatible() -> None:
@@ -89,3 +91,10 @@ def test_codec_registry_reexports_generated_aliases() -> None:
 def test_runtime_no_longer_owns_charmap_tables() -> None:
     stale = ROOT / "runtime/molt-runtime/src/object/ops_encoding/charmap_codecs.rs"
     assert not stale.exists()
+
+    consumer = (ROOT / "runtime/molt-runtime/src/object/ops_encoding.rs").read_text(
+        encoding="utf-8"
+    )
+    assert "molt_runtime_text::charmap_codecs_generated" in consumer
+    assert "mod charmap_codecs" not in consumer
+    assert "crate::object::ops_encoding::charmap_codecs" not in consumer

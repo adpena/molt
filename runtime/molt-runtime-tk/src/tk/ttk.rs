@@ -1,4 +1,19 @@
-use super::*;
+use super::args::{get_string_arg, raise_tcl_for_handle};
+use super::parsing::{
+    TTK_NOTEBOOK_TAB_OPTIONS, TTK_PANEDWINDOW_PANE_OPTIONS, alloc_tuple_from_strings,
+    option_allowed, option_map_query_or_empty, option_map_to_tuple, parse_notebook_index_strict,
+    parse_ttk_insert_index_strict, parse_widget_option_name_arg, parse_widget_option_pairs,
+    set_to_sorted_tuple,
+};
+use super::state::{
+    alloc_string_bits, app_mut_from_registry, app_tcl_error_locked, clear_value_map_refs,
+    tk_registry, value_map_set_bits,
+};
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
+use super::tcl::{get, new};
+use super::widgets::common::unknown_widget_subcommand_message;
+use crate::bridge::{dec_ref_bits, inc_ref_bits, string_obj_to_owned, to_f64, to_i64};
+use molt_runtime_core::prelude::{MoltObject, PyToken, obj_from_bits};
 
 pub(super) fn handle_ttk_style_command(
     py: &PyToken,

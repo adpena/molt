@@ -1,4 +1,6 @@
-use super::super::*;
+use super::super::parsing::{alloc_tuple_from_strings, text_char_count};
+use super::super::state::{TkWidgetState, alloc_string_bits, raise_tcl_error};
+use molt_runtime_core::prelude::PyToken;
 
 pub(in crate::tk) fn alloc_empty_string_bits(py: &PyToken) -> Result<u64, u64> {
     alloc_string_bits(py, "")

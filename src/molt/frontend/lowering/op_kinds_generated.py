@@ -344,6 +344,10 @@ RAISING_KIND_NAMES: frozenset[str] = frozenset(
         "LE",
         "GT",
         "GE",
+        "NEG",
+        "POS",
+        "INVERT",
+        "ABS",
         "INPLACE_DIV",
         "INPLACE_FLOORDIV",
         "INPLACE_MOD",
@@ -460,7 +464,7 @@ CHECK_EXCEPTION_SKIP_KINDS: frozenset[str] = frozenset(
 # [[simpleir_control_kind]], and frontend-only overrides come from
 # [[frontend_effect_kind]].
 FRONTEND_EFFECT_CLASS: dict[str, str] = {
-    "ABS": "pure",
+    "ABS": "writes_heap",
     "ADD": "writes_heap",
     "ALLOC": "writes_heap",
     "ALLOC_TASK": "writes_heap",
@@ -610,6 +614,7 @@ FRONTEND_EFFECT_CLASS: dict[str, str] = {
     "INPLACE_POW": "writes_heap",
     "INPLACE_RSHIFT": "writes_heap",
     "INPLACE_SUB": "writes_heap",
+    "INVERT": "writes_heap",
     "INVOKE_FFI": "writes_heap",
     "IS": "pure",
     "ISINSTANCE": "reads_heap",
@@ -655,7 +660,7 @@ FRONTEND_EFFECT_CLASS: dict[str, str] = {
     "MODULE_SET_ATTR": "writes_heap",
     "MUL": "writes_heap",
     "NE": "writes_heap",
-    "NEG": "pure",
+    "NEG": "writes_heap",
     "NOP": "control",
     "NOT": "pure",
     "NOT_IN": "writes_heap",
@@ -664,7 +669,7 @@ FRONTEND_EFFECT_CLASS: dict[str, str] = {
     "OR": "pure",
     "ORD_AT": "writes_heap",
     "PHI": "pure",
-    "POS": "pure",
+    "POS": "writes_heap",
     "POW": "writes_heap",
     "PRINT": "writes_heap",
     "RAISE": "control",
@@ -715,7 +720,6 @@ FRONTEND_EFFECT_CLASS: dict[str, str] = {
 
 FRONTEND_EFFECT_PURE_KINDS: frozenset[str] = frozenset(
     {
-        "ABS",
         "AND",
         "BIT_NOT",
         "BOOL",
@@ -737,11 +741,9 @@ FRONTEND_EFFECT_PURE_KINDS: frozenset[str] = frozenset(
         "IS_NOT",
         "LOAD_CONST",
         "MISSING",
-        "NEG",
         "NOT",
         "OR",
         "PHI",
-        "POS",
         "STRING_EQ",
         "TYPE_GUARD",
         "TYPE_OF",
@@ -764,6 +766,7 @@ FRONTEND_EFFECT_READS_HEAP_KINDS: frozenset[str] = frozenset(
 
 FRONTEND_EFFECT_WRITES_HEAP_KINDS: frozenset[str] = frozenset(
     {
+        "ABS",
         "ADD",
         "ALLOC",
         "ALLOC_TASK",
@@ -863,6 +866,7 @@ FRONTEND_EFFECT_WRITES_HEAP_KINDS: frozenset[str] = frozenset(
         "INPLACE_POW",
         "INPLACE_RSHIFT",
         "INPLACE_SUB",
+        "INVERT",
         "INVOKE_FFI",
         "ITER_NEXT",
         "ITER_NEXT_UNBOXED",
@@ -892,10 +896,12 @@ FRONTEND_EFFECT_WRITES_HEAP_KINDS: frozenset[str] = frozenset(
         "MODULE_SET_ATTR",
         "MUL",
         "NE",
+        "NEG",
         "NOT_IN",
         "OBJECT_NEW_BOUND",
         "OBJECT_NEW_BOUND_STACK",
         "ORD_AT",
+        "POS",
         "POW",
         "PRINT",
         "RANGE_NEW",
