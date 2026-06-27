@@ -10,6 +10,9 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         if vector_reductions::is_preserved_vec_reduction_kind(kind) {
             return self.lower_preserved_vec_reduction_op(op, kind);
         }
+        if kind == "call_async" {
+            return self.lower_preserved_call_async_op(op);
+        }
         if callable_ops::is_preserved_callable_kind(kind) {
             return self.lower_preserved_callable_op(op, kind);
         }
