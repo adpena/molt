@@ -48,10 +48,6 @@ pub(crate) mod gpu_primitives;
 pub(crate) mod graphlib;
 #[cfg(feature = "stdlib_compression")]
 pub(crate) mod gzip;
-#[cfg(feature = "stdlib_crypto")]
-pub(crate) mod hashlib;
-#[cfg(feature = "stdlib_crypto")]
-pub(crate) mod hmac;
 pub(crate) mod inspect;
 pub(crate) mod io;
 pub(crate) mod io_path;
@@ -77,8 +73,6 @@ pub(crate) mod platform;
 pub(crate) mod platform_mod;
 pub(crate) mod pprint_ext;
 pub(crate) mod punycode;
-#[cfg(feature = "stdlib_crypto")]
-pub(crate) mod secrets;
 pub(crate) mod select;
 pub(crate) mod shutil;
 pub(crate) mod signal_ext;
