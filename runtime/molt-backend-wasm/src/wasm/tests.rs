@@ -1,4 +1,3 @@
-use super::local_layout::collect_read_vars;
 use super::*;
 use crate::wasm_plan::is_production_lir_wasm_fast_path_name;
 
@@ -154,74 +153,6 @@ fn container_import_selection_uses_flat_list_storage_proof() {
         wasm_specialized_container_import(&plan, 2, "store_index", &set),
         Some("list_int_setitem")
     );
-}
-
-// ---------------------------------------------------------------
-// Dead local elimination -- read-variable scanning
-// ---------------------------------------------------------------
-
-/// Build a minimal OpIR with only the fields relevant to read-var scanning.
-fn make_op(kind: &str, args: Option<Vec<&str>>, var: Option<&str>, out: Option<&str>) -> OpIR {
-    OpIR {
-        kind: kind.to_string(),
-        args: args.map(|a| a.into_iter().map(String::from).collect()),
-        var: var.map(String::from),
-        out: out.map(String::from),
-        ..Default::default()
-    }
-}
-
-#[test]
-fn read_vars_includes_args_and_var() {
-    let ops = vec![
-        make_op("add", Some(vec!["a", "b"]), None, Some("c")),
-        make_op("load", None, Some("d"), Some("e")),
-    ];
-    let read_vars = collect_read_vars(&ops);
-    assert!(read_vars.contains("a"), "arg 'a' should be in read set");
-    assert!(read_vars.contains("b"), "arg 'b' should be in read set");
-    assert!(read_vars.contains("d"), "var 'd' should be in read set");
-    // 'c' and 'e' are outputs only -- they should NOT be in read_vars
-    assert!(
-        !read_vars.contains("c"),
-        "output-only 'c' should NOT be in read set"
-    );
-    assert!(
-        !read_vars.contains("e"),
-        "output-only 'e' should NOT be in read set"
-    );
-}
-
-#[test]
-fn read_vars_output_becomes_live_when_later_read() {
-    let ops = vec![
-        make_op("const", None, None, Some("x")),
-        make_op("add", Some(vec!["x", "y"]), None, Some("z")),
-    ];
-    let read_vars = collect_read_vars(&ops);
-    // 'x' is an output of const but also an arg of add -- should be live
-    assert!(
-        read_vars.contains("x"),
-        "'x' should be live since it's read by add"
-    );
-    assert!(read_vars.contains("y"), "'y' should be live");
-    // 'z' is output-only
-    assert!(
-        !read_vars.contains("z"),
-        "'z' is output-only, should be dead"
-    );
-}
-
-#[test]
-fn dead_local_all_outputs_dead() {
-    // No op reads any variable -- all outputs are dead
-    let ops = vec![
-        make_op("const", None, None, Some("a")),
-        make_op("const", None, None, Some("b")),
-        make_op("const", None, None, Some("c")),
-    ];
-    let read_vars = collect_read_vars(&ops);
-    assert!(read_vars.is_empty(), "no variable is ever read");
 }
 
 /// Extract `(param_count, result_count)` for every func type in a module's
