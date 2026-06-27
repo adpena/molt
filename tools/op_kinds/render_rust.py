@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import tempfile
 from pathlib import Path
 
@@ -100,6 +101,9 @@ def _render_rs_unformatted(data: dict) -> str:
         out.append(f"        {pat} => Some(OpCode::{opcode}),\n")
     out.append("        _ => None,\n")
     out.append("    }\n}\n\n")
+
+    out.append(_render_opcode_canonical_kind_table(opcodes, kinds))
+    out.append("\n")
 
     out.append(_render_ssa_attr_transport(opcodes, data))
     out.append("\n")
@@ -1143,6 +1147,39 @@ def _render_all_opcodes(opcodes: list[dict]) -> str:
     for row in opcodes:
         lines.append(f"    OpCode::{row['name']},\n")
     lines.append("];\n")
+    return "".join(lines)
+
+
+def _opcode_default_canonical_kind(name: str) -> str:
+    first_pass = re.sub(r"(.)([A-Z][a-z]+)", r"\1_\2", name)
+    snake = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", first_pass).lower()
+    return snake.removeprefix("scf_")
+
+
+def _render_opcode_canonical_kind_table(opcodes: list[dict], kinds: list[dict]) -> str:
+    canonical_by_opcode: dict[str, str] = {}
+    for row in kinds:
+        opcode = row.get("mapper_opcode")
+        if opcode is None or opcode in canonical_by_opcode:
+            continue
+        canonical_by_opcode[opcode] = row["canonical"]
+
+    lines = [
+        "/// Canonical backend op-name tail for an `OpCode`.\n",
+        "///\n",
+        "/// This is the reverse spelling authority for backend dialects that need a\n",
+        "/// stable operation name after TIR lowering. For opcode rows that have a\n",
+        "/// first-class `[[kind]]` mapper, the mapper's canonical spelling wins;\n",
+        "/// opcode-only rows fall back to a deterministic opcode-name spelling.\n",
+        "#[inline]\n",
+        "pub fn opcode_canonical_kind_table(opcode: OpCode) -> &'static str {\n",
+        "    match opcode {\n",
+    ]
+    for row in opcodes:
+        name = row["name"]
+        canonical = canonical_by_opcode.get(name, _opcode_default_canonical_kind(name))
+        lines.append(f"        OpCode::{name} => {_rs_string(canonical)},\n")
+    lines.append("    }\n}\n")
     return "".join(lines)
 
 
