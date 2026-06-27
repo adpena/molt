@@ -222,7 +222,7 @@ fn is_tail_call_candidate(
         && args_names.len() == call_ctx.func_ir.params.len()
 }
 
-fn push_call_args(func: &mut Function, locals: &BTreeMap<String, u32>, args_names: &[String]) {
+fn push_call_args(func: &mut Function, locals: &WasmFrameLocals, args_names: &[String]) {
     for arg_name in args_names {
         let arg = locals[arg_name];
         func.instruction(&Instruction::LocalGet(arg));

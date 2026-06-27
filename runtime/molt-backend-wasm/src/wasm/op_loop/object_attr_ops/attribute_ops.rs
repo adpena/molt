@@ -7,7 +7,7 @@ pub(super) fn emit_attribute_op(
     op: &OpIR,
     func_ir: &FunctionIR,
     import_ids: &TrackedImportIds,
-    locals: &BTreeMap<String, u32>,
+    locals: &WasmFrameLocals,
     func_index: u32,
     reloc_enabled: bool,
     op_idx: usize,

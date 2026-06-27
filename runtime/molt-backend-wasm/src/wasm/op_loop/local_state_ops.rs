@@ -8,7 +8,7 @@ mod state_machine_ops;
 pub(super) struct LocalStateOpContext<'a> {
     pub(super) backend: &'a mut WasmBackend,
     pub(super) import_ids: &'a TrackedImportIds,
-    pub(super) locals: &'a BTreeMap<String, u32>,
+    pub(super) locals: &'a WasmFrameLocals,
     pub(super) const_cache: &'a ConstantCache,
     pub(super) func_index: u32,
     pub(super) reloc_enabled: bool,
@@ -20,7 +20,7 @@ pub(super) fn emit_local_state_op(
     func: &mut Function,
     op: &OpIR,
     import_ids: &TrackedImportIds,
-    locals: &BTreeMap<String, u32>,
+    locals: &WasmFrameLocals,
     const_cache: &ConstantCache,
     func_index: u32,
     reloc_enabled: bool,

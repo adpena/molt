@@ -43,7 +43,7 @@ pub(super) struct WasmFunctionEmitContext<'a, 'ctx> {
 }
 
 impl<'a, 'ctx> WasmFunctionEmitContext<'a, 'ctx> {
-    pub(super) fn locals(&self) -> &BTreeMap<String, u32> {
+    pub(super) fn locals(&self) -> &WasmFrameLocals {
         self.frame.locals()
     }
 

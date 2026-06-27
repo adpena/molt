@@ -17,7 +17,7 @@ pub(super) fn emit_object_attr_op(
     func_ir: &FunctionIR,
     ctx: &CompileFuncContext<'_>,
     import_ids: &TrackedImportIds,
-    locals: &BTreeMap<String, u32>,
+    locals: &WasmFrameLocals,
     func_index: u32,
     reloc_enabled: bool,
     op_idx: usize,

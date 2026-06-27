@@ -17,7 +17,7 @@ mod set_ops;
 pub(super) struct AggregateRuntimeContext<'a> {
     pub(super) func_ir: &'a FunctionIR,
     pub(super) import_ids: &'a TrackedImportIds,
-    pub(super) locals: &'a BTreeMap<String, u32>,
+    pub(super) locals: &'a WasmFrameLocals,
     pub(super) scalar_plan: &'a ScalarRepresentationPlan,
     pub(super) multi_return: &'a WasmMultiReturnLayout,
     pub(super) reloc_enabled: bool,
@@ -30,7 +30,7 @@ pub(super) fn emit_aggregate_runtime_op(
     op: &OpIR,
     func_ir: &FunctionIR,
     import_ids: &TrackedImportIds,
-    locals: &BTreeMap<String, u32>,
+    locals: &WasmFrameLocals,
     scalar_plan: &ScalarRepresentationPlan,
     multi_return: &WasmMultiReturnLayout,
     reloc_enabled: bool,

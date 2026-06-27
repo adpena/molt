@@ -22,7 +22,7 @@ pub(super) struct CallOpContext<'a, 'ctx, 'm> {
     pub(super) import_ids: &'a TrackedImportIds,
     pub(super) closure_functions: &'a BTreeSet<String>,
     pub(super) runtime_lookup_only_vars: &'a BTreeSet<String>,
-    pub(super) locals: &'a BTreeMap<String, u32>,
+    pub(super) locals: &'a WasmFrameLocals,
     pub(super) const_cache: &'a ConstantCache,
     pub(super) multi_return_candidates: &'a BTreeMap<String, usize>,
     pub(super) multi_return: &'a WasmMultiReturnLayout,
