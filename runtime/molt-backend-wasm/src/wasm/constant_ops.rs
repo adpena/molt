@@ -227,14 +227,14 @@ fn emit_literal_ptr_len(
     locals: &WasmFrameLocals,
     func_index: u32,
     reloc_enabled: bool,
-) {
+) -> WasmLiteralScratchLocals {
     let data = backend.add_data_segment(reloc_enabled, bytes);
-    let ptr_local = locals[&format!("{out_name}_ptr")];
-    let len_local = locals[&format!("{out_name}_len")];
+    let scratch = locals.literal_scratch(out_name);
     backend.emit_data_ptr(reloc_enabled, func_index, func, data);
-    func.instruction(&Instruction::LocalSet(ptr_local));
+    func.instruction(&Instruction::LocalSet(scratch.ptr_local()));
     func.instruction(&Instruction::I64Const(bytes.len() as i64));
-    func.instruction(&Instruction::LocalSet(len_local));
+    func.instruction(&Instruction::LocalSet(scratch.len_local()));
+    scratch
 }
 
 fn emit_scratch_materialized_bytes(
@@ -248,7 +248,7 @@ fn emit_scratch_materialized_bytes(
     import_id: u32,
     scratch_segment: DataSegmentRef,
 ) {
-    emit_literal_ptr_len(
+    let scratch = emit_literal_ptr_len(
         backend,
         func,
         out_name,
@@ -257,11 +257,9 @@ fn emit_scratch_materialized_bytes(
         func_index,
         reloc_enabled,
     );
-    let ptr_local = locals[&format!("{out_name}_ptr")];
-    let len_local = locals[&format!("{out_name}_len")];
-    func.instruction(&Instruction::LocalGet(ptr_local));
+    func.instruction(&Instruction::LocalGet(scratch.ptr_local()));
     func.instruction(&Instruction::I32WrapI64);
-    func.instruction(&Instruction::LocalGet(len_local));
+    func.instruction(&Instruction::LocalGet(scratch.len_local()));
     backend.emit_data_ptr_i32(reloc_enabled, func_index, func, scratch_segment);
     emit_call(func, reloc_enabled, import_id);
     func.instruction(&Instruction::Drop);
@@ -310,7 +308,7 @@ fn emit_const_bigint(
     import_ids: &TrackedImportIds,
 ) {
     let (out_name, bytes) = const_bigint_bytes(op);
-    emit_literal_ptr_len(
+    let scratch = emit_literal_ptr_len(
         backend,
         func,
         out_name,
@@ -319,11 +317,9 @@ fn emit_const_bigint(
         func_index,
         reloc_enabled,
     );
-    let ptr_local = locals[&format!("{out_name}_ptr")];
-    let len_local = locals[&format!("{out_name}_len")];
-    func.instruction(&Instruction::LocalGet(ptr_local));
+    func.instruction(&Instruction::LocalGet(scratch.ptr_local()));
     func.instruction(&Instruction::I32WrapI64);
-    func.instruction(&Instruction::LocalGet(len_local));
+    func.instruction(&Instruction::LocalGet(scratch.len_local()));
     emit_call(func, reloc_enabled, import_ids["bigint_from_str"]);
     let out_local = locals[out_name];
     func.instruction(&Instruction::LocalSet(out_local));
