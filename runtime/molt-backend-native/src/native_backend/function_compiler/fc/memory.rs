@@ -63,7 +63,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
     profile_enabled_val: Option<Value>,
     local_inc_ref_obj: FuncRef,
     local_dec_ref_obj: FuncRef,
-    native_rc_tracking_enabled: bool,
+    rc_authority: NativeRcAuthority,
     scalar_fast_paths_enabled: bool,
     nbc: &crate::NanBoxConsts,
 ) -> OpFlow {
@@ -323,7 +323,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 .expect("store requires an active block");
             let mut origin_obj_live = block_tracked_obj.remove(&origin_block).unwrap_or_default();
             let origin_obj_cleanup = drain_cleanup_tracked_dedup_with_authority(
-                native_rc_tracking_enabled,
+                rc_authority,
                 &mut origin_obj_live,
                 last_use,
                 alias_roots,
@@ -333,7 +333,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
             );
             let mut origin_ptr_live = block_tracked_ptr.remove(&origin_block).unwrap_or_default();
             let origin_ptr_cleanup = drain_cleanup_tracked_dedup_with_authority(
-                native_rc_tracking_enabled,
+                rc_authority,
                 &mut origin_ptr_live,
                 last_use,
                 alias_roots,
@@ -697,7 +697,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 .expect("store_init requires an active block");
             let mut origin_obj_live = block_tracked_obj.remove(&origin_block).unwrap_or_default();
             let origin_obj_cleanup = drain_cleanup_tracked_dedup_with_authority(
-                native_rc_tracking_enabled,
+                rc_authority,
                 &mut origin_obj_live,
                 last_use,
                 alias_roots,
@@ -707,7 +707,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
             );
             let mut origin_ptr_live = block_tracked_ptr.remove(&origin_block).unwrap_or_default();
             let origin_ptr_cleanup = drain_cleanup_tracked_dedup_with_authority(
-                native_rc_tracking_enabled,
+                rc_authority,
                 &mut origin_ptr_live,
                 last_use,
                 alias_roots,

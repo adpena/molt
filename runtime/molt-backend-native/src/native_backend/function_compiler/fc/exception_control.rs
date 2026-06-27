@@ -22,7 +22,7 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_control_op(
     label_blocks: &BTreeMap<i64, Block>,
     reachable_blocks: &mut BTreeSet<Block>,
     is_block_filled: &mut bool,
-    native_rc_tracking_enabled: bool,
+    rc_authority: NativeRcAuthority,
     module: &mut ObjectModule,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
@@ -163,7 +163,7 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_control_op(
                 std::collections::HashSet::new();
             if !carry_obj.is_empty() {
                 let cleanup = drain_cleanup_tracked_dedup_with_authority(
-                    native_rc_tracking_enabled,
+                    rc_authority,
                     &mut carry_obj,
                     last_use,
                     alias_roots,
@@ -217,7 +217,7 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_control_op(
             }
             if !carry_ptr.is_empty() {
                 let cleanup = drain_cleanup_tracked_dedup_with_authority(
-                    native_rc_tracking_enabled,
+                    rc_authority,
                     &mut carry_ptr,
                     last_use,
                     alias_roots,

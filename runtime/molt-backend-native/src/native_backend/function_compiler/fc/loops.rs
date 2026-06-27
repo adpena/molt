@@ -74,14 +74,14 @@ pub(in crate::native_backend::function_compiler) fn capture_loop_reassign_old_va
     op: &OpIR,
     out_name: Option<&str>,
     loop_depth: i32,
-    drop_inserted: bool,
+    rc_authority: NativeRcAuthority,
     is_block_filled: bool,
     rc_skip_dec: &std::collections::HashSet<String>,
     loop_body_out_vars: &BTreeMap<usize, Vec<String>>,
     vars: &BTreeMap<String, Variable>,
     builder: &mut FunctionBuilder<'_>,
 ) -> Option<Value> {
-    if loop_depth <= 0 || drop_inserted || is_block_filled {
+    if loop_depth <= 0 || !rc_authority.native_value_tracking_enabled() || is_block_filled {
         return None;
     }
     let name = out_name?;
@@ -184,7 +184,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
     skip_ops: &mut BTreeSet<usize>,
     loop_depth: &mut i32,
     is_block_filled: &mut bool,
-    native_rc_tracking_enabled: bool,
+    rc_authority: NativeRcAuthority,
     scalar_fast_paths_enabled: bool,
     debug_loop_cfg: Option<&str>,
     debug_block_origins: Option<&str>,
@@ -1056,7 +1056,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                     .expect("loop_break_if_exception requires an active block");
                 let mut carry_obj_lb = block_tracked_obj.remove(&current_block).unwrap_or_default();
                 let tracked_obj_snapshot = drain_cleanup_tracked_dedup_with_authority(
-                    native_rc_tracking_enabled,
+                    rc_authority,
                     &mut carry_obj_lb,
                     last_use,
                     alias_roots,
@@ -1066,7 +1066,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                 );
                 let mut carry_ptr_lb = block_tracked_ptr.remove(&current_block).unwrap_or_default();
                 let tracked_ptr_snapshot = drain_cleanup_tracked_dedup_with_authority(
-                    native_rc_tracking_enabled,
+                    rc_authority,
                     &mut carry_ptr_lb,
                     last_use,
                     alias_roots,
@@ -1160,7 +1160,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                     .expect("loop_break_if_true requires an active block");
                 let mut carry_obj_lb = block_tracked_obj.remove(&current_block).unwrap_or_default();
                 let tracked_obj_snapshot = drain_cleanup_tracked_dedup_with_authority(
-                    native_rc_tracking_enabled,
+                    rc_authority,
                     &mut carry_obj_lb,
                     last_use,
                     alias_roots,
@@ -1170,7 +1170,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                 );
                 let mut carry_ptr_lb = block_tracked_ptr.remove(&current_block).unwrap_or_default();
                 let tracked_ptr_snapshot = drain_cleanup_tracked_dedup_with_authority(
-                    native_rc_tracking_enabled,
+                    rc_authority,
                     &mut carry_ptr_lb,
                     last_use,
                     alias_roots,
@@ -1340,7 +1340,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                     .expect("loop_break_if_false requires an active block");
                 let mut carry_obj_lb = block_tracked_obj.remove(&current_block).unwrap_or_default();
                 let tracked_obj_snapshot = drain_cleanup_tracked_dedup_with_authority(
-                    native_rc_tracking_enabled,
+                    rc_authority,
                     &mut carry_obj_lb,
                     last_use,
                     alias_roots,
@@ -1350,7 +1350,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                 );
                 let mut carry_ptr_lb = block_tracked_ptr.remove(&current_block).unwrap_or_default();
                 let tracked_ptr_snapshot = drain_cleanup_tracked_dedup_with_authority(
-                    native_rc_tracking_enabled,
+                    rc_authority,
                     &mut carry_ptr_lb,
                     last_use,
                     alias_roots,
@@ -1523,7 +1523,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                     .expect("loop_break requires an active block");
                 if let Some(names) = block_tracked_obj.get_mut(&current_block) {
                     let cleanup = drain_cleanup_tracked_dedup_with_authority(
-                        native_rc_tracking_enabled,
+                        rc_authority,
                         names,
                         last_use,
                         alias_roots,
@@ -1556,7 +1556,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                 }
                 if let Some(names) = block_tracked_ptr.get_mut(&current_block) {
                     let cleanup = drain_cleanup_tracked_dedup_with_authority(
-                        native_rc_tracking_enabled,
+                        rc_authority,
                         names,
                         last_use,
                         alias_roots,
@@ -1689,7 +1689,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                     .expect("loop_continue requires an active block");
                 if let Some(names) = block_tracked_obj.get_mut(&current_block) {
                     let cleanup = drain_cleanup_tracked_dedup_with_authority(
-                        native_rc_tracking_enabled,
+                        rc_authority,
                         names,
                         last_use,
                         alias_roots,
@@ -1722,7 +1722,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                 }
                 if let Some(names) = block_tracked_ptr.get_mut(&current_block) {
                     let cleanup = drain_cleanup_tracked_dedup_with_authority(
-                        native_rc_tracking_enabled,
+                        rc_authority,
                         names,
                         last_use,
                         alias_roots,

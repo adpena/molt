@@ -34,6 +34,28 @@ pub(crate) fn extend_unique_tracked(dst: &mut Vec<String>, src: Vec<String>) {
     }
 }
 
+#[cfg(feature = "native-backend")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum NativeRcAuthority {
+    NativeValueTracking,
+    TirDropInsertion,
+}
+
+#[cfg(feature = "native-backend")]
+impl NativeRcAuthority {
+    pub(crate) fn from_drop_inserted(drop_inserted: bool) -> Self {
+        if drop_inserted {
+            Self::TirDropInsertion
+        } else {
+            Self::NativeValueTracking
+        }
+    }
+
+    pub(crate) fn native_value_tracking_enabled(self) -> bool {
+        matches!(self, Self::NativeValueTracking)
+    }
+}
+
 /// Propagate tracked objects to ALL branch target blocks.
 /// Prevents use-after-free when exception handlers access freed objects.
 #[cfg(feature = "native-backend")]
@@ -81,7 +103,7 @@ pub(crate) fn drain_cleanup_tracked_dedup(
 
 #[cfg(feature = "native-backend")]
 pub(crate) fn drain_cleanup_tracked_dedup_with_authority(
-    native_rc_tracking_enabled: bool,
+    rc_authority: NativeRcAuthority,
     names: &mut Vec<String>,
     last_use: &BTreeMap<String, usize>,
     alias_roots: &BTreeMap<String, String>,
@@ -89,7 +111,7 @@ pub(crate) fn drain_cleanup_tracked_dedup_with_authority(
     skip: Option<&str>,
     already_decrefed: Option<&mut BTreeSet<String>>,
 ) -> Vec<String> {
-    if !native_rc_tracking_enabled {
+    if !rc_authority.native_value_tracking_enabled() {
         names.clear();
         return Vec::new();
     }
@@ -153,7 +175,7 @@ pub(crate) fn drain_cleanup_tracked_dedup_with_budget(
 
 #[cfg(feature = "native-backend")]
 pub(crate) fn drain_cleanup_entry_tracked_with_authority(
-    native_rc_tracking_enabled: bool,
+    rc_authority: NativeRcAuthority,
     names: &mut Vec<String>,
     entry_vars: &mut BTreeMap<String, Value>,
     last_use: &BTreeMap<String, usize>,
@@ -162,7 +184,7 @@ pub(crate) fn drain_cleanup_entry_tracked_with_authority(
     op_idx: usize,
     skip: Option<&str>,
 ) -> Vec<Value> {
-    if !native_rc_tracking_enabled {
+    if !rc_authority.native_value_tracking_enabled() {
         for name in names.drain(..) {
             entry_vars.remove(&name);
         }

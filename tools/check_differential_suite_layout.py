@@ -10,8 +10,12 @@ DIFF_ROOT = ROOT / "tests" / "differential"
 COVERAGE_INDEX = DIFF_ROOT / "COVERAGE_INDEX.yaml"
 # The canonical differential lanes. Each is a first-class differential corpus
 # discovered and run by tests/molt_diff.py; the committed native suite-honesty
-# snapshot (tools/suite_honesty/native_calibration.jsonl) covers
-# {basic, loop_overflow_peel, memory, pyperformance}.
+# snapshot (tools/suite_honesty/native_calibration.jsonl) calibrates
+# {basic, stdlib, loop_overflow_peel, memory, pyperformance}. The P0 hard-pass
+# regression lanes (overflow_scalar, int_loop_modulo, memory_safety) are run by
+# explicit path and are intentionally NOT in the expected-fail honesty ledger —
+# they assert silent-wrong-answer / memory-corruption fixes that must always
+# match CPython, so they may never be marked xfail.
 ALLOWED_LANES = {
     "basic",  # core language + builtin (non-module) semantics. runner: tests/molt_diff.py
     "stdlib",  # stdlib module/submodule semantics. runner: tests/molt_diff.py
@@ -25,6 +29,25 @@ ALLOWED_LANES = {
     # generator-consumer programs run under the molt_diff memory guard (RSS
     # measurement default-on). runner: tests/molt_diff.py.
     "memory",
+    # Scalar (non-loop) integer-overflow soundness (INT-lane unification,
+    # RawI64FullDeopt tier): the CheckedAdd/CheckedMul slow-path deopt plus
+    # from_int inline-window / as_int truncation boundaries. Seeded/boundary
+    # mul + accumulate programs proving an i64 overflow re-executes on a BigInt
+    # carrier and never silently wraps. Distinct from loop_overflow_peel: scalar
+    # boundary values, not the sum() loop peel matrix. runner: tests/molt_diff.py.
+    "overflow_scalar",
+    # Loop-induction-variable division-family carrier correctness:
+    # `i % const` / floordiv / var-divisor programs proving the boxed-fallback
+    # store and its raw-i64 consumers agree on the carrier (the modulo-carrier
+    # P0 — a NaN-boxed result read back through a raw-i64 store = silent wrong
+    # answer). runner: tests/molt_diff.py.
+    "int_loop_modulo",
+    # P0 memory-SAFETY corruption corpus (Spine-4 ownership-lattice trust root):
+    # resurrection / weakref-callback ordering / deopt-index bounds programs that
+    # a wrong-place or wrong-order Free would turn into a use-after-free. Hard
+    # pass against CPython (never xfail); the RC/RSS-bounded sibling cases live in
+    # the `memory` lane. runner: tests/molt_diff.py.
+    "memory_safety",
 }
 
 # Core Python 3.12+ PEP coverage tracked in COVERAGE_INDEX.yaml.
@@ -68,6 +91,11 @@ BASIC_LANE_PREFIX_ALLOWLIST = {
     # `Copy[_original_kind=...]` value-producing lowering arms (int_from_obj,
     # slice, dict_keys, enumerate, object_new, ...), a backend codegen test.
     "tests/differential/basic/copy_arm_conversions.py",
+    # `copy` token vs the `copy` module: the native-backend `copy` op must route
+    # to its family handler via `fc::native_op_family` (the arm<->HANDLED_KINDS
+    # authority); a dispatch-routing regression test, not the `copy` module. No
+    # `import copy`.
+    "tests/differential/basic/copy_op_routing.py",
     # `struct` token vs the `struct` module: MemGVN store-to-load forwarding
     # (S5-2b) on instance fields — a compiler memory-optimization test.
     "tests/differential/basic/struct_field_forwarding.py",

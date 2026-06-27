@@ -43,7 +43,7 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
     label_blocks: &BTreeMap<i64, Block>,
     reachable_blocks: &mut BTreeSet<Block>,
     is_block_filled: &mut bool,
-    native_rc_tracking_enabled: bool,
+    rc_authority: NativeRcAuthority,
     returns_value: bool,
     module: &mut ObjectModule,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
@@ -286,7 +286,7 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
             // deferred to the per-await return (see
             // `drain_dead_block_temps_for_suspend`).
             drain_dead_block_temps_for_suspend(
-                native_rc_tracking_enabled,
+                rc_authority,
                 &mut *builder,
                 &mut *block_tracked_obj,
                 &mut *block_tracked_ptr,
@@ -395,7 +395,7 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
             // because their `last_use` was extended past this op and the
             // `last <= op_idx` gate keeps them live.
             drain_dead_block_temps_for_suspend(
-                native_rc_tracking_enabled,
+                rc_authority,
                 &mut *builder,
                 &mut *block_tracked_obj,
                 &mut *block_tracked_ptr,

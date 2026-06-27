@@ -46,7 +46,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
     emit_traces: bool,
     has_frame_slot: bool,
     is_block_filled: bool,
-    native_rc_tracking_enabled: bool,
+    rc_authority: NativeRcAuthority,
     in_loop: bool,
     module: &mut ObjectModule,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
@@ -796,7 +796,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
             if !is_block_filled && let Some(block) = builder.current_block() {
                 if let Some(names) = block_tracked_obj.get_mut(&block) {
                     let cleanup = drain_cleanup_tracked_dedup_with_authority(
-                        native_rc_tracking_enabled,
+                        rc_authority,
                         names,
                         last_use,
                         alias_roots,
@@ -833,7 +833,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
                 }
                 if let Some(names) = block_tracked_ptr.get_mut(&block) {
                     let cleanup = drain_cleanup_tracked_dedup_with_authority(
-                        native_rc_tracking_enabled,
+                        rc_authority,
                         names,
                         last_use,
                         alias_roots,
