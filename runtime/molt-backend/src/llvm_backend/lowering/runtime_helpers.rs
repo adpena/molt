@@ -330,23 +330,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         }
     }
 
-    pub(super) fn const_i64_operand(&self, operand_id: ValueId) -> i64 {
-        for block in self.func.blocks.values() {
-            for op in &block.ops {
-                if op.results.first() == Some(&operand_id)
-                    && op.opcode == OpCode::ConstInt
-                    && let Some(AttrValue::Int(v)) = op.attrs.get("value")
-                {
-                    return *v;
-                }
-            }
-        }
-        panic!(
-            "expected const int operand {:?} in {}",
-            operand_id, self.func.name
-        );
-    }
-
     pub(super) fn raw_i64_operand(
         &self,
         operand_id: ValueId,
@@ -390,61 +373,5 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .unwrap()
             .try_as_basic_value()
             .unwrap_basic()
-    }
-
-    /// Emit a global string constant and call `molt_string_from_bytes` to get
-    /// a NaN-boxed string value at runtime.
-    pub(super) fn intern_string_const(&self, s: &str) -> BasicValueEnum<'ctx> {
-        let i64_ty = self.backend.context.i64_type();
-        let sfb_fn = if let Some(f) = self.backend.module.get_function("molt_string_from_bytes") {
-            f
-        } else {
-            let ptr_ty = self
-                .backend
-                .context
-                .ptr_type(inkwell::AddressSpace::default());
-            let i32_ty = self.backend.context.i32_type();
-            let fn_ty = i32_ty.fn_type(&[ptr_ty.into(), i64_ty.into(), ptr_ty.into()], false);
-            self.backend.module.add_function(
-                "molt_string_from_bytes",
-                fn_ty,
-                Some(inkwell::module::Linkage::External),
-            )
-        };
-        let name_bytes = s.as_bytes();
-        let global = self.backend.module.add_global(
-            self.backend
-                .context
-                .i8_type()
-                .array_type(name_bytes.len() as u32),
-            None,
-            &format!(
-                "__attr_str_{}",
-                s.replace(|c: char| !c.is_alphanumeric(), "_")
-            ),
-        );
-        global.set_linkage(inkwell::module::Linkage::Private);
-        global.set_initializer(&self.backend.context.const_string(name_bytes, false));
-        global.set_constant(true);
-        global.set_unnamed_addr(true);
-        let ptr = global.as_pointer_value();
-        let len = i64_ty.const_int(name_bytes.len() as u64, false);
-        let out_alloca = self
-            .backend
-            .builder
-            .build_alloca(i64_ty, "intern_out")
-            .unwrap();
-        self.backend
-            .builder
-            .build_call(
-                sfb_fn,
-                &[ptr.into(), len.into(), out_alloca.into()],
-                "intern_sfb",
-            )
-            .unwrap();
-        self.backend
-            .builder
-            .build_load(i64_ty, out_alloca, "intern_bits")
-            .unwrap()
     }
 }
