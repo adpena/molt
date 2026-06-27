@@ -16,5 +16,6 @@ pub mod csv;
 pub mod datetime;
 pub mod decimal;
 pub mod email;
+pub mod intrinsics_generated;
 pub mod structs;
 pub mod zipfile;
