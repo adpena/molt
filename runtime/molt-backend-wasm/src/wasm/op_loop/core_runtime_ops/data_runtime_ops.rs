@@ -246,7 +246,7 @@ fn emit_scalar_parse_op(
     let arg_name = &args[0];
     let out_ptr = locals[op.out.as_ref().unwrap()];
     if let Some(scratch) = locals.try_literal_scratch(arg_name) {
-        let tmp_rc = locals["__molt_tmp0"];
+        let tmp_rc = locals.synthetic(WasmFrameSyntheticLocal::MoltTmp0);
 
         func.instruction(&Instruction::I64Const(8));
         emit_call(func, reloc_enabled, import_ids["alloc"]);

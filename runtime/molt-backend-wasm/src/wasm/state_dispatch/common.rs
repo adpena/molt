@@ -57,7 +57,7 @@ pub(super) fn emit_stateful_resume_prelude(
         .expect("self ptr local missing for stateful wasm");
     let self_param = *op_emitter
         .locals()
-        .get("self_param")
+        .get(WasmFrameLocals::SELF_PARAM_NAME)
         .expect("self_param missing for stateful wasm");
     let self_local = *op_emitter
         .locals()

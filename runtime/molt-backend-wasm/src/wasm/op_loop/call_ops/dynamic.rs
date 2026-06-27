@@ -28,8 +28,8 @@ pub(super) fn emit_dynamic_call_op(
             let args_names = op.args.as_ref().unwrap();
             let callee_bits = locals[&args_names[0]];
             let out = locals[op.out.as_ref().unwrap()];
-            let callargs_tmp = locals["__molt_tmp0"];
-            let tmp_ptr = locals["__molt_tmp1"];
+            let callargs_tmp = locals.synthetic(WasmFrameSyntheticLocal::MoltTmp0);
+            let tmp_ptr = locals.synthetic(WasmFrameSyntheticLocal::MoltTmp1);
             let arity = args_names.len().saturating_sub(1);
             let escaped_target = ctx.escaped_callable_targets.contains(target_name);
             let func_idx = *func_indices
@@ -277,7 +277,7 @@ pub(super) fn emit_dynamic_call_op(
             retain_live_object_locals(func, import_ids, reloc_enabled, &live_object_locals);
             let func_bits = locals[&args_names[0]];
             let out = locals[op.out.as_ref().unwrap()];
-            let callargs_tmp = locals["__molt_tmp0"];
+            let callargs_tmp = locals.synthetic(WasmFrameSyntheticLocal::MoltTmp0);
             let arity = args_names.len().saturating_sub(1);
             func.instruction(&Instruction::I64Const(arity as i64));
             func.instruction(&Instruction::I64Const(0));
@@ -417,7 +417,7 @@ pub(super) fn emit_dynamic_call_op(
 
             if !fast_dispatched {
                 // Generic path: allocate callargs and dispatch via IC.
-                let callargs_tmp = locals["__molt_tmp0"];
+                let callargs_tmp = locals.synthetic(WasmFrameSyntheticLocal::MoltTmp0);
                 let arity = args_names.len().saturating_sub(1);
                 func.instruction(&Instruction::I64Const(arity as i64));
                 func.instruction(&Instruction::I64Const(0));

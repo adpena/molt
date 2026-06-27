@@ -40,7 +40,7 @@ pub(super) fn emit_iterator_op(
         "iter_next_unboxed" => {
             let args = op.args.as_ref().unwrap();
             let iter = locals[&args[0]];
-            let pair = locals["__molt_tmp0"];
+            let pair = locals.synthetic(WasmFrameSyntheticLocal::MoltTmp0);
             func.instruction(&Instruction::LocalGet(iter));
             emit_call(func, reloc_enabled, import_ids["iter_next"]);
             func.instruction(&Instruction::LocalSet(pair));
