@@ -570,7 +570,12 @@ pub extern "C" fn __molt_http_resolve_global_bits(
                 }
                 1
             }
-            Err(_) => 0,
+            Err(bits) => {
+                unsafe {
+                    *out = bits;
+                }
+                -1
+            }
         }
     })
 }

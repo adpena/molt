@@ -13,12 +13,11 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use crate::bridge::{
     alloc_bytes, alloc_dict_with_pairs, alloc_list_with_capacity, alloc_string, alloc_tuple,
     attr_name_bits_from_bytes, bytes_like_slice, call_callable0, call_callable1, call_callable2,
-    call_class_init_with_args, clear_attribute_error_if_pending, clear_exception, dec_ref_bits,
-    env_state_get, exception_kind_bits, exception_pending, inc_ref_bits, index_bigint_from_obj,
-    int_bits_from_bigint, is_truthy, maybe_ptr_from_bits, missing_bits, molt_exception_last,
-    molt_float_from_obj, molt_getattr_builtin, molt_is_callable, molt_iter, molt_iter_next,
-    molt_list_insert, object_type_id, raise_exception, seq_vec_ref, string_obj_to_owned, to_f64,
-    to_i64,
+    call_class_init_with_args, clear_exception, dec_ref_bits, env_state_get, exception_kind_bits,
+    exception_pending, inc_ref_bits, index_bigint_from_obj, int_bits_from_bigint, is_truthy,
+    maybe_ptr_from_bits, missing_bits, molt_exception_last, molt_float_from_obj,
+    molt_getattr_builtin, molt_is_callable, molt_iter, molt_iter_next, molt_list_insert,
+    object_type_id, raise_exception, seq_vec_ref, string_obj_to_owned, to_f64, to_i64,
 };
 
 #[path = "functions_http/client_core.rs"]
@@ -63,10 +62,9 @@ use url_cookie_error_ffi::*;
 #[allow(unused_imports)]
 use url_parse::*;
 
-pub(crate) use common::alloc_string_bits;
+pub(crate) use crate::bridge::{alloc_string_bits, attr_optional};
 pub use ctypes::*;
 pub use message_client_ffi::*;
 pub use request_response_ffi::*;
 pub use server_ffi::*;
 pub use url_cookie_error_ffi::*;
-pub(crate) use url_parse::urllib_request_attr_optional;

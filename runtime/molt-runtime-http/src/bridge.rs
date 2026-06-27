@@ -119,6 +119,15 @@ pub fn alloc_string(_py: &CoreGilToken, data: &[u8]) -> *mut u8 {
     unsafe { __molt_http_alloc_string(data.as_ptr(), data.len()) }
 }
 
+pub fn alloc_string_bits(_py: &CoreGilToken, value: &str) -> Option<u64> {
+    let ptr = alloc_string(_py, value.as_bytes());
+    if ptr.is_null() {
+        None
+    } else {
+        Some(MoltObject::from_ptr(ptr).bits())
+    }
+}
+
 pub fn alloc_bytes(_py: &CoreGilToken, data: &[u8]) -> *mut u8 {
     unsafe { __molt_http_alloc_bytes(data.as_ptr(), data.len()) }
 }
@@ -374,6 +383,25 @@ pub fn molt_getattr_builtin(obj_bits: u64, name_bits: u64, default_bits: u64) ->
     unsafe { __molt_http_molt_getattr_builtin(obj_bits, name_bits, default_bits) }
 }
 
+pub fn attr_optional(_py: &CoreGilToken, obj_bits: u64, name: &[u8]) -> Result<Option<u64>, u64> {
+    let Some(name_bits) = attr_name_bits_from_bytes(_py, name) else {
+        return Err(MoltObject::none().bits());
+    };
+    let missing = missing_bits(_py);
+    let value_bits = molt_getattr_builtin(obj_bits, name_bits, missing);
+    dec_ref_bits(_py, name_bits);
+    if exception_pending(_py) {
+        if clear_attribute_error_if_pending(_py) {
+            return Ok(None);
+        }
+        return Err(MoltObject::none().bits());
+    }
+    if value_bits == missing {
+        return Ok(None);
+    }
+    Ok(Some(value_bits))
+}
+
 pub fn molt_is_callable(bits: u64) -> bool {
     unsafe { __molt_http_molt_is_callable(bits) != 0 }
 }
@@ -512,8 +540,8 @@ pub fn builtin_classes(_py: &CoreGilToken, name: &str) -> u64 {
 }
 
 pub fn resolve_global_bits(_py: &CoreGilToken, module: &str, name: &str) -> Result<u64, u64> {
-    let mut out: u64 = 0;
-    let ok = unsafe {
+    let mut out: u64 = MoltObject::none().bits();
+    let status = unsafe {
         __molt_http_resolve_global_bits(
             module.as_ptr(),
             module.len(),
@@ -522,11 +550,7 @@ pub fn resolve_global_bits(_py: &CoreGilToken, module: &str, name: &str) -> Resu
             &mut out,
         )
     };
-    if ok != 0 {
-        Ok(out)
-    } else {
-        Err(MoltObject::none().bits())
-    }
+    if status == 1 { Ok(out) } else { Err(out) }
 }
 
 // ---------------------------------------------------------------------------

@@ -78,13 +78,7 @@ INTREE_DIR = RUNTIME / "molt-runtime" / "src"
 # `#[cfg(not(feature = "stdlib_*"))]` gates in builtins/mod.rs and verified
 # against the on-disk crates. Leaf-owned modules with no in-tree fallback are
 # deliberately absent; adding them back would reintroduce a second authority.
-PAIRS: dict[str, tuple[str, str]] = {
-    "functions_logging": (
-        "builtins/functions_logging.rs",
-        "molt-runtime-http/src/functions_logging.rs",
-    ),
-    "itertools": ("builtins/itertools.rs", "molt-runtime-itertools/src/itertools.rs"),
-}
+PAIRS: dict[str, tuple[str, str]] = {}
 
 # --- access-layer normalization (must stay byte-for-byte in sync with the
 #     reconciliation audit normalizer; this is the committed source of truth) ---
