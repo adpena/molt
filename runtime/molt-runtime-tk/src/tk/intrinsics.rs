@@ -36,9 +36,7 @@ use crate::bridge::{
     dec_ref_bits, decode_value_list, is_truthy, raise_exception_u64, string_obj_to_owned, to_f64,
     to_i64,
 };
-#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
-use molt_runtime_core::prelude::GilReleaseGuard;
-use molt_runtime_core::prelude::{MoltObject, obj_from_bits};
+use molt_runtime_core::prelude::{GilReleaseGuard, MoltObject, obj_from_bits};
 use std::time::Duration;
 
 pub extern "C" fn molt_tk_available() -> u64 {
