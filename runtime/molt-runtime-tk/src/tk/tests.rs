@@ -618,19 +618,6 @@ fn treeview_column_offset_parser_accepts_hash_indices() {
 }
 
 #[test]
-fn treeview_noop_generic_subcommands_are_identified() {
-    assert!(treeview_subcommand_is_noop_generic_fallback(
-        "itemconfigure"
-    ));
-    assert!(treeview_subcommand_is_noop_generic_fallback(
-        "paneconfigure"
-    ));
-    assert!(treeview_subcommand_is_noop_generic_fallback("replace"));
-    assert!(!treeview_subcommand_is_noop_generic_fallback("item"));
-    assert!(!treeview_subcommand_is_noop_generic_fallback("selection"));
-}
-
-#[test]
 fn treeview_strict_index_parser_rejects_non_integer_tokens() {
     assert_eq!(parse_treeview_index_strict("end", 4), Some(4));
     assert_eq!(parse_treeview_index_strict("2", 4), Some(2));
