@@ -2,9 +2,9 @@
 
 > **UPDATE 2026-03-20:** Import stripping for freestanding deployment is now implemented via `tools/wasm_stub_wasi.py` (post-link WASI import replacement with unreachable stubs). See `--target wasm-freestanding`.
 > **UPDATE 2026-06-27:** Runtime import discovery is no longer a monolithic
-> `wasm.rs` scan. The generated ABI manifest owns import names/types,
-> `wasm_imports.rs` owns static op dependency data, and
-> `wasm/module_abi/runtime_surface.rs` is the single IR-scanning planner for
+> `wasm.rs` scan. The generated ABI manifest owns import names/types and static
+> op dependency data, and `wasm/module_abi/runtime_surface.rs` is the single
+> IR-scanning planner for
 > Auto/reloc import requirements, direct runtime-call arity, builtin trampolines,
 > and per-module intrinsic manifests.
 
@@ -96,7 +96,7 @@ Or use the existing `tools/wasm_strip_unused.py` (already in the repo) which can
 
 - Existing analysis: `docs/architecture/wasm-import-analysis.md` (2026-03-06)
 - Existing strip tool: `tools/wasm_strip_unused.py`
-- WASM import registry: `runtime/molt-backend-wasm/src/wasm_abi_manifest.toml`
-- WASM import dependency data: `runtime/molt-backend-wasm/src/wasm_imports.rs`
+- WASM import registry and dependency data:
+  `runtime/molt-backend-wasm/src/wasm_abi_manifest.toml`
 - WASM runtime surface planner: `runtime/molt-backend-wasm/src/wasm/module_abi/runtime_surface.rs`
 - Browser host stubs: `strata/` or site `molt-wasm-host.ts`

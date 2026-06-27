@@ -74,6 +74,18 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
     assert "RuntimeCallableResult::Void" in rendered_rs
 
 
+def test_wasm_abi_manifest_owns_op_import_deps() -> None:
+    gen = _load_gen_wasm_abi()
+    data = gen.load_manifest()
+    op_deps = {entry["kind"]: entry["deps"] for entry in data["op_import_dep"]}
+
+    assert "OP_IMPORT_DEPS" in gen.render_rs(data)
+    assert "module_cache_del" not in op_deps["__structural__"]
+    assert op_deps["module_cache_del"] == ["module_cache_del"]
+    assert op_deps["object_new_bound"] == []
+    assert op_deps["object_new_bound_stack"] == ["object_new_bound_sized"]
+
+
 def test_wasm_abi_manifest_owns_split_runtime_table_prefix() -> None:
     gen = _load_gen_wasm_abi()
     data = gen.load_manifest()

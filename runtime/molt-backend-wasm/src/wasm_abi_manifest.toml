@@ -4446,3 +4446,1705 @@ prefix = "tempfile_"
 
 [[pure_skip_prefix]]
 prefix = "tarfile_"
+
+# Canonical op -> WASM import dependency planner.
+# Generated Rust consumers are produced by tools/gen_wasm_abi.py.
+
+[[op_import_dep]]
+kind = "__structural__"
+deps = [
+  "alloc",
+  "dec_ref_obj",
+  "inc_ref_obj",
+  "call_func_dispatch",
+  "exception_active",
+  "exception_current",
+  "exception_enter_handler",
+  "exception_class",
+  "exception_clear",
+  "exception_context_set",
+  "exception_kind",
+  "exception_last",
+  "exception_last_pending",
+  "exception_resolve_captured",
+  "exception_message",
+  "exception_new",
+  "exception_new_from_class",
+  "exception_pending",
+  "exception_pop",
+  "exception_push",
+  "exception_set_cause",
+  "exception_set_last",
+  "exception_set_value",
+  "exception_stack_clear",
+  "func_new",
+  "handle_resolve",
+  "is",
+  "is_truthy",
+  "not",
+  "module_cache_get",
+  "module_cache_set",
+  "module_get_attr",
+  "module_new",
+  "module_set_attr",
+  "print_newline",
+  "print_obj",
+  "raise",
+  "runtime_init",
+  "runtime_shutdown",
+  "set_intrinsic_manifest",
+  "sys_set_version_info",
+]
+
+[[op_import_dep]]
+kind = "if"
+deps = [
+  "is_truthy_int",
+  "is_truthy_bool",
+]
+
+[[op_import_dep]]
+kind = "while_test"
+deps = [
+  "is_truthy_int",
+  "is_truthy_bool",
+]
+
+[[op_import_dep]]
+kind = "eq"
+deps = [
+  "eq",
+]
+
+[[op_import_dep]]
+kind = "ne"
+deps = [
+  "ne",
+]
+
+[[op_import_dep]]
+kind = "lt"
+deps = [
+  "lt",
+]
+
+[[op_import_dep]]
+kind = "le"
+deps = [
+  "le",
+]
+
+[[op_import_dep]]
+kind = "gt"
+deps = [
+  "gt",
+]
+
+[[op_import_dep]]
+kind = "ge"
+deps = [
+  "ge",
+]
+
+[[op_import_dep]]
+kind = "context_enter"
+deps = [
+  "context_enter",
+  "context_exit",
+  "context_depth",
+  "context_closing",
+  "context_null",
+  "context_unwind",
+  "context_unwind_to",
+]
+
+[[op_import_dep]]
+kind = "context_exit"
+deps = [
+  "context_exit",
+  "context_depth",
+  "context_unwind_to",
+]
+
+[[op_import_dep]]
+kind = "context_closing"
+deps = [
+  "context_closing",
+]
+
+[[op_import_dep]]
+kind = "context_null"
+deps = [
+  "context_null",
+]
+
+[[op_import_dep]]
+kind = "context_unwind"
+deps = [
+  "context_unwind",
+  "context_unwind_to",
+  "context_depth",
+]
+
+[[op_import_dep]]
+kind = "alloc_class"
+deps = [
+  "alloc_class",
+  "class_new",
+  "class_set_base",
+  "class_apply_set_name",
+  "class_layout_version",
+  "class_merge_layout",
+  "class_set_layout_version",
+]
+
+[[op_import_dep]]
+kind = "alloc_class_static"
+deps = [
+  "alloc_class_static",
+  "class_new",
+  "class_set_base",
+  "class_apply_set_name",
+  "class_layout_version",
+  "class_merge_layout",
+  "class_set_layout_version",
+]
+
+[[op_import_dep]]
+kind = "alloc_class_trusted"
+deps = [
+  "alloc_class_trusted",
+  "class_new",
+  "class_set_base",
+  "class_apply_set_name",
+  "class_layout_version",
+  "class_merge_layout",
+  "class_set_layout_version",
+]
+
+[[op_import_dep]]
+kind = "class_new"
+deps = [
+  "class_new",
+  "class_set_base",
+  "class_apply_set_name",
+  "class_layout_version",
+  "class_merge_layout",
+  "class_set_layout_version",
+]
+
+[[op_import_dep]]
+kind = "class_def"
+deps = [
+  "guarded_class_def",
+  "class_layout_version",
+  "class_set_layout_version",
+]
+
+[[op_import_dep]]
+kind = "object_new"
+deps = [
+  "object_new",
+  "object_set_class",
+]
+
+[[op_import_dep]]
+kind = "object_new_bound"
+deps = []
+
+[[op_import_dep]]
+kind = "object_new_bound_stack"
+deps = [
+  "object_new_bound_sized",
+]
+
+[[op_import_dep]]
+kind = "object_field_get"
+deps = [
+  "object_field_get",
+]
+
+[[op_import_dep]]
+kind = "object_field_get_ptr"
+deps = [
+  "object_field_get_ptr",
+]
+
+[[op_import_dep]]
+kind = "object_field_init"
+deps = [
+  "object_field_init",
+]
+
+[[op_import_dep]]
+kind = "object_field_init_ptr"
+deps = [
+  "object_field_init_ptr",
+]
+
+[[op_import_dep]]
+kind = "object_field_set"
+deps = [
+  "object_field_set",
+]
+
+[[op_import_dep]]
+kind = "object_field_set_ptr"
+deps = [
+  "object_field_set_ptr",
+]
+
+[[op_import_dep]]
+kind = "guard_type"
+deps = [
+  "guard_type",
+]
+
+[[op_import_dep]]
+kind = "guard_layout_ptr"
+deps = [
+  "guard_layout_ptr",
+]
+
+[[op_import_dep]]
+kind = "exceptiongroup_combine"
+deps = [
+  "exceptiongroup_combine",
+]
+
+[[op_import_dep]]
+kind = "exceptiongroup_match"
+deps = [
+  "exceptiongroup_match",
+]
+
+[[op_import_dep]]
+kind = "ellipsis"
+deps = [
+  "ellipsis",
+]
+
+[[op_import_dep]]
+kind = "missing"
+deps = [
+  "missing",
+]
+
+[[op_import_dep]]
+kind = "not_implemented"
+deps = [
+  "not_implemented",
+]
+
+[[op_import_dep]]
+kind = "pending"
+deps = [
+  "pending",
+]
+
+[[op_import_dep]]
+kind = "func_new_builtin"
+deps = [
+  "func_new_builtin",
+]
+
+[[op_import_dep]]
+kind = "func_new_closure"
+deps = [
+  "func_new_closure",
+]
+
+[[op_import_dep]]
+kind = "fn_ptr_code_set"
+deps = [
+  "fn_ptr_code_set",
+]
+
+[[op_import_dep]]
+kind = "builtin_func"
+deps = [
+  "func_new_builtin",
+]
+
+[[op_import_dep]]
+kind = "call_bind"
+deps = [
+  "call_bind",
+]
+
+[[op_import_dep]]
+kind = "call_bind_ic"
+deps = [
+  "call_bind_ic",
+]
+
+[[op_import_dep]]
+kind = "call_method_ic"
+deps = [
+  "call_method_ic0",
+  "call_method_ic1",
+  "call_method_ic2",
+  "call_method_ic3",
+  "call_method_ic4",
+]
+
+[[op_import_dep]]
+kind = "call_super_method_ic"
+deps = [
+  "call_super_method_ic0",
+  "call_super_method_ic1",
+  "call_super_method_ic2",
+  "call_super_method_ic3",
+  "call_super_method_ic4",
+]
+
+[[op_import_dep]]
+kind = "call_arity_error"
+deps = [
+  "call_arity_error",
+]
+
+[[op_import_dep]]
+kind = "call_indirect"
+deps = [
+  "call_indirect_ic",
+]
+
+[[op_import_dep]]
+kind = "call_indirect_ic"
+deps = [
+  "call_indirect_ic",
+]
+
+[[op_import_dep]]
+kind = "invoke_ffi_ic"
+deps = [
+  "invoke_ffi_ic",
+]
+
+[[op_import_dep]]
+kind = "module_cache_del"
+deps = [
+  "module_cache_del",
+]
+
+[[op_import_dep]]
+kind = "module_del_global"
+deps = [
+  "module_del_global",
+]
+
+[[op_import_dep]]
+kind = "module_del_global_if_present"
+deps = [
+  "module_del_global_if_present",
+]
+
+[[op_import_dep]]
+kind = "module_get_global"
+deps = [
+  "module_get_global",
+]
+
+[[op_import_dep]]
+kind = "module_get_name"
+deps = [
+  "module_get_name",
+]
+
+[[op_import_dep]]
+kind = "module_import_from"
+deps = [
+  "module_import_from",
+]
+
+[[op_import_dep]]
+kind = "module_import"
+deps = [
+  "module_import",
+]
+
+[[op_import_dep]]
+kind = "module_import_star"
+deps = [
+  "module_import_star",
+]
+
+[[op_import_dep]]
+kind = "code_new"
+deps = [
+  "code_new",
+]
+
+[[op_import_dep]]
+kind = "code_slot_set"
+deps = [
+  "code_slot_set",
+]
+
+[[op_import_dep]]
+kind = "code_slots_init"
+deps = [
+  "code_slots_init",
+]
+
+[[op_import_dep]]
+kind = "trace_enter_slot"
+deps = [
+  "trace_enter_slot",
+]
+
+[[op_import_dep]]
+kind = "trace_exit"
+deps = [
+  "trace_exit",
+]
+
+[[op_import_dep]]
+kind = "line"
+deps = [
+  "trace_set_line",
+]
+
+[[op_import_dep]]
+kind = "trace_set_line"
+deps = [
+  "trace_set_line",
+]
+
+[[op_import_dep]]
+kind = "check_exception"
+deps = [
+  "exception_pending",
+]
+
+[[op_import_dep]]
+kind = "function_defaults_version"
+deps = [
+  "function_defaults_version",
+]
+
+[[op_import_dep]]
+kind = "add"
+deps = [
+  "add",
+  "str_concat",
+]
+
+[[op_import_dep]]
+kind = "str_concat"
+deps = [
+  "str_concat",
+]
+
+[[op_import_dep]]
+kind = "sub"
+deps = [
+  "sub",
+]
+
+[[op_import_dep]]
+kind = "mul"
+deps = [
+  "mul",
+]
+
+[[op_import_dep]]
+kind = "div"
+deps = [
+  "div",
+]
+
+[[op_import_dep]]
+kind = "floordiv"
+deps = [
+  "floordiv",
+]
+
+[[op_import_dep]]
+kind = "mod"
+deps = [
+  "mod",
+]
+
+[[op_import_dep]]
+kind = "pow"
+deps = [
+  "pow",
+]
+
+[[op_import_dep]]
+kind = "pow_mod"
+deps = [
+  "pow_mod",
+]
+
+[[op_import_dep]]
+kind = "lshift"
+deps = [
+  "lshift",
+]
+
+[[op_import_dep]]
+kind = "rshift"
+deps = [
+  "rshift",
+]
+
+[[op_import_dep]]
+kind = "bit_and"
+deps = [
+  "bit_and",
+]
+
+[[op_import_dep]]
+kind = "bit_or"
+deps = [
+  "bit_or",
+]
+
+[[op_import_dep]]
+kind = "bit_xor"
+deps = [
+  "bit_xor",
+]
+
+[[op_import_dep]]
+kind = "invert"
+deps = [
+  "invert",
+]
+
+[[op_import_dep]]
+kind = "neg"
+deps = [
+  "neg",
+]
+
+[[op_import_dep]]
+kind = "pos"
+deps = [
+  "pos",
+]
+
+[[op_import_dep]]
+kind = "matmul"
+deps = [
+  "matmul",
+]
+
+[[op_import_dep]]
+kind = "inplace_add"
+deps = [
+  "inplace_add",
+  "str_concat",
+]
+
+[[op_import_dep]]
+kind = "inplace_sub"
+deps = [
+  "inplace_sub",
+]
+
+[[op_import_dep]]
+kind = "inplace_mul"
+deps = [
+  "inplace_mul",
+]
+
+[[op_import_dep]]
+kind = "inplace_div"
+deps = [
+  "inplace_div",
+]
+
+[[op_import_dep]]
+kind = "inplace_floordiv"
+deps = [
+  "inplace_floordiv",
+]
+
+[[op_import_dep]]
+kind = "inplace_mod"
+deps = [
+  "inplace_mod",
+]
+
+[[op_import_dep]]
+kind = "inplace_pow"
+deps = [
+  "inplace_pow",
+]
+
+[[op_import_dep]]
+kind = "inplace_lshift"
+deps = [
+  "inplace_lshift",
+]
+
+[[op_import_dep]]
+kind = "inplace_rshift"
+deps = [
+  "inplace_rshift",
+]
+
+[[op_import_dep]]
+kind = "inplace_matmul"
+deps = [
+  "inplace_matmul",
+]
+
+[[op_import_dep]]
+kind = "inplace_bit_and"
+deps = [
+  "inplace_bit_and",
+]
+
+[[op_import_dep]]
+kind = "inplace_bit_or"
+deps = [
+  "inplace_bit_or",
+]
+
+[[op_import_dep]]
+kind = "inplace_bit_xor"
+deps = [
+  "inplace_bit_xor",
+]
+
+[[op_import_dep]]
+kind = "abs_builtin"
+deps = [
+  "abs_builtin",
+]
+
+[[op_import_dep]]
+kind = "round"
+deps = [
+  "round",
+]
+
+[[op_import_dep]]
+kind = "trunc"
+deps = [
+  "trunc",
+]
+
+[[op_import_dep]]
+kind = "len"
+deps = [
+  "len",
+]
+
+[[op_import_dep]]
+kind = "len_dict"
+deps = [
+  "len_dict",
+]
+
+[[op_import_dep]]
+kind = "len_list"
+deps = [
+  "len_list",
+]
+
+[[op_import_dep]]
+kind = "len_set"
+deps = [
+  "len_set",
+]
+
+[[op_import_dep]]
+kind = "len_str"
+deps = [
+  "len_str",
+]
+
+[[op_import_dep]]
+kind = "len_tuple"
+deps = [
+  "len_tuple",
+]
+
+[[op_import_dep]]
+kind = "get_attr_generic"
+deps = [
+  "get_attr_generic",
+]
+
+[[op_import_dep]]
+kind = "get_attr_name"
+deps = [
+  "get_attr_name",
+]
+
+[[op_import_dep]]
+kind = "get_attr_name_default"
+deps = [
+  "get_attr_name_default",
+]
+
+[[op_import_dep]]
+kind = "get_attr_object"
+deps = [
+  "get_attr_object",
+]
+
+[[op_import_dep]]
+kind = "get_attr_special"
+deps = [
+  "get_attr_special",
+]
+
+[[op_import_dep]]
+kind = "set_attr_generic"
+deps = [
+  "set_attr_generic",
+]
+
+[[op_import_dep]]
+kind = "set_attr_name"
+deps = [
+  "set_attr_name",
+]
+
+[[op_import_dep]]
+kind = "del_attr_generic"
+deps = [
+  "del_attr_generic",
+]
+
+[[op_import_dep]]
+kind = "del_attr_name"
+deps = [
+  "del_attr_name",
+]
+
+[[op_import_dep]]
+kind = "del_attr_object"
+deps = [
+  "del_attr_object",
+]
+
+[[op_import_dep]]
+kind = "has_attr_name"
+deps = [
+  "has_attr_name",
+]
+
+[[op_import_dep]]
+kind = "iter"
+deps = [
+  "iter",
+]
+
+[[op_import_dep]]
+kind = "iter_next"
+deps = [
+  "iter_next",
+]
+
+[[op_import_dep]]
+kind = "iter_next_unboxed"
+deps = [
+  "index",
+  "iter_next",
+]
+
+[[op_import_dep]]
+kind = "iter_sentinel"
+deps = [
+  "iter_sentinel",
+]
+
+[[op_import_dep]]
+kind = "contains"
+deps = [
+  "contains",
+]
+
+[[op_import_dep]]
+kind = "guard_tag"
+deps = [
+  "guard_type",
+]
+
+[[op_import_dep]]
+kind = "isinstance"
+deps = [
+  "isinstance",
+]
+
+[[op_import_dep]]
+kind = "exception_match_builtin"
+deps = [
+  "exception_match_builtin",
+]
+
+[[op_import_dep]]
+kind = "issubclass"
+deps = [
+  "issubclass",
+]
+
+[[op_import_dep]]
+kind = "is_bound_method"
+deps = [
+  "is_bound_method",
+]
+
+[[op_import_dep]]
+kind = "is_callable"
+deps = [
+  "is_callable",
+]
+
+[[op_import_dep]]
+kind = "is_function_obj"
+deps = [
+  "is_function_obj",
+]
+
+[[op_import_dep]]
+kind = "is_generator"
+deps = [
+  "is_generator",
+]
+
+[[op_import_dep]]
+kind = "exception_new_builtin"
+deps = [
+  "exception_new_builtin",
+]
+
+[[op_import_dep]]
+kind = "exception_new_builtin_empty"
+deps = [
+  "exception_new_builtin_empty",
+]
+
+[[op_import_dep]]
+kind = "exception_new_builtin_one"
+deps = [
+  "exception_new_builtin_one",
+]
+
+[[op_import_dep]]
+kind = "gen_close"
+deps = [
+  "generator_close",
+]
+
+[[op_import_dep]]
+kind = "gen_send"
+deps = [
+  "generator_send",
+]
+
+[[op_import_dep]]
+kind = "gen_throw"
+deps = [
+  "generator_throw",
+]
+
+[[op_import_dep]]
+kind = "generator_close"
+deps = [
+  "generator_close",
+]
+
+[[op_import_dep]]
+kind = "generator_send"
+deps = [
+  "generator_send",
+]
+
+[[op_import_dep]]
+kind = "generator_throw"
+deps = [
+  "generator_throw",
+]
+
+[[op_import_dep]]
+kind = "builtin_type"
+deps = [
+  "builtin_type",
+]
+
+[[op_import_dep]]
+kind = "type_of"
+deps = [
+  "type_of",
+]
+
+[[op_import_dep]]
+kind = "bound_method_new"
+deps = [
+  "bound_method_new",
+]
+
+[[op_import_dep]]
+kind = "bridge_unavailable"
+deps = [
+  "bridge_unavailable",
+]
+
+[[op_import_dep]]
+kind = "classmethod_new"
+deps = [
+  "classmethod_new",
+]
+
+[[op_import_dep]]
+kind = "staticmethod_new"
+deps = [
+  "staticmethod_new",
+]
+
+[[op_import_dep]]
+kind = "property_new"
+deps = [
+  "property_new",
+]
+
+[[op_import_dep]]
+kind = "super_new"
+deps = [
+  "super_new",
+]
+
+[[op_import_dep]]
+kind = "repr_builtin"
+deps = [
+  "repr_builtin",
+]
+
+[[op_import_dep]]
+kind = "repr_from_obj"
+deps = [
+  "repr_from_obj",
+]
+
+[[op_import_dep]]
+kind = "int_from_str_of_obj"
+deps = [
+  "int_from_str_of_obj",
+]
+
+[[op_import_dep]]
+kind = "ord_at"
+deps = [
+  "ord_at",
+]
+
+[[op_import_dep]]
+kind = "str_from_obj"
+deps = [
+  "str_from_obj",
+]
+
+[[op_import_dep]]
+kind = "format_builtin"
+deps = [
+  "format_builtin",
+]
+
+[[op_import_dep]]
+kind = "string_eq"
+deps = [
+  "string_eq",
+]
+
+[[op_import_dep]]
+kind = "frame_locals_set"
+deps = [
+  "frame_locals_set",
+]
+
+[[op_import_dep]]
+kind = "recursion_guard_enter"
+deps = [
+  "recursion_guard_enter",
+  "recursion_guard_exit",
+]
+
+[[op_import_dep]]
+kind = "recursion_guard_exit"
+deps = [
+  "recursion_guard_exit",
+]
+
+[[op_import_dep]]
+kind = "callargs_new"
+deps = [
+  "callargs_new",
+]
+
+[[op_import_dep]]
+kind = "callargs_push_pos"
+deps = [
+  "callargs_push_pos",
+]
+
+[[op_import_dep]]
+kind = "callargs_push_kw"
+deps = [
+  "callargs_push_kw",
+]
+
+[[op_import_dep]]
+kind = "callargs_expand_star"
+deps = [
+  "callargs_expand_star",
+]
+
+[[op_import_dep]]
+kind = "callargs_expand_kwstar"
+deps = [
+  "callargs_expand_kwstar",
+]
+
+[[op_import_dep]]
+kind = "function_default_kind"
+deps = [
+  "function_default_kind",
+]
+
+[[op_import_dep]]
+kind = "function_is_coroutine"
+deps = [
+  "function_is_coroutine",
+]
+
+[[op_import_dep]]
+kind = "function_is_generator"
+deps = [
+  "function_is_generator",
+]
+
+[[op_import_dep]]
+kind = "function_init_metadata_packed"
+deps = [
+  "function_init_metadata_packed",
+]
+
+[[op_import_dep]]
+kind = "function_set_builtin"
+deps = [
+  "function_set_builtin",
+]
+
+[[op_import_dep]]
+kind = "function_set_defaults"
+deps = [
+  "function_set_defaults",
+]
+
+[[op_import_dep]]
+kind = "async_generator_yield"
+deps = [
+  "asyncgen_hooks_get",
+  "asyncgen_hooks_set",
+  "asyncgen_locals",
+  "asyncgen_locals_register",
+  "asyncgen_new",
+  "asyncgen_shutdown",
+]
+
+[[op_import_dep]]
+kind = "asyncgen_new"
+deps = [
+  "asyncgen_hooks_get",
+  "asyncgen_hooks_set",
+  "asyncgen_locals",
+  "asyncgen_locals_register",
+  "asyncgen_new",
+  "asyncgen_shutdown",
+]
+
+[[op_import_dep]]
+kind = "call_async"
+deps = [
+  "handle_resolve",
+  "inc_ref_obj",
+  "task_new",
+]
+
+[[op_import_dep]]
+kind = "call_guarded"
+deps = [
+  "call_bind_ic",
+  "call_func_dispatch",
+  "callargs_new",
+  "callargs_push_pos",
+  "handle_resolve",
+  "is_function_obj",
+  "is_truthy",
+  "recursion_guard_enter",
+  "recursion_guard_exit",
+  "trace_enter_slot",
+  "trace_exit",
+]
+
+[[op_import_dep]]
+kind = "call_method"
+deps = [
+  "call_bind_ic",
+  "callargs_new",
+  "callargs_push_pos",
+  "fast_dict_get",
+  "fast_list_append",
+  "fast_str_join",
+  "fast_str_startswith",
+  "fast_str_upper",
+  "fast_str_lower",
+  "fast_str_strip",
+]
+
+[[op_import_dep]]
+kind = "cbor_parse"
+deps = [
+  "alloc",
+  "cbor_parse_scalar",
+  "cbor_parse_scalar_obj",
+  "handle_resolve",
+]
+
+[[op_import_dep]]
+kind = "closure_load"
+deps = [
+  "closure_load",
+  "handle_resolve",
+]
+
+[[op_import_dep]]
+kind = "closure_store"
+deps = [
+  "closure_store",
+  "handle_resolve",
+]
+
+[[op_import_dep]]
+kind = "const_bigint"
+deps = [
+  "bigint_from_str",
+]
+
+[[op_import_dep]]
+kind = "const_bytes"
+deps = [
+  "bytes_from_bytes",
+]
+
+[[op_import_dep]]
+kind = "const_ellipsis"
+deps = [
+  "ellipsis",
+]
+
+[[op_import_dep]]
+kind = "const_not_implemented"
+deps = [
+  "not_implemented",
+]
+
+[[op_import_dep]]
+kind = "const_str"
+deps = [
+  "string_from_bytes",
+]
+
+[[op_import_dep]]
+kind = "coroutine"
+deps = [
+  "cancel_token_get_current",
+  "handle_resolve",
+  "inc_ref_obj",
+  "task_new",
+  "task_register_token_owned",
+]
+
+[[op_import_dep]]
+kind = "alloc_task"
+deps = [
+  "cancel_token_get_current",
+  "handle_resolve",
+  "inc_ref_obj",
+  "task_new",
+  "task_register_token_owned",
+]
+
+[[op_import_dep]]
+kind = "del_attr_generic_ptr"
+deps = [
+  "del_attr_object",
+]
+
+[[op_import_dep]]
+kind = "dict_new"
+deps = [
+  "dict_new",
+  "dict_set",
+]
+
+[[op_import_dep]]
+kind = "frozenset_new"
+deps = [
+  "frozenset_add",
+  "frozenset_new",
+]
+
+[[op_import_dep]]
+kind = "function_closure_bits"
+deps = [
+  "function_closure_bits",
+  "inc_ref_obj",
+]
+
+[[op_import_dep]]
+kind = "gen_locals_register"
+deps = [
+  "gen_locals",
+  "gen_locals_register",
+]
+
+[[op_import_dep]]
+kind = "get_attr_generic_obj"
+deps = [
+  "get_attr_object_ic",
+]
+
+[[op_import_dep]]
+kind = "get_attr_generic_ptr"
+deps = [
+  "get_attr_ptr",
+  "handle_resolve",
+]
+
+[[op_import_dep]]
+kind = "get_attr_special_obj"
+deps = [
+  "get_attr_special",
+]
+
+[[op_import_dep]]
+kind = "guard_layout"
+deps = [
+  "guard_layout_ptr",
+  "handle_resolve",
+]
+
+[[op_import_dep]]
+kind = "guarded_field_get"
+deps = [
+  "guard_layout_ptr",
+  "guarded_field_get_ptr",
+  "handle_resolve",
+  "inc_ref_obj",
+]
+
+[[op_import_dep]]
+kind = "guarded_field_init"
+deps = [
+  "guard_layout_ptr",
+  "guarded_field_init_ptr",
+  "handle_resolve",
+  "object_field_init_ptr",
+]
+
+[[op_import_dep]]
+kind = "guarded_field_set"
+deps = [
+  "guard_layout_ptr",
+  "guarded_field_set_ptr",
+  "handle_resolve",
+  "object_field_set_ptr",
+]
+
+[[op_import_dep]]
+kind = "guarded_load"
+deps = [
+  "inc_ref_obj",
+  "object_field_get",
+]
+
+[[op_import_dep]]
+kind = "invoke_ffi"
+deps = [
+  "callargs_new",
+  "callargs_push_pos",
+  "invoke_ffi_ic",
+]
+
+[[op_import_dep]]
+kind = "io_wait"
+deps = [
+  "io_wait",
+  "io_wait_new",
+]
+
+[[op_import_dep]]
+kind = "io_wait_new"
+deps = [
+  "io_wait",
+  "io_wait_new",
+]
+
+[[op_import_dep]]
+kind = "json_parse"
+deps = [
+  "alloc",
+  "handle_resolve",
+  "json_parse_scalar",
+  "json_parse_scalar_obj",
+]
+
+[[op_import_dep]]
+kind = "list_int_new"
+deps = [
+  "list_int_new",
+]
+
+[[op_import_dep]]
+kind = "list_fill_new"
+deps = [
+  "list_fill_new",
+]
+
+[[op_import_dep]]
+kind = "build_list"
+deps = [
+  "list_builder_append",
+  "list_builder_finish",
+  "list_builder_new",
+]
+
+[[op_import_dep]]
+kind = "list_new"
+deps = [
+  "list_builder_append",
+  "list_builder_finish",
+  "list_builder_new",
+]
+
+[[op_import_dep]]
+kind = "load"
+deps = [
+  "inc_ref_obj",
+  "object_field_get",
+]
+
+[[op_import_dep]]
+kind = "msgpack_parse"
+deps = [
+  "alloc",
+  "handle_resolve",
+  "msgpack_parse_scalar",
+  "msgpack_parse_scalar_obj",
+]
+
+[[op_import_dep]]
+kind = "object_set_class"
+deps = [
+  "handle_resolve",
+  "object_set_class",
+]
+
+[[op_import_dep]]
+kind = "process_spawn"
+deps = [
+  "process_poll",
+  "process_spawn",
+]
+
+[[op_import_dep]]
+kind = "set_attr_generic_obj"
+deps = [
+  "set_attr_object",
+]
+
+[[op_import_dep]]
+kind = "set_attr_generic_ptr"
+deps = [
+  "set_attr_object",
+]
+
+[[op_import_dep]]
+kind = "set_new"
+deps = [
+  "set_add",
+  "set_new",
+]
+
+[[op_import_dep]]
+kind = "state_transition"
+deps = [
+  "closure_store",
+  "future_poll",
+  "handle_resolve",
+  "obj_get_state",
+  "obj_set_state",
+  "sleep_register",
+]
+
+[[op_import_dep]]
+kind = "state_yield"
+deps = [
+  "inc_ref_obj",
+  "obj_set_state",
+]
+
+[[op_import_dep]]
+kind = "chan_send_yield"
+deps = [
+  "chan_send",
+  "obj_set_state",
+]
+
+[[op_import_dep]]
+kind = "chan_recv_yield"
+deps = [
+  "chan_recv",
+  "obj_set_state",
+]
+
+[[op_import_dep]]
+kind = "store"
+deps = [
+  "object_field_set",
+]
+
+[[op_import_dep]]
+kind = "store_init"
+deps = [
+  "object_field_init",
+]
+
+[[op_import_dep]]
+kind = "string_format"
+deps = [
+  "format_builtin",
+]
+
+[[op_import_dep]]
+kind = "task_new"
+deps = [
+  "task_new",
+  "task_register_token_owned",
+]
+
+[[op_import_dep]]
+kind = "thread_spawn"
+deps = [
+  "thread_poll",
+  "thread_spawn",
+]
+
+[[op_import_dep]]
+kind = "thread_submit"
+deps = [
+  "thread_poll",
+  "thread_submit",
+]
+
+[[op_import_dep]]
+kind = "tuple_new"
+deps = [
+  "list_builder_append",
+  "list_builder_new",
+  "tuple_builder_finish",
+]
+
+[[op_import_dep]]
+kind = "unpack_sequence"
+deps = [
+  "index",
+]
+
+[[op_import_dep]]
+kind = "yield_await"
+deps = [
+  "future_poll",
+]
+
+[[op_import_dep]]
+kind = "yield_send"
+deps = [
+  "future_poll",
+]
+
+[[op_import_dep]]
+kind = "ws_connect"
+deps = [
+  "ws_close",
+  "ws_connect",
+  "ws_connect_obj",
+  "ws_drop",
+  "ws_pair",
+  "ws_pair_obj",
+  "ws_recv",
+  "ws_send",
+  "ws_send_obj",
+  "ws_wait",
+  "ws_wait_new",
+]
+
+[[op_import_dep]]
+kind = "ws_connect_obj"
+deps = [
+  "ws_close",
+  "ws_connect",
+  "ws_connect_obj",
+  "ws_drop",
+  "ws_pair",
+  "ws_pair_obj",
+  "ws_recv",
+  "ws_send",
+  "ws_send_obj",
+  "ws_wait",
+  "ws_wait_new",
+]
+
+[[op_import_dep]]
+kind = "ws_pair"
+deps = [
+  "ws_close",
+  "ws_connect",
+  "ws_connect_obj",
+  "ws_drop",
+  "ws_pair",
+  "ws_pair_obj",
+  "ws_recv",
+  "ws_send",
+  "ws_send_obj",
+  "ws_wait",
+  "ws_wait_new",
+]
+
+[[op_import_dep]]
+kind = "ws_pair_obj"
+deps = [
+  "ws_close",
+  "ws_connect",
+  "ws_connect_obj",
+  "ws_drop",
+  "ws_pair",
+  "ws_pair_obj",
+  "ws_recv",
+  "ws_send",
+  "ws_send_obj",
+  "ws_wait",
+  "ws_wait_new",
+]
+
+[[op_import_dep]]
+kind = "ws_send"
+deps = [
+  "ws_close",
+  "ws_connect",
+  "ws_connect_obj",
+  "ws_drop",
+  "ws_pair",
+  "ws_pair_obj",
+  "ws_recv",
+  "ws_send",
+  "ws_send_obj",
+  "ws_wait",
+  "ws_wait_new",
+]
+
+[[op_import_dep]]
+kind = "ws_send_obj"
+deps = [
+  "ws_close",
+  "ws_connect",
+  "ws_connect_obj",
+  "ws_drop",
+  "ws_pair",
+  "ws_pair_obj",
+  "ws_recv",
+  "ws_send",
+  "ws_send_obj",
+  "ws_wait",
+  "ws_wait_new",
+]
+
+[[op_import_dep]]
+kind = "ws_recv"
+deps = [
+  "ws_close",
+  "ws_connect",
+  "ws_connect_obj",
+  "ws_drop",
+  "ws_pair",
+  "ws_pair_obj",
+  "ws_recv",
+  "ws_send",
+  "ws_send_obj",
+  "ws_wait",
+  "ws_wait_new",
+]
+
+[[op_import_dep]]
+kind = "ws_close"
+deps = [
+  "ws_close",
+  "ws_connect",
+  "ws_connect_obj",
+  "ws_drop",
+  "ws_pair",
+  "ws_pair_obj",
+  "ws_recv",
+  "ws_send",
+  "ws_send_obj",
+  "ws_wait",
+  "ws_wait_new",
+]
+
+[[op_import_dep]]
+kind = "ws_drop"
+deps = [
+  "ws_close",
+  "ws_connect",
+  "ws_connect_obj",
+  "ws_drop",
+  "ws_pair",
+  "ws_pair_obj",
+  "ws_recv",
+  "ws_send",
+  "ws_send_obj",
+  "ws_wait",
+  "ws_wait_new",
+]
+
+[[op_import_dep]]
+kind = "ws_wait"
+deps = [
+  "ws_close",
+  "ws_connect",
+  "ws_connect_obj",
+  "ws_drop",
+  "ws_pair",
+  "ws_pair_obj",
+  "ws_recv",
+  "ws_send",
+  "ws_send_obj",
+  "ws_wait",
+  "ws_wait_new",
+]
+
+[[op_import_dep]]
+kind = "ws_wait_new"
+deps = [
+  "ws_close",
+  "ws_connect",
+  "ws_connect_obj",
+  "ws_drop",
+  "ws_pair",
+  "ws_pair_obj",
+  "ws_recv",
+  "ws_send",
+  "ws_send_obj",
+  "ws_wait",
+  "ws_wait_new",
+]
