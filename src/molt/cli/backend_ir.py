@@ -25,6 +25,8 @@ from molt.cli.models import (
 from molt.cli.module_cache import _normalize_backend_ir_functions
 from molt.cli.module_graph import ENTRY_OVERRIDE_SPAWN
 from molt.cli.output import CliFailure as _CliFailure
+from molt.cli import required_features as _required_features
+from molt.cli import runtime_features as _runtime_features
 from molt.cli.target_python import TargetPythonVersion
 
 
@@ -704,6 +706,47 @@ def _static_backend_ir_module_call_closure_issue(
     )
 
 
+def _reachability_feature_refusal(
+    ir: Mapping[str, Any],
+    *,
+    stdlib_profile: str | None,
+    target: str,
+) -> str | None:
+    """Refuse when the reached SimpleIR needs a feature the profile excludes.
+
+    Computes ``RequiredLinkFeatures`` from the finalized merged backend IR and
+    compares it against the selected profile's per-target link-affecting feature
+    ceiling (``runtime_features.profile_link_features``). Returns a truthful,
+    reached-intrinsic refusal message when a required feature is excluded, or
+    ``None`` to proceed. The ceiling is computed for the build target's triple so
+    a WASM build is checked against the WASM feature surface and a native build
+    against the native surface. ``RequiredLinkFeatures`` itself is
+    target-independent (a property of the reached IR).
+    """
+    functions = ir.get("functions")
+    if not isinstance(functions, list):
+        return None
+    is_wasm = target in {"wasm", "wasm-freestanding"} or target.startswith("wasm32")
+    target_triple = "wasm32-wasip1" if is_wasm else None
+    # The ceiling is the SAME per-target available-feature authority the build
+    # uses to select the staticlib (``_runtime_builtin_features_for_profile``):
+    # native reads the Cargo ladder (Phase 0), WASM keeps its deliberately broader
+    # availability surface. Using this (not the raw Cargo-only
+    # ``profile_link_features``) keeps the reachability ceiling aligned with the
+    # features the linked archive actually provides on each target.
+    profile_features = frozenset(
+        _runtime_features._runtime_builtin_features_for_profile(
+            stdlib_profile or "micro",
+            target_triple=target_triple,
+        )
+    )
+    return _required_features.reachability_profile_feature_refusal(
+        functions,
+        profile_name=stdlib_profile or "micro",
+        profile_features=profile_features,
+    )
+
+
 def _prepare_backend_ir(
     *,
     entry_module: str,
@@ -737,6 +780,7 @@ def _prepare_backend_ir(
     emit_ir_path: Path | None,
     target_python: TargetPythonVersion,
     stdlib_profile: str | None = "micro",
+    target: str = "native",
 ) -> tuple[_PreparedBackendIR | None, _CliFailure | None]:
     entry_path: Path | None = None
     if entry_module != "__main__":
@@ -902,6 +946,23 @@ def _prepare_backend_ir(
         pgo_profile_summary=pgo_profile_summary,
         runtime_feedback_summary=runtime_feedback_summary,
     )
+    # Reachability-driven runtime-feature requirement / refusal (Option b,
+    # docs/design/foundation/feature_reachability_tree_shaking.md). ``ir`` is the
+    # finalized merged backend IR (exactly the function list the native/WASM
+    # backends dead-strip), so ``required_features`` computes the link-affecting
+    # features the REACHED code actually needs and refuses BEFORE codegen/link
+    # (with a truthful, reached-intrinsic message) when the selected profile's
+    # ceiling omits one. This is the authoritative requirement fact; the coarse
+    # per-module ``module_required_intrinsic_names`` presence gate in
+    # ``module_stdlib_policy`` remains only as the early fail-fast pre-frontend
+    # check and as the Python-only-module classifier.
+    feature_refusal = _reachability_feature_refusal(
+        ir,
+        stdlib_profile=stdlib_profile,
+        target=target,
+    )
+    if feature_refusal is not None:
+        return None, fail(feature_refusal, json_output, command="build")
     module_call_issue = _static_backend_ir_module_call_closure_issue(
         ir,
         module_graph,
