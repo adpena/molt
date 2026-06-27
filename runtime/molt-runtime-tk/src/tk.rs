@@ -22,6 +22,7 @@ use std::{
 
 mod app_commands;
 mod args;
+mod callback_intrinsics;
 mod callbacks;
 mod commands;
 mod dialogs;
@@ -57,6 +58,7 @@ use tcl::*;
 use ttk::*;
 use widgets::*;
 
+pub use callback_intrinsics::*;
 pub use intrinsics::*;
 
 #[cfg(test)]
