@@ -1,5 +1,9 @@
-use super::prelude::*;
-use molt_tir::tir::lir::LirValue;
+use crate::wasm::body::WasmBodyOps;
+use molt_tir::tir::blocks::BlockId;
+use molt_tir::tir::lir::{LirFunction, LirRepr, LirTerminator, LirValue};
+use molt_tir::tir::values::ValueId;
+use std::collections::HashMap;
+use wasm_encoder::{Instruction, ValType};
 
 pub(super) fn lir_repr_to_val(repr: LirRepr) -> ValType {
     match repr {
@@ -18,10 +22,7 @@ pub(super) struct LirLowerCtx<'a> {
     /// locals vector can be constructed in O(N) instead of O(N^2).
     pub(super) local_types: HashMap<u32, ValType>,
     pub(super) next_local: u32,
-    pub(super) instructions: Vec<Instruction<'static>>,
-    /// Named runtime calls in emission order (see
-    /// [`WasmFunctionOutput::runtime_calls`]).
-    pub(super) runtime_calls: Vec<&'static str>,
+    pub(super) instructions: WasmBodyOps,
     pub(super) rpo: Vec<BlockId>,
     pub(super) block_index: HashMap<BlockId, usize>,
 }
@@ -36,22 +37,21 @@ impl<'a> LirLowerCtx<'a> {
             value_reprs: HashMap::new(),
             local_types: HashMap::new(),
             next_local: local_base,
-            instructions: Vec::new(),
-            runtime_calls: Vec::new(),
+            instructions: WasmBodyOps::default(),
             rpo,
             block_index,
         }
     }
 
-    /// Emit a NAMED runtime-import call: a placeholder `Call` paired
-    /// positionally with `name` in `runtime_calls`, resolved to the real
-    /// import index by the module assembler. This is how the LIR fast lane
-    /// reaches runtime helpers (e.g. `int_from_i64` for the overflow-safe
-    /// box) without bailing the whole function the way `Call(0)` does.
+    /// Emit a typed runtime-import call. This is how the LIR fast lane reaches
+    /// runtime helpers (e.g. `int_from_i64` for the overflow-safe box) without
+    /// bailing the whole function to the generic path.
     pub(super) fn emit_runtime_call(&mut self, name: &'static str) {
-        self.instructions
-            .push(Instruction::Call(NAMED_RUNTIME_CALL_PLACEHOLDER));
-        self.runtime_calls.push(name);
+        self.instructions.push_runtime_import_call(name);
+    }
+
+    pub(super) fn emit_bail_to_generic_path(&mut self) {
+        self.instructions.push_bail_to_generic_path();
     }
 
     pub(super) fn local_for(&mut self, value: &LirValue) -> u32 {

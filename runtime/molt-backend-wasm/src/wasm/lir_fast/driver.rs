@@ -1,14 +1,26 @@
-use super::lir_context::{LirLowerCtx, lir_repr_to_val, lir_terminator_successors};
+#[cfg(any(test, feature = "test-util"))]
+use super::lir_context::lir_repr_to_val;
+use super::lir_context::{LirLowerCtx, lir_terminator_successors};
 use super::lir_control::{LirReturnAbi, emit_lir_terminator, emit_lir_terminator_multiblock};
 use super::lir_ops::emit_lir_block_ops;
 use super::peephole::peephole_set_get_to_tee;
-use super::prelude::*;
+use crate::wasm::body::WasmBody;
+use molt_codegen_abi::INT_SHIFT as INT_SHIFT_BITS;
+use molt_tir::tir::blocks::BlockId;
+use molt_tir::tir::function::TirFunction;
+use molt_tir::tir::lir::{LirFunction, LirRepr};
+#[cfg(test)]
+use molt_tir::tir::lower_to_lir::lower_function_to_lir;
+use molt_tir::tir::lower_to_lir::lower_function_to_lir_with_inline_proof;
+use molt_tir::tir::values::ValueId;
+use std::collections::HashMap;
+use wasm_encoder::{BlockType, Instruction, ValType};
 
 /// Lower a TIR function to WASM instructions.
 ///
 /// Type-specialized: `I64` -> `wasm i64`, `F64` -> `wasm f64`, `DynBox` -> runtime call.
-#[cfg(feature = "wasm-backend")]
-pub fn lower_tir_to_wasm(func: &TirFunction) -> WasmFunctionOutput {
+#[cfg(test)]
+pub(crate) fn lower_tir_to_wasm(func: &TirFunction) -> WasmBody {
     // The generic path derives carriers from the same pure-TIR `repr_by_value`
     // authority as the boxed-i64 ABI path and LLVM. Semantic `I64` alone is not
     // a raw machine carrier; unproven ints lower as DynBox/boxed runtime values,
@@ -17,14 +29,14 @@ pub fn lower_tir_to_wasm(func: &TirFunction) -> WasmFunctionOutput {
     lower_lir_to_wasm(&lir)
 }
 
-#[cfg(feature = "wasm-backend")]
-pub fn lower_lir_to_wasm(func: &LirFunction) -> WasmFunctionOutput {
+#[cfg(any(test, feature = "test-util"))]
+pub(crate) fn lower_lir_to_wasm(func: &LirFunction) -> WasmBody {
     lower_lir_to_wasm_with_abi(func, LirWasmAbi::Native)
         .expect("native LIR-to-WASM lowering is total for well-formed LIR")
 }
 
-#[cfg(feature = "wasm-backend")]
-pub fn lower_tir_to_wasm_boxed_i64_abi(func: &TirFunction) -> Option<WasmFunctionOutput> {
+#[cfg(test)]
+pub(crate) fn lower_tir_to_wasm_boxed_i64_abi(func: &TirFunction) -> Option<WasmBody> {
     let vr = crate::representation_plan::value_range_for(func);
     let repr = crate::representation_plan::repr_by_value_for(func, Some(&vr));
     lower_tir_to_wasm_boxed_i64_abi_with_proof(func, &repr, &vr)
@@ -34,22 +46,23 @@ pub fn lower_tir_to_wasm_boxed_i64_abi(func: &TirFunction) -> Option<WasmFunctio
 /// the value-keyed Repr map. The production WASM fast lane uses this entry so
 /// full-range raw carriers can never take the 47-bit-window checked-i64 triple.
 #[cfg(feature = "wasm-backend")]
-pub fn lower_tir_to_wasm_boxed_i64_abi_with_proof(
+pub(crate) fn lower_tir_to_wasm_boxed_i64_abi_with_proof(
     func: &TirFunction,
     repr: &HashMap<ValueId, crate::repr::Repr>,
     inline_proof: &crate::tir::passes::value_range::ValueRangeResult,
-) -> Option<WasmFunctionOutput> {
+) -> Option<WasmBody> {
     let lir = lower_function_to_lir_with_inline_proof(func, repr, inline_proof);
     lower_lir_to_wasm_boxed_i64_abi(&lir)
 }
 
 #[cfg(feature = "wasm-backend")]
-pub fn lower_lir_to_wasm_boxed_i64_abi(func: &LirFunction) -> Option<WasmFunctionOutput> {
+pub(crate) fn lower_lir_to_wasm_boxed_i64_abi(func: &LirFunction) -> Option<WasmBody> {
     lower_lir_to_wasm_with_abi(func, LirWasmAbi::BoxedI64)
 }
 
 #[derive(Clone, Copy)]
 enum LirWasmAbi {
+    #[cfg(any(test, feature = "test-util"))]
     Native,
     BoxedI64,
 }
@@ -65,6 +78,7 @@ struct LirWasmAbiPlan {
 impl LirWasmAbi {
     fn plan(self, func: &LirFunction) -> Option<LirWasmAbiPlan> {
         match self {
+            #[cfg(any(test, feature = "test-util"))]
             LirWasmAbi::Native => {
                 let param_types: Vec<ValType> = func
                     .blocks
@@ -123,6 +137,7 @@ impl LirWasmAbi {
 
     fn emit_entry_prologue(self, ctx: &mut LirLowerCtx) {
         match self {
+            #[cfg(any(test, feature = "test-util"))]
             LirWasmAbi::Native => {}
             LirWasmAbi::BoxedI64 => {
                 if let Some(entry) = ctx.func.blocks.get(&ctx.func.entry_block) {
@@ -140,7 +155,7 @@ impl LirWasmAbi {
     }
 }
 
-fn lower_lir_to_wasm_with_abi(func: &LirFunction, abi: LirWasmAbi) -> Option<WasmFunctionOutput> {
+fn lower_lir_to_wasm_with_abi(func: &LirFunction, abi: LirWasmAbi) -> Option<WasmBody> {
     let plan = abi.plan(func)?;
     let mut ctx = LirLowerCtx::new_with_local_base(func, plan.ctx_local_base);
     ctx.allocate_function_locals();
@@ -150,12 +165,11 @@ fn lower_lir_to_wasm_with_abi(func: &LirFunction, abi: LirWasmAbi) -> Option<Was
     ctx.instructions.push(Instruction::End);
     let locals = ctx.local_declarations_after(plan.local_decl_start);
     let instructions = peephole_set_get_to_tee(ctx.instructions);
-    Some(WasmFunctionOutput {
+    Some(WasmBody {
         param_types: plan.param_types,
         result_types: plan.result_types,
         locals,
-        instructions,
-        runtime_calls: ctx.runtime_calls,
+        ops: instructions.into_vec(),
     })
 }
 

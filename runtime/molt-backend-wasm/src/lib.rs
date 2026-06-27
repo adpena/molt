@@ -30,8 +30,8 @@ pub use molt_tir::trampolines::{
 };
 pub use molt_tir::{passes, representation_plan, tir};
 
-#[cfg(feature = "wasm-backend")]
-pub mod lower_to_wasm;
+#[cfg(all(feature = "wasm-backend", feature = "test-util"))]
+pub mod test_util;
 #[cfg(feature = "wasm-backend")]
 pub mod wasm;
 #[cfg(feature = "wasm-backend")]
@@ -46,9 +46,6 @@ mod wasm_data;
 mod wasm_import_tracking;
 #[cfg(feature = "wasm-backend")]
 mod wasm_imports;
-#[cfg(feature = "wasm-backend")]
-pub mod wasm_lir_fast_output;
-#[cfg(feature = "wasm-backend")]
 mod wasm_options;
 #[cfg(feature = "wasm-backend")]
 mod wasm_plan;

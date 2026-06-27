@@ -3,7 +3,10 @@ use super::lir_scalar::{
     emit_get_boxed_for_repr, emit_lir_binary_arith, emit_lir_bitwise, emit_lir_bool_select,
     emit_lir_comparison, emit_lir_i64_binary_or_boxed, emit_lir_unary_arith,
 };
-use super::prelude::*;
+use molt_codegen_abi::box_none_bits;
+use molt_tir::tir::lir::{LirBlock, LirOp, LirRepr};
+use molt_tir::tir::ops::{AttrValue, OpCode};
+use wasm_encoder::{Ieee64, Instruction};
 
 #[derive(Clone, Copy)]
 pub(super) enum ArithOp {
@@ -144,7 +147,7 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
             } else {
                 emit_get_boxed_for_repr(ctx, lhs);
                 emit_get_boxed_for_repr(ctx, rhs);
-                ctx.instructions.push(Instruction::Call(0));
+                ctx.emit_bail_to_generic_path();
                 ctx.emit_set(sum);
                 ctx.instructions.push(Instruction::I32Const(0));
                 ctx.emit_set(flag);
@@ -154,18 +157,13 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
             // (product, flag) = signed-i64 multiply. BOXED-LANE-ONLY v1.
             //
             // WASM has no multiply-with-overflow instruction and no raw
-            // 64x64->128 widening primitive, so there is NO sound raw fast
-            // lane today (unlike CheckedAdd's sign-bit identity). Rather than
-            // fabricate a fake helper or a wrong narrow-range check, every
-            // CheckedMul bails this function out of the WASM fast lane via the
-            // `Call(0)` BAIL sentinel — the guarded slow path then runs the
-            // boxed runtime multiply (`molt_mul`), which is BigInt-exact, so
-            // the product can never silently wrap. The overflow flag is set
-            // CONSTANT FALSE (the peel's slow path is correctly dead on this
-            // bailed lane; same semantics, no speedup). This is a DOCUMENTED
-            // target limitation per the Performance Constitution backend
-            // scoreboard, retired when the RawI64Full lattice + a 64x64->128
-            // overflow helper land.
+            // 64x64->128 widening primitive, so there is no sound raw fast lane
+            // today. Rather than fabricate a fake helper or a wrong
+            // narrow-range check, every CheckedMul marks this function for the
+            // guarded generic slow path, where boxed runtime multiply is
+            // BigInt-exact. The overflow flag is constant false on the bailed
+            // lane; same semantics, no speedup until a sound wide multiply
+            // helper exists.
             assert!(
                 tir_op.operands.len() >= 2 && op.result_values.len() >= 2,
                 "checked_mul requires 2 operands and 2 results"
@@ -176,7 +174,7 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
             let flag = op.result_values[1].id;
             emit_get_boxed_for_repr(ctx, lhs);
             emit_get_boxed_for_repr(ctx, rhs);
-            ctx.instructions.push(Instruction::Call(0));
+            ctx.emit_bail_to_generic_path();
             ctx.emit_set(product);
             ctx.instructions.push(Instruction::I32Const(0));
             ctx.emit_set(flag);
@@ -217,15 +215,16 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
                 // `~x` is a bare `x ^ -1` only when `x` is a proven raw i64; an
                 // unproven (`DynBox`/`MaybeBigInt`) operand must dispatch through
                 // the runtime helper (a raw `I64Xor` on a NaN-boxed word would be
-                // a miscompile). On the production fast path the resulting
-                // `Call(0)` bails to the guarded slow path.
+                // a miscompile). On the production fast path the typed bail
+                // marker rejects this body and keeps execution on the guarded
+                // slow path.
                 if ctx.repr_of(src) == LirRepr::I64 {
                     ctx.emit_get(src);
                     ctx.instructions.push(Instruction::I64Const(-1));
                     ctx.instructions.push(Instruction::I64Xor);
                 } else {
                     emit_get_boxed_for_repr(ctx, src);
-                    ctx.instructions.push(Instruction::Call(0));
+                    ctx.emit_bail_to_generic_path();
                 }
                 ctx.emit_set(result.id);
             }
@@ -294,7 +293,7 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
                     }
                     _ => {
                         ctx.emit_get(src);
-                        ctx.instructions.push(Instruction::Call(0));
+                        ctx.emit_bail_to_generic_path();
                     }
                 }
                 ctx.emit_set(result.id);
@@ -318,7 +317,7 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
                     }
                     _ => {
                         ctx.emit_get(src);
-                        ctx.instructions.push(Instruction::Call(0));
+                        ctx.emit_bail_to_generic_path();
                     }
                 }
                 ctx.emit_set(result.id);
@@ -400,7 +399,7 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
             for &operand in &tir_op.operands {
                 ctx.emit_get(operand);
             }
-            ctx.instructions.push(Instruction::Call(0));
+            ctx.emit_bail_to_generic_path();
             if let Some(result) = op.result_values.first() {
                 ctx.emit_set(result.id);
             }
@@ -411,8 +410,8 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
         // repr filter in the drop pass already excludes raw-scalar carriers, so
         // the operand here is a heap-carrying (NaN-boxed-pointer) value. A NAMED
         // runtime call keeps the function in the LIR fast lane rather than
-        // bailing it (`Call(0)`) to the generic emitter — preserving the WASM
-        // perf contract for drop-inserted functions. Neither op has a result.
+        // bailing it to the generic emitter, preserving the WASM perf contract
+        // for drop-inserted functions. Neither op has a result.
         OpCode::DecRef | OpCode::DelBoundary => {
             if let Some(&operand) = tir_op.operands.first() {
                 emit_get_boxed_for_repr(ctx, operand);

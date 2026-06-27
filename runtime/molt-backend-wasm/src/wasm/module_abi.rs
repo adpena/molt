@@ -10,7 +10,7 @@ impl WasmBackend {
     pub(super) fn emit_wasm_module(
         mut self,
         ir: SimpleIR,
-        lir_fast_outputs: BTreeMap<String, crate::wasm_lir_fast_output::WasmFunctionOutput>,
+        lir_fast_outputs: BTreeMap<String, crate::wasm::body::WasmBody>,
         analysis: WasmTrampolineAnalysis,
     ) -> Vec<u8> {
         let WasmTrampolineAnalysis {

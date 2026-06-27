@@ -20,4 +20,4 @@ wasm-backend = [
     "molt-ir/wasm-backend",
     "molt-tir/wasm-backend",
 ]
-test-util = ["molt-ir/test-util", "molt-tir/test-util"]
+test-util = ["wasm-backend", "molt-ir/test-util", "molt-tir/test-util"]

@@ -337,7 +337,7 @@ pub(crate) const DEFAULT_GPU_INTRINSIC_MANIFEST_NAMES: &[&str] = &[
 
 pub(crate) fn prepare_lir_wasm_fast_output(
     tir_func: &crate::tir::function::TirFunction,
-) -> Option<crate::wasm_lir_fast_output::WasmFunctionOutput> {
+) -> Option<crate::wasm::body::WasmBody> {
     // Drive the LIR carrier derivation from the PROVEN `repr_by_value` (the
     // single source of truth shared with LLVM), so `LirRepr::I64` is assigned
     // only to proven raw-i64 carriers (`RawI64Safe` or `RawI64FullDeopt`).
@@ -346,14 +346,14 @@ pub(crate) fn prepare_lir_wasm_fast_output(
     // this exact `tir_func` (the same source the LLVM `LlvmReprFacts::build`
     // uses), so WASM and LLVM agree per `ValueId`. An unproven `int`
     // (`MaybeBigInt`) lowers
-    // to `DynBox`; its arithmetic emits the boxed runtime `Call(0)`, which is
+    // to `DynBox`; its arithmetic emits a typed generic-path bail, which is
     // rejected below so the function falls back to the IntFastLane-guarded slow
     // path (correctness preserved; the unsound bare op is un-emittable here).
     let vr = crate::representation_plan::value_range_for(tir_func);
     let repr = crate::representation_plan::repr_by_value_for(tir_func, Some(&vr));
     let output =
-        crate::lower_to_wasm::lower_tir_to_wasm_boxed_i64_abi_with_proof(tir_func, &repr, &vr)?;
-    if crate::wasm_lir_fast_output::has_lir_fast_output_bail_call(&output) {
+        crate::wasm::lir_fast::lower_tir_to_wasm_boxed_i64_abi_with_proof(tir_func, &repr, &vr)?;
+    if output.has_bail_to_generic_path() {
         None
     } else {
         Some(output)
@@ -362,7 +362,7 @@ pub(crate) fn prepare_lir_wasm_fast_output(
 
 pub(crate) fn compute_lir_wasm_fast_outputs_from_final_ir(
     ir: &SimpleIR,
-) -> BTreeMap<String, crate::wasm_lir_fast_output::WasmFunctionOutput> {
+) -> BTreeMap<String, crate::wasm::body::WasmBody> {
     let mut outputs = BTreeMap::new();
     for func_ir in &ir.functions {
         if func_ir.is_extern || !is_production_lir_wasm_fast_path_name(&func_ir.name) {
