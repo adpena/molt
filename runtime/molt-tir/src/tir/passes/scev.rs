@@ -60,71 +60,12 @@ use crate::tir::analysis::{Analysis, AnalysisId};
 use crate::tir::blocks::{BlockId, LoopRole, Terminator};
 use crate::tir::dominators;
 use crate::tir::function::TirFunction;
-use crate::tir::op_kinds_generated::{ScevExprRule, opcode_scev_expr_rule_table};
+use crate::tir::numeric_facts::{ScevExpr, TripCount, ordered_comparison_trip_count};
+use crate::tir::op_kinds_generated::{
+    CountedLoopComparisonRole, ScevExprRule, opcode_scev_expr_rule_table,
+};
 use crate::tir::ops::{AttrValue, OpCode};
 use crate::tir::values::ValueId;
-
-// ---------------------------------------------------------------------------
-// SCEV expression lattice
-// ---------------------------------------------------------------------------
-
-/// A closed-form description of how an SSA value evolves.
-///
-/// `Add`/`Mul` are kept shallow (over operand `ValueId`s, not nested
-/// expressions) — the analysis is intentionally a *linear*/affine recognizer,
-/// not a full symbolic algebra system. That keeps it total and cheap; anything
-/// it cannot prove affine is `Unknown` (the conservative top of the lattice).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ScevExpr {
-    /// A compile-time integer constant.
-    Constant(i64),
-    /// A value that is invariant within every loop it is queried against
-    /// (defined outside any loop, or a parameter / non-recurrent definition).
-    Invariant(ValueId),
-    /// An affine recurrence `{start, +, step}` over `loop_header`:
-    /// `start` on entry, `+ step` each back-edge. Sound only when the back-edge
-    /// increment is proven non-wrapping (see module soundness rules).
-    AddRec {
-        start: Box<ScevExpr>,
-        step: Box<ScevExpr>,
-        loop_header: BlockId,
-    },
-    /// `a + b` of two sub-expressions (loop-invariant operands only).
-    Add(Box<ScevExpr>, Box<ScevExpr>),
-    /// `a * b` of two sub-expressions (loop-invariant operands only).
-    Mul(Box<ScevExpr>, Box<ScevExpr>),
-    /// No closed form proven — the conservative top of the lattice.
-    Unknown,
-}
-
-impl ScevExpr {
-    /// True for a recurrence (an `AddRec`). Convenience for consumers gating on
-    /// "is this an induction variable".
-    pub fn is_add_rec(&self) -> bool {
-        matches!(self, ScevExpr::AddRec { .. })
-    }
-
-    /// If this expression is a compile-time constant, return it.
-    pub fn as_constant(&self) -> Option<i64> {
-        match self {
-            ScevExpr::Constant(c) => Some(*c),
-            _ => None,
-        }
-    }
-}
-
-/// The number of times a loop's body executes.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TripCount {
-    /// A statically-known constant trip count.
-    Constant(i64),
-    /// A symbolic trip count expressed as a (loop-invariant) SCEV expression
-    /// (e.g. the `stop` of `for i in range(stop)`). The value is the count
-    /// itself, in iterations.
-    Symbolic(Box<ScevExpr>),
-    /// Not proven.
-    Unknown,
-}
 
 // ---------------------------------------------------------------------------
 // SCEV result
@@ -836,30 +777,14 @@ fn compute_trip_count(
     let bound_const = defs.const_int.get(&bound_val).copied();
 
     if let (Some(s0), Some(stop), k) = (start_const, bound_const, step_const) {
-        // Constant trip count, computed in i128 to avoid overflow.
-        let s0 = s0 as i128;
-        let stop = stop as i128;
-        let k = k as i128;
-        let trips = if positive_guard {
-            if stop <= s0 {
-                0
-            } else {
-                // ceil((stop - s0) / k)
-                (stop - s0 + (k - 1)) / k
-            }
+        let role = if positive_guard {
+            CountedLoopComparisonRole::IncreasingExclusive
         } else {
-            // negative: Gt(iv, stop), step < 0. trip = ceil((s0 - stop)/(-k))
-            let nk = -k;
-            if s0 <= stop {
-                0
-            } else {
-                (s0 - stop + (nk - 1)) / nk
-            }
+            CountedLoopComparisonRole::DecreasingExclusive
         };
-        if trips >= 0 && trips <= i64::MAX as i128 {
-            return TripCount::Constant(trips as i64);
-        }
-        return TripCount::Unknown;
+        return ordered_comparison_trip_count(role, s0, stop, k)
+            .map(TripCount::Constant)
+            .unwrap_or(TripCount::Unknown);
     }
 
     // Symbolic: positive unit-step loop `for i in range(stop)` from 0 with
@@ -881,6 +806,7 @@ mod tests {
     use super::*;
     use crate::tir::blocks::{LoopRole, Terminator, TirBlock};
     use crate::tir::function::TirFunction;
+    use crate::tir::numeric_facts::{ScevExpr, TripCount};
     use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
     use crate::tir::types::TirType;
     use crate::tir::values::{TirValue, ValueId};

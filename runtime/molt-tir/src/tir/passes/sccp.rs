@@ -13,6 +13,9 @@ use super::effects;
 use super::reachability::metadata_preserving_reachable_blocks;
 use crate::tir::blocks::{BlockId, LoopRole, Terminator};
 use crate::tir::function::TirFunction;
+use crate::tir::numeric_facts::{
+    py_i64_floordiv, py_i64_mod, python_range_is_non_empty, python_range_len,
+};
 use crate::tir::op_kinds_generated::{
     ExceptionRegionNestingRole, SccpConstantEvalRule, SccpConstantSeedRule,
     opcode_exception_region_nesting_role_table, opcode_sccp_constant_eval_rule_table,
@@ -388,25 +391,6 @@ pub fn run(func: &mut TirFunction) -> PassStats {
     stats
 }
 
-/// Compute len(range(start, stop, step)) using Python semantics.
-fn range_len(start: i64, stop: i64, step: i64) -> i64 {
-    if step > 0 {
-        if start >= stop {
-            0
-        } else {
-            (stop - start - 1) / step + 1
-        }
-    } else if step < 0 {
-        if start <= stop {
-            0
-        } else {
-            (start - stop - 1) / (-step) + 1
-        }
-    } else {
-        0 // step == 0 is ValueError, but we guard against this at construction
-    }
-}
-
 fn seed_constant_lattice_value(opcode: OpCode, attrs: &AttrDict) -> Option<LatticeValue> {
     match opcode_sccp_constant_seed_rule_table(opcode) {
         SccpConstantSeedRule::None => None,
@@ -641,15 +625,7 @@ fn eval_binary_floordiv(operands: &[Option<&ConstVal>]) -> Option<ConstVal> {
     let a = operands.first().copied().flatten()?;
     let b = operands.get(1).copied().flatten()?;
     match (a, b) {
-        (ConstVal::Int(x), ConstVal::Int(y)) if *y != 0 => {
-            // Python floor division: rounds towards negative infinity.
-            // Rust's div_euclid rounds towards zero for negative divisors — WRONG.
-            // Use explicit floor division: q = x/y, adjust if signs differ and not exact.
-            let q = x / y;
-            let r = x % y;
-            let result = if r != 0 && ((*x ^ *y) < 0) { q - 1 } else { q };
-            Some(ConstVal::Int(result))
-        }
+        (ConstVal::Int(x), ConstVal::Int(y)) => py_i64_floordiv(*x, *y).map(ConstVal::Int),
         (ConstVal::Float(x), ConstVal::Float(y)) if *y != 0.0 => {
             Some(ConstVal::Float((*x / *y).floor()))
         }
@@ -661,13 +637,7 @@ fn eval_binary_mod(operands: &[Option<&ConstVal>]) -> Option<ConstVal> {
     let a = operands.first().copied().flatten()?;
     let b = operands.get(1).copied().flatten()?;
     match (a, b) {
-        (ConstVal::Int(x), ConstVal::Int(y)) if *y != 0 => {
-            // Python modulo: result has the sign of the divisor.
-            // C/Rust rem_euclid always returns non-negative — WRONG for negative divisors.
-            let r = *x % *y;
-            let result = if r != 0 && ((r ^ *y) < 0) { r + *y } else { r };
-            Some(ConstVal::Int(result))
-        }
+        (ConstVal::Int(x), ConstVal::Int(y)) => py_i64_mod(*x, *y).map(ConstVal::Int),
         (ConstVal::Float(x), ConstVal::Float(y)) if *y != 0.0 => {
             // Python modulo semantics
             let r = *x % *y;
@@ -831,8 +801,7 @@ fn eval_concrete_builtin(name: &str, operands: &[Option<&ConstVal>]) -> Option<C
                 ConstVal::Dict(entries) => Some(ConstVal::Int(entries.len() as i64)),
                 ConstVal::Range { start, stop, step } => {
                     // Python: len(range(start, stop, step))
-                    let len = range_len(*start, *stop, *step);
-                    Some(ConstVal::Int(len))
+                    python_range_len(*start, *stop, *step).map(ConstVal::Int)
                 }
                 _ => None,
             }
@@ -856,7 +825,7 @@ fn eval_concrete_builtin(name: &str, operands: &[Option<&ConstVal>]) -> Option<C
                 ConstVal::List(elems) => Some(ConstVal::Bool(!elems.is_empty())),
                 ConstVal::Dict(entries) => Some(ConstVal::Bool(!entries.is_empty())),
                 ConstVal::Range { start, stop, step } => {
-                    Some(ConstVal::Bool(range_len(*start, *stop, *step) > 0))
+                    python_range_is_non_empty(*start, *stop, *step).map(ConstVal::Bool)
                 }
             }
         }
@@ -2375,20 +2344,21 @@ mod tests {
     }
 
     #[test]
-    fn range_len_helper_correctness() {
-        // Verify range_len matches Python semantics for edge cases
-        assert_eq!(range_len(0, 10, 1), 10);
-        assert_eq!(range_len(0, 10, 2), 5);
-        assert_eq!(range_len(0, 10, 3), 4);
-        assert_eq!(range_len(0, 0, 1), 0);
-        assert_eq!(range_len(5, 5, 1), 0);
-        assert_eq!(range_len(10, 0, -1), 10);
-        assert_eq!(range_len(10, 0, -2), 5);
-        assert_eq!(range_len(10, 0, -3), 4);
-        assert_eq!(range_len(0, -10, -1), 10);
-        assert_eq!(range_len(0, 10, -1), 0); // empty (step goes wrong way)
-        assert_eq!(range_len(10, 0, 1), 0); // empty (step goes wrong way)
-        assert_eq!(range_len(0, 1, 1), 1);
-        assert_eq!(range_len(-5, 5, 1), 10);
+    fn python_range_len_uses_canonical_numeric_fact() {
+        // Verify the canonical numeric fact matches Python semantics for edge cases.
+        assert_eq!(python_range_len(0, 10, 1), Some(10));
+        assert_eq!(python_range_len(0, 10, 2), Some(5));
+        assert_eq!(python_range_len(0, 10, 3), Some(4));
+        assert_eq!(python_range_len(0, 0, 1), Some(0));
+        assert_eq!(python_range_len(5, 5, 1), Some(0));
+        assert_eq!(python_range_len(10, 0, -1), Some(10));
+        assert_eq!(python_range_len(10, 0, -2), Some(5));
+        assert_eq!(python_range_len(10, 0, -3), Some(4));
+        assert_eq!(python_range_len(0, -10, -1), Some(10));
+        assert_eq!(python_range_len(0, 10, -1), Some(0)); // empty (step goes wrong way)
+        assert_eq!(python_range_len(10, 0, 1), Some(0)); // empty (step goes wrong way)
+        assert_eq!(python_range_len(0, 1, 1), Some(1));
+        assert_eq!(python_range_len(-5, 5, 1), Some(10));
+        assert_eq!(python_range_len(0, 1, 0), None);
     }
 }

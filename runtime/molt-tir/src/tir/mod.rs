@@ -20,6 +20,7 @@ pub mod lower_to_simple;
 pub mod lower_to_wasm;
 pub mod mlir_compat;
 pub mod module_phase;
+pub mod numeric_facts;
 pub mod op_kinds_generated;
 pub mod ops;
 pub mod parallel;
