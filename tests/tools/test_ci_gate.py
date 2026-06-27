@@ -6,6 +6,8 @@ import os
 import sys
 from pathlib import Path
 
+import molt.dx as molt_dx
+
 from tests.process_guard_common import run_guarded_test_process
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -146,10 +148,30 @@ def test_check_env_seeds_canonical_artifact_roots(monkeypatch) -> None:
     ):
         monkeypatch.delenv(key, raising=False)
 
+    # Pin the canonical-root resolver to its repo-local fallback so the
+    # assertions below stay deterministic on developer hosts that have an
+    # external (non-C:) artifact drive attached. development_artifact_env()
+    # prefers an external root whenever one is available; emptying the candidate
+    # set reproduces the no-external-drive CI environment, and clearing the
+    # request knobs keeps a developer's shell env from forcing external
+    # selection (or a hard external-required failure).
+    for key in (
+        "MOLT_REQUIRE_EXTERNAL_ARTIFACTS",
+        "MOLT_PREFER_EXTERNAL_ARTIFACTS",
+        "MOLT_USE_EXTERNAL_ARTIFACTS",
+        "MOLT_EXTERNAL_ARTIFACT_ROOTS",
+        "MOLT_EXTERNAL_ARTIFACT_CANDIDATES",
+        "MOLT_ALLOW_C_DRIVE_ARTIFACTS",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setattr(molt_dx, "_candidate_roots", lambda _env: ())
+
     env = module._check_env(module.Check(name="unit", tier=1, cmd=["true"]))
 
     assert env["MOLT_EXT_ROOT"] == str(module.ROOT)
-    assert env["CARGO_TARGET_DIR"] == str(module.ROOT / "target")
+    assert env["CARGO_TARGET_DIR"] == str(
+        module.ROOT / "target" / "sessions" / env["MOLT_SESSION_ID"]
+    )
     assert env["MOLT_DIFF_CARGO_TARGET_DIR"] == env["CARGO_TARGET_DIR"]
     assert env["MOLT_CACHE"] == str(module.ROOT / ".molt_cache")
     assert env["MOLT_DIFF_ROOT"] == str(module.ROOT / "tmp" / "diff")

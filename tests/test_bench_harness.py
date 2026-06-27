@@ -4,6 +4,7 @@ import importlib.util
 import sys
 from pathlib import Path
 
+import molt.dx as molt_dx
 import pytest
 
 
@@ -35,6 +36,21 @@ def test_bench_harness_run_cmd_uses_memory_guard(
         "guarded_completed_process",
         fake_guarded_completed_process,
     )
+    # Pin MOLT_EXT_ROOT to its repo-local fallback so the assertions stay
+    # deterministic on developer hosts that have an external (non-C:) artifact
+    # drive attached; _base_env() -> development_artifact_env() prefers an
+    # external root whenever one is available.
+    monkeypatch.delenv("MOLT_EXT_ROOT", raising=False)
+    for key in (
+        "MOLT_REQUIRE_EXTERNAL_ARTIFACTS",
+        "MOLT_PREFER_EXTERNAL_ARTIFACTS",
+        "MOLT_USE_EXTERNAL_ARTIFACTS",
+        "MOLT_EXTERNAL_ARTIFACT_ROOTS",
+        "MOLT_EXTERNAL_ARTIFACT_CANDIDATES",
+        "MOLT_ALLOW_C_DRIVE_ARTIFACTS",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setattr(molt_dx, "_candidate_roots", lambda _env: ())
 
     stdout, stderr, returncode, elapsed = bench_harness.run_cmd(
         ["python3", "--version"],
@@ -51,7 +67,9 @@ def test_bench_harness_run_cmd_uses_memory_guard(
     assert call["text"] is True
     assert call["timeout"] == 9.0
     assert call["env"]["MOLT_EXT_ROOT"] == str(bench_harness.REPO_ROOT)
-    assert call["env"]["CARGO_TARGET_DIR"] == str(bench_harness.REPO_ROOT / "target")
+    assert call["env"]["CARGO_TARGET_DIR"] == str(
+        bench_harness.REPO_ROOT / "target" / "sessions" / call["env"]["MOLT_SESSION_ID"]
+    )
     assert call["env"]["TMPDIR"] == str(bench_harness.REPO_ROOT / "tmp")
 
 
