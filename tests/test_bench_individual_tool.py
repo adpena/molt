@@ -8,6 +8,8 @@ import subprocess
 import sys
 from types import ModuleType, SimpleNamespace
 
+import molt.dx as molt_dx
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -451,6 +453,21 @@ def test_bench_individual_process_helpers_use_molt_bench_guard(
         fake_guarded_completed_process,
     )
     monkeypatch.setenv("MOLT_SESSION_ID", "caller-session")
+    # Pin MOLT_EXT_ROOT to its repo-local fallback so the assertions below stay
+    # deterministic on developer hosts that have an external (non-C:) artifact
+    # drive attached; canonical_harness_env() prefers an external root whenever
+    # one is available.
+    monkeypatch.delenv("MOLT_EXT_ROOT", raising=False)
+    for key in (
+        "MOLT_REQUIRE_EXTERNAL_ARTIFACTS",
+        "MOLT_PREFER_EXTERNAL_ARTIFACTS",
+        "MOLT_USE_EXTERNAL_ARTIFACTS",
+        "MOLT_EXTERNAL_ARTIFACT_ROOTS",
+        "MOLT_EXTERNAL_ARTIFACT_CANDIDATES",
+        "MOLT_ALLOW_C_DRIVE_ARTIFACTS",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setattr(molt_dx, "_candidate_roots", lambda _env: ())
 
     built_binary, build_s, build_err = bench.molt_build(
         str(script),
@@ -475,7 +492,9 @@ def test_bench_individual_process_helpers_use_molt_bench_guard(
     assert calls[0]["timeout"] == 3.0
     assert calls[0]["cwd"] == bench.REPO_ROOT
     assert calls[0]["env"]["MOLT_EXT_ROOT"] == str(bench.REPO_ROOT)
-    assert calls[0]["env"]["CARGO_TARGET_DIR"] == str(bench.REPO_ROOT / "target")
+    assert calls[0]["env"]["CARGO_TARGET_DIR"] == str(
+        bench.REPO_ROOT / "target" / "sessions" / calls[0]["env"]["MOLT_SESSION_ID"]
+    )
     assert calls[0]["env"]["MOLT_SESSION_ID"] == "caller-session"
     assert calls[0]["env"]["PYTHONPATH"] == str(bench.REPO_ROOT / "src")
     assert calls[1]["timeout"] == 4.0
