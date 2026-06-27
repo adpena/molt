@@ -110,9 +110,45 @@ jobs:
               --print-provenance \
               --out "bench/scoreboard/cpython_ci_${{ matrix.backend }}.json"
 
-      - name: Upload scoreboard artifact
+      - name: Project the five gated boards (doc 64 §3.2 measurement plane)
+        # Pure consumer of the source scoreboard: project CPython / Backend /
+        # Profile / PyPy / Codon, each its own gated artifact. The plane gate
+        # exits nonzero iff ANY board FAILs -- so a native win cannot hide a
+        # wasm/llvm regression (the Backend board has its own exit code) and a
+        # release-output win cannot hide a release-fast regression. The CLI writes
+        # all five artifacts BEFORE returning the gate exit code, so the views are
+        # materialized even when this step then fails the plane gate. `if: always`
+        # ensures the projection runs (and uploads) even on a step-1 RED. This
+        # step GATES on the plane (the canonical measurement is never neutered);
+        # the plane is an additive re-statement of the same absolute CPython floor
+        # as five separate exit codes.
+        if: always()
+        run: |
+          uv run python3 tools/perf_board.py \
+            "bench/scoreboard/cpython_ci_${{ matrix.backend }}.json" \
+            --out-dir "bench/scoreboard/plane_${{ matrix.backend }}"
+
+      - name: Board-vs-history regression gate (doc 64 Phase 4)
+        # Compare the projected boards against the most-recent AUTHORITATIVE
+        # same-class baseline committed in bench/scoreboard/history/. FAILS CI on
+        # a previously-green cell that regressed (CLAUDE.md triage priority #2).
+        # On a quiescent authoritative run this also records the new baseline so
+        # the next PR diffs against it. A non-authoritative (contended-runner)
+        # board is recorded but never becomes a baseline (Rule 2), and its warm
+        # reds are advisory -- the regression delta is the contamination-robust
+        # axis the per-merge gate trusts.
+        run: |
+          uv run python3 tools/perf_history.py \
+            bench/scoreboard/plane_${{ matrix.backend }}/cpython_*.json \
+            bench/scoreboard/plane_${{ matrix.backend }}/backend_*.json \
+            bench/scoreboard/plane_${{ matrix.backend }}/profile_*.json \
+            --gate --record
+
+      - name: Upload scoreboard + plane artifacts
         if: always()
         uses: actions/upload-artifact@v7.0.1
         with:
           name: cpython-floor-scoreboard-${{ matrix.backend }}
-          path: bench/scoreboard/cpython_ci_${{ matrix.backend }}.json
+          path: |
+            bench/scoreboard/cpython_ci_${{ matrix.backend }}.json
+            bench/scoreboard/plane_${{ matrix.backend }}/
