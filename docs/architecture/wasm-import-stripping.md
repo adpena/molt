@@ -3,8 +3,9 @@
 > **UPDATE 2026-03-20:** Import stripping for freestanding deployment is now implemented via `tools/wasm_stub_wasi.py` (post-link WASI import replacement with unreachable stubs). See `--target wasm-freestanding`.
 > **UPDATE 2026-06-27:** Runtime import discovery is no longer a monolithic
 > `wasm.rs` scan. The generated ABI manifest owns import names/types and static
-> op dependency data, and `wasm/module_abi/runtime_surface.rs` is the single
-> IR-scanning planner for
+> op dependency data. It also owns the runtime-surface prefix/singleton
+> matchers for IR op kinds that map directly to import names.
+> `wasm/module_abi/runtime_surface.rs` is the single IR-scanning planner for
 > Auto/reloc import requirements, direct runtime-call arity, builtin trampolines,
 > and per-module intrinsic manifests.
 
@@ -22,8 +23,9 @@ The compiled `generator.wasm` (13.1 MB) declares **90 imports** across three nam
 Runtime host functions are declared from the generated ABI registry
 (`runtime/molt-backend-wasm/src/wasm_abi_generated.rs`). In Auto/reloc mode,
 `runtime/molt-backend-wasm/src/wasm/module_abi/runtime_surface.rs` computes the
-pre-emission requirement set from IR, `OP_IMPORT_DEPS`, direct runtime calls,
-task/generator facts, and backend-lowered runtime calls. These cover:
+pre-emission requirement set from IR, `OP_IMPORT_DEPS`, generated
+runtime-required import matchers, direct runtime calls, task/generator facts,
+and backend-lowered runtime calls. These cover:
 - **Core:** `runtime_init`, `runtime_shutdown`, `alloc`, `print_obj`, `print_newline`
 - **Arithmetic/comparison:** `add`, `sub`, `mul`, `div`, `lt`, `gt`, `eq`, etc.
 - **Collections:** `list_*`, `dict_*`, `set_*`, `tuple_*`, `string_*`

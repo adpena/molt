@@ -167,6 +167,27 @@ gates = [
   "python3 tools/audit_op_kinds.py --check",
 ]
 
+# --- WASM ABI registry (generated import surface authority) --------------
+[[rule]]
+name = "wasm-abi-registry"
+description = "WASM ABI registry: manifest-owned imports, runtime-surface matchers, and generated sync."
+globs = [
+  "tools/gen_wasm_abi.py",
+  "runtime/molt-backend-wasm/src/wasm_abi_manifest.toml",
+  "runtime/molt-backend-wasm/src/wasm_abi_generated.rs",
+  "runtime/molt-backend-wasm/src/wasm_imports.rs",
+  "runtime/molt-backend-wasm/src/wasm/module_abi/**/*.rs",
+  "src/molt/_wasm_abi_generated.py",
+  "runtime/wasm_table_layout.inc",
+  "runtime/wasm_poll_callables.inc",
+  "runtime/wasm_runtime_callables.inc",
+  "tests/test_gen_wasm_abi.py",
+]
+gates = [
+  "python3 tools/gen_wasm_abi.py --check",
+  "python3 -m pytest -q tests/test_gen_wasm_abi.py",
+]
+
 # --- tinygrad GPU op-contract fact (pin + generated op_contract.toml) -----
 [[rule]]
 name = "tinygrad-op-contract"

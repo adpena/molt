@@ -1231,6 +1231,73 @@ WASM_RUNTIME_CALLABLE_IMPORTS: tuple[tuple[str, str, int, str], ...] = (
     ("molt_ws_wait_new", "ws_wait_new", 3, "i64"),
 )
 
+WASM_REQUIRED_RUNTIME_IMPORT_PREFIXES: tuple[str, ...] = (
+    "os_",
+    "path_",
+    "time_",
+    "struct_",
+    "importlib_",
+    "asyncio_",
+    "contextlib_async",
+    "socket_",
+    "file_",
+    "stream_",
+    "lock_",
+    "rlock_",
+    "thread_",
+    "process_",
+    "db_",
+    "ws_",
+    "cancel_token_",
+    "chan_",
+    "string_",
+    "bytes_",
+    "bytearray_",
+    "math_",
+    "json_",
+    "msgpack_",
+    "cbor_",
+    "vec_",
+    "heapq_",
+    "buffer2d_",
+    "statistics_",
+    "weakref_",
+    "memoryview_",
+    "taq_",
+    "sys_",
+    "dataclass_",
+)
+
+WASM_REQUIRED_RUNTIME_IMPORT_SINGLETONS: tuple[str, ...] = (
+    "socketpair",
+    "cancelled",
+    "cancel_current",
+    "spawn",
+    "block_on",
+    "sleep_register",
+    "intarray_from_seq",
+    "enumerate",
+    "aiter",
+    "anext",
+    "open_builtin",
+    "compile_builtin",
+    "getargv",
+    "getpid",
+    "getframe",
+    "getcwd",
+    "getrecursionlimit",
+    "setrecursionlimit",
+    "env_get",
+    "env_snapshot",
+    "errno_constants",
+)
+
+def runtime_surface_requires_direct_import(kind: str) -> bool:
+    return any(
+        kind.startswith(prefix)
+        for prefix in WASM_REQUIRED_RUNTIME_IMPORT_PREFIXES
+    ) or kind in WASM_REQUIRED_RUNTIME_IMPORT_SINGLETONS
+
 WASM_RESERVED_RUNTIME_CALLABLES: tuple[tuple[int, str, str, int], ...] = (
     (0, "molt_type_call", "type_call", 1),
     (1, "molt_type_new", "type_new", 5),

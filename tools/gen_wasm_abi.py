@@ -134,6 +134,68 @@ def load_manifest(path: Path = MANIFEST) -> dict:
             raise WasmAbiManifestError(f"duplicate Pure-profile skip prefix {prefix!r}")
         seen_prefixes.add(prefix)
 
+    required_prefixes = data.get("runtime_required_import_prefix", [])
+    if not isinstance(required_prefixes, list):
+        raise WasmAbiManifestError(
+            "runtime_required_import_prefix must be a list of tables"
+        )
+    seen_required_prefixes: set[str] = set()
+    for idx, entry in enumerate(required_prefixes):
+        if not isinstance(entry, dict):
+            raise WasmAbiManifestError(
+                f"runtime_required_import_prefix entry {idx} must be a table"
+            )
+        prefix = entry.get("prefix")
+        if not isinstance(prefix, str) or not prefix:
+            raise WasmAbiManifestError(
+                f"runtime_required_import_prefix entry {idx} has invalid prefix"
+            )
+        if prefix in seen_required_prefixes:
+            raise WasmAbiManifestError(
+                f"duplicate runtime-required import prefix {prefix!r}"
+            )
+        if not any(import_name.startswith(prefix) for import_name in seen_imports):
+            raise WasmAbiManifestError(
+                f"runtime-required import prefix {prefix!r} matches no imports"
+            )
+        seen_required_prefixes.add(prefix)
+
+    required_singletons = data.get("runtime_required_import_singleton", [])
+    if not isinstance(required_singletons, list):
+        raise WasmAbiManifestError(
+            "runtime_required_import_singleton must be a list of tables"
+        )
+    seen_required_singletons: set[str] = set()
+    for idx, entry in enumerate(required_singletons):
+        if not isinstance(entry, dict):
+            raise WasmAbiManifestError(
+                f"runtime_required_import_singleton entry {idx} must be a table"
+            )
+        name = entry.get("name")
+        if not isinstance(name, str) or not name:
+            raise WasmAbiManifestError(
+                f"runtime_required_import_singleton entry {idx} has invalid name"
+            )
+        if name in seen_required_singletons:
+            raise WasmAbiManifestError(
+                f"duplicate runtime-required import singleton {name!r}"
+            )
+        if name not in seen_imports:
+            raise WasmAbiManifestError(
+                f"runtime-required import singleton {name!r} is not a known import"
+            )
+        matching_prefixes = [
+            prefix
+            for prefix in seen_required_prefixes
+            if name.startswith(prefix)
+        ]
+        if matching_prefixes:
+            raise WasmAbiManifestError(
+                f"runtime-required import singleton {name!r} is already covered "
+                f"by prefix {sorted(matching_prefixes)[0]!r}"
+            )
+        seen_required_singletons.add(name)
+
     reserved_callables = data.get("reserved_runtime_callable", [])
     if not isinstance(reserved_callables, list):
         raise WasmAbiManifestError("reserved_runtime_callable must be a list of tables")
@@ -214,6 +276,25 @@ def render_rs(data: dict) -> str:
             lines.append(f'        "{dep}",\n')
         lines.append("    ]),\n")
     lines.append("];\n\n")
+    lines.append("pub(crate) const REQUIRED_RUNTIME_IMPORT_PREFIXES: &[&str] = &[\n")
+    for entry in data.get("runtime_required_import_prefix", []):
+        lines.append(f'    "{entry["prefix"]}",\n')
+    lines.append("];\n\n")
+    lines.append("pub(crate) const REQUIRED_RUNTIME_IMPORT_SINGLETONS: &[&str] = &[\n")
+    for entry in data.get("runtime_required_import_singleton", []):
+        lines.append(f'    "{entry["name"]}",\n')
+    lines.append("];\n\n")
+    lines.extend(
+        [
+            "#[inline]\n",
+            "pub(crate) fn runtime_surface_requires_direct_import(kind: &str) -> bool {\n",
+            "    REQUIRED_RUNTIME_IMPORT_PREFIXES\n",
+            "        .iter()\n",
+            "        .any(|prefix| kind.starts_with(prefix))\n",
+            "        || REQUIRED_RUNTIME_IMPORT_SINGLETONS.contains(&kind)\n",
+            "}\n\n",
+        ]
+    )
     poll_imports = sorted(
         (
             (entry["poll_table_slot"], entry["name"])
@@ -311,6 +392,23 @@ def render_py(data: dict) -> str:
             f'{entry["callable_arity"]}, "{result}"),\n'
         )
     lines.append(")\n\n")
+    lines.append("WASM_REQUIRED_RUNTIME_IMPORT_PREFIXES: tuple[str, ...] = (\n")
+    for entry in data.get("runtime_required_import_prefix", []):
+        lines.append(f'    "{entry["prefix"]}",\n')
+    lines.append(")\n\n")
+    lines.append("WASM_REQUIRED_RUNTIME_IMPORT_SINGLETONS: tuple[str, ...] = (\n")
+    for entry in data.get("runtime_required_import_singleton", []):
+        lines.append(f'    "{entry["name"]}",\n')
+    lines.append(")\n\n")
+    lines.extend(
+        [
+            "def runtime_surface_requires_direct_import(kind: str) -> bool:\n",
+            "    return any(\n",
+            "        kind.startswith(prefix)\n",
+            "        for prefix in WASM_REQUIRED_RUNTIME_IMPORT_PREFIXES\n",
+            "    ) or kind in WASM_REQUIRED_RUNTIME_IMPORT_SINGLETONS\n\n",
+        ]
+    )
     lines.append("WASM_RESERVED_RUNTIME_CALLABLES: tuple[tuple[int, str, str, int], ...] = (\n")
     for entry in data.get("reserved_runtime_callable", []):
         lines.append(

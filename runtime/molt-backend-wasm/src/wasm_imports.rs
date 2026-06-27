@@ -1,14 +1,17 @@
 //! Static import registry and op->import dependency table for WASM backend.
 //!
 //! Generated from `wasm_abi_manifest.toml` so import names, type indices,
-//! callable metadata, pure-profile skip prefixes, and op dependency planning
-//! all share one manifest authority. Edit the manifest, then run
+//! callable metadata, pure-profile skip prefixes, runtime-surface import
+//! matchers, and op dependency planning all share one manifest authority. Edit
+//! the manifest, then run
 //! `python tools/gen_wasm_abi.py`.
 
-pub(crate) use crate::wasm_abi_generated::{IMPORT_REGISTRY, OP_IMPORT_DEPS};
+pub(crate) use crate::wasm_abi_generated::{
+    IMPORT_REGISTRY, OP_IMPORT_DEPS, runtime_surface_requires_direct_import,
+};
 #[cfg(test)]
 mod tests {
-    use super::{IMPORT_REGISTRY, OP_IMPORT_DEPS};
+    use super::{IMPORT_REGISTRY, OP_IMPORT_DEPS, runtime_surface_requires_direct_import};
 
     #[test]
     fn module_cache_del_is_registered_as_on_demand_wasm_import() {
@@ -79,5 +82,15 @@ mod tests {
             ["object_new_bound_sized"],
             "WASM has no native stack object representation; stack-eligible class allocation lowers to the sized heap constructor"
         );
+    }
+
+    #[test]
+    fn runtime_surface_direct_import_matchers_are_generated() {
+        assert!(runtime_surface_requires_direct_import("path_exists"));
+        assert!(runtime_surface_requires_direct_import("socket_bind"));
+        assert!(runtime_surface_requires_direct_import("socketpair"));
+        assert!(runtime_surface_requires_direct_import("os_name"));
+        assert!(runtime_surface_requires_direct_import("errno_constants"));
+        assert!(!runtime_surface_requires_direct_import("call_func"));
     }
 }
