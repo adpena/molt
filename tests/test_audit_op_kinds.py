@@ -168,12 +168,12 @@ def test_d9_treats_handler_arm_slice_drift_as_dangerous() -> None:
     broken = replace(
         res,
         native_handler_routing_drift=[
-            "runtime/molt-backend/src/native_backend/function_compiler/fc/value_transfer.rs:"
+            "runtime/molt-backend-native/src/native_backend/function_compiler/fc/value_transfer.rs:"
             "handle_value_transfer_op:copy:arm-not-in-HANDLED_KINDS"
         ],
     )
     assert broken.dangerous()["native_handler_routing_drift"] == [
-        "runtime/molt-backend/src/native_backend/function_compiler/fc/value_transfer.rs:"
+        "runtime/molt-backend-native/src/native_backend/function_compiler/fc/value_transfer.rs:"
         "handle_value_transfer_op:copy:arm-not-in-HANDLED_KINDS"
     ]
 

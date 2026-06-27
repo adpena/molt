@@ -1,9 +1,9 @@
 # Parallel-Build Architecture: maximizing dev velocity + incremental throughput
 
-Status: live routing doc / partially landed (refreshed 2026-06-24).
+Status: live routing doc / partially landed (refreshed 2026-06-27).
 The live codebase and executable Cargo metadata remain authoritative.
 
-## Live State Snapshot (2026-06-24)
+## Live State Snapshot (2026-06-27)
 
 - The build-iteration profile fix from this document has already landed in the
   root `Cargo.toml`: `release-fast` uses thin LTO with high codegen-unit
@@ -34,16 +34,17 @@ The live codebase and executable Cargo metadata remain authoritative.
   SimpleIR<->TIR transport, module/drop orchestration, target/profile
   descriptors, pass cache, and value-keyed representation facts; and
   `runtime/molt-tir/` owns backend projection, LIR/WASM/MLIR lowering, and
-  SimpleIR-name representation projection. `runtime/molt-backend/Cargo.toml`
-  depends on this stack and
-  activates its feature gates through backend features. The old dx Phase-3
-  baton predated this cut; use this document, not that standalone baton, for the
-  remaining backend-native extraction route.
-- The extraction is not complete. `molt-runtime` is still the facade plus a
-  large implementation owner, `runtime/molt-backend/src/native_backend/function_compiler.rs`
-  remains a ~28K-line codegen lock, and `src/molt/frontend/__init__.py` remains
-  a ~27K-line frontend lock. Native Cranelift is nevertheless decomposing by
-  complete op-family handlers under `native_backend/function_compiler/fc/`;
+  SimpleIR-name representation projection. `runtime/molt-backend-native/` now
+  owns native Cranelift and LLVM codegen authority; `runtime/molt-backend/`
+  remains the composition facade and daemon package, re-exporting native and LLVM
+  entrypoints only through feature-gated leaf-crate dependencies.
+- The extraction is not finished as a decomposition program. `molt-runtime` is
+  still the facade plus a large implementation owner,
+  `runtime/molt-backend-native/src/native_backend/function_compiler.rs` remains
+  a large codegen lock inside the native leaf crate, and
+  `src/molt/frontend/__init__.py` remains a large frontend lock. Native
+  Cranelift is nevertheless decomposing by complete op-family handlers under
+  `runtime/molt-backend-native/src/native_backend/function_compiler/fc/`;
   indexing plus scalar builtins (`id`, `ord`, fused `ord_at`, `chr`) now live
   outside `compile_func_inner` while `len` stays inline because it owns
   representation-plan specialization.
@@ -78,16 +79,20 @@ The live codebase and executable Cargo metadata remain authoritative.
    `codegen-units`. Editing ANY of its 116 `builtins/*.rs` or 38 `object/*.rs`
    files recompiles the whole ~352K-line crate.
 2. **The backend-native and frontend god-file locks still serialize multi-agent
-   development.** The backend module split landed, but native codegen is still
-   centered on `function_compiler.rs`; frontend F1 split files, but F2 semantic
-   authority split is still active work.
+   development.** Native/LLVM codegen is now isolated in
+   `molt-backend-native`, but native codegen is still centered on
+   `function_compiler.rs`; frontend F1 split files, but F2 semantic authority
+   split is still active work.
 3. **Shared-cache policy is still more important than raw local target size.**
    The current throughput bootstrap derives one canonical artifact root through
-   `RunContext`/`tools/throughput_env.sh`, prefers a healthy external root when
-   configured, and shares `CARGO_TARGET_DIR`, `MOLT_DIFF_CARGO_TARGET_DIR`,
-   `MOLT_CACHE`, and `.sccache` under that root. Isolation comes from
-   `MOLT_SESSION_ID`, daemon/socket identity, and lock custody rather than each
-   agent inventing a private target tree.
+   `RunContext`/`tools/throughput_env.sh`, prefers a healthy external root for
+   our development and proof lanes when configured, and shares
+   `CARGO_TARGET_DIR`, `MOLT_DIFF_CARGO_TARGET_DIR`, `MOLT_CACHE`, and
+   `.sccache` under that root. This is developer custody policy, not a public
+   compile requirement: real users may compile in place, use Cargo defaults, or
+   choose an output root with a flag. Isolation comes from `MOLT_SESSION_ID`,
+   daemon/socket identity, and lock custody rather than each agent inventing a
+   private target tree.
 
 ## Prioritized levers (highest leverage first)
 
@@ -191,9 +196,10 @@ monolith) + #3 (shared canonical artifact roots and sccache). Keep
    facade over the existing leaf crates. For each cluster, move the authority
    once, delete the old in-crate duplicate, and prove the feature gate builds
    both standalone and through the facade.
-2. **Backend-native extraction:** create the `molt-backend-native` crate only
-   when `native_backend/*` plus `llvm_backend/*` can move as one authority over
-   native lowering. Keep TIR/passes/representation facts in backend core.
+2. **Backend-native follow-through:** `molt-backend-native` now owns native and
+   LLVM codegen. Continue by decomposing its remaining native god-file and keep
+   TIR/passes/representation facts in `molt-ir`, `molt-passes`, and
+   `molt-tir`, not in the facade.
 3. **Intrinsic registry:** the generated resolver source split has landed and
    the `stringprep` plus math-family resolvers are now leaf-owned; continue
    moving remaining categories to per-crate intrinsic sub-registries + thin
@@ -240,51 +246,51 @@ Step 2 (extract `molt-backend-native`) — measured boundary from `simple_backen
   codegen no longer recompiles tir/passes/the non-native backends. Pick this boundary (one
   cut, low back-edge) over splitting `tir` further until measurement shows tir churn dominates.
 
-## Addendum (2026-06-24): dx Phase-3 Baton Folded Into Current Routing
+## Addendum (2026-06-27): backend-native boundary landed
 
 The deleted `docs/design/foundation/dx_phase3_extraction_baton.md` was a
-pre-`molt-tir` handoff anchored to base `9e93503bb`. Its durable content is the
-backend-native extraction boundary, but its mechanics are stale now that
-`molt-tir` exists and `molt-backend` depends on it directly.
+pre-`molt-tir` handoff anchored to base `9e93503bb`. Its durable boundary has
+now landed as code: `runtime/molt-backend-native/` owns `native_backend/` and
+`llvm_backend/` on top of `molt-ir`, `molt-passes`, `molt-tir`, and
+`molt-codegen-abi`.
 
 Current extraction state:
 - Already extracted: `runtime/molt-ir` owns the immutable IR/data layer,
   `runtime/molt-passes` owns TIR passes/facts/target descriptors plus the
-  SimpleIR<->TIR round-trip, and `runtime/molt-tir` owns backend-neutral LIR,
+  SimpleIR<->TIR round-trip, `runtime/molt-tir` owns backend-neutral LIR,
   verification, representation planning, and representation-plan name
-  projection. `runtime/molt-backend-wasm` now owns WASM instruction projection
-  (`lower_to_wasm`) and the `wasm-encoder` dependency. None of the IR/pass/TIR
-  crates depends on native/wasm/luau/llvm/rust backend implementation crates.
-- Not yet extracted: there is no `runtime/molt-backend-native` workspace member.
-  `runtime/molt-backend/Cargo.toml` still owns Cranelift and Inkwell
-  dependencies, default `native-backend`, `llvm`, `wasm-backend`, `luau-backend`,
-  and `rust-backend` feature composition.
+  projection, and `runtime/molt-backend-native` owns native Cranelift plus LLVM
+  codegen.
+- `runtime/molt-backend` remains the composition facade and daemon package. It
+  re-exports `SimpleBackend`, `CompileOutput`, `NativeBackendModuleContext`, and
+  `llvm_backend` only through feature-gated `molt-backend-native` dependency
+  edges. Do not add implementation shims or fallback native/LLVM lanes under the
+  facade crate.
 - CLI/daemon orchestration is in `src/molt/cli/__init__.py`, with the backend
   binary still built from package `molt-backend` and named `molt-backend`.
 
 Next structural cut:
-- Create `molt-backend-native` only when `native_backend/*` and
-  `llvm_backend/*` can move together as one native codegen authority.
+- Decompose the remaining native codegen god-file inside
+  `runtime/molt-backend-native/src/native_backend/function_compiler.rs` and its
+  `fc/` family modules. This is now an internal leaf-crate throughput problem,
+  not another crate extraction.
 - Keep `molt-ir` as the typed-IR authority, `molt-passes` as the midend
   pass/fact/round-trip authority, and `molt-tir` as the backend-neutral
   TIR/LIR/representation authority. Backend-specific instruction projection
-  belongs in the backend crates; do not duplicate TIR facts or re-export
+  belongs in backend crates; do not duplicate TIR facts or re-export
   compatibility shims from the native crate.
-- Keep `molt-backend` as the composition crate until the daemon/bin move is
-  atomic; when the bin moves, preserve the binary name `molt-backend` so CLI
-  artifact discovery does not fork.
 - Any new cross-crate `pub` surface must be a durable API needed by the native
   crate, not a temporary alias. Prefer the existing `molt-tir` exports first.
 
-Landing gates for the native extraction:
-- `cargo build -p molt-passes`, `cargo test -p molt-passes`, and
-  `cargo build -p molt-tir` prove the core midend and TIR/LIR layers remain
-  backend-free.
-- `cargo build -p molt-backend --no-default-features` proves core composition
-  no longer pulls Cranelift/Inkwell after the cut.
-- `cargo build -p molt-backend-native --features native-backend` and
-  `--features native-backend,llvm` prove the moved native/LLVM authority.
-- `src/molt/cli/__init__.py` must still find a binary named `molt-backend`.
+Landing and support gates for the native boundary:
+- `cargo check -p molt-backend-native --features native-backend --lib` proves the
+  native leaf crate composes Cranelift codegen directly.
+- `cargo check -p molt-backend --no-default-features --lib` proves the facade can
+  compile without pulling native codegen.
+- `cargo check -p molt-backend --features native-backend --lib` and
+  `cargo check -p molt-backend --features native-backend --bin molt-backend`
+  prove the facade and daemon still compose the native leaf.
+- LLVM and Polly support claims need their own system-toolchain proof lanes.
 - BX-4 evidence must measure both directions: touch a TIR pass and confirm the
-  native crate only relinks as required; touch native codegen and confirm
+  native crate only rebuilds as required; touch native codegen and confirm
   `molt-tir` does not rebuild.

@@ -1,10 +1,10 @@
-use cranelift_object::object::{Object, ObjectSymbol};
 use molt_backend::tir::lower_from_simple::lower_to_tir;
 use molt_backend::tir::lower_to_simple::lower_to_simple_ir;
 use molt_backend::tir::passes::run_pipeline;
 use molt_backend::tir::type_refine::refine_types;
 use molt_backend::tir::verify::verify_function;
 use molt_backend::{CompileOutput, FunctionIR, OpIR, SimpleBackend, SimpleIR};
+use object::{Object, ObjectSymbol};
 
 fn op(kind: &str) -> OpIR {
     OpIR {
@@ -47,8 +47,7 @@ fn compile_standalone(ir: SimpleIR) -> CompileOutput {
 /// defined (non-undefined) Export symbol — a trap-stubbed function never
 /// reaches this state because codegen aborts first.
 fn assert_function_compiled(bytes: &[u8], func_name: &str) {
-    let file = cranelift_object::object::File::parse(bytes)
-        .expect("backend must emit a parseable object file");
+    let file = object::File::parse(bytes).expect("backend must emit a parseable object file");
     let defined = file.symbols().any(|symbol| {
         symbol_matches(symbol.name().ok(), func_name)
             && symbol.is_definition()

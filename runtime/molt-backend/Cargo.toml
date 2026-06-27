@@ -8,25 +8,19 @@ license = "Apache-2.0"
 [dependencies]
 molt-ir = { path = "../molt-ir" }
 molt-tir = { path = "../molt-tir" }
-molt-codegen-abi = { path = "../molt-codegen-abi" }
+molt-backend-native = { path = "../molt-backend-native", optional = true, default-features = false }
 molt-backend-luau = { path = "../molt-backend-luau", optional = true, default-features = false }
 molt-backend-rust = { path = "../molt-backend-rust", optional = true, default-features = false }
 molt-backend-wasm = { path = "../molt-backend-wasm", optional = true, default-features = false }
 libc = "0.2"
 tikv-jemallocator = { version = "0.7", optional = true }
-cranelift-codegen = { version = "0.133.1", optional = true, default-features = false, features = ["host-arch", "std", "unwind"] }
-cranelift-frontend = { version = "0.133.1", optional = true }
-cranelift-module = { version = "0.133.1", optional = true }
-cranelift-object = { version = "0.133.1", optional = true }
-cranelift-native = { version = "0.133.1", optional = true }
-rayon = "1.12"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = "0.11"
+object = { version = "0.39", default-features = false, features = ["read", "std"] }
 rmp-serde = "1"
 ciborium = { version = "0.2", optional = true }
 egg = { version = "0.11", optional = true }
-inkwell = { version = "0.9", features = ["llvm22-1"], optional = true }
 wgpu = { version = "29", optional = true }
 pollster = { version = "0.4", optional = true }
 cudarc = { version = "0.19", optional = true, default-features = false, features = ["driver", "dynamic-loading", "cuda-12080"] }
@@ -55,27 +49,16 @@ windows-sys = { version = "0.61", features = [
     "Win32_System_Threading",
 ] }
 
-[target.'cfg(target_arch = "aarch64")'.dependencies]
-cranelift-codegen = { version = "0.133.1", optional = true, default-features = false, features = ["x86"] }
-
-[target.'cfg(target_arch = "x86_64")'.dependencies]
-cranelift-codegen = { version = "0.133.1", optional = true, default-features = false, features = ["arm64"] }
-
 [features]
 default = ["native-backend"]
 jemalloc = ["dep:tikv-jemallocator"]
 egraphs = ["egg"]
-llvm = ["dep:inkwell", "molt-ir/llvm", "molt-tir/llvm"]
-polly = ["llvm"]
+llvm = ["dep:molt-backend-native", "molt-backend-native/llvm"]
+polly = ["llvm", "molt-backend-native/polly"]
 luau-backend = ["dep:molt-backend-luau", "molt-backend-luau/luau-backend"]
 native-backend = [
-    "dep:cranelift-codegen",
-    "dep:cranelift-frontend",
-    "dep:cranelift-module",
-    "dep:cranelift-object",
-    "dep:cranelift-native",
-    "molt-ir/native-backend",
-    "molt-tir/native-backend",
+    "dep:molt-backend-native",
+    "molt-backend-native/native-backend",
 ]
 cbor = ["dep:ciborium"]
 rust-backend = ["dep:molt-backend-rust", "molt-backend-rust/rust-backend"]

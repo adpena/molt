@@ -1057,7 +1057,7 @@ def probe_debt_markers(root: Path) -> list[Finding]:
 
 
 _NATIVE_SCALAR_PLAN_SURFACE_REL = (
-    "runtime/molt-backend/src/native_backend/function_compiler"
+    "runtime/molt-backend-native/src/native_backend/function_compiler"
 )
 _NATIVE_SCALAR_PLAN_FORBIDDEN = {
     r"\bbool_primary_vars\b": "raw-bool membership cloned out of ScalarRepresentationPlan",
@@ -1083,7 +1083,7 @@ def probe_native_scalar_plan_authority(root: Path) -> list[Finding]:
     not clone carrier or scalar-kind membership into local side sets.
     """
     targets = [
-        root / "runtime/molt-backend/src/native_backend/function_compiler.rs",
+        root / "runtime/molt-backend-native/src/native_backend/function_compiler.rs",
     ]
     base = root / _NATIVE_SCALAR_PLAN_SURFACE_REL
     if base.is_dir():

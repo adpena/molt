@@ -334,8 +334,8 @@ Read these first instead of rediscovering project structure:
     representation facts and raw-scalar carrier proof; `runtime/molt-tir/src/
     representation_plan.rs` for residual SimpleIR-name projection and
     backend-facing scalar/container representation plans.
-  - `runtime/molt-backend/src/native_backend/`,
-    `runtime/molt-backend/src/llvm_backend/`,
+  - `runtime/molt-backend-native/src/native_backend/`,
+    `runtime/molt-backend-native/src/llvm_backend/`,
     `runtime/molt-backend-wasm/src/`, `runtime/molt-backend-luau/src/`, and
     `runtime/molt-backend-rust/src/` for backend-specific lowering.
     `molt-backend` reexports backend leaf facades behind feature flags; do not
@@ -1060,8 +1060,12 @@ export MOLT_SESSION_ID="<unique-name>"  # e.g., "agent-1", "debug-session", UUID
 **Pre-build step** (first build in a new session takes ~5 min for full compile):
 ```bash
 export MOLT_SESSION_ID="agent-1"
-cargo build --profile release-fast -p molt-backend --features native-backend --target-dir target
+export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-/mnt/e/Molt/target/$MOLT_SESSION_ID}"
+cargo build --profile release-fast -p molt-backend --features native-backend
 ```
+For Codex/Claude development proof lanes, prefer an external target root when
+available. This is agent custody policy, not a public-user requirement; real
+users may compile in place, use Cargo defaults, or pass an explicit output flag.
 
 **Daemon management:**
 - Never use raw `pkill`/PID/socket heuristics for backend-daemon cleanup.

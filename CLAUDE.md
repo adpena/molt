@@ -452,7 +452,8 @@ or rebuilt.
 
 ## Build & Test
 
-- Build with `cargo build --profile release-fast -p molt-backend --features native-backend`
+- Build daemon composition with `cargo build --profile release-fast -p molt-backend --features native-backend`; check native codegen leaf edits with `cargo check -p molt-backend-native --features native-backend --lib`
+- For Codex/Claude development proof lanes, prefer an external `CARGO_TARGET_DIR` when available. Real users may compile with Cargo defaults or an explicit output flag.
 - Test with `python3 -m molt build --target native --output /tmp/test_out test_file.py --rebuild`
 - Backend daemon uses release-fast profile. Drain stale live-proved Molt build/test/bench
   workers through `molt clean --apply --kill-processes` or

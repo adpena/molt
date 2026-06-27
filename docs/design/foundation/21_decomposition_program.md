@@ -71,7 +71,7 @@ cache). The runtime wants the *completion* of crate splits it half-did.
 | 2 | Decompose `frontend/__init__.py` `SimpleTIRGenerator` into a `frontend/` package of visitor mixins | #1 ownership-collision source (3 contention events this window) | None (Python) — but unblocks parallel agents | Medium (mixin MRO, no static typing of `self`) | **A** |
 | 3 | Extract `molt-tir` crate (tir/ + ir/ + Repr), the clean lower layer | TIR-pass authors stop recompiling all 5 backends | Editing a TIR pass no longer rebuilds Cranelift/WASM/LLVM codegen | Medium (pub-surface contract, the `Repr` cycle cut) | **A** |
 | 4 | Finish the runtime satellite arc: parity guard + reconcile drift (R.1, LANDED), then access-layer unification (R.2) + dedup (R.3). NOT a naive "delete the 28 copies" — they drifted, serve disjoint tiers, and are two access models (§1.4/§2.4) | Stops new drift now (guard); eliminates dual-maintenance after R.3 | Removes duplicate CUs at R.3 | R.1 Low; R.2/R.3 Med (access-layer unification, feature-unification audit) | **A−** |
-| 5 | Extract `molt-backend-native` (native_backend/ + llvm_backend/) onto `molt-tir` | Cranelift/LLVM authors isolated from WASM/Luau/TIR authors | Editing codegen ⟂ editing passes; parallel codegen | Medium (the `use super::*` glob → explicit `use molt_tir::*`) | **B+** |
+| 5 | Extract `molt-backend-native` (LANDED: native_backend/ + llvm_backend/ onto `molt-tir`) | Cranelift/LLVM authors isolated from WASM/Luau/TIR authors | Editing codegen stays in the native leaf instead of the facade; remaining win is deeper native handler decomposition | Medium follow-on risk now moves to symbol/perf proof and god-file decomposition | **B+** |
 
 ### 0.2 What contradicts the supervisor's stated assumptions
 
@@ -96,17 +96,16 @@ cache). The runtime wants the *completion* of crate splits it half-did.
 
 ### 0.3 Relationship to in-flight work (do not redo)
 
-- **DX agent lane** (doc 08): owns Cargo profiles, sccache default-on, the `function_compiler.rs`
-  split (move #1), and possibly `molt-backend-native` extraction (move #5). **This program adopts
-  08's Phase-1 config wins as already-in-progress and sequences moves #1/#5 as shared deliverables
-  — whichever lane lands them first, the other consumes.** Where 08 and this doc both specify the
-  fc split, **08's submodule boundary list is authoritative**; this doc's move #1 defers to it and
-  only adds the gate checklist + line budgets if 08's are absent.
-- **Partner LLVM lane**: actively edits `llvm_backend/lowering.rs`. The `molt-backend-native`
-  extraction (move #5) bundles `llvm_backend/` — **sequence move #5 AFTER the LLVM partner's
-  current arc lands**, or coordinate a freeze window. Do not extract a crate out from under an
-  active editor.
-- **Baseline build numbers**: 08 will produce measured cold/incremental timings. This doc leaves
+- **DX agent lane** (doc 08): owns Cargo profiles, sccache default-on, the
+  `function_compiler.rs` split (move #1), and consumes the landed
+  `molt-backend-native` extraction (move #5). Where 08 and this doc both specify
+  the fc split, **08's submodule boundary list is authoritative**; this doc's
+  move #1 defers to it and only adds the gate checklist + line budgets if 08's
+  are absent.
+- **Partner LLVM lane**: `llvm_backend/` now lives under
+  `runtime/molt-backend-native/src/llvm_backend/`. Coordinate freezes around
+  LLVM lowering edits there; do not reintroduce an LLVM implementation lane under
+  `runtime/molt-backend/src/`.- **Baseline build numbers**: 08 will produce measured cold/incremental timings. This doc leaves
   **keyed placeholders `{DX-BASELINE:<key>}`** for per-phase build-win estimates; fill them once
   08's measurements exist. Do not invent numbers.
 
@@ -626,18 +625,20 @@ interleave anytime. N1 must wait for the LLVM partner's arc (§0.3). C1/O are cl
   R.3 is per-satellite (each satellite IS a complete structural piece per the
   CLAUDE.md "intermediate commits acceptable when each is itself complete" rule).
 
-**N1 — extract `molt-backend-native` (move #5):**
-- New crate = `native_backend/` + `llvm_backend/` onto `molt-tir`. The `use super::*` glob becomes
-  explicit `use molt_tir::{...}` / `use molt_codegen_abi::{...}`. The NaN-box helpers,
-  `stable_ic_site_id`, `pending_bits`, header/layout facts, task/generator layout facts, and
-  type-id values live in dependency-free `molt-codegen-abi`; native, LLVM, WASM, the object model,
-  fuzzers, and formal correspondence tools consume that crate as the single Rust authority.
-- **Sequence AFTER the LLVM partner's current arc** (§0.3) — coordinate a freeze.
-- Gate: symbol identity (G5) is load-bearing here — the C-ABI export surface must be byte-identical;
-  `nm` the artifacts before/after.
-- Rollback: largest revert; merge files back, restore `use super::*`. This is why N1 is last among
-  the backend extractions and scored B+ not A.
-
+**N1 - extract `molt-backend-native` (move #5, landed boundary):**
+- New crate = `runtime/molt-backend-native/`, owning `native_backend/` and
+  `llvm_backend/` on top of `molt-ir`, `molt-tir`, and `molt-codegen-abi`.
+  The facade crate keeps composition, daemon packaging, and feature-gated public
+  re-exports; it must not grow a second native or LLVM implementation lane.
+- The NaN-box helpers, `stable_ic_site_id`, `pending_bits`, header/layout facts,
+  task/generator layout facts, and type-id values live in dependency-free
+  `molt-codegen-abi`; native, LLVM, WASM, the object model, fuzzers, and formal
+  correspondence tools consume that crate as the single Rust authority.
+- Gate: symbol identity (G5) is load-bearing for support/release claims. `nm` or
+  equivalent object inspection belongs with release/perf validation, not as a
+  reason to preserve the old crate lane.
+- Follow-on: decompose the remaining native codegen god-file inside
+  `molt-backend-native` and keep LLVM edits under the leaf crate.
 **W1 / L1** — same pattern for wasm / luau+rust, each onto `molt-tir`. Lower coupling (luau/rust
 only touch `representation_plan`), so easier than N1. wasm pulls heavy `tir::*` (already public after
 T1).
