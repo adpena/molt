@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import copy
 import importlib.util
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 GEN_WASM_ABI = ROOT / "tools" / "gen_wasm_abi.py"
@@ -277,6 +280,13 @@ def test_wasm_abi_manifest_owns_split_runtime_table_prefix() -> None:
     assert poll_slots["async_sleep_poll"] == 1
     assert poll_slots["contextlib_async_exitstack_enter_context_poll"] == 32
     assert sorted(poll_slots.values()) == list(range(1, len(poll_slots) + 1))
+    broken = copy.deepcopy(data)
+    for entry in broken["import"]:
+        if entry.get("name") == "contextlib_async_exitstack_enter_context_poll":
+            entry["poll_table_slot"] = 34
+            break
+    with pytest.raises(gen.WasmAbiManifestError, match="poll_table_slot values"):
+        gen.validate_loaded_manifest(broken)
 
     reserved = data["reserved_runtime_callable"]
     assert reserved[0] == {
@@ -290,9 +300,19 @@ def test_wasm_abi_manifest_owns_split_runtime_table_prefix() -> None:
 
     rendered_rs = _rendered_rs(gen, data)
     rendered_py = gen.render_py(data)
-    assert "POLL_TABLE_FUNCS" in rendered_rs
+    assert "PollTableImportSpec" in rendered_rs
+    assert "POLL_TABLE_IMPORTS" in rendered_rs
+    assert "POLL_TABLE_FUNCS" not in rendered_rs
+    assert "WASM_POLL_TABLE_IMPORTS: tuple[tuple[int, str], ...]" in rendered_py
+    assert '(32, "contextlib_async_exitstack_enter_context_poll")' in rendered_py
     assert "WASM_LEGACY_TABLE_BASE" in rendered_py
     assert "WASM_RESERVED_RUNTIME_CALLABLE_BASE" in rendered_py
+
+    callable_table = (
+        ROOT / "runtime/molt-backend-wasm/src/wasm/module_abi/callable_table.rs"
+    ).read_text(encoding="utf-8")
+    assert "POLL_TABLE_FUNCS" not in callable_table
+    assert "spec.table_slot" in callable_table
 
 
 def test_wasm_abi_manifest_owns_host_import_policy() -> None:

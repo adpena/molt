@@ -9,6 +9,8 @@ use super::*;
 pub(crate) const RUNTIME_CALLABLE_KEY_BASE: u64 = 0xFFFF_FF00_0000_0000;
 pub(crate) const RUNTIME_POLL_CALLABLE_KEY_BASE: u64 = RUNTIME_CALLABLE_KEY_BASE + 0x100;
 
+pub(crate) const WASM_POLL_SLOT_MAX_OFFSET: u64 = 32;
+
 #[cfg(target_arch = "wasm32")]
 pub(crate) const RESERVED_WASM_RUNTIME_CALLABLE_BASE: u64 = 1 + 32;
 #[cfg(target_arch = "wasm32")]
@@ -21,6 +23,45 @@ pub(crate) const RESERVED_WASM_RUNTIME_TRAMPOLINE_BASE: u64 =
 pub(crate) fn runtime_callable_key_from_symbol_name(symbol_name: &str) -> Option<u64> {
     runtime_reserved_callable_key_from_symbol_name(symbol_name)
         .or_else(|| runtime_poll_callable_key_from_symbol_name(symbol_name))
+}
+
+#[inline]
+pub(crate) fn wasm_poll_table_slot_from_symbol_name(symbol_name: &str) -> Option<u64> {
+    match symbol_name {
+        "molt_async_sleep_poll" => Some(1),
+        "molt_anext_default_poll" => Some(2),
+        "molt_asyncgen_poll" => Some(3),
+        "molt_promise_poll" => Some(4),
+        "molt_io_wait" => Some(5),
+        "molt_thread_poll" => Some(6),
+        "molt_process_poll" => Some(7),
+        "molt_ws_wait" => Some(8),
+        "molt_asyncio_wait_for_poll" => Some(9),
+        "molt_asyncio_wait_poll" => Some(10),
+        "molt_asyncio_gather_poll" => Some(11),
+        "molt_asyncio_socket_reader_read_poll" => Some(12),
+        "molt_asyncio_socket_reader_readline_poll" => Some(13),
+        "molt_asyncio_stream_reader_read_poll" => Some(14),
+        "molt_asyncio_stream_reader_readline_poll" => Some(15),
+        "molt_asyncio_stream_send_all_poll" => Some(16),
+        "molt_asyncio_sock_recv_poll" => Some(17),
+        "molt_asyncio_sock_connect_poll" => Some(18),
+        "molt_asyncio_sock_accept_poll" => Some(19),
+        "molt_asyncio_sock_recv_into_poll" => Some(20),
+        "molt_asyncio_sock_sendall_poll" => Some(21),
+        "molt_asyncio_sock_recvfrom_poll" => Some(22),
+        "molt_asyncio_sock_recvfrom_into_poll" => Some(23),
+        "molt_asyncio_sock_sendto_poll" => Some(24),
+        "molt_asyncio_timer_handle_poll" => Some(25),
+        "molt_asyncio_fd_watcher_poll" => Some(26),
+        "molt_asyncio_server_accept_loop_poll" => Some(27),
+        "molt_asyncio_ready_runner_poll" => Some(28),
+        "molt_contextlib_asyncgen_enter_poll" => Some(29),
+        "molt_contextlib_asyncgen_exit_poll" => Some(30),
+        "molt_contextlib_async_exitstack_exit_poll" => Some(31),
+        "molt_contextlib_async_exitstack_enter_context_poll" => Some(32),
+        _ => None,
+    }
 }
 
 #[inline]

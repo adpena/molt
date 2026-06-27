@@ -2,39 +2,141 @@
 // runtime/molt-backend-wasm/src/wasm_abi_manifest.toml
 // DO NOT EDIT BY HAND.
 
-pub(crate) const POLL_TABLE_FUNCS: &[&str] = &[
-    "async_sleep_poll",
-    "anext_default_poll",
-    "asyncgen_poll",
-    "promise_poll",
-    "io_wait",
-    "thread_poll",
-    "process_poll",
-    "ws_wait",
-    "asyncio_wait_for_poll",
-    "asyncio_wait_poll",
-    "asyncio_gather_poll",
-    "asyncio_socket_reader_read_poll",
-    "asyncio_socket_reader_readline_poll",
-    "asyncio_stream_reader_read_poll",
-    "asyncio_stream_reader_readline_poll",
-    "asyncio_stream_send_all_poll",
-    "asyncio_sock_recv_poll",
-    "asyncio_sock_connect_poll",
-    "asyncio_sock_accept_poll",
-    "asyncio_sock_recv_into_poll",
-    "asyncio_sock_sendall_poll",
-    "asyncio_sock_recvfrom_poll",
-    "asyncio_sock_recvfrom_into_poll",
-    "asyncio_sock_sendto_poll",
-    "asyncio_timer_handle_poll",
-    "asyncio_fd_watcher_poll",
-    "asyncio_server_accept_loop_poll",
-    "asyncio_ready_runner_poll",
-    "contextlib_asyncgen_enter_poll",
-    "contextlib_asyncgen_exit_poll",
-    "contextlib_async_exitstack_exit_poll",
-    "contextlib_async_exitstack_enter_context_poll",
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct PollTableImportSpec {
+    pub(crate) table_slot: u32,
+    pub(crate) import_name: &'static str,
+}
+
+pub(crate) const POLL_TABLE_IMPORTS: &[PollTableImportSpec] = &[
+    PollTableImportSpec {
+        table_slot: 1,
+        import_name: "async_sleep_poll",
+    },
+    PollTableImportSpec {
+        table_slot: 2,
+        import_name: "anext_default_poll",
+    },
+    PollTableImportSpec {
+        table_slot: 3,
+        import_name: "asyncgen_poll",
+    },
+    PollTableImportSpec {
+        table_slot: 4,
+        import_name: "promise_poll",
+    },
+    PollTableImportSpec {
+        table_slot: 5,
+        import_name: "io_wait",
+    },
+    PollTableImportSpec {
+        table_slot: 6,
+        import_name: "thread_poll",
+    },
+    PollTableImportSpec {
+        table_slot: 7,
+        import_name: "process_poll",
+    },
+    PollTableImportSpec {
+        table_slot: 8,
+        import_name: "ws_wait",
+    },
+    PollTableImportSpec {
+        table_slot: 9,
+        import_name: "asyncio_wait_for_poll",
+    },
+    PollTableImportSpec {
+        table_slot: 10,
+        import_name: "asyncio_wait_poll",
+    },
+    PollTableImportSpec {
+        table_slot: 11,
+        import_name: "asyncio_gather_poll",
+    },
+    PollTableImportSpec {
+        table_slot: 12,
+        import_name: "asyncio_socket_reader_read_poll",
+    },
+    PollTableImportSpec {
+        table_slot: 13,
+        import_name: "asyncio_socket_reader_readline_poll",
+    },
+    PollTableImportSpec {
+        table_slot: 14,
+        import_name: "asyncio_stream_reader_read_poll",
+    },
+    PollTableImportSpec {
+        table_slot: 15,
+        import_name: "asyncio_stream_reader_readline_poll",
+    },
+    PollTableImportSpec {
+        table_slot: 16,
+        import_name: "asyncio_stream_send_all_poll",
+    },
+    PollTableImportSpec {
+        table_slot: 17,
+        import_name: "asyncio_sock_recv_poll",
+    },
+    PollTableImportSpec {
+        table_slot: 18,
+        import_name: "asyncio_sock_connect_poll",
+    },
+    PollTableImportSpec {
+        table_slot: 19,
+        import_name: "asyncio_sock_accept_poll",
+    },
+    PollTableImportSpec {
+        table_slot: 20,
+        import_name: "asyncio_sock_recv_into_poll",
+    },
+    PollTableImportSpec {
+        table_slot: 21,
+        import_name: "asyncio_sock_sendall_poll",
+    },
+    PollTableImportSpec {
+        table_slot: 22,
+        import_name: "asyncio_sock_recvfrom_poll",
+    },
+    PollTableImportSpec {
+        table_slot: 23,
+        import_name: "asyncio_sock_recvfrom_into_poll",
+    },
+    PollTableImportSpec {
+        table_slot: 24,
+        import_name: "asyncio_sock_sendto_poll",
+    },
+    PollTableImportSpec {
+        table_slot: 25,
+        import_name: "asyncio_timer_handle_poll",
+    },
+    PollTableImportSpec {
+        table_slot: 26,
+        import_name: "asyncio_fd_watcher_poll",
+    },
+    PollTableImportSpec {
+        table_slot: 27,
+        import_name: "asyncio_server_accept_loop_poll",
+    },
+    PollTableImportSpec {
+        table_slot: 28,
+        import_name: "asyncio_ready_runner_poll",
+    },
+    PollTableImportSpec {
+        table_slot: 29,
+        import_name: "contextlib_asyncgen_enter_poll",
+    },
+    PollTableImportSpec {
+        table_slot: 30,
+        import_name: "contextlib_asyncgen_exit_poll",
+    },
+    PollTableImportSpec {
+        table_slot: 31,
+        import_name: "contextlib_async_exitstack_exit_poll",
+    },
+    PollTableImportSpec {
+        table_slot: 32,
+        import_name: "contextlib_async_exitstack_enter_context_poll",
+    },
 ];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

@@ -187,6 +187,41 @@ fn wasm_function_import_type_indices(wasm: &[u8]) -> BTreeMap<String, u32> {
     imports
 }
 
+fn wasm_function_import_indices(wasm: &[u8]) -> BTreeMap<String, u32> {
+    let mut imports = BTreeMap::new();
+    let mut func_index = 0u32;
+    for payload in Parser::new(0).parse_all(wasm) {
+        if let Ok(Payload::ImportSection(reader)) = payload {
+            for import in reader.into_imports().flatten() {
+                if matches!(import.ty, TypeRef::Func(_) | TypeRef::FuncExact(_)) {
+                    imports.insert(import.name.to_string(), func_index);
+                    func_index += 1;
+                }
+            }
+        }
+    }
+    imports
+}
+
+fn wasm_element_function_indices(wasm: &[u8]) -> Vec<u32> {
+    use wasmparser::ElementItems;
+
+    for payload in Parser::new(0).parse_all(wasm) {
+        if let Ok(Payload::ElementSection(reader)) = payload {
+            for element in reader.into_iter().flatten() {
+                if let ElementItems::Functions(funcs) = element.items {
+                    return funcs
+                        .into_iter_with_offsets()
+                        .flatten()
+                        .map(|(_offset, func_index)| func_index)
+                        .collect();
+                }
+            }
+        }
+    }
+    panic!("expected active function element section");
+}
+
 fn wasm_type_section_signatures(wasm: &[u8]) -> Vec<(usize, usize)> {
     use wasmparser::CompositeInnerType;
     let mut sigs = Vec::new();
@@ -203,6 +238,48 @@ fn wasm_type_section_signatures(wasm: &[u8]) -> Vec<(usize, usize)> {
         }
     }
     sigs
+}
+
+#[test]
+fn poll_table_slots_follow_manifest_slot_numbers() {
+    let func = wasm_test_function(
+        "slot_layout",
+        vec![],
+        None,
+        vec![wasm_test_op("ret_void", None, vec![])],
+    );
+    let ir = SimpleIR {
+        functions: vec![func],
+        profile: None,
+    };
+    let wasm = WasmBackend::with_options(WasmCompileOptions {
+        native_eh_enabled: false,
+        reloc_enabled: false,
+        ..WasmCompileOptions::default()
+    })
+    .compile(ir);
+
+    wasmparser::Validator::new()
+        .validate_all(&wasm)
+        .expect("poll table layout test module must be structurally valid WASM");
+
+    let import_indices = wasm_function_import_indices(&wasm);
+    let element_indices = wasm_element_function_indices(&wasm);
+    for import_name in [
+        "async_sleep_poll",
+        "promise_poll",
+        "contextlib_async_exitstack_enter_context_poll",
+    ] {
+        let slot = crate::wasm_abi::poll_table_import_slot(import_name)
+            .unwrap_or_else(|| panic!("missing generated poll slot for {import_name}"));
+        let func_index = *import_indices
+            .get(import_name)
+            .unwrap_or_else(|| panic!("missing poll import {import_name}"));
+        assert_eq!(
+            element_indices[slot as usize], func_index,
+            "poll import {import_name} must occupy manifest table slot {slot}"
+        );
+    }
 }
 
 #[test]
