@@ -1,4 +1,45 @@
-use super::*;
+use super::args::{get_string_arg, get_text_arg, raise_tcl_for_handle};
+use super::callbacks::{
+    after_callback_name_from_token, alloc_after_info_all, alloc_after_info_token,
+    callback_is_callable, cleanup_after_tokens, clear_filehandler_registration_locked,
+    clear_trace_registrations_for_variable, filehandler_command_name, next_after_token,
+    next_callback_command_name, normalize_bind_add_prefix, register_after_command_token,
+    register_callback_command, remove_trace_registration, rollback_filehandler_registration_locked,
+    schedule_after_timer_token, tokens_for_after_command, unregister_callback_command,
+};
+use super::commands::{
+    handle_tkwait_variable_target, handle_tkwait_visibility_target, handle_tkwait_window_target,
+};
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
+use super::dialogs::app_interp_eval_list;
+use super::event_commands::{
+    TK_EVENT_SUBST_FIELD_COUNT, flatten_event_subst_arg, normalize_event_subst_bool_field,
+    normalize_event_subst_delta_field, normalize_event_subst_int_field,
+    remove_bind_script_command_invocations,
+};
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
+use super::native::eval_tcl_without_gil;
+use super::native::{register_tcl_callback_proc, unregister_tcl_callback_proc};
+use super::parsing::alloc_tuple_bits;
+use super::state::{
+    TK_BIND_SUBST_FORMAT_STR, TK_FILE_EVENT_EXCEPTION, TK_FILE_EVENT_READABLE,
+    TK_FILE_EVENT_WRITABLE, TkEvent, TkFileHandlerCommand, TkFileHandlerRegistration, TkOperation,
+    TkTraceRegistration, alloc_string_bits, app_mut_from_registry, app_tcl_error_locked,
+    parse_app_handle, raise_invalid_handle_error, require_tk_operation, tk_registry,
+};
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
+use super::tcl::{TclObj, get, new};
+use super::trace_commands::{
+    alloc_trace_info, call_tk_command_from_strings, normalize_trace_mode_name, release_result_bits,
+};
+use crate::bridge::{
+    dec_ref_bits, decode_value_list, inc_ref_bits, is_truthy, raise_exception_u64,
+    string_obj_to_owned, to_i64,
+};
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
+use molt_runtime_core::prelude::GilReleaseGuard;
+use molt_runtime_core::prelude::{MoltObject, obj_from_bits};
+use std::collections::{HashMap, HashSet};
 
 pub extern "C" fn molt_tk_after(app_bits: u64, delay_ms_bits: u64, callback_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {

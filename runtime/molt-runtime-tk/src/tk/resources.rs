@@ -1,4 +1,17 @@
-use super::*;
+use super::args::{clear_last_error, get_string_arg, get_text_arg, raise_tcl_for_handle};
+use super::parsing::{
+    alloc_tuple_from_strings, option_map_query_or_empty, option_map_to_tuple,
+    parse_widget_option_name_arg, parse_widget_option_pairs, widget_option_i64_default,
+};
+use super::state::{
+    TkFontState, TkImageState, alloc_string_bits, app_mut_from_registry, app_tcl_error_locked,
+    clear_value_map_refs, tk_registry, value_map_set_bits,
+};
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
+use super::tcl::{get, new};
+use crate::bridge::{dec_ref_bits, inc_ref_bits};
+use molt_runtime_core::prelude::{MoltObject, PyToken};
+use std::collections::HashMap;
 
 pub(super) fn handle_image_command(py: &PyToken, handle: i64, args: &[u64]) -> Result<u64, u64> {
     if args.len() < 2 {

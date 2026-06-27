@@ -1692,6 +1692,7 @@ def test_value_range_rules_delegate_to_generated_tables() -> None:
         "Add": "add",
         "Sub": "sub",
         "Mul": "mul",
+        "FloorDiv": "floordiv",
         "Neg": "neg",
         "BitAnd": "bit_and",
         "BitOr": "bit_or",
@@ -1737,6 +1738,7 @@ def test_value_range_rules_delegate_to_generated_tables() -> None:
         "add": "Add",
         "sub": "Sub",
         "mul": "Mul",
+        "floordiv": "FloorDiv",
         "neg": "Neg",
         "bit_and": "BitAnd",
         "bit_or": "BitOr",
@@ -1782,8 +1784,12 @@ def test_value_range_rules_delegate_to_generated_tables() -> None:
     for opcode, rule in expected_container_length_rows.items():
         expected = f"ValueRangeContainerLengthRule::{length_variant[rule]}"
         assert f"OpCode::{opcode} => {expected}," in length_block
-    for opcode in ("Div", "FloorDiv", "ConstInt", "BuildList"):
+    # FloorDiv now has a value-range TRANSFER rule (the `i // 3` inline proof),
+    # so it is excluded from the transfer-None check; it remains None for the
+    # const-fold and cond-narrow lattices, which it does not participate in.
+    for opcode in ("Div", "ConstInt", "BuildList"):
         assert f"OpCode::{opcode} => ValueRangeTransferRule::None," in transfer_block
+    for opcode in ("Div", "FloorDiv", "ConstInt", "BuildList"):
         assert f"OpCode::{opcode} => ValueRangeConstFoldRule::None," in fold_block
         assert f"OpCode::{opcode} => ValueRangeCondNarrowRule::None," in narrow_block
     for opcode in ("Div", "FloorDiv", "ConstInt", "Lt"):

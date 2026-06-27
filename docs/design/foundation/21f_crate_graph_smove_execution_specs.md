@@ -90,15 +90,17 @@ change the mechanics. Absorb all eight.
    *between* crate moves: S1 may start on a clean backend tree. (Coordinate only with the LLVM
    lane for S4/S7, per 21b -- verify no `llvm_backend/*` editor is active at S4 start.)
 
-9. **Per-function cached TIR optimization has ONE live authority.** `runtime/molt-tir/src/tir/pipeline_cache.rs`
+9. **Cached TIR optimization and module handoff have ONE live authority.** `runtime/molt-tir/src/tir/pipeline_cache.rs`
    owns SimpleIR->TIR cache keying, batching, warm-hit restoration, cold-miss optimization,
-   artifact encoding, LIR verification policy, and index persistence for both native and WASM.
-   Backends pass target policy plus optional pre-lowering hooks and consume optimized TIR custody;
-   they must not open `CompilationCache` directly for this pipeline. Native, LLVM, and WASM cache
-   flavors use explicit schema salts and include target kind, optimization profile, target-cost
-   fields, OS, OS family, architecture, pointer width, and endianness in the hash body before they
-   store serialized optimized `TirFunction`s. WASM LIR fast outputs are derived from final
-   surviving SimpleIR functions, not from a pre-final cached side channel.
+   artifact encoding, LIR verification policy, index persistence, cached-custody module assembly,
+   `run_module_pipeline` handoff, selective SimpleIR back-conversion, skip-path terminal drops, and
+   LLVM owned-TIR extern/local partitioning for native, LLVM, and WASM. Backends pass target policy,
+   non-inlinable extern policy, optional pre-lowering hooks, and optional audit observers; they must
+   not open `CompilationCache` directly or rebuild the cached-TIR-to-module lane themselves. Native,
+   LLVM, and WASM cache flavors use explicit schema salts and include target kind, optimization
+   profile, target-cost fields, OS, OS family, architecture, pointer width, and endianness in the
+   hash body before they store serialized optimized `TirFunction`s. WASM LIR fast outputs are
+   derived from final surviving SimpleIR functions, not from a pre-final cached side channel.
 
 10. **Backend-neutral SimpleIR rewrite policy is upstream of backend extraction.** `runtime/molt-tir/src/ir_rewrites.rs`
     owns phi-store lowering, try/except elision, copy-alias rewriting, and annotation-stub

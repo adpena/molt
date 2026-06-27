@@ -171,22 +171,25 @@ def test_committed_gate_manifest_selects_tir_midend_ratchet(drv):
         gates
     )
     assert "cargo test -p molt-tir --all-features" in gates
-    assert "cargo clippy -p molt-passes --all-targets --all-features -- -D warnings" in (
-        gates
+    assert (
+        "cargo clippy -p molt-passes --all-targets --all-features -- -D warnings"
+        in gates
     )
     assert "cargo test -p molt-passes --all-features" in gates
 
     gates, matched = cfg.select(["runtime/molt-passes/src/tir/passes/effects.rs"])
     assert [r.name for r in matched] == ["tir-midend"]
-    assert "cargo clippy -p molt-passes --all-targets --all-features -- -D warnings" in (
-        gates
+    assert (
+        "cargo clippy -p molt-passes --all-targets --all-features -- -D warnings"
+        in gates
     )
     assert "cargo test -p molt-passes --all-features" in gates
 
     gates, matched = cfg.select(["runtime/molt-passes/src/tir/lower_to_simple.rs"])
     assert [r.name for r in matched] == ["tir-midend"]
-    assert "cargo clippy -p molt-passes --all-targets --all-features -- -D warnings" in (
-        gates
+    assert (
+        "cargo clippy -p molt-passes --all-targets --all-features -- -D warnings"
+        in gates
     )
     assert "cargo test -p molt-passes --all-features" in gates
 
@@ -211,7 +214,7 @@ def test_committed_gate_manifest_selects_codec_table_registry(drv):
 
     assert [r.name for r in matched] == ["codec-tables"]
     assert "python3 tools/gen_codecs.py --check" in gates
-    assert "python3 -m pytest -q tests/test_gen_codecs.py" in gates
+    assert "uv run python -m pytest -q tests/test_gen_codecs.py" in gates
 
     gates, matched = cfg.select(["src/molt/stdlib/encodings/cp1252.py"])
     assert "codec-tables" in {r.name for r in matched}
@@ -222,6 +225,17 @@ def test_committed_gate_manifest_selects_codec_table_registry(drv):
     )
     assert [r.name for r in matched] == ["codec-tables"]
     assert "python3 tools/gen_codecs.py --check" in gates
+
+    gates, matched = cfg.select(
+        ["runtime/molt-runtime-text/src/charmap_codecs_generated.rs"]
+    )
+    assert [r.name for r in matched] == ["codec-tables"]
+    assert "python3 tools/gen_codecs.py --check" in gates
+
+    gates, matched = cfg.select(["runtime/molt-runtime/src/object/ops_encoding.rs"])
+    assert "codec-tables" in {r.name for r in matched}
+    assert "python3 tools/gen_codecs.py --check" in gates
+    assert "uv run python -m pytest -q tests/test_gen_codecs.py" in gates
 
 
 def test_committed_gate_manifest_selects_wasm_host_ratchet(drv):

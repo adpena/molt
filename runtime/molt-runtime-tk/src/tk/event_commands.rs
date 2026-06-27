@@ -1,4 +1,18 @@
-use super::*;
+use super::args::{clear_last_error, get_string_arg, get_text_arg, raise_tcl_for_handle};
+use super::dispatch::tk_call_dispatch;
+use super::parsing::{
+    alloc_tuple_from_strings, parse_bool_text, parse_tcl_script_commands, parse_treeview_tags,
+    tk_widget_class_name,
+};
+use super::state::{
+    TkAppState, TkTreeviewState, alloc_string_bits, app_mut_from_registry, app_tcl_error_locked,
+    tk_registry,
+};
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
+use super::tcl::{get, new};
+use crate::bridge::{dec_ref_bits, decode_value_list, string_obj_to_owned, to_f64, to_i64};
+use molt_runtime_core::prelude::{MoltObject, PyToken, obj_from_bits};
+use std::collections::HashMap;
 
 pub(super) fn default_bindtags_for_target(app: &TkAppState, target_name: &str) -> Vec<String> {
     if target_name == "." {

@@ -1,3 +1,32 @@
+use super::args::{clear_last_error, get_string_arg, raise_tcl_for_handle, set_last_error};
+use super::callbacks::{
+    cleanup_after_tokens, invoke_filehandler_command, next_ready_filehandler_commands,
+    tokens_for_after_command,
+};
+use super::commands::{
+    handle_after_command, handle_expr_command, handle_loadtk_command, handle_tkwait_command,
+    handle_update_command, invoke_callback, lookup_bound_callback, run_event_callback,
+};
+use super::dialogs::{handle_headless_commondialog_command, handle_headless_tk_dialog_command};
+use super::event_commands::{handle_bind_command, handle_bindtags_command, handle_event_command};
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
+use super::native::{
+    dispatch_named_callback_from_strings, run_tcl_command, run_tcl_command_with_ctx,
+    take_pending_tcl_callbacks,
+};
+use super::parsing::parse_tcl_script_commands;
+use super::state::{TkAppState, TkEvent, app_mut_from_registry, app_tcl_error_locked, tk_registry};
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
+use super::tcl::{TclApi, TclTypePtrs, ensure_owner_thread, eval, get, new};
+use super::trace_commands::{
+    call_tk_command_from_strings, handle_set_command, handle_trace_command, handle_unset_command,
+};
+use super::ttk::{handle_ttk_notebook_enable_traversal, handle_ttk_style_command};
+use super::widgets::path::handle_widget_path_command;
+use crate::bridge::{dec_ref_bits, exception_pending, inc_ref_bits, string_obj_to_owned, to_i64};
+use molt_runtime_core::prelude::{MoltObject, PyToken, obj_from_bits};
+use std::collections::HashSet;
+
 #[cfg(any(target_arch = "wasm32", not(feature = "native-tcl")))]
 use super::app_commands::{
     handle_option_command, handle_rename_command, handle_send_command, handle_tk_global_command,
@@ -27,7 +56,6 @@ use super::widgets::menu::handle_menu_popup_command;
 use super::winfo_commands::handle_winfo_command;
 #[cfg(any(target_arch = "wasm32", not(feature = "native-tcl")))]
 use super::wm_commands::handle_wm_command;
-use super::*;
 
 pub(super) fn handle_eval_command(py: &PyToken, handle: i64, args: &[u64]) -> Result<u64, u64> {
     if args.len() < 2 {
@@ -420,7 +448,7 @@ pub(super) fn tk_call_dispatch(py: &PyToken, handle: i64, args: &[u64]) -> Resul
             }
             _ => {
                 if command.starts_with('.') {
-                    return widgets::path::handle_widget_path_command(py, handle, &command, args);
+                    return handle_widget_path_command(py, handle, &command, args);
                 }
                 if command_is_image_instance(py, handle, &command)? {
                     return handle_image_instance_command(py, handle, &command, args);

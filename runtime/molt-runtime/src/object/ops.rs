@@ -94,9 +94,9 @@ pub use specialized_list::{
     molt_list_getitem_raw_idx, molt_list_getitem_unchecked, molt_list_int_data,
     molt_list_int_getitem, molt_list_int_getitem_nogil, molt_list_int_getitem_raw,
     molt_list_int_getitem_raw_checked, molt_list_int_getitem_truthy,
-    molt_list_int_getitem_unchecked, molt_list_int_len, molt_list_int_len_raw,
-    molt_list_int_new, molt_list_int_setitem, molt_list_int_setitem_nogil,
-    molt_list_int_setitem_unchecked, molt_list_setitem_int_fast, molt_list_setitem_raw_idx,
+    molt_list_int_getitem_unchecked, molt_list_int_len, molt_list_int_len_raw, molt_list_int_new,
+    molt_list_int_setitem, molt_list_int_setitem_nogil, molt_list_int_setitem_unchecked,
+    molt_list_setitem_int_fast, molt_list_setitem_raw_idx,
 };
 pub(crate) use subscript::value_supports_mp_subscript;
 pub use subscript::{

@@ -1,4 +1,13 @@
-use super::*;
+use super::args::{get_string_arg, raise_tcl_for_handle};
+use super::state::{
+    TkTreeviewState, TkWidgetState, TkWmState, alloc_string_bits, app_mut_from_registry,
+    clear_widget_refs, tk_registry,
+};
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
+use super::tcl::new;
+use crate::bridge::{dec_ref_bits, inc_ref_bits};
+use molt_runtime_core::prelude::PyToken;
+use std::collections::HashMap;
 
 pub(super) fn handle_widget_create_command(
     py: &PyToken,

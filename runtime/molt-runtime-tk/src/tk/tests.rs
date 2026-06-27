@@ -1,4 +1,43 @@
-use super::*;
+use super::callbacks::{
+    after_callback_name_from_token, filehandler_command_name, filehandler_event_name,
+    filehandler_poll_events, filehandler_revents_to_mask, lookup_after_command_for_token,
+    lookup_after_kind_for_token, next_after_token, register_after_command_token,
+    remove_after_events_for_tokens, schedule_after_timer_token, sort_after_info_tokens,
+    tokens_for_after_command, unregister_after_command_token,
+};
+use super::commands::{tkwait_visibility_reached_in_app, tkwait_window_exists};
+use super::dialogs::{
+    apply_default_extension, clamp_dialog_selection, commondialog_allowed_options,
+    commondialog_is_supported_command, commondialog_supports_parent,
+    filedialog_is_supported_command, join_dialog_path, messagebox_icon_is_supported,
+    normalize_color_literal, resolve_messagebox_selection,
+};
+use super::dispatch::pop_next_ready_event;
+use super::event_commands::{
+    event_generate_binding_sequences, parse_bind_script_commands,
+    remove_bind_script_command_invocations, treeview_event_target_item,
+};
+use super::parsing::{
+    first_missing_treeview_item, parse_bool_text, parse_expr_literal, parse_notebook_index_strict,
+    parse_tcl_script_commands, parse_treeview_column_offset, parse_treeview_index_strict,
+    parse_ttk_insert_index_strict, treeview_hit_item_by_y, treeview_item_is_descendant_of,
+    treeview_visible_items,
+};
+use super::state::{
+    TK_FILE_EVENT_EXCEPTION, TK_FILE_EVENT_READABLE, TK_FILE_EVENT_WRITABLE, TkAppState, TkEvent,
+    TkExprLiteral, TkFileHandlerRegistration, TkGateState, TkOperation, TkRegistry,
+    TkTraceRegistration, TkTreeviewItem, TkTreeviewState, TkWidgetState, TkWmState,
+    format_permission_error_message, format_tk_unavailable_message,
+    has_platform_preflight_blockers, wm_state_for_path, wm_state_for_path_mut,
+};
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
+use super::tcl::{get, new, tcl_find_executable_arg};
+use super::trace_commands::{
+    bump_variable_version, collect_trace_callbacks_for_operation, normalize_trace_mode_name,
+    split_array_variable_reference, trace_callback_command_words, trace_mode_matches,
+    variable_version,
+};
+use std::collections::HashMap;
 
 #[test]
 fn permission_message_single_capability_stays_stable() {

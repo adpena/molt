@@ -462,7 +462,11 @@ the implementation. For forward-looking priorities, use
   matrix statuses `implemented-exact`.
 - Native, WASM, LLVM, and Luau backend-facing lowering now run through the TIR
   pipeline; the old environment-variable opt-out has been removed so SimpleIR
-  transport metadata cannot bypass typed-IR validation.
+  transport metadata cannot bypass typed-IR validation. Native, LLVM, and WASM
+  now share `runtime/molt-tir/src/tir/pipeline_cache.rs` for cached
+  SimpleIR-to-TIR custody, module-phase handoff, selective back-conversion, and
+  skip-path terminal drops, so backend code no longer owns a parallel cached TIR
+  optimization lane.
 - Frontend midend fixed-point verification fails closed: non-convergence and
   post-convergence idempotence drift record policy diagnostics and raise instead
   of accepting the last verified round or probe output behind an env-controlled
