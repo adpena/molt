@@ -44,7 +44,11 @@ use crate::wasm_values::{
     emit_unbox_int_local_trusted_tee_opt, stable_ic_site_id,
 };
 use crate::{FunctionIR, OpIR, SimpleIR, TrampolineKind, TrampolineSpec};
-pub(in crate::wasm) use function_frame::{WasmFrameLocals, WasmLiteralScratchLocals};
+pub(in crate::wasm) use function_frame::{
+    WasmFrameLocals, WasmFrameSyntheticLocal, WasmLiteralScratchLocals,
+};
+#[cfg(test)]
+pub(in crate::wasm) use function_frame::WasmFrameLocalKind;
 use std::borrow::Cow;
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};

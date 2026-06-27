@@ -23,9 +23,8 @@ impl WasmMultiReturnLayout {
 
         if let Some(ret_count) = callee_return_count {
             for i in 0..ret_count {
-                let name = format!("__multi_ret_{i}");
                 let local_idx =
-                    ensure_internal_local(locals, local_types, local_count, name.as_str());
+                    locals.ensure_multi_return_callee_value(i, local_types, local_count);
                 callee_value_locals.push(local_idx);
             }
             for op in &func_ir.ops {
@@ -59,9 +58,8 @@ impl WasmMultiReturnLayout {
             }
             call_tuple_vars.insert(result_var.clone());
             for k in 0..ret_count {
-                let name = format!("__multi_call_{result_var}_{k}");
                 let local_idx =
-                    ensure_internal_local(locals, local_types, local_count, name.as_str());
+                    locals.ensure_multi_return_call_value(result_var, k, local_types, local_count);
                 call_value_locals.insert((result_var.clone(), k as i64), local_idx);
             }
         }
@@ -92,22 +90,6 @@ impl WasmMultiReturnLayout {
             .get(&(tuple_var.to_string(), index))
             .copied()
     }
-}
-
-fn ensure_internal_local(
-    locals: &mut WasmFrameLocals,
-    local_types: &mut Vec<ValType>,
-    local_count: &mut u32,
-    name: &str,
-) -> u32 {
-    if let Some(&idx) = locals.get(name) {
-        return idx;
-    }
-    let idx = *local_count;
-    locals.insert(name.to_string(), idx);
-    local_types.push(ValType::I64);
-    *local_count += 1;
-    idx
 }
 
 fn tuple_indexes_immediately_follow(
@@ -213,6 +195,14 @@ mod tests {
 
         assert!(layout.is_callee_tuple_var("pair"));
         assert_eq!(layout.callee_value_locals(), &[2, 3]);
+        assert_eq!(
+            locals.name_kind("__multi_ret_0"),
+            Some(WasmFrameLocalKind::MultiReturnCalleeValue)
+        );
+        assert_eq!(
+            locals.name_kind("__multi_ret_1"),
+            Some(WasmFrameLocalKind::MultiReturnCalleeValue)
+        );
         assert_eq!(local_types, vec![ValType::I64, ValType::I64]);
         assert_eq!(local_count, 4);
     }
@@ -243,6 +233,14 @@ mod tests {
         assert!(layout.is_promoted_call_tuple("pair"));
         assert_eq!(layout.promoted_call_value_local("pair", 0), Some(0));
         assert_eq!(layout.promoted_call_value_local("pair", 1), Some(1));
+        assert_eq!(
+            locals.name_kind("__multi_call_pair_0"),
+            Some(WasmFrameLocalKind::MultiReturnCallValue)
+        );
+        assert_eq!(
+            locals.name_kind("__multi_call_pair_1"),
+            Some(WasmFrameLocalKind::MultiReturnCallValue)
+        );
         assert_eq!(local_types, vec![ValType::I64, ValType::I64]);
         assert_eq!(local_count, 2);
     }

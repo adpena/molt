@@ -18,9 +18,9 @@ pub(super) fn emit_guarded_field_local_state_op(
             let obj = locals[&args[0]];
             let class_bits = locals[&args[1]];
             let expected = locals[&args[2]];
-            let tmp_ptr = locals["__wasm_tmp0"];
-            let tmp_val = locals["__wasm_tmp1"];
-            let guard_val = locals["__molt_tmp0"];
+            let tmp_ptr = locals.synthetic(WasmFrameSyntheticLocal::WasmTmp0);
+            let tmp_val = locals.synthetic(WasmFrameSyntheticLocal::WasmTmp1);
+            let guard_val = locals.synthetic(WasmFrameSyntheticLocal::MoltTmp0);
             let attr = op.s_value.as_ref().unwrap();
             let bytes = attr.as_bytes();
             let data = backend.add_data_segment(reloc_enabled, bytes);
@@ -96,9 +96,9 @@ pub(super) fn emit_guarded_field_local_state_op(
             let class_bits = locals[&args[1]];
             let expected = locals[&args[2]];
             let val = locals[&args[3]];
-            let tmp_ptr = locals["__wasm_tmp0"];
-            let tmp_old = locals["__wasm_tmp1"];
-            let guard_val = locals["__molt_tmp0"];
+            let tmp_ptr = locals.synthetic(WasmFrameSyntheticLocal::WasmTmp0);
+            let tmp_old = locals.synthetic(WasmFrameSyntheticLocal::WasmTmp1);
+            let guard_val = locals.synthetic(WasmFrameSyntheticLocal::MoltTmp0);
             let attr = op.s_value.as_ref().unwrap();
             let bytes = attr.as_bytes();
             let data = backend.add_data_segment(reloc_enabled, bytes);
@@ -200,8 +200,8 @@ pub(super) fn emit_guarded_field_local_state_op(
             let class_bits = locals[&args[1]];
             let expected = locals[&args[2]];
             let val = locals[&args[3]];
-            let tmp_ptr = locals["__wasm_tmp0"];
-            let guard_val = locals["__molt_tmp0"];
+            let tmp_ptr = locals.synthetic(WasmFrameSyntheticLocal::WasmTmp0);
+            let guard_val = locals.synthetic(WasmFrameSyntheticLocal::MoltTmp0);
             let attr = op.s_value.as_ref().unwrap();
             let bytes = attr.as_bytes();
             let data = backend.add_data_segment(reloc_enabled, bytes);
