@@ -167,14 +167,15 @@ gates = [
   "python3 tools/audit_op_kinds.py --check",
 ]
 
-# --- WASM ABI registry (generated import surface authority) --------------
+# --- WASM ABI registry (generated import/export surface authority) -------
 [[rule]]
 name = "wasm-abi-registry"
-description = "WASM ABI registry: manifest-owned imports, runtime-surface matchers, and generated sync."
+description = "WASM ABI registry: manifest-owned imports, export policy, runtime-surface matchers, and generated sync."
 globs = [
   "tools/gen_wasm_abi.py",
   "tools/wasm_allowed_imports.txt",
   "tools/wasm_strip_unused.py",
+  "tools/wasm_link_format.py",
   "runtime/molt-backend-wasm/src/wasm_abi_manifest.toml",
   "runtime/molt-backend-wasm/src/wasm_abi_generated.rs",
   "runtime/molt-backend-wasm/src/wasm_imports.rs",

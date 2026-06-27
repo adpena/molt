@@ -62,6 +62,25 @@ def _validate_val_type_list(
     return vals
 
 
+def _validate_string_list(section: str, field: str, value: object) -> list[str]:
+    if not isinstance(value, list):
+        raise WasmAbiManifestError(f"{section}.{field} must be a list")
+    items: list[str] = []
+    seen: set[str] = set()
+    for idx, item in enumerate(value):
+        if not isinstance(item, str) or not item:
+            raise WasmAbiManifestError(
+                f"{section}.{field} entry {idx} must be a non-empty string"
+            )
+        if item in seen:
+            raise WasmAbiManifestError(
+                f"{section}.{field} repeats string {item!r}"
+            )
+        seen.add(item)
+        items.append(item)
+    return items
+
+
 def load_manifest(path: Path = MANIFEST) -> dict:
     data = tomllib.loads(path.read_text(encoding="utf-8"))
     table_layout = data.get("table_layout")
@@ -308,6 +327,53 @@ def load_manifest(path: Path = MANIFEST) -> dict:
     if seen_reserved_indices != expected_reserved_indices:
         raise WasmAbiManifestError(
             "reserved runtime callable indices must be contiguous from zero"
+        )
+    output_export_policy = data.get("output_export_policy")
+    if not isinstance(output_export_policy, dict):
+        raise WasmAbiManifestError("manifest must define [output_export_policy]")
+    alias_prefix = output_export_policy.get("alias_prefix")
+    if not isinstance(alias_prefix, str) or not alias_prefix.startswith("__molt_"):
+        raise WasmAbiManifestError(
+            "[output_export_policy].alias_prefix must be a non-empty Molt-private prefix"
+        )
+    essential_exports = _validate_string_list(
+        "output_export_policy",
+        "essential_exports",
+        output_export_policy.get("essential_exports"),
+    )
+    runtime_export_aliases = _validate_string_list(
+        "output_export_policy",
+        "runtime_export_aliases",
+        output_export_policy.get("runtime_export_aliases"),
+    )
+    internal_output_export_prefixes = _validate_string_list(
+        "output_export_policy",
+        "internal_output_export_prefixes",
+        output_export_policy.get("internal_output_export_prefixes"),
+    )
+    required_essential_exports = {
+        "memory",
+        "molt_memory",
+        "molt_main",
+        "molt_table",
+        "molt_table_init",
+        "__indirect_function_table",
+    }
+    missing_essential_exports = required_essential_exports - set(essential_exports)
+    if missing_essential_exports:
+        raise WasmAbiManifestError(
+            "output_export_policy essential_exports missing required split-runtime "
+            f"exports: {sorted(missing_essential_exports)}"
+        )
+    alias_overlap = set(runtime_export_aliases) & set(essential_exports)
+    if alias_overlap:
+        raise WasmAbiManifestError(
+            "output_export_policy runtime aliases must not duplicate essential "
+            f"exports: {sorted(alias_overlap)}"
+        )
+    if any(prefix.startswith(alias_prefix) for prefix in internal_output_export_prefixes):
+        raise WasmAbiManifestError(
+            "output_export_policy internal prefixes must not overlap the alias prefix"
         )
     link_allowed = data.get("link_allowed_import", [])
     if not isinstance(link_allowed, list):
@@ -599,6 +665,25 @@ def render_py(data: dict) -> str:
         "WASM_RESERVED_RUNTIME_CALLABLE_COUNT: int = "
         "len(WASM_RESERVED_RUNTIME_CALLABLES)\n\n"
     )
+    output_export_policy = data["output_export_policy"]
+    lines.append(
+        "WASM_OUTPUT_EXPORT_ALIAS_PREFIX: str = "
+        f'"{output_export_policy["alias_prefix"]}"\n\n'
+    )
+    lines.append("WASM_OUTPUT_RUNTIME_EXPORT_ALIASES: tuple[str, ...] = (\n")
+    for name in output_export_policy["runtime_export_aliases"]:
+        lines.append(f'    "{name}",\n')
+    lines.append(")\n\n")
+    lines.append("WASM_INTERNAL_OUTPUT_EXPORT_PREFIXES: tuple[str, ...] = (\n")
+    for prefix in output_export_policy["internal_output_export_prefixes"]:
+        lines.append(f'    "{prefix}",\n')
+    lines.append(")\n\n")
+    lines.append("WASM_ESSENTIAL_EXPORTS: frozenset[str] = frozenset(\n")
+    lines.append("    {\n")
+    for name in output_export_policy["essential_exports"]:
+        lines.append(f'        "{name}",\n')
+    lines.append("    }\n")
+    lines.append(")\n\n")
     lines.append("WASM_LINK_ALLOWED_IMPORTS: tuple[str, ...] = (\n")
     for entry in data.get("link_allowed_import", []):
         lines.append(f'    "{entry["name"]}",\n')

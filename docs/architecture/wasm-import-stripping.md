@@ -4,7 +4,8 @@
 > **UPDATE 2026-06-27:** Runtime import discovery is no longer a monolithic
 > `wasm.rs` scan. The generated ABI manifest owns import names/types and static
 > op dependency data. It also owns the runtime-surface prefix/singleton
-> matchers for IR op kinds that map directly to import names.
+> matchers for IR op kinds that map directly to import names, plus the
+> split/link output export policy consumed by `tools/wasm_link_format.py`.
 > `wasm/module_abi/runtime_surface.rs` is the single IR-scanning planner for
 > Auto/reloc import requirements, direct runtime-call arity, builtin trampolines,
 > and per-module intrinsic manifests.
@@ -99,6 +100,8 @@ Or use the existing `tools/wasm_strip_unused.py` (already in the repo) which can
 - Existing analysis: `docs/architecture/wasm-import-analysis.md` (2026-03-06)
 - Existing strip tool: `tools/wasm_strip_unused.py`
 - WASM import registry and dependency data:
+  `runtime/molt-backend-wasm/src/wasm_abi_manifest.toml`
+- WASM split/link export keep policy:
   `runtime/molt-backend-wasm/src/wasm_abi_manifest.toml`
 - WASM runtime surface planner: `runtime/molt-backend-wasm/src/wasm/module_abi/runtime_surface.rs`
 - Browser host stubs: `strata/` or site `molt-wasm-host.ts`

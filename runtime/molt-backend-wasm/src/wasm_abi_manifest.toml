@@ -4674,6 +4674,58 @@ name = "env_snapshot"
 [[runtime_required_import_singleton]]
 name = "errno_constants"
 
+# Link/export policy for split-runtime and linked app/runtime WASM artifacts.
+# Generated into src/molt/_wasm_abi_generated.py and consumed by tools/wasm_link.py.
+
+[output_export_policy]
+alias_prefix = "__molt_export_alias__"
+
+runtime_export_aliases = [
+  "molt_isolate_bootstrap",
+  "molt_isolate_import",
+]
+
+internal_output_export_prefixes = [
+  "molt_module_chunk_",
+  "genexpr_",
+  "listcomp_",
+  "dictcomp_",
+  "setcomp_",
+  "lambda_",
+]
+
+essential_exports = [
+  "molt_alloc",
+  "molt_bytes_as_ptr",
+  "molt_bytes_from_bytes",
+  "molt_dec_ref_obj",
+  "molt_exception_kind",
+  "molt_exception_last",
+  "molt_exception_message",
+  "molt_exception_pending",
+  "molt_exception_pending_fast",
+  "molt_handle_resolve",
+  "molt_header_size",
+  "memory",
+  "molt_memory",
+  "molt_host_init",
+  "molt_list_builder_append",
+  "molt_list_builder_finish",
+  "molt_list_builder_new",
+  "molt_main",
+  "molt_object_repr",
+  "molt_scratch_alloc",
+  "molt_scratch_free",
+  "molt_string_as_ptr",
+  "molt_string_from_bytes",
+  "molt_table_init",
+  "molt_table",
+  "molt_traceback_format_exc",
+  "molt_type_tag_of_bits",
+  "molt_set_wasm_table_base",
+  "__indirect_function_table",
+]
+
 # Linker allowlist for undefined host symbols accepted by wasm-ld when linking
 # app/runtime WASM artifacts. Generated into tools/wasm_allowed_imports.txt.
 

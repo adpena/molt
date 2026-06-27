@@ -232,3 +232,40 @@ def test_wasm_abi_manifest_owns_host_import_policy() -> None:
     assert "WASM_STRIP_IMPORT_RULES" in strip_tool
     assert "WASM_STRIP_IMPORT_PREFIX_RULES" in strip_tool
     assert "molt_process_write_host" not in strip_tool
+
+
+def test_wasm_abi_manifest_owns_link_export_policy() -> None:
+    gen = _load_gen_wasm_abi()
+    data = gen.load_manifest()
+    policy = data["output_export_policy"]
+
+    assert policy["alias_prefix"] == "__molt_export_alias__"
+    assert {
+        "memory",
+        "molt_memory",
+        "molt_main",
+        "molt_table",
+        "molt_table_init",
+        "__indirect_function_table",
+    } <= set(policy["essential_exports"])
+    assert policy["runtime_export_aliases"] == [
+        "molt_isolate_bootstrap",
+        "molt_isolate_import",
+    ]
+    assert {"genexpr_", "listcomp_", "lambda_"} <= set(
+        policy["internal_output_export_prefixes"]
+    )
+
+    rendered_py = gen.render_py(data)
+    assert "WASM_OUTPUT_EXPORT_ALIAS_PREFIX" in rendered_py
+    assert "WASM_OUTPUT_RUNTIME_EXPORT_ALIASES" in rendered_py
+    assert "WASM_INTERNAL_OUTPUT_EXPORT_PREFIXES" in rendered_py
+    assert "WASM_ESSENTIAL_EXPORTS" in rendered_py
+
+    link_format = (ROOT / "tools/wasm_link_format.py").read_text(encoding="utf-8")
+    assert "_WASM_ABI.WASM_OUTPUT_EXPORT_ALIAS_PREFIX" in link_format
+    assert "_WASM_ABI.WASM_OUTPUT_RUNTIME_EXPORT_ALIASES" in link_format
+    assert "_WASM_ABI.WASM_INTERNAL_OUTPUT_EXPORT_PREFIXES" in link_format
+    assert "_WASM_ABI.WASM_ESSENTIAL_EXPORTS" in link_format
+    assert '"molt_alloc"' not in link_format
+    assert '"molt_isolate_import"' not in link_format
