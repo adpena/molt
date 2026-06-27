@@ -1,0 +1,22 @@
+[package]
+name = "molt-backend-wasm"
+version = "0.1.0"
+publish = false
+edition = "2024"
+license = "Apache-2.0"
+
+[dependencies]
+molt-ir = { path = "../molt-ir", default-features = false }
+molt-tir = { path = "../molt-tir", default-features = false }
+wasm-encoder = { version = "0.252.0", optional = true }
+wasmparser = { version = "0.252.0", optional = true }
+
+[features]
+default = []
+wasm-backend = [
+    "dep:wasm-encoder",
+    "dep:wasmparser",
+    "molt-ir/wasm-backend",
+    "molt-tir/wasm-backend",
+]
+test-util = ["molt-ir/test-util", "molt-tir/test-util"]

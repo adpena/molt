@@ -51,7 +51,7 @@ Molt supports multiple WASM deployment targets with different constraints.
 - All host boundaries are schema-first and versioned.
 - No implicit JS object wrapping or dynamic import behavior.
 - All Molt runtime imports must be enumerated in
-  `runtime/molt-backend/src/wasm_abi_manifest.toml` and regenerated with
+  `runtime/molt-backend-wasm/src/wasm_abi_manifest.toml` and regenerated with
   `tools/gen_wasm_abi.py`.
 
 ---

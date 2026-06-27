@@ -737,12 +737,6 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
         // SCF ops — handled separately via terminators in Phase 2.
         OpCode::ScfIf | OpCode::ScfFor | OpCode::ScfWhile | OpCode::ScfYield => None,
 
-        // Deopt — emit a hint but not critical.
-        OpCode::Deopt => Some(OpIR {
-            kind: "deopt".to_string(),
-            ..OpIR::default()
-        }),
-
         // Remaining attribute ops.
         OpCode::DelAttr => {
             let kind =

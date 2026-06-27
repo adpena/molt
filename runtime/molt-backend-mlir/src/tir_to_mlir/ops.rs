@@ -510,11 +510,6 @@ pub(super) fn emit_tir_op<'c, 'a>(
             emit_opaque_molt_op(ctx, block, op, value_map, i64_type, location)?;
         }
 
-        // ---- Deoptimization ----
-        (_, OpCode::Deopt) => {
-            emit_opaque_molt_op(ctx, block, op, value_map, i64_type, location)?;
-        }
-
         // ---- Catch-all for any dialect/opcode combination not handled above ----
         // This covers cases like SCF ops appearing with non-Scf dialects,
         // or future op additions. Emitted as opaque molt ops.

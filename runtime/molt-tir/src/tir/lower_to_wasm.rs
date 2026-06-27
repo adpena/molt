@@ -890,7 +890,6 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
         | OpCode::ScfFor
         | OpCode::ScfWhile
         | OpCode::ScfYield
-        | OpCode::Deopt
         | OpCode::TryStart
         | OpCode::TryEnd
         | OpCode::StateBlockStart

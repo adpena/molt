@@ -12,7 +12,8 @@ Already present and non-trivial: fixpoint type inference w/ IV-seeding + oscilla
 guard propagation (type_refine.rs); a single-source-of-truth `Repr` lattice across native/LLVM/WASM
 (representation_plan.rs, Phase 0/1 landed); Perceus reuse analysis (reuse_analysis.rs); 6-strategy
 refcount elimination incl. Deutsch-Bobrow + unique-ownership (refcount_elim.rs); SBBV block
-versioning (block_versioning.rs); a deopt skeleton (tir/deopt.rs + object/deopt.rs); an egg-based
+versioning (block_versioning.rs); the prior dead deoptimization skeleton has been deleted rather
+than left as unsafe dormant ABI; an egg-based
 e-graph PoC (egraph_simplify.rs, feature-gated); a Lean 4 formalization of ~15 passes (formal/lean/,
 ~73 open sorries); an MLIR backend with a real pass manager; a 26-primitive GPU stack; SCCP/GVN/LICM/
 DCE/canonicalize/strength-reduction/BCE/check_exception_elim. This is advanced for an early compiler.
@@ -120,8 +121,9 @@ These six are absent and are prerequisites cited repeatedly across lanes.
   molt_reuse_token/alloc — dead since line-15 TODO). Wire into native/WASM/LLVM. Real alloc win, low risk.
 - **D3. Unboxed call ABI** (needs Repr + E1) — proven-RawI64Safe call sites pass raw i64, no box/unbox
   round-trip. repr_by_value is ready; call lowering ignores it.
-- **D4. Deopt wired end-to-end** (skeleton exists; nothing emits DeoptState/molt_deopt_transfer).
-  Enables aggressive speculation with re-optimizable fallback (needs E5 + guard infra).
+- **D4. Deoptimization wired end-to-end** (no implementation skeleton is kept in-tree).
+  Enables aggressive speculation with re-optimizable fallback; rebuilding it requires a first-class
+  TIR fact, liveness-backed state materialization, and one ABI shared by every backend/runtime path.
 - **D5. Polymorphic/megamorphic ICs** (today monomorphic-only — object/inline_cache.rs single
   (type_id,offset,version); a 2-type site permanently misses). 2–4-entry + megamorphic fallback.
 

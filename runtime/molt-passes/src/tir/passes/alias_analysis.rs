@@ -1264,7 +1264,6 @@ mod tests {
             ScfFor,
             ScfWhile,
             ScfYield,
-            Deopt,
         ]
     }
 
@@ -1380,8 +1379,7 @@ mod tests {
             | ScfIf
             | ScfFor
             | ScfWhile
-            | ScfYield
-            | Deopt => {}
+            | ScfYield => {}
         }
     }
 

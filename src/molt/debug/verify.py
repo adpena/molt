@@ -14,8 +14,8 @@ FRONTEND_PATH = ROOT / "src/molt/frontend/__init__.py"
 NATIVE_BACKEND_PATH = (
     ROOT / "runtime/molt-backend/src/native_backend/function_compiler.rs"
 )
-WASM_BACKEND_PATH = ROOT / "runtime/molt-backend/src/wasm.rs"
-WASM_IMPORTS_PATH = ROOT / "runtime/molt-backend/src/wasm_imports.rs"
+WASM_BACKEND_PATH = ROOT / "runtime/molt-backend-wasm/src/wasm.rs"
+WASM_IMPORTS_PATH = ROOT / "runtime/molt-backend-wasm/src/wasm_imports.rs"
 
 ALIASES: dict[str, list[str]] = {
     "ConstInt": ["CONST", "CONST_BIGINT"],

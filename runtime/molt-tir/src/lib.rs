@@ -12,7 +12,9 @@
 
 pub mod passes;
 pub mod representation_plan;
+pub mod simpleir_debug;
 pub mod tir;
+pub mod trampolines;
 
 pub use molt_ir::{FunctionIR, OpIR, PgoProfileIR, SimpleIR, validate_simple_ir};
 pub use molt_ir::{

@@ -133,12 +133,12 @@ This surface is implemented by:
 - JS host in the browser
 - Rust host in the server
 
-`runtime/molt-backend/src/wasm_abi_manifest.toml` is the executable authority
+`runtime/molt-backend-wasm/src/wasm_abi_manifest.toml` is the executable authority
 for Molt runtime import names, static type indices, and backend Pure-profile
 skip prefixes. `tools/gen_wasm_abi.py` renders the checked-in Rust and Python
 consumers:
 
-- `runtime/molt-backend/src/wasm_abi_generated.rs` for backend import emission.
+- `runtime/molt-backend-wasm/src/wasm_abi_generated.rs` for backend import emission.
 - `src/molt/_wasm_abi_generated.py` for runtime-export validation and tools.
 
 Do not add host import names by parsing Rust or hand-editing generated outputs.
@@ -392,7 +392,7 @@ Migrate from raw `Linker::func_wrap()` imports to Component Model linking:
    - [ ] Split `wit/molt-runtime.wit` into per-capability `.wit` files
    - [ ] Define `molt-app` world in `wit/world.wit`
    - [ ] Replace `Linker::func_wrap()` calls with `wasmtime::component::Linker`
-   - [ ] Update `molt-backend/src/wasm.rs` to emit Component Model modules
+   - [ ] Update `runtime/molt-backend-wasm/src/wasm.rs` to emit Component Model modules
    - [ ] Validate with `wasm-tools validate --features component-model`
 
 ### 13.3 Phase 3: WASI Preview 2 Alignment (Future)
