@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
-use molt_backend::wasm::WasmBackend;
+use molt_backend::WasmBackend;
 use molt_backend::{FunctionIR, OpIR, SimpleIR};
 use std::f64::consts::PI;
 use wasmparser::{Operator, Parser, Payload, TypeRef, Validator};

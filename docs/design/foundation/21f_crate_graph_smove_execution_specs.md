@@ -518,16 +518,17 @@ encoder or ABI modules.
   `wasm-encoder`(opt), and `wasmparser`(opt). Features:
   `wasm-backend = ["dep:wasm-encoder", "dep:wasmparser",
   "molt-ir/wasm-backend", "molt-tir/wasm-backend"]`,
-  `test-util=["molt-ir/test-util", "molt-tir/test-util"]`.
+  `test-util=["wasm-backend", "molt-ir/test-util", "molt-tir/test-util"]`.
 - `molt-backend/Cargo.toml`: `molt-backend-wasm = { path = "...", optional = true }`;
   `wasm-backend = ["dep:molt-backend-wasm", "molt-backend-wasm/wasm-backend"]`. Delete the inline
   `wasm-encoder`/`wasmparser` deps if the driver no longer uses them.
 - `molt-backend/src/lib.rs`: `#[cfg(feature="wasm-backend")] pub use
-  molt_backend_wasm::wasm;` (preserves
-  `molt_backend::wasm::{WasmBackend, WasmCompileOptions}` that main.rs:16 imports).
+  molt_backend_wasm::{WasmBackend, WasmCompileOptions, WasmProfile};` (keeps the
+  public WASM surface explicit instead of exposing the backend-internal
+  `wasm` module).
 
 ### 7.3 Visibility / gates / parallelization
-Widen what main.rs names (`wasm::{WasmBackend, WasmCompileOptions}`) + what the wasm `[[test]]`
+Widen what main.rs names (`WasmBackend`, `WasmCompileOptions`) + what the wasm `[[test]]`
 integration tests reach. The wasm `[[test]]` entries (molt-backend/Cargo.toml:79-117:
 `wasm_compilation`, `wasm_import_registry`, `wasm_import_filtering`, `wasm_data_segments`,
 `wasm_type_section`, `wasm_fastcall_lowering`, `jumpful_malformed_control`) MOVE to

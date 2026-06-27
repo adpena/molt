@@ -58,6 +58,12 @@ for the crate-extraction and incremental-build routing plan.
 - `molt-backend-wasm` owns WASM instruction projection and the `wasm-encoder`
   dependency; `molt-tir` remains the backend-neutral TIR/LIR/representation
   authority and no longer carries backend-specific WASM codegen.
+- Backend source identity for rebuild freshness and module/function cache keys
+  is derived from `runtime/molt-backend/Cargo.toml` feature edges plus local
+  path-dependency closure. A WASM edit tracks `molt-backend-wasm`, native/LLVM
+  edits track `molt-backend-native`, and shared `molt-ir`/`molt-tir`/
+  `molt-passes`/`molt-codegen-abi` edits invalidate the backend lanes that
+  actually depend on them.
 - Remaining structural work: finish runtime facade composition, finish per-crate
   intrinsic registries, isolate native backend codegen into its own crate, and
   preserve deterministic cache/build-state custody across concurrent agents.

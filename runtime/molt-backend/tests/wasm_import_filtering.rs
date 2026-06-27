@@ -7,8 +7,8 @@
 use std::collections::BTreeSet;
 use std::sync::Mutex;
 
-use molt_backend::wasm::{WasmBackend, WasmCompileOptions, WasmProfile};
 use molt_backend::{FunctionIR, OpIR, SimpleIR};
+use molt_backend::{WasmBackend, WasmCompileOptions, WasmProfile};
 use wasmparser::{ExternalKind, Parser, Payload, TypeRef};
 
 static ENV_LOCK: Mutex<()> = Mutex::new(());
