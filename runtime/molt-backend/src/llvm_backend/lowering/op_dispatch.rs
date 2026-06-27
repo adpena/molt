@@ -3,7 +3,7 @@ use super::*;
 impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     pub(super) fn lower_op(&mut self, source_block: BlockId, op: &crate::tir::ops::TirOp) {
         match op.opcode {
-            // ── Constants ──
+            // -- Constants --
             OpCode::ConstInt => self.emit_const_int(op),
             OpCode::ConstFloat => self.emit_const_float(op),
             OpCode::ConstBool => self.emit_const_bool(op),
@@ -12,7 +12,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             OpCode::ConstBigInt => self.emit_const_bigint(op),
             OpCode::ConstBytes => self.emit_const_bytes(op),
 
-            // ── Arithmetic (type-specialized) ──
+            // -- Arithmetic (type-specialized) --
             OpCode::Add | OpCode::InplaceAdd => self.emit_binary_arith(op, "add"),
             OpCode::CheckedAdd => self.emit_checked_add(op),
             OpCode::CheckedMul => self.emit_checked_mul(op),
@@ -23,7 +23,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             OpCode::Mod => self.emit_binary_arith(op, "mod"),
             OpCode::Pow => self.emit_binary_arith(op, "pow"),
 
-            // ── Unary ──
+            // -- Unary --
             OpCode::Neg => self.emit_unary(op, "neg"),
             OpCode::Pos => {
                 // Pos is identity for numeric types.
@@ -36,7 +36,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             }
             OpCode::Not => self.emit_unary(op, "not"),
 
-            // ── Comparison (type-specialized) ──
+            // -- Comparison (type-specialized) --
             OpCode::Eq => self.emit_comparison(op, "eq"),
             OpCode::Ne => self.emit_comparison(op, "ne"),
             OpCode::Lt => self.emit_comparison(op, "lt"),
@@ -46,7 +46,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             OpCode::Is | OpCode::IsNot => self.emit_identity(op),
             OpCode::In | OpCode::NotIn => self.emit_containment(op),
 
-            // ── Bitwise ──
+            // -- Bitwise --
             OpCode::BitAnd => self.emit_bitwise(op, "bit_and"),
             OpCode::BitOr => self.emit_bitwise(op, "bit_or"),
             OpCode::BitXor => self.emit_bitwise(op, "bit_xor"),
@@ -54,7 +54,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             OpCode::Shl => self.emit_bitwise(op, "lshift"),
             OpCode::Shr => self.emit_bitwise(op, "rshift"),
 
-            // ── Boolean ──
+            // -- Boolean --
             OpCode::And | OpCode::Or => {
                 // Frontend BoolOp lowering uses And/Or ops to produce the
                 // selected operand value inside already-structured control flow.
@@ -183,7 +183,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 self.value_types.insert(result_id, TirType::Bool);
             }
 
-            // ── Box/Unbox ──
+            // -- Box/Unbox --
             OpCode::BoxVal => self.emit_box(op),
             OpCode::UnboxVal => self.emit_unbox(op),
             OpCode::TypeGuard => {
@@ -201,7 +201,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 self.value_types.insert(result_id, ty);
             }
 
-            // ── Refcount ──
+            // -- Refcount --
             OpCode::IncRef => {
                 let val = self.resolve(op.operands[0]);
                 let inc_fn = self.ensure_runtime_void_fn("molt_inc_ref_obj", 1);
@@ -257,7 +257,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             // -- Call --
             OpCode::Call => self.emit_call(op),
 
-            // ── DeleteVar local-slot transition ──
+            // -- DeleteVar local-slot transition --
             // DeleteVar defines the local's new SSA value as the missing sentinel
             // operand. Ownership of the previous slot occupant is modeled by the
             // drop fact plane (DecRef / explicit consumed operands), not by LLVM
@@ -291,7 +291,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 }
             }
 
-            // ── SSA Copy ──
+            // -- SSA Copy --
             // Also serves as the fallback for unknown frontend ops that were
             // mapped to Copy by the SSA converter.  Handle all combinations of
             // operand/result counts gracefully:
@@ -369,7 +369,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         ));
                     } else {
                         // A `CopyLowering::FreshValue` reached the passthrough: the
-                        // exact classifier↔backend drift this gate exists to catch.
+                        // exact classifier?backend drift this gate exists to catch.
                         self.record_fatal(format!(
                             "fresh-value SimpleIR op `{kind}` (operands={}, \
                              results={}) reached the LLVM `Copy` passthrough — \
@@ -419,7 +419,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 }
             }
 
-            // ── Allocation ──
+            // -- Allocation --
             OpCode::Alloc => {
                 let result_id = op.results[0];
                 let size = self.resolve(op.operands[0]);
@@ -445,7 +445,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
 
             OpCode::CallBuiltin => self.emit_call_builtin(op),
 
-            // ── OrdAt: fused ord(container[index]) ──
+            // -- OrdAt: fused ord(container[index]) --
             OpCode::OrdAt => {
                 if op.operands.len() < 2 {
                     return;
@@ -466,7 +466,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 }
             }
 
-            // ── StackAlloc: alloca for stack-resident slots ──
+            // -- StackAlloc: alloca for stack-resident slots --
             // attrs: { "type": "i64" | "dynbox" | ... }
             // result: pointer stored as i64 (ptrtoint)
             OpCode::StackAlloc => {
@@ -487,323 +487,37 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 }
             }
 
-            // ── Free: stack-allocated slots are freed automatically — no-op ──
+            // -- Free: stack-allocated slots are freed automatically — no-op --
             OpCode::Free => {
                 // Stack memory is reclaimed by the function epilogue; nothing to emit.
             }
 
-            // ── BuildList: [item0, item1, ...] ──
+            // -- BuildList: [item0, item1, ...] --
             // Strategy: list_builder_new(capacity) + append + finish.
-            OpCode::BuildList => {
-                let i64_ty = self.backend.context.i64_type();
-                let n = op.operands.len() as u64;
-                let list_new_fn = self
-                    .backend
-                    .module
-                    .get_function("molt_list_builder_new")
-                    .unwrap();
-                let builder = self
-                    .backend
-                    .builder
-                    .build_call(list_new_fn, &[i64_ty.const_int(n, false).into()], "list")
-                    .unwrap()
-                    .try_as_basic_value()
-                    .unwrap_basic();
-                let push_fn = self
-                    .backend
-                    .module
-                    .get_function("molt_list_builder_append")
-                    .unwrap();
-                for &item_id in &op.operands {
-                    let item_i64 = self.materialize_dynbox_operand(item_id);
-                    self.backend
-                        .builder
-                        .build_call(push_fn, &[builder.into(), item_i64.into()], "list_push")
-                        .unwrap();
-                }
-                let finish_fn = self
-                    .backend
-                    .module
-                    .get_function("molt_list_builder_finish")
-                    .unwrap();
-                let list = self
-                    .backend
-                    .builder
-                    .build_call(finish_fn, &[builder.into()], "list_finish")
-                    .unwrap()
-                    .try_as_basic_value()
-                    .unwrap_basic();
-                if let Some(&result_id) = op.results.first() {
-                    self.values.insert(result_id, list);
-                    self.value_types.insert(result_id, TirType::DynBox);
-                }
-            }
+            OpCode::BuildList => self.emit_build_list(op),
 
-            // ── BuildDict: {k0: v0, k1: v1, ...} ──
+            // -- BuildDict: {k0: v0, k1: v1, ...} --
             // operands: [k0, v0, k1, v1, ...]  (pairs)
-            OpCode::BuildDict => {
-                let i64_ty = self.backend.context.i64_type();
-                let n_pairs = (op.operands.len() / 2) as u64;
-                let dict_new_fn = self
-                    .backend
-                    .module
-                    .get_function("molt_dict_builder_new")
-                    .unwrap();
-                let builder = self
-                    .backend
-                    .builder
-                    .build_call(
-                        dict_new_fn,
-                        &[i64_ty.const_int(n_pairs, false).into()],
-                        "dict_builder",
-                    )
-                    .unwrap()
-                    .try_as_basic_value()
-                    .unwrap_basic();
-                let dict_set_fn = self
-                    .backend
-                    .module
-                    .get_function("molt_dict_builder_append")
-                    .unwrap();
-                let mut i = 0;
-                while i + 1 < op.operands.len() {
-                    let k_i64 = self.materialize_dynbox_operand(op.operands[i]);
-                    let v_i64 = self.materialize_dynbox_operand(op.operands[i + 1]);
-                    self.backend
-                        .builder
-                        .build_call(
-                            dict_set_fn,
-                            &[builder.into(), k_i64.into(), v_i64.into()],
-                            "dict_append",
-                        )
-                        .unwrap();
-                    i += 2;
-                }
-                let finish_fn = self
-                    .backend
-                    .module
-                    .get_function("molt_dict_builder_finish")
-                    .unwrap();
-                let dict = self
-                    .backend
-                    .builder
-                    .build_call(finish_fn, &[builder.into()], "dict_finish")
-                    .unwrap()
-                    .try_as_basic_value()
-                    .unwrap_basic();
-                if let Some(&result_id) = op.results.first() {
-                    self.values.insert(result_id, dict);
-                    self.value_types.insert(result_id, TirType::DynBox);
-                }
-            }
+            OpCode::BuildDict => self.emit_build_dict(op),
 
-            // ── BuildTuple: (item0, item1, ...) ──
-            OpCode::BuildTuple => {
-                let i64_ty = self.backend.context.i64_type();
-                let n = op.operands.len() as u64;
-                let tuple_builder_new = self
-                    .backend
-                    .module
-                    .get_function("molt_list_builder_new")
-                    .unwrap();
-                let builder = self
-                    .backend
-                    .builder
-                    .build_call(
-                        tuple_builder_new,
-                        &[i64_ty.const_int(n, false).into()],
-                        "tuple_builder",
-                    )
-                    .unwrap()
-                    .try_as_basic_value()
-                    .unwrap_basic();
-                let push_fn = self
-                    .backend
-                    .module
-                    .get_function("molt_list_builder_append")
-                    .unwrap();
-                for &item_id in &op.operands {
-                    let item_i64 = self.materialize_dynbox_operand(item_id);
-                    self.backend
-                        .builder
-                        .build_call(push_fn, &[builder.into(), item_i64.into()], "tup_push")
-                        .unwrap();
-                }
-                let finish_fn = self
-                    .backend
-                    .module
-                    .get_function("molt_tuple_builder_finish")
-                    .unwrap();
-                let tup = self
-                    .backend
-                    .builder
-                    .build_call(finish_fn, &[builder.into()], "tuple_finish")
-                    .unwrap()
-                    .try_as_basic_value()
-                    .unwrap_basic();
-                if let Some(&result_id) = op.results.first() {
-                    self.values.insert(result_id, tup);
-                    self.value_types.insert(result_id, TirType::DynBox);
-                }
-            }
+            // -- BuildTuple: (item0, item1, ...) --
+            OpCode::BuildTuple => self.emit_build_tuple(op),
 
-            // ── BuildSet: {item0, item1, ...} ──
-            OpCode::BuildSet => {
-                let i64_ty = self.backend.context.i64_type();
-                let n = op.operands.len() as u64;
-                let set_new_fn = self
-                    .backend
-                    .module
-                    .get_function("molt_set_builder_new")
-                    .unwrap();
-                let builder = self
-                    .backend
-                    .builder
-                    .build_call(
-                        set_new_fn,
-                        &[i64_ty.const_int(n, false).into()],
-                        "set_builder",
-                    )
-                    .unwrap()
-                    .try_as_basic_value()
-                    .unwrap_basic();
-                let push_fn = self
-                    .backend
-                    .module
-                    .get_function("molt_set_builder_append")
-                    .unwrap();
-                for &item_id in &op.operands {
-                    let item_i64 = self.materialize_dynbox_operand(item_id);
-                    self.backend
-                        .builder
-                        .build_call(push_fn, &[builder.into(), item_i64.into()], "set_append")
-                        .unwrap();
-                }
-                let finish_fn = self
-                    .backend
-                    .module
-                    .get_function("molt_set_builder_finish")
-                    .unwrap();
-                let set = self
-                    .backend
-                    .builder
-                    .build_call(finish_fn, &[builder.into()], "set_finish")
-                    .unwrap()
-                    .try_as_basic_value()
-                    .unwrap_basic();
-                if let Some(&result_id) = op.results.first() {
-                    self.values.insert(result_id, set);
-                    self.value_types.insert(result_id, TirType::DynBox);
-                }
-            }
+            // -- BuildSet: {item0, item1, ...} --
+            OpCode::BuildSet => self.emit_build_set(op),
 
-            // ── BuildSlice: slice(start, stop, step) ──
+            // -- BuildSlice: slice(start, stop, step) --
             // operands: [start, stop, step]   (already declared as molt_slice_new)
-            OpCode::BuildSlice => {
-                let i64_ty = self.backend.context.i64_type();
-                let none_bits = nanbox::QNAN | nanbox::TAG_NONE;
-                let none_val: BasicValueEnum<'ctx> = i64_ty.const_int(none_bits, false).into();
+            OpCode::BuildSlice => self.emit_build_slice(op),
 
-                let start = if !op.operands.is_empty() {
-                    let v = self.resolve(op.operands[0]);
-                    self.ensure_i64(v).into()
-                } else {
-                    none_val
-                };
-                let stop = if op.operands.len() > 1 {
-                    let v = self.resolve(op.operands[1]);
-                    self.ensure_i64(v).into()
-                } else {
-                    none_val
-                };
-                let step = if op.operands.len() > 2 {
-                    let v = self.resolve(op.operands[2]);
-                    self.ensure_i64(v).into()
-                } else {
-                    none_val
-                };
+            // -- GetIter: iter(obj) --
+            OpCode::GetIter => self.emit_get_iter(op),
 
-                let slice_fn = self.backend.module.get_function("molt_slice_new").unwrap();
-                let result = self
-                    .backend
-                    .builder
-                    .build_call(slice_fn, &[start.into(), stop.into(), step.into()], "slice")
-                    .unwrap()
-                    .try_as_basic_value()
-                    .unwrap_basic();
-                if let Some(&result_id) = op.results.first() {
-                    self.values.insert(result_id, result);
-                    self.value_types.insert(result_id, TirType::DynBox);
-                }
-            }
+            // -- IterNext: next(iter) -> value (or StopIteration sentinel) --
+            OpCode::IterNext => self.emit_iter_next(op),
 
-            // ── GetIter: iter(obj) ──
-            OpCode::GetIter => {
-                let obj = self.resolve(op.operands[0]);
-                let obj_i64 = self.ensure_i64(obj);
-                let get_iter_fn = self.backend.module.get_function("molt_get_iter").unwrap();
-                let result = self
-                    .backend
-                    .builder
-                    .build_call(get_iter_fn, &[obj_i64.into()], "get_iter")
-                    .unwrap()
-                    .try_as_basic_value()
-                    .unwrap_basic();
-                if let Some(&result_id) = op.results.first() {
-                    self.values.insert(result_id, result);
-                    self.value_types.insert(result_id, TirType::DynBox);
-                }
-            }
-
-            // ── IterNext: next(iter) -> value (or StopIteration sentinel) ──
-            OpCode::IterNext => {
-                let iter = self.resolve(op.operands[0]);
-                let iter_i64 = self.ensure_i64(iter);
-                let iter_next_fn = self.backend.module.get_function("molt_iter_next").unwrap();
-                let result = self
-                    .backend
-                    .builder
-                    .build_call(iter_next_fn, &[iter_i64.into()], "iter_next")
-                    .unwrap()
-                    .try_as_basic_value()
-                    .unwrap_basic();
-                if let Some(&result_id) = op.results.first() {
-                    self.values.insert(result_id, result);
-                    self.value_types.insert(result_id, TirType::DynBox);
-                }
-            }
-
-            // ── ForIter: advance iterator, returning next value or exhaustion sentinel ──
-            OpCode::ForIter => {
-                // Vectorization hint: when `vectorize = true` is set on this op (by the
-                // vectorize analysis pass), the enclosing loop body is safe to vectorize.
-                //
-                // Per-loop vectorization metadata (`!{!"llvm.loop.vectorize.enable", i1 1}`)
-                // requires attaching an MDNode to the loop back-edge branch instruction.
-                // The inkwell API does not expose `LLVMSetMetadata` for branch instructions
-                // nor the `MDNode`/`MDString` constructors needed to build loop metadata.
-                // Vectorization is still enabled at the function level via `-march=native`
-                // in the target machine (which enables +neon on ARM / +avx2 on x86), so
-                // LLVM's loop vectorizer will analyze and vectorize eligible loops anyway.
-                // To attach per-loop metadata, a raw `llvm-sys::LLVMSetMetadata` call on
-                // the back-edge `BranchInst` would be needed.
-                let _ = has_attr(op, "vectorize");
-
-                let iter = self.resolve(op.operands[0]);
-                let iter_i64 = self.ensure_i64(iter);
-                let for_iter_fn = self.backend.module.get_function("molt_for_iter").unwrap();
-                let result = self
-                    .backend
-                    .builder
-                    .build_call(for_iter_fn, &[iter_i64.into()], "for_iter")
-                    .unwrap()
-                    .try_as_basic_value()
-                    .unwrap_basic();
-                if let Some(&result_id) = op.results.first() {
-                    self.values.insert(result_id, result);
-                    self.value_types.insert(result_id, TirType::DynBox);
-                }
-            }
+            // -- ForIter: advance iterator, returning next value or exhaustion sentinel --
+            OpCode::ForIter => self.emit_for_iter(op),
 
             // -- Async / generator / channel state machine --
             OpCode::AllocTask => self.emit_alloc_task(op),
@@ -833,7 +547,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 }
             }
 
-            // ── WarnStderr: side-effecting diagnostic emit ──
+            // -- WarnStderr: side-effecting diagnostic emit --
             OpCode::WarnStderr => {
                 let msg = self.resolve(op.operands[0]);
                 let msg_i64 = self.ensure_i64(msg);
@@ -858,7 +572,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 }
             }
 
-            // ── ExceptionPending: read the runtime exception-pending flag as
+            // -- ExceptionPending: read the runtime exception-pending flag as
             //    a raw i64 boolean (`molt_exception_pending() != 0`).  Produced
             //    by `loop_break_if_exception` and consumed as the condition of
             //    the loop-exit CondBranch that breaks an iterator-consumer loop
@@ -896,7 +610,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 }
             }
 
-            // ── FunctionDefaultsVersion: read a function object's
+            // -- FunctionDefaultsVersion: read a function object's
             //    __defaults__/__kwdefaults__ mutation version stamp as a boxed
             //    inline int (`molt_function_defaults_version(func)`).  Produced
             //    by the compile-time defaults-devirt deopt guard and consumed by
@@ -924,7 +638,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 }
             }
 
-            // ── CheckException: inspect the current exception state ──
+            // -- CheckException: inspect the current exception state --
             OpCode::CheckException => {
                 let check_fn = self
                     .backend
@@ -1013,7 +727,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 self.backend.builder.position_at_end(continue_bb);
             }
 
-            // ── Import: import module by name ──
+            // -- Import: import module by name --
             OpCode::Import => {
                 let result_id = op.results[0];
                 let name = if let Some(&name_id) = op.operands.first() {
@@ -1047,7 +761,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 self.value_types.insert(result_id, TirType::DynBox);
             }
 
-            // ── ImportFrom: from module import name ──
+            // -- ImportFrom: from module import name --
             // operands: [module, attr_name]
             OpCode::ImportFrom => {
                 let result = self.call_runtime_2_boxed(
@@ -1061,7 +775,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 }
             }
 
-            // ── ModuleCacheGet: module-cache lookup by name ──
+            // -- ModuleCacheGet: module-cache lookup by name --
             // operands: [module_name]
             OpCode::ModuleCacheGet => {
                 let result_id = op.results[0];
@@ -1078,7 +792,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 self.value_types.insert(result_id, TirType::DynBox);
             }
 
-            // ── ModuleCacheSet: module-cache mutation by name ──
+            // -- ModuleCacheSet: module-cache mutation by name --
             // operands: [module_name, module]
             OpCode::ModuleCacheSet => {
                 let set_fn = self.ensure_runtime_i64_fn("molt_module_cache_set", 2);
@@ -1101,7 +815,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 }
             }
 
-            // ── ModuleCacheDel: module-cache deletion by name ──
+            // -- ModuleCacheDel: module-cache deletion by name --
             // operands: [module_name]
             OpCode::ModuleCacheDel => {
                 let del_fn = self.ensure_runtime_i64_fn("molt_module_cache_del", 1);
@@ -1119,7 +833,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 }
             }
 
-            // ── ModuleGetAttr: module attribute read ──
+            // -- ModuleGetAttr: module attribute read --
             // operands: [module, attr_name]
             OpCode::ModuleGetAttr => {
                 let result = self.call_runtime_2_boxed(
@@ -1133,7 +847,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 }
             }
 
-            // ── ModuleImportFrom: `from M import name` binding ──
+            // -- ModuleImportFrom: `from M import name` binding --
             // operands: [module, attr_name]. CPython IMPORT_FROM semantics:
             // ImportError (not AttributeError) on miss, with a sys.modules
             // submodule fallback (see molt_module_import_from).
@@ -1149,7 +863,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 }
             }
 
-            // ── ModuleGetGlobal: CPython-style module global lookup ──
+            // -- ModuleGetGlobal: CPython-style module global lookup --
             // operands: [module, global_name]
             OpCode::ModuleGetGlobal => {
                 let result = self.call_runtime_2_boxed(
@@ -1163,7 +877,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 }
             }
 
-            // ── ModuleGetName: module name/attribute lookup helper ──
+            // -- ModuleGetName: module name/attribute lookup helper --
             // operands: [module, attr_name]
             OpCode::ModuleGetName => {
                 let result = self.call_runtime_2_boxed(
@@ -1177,7 +891,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 }
             }
 
-            // ── ModuleSetAttr: module attribute mutation ──
+            // -- ModuleSetAttr: module attribute mutation --
             // operands: [module, attr_name, value]
             OpCode::ModuleSetAttr => {
                 let set_fn = self.ensure_runtime_i64_fn("molt_module_set_attr", 3);
@@ -1201,7 +915,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 }
             }
 
-            // ── ModuleDelGlobal: CPython-style module global deletion ──
+            // -- ModuleDelGlobal: CPython-style module global deletion --
             // operands: [module, global_name]
             OpCode::ModuleDelGlobal => {
                 let result = self.call_runtime_2_boxed(
@@ -1226,7 +940,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 }
             }
 
-            // ── SCF dialect ops ──
+            // -- SCF dialect ops --
             // Structured control flow ops are desugared into LLVM basic blocks.
             // ScfIf uses conditional branches to then/else blocks with a merge phi.
             // ScfFor/ScfWhile delegate to runtime helpers since full loop lowering
@@ -1451,7 +1165,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 }
             }
 
-            // ── Deopt: transfer execution back to interpreter ──
+            // -- Deopt: transfer execution back to interpreter --
             OpCode::Deopt => {
                 let i64_ty = self.backend.context.i64_type();
                 let frame_bits = if !op.operands.is_empty() {
@@ -1528,45 +1242,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     }
                 }
             }
-            OpCode::IterNextUnboxed => {
-                let iter_bits = self.materialize_dynbox_operand(op.operands[0]);
-                let i64_ty = self.backend.context.i64_type();
-                let val_ptr = self
-                    .backend
-                    .builder
-                    .build_alloca(i64_ty, "iter_next_unboxed_value")
-                    .unwrap();
-                let val_ptr_bits = self
-                    .backend
-                    .builder
-                    .build_ptr_to_int(val_ptr, i64_ty, "iter_next_unboxed_value_ptr")
-                    .unwrap();
-                let iter_next_fn = self.ensure_runtime_i64_fn("molt_iter_next_unboxed", 2);
-                let done_bits = self
-                    .backend
-                    .builder
-                    .build_call(
-                        iter_next_fn,
-                        &[iter_bits.into(), val_ptr_bits.into()],
-                        "iter_next_unboxed",
-                    )
-                    .unwrap()
-                    .try_as_basic_value()
-                    .unwrap_basic();
-                let value_bits = self
-                    .backend
-                    .builder
-                    .build_load(i64_ty, val_ptr, "iter_next_unboxed_value_load")
-                    .unwrap();
-                if let Some(&value_id) = op.results.first() {
-                    self.values.insert(value_id, value_bits);
-                    self.value_types.insert(value_id, TirType::DynBox);
-                }
-                if let Some(&done_id) = op.results.get(1) {
-                    self.values.insert(done_id, done_bits);
-                    self.value_types.insert(done_id, TirType::DynBox);
-                }
-            }
+            OpCode::IterNextUnboxed => self.emit_iter_next_unboxed(op),
             OpCode::ObjectNewBound | OpCode::ObjectNewBoundStack => {
                 let Some(&class_id) = op.operands.first() else {
                     panic!("{:?} requires class operand", op.opcode);
