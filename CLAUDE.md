@@ -511,7 +511,9 @@ export MOLT_SESSION_ID="agent-1"  # MUST come before any molt or cargo command
 **Molt developer build artifacts go on an external drive, never `C:`.** This is
 a development self-protection rule for agents and local Molt maintainers, not a
 user-facing compile contract. Real users may build in place, use Cargo defaults,
-or pass their own target/output flags.
+or pass their own target/output flags. Do not make external artifact placement a
+required public CLI default unless the user explicitly opts in with a flag,
+environment variable, or developer wrapper.
 
 Use the DX resolver (`molt dx env`, `molt dx run`, `tools/dev.py`, or
 `tools/run_context_env.py --prefer-external-artifacts`) before build/test/bench
