@@ -46,7 +46,6 @@ from molt.cli.runtime_features import (
     _wasm_runtime_feature_plan,
 )
 from molt.cli.runtime_fingerprints import (
-    _inspect_wasm_binary,
     _read_runtime_fingerprint,
     _runtime_artifact_fingerprint_matches,
     _runtime_fingerprint,
@@ -67,6 +66,7 @@ from molt.cli.runtime_wasm_validation import (
     _write_runtime_wasm_integrity_sidecar,
 )
 from molt.cli.models import _RuntimeArtifactState
+from molt.wasm_artifact import inspect_wasm_binary as _inspect_wasm_binary
 
 
 _RUNTIME_LIB_VERIFIED: set[

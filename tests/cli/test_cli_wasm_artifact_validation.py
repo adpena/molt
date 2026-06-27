@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 import molt.cli as cli
+import molt.wasm_artifact as wasm_artifact
 from molt.cli import backend_binary as cli_backend_binary
 from tests.cli.process_guard import run_cli_test_process
 
@@ -17,23 +18,39 @@ RUNTIME_FINGERPRINTS = importlib.import_module("molt.cli.runtime_fingerprints")
 RUNTIME_BUILD = importlib.import_module("molt.cli.runtime_build")
 
 
-def test_is_valid_wasm_binary_accepts_wasm_magic(tmp_path: Path) -> None:
+def _valid_wasm_bytes(label: bytes = b"") -> bytes:
+    if not label:
+        return wasm_artifact._build_wasm_sections([])
+    payload = wasm_artifact._write_wasm_string("molt.test") + label
+    return wasm_artifact._build_wasm_sections([(0, payload)])
+
+
+def test_is_valid_wasm_binary_accepts_structural_empty_module(
+    tmp_path: Path,
+) -> None:
     artifact = tmp_path / "ok.wasm"
+    artifact.write_bytes(_valid_wasm_bytes())
+    assert wasm_artifact.inspect_wasm_binary(artifact) == "valid"
+    assert wasm_artifact.is_valid_wasm_binary(artifact)
+
+
+def test_is_valid_wasm_binary_rejects_trailing_junk(tmp_path: Path) -> None:
+    artifact = tmp_path / "junk.wasm"
     artifact.write_bytes(b"\x00asm\x01\x00\x00\x00rest")
-    assert cli._inspect_wasm_binary(artifact) == "valid"
-    assert cli._is_valid_wasm_binary(artifact)
+    assert wasm_artifact.inspect_wasm_binary(artifact) == "invalid"
+    assert not wasm_artifact.is_valid_wasm_binary(artifact)
 
 
 def test_is_valid_wasm_binary_rejects_zero_filled_file(tmp_path: Path) -> None:
     artifact = tmp_path / "bad.wasm"
     artifact.write_bytes(b"\x00" * 32)
-    assert cli._inspect_wasm_binary(artifact) == "invalid"
-    assert not cli._is_valid_wasm_binary(artifact)
+    assert wasm_artifact.inspect_wasm_binary(artifact) == "invalid"
+    assert not wasm_artifact.is_valid_wasm_binary(artifact)
 
 
 def test_inspect_wasm_binary_reports_missing(tmp_path: Path) -> None:
     artifact = tmp_path / "missing.wasm"
-    assert cli._inspect_wasm_binary(artifact) == "missing"
+    assert wasm_artifact.inspect_wasm_binary(artifact) == "missing"
 
 
 def test_wasm_runtime_recovery_target_root_suffix(tmp_path: Path) -> None:
@@ -118,7 +135,10 @@ def test_ensure_runtime_wasm_recovers_from_invalid_primary_artifact(
     # so stub the two post-build ABI validators (same pattern as the other
     # reloc=False tests in this module).
     monkeypatch.setattr(
-        RUNTIME_BUILD, "_runtime_wasm_missing_exports", lambda path, required: set(), raising=True
+        RUNTIME_BUILD,
+        "_runtime_wasm_missing_exports",
+        lambda path, required: set(),
+        raising=True,
     )
     monkeypatch.setattr(
         RUNTIME_BUILD,
@@ -148,7 +168,7 @@ def test_ensure_runtime_wasm_recovers_from_invalid_primary_artifact(
         if len(seen_target_roots) == 1:
             src.write_bytes(b"\x00" * 64)
         else:
-            src.write_bytes(b"\x00asm\x01\x00\x00\x00ok")
+            src.write_bytes(_valid_wasm_bytes(b"ok"))
         return subprocess.CompletedProcess(cmd, 0, "", ""), src
 
     monkeypatch.setattr(
@@ -166,7 +186,7 @@ def test_ensure_runtime_wasm_recovers_from_invalid_primary_artifact(
         cargo_timeout=5.0,
         project_root=project_root,
     )
-    assert cli._is_valid_wasm_binary(runtime_wasm)
+    assert wasm_artifact.is_valid_wasm_binary(runtime_wasm)
     assert len(seen_target_roots) == 2
     assert seen_target_roots[0] == primary_target
     assert seen_target_roots[1] == RUNTIME_BUILD._wasm_runtime_recovery_target_root(
@@ -217,7 +237,10 @@ def test_ensure_runtime_wasm_uses_fallback_profile_when_release_artifacts_invali
     # stub the two post-build ABI validators (same pattern as the other
     # reloc=False tests in this module).
     monkeypatch.setattr(
-        RUNTIME_BUILD, "_runtime_wasm_missing_exports", lambda path, required: set(), raising=True
+        RUNTIME_BUILD,
+        "_runtime_wasm_missing_exports",
+        lambda path, required: set(),
+        raising=True,
     )
     monkeypatch.setattr(
         RUNTIME_BUILD,
@@ -248,7 +271,7 @@ def test_ensure_runtime_wasm_uses_fallback_profile_when_release_artifacts_invali
         src = target_root / "wasm32-wasip1" / profile_dir / "molt_runtime.wasm"
         src.parent.mkdir(parents=True, exist_ok=True)
         if profile == "wasm-release-fallback":
-            src.write_bytes(b"\x00asm\x01\x00\x00\x00ok")
+            src.write_bytes(_valid_wasm_bytes(b"ok"))
         else:
             src.write_bytes(b"\x00" * 64)
         return subprocess.CompletedProcess(cmd, 0, "", ""), src
@@ -268,14 +291,16 @@ def test_ensure_runtime_wasm_uses_fallback_profile_when_release_artifacts_invali
         cargo_timeout=5.0,
         project_root=project_root,
     )
-    assert cli._is_valid_wasm_binary(runtime_wasm)
+    assert wasm_artifact.is_valid_wasm_binary(runtime_wasm)
     assert seen_profiles == [
         "wasm-release",
         "wasm-release",
         "wasm-release-fallback",
     ]
     assert seen_targets[0] == primary_target
-    assert seen_targets[1] == RUNTIME_BUILD._wasm_runtime_recovery_target_root(primary_target)
+    assert seen_targets[1] == RUNTIME_BUILD._wasm_runtime_recovery_target_root(
+        primary_target
+    )
 
 
 def test_ensure_runtime_wasm_rebuilds_when_feature_shape_changes_even_if_artifact_is_newer(
@@ -287,7 +312,7 @@ def test_ensure_runtime_wasm_rebuilds_when_feature_shape_changes_even_if_artifac
     target_root = tmp_path / "target"
     fingerprint_path = tmp_path / "fingerprint.json"
     runtime_wasm.parent.mkdir(parents=True, exist_ok=True)
-    runtime_wasm.write_bytes(b"\x00asm\x01\x00\x00\x00old")
+    runtime_wasm.write_bytes(_valid_wasm_bytes(b"old"))
     RUNTIME_FINGERPRINTS._write_runtime_fingerprint(
         fingerprint_path,
         {"hash": "old-shape"},
@@ -343,7 +368,7 @@ def test_ensure_runtime_wasm_rebuilds_when_feature_shape_changes_even_if_artifac
         target_root = target_root_override or cli._cargo_target_root(root)
         src = target_root / "wasm32-wasip1" / "dev-fast" / "molt_runtime.wasm"
         src.parent.mkdir(parents=True, exist_ok=True)
-        src.write_bytes(b"\x00asm\x01\x00\x00\x00rebuilt")
+        src.write_bytes(_valid_wasm_bytes(b"rebuilt"))
         build_calls.append((tuple(cmd), src))
         return subprocess.CompletedProcess(cmd, 0), src
 
@@ -369,7 +394,7 @@ def test_ensure_runtime_wasm_rebuilds_when_feature_shape_changes_even_if_artifac
     assert "--no-default-features" in cmd
     cmd_features = set(cmd[cmd.index("--features") + 1].split(","))
     assert "sqlite" not in cmd_features
-    assert runtime_wasm.read_bytes() == b"\x00asm\x01\x00\x00\x00rebuilt"
+    assert runtime_wasm.read_bytes() == _valid_wasm_bytes(b"rebuilt")
 
 
 def test_ensure_runtime_wasm_rebuilds_prebuilt_missing_shared_import_abi(
@@ -382,7 +407,7 @@ def test_ensure_runtime_wasm_rebuilds_prebuilt_missing_shared_import_abi(
     runtime_wasm.parent.mkdir(parents=True, exist_ok=True)
     cargo_runtime = target_root / "wasm32-wasip1" / "dev-fast" / "molt_runtime.wasm"
     cargo_runtime.parent.mkdir(parents=True, exist_ok=True)
-    cargo_runtime.write_bytes(b"\x00asm\x01\x00\x00\x00owned-memory")
+    cargo_runtime.write_bytes(_valid_wasm_bytes(b"owned-memory"))
     runtime_source = project_root / "runtime" / "molt-runtime" / "src" / "lib.rs"
     runtime_source.parent.mkdir(parents=True, exist_ok=True)
     runtime_source.write_text("// runtime source\n", encoding="utf-8")
@@ -390,7 +415,7 @@ def test_ensure_runtime_wasm_rebuilds_prebuilt_missing_shared_import_abi(
         target_root / "wasm32-wasip1" / "dev-fast" / "deps" / "molt_runtime-new.wasm"
     )
     built_src.parent.mkdir(parents=True, exist_ok=True)
-    built_src.write_bytes(b"\x00asm\x01\x00\x00\x00shared-imports")
+    built_src.write_bytes(_valid_wasm_bytes(b"shared-imports"))
 
     monkeypatch.setenv("CARGO_TARGET_DIR", str(target_root))
     monkeypatch.setattr(
@@ -411,7 +436,9 @@ def test_ensure_runtime_wasm_rebuilds_prebuilt_missing_shared_import_abi(
         lambda *args, **kwargs: False,
     )
     monkeypatch.setattr(RUNTIME_BUILD, "_inspect_wasm_binary", lambda path: "valid")
-    monkeypatch.setattr(RUNTIME_BUILD, "_is_valid_runtime_wasm_artifact", lambda path: True)
+    monkeypatch.setattr(
+        RUNTIME_BUILD, "_is_valid_runtime_wasm_artifact", lambda path: True
+    )
     monkeypatch.setattr(
         RUNTIME_BUILD,
         "_is_valid_shared_runtime_wasm_artifact",
@@ -442,7 +469,9 @@ def test_ensure_runtime_wasm_rebuilds_prebuilt_missing_shared_import_abi(
         return subprocess.CompletedProcess(cmd, 0), built_src
 
     monkeypatch.setattr(
-        RUNTIME_BUILD, "_run_runtime_wasm_cargo_build", fake_run_runtime_wasm_cargo_build
+        RUNTIME_BUILD,
+        "_run_runtime_wasm_cargo_build",
+        fake_run_runtime_wasm_cargo_build,
     )
 
     assert RUNTIME_BUILD._ensure_runtime_wasm(
@@ -503,7 +532,10 @@ def test_ensure_runtime_wasm_full_profile_fingerprint_matches_cargo_features(
         raising=True,
     )
     monkeypatch.setattr(
-        cli_backend_binary, "_artifact_newer_than_sources", lambda *args, **kwargs: False, raising=True
+        cli_backend_binary,
+        "_artifact_newer_than_sources",
+        lambda *args, **kwargs: False,
+        raising=True,
     )
     monkeypatch.setattr(
         RUNTIME_BUILD,
@@ -534,7 +566,7 @@ def test_ensure_runtime_wasm_full_profile_fingerprint_matches_cargo_features(
         src_root = target_root_override or cli._cargo_target_root(root)
         src = src_root / "wasm32-wasip1" / profile_dir / "molt_runtime.wasm"
         src.parent.mkdir(parents=True, exist_ok=True)
-        src.write_bytes(b"\x00asm\x01\x00\x00\x00full")
+        src.write_bytes(_valid_wasm_bytes(b"full"))
         return subprocess.CompletedProcess(cmd, 0), src
 
     monkeypatch.setattr(
@@ -581,7 +613,7 @@ def test_ensure_runtime_wasm_skip_rebuild_still_requires_requested_exports(
     project_root.mkdir()
     runtime_wasm = tmp_path / "wasm" / "molt_runtime.wasm"
     runtime_wasm.parent.mkdir(parents=True, exist_ok=True)
-    runtime_wasm.write_bytes(b"\x00asm\x01\x00\x00\x00runtime")
+    runtime_wasm.write_bytes(_valid_wasm_bytes(b"runtime"))
 
     monkeypatch.setenv("MOLT_SKIP_RUNTIME_REBUILD", "1")
     monkeypatch.setattr(
@@ -676,14 +708,18 @@ def test_backend_fingerprint_recomputes_when_rustflags_change(
     project_root = tmp_path / "repo"
     project_root.mkdir()
 
-    monkeypatch.setattr(cli_backend_binary, "_backend_source_paths", lambda *_args: (), raising=True)
+    monkeypatch.setattr(
+        cli_backend_binary, "_backend_source_paths", lambda *_args: (), raising=True
+    )
     monkeypatch.setattr(
         cli,
         "_hash_source_tree_metadata",
         lambda *args, **kwargs: ("same-inputs", 0),
         raising=True,
     )
-    monkeypatch.setattr(cli_backend_binary, "_rustc_version", lambda: "rustc test", raising=True)
+    monkeypatch.setattr(
+        cli_backend_binary, "_rustc_version", lambda: "rustc test", raising=True
+    )
 
     first = cli_backend_binary._backend_fingerprint(
         project_root,
@@ -730,7 +766,10 @@ def test_ensure_runtime_wasm_shared_uses_response_file_for_export_allowlist(
         raising=True,
     )
     monkeypatch.setattr(
-        RUNTIME_BUILD, "_write_runtime_fingerprint", lambda *args, **kwargs: None, raising=True
+        RUNTIME_BUILD,
+        "_write_runtime_fingerprint",
+        lambda *args, **kwargs: None,
+        raising=True,
     )
     monkeypatch.setattr(
         RUNTIME_BUILD,
@@ -782,7 +821,7 @@ def test_ensure_runtime_wasm_shared_uses_response_file_for_export_allowlist(
             effective_target_root / "wasm32-wasip1" / profile_dir / "molt_runtime.wasm"
         )
         artifact.parent.mkdir(parents=True, exist_ok=True)
-        artifact.write_bytes(b"\x00asm\x01\x00\x00\x00shared")
+        artifact.write_bytes(_valid_wasm_bytes(b"shared"))
         return subprocess.CompletedProcess(cmd, 0, "", ""), artifact
 
     monkeypatch.setattr(
@@ -870,7 +909,10 @@ def test_ensure_runtime_wasm_reloc_requests_staticlib_build(
         raising=True,
     )
     monkeypatch.setattr(
-        RUNTIME_BUILD, "_write_runtime_fingerprint", lambda *args, **kwargs: None, raising=True
+        RUNTIME_BUILD,
+        "_write_runtime_fingerprint",
+        lambda *args, **kwargs: None,
+        raising=True,
     )
     monkeypatch.setattr(
         RUNTIME_BUILD,
@@ -919,7 +961,7 @@ def test_ensure_runtime_wasm_reloc_requests_staticlib_build(
         captured["linked_staticlib_path"] = staticlib_path
         captured["export_link_args"] = export_link_args
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_bytes(b"\x00asm\x01\x00\x00\x00reloc")
+        output_path.write_bytes(_valid_wasm_bytes(b"reloc"))
         return True
 
     monkeypatch.setattr(
@@ -961,7 +1003,7 @@ def test_ensure_runtime_wasm_reloc_requests_staticlib_build(
     assert captured["linked_staticlib_path"] == (
         target_root / "wasm32-wasip1" / "release-fast" / "libmolt_runtime.a"
     )
-    assert runtime_wasm.read_bytes() == b"\x00asm\x01\x00\x00\x00reloc"
+    assert runtime_wasm.read_bytes() == _valid_wasm_bytes(b"reloc")
 
 
 def test_link_runtime_staticlib_to_reloc_wasm_uses_absolute_paths(
@@ -976,12 +1018,17 @@ def test_link_runtime_staticlib_to_reloc_wasm_uses_absolute_paths(
     libc.write_bytes(b"libc")
     captured: dict[str, object] = {}
 
-    monkeypatch.setattr(RUNTIME_BUILD.shutil, "which", lambda name: "wasm-ld", raising=True)
+    monkeypatch.setattr(
+        RUNTIME_BUILD.shutil, "which", lambda name: "wasm-ld", raising=True
+    )
     monkeypatch.setattr(
         RUNTIME_BUILD, "_wasm_wasi_libc_archive", lambda: libc, raising=True
     )
     monkeypatch.setattr(
-        RUNTIME_BUILD, "_is_valid_runtime_wasm_artifact", lambda path: True, raising=True
+        RUNTIME_BUILD,
+        "_is_valid_runtime_wasm_artifact",
+        lambda path: True,
+        raising=True,
     )
 
     def fake_run_completed_command(
@@ -998,11 +1045,14 @@ def test_link_runtime_staticlib_to_reloc_wasm_uses_absolute_paths(
         captured["cwd"] = cwd
         output_path = Path(cmd[cmd.index("-o") + 1])
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_bytes(b"\x00asm\x01\x00\x00\x00reloc")
+        output_path.write_bytes(_valid_wasm_bytes(b"reloc"))
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     monkeypatch.setattr(
-        RUNTIME_BUILD, "_run_completed_command", fake_run_completed_command, raising=True
+        RUNTIME_BUILD,
+        "_run_completed_command",
+        fake_run_completed_command,
+        raising=True,
     )
 
     output = Path("runtime") / "molt_runtime_reloc.wasm"
@@ -1052,7 +1102,10 @@ def test_ensure_runtime_wasm_defaults_cargo_incremental_off_and_preserves_explic
         raising=True,
     )
     monkeypatch.setattr(
-        RUNTIME_BUILD, "_write_runtime_fingerprint", lambda *args, **kwargs: None, raising=True
+        RUNTIME_BUILD,
+        "_write_runtime_fingerprint",
+        lambda *args, **kwargs: None,
+        raising=True,
     )
     monkeypatch.setattr(
         RUNTIME_BUILD,
@@ -1061,7 +1114,10 @@ def test_ensure_runtime_wasm_defaults_cargo_incremental_off_and_preserves_explic
         raising=True,
     )
     monkeypatch.setattr(
-        RUNTIME_BUILD, "_runtime_wasm_missing_exports", lambda path, required: set(), raising=True
+        RUNTIME_BUILD,
+        "_runtime_wasm_missing_exports",
+        lambda path, required: set(),
+        raising=True,
     )
     monkeypatch.setattr(
         RUNTIME_BUILD,
@@ -1089,7 +1145,7 @@ def test_ensure_runtime_wasm_defaults_cargo_incremental_off_and_preserves_explic
             effective_target_root / "wasm32-wasip1" / profile_dir / "molt_runtime.wasm"
         )
         artifact.parent.mkdir(parents=True, exist_ok=True)
-        artifact.write_bytes(b"\x00asm\x01\x00\x00\x00ok")
+        artifact.write_bytes(_valid_wasm_bytes(b"ok"))
         return subprocess.CompletedProcess(cmd, 0, "", ""), artifact
 
     monkeypatch.setattr(
@@ -1139,7 +1195,7 @@ def test_link_runtime_staticlib_to_reloc_wasm_does_not_whole_archive_libc(
         captured["cmd"] = list(cmd)
         captured["kwargs"] = dict(kwargs)
         output = Path(cmd[cmd.index("-o") + 1])
-        output.write_bytes(b"\0asm\x01\0\0\0reloc")
+        output.write_bytes(_valid_wasm_bytes(b"reloc"))
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     monkeypatch.setattr(RUNTIME_BUILD.shutil, "which", lambda name: "/usr/bin/wasm-ld")
@@ -1148,7 +1204,10 @@ def test_link_runtime_staticlib_to_reloc_wasm_does_not_whole_archive_libc(
     )
     monkeypatch.setattr(RUNTIME_BUILD, "_run_completed_command", fake_run, raising=True)
     monkeypatch.setattr(
-        RUNTIME_BUILD, "_is_valid_runtime_wasm_artifact", lambda path: True, raising=True
+        RUNTIME_BUILD,
+        "_is_valid_runtime_wasm_artifact",
+        lambda path: True,
+        raising=True,
     )
 
     assert RUNTIME_BUILD._link_runtime_staticlib_to_reloc_wasm(

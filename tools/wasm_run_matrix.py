@@ -72,10 +72,14 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-import harness_memory_guard
-
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SRC_DIR = REPO_ROOT / "src"
+if str(SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(SRC_DIR))
+
+import harness_memory_guard  # noqa: E402
+from molt.wasm_artifact import read_wasm_imports  # noqa: E402
+
 WASM_DIR = REPO_ROOT / "wasm"
 RUN_WASM_JS = WASM_DIR / "run_wasm.js"
 BROWSER_HOST_HTML = WASM_DIR / "browser_host.html"
@@ -461,80 +465,17 @@ def _probe_unsupported_imports(wasm: Path) -> list[str] | None:
     ``env.molt_*_host`` host shim functions which stock CLIs cannot satisfy.
     Returns the list of incompatible imports for diagnostics.
     """
-    try:
-        data = wasm.read_bytes()
-    except OSError:
-        return None
-    if data[:4] != b"\x00asm":
-        return None
-
-    # Minimal WASM import-section parser. We only care about identifying
-    # imports whose (module, name) pair is _not_ wasi_snapshot_preview1 and
-    # not env.memory / env.__indirect_function_table.
-    pos = 8  # skip magic + version
-
-    def _read_u8(p: int) -> tuple[int, int]:
-        return data[p], p + 1
-
-    def _read_uleb(p: int) -> tuple[int, int]:
-        result = 0
-        shift = 0
-        while True:
-            b = data[p]
-            p += 1
-            result |= (b & 0x7F) << shift
-            if (b & 0x80) == 0:
-                return result, p
-            shift += 7
-            if shift > 63:
-                raise ValueError("uleb overflow")
-
-    def _read_name(p: int) -> tuple[str, int]:
-        n, p = _read_uleb(p)
-        s = data[p : p + n].decode("utf-8", errors="replace")
-        return s, p + n
-
     incompatible: list[str] = []
-    while pos < len(data):
-        section_id, pos = _read_u8(pos)
-        section_len, pos = _read_uleb(pos)
-        section_end = pos + section_len
-        if section_id == 2:  # Import section
-            count, pos = _read_uleb(pos)
-            for _ in range(count):
-                module, pos = _read_name(pos)
-                name, pos = _read_name(pos)
-                kind, pos = _read_u8(pos)
-                # Skip the type immediate. 0=func (typeidx u32),
-                # 1=table (reftype u8 + limits), 2=memory (limits),
-                # 3=global (valtype u8 + mut u8).
-                if kind == 0:
-                    _, pos = _read_uleb(pos)
-                elif kind == 1:
-                    pos += 1  # reftype
-                    flags, pos = _read_uleb(pos)
-                    _, pos = _read_uleb(pos)
-                    if flags & 1:
-                        _, pos = _read_uleb(pos)
-                elif kind == 2:
-                    flags, pos = _read_uleb(pos)
-                    _, pos = _read_uleb(pos)
-                    if flags & 1:
-                        _, pos = _read_uleb(pos)
-                elif kind == 3:
-                    pos += 2
-                else:
-                    return None
-                if module == "wasi_snapshot_preview1":
-                    continue
-                if module == "env" and name in {
-                    "memory",
-                    "__indirect_function_table",
-                }:
-                    continue
-                incompatible.append(f"{module}.{name}")
-            return incompatible
-        pos = section_end
+    imports = read_wasm_imports(wasm, on_error="ignore")
+    for wasm_import in imports:
+        if wasm_import.module == "wasi_snapshot_preview1":
+            continue
+        if wasm_import.module == "env" and wasm_import.name in {
+            "memory",
+            "__indirect_function_table",
+        }:
+            continue
+        incompatible.append(f"{wasm_import.module}.{wasm_import.name}")
     return incompatible
 
 

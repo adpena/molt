@@ -5,6 +5,7 @@ import tempfile
 from pathlib import Path
 
 import pytest
+from molt.wasm_artifact import parse_wasm_exports, parse_wasm_imports
 
 
 def _load_wasm_link():
@@ -342,49 +343,19 @@ def _build_host_call_indirect_module() -> bytes:
     return wasm_link._build_sections(sections)
 
 
-def _parse_function_imports(wasm_bytes: bytes) -> list[tuple[str, str]]:
-    imports: list[tuple[str, str]] = []
-    offset = 8
-    while offset < len(wasm_bytes):
-        section_id = wasm_bytes[offset]
-        offset += 1
-        size, offset = wasm_link._read_varuint(wasm_bytes, offset)
-        section_end = offset + size
-        if section_id == 2:
-            count, offset = wasm_link._read_varuint(wasm_bytes, offset)
-            for _ in range(count):
-                module, offset = wasm_link._read_string(wasm_bytes, offset)
-                name, offset = wasm_link._read_string(wasm_bytes, offset)
-                kind = wasm_bytes[offset]
-                offset += 1
-                offset = wasm_link._parse_import_desc(wasm_bytes, offset, kind)
-                if kind == 0:
-                    imports.append((module, name))
-            return imports
-        offset = section_end
-    return imports
+def _function_import_pairs(wasm_bytes: bytes) -> list[tuple[str, str]]:
+    return [
+        (wasm_import.module, wasm_import.name)
+        for wasm_import in parse_wasm_imports(wasm_bytes, on_error="ignore")
+        if wasm_import.kind == 0
+    ]
 
 
-def _parse_function_exports(wasm_bytes: bytes) -> list[tuple[str, int]]:
-    exports: list[tuple[str, int]] = []
-    offset = 8
-    while offset < len(wasm_bytes):
-        section_id = wasm_bytes[offset]
-        offset += 1
-        size, offset = wasm_link._read_varuint(wasm_bytes, offset)
-        section_end = offset + size
-        if section_id == 7:
-            count, offset = wasm_link._read_varuint(wasm_bytes, offset)
-            for _ in range(count):
-                name, offset = wasm_link._read_string(wasm_bytes, offset)
-                kind = wasm_bytes[offset]
-                offset += 1
-                idx, offset = wasm_link._read_varuint(wasm_bytes, offset)
-                if kind == 0:
-                    exports.append((name, idx))
-            return exports
-        offset = section_end
-    return exports
+def _function_export_pairs(wasm_bytes: bytes) -> list[tuple[str, int]]:
+    return [
+        (wasm_export.name, wasm_export.index)
+        for wasm_export in parse_wasm_exports(wasm_bytes, kind=0, on_error="ignore")
+    ]
 
 
 def _parse_code_section_call_targets(wasm_bytes: bytes) -> list[list[int]]:
@@ -1006,10 +977,10 @@ def test_strip_unused_module_function_imports_remaps_indices() -> None:
         module_name="molt_runtime",
     )
 
-    imports_after = _parse_function_imports(stripped)
+    imports_after = _function_import_pairs(stripped)
     assert imports_after == [("molt_runtime", "live_runtime_fn")]
 
-    exports_after = _parse_function_exports(stripped)
+    exports_after = _function_export_pairs(stripped)
     assert exports_after == [("molt_main", 1)]
 
     call_targets = _parse_code_section_call_targets(stripped)

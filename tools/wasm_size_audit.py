@@ -24,24 +24,14 @@ import os
 import sys
 from pathlib import Path
 
-# WASM well-known section IDs.
-SECTION_NAMES: dict[int, str] = {
-    0: "custom",
-    1: "type",
-    2: "import",
-    3: "function",
-    4: "table",
-    5: "memory",
-    6: "global",
-    7: "export",
-    8: "start",
-    9: "element",
-    10: "code",
-    11: "data",
-    12: "data_count",
-}
+SRC_ROOT = Path(__file__).resolve().parents[1] / "src"
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
 
-WASM_MAGIC = b"\x00asm"
+from molt.wasm_artifact import (  # noqa: E402
+    WasmSectionSpan,
+    read_wasm_section_spans,
+)
 
 # Default size budgets (overridable via CLI or env vars).
 # These are chosen to stay well below V8's compilation memory limits:
@@ -51,25 +41,6 @@ WASM_MAGIC = b"\x00asm"
 DEFAULT_TOTAL_BUDGET_MB = 16.0
 DEFAULT_CODE_BUDGET_MB = 10.0
 DEFAULT_DATA_BUDGET_MB = 4.0
-
-
-# ---------------------------------------------------------------------------
-# LEB128 helper
-# ---------------------------------------------------------------------------
-
-
-def _read_leb128_u32(data: bytes, offset: int) -> tuple[int, int]:
-    """Read an unsigned LEB128 value. Returns (value, new_offset)."""
-    result = 0
-    shift = 0
-    while True:
-        byte = data[offset]
-        offset += 1
-        result |= (byte & 0x7F) << shift
-        if (byte & 0x80) == 0:
-            break
-        shift += 7
-    return result, offset
 
 
 def _parse_size_spec(spec: str) -> int:
@@ -87,76 +58,16 @@ def _parse_size_spec(spec: str) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Section parsing
+# Section facts
 # ---------------------------------------------------------------------------
 
 
-class SectionInfo:
-    """Metadata for one WASM section."""
-
-    __slots__ = ("id", "name", "offset", "size", "custom_name")
-
-    def __init__(
-        self, *, id: int, name: str, offset: int, size: int, custom_name: str = ""
-    ):
-        self.id = id
-        self.name = name
-        self.offset = offset
-        self.size = size
-        self.custom_name = custom_name
-
-    def to_dict(self) -> dict:
-        d: dict = {
-            "id": self.id,
-            "name": self.name,
-            "offset": self.offset,
-            "size": self.size,
-        }
-        if self.custom_name:
-            d["custom_name"] = self.custom_name
-        return d
-
-
-def parse_sections(wasm_path: Path) -> list[SectionInfo]:
+def parse_sections(wasm_path: Path) -> list[WasmSectionSpan]:
     """Parse all WASM binary sections and return metadata."""
-    data = wasm_path.read_bytes()
-    if len(data) < 8 or data[:4] != WASM_MAGIC:
-        raise ValueError(f"{wasm_path} is not a valid WASM binary")
-
-    offset = 8  # skip magic + version
-    sections: list[SectionInfo] = []
-
-    while offset < len(data):
-        sec_id = data[offset]
-        offset += 1
-        sec_size, offset = _read_leb128_u32(data, offset)
-        sec_start = offset
-
-        name = SECTION_NAMES.get(sec_id, f"unknown({sec_id})")
-        custom_name = ""
-
-        # For custom sections, read the name field
-        if sec_id == 0 and sec_size > 0:
-            try:
-                name_len, name_offset = _read_leb128_u32(data, sec_start)
-                custom_name = data[name_offset : name_offset + name_len].decode(
-                    "utf-8", errors="replace"
-                )
-            except (IndexError, UnicodeDecodeError):
-                custom_name = "<unparseable>"
-
-        sections.append(
-            SectionInfo(
-                id=sec_id,
-                name=name,
-                offset=sec_start,
-                size=sec_size,
-                custom_name=custom_name,
-            )
-        )
-        offset += sec_size
-
-    return sections
+    try:
+        return read_wasm_section_spans(wasm_path)
+    except ValueError as exc:
+        raise ValueError(f"{wasm_path} is not a valid WASM binary") from exc
 
 
 # ---------------------------------------------------------------------------
@@ -164,7 +75,9 @@ def parse_sections(wasm_path: Path) -> list[SectionInfo]:
 # ---------------------------------------------------------------------------
 
 
-def suggest_optimisations(sections: list[SectionInfo], total_bytes: int) -> list[str]:
+def suggest_optimisations(
+    sections: list[WasmSectionSpan], total_bytes: int
+) -> list[str]:
     """Return a list of optimisation suggestions based on section sizes."""
     suggestions: list[str] = []
     code_size = sum(s.size for s in sections if s.name == "code")
@@ -272,7 +185,7 @@ class BudgetViolation:
 
 
 def check_budget(
-    sections: list[SectionInfo],
+    sections: list[WasmSectionSpan],
     total_bytes: int,
     *,
     total_budget: int | None = None,
@@ -305,7 +218,7 @@ def check_budget(
 # ---------------------------------------------------------------------------
 
 
-def print_report(sections: list[SectionInfo], total_bytes: int) -> None:
+def print_report(sections: list[WasmSectionSpan], total_bytes: int) -> None:
     """Print a human-readable size audit."""
     print("=" * 72)
     print(
@@ -351,7 +264,7 @@ def print_report(sections: list[SectionInfo], total_bytes: int) -> None:
 
 
 def print_json_report(
-    sections: list[SectionInfo],
+    sections: list[WasmSectionSpan],
     total_bytes: int,
     violations: list[BudgetViolation] | None = None,
 ) -> None:

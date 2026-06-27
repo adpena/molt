@@ -19,13 +19,14 @@ from pathlib import Path
 
 import pytest
 from tests.wasm_linked_runner import _run_wasm_test_process
+from molt.wasm_artifact import WASM_SECTION_NAMES
 
 ROOT = Path(__file__).resolve().parents[1]
 
 # Import project tools (added to path so they are importable)
 sys.path.insert(0, str(ROOT / "tools"))
 from wasm_optimize import find_wasm_opt, optimize  # noqa: E402
-from wasm_size_audit import parse_sections, SECTION_NAMES  # noqa: E402
+from wasm_size_audit import parse_sections  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -338,7 +339,7 @@ class TestWasmSectionOrdering:
         # type=1, function=3, code=10 are required for any non-trivial module
         for required_id in (1, 3, 10):
             assert required_id in section_ids, (
-                f"Missing required section: {SECTION_NAMES.get(required_id, required_id)}"
+                f"Missing required section: {WASM_SECTION_NAMES.get(required_id, required_id)}"
             )
 
 
