@@ -1964,13 +1964,6 @@ class RepoProcessMemorySentinel:
         self._record_skipped_protected_groups(samples)
         owned_pids = self._owned_pids_from_samples(samples)
         known_process_identities = dict(self._observed_process_identities)
-        known_process_identities.update(
-            {
-                pid: memory_guard.process_identity(samples[pid])
-                for pid in owned_pids
-                if pid in samples
-            }
-        )
         groups = process_sentinel.process_groups(
             samples,
             root=self._repo_root,
