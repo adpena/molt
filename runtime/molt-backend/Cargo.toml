@@ -8,6 +8,7 @@ license = "Apache-2.0"
 [dependencies]
 molt-ir = { path = "../molt-ir" }
 molt-tir = { path = "../molt-tir" }
+molt-codegen-abi = { path = "../molt-codegen-abi" }
 molt-backend-wasm = { path = "../molt-backend-wasm", optional = true, default-features = false }
 libc = "0.2"
 tikv-jemallocator = { version = "0.7", optional = true }

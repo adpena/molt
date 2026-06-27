@@ -238,13 +238,13 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 .context
                 .ptr_type(inkwell::AddressSpace::default());
             // Check if val is a heap pointer: (val & TAG_MASK) == TAG_PTR
-            let tag_mask = i64_ty.const_int(nanbox::QNAN | 0x0007_0000_0000_0000, false);
+            let tag_mask = i64_ty.const_int(nanbox::QNAN_TAG_MASK_I64 as u64, false);
             let tag_bits = self
                 .backend
                 .builder
                 .build_and(val_bits, tag_mask, "init_tag")
                 .unwrap();
-            let ptr_tag = i64_ty.const_int(nanbox::QNAN | 0x0004_0000_0000_0000, false);
+            let ptr_tag = i64_ty.const_int(nanbox::QNAN_TAG_PTR_I64 as u64, false);
             let is_ptr = self
                 .backend
                 .builder

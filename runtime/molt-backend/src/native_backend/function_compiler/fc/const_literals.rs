@@ -17,16 +17,11 @@ pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] = 
 ];
 
 #[cfg(feature = "native-backend")]
-const NATIVE_INLINE_INT_MIN: i64 = -(1_i64 << 46);
-#[cfg(feature = "native-backend")]
-const NATIVE_INLINE_INT_MAX: i64 = (1_i64 << 46) - 1;
-
-#[cfg(feature = "native-backend")]
 #[inline]
 pub(in crate::native_backend::function_compiler) fn native_int_literal_fits_inline(
     val: i64,
 ) -> bool {
-    (NATIVE_INLINE_INT_MIN..=NATIVE_INLINE_INT_MAX).contains(&val)
+    molt_codegen_abi::fits_inline_int(val)
 }
 
 #[cfg(feature = "native-backend")]

@@ -4,11 +4,10 @@ use wasm_encoder::{TypeSection, ValType};
 pub(crate) use crate::wasm_abi_generated::{
     POLL_TABLE_FUNCS, RUNTIME_CALLABLE_IMPORTS, RuntimeCallableResult,
 };
-
-pub(crate) const GEN_CONTROL_SIZE: i32 = 48;
-pub(crate) const TASK_KIND_FUTURE: i64 = 0;
-pub(crate) const TASK_KIND_GENERATOR: i64 = 1;
-pub(crate) const TASK_KIND_COROUTINE: i64 = 2;
+pub(crate) use molt_codegen_abi::{
+    GENERATOR_CONTROL_BYTES as GEN_CONTROL_SIZE, TASK_KIND_COROUTINE, TASK_KIND_FUTURE,
+    TASK_KIND_GENERATOR,
+};
 pub(crate) const RELOC_TABLE_BASE_DEFAULT: u32 = 4096;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

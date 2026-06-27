@@ -226,7 +226,7 @@ pub(in crate::native_backend::function_compiler) fn handle_object_construct_op(
                 .expect("object_new_bound_stack payload size exceeds u32");
             // MoltHeader is 24 bytes, header + payload is
             // 8-byte aligned (align_pow_of_2 = 3).
-            const MOLT_HEADER_SIZE: u32 = 24;
+            const MOLT_HEADER_SIZE: u32 = HEADER_SIZE_BYTES as u32;
             let total = MOLT_HEADER_SIZE
                 .checked_add(payload_bytes)
                 .expect("object_new_bound_stack total size overflow");
@@ -289,11 +289,14 @@ pub(in crate::native_backend::function_compiler) fn handle_object_construct_op(
             //              compare-exchange on the class's
             //              `MoltHeader::reserved` field plus
             //              a slab alloc on cache miss.
-            let type_id_val = builder.ins().iconst(types::I32, 100); // TYPE_ID_OBJECT
+            let type_id_val = builder.ins().iconst(types::I32, i64::from(TYPE_ID_OBJECT));
             builder.ins().stack_store(type_id_val, slot, 0);
             let ref_count_val = builder.ins().iconst(types::I32, 1);
             builder.ins().stack_store(ref_count_val, slot, 4);
-            let flags_val = builder.ins().iconst(types::I32, 0x8002);
+            let stack_object_flags = HEADER_FLAG_IMMORTAL | HEADER_FLAG_SKIP_CLASS_DECREF;
+            let flags_val = builder
+                .ins()
+                .iconst(types::I32, i64::from(stack_object_flags));
             builder.ins().stack_store(flags_val, slot, 8);
             // cold_idx: one runtime call (atomic CAS + slab).
             let cold_idx_callee = SimpleBackend::import_func_id_split(

@@ -602,7 +602,7 @@ impl SimpleBackend {
             ));
         }
 
-        let nbc = NanBoxConsts::new(&mut builder);
+        let nbc = NanBoxConsts::new();
 
         let var_get_boxed_overflow_safe = |module: &mut ObjectModule,
                                            import_ids: &mut BTreeMap<

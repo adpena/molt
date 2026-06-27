@@ -2790,6 +2790,7 @@ dependencies = [
  "metal",
  "mlx-rs",
  "molt-backend-wasm",
+ "molt-codegen-abi",
  "molt-ir",
  "molt-tir",
  "objc",
@@ -2810,11 +2811,16 @@ dependencies = [
 name = "molt-backend-wasm"
 version = "0.1.0"
 dependencies = [
+ "molt-codegen-abi",
  "molt-ir",
  "molt-tir",
  "wasm-encoder 0.252.0",
  "wasmparser 0.252.0",
 ]
+
+[[package]]
+name = "molt-codegen-abi"
+version = "0.1.0"
 
 [[package]]
 name = "molt-db"
@@ -2889,6 +2895,7 @@ name = "molt-lang-obj-model"
 version = "0.1.0"
 dependencies = [
  "criterion",
+ "molt-codegen-abi",
  "proptest",
 ]
 
@@ -2927,6 +2934,7 @@ dependencies = [
  "metal",
  "mimalloc",
  "mio",
+ "molt-codegen-abi",
  "molt-db",
  "molt-gpu",
  "molt-lang-cpython-abi",

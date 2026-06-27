@@ -38,7 +38,7 @@ def _find_repo_root() -> Path:
 ROOT = _find_repo_root()
 NANBOX_LEAN = ROOT / "formal" / "lean" / "MoltTIR" / "Runtime" / "NanBox.lean"
 SYNTAX_LEAN = ROOT / "formal" / "lean" / "MoltTIR" / "Syntax.lean"
-OBJ_MODEL_RS = ROOT / "runtime" / "molt-obj-model" / "src" / "lib.rs"
+CODEGEN_ABI_RS = ROOT / "runtime" / "molt-codegen-abi" / "src" / "lib.rs"
 LEAN_PASSES_DIR = ROOT / "formal" / "lean" / "MoltTIR" / "Passes"
 SRC = ROOT / "src"
 if str(SRC) not in sys.path:
@@ -83,7 +83,7 @@ def _parse_lean_hex_constants(text: str) -> dict[str, int]:
 
 def _parse_rust_u64_constants(text: str) -> dict[str, int]:
     raw: dict[str, str] = {}
-    for m in re.finditer(r"const\s+(\w+):\s*u64\s*=\s*(.+?);", text):
+    for m in re.finditer(r"(?:pub\s+)?const\s+(\w+):\s*u(?:32|64)\s*=\s*(.+?);", text):
         raw[m.group(1)] = m.group(2).strip()
     resolved: dict[str, int] = {}
     for name, expr in raw.items():
@@ -96,27 +96,43 @@ def _parse_rust_u64_constants(text: str) -> dict[str, int]:
 
 def _resolve_rust_expr(expr: str, raw_consts: dict[str, str]) -> int:
     expr = expr.strip()
+    cast = re.match(r"^(\w+)\s+as\s+u(?:32|64)$", expr)
+    if cast:
+        expr = cast.group(1)
     if re.match(r"^0x[0-9a-fA-F_]+$", expr):
         return int(expr.replace("_", ""), 16)
     if expr.isdigit():
         return int(expr)
-    m = re.match(r"1(?:u64)?\s*<<\s*(\w+)", expr)
+    if re.match(r"^\w+$", expr) and expr in raw_consts:
+        return _resolve_rust_expr(raw_consts[expr], raw_consts)
+    m = re.fullmatch(r"1(?:u64)?\s*<<\s*(.+)", expr)
     if m:
-        shift_val = m.group(1)
-        if shift_val.isdigit():
-            return 1 << int(shift_val)
-        if shift_val in raw_consts:
-            return 1 << _resolve_rust_expr(raw_consts[shift_val], raw_consts)
-        raise ValueError(f"Cannot resolve: {shift_val}")
-    m = re.match(r"\(1u64\s*<<\s*(\w+)\)\s*-\s*1", expr)
+        return 1 << _resolve_rust_shift_width(m.group(1), raw_consts)
+    m = re.fullmatch(r"\(1u64\s*<<\s*(.+)\)\s*-\s*1", expr)
     if m:
-        shift_val = m.group(1)
-        if shift_val.isdigit():
-            return (1 << int(shift_val)) - 1
-        if shift_val in raw_consts:
-            return (1 << _resolve_rust_expr(raw_consts[shift_val], raw_consts)) - 1
-        raise ValueError(f"Cannot resolve: {shift_val}")
+        return (1 << _resolve_rust_shift_width(m.group(1), raw_consts)) - 1
     raise ValueError(f"Cannot parse: {expr}")
+
+
+def _resolve_rust_shift_width(expr: str, raw_consts: dict[str, str]) -> int:
+    expr = expr.strip()
+    if expr.startswith("(") and expr.endswith(")"):
+        expr = expr[1:-1].strip()
+    m = re.fullmatch(r"(\w+)(?:\s*-\s*(\d+))?", expr)
+    if not m:
+        raise ValueError(f"Cannot parse shift width: {expr}")
+
+    base, decrement = m.group(1), m.group(2)
+    if base.isdigit():
+        width = int(base)
+    elif base in raw_consts:
+        width = _resolve_rust_expr(raw_consts[base], raw_consts)
+    else:
+        raise ValueError(f"Cannot resolve: {base}")
+
+    if decrement:
+        width -= int(decrement)
+    return width
 
 
 def _parse_lean_inductive_variants(text: str, type_name: str) -> list[str]:
@@ -166,7 +182,7 @@ def check_nanbox_constants(verbose: bool) -> bool:
     """Check NaN-boxing constants match between Lean and Rust."""
     print(bold("\n[1] NaN-boxing constant alignment"))
     lean_text = _read(NANBOX_LEAN)
-    rust_text = _read(OBJ_MODEL_RS)
+    rust_text = _read(CODEGEN_ABI_RS)
     if not lean_text or not rust_text:
         print(red("  SKIP: source files missing"))
         return True

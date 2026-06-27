@@ -130,7 +130,7 @@ fn raw_bool_boxing_accepts_i64_carrier() {
         builder.switch_to_block(entry);
         builder.seal_block(entry);
         let raw = builder.ins().iconst(types::I64, 1);
-        let nbc = crate::NanBoxConsts::new(&mut builder);
+        let nbc = crate::NanBoxConsts::new();
         let boxed = box_raw_bool_value(&mut builder, raw, &nbc);
         builder.ins().return_(&[boxed]);
         builder.finalize();
@@ -155,7 +155,7 @@ fn native_int_boxing_constants_materialized_at_site() {
         builder.switch_to_block(entry);
         builder.seal_block(entry);
 
-        let nbc = crate::NanBoxConsts::new(&mut builder);
+        let nbc = crate::NanBoxConsts::new();
         int_mask_needle = format!("iconst.i64 {:#x}", nbc.int_mask);
         int_tag_needle = format!("iconst.i64 {:#x}", nbc.qnan_tag_int);
 
@@ -211,7 +211,7 @@ fn boxed_transport_defines_scalar_primary_homes() {
 
         let representation_plan = scalar_transport_plan_for_boxed_transport_homes();
         let mut import_refs = BTreeMap::new();
-        let nbc = crate::NanBoxConsts::new(&mut builder);
+        let nbc = crate::NanBoxConsts::new();
 
         let boxed_float = builder.ins().iconst(types::I64, 1.25f64.to_bits() as i64);
         def_var_from_boxed_transport(
@@ -282,7 +282,7 @@ fn numeric_result_binding_converts_boxed_call_result_for_float_primary_home() {
 
         let representation_plan = scalar_transport_plan_for_float_home();
         let mut import_refs = BTreeMap::new();
-        let nbc = crate::NanBoxConsts::new(&mut builder);
+        let nbc = crate::NanBoxConsts::new();
 
         let boxed_float = builder.ins().iconst(types::I64, 1.25f64.to_bits() as i64);
         def_var_from_numeric_result(

@@ -4,7 +4,7 @@
 //! verbatim from lib.rs as a pure structural split. This module is `cfg(native
 //! -backend)` via its declaration in `native_backend/mod.rs`; the crate-root
 //! glob (`use super::*`) makes every crate-root item (FunctionIR, OpIR, passes,
-//! the `native_backend_consts` glob, etc.) visible exactly as in lib.rs.
+//! the shared `molt-codegen-abi` constants, etc.) visible exactly as in lib.rs.
 
 use super::*;
 // The shared Cranelift / std collection imports (and the `std::fmt::Write`

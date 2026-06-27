@@ -8,6 +8,7 @@ license = "Apache-2.0"
 [dependencies]
 molt-ir = { path = "../molt-ir", default-features = false }
 molt-tir = { path = "../molt-tir", default-features = false }
+molt-codegen-abi = { path = "../molt-codegen-abi" }
 wasm-encoder = { version = "0.252.0", optional = true }
 wasmparser = { version = "0.252.0", optional = true }
 
