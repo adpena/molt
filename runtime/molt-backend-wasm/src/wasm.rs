@@ -1,9 +1,9 @@
 use crate::representation_plan::ScalarRepresentationPlan;
 use crate::wasm_abi::{
-    GEN_CONTROL_SIZE, POLL_TABLE_FUNCS, RESERVED_RUNTIME_CALLABLE_COUNT,
+    GEN_CONTROL_SIZE, POLL_TABLE_IMPORTS, RESERVED_RUNTIME_CALLABLE_COUNT,
     RESERVED_RUNTIME_CALLABLE_SPECS, RUNTIME_CALLABLE_IMPORTS, RuntimeCallableResult,
     TAG_EXCEPTION_FUNC_TYPE, TAG_EXCEPTION_INDEX, TASK_KIND_COROUTINE, TASK_KIND_FUTURE,
-    TASK_KIND_GENERATOR, TypeSectionExt, emit_static_type_section,
+    TASK_KIND_GENERATOR, TypeSectionExt, emit_static_type_section, poll_table_import_slot,
 };
 use crate::wasm_binary::{
     add_reloc_sections, emit_call, emit_call_indirect, emit_i32_const, emit_ref_func,

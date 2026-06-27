@@ -13,16 +13,20 @@ use crate::{
 #[cfg(target_arch = "wasm32")]
 use crate::raise_exception;
 
+#[cfg(target_arch = "wasm32")]
+use crate::builtins::functions::{
+    WASM_POLL_SLOT_MAX_OFFSET, wasm_poll_table_slot_from_symbol_name,
+};
+
 use super::scheduler::CURRENT_TASK;
 
 #[cfg(target_arch = "wasm32")]
 #[inline]
-fn wasm_poll_slot(offset: u64) -> u64 {
+fn wasm_poll_slot(symbol_name: &str) -> u64 {
+    let offset = wasm_poll_table_slot_from_symbol_name(symbol_name)
+        .unwrap_or_else(|| panic!("missing generated wasm poll slot for {symbol_name}"));
     crate::wasm_table_base().saturating_add(offset)
 }
-
-#[cfg(target_arch = "wasm32")]
-const WASM_POLL_SLOT_MAX_OFFSET: u64 = 32;
 
 #[cfg(target_arch = "wasm32")]
 #[inline]
@@ -46,7 +50,7 @@ fn normalize_wasm_poll_fn_addr(poll_fn_addr: u64) -> u64 {
 pub(crate) fn async_sleep_poll_fn_addr() -> u64 {
     #[cfg(target_arch = "wasm32")]
     {
-        wasm_poll_slot(1)
+        wasm_poll_slot("molt_async_sleep_poll")
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -58,7 +62,7 @@ pub(crate) fn async_sleep_poll_fn_addr() -> u64 {
 pub(crate) fn anext_default_poll_fn_addr() -> u64 {
     #[cfg(target_arch = "wasm32")]
     {
-        wasm_poll_slot(2)
+        wasm_poll_slot("molt_anext_default_poll")
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -70,7 +74,7 @@ pub(crate) fn anext_default_poll_fn_addr() -> u64 {
 pub(crate) fn asyncgen_poll_fn_addr() -> u64 {
     #[cfg(target_arch = "wasm32")]
     {
-        wasm_poll_slot(3)
+        wasm_poll_slot("molt_asyncgen_poll")
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -82,7 +86,7 @@ pub(crate) fn asyncgen_poll_fn_addr() -> u64 {
 pub(crate) fn promise_poll_fn_addr() -> u64 {
     #[cfg(target_arch = "wasm32")]
     {
-        wasm_poll_slot(4)
+        wasm_poll_slot("molt_promise_poll")
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -94,7 +98,7 @@ pub(crate) fn promise_poll_fn_addr() -> u64 {
 pub(crate) fn contextlib_asyncgen_enter_poll_fn_addr() -> u64 {
     #[cfg(target_arch = "wasm32")]
     {
-        wasm_poll_slot(29)
+        wasm_poll_slot("molt_contextlib_asyncgen_enter_poll")
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -106,7 +110,7 @@ pub(crate) fn contextlib_asyncgen_enter_poll_fn_addr() -> u64 {
 pub(crate) fn contextlib_asyncgen_exit_poll_fn_addr() -> u64 {
     #[cfg(target_arch = "wasm32")]
     {
-        wasm_poll_slot(30)
+        wasm_poll_slot("molt_contextlib_asyncgen_exit_poll")
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -118,7 +122,7 @@ pub(crate) fn contextlib_asyncgen_exit_poll_fn_addr() -> u64 {
 pub(crate) fn contextlib_async_exitstack_exit_poll_fn_addr() -> u64 {
     #[cfg(target_arch = "wasm32")]
     {
-        wasm_poll_slot(31)
+        wasm_poll_slot("molt_contextlib_async_exitstack_exit_poll")
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -130,7 +134,7 @@ pub(crate) fn contextlib_async_exitstack_exit_poll_fn_addr() -> u64 {
 pub(crate) fn contextlib_async_exitstack_enter_context_poll_fn_addr() -> u64 {
     #[cfg(target_arch = "wasm32")]
     {
-        wasm_poll_slot(32)
+        wasm_poll_slot("molt_contextlib_async_exitstack_enter_context_poll")
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -142,7 +146,7 @@ pub(crate) fn contextlib_async_exitstack_enter_context_poll_fn_addr() -> u64 {
 pub(crate) fn io_wait_poll_fn_addr() -> u64 {
     #[cfg(target_arch = "wasm32")]
     {
-        wasm_poll_slot(5)
+        wasm_poll_slot("molt_io_wait")
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -154,7 +158,7 @@ pub(crate) fn io_wait_poll_fn_addr() -> u64 {
 pub(crate) fn ws_wait_poll_fn_addr() -> u64 {
     #[cfg(target_arch = "wasm32")]
     {
-        wasm_poll_slot(8)
+        wasm_poll_slot("molt_ws_wait")
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -166,7 +170,7 @@ pub(crate) fn ws_wait_poll_fn_addr() -> u64 {
 pub(crate) fn thread_poll_fn_addr() -> u64 {
     #[cfg(target_arch = "wasm32")]
     {
-        wasm_poll_slot(6)
+        wasm_poll_slot("molt_thread_poll")
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -178,7 +182,7 @@ pub(crate) fn thread_poll_fn_addr() -> u64 {
 pub(crate) fn process_poll_fn_addr() -> u64 {
     #[cfg(target_arch = "wasm32")]
     {
-        wasm_poll_slot(7)
+        wasm_poll_slot("molt_process_poll")
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -190,7 +194,7 @@ pub(crate) fn process_poll_fn_addr() -> u64 {
 pub(crate) fn asyncio_wait_for_poll_fn_addr() -> u64 {
     #[cfg(target_arch = "wasm32")]
     {
-        wasm_poll_slot(9)
+        wasm_poll_slot("molt_asyncio_wait_for_poll")
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -202,7 +206,7 @@ pub(crate) fn asyncio_wait_for_poll_fn_addr() -> u64 {
 pub(crate) fn asyncio_wait_poll_fn_addr() -> u64 {
     #[cfg(target_arch = "wasm32")]
     {
-        wasm_poll_slot(10)
+        wasm_poll_slot("molt_asyncio_wait_poll")
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -214,7 +218,7 @@ pub(crate) fn asyncio_wait_poll_fn_addr() -> u64 {
 pub(crate) fn asyncio_gather_poll_fn_addr() -> u64 {
     #[cfg(target_arch = "wasm32")]
     {
-        wasm_poll_slot(11)
+        wasm_poll_slot("molt_asyncio_gather_poll")
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -226,7 +230,7 @@ pub(crate) fn asyncio_gather_poll_fn_addr() -> u64 {
 pub(crate) fn asyncio_timer_handle_poll_fn_addr() -> u64 {
     #[cfg(target_arch = "wasm32")]
     {
-        wasm_poll_slot(25)
+        wasm_poll_slot("molt_asyncio_timer_handle_poll")
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -238,7 +242,7 @@ pub(crate) fn asyncio_timer_handle_poll_fn_addr() -> u64 {
 pub(crate) fn asyncio_fd_watcher_poll_fn_addr() -> u64 {
     #[cfg(target_arch = "wasm32")]
     {
-        wasm_poll_slot(26)
+        wasm_poll_slot("molt_asyncio_fd_watcher_poll")
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -250,7 +254,7 @@ pub(crate) fn asyncio_fd_watcher_poll_fn_addr() -> u64 {
 pub(crate) fn asyncio_server_accept_loop_poll_fn_addr() -> u64 {
     #[cfg(target_arch = "wasm32")]
     {
-        wasm_poll_slot(27)
+        wasm_poll_slot("molt_asyncio_server_accept_loop_poll")
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -262,7 +266,7 @@ pub(crate) fn asyncio_server_accept_loop_poll_fn_addr() -> u64 {
 pub(crate) fn asyncio_ready_runner_poll_fn_addr() -> u64 {
     #[cfg(target_arch = "wasm32")]
     {
-        wasm_poll_slot(28)
+        wasm_poll_slot("molt_asyncio_ready_runner_poll")
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -274,7 +278,7 @@ pub(crate) fn asyncio_ready_runner_poll_fn_addr() -> u64 {
 pub(crate) fn asyncio_socket_reader_read_poll_fn_addr() -> u64 {
     #[cfg(target_arch = "wasm32")]
     {
-        wasm_poll_slot(12)
+        wasm_poll_slot("molt_asyncio_socket_reader_read_poll")
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -286,7 +290,7 @@ pub(crate) fn asyncio_socket_reader_read_poll_fn_addr() -> u64 {
 pub(crate) fn asyncio_socket_reader_readline_poll_fn_addr() -> u64 {
     #[cfg(target_arch = "wasm32")]
     {
-        wasm_poll_slot(13)
+        wasm_poll_slot("molt_asyncio_socket_reader_readline_poll")
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -298,7 +302,7 @@ pub(crate) fn asyncio_socket_reader_readline_poll_fn_addr() -> u64 {
 pub(crate) fn asyncio_stream_reader_read_poll_fn_addr() -> u64 {
     #[cfg(target_arch = "wasm32")]
     {
-        wasm_poll_slot(14)
+        wasm_poll_slot("molt_asyncio_stream_reader_read_poll")
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -310,7 +314,7 @@ pub(crate) fn asyncio_stream_reader_read_poll_fn_addr() -> u64 {
 pub(crate) fn asyncio_stream_reader_readline_poll_fn_addr() -> u64 {
     #[cfg(target_arch = "wasm32")]
     {
-        wasm_poll_slot(15)
+        wasm_poll_slot("molt_asyncio_stream_reader_readline_poll")
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -322,7 +326,7 @@ pub(crate) fn asyncio_stream_reader_readline_poll_fn_addr() -> u64 {
 pub(crate) fn asyncio_stream_send_all_poll_fn_addr() -> u64 {
     #[cfg(target_arch = "wasm32")]
     {
-        wasm_poll_slot(16)
+        wasm_poll_slot("molt_asyncio_stream_send_all_poll")
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -334,7 +338,7 @@ pub(crate) fn asyncio_stream_send_all_poll_fn_addr() -> u64 {
 pub(crate) fn asyncio_sock_recv_poll_fn_addr() -> u64 {
     #[cfg(target_arch = "wasm32")]
     {
-        wasm_poll_slot(17)
+        wasm_poll_slot("molt_asyncio_sock_recv_poll")
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -346,7 +350,7 @@ pub(crate) fn asyncio_sock_recv_poll_fn_addr() -> u64 {
 pub(crate) fn asyncio_sock_connect_poll_fn_addr() -> u64 {
     #[cfg(target_arch = "wasm32")]
     {
-        wasm_poll_slot(18)
+        wasm_poll_slot("molt_asyncio_sock_connect_poll")
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -358,7 +362,7 @@ pub(crate) fn asyncio_sock_connect_poll_fn_addr() -> u64 {
 pub(crate) fn asyncio_sock_accept_poll_fn_addr() -> u64 {
     #[cfg(target_arch = "wasm32")]
     {
-        wasm_poll_slot(19)
+        wasm_poll_slot("molt_asyncio_sock_accept_poll")
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -370,7 +374,7 @@ pub(crate) fn asyncio_sock_accept_poll_fn_addr() -> u64 {
 pub(crate) fn asyncio_sock_recv_into_poll_fn_addr() -> u64 {
     #[cfg(target_arch = "wasm32")]
     {
-        wasm_poll_slot(20)
+        wasm_poll_slot("molt_asyncio_sock_recv_into_poll")
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -382,7 +386,7 @@ pub(crate) fn asyncio_sock_recv_into_poll_fn_addr() -> u64 {
 pub(crate) fn asyncio_sock_sendall_poll_fn_addr() -> u64 {
     #[cfg(target_arch = "wasm32")]
     {
-        wasm_poll_slot(21)
+        wasm_poll_slot("molt_asyncio_sock_sendall_poll")
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -394,7 +398,7 @@ pub(crate) fn asyncio_sock_sendall_poll_fn_addr() -> u64 {
 pub(crate) fn asyncio_sock_recvfrom_poll_fn_addr() -> u64 {
     #[cfg(target_arch = "wasm32")]
     {
-        wasm_poll_slot(22)
+        wasm_poll_slot("molt_asyncio_sock_recvfrom_poll")
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -406,7 +410,7 @@ pub(crate) fn asyncio_sock_recvfrom_poll_fn_addr() -> u64 {
 pub(crate) fn asyncio_sock_recvfrom_into_poll_fn_addr() -> u64 {
     #[cfg(target_arch = "wasm32")]
     {
-        wasm_poll_slot(23)
+        wasm_poll_slot("molt_asyncio_sock_recvfrom_into_poll")
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -418,7 +422,7 @@ pub(crate) fn asyncio_sock_recvfrom_into_poll_fn_addr() -> u64 {
 pub(crate) fn asyncio_sock_sendto_poll_fn_addr() -> u64 {
     #[cfg(target_arch = "wasm32")]
     {
-        wasm_poll_slot(24)
+        wasm_poll_slot("molt_asyncio_sock_sendto_poll")
     }
     #[cfg(not(target_arch = "wasm32"))]
     {

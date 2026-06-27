@@ -2,7 +2,7 @@ use std::iter::ExactSizeIterator;
 use wasm_encoder::{TypeSection, ValType};
 
 pub(crate) use crate::wasm_abi_generated::{
-    POLL_TABLE_FUNCS, RESERVED_RUNTIME_CALLABLE_COUNT, RESERVED_RUNTIME_CALLABLE_SPECS,
+    POLL_TABLE_IMPORTS, RESERVED_RUNTIME_CALLABLE_COUNT, RESERVED_RUNTIME_CALLABLE_SPECS,
     RUNTIME_CALLABLE_IMPORTS, RuntimeCallableResult, STATIC_FUNC_TYPES, STATIC_TYPE_COUNT,
 };
 pub(crate) use molt_codegen_abi::{
@@ -115,6 +115,12 @@ pub(crate) fn runtime_callable_arity(runtime_name: &str) -> Option<usize> {
                 .iter()
                 .find_map(|spec| (spec.runtime_name == runtime_name).then_some(spec.arity))
         })
+}
+
+pub(crate) fn poll_table_import_slot(import_name: &str) -> Option<u32> {
+    POLL_TABLE_IMPORTS
+        .iter()
+        .find_map(|spec| (spec.import_name == import_name).then_some(spec.table_slot))
 }
 
 // Constant folding pass is now shared via crate::fold_constants in passes.rs.
