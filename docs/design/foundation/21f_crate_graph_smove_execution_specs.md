@@ -507,7 +507,7 @@ molt-lower, so this crate is a clean consumer of molt-lower output). Deps `molt-
 ### 7.1 Exact partition
 The live partition is the full WASM authority cluster, not the older
 `wasm.rs`/`wasm_imports.rs` slice: `runtime/molt-backend-wasm/src/{wasm.rs,
-wasm_abi.rs,wasm_abi_generated.rs,wasm_abi_manifest.toml,wasm_binary.rs,
+wasm_abi.rs,wasm_abi_generated/,wasm_abi_manifest.toml,wasm_binary.rs,
 wasm_data.rs,wasm_dispatch.rs,wasm_import_tracking.rs,wasm_imports.rs,
 wasm_options.rs,wasm_plan.rs,wasm_values.rs,wasm/**}`. Shared SimpleIR debug
 and trampoline metadata live in `molt-tir`; `molt-backend` keeps no private WASM

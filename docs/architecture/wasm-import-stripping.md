@@ -22,7 +22,7 @@ The compiled `generator.wasm` (13.1 MB) declares **90 imports** across three nam
 
 ### `molt_runtime` (internal runtime)
 Runtime host functions are declared from the generated ABI registry
-(`runtime/molt-backend-wasm/src/wasm_abi_generated.rs`). In Auto/reloc mode,
+(`runtime/molt-backend-wasm/src/wasm_abi_generated/`). In Auto/reloc mode,
 `runtime/molt-backend-wasm/src/wasm/module_abi/runtime_surface.rs` computes the
 pre-emission requirement set from IR, `OP_IMPORT_DEPS`, generated
 runtime-required import matchers, direct runtime calls, task/generator facts,

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import subprocess
 import sys
 from pathlib import Path
 
@@ -14,7 +15,16 @@ except ModuleNotFoundError:  # pragma: no cover - Python < 3.11 fallback
 
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = ROOT / "runtime/molt-backend-wasm/src/wasm_abi_manifest.toml"
-OUT_RS = ROOT / "runtime/molt-backend-wasm/src/wasm_abi_generated.rs"
+LEGACY_OUT_RS = ROOT / "runtime/molt-backend-wasm/src/wasm_abi_generated.rs"
+OUT_RS_DIR = ROOT / "runtime/molt-backend-wasm/src/wasm_abi_generated"
+OUT_RS_FILES = {
+    "mod.rs": OUT_RS_DIR / "mod.rs",
+    "static_types.rs": OUT_RS_DIR / "static_types.rs",
+    "imports.rs": OUT_RS_DIR / "imports.rs",
+    "runtime_surface.rs": OUT_RS_DIR / "runtime_surface.rs",
+    "runtime_callables.rs": OUT_RS_DIR / "runtime_callables.rs",
+    "pure_profile.rs": OUT_RS_DIR / "pure_profile.rs",
+}
 OUT_PY = ROOT / "src/molt/_wasm_abi_generated.py"
 OUT_TABLE_LAYOUT_INC = ROOT / "runtime/wasm_table_layout.inc"
 OUT_POLL_INC = ROOT / "runtime/wasm_poll_callables.inc"
@@ -460,6 +470,28 @@ def _rust_val_slice(vals: list[str]) -> str:
     return "&[" + ", ".join(_rust_val_type(val) for val in vals) + "]"
 
 
+def _rustfmt(module_name: str, source: str) -> str:
+    try:
+        proc = subprocess.run(
+            ["rustfmt", "--edition", "2024", "--emit", "stdout"],
+            input=source,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+    except FileNotFoundError as exc:
+        raise RuntimeError(
+            "rustfmt is required to generate canonical WASM ABI Rust modules"
+        ) from exc
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"rustfmt failed for generated WASM ABI module {module_name}:\n"
+            f"{proc.stderr.strip()}"
+        )
+    return proc.stdout.rstrip() + "\n"
+
+
 def _py_tuple(vals: list[str]) -> str:
     if not vals:
         return "()"
@@ -468,7 +500,30 @@ def _py_tuple(vals: list[str]) -> str:
     return "(" + ", ".join(f'"{val}"' for val in vals) + ")"
 
 
-def render_rs(data: dict) -> str:
+def _render_rs_mod() -> str:
+    lines: list[str] = [_header("//")]
+    lines.extend(
+        [
+            "mod imports;\n",
+            "mod pure_profile;\n",
+            "mod runtime_callables;\n",
+            "mod runtime_surface;\n",
+            "mod static_types;\n\n",
+            "pub(crate) use imports::{IMPORT_REGISTRY, OP_IMPORT_DEPS};\n",
+            "pub(crate) use pure_profile::pure_profile_skips_import;\n",
+            "pub(crate) use runtime_callables::{\n",
+            "    POLL_TABLE_FUNCS, RUNTIME_CALLABLE_IMPORTS, RuntimeCallableResult,\n",
+            "};\n",
+            "pub(crate) use runtime_surface::runtime_surface_requires_direct_import;\n",
+            "pub(crate) use static_types::{\n",
+            "    STATIC_FUNC_TYPES, STATIC_TYPE_COUNT,\n",
+            "};\n",
+        ]
+    )
+    return "".join(lines)
+
+
+def _render_rs_static_types(data: dict) -> str:
     lines: list[str] = [_header("//")]
     lines.append("use wasm_encoder::ValType;\n\n")
     lines.extend(
@@ -496,6 +551,11 @@ def render_rs(data: dict) -> str:
             f"pub(crate) const STATIC_TYPE_COUNT: u32 = {len(data['static_type'])};\n\n",
         ]
     )
+    return "".join(lines)
+
+
+def _render_rs_imports(data: dict) -> str:
+    lines: list[str] = [_header("//")]
     lines.append("pub(crate) const IMPORT_REGISTRY: &[(&str, u32)] = &[\n")
     for entry in data["import"]:
         lines.append(f'    ("{entry["name"]}", {entry["type"]}),\n')
@@ -512,6 +572,11 @@ def render_rs(data: dict) -> str:
             lines.append(f'        "{dep}",\n')
         lines.append("    ]),\n")
     lines.append("];\n\n")
+    return "".join(lines)
+
+
+def _render_rs_runtime_surface(data: dict) -> str:
+    lines: list[str] = [_header("//")]
     lines.append("pub(crate) const REQUIRED_RUNTIME_IMPORT_PREFIXES: &[&str] = &[\n")
     for entry in data.get("runtime_required_import_prefix", []):
         lines.append(f'    "{entry["prefix"]}",\n')
@@ -531,6 +596,11 @@ def render_rs(data: dict) -> str:
             "}\n\n",
         ]
     )
+    return "".join(lines)
+
+
+def _render_rs_runtime_callables(data: dict) -> str:
+    lines: list[str] = [_header("//")]
     poll_imports = sorted(
         (
             (entry["poll_table_slot"], entry["name"])
@@ -575,6 +645,11 @@ def render_rs(data: dict) -> str:
             ]
         )
     lines.append("];\n\n")
+    return "".join(lines)
+
+
+def _render_rs_pure_profile(data: dict) -> str:
+    lines: list[str] = [_header("//")]
     lines.append("pub(crate) const PURE_PROFILE_SKIP_PREFIXES: &[&str] = &[\n")
     for entry in data.get("pure_skip_prefix", []):
         lines.append(f'    "{entry["prefix"]}",\n')
@@ -590,6 +665,18 @@ def render_rs(data: dict) -> str:
         ]
     )
     return "".join(lines)
+
+
+def render_rs_modules(data: dict) -> dict[str, str]:
+    modules = {
+        "mod.rs": _render_rs_mod(),
+        "static_types.rs": _render_rs_static_types(data),
+        "imports.rs": _render_rs_imports(data),
+        "runtime_surface.rs": _render_rs_runtime_surface(data),
+        "runtime_callables.rs": _render_rs_runtime_callables(data),
+        "pure_profile.rs": _render_rs_pure_profile(data),
+    }
+    return {name: _rustfmt(name, rendered) for name, rendered in modules.items()}
 
 
 def render_py(data: dict) -> str:
@@ -779,13 +866,65 @@ def _check(path: Path, rendered: str) -> bool:
     return True
 
 
+def _unexpected_rs_files() -> list[Path]:
+    if not OUT_RS_DIR.exists():
+        return []
+    expected = set(OUT_RS_FILES.values())
+    return sorted(
+        path
+        for path in OUT_RS_DIR.glob("*.rs")
+        if path not in expected
+    )
+
+
+def _check_rs_modules(rendered_modules: dict[str, str]) -> bool:
+    ok = True
+    if LEGACY_OUT_RS.exists():
+        print(
+            f"STALE legacy generated file: {LEGACY_OUT_RS}\n"
+            "  run `python tools/gen_wasm_abi.py` to regenerate split modules.",
+            file=sys.stderr,
+        )
+        ok = False
+    if set(rendered_modules) != set(OUT_RS_FILES):
+        missing = sorted(set(OUT_RS_FILES) - set(rendered_modules))
+        extra = sorted(set(rendered_modules) - set(OUT_RS_FILES))
+        print(
+            "BUG: Rust WASM ABI module renderer does not match OUT_RS_FILES "
+            f"(missing={missing}, extra={extra})",
+            file=sys.stderr,
+        )
+        ok = False
+    for name, rendered in rendered_modules.items():
+        path = OUT_RS_FILES[name]
+        ok = _check(path, rendered) and ok
+    for path in _unexpected_rs_files():
+        print(
+            f"STALE generated module: {path}\n"
+            "  run `python tools/gen_wasm_abi.py` to remove stale split modules.",
+            file=sys.stderr,
+        )
+        ok = False
+    return ok
+
+
+def _write_rs_modules(rendered_modules: dict[str, str]) -> None:
+    if LEGACY_OUT_RS.exists():
+        LEGACY_OUT_RS.unlink()
+    OUT_RS_DIR.mkdir(parents=True, exist_ok=True)
+    for path in _unexpected_rs_files():
+        path.unlink()
+    for name, rendered in rendered_modules.items():
+        OUT_RS_FILES[name].write_text(rendered, encoding="utf-8", newline="\n")
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check", action="store_true")
     args = parser.parse_args(argv)
 
     data = load_manifest()
-    rendered_rs = render_rs(data)
+    rendered_rs_modules = render_rs_modules(data)
     rendered_py = render_py(data)
     rendered_table_layout_inc = render_table_layout_inc(data)
     rendered_poll_inc = render_poll_inc(data)
@@ -794,7 +933,7 @@ def main(argv: list[str]) -> int:
     if args.check:
         return (
             0
-            if _check(OUT_RS, rendered_rs)
+            if _check_rs_modules(rendered_rs_modules)
             and _check(OUT_PY, rendered_py)
             and _check(OUT_TABLE_LAYOUT_INC, rendered_table_layout_inc)
             and _check(OUT_POLL_INC, rendered_poll_inc)
@@ -802,7 +941,7 @@ def main(argv: list[str]) -> int:
             and _check(OUT_ALLOWED_IMPORTS, rendered_allowed_imports)
             else 1
         )
-    OUT_RS.write_text(rendered_rs, encoding="utf-8", newline="\n")
+    _write_rs_modules(rendered_rs_modules)
     OUT_PY.write_text(rendered_py, encoding="utf-8", newline="\n")
     OUT_TABLE_LAYOUT_INC.write_text(rendered_table_layout_inc, encoding="utf-8", newline="\n")
     OUT_POLL_INC.write_text(rendered_poll_inc, encoding="utf-8", newline="\n")
