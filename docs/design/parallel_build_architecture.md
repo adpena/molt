@@ -16,9 +16,10 @@ The live codebase and executable Cargo metadata remain authoritative.
   `-ipaddress`, `-zoneinfo`, `-stringprep`, and `-tk`. Guarded
   `cargo metadata --no-deps` reports these as workspace packages.
 - `molt-runtime-stringprep`, the `html` / `unicodedata` portions of
-  `molt-runtime-text`, and `molt-runtime-zoneinfo` are completed leaf-ownership
-  examples: their in-facade fallback modules are deleted, `molt_stringprep_*`,
-  `molt_html_*`, `molt_unicodedata_*`, and `molt_zoneinfo_*` resolver arms are
+  `molt-runtime-text`, `molt-runtime-zoneinfo`, and the math-family modules
+  owned by `molt-runtime-math` are completed leaf-ownership examples: their
+  in-facade fallback modules are deleted, their generated resolver arms delegate
+  into leaf-owned intrinsic sub-registries, their symbol prefixes are
   link-affecting feature gates, and feature-on/feature-off checks prove the
   facade no longer carries duplicate authorities for those domains.
 - `molt-tir` is now a workspace member and the backend-agnostic lower layer:
@@ -117,13 +118,14 @@ Hard constraints / watch-items:
   resolver files and skips exact-content no-op writes before invoking rustfmt,
   lazy-loads formatting custody only for changed Rust files, and prevents
   repeated generation from dirtying mtimes or triggering needless Cargo
-  rebuilds. `molt-runtime-stringprep` now owns the first generated per-crate
-  intrinsic sub-registry, with the `molt-runtime` category resolver reduced to a
-  feature-gated facade delegate. The remaining structural target is moving the
-  other category resolvers into **per-crate intrinsic sub-registries** composed
-  by a thin facade resolver. This simultaneously: (i) finishes breaking the
-  build hub, (ii) advances the per-app intrinsic tree-shaking / <2MB binary-size
-  goal. Two top priorities solved by one refactor.
+  rebuilds. `molt-runtime-stringprep` and `molt-runtime-math` now own generated
+  per-crate intrinsic sub-registries, with the `molt-runtime` category
+  resolvers reduced to feature-gated facade delegates. The remaining structural
+  target is moving the other category resolvers into **per-crate intrinsic
+  sub-registries** composed by a thin facade resolver. This simultaneously:
+  (i) finishes breaking the build hub, (ii) advances the per-app intrinsic
+  tree-shaking / <2MB binary-size goal. Two top priorities solved by one
+  refactor.
 - Do it as a real structural arc (one cohesive crate at a time, each landing
   green), not a half-split that leaves two sources of truth.
 
@@ -179,9 +181,10 @@ monolith) + #3 (shared canonical artifact roots and sccache). Keep
    when `native_backend/*` plus `llvm_backend/*` can move as one authority over
    native lowering. Keep TIR/passes/representation facts in backend core.
 3. **Intrinsic registry:** the generated resolver source split has landed and
-   the `stringprep` resolver is now leaf-owned; continue moving remaining
-   categories to per-crate intrinsic sub-registries + thin composing facade
-   resolvers, co-designed with the binary-size per-app resolver work.
+   the `stringprep` plus math-family resolvers are now leaf-owned; continue
+   moving remaining categories to per-crate intrinsic sub-registries + thin
+   composing facade resolvers, co-designed with the binary-size per-app resolver
+   work.
 4. **Frontend F2:** replace the F1 move-only mixin split with semantic authority
    surfaces so frontend changes stop serializing through one shared class/state
    owner.

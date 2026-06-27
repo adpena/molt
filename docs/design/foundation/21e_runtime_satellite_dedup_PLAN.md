@@ -1,3 +1,9 @@
+<!-- Update 2026-06-26: the math-family fallback lane has been deleted. The live
+satellite parity guard now tracks 8 remaining dual-path pairs with a residual
+ceiling of 902; cmath_mod, colorsys, fractions, math, and random_mod are no
+longer PAIRS entries. molt-runtime-math owns math/cmath/colorsys/fractions/
+random/statistics implementations and generated leaf resolver modules. -->
+
 <!-- Foundation blueprint 21e. Architect: portfolio-architect (Plan agent), 2026-06-24.
 Executable plan for decomposition move #4 — the molt-runtime satellite dedup arc (R.2 + R.3).
 Supersedes doc 21 §1.4/§2.4 prose AND the missing memory/recovery/baton_move_R_satellite_drift.md

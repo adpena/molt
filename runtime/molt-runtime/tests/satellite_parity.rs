@@ -1,4 +1,6 @@
 //! Fail-closed parity guard for the runtime stdlib in-tree <-> satellite pairs.
+//! The PAIRS table contains only domains that still have two live source
+//! authorities; completed leaf-only domains are deliberately absent.
 //!
 //! molt ships every feature-gated stdlib module in TWO physical copies: an
 //! in-tree copy under `runtime/molt-runtime/src/builtins/<mod>.rs` (the SOLE
