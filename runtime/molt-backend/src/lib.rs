@@ -11,16 +11,14 @@ pub use molt_ir::{
     MOLT_CLOSURE_PARAM_NAME, debug_artifacts, intrinsic_symbols, ir, ir_schema, json_boundary,
     process_diagnostics, repr, stdlib_module_symbols,
 };
-pub use molt_tir::{passes, representation_plan, tir};
 #[cfg(any(feature = "native-backend", feature = "llvm"))]
-pub(crate) use molt_tir::simpleir_debug::{
-    dump_ir_matches, dump_ir_ops, should_dump_ir,
-};
+pub(crate) use molt_tir::simpleir_debug::{dump_ir_matches, dump_ir_ops, should_dump_ir};
+pub use molt_tir::trampolines::externalize_function_with_signature;
 #[cfg(any(feature = "native-backend", feature = "llvm"))]
 pub(crate) use molt_tir::trampolines::{
     TrampolineKind, TrampolineSpec, function_requires_value_return,
 };
-pub use molt_tir::trampolines::externalize_function_with_signature;
+pub use molt_tir::{passes, representation_plan, tir};
 
 pub use molt_ir::intrinsic_symbols::{
     runtime_intrinsic_symbols_from_env, runtime_intrinsic_symbols_required,

@@ -3227,7 +3227,6 @@ dependencies = [
  "rmp-serde",
  "serde",
  "serde_json",
- "wasm-encoder 0.252.0",
 ]
 
 [[package]]
