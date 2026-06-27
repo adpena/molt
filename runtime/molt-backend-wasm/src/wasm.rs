@@ -23,6 +23,7 @@ mod function_emitter;
 mod local_analysis;
 mod local_layout;
 mod module_abi;
+mod multi_return_layout;
 mod op_loop;
 mod state_dispatch;
 mod tir_pipeline;

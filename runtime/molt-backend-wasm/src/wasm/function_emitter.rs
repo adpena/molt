@@ -85,11 +85,7 @@ impl WasmBackend {
             const_seed_locals,
             seeded_runtime_const_ops,
             seeded_runtime_const_op_indices,
-            is_multi_return_callee,
-            multi_ret_locals,
-            multi_ret_tuple_vars,
-            multi_ret_call_locals,
-            multi_ret_call_vars,
+            multi_return,
         } = local_layout;
         let multi_return_candidates = ctx.multi_return_candidates;
         let mut func = Function::new_with_locals_types(local_types);
@@ -206,11 +202,7 @@ impl WasmBackend {
             const_cache: &const_cache,
             scalar_plan: &scalar_plan,
             multi_return_candidates,
-            is_multi_return_callee,
-            multi_ret_locals: &multi_ret_locals,
-            multi_ret_tuple_vars: &multi_ret_tuple_vars,
-            multi_ret_call_locals: &multi_ret_call_locals,
-            multi_ret_call_vars: &multi_ret_call_vars,
+            multi_return: &multi_return,
             func_index,
             reloc_enabled,
             native_eh_enabled,

@@ -1,6 +1,7 @@
 use super::constant_ops::{ConstantOpContext, emit_constant_op};
 use super::context::CompileFuncContext;
 use super::control_flow::dispatch_control_panic;
+use super::multi_return_layout::WasmMultiReturnLayout;
 use super::*;
 
 mod builder_ops;
@@ -44,11 +45,7 @@ pub(super) struct WasmFunctionEmitContext<'a, 'ctx> {
     pub(super) const_cache: &'a ConstantCache,
     pub(super) scalar_plan: &'a ScalarRepresentationPlan,
     pub(super) multi_return_candidates: &'a BTreeMap<String, usize>,
-    pub(super) is_multi_return_callee: Option<usize>,
-    pub(super) multi_ret_locals: &'a [u32],
-    pub(super) multi_ret_tuple_vars: &'a BTreeSet<String>,
-    pub(super) multi_ret_call_locals: &'a BTreeMap<(String, i64), u32>,
-    pub(super) multi_ret_call_vars: &'a BTreeSet<String>,
+    pub(super) multi_return: &'a WasmMultiReturnLayout,
     pub(super) func_index: u32,
     pub(super) reloc_enabled: bool,
     pub(super) native_eh_enabled: bool,
@@ -84,11 +81,7 @@ impl<'a, 'ctx> WasmFunctionEmitContext<'a, 'ctx> {
         let const_cache = self.const_cache;
         let scalar_plan = self.scalar_plan;
         let multi_return_candidates = self.multi_return_candidates;
-        let is_multi_return_callee = self.is_multi_return_callee;
-        let multi_ret_locals = self.multi_ret_locals;
-        let multi_ret_tuple_vars = self.multi_ret_tuple_vars;
-        let multi_ret_call_locals = self.multi_ret_call_locals;
-        let multi_ret_call_vars = self.multi_ret_call_vars;
+        let multi_return = self.multi_return;
         let func_index = self.func_index;
         let reloc_enabled = self.reloc_enabled;
         let native_eh_enabled = self.native_eh_enabled;
@@ -159,11 +152,7 @@ impl<'a, 'ctx> WasmFunctionEmitContext<'a, 'ctx> {
                 import_ids,
                 locals,
                 scalar_plan,
-                is_multi_return_callee,
-                multi_ret_locals,
-                multi_ret_tuple_vars,
-                multi_ret_call_locals,
-                multi_ret_call_vars,
+                multi_return,
                 reloc_enabled,
                 arena_local,
                 ops,
@@ -211,8 +200,7 @@ impl<'a, 'ctx> WasmFunctionEmitContext<'a, 'ctx> {
                 locals,
                 const_cache,
                 multi_return_candidates,
-                multi_ret_call_locals,
-                multi_ret_call_vars,
+                multi_return,
                 reloc_enabled,
                 tail_call_eligible,
                 arena_local,
@@ -272,11 +260,11 @@ impl<'a, 'ctx> WasmFunctionEmitContext<'a, 'ctx> {
                     let ret_var = op.var.as_ref();
                     // Multi-value return (Section 3.1): push individual
                     // __multi_ret_N locals instead of the tuple handle.
-                    if is_multi_return_callee.is_some()
-                        && ret_var.is_some_and(|v| multi_ret_tuple_vars.contains(v))
-                        && !multi_ret_locals.is_empty()
+                    let callee_value_locals = multi_return.callee_value_locals();
+                    if ret_var.is_some_and(|v| multi_return.is_callee_tuple_var(v))
+                        && !callee_value_locals.is_empty()
                     {
-                        for &local_idx in multi_ret_locals {
+                        for &local_idx in callee_value_locals {
                             func.instruction(&Instruction::LocalGet(local_idx));
                         }
                     } else {
