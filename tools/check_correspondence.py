@@ -26,6 +26,29 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
+try:
+    from correspondence_sources import (
+        normalize_lean_variant_name as _normalize_lean_variant_name,
+        parse_lean_builtin_mappings as _parse_lean_builtin_mappings,
+        parse_lean_eval_binop_rules as _parse_lean_evalBinOp_rules,
+        parse_lean_eval_unop_rules as _parse_lean_evalUnOp_rules,
+        parse_lean_hex_constants as _parse_lean_hex_constants,
+        parse_lean_inductive_variants as _parse_lean_inductive_variants,
+        parse_rust_unsigned_constant_expressions as _parse_rust_u64_constants,
+        resolve_rust_or_hex_int as _normalize_hex,
+    )
+except ModuleNotFoundError:  # pragma: no cover - package-style import path
+    from tools.correspondence_sources import (
+        normalize_lean_variant_name as _normalize_lean_variant_name,
+        parse_lean_builtin_mappings as _parse_lean_builtin_mappings,
+        parse_lean_eval_binop_rules as _parse_lean_evalBinOp_rules,
+        parse_lean_eval_unop_rules as _parse_lean_evalUnOp_rules,
+        parse_lean_hex_constants as _parse_lean_hex_constants,
+        parse_lean_inductive_variants as _parse_lean_inductive_variants,
+        parse_rust_unsigned_constant_expressions as _parse_rust_u64_constants,
+        resolve_rust_or_hex_int as _normalize_hex,
+    )
+
 
 def _find_repo_root() -> Path:
     """Find the real repo root, handling worktree checkouts."""
@@ -42,7 +65,7 @@ def _find_repo_root() -> Path:
 
 ROOT = _find_repo_root()
 
-# ── Source paths ──────────────────────────────────────────────────────
+# Source paths
 LEAN_DIR = ROOT / "formal" / "lean"
 
 # Lean sources
@@ -68,7 +91,7 @@ if str(SRC) not in sys.path:
 
 from molt.frontend.lowering.op_kinds_generated import FRONTEND_EFFECT_CLASS  # noqa: E402
 
-# ── Terminal colors ──────────────────────────────────────────────────
+# Terminal colors
 IS_TTY = sys.stdout.isatty()
 
 
@@ -92,7 +115,7 @@ def bold(t: str) -> str:
     return _c("1", t)
 
 
-# ── Result tracking ──────────────────────────────────────────────────
+# Result tracking
 
 
 @dataclass
@@ -129,7 +152,7 @@ class CategoryResult:
         return self.failed == 0
 
 
-# ── Parsing helpers ──────────────────────────────────────────────────
+# Source loading
 
 
 def _read(path: Path) -> str:
@@ -138,128 +161,9 @@ def _read(path: Path) -> str:
     return ""
 
 
-def _normalize_hex(val: str, rust_text: str = "") -> int:
-    val = val.strip().rstrip(";")
-    cast = re.match(r"^(\w+)\s+as\s+u(?:32|64)$", val)
-    if cast:
-        val = cast.group(1)
-    if re.match(r"^\w+$", val) and rust_text:
-        vm = re.search(
-            rf"(?:pub\s+)?const {val}:\s*u(?:32|64)\s*=\s*([^;]+);",
-            rust_text,
-        )
-        if vm:
-            return _normalize_hex(vm.group(1), rust_text=rust_text)
-    if "<<" in val:
-        m = re.fullmatch(r"\(1u64\s*<<\s*(.+)\)\s*-\s*1", val.strip())
-        if m:
-            return (1 << _resolve_rust_shift_width(m.group(1), rust_text)) - 1
-        m2 = re.fullmatch(r"1(?:u64)?\s*<<\s*(.+)", val.strip())
-        if m2:
-            return 1 << _resolve_rust_shift_width(m2.group(1), rust_text)
-        raise ValueError(f"Cannot parse computed constant: {val}")
-    if val.isdigit():
-        return int(val)
-    return int(val.replace("_", ""), 16)
-
-
-def _resolve_rust_shift_width(expr: str, rust_text: str) -> int:
-    expr = expr.strip()
-    if expr.startswith("(") and expr.endswith(")"):
-        expr = expr[1:-1].strip()
-    m = re.fullmatch(r"(\w+)(?:\s*-\s*(\d+))?", expr)
-    if not m:
-        raise ValueError(f"Cannot parse shift width: {expr}")
-
-    base, decrement = m.group(1), m.group(2)
-    if base.isdigit():
-        width = int(base)
-    elif rust_text:
-        vm = re.search(
-            rf"(?:pub\s+)?const {base}:\s*u(?:32|64)\s*=\s*([^;]+);",
-            rust_text,
-        )
-        if not vm:
-            raise ValueError(f"Cannot resolve variable: {base}")
-        width = _normalize_hex(vm.group(1), rust_text=rust_text)
-    else:
-        raise ValueError(f"Cannot resolve variable: {base}")
-
-    if decrement:
-        width -= int(decrement)
-    return width
-
-
-def _parse_lean_hex_constants(text: str) -> dict[str, int]:
-    result: dict[str, int] = {}
-    for m in re.finditer(r"def\s+(\w+)\s*:\s*UInt64\s*:=\s*(0x[0-9a-fA-F]+)", text):
-        result[m.group(1)] = int(m.group(2), 16)
-    return result
-
-
-def _parse_rust_u64_constants(text: str) -> dict[str, str]:
-    result: dict[str, str] = {}
-    for m in re.finditer(r"(?:pub\s+)?const\s+(\w+):\s*u(?:32|64)\s*=\s*(.+?);", text):
-        result[m.group(1)] = m.group(2).strip()
-    return result
-
-
-def _parse_lean_inductive_variants(text: str, type_name: str) -> list[str]:
-    pattern = rf"inductive\s+{type_name}\s+where"
-    m = re.search(pattern, text)
-    if not m:
-        return []
-    start = m.end()
-    lines = text[start:].split("\n")
-    variants: list[str] = []
-    for line in lines:
-        stripped = line.strip()
-        if not stripped:
-            continue
-        if stripped.startswith("--"):
-            continue
-        if stripped.startswith("deriving"):
-            break
-        if re.match(
-            r"^(inductive|def|theorem|structure|namespace|end|abbrev|section)\b",
-            stripped,
-        ):
-            break
-        for vm in re.finditer(r"\|\s*\.?(\w+)", stripped):
-            name = vm.group(1)
-            if name.endswith("_"):
-                name = name[:-1]
-            if name not in variants:
-                variants.append(name)
-    return variants
-
-
-def _parse_lean_builtin_mappings(text: str) -> list[tuple[str, str]]:
-    return re.findall(r'\("(\w+)",\s*"([^"]+)"\)', text)
-
-
-def _normalize_lean_variant_name(name: str) -> str:
-    """Match `_parse_lean_inductive_variants` reserved-word normalization."""
-    return name[:-1] if name.endswith("_") else name
-
-
-def _parse_lean_evalBinOp_rules(text: str) -> list[tuple[str, str, str]]:
-    rules: list[tuple[str, str, str]] = []
-    for m in re.finditer(r"\|\s*\.(\w+),\s*\.(\w+)\s+\w+,\s*\.(\w+)\s+\w+\s*=>", text):
-        rules.append((m.group(1), m.group(2), m.group(3)))
-    return rules
-
-
-def _parse_lean_evalUnOp_rules(text: str) -> list[tuple[str, str]]:
-    rules: list[tuple[str, str]] = []
-    for m in re.finditer(r"\|\s*\.(\w+),\s*\.(\w+)\s+\w+\s*=>", text):
-        rules.append((m.group(1), m.group(2)))
-    return rules
-
-
-# ═══════════════════════════════════════════════════════════════════
+#
 # Category 1: NaN-boxing constants
-# ═══════════════════════════════════════════════════════════════════
+#
 
 
 def check_nanbox_constants() -> CategoryResult:
@@ -348,9 +252,9 @@ def check_nanbox_constants() -> CategoryResult:
     return result
 
 
-# ═══════════════════════════════════════════════════════════════════
+#
 # Category 2: Operator enums
-# ═══════════════════════════════════════════════════════════════════
+#
 
 
 def check_operator_enums() -> CategoryResult:
@@ -413,9 +317,9 @@ def check_operator_enums() -> CategoryResult:
     return result
 
 
-# ═══════════════════════════════════════════════════════════════════
+#
 # Category 3: Type system
-# ═══════════════════════════════════════════════════════════════════
+#
 
 
 def check_type_system() -> CategoryResult:
@@ -475,9 +379,9 @@ def check_type_system() -> CategoryResult:
     return result
 
 
-# ═══════════════════════════════════════════════════════════════════
+#
 # Category 4: Luau builtin mappings
-# ═══════════════════════════════════════════════════════════════════
+#
 
 
 def check_luau_builtins() -> CategoryResult:
@@ -536,9 +440,9 @@ def check_luau_builtins() -> CategoryResult:
     return result
 
 
-# ═══════════════════════════════════════════════════════════════════
+#
 # Category 5: Luau operator translations
-# ═══════════════════════════════════════════════════════════════════
+#
 
 
 def check_luau_operators() -> CategoryResult:
@@ -651,9 +555,9 @@ def check_luau_operators() -> CategoryResult:
     return result
 
 
-# ═══════════════════════════════════════════════════════════════════
+#
 # Category 6: Evaluation rules
-# ═══════════════════════════════════════════════════════════════════
+#
 
 
 def check_eval_rules() -> CategoryResult:
@@ -752,9 +656,9 @@ def check_eval_rules() -> CategoryResult:
     return result
 
 
-# ═══════════════════════════════════════════════════════════════════
+#
 # Category 7: SCCP lattice
-# ═══════════════════════════════════════════════════════════════════
+#
 
 
 def check_sccp_lattice() -> CategoryResult:
@@ -819,9 +723,9 @@ def check_sccp_lattice() -> CategoryResult:
     return result
 
 
-# ═══════════════════════════════════════════════════════════════════
+#
 # Category 8: Structural invariants
-# ═══════════════════════════════════════════════════════════════════
+#
 
 
 def check_structural_invariants() -> CategoryResult:
@@ -926,9 +830,9 @@ def check_structural_invariants() -> CategoryResult:
     return result
 
 
-# ═══════════════════════════════════════════════════════════════════
+#
 # Orchestration
-# ═══════════════════════════════════════════════════════════════════
+#
 
 ALL_CATEGORIES: dict[str, callable] = {
     "nanbox": check_nanbox_constants,

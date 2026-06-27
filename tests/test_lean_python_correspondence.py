@@ -10,11 +10,11 @@ Run:
 
 from __future__ import annotations
 
-import re
 import subprocess
 from pathlib import Path
 
 import pytest
+from tools.correspondence_sources import parse_lean_inductive_variants
 from tests.process_guard_common import run_guarded_test_process
 
 
@@ -55,7 +55,7 @@ def _read_all(paths: tuple[Path, ...]) -> str:
     return "\n".join(_read(path) for path in paths)
 
 
-# ── Python effect classification parsing ─────────────────────────────
+# Python effect classification parsing
 
 
 def _generated_python_effect_classes() -> dict[str, set[str]]:
@@ -70,35 +70,6 @@ def _generated_python_effect_classes() -> dict[str, set[str]]:
     for kind, effect in FRONTEND_EFFECT_CLASS.items():
         classes[effect].add(kind)
     return classes
-
-
-def _parse_lean_inductive_variants(text: str, type_name: str) -> list[str]:
-    """Extract variant names from a Lean `inductive` definition."""
-    pattern = rf"inductive\s+{type_name}\s+where"
-    m = re.search(pattern, text)
-    if not m:
-        return []
-    start = m.end()
-    lines = text[start:].split("\n")
-    variants: list[str] = []
-    for line in lines:
-        stripped = line.strip()
-        if not stripped or stripped.startswith("--"):
-            continue
-        if stripped.startswith("deriving"):
-            break
-        if re.match(
-            r"^(inductive|def|theorem|structure|namespace|end|abbrev|section)\b",
-            stripped,
-        ):
-            break
-        for vm in re.finditer(r"\|\s*\.?(\w+)", stripped):
-            name = vm.group(1)
-            if name.endswith("_"):
-                name = name[:-1]
-            if name not in variants:
-                variants.append(name)
-    return variants
 
 
 def _lean_binop_python_name(name: str) -> str | None:
@@ -120,7 +91,7 @@ def _lean_unop_python_name(name: str) -> str | None:
     return normalized.upper()
 
 
-# ── Effect classification tests ──────────────────────────────────────
+# Effect classification tests
 
 
 @pytest.fixture(scope="module")
@@ -186,7 +157,7 @@ class TestFrontendEffectAlignment:
         python_effect_classes: dict[str, set[str]],
     ) -> None:
         """Lean BinOp variants map to generated frontend effect classes."""
-        lean_binops = _parse_lean_inductive_variants(lean_syntax_text, "BinOp")
+        lean_binops = parse_lean_inductive_variants(lean_syntax_text, "BinOp")
         effect_ops = set().union(*python_effect_classes.values())
 
         for op in lean_binops:
@@ -203,7 +174,7 @@ class TestFrontendEffectAlignment:
         python_effect_classes: dict[str, set[str]],
     ) -> None:
         """Typed Lean arithmetic/comparisons are pure, but frontend ops may raise."""
-        lean_binops = set(_parse_lean_inductive_variants(lean_syntax_text, "BinOp"))
+        lean_binops = set(parse_lean_inductive_variants(lean_syntax_text, "BinOp"))
         barrier_ops = {
             "add",
             "sub",
@@ -233,13 +204,18 @@ class TestFrontendEffectAlignment:
                 f"Lean BinOp.{op} frontend op {upper} must be a may-raise barrier"
             )
 
-    def test_frontend_boolean_and_unops_stay_pure(
+    def test_frontend_boolean_ops_and_not_stay_pure(
         self,
         lean_syntax_text: str,
         python_effect_classes: dict[str, set[str]],
     ) -> None:
-        lean_binops = set(_parse_lean_inductive_variants(lean_syntax_text, "BinOp"))
-        lean_unops = _parse_lean_inductive_variants(lean_syntax_text, "UnOp")
+        """The short-circuit/identity boolean binops and the unary `not` are
+        pure: `and`/`or` are value-selects, `is`/`is_not` are identity, and
+        `not` is a truthiness test. (The arithmetic/bitwise unary operators
+        neg/pos/abs/invert are NOT pure - they dispatch a may-raise dunder; see
+        test_pre_specialization_raising_unops_are_barriers.)"""
+        lean_binops = set(parse_lean_inductive_variants(lean_syntax_text, "BinOp"))
+        lean_unops = set(parse_lean_inductive_variants(lean_syntax_text, "UnOp"))
         pure_ops = python_effect_classes["pure"]
 
         for op in {"and", "or", "is", "is_not"} & lean_binops:
@@ -247,16 +223,42 @@ class TestFrontendEffectAlignment:
             assert upper in pure_ops, (
                 f"Lean BinOp.{op} (Python: {upper}) not in frontend pure ops"
             )
-        for op in lean_unops:
+        for op in {"not"} & lean_unops:
             upper = _lean_unop_python_name(op)
-            if upper is None:
-                continue
+            assert upper is not None
             assert upper in pure_ops, (
                 f"Lean UnOp.{op} (Python: {upper}) not in frontend pure ops"
             )
 
+    def test_pre_specialization_raising_unops_are_barriers(
+        self,
+        lean_syntax_text: str,
+        python_effect_classes: dict[str, set[str]],
+    ) -> None:
+        """Typed Lean unary neg/pos/abs/invert are nothrow, but the frontend
+        emits them BEFORE type specialization, so a pre-spec `-a` / `+a` /
+        `abs(a)` / `~a` may dispatch __neg__/__pos__/__abs__/__invert__ and raise
+        `TypeError: bad operand type ...`. They must be may-raise barriers
+        (writes_heap), exactly like their binary counterparts
+        (test_pre_specialization_raising_binops_are_barriers), so the frontend
+        dead-trivial-const pass never deletes a dead-result unary op and silently
+        drops the raise - the structural fix for the abs("x") / `-"x"` parity
+        bug."""
+        lean_unops = set(parse_lean_inductive_variants(lean_syntax_text, "UnOp"))
+        barrier_unops = {"neg", "pos", "abs", "invert"}
+        checked = barrier_unops & lean_unops
+        assert checked == barrier_unops, (
+            f"expected Lean UnOp variants {sorted(barrier_unops)}, "
+            f"found {sorted(lean_unops)}"
+        )
+        for op in sorted(checked):
+            upper = op.upper()
+            assert upper in python_effect_classes["writes_heap"], (
+                f"Lean UnOp.{op} frontend op {upper} must be a may-raise barrier"
+            )
 
-# ── Compiler pass name tests ─────────────────────────────────────────
+
+# Compiler pass name tests
 
 
 # Expected Lean compiler pass files and their key function names
