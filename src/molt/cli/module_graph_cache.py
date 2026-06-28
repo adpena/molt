@@ -41,7 +41,7 @@ def _resolved_module_cache_key(path_str: str, *parts: str) -> str:
     ).hexdigest()[:24]
 
 
-_MODULE_GRAPH_CACHE_SCHEMA_VERSION = 7
+_MODULE_GRAPH_CACHE_SCHEMA_VERSION = 8
 
 
 _IMPORT_SCAN_CACHE_SCHEMA_VERSION = 7
@@ -74,7 +74,7 @@ def _module_graph_cache_key(
     stdlib_root: str,
     skip_modules: tuple[str, ...],
     stub_parents: tuple[str, ...],
-    nested_stdlib_scan_modules: tuple[str, ...],
+    stdlib_static_import_helper_modules: tuple[str, ...],
     stdlib_allowlist_digest: str,
     compiler_fingerprint: str,
     target_python_tag: str = _DEFAULT_TARGET_PYTHON_VERSION.tag,
@@ -89,7 +89,9 @@ def _module_graph_cache_key(
         "stdlib_root": str(Path(stdlib_root).resolve()),
         "skip_modules": list(skip_modules),
         "stub_parents": list(stub_parents),
-        "nested_stdlib_scan_modules": list(nested_stdlib_scan_modules),
+        "stdlib_static_import_helper_modules": list(
+            stdlib_static_import_helper_modules
+        ),
         "stdlib_allowlist_digest": stdlib_allowlist_digest,
         "target_python": target_python_tag,
     }
@@ -143,7 +145,7 @@ def _module_graph_cache_path(
     stdlib_root: Path,
     skip_modules: set[str],
     stub_parents: set[str],
-    nested_stdlib_scan_modules: set[str],
+    stdlib_static_import_helper_modules: set[str],
     stdlib_allowlist: set[str],
     import_admission_policy: _ImportAdmissionPolicy | None = None,
     allow_entry_external_imports: bool = True,
@@ -161,7 +163,7 @@ def _module_graph_cache_path(
         os.fspath(stdlib_root),
         tuple(sorted(skip_modules)),
         tuple(sorted(stub_parents)),
-        tuple(sorted(nested_stdlib_scan_modules)),
+        tuple(sorted(stdlib_static_import_helper_modules)),
         _module_graph_policy_digest(
             stdlib_allowlist,
             import_admission_policy,
@@ -183,7 +185,7 @@ def _read_persisted_module_graph(
     stdlib_root: Path,
     skip_modules: set[str],
     stub_parents: set[str],
-    nested_stdlib_scan_modules: set[str],
+    stdlib_static_import_helper_modules: set[str],
     stdlib_allowlist: set[str],
     import_admission_policy: _ImportAdmissionPolicy | None = None,
     allow_entry_external_imports: bool = True,
@@ -199,7 +201,7 @@ def _read_persisted_module_graph(
         stdlib_root=stdlib_root,
         skip_modules=skip_modules,
         stub_parents=stub_parents,
-        nested_stdlib_scan_modules=nested_stdlib_scan_modules,
+        stdlib_static_import_helper_modules=stdlib_static_import_helper_modules,
         stdlib_allowlist=stdlib_allowlist,
         import_admission_policy=import_admission_policy,
         allow_entry_external_imports=allow_entry_external_imports,
@@ -280,7 +282,7 @@ def _write_persisted_module_graph(
     stdlib_root: Path,
     skip_modules: set[str],
     stub_parents: set[str],
-    nested_stdlib_scan_modules: set[str],
+    stdlib_static_import_helper_modules: set[str],
     stdlib_allowlist: set[str],
     import_admission_policy: _ImportAdmissionPolicy | None = None,
     allow_entry_external_imports: bool = True,
@@ -321,7 +323,7 @@ def _write_persisted_module_graph(
         stdlib_root=stdlib_root,
         skip_modules=skip_modules,
         stub_parents=stub_parents,
-        nested_stdlib_scan_modules=nested_stdlib_scan_modules,
+        stdlib_static_import_helper_modules=stdlib_static_import_helper_modules,
         stdlib_allowlist=stdlib_allowlist,
         import_admission_policy=import_admission_policy,
         allow_entry_external_imports=allow_entry_external_imports,

@@ -690,11 +690,11 @@ def test_materialize_import_plan_retains_external_native_artifact_plan(
     assert import_plan.native_artifact_plan.artifacts[0].module == "nativepkg._native"
 
 
-def test_core_closure_preserves_stdlib_nested_scan_exceptions(
+def test_entry_collections_closure_preserves_static_helper_import_edges(
     tmp_path: Path,
 ) -> None:
     entry_path = tmp_path / "demo.py"
-    entry_path.write_text("value = 1\n")
+    entry_path.write_text("import collections\n")
     entry_tree = ast.parse(entry_path.read_text(), filename=str(entry_path))
     module_reasons: dict[str, set[str]] = {}
 
@@ -715,14 +715,16 @@ def test_core_closure_preserves_stdlib_nested_scan_exceptions(
     assert prepared is not None
     assert "collections" in prepared.module_graph
     assert "copy" in prepared.module_graph
-    assert "core_closure" in module_reasons["copy"]
+    assert "warnings" not in prepared.module_graph
+    assert "re" not in prepared.module_graph
+    assert "entry_closure" in module_reasons["copy"]
 
 
-def test_core_closure_copy_reaches_backend_stdlib_symbol_contract(
+def test_collections_static_helper_copy_reaches_backend_symbol_contract(
     tmp_path: Path,
 ) -> None:
     entry_path = tmp_path / "demo.py"
-    entry_path.write_text("value = 1\n")
+    entry_path.write_text("import collections\n")
     entry_tree = ast.parse(entry_path.read_text(), filename=str(entry_path))
     module_reasons: dict[str, set[str]] = {}
 
@@ -1804,7 +1806,7 @@ def _discover_with_core_modules(entry: Path) -> dict[str, Path]:
             stdlib_allowlist,
             skip_modules=cli.STUB_MODULES,
             stub_parents=cli.STUB_PARENT_MODULES,
-            nested_stdlib_scan_modules=set(),
+            stdlib_static_import_helper_modules=set(),
         )
         for name, path in core_graph.items():
             module_graph.setdefault(name, path)
@@ -4067,8 +4069,8 @@ def test_shared_module_resolution_cache_reuses_import_scans(
             path=module_path,
             module_name=module_name,
             entry_paths=frozenset({cache.resolved_path(entry)}),
-            nested_scan_modules=(
-                cli_module_import_scanner.STDLIB_NESTED_IMPORT_SCAN_MODULES
+            static_import_helper_modules=(
+                cli_module_import_scanner.STDLIB_STATIC_IMPORT_HELPER_MODULES
             ),
             resolution_cache=cache,
         )
@@ -4291,7 +4293,7 @@ def test_persisted_module_graph_cache_tracks_tooling_fingerprint(
         stdlib_root=stdlib_root,
         skip_modules=set(),
         stub_parents=set(),
-        nested_stdlib_scan_modules=set(),
+        stdlib_static_import_helper_modules=set(),
         stdlib_allowlist=set(),
         graph={"__main__": entry_path, "pkg.mod": module_path},
         explicit_imports={"pkg.mod"},
@@ -4305,7 +4307,7 @@ def test_persisted_module_graph_cache_tracks_tooling_fingerprint(
             stdlib_root=stdlib_root,
             skip_modules=set(),
             stub_parents=set(),
-            nested_stdlib_scan_modules=set(),
+            stdlib_static_import_helper_modules=set(),
             stdlib_allowlist=set(),
         )
         is not None
@@ -4323,7 +4325,7 @@ def test_persisted_module_graph_cache_tracks_tooling_fingerprint(
             stdlib_root=stdlib_root,
             skip_modules=set(),
             stub_parents=set(),
-            nested_stdlib_scan_modules=set(),
+            stdlib_static_import_helper_modules=set(),
             stdlib_allowlist=set(),
         )
         is None
@@ -4351,7 +4353,7 @@ def test_persisted_module_graph_cache_tracks_source_content(
         stdlib_root=stdlib_root,
         skip_modules=set(),
         stub_parents=set(),
-        nested_stdlib_scan_modules=set(),
+        stdlib_static_import_helper_modules=set(),
         stdlib_allowlist=set(),
         graph={"__main__": entry_path},
         explicit_imports={"json"},
@@ -4367,7 +4369,7 @@ def test_persisted_module_graph_cache_tracks_source_content(
         stdlib_root=stdlib_root,
         skip_modules=set(),
         stub_parents=set(),
-        nested_stdlib_scan_modules=set(),
+        stdlib_static_import_helper_modules=set(),
         stdlib_allowlist=set(),
     )
     assert cached is not None
@@ -5274,7 +5276,7 @@ def test_module_graph_cache_path_uses_cached_graph_key(
         stdlib_root_str: str,
         skip_modules: tuple[str, ...],
         stub_parents: tuple[str, ...],
-        nested_stdlib_scan_modules: tuple[str, ...],
+        stdlib_static_import_helper_modules: tuple[str, ...],
         stdlib_allowlist_digest: str,
         compiler_fingerprint: str,
         target_python_tag: str = cli_module_graph_cache._DEFAULT_TARGET_PYTHON_VERSION.tag,
@@ -5289,7 +5291,7 @@ def test_module_graph_cache_path_uses_cached_graph_key(
             stdlib_root_str,
             skip_modules,
             stub_parents,
-            nested_stdlib_scan_modules,
+            stdlib_static_import_helper_modules,
             stdlib_allowlist_digest,
             compiler_fingerprint,
             target_python_tag,
@@ -5308,7 +5310,7 @@ def test_module_graph_cache_path_uses_cached_graph_key(
         stdlib_root=stdlib_root,
         skip_modules={"warnings"},
         stub_parents={"asyncio"},
-        nested_stdlib_scan_modules={"tkinter"},
+        stdlib_static_import_helper_modules={"tkinter"},
         stdlib_allowlist={"json"},
     )
     second = cli_module_graph_cache._module_graph_cache_path(
@@ -5319,7 +5321,7 @@ def test_module_graph_cache_path_uses_cached_graph_key(
         stdlib_root=stdlib_root,
         skip_modules={"warnings"},
         stub_parents={"asyncio"},
-        nested_stdlib_scan_modules={"tkinter"},
+        stdlib_static_import_helper_modules={"tkinter"},
         stdlib_allowlist={"json"},
     )
 
@@ -9062,6 +9064,61 @@ def test_typing_static_graph_keeps_collections_abc_without_lazy_deprecated(
     assert "re" not in graph
 
 
+def test_collections_static_helper_scan_includes_userdict_copy_only() -> None:
+    tree = ast.parse(
+        (ROOT / "src/molt/stdlib/collections/__init__.py").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    module_init = set(
+        cli_module_import_scanner._collect_imports(
+            tree,
+            module_name="collections",
+            is_package=True,
+            import_scan_mode="module_init",
+        )
+    )
+    helper_scan = set(
+        cli_module_import_scanner._collect_imports(
+            tree,
+            module_name="collections",
+            is_package=True,
+            import_scan_mode="module_init_static_helpers",
+        )
+    )
+
+    assert "copy" not in module_init
+    assert "copy" in helper_scan
+    assert "warnings" not in helper_scan
+    assert "re" not in helper_scan
+
+
+def test_email_message_static_helper_scan_includes_policy_default_only() -> None:
+    tree = ast.parse(
+        (ROOT / "src/molt/stdlib/email/message.py").read_text(encoding="utf-8")
+    )
+
+    module_init = set(
+        cli_module_import_scanner._collect_imports(
+            tree,
+            module_name="email.message",
+            import_scan_mode="module_init",
+        )
+    )
+    helper_scan = set(
+        cli_module_import_scanner._collect_imports(
+            tree,
+            module_name="email.message",
+            import_scan_mode="module_init_static_helpers",
+        )
+    )
+
+    assert "email.policy" not in module_init
+    assert "email.policy" in helper_scan
+    assert "email.generator" not in helper_scan
+
+
 def test_stdlib_module_init_scan_excludes_lazy_regex_and_struct_edges() -> None:
     cases = {
         "glob": {"re"},
@@ -9163,7 +9220,7 @@ def test_spawn_entry_override_not_required_for_plain_script(tmp_path: Path) -> N
             stdlib_allowlist,
             skip_modules=cli.STUB_MODULES,
             stub_parents=cli.STUB_PARENT_MODULES,
-            nested_stdlib_scan_modules=set(),
+            stdlib_static_import_helper_modules=set(),
         )
         for name, path in core_graph.items():
             module_graph.setdefault(name, path)
