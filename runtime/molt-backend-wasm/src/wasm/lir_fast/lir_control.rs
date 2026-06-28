@@ -1,5 +1,6 @@
 use super::lir_context::LirLowerCtx;
 use super::lir_scalar::{emit_box_none, emit_return_boxed_i64};
+use crate::wasm::body::WasmLirFallbackReason;
 use molt_tir::tir::blocks::BlockId;
 use molt_tir::tir::lir::{LirRepr, LirTerminator};
 use molt_tir::tir::values::ValueId;
@@ -85,7 +86,7 @@ pub(super) fn emit_lir_terminator_multiblock(
                 }
                 LirRepr::DynBox | LirRepr::Ref64 => {
                     ctx.emit_get(*cond);
-                    ctx.emit_bail_to_generic_path();
+                    ctx.emit_bail_to_generic_path(WasmLirFallbackReason::BoxedControlCondition);
                 }
             }
             store_lir_block_args(ctx, *then_block, then_args);
@@ -124,7 +125,7 @@ pub(super) fn emit_lir_terminator_multiblock(
         LirTerminator::StateDispatch { .. } => {
             // `StateDispatch` only appears in generator/coroutine `_poll`
             // bodies, which on WASM are lowered by the SimpleIR relooper path
-            // (`wasm.rs`), NOT this LIR fast path: `prepare_lir_wasm_fast_output`
+            // (`wasm.rs`), NOT this LIR fast path: `prepare_lir_wasm_fast_plan`
             // is gated to `____molt_globals_builtin__` functions only
             // (`is_production_lir_wasm_fast_path_name`).  Reaching here means a
             // state-machine body was incorrectly routed through the LIR fast

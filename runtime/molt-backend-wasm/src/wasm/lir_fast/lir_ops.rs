@@ -3,6 +3,7 @@ use super::lir_scalar::{
     emit_get_boxed_for_repr, emit_lir_binary_arith, emit_lir_bitwise, emit_lir_bool_select,
     emit_lir_comparison, emit_lir_i64_binary_or_boxed, emit_lir_unary_arith,
 };
+use crate::wasm::body::WasmLirFallbackReason;
 use crate::wasm_abi_generated::{
     WasmConstLirFastPolicy, WasmConstOpPolicySpec, WasmConstScalarValue, wasm_const_op_policy,
 };
@@ -84,7 +85,7 @@ fn emit_const_bail_to_generic(ctx: &mut LirLowerCtx, op: &LirOp) {
     for &operand in &op.tir_op.operands {
         ctx.emit_get(operand);
     }
-    ctx.emit_bail_to_generic_path();
+    ctx.emit_bail_to_generic_path(WasmLirFallbackReason::RuntimeConstMaterialization);
     if let Some(result) = op.result_values.first() {
         ctx.emit_set(result.id);
     }
@@ -154,15 +155,17 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
                 ctx.emit_set(result.id);
             }
         }
-        OpCode::ConstStr | OpCode::ConstBytes => match const_policy_for_opcode(tir_op.opcode).lir_fast {
-            WasmConstLirFastPolicy::BailGeneric => emit_const_bail_to_generic(ctx, op),
-            WasmConstLirFastPolicy::Lower => {
-                panic!(
-                    "generated WASM const policy requires direct LIR lowering for {:?}",
-                    tir_op.opcode
-                );
+        OpCode::ConstStr | OpCode::ConstBytes => {
+            match const_policy_for_opcode(tir_op.opcode).lir_fast {
+                WasmConstLirFastPolicy::BailGeneric => emit_const_bail_to_generic(ctx, op),
+                WasmConstLirFastPolicy::Lower => {
+                    panic!(
+                        "generated WASM const policy requires direct LIR lowering for {:?}",
+                        tir_op.opcode
+                    );
+                }
             }
-        },
+        }
         OpCode::ConstBigInt => match const_policy_for_opcode(tir_op.opcode).lir_fast {
             WasmConstLirFastPolicy::BailGeneric => emit_const_bail_to_generic(ctx, op),
             WasmConstLirFastPolicy::Lower => {
@@ -218,7 +221,7 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
             } else {
                 emit_get_boxed_for_repr(ctx, lhs);
                 emit_get_boxed_for_repr(ctx, rhs);
-                ctx.emit_bail_to_generic_path();
+                ctx.emit_bail_to_generic_path(WasmLirFallbackReason::BoxedCheckedArithmetic);
                 ctx.emit_set(sum);
                 ctx.instructions.push(Instruction::I32Const(0));
                 ctx.emit_set(flag);
@@ -245,7 +248,7 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
             let flag = op.result_values[1].id;
             emit_get_boxed_for_repr(ctx, lhs);
             emit_get_boxed_for_repr(ctx, rhs);
-            ctx.emit_bail_to_generic_path();
+            ctx.emit_bail_to_generic_path(WasmLirFallbackReason::BoxedCheckedArithmetic);
             ctx.emit_set(product);
             ctx.instructions.push(Instruction::I32Const(0));
             ctx.emit_set(flag);
@@ -295,7 +298,7 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
                     ctx.instructions.push(Instruction::I64Xor);
                 } else {
                     emit_get_boxed_for_repr(ctx, src);
-                    ctx.emit_bail_to_generic_path();
+                    ctx.emit_bail_to_generic_path(WasmLirFallbackReason::BoxedBitwiseOrShift);
                 }
                 ctx.emit_set(result.id);
             }
@@ -364,7 +367,7 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
                     }
                     _ => {
                         ctx.emit_get(src);
-                        ctx.emit_bail_to_generic_path();
+                        ctx.emit_bail_to_generic_path(WasmLirFallbackReason::BoxedTruthiness);
                     }
                 }
                 ctx.emit_set(result.id);
@@ -388,7 +391,7 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
                     }
                     _ => {
                         ctx.emit_get(src);
-                        ctx.emit_bail_to_generic_path();
+                        ctx.emit_bail_to_generic_path(WasmLirFallbackReason::BoxedTruthiness);
                     }
                 }
                 ctx.emit_set(result.id);
@@ -467,7 +470,7 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
             for &operand in &tir_op.operands {
                 ctx.emit_get(operand);
             }
-            ctx.emit_bail_to_generic_path();
+            ctx.emit_bail_to_generic_path(WasmLirFallbackReason::UnsupportedOperation);
             if let Some(result) = op.result_values.first() {
                 ctx.emit_set(result.id);
             }

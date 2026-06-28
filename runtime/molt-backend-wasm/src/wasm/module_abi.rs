@@ -13,7 +13,7 @@ impl WasmBackend {
     pub(super) fn emit_wasm_module(
         mut self,
         ir: SimpleIR,
-        lir_fast_outputs: BTreeMap<String, crate::wasm::body::WasmBody>,
+        lir_lowering_plans: crate::wasm_plan::WasmFunctionLoweringPlans,
         analysis: WasmTrampolineAnalysis,
     ) -> Vec<u8> {
         let WasmTrampolineAnalysis {
@@ -31,7 +31,7 @@ impl WasmBackend {
         let WasmRuntimeImportEmission {
             runtime_surface,
             mut next_type_idx,
-        } = self.emit_runtime_import_surface(&ir, &lir_fast_outputs, &task_kinds);
+        } = self.emit_runtime_import_surface(&ir, &lir_lowering_plans, &task_kinds);
         let WasmRuntimeSurfacePlan {
             max_func_arity,
             max_call_arity,
@@ -223,7 +223,7 @@ impl WasmBackend {
             call_func_spill_offset,
             class_def_spill_offset,
             const_str_scratch_segment,
-            lir_fast_outputs: &lir_fast_outputs,
+            lir_lowering_plans: &lir_lowering_plans,
             return_alias_summaries: &return_alias_summaries,
         };
         for func_ir in &ir.functions {

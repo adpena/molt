@@ -26,7 +26,7 @@ pub(super) struct WasmRuntimeSurfacePlan {
 impl WasmRuntimeSurfacePlan {
     pub(super) fn build(
         ir: &SimpleIR,
-        lir_fast_outputs: &BTreeMap<String, crate::wasm::body::WasmBody>,
+        lir_lowering_plans: &crate::wasm_plan::WasmFunctionLoweringPlans,
         task_kinds: &BTreeMap<String, TrampolineKind>,
         options: &WasmCompileOptions,
     ) -> Self {
@@ -50,7 +50,7 @@ impl WasmRuntimeSurfacePlan {
         for func_ir in &ir.functions {
             plan.observe_function(func_ir, &defined_function_names, &known_imports, &deps_map);
         }
-        plan.finish_auto_required_imports(lir_fast_outputs, task_kinds);
+        plan.finish_auto_required_imports(lir_lowering_plans, task_kinds);
         plan
     }
 
@@ -361,7 +361,7 @@ impl WasmRuntimeSurfacePlan {
 
     fn finish_auto_required_imports(
         &mut self,
-        lir_fast_outputs: &BTreeMap<String, crate::wasm::body::WasmBody>,
+        lir_lowering_plans: &crate::wasm_plan::WasmFunctionLoweringPlans,
         task_kinds: &BTreeMap<String, TrampolineKind>,
     ) {
         let Some(required) = self.auto_required_imports.as_mut() else {
@@ -397,8 +397,10 @@ impl WasmRuntimeSurfacePlan {
                 .iter()
                 .map(|spec| spec.import_name.to_string()),
         );
-        for output in lir_fast_outputs.values() {
-            required.extend(output.runtime_imports().map(str::to_string));
+        for plan in lir_lowering_plans.values() {
+            if let Some(output) = plan.lir_fast_body() {
+                required.extend(output.runtime_imports().map(str::to_string));
+            }
         }
     }
 
