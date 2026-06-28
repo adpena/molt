@@ -1,5 +1,10 @@
 use super::super::result_sink::store_result_or_drop;
-use super::super::*;
+use crate::wasm::{WasmBackend, WasmFrameLocals};
+use crate::wasm_binary::emit_call;
+use crate::wasm_import_tracking::TrackedImportIds;
+use crate::wasm_values::{box_int, stable_ic_site_id};
+use crate::{FunctionIR, OpIR};
+use wasm_encoder::{Function, Instruction};
 
 pub(super) fn emit_attribute_op(
     backend: &mut WasmBackend,
