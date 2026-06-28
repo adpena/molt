@@ -1,10 +1,9 @@
 use super::lir_context::LirLowerCtx;
-use super::lir_scalar::{emit_box_none, emit_return_boxed_i64};
-use crate::wasm::body::WasmLirFallbackReason;
+use super::lir_scalar::{emit_box_none, emit_lir_truthiness_i32, emit_return_boxed_i64};
 use molt_tir::tir::blocks::BlockId;
-use molt_tir::tir::lir::{LirRepr, LirTerminator};
+use molt_tir::tir::lir::LirTerminator;
 use molt_tir::tir::values::ValueId;
-use wasm_encoder::{Ieee64, Instruction};
+use wasm_encoder::Instruction;
 
 #[derive(Clone, Copy)]
 pub(super) enum LirReturnAbi {
@@ -71,24 +70,7 @@ pub(super) fn emit_lir_terminator_multiblock(
             else_block,
             else_args,
         } => {
-            match ctx.repr_of(*cond) {
-                LirRepr::Bool1 => ctx.emit_get(*cond),
-                LirRepr::I64 => {
-                    ctx.emit_get(*cond);
-                    ctx.instructions.push(Instruction::I64Const(0));
-                    ctx.instructions.push(Instruction::I64Ne);
-                }
-                LirRepr::F64 => {
-                    ctx.emit_get(*cond);
-                    ctx.instructions
-                        .push(Instruction::F64Const(Ieee64::from(0.0)));
-                    ctx.instructions.push(Instruction::F64Ne);
-                }
-                LirRepr::DynBox | LirRepr::Ref64 => {
-                    ctx.emit_get(*cond);
-                    ctx.emit_bail_to_generic_path(WasmLirFallbackReason::BoxedControlCondition);
-                }
-            }
+            emit_lir_truthiness_i32(ctx, *cond);
             store_lir_block_args(ctx, *then_block, then_args);
             if let Some(&tgt_idx) = ctx.block_index.get(then_block) {
                 let depth = (num_blocks - 1).saturating_sub(tgt_idx + 1);

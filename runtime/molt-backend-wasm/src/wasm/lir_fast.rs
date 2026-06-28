@@ -31,12 +31,14 @@ mod lir_control;
 mod lir_ops;
 mod lir_scalar;
 mod peephole;
+mod runtime_calls;
 
 #[cfg(any(test, feature = "test-util"))]
 pub(crate) use driver::lower_lir_to_wasm;
 pub(crate) use driver::lower_tir_to_wasm_boxed_i64_abi_with_proof;
 #[cfg(test)]
 pub(crate) use driver::{lower_tir_to_wasm, lower_tir_to_wasm_boxed_i64_abi};
+pub(crate) use runtime_calls::LirRuntimeCall;
 
 #[cfg(test)]
 mod tests;
