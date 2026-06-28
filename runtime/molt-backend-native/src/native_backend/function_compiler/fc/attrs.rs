@@ -240,29 +240,47 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
             let global_ptr = module.declare_data_in_func(data_id, builder.func);
             let attr_ptr = builder.ins().symbol_value(types::I64, global_ptr);
             let attr_len = builder.ins().iconst(types::I64, attr_name.len() as i64);
-            let callee = SimpleBackend::import_func_id_split(
-                &mut *module,
-                &mut *import_ids,
-                "molt_get_attr_object_ic",
-                &[types::I64, types::I64, types::I64, types::I64],
-                &[types::I64],
-            );
-            let local_callee = module.declare_func_in_func(callee, builder.func);
-            let source_op_idx = required_source_op_idx(op, op_idx, "get_attr_generic_obj");
-            let site_bits = builder.ins().iconst(
-                types::I64,
-                box_int(stable_ic_site_id(
-                    func_name,
-                    source_op_idx,
-                    "get_attr_generic_obj",
-                )),
-            );
-            let call = builder
-                .ins()
-                .call(local_callee, &[*obj, attr_ptr, attr_len, site_bits]);
+            let call = match op.kind.as_str() {
+                "get_attr" => {
+                    let callee = SimpleBackend::import_func_id_split(
+                        &mut *module,
+                        &mut *import_ids,
+                        "molt_get_attr_object",
+                        &[types::I64, types::I64, types::I64],
+                        &[types::I64],
+                    );
+                    let local_callee = module.declare_func_in_func(callee, builder.func);
+                    builder
+                        .ins()
+                        .call(local_callee, &[*obj, attr_ptr, attr_len])
+                }
+                "get_attr_generic_obj" => {
+                    let source_op_idx = required_source_op_idx(op, op_idx, "get_attr_generic_obj");
+                    let callee = SimpleBackend::import_func_id_split(
+                        &mut *module,
+                        &mut *import_ids,
+                        "molt_get_attr_object_ic",
+                        &[types::I64, types::I64, types::I64, types::I64],
+                        &[types::I64],
+                    );
+                    let local_callee = module.declare_func_in_func(callee, builder.func);
+                    let site_bits = builder.ins().iconst(
+                        types::I64,
+                        box_int(stable_ic_site_id(
+                            func_name,
+                            source_op_idx,
+                            "get_attr_generic_obj",
+                        )),
+                    );
+                    builder
+                        .ins()
+                        .call(local_callee, &[*obj, attr_ptr, attr_len, site_bits])
+                }
+                _ => unreachable!("handler invoked with non-matching op.kind"),
+            };
             let res = builder.inst_results(call)[0];
-            // `molt_get_attr_object_ic` delegates to `molt_get_attr_name`, which can
-            // hand back borrowed values on fast paths. Own the result here.
+            // `molt_get_attr_object[_ic]` can hand back borrowed values on fast
+            // paths. Own the result here.
             emit_maybe_ref_adjust_v2(&mut *builder, res, local_inc_ref_obj, nbc);
             if let Some(out__) = op.out.as_ref() {
                 def_var_named(&mut *builder, vars, out__, res);
