@@ -4380,6 +4380,376 @@ type = 5
 runtime_name = "molt_ws_wait_new"
 callable_arity = 3
 
+# LIR-fast runtime-call enum authority. Each row references a canonical import
+# above; preserved Copy runtime services use the import name as their
+# `_original_kind` key and carry only the operand count here.
+
+[[lir_runtime_call]]
+variant = "Add"
+import_name = "add"
+
+[[lir_runtime_call]]
+variant = "Sub"
+import_name = "sub"
+
+[[lir_runtime_call]]
+variant = "Mul"
+import_name = "mul"
+
+[[lir_runtime_call]]
+variant = "Div"
+import_name = "div"
+
+[[lir_runtime_call]]
+variant = "FloorDiv"
+import_name = "floordiv"
+
+[[lir_runtime_call]]
+variant = "Mod"
+import_name = "mod"
+
+[[lir_runtime_call]]
+variant = "Eq"
+import_name = "eq"
+
+[[lir_runtime_call]]
+variant = "Ne"
+import_name = "ne"
+
+[[lir_runtime_call]]
+variant = "Lt"
+import_name = "lt"
+
+[[lir_runtime_call]]
+variant = "Le"
+import_name = "le"
+
+[[lir_runtime_call]]
+variant = "Gt"
+import_name = "gt"
+
+[[lir_runtime_call]]
+variant = "Ge"
+import_name = "ge"
+
+[[lir_runtime_call]]
+variant = "Is"
+import_name = "is"
+
+[[lir_runtime_call]]
+variant = "BitAnd"
+import_name = "bit_and"
+
+[[lir_runtime_call]]
+variant = "BitOr"
+import_name = "bit_or"
+
+[[lir_runtime_call]]
+variant = "BitXor"
+import_name = "bit_xor"
+
+[[lir_runtime_call]]
+variant = "Invert"
+import_name = "invert"
+
+[[lir_runtime_call]]
+variant = "LShift"
+import_name = "lshift"
+
+[[lir_runtime_call]]
+variant = "RShift"
+import_name = "rshift"
+
+[[lir_runtime_call]]
+variant = "Neg"
+import_name = "neg"
+
+[[lir_runtime_call]]
+variant = "Pos"
+import_name = "pos"
+
+[[lir_runtime_call]]
+variant = "Pow"
+import_name = "pow"
+
+[[lir_runtime_call]]
+variant = "Index"
+import_name = "index"
+
+[[lir_runtime_call]]
+variant = "StoreIndex"
+import_name = "store_index"
+
+[[lir_runtime_call]]
+variant = "DelIndex"
+import_name = "del_index"
+
+[[lir_runtime_call]]
+variant = "DictGetitem"
+import_name = "dict_getitem"
+
+[[lir_runtime_call]]
+variant = "DictSetitem"
+import_name = "dict_setitem"
+
+[[lir_runtime_call]]
+variant = "TupleGetitem"
+import_name = "tuple_getitem"
+
+[[lir_runtime_call]]
+variant = "ListIntGetitem"
+import_name = "list_int_getitem"
+
+[[lir_runtime_call]]
+variant = "ListIntSetitem"
+import_name = "list_int_setitem"
+
+[[lir_runtime_call]]
+variant = "Alloc"
+import_name = "alloc"
+
+[[lir_runtime_call]]
+variant = "ListBuilderNew"
+import_name = "list_builder_new"
+
+[[lir_runtime_call]]
+variant = "ListBuilderAppend"
+import_name = "list_builder_append"
+
+[[lir_runtime_call]]
+variant = "ListBuilderFinish"
+import_name = "list_builder_finish"
+
+[[lir_runtime_call]]
+variant = "TupleBuilderFinish"
+import_name = "tuple_builder_finish"
+
+[[lir_runtime_call]]
+variant = "DictNew"
+import_name = "dict_new"
+
+[[lir_runtime_call]]
+variant = "DictSet"
+import_name = "dict_set"
+
+[[lir_runtime_call]]
+variant = "SetNew"
+import_name = "set_new"
+
+[[lir_runtime_call]]
+variant = "SetAdd"
+import_name = "set_add"
+
+[[lir_runtime_call]]
+variant = "GetAttrName"
+import_name = "get_attr_name"
+
+[[lir_runtime_call]]
+variant = "GetAttrObjectIc"
+import_name = "get_attr_object_ic"
+
+[[lir_runtime_call]]
+variant = "GetAttrPtr"
+import_name = "get_attr_ptr"
+
+[[lir_runtime_call]]
+variant = "GetAttrSpecial"
+import_name = "get_attr_special"
+
+[[lir_runtime_call]]
+variant = "SetAttrName"
+import_name = "set_attr_name"
+
+[[lir_runtime_call]]
+variant = "SetAttrObject"
+import_name = "set_attr_object"
+
+[[lir_runtime_call]]
+variant = "DelAttrName"
+import_name = "del_attr_name"
+
+[[lir_runtime_call]]
+variant = "DelAttrObject"
+import_name = "del_attr_object"
+
+[[lir_runtime_call]]
+variant = "Iter"
+import_name = "iter"
+
+[[lir_runtime_call]]
+variant = "IterNext"
+import_name = "iter_next"
+
+[[lir_runtime_call]]
+variant = "Contains"
+import_name = "contains"
+
+[[lir_runtime_call]]
+variant = "DictContains"
+import_name = "dict_contains"
+
+[[lir_runtime_call]]
+variant = "ListContains"
+import_name = "list_contains"
+
+[[lir_runtime_call]]
+variant = "SetContains"
+import_name = "set_contains"
+
+[[lir_runtime_call]]
+variant = "StrContains"
+import_name = "str_contains"
+
+[[lir_runtime_call]]
+variant = "SliceNew"
+import_name = "slice_new"
+
+[[lir_runtime_call]]
+variant = "OrdAt"
+import_name = "ord_at"
+
+[[lir_runtime_call]]
+variant = "Not"
+import_name = "not"
+
+[[lir_runtime_call]]
+variant = "IsTruthy"
+import_name = "is_truthy"
+
+[[lir_runtime_call]]
+variant = "ExceptionPending"
+import_name = "exception_pending"
+
+[[lir_runtime_call]]
+variant = "FunctionDefaultsVersion"
+import_name = "function_defaults_version"
+
+[[lir_runtime_call]]
+variant = "HandleResolve"
+import_name = "handle_resolve"
+
+[[lir_runtime_call]]
+variant = "ModuleImport"
+import_name = "module_import"
+
+[[lir_runtime_call]]
+variant = "ModuleImportStar"
+import_name = "module_import_star"
+preserved_copy_operand_count = 2
+
+[[lir_runtime_call]]
+variant = "ModuleNew"
+import_name = "module_new"
+preserved_copy_operand_count = 1
+
+[[lir_runtime_call]]
+variant = "BridgeUnavailable"
+import_name = "bridge_unavailable"
+preserved_copy_operand_count = 1
+
+[[lir_runtime_call]]
+variant = "ContextNull"
+import_name = "context_null"
+preserved_copy_operand_count = 1
+
+[[lir_runtime_call]]
+variant = "ContextEnter"
+import_name = "context_enter"
+preserved_copy_operand_count = 1
+
+[[lir_runtime_call]]
+variant = "ContextExit"
+import_name = "context_exit"
+preserved_copy_operand_count = 2
+
+[[lir_runtime_call]]
+variant = "ContextUnwind"
+import_name = "context_unwind"
+preserved_copy_operand_count = 1
+
+[[lir_runtime_call]]
+variant = "ContextDepth"
+import_name = "context_depth"
+preserved_copy_operand_count = 0
+
+[[lir_runtime_call]]
+variant = "ContextUnwindTo"
+import_name = "context_unwind_to"
+preserved_copy_operand_count = 2
+
+[[lir_runtime_call]]
+variant = "ContextClosing"
+import_name = "context_closing"
+preserved_copy_operand_count = 1
+
+[[lir_runtime_call]]
+variant = "ObjectNewBound"
+import_name = "object_new_bound"
+
+[[lir_runtime_call]]
+variant = "ObjectNewBoundSized"
+import_name = "object_new_bound_sized"
+
+[[lir_runtime_call]]
+variant = "ClosureLoad"
+import_name = "closure_load"
+
+[[lir_runtime_call]]
+variant = "ClosureStore"
+import_name = "closure_store"
+
+[[lir_runtime_call]]
+variant = "ModuleCacheGet"
+import_name = "module_cache_get"
+
+[[lir_runtime_call]]
+variant = "ModuleCacheSet"
+import_name = "module_cache_set"
+
+[[lir_runtime_call]]
+variant = "ModuleCacheDel"
+import_name = "module_cache_del"
+
+[[lir_runtime_call]]
+variant = "ModuleGetAttr"
+import_name = "module_get_attr"
+
+[[lir_runtime_call]]
+variant = "ModuleImportFrom"
+import_name = "module_import_from"
+
+[[lir_runtime_call]]
+variant = "ModuleGetGlobal"
+import_name = "module_get_global"
+
+[[lir_runtime_call]]
+variant = "ModuleGetName"
+import_name = "module_get_name"
+
+[[lir_runtime_call]]
+variant = "ModuleSetAttr"
+import_name = "module_set_attr"
+
+[[lir_runtime_call]]
+variant = "ModuleDelGlobal"
+import_name = "module_del_global"
+
+[[lir_runtime_call]]
+variant = "ModuleDelGlobalIfPresent"
+import_name = "module_del_global_if_present"
+
+[[lir_runtime_call]]
+variant = "IncRefObj"
+import_name = "inc_ref_obj"
+
+[[lir_runtime_call]]
+variant = "DecRefObj"
+import_name = "dec_ref_obj"
+
+[[lir_runtime_call]]
+variant = "IntFromI64"
+import_name = "int_from_i64"
+
 # Import-name prefixes omitted by the backend Pure profile.
 # These apply to molt_runtime imports, not WASI/env host imports.
 

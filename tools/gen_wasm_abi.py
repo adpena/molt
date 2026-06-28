@@ -22,6 +22,7 @@ OUT_RS_FILES = {
     "call_indirect.rs": OUT_RS_DIR / "call_indirect.rs",
     "static_types.rs": OUT_RS_DIR / "static_types.rs",
     "imports.rs": OUT_RS_DIR / "imports.rs",
+    "lir_runtime_calls.rs": OUT_RS_DIR / "lir_runtime_calls.rs",
     "const_policy.rs": OUT_RS_DIR / "const_policy.rs",
     "runtime_surface.rs": OUT_RS_DIR / "runtime_surface.rs",
     "runtime_callables.rs": OUT_RS_DIR / "runtime_callables.rs",
@@ -146,6 +147,27 @@ def _validate_string_list(section: str, field: str, value: object) -> list[str]:
     return items
 
 
+def _validate_rust_variant(section: str, idx: int, value: object) -> str:
+    if not isinstance(value, str) or not value:
+        raise WasmAbiManifestError(f"{section} entry {idx} has invalid variant")
+    first = value[0]
+    if not ("A" <= first <= "Z"):
+        raise WasmAbiManifestError(
+            f"{section} entry {idx} variant {value!r} must start with A-Z"
+        )
+    for char in value:
+        if not (
+            "A" <= char <= "Z"
+            or "a" <= char <= "z"
+            or "0" <= char <= "9"
+            or char == "_"
+        ):
+            raise WasmAbiManifestError(
+                f"{section} entry {idx} variant {value!r} is not an ASCII Rust variant"
+            )
+    return value
+
+
 def validate_loaded_manifest(data: dict) -> dict:
     table_layout = data.get("table_layout")
     if not isinstance(table_layout, dict):
@@ -235,6 +257,51 @@ def validate_loaded_manifest(data: dict) -> dict:
                 "poll_table_slot values must be contiguous from 1; "
                 f"missing {missing}"
             )
+
+    lir_runtime_calls = data.get("lir_runtime_call", [])
+    if not isinstance(lir_runtime_calls, list) or not lir_runtime_calls:
+        raise WasmAbiManifestError("manifest must define lir_runtime_call entries")
+    seen_lir_variants: set[str] = set()
+    seen_lir_imports: set[str] = set()
+    seen_lir_preserved_copy_imports: set[str] = set()
+    for idx, entry in enumerate(lir_runtime_calls):
+        if not isinstance(entry, dict):
+            raise WasmAbiManifestError(f"lir_runtime_call entry {idx} must be a table")
+        variant = _validate_rust_variant("lir_runtime_call", idx, entry.get("variant"))
+        if variant in seen_lir_variants:
+            raise WasmAbiManifestError(f"duplicate LIR runtime-call variant {variant!r}")
+        seen_lir_variants.add(variant)
+        import_name = entry.get("import_name")
+        if not isinstance(import_name, str) or not import_name:
+            raise WasmAbiManifestError(
+                f"lir_runtime_call {variant!r} has invalid import_name"
+            )
+        if import_name in seen_lir_imports:
+            raise WasmAbiManifestError(
+                f"duplicate LIR runtime-call import {import_name!r}"
+            )
+        seen_lir_imports.add(import_name)
+        if import_name not in seen_imports:
+            raise WasmAbiManifestError(
+                f"lir_runtime_call {variant!r} references unknown import "
+                f"{import_name!r}"
+            )
+        preserved_copy_operand_count = entry.get("preserved_copy_operand_count")
+        if preserved_copy_operand_count is None:
+            continue
+        if (
+            not isinstance(preserved_copy_operand_count, int)
+            or preserved_copy_operand_count < 0
+        ):
+            raise WasmAbiManifestError(
+                f"lir_runtime_call {variant!r} has invalid "
+                "preserved_copy_operand_count"
+            )
+        if import_name in seen_lir_preserved_copy_imports:
+            raise WasmAbiManifestError(
+                f"duplicate preserved-Copy LIR runtime-call import {import_name!r}"
+            )
+        seen_lir_preserved_copy_imports.add(import_name)
 
     op_import_deps = data.get("op_import_dep", [])
     if not isinstance(op_import_deps, list):
@@ -767,6 +834,7 @@ def _render_rs_mod() -> str:
             "mod call_indirect;\n",
             "mod const_policy;\n",
             "mod imports;\n",
+            "mod lir_runtime_calls;\n",
             "mod pure_profile;\n",
             "mod runtime_callables;\n",
             "mod runtime_surface;\n",
@@ -780,6 +848,9 @@ def _render_rs_mod() -> str:
             "    WasmConstScalarValue,\n",
             "};\n",
             "pub(crate) use imports::{IMPORT_REGISTRY, OP_IMPORT_DEPS};\n",
+            "pub(crate) use lir_runtime_calls::{\n",
+            "    LirRuntimeCall, preserved_copy_runtime_call,\n",
+            "};\n",
             "pub(crate) use pure_profile::pure_profile_skips_import;\n",
             "pub(crate) use runtime_callables::{\n",
             "    POLL_TABLE_IMPORTS, RESERVED_RUNTIME_CALLABLE_COUNT, RESERVED_RUNTIME_CALLABLE_SPECS,\n",
@@ -1030,6 +1101,77 @@ def _render_rs_imports(data: dict) -> str:
             lines.append(f'        "{dep}",\n')
         lines.append("    ]),\n")
     lines.append("];\n\n")
+    return "".join(lines)
+
+
+def _render_rs_lir_runtime_calls(data: dict) -> str:
+    entries = data["lir_runtime_call"]
+    preserved_entries = [
+        entry for entry in entries if "preserved_copy_operand_count" in entry
+    ]
+    lines: list[str] = [_header("//")]
+    lines.extend(
+        [
+            "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
+            "pub(crate) enum LirRuntimeCall {\n",
+        ]
+    )
+    for entry in entries:
+        lines.append(f"    {entry['variant']},\n")
+    lines.extend(
+        [
+            "}\n\n",
+            "impl LirRuntimeCall {\n",
+            "    #[cfg(test)]\n",
+            "    pub(crate) const ALL: &'static [Self] = &[\n",
+        ]
+    )
+    for entry in entries:
+        lines.append(f"        Self::{entry['variant']},\n")
+    lines.extend(
+        [
+            "    ];\n\n",
+            "    pub(crate) const fn import_name(self) -> &'static str {\n",
+            "        match self {\n",
+        ]
+    )
+    for entry in entries:
+        lines.append(
+            f"            Self::{entry['variant']} => \"{entry['import_name']}\",\n"
+        )
+    lines.extend(
+        [
+            "        }\n",
+            "    }\n",
+            "}\n\n",
+            "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
+            "pub(crate) struct LirPreservedCopyRuntimeCall {\n",
+            "    pub(crate) call: LirRuntimeCall,\n",
+            "    pub(crate) operand_count: usize,\n",
+            "}\n\n",
+            "#[inline]\n",
+            "pub(crate) fn preserved_copy_runtime_call(\n",
+            "    kind: &str,\n",
+            ") -> Option<LirPreservedCopyRuntimeCall> {\n",
+            "    match kind {\n",
+        ]
+    )
+    for entry in preserved_entries:
+        lines.extend(
+            [
+                f"        \"{entry['import_name']}\" => Some(LirPreservedCopyRuntimeCall {{\n",
+                f"            call: LirRuntimeCall::{entry['variant']},\n",
+                f"            operand_count: {entry['preserved_copy_operand_count']},\n",
+                "        }),\n",
+            ]
+        )
+    lines.extend(
+        [
+            "        _ => None,\n",
+            "    }\n",
+            "}\n",
+        ]
+    )
     return "".join(lines)
 
 
@@ -1375,6 +1517,7 @@ def render_rs_modules(data: dict) -> dict[str, str]:
         "const_policy.rs": _render_rs_const_policy(data),
         "static_types.rs": _render_rs_static_types(data),
         "imports.rs": _render_rs_imports(data),
+        "lir_runtime_calls.rs": _render_rs_lir_runtime_calls(data),
         "runtime_surface.rs": _render_rs_runtime_surface(data),
         "runtime_callables.rs": _render_rs_runtime_callables(data),
         "pure_profile.rs": _render_rs_pure_profile(data),
