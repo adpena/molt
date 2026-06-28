@@ -354,15 +354,15 @@ def test_wasm_abi_manifest_owns_const_op_policy() -> None:
     assert policies["const_str"]["literal_payload"] == "string"
     assert policies["const_str"]["scalar_payload"] == "none"
     assert policies["const_str"]["parse_scalar_literal"] is True
-    assert policies["const_str"]["lir_fast"] == "bail_generic"
+    assert policies["const_str"]["lir_fast"] == "materialize"
     assert policies["const_bytes"]["materializer_import"] == "bytes_from_bytes"
     assert policies["const_bytes"]["literal_payload"] == "bytes"
     assert policies["const_bytes"]["parse_scalar_literal"] is True
-    assert policies["const_bytes"]["lir_fast"] == "bail_generic"
+    assert policies["const_bytes"]["lir_fast"] == "materialize"
     assert policies["const_bigint"]["materializer_import"] == "bigint_from_str"
     assert policies["const_bigint"]["literal_payload"] == "bigint_decimal"
     assert policies["const_bigint"]["parse_scalar_literal"] is False
-    assert policies["const_bigint"]["lir_fast"] == "bail_generic"
+    assert policies["const_bigint"]["lir_fast"] == "materialize"
     for kind, policy in policies.items():
         materializer = policy.get("materializer_import")
         if materializer is not None:
@@ -375,6 +375,8 @@ def test_wasm_abi_manifest_owns_const_op_policy() -> None:
     assert "required_tir_scalar_value" in rendered_rs
     assert "WasmConstLiteralPayload::BigintDecimal" in rendered_rs
     assert "wasm_const_op_policy" in rendered_rs
+    assert "wasm_const_op_policy_for_opcode" in rendered_rs
+    assert "opcode_canonical_kind_table(opcode)" in rendered_rs
     assert "PlaceholderZero" not in rendered_rs
     assert "WASM_CONST_OP_POLICIES" in rendered_py
 

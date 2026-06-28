@@ -196,6 +196,10 @@ def _runtime_integrity_sidecar_path(path: Path) -> Path:
     return path.with_name(f"{path.name}.sha256")
 
 
+_RUNTIME_INTEGRITY_PAIR_ATTEMPTS = 8
+_RUNTIME_INTEGRITY_PAIR_RETRY_DELAY_SEC = 0.05
+
+
 def _read_runtime_integrity_sidecar(path: Path) -> str | None:
     sidecar = _runtime_integrity_sidecar_path(path)
     if not sidecar.exists():
@@ -218,19 +222,28 @@ def _verify_runtime_integrity(path: Path) -> None:
         if part == "..":
             raise SystemExit(f"Runtime path contains '..' traversal component: {path}")
 
-    data = path.read_bytes()
-    digest = hashlib.sha256(data).hexdigest()
     filename = path.name
-    sidecar_expected = _read_runtime_integrity_sidecar(path)
-    if sidecar_expected is not None:
-        if digest != sidecar_expected:
-            raise SystemExit(
-                f"Runtime integrity check failed for {path}\n"
-                f"  source: sidecar {_runtime_integrity_sidecar_path(path)}\n"
-                f"  expected SHA-256: {sidecar_expected}\n"
-                f"  actual   SHA-256: {digest}\n"
-            )
-        return
+    sidecar_mismatch: tuple[str, str] | None = None
+    for attempt in range(_RUNTIME_INTEGRITY_PAIR_ATTEMPTS):
+        data = path.read_bytes()
+        digest = hashlib.sha256(data).hexdigest()
+        sidecar_expected = _read_runtime_integrity_sidecar(path)
+        if sidecar_expected is None:
+            break
+        if digest == sidecar_expected:
+            return
+        sidecar_mismatch = (sidecar_expected, digest)
+        if attempt + 1 < _RUNTIME_INTEGRITY_PAIR_ATTEMPTS:
+            time.sleep(_RUNTIME_INTEGRITY_PAIR_RETRY_DELAY_SEC)
+
+    if sidecar_mismatch is not None:
+        sidecar_expected, digest = sidecar_mismatch
+        raise SystemExit(
+            f"Runtime integrity check failed for {path}\n"
+            f"  source: sidecar {_runtime_integrity_sidecar_path(path)}\n"
+            f"  expected SHA-256: {sidecar_expected}\n"
+            f"  actual   SHA-256: {digest}\n"
+        )
 
     if not RUNTIME_EXPECTED_HASHES:
         raise SystemExit(

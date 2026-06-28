@@ -113,9 +113,7 @@ impl LirWasmAbi {
                 {
                     return None;
                 }
-                if func.return_types.len() != 1
-                    || func.return_types[0] != crate::tir::types::TirType::I64
-                {
+                if func.return_types.len() != 1 {
                     return None;
                 }
                 let entry = func.blocks.get(&func.entry_block)?;

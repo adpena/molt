@@ -63,7 +63,6 @@ const loadBrowserVfsModule = () => {
   }
   return browserVfsModulePromise;
 };
-
 const prepareBrowserVfs = async (options = {}) => {
   const provided = options.vfs || null;
   if (provided) {
@@ -1447,7 +1446,6 @@ const tzProfileForYear = (year) => {
     dstName,
   };
 };
-
 const defaultLogSink = (level, message) => {
   if (typeof console === 'undefined') return;
   const text = typeof message === 'string' ? message : String(message);
@@ -4192,90 +4190,5 @@ export const loadMoltWasm = async (options = {}) => {
         throw new Error(pendingException);
       }
     },
-  };
-};
-
-const kernelResultBytes = (result) => {
-  if (result && result.resultBytes instanceof Uint8Array) {
-    return result.resultBytes;
-  }
-  if (result && Array.isArray(result.resultJson)) {
-    return Uint8Array.from(result.resultJson.map((item) => Number(item) & 0xff));
-  }
-  throw new Error('Molt kernel result is not bytes; return bytes or choose resultType: "json"');
-};
-
-const typedArrayFromKernelBytes = (bytes, Constructor, label) => {
-  if (bytes.byteLength % Constructor.BYTES_PER_ELEMENT !== 0) {
-    throw new Error(
-      `${label} result byte length ${bytes.byteLength} is not divisible by ${Constructor.BYTES_PER_ELEMENT}`
-    );
-  }
-  const copy = new Uint8Array(bytes.byteLength);
-  copy.set(bytes);
-  return new Constructor(copy.buffer);
-};
-
-export const decodeMoltKernelResult = (result, resultType = 'bytes') => {
-  const normalized = String(resultType || 'bytes').toLowerCase().replace(/[-_]/g, '');
-  if (normalized === 'raw') {
-    return result;
-  }
-  if (normalized === 'json') {
-    return result ? result.resultJson : null;
-  }
-  if (normalized === 'repr') {
-    return result ? result.resultRepr : null;
-  }
-  const bytes = kernelResultBytes(result);
-  switch (normalized) {
-    case 'bytes':
-    case 'uint8':
-    case 'uint8array':
-      return bytes;
-    case 'int8':
-    case 'int8array':
-      return typedArrayFromKernelBytes(bytes, Int8Array, 'int8');
-    case 'uint16':
-    case 'uint16array':
-      return typedArrayFromKernelBytes(bytes, Uint16Array, 'uint16');
-    case 'int16':
-    case 'int16array':
-      return typedArrayFromKernelBytes(bytes, Int16Array, 'int16');
-    case 'uint32':
-    case 'uint32array':
-      return typedArrayFromKernelBytes(bytes, Uint32Array, 'uint32');
-    case 'int32':
-    case 'int32array':
-      return typedArrayFromKernelBytes(bytes, Int32Array, 'int32');
-    case 'float32':
-    case 'float32array':
-    case 'f32':
-      return typedArrayFromKernelBytes(bytes, Float32Array, 'float32');
-    case 'float64':
-    case 'float64array':
-    case 'f64':
-      return typedArrayFromKernelBytes(bytes, Float64Array, 'float64');
-    default:
-      throw new Error(`unsupported Molt kernel resultType: ${resultType}`);
-  }
-};
-
-export const loadMoltKernel = async (options = {}) => {
-  const exportName = options.exportName || options.functionName || 'forward';
-  const resultType = options.resultType || options.outputType || 'bytes';
-  const decode =
-    typeof options.decode === 'function'
-      ? options.decode
-      : (result) => decodeMoltKernelResult(result, resultType);
-  const host = await loadMoltWasm(options);
-  const callRaw = async (...args) => host.invokeExport(exportName, args);
-  const call = async (...args) => decode(await callRaw(...args));
-  return {
-    ...host,
-    exportName,
-    call,
-    callRaw,
-    forward: call,
   };
 };

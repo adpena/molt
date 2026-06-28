@@ -6949,14 +6949,14 @@ kind = "const_not_implemented"
 materializer_import = "not_implemented"
 dispatch_runtime_seed = true
 raw_int_effect = "clear"
-lir_fast = "bail_generic"
+lir_fast = "materialize"
 
 [[const_op_policy]]
 kind = "const_ellipsis"
 materializer_import = "ellipsis"
 dispatch_runtime_seed = true
 raw_int_effect = "clear"
-lir_fast = "bail_generic"
+lir_fast = "materialize"
 
 [[const_op_policy]]
 kind = "const_str"
@@ -6965,7 +6965,7 @@ literal_payload = "string"
 dispatch_runtime_seed = true
 parse_scalar_literal = true
 raw_int_effect = "clear"
-lir_fast = "bail_generic"
+lir_fast = "materialize"
 
 [[const_op_policy]]
 kind = "const_bigint"
@@ -6974,7 +6974,7 @@ literal_payload = "bigint_decimal"
 dispatch_runtime_seed = true
 parse_scalar_literal = false
 raw_int_effect = "clear"
-lir_fast = "bail_generic"
+lir_fast = "materialize"
 
 [[const_op_policy]]
 kind = "const_bytes"
@@ -6983,7 +6983,7 @@ literal_payload = "bytes"
 dispatch_runtime_seed = true
 parse_scalar_literal = true
 raw_int_effect = "clear"
-lir_fast = "bail_generic"
+lir_fast = "materialize"
 
 [[op_import_dep]]
 kind = "coroutine"

@@ -16,6 +16,50 @@ fn production_lir_wasm_fast_path_is_reserved_for_global_builtin_lane() {
     ));
 }
 
+#[test]
+fn lir_fast_literal_const_materialization_emits_valid_wasm() {
+    let literal_bytes = b"hello wasm literal";
+    let mut literal = wasm_test_op("const_str", Some("literal"), vec![]);
+    literal.s_value = Some(String::from_utf8(literal_bytes.to_vec()).expect("ascii literal"));
+    let mut ret = wasm_test_op("ret", None, vec!["literal"]);
+    ret.var = Some("literal".to_string());
+    let func = wasm_test_function(
+        "m____molt_globals_builtin__literal_const",
+        vec![],
+        None,
+        vec![literal, ret],
+    );
+    let ir = SimpleIR {
+        functions: vec![func],
+        profile: None,
+    };
+    let wasm = WasmBackend::with_options(WasmCompileOptions {
+        native_eh_enabled: false,
+        reloc_enabled: false,
+        ..WasmCompileOptions::default()
+    })
+    .compile(ir);
+
+    wasmparser::Validator::new()
+        .validate_all(&wasm)
+        .expect("LIR-fast literal const materialization must emit valid WASM");
+
+    let imports = wasm_function_import_indices(&wasm);
+    let string_from_bytes = *imports
+        .get("string_from_bytes")
+        .unwrap_or_else(|| panic!("string_from_bytes import missing; imports={imports:?}"));
+    assert!(
+        wasm_direct_call_indices(&wasm).contains(&string_from_bytes),
+        "LIR-fast materialization must emit a direct call to string_from_bytes"
+    );
+    assert!(
+        wasm_data_segment_payloads(&wasm)
+            .iter()
+            .any(|payload| payload.as_slice() == literal_bytes),
+        "LIR-fast materialization must write literal bytes into a data segment"
+    );
+}
+
 fn wasm_test_function(
     name: &str,
     params: Vec<&str>,
@@ -203,6 +247,34 @@ fn wasm_function_import_indices(wasm: &[u8]) -> BTreeMap<String, u32> {
         }
     }
     imports
+}
+
+fn wasm_direct_call_indices(wasm: &[u8]) -> Vec<u32> {
+    let mut calls = Vec::new();
+    for payload in Parser::new(0).parse_all(wasm) {
+        if let Ok(Payload::CodeSectionEntry(body)) = payload
+            && let Ok(mut ops) = body.get_operators_reader()
+        {
+            while let Ok(op) = ops.read() {
+                if let wasmparser::Operator::Call { function_index } = op {
+                    calls.push(function_index);
+                }
+            }
+        }
+    }
+    calls
+}
+
+fn wasm_data_segment_payloads(wasm: &[u8]) -> Vec<Vec<u8>> {
+    let mut payloads = Vec::new();
+    for payload in Parser::new(0).parse_all(wasm) {
+        if let Ok(Payload::DataSection(reader)) = payload {
+            for data in reader.into_iter().flatten() {
+                payloads.push(data.data.to_vec());
+            }
+        }
+    }
+    payloads
 }
 
 fn wasm_element_function_indices(wasm: &[u8]) -> Vec<u32> {
