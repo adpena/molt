@@ -189,6 +189,44 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
     assert "molt_async_sleep_poll as *const" not in function_abi
 
 
+def test_wasm_abi_manifest_owns_lir_runtime_calls() -> None:
+    gen = _load_gen_wasm_abi()
+    data = gen.load_manifest()
+    calls = {entry["variant"]: entry for entry in data["lir_runtime_call"]}
+
+    assert calls["Add"]["import_name"] == "add"
+    assert calls["FloorDiv"]["import_name"] == "floordiv"
+    assert calls["ModuleImportStar"] == {
+        "variant": "ModuleImportStar",
+        "import_name": "module_import_star",
+        "preserved_copy_operand_count": 2,
+    }
+    assert calls["ContextDepth"] == {
+        "variant": "ContextDepth",
+        "import_name": "context_depth",
+        "preserved_copy_operand_count": 0,
+    }
+    assert calls["IntFromI64"]["import_name"] == "int_from_i64"
+
+    rendered_rs = _rendered_rs(gen, data)
+    assert "enum LirRuntimeCall" in rendered_rs
+    assert "Self::FloorDiv => \"floordiv\"" in rendered_rs
+    assert "preserved_copy_runtime_call" in rendered_rs
+    assert '"context_depth" => Some(LirPreservedCopyRuntimeCall' in rendered_rs
+
+    broken = copy.deepcopy(data)
+    broken["lir_runtime_call"][0]["import_name"] = "not_a_real_import"
+    with pytest.raises(gen.WasmAbiManifestError, match="references unknown import"):
+        gen.validate_loaded_manifest(broken)
+
+    local_facade = (
+        ROOT / "runtime/molt-backend-wasm/src/wasm/lir_fast/runtime_calls.rs"
+    ).read_text(encoding="utf-8")
+    assert "enum LirRuntimeCall" not in local_facade
+    assert "match kind" not in local_facade
+    assert "crate::wasm_abi_generated::LirRuntimeCall" in local_facade
+
+
 def test_wasm_abi_manifest_owns_python_runtime_import_signatures() -> None:
     gen = _load_gen_wasm_abi()
     data = gen.load_manifest()

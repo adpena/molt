@@ -180,10 +180,9 @@ globs = [
   "runtime/molt-backend-wasm/src/wasm_abi_generated/*.rs",
   "runtime/molt-backend-wasm/src/wasm_imports.rs",
   "runtime/molt-backend-wasm/src/wasm/module_abi/**/*.rs",
+  "runtime/molt-runtime/src/builtins/functions/wasm_callables_generated.rs",
   "src/molt/_wasm_abi_generated.py",
   "runtime/wasm_table_layout.inc",
-  "runtime/wasm_poll_callables.inc",
-  "runtime/wasm_runtime_callables.inc",
   "tests/test_gen_wasm_abi.py",
 ]
 gates = [
