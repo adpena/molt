@@ -107,9 +107,9 @@ pub(super) fn emit_lir_terminator_multiblock(
         LirTerminator::StateDispatch { .. } => {
             // `StateDispatch` only appears in generator/coroutine `_poll`
             // bodies, which on WASM are lowered by the SimpleIR relooper path
-            // (`wasm.rs`), NOT this LIR fast path: `prepare_lir_wasm_fast_plan`
-            // is gated to `____molt_globals_builtin__` functions only
-            // (`is_production_lir_wasm_fast_path_name`).  Reaching here means a
+            // (`wasm.rs`), NOT this LIR fast path: `wasm/lir_fast/plan.rs`
+            // gates production LIR-fast lowering to `____molt_globals_builtin__`
+            // functions (`is_production_lir_wasm_fast_path_name`).  Reaching here means a
             // state-machine body was incorrectly routed through the LIR fast
             // lane — fail loud rather than emit a dispatch that silently ignores
             // the saved frame state.

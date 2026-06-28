@@ -120,11 +120,12 @@ This function is the consolidation point for the three backends' identical lift 
 4. Back-convert each post-inline `TirFunction` via `lower_to_simple_ir` → update `func_ir.ops`.
 5. Delete the `crate::inline_functions(...)` call at line 2159-2162.
 
-**LIR fast path**: The `wasm_plan::prepare_lir_wasm_fast_output(&tir_func)` call
-produces crate-private `wasm::lir_fast` typed `WasmBody` outputs. When the module
-phase modifies callers, this path must run on the **post-inline** `TirFunction`.
-Move the call to after the module phase back-conversion, using the post-inline
-`TirFunction`; no SimpleIR companion participates in value-carrier proof.
+**LIR fast path**: The `wasm::lir_fast::prepare_lir_wasm_fast_plan(&tir_func)`
+planner produces crate-private `wasm::lir_fast` typed `WasmBody` outputs. When
+the module phase modifies callers, this path must run on the **post-inline**
+`TirFunction`. Move the call to after the module phase back-conversion, using
+the post-inline `TirFunction`; no SimpleIR companion participates in
+value-carrier proof.
 
 ### 4.4 `/Users/adpena/Projects/molt/runtime/molt-backend/src/native_backend/simple_backend.rs` (LLVM branch, lines ~2700-2840)
 
@@ -358,7 +359,7 @@ The Cranelift and WASM backends use `lower_to_simple_ir` as a final step to prod
 
 ### 9.4 Risk: WASM LIR fast path
 
-The `wasm_plan::prepare_lir_wasm_fast_output(&tir_func)` path must be called
+The `wasm::lir_fast::prepare_lir_wasm_fast_plan(&tir_func)` path must be called
 with the post-inline `TirFunction`, not the pre-inline one. It no longer accepts
 a SimpleIR companion for representation proof: WASM computes `value_range_for`
 and `repr_by_value_for` directly from that post-pipeline TIR body, matching
@@ -404,7 +405,7 @@ Acceptance: `cargo test -p molt-backend` passes (861 tests). Differential: all b
 **Files**: `wasm.rs`, `wasm_plan.rs`, `wasm/lir_fast/`
 
 1. Mirror the native structural change: per-function TIR loop produces `Vec<TirFunction>`, module assembled, `run_module_pipeline` called, back-conversion produces updated `func_ir.ops`.
-2. Move `prepare_lir_wasm_fast_output` call to after the module phase.
+2. Move the `wasm::lir_fast::prepare_lir_wasm_fast_plan` call to after the module phase.
 3. Delete the `crate::inline_functions(...)` call at line 2159-2162.
 
 Acceptance: `cargo test -p molt-backend` passes. WASM differential byte-identical. Perf: ≥ pre-arc baseline on WASM target.
