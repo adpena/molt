@@ -4,7 +4,7 @@ use super::runtime_calls::LirRuntimeCall;
 use crate::wasm::body::WasmLirFallbackReason;
 use molt_codegen_abi::{QNAN_TAG_BOOL_I64, box_int_bits, box_none_bits};
 use molt_tir::tir::lir::{LirOp, LirRepr};
-use molt_tir::tir::ops::AttrValue;
+use molt_tir::tir::ops::{AttrValue, OpCode};
 use molt_tir::tir::types::TirType;
 use molt_tir::tir::values::ValueId;
 use wasm_encoder::Instruction;
@@ -250,6 +250,22 @@ pub(super) fn emit_lir_build_set(ctx: &mut LirLowerCtx, op: &LirOp) {
     }
 }
 
+pub(super) fn emit_lir_attr(ctx: &mut LirLowerCtx, op: &LirOp) {
+    let original_kind = original_kind(op);
+    match (op.tir_op.opcode, original_kind) {
+        (OpCode::LoadAttr, Some("get_attr_name")) => {
+            emit_lir_boxed_operands_runtime_call(ctx, op, LirRuntimeCall::GetAttrName, 2)
+        }
+        (OpCode::StoreAttr, Some("set_attr_name")) => {
+            emit_lir_boxed_operands_runtime_call(ctx, op, LirRuntimeCall::SetAttrName, 3)
+        }
+        (OpCode::DelAttr, Some("del_attr_name")) => {
+            emit_lir_boxed_operands_runtime_call(ctx, op, LirRuntimeCall::DelAttrName, 2)
+        }
+        _ => emit_lir_unsupported_marker(ctx, op),
+    }
+}
+
 pub(super) fn emit_lir_object_new_bound(ctx: &mut LirLowerCtx, op: &LirOp) {
     let Some(&class_ref) = op.tir_op.operands.first() else {
         panic!("ObjectNewBound requires class operand");
@@ -350,6 +366,23 @@ fn required_i64_attr(op: &LirOp, attr: &str, op_name: &str) -> i64 {
     match op.tir_op.attrs.get(attr) {
         Some(AttrValue::Int(value)) => *value,
         _ => panic!("{op_name} requires integer attr {attr}"),
+    }
+}
+
+fn original_kind(op: &LirOp) -> Option<&str> {
+    match op.tir_op.attrs.get("_original_kind") {
+        Some(AttrValue::Str(kind)) => Some(kind.as_str()),
+        _ => None,
+    }
+}
+
+fn emit_lir_unsupported_marker(ctx: &mut LirLowerCtx, op: &LirOp) {
+    for &operand in &op.tir_op.operands {
+        ctx.emit_get(operand);
+    }
+    ctx.emit_bail_to_generic_path(WasmLirFallbackReason::UnsupportedOperation);
+    if let Some(result) = op.result_values.first() {
+        ctx.emit_set(result.id);
     }
 }
 
