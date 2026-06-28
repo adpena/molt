@@ -1,5 +1,8 @@
 use super::super::result_sink::store_result_or_drop;
-use super::*;
+use super::RuntimeServiceOpContext;
+use crate::OpIR;
+use crate::wasm_binary::emit_call;
+use wasm_encoder::{Function, Instruction};
 
 pub(super) fn emit_file_runtime_op(
     context: &RuntimeServiceOpContext<'_>,
