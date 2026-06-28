@@ -196,6 +196,7 @@ stdlib:
       - tests/differential/basic/builtins_symbol_float_685e8036.py
       - tests/differential/basic/builtins_symbol_floatingpointerror_5e9add85.py
       - tests/differential/basic/builtins_symbol_format_78598764.py
+      - tests/differential/basic/builtins_format_grouping_zero_fill.py
       - tests/differential/basic/builtins_symbol_frozenset_fc584512.py
       - tests/differential/basic/builtins_symbol_futurewarning_943e868a.py
       - tests/differential/basic/builtins_symbol_generatorexit_091c54c4.py
