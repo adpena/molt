@@ -1,4 +1,6 @@
-use super::*;
+use crate::OpIR;
+use crate::wasm::WasmFrameLocals;
+use wasm_encoder::{Function, Instruction};
 
 pub(super) fn store_result_or_drop(func: &mut Function, op: &OpIR, locals: &WasmFrameLocals) {
     if let Some(out) = op.out.as_ref() {
