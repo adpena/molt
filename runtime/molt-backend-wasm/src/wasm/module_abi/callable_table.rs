@@ -6,6 +6,10 @@ use wasm_encoder::{
     Instruction,
 };
 
+mod layout;
+mod runtime_callables;
+mod trampoline_emit;
+
 use crate::TrampolineSpec;
 use crate::wasm::WasmBackend;
 use crate::wasm_binary::{emit_call, emit_i32_const, emit_ref_func, encode_u32_leb128_padded};
