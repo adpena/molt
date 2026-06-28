@@ -1,4 +1,9 @@
-use super::*;
+use super::super::call_site_abi::WasmCallSiteAbi;
+use crate::OpIR;
+use crate::wasm::WasmFrameLocals;
+use crate::wasm_import_tracking::TrackedImportIds;
+use crate::wasm_values::ConstantCache;
+use wasm_encoder::Function;
 
 mod async_task_ops;
 mod bridge_ops;

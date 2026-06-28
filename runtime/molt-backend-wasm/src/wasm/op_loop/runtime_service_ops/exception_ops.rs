@@ -1,4 +1,8 @@
-use super::*;
+use super::RuntimeServiceOpContext;
+use crate::OpIR;
+use crate::wasm_abi::TAG_EXCEPTION_INDEX;
+use crate::wasm_binary::emit_call;
+use wasm_encoder::{Function, Instruction};
 
 pub(super) fn emit_exception_runtime_op(
     context: &RuntimeServiceOpContext<'_>,

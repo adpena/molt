@@ -8,10 +8,7 @@ use super::function_frame::WasmFunctionFrame;
 use super::multi_return_layout::WasmMultiReturnLayout;
 use super::{WasmBackend, WasmFrameLocals, WasmFrameSyntheticLocal};
 use crate::representation_plan::ScalarRepresentationPlan;
-use crate::wasm_abi::{
-    GEN_CONTROL_SIZE, TAG_EXCEPTION_INDEX, TASK_KIND_COROUTINE, TASK_KIND_FUTURE,
-    TASK_KIND_GENERATOR,
-};
+use crate::wasm_abi::{TAG_EXCEPTION_INDEX, TASK_KIND_FUTURE};
 use crate::wasm_binary::{emit_call, emit_return_call, emit_table_index_i64};
 use crate::wasm_import_tracking::{TrackedImportIds, selected_import_id};
 use crate::wasm_plan::{
