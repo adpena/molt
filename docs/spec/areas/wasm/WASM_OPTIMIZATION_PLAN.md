@@ -26,8 +26,9 @@ Key characteristics of the current implementation:
 - **Generated and planned import surface**: `wasm_abi_manifest.toml` generates
   the import registry/types, `wasm_imports.rs` owns static op dependency data,
   and `wasm/module_abi/runtime_surface.rs` performs the single IR scan for
-  Auto/reloc required imports, direct runtime-call arity, builtin trampolines,
-  and per-module intrinsic manifests.
+  module ABI facts. `wasm/module_abi/runtime_import_demand.rs` owns Auto/reloc
+  required imports, while runtime surface retains direct runtime-call arity,
+  builtin trampolines, and per-module intrinsic manifests.
 - **State machine lowering**: Generators, coroutines, and async generators use dispatch-block state machines with dense/sparse remap tables.
 - **Deterministic output**: BTreeMap used everywhere for iteration-order stability; NaN canonicalization available via `MOLT_DETERMINISTIC=1`.
 
