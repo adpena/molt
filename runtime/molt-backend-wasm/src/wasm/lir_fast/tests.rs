@@ -867,7 +867,61 @@ fn mixed_f64_dynbox_add_boxes_float_without_generic_bail() {
 }
 
 #[test]
-fn alloc_task_falls_back_to_runtime_call() {
+fn dynbox_identity_comparisons_stay_lir_fast_runtime_calls() {
+    let cases = [
+        ("is_dynbox", OpCode::Is, false),
+        ("is_not_dynbox", OpCode::IsNot, true),
+    ];
+
+    for (name, opcode, expect_invert) in cases {
+        let mut func = TirFunction::new(
+            name.into(),
+            vec![TirType::DynBox, TirType::DynBox],
+            TirType::Bool,
+        );
+        let result_id = func.fresh_value();
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode,
+            operands: vec![ValueId(0), ValueId(1)],
+            results: vec![result_id],
+            attrs: AttrDict::new(),
+            source_span: None,
+        });
+        entry.terminator = Terminator::Return {
+            values: vec![result_id],
+        };
+
+        let output = lower_tir_to_wasm(&func).test_view();
+
+        assert!(
+            !output.bails_to_generic_path,
+            "{name} must stay in the LIR fast lane"
+        );
+        assert!(
+            output.runtime_calls.contains(&"is"),
+            "{name} must dispatch through the identity helper; got {:?}",
+            output.runtime_calls
+        );
+        assert!(
+            !output.runtime_calls.contains(&"not"),
+            "{name} should project/invert the boxed bool locally for Bool1 results"
+        );
+        assert_eq!(
+            output
+                .instructions
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::I32Eqz)),
+            expect_invert,
+            "{name} local Bool1 projection invert mismatch: {:?}",
+            output.instructions
+        );
+    }
+}
+
+#[test]
+fn alloc_task_bails_to_generic_emission() {
     let mut func = TirFunction::new("alloc_task".into(), vec![TirType::DynBox], TirType::DynBox);
     let result_id = func.fresh_value();
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
@@ -901,7 +955,7 @@ fn alloc_task_falls_back_to_runtime_call() {
 }
 
 #[test]
-fn state_switch_falls_back_to_runtime_call() {
+fn state_switch_bails_to_generic_emission() {
     let mut func = TirFunction::new(
         "state_switch".into(),
         vec![TirType::DynBox],

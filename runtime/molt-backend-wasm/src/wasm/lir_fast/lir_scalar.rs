@@ -375,6 +375,40 @@ pub(super) fn emit_lir_comparison(ctx: &mut LirLowerCtx, op: &LirOp, cmp: CmpOp)
     ctx.emit_set(dst);
 }
 
+pub(super) fn emit_lir_identity_comparison(ctx: &mut LirLowerCtx, op: &LirOp, invert: bool) {
+    let tir_op = &op.tir_op;
+    if tir_op.operands.len() < 2 || op.result_values.is_empty() {
+        return;
+    }
+    let lhs = tir_op.operands[0];
+    let rhs = tir_op.operands[1];
+    let result = &op.result_values[0];
+
+    emit_get_boxed_for_repr(ctx, lhs);
+    emit_get_boxed_for_repr(ctx, rhs);
+    ctx.emit_runtime_call(LirRuntimeCall::Is);
+
+    match result.repr {
+        LirRepr::Bool1 => {
+            ctx.instructions.push(Instruction::I64Const(1));
+            ctx.instructions.push(Instruction::I64And);
+            ctx.instructions.push(Instruction::I32WrapI64);
+            if invert {
+                ctx.instructions.push(Instruction::I32Eqz);
+            }
+        }
+        LirRepr::DynBox | LirRepr::Ref64 | LirRepr::I64 => {
+            if invert {
+                ctx.emit_runtime_call(LirRuntimeCall::Not);
+            }
+        }
+        LirRepr::F64 => {
+            panic!("identity comparison cannot materialize an f64 result");
+        }
+    }
+    ctx.emit_set(result.id);
+}
+
 pub(super) fn emit_lir_bitwise(ctx: &mut LirLowerCtx, op: &LirOp, bw: BitwiseOp) {
     let tir_op = &op.tir_op;
     if tir_op.operands.len() < 2 || op.result_values.is_empty() {
