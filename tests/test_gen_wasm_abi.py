@@ -341,13 +341,13 @@ def test_wasm_abi_manifest_owns_runtime_surface_required_import_matchers() -> No
     assert "WASM_REQUIRED_RUNTIME_IMPORT_PREFIXES" in rendered_py
     assert "runtime_surface_requires_direct_import" in rendered_py
 
-    runtime_surface = (
+    runtime_import_demand = (
         ROOT
-        / "runtime/molt-backend-wasm/src/wasm/module_abi/runtime_surface.rs"
+        / "runtime/molt-backend-wasm/src/wasm/module_abi/runtime_import_demand.rs"
     ).read_text(encoding="utf-8")
-    assert "REQUIRED_IMPORT_PREFIXES" not in runtime_surface
-    assert "REQUIRED_IMPORT_SINGLETONS" not in runtime_surface
-    assert "runtime_surface_requires_direct_import(kind)" in runtime_surface
+    assert "REQUIRED_IMPORT_PREFIXES" not in runtime_import_demand
+    assert "REQUIRED_IMPORT_SINGLETONS" not in runtime_import_demand
+    assert "runtime_surface_requires_direct_import(kind)" in runtime_import_demand
 
 
 def test_wasm_abi_manifest_owns_split_runtime_table_prefix() -> None:

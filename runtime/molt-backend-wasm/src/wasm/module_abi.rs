@@ -14,6 +14,7 @@ mod callable_table;
 mod finalize;
 mod imports;
 mod runtime_callables;
+mod runtime_import_demand;
 mod runtime_surface;
 mod table_init;
 mod trampoline_emit;

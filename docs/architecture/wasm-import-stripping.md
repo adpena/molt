@@ -6,9 +6,11 @@
 > op dependency data. It also owns the runtime-surface prefix/singleton
 > matchers for IR op kinds that map directly to import names, plus the
 > split/link output export policy consumed by `tools/wasm_link_format.py`.
-> `wasm/module_abi/runtime_surface.rs` is the single IR-scanning planner for
-> Auto/reloc import requirements, direct runtime-call arity, builtin trampolines,
-> and per-module intrinsic manifests.
+> `wasm/module_abi/runtime_surface.rs` remains the single IR-scanning planner
+> for module ABI facts. It delegates Auto/reloc import demand to
+> `wasm/module_abi/runtime_import_demand.rs`, while retaining direct
+> runtime-call arity, builtin trampoline, class spill, and per-module intrinsic
+> manifest planning.
 
 **Date:** 2026-03-07
 **Context:** Molt WASM codegen (`runtime/molt-backend-wasm/src/wasm.rs`) now routes import
@@ -23,8 +25,8 @@ The compiled `generator.wasm` (13.1 MB) declares **90 imports** across three nam
 ### `molt_runtime` (internal runtime)
 Runtime host functions are declared from the generated ABI registry
 (`runtime/molt-backend-wasm/src/wasm_abi_generated/`). In Auto/reloc mode,
-`runtime/molt-backend-wasm/src/wasm/module_abi/runtime_surface.rs` computes the
-pre-emission requirement set from IR, `OP_IMPORT_DEPS`, generated
+`runtime/molt-backend-wasm/src/wasm/module_abi/runtime_import_demand.rs`
+computes the pre-emission requirement set from IR, `OP_IMPORT_DEPS`, generated
 runtime-required import matchers, direct runtime calls, task/generator facts,
 and backend-lowered runtime calls. These cover:
 - **Core:** `runtime_init`, `runtime_shutdown`, `alloc`, `print_obj`, `print_newline`
@@ -104,4 +106,6 @@ Or use the existing `tools/wasm_strip_unused.py` (already in the repo) which can
 - WASM split/link export keep policy:
   `runtime/molt-backend-wasm/src/wasm_abi_manifest.toml`
 - WASM runtime surface planner: `runtime/molt-backend-wasm/src/wasm/module_abi/runtime_surface.rs`
+- WASM runtime import-demand planner:
+  `runtime/molt-backend-wasm/src/wasm/module_abi/runtime_import_demand.rs`
 - Browser host stubs: `strata/` or site `molt-wasm-host.ts`
