@@ -1,5 +1,4 @@
 use super::WasmBackend;
-use super::call_site_abi::WasmCallSiteAbi;
 use super::context::CompileFuncContext;
 use super::trampoline_analysis::WasmTrampolineAnalysis;
 use imports::WasmRuntimeImportEmission;
@@ -17,6 +16,7 @@ mod runtime_import_demand;
 mod runtime_surface;
 mod type_layout;
 
+pub(in crate::wasm) use callable_table::WasmCallableCallSiteAbi;
 use finalize::WasmModuleFinalizationInput;
 use type_layout::WasmModuleTypeLayout;
 
@@ -91,12 +91,7 @@ impl WasmBackend {
         let return_alias_summaries = crate::passes::compute_return_alias_summaries(&ir.functions);
 
         let compile_ctx = CompileFuncContext {
-            call_site_abi: WasmCallSiteAbi::new(
-                &callable_table.func_to_table_idx,
-                &callable_table.func_to_index,
-                &callable_table.func_to_trampoline_idx,
-                callable_table.table_base,
-                &callable_table.closure_functions,
+            call_site_abi: callable_table.call_site_abi(
                 &escaped_callable_targets,
                 host_surface.call_func_spill_offset,
                 &return_alias_summaries,
