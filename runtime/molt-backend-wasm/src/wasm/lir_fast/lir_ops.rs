@@ -1,9 +1,11 @@
 use super::lir_context::LirLowerCtx;
 use super::lir_runtime_ops::{
-    emit_lir_alloc, emit_lir_boxed_binary_runtime_call, emit_lir_boxed_operands_runtime_call,
+    LirSequenceBuilderFinish, emit_lir_alloc, emit_lir_boxed_binary_runtime_call,
+    emit_lir_boxed_operands_runtime_call, emit_lir_build_dict, emit_lir_build_set,
     emit_lir_build_slice, emit_lir_closure_load, emit_lir_closure_store, emit_lir_del_index,
     emit_lir_exception_pending, emit_lir_get_iter, emit_lir_index, emit_lir_iter_next,
-    emit_lir_membership, emit_lir_object_new_bound, emit_lir_store_index,
+    emit_lir_membership, emit_lir_object_new_bound, emit_lir_sequence_builder,
+    emit_lir_store_index,
 };
 use super::lir_scalar::{
     emit_get_boxed_for_repr, emit_lir_binary_arith, emit_lir_bitwise, emit_lir_bool_select,
@@ -313,6 +315,10 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
         OpCode::Mod => emit_lir_binary_arith(ctx, op, ArithOp::Mod),
         OpCode::Pow => emit_lir_boxed_binary_runtime_call(ctx, op, LirRuntimeCall::Pow),
         OpCode::OrdAt => emit_lir_boxed_operands_runtime_call(ctx, op, LirRuntimeCall::OrdAt, 2),
+        OpCode::BuildList => emit_lir_sequence_builder(ctx, op, LirSequenceBuilderFinish::List),
+        OpCode::BuildTuple => emit_lir_sequence_builder(ctx, op, LirSequenceBuilderFinish::Tuple),
+        OpCode::BuildDict => emit_lir_build_dict(ctx, op),
+        OpCode::BuildSet => emit_lir_build_set(ctx, op),
         OpCode::Neg => emit_lir_unary_arith(ctx, op, UnaryOp::Neg),
         OpCode::Pos => emit_lir_unary_pos(ctx, op),
         OpCode::Index => emit_lir_index(ctx, op),
@@ -497,10 +503,6 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
         | OpCode::CallMethodIc
         | OpCode::CallSuperMethodIc
         | OpCode::CallBuiltin
-        | OpCode::BuildList
-        | OpCode::BuildDict
-        | OpCode::BuildTuple
-        | OpCode::BuildSet
         | OpCode::LoadAttr
         | OpCode::StoreAttr
         | OpCode::DelAttr
