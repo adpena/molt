@@ -1,5 +1,5 @@
-use super::super::result_sink::store_result_or_drop;
 use super::RuntimeServiceOpContext;
+use super::call_emit::{RuntimeServiceArg::Local, RuntimeServiceCall, emit_runtime_service_call};
 use crate::OpIR;
 use crate::wasm::WasmFrameSyntheticLocal;
 use crate::wasm_abi::{
@@ -13,6 +13,11 @@ pub(super) fn emit_async_task_runtime_op(
     func: &mut Function,
     op: &OpIR,
 ) -> bool {
+    if let Some(call) = async_task_runtime_call(op.kind.as_str()) {
+        emit_runtime_service_call(context, func, op, call);
+        return true;
+    }
+
     let call_site_abi = context.call_site_abi;
     let import_ids = context.import_ids;
     let locals = context.locals;
@@ -96,137 +101,46 @@ pub(super) fn emit_async_task_runtime_op(
             }
             func.instruction(&Instruction::Return);
         }
-        "cancel_token_new" => {
-            let args = op.args.as_ref().unwrap();
-            let parent = locals[&args[0]];
-            func.instruction(&Instruction::LocalGet(parent));
-            emit_call(func, reloc_enabled, import_ids["cancel_token_new"]);
-            store_result_or_drop(func, op, locals);
-        }
-        "cancel_token_clone" => {
-            let args = op.args.as_ref().unwrap();
-            let token = locals[&args[0]];
-            func.instruction(&Instruction::LocalGet(token));
-            emit_call(func, reloc_enabled, import_ids["cancel_token_clone"]);
-            store_result_or_drop(func, op, locals);
-        }
-        "cancel_token_drop" => {
-            let args = op.args.as_ref().unwrap();
-            let token = locals[&args[0]];
-            func.instruction(&Instruction::LocalGet(token));
-            emit_call(func, reloc_enabled, import_ids["cancel_token_drop"]);
-            store_result_or_drop(func, op, locals);
-        }
-        "cancel_token_cancel" => {
-            let args = op.args.as_ref().unwrap();
-            let token = locals[&args[0]];
-            func.instruction(&Instruction::LocalGet(token));
-            emit_call(func, reloc_enabled, import_ids["cancel_token_cancel"]);
-            store_result_or_drop(func, op, locals);
-        }
-        "future_cancel" => {
-            let args = op.args.as_ref().unwrap();
-            let future = locals[&args[0]];
-            func.instruction(&Instruction::LocalGet(future));
-            emit_call(func, reloc_enabled, import_ids["future_cancel"]);
-            store_result_or_drop(func, op, locals);
-        }
-        "future_cancel_msg" => {
-            let args = op.args.as_ref().unwrap();
-            let future = locals[&args[0]];
-            let msg = locals[&args[1]];
-            func.instruction(&Instruction::LocalGet(future));
-            func.instruction(&Instruction::LocalGet(msg));
-            emit_call(func, reloc_enabled, import_ids["future_cancel_msg"]);
-            store_result_or_drop(func, op, locals);
-        }
-        "future_cancel_clear" => {
-            let args = op.args.as_ref().unwrap();
-            let future = locals[&args[0]];
-            func.instruction(&Instruction::LocalGet(future));
-            emit_call(func, reloc_enabled, import_ids["future_cancel_clear"]);
-            store_result_or_drop(func, op, locals);
-        }
-        "promise_new" => {
-            emit_call(func, reloc_enabled, import_ids["promise_new"]);
-            store_result_or_drop(func, op, locals);
-        }
-        "promise_set_result" => {
-            let args = op.args.as_ref().unwrap();
-            let future = locals[&args[0]];
-            let result = locals[&args[1]];
-            func.instruction(&Instruction::LocalGet(future));
-            func.instruction(&Instruction::LocalGet(result));
-            emit_call(func, reloc_enabled, import_ids["promise_set_result"]);
-            store_result_or_drop(func, op, locals);
-        }
-        "promise_set_exception" => {
-            let args = op.args.as_ref().unwrap();
-            let future = locals[&args[0]];
-            let exc = locals[&args[1]];
-            func.instruction(&Instruction::LocalGet(future));
-            func.instruction(&Instruction::LocalGet(exc));
-            emit_call(func, reloc_enabled, import_ids["promise_set_exception"]);
-            store_result_or_drop(func, op, locals);
-        }
-        "thread_submit" => {
-            let args = op.args.as_ref().unwrap();
-            let callable = locals[&args[0]];
-            let call_args = locals[&args[1]];
-            let call_kwargs = locals[&args[2]];
-            func.instruction(&Instruction::LocalGet(callable));
-            func.instruction(&Instruction::LocalGet(call_args));
-            func.instruction(&Instruction::LocalGet(call_kwargs));
-            emit_call(func, reloc_enabled, import_ids["thread_submit"]);
-            store_result_or_drop(func, op, locals);
-        }
-        "task_register_token_owned" => {
-            let args = op.args.as_ref().unwrap();
-            let task = locals[&args[0]];
-            let token = locals[&args[1]];
-            func.instruction(&Instruction::LocalGet(task));
-            func.instruction(&Instruction::LocalGet(token));
-            emit_call(func, reloc_enabled, import_ids["task_register_token_owned"]);
-            store_result_or_drop(func, op, locals);
-        }
-        "spawn" => {
-            let args = op.args.as_ref().unwrap();
-            func.instruction(&Instruction::LocalGet(locals[&args[0]]));
-            emit_call(func, reloc_enabled, import_ids["spawn"]);
-        }
-        "cancel_token_is_cancelled" => {
-            let args = op.args.as_ref().unwrap();
-            let token = locals[&args[0]];
-            func.instruction(&Instruction::LocalGet(token));
-            emit_call(func, reloc_enabled, import_ids["cancel_token_is_cancelled"]);
-            store_result_or_drop(func, op, locals);
-        }
-        "cancel_token_set_current" => {
-            let args = op.args.as_ref().unwrap();
-            let token = locals[&args[0]];
-            func.instruction(&Instruction::LocalGet(token));
-            emit_call(func, reloc_enabled, import_ids["cancel_token_set_current"]);
-            store_result_or_drop(func, op, locals);
-        }
-        "cancel_token_get_current" => {
-            emit_call(func, reloc_enabled, import_ids["cancel_token_get_current"]);
-            store_result_or_drop(func, op, locals);
-        }
-        "cancelled" => {
-            emit_call(func, reloc_enabled, import_ids["cancelled"]);
-            store_result_or_drop(func, op, locals);
-        }
-        "cancel_current" => {
-            emit_call(func, reloc_enabled, import_ids["cancel_current"]);
-            store_result_or_drop(func, op, locals);
-        }
-        "block_on" => {
-            let args = op.args.as_ref().unwrap();
-            func.instruction(&Instruction::LocalGet(locals[&args[0]]));
-            emit_call(func, reloc_enabled, import_ids["block_on"]);
-            store_result_or_drop(func, op, locals);
-        }
         _ => return false,
     }
     true
+}
+
+fn async_task_runtime_call(kind: &str) -> Option<RuntimeServiceCall<'static>> {
+    Some(match kind {
+        "cancel_token_new" => RuntimeServiceCall::result("cancel_token_new", &[Local(0)]),
+        "cancel_token_clone" => RuntimeServiceCall::result("cancel_token_clone", &[Local(0)]),
+        "cancel_token_drop" => RuntimeServiceCall::result("cancel_token_drop", &[Local(0)]),
+        "cancel_token_cancel" => RuntimeServiceCall::result("cancel_token_cancel", &[Local(0)]),
+        "future_cancel" => RuntimeServiceCall::result("future_cancel", &[Local(0)]),
+        "future_cancel_msg" => {
+            RuntimeServiceCall::result("future_cancel_msg", &[Local(0), Local(1)])
+        }
+        "future_cancel_clear" => RuntimeServiceCall::result("future_cancel_clear", &[Local(0)]),
+        "promise_new" => RuntimeServiceCall::result("promise_new", &[]),
+        "promise_set_result" => {
+            RuntimeServiceCall::result("promise_set_result", &[Local(0), Local(1)])
+        }
+        "promise_set_exception" => {
+            RuntimeServiceCall::result("promise_set_exception", &[Local(0), Local(1)])
+        }
+        "thread_submit" => {
+            RuntimeServiceCall::result("thread_submit", &[Local(0), Local(1), Local(2)])
+        }
+        "task_register_token_owned" => {
+            RuntimeServiceCall::result("task_register_token_owned", &[Local(0), Local(1)])
+        }
+        "spawn" => RuntimeServiceCall::no_result("spawn", &[Local(0)]),
+        "cancel_token_is_cancelled" => {
+            RuntimeServiceCall::result("cancel_token_is_cancelled", &[Local(0)])
+        }
+        "cancel_token_set_current" => {
+            RuntimeServiceCall::result("cancel_token_set_current", &[Local(0)])
+        }
+        "cancel_token_get_current" => RuntimeServiceCall::result("cancel_token_get_current", &[]),
+        "cancelled" => RuntimeServiceCall::result("cancelled", &[]),
+        "cancel_current" => RuntimeServiceCall::result("cancel_current", &[]),
+        "block_on" => RuntimeServiceCall::result("block_on", &[Local(0)]),
+        _ => return None,
+    })
 }
