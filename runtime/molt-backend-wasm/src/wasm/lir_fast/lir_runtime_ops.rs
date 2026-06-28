@@ -7,11 +7,13 @@ use molt_tir::tir::lir::{LirOp, LirRepr};
 use molt_tir::tir::ops::{AttrValue, OpCode};
 use molt_tir::tir::types::TirType;
 use molt_tir::tir::values::ValueId;
+use std::sync::Arc;
 use wasm_encoder::Instruction;
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum LirRuntimeArg {
     BoxedOperand(ValueId),
+    DataPtrI32(Arc<[u8]>),
     I64Const(i64),
     ResolvedPtr32(ValueId),
 }
@@ -32,12 +34,13 @@ impl LirSequenceBuilderFinish {
 }
 
 impl LirRuntimeArg {
-    fn emit(self, ctx: &mut LirLowerCtx) {
+    fn emit(&self, ctx: &mut LirLowerCtx) {
         match self {
-            Self::BoxedOperand(value) => emit_get_boxed_for_repr(ctx, value),
-            Self::I64Const(value) => ctx.instructions.push(Instruction::I64Const(value)),
+            Self::BoxedOperand(value) => emit_get_boxed_for_repr(ctx, *value),
+            Self::DataPtrI32(bytes) => ctx.instructions.push_data_ptr_i32(bytes.clone()),
+            Self::I64Const(value) => ctx.instructions.push(Instruction::I64Const(*value)),
             Self::ResolvedPtr32(value) => {
-                emit_get_boxed_for_repr(ctx, value);
+                emit_get_boxed_for_repr(ctx, *value);
                 ctx.emit_runtime_call(LirRuntimeCall::HandleResolve);
             }
         }
@@ -262,6 +265,68 @@ pub(super) fn emit_lir_attr(ctx: &mut LirLowerCtx, op: &LirOp) {
         (OpCode::DelAttr, Some("del_attr_name")) => {
             emit_lir_boxed_operands_runtime_call(ctx, op, LirRuntimeCall::DelAttrName, 2)
         }
+        (OpCode::LoadAttr, Some("get_attr_generic_ptr")) => {
+            let obj = required_operand(op, 0, "get_attr_generic_ptr");
+            let name = required_name_bytes(op, "get_attr_generic_ptr");
+            let name_len = name.len() as i64;
+            emit_lir_runtime_call_with_args_and_result(
+                ctx,
+                op,
+                LirRuntimeCall::GetAttrPtr,
+                &[
+                    LirRuntimeArg::ResolvedPtr32(obj),
+                    LirRuntimeArg::DataPtrI32(name),
+                    LirRuntimeArg::I64Const(name_len),
+                ],
+            );
+        }
+        (OpCode::LoadAttr, Some("get_attr_special_obj")) => {
+            let obj = required_operand(op, 0, "get_attr_special_obj");
+            let name = required_name_bytes(op, "get_attr_special_obj");
+            let name_len = name.len() as i64;
+            emit_lir_runtime_call_with_args_and_result(
+                ctx,
+                op,
+                LirRuntimeCall::GetAttrSpecial,
+                &[
+                    LirRuntimeArg::BoxedOperand(obj),
+                    LirRuntimeArg::DataPtrI32(name),
+                    LirRuntimeArg::I64Const(name_len),
+                ],
+            );
+        }
+        (OpCode::StoreAttr, Some(kind @ ("set_attr_generic_ptr" | "set_attr_generic_obj"))) => {
+            let obj = required_operand(op, 0, kind);
+            let value = required_operand(op, 1, kind);
+            let name = required_name_bytes(op, kind);
+            let name_len = name.len() as i64;
+            emit_lir_runtime_call_with_args_and_result(
+                ctx,
+                op,
+                LirRuntimeCall::SetAttrObject,
+                &[
+                    LirRuntimeArg::BoxedOperand(obj),
+                    LirRuntimeArg::DataPtrI32(name),
+                    LirRuntimeArg::I64Const(name_len),
+                    LirRuntimeArg::BoxedOperand(value),
+                ],
+            );
+        }
+        (OpCode::DelAttr, Some(kind @ ("del_attr_generic_ptr" | "del_attr_generic_obj"))) => {
+            let obj = required_operand(op, 0, kind);
+            let name = required_name_bytes(op, kind);
+            let name_len = name.len() as i64;
+            emit_lir_runtime_call_with_args_and_result(
+                ctx,
+                op,
+                LirRuntimeCall::DelAttrObject,
+                &[
+                    LirRuntimeArg::BoxedOperand(obj),
+                    LirRuntimeArg::DataPtrI32(name),
+                    LirRuntimeArg::I64Const(name_len),
+                ],
+            );
+        }
         _ => emit_lir_unsupported_marker(ctx, op),
     }
 }
@@ -367,6 +432,21 @@ fn required_i64_attr(op: &LirOp, attr: &str, op_name: &str) -> i64 {
         Some(AttrValue::Int(value)) => *value,
         _ => panic!("{op_name} requires integer attr {attr}"),
     }
+}
+
+fn required_name_bytes(op: &LirOp, op_name: &str) -> Arc<[u8]> {
+    match op.tir_op.attrs.get("name") {
+        Some(AttrValue::Str(name)) => Arc::from(name.as_bytes()),
+        _ => panic!("{op_name} requires string attr name"),
+    }
+}
+
+fn required_operand(op: &LirOp, index: usize, op_name: &str) -> ValueId {
+    op.tir_op
+        .operands
+        .get(index)
+        .copied()
+        .unwrap_or_else(|| panic!("{op_name} requires operand {index}"))
 }
 
 fn original_kind(op: &LirOp) -> Option<&str> {
