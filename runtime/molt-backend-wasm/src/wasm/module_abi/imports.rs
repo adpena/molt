@@ -18,7 +18,7 @@ impl WasmBackend {
     pub(super) fn emit_runtime_import_surface(
         &mut self,
         ir: &SimpleIR,
-        lir_lowering_plans: &crate::wasm_plan::WasmFunctionLoweringPlans,
+        lir_lowering_plans: &crate::wasm::lir_fast::WasmFunctionLoweringPlans,
         task_kinds: &BTreeMap<String, TrampolineKind>,
     ) -> WasmRuntimeImportEmission {
         let runtime_surface =

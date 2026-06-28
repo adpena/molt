@@ -15,5 +15,5 @@ pub(super) struct CompileFuncContext<'a> {
     /// Data segment ref for the 8-byte scratch slot used by `const_str` ops.
     pub(super) const_str_scratch_segment: DataSegmentRef,
     /// Precomputed production LIR-fast decisions keyed by function name.
-    pub(super) lir_lowering_plans: &'a crate::wasm_plan::WasmFunctionLoweringPlans,
+    pub(super) lir_lowering_plans: &'a crate::wasm::lir_fast::WasmFunctionLoweringPlans,
 }
