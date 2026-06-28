@@ -5,9 +5,12 @@ use imports::WasmRuntimeImportEmission;
 use runtime_surface::WasmRuntimeSurfacePlan;
 
 mod callable_table;
+mod finalize;
 mod imports;
 mod runtime_surface;
 mod trampoline_emit;
+
+use finalize::WasmModuleFinalizationInput;
 
 impl WasmBackend {
     pub(super) fn emit_wasm_module(
@@ -258,218 +261,10 @@ impl WasmBackend {
             manifest_len,
         );
 
-        let page_size: u64 = 64 * 1024;
-        let required_pages = (self.data_segments.offset() as u64).div_ceil(page_size);
-        let floor_pages = std::env::var("MOLT_WASM_MIN_PAGES")
-            .ok()
-            .and_then(|val| val.parse::<u64>().ok())
-            .unwrap_or(64);
-        let minimum_pages = required_pages.max(floor_pages);
-        let memory_ty = MemoryType {
-            minimum: minimum_pages,
-            maximum: None,
-            memory64: false,
-            shared: false,
-            page_size_log2: None,
-        };
-        self.imports
-            .import("env", "memory", EntityType::Memory(memory_ty));
-        self.exports.export("molt_memory", ExportKind::Memory, 0);
-
-        // --- Import audit diagnostic (gated by MOLT_WASM_IMPORT_AUDIT=1) ---
-        if std::env::var("MOLT_WASM_IMPORT_AUDIT").as_deref() == Ok("1") {
-            let unused = self.import_ids.unused_names();
-            let total = self.import_ids.len();
-            let used = total - unused.len();
-            let pct = if total > 0 {
-                (unused.len() as f64 / total as f64) * 100.0
-            } else {
-                0.0
-            };
-            eprintln!(
-                "[molt-wasm-import-audit] {used}/{total} imports used, {} unused ({pct:.1}% bloat)",
-                unused.len()
-            );
-            if !unused.is_empty() {
-                eprintln!("[molt-wasm-import-audit] unused imports:");
-                for name in &unused {
-                    eprintln!("  - {name}");
-                }
-            }
-
-            // --- Exception-related host call audit (Section 3.6) ---
-            let eh_imports = [
-                "exception_push",
-                "exception_pop",
-                "exception_pending",
-                "exception_clear",
-                "exception_new",
-                "exception_new_builtin",
-                "exception_new_builtin_empty",
-                "exception_new_builtin_one",
-                "exception_new_from_class",
-                "exception_match_builtin",
-                "exception_kind",
-                "exception_class",
-                "exception_message",
-                "exception_active",
-                "exception_last",
-                "exception_last_pending",
-                "exception_stack_clear",
-                "exception_set_cause",
-                "exception_set_value",
-                "exception_context_set",
-                "exception_set_last",
-                "raise",
-            ];
-            let eh_used: Vec<&str> = eh_imports
-                .iter()
-                .copied()
-                .filter(|name| self.import_ids.is_used(name))
-                .collect();
-            let eh_eliminable: Vec<&str> = ["exception_push", "exception_pop", "exception_pending"]
-                .iter()
-                .copied()
-                .filter(|name| self.import_ids.is_used(name))
-                .collect();
-            eprintln!(
-                "[molt-wasm-import-audit] exception host calls: {}/{} used ({} eliminable by native EH: {})",
-                eh_used.len(),
-                eh_imports.len(),
-                eh_eliminable.len(),
-                eh_eliminable.join(", "),
-            );
-            if self.options.native_eh_enabled && !self.options.reloc_enabled {
-                eprintln!("[molt-wasm-import-audit] native EH ENABLED: tag section emitted");
-            } else if self.options.native_eh_enabled && self.options.reloc_enabled {
-                eprintln!(
-                    "[molt-wasm-import-audit] native EH requested but suppressed (reloc mode; wasm-ld doesn't support EH relocations)"
-                );
-            } else {
-                eprintln!("[molt-wasm-import-audit] native EH disabled (MOLT_WASM_NATIVE_EH=0)");
-            }
-
-            // --- Tail call optimization audit (section 3.5) ---
-            eprintln!(
-                "[molt-wasm-import-audit] tail calls emitted: {} (return_call instructions)",
-                self.tail_calls_emitted
-            );
-
-            // --- Data segment size audit ---
-            let total_data_bytes = self.data_segments.total_data_bytes();
-            let dedup_hits = self.data_segments.dedup_entry_count();
-            eprintln!(
-                "[molt-wasm-import-audit] data segments: {} segments, {} total bytes, {} dedup cache entries",
-                self.data_segments.segment_count(),
-                total_data_bytes,
-                dedup_hits,
-            );
-        }
-
-        self.module.section(&self.types);
-        self.module.section(&self.imports);
-        self.module.section(&self.funcs);
-        self.module.section(&self.tables);
-        self.module.section(&self.memories);
-
-        // --- WASM EH Tag Section (Section 3.6) ---
-        // Tag 0 = molt_exception with payload (i64) -> (), using type index 1.
-        // Emitted between memory and export sections per WASM spec ordering.
-        // Native EH requires non-relocatable output (wasm-ld doesn't support EH relocations)
-        if self.options.native_eh_enabled && !self.options.reloc_enabled {
-            let mut tags = TagSection::new();
-            tags.tag(TagType {
-                kind: TagKind::Exception,
-                func_type_idx: TAG_EXCEPTION_FUNC_TYPE,
-            });
-            self.module.section(&tags);
-        }
-
-        self.module.section(&self.exports);
-        if let Some(element_section) = callable_table_elements.element_section.as_ref() {
-            self.module.section(element_section);
-        }
-        if let Some(payload) = callable_table_elements.element_payload.as_ref() {
-            let raw_section = RawSection {
-                id: 9,
-                data: payload,
-            };
-            self.module.section(&raw_section);
-        }
-        self.module.section(&self.codes);
-        self.module.section(self.data_segments.section());
-        let module_finish_start = std::time::Instant::now();
-        let mut bytes = self.module.finish();
-        emit_wasm_stage_audit(
-            "after-module-finish",
-            simple_ir_stage_shape(&ir.functions),
-            Some(bytes.len()),
-            None,
-            None,
-            Some(module_finish_start.elapsed().as_millis()),
-        );
-
-        // --- Dead import elimination ---
-        // After compilation, TrackedImportIds knows exactly which imports were
-        // referenced during code emission.  Strip the unused ones from the
-        // serialized module and remap all function indices.  Stripping is
-        // attempted unconditionally; only the *result* is validated before
-        // replacing the original binary.
-        // Only applies to Auto profile in non-relocatable mode.
-        // Full profile preserves all imports for maximum host compatibility;
-        // Pure profile's import set is already curated and expected stable.
-        // Relocatable modules are linked by wasm-ld --gc-sections instead.
-        let strip_enabled = !reloc_enabled && self.options.wasm_profile == WasmProfile::Auto;
-        if strip_enabled {
-            let unused: BTreeSet<String> = self.import_ids.unused_names().into_iter().collect();
-            if !unused.is_empty() {
-                let before_len = bytes.len();
-                emit_wasm_stage_audit(
-                    "before-strip-unused-imports",
-                    simple_ir_stage_shape(&ir.functions),
-                    Some(before_len),
-                    Some(unused.len()),
-                    None,
-                    None,
-                );
-                let strip_start = std::time::Instant::now();
-                let stripped = strip_unused_imports(bytes.clone(), &unused);
-                emit_wasm_stage_audit(
-                    "after-strip-unused-imports",
-                    simple_ir_stage_shape(&ir.functions),
-                    Some(stripped.len()),
-                    Some(unused.len()),
-                    None,
-                    Some(strip_start.elapsed().as_millis()),
-                );
-                if validate_wasm_sections(&stripped) {
-                    eprintln!(
-                        "[molt-wasm-strip] eliminated {} unused imports, \
-                         {} -> {} bytes (saved {})",
-                        unused.len(),
-                        before_len,
-                        stripped.len(),
-                        before_len.saturating_sub(stripped.len()),
-                    );
-                    bytes = stripped;
-                } else {
-                    eprintln!(
-                        "[molt-wasm-strip] stripping {} unused imports produced \
-                         invalid WASM; keeping original ({} bytes)",
-                        unused.len(),
-                        before_len,
-                    );
-                }
-            }
-        }
-
-        if reloc_enabled {
-            bytes = add_reloc_sections(
-                bytes,
-                self.data_segments.segments(),
-                self.data_segments.relocs(),
-            );
-        }
-        bytes
+        self.finalize_wasm_module(WasmModuleFinalizationInput {
+            functions: &ir.functions,
+            callable_table_elements,
+            reloc_enabled,
+        })
     }
 }
