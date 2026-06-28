@@ -134,6 +134,14 @@ INSPECTION_COMMAND_TOKENS = (
     "sed -n",
 )
 
+REPORT_ONLY_ENV = "MOLT_PROCESS_SENTINEL_REPORT_ONLY"
+_TRUTHY_FLAG_VALUES = frozenset({"1", "true", "yes", "on"})
+
+
+def report_only_enabled(env: Mapping[str, str] | None = None) -> bool:
+    source = os.environ if env is None else env
+    return source.get(REPORT_ONLY_ENV, "").strip().lower() in _TRUTHY_FLAG_VALUES
+
 
 @dataclass(frozen=True, slots=True)
 class ProcessGroup:
@@ -315,11 +323,13 @@ def protected_process_group_ids(
     *,
     self_pid: int | None = None,
     self_pgid: int | None = None,
+    owned_pids: set[int] | None = None,
 ) -> set[int]:
     return memory_guard.protected_process_group_ids(
         samples,
         self_pid=self_pid,
         self_pgid=self_pgid,
+        owned_pids=owned_pids,
     )
 
 
@@ -340,6 +350,37 @@ def _group_samples_by_pgid(
     return grouped
 
 
+def _propagate_ownership_to_descendants(
+    samples: Mapping[int, memory_guard.ProcessSample],
+    owned: set[int],
+) -> set[int]:
+    changed = True
+    while changed:
+        changed = False
+        for sample in samples.values():
+            if sample.pid not in owned and sample.ppid in owned:
+                owned.add(sample.pid)
+                changed = True
+    return owned
+
+
+def _explicitly_owned_process_ids(
+    samples: Mapping[int, memory_guard.ProcessSample],
+    *,
+    known_process_identities: Mapping[int, memory_guard.ProcessIdentity] | None,
+    caller_owned_pids: set[int] | None,
+) -> set[int]:
+    owned: set[int] = set()
+    if caller_owned_pids is not None:
+        owned.update(pid for pid in caller_owned_pids if pid in samples)
+    if known_process_identities is not None:
+        for pid, identity in known_process_identities.items():
+            sample = samples.get(pid)
+            if sample is not None and memory_guard.process_identity(sample) == identity:
+                owned.add(pid)
+    return _propagate_ownership_to_descendants(samples, owned)
+
+
 def _owned_process_ids(
     samples: Mapping[int, memory_guard.ProcessSample],
     *,
@@ -356,14 +397,7 @@ def _owned_process_ids(
     for sample in samples.values():
         if is_molt_process(sample, root=root, self_pid=self_pid):
             owned.add(sample.pid)
-    changed = True
-    while changed:
-        changed = False
-        for sample in samples.values():
-            if sample.pid not in owned and sample.ppid in owned:
-                owned.add(sample.pid)
-                changed = True
-    return owned
+    return _propagate_ownership_to_descendants(samples, owned)
 
 
 def _explicitly_owned_molt_process_ids(
@@ -488,10 +522,16 @@ def process_groups(
     owned_pids: set[int] | None = None,
 ) -> list[ProcessGroup]:
     grouped = _group_samples_by_pgid(samples)
+    explicitly_owned = _explicitly_owned_process_ids(
+        samples,
+        known_process_identities=known_process_identities,
+        caller_owned_pids=owned_pids,
+    )
     protected_pgids = protected_process_group_ids(
         samples,
         self_pid=self_pid,
         self_pgid=self_pgid,
+        owned_pids=explicitly_owned,
     )
     owned = (
         _explicitly_owned_molt_process_ids(
@@ -535,10 +575,16 @@ def skipped_protected_process_groups(
     known_process_identities: Mapping[int, memory_guard.ProcessIdentity] | None = None,
 ) -> list[ProcessGroup]:
     grouped = _group_samples_by_pgid(samples)
+    explicitly_owned = _explicitly_owned_process_ids(
+        samples,
+        known_process_identities=known_process_identities,
+        caller_owned_pids=None,
+    )
     protected_pgids = protected_process_group_ids(
         samples,
         self_pid=self_pid,
         self_pgid=self_pgid,
+        owned_pids=explicitly_owned,
     )
     owned = _owned_process_ids(
         samples,
@@ -861,6 +907,16 @@ def sample_processes_for_sentinel() -> dict[int, memory_guard.ProcessSample]:
     return memory_guard.sample_processes()
 
 
+def _emit_report_only(pgid: int, command: str) -> None:
+    print(
+        f"[PROCESS-SENTINEL] report-only ({REPORT_ONLY_ENV}=1): "
+        f"would terminate pgid={pgid} command={command}",
+        file=sys.stderr,
+    )
+    with contextlib.suppress(Exception):
+        sys.stderr.flush()
+
+
 def terminate_group(
     pgid: int,
     *,
@@ -896,6 +952,9 @@ def terminate_group(
             return
         if not is_molt_process(sample, root=root, self_pid=os.getpid()):
             return
+        if report_only_enabled():
+            _emit_report_only(pgid, sample.command)
+            return
         action = memory_guard._send_pid_signal_if_identity_action(
             pgid,
             expected_pid_identity,
@@ -913,6 +972,10 @@ def terminate_group(
         )
         return
     if expected_identities is None:
+        return
+    if report_only_enabled():
+        member = samples.get(pgid)
+        _emit_report_only(pgid, "" if member is None else member.command)
         return
     action = memory_guard._send_process_group_signal_if_identities_match_action(
         pgid,
