@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import subprocess
 
+import molt.dx as molt_dx
 import pytest
 
 from tools import runtime_safety
@@ -97,14 +98,19 @@ def test_run_with_log_uses_memory_guard_and_canonical_env(
     assert captured["kwargs"]["prefix"] == "MOLT_RUNTIME_SAFETY"
     assert captured["kwargs"]["capture_output"] is True
     run_env = captured["kwargs"]["env"]
-    assert run_env["MOLT_EXT_ROOT"] == str(runtime_safety.ROOT)
-    assert run_env["CARGO_TARGET_DIR"] == str(runtime_safety.ROOT / "target")
+    artifact_root = Path(run_env["MOLT_EXT_ROOT"])
+    assert run_env["CARGO_TARGET_DIR"] == str(
+        molt_dx.cargo_target_dir_for_artifact_root(
+            artifact_root,
+            "runtime-safety-test",
+        )
+    )
     assert run_env["MOLT_DIFF_CARGO_TARGET_DIR"] == run_env["CARGO_TARGET_DIR"]
-    assert run_env["MOLT_CACHE"] == str(runtime_safety.ROOT / ".molt_cache")
-    assert run_env["MOLT_DIFF_ROOT"] == str(runtime_safety.ROOT / "tmp" / "diff")
-    assert run_env["MOLT_DIFF_TMPDIR"] == str(runtime_safety.ROOT / "tmp")
-    assert run_env["UV_CACHE_DIR"] == str(runtime_safety.ROOT / ".uv-cache")
-    assert run_env["TMPDIR"] == str(runtime_safety.ROOT / "tmp")
+    assert run_env["MOLT_CACHE"] == str(artifact_root / ".molt_cache")
+    assert run_env["MOLT_DIFF_ROOT"] == str(artifact_root / "tmp" / "diff")
+    assert run_env["MOLT_DIFF_TMPDIR"] == str(artifact_root / "tmp")
+    assert run_env["UV_CACHE_DIR"] == str(artifact_root / ".uv-cache")
+    assert run_env["TMPDIR"] == str(artifact_root / "tmp")
     assert run_env["MOLT_SESSION_ID"] == "runtime-safety-test"
     assert run_env["RUSTFLAGS"] == "-Z sanitizer=address"
     assert log_path.read_text(encoding="utf-8") == "out\nerr\n"

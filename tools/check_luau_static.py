@@ -120,18 +120,10 @@ def _with_repo_pythonpath(env: dict[str, str], repo_root: Path) -> dict[str, str
 
 def make_build_env() -> dict[str, str]:
     """Build child-process env with canonical artifact-root defaults."""
-    env = os.environ.copy()
-    ext_root = Path(env.get("MOLT_EXT_ROOT", str(_repo_root()))).expanduser().resolve()
-    if not ext_root.is_dir():
-        raise RuntimeError(f"MOLT_EXT_ROOT is not a directory: {ext_root}.")
-    env.setdefault("MOLT_EXT_ROOT", str(ext_root))
-    env.setdefault("CARGO_TARGET_DIR", str(ext_root / "target"))
-    env.setdefault("MOLT_DIFF_CARGO_TARGET_DIR", env["CARGO_TARGET_DIR"])
-    env.setdefault("MOLT_CACHE", str(ext_root / ".molt_cache"))
-    env.setdefault("MOLT_DIFF_ROOT", str(ext_root / "tmp" / "diff"))
-    env.setdefault("MOLT_DIFF_TMPDIR", str(ext_root / "tmp"))
-    env.setdefault("UV_CACHE_DIR", str(ext_root / ".uv-cache"))
-    env.setdefault("TMPDIR", env["MOLT_DIFF_TMPDIR"])
+    env = harness_memory_guard.canonical_harness_env(
+        os.environ,
+        repo_root=_repo_root(),
+    )
     env.setdefault("PYTHONHASHSEED", "0")
     return _with_repo_pythonpath(env, _repo_root())
 

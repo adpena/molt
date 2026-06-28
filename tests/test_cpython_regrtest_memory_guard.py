@@ -7,6 +7,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import molt.dx as molt_dx
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 REGRTEST_TOOL_PATH = REPO_ROOT / "tools" / "cpython_regrtest.py"
@@ -69,7 +71,12 @@ def test_run_command_uses_memory_guard_and_preserves_log(monkeypatch) -> None:
     assert contexts[0]["repo_root"] == module.REPO_ROOT
     assert contexts[0]["env"]["X"] == "1"
     assert contexts[0]["env"]["MOLT_EXT_ROOT"] == str(module.REPO_ROOT)
-    assert contexts[0]["env"]["CARGO_TARGET_DIR"] == str(module.REPO_ROOT / "target")
+    assert contexts[0]["env"]["CARGO_TARGET_DIR"] == str(
+        molt_dx.cargo_target_dir_for_artifact_root(
+            module.REPO_ROOT,
+            contexts[0]["env"]["MOLT_SESSION_ID"],
+        )
+    )
     assert contexts[0]["env"]["TMPDIR"] == str(module.REPO_ROOT / "tmp")
     assert calls[0]["cwd"] == Path("/tmp")
     assert calls[0]["env"]["X"] == "1"
@@ -137,7 +144,12 @@ def test_build_env_canonicalizes_repo_local_artifact_roots(
     env = module.build_env(config)
 
     assert env["MOLT_EXT_ROOT"] == str(tmp_path.resolve())
-    assert env["CARGO_TARGET_DIR"] == str(tmp_path / "target")
+    assert env["CARGO_TARGET_DIR"] == str(
+        molt_dx.cargo_target_dir_for_artifact_root(
+            tmp_path.resolve(),
+            env["MOLT_SESSION_ID"],
+        )
+    )
     assert env["MOLT_DIFF_CARGO_TARGET_DIR"] == env["CARGO_TARGET_DIR"]
     assert env["TMPDIR"] == str(tmp_path / "tmp")
     assert env["UV_CACHE_DIR"] == str(tmp_path / ".uv-cache")

@@ -7,6 +7,7 @@ from pathlib import Path
 
 sys.path.insert(0, "src")
 
+import molt.dx as molt_dx
 from molt.harness_layers import (
     LAYERS,
     get_layers_for_profile,
@@ -52,9 +53,14 @@ def test_run_cmd_uses_harness_memory_guard(monkeypatch, tmp_path: Path):
     assert call["text"] is True
     assert call["timeout"] == 12
     assert call["limits"].max_process_rss_gb == 2
-    assert call["env"]["MOLT_EXT_ROOT"] == str(harness_layers._REPO_ROOT)
-    assert call["env"]["CARGO_TARGET_DIR"] == str(harness_layers._REPO_ROOT / "target")
-    assert call["env"]["TMPDIR"] == str(harness_layers._REPO_ROOT / "tmp")
+    artifact_root = Path(call["env"]["MOLT_EXT_ROOT"])
+    assert call["env"]["CARGO_TARGET_DIR"] == str(
+        molt_dx.cargo_target_dir_for_artifact_root(
+            artifact_root,
+            call["env"]["MOLT_SESSION_ID"],
+        )
+    )
+    assert call["env"]["TMPDIR"] == str(artifact_root / "tmp")
 
 
 def test_harness_repo_sentinel_uses_canonical_artifact_root(

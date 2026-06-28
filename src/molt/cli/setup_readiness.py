@@ -656,10 +656,11 @@ def _build_toolchain_report(root: Path) -> _ToolchainReport:
         record(
             "cargo-target-dir",
             False,
-            f"defaulting to {root / 'target'}",
+            f"DX target root should be under {root / 'target' / 'sessions'}/$MOLT_SESSION_ID",
             level="warning",
             advice=[
-                "Maintainer/agent DX: export CARGO_TARGET_DIR=<external>/target",
+                "Maintainer/agent DX: export MOLT_SESSION_ID=<session-id>",
+                "Maintainer/agent DX: export CARGO_TARGET_DIR=<artifact-root>/target/sessions/$MOLT_SESSION_ID",
                 "Maintainer/agent DX: export MOLT_DIFF_CARGO_TARGET_DIR=$CARGO_TARGET_DIR",
             ],
         )
@@ -729,7 +730,7 @@ def _build_toolchain_report(root: Path) -> _ToolchainReport:
             level="warning",
             advice=[
                 "Maintainer/agent DX: export MOLT_EXT_ROOT=<artifact-root>",
-                "Maintainer/agent DX: export CARGO_TARGET_DIR=$MOLT_EXT_ROOT/target",
+                "Maintainer/agent DX: export CARGO_TARGET_DIR=$MOLT_EXT_ROOT/target/sessions/$MOLT_SESSION_ID",
                 "Maintainer/agent DX: export MOLT_CACHE=$MOLT_EXT_ROOT/.molt_cache",
             ]
             if not ext_ok

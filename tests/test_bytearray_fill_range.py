@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from molt.dx import development_artifact_env
 from tests.native_process_guard import run_native_test_process
 
 
@@ -32,19 +33,16 @@ SCRIPT = (
 
 
 def _native_env(root: Path) -> dict[str, str]:
-    env = os.environ.copy()
+    env = development_artifact_env(
+        root,
+        os.environ,
+        session_prefix="bytearray-fill-range",
+        session_id=os.environ.get("MOLT_SESSION_ID") or "bytearray-fill-range-test",
+        create_dirs=True,
+    )
     env["PYTHONPATH"] = str(root / "src")
     env.setdefault("CARGO_BUILD_JOBS", "1")
     env.setdefault("MOLT_BACKEND_DAEMON_CACHE_MB", "128")
-    env.setdefault("MOLT_SESSION_ID", "bytearray-fill-range-test")
-    env.setdefault("MOLT_EXT_ROOT", str(root))
-    env.setdefault("CARGO_TARGET_DIR", str(root / "target"))
-    env.setdefault("MOLT_DIFF_CARGO_TARGET_DIR", str(root / "target"))
-    env.setdefault("MOLT_CACHE", str(root / ".molt_cache"))
-    env.setdefault("MOLT_DIFF_ROOT", str(root / "tmp" / "diff"))
-    env.setdefault("MOLT_DIFF_TMPDIR", str(root / "tmp"))
-    env.setdefault("UV_CACHE_DIR", str(root / ".uv-cache"))
-    env.setdefault("TMPDIR", str(root / "tmp"))
     return env
 
 

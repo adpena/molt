@@ -20,6 +20,7 @@ from pathlib import Path
 
 import pytest
 
+from molt.dx import development_artifact_env
 from tests.native_process_guard import run_native_test_process
 
 MOLT_DIR = Path(__file__).resolve().parents[1]
@@ -58,14 +59,14 @@ def _compile_and_run(source: str) -> str:
         src_path.write_text(source)
         binary_path = Path(tmp) / "https_demo_molt"
 
-        env = {
-            **os.environ,
-            "MOLT_EXT_ROOT": str(ARTIFACT_ROOT),
-            "CARGO_TARGET_DIR": os.environ.get(
-                "CARGO_TARGET_DIR", str(ARTIFACT_ROOT / "target")
-            ),
-            "PYTHONPATH": str(MOLT_DIR / "src"),
-        }
+        env = development_artifact_env(
+            MOLT_DIR,
+            {**os.environ, "MOLT_EXT_ROOT": str(ARTIFACT_ROOT)},
+            session_prefix="https-urlopen",
+            session_id=os.environ.get("MOLT_SESSION_ID") or "https-urlopen",
+            create_dirs=True,
+        )
+        env["PYTHONPATH"] = str(MOLT_DIR / "src")
         build = run_native_test_process(
             [
                 sys.executable,

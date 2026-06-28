@@ -62,10 +62,13 @@ from typing import Any, Literal
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
+SRC_ROOT = REPO_ROOT / "src"
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
 
 from tools import harness_memory_guard  # noqa: E402
+from molt.dx import cargo_target_dir_for_artifact_root  # noqa: E402
 
-SRC_ROOT = REPO_ROOT / "src"
 DEFAULT_TARGET_DIR = SRC_ROOT / "molt"
 DEFAULT_TEST_SUBSET = REPO_ROOT / "tests" / "differential" / "basic"
 
@@ -837,11 +840,14 @@ def _default_cargo_target_dir() -> Path:
     if configured:
         return Path(configured).expanduser()
 
+    session_id = os.environ.get("MOLT_SESSION_ID") or f"mutation-{os.getpid()}"
     ext = os.environ.get("MOLT_EXT_ROOT", "").strip()
     if ext:
-        return Path(ext).expanduser() / "target"
+        return cargo_target_dir_for_artifact_root(
+            Path(ext).expanduser(), session_id
+        )
 
-    return REPO_ROOT / "target"
+    return cargo_target_dir_for_artifact_root(REPO_ROOT, session_id)
 
 
 def create_mutant_workspace(

@@ -11,6 +11,7 @@ from pathlib import Path
 
 import molt.cli as molt_cli
 from molt.cli import debug_helpers as cli_debug_helpers
+from molt.dx import development_artifact_env
 from molt.debug import DebugSubcommand, allocate_debug_paths
 
 from tests.cli.process_guard import run_cli_test_process
@@ -20,18 +21,15 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def _base_env() -> dict[str, str]:
-    env = os.environ.copy()
+    env = development_artifact_env(
+        ROOT,
+        os.environ,
+        session_prefix="tests-cli-debug",
+        session_id=os.environ.get("MOLT_SESSION_ID") or "tests-cli-debug",
+        create_dirs=True,
+    )
     env["PYTHONPATH"] = str(ROOT / "src")
     env.setdefault("MOLT_BACKEND_DAEMON", "0")
-    env.setdefault("MOLT_SESSION_ID", "tests-cli-debug")
-    env.setdefault("MOLT_EXT_ROOT", str(ROOT))
-    env.setdefault("CARGO_TARGET_DIR", str(ROOT / "target"))
-    env.setdefault("MOLT_DIFF_CARGO_TARGET_DIR", env["CARGO_TARGET_DIR"])
-    env.setdefault("MOLT_CACHE", str(ROOT / ".molt_cache"))
-    env.setdefault("MOLT_DIFF_ROOT", str(ROOT / "tmp" / "diff"))
-    env.setdefault("MOLT_DIFF_TMPDIR", str(ROOT / "tmp"))
-    env.setdefault("UV_CACHE_DIR", str(ROOT / ".uv-cache"))
-    env.setdefault("TMPDIR", str(ROOT / "tmp"))
     return env
 
 

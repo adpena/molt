@@ -6,10 +6,18 @@ import tempfile
 import pathlib
 import pytest
 
+from molt.dx import development_artifact_env
 from tests.native_process_guard import run_native_test_process
 
 MOLT_DIR = pathlib.Path(__file__).resolve().parents[2]
-TARGET_ROOT = pathlib.Path(os.environ.get("CARGO_TARGET_DIR", str(MOLT_DIR / "target")))
+LUAU_ENV = development_artifact_env(
+    MOLT_DIR,
+    os.environ,
+    session_prefix="luau-differential",
+    session_id=os.environ.get("MOLT_SESSION_ID") or "luau-differential",
+    create_dirs=True,
+)
+TARGET_ROOT = pathlib.Path(LUAU_ENV["CARGO_TARGET_DIR"])
 BACKEND_BIN = TARGET_ROOT / "debug" / "molt-backend"
 BASIC_DIR = MOLT_DIR / "tests" / "differential" / "basic"
 
@@ -36,6 +44,7 @@ def build_backend():
         ],
         capture_output=True,
         timeout=120,
+        env=LUAU_ENV,
     )
 
 
