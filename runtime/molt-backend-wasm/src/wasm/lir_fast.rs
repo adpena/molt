@@ -29,6 +29,7 @@ mod driver;
 mod lir_context;
 mod lir_control;
 mod lir_ops;
+mod lir_runtime_ops;
 mod lir_scalar;
 mod peephole;
 mod runtime_calls;
