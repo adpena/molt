@@ -484,7 +484,7 @@ fn original_kind(op: &LirOp) -> Option<&str> {
     }
 }
 
-fn emit_lir_unsupported_marker(ctx: &mut LirLowerCtx, op: &LirOp) {
+pub(super) fn emit_lir_unsupported_marker(ctx: &mut LirLowerCtx, op: &LirOp) {
     for &operand in &op.tir_op.operands {
         ctx.emit_get(operand);
     }

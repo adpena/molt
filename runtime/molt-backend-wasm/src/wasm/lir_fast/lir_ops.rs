@@ -5,13 +5,14 @@ use super::lir_runtime_ops::{
     emit_lir_build_slice, emit_lir_closure_load, emit_lir_closure_store, emit_lir_del_index,
     emit_lir_exception_pending, emit_lir_get_iter, emit_lir_index, emit_lir_iter_next,
     emit_lir_membership, emit_lir_object_new_bound, emit_lir_sequence_builder,
-    emit_lir_store_index,
+    emit_lir_store_index, emit_lir_unsupported_marker,
 };
 use super::lir_scalar::{
     emit_get_boxed_for_repr, emit_lir_binary_arith, emit_lir_bitwise, emit_lir_bool_select,
     emit_lir_comparison, emit_lir_i64_binary_or_boxed, emit_lir_identity_comparison,
     emit_lir_truthiness_i32, emit_lir_unary_arith, emit_lir_unary_pos,
 };
+use super::runtime_calls::preserved_copy_runtime_call;
 use crate::wasm::body::WasmLirFallbackReason;
 use crate::wasm::const_materialization::{WasmConstMaterializationScratch, WasmConstOpPolicy};
 use crate::wasm::lir_fast::LirRuntimeCall;
@@ -369,28 +370,17 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
             LirRuntimeCall::ModuleDelGlobalIfPresent,
             2,
         ),
+        OpCode::Import if !tir_op.operands.is_empty() => {
+            emit_lir_boxed_operands_runtime_call(ctx, op, LirRuntimeCall::ModuleImport, 1)
+        }
         OpCode::LoadAttr | OpCode::StoreAttr | OpCode::DelAttr => emit_lir_attr(ctx, op),
         OpCode::Alloc => emit_lir_alloc(ctx, op),
         OpCode::ObjectNewBound => emit_lir_object_new_bound(ctx, op),
         OpCode::ClosureLoad => emit_lir_closure_load(ctx, op),
         OpCode::ClosureStore => emit_lir_closure_store(ctx, op),
-        OpCode::Copy
-        | OpCode::DeleteVar
-        | OpCode::BoxVal
-        | OpCode::UnboxVal
-        | OpCode::TypeGuard => {
-            if let (Some(&src), Some(result)) = (tir_op.operands.first(), op.result_values.first())
-            {
-                if matches!(
-                    tir_op.attrs.get("_original_kind"),
-                    Some(AttrValue::Str(kind)) if kind == "binding_alias"
-                ) {
-                    emit_get_boxed_for_repr(ctx, src);
-                    ctx.emit_runtime_call(LirRuntimeCall::IncRefObj);
-                }
-                ctx.emit_get(src);
-                ctx.emit_set(result.id);
-            }
+        OpCode::Copy => emit_lir_copy_or_original_kind(ctx, op),
+        OpCode::DeleteVar | OpCode::BoxVal | OpCode::UnboxVal | OpCode::TypeGuard => {
+            emit_lir_identity_copy(ctx, op)
         }
         OpCode::Eq => emit_lir_comparison(ctx, op, CmpOp::Eq),
         OpCode::Ne => emit_lir_comparison(ctx, op, CmpOp::Ne),
@@ -558,5 +548,44 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
                 ctx.emit_runtime_call(LirRuntimeCall::IncRefObj);
             }
         }
+    }
+}
+
+fn emit_lir_identity_copy(ctx: &mut LirLowerCtx, op: &LirOp) {
+    if let (Some(&src), Some(result)) = (op.tir_op.operands.first(), op.result_values.first()) {
+        ctx.emit_get(src);
+        ctx.emit_set(result.id);
+    }
+}
+
+fn emit_lir_binding_alias(ctx: &mut LirLowerCtx, op: &LirOp) {
+    if let (Some(&src), Some(result)) = (op.tir_op.operands.first(), op.result_values.first()) {
+        emit_get_boxed_for_repr(ctx, src);
+        ctx.emit_runtime_call(LirRuntimeCall::IncRefObj);
+        ctx.emit_get(src);
+        ctx.emit_set(result.id);
+    }
+}
+
+fn emit_lir_copy_or_original_kind(ctx: &mut LirLowerCtx, op: &LirOp) {
+    match original_kind(op) {
+        Some("binding_alias") => emit_lir_binding_alias(ctx, op),
+        Some(kind)
+            if crate::tir::op_kinds_generated::copy_kind_is_explicit_no_heap_move_table(kind) =>
+        {
+            emit_lir_identity_copy(ctx, op)
+        }
+        Some(kind) if let Some(runtime) = preserved_copy_runtime_call(kind) => {
+            emit_lir_boxed_operands_runtime_call(ctx, op, runtime.call, runtime.operand_count)
+        }
+        Some(_) => emit_lir_unsupported_marker(ctx, op),
+        None => emit_lir_identity_copy(ctx, op),
+    }
+}
+
+fn original_kind(op: &LirOp) -> Option<&str> {
+    match op.tir_op.attrs.get("_original_kind") {
+        Some(AttrValue::Str(kind)) => Some(kind.as_str()),
+        _ => None,
     }
 }
