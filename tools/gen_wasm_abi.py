@@ -74,7 +74,6 @@ CONST_POLICY_RAW_INT_EFFECTS = {
 }
 CONST_POLICY_LIR_FAST = {
     "lower",
-    "placeholder_zero",
     "bail_generic",
 }
 CALL_INDIRECT_IMPORT_PREFIX = "molt_call_indirect"
@@ -817,7 +816,6 @@ def _render_rs_const_policy(data: dict) -> str:
             "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
             "pub(crate) enum WasmConstLirFastPolicy {\n",
             "    Lower,\n",
-            "    PlaceholderZero,\n",
             "    BailGeneric,\n",
             "}\n\n",
             "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",

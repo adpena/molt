@@ -75,13 +75,6 @@ fn assert_const_lir_fast_policy(opcode: OpCode, expected: WasmConstLirFastPolicy
     );
 }
 
-fn emit_placeholder_zero_const(ctx: &mut LirLowerCtx, op: &LirOp) {
-    if let Some(result) = op.result_values.first() {
-        ctx.instructions.push(Instruction::I64Const(0));
-        ctx.emit_set(result.id);
-    }
-}
-
 fn emit_const_bail_to_generic(ctx: &mut LirLowerCtx, op: &LirOp) {
     for &operand in &op.tir_op.operands {
         ctx.emit_get(operand);
@@ -147,7 +140,6 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
             }
         }
         OpCode::ConstStr | OpCode::ConstBytes => match const_lir_fast_policy(tir_op.opcode) {
-            WasmConstLirFastPolicy::PlaceholderZero => emit_placeholder_zero_const(ctx, op),
             WasmConstLirFastPolicy::BailGeneric => emit_const_bail_to_generic(ctx, op),
             WasmConstLirFastPolicy::Lower => {
                 panic!(
@@ -158,7 +150,6 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
         },
         OpCode::ConstBigInt => match const_lir_fast_policy(tir_op.opcode) {
             WasmConstLirFastPolicy::BailGeneric => emit_const_bail_to_generic(ctx, op),
-            WasmConstLirFastPolicy::PlaceholderZero => emit_placeholder_zero_const(ctx, op),
             WasmConstLirFastPolicy::Lower => {
                 panic!(
                     "generated WASM const policy requires direct LIR lowering for {:?}",

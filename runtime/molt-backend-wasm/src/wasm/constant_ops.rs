@@ -528,7 +528,7 @@ mod tests {
                 WasmConstLiteralPayload::String,
                 "string_from_bytes",
                 true,
-                WasmConstLirFastPolicy::PlaceholderZero,
+                WasmConstLirFastPolicy::BailGeneric,
             ),
             (
                 "const_bigint",
@@ -542,7 +542,7 @@ mod tests {
                 WasmConstLiteralPayload::Bytes,
                 "bytes_from_bytes",
                 true,
-                WasmConstLirFastPolicy::PlaceholderZero,
+                WasmConstLirFastPolicy::BailGeneric,
             ),
         ] {
             let policy = WasmConstOpPolicy::for_kind(kind).expect("literal const policy");
