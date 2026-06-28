@@ -48,6 +48,7 @@ mod wasm_data;
 mod wasm_import_tracking;
 #[cfg(feature = "wasm-backend")]
 mod wasm_imports;
+#[cfg(feature = "wasm-backend")]
 mod wasm_options;
 #[cfg(feature = "wasm-backend")]
 mod wasm_plan;

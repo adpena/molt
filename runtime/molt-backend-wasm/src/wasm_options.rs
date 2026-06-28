@@ -1,4 +1,4 @@
-use crate::wasm_abi::RELOC_TABLE_BASE_DEFAULT;
+pub(crate) const RELOC_TABLE_BASE_DEFAULT: u32 = 4096;
 
 /// WASM profile for import planning.
 /// `Full` registers the whole generated host-import registry for process-host

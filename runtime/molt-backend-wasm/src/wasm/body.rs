@@ -1,3 +1,7 @@
+use super::WasmBackend;
+use super::const_materialization::WasmConstMaterialization;
+use crate::wasm_binary::emit_call;
+use crate::wasm_data::DataSegmentRef;
 use wasm_encoder::{Function, Instruction, ValType};
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -9,7 +13,6 @@ pub enum WasmLirFallbackReason {
     BoxedBitwiseOrShift,
     BoxedTruthiness,
     BoxedControlCondition,
-    RuntimeConstMaterialization,
     UnsupportedOperation,
 }
 
@@ -23,7 +26,6 @@ impl WasmLirFallbackReason {
             Self::BoxedBitwiseOrShift => "boxed-bitwise-or-shift",
             Self::BoxedTruthiness => "boxed-truthiness",
             Self::BoxedControlCondition => "boxed-control-condition",
-            Self::RuntimeConstMaterialization => "runtime-const-materialization",
             Self::UnsupportedOperation => "unsupported-operation",
         }
     }
@@ -39,6 +41,7 @@ pub(crate) enum WasmCallTarget {
 pub(crate) enum WasmBodyOp {
     Instruction(Instruction<'static>),
     Call(WasmCallTarget),
+    ConstMaterialization(WasmConstMaterialization),
 }
 
 #[derive(Debug, Clone, Default)]
@@ -61,6 +64,11 @@ impl WasmBodyOps {
             .push(WasmBodyOp::Call(WasmCallTarget::BailToGenericPath(reason)));
     }
 
+    pub(crate) fn push_const_materialization(&mut self, materialization: WasmConstMaterialization) {
+        self.ops
+            .push(WasmBodyOp::ConstMaterialization(materialization));
+    }
+
     pub(crate) fn into_vec(self) -> Vec<WasmBodyOp> {
         self.ops
     }
@@ -81,7 +89,7 @@ impl WasmBodyOps {
             .into_iter()
             .map(|op| match op {
                 WasmBodyOp::Instruction(instruction) => instruction,
-                WasmBodyOp::Call(_) => {
+                WasmBodyOp::Call(_) | WasmBodyOp::ConstMaterialization(_) => {
                     panic!("peephole instruction test unexpectedly produced a typed call")
                 }
             })
@@ -101,13 +109,18 @@ impl WasmBody {
     pub(crate) fn bail_to_generic_reason(&self) -> Option<WasmLirFallbackReason> {
         self.ops.iter().find_map(|op| match op {
             WasmBodyOp::Call(WasmCallTarget::BailToGenericPath(reason)) => Some(*reason),
-            WasmBodyOp::Instruction(_) | WasmBodyOp::Call(WasmCallTarget::RuntimeImport(_)) => None,
+            WasmBodyOp::Instruction(_)
+            | WasmBodyOp::Call(WasmCallTarget::RuntimeImport(_))
+            | WasmBodyOp::ConstMaterialization(_) => None,
         })
     }
 
     pub(crate) fn runtime_imports(&self) -> impl Iterator<Item = &'static str> + '_ {
         self.ops.iter().filter_map(|op| match op {
             WasmBodyOp::Call(WasmCallTarget::RuntimeImport(name)) => Some(*name),
+            WasmBodyOp::ConstMaterialization(materialization) => {
+                Some(materialization.runtime_import())
+            }
             WasmBodyOp::Instruction(_) | WasmBodyOp::Call(WasmCallTarget::BailToGenericPath(_)) => {
                 None
             }
@@ -117,6 +130,10 @@ impl WasmBody {
     pub(crate) fn emit_into(
         &self,
         func_name: &str,
+        backend: &mut WasmBackend,
+        func_index: u32,
+        reloc_enabled: bool,
+        const_str_scratch_segment: DataSegmentRef,
         mut import_index_for: impl FnMut(&str) -> u32,
         func: &mut Function,
     ) {
@@ -131,7 +148,24 @@ impl WasmBody {
                         import_index != u32::MAX,
                         "LIR fast body for '{func_name}' calls runtime import '{name}' which was skipped/pruned from the import set"
                     );
-                    func.instruction(&Instruction::Call(import_index));
+                    emit_call(func, reloc_enabled, import_index);
+                }
+                WasmBodyOp::ConstMaterialization(materialization) => {
+                    let import_name = materialization.runtime_import();
+                    let import_index = import_index_for(import_name);
+                    assert!(
+                        import_index != u32::MAX,
+                        "LIR fast body for '{func_name}' materializes const through runtime import '{}' which was skipped/pruned from the import set",
+                        import_name
+                    );
+                    materialization.emit(
+                        backend,
+                        func,
+                        func_index,
+                        reloc_enabled,
+                        import_index,
+                        const_str_scratch_segment,
+                    );
                 }
                 WasmBodyOp::Call(WasmCallTarget::BailToGenericPath(reason)) => {
                     panic!(
@@ -154,7 +188,7 @@ impl WasmBody {
                 .iter()
                 .filter_map(|op| match op {
                     WasmBodyOp::Instruction(instruction) => Some(instruction.clone()),
-                    WasmBodyOp::Call(_) => None,
+                    WasmBodyOp::Call(_) | WasmBodyOp::ConstMaterialization(_) => None,
                 })
                 .collect(),
             runtime_calls: self.runtime_imports().collect(),

@@ -158,6 +158,93 @@ fn lir_const_bool_mismatched_payload_fails_closed() {
 }
 
 #[test]
+fn lir_literal_consts_materialize_without_generic_bail() {
+    let cases = [
+        {
+            let mut attrs = AttrDict::new();
+            attrs.insert("s_value".into(), AttrValue::Str("hello".into()));
+            (
+                "const_str_literal",
+                OpCode::ConstStr,
+                TirType::Str,
+                attrs,
+                "string_from_bytes",
+            )
+        },
+        {
+            let mut attrs = AttrDict::new();
+            attrs.insert(
+                "s_value".into(),
+                AttrValue::Str("9223372036854775808".into()),
+            );
+            (
+                "const_bigint_literal",
+                OpCode::ConstBigInt,
+                TirType::DynBox,
+                attrs,
+                "bigint_from_str",
+            )
+        },
+        {
+            let mut attrs = AttrDict::new();
+            attrs.insert("bytes".into(), AttrValue::Bytes(vec![0, 1, 2, 255]));
+            (
+                "const_bytes_literal",
+                OpCode::ConstBytes,
+                TirType::Bytes,
+                attrs,
+                "bytes_from_bytes",
+            )
+        },
+    ];
+
+    for (name, opcode, return_type, attrs, import_name) in cases {
+        let output = lower_tir_to_wasm(&make_scalar_const_return_func(
+            name,
+            opcode,
+            return_type,
+            attrs,
+        ))
+        .test_view();
+
+        assert!(
+            !output.bails_to_generic_path,
+            "{name} must materialize in the LIR fast body instead of bailing"
+        );
+        assert_eq!(output.bail_to_generic_reason, None);
+        assert!(
+            output.runtime_calls.contains(&import_name),
+            "{name} must call {import_name}; got {:?}",
+            output.runtime_calls
+        );
+        assert!(
+            output.locals.len() >= 3,
+            "{name} must declare result plus ptr/len scratch locals for materialization"
+        );
+    }
+}
+
+#[test]
+#[should_panic(expected = "generated WASM const policy requires a result for ConstStr")]
+fn lir_literal_const_without_result_fails_closed() {
+    let mut func = TirFunction::new("bad_const_str".into(), vec![], TirType::None);
+    let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+    let mut attrs = AttrDict::new();
+    attrs.insert("s_value".into(), AttrValue::Str("orphan".into()));
+    entry.ops.push(TirOp {
+        dialect: Dialect::Molt,
+        opcode: OpCode::ConstStr,
+        operands: vec![],
+        results: vec![],
+        attrs,
+        source_span: None,
+    });
+    entry.terminator = Terminator::Return { values: vec![] };
+
+    let _ = lower_tir_to_wasm(&func);
+}
+
+#[test]
 fn lir_fast_lane_dec_ref_emits_named_runtime_call() {
     let mut func = TirFunction::new("drop_ref".into(), vec![], TirType::None);
     let owned = func.fresh_value();

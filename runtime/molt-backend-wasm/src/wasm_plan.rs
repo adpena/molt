@@ -451,6 +451,29 @@ mod wasm_lir_fast_plan_tests {
         func
     }
 
+    fn literal_const_return_func(
+        name: &str,
+        opcode: OpCode,
+        return_type: TirType,
+        attrs: AttrDict,
+    ) -> TirFunction {
+        let mut func = TirFunction::new(name.into(), vec![], return_type);
+        let result = func.fresh_value();
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode,
+            operands: vec![],
+            results: vec![result],
+            attrs,
+            source_span: None,
+        });
+        entry.terminator = Terminator::Return {
+            values: vec![result],
+        };
+        func
+    }
+
     fn add_two_i64_params_func() -> TirFunction {
         let mut func = TirFunction::new(
             "add_two_i64_params".into(),
@@ -515,6 +538,106 @@ mod wasm_lir_fast_plan_tests {
 
         assert_eq!(plan.generic_reason(), None);
         assert_eq!(body.bail_to_generic_reason(), None);
+    }
+
+    #[test]
+    fn wasm_lir_fast_plan_accepts_materialized_literal_consts() {
+        let cases = [
+            {
+                let mut attrs = AttrDict::new();
+                attrs.insert("s_value".into(), AttrValue::Str("hello".into()));
+                (
+                    "const_str_literal",
+                    OpCode::ConstStr,
+                    TirType::Str,
+                    attrs,
+                    "string_from_bytes",
+                )
+            },
+            {
+                let mut attrs = AttrDict::new();
+                attrs.insert(
+                    "s_value".into(),
+                    AttrValue::Str("9223372036854775808".into()),
+                );
+                (
+                    "const_bigint_literal",
+                    OpCode::ConstBigInt,
+                    TirType::DynBox,
+                    attrs,
+                    "bigint_from_str",
+                )
+            },
+            {
+                let mut attrs = AttrDict::new();
+                attrs.insert("bytes".into(), AttrValue::Bytes(vec![0, 1, 2, 255]));
+                (
+                    "const_bytes_literal",
+                    OpCode::ConstBytes,
+                    TirType::Bytes,
+                    attrs,
+                    "bytes_from_bytes",
+                )
+            },
+        ];
+
+        for (name, opcode, return_type, attrs, import_name) in cases {
+            let plan = prepare_lir_wasm_fast_plan(&literal_const_return_func(
+                name,
+                opcode,
+                return_type,
+                attrs,
+            ));
+            let body = plan
+                .lir_fast_body()
+                .unwrap_or_else(|| panic!("{name} must stay on the LIR fast plan"));
+            let view = body.test_view();
+
+            assert_eq!(plan.generic_reason(), None);
+            assert_eq!(body.bail_to_generic_reason(), None);
+            assert!(
+                view.runtime_calls.contains(&import_name),
+                "{name} must materialize through {import_name}; got {:?}",
+                view.runtime_calls
+            );
+        }
+    }
+
+    #[test]
+    fn wasm_lir_fast_plan_accepts_boxed_single_return_carriers() {
+        let cases = [
+            {
+                let mut attrs = AttrDict::new();
+                attrs.insert("value".into(), AttrValue::Bool(true));
+                ("const_bool_return", OpCode::ConstBool, TirType::Bool, attrs)
+            },
+            {
+                let mut attrs = AttrDict::new();
+                attrs.insert("f_value".into(), AttrValue::Float(1.25));
+                (
+                    "const_float_return",
+                    OpCode::ConstFloat,
+                    TirType::F64,
+                    attrs,
+                )
+            },
+        ];
+
+        for (name, opcode, return_type, attrs) in cases {
+            let plan = prepare_lir_wasm_fast_plan(&literal_const_return_func(
+                name,
+                opcode,
+                return_type,
+                attrs,
+            ));
+            let body = plan
+                .lir_fast_body()
+                .unwrap_or_else(|| panic!("{name} must stay on the boxed-i64 fast plan"));
+
+            assert_eq!(plan.generic_reason(), None);
+            assert_eq!(body.result_types, vec![wasm_encoder::ValType::I64]);
+            assert_eq!(body.bail_to_generic_reason(), None);
+        }
     }
 
     #[test]

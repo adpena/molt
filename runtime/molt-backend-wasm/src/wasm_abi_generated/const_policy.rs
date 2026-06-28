@@ -4,7 +4,8 @@
 // DO NOT EDIT BY HAND.
 
 use molt_codegen_abi::{box_bool_bits, box_float_bits, box_int_bits, box_none_bits};
-use molt_tir::tir::ops::{AttrValue, TirOp};
+use molt_tir::tir::op_kinds_generated::opcode_canonical_kind_table;
+use molt_tir::tir::ops::{AttrValue, OpCode, TirOp};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum WasmConstInlineSeed {
@@ -48,7 +49,7 @@ pub(crate) enum WasmConstRawIntEffect {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum WasmConstLirFastPolicy {
     Lower,
-    BailGeneric,
+    Materialize,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -118,7 +119,7 @@ pub(crate) const WASM_CONST_OP_POLICIES: &[WasmConstOpPolicySpec] = &[
         dispatch_runtime_seed: true,
         parse_scalar_literal: false,
         raw_int_effect: WasmConstRawIntEffect::Clear,
-        lir_fast: WasmConstLirFastPolicy::BailGeneric,
+        lir_fast: WasmConstLirFastPolicy::Materialize,
     },
     WasmConstOpPolicySpec {
         kind: "const_ellipsis",
@@ -129,7 +130,7 @@ pub(crate) const WASM_CONST_OP_POLICIES: &[WasmConstOpPolicySpec] = &[
         dispatch_runtime_seed: true,
         parse_scalar_literal: false,
         raw_int_effect: WasmConstRawIntEffect::Clear,
-        lir_fast: WasmConstLirFastPolicy::BailGeneric,
+        lir_fast: WasmConstLirFastPolicy::Materialize,
     },
     WasmConstOpPolicySpec {
         kind: "const_str",
@@ -140,7 +141,7 @@ pub(crate) const WASM_CONST_OP_POLICIES: &[WasmConstOpPolicySpec] = &[
         dispatch_runtime_seed: true,
         parse_scalar_literal: true,
         raw_int_effect: WasmConstRawIntEffect::Clear,
-        lir_fast: WasmConstLirFastPolicy::BailGeneric,
+        lir_fast: WasmConstLirFastPolicy::Materialize,
     },
     WasmConstOpPolicySpec {
         kind: "const_bigint",
@@ -151,7 +152,7 @@ pub(crate) const WASM_CONST_OP_POLICIES: &[WasmConstOpPolicySpec] = &[
         dispatch_runtime_seed: true,
         parse_scalar_literal: false,
         raw_int_effect: WasmConstRawIntEffect::Clear,
-        lir_fast: WasmConstLirFastPolicy::BailGeneric,
+        lir_fast: WasmConstLirFastPolicy::Materialize,
     },
     WasmConstOpPolicySpec {
         kind: "const_bytes",
@@ -162,7 +163,7 @@ pub(crate) const WASM_CONST_OP_POLICIES: &[WasmConstOpPolicySpec] = &[
         dispatch_runtime_seed: true,
         parse_scalar_literal: true,
         raw_int_effect: WasmConstRawIntEffect::Clear,
-        lir_fast: WasmConstLirFastPolicy::BailGeneric,
+        lir_fast: WasmConstLirFastPolicy::Materialize,
     },
 ];
 
@@ -171,6 +172,13 @@ pub(crate) fn wasm_const_op_policy(kind: &str) -> Option<&'static WasmConstOpPol
     WASM_CONST_OP_POLICIES
         .iter()
         .find(|policy| policy.kind == kind)
+}
+
+#[inline]
+pub(crate) fn wasm_const_op_policy_for_opcode(
+    opcode: OpCode,
+) -> Option<&'static WasmConstOpPolicySpec> {
+    wasm_const_op_policy(opcode_canonical_kind_table(opcode))
 }
 
 impl WasmConstOpPolicySpec {

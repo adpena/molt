@@ -1,0 +1,8 @@
+{
+  "command": "uv run --project . --python 3.12 python -m pytest tests/test_wasm_browser_embed.py::test_browser_embed_pact_ndimage_primitives_match_scipy_oracle -q",
+  "cwd": "C:\\Users\\adpen\\OneDrive\\Documents\\molt",
+  "status": "started",
+  "timestamp": "2026-06-28T09:59:12-05:00",
+  "evidence_path": "logs/agents/codex_stall/pact_ndimage_browser_parity_pytest_20260628T095912-0500.json",
+  "retry_reason": "previous run reached WASM backend build and exposed missing generated const-policy re-export"
+}

@@ -132,7 +132,7 @@ binary artifact, or ownership boundary made the weird behavior possible.
   tree-shaking boundary caused a codec path to require regex, and whether that
   edge is semantically necessary.
 - Prefer structural deforestation over profile inflation. Remove avoidable
-  intermediate objects, import edges, generated duplicates, facade fallbacks,
+  intermediate objects, import edges, generated duplicates, wrapper fallbacks,
   and heavyweight runtime features from hot or minimal paths when semantics do
   not require them.
 - Use subagents for crux-finding on independent axes: one can map import/feature
@@ -174,6 +174,12 @@ binary artifact, or ownership boundary made the weird behavior possible.
   is needed by CLI setup, diagnostics, validation, binary closure, and docs,
   route them all through the same implementation and generated facts so future
   dependency churn cannot split authority again.
+- Wrapper-name trap, hard stop: do not present a wrapper, shim, or adapter as
+  architecture. A wrapper is acceptable only when it is the thinnest ABI
+  entrypoint, import route, or diagnostic boundary over a real authority.
+  If the work creates a named wrapper layer without deleting duplicate
+  authority or moving execution into compiler/runtime primitives, stop and move
+  the invariant instead.
 
 ## Ecosystem Compatibility Doctrine: Primitives, Wiring, Integration
 
@@ -181,9 +187,18 @@ This is a turn blocker for NumPy, SciPy, pandas, tinygrad, and every other
 third-party package lane.
 
 - Do not reinvent upstream packages inside `src/molt/stdlib` as the primary
-  compatibility strategy. Python facades are acceptable only as thin import/API
-  routing over real shared primitives, or as explicit fail-closed diagnostics
-  while the primitive is missing.
+  compatibility strategy. For NumPy, SciPy, pandas, tinygrad, and similar
+  ecosystem packages, do not add Molt-owned Python stub, shim, or package
+  surfaces. Import routing may only point at upstream source admitted through
+  package custody or fail closed with a precise diagnostic.
+- Python-source trap, hard stop: Python is allowed as user source input, thin
+  import/API routing, diagnostics, generators, and test fixtures. It is not an
+  implementation substrate for NumPy/SciPy/pandas/tinygrad semantics, ndarray
+  kernels, C-extension behavior, or performance-critical numeric operations. If
+  an agent starts adding Python code to implement upstream package behavior or a
+  hot numeric library primitive, stop immediately and route the work through
+  source-recompiled extensions, Molt ABI/C-API symbols, typed storage,
+  compiler IR, SIMD, native codegen, or GPU/WebGPU kernels.
 - The first-class path is source-recompiled package compatibility against
   Molt's ABI and verified subset contract: compile upstream C/C++/Cython/Rust
   extension sources against `include/` and `libmolt`, link against Molt runtime
@@ -381,7 +396,7 @@ Read these first instead of rediscovering project structure:
     `runtime/molt-backend-native/src/llvm_backend/`,
     `runtime/molt-backend-wasm/src/`, `runtime/molt-backend-luau/src/`, and
     `runtime/molt-backend-rust/src/` for backend-specific lowering.
-    `molt-backend` reexports backend leaf facades behind feature flags; do not
+    `molt-backend` reexports backend leaf APIs behind feature flags; do not
     add new backend encoder, source-emission, or ABI authority under
     `runtime/molt-backend/src/`.
   - `runtime/molt-runtime/src/intrinsics/manifest.pyi`,

@@ -15,6 +15,7 @@ pub(crate) use call_indirect::{CALL_INDIRECT_IMPORTS, CALL_INDIRECT_MAX_ARITY};
 pub(crate) use const_policy::{
     WasmConstInlineSeed, WasmConstLirFastPolicy, WasmConstLiteralPayload, WasmConstOpPolicySpec,
     WasmConstRawIntEffect, WasmConstScalarValue, wasm_const_op_policy,
+    wasm_const_op_policy_for_opcode,
 };
 pub(crate) use imports::{IMPORT_REGISTRY, OP_IMPORT_DEPS};
 pub(crate) use pure_profile::pure_profile_skips_import;

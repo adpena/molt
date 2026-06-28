@@ -16,7 +16,7 @@ pub(crate) fn push_f64_to_i64_canonical(
     scratch_local: u32,
 ) {
     push(Instruction::I64ReinterpretF64);
-    push(Instruction::LocalTee(scratch_local));
+    push(Instruction::LocalSet(scratch_local));
     push(Instruction::LocalGet(scratch_local));
     push(Instruction::I64Const(F64_EXPONENT_MASK));
     push(Instruction::I64And);
@@ -72,6 +72,14 @@ mod tests {
                 |instruction| matches!(instruction, Instruction::I64Const(bits) if *bits == CANONICAL_NAN_BITS as i64)
             ),
             "float canonicalizer must emit the shared canonical NaN bits"
+        );
+        assert!(
+            matches!(instructions.get(1), Some(Instruction::LocalSet(7))),
+            "float canonicalizer must consume the raw bits when storing them; local.tee would leave an extra stack value inside if-result blocks"
+        );
+        assert!(
+            matches!(instructions.get(2), Some(Instruction::LocalGet(7))),
+            "float canonicalizer should reload exactly one scratch value for the exponent test"
         );
     }
 }
