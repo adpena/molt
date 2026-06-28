@@ -1,7 +1,6 @@
 pub use crate::wasm_options::{WasmCompileOptions, WasmProfile};
 mod backend;
 pub(crate) mod body;
-mod call_site_abi;
 mod class_def_layout;
 mod compile_pipeline;
 mod const_materialization;
