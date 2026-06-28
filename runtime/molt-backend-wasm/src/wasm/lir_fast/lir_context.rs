@@ -108,6 +108,13 @@ impl<'a> LirLowerCtx<'a> {
             .push(Instruction::LocalSet(self.get_local(vid)));
     }
 
+    pub(super) fn alloc_scratch_local(&mut self, val_type: ValType) -> u32 {
+        let idx = self.next_local;
+        self.next_local += 1;
+        self.local_types.insert(idx, val_type);
+        idx
+    }
+
     pub(super) fn repr_of(&self, vid: ValueId) -> LirRepr {
         self.value_reprs
             .get(&vid)

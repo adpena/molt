@@ -234,13 +234,18 @@ def test_wasm_abi_manifest_owns_const_op_policy() -> None:
         "kind": "const",
         "inline_seed": "int",
         "literal_payload": "none",
+        "scalar_payload": "int",
         "raw_int_effect": "set_int",
         "lir_fast": "lower",
         "parse_scalar_literal": False,
         "dispatch_runtime_seed": False,
     }
+    assert policies["const_bool"]["scalar_payload"] == "bool"
+    assert policies["const_float"]["scalar_payload"] == "float"
+    assert policies["const_none"]["scalar_payload"] == "none"
     assert policies["const_str"]["materializer_import"] == "string_from_bytes"
     assert policies["const_str"]["literal_payload"] == "string"
+    assert policies["const_str"]["scalar_payload"] == "none"
     assert policies["const_str"]["parse_scalar_literal"] is True
     assert policies["const_str"]["lir_fast"] == "bail_generic"
     assert policies["const_bytes"]["materializer_import"] == "bytes_from_bytes"
@@ -259,6 +264,8 @@ def test_wasm_abi_manifest_owns_const_op_policy() -> None:
     rendered_rs = _rendered_rs(gen, data)
     rendered_py = gen.render_py(data)
     assert "WASM_CONST_OP_POLICIES" in rendered_rs
+    assert "WasmConstScalarPayload::Int" in rendered_rs
+    assert "required_tir_scalar_value" in rendered_rs
     assert "WasmConstLiteralPayload::BigintDecimal" in rendered_rs
     assert "wasm_const_op_policy" in rendered_rs
     assert "PlaceholderZero" not in rendered_rs

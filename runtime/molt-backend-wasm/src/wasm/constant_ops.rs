@@ -59,13 +59,8 @@ impl WasmConstOpPolicy {
     }
 
     pub(super) fn inline_seed_bits(self, op: &OpIR) -> Option<i64> {
-        match self.inline_seed() {
-            WasmConstInlineSeed::Int => op.value.map(box_int),
-            WasmConstInlineSeed::Bool => op.value.map(box_bool),
-            WasmConstInlineSeed::Float => op.f_value.map(box_float),
-            WasmConstInlineSeed::NoneValue => Some(box_none()),
-            WasmConstInlineSeed::None => None,
-        }
+        (!matches!(self.inline_seed(), WasmConstInlineSeed::None))
+            .then(|| self.0.required_simple_ir_inline_seed_bits(op))
     }
 
     pub(super) fn needs_dispatch_runtime_seed(self) -> bool {
@@ -87,23 +82,17 @@ impl WasmConstOpPolicy {
         let Some(out) = op.out.as_ref() else {
             return false;
         };
+        if matches!(self.inline_seed(), WasmConstInlineSeed::None) {
+            return false;
+        }
         match self.inline_seed() {
-            WasmConstInlineSeed::Int => {
-                let val = op.value.unwrap();
-                func.instruction(&Instruction::I64Const(box_int(val)));
+            WasmConstInlineSeed::NoneValue => const_cache.emit_none(func),
+            WasmConstInlineSeed::Int | WasmConstInlineSeed::Bool | WasmConstInlineSeed::Float => {
+                func.instruction(&Instruction::I64Const(
+                    self.0.required_simple_ir_inline_seed_bits(op),
+                ));
             }
-            WasmConstInlineSeed::Bool => {
-                let val = op.value.unwrap();
-                func.instruction(&Instruction::I64Const(box_bool(val)));
-            }
-            WasmConstInlineSeed::Float => {
-                let val = op.f_value.expect("Float value not found");
-                func.instruction(&Instruction::I64Const(box_float(val)));
-            }
-            WasmConstInlineSeed::NoneValue => {
-                const_cache.emit_none(func);
-            }
-            WasmConstInlineSeed::None => return false,
+            WasmConstInlineSeed::None => unreachable!("inline seed checked above"),
         }
         let local_idx = locals[out];
         func.instruction(&Instruction::LocalSet(local_idx));
@@ -579,5 +568,14 @@ mod tests {
     fn const_policy_rejects_non_const_ops() {
         assert_eq!(WasmConstOpPolicy::for_kind("add"), None);
         assert_eq!(WasmConstOpPolicy::for_kind("parse_int"), None);
+    }
+
+    #[test]
+    #[should_panic(expected = "WASM const policy const requires int scalar payload")]
+    fn const_policy_fails_closed_on_missing_scalar_payload() {
+        let const_op = op("const");
+        let policy = WasmConstOpPolicy::for_op(&const_op).expect("const policy");
+
+        let _ = policy.inline_seed_bits(&const_op);
     }
 }

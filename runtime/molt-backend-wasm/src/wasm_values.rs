@@ -8,7 +8,7 @@ pub(crate) use constant_cache::ConstantCache;
 pub(crate) use fast_lane::{
     IntFastLane, emit_trusted_int_fast_path_guard_close, emit_trusted_int_fast_path_guard_open,
 };
-pub(crate) use float::emit_f64_to_i64_canonical;
+pub(crate) use float::{emit_f64_to_i64_canonical, push_f64_to_i64_canonical};
 pub(crate) use int_box::{
     emit_box_bool_from_i32, emit_box_int_from_local_opt, emit_inline_int_range_check,
     emit_unbox_int_local_trusted_opt, emit_unbox_int_local_trusted_tee_opt,
