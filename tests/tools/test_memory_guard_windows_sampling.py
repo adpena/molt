@@ -532,7 +532,9 @@ def test_terminate_watched_processes_windows_kills_owned_descendants(
         sent.append((pid, sig))
 
     monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
-    monkeypatch.setattr(module, "_current_protected_process_group_ids", lambda _s: set())
+    monkeypatch.setattr(
+        module, "_current_protected_process_group_ids", lambda _s, **_kw: set()
+    )
     monkeypatch.setattr(module.os, "getpid", lambda: 99999)
     monkeypatch.setattr(module.os, "kill", fake_kill)
 
@@ -709,7 +711,9 @@ def test_pid_signal_windows_refuses_external_codex_lineage_without_group_net(
     sent: list[tuple[int, int]] = []
 
     monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
-    monkeypatch.setattr(module, "_current_protected_process_group_ids", lambda _s: set())
+    monkeypatch.setattr(
+        module, "_current_protected_process_group_ids", lambda _s, **_kw: set()
+    )
     monkeypatch.setattr(module.os, "getpid", lambda: 99999)
     monkeypatch.setattr(module.os, "kill", lambda pid, sig: sent.append((pid, sig)))
 
@@ -754,7 +758,9 @@ def test_terminate_single_pid_windows_refuses_external_codex_lineage(
 
     monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
     monkeypatch.setattr(module, "sample_processes", lambda: samples)
-    monkeypatch.setattr(module, "_current_protected_process_group_ids", lambda _s: set())
+    monkeypatch.setattr(
+        module, "_current_protected_process_group_ids", lambda _s, **_kw: set()
+    )
     monkeypatch.setattr(module.os, "getpid", lambda: 99999)
     monkeypatch.setattr(module.os, "kill", lambda pid, sig: sent.append((pid, sig)))
 
@@ -802,7 +808,9 @@ def test_terminate_single_pid_windows_rechecks_identity_before_signal(
 
     monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
     monkeypatch.setattr(module, "sample_processes", sample_processes)
-    monkeypatch.setattr(module, "_current_protected_process_group_ids", lambda _s: set())
+    monkeypatch.setattr(
+        module, "_current_protected_process_group_ids", lambda _s, **_kw: set()
+    )
     monkeypatch.setattr(module.os, "getpid", lambda: 99999)
     monkeypatch.setattr(module.os, "kill", lambda pid, sig: sent.append((pid, sig)))
 
@@ -850,7 +858,9 @@ def test_pid_signal_windows_keeps_current_guard_child_killable(
     sent: list[tuple[int, int]] = []
 
     monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
-    monkeypatch.setattr(module, "_current_protected_process_group_ids", lambda _s: set())
+    monkeypatch.setattr(
+        module, "_current_protected_process_group_ids", lambda _s, **_kw: set()
+    )
     monkeypatch.setattr(module.os, "getpid", lambda: 999)
     monkeypatch.setattr(module.os, "kill", lambda pid, sig: sent.append((pid, sig)))
 
@@ -901,7 +911,9 @@ def test_pid_signal_windows_refuses_current_guard_shell_child(
     sent: list[tuple[int, int]] = []
 
     monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
-    monkeypatch.setattr(module, "_current_protected_process_group_ids", lambda _s: set())
+    monkeypatch.setattr(
+        module, "_current_protected_process_group_ids", lambda _s, **_kw: set()
+    )
     monkeypatch.setattr(module.os, "getpid", lambda: 999)
     monkeypatch.setattr(module.os, "kill", lambda pid, sig: sent.append((pid, sig)))
 
@@ -1075,7 +1087,9 @@ def test_cleanup_tracked_orphans_windows_passes_live_descendants_to_terminator(
             actions=(),
         )
 
-    monkeypatch.setattr(module, "_current_protected_process_group_ids", lambda _s: set())
+    monkeypatch.setattr(
+        module, "_current_protected_process_group_ids", lambda _s, **_kw: set()
+    )
     monkeypatch.setattr(module, "terminate_watched_processes", fake_terminate)
 
     orphans = module.cleanup_tracked_orphans(

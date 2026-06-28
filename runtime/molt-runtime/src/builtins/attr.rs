@@ -1270,30 +1270,20 @@ pub(crate) unsafe fn class_own_slot_field_offset(
     }
 }
 
-/// Design A (#86 — single field-ownership authority): release every inline typed
-/// attribute field of a heap `TYPE_ID_OBJECT` instance when it is freed.
+/// Walk the pointer-valued inline attribute fields of a heap `TYPE_ID_OBJECT`
+/// instance. This is the single runtime field-edge authority shared by dealloc and
+/// cyclic GC traversal: both must see exactly the same offsets or slot cycles either
+/// leak (missed traverse edge) or double-release (clear/dealloc drift).
 ///
-/// An object's inline field slots are the SOLE owner of their pointer references:
-/// `object_field_set_ptr_raw` / `object_field_init_ptr_raw` `inc_ref` the value on
-/// store (and `dec_ref` the displaced old value). The runtime free path is the one
-/// authority that releases them. Folded objects that release their fields via the
-/// compiler drop pass are stack-promoted / immortal and NEVER reach the runtime
-/// free path, so there is no double-free with this release.
-///
-/// Safety facts that make a blind per-slot `dec_ref` correct:
-/// - inline fields are NaN-boxed (`object_field_set_ptr_raw` stores `val_bits`), so
-///   a primitive field (`int`/`float`/`bool`/`None`) `dec_ref`s to a no-op;
-/// - the payload is zero-initialised at alloc, so an unset field reads `0` (no-op);
-/// - only POINTER slots (`as_ptr().is_some()`) are released, and each released slot
-///   is cleared to `0` first so a resurrecting `__del__` re-entry cannot double-dec.
-///
-/// Offsets are deduplicated across the MRO so a field shared by base+subclass
-/// layout is released exactly once. The caller gates on `HEADER_FLAG_HAS_PTRS`, so
-/// primitive-only objects skip this walk entirely (zero hot-path cost).
-pub(crate) unsafe fn dec_ref_object_inline_fields(
+/// The offset dictionary is the same `(field_name, byte_offset)` interleaved table
+/// consumed by class layout and lazy `__dict__` materialization. Offsets are
+/// deduplicated across the MRO so a field shared by base+subclass layout is visited
+/// exactly once.
+pub(crate) unsafe fn for_each_object_inline_field_ptr(
     _py: &PyToken<'_>,
     obj_ptr: *mut u8,
     class_ptr: *mut u8,
+    visit: &mut dyn FnMut(*mut u64, u64),
 ) {
     unsafe {
         let fields_bits = intern_static_name(
@@ -1331,12 +1321,13 @@ pub(crate) unsafe fn dec_ref_object_inline_fields(
             if object_type_id(offsets_ptr) != TYPE_ID_DICT {
                 continue;
             }
-            // Snapshot the offset-dict keys before the per-key lookups so we do not
-            // alias the dict's `order` Vec across `dict_get_in_place`.
-            let keys: Vec<u64> = crate::builtins::containers::dict_order(offsets_ptr).clone();
-            for key in keys {
-                let Some(offset) = dict_get_in_place(_py, offsets_ptr, key)
-                    .and_then(|b| obj_from_bits(b).as_int())
+            let entries = crate::builtins::containers::dict_order(offsets_ptr).clone();
+            for pair in entries.chunks(2) {
+                if pair.len() != 2 {
+                    continue;
+                }
+                let Some(offset) = obj_from_bits(pair[1])
+                    .as_int()
                     .and_then(|v| if v >= 0 { Some(v as usize) } else { None })
                 else {
                     continue;
@@ -1354,11 +1345,43 @@ pub(crate) unsafe fn dec_ref_object_inline_fields(
                 let slot = obj_ptr.add(offset) as *mut u64;
                 let val = *slot;
                 if val != 0 && obj_from_bits(val).as_ptr().is_some() {
-                    *slot = 0;
-                    dec_ref_bits(_py, val);
+                    visit(slot, val);
                 }
             }
         }
+    }
+}
+
+/// Design A (#86 — single field-ownership authority): release every inline typed
+/// attribute field of a heap `TYPE_ID_OBJECT` instance when it is freed.
+///
+/// An object's inline field slots are the SOLE owner of their pointer references:
+/// `object_field_set_ptr_raw` / `object_field_init_ptr_raw` `inc_ref` the value on
+/// store (and `dec_ref` the displaced old value). The runtime free path is the one
+/// authority that releases them. Folded objects that release their fields via the
+/// compiler drop pass are stack-promoted / immortal and NEVER reach the runtime
+/// free path, so there is no double-free with this release.
+///
+/// Safety facts that make a blind per-slot `dec_ref` correct:
+/// - inline fields are NaN-boxed (`object_field_set_ptr_raw` stores `val_bits`), so
+///   a primitive field (`int`/`float`/`bool`/`None`) `dec_ref`s to a no-op;
+/// - the payload is zero-initialised at alloc, so an unset field reads `0` (no-op);
+/// - only POINTER slots (`as_ptr().is_some()`) are released, and each released slot
+///   is cleared to `0` first so a resurrecting `__del__` re-entry cannot double-dec.
+///
+/// Primitive-only objects still pay only the offset-table walk and skip every slot
+/// after the actual pointer-bit check; `HEADER_FLAG_HAS_PTRS` is a hint, not the
+/// ownership authority.
+pub(crate) unsafe fn dec_ref_object_inline_fields(
+    _py: &PyToken<'_>,
+    obj_ptr: *mut u8,
+    class_ptr: *mut u8,
+) {
+    unsafe {
+        for_each_object_inline_field_ptr(_py, obj_ptr, class_ptr, &mut |slot, val| {
+            *slot = 0;
+            dec_ref_bits(_py, val);
+        });
     }
 }
 

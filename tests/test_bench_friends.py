@@ -1737,7 +1737,7 @@ def test_friend_manifest_registers_numpy_off_the_shelf_suite() -> None:
     assert suite.source == "git"
     assert suite.repo_url == "https://github.com/numpy/numpy.git"
     assert suite.repo_ref == "c81c49f77451340651a751e76bca607d85e4fd55"
-    assert suite.semantic_mode == "runs_unmodified"
+    assert suite.semantic_mode == "c_api_probe"
     assert {"ecosystem", "numpy", "c-api", "scientific-python", "compile-time"} <= set(
         suite.tags
     )
@@ -1789,6 +1789,16 @@ def test_friend_manifest_registers_numpy_off_the_shelf_suite() -> None:
         "{suite_root}",
         "--source",
         "{suite_root}/numpy",
+        "--exclude-dir",
+        "tests",
+        "--exclude-dir",
+        "testing",
+        "--exclude-dir",
+        "examples",
+        "--exclude-dir",
+        "_examples",
+        "--exclude-dir",
+        "benchmarks",
         "--fail-on-missing",
         "--json",
     ]
@@ -1803,6 +1813,52 @@ def test_friend_manifest_registers_numpy_off_the_shelf_suite() -> None:
         "--source-tree-audit",
         "--workload",
         "none",
+        "--json",
+    ]
+
+
+def test_friend_manifest_registers_scipy_off_the_shelf_suite() -> None:
+    module = _load_tool_module()
+    _meta, suites = module._load_manifest(REPO_ROOT / "bench/friends/manifest.toml")
+    suite = next(s for s in suites if s.id == "scipy_off_the_shelf")
+
+    assert suite.enabled is True
+    assert suite.friend == "scipy"
+    assert suite.source == "git"
+    assert suite.repo_url == "https://github.com/scipy/scipy.git"
+    assert suite.repo_ref == "54ef5423f2e4376230ec3bfda6912a07a50958e3"
+    assert suite.semantic_mode == "c_api_probe"
+    assert {"ecosystem", "scipy", "c-api", "scientific-python", "compile-time"} <= set(
+        suite.tags
+    )
+
+    c_api_scan = suite.runners["c_api_scan"]
+    assert c_api_scan.skip_reason is None
+    assert c_api_scan.role == "c_api_scan"
+    assert c_api_scan.json_stdout is True
+    assert c_api_scan.run_cmd == [
+        "{project_python}",
+        "-m",
+        "molt.cli",
+        "extension",
+        "scan",
+        "--project",
+        "{suite_root}",
+        "--source",
+        "{suite_root}/scipy",
+        "--exclude-dir",
+        "tests",
+        "--exclude-dir",
+        "benchmarks",
+        "--exclude-dir",
+        "doc",
+        "--exclude-dir",
+        "docs",
+        "--exclude-dir",
+        "build",
+        "--exclude-dir",
+        "_build",
+        "--fail-on-missing",
         "--json",
     ]
 

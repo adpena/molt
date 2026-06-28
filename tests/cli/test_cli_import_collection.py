@@ -43,9 +43,6 @@ from molt.cli import module_resolution as cli_module_resolution
 from molt.cli import module_source as cli_module_source
 from molt.cli import module_stdlib_policy as cli_module_stdlib_policy
 from molt.cli import typecheck as cli_typecheck
-
-cli_deps = importlib.import_module("molt.cli.deps")
-cli_frontend_worker = importlib.import_module("molt.cli.frontend_worker")
 from molt.frontend import MoltValue, SimpleTIRGenerator
 from molt.type_facts import Fact, FunctionFacts, ModuleFacts, TypeFacts
 from tests.cli.process_guard import (
@@ -53,6 +50,9 @@ from tests.cli.process_guard import (
     close_cli_test_process_group,
     run_cli_test_process,
 )
+
+cli_deps = importlib.import_module("molt.cli.deps")
+cli_frontend_worker = importlib.import_module("molt.cli.frontend_worker")
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -690,11 +690,11 @@ def test_materialize_import_plan_retains_external_native_artifact_plan(
     assert import_plan.native_artifact_plan.artifacts[0].module == "nativepkg._native"
 
 
-def test_core_closure_preserves_stdlib_nested_scan_exceptions(
+def test_entry_collections_closure_preserves_static_helper_import_edges(
     tmp_path: Path,
 ) -> None:
     entry_path = tmp_path / "demo.py"
-    entry_path.write_text("value = 1\n")
+    entry_path.write_text("import collections\n")
     entry_tree = ast.parse(entry_path.read_text(), filename=str(entry_path))
     module_reasons: dict[str, set[str]] = {}
 
@@ -715,14 +715,16 @@ def test_core_closure_preserves_stdlib_nested_scan_exceptions(
     assert prepared is not None
     assert "collections" in prepared.module_graph
     assert "copy" in prepared.module_graph
-    assert "core_closure" in module_reasons["copy"]
+    assert "warnings" not in prepared.module_graph
+    assert "re" not in prepared.module_graph
+    assert "entry_closure" in module_reasons["copy"]
 
 
-def test_core_closure_copy_reaches_backend_stdlib_symbol_contract(
+def test_collections_static_helper_copy_reaches_backend_symbol_contract(
     tmp_path: Path,
 ) -> None:
     entry_path = tmp_path / "demo.py"
-    entry_path.write_text("value = 1\n")
+    entry_path.write_text("import collections\n")
     entry_tree = ast.parse(entry_path.read_text(), filename=str(entry_path))
     module_reasons: dict[str, set[str]] = {}
 
@@ -1804,7 +1806,7 @@ def _discover_with_core_modules(entry: Path) -> dict[str, Path]:
             stdlib_allowlist,
             skip_modules=cli.STUB_MODULES,
             stub_parents=cli.STUB_PARENT_MODULES,
-            nested_stdlib_scan_modules=set(),
+            stdlib_static_import_helper_modules=set(),
         )
         for name, path in core_graph.items():
             module_graph.setdefault(name, path)
@@ -3447,6 +3449,38 @@ def test_linux_release_link_omits_safe_icf_without_capable_linker(
     assert "-Wl,--icf=safe" not in link_cmd
 
 
+def test_linux_link_exports_molt_runtime_symbols_for_source_extensions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    output_obj = tmp_path / "output.o"
+    stub_path = tmp_path / "main_stub.c"
+    runtime_lib = tmp_path / "libmolt_runtime.a"
+    output_binary = tmp_path / "app"
+    output_obj.write_bytes(b"\x7fELFobject")
+    stub_path.write_text("int main(void) { return 0; }\n")
+    runtime_lib.write_bytes(b"archive")
+
+    monkeypatch.setattr(NATIVE_LINK_COMMAND.sys, "platform", "linux")
+    monkeypatch.setenv("CC", "clang")
+    monkeypatch.setattr(NATIVE_LINK_COMMAND.shutil, "which", lambda _name: None)
+
+    link_cmd, _linker_hint, _normalized_target = cli._build_native_link_command(
+        output_obj=output_obj,
+        stub_path=stub_path,
+        runtime_lib=runtime_lib,
+        output_binary=output_binary,
+        target_triple=None,
+        sysroot_path=None,
+        profile="release",
+        stdlib_obj_path=None,
+        export_molt_runtime_symbols=True,
+    )
+
+    assert "-Wl,--export-dynamic" in link_cmd
+    version_script = tmp_path / ".molt_version.ver"
+    assert "molt_*" in version_script.read_text(encoding="utf-8")
+
+
 def test_linux_release_link_selects_lld_without_icf_for_fn_identity(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -3515,6 +3549,45 @@ def test_windows_link_omits_icf_for_fn_identity(
     assert "-lntdll" in link_cmd
     assert "-luserenv" in link_cmd
     assert "-ladvapi32" in link_cmd
+
+
+def test_windows_link_exports_molt_runtime_symbols_for_source_extensions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    output_obj = tmp_path / "output.obj"
+    stub_path = tmp_path / "main_stub.c"
+    runtime_lib = tmp_path / "molt_runtime.lib"
+    output_binary = tmp_path / "app.exe"
+    output_obj.write_bytes(b"COFFobject")
+    stub_path.write_text("int main(void) { return 0; }\n")
+    runtime_lib.write_bytes(b"archive")
+
+    monkeypatch.setattr(NATIVE_LINK_COMMAND.sys, "platform", "win32")
+    monkeypatch.setenv("CC", "clang")
+    monkeypatch.setattr(NATIVE_LINK_COMMAND.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(
+        NATIVE_LINK_COMMAND,
+        "_molt_c_api_export_names",
+        lambda: ("molt_c_api_version", "molt_module_create"),
+    )
+
+    link_cmd, _linker_hint, _normalized_target = cli._build_native_link_command(
+        output_obj=output_obj,
+        stub_path=stub_path,
+        runtime_lib=runtime_lib,
+        output_binary=output_binary,
+        target_triple=None,
+        sysroot_path=None,
+        profile="release",
+        stdlib_obj_path=None,
+        export_molt_runtime_symbols=True,
+    )
+
+    def_path = tmp_path / ".molt_exports.def"
+    assert f"-Wl,/DEF:{def_path}" in link_cmd
+    assert def_path.read_text(encoding="utf-8") == (
+        "EXPORTS\nmolt_c_api_version\nmolt_module_create\n"
+    )
 
 
 def test_windows_gnu_link_uses_gnu_system_lib_flags(
@@ -3996,8 +4069,8 @@ def test_shared_module_resolution_cache_reuses_import_scans(
             path=module_path,
             module_name=module_name,
             entry_paths=frozenset({cache.resolved_path(entry)}),
-            nested_scan_modules=(
-                cli_module_import_scanner.STDLIB_NESTED_IMPORT_SCAN_MODULES
+            static_import_helper_modules=(
+                cli_module_import_scanner.STDLIB_STATIC_IMPORT_HELPER_MODULES
             ),
             resolution_cache=cache,
         )
@@ -4220,7 +4293,7 @@ def test_persisted_module_graph_cache_tracks_tooling_fingerprint(
         stdlib_root=stdlib_root,
         skip_modules=set(),
         stub_parents=set(),
-        nested_stdlib_scan_modules=set(),
+        stdlib_static_import_helper_modules=set(),
         stdlib_allowlist=set(),
         graph={"__main__": entry_path, "pkg.mod": module_path},
         explicit_imports={"pkg.mod"},
@@ -4234,7 +4307,7 @@ def test_persisted_module_graph_cache_tracks_tooling_fingerprint(
             stdlib_root=stdlib_root,
             skip_modules=set(),
             stub_parents=set(),
-            nested_stdlib_scan_modules=set(),
+            stdlib_static_import_helper_modules=set(),
             stdlib_allowlist=set(),
         )
         is not None
@@ -4252,7 +4325,7 @@ def test_persisted_module_graph_cache_tracks_tooling_fingerprint(
             stdlib_root=stdlib_root,
             skip_modules=set(),
             stub_parents=set(),
-            nested_stdlib_scan_modules=set(),
+            stdlib_static_import_helper_modules=set(),
             stdlib_allowlist=set(),
         )
         is None
@@ -4280,7 +4353,7 @@ def test_persisted_module_graph_cache_tracks_source_content(
         stdlib_root=stdlib_root,
         skip_modules=set(),
         stub_parents=set(),
-        nested_stdlib_scan_modules=set(),
+        stdlib_static_import_helper_modules=set(),
         stdlib_allowlist=set(),
         graph={"__main__": entry_path},
         explicit_imports={"json"},
@@ -4296,7 +4369,7 @@ def test_persisted_module_graph_cache_tracks_source_content(
         stdlib_root=stdlib_root,
         skip_modules=set(),
         stub_parents=set(),
-        nested_stdlib_scan_modules=set(),
+        stdlib_static_import_helper_modules=set(),
         stdlib_allowlist=set(),
     )
     assert cached is not None
@@ -5203,7 +5276,7 @@ def test_module_graph_cache_path_uses_cached_graph_key(
         stdlib_root_str: str,
         skip_modules: tuple[str, ...],
         stub_parents: tuple[str, ...],
-        nested_stdlib_scan_modules: tuple[str, ...],
+        stdlib_static_import_helper_modules: tuple[str, ...],
         stdlib_allowlist_digest: str,
         compiler_fingerprint: str,
         target_python_tag: str = cli_module_graph_cache._DEFAULT_TARGET_PYTHON_VERSION.tag,
@@ -5218,7 +5291,7 @@ def test_module_graph_cache_path_uses_cached_graph_key(
             stdlib_root_str,
             skip_modules,
             stub_parents,
-            nested_stdlib_scan_modules,
+            stdlib_static_import_helper_modules,
             stdlib_allowlist_digest,
             compiler_fingerprint,
             target_python_tag,
@@ -5237,7 +5310,7 @@ def test_module_graph_cache_path_uses_cached_graph_key(
         stdlib_root=stdlib_root,
         skip_modules={"warnings"},
         stub_parents={"asyncio"},
-        nested_stdlib_scan_modules={"tkinter"},
+        stdlib_static_import_helper_modules={"tkinter"},
         stdlib_allowlist={"json"},
     )
     second = cli_module_graph_cache._module_graph_cache_path(
@@ -5248,7 +5321,7 @@ def test_module_graph_cache_path_uses_cached_graph_key(
         stdlib_root=stdlib_root,
         skip_modules={"warnings"},
         stub_parents={"asyncio"},
-        nested_stdlib_scan_modules={"tkinter"},
+        stdlib_static_import_helper_modules={"tkinter"},
         stdlib_allowlist={"json"},
     )
 
@@ -8991,6 +9064,61 @@ def test_typing_static_graph_keeps_collections_abc_without_lazy_deprecated(
     assert "re" not in graph
 
 
+def test_collections_static_helper_scan_includes_userdict_copy_only() -> None:
+    tree = ast.parse(
+        (ROOT / "src/molt/stdlib/collections/__init__.py").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    module_init = set(
+        cli_module_import_scanner._collect_imports(
+            tree,
+            module_name="collections",
+            is_package=True,
+            import_scan_mode="module_init",
+        )
+    )
+    helper_scan = set(
+        cli_module_import_scanner._collect_imports(
+            tree,
+            module_name="collections",
+            is_package=True,
+            import_scan_mode="module_init_static_helpers",
+        )
+    )
+
+    assert "copy" not in module_init
+    assert "copy" in helper_scan
+    assert "warnings" not in helper_scan
+    assert "re" not in helper_scan
+
+
+def test_email_message_static_helper_scan_includes_policy_default_only() -> None:
+    tree = ast.parse(
+        (ROOT / "src/molt/stdlib/email/message.py").read_text(encoding="utf-8")
+    )
+
+    module_init = set(
+        cli_module_import_scanner._collect_imports(
+            tree,
+            module_name="email.message",
+            import_scan_mode="module_init",
+        )
+    )
+    helper_scan = set(
+        cli_module_import_scanner._collect_imports(
+            tree,
+            module_name="email.message",
+            import_scan_mode="module_init_static_helpers",
+        )
+    )
+
+    assert "email.policy" not in module_init
+    assert "email.policy" in helper_scan
+    assert "email.generator" not in helper_scan
+
+
 def test_stdlib_module_init_scan_excludes_lazy_regex_and_struct_edges() -> None:
     cases = {
         "glob": {"re"},
@@ -9000,6 +9128,8 @@ def test_stdlib_module_init_scan_excludes_lazy_regex_and_struct_edges() -> None:
         "typing_extensions": {"re"},
         "unittest": {"re"},
         "warnings": {"re"},
+        # gettext still imports re at module scope for plural-expression tokenizing;
+        # only binary .mo parsing needs struct, and that path is lazy.
         "gettext": {"struct"},
     }
     stdlib_root = ROOT / "src" / "molt" / "stdlib"
@@ -9103,7 +9233,7 @@ def test_spawn_entry_override_not_required_for_plain_script(tmp_path: Path) -> N
             stdlib_allowlist,
             skip_modules=cli.STUB_MODULES,
             stub_parents=cli.STUB_PARENT_MODULES,
-            nested_stdlib_scan_modules=set(),
+            stdlib_static_import_helper_modules=set(),
         )
         for name, path in core_graph.items():
             module_graph.setdefault(name, path)

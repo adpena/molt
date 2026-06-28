@@ -35,7 +35,7 @@ FallbackPolicy = Literal["error", "bridge"]
 BuildProfile = Literal["dev", "release"]
 EmitMode = Literal["bin", "obj", "wasm"]
 Target = str
-ImportScanMode = Literal["full", "module_init"]
+ImportScanMode = Literal["full", "module_init", "module_init_static_helpers"]
 BinaryImageKind = Literal[
     "entry_script",
     "entry_module",
@@ -494,6 +494,7 @@ class _RuntimeArtifactState:
     runtime_lib: Path | None = None
     runtime_wasm: Path | None = None
     runtime_reloc_wasm: Path | None = None
+    extra_runtime_features: tuple[str, ...] = ()
     runtime_wasm_ready: bool = False
     runtime_reloc_wasm_ready: bool = False
     runtime_lib_ready_future: Future[bool] | None = None

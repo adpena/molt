@@ -458,6 +458,11 @@ def filterwarnings(
     msg_pat = None
     mod_pat = None
     if message or module:
+        # Lazy import: `re` is only needed to pre-compile filter patterns, which
+        # most callers never supply. Importing it here (instead of at module
+        # scope) keeps `re`'s intrinsics out of the static reach of every
+        # program that imports `warnings` — `warnings` is pulled transitively by
+        # vast amounts of code that never installs a pattern filter.
         import re as _re
 
         msg_flags = getattr(_re, "IGNORECASE", getattr(_re, "I", 0))

@@ -15,7 +15,7 @@ libc = "0.2"
 molt-ir = { path = "../molt-ir" }
 rayon = "1.12"
 serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
+serde_json = { workspace = true }
 rmp-serde = "1"
 sha2 = "0.11"
 

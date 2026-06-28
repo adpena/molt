@@ -519,6 +519,52 @@ def has_external_host_control_plane_lineage(
     return is_host_control_plane_process(sample)
 
 
+_ORPHAN_ROOT_PPIDS = frozenset({0, 1})
+
+
+def ancestry_resolves_to_confirmed_orphan(
+    samples: Mapping[int, ProcessSample],
+    pid: int,
+    *,
+    host_control_plane_pids: set[int] | None = None,
+) -> bool:
+    """Return true only when ancestry is fully observed to a non-host orphan root.
+
+    Heuristic repo-scope process matching is intentionally weaker than explicit
+    guard custody. If a real parent PID is absent from the snapshot, especially
+    on Windows, that missing link could hide a Codex or Claude ancestor. Treat
+    that uncertainty as protected unless a caller supplies explicit ownership.
+    """
+
+    if pid <= 0:
+        return False
+    if host_control_plane_pids is None:
+        host_control_plane_pids = {
+            sample.pid
+            for sample in samples.values()
+            if is_host_control_plane_process(sample)
+        }
+    seen: set[int] = set()
+    current = pid
+    while True:
+        if current in host_control_plane_pids:
+            return False
+        if current in seen:
+            return True
+        seen.add(current)
+        sample = samples.get(current)
+        if sample is None:
+            return False
+        ppid = sample.ppid
+        if ppid in _ORPHAN_ROOT_PPIDS or ppid == current:
+            return True
+        if ppid <= 0:
+            return True
+        if ppid not in samples:
+            return False
+        current = ppid
+
+
 def ancestor_pids(
     samples: Mapping[int, ProcessSample],
     pid: int | None,
@@ -555,12 +601,14 @@ def protected_process_group_ids(
     *,
     self_pid: int | None = None,
     self_pgid: int | None = None,
+    owned_pids: Collection[int] = (),
 ) -> set[int]:
     protected: set[int] = set()
     if self_pgid is not None and self_pgid > 0:
         protected.add(self_pgid)
     ancestor_ids = ancestor_pids(samples, self_pid)
     self_descendant_ids = descendant_pids(samples, self_pid) if self_pid else set()
+    explicitly_owned = set(owned_pids) | self_descendant_ids
     host_control_plane_pids = {
         sample.pid
         for sample in samples.values()
@@ -574,6 +622,16 @@ def protected_process_group_ids(
         if (
             host_control_plane_pids.intersection(sample_ancestors)
             and sample.pid not in self_descendant_ids
+        ):
+            protected.add(sample_pgid_or_pid(sample))
+            continue
+        if (
+            sample.pid not in explicitly_owned
+            and not ancestry_resolves_to_confirmed_orphan(
+                samples,
+                sample.pid,
+                host_control_plane_pids=host_control_plane_pids,
+            )
         ):
             protected.add(sample_pgid_or_pid(sample))
     return protected

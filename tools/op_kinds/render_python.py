@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from .validate import _frontend_effect_class_map
+from .validate import (
+    _frontend_effect_class_map,
+    _frontend_raising_nothrow_on_primitives,
+)
 
 def _canonical_kinds_for_opcodes(data: dict, opcodes: set[str]) -> list[str]:
     out: set[str] = set()
@@ -109,16 +112,10 @@ def _render_py_frontend_effect_sets(data: dict) -> str:
     out.append(
         "# Frontend pre-serialization optimizer effect classes. Mapper opcode\n"
     )
-    out.append(
-        "# spellings derive from [[kind]] + [[opcode]], may-raise frontend spellings\n"
-    )
-    out.append(
-        "# derive from [[frontend_raising_kind]], CFG/state facts derive from\n"
-    )
-    out.append(
-        "# [[simpleir_control_kind]], and frontend-only overrides come from\n"
-    )
-    out.append("# [[frontend_effect_kind]].\n")
+    out.append("# spellings derive from [[kind]] + [[opcode]], CFG/state facts\n")
+    out.append("# derive from [[simpleir_control_kind]], and frontend-only\n")
+    out.append("# overrides come from [[frontend_effect_kind]]. May-raise facts\n")
+    out.append("# are rendered separately from [[frontend_raising_kind]].\n")
     out.append("FRONTEND_EFFECT_CLASS: dict[str, str] = {\n")
     for kind in sorted(effects):
         out.append(f'    "{kind}": "{effects[kind]}",\n')
@@ -212,6 +209,20 @@ def render_py(data: dict) -> str:
     out.append("    {\n")
     for row in raising:
         out.append(f'        "{row["kind"]}",\n')
+    out.append("    }\n")
+    out.append(")\n\n")
+
+    nothrow_on_primitives = _frontend_raising_nothrow_on_primitives(data)
+    out.append(
+        "# Raising kinds whose raise is disproved when all value operands are\n"
+    )
+    out.append("# primitive int/float/bool constants.\n")
+    out.append(
+        "FRONTEND_RAISING_NOTHROW_ON_PRIMITIVES_KINDS: frozenset[str] = frozenset(\n"
+    )
+    out.append("    {\n")
+    for kind in sorted(nothrow_on_primitives):
+        out.append(f'        "{kind}",\n')
     out.append("    }\n")
     out.append(")\n\n")
 

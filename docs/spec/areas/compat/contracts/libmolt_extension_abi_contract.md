@@ -14,6 +14,12 @@ for C/C++ extensions recompiled against Molt.
 - Compatibility overlays may grow to unblock real extension builds without
   implying CPython ABI compatibility.
 - Private/generated upstream headers are never part of the `libmolt` contract.
+- Ecosystem compatibility is about primitives, wiring, and integration. The
+  extension ABI exists so upstream package extension sources can be recompiled
+  against Molt, linked to Molt runtime symbols, staged through Molt package
+  custody, and tree-shaken to the reachable user-program closure. It is not a
+  mandate to recreate NumPy, SciPy, pandas, or other package APIs in Molt
+  Python.
 
 ---
 
@@ -86,6 +92,15 @@ for C/C++ extensions recompiled against Molt.
   of contract headers rather than an unbounded recursive header crawl.
 - Public overlay growth must stay compile-validated with representative source
   probes; adding a header to the contract does not imply runtime/ABI parity.
+- C-API scan green is only the first gate. A package support claim must also
+  prove source compilation, object link, package-native artifact staging,
+  import execution, module-state lifecycle, deterministic runtime behavior, and
+  binary closure for the claimed reachable path.
+- Build/link tooling must model object closure explicitly: compile and link only
+  extension objects, symbols, data tables, generated C/Cython outputs, and
+  runtime features proven reachable from the user's entry program and admitted
+  package imports. Whole-package linking is not an acceptable substitute for
+  missing reachability facts.
 - Tooling must report the distinction between:
   - stable ABI headers
   - source-compat headers
@@ -99,6 +114,8 @@ for C/C++ extensions recompiled against Molt.
   - compile extensions that can be recompiled against `libmolt`
   - preserve a narrow stable ABI core
   - add bounded source-compat overlays for high-value ecosystems
+  - make high-value ecosystems green by improving shared ABI/import/storage
+    primitives, not by cloning their Python APIs locally
   - reject private/generated upstream build dependencies unless Molt chooses to
     ship an explicit compatibility overlay for them
 

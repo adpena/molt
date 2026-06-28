@@ -14,15 +14,21 @@ from molt.cli.target_python import (
 from molt.compiler_analysis.static_truth import static_if_live_branch
 
 
-# Modules whose function-body imports are part of the required static module
-# graph. The default set is limited to stdlib modules with proven module-init
-# semantics; third-party lazy backend families stay runtime import obligations
-# unless they are entry modules or explicitly admitted here.
-STDLIB_NESTED_IMPORT_SCAN_MODULES = {
-    "collections",
-    # EmailMessage lazily imports email.policy inside __init__.
-    "email.message",
+# Runtime helper bodies whose imports are required static graph edges. This is
+# intentionally qualname-based: stdlib modules stay module-init scanned unless a
+# specific helper body is part of Molt's compiled runtime contract.
+STDLIB_STATIC_IMPORT_HELPER_QUALNAMES: Mapping[str, frozenset[str]] = {
+    "collections": frozenset({"UserDict.copy"}),
+    # EmailMessage inherits MIMEPart.__init__, which supplies email.policy.default.
+    "email.message": frozenset({"MIMEPart.__init__"}),
 }
+STDLIB_STATIC_IMPORT_HELPER_MODULES = frozenset(
+    STDLIB_STATIC_IMPORT_HELPER_QUALNAMES
+)
+
+_IMPORT_SCAN_MODES = frozenset(
+    {"full", "module_init", "module_init_static_helpers"}
+)
 
 
 IMPORTER_MODULE_NAME = "_molt_importer"
@@ -210,63 +216,108 @@ def _resolve_relative_import(
     return base_name or None
 
 
+def _validate_import_scan_mode(import_scan_mode: ImportScanMode) -> None:
+    if import_scan_mode not in _IMPORT_SCAN_MODES:
+        raise ValueError(f"unknown import scan mode: {import_scan_mode}")
+
+
+def _static_import_helper_qualnames(
+    module_name: str | None, import_scan_mode: ImportScanMode
+) -> frozenset[str]:
+    _validate_import_scan_mode(import_scan_mode)
+    if import_scan_mode != "module_init_static_helpers":
+        return frozenset()
+    if module_name is None:
+        raise ValueError("module_init_static_helpers requires module_name")
+    helper_qualnames = STDLIB_STATIC_IMPORT_HELPER_QUALNAMES.get(module_name)
+    if helper_qualnames is None:
+        raise ValueError(
+            f"module_init_static_helpers has no helper policy for {module_name}"
+        )
+    return helper_qualnames
+
+
+def _qualified_child(prefix: tuple[str, ...], name: str) -> tuple[str, ...]:
+    return (*prefix, name)
+
+
 def _static_scan_nodes(
-    tree: ast.AST, *, include_function_bodies: bool
+    tree: ast.AST,
+    *,
+    include_function_bodies: bool,
+    included_function_qualnames: Collection[str] = frozenset(),
 ) -> tuple[ast.AST, ...]:
     if not isinstance(tree, ast.Module):
         return tuple(ast.walk(tree))
     nodes: list[ast.AST] = []
+    included_qualnames = frozenset(included_function_qualnames)
 
-    def visit(node: ast.AST) -> None:
+    def visit(node: ast.AST, qualname_prefix: tuple[str, ...] = ()) -> None:
         nodes.append(node)
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            function_qualname = ".".join(_qualified_child(qualname_prefix, node.name))
             for decorator in node.decorator_list:
-                visit(decorator)
+                visit(decorator, qualname_prefix)
             for default in list(node.args.defaults) + [
                 default for default in node.args.kw_defaults if default is not None
             ]:
-                visit(default)
+                visit(default, qualname_prefix)
             for arg in (
                 list(node.args.posonlyargs)
                 + list(node.args.args)
                 + list(node.args.kwonlyargs)
             ):
                 if arg.annotation is not None:
-                    visit(arg.annotation)
+                    visit(arg.annotation, qualname_prefix)
             if node.args.vararg is not None and node.args.vararg.annotation is not None:
-                visit(node.args.vararg.annotation)
+                visit(node.args.vararg.annotation, qualname_prefix)
             if node.args.kwarg is not None and node.args.kwarg.annotation is not None:
-                visit(node.args.kwarg.annotation)
+                visit(node.args.kwarg.annotation, qualname_prefix)
             if node.returns is not None:
-                visit(node.returns)
+                visit(node.returns, qualname_prefix)
             for type_param in getattr(node, "type_params", ()):
-                visit(type_param)
-            if include_function_bodies:
+                visit(type_param, qualname_prefix)
+            if include_function_bodies or function_qualname in included_qualnames:
+                function_prefix = _qualified_child(qualname_prefix, node.name)
                 for stmt in node.body:
-                    visit(stmt)
+                    visit(stmt, function_prefix)
             return
         if isinstance(node, ast.Lambda):
             for default in list(node.args.defaults) + [
                 default for default in node.args.kw_defaults if default is not None
             ]:
-                visit(default)
+                visit(default, qualname_prefix)
             if include_function_bodies:
-                visit(node.body)
+                visit(node.body, qualname_prefix)
+            return
+        if isinstance(node, ast.ClassDef):
+            for decorator in node.decorator_list:
+                visit(decorator, qualname_prefix)
+            for base in node.bases:
+                visit(base, qualname_prefix)
+            for keyword in node.keywords:
+                if keyword.value is not None:
+                    visit(keyword.value, qualname_prefix)
+            for type_param in getattr(node, "type_params", ()):
+                visit(type_param, qualname_prefix)
+            class_prefix = _qualified_child(qualname_prefix, node.name)
+            for stmt in node.body:
+                visit(stmt, class_prefix)
             return
         if isinstance(node, ast.If):
-            visit(node.test)
+            visit(node.test, qualname_prefix)
             static_branch = static_if_live_branch(node)
             if static_branch is not None:
                 for stmt in static_branch:
-                    visit(stmt)
+                    visit(stmt, qualname_prefix)
             else:
                 for stmt in node.body:
-                    visit(stmt)
+                    visit(stmt, qualname_prefix)
                 for stmt in node.orelse:
-                    visit(stmt)
+                    visit(stmt, qualname_prefix)
             return
         for child in ast.iter_child_nodes(node):
-            visit(child)
+            visit(child, qualname_prefix)
 
     for stmt in tree.body:
         visit(stmt)
@@ -277,18 +328,34 @@ def _module_init_scan_nodes(tree: ast.AST) -> tuple[ast.AST, ...]:
     return _static_scan_nodes(tree, include_function_bodies=False)
 
 
+def _module_init_static_helper_scan_nodes(
+    tree: ast.AST, module_name: str | None
+) -> tuple[ast.AST, ...]:
+    return _static_scan_nodes(
+        tree,
+        include_function_bodies=False,
+        included_function_qualnames=_static_import_helper_qualnames(
+            module_name, "module_init_static_helpers"
+        ),
+    )
+
+
 def _full_static_scan_nodes(tree: ast.AST) -> tuple[ast.AST, ...]:
     return _static_scan_nodes(tree, include_function_bodies=True)
 
 
 def _scan_nodes_for_import_mode(
-    tree: ast.AST, import_scan_mode: ImportScanMode
+    tree: ast.AST,
+    import_scan_mode: ImportScanMode,
+    *,
+    module_name: str | None = None,
 ) -> tuple[ast.AST, ...]:
-    return (
-        _full_static_scan_nodes(tree)
-        if import_scan_mode == "full"
-        else _module_init_scan_nodes(tree)
-    )
+    _validate_import_scan_mode(import_scan_mode)
+    if import_scan_mode == "full":
+        return _full_static_scan_nodes(tree)
+    if import_scan_mode == "module_init_static_helpers":
+        return _module_init_static_helper_scan_nodes(tree, module_name)
+    return _module_init_scan_nodes(tree)
 
 
 def _collect_imports(
@@ -298,8 +365,10 @@ def _collect_imports(
     *,
     import_scan_mode: ImportScanMode = "full",
 ) -> list[str]:
-    if import_scan_mode not in {"full", "module_init"}:
-        raise ValueError(f"unknown import scan mode: {import_scan_mode}")
+    _validate_import_scan_mode(import_scan_mode)
+    selected_static_helper_qualnames = _static_import_helper_qualnames(
+        module_name, import_scan_mode
+    )
     imports: list[str] = []
     needs_typing = False
     needs_string_templatelib = False
@@ -786,12 +855,18 @@ def _collect_imports(
         return names
 
     def _visit_many(
-        nodes: Iterable[ast.AST], bindings: _ImportlibStaticBindings
+        nodes: Iterable[ast.AST],
+        bindings: _ImportlibStaticBindings,
+        qualname_prefix: tuple[str, ...] = (),
     ) -> None:
         for child in nodes:
-            _visit(child, bindings)
+            _visit(child, bindings, qualname_prefix)
 
-    def _visit(node: ast.AST, bindings: _ImportlibStaticBindings) -> None:
+    def _visit(
+        node: ast.AST,
+        bindings: _ImportlibStaticBindings,
+        qualname_prefix: tuple[str, ...] = (),
+    ) -> None:
         nonlocal needs_string_templatelib, needs_typing
         if isinstance(node, ast.Module):
             _visit_many(node.body, bindings)
@@ -800,65 +875,70 @@ def _collect_imports(
             _record_import_statement(node, bindings)
             return
         if isinstance(node, ast.Assign):
-            _visit(node.value, bindings)
-            _visit_many(node.targets, bindings)
+            _visit(node.value, bindings, qualname_prefix)
+            _visit_many(node.targets, bindings, qualname_prefix)
             for target in node.targets:
                 bindings.record_rebinding_target(target)
             return
         if isinstance(node, ast.AnnAssign):
-            _visit(node.annotation, bindings)
+            _visit(node.annotation, bindings, qualname_prefix)
             if node.value is not None:
-                _visit(node.value, bindings)
-            _visit(node.target, bindings)
+                _visit(node.value, bindings, qualname_prefix)
+            _visit(node.target, bindings, qualname_prefix)
             bindings.record_rebinding_target(node.target)
             return
         if isinstance(node, ast.AugAssign):
-            _visit(node.target, bindings)
-            _visit(node.value, bindings)
+            _visit(node.target, bindings, qualname_prefix)
+            _visit(node.value, bindings, qualname_prefix)
             bindings.record_rebinding_target(node.target)
             return
         if isinstance(node, ast.Delete):
-            _visit_many(node.targets, bindings)
+            _visit_many(node.targets, bindings, qualname_prefix)
             for target in node.targets:
                 bindings.record_rebinding_target(target)
             return
         if isinstance(node, ast.If):
-            _visit(node.test, bindings)
+            _visit(node.test, bindings, qualname_prefix)
             static_branch = static_if_live_branch(node)
             if static_branch is not None:
-                _visit_many(static_branch, bindings)
+                _visit_many(static_branch, bindings, qualname_prefix)
             else:
-                _visit_many(node.body, bindings)
-                _visit_many(node.orelse, bindings)
+                _visit_many(node.body, bindings, qualname_prefix)
+                _visit_many(node.orelse, bindings, qualname_prefix)
             return
         if isinstance(node, ast.NamedExpr):
-            _visit(node.value, bindings)
-            _visit(node.target, bindings)
+            _visit(node.value, bindings, qualname_prefix)
+            _visit(node.target, bindings, qualname_prefix)
             bindings.record_rebinding_target(node.target)
             return
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             if getattr(node, "type_params", None):
                 needs_typing = True
             if isinstance(node, ast.ClassDef):
-                _visit_many(node.decorator_list, bindings)
-                _visit_many(node.bases, bindings)
+                _visit_many(node.decorator_list, bindings, qualname_prefix)
+                _visit_many(node.bases, bindings, qualname_prefix)
                 _visit_many(
                     [keyword.value for keyword in node.keywords if keyword.value],
                     bindings,
+                    qualname_prefix,
                 )
-                _visit_many(getattr(node, "type_params", ()), bindings)
+                _visit_many(
+                    getattr(node, "type_params", ()), bindings, qualname_prefix
+                )
                 class_bindings = bindings.fork()
-                _visit_many(node.body, class_bindings)
+                class_prefix = _qualified_child(qualname_prefix, node.name)
+                _visit_many(node.body, class_bindings, class_prefix)
                 bindings.module_import_module_mutated |= (
                     class_bindings.module_import_module_mutated
                 )
                 bindings.module_util_mutated |= class_bindings.module_util_mutated
                 return
-            _visit_many(node.decorator_list, bindings)
-            _visit_many(list(node.args.defaults), bindings)
+            _visit_many(node.decorator_list, bindings, qualname_prefix)
+            _visit_many(list(node.args.defaults), bindings, qualname_prefix)
             _visit_many(
                 [default for default in node.args.kw_defaults if default is not None],
                 bindings,
+                qualname_prefix,
             )
             for arg in (
                 list(node.args.posonlyargs)
@@ -866,25 +946,31 @@ def _collect_imports(
                 + list(node.args.kwonlyargs)
             ):
                 if arg.annotation is not None:
-                    _visit(arg.annotation, bindings)
+                    _visit(arg.annotation, bindings, qualname_prefix)
             if node.args.vararg is not None and node.args.vararg.annotation is not None:
-                _visit(node.args.vararg.annotation, bindings)
+                _visit(node.args.vararg.annotation, bindings, qualname_prefix)
             if node.args.kwarg is not None and node.args.kwarg.annotation is not None:
-                _visit(node.args.kwarg.annotation, bindings)
+                _visit(node.args.kwarg.annotation, bindings, qualname_prefix)
             if node.returns is not None:
-                _visit(node.returns, bindings)
-            _visit_many(getattr(node, "type_params", ()), bindings)
-            if import_scan_mode == "full":
+                _visit(node.returns, bindings, qualname_prefix)
+            _visit_many(getattr(node, "type_params", ()), bindings, qualname_prefix)
+            function_qualname = ".".join(_qualified_child(qualname_prefix, node.name))
+            if (
+                import_scan_mode == "full"
+                or function_qualname in selected_static_helper_qualnames
+            ):
                 function_bindings = bindings.fork()
                 for name in _function_parameter_names(node):
                     function_bindings.invalidate_name(name)
-                _visit_many(node.body, function_bindings)
+                function_prefix = _qualified_child(qualname_prefix, node.name)
+                _visit_many(node.body, function_bindings, function_prefix)
             return
         if isinstance(node, ast.Lambda):
-            _visit_many(list(node.args.defaults), bindings)
+            _visit_many(list(node.args.defaults), bindings, qualname_prefix)
             _visit_many(
                 [default for default in node.args.kw_defaults if default is not None],
                 bindings,
+                qualname_prefix,
             )
             if import_scan_mode == "full":
                 lambda_bindings = bindings.fork()
@@ -904,7 +990,7 @@ def _collect_imports(
         if isinstance(node, ast.Call) and node.args:
             _collect_import_call(node, bindings)
         for child in ast.iter_child_nodes(node):
-            _visit(child, bindings)
+            _visit(child, bindings, qualname_prefix)
 
     _visit(tree, _ImportlibStaticBindings())
     if needs_typing:
@@ -956,7 +1042,9 @@ def _runtime_import_alias_bindings(
     import_scan_mode: ImportScanMode = "full",
 ) -> dict[str, str]:
     bindings: dict[str, str] = {}
-    scan_nodes = _scan_nodes_for_import_mode(tree, import_scan_mode)
+    scan_nodes = _scan_nodes_for_import_mode(
+        tree, import_scan_mode, module_name=module_name
+    )
 
     def _register_binding(local_name: str, qualified_name: str) -> None:
         if local_name and qualified_name:
@@ -1024,7 +1112,9 @@ def _tree_uses_runtime_import_protocol(
         is_package=is_package,
         import_scan_mode=import_scan_mode,
     )
-    scan_nodes = _scan_nodes_for_import_mode(tree, import_scan_mode)
+    scan_nodes = _scan_nodes_for_import_mode(
+        tree, import_scan_mode, module_name=module_name
+    )
     for node in scan_nodes:
         if not isinstance(node, ast.Call):
             continue
@@ -1099,8 +1189,7 @@ def _collect_import_star_modules(
     *,
     import_scan_mode: ImportScanMode = "full",
 ) -> tuple[str, ...]:
-    if import_scan_mode not in {"full", "module_init"}:
-        raise ValueError(f"unknown import scan mode: {import_scan_mode}")
+    _validate_import_scan_mode(import_scan_mode)
     (
         package_override_set,
         package_override,
@@ -1108,7 +1197,9 @@ def _collect_import_star_modules(
         spec_override,
         spec_override_is_package,
     ) = _infer_module_overrides(tree)
-    scan_nodes = _scan_nodes_for_import_mode(tree, import_scan_mode)
+    scan_nodes = _scan_nodes_for_import_mode(
+        tree, import_scan_mode, module_name=module_name
+    )
     out: list[str] = []
     seen: set[str] = set()
     for node in scan_nodes:
@@ -1255,7 +1346,9 @@ def _module_uses_runtime_import_protocol(
             )
         except SyntaxError:
             return True
-    scan_nodes = _scan_nodes_for_import_mode(tree, import_scan_mode)
+    scan_nodes = _scan_nodes_for_import_mode(
+        tree, import_scan_mode, module_name=module_name
+    )
     for node in scan_nodes:
         if isinstance(node, ast.Import):
             if any(alias.name != "_intrinsics" for alias in node.names):
@@ -1307,6 +1400,8 @@ def _module_graph_needs_runtime_import_support(
         import_scan_mode: ImportScanMode = (
             "full"
             if module_name == entry_module and module_path == entry_path
+            else "module_init_static_helpers"
+            if module_name in STDLIB_STATIC_IMPORT_HELPER_MODULES
             else "module_init"
         )
         if _module_uses_runtime_import_protocol(

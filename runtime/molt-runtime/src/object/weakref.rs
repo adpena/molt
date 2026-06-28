@@ -105,6 +105,65 @@ pub(crate) fn weakref_clear_for_ptr(_py: &PyToken<'_>, target_ptr: *mut u8) {
     }
 }
 
+/// CPython `handle_weakrefs` for cyclic collection: clear every weakref into the
+/// unreachable set before running any surviving callback.
+pub(crate) fn weakref_handle_cycle_unreachable(
+    _py: &PyToken<'_>,
+    unreachable: &[*mut u8],
+    is_collecting: impl Fn(*mut u8) -> bool,
+) {
+    let mut callbacks: Vec<(u64, u64)> = Vec::new();
+    let mut dropped_callbacks: Vec<u64> = Vec::new();
+    {
+        let mut registry = runtime_state(_py).weakrefs.lock().unwrap();
+        for &target_ptr in unreachable {
+            if target_ptr.is_null() {
+                continue;
+            }
+            let target_slot = PtrSlot(target_ptr);
+            let Some(list) = registry.by_target.remove(&target_slot) else {
+                continue;
+            };
+            for weak_slot in list {
+                if weak_slot.0.is_null() {
+                    continue;
+                }
+                let Some(entry) = registry.by_ref.get_mut(&weak_slot) else {
+                    continue;
+                };
+                entry.target = PtrSlot(ptr::null_mut());
+                let cb_bits = entry.callback_bits;
+                if obj_from_bits(cb_bits).is_none() {
+                    continue;
+                }
+                entry.callback_bits = MoltObject::none().bits();
+                if is_collecting(weak_slot.0) {
+                    dropped_callbacks.push(cb_bits);
+                    continue;
+                }
+                let weak_bits = MoltObject::from_ptr(weak_slot.0).bits();
+                inc_ref_bits(_py, cb_bits);
+                inc_ref_bits(_py, weak_bits);
+                callbacks.push((weak_bits, cb_bits));
+            }
+        }
+    }
+    for cb_bits in dropped_callbacks {
+        dec_ref_bits(_py, cb_bits);
+    }
+    for (weak_bits, cb_bits) in callbacks {
+        let res_bits = unsafe { call_callable1(_py, cb_bits, weak_bits) };
+        if exception_pending(_py) {
+            clear_exception(_py);
+        }
+        if !obj_from_bits(res_bits).is_none() {
+            dec_ref_bits(_py, res_bits);
+        }
+        dec_ref_bits(_py, cb_bits);
+        dec_ref_bits(_py, weak_bits);
+    }
+}
+
 pub(crate) fn weakref_collect_for_gc(_py: &PyToken<'_>) -> usize {
     let targets: Vec<*mut u8> = {
         let registry = runtime_state(_py).weakrefs.lock().unwrap();

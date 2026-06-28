@@ -10,7 +10,7 @@ molt-ir = { path = "../molt-ir" }
 molt-tir = { path = "../molt-tir" }
 
 [dev-dependencies]
-serde_json = "1.0"
+serde_json = { workspace = true }
 
 [features]
 default = []

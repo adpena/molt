@@ -30,6 +30,7 @@ pub(crate) mod accessors;
 pub(crate) mod backing;
 pub(crate) mod buffer2d;
 pub(crate) mod builders;
+pub(crate) mod gc;
 #[allow(dead_code)]
 pub mod gil;
 #[allow(dead_code)]
@@ -1215,7 +1216,9 @@ pub(crate) fn alloc_object_zeroed(_py: &PyToken<'_>, total_size: usize, type_id:
         } else {
             0
         };
-        ptr.add(std::mem::size_of::<MoltHeader>())
+        let data_ptr = ptr.add(std::mem::size_of::<MoltHeader>());
+        gc::gc_track_if_cyclic(data_ptr, type_id);
+        data_ptr
     }
 }
 
@@ -1286,7 +1289,9 @@ pub(crate) fn alloc_object(_py: &PyToken<'_>, total_size: usize, type_id: u32) -
                 extended_size: total_size,
             });
         }
-        header_ptr.add(std::mem::size_of::<MoltHeader>())
+        let data_ptr = header_ptr.add(std::mem::size_of::<MoltHeader>());
+        gc::gc_track_if_cyclic(data_ptr, type_id);
+        data_ptr
     }
 }
 
@@ -2007,6 +2012,16 @@ unsafe fn run_object_del_in_revival_window(py: &PyToken<'_>, ptr: *mut u8) {
     // the SAME post-window check (CPython's finalize+ClearWeakRefs window).
 }
 
+/// Cyclic-collector finalizer: run `__del__` once without the acyclic rc=0
+/// resurrection verdict. Cyclic resurrection is detected by the collector's
+/// second reachability partition after finalizers run.
+///
+/// # Safety
+/// `ptr` is a live unreachable object and the GIL is held.
+pub(crate) unsafe fn maybe_run_object_finalizer_for_cycle(py: &PyToken<'_>, ptr: *mut u8) {
+    unsafe { run_object_del_in_revival_window(py, ptr) };
+}
+
 unsafe fn release_dealloc_tracked_bits_vec(
     py: &PyToken<'_>,
     vec_ptr: *mut Vec<u64>,
@@ -2321,6 +2336,7 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
             profile_hit(py, &DEALLOC_COUNT);
             profile_hit_bytes(py, &DEALLOC_BYTES_TOTAL, dealloc_bytes);
             profile_dealloc_type(py, type_id);
+            gc::gc_untrack_on_free(ptr, type_id);
             match type_id {
                 // Hot path: most-frequently-freed types first
                 TYPE_ID_STRING => {
@@ -2982,15 +2998,14 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                     // with `__del__`, a @dataclass, dynamic/metaclass/decorated
                     // classes — all of which decline the constructor fold) leaks its
                     // object-valued attributes and skips their `__del__`. Gated on
-                    // `HAS_PTRS` so primitive-only objects pay nothing. Folded objects
+                    // `HEADER_FLAG_HAS_PTRS` is only a hot-path hint: the offset table
+                    // plus pointer-bit check is the ownership authority. Folded objects
                     // release their fields via the compiler drop pass and are
                     // stack-promoted/immortal (they never reach this runtime free
                     // path), so there is no double-free.
-                    if (header_flags & HEADER_FLAG_HAS_PTRS) != 0 {
-                        let class_bits = object_class_bits(ptr);
-                        if let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() {
-                            crate::builtins::attr::dec_ref_object_inline_fields(py, ptr, class_ptr);
-                        }
+                    let class_bits = object_class_bits(ptr);
+                    if let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() {
+                        crate::builtins::attr::dec_ref_object_inline_fields(py, ptr, class_ptr);
                     }
                     let dict_bits = instance_dict_bits(ptr);
                     if dict_bits != 0 && !obj_from_bits(dict_bits).is_none() {

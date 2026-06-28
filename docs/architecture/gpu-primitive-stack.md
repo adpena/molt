@@ -4,6 +4,13 @@
 
 Molt's GPU compute subsystem implements all of deep learning with 26 compute primitives, a zero-copy ShapeTracker view system, lazy evaluation DAG, kernel fusion, and multi-backend rendering. The design is tinygrad-conformant: the same 3 OpTypes and 26 ops that tinygrad uses to express all ML operations.
 
+Non-negotiable: tinygrad compatibility is a primitive and wiring contract, not
+a local fork of tinygrad semantics. `src/molt/stdlib/tinygrad/` and
+`src/tinygrad/` must expose exact upstream tinygrad API behavior over Molt's
+shared tensor/GPU/storage primitives. When upstream tinygrad needs a capability
+that Molt lacks, add the reusable primitive or fail closed with a precise
+diagnostic; do not patch around the gap with package-local behavior drift.
+
 ```
                      Python Tensor API
                      (src/molt/stdlib/tinygrad/)

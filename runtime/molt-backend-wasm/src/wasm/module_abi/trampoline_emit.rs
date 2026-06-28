@@ -1,4 +1,10 @@
-use super::*;
+use wasm_encoder::{Function, Instruction, ValType};
+
+use crate::wasm::WasmBackend;
+use crate::wasm_abi::{GEN_CONTROL_SIZE, TASK_KIND_COROUTINE, TASK_KIND_GENERATOR};
+use crate::wasm_binary::{emit_call, emit_table_index_i64};
+use crate::wasm_values::box_int;
+use crate::{TrampolineKind, TrampolineSpec};
 
 impl WasmBackend {
     pub(super) fn compile_trampoline(
@@ -311,81 +317,5 @@ impl WasmBackend {
         }
         func.instruction(&Instruction::End);
         self.codes.function(&func);
-    }
-
-    pub(super) fn compile_table_init(
-        &mut self,
-        reloc_enabled: bool,
-        table_base: u32,
-        table_indices: &[u32],
-        owned_slot_start: usize,
-        shared_abi_slot_end: usize,
-    ) -> u32 {
-        let func_index = self.func_count;
-        self.funcs.function(8);
-        self.func_count += 1;
-        let mut func = Function::new_with_locals_types(Vec::new());
-        for (slot, target_index) in table_indices.iter().enumerate() {
-            if slot < owned_slot_start && slot >= shared_abi_slot_end {
-                continue;
-            }
-            let table_index = table_base + slot as u32;
-            emit_i32_const(&mut func, reloc_enabled, table_index as i32);
-            emit_ref_func(&mut func, reloc_enabled, *target_index);
-            func.instruction(&Instruction::TableSet(0));
-        }
-        func.instruction(&Instruction::End);
-        self.codes.function(&func);
-        func_index
-    }
-
-    pub(super) fn compile_molt_main_wrapper(
-        &mut self,
-        reloc_enabled: bool,
-        main_index: u32,
-        table_init_index: u32,
-        manifest_segment: DataSegmentRef,
-        manifest_len: u32,
-    ) -> u32 {
-        let func_index = self.func_count;
-        self.funcs.function(0);
-        self.func_count += 1;
-        let mut func = Function::new_with_locals_types(Vec::new());
-        self.emit_host_init_sequence(
-            reloc_enabled,
-            func_index,
-            &mut func,
-            table_init_index,
-            manifest_segment,
-            manifest_len,
-        );
-        emit_call(&mut func, reloc_enabled, main_index);
-        func.instruction(&Instruction::End);
-        self.codes.function(&func);
-        func_index
-    }
-
-    pub(super) fn emit_host_init_sequence(
-        &mut self,
-        reloc_enabled: bool,
-        func_index: u32,
-        func: &mut Function,
-        table_init_index: u32,
-        manifest_segment: DataSegmentRef,
-        manifest_len: u32,
-    ) {
-        emit_call(func, reloc_enabled, self.import_ids["runtime_init"]);
-        func.instruction(&Instruction::Drop);
-        if manifest_len > 0 {
-            self.emit_data_ptr(reloc_enabled, func_index, func, manifest_segment);
-            func.instruction(&Instruction::I64Const(i64::from(manifest_len)));
-            emit_call(
-                func,
-                reloc_enabled,
-                self.import_ids["set_intrinsic_manifest"],
-            );
-            func.instruction(&Instruction::Drop);
-        }
-        emit_call(func, reloc_enabled, table_init_index);
     }
 }
