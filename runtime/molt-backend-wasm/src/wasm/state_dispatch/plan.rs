@@ -1,6 +1,12 @@
 use super::super::control_flow::{DispatchControlMaps, build_dispatch_control_maps};
 use super::super::function_frame::WasmFrameControlMode;
-use super::*;
+use super::block_layout::{build_dispatch_block_map, build_dispatch_blocks};
+use super::state_remap::{build_dense_state_remap_table, build_state_resume_maps};
+use crate::FunctionIR;
+use crate::wasm::WasmBackend;
+use crate::wasm_data::DataSegmentRef;
+use std::collections::BTreeMap;
+use wasm_encoder::{Function, Instruction};
 
 pub(in crate::wasm) struct NonLinearDispatchPlan {
     pub(super) block_starts: Vec<usize>,

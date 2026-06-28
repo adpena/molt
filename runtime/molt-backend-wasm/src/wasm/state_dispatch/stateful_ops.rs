@@ -1,5 +1,10 @@
 use super::common::{emit_obj_set_state_arg, emit_pending_state_value};
-use super::*;
+use super::super::op_loop::WasmFunctionEmitContext;
+use super::plan::{NonLinearDispatchLocals, NonLinearDispatchPlan};
+use crate::OpIR;
+use crate::wasm_binary::emit_call;
+use crate::wasm_values::{INT_MASK, box_pending};
+use wasm_encoder::{BlockType, Function, Instruction};
 
 pub(super) fn emit_state_transition(
     func: &mut Function,
