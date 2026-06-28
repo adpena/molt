@@ -3,7 +3,7 @@ use std::time::Instant;
 
 use wasm_encoder::{RawSection, TagKind, TagSection, TagType};
 
-use super::host_surface::WasmCallableTableElements;
+use super::callable_table::WasmCallableTableElements;
 use crate::FunctionIR;
 use crate::wasm::WasmBackend;
 use crate::wasm_abi::TAG_EXCEPTION_FUNC_TYPE;
