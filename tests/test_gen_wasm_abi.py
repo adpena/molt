@@ -247,15 +247,15 @@ def test_wasm_abi_manifest_owns_const_op_policy() -> None:
     assert policies["const_str"]["literal_payload"] == "string"
     assert policies["const_str"]["scalar_payload"] == "none"
     assert policies["const_str"]["parse_scalar_literal"] is True
-    assert policies["const_str"]["lir_fast"] == "bail_generic"
+    assert policies["const_str"]["lir_fast"] == "materialize"
     assert policies["const_bytes"]["materializer_import"] == "bytes_from_bytes"
     assert policies["const_bytes"]["literal_payload"] == "bytes"
     assert policies["const_bytes"]["parse_scalar_literal"] is True
-    assert policies["const_bytes"]["lir_fast"] == "bail_generic"
+    assert policies["const_bytes"]["lir_fast"] == "materialize"
     assert policies["const_bigint"]["materializer_import"] == "bigint_from_str"
     assert policies["const_bigint"]["literal_payload"] == "bigint_decimal"
     assert policies["const_bigint"]["parse_scalar_literal"] is False
-    assert policies["const_bigint"]["lir_fast"] == "bail_generic"
+    assert policies["const_bigint"]["lir_fast"] == "materialize"
     for kind, policy in policies.items():
         materializer = policy.get("materializer_import")
         if materializer is not None:
@@ -356,7 +356,10 @@ def test_wasm_abi_manifest_owns_split_runtime_table_prefix() -> None:
         ROOT / "runtime/molt-backend-wasm/src/wasm/module_abi/callable_table.rs"
     ).read_text(encoding="utf-8")
     assert "POLL_TABLE_FUNCS" not in callable_table
-    assert "spec.table_slot" in callable_table
+    callable_layout = (
+        ROOT / "runtime/molt-backend-wasm/src/wasm/module_abi/callable_layout.rs"
+    ).read_text(encoding="utf-8")
+    assert "spec.table_slot" in callable_layout
 
 
 def test_wasm_abi_manifest_owns_host_import_policy() -> None:
