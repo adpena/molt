@@ -66,6 +66,8 @@ from wasm_link_format import (  # noqa: E402
     _read_string as _read_string,
     _read_varuint as _read_varuint,
     _read_varsint as _read_varsint,
+    call_indirect_import_name_for_arity as call_indirect_import_name_for_arity,
+    is_call_indirect_import_name as is_call_indirect_import_name,
     _repair_out_of_bounds_func_refs as _repair_out_of_bounds_func_refs,
     _safe_repair_out_of_bounds_func_refs as _safe_repair_out_of_bounds_func_refs,
     _scan_code_ref_funcs as _scan_code_ref_funcs,
@@ -334,13 +336,17 @@ def _find_call_indirect_mangled(runtime: Path) -> dict[str, str]:
             continue
         match = CALL_INDIRECT_RE.fullmatch(name)
         if match:
-            idx = match.group(1)
-            names[f"molt_call_indirect{idx}"] = name
+            import_name = call_indirect_import_name_for_arity(match.group(1))
+            if import_name is not None:
+                names[import_name] = name
             continue
         mangled_match = CALL_INDIRECT_MANGLED_RE.search(name)
         if mangled_match:
-            idx = mangled_match.group(1)
-            names[f"molt_call_indirect{idx}"] = name
+            import_name = call_indirect_import_name_for_arity(
+                mangled_match.group(1)
+            )
+            if import_name is not None:
+                names[import_name] = name
     if not names and not wasm_tools:
         print(
             "wasm-tools not found; cannot extract call_indirect symbol name.",
@@ -355,7 +361,7 @@ def _find_output_call_indirect_symbol(output: Path) -> dict[str, tuple[int, int]
     wasm_tools = _find_tool(["wasm-tools"])
     symbols: dict[str, tuple[int, int]] = {}
     for flags, index, name, _ in _dump_symbols(output, wasm_tools):
-        if CALL_INDIRECT_RE.fullmatch(name):
+        if is_call_indirect_import_name(name):
             symbols[name] = (index, flags)
     if not symbols and not wasm_tools:
         print(

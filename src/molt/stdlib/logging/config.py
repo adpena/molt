@@ -10,8 +10,6 @@ import io
 import logging
 import os
 import queue
-import re
-import struct
 import threading
 import traceback
 import socketserver as _socketserver
@@ -30,13 +28,28 @@ _MOLT_LOGGING_CONFIG_STOP_LISTENING = _require_intrinsic(
 
 DEFAULT_LOGGING_CONFIG_PORT = 9030
 RESET_ERROR = errno.ECONNRESET
-IDENTIFIER = re.compile(r"^[a-z_][a-z0-9_]*$", re.I)
 StreamRequestHandler = getattr(
     _socketserver, "StreamRequestHandler", type("StreamRequestHandler", (), {})
 )
 ThreadingTCPServer = getattr(
     _socketserver, "ThreadingTCPServer", type("ThreadingTCPServer", (), {})
 )
+
+
+def __getattr__(name: str):
+    if name == "IDENTIFIER":
+        import re
+
+        value = re.compile(r"^[a-z_][a-z0-9_]*$", re.I)
+        globals()["IDENTIFIER"] = value
+        return value
+    if name == "re":
+        import re
+
+        globals()["re"] = re
+        return re
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 __all__ = [
     "BaseConfigurator",
@@ -62,7 +75,6 @@ __all__ = [
     "queue",
     "re",
     "stopListening",
-    "struct",
     "threading",
     "traceback",
     "valid_ident",

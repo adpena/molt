@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re as _re
 import sys
 import warnings
 
@@ -27,8 +26,8 @@ if sys.version_info >= (3, 13):
 # detection. molt's glob does NOT use them internally (magic detection is the
 # `molt_glob_has_magic` intrinsic), so they are pure API-compat surface.
 #
-# `magic_check` (str) compiles eagerly, exactly like CPython. `magic_check_bytes`
-# (a *bytes* pattern) is compiled lazily via PEP 562 `__getattr__`: molt's `re`
+# `magic_check` (str) and `magic_check_bytes` (bytes) are resolved lazily via
+# PEP 562 `__getattr__`: molt's `re`
 # engine does not yet support bytes patterns, and eagerly compiling it here
 # would crash glob at import (the str-only `re.compile` raises TypeError on a
 # bytes pattern). Deferring it keeps the whole module importable and every glob
@@ -36,13 +35,18 @@ if sys.version_info >= (3, 13):
 # Rust `molt_glob`/`molt_glob_iter` intrinsics (full bytes support), NOT through
 # this regex. Accessing `glob.magic_check_bytes` surfaces molt's real
 # re-bytes-pattern limitation at the point of use rather than masking it.
-# BATON: when `re` gains bytes-pattern support, make this eager again.
-magic_check = _re.compile(r"([*?[])")
-
-
+# Keep both lazy so importing `glob` does not make `re` part of module-init reach.
 def __getattr__(name: str):
+    if name == "magic_check":
+        import re
+
+        value = re.compile(r"([*?[])")
+        globals()["magic_check"] = value
+        return value
     if name == "magic_check_bytes":
-        value = _re.compile(rb"([*?[])")
+        import re
+
+        value = re.compile(rb"([*?[])")
         globals()["magic_check_bytes"] = value
         return value
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

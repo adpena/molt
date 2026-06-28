@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
+import _collections_abc as _collections_abc_module
 import sys as _sys
 import builtins as _builtins
 from types import ModuleType
@@ -565,9 +566,7 @@ def _load_collections_abc() -> ModuleType:
     cached = globals().get("_ABC_CACHE")
     if isinstance(cached, ModuleType):
         return cached
-    import _collections_abc as abc_mod_raw
-
-    abc_mod = _typing_cast(ModuleType, abc_mod_raw)
+    abc_mod = _typing_cast(ModuleType, _collections_abc_module)
     if getattr(abc_mod, "__name__", None) == "_abc":
         raise RuntimeError("typing requires _collections_abc, not _abc")
     required_names = (

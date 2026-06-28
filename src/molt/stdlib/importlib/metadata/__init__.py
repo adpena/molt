@@ -15,8 +15,6 @@ from ._itertools import always_iterable, unique_everseen
 from ._meta import PackageMetadata, SimplePath
 import collections
 import contextlib
-import csv
-import email
 import functools
 import importlib.abc as abc
 import inspect
@@ -25,11 +23,9 @@ import operator
 import os
 import pathlib
 import posixpath
-import re
 import sys
 import textwrap
 import warnings
-import zipfile
 
 _require_intrinsic("molt_stdlib_probe")
 _MOLT_IMPORTLIB_READ_FILE = _require_intrinsic("molt_importlib_read_file")
@@ -345,10 +341,8 @@ __all__ = [
     "cast",
     "collections",
     "contextlib",
-    "csv",
     "distribution",
     "distributions",
-    "email",
     "entry_points",
     "files",
     "functools",
@@ -363,7 +357,6 @@ __all__ = [
     "pass_none",
     "pathlib",
     "posixpath",
-    "re",
     "requires",
     "starmap",
     "suppress",
@@ -372,7 +365,6 @@ __all__ = [
     "unique_everseen",
     "version",
     "warnings",
-    "zipfile",
 ]
 
 _DIST_CACHE: dict[str, Distribution] | None = None

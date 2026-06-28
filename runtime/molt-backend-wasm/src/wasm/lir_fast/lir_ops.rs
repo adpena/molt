@@ -6,6 +6,7 @@ use super::lir_scalar::{
 use crate::wasm_abi_generated::{WasmConstLirFastPolicy, wasm_const_op_policy};
 use molt_codegen_abi::box_none_bits;
 use molt_tir::tir::lir::{LirBlock, LirOp, LirRepr};
+use molt_tir::tir::op_kinds_generated::opcode_canonical_kind_table;
 use molt_tir::tir::ops::{AttrValue, OpCode};
 use wasm_encoder::{Ieee64, Instruction};
 
@@ -46,22 +47,8 @@ pub(super) fn emit_lir_block_ops(ctx: &mut LirLowerCtx, block: &LirBlock) {
     }
 }
 
-fn const_policy_kind_for_opcode(opcode: OpCode) -> Option<&'static str> {
-    match opcode {
-        OpCode::ConstInt => Some("const"),
-        OpCode::ConstBool => Some("const_bool"),
-        OpCode::ConstFloat => Some("const_float"),
-        OpCode::ConstNone => Some("const_none"),
-        OpCode::ConstStr => Some("const_str"),
-        OpCode::ConstBytes => Some("const_bytes"),
-        OpCode::ConstBigInt => Some("const_bigint"),
-        _ => None,
-    }
-}
-
 fn const_lir_fast_policy(opcode: OpCode) -> WasmConstLirFastPolicy {
-    let kind = const_policy_kind_for_opcode(opcode)
-        .unwrap_or_else(|| panic!("opcode {opcode:?} is not a WASM const policy opcode"));
+    let kind = opcode_canonical_kind_table(opcode);
     wasm_const_op_policy(kind)
         .unwrap_or_else(|| panic!("missing generated WASM const policy for {kind}"))
         .lir_fast

@@ -8965,12 +8965,101 @@ def test_stdlib_graph_ignores_nested_imports_for_core_scan(tmp_path: Path) -> No
     assert "dataclasses" not in graph
 
 
-def test_typing_enables_nested_import_scan_for_collections_abc(tmp_path: Path) -> None:
+def test_typing_module_init_imports_collections_abc_without_warnings_regex() -> None:
+    tree = ast.parse((ROOT / "src/molt/stdlib/typing.py").read_text(encoding="utf-8"))
+
+    imports = cli_module_import_scanner._collect_imports(
+        tree,
+        module_name="typing",
+        import_scan_mode="module_init",
+    )
+
+    assert "_collections_abc" in imports
+    assert "warnings" not in imports
+    assert "re" not in imports
+
+
+def test_typing_static_graph_keeps_collections_abc_without_lazy_deprecated(
+    tmp_path: Path,
+) -> None:
     entry = tmp_path / "main.py"
     entry.write_text("import typing\n")
     graph = _discover_with_core_modules(entry)
     assert "typing" in graph
     assert "_collections_abc" in graph
+    assert "warnings" not in graph
+    assert "re" not in graph
+
+
+def test_stdlib_module_init_scan_excludes_lazy_regex_and_struct_edges() -> None:
+    cases = {
+        "glob": {"re"},
+        "importlib.metadata": {"csv", "email", "re", "zipfile"},
+        "importlib.metadata._text": {"re"},
+        "logging.config": {"re", "struct"},
+        "typing_extensions": {"re"},
+        "unittest": {"re"},
+        "warnings": {"re"},
+        "gettext": {"struct"},
+    }
+    stdlib_root = ROOT / "src" / "molt" / "stdlib"
+
+    for module_name, excluded in cases.items():
+        path = stdlib_root.joinpath(*module_name.split(".")).with_suffix(".py")
+        if not path.exists():
+            path = stdlib_root.joinpath(*module_name.split("."), "__init__.py")
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        imports = set(
+            cli_module_import_scanner._collect_imports(
+                tree,
+                module_name=module_name,
+                is_package=path.name == "__init__.py",
+                import_scan_mode="module_init",
+            )
+        )
+        assert imports.isdisjoint(excluded), (
+            f"{module_name} module-init imports leaked {sorted(imports & excluded)}"
+        )
+
+
+def test_codecs_os_type_checking_imports_are_pruned() -> None:
+    stdlib_root = cli_module_resolution._stdlib_root_path()
+    module_roots = [ROOT.resolve(), (ROOT / "src").resolve()]
+    roots = module_roots + [stdlib_root]
+    stdlib_allowlist = cli_module_stdlib_policy._stdlib_allowlist()
+    cache = cli_module_resolution._ModuleResolutionCache()
+    codecs_path = cache.resolve_module("codecs", roots, stdlib_root, stdlib_allowlist)
+    assert codecs_path is not None
+
+    graph, _explicit_imports = cli_module_graph_discovery._discover_module_graph(
+        codecs_path,
+        roots,
+        module_roots,
+        stdlib_root,
+        ROOT,
+        stdlib_allowlist,
+        skip_modules=cli.STUB_MODULES,
+        stub_parents=cli.STUB_PARENT_MODULES,
+        resolver_cache=cache,
+    )
+
+    assert "codecs" in graph
+    assert "os" in graph
+    assert "typing" not in graph
+    assert "warnings" not in graph
+    assert "re" not in graph
+
+
+def test_decimal_static_graph_prunes_lazy_typing_deprecated_regex(
+    tmp_path: Path,
+) -> None:
+    entry = tmp_path / "main.py"
+    entry.write_text("import decimal\n")
+    graph = _discover_with_core_modules(entry)
+    assert "decimal" in graph
+    assert "typing" not in graph
+    assert "warnings" not in graph
+    assert "re" not in graph
 
 
 def test_spawn_entry_override_not_required_for_plain_script(tmp_path: Path) -> None:
@@ -11673,9 +11762,15 @@ def _install_fake_wasm_link_runner(
 
 
 def _write_split_runtime_vfs_support(molt_root: Path) -> None:
-    vfs_support = molt_root / "wasm" / "molt_vfs_browser.js"
-    vfs_support.parent.mkdir(parents=True, exist_ok=True)
+    wasm_root = molt_root / "wasm"
+    wasm_root.mkdir(parents=True, exist_ok=True)
+    vfs_support = wasm_root / "molt_vfs_browser.js"
     vfs_support.write_text("globalThis.MoltVfs = class {};\n", encoding="utf-8")
+    browser_embed = wasm_root / "browser_embed.js"
+    browser_embed.write_text(
+        "export const loadMoltBrowserKernel = async () => ({});\n",
+        encoding="utf-8",
+    )
 
 
 def test_prepare_non_native_build_result_skips_runtime_wasm_sidecar_for_linked_wasm(

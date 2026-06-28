@@ -21,8 +21,10 @@ __all__ = (
     "_export_wasm_table_refs",
     "_generate_split_worker_js",
     "_generate_split_wrangler_jsonc",
+    "_runtime_import_fallbacks_from_manifest",
     "_runtime_import_result_kinds_from_manifest",
     "_runtime_import_signatures_from_manifest",
+    "_split_runtime_browser_abi_from_manifest",
 )
 
 
@@ -141,6 +143,29 @@ def _runtime_import_result_kinds_from_manifest(
     return result_kinds
 
 
+def _runtime_import_fallbacks_from_manifest() -> dict[str, dict[str, object]]:
+    return {
+        import_name: {
+            "strategy": strategy,
+            "call_arity": call_arity,
+            "exports": list(exports),
+        }
+        for import_name, strategy, call_arity, exports in WASM_RUNTIME_IMPORT_FALLBACK_SPECS
+    }
+
+
+def _split_runtime_browser_abi_from_manifest() -> dict[str, object]:
+    return {
+        "call_indirect_imports": list(WASM_CALL_INDIRECT_IMPORTS),
+        "runtime_import_fallbacks": _runtime_import_fallbacks_from_manifest(),
+        "table_layout": {
+            "legacy_table_base": WASM_LEGACY_TABLE_BASE,
+            "reserved_runtime_callable_base": WASM_RESERVED_RUNTIME_CALLABLE_BASE,
+            "reserved_runtime_callable_count": WASM_RESERVED_RUNTIME_CALLABLE_COUNT,
+        },
+    }
+
+
 def _generate_split_worker_js(
     *,
     shared_memory_initial_pages: int,
@@ -171,15 +196,7 @@ def _generate_split_worker_js(
     )
     call_indirect_imports_json = json.dumps(list(WASM_CALL_INDIRECT_IMPORTS))
     runtime_import_fallbacks_json = json.dumps(
-        {
-            import_name: {
-                "strategy": strategy,
-                "call_arity": call_arity,
-                "exports": list(exports),
-            }
-            for import_name, strategy, call_arity, exports in WASM_RUNTIME_IMPORT_FALLBACK_SPECS
-        },
-        sort_keys=True,
+        _runtime_import_fallbacks_from_manifest(), sort_keys=True
     )
     app_table_ref_signatures_json = json.dumps(
         dict(app_table_ref_signatures or {}), sort_keys=True

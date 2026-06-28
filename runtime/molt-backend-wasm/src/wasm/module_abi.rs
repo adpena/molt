@@ -150,10 +150,9 @@ impl WasmBackend {
             }
         }
 
-        let max_call_indirect = 13usize;
         let max_needed_arity = max_func_arity
             .max(max_call_arity.saturating_add(3))
-            .max(max_call_indirect + 1);
+            .max(CALL_INDIRECT_MAX_ARITY + 1);
         for arity in 0..=max_needed_arity {
             if let std::collections::btree_map::Entry::Vacant(entry) = user_type_map.entry(arity) {
                 self.types.function(
@@ -165,7 +164,8 @@ impl WasmBackend {
             }
         }
 
-        for arity in 0..=max_call_indirect {
+        for spec in CALL_INDIRECT_IMPORTS {
+            let arity = spec.arity;
             let sig_idx = *user_type_map.get(&(arity + 1)).unwrap_or_else(|| {
                 panic!("missing call_indirect signature for arity {}", arity + 1)
             });
@@ -173,9 +173,8 @@ impl WasmBackend {
                 .get(&arity)
                 .unwrap_or_else(|| panic!("missing call_indirect callee type for arity {}", arity));
             self.funcs.function(sig_idx);
-            let export_name = format!("molt_call_indirect{arity}");
             self.exports
-                .export(&export_name, ExportKind::Func, self.func_count);
+                .export(spec.import_name, ExportKind::Func, self.func_count);
             let mut call_indirect = Function::new_with_locals_types(Vec::new());
             for idx in 0..arity {
                 call_indirect.instruction(&Instruction::LocalGet((idx + 1) as u32));

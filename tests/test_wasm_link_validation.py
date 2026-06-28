@@ -1883,6 +1883,11 @@ def test_call_indirect_symbol_discovery_does_not_require_wasm_tools(
                     flags=wasm_link.FLAG_UNDEFINED | wasm_link.FLAG_EXPLICIT_NAME,
                     index=3,
                     name="_ZN4molt19molt_call_indirect1317hfeedfaceE",
+                ),
+                _function_symbol_entry(
+                    flags=wasm_link.FLAG_UNDEFINED | wasm_link.FLAG_EXPLICIT_NAME,
+                    index=4,
+                    name="_ZN4molt19molt_call_indirect9917hfeedfaceE",
                 )
             ]
         )
@@ -1897,6 +1902,13 @@ def test_call_indirect_symbol_discovery_does_not_require_wasm_tools(
                     | wasm_link.FLAG_EXPORTED,
                     index=41,
                     name="molt_call_indirect13",
+                ),
+                _function_symbol_entry(
+                    flags=wasm_link.FLAG_BINDING_GLOBAL
+                    | wasm_link.FLAG_EXPLICIT_NAME
+                    | wasm_link.FLAG_EXPORTED,
+                    index=42,
+                    name="molt_call_indirect99",
                 )
             ]
         )
@@ -1909,6 +1921,7 @@ def test_call_indirect_symbol_discovery_does_not_require_wasm_tools(
     assert mangled == {
         "molt_call_indirect13": "_ZN4molt19molt_call_indirect1317hfeedfaceE"
     }
+    assert "molt_call_indirect99" not in output_symbols
     assert output_symbols["molt_call_indirect13"] == (
         41,
         wasm_link.FLAG_BINDING_GLOBAL
@@ -2717,13 +2730,14 @@ def test_allowlist_file_exists():
     )
     assert allowlist.exists(), f"Missing allowlist: {allowlist}"
     symbols = _parse_allowlist(allowlist)
+    from molt._wasm_abi_generated import WASM_CALL_INDIRECT_IMPORTS
+
     # Must contain core WASI symbols
     assert "fd_write" in symbols
     assert "proc_exit" in symbols
     assert "__indirect_function_table" in symbols
     # Must contain indirect call trampolines
-    assert "molt_call_indirect0" in symbols
-    assert "molt_call_indirect13" in symbols
+    assert set(WASM_CALL_INDIRECT_IMPORTS) <= symbols
     # Must NOT contain molt_runtime namespace symbols (those are resolved by linking),
     # except for serialization/compression builtins that are direct WASM imports.
     _ALLOWED_MOLT_PREFIXES = (

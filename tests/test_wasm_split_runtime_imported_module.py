@@ -7,28 +7,56 @@ from pathlib import Path
 
 import pytest
 
+from molt.dx import cargo_target_dir_for_artifact_root, development_artifact_env
 from tests.wasm_linked_runner import _run_wasm_test_process
 
 ROOT = Path(__file__).resolve().parents[1]
-SPLIT_RUNTIME_TARGET_DIR = ROOT / "target" / "pytest" / "split_runtime_imported_module"
 
 
 def _split_runtime_imported_module_target_dirs(
     env: dict[str, str],
     *,
     cargo_target_dir: Path | None = None,
+    session_id: str = "split-runtime-imported-module",
 ) -> tuple[Path, Path]:
     if cargo_target_dir is not None:
         return cargo_target_dir, cargo_target_dir
     raw_target = env.get("CARGO_TARGET_DIR", "").strip()
-    target_dir = (
-        Path(raw_target).expanduser() if raw_target else SPLIT_RUNTIME_TARGET_DIR
-    )
+    if raw_target:
+        target_dir = Path(raw_target).expanduser()
+    else:
+        raw_root = env.get("MOLT_EXT_ROOT", "").strip()
+        artifact_root = Path(raw_root).expanduser() if raw_root else ROOT
+        if not artifact_root.is_absolute():
+            artifact_root = ROOT / artifact_root
+        target_dir = cargo_target_dir_for_artifact_root(
+            artifact_root.resolve(),
+            env.get("MOLT_SESSION_ID") or session_id,
+        )
     raw_diff_target = env.get("MOLT_DIFF_CARGO_TARGET_DIR", "").strip()
     diff_target_dir = (
         Path(raw_diff_target).expanduser() if raw_diff_target else target_dir
     )
     return target_dir, diff_target_dir
+
+
+def _split_runtime_imported_module_build_env(
+    *,
+    session_id: str = "split-runtime-imported-module",
+) -> dict[str, str]:
+    env = development_artifact_env(
+        ROOT,
+        os.environ,
+        session_prefix=session_id,
+        session_id=os.environ.get("MOLT_SESSION_ID") or session_id,
+        create_dirs=True,
+    )
+    env["MOLT_BACKEND_DAEMON"] = "0"
+    env.setdefault("CARGO_BUILD_JOBS", "1")
+    env.setdefault("MOLT_WASM_DISABLE_SCCACHE", "1")
+    env.setdefault("MOLT_BUILD_LOCK_TIMEOUT", "45")
+    env.setdefault("MOLT_CARGO_TIMEOUT", "900")
+    return env
 
 
 def test_split_runtime_imported_module_target_dir_respects_explicit_env_override() -> (
@@ -54,6 +82,18 @@ def test_split_runtime_imported_module_target_dir_prefers_explicit_arg() -> None
 
     assert target_dir == explicit
     assert diff_target_dir == explicit
+
+
+def test_split_runtime_imported_module_target_dir_defaults_to_dx_session_target() -> (
+    None
+):
+    target_dir, diff_target_dir = _split_runtime_imported_module_target_dirs({})
+
+    assert target_dir == cargo_target_dir_for_artifact_root(
+        ROOT,
+        "split-runtime-imported-module",
+    )
+    assert diff_target_dir == target_dir
 
 
 def test_split_runtime_imported_module_build_uses_wasm_test_guard(
@@ -87,18 +127,7 @@ def _build_split(
     extra_env: dict[str, str] | None = None,
     cargo_target_dir: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    env = os.environ.copy()
-    repo_src = str(ROOT / "src")
-    current_pythonpath = env.get("PYTHONPATH", "")
-    env["PYTHONPATH"] = (
-        repo_src + os.pathsep + current_pythonpath if current_pythonpath else repo_src
-    )
-    env["MOLT_BACKEND_DAEMON"] = "0"
-    # Keep split-runtime test builds deterministic and memory-bounded on laptops.
-    env.setdefault("CARGO_BUILD_JOBS", "1")
-    env.setdefault("MOLT_WASM_DISABLE_SCCACHE", "1")
-    env.setdefault("MOLT_BUILD_LOCK_TIMEOUT", "45")
-    env.setdefault("MOLT_CARGO_TIMEOUT", "900")
+    env = _split_runtime_imported_module_build_env()
     target_dir, diff_target_dir = _split_runtime_imported_module_target_dirs(
         env, cargo_target_dir=cargo_target_dir
     )

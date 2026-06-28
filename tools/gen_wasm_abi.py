@@ -19,6 +19,7 @@ LEGACY_OUT_RS = ROOT / "runtime/molt-backend-wasm/src/wasm_abi_generated.rs"
 OUT_RS_DIR = ROOT / "runtime/molt-backend-wasm/src/wasm_abi_generated"
 OUT_RS_FILES = {
     "mod.rs": OUT_RS_DIR / "mod.rs",
+    "call_indirect.rs": OUT_RS_DIR / "call_indirect.rs",
     "static_types.rs": OUT_RS_DIR / "static_types.rs",
     "imports.rs": OUT_RS_DIR / "imports.rs",
     "const_policy.rs": OUT_RS_DIR / "const_policy.rs",
@@ -76,10 +77,31 @@ CONST_POLICY_LIR_FAST = {
     "placeholder_zero",
     "bail_generic",
 }
+CALL_INDIRECT_IMPORT_PREFIX = "molt_call_indirect"
 
 
 class WasmAbiManifestError(ValueError):
     pass
+
+
+def _parse_call_indirect_import_arity(name: str) -> int | None:
+    if not name.startswith(CALL_INDIRECT_IMPORT_PREFIX):
+        return None
+    suffix = name.removeprefix(CALL_INDIRECT_IMPORT_PREFIX)
+    if not suffix.isdecimal():
+        return None
+    arity = int(suffix)
+    return arity if str(arity) == suffix else None
+
+
+def _call_indirect_imports(data: dict) -> list[tuple[int, str]]:
+    imports: list[tuple[int, str]] = []
+    for entry in data.get("link_allowed_import", []):
+        name = entry["name"]
+        arity = _parse_call_indirect_import_arity(name)
+        if arity is not None:
+            imports.append((arity, name))
+    return sorted(imports)
 
 
 def _validate_val_type_list(
@@ -579,6 +601,18 @@ def validate_loaded_manifest(data: dict) -> dict:
         if name in seen_link_allowed:
             raise WasmAbiManifestError(f"duplicate linker allowlist import {name!r}")
         seen_link_allowed.add(name)
+    call_indirect_imports = _call_indirect_imports(data)
+    call_indirect_arities = [arity for arity, _name in call_indirect_imports]
+    if not call_indirect_arities:
+        raise WasmAbiManifestError("link_allowed_import must define call_indirect imports")
+    expected_call_indirect_arities = list(
+        range(call_indirect_arities[-1] + 1)
+    )
+    if call_indirect_arities != expected_call_indirect_arities:
+        raise WasmAbiManifestError(
+            "call_indirect import arities must be contiguous from 0: "
+            f"{call_indirect_arities!r}"
+        )
 
     def validate_strip_rule(
         section: str, idx: int, entry: object, *, prefix_rule: bool
@@ -695,12 +729,16 @@ def _render_rs_mod() -> str:
     lines: list[str] = [_header("//")]
     lines.extend(
         [
+            "mod call_indirect;\n",
             "mod const_policy;\n",
             "mod imports;\n",
             "mod pure_profile;\n",
             "mod runtime_callables;\n",
             "mod runtime_surface;\n",
             "mod static_types;\n\n",
+            "pub(crate) use call_indirect::{\n",
+            "    CALL_INDIRECT_IMPORTS, CALL_INDIRECT_MAX_ARITY,\n",
+            "};\n",
             "pub(crate) use const_policy::{\n",
             "    wasm_const_op_policy, WasmConstInlineSeed, WasmConstLirFastPolicy,\n",
             "    WasmConstLiteralPayload, WasmConstOpPolicySpec, WasmConstRawIntEffect,\n",
@@ -715,6 +753,38 @@ def _render_rs_mod() -> str:
             "pub(crate) use static_types::{\n",
             "    STATIC_FUNC_TYPES, STATIC_TYPE_COUNT,\n",
             "};\n",
+        ]
+    )
+    return "".join(lines)
+
+
+def _render_rs_call_indirect(data: dict) -> str:
+    call_indirect_imports = _call_indirect_imports(data)
+    max_arity = call_indirect_imports[-1][0]
+    lines: list[str] = [_header("//")]
+    lines.extend(
+        [
+            "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
+            "pub(crate) struct CallIndirectImportSpec {\n",
+            "    pub(crate) arity: usize,\n",
+            "    pub(crate) import_name: &'static str,\n",
+            "}\n\n",
+            "pub(crate) const CALL_INDIRECT_IMPORTS: &[CallIndirectImportSpec] = &[\n",
+        ]
+    )
+    for arity, import_name in call_indirect_imports:
+        lines.extend(
+            [
+                "    CallIndirectImportSpec {\n",
+                f"        arity: {arity},\n",
+                f'        import_name: "{import_name}",\n',
+                "    },\n",
+            ]
+        )
+    lines.extend(
+        [
+            "];\n\n",
+            f"pub(crate) const CALL_INDIRECT_MAX_ARITY: usize = {max_arity};\n",
         ]
     )
     return "".join(lines)
@@ -1192,6 +1262,7 @@ def _render_rs_pure_profile(data: dict) -> str:
 def render_rs_modules(data: dict) -> dict[str, str]:
     modules = {
         "mod.rs": _render_rs_mod(),
+        "call_indirect.rs": _render_rs_call_indirect(data),
         "const_policy.rs": _render_rs_const_policy(data),
         "static_types.rs": _render_rs_static_types(data),
         "imports.rs": _render_rs_imports(data),
@@ -1297,14 +1368,9 @@ def render_py(data: dict) -> str:
             "    return \"nil\" if not results else \", \".join(results)\n\n",
         ]
     )
-    call_indirect_imports = [
-        entry["name"]
-        for entry in data.get("link_allowed_import", [])
-        if entry["name"].startswith("molt_call_indirect")
-    ]
     lines.append("WASM_CALL_INDIRECT_IMPORTS: tuple[str, ...] = (\n")
-    for name in call_indirect_imports:
-        lines.append(f'    "{name}",\n')
+    for _arity, import_name in _call_indirect_imports(data):
+        lines.append(f'    "{import_name}",\n')
     lines.append(")\n\n")
     lines.append(
         "WASM_CONST_OP_POLICIES: tuple[tuple[str, str, str | None, str, bool, bool, str, str], ...] = (\n"

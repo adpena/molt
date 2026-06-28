@@ -151,6 +151,7 @@ authoritative when a design claim drifts.
 - 0966 External Inspirations Codon Py2WASM Trio Go OpenMP: [docs/spec/areas/wasm/0966_EXTERNAL_INSPIRATIONS_CODON_PY2WASM_TRIO_GO_OPENMP.md](docs/spec/areas/wasm/0966_EXTERNAL_INSPIRATIONS_CODON_PY2WASM_TRIO_GO_OPENMP.md)
 - 0967 Portable Plugin Manifest + Schema Resolution: [docs/spec/areas/wasm/0967_PORTABLE_PLUGIN_MANIFEST.md](docs/spec/areas/wasm/0967_PORTABLE_PLUGIN_MANIFEST.md)
 - 0968 Molt Edge/Workers VFS And Host Capabilities: [docs/spec/areas/wasm/0968_MOLT_EDGE_WORKERS_VFS_AND_HOST_CAPABILITIES.md](docs/spec/areas/wasm/0968_MOLT_EDGE_WORKERS_VFS_AND_HOST_CAPABILITIES.md)
+- 0969 Browser Numeric Kernel Embed: [docs/spec/areas/wasm/0969_BROWSER_NUMERIC_KERNEL_EMBED.md](docs/spec/areas/wasm/0969_BROWSER_NUMERIC_KERNEL_EMBED.md)
 
 ## Web
 - 0600 Streaming And WebSockets: [docs/spec/areas/web/0600_STREAMING_AND_WEBSOCKETS.md](docs/spec/areas/web/0600_STREAMING_AND_WEBSOCKETS.md)
