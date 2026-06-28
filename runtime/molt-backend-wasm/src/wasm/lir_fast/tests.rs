@@ -1420,6 +1420,112 @@ fn aggregate_builders_stay_lir_fast_runtime_calls() {
 }
 
 #[test]
+fn operand_name_attrs_stay_lir_fast_runtime_calls() {
+    let cases = [
+        ("get_attr_name", OpCode::LoadAttr, 2, true, "get_attr_name"),
+        (
+            "set_attr_name",
+            OpCode::StoreAttr,
+            3,
+            false,
+            "set_attr_name",
+        ),
+        ("del_attr_name", OpCode::DelAttr, 2, false, "del_attr_name"),
+    ];
+
+    for (name, opcode, operand_count, has_result, runtime_call) in cases {
+        let mut func = TirFunction::new(
+            name.into(),
+            vec![TirType::DynBox; operand_count],
+            if has_result {
+                TirType::DynBox
+            } else {
+                TirType::None
+            },
+        );
+        let result_id = has_result.then(|| {
+            let id = func.fresh_value();
+            func.value_types.insert(id, TirType::DynBox);
+            id
+        });
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode,
+            operands: (0..operand_count).map(|idx| ValueId(idx as u32)).collect(),
+            results: result_id.into_iter().collect(),
+            attrs: {
+                let mut m = AttrDict::new();
+                m.insert("_original_kind".into(), AttrValue::Str(name.into()));
+                m
+            },
+            source_span: None,
+        });
+        entry.terminator = Terminator::Return {
+            values: result_id.into_iter().collect(),
+        };
+
+        let output = lower_tir_to_wasm(&func).test_view();
+
+        assert!(
+            !output.bails_to_generic_path,
+            "{name} must stay in the LIR fast lane"
+        );
+        assert!(
+            output.runtime_calls.contains(&runtime_call),
+            "{name} must call {runtime_call}; got {:?}",
+            output.runtime_calls
+        );
+    }
+}
+
+#[test]
+fn literal_name_attr_stays_explicit_generic_fallback() {
+    let mut func = TirFunction::new(
+        "get_attr_generic_obj".into(),
+        vec![TirType::DynBox],
+        TirType::DynBox,
+    );
+    let result_id = func.fresh_value();
+    func.value_types.insert(result_id, TirType::DynBox);
+    let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+    entry.ops.push(TirOp {
+        dialect: Dialect::Molt,
+        opcode: OpCode::LoadAttr,
+        operands: vec![ValueId(0)],
+        results: vec![result_id],
+        attrs: {
+            let mut m = AttrDict::new();
+            m.insert(
+                "_original_kind".into(),
+                AttrValue::Str("get_attr_generic_obj".into()),
+            );
+            m.insert("name".into(), AttrValue::Str("field".into()));
+            m
+        },
+        source_span: None,
+    });
+    entry.terminator = Terminator::Return {
+        values: vec![result_id],
+    };
+
+    let output = lower_tir_to_wasm(&func).test_view();
+
+    assert!(
+        output.bails_to_generic_path,
+        "literal-name attrs need the data-payload LIR authority before fast lowering"
+    );
+    assert_eq!(
+        output.bail_to_generic_reason,
+        Some(WasmLirFallbackReason::UnsupportedOperation)
+    );
+    assert!(
+        !output.runtime_calls.contains(&"get_attr_name"),
+        "literal-name attr must not be silently rerouted through name-object lookup"
+    );
+}
+
+#[test]
 fn dynbox_binary_bitwise_and_shift_helpers_stay_lir_fast_runtime_calls() {
     let cases = [
         ("bit_and_dynbox", OpCode::BitAnd, "bit_and"),
