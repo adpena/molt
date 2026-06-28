@@ -1,5 +1,7 @@
 use super::call_site_abi::WasmCallSiteAbi;
-use super::*;
+use crate::wasm_data::DataSegmentRef;
+use crate::wasm_import_tracking::TrackedImportIds;
+use std::collections::BTreeMap;
 
 /// Per-module authorities needed while compiling each function body.
 pub(super) struct CompileFuncContext<'a> {

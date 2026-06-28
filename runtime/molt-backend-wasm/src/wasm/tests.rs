@@ -1,6 +1,14 @@
-use super::*;
+use super::{WasmBackend, WasmCompileOptions};
+use crate::representation_plan::ScalarRepresentationPlan;
 use crate::wasm::lir_fast::is_production_lir_wasm_fast_path_name;
 use crate::wasm_abi::{CALL_INDIRECT_IMPORTS, CALL_INDIRECT_MAX_ARITY, POLL_TABLE_IMPORTS};
+use crate::wasm_plan::{
+    is_shared_drop_fact_marker, wasm_scalar_integer_fast_path_for_op,
+    wasm_scalar_truthiness_fast_path_for_name, wasm_specialized_container_import,
+};
+use crate::{FunctionIR, OpIR, SimpleIR};
+use std::collections::{BTreeMap, BTreeSet};
+use wasmparser::{ExternalKind, Parser, Payload, TypeRef};
 
 #[test]
 fn production_lir_wasm_fast_path_is_reserved_for_global_builtin_lane() {
