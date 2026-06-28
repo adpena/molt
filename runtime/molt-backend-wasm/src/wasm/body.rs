@@ -1,5 +1,6 @@
 use super::WasmBackend;
 use super::const_materialization::WasmConstMaterialization;
+use super::lir_fast::LirRuntimeCall;
 use crate::wasm_binary::emit_call;
 use crate::wasm_data::DataSegmentRef;
 use wasm_encoder::{Function, Instruction, ValType};
@@ -9,10 +10,6 @@ pub enum WasmLirFallbackReason {
     BoxedI64AbiUnsupported,
     EscapedCallableTarget,
     BoxedCheckedArithmetic,
-    BoxedUnaryArithmetic,
-    BoxedBitwiseOrShift,
-    BoxedTruthiness,
-    BoxedControlCondition,
     UnsupportedOperation,
 }
 
@@ -22,10 +19,6 @@ impl WasmLirFallbackReason {
             Self::BoxedI64AbiUnsupported => "boxed-i64-abi-unsupported",
             Self::EscapedCallableTarget => "escaped-callable-target",
             Self::BoxedCheckedArithmetic => "boxed-checked-arithmetic",
-            Self::BoxedUnaryArithmetic => "boxed-unary-arithmetic",
-            Self::BoxedBitwiseOrShift => "boxed-bitwise-or-shift",
-            Self::BoxedTruthiness => "boxed-truthiness",
-            Self::BoxedControlCondition => "boxed-control-condition",
             Self::UnsupportedOperation => "unsupported-operation",
         }
     }
@@ -33,7 +26,7 @@ impl WasmLirFallbackReason {
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub(crate) enum WasmCallTarget {
-    RuntimeImport(&'static str),
+    RuntimeImport(LirRuntimeCall),
     BailToGenericPath(WasmLirFallbackReason),
 }
 
@@ -54,9 +47,9 @@ impl WasmBodyOps {
         self.ops.push(WasmBodyOp::Instruction(instruction));
     }
 
-    pub(crate) fn push_runtime_import_call(&mut self, name: &'static str) {
+    pub(crate) fn push_runtime_import_call(&mut self, call: LirRuntimeCall) {
         self.ops
-            .push(WasmBodyOp::Call(WasmCallTarget::RuntimeImport(name)));
+            .push(WasmBodyOp::Call(WasmCallTarget::RuntimeImport(call)));
     }
 
     pub(crate) fn push_bail_to_generic_path(&mut self, reason: WasmLirFallbackReason) {
@@ -117,7 +110,7 @@ impl WasmBody {
 
     pub(crate) fn runtime_imports(&self) -> impl Iterator<Item = &'static str> + '_ {
         self.ops.iter().filter_map(|op| match op {
-            WasmBodyOp::Call(WasmCallTarget::RuntimeImport(name)) => Some(*name),
+            WasmBodyOp::Call(WasmCallTarget::RuntimeImport(call)) => Some(call.import_name()),
             WasmBodyOp::ConstMaterialization(materialization) => {
                 Some(materialization.runtime_import())
             }
@@ -142,11 +135,12 @@ impl WasmBody {
                 WasmBodyOp::Instruction(instruction) => {
                     func.instruction(instruction);
                 }
-                WasmBodyOp::Call(WasmCallTarget::RuntimeImport(name)) => {
-                    let import_index = import_index_for(name);
+                WasmBodyOp::Call(WasmCallTarget::RuntimeImport(call)) => {
+                    let import_name = call.import_name();
+                    let import_index = import_index_for(import_name);
                     assert!(
                         import_index != u32::MAX,
-                        "LIR fast body for '{func_name}' calls runtime import '{name}' which was skipped/pruned from the import set"
+                        "LIR fast body for '{func_name}' calls runtime import '{import_name}' which was skipped/pruned from the import set"
                     );
                     emit_call(func, reloc_enabled, import_index);
                 }

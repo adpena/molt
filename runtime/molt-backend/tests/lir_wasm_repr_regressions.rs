@@ -153,22 +153,16 @@ fn wasm_lir_ref64_condition_uses_runtime_truthiness() {
 
     assert!(
         output.bails_to_generic_path,
-        "Ref64 object truthiness must bail to generic WASM emission"
+        "ObjectNewBoundStack is still an unsupported LIR-fast producer"
     );
     assert_eq!(
         output.bail_to_generic_reason,
         Some(WasmLirFallbackReason::UnsupportedOperation)
     );
     assert!(
-        !output.instructions.windows(3).any(|w| matches!(
-            w,
-            [
-                Instruction::LocalGet(_),
-                Instruction::I64Const(0),
-                Instruction::I64Ne
-            ]
-        )),
-        "Ref64 condition must not be treated as integer nonzero"
+        output.runtime_calls.contains(&"is_truthy"),
+        "Ref64 condition lowering must call is_truthy instead of treating the reference word as integer nonzero; got {:?}",
+        output.runtime_calls
     );
     assert!(
         output
@@ -245,12 +239,13 @@ fn wasm_lir_truthiness_materialization_uses_bool_local_and_br_if() {
 
     assert!(output.locals.contains(&ValType::I32));
     assert!(
-        output.bails_to_generic_path,
-        "DynBox truthiness must bail to generic WASM emission"
+        !output.bails_to_generic_path,
+        "DynBox truthiness must stay in the LIR fast lane via typed runtime dispatch"
     );
-    assert_eq!(
-        output.bail_to_generic_reason,
-        Some(WasmLirFallbackReason::BoxedTruthiness)
+    assert!(
+        output.runtime_calls.contains(&"is_truthy"),
+        "DynBox truthiness must call is_truthy; got {:?}",
+        output.runtime_calls
     );
     assert!(
         output

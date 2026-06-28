@@ -1,10 +1,12 @@
 use super::lir_context::LirLowerCtx;
 use super::lir_ops::{ArithOp, BitwiseOp, CmpOp, UnaryOp};
+use super::runtime_calls::LirRuntimeCall;
 use crate::wasm::body::WasmLirFallbackReason;
 use crate::wasm_values::push_f64_to_i64_canonical;
 use molt_codegen_abi::{
     INLINE_INT_BIAS, INLINE_INT_LIMIT, INT_MASK, INT_MAX_INLINE as INLINE_INT_MAX,
-    INT_MIN_INLINE as INLINE_INT_MIN, QNAN_TAG_BOOL_I64, QNAN_TAG_INT_I64, box_none_bits,
+    INT_MIN_INLINE as INLINE_INT_MIN, QNAN, QNAN_TAG_BOOL_I64, QNAN_TAG_INT_I64, QNAN_TAG_MASK_I64,
+    TAG_BOOL, box_none_bits,
 };
 use molt_tir::tir::lir::{LirOp, LirRepr};
 use molt_tir::tir::ops::AttrValue;
@@ -137,12 +139,12 @@ pub(super) fn emit_lir_binary_arith(ctx: &mut LirLowerCtx, op: &LirOp, arith: Ar
             emit_get_boxed_for_repr(ctx, lhs);
             emit_get_boxed_for_repr(ctx, rhs);
             ctx.emit_runtime_call(match arith {
-                ArithOp::Add => "add",
-                ArithOp::Sub => "sub",
-                ArithOp::Mul => "mul",
-                ArithOp::Div => "div",
-                ArithOp::FloorDiv => "floordiv",
-                ArithOp::Mod => "mod",
+                ArithOp::Add => LirRuntimeCall::Add,
+                ArithOp::Sub => LirRuntimeCall::Sub,
+                ArithOp::Mul => LirRuntimeCall::Mul,
+                ArithOp::Div => LirRuntimeCall::Div,
+                ArithOp::FloorDiv => LirRuntimeCall::FloorDiv,
+                ArithOp::Mod => LirRuntimeCall::Mod,
             });
             ctx.emit_set(dst);
             return;
@@ -203,13 +205,51 @@ pub(super) fn emit_lir_unary_arith(ctx: &mut LirLowerCtx, op: &LirOp, _unary: Un
             ctx.instructions.push(Instruction::F64Neg);
         }
         _ => {
-            ctx.emit_get(src);
-            ctx.emit_bail_to_generic_path(WasmLirFallbackReason::BoxedUnaryArithmetic);
+            emit_get_boxed_for_repr(ctx, src);
+            ctx.emit_runtime_call(LirRuntimeCall::Neg);
             ctx.emit_set(dst);
             return;
         }
     }
     ctx.emit_set(dst);
+}
+
+pub(super) fn emit_lir_truthiness_i32(ctx: &mut LirLowerCtx, src: ValueId) {
+    match ctx.repr_of(src) {
+        LirRepr::Bool1 => ctx.emit_get(src),
+        LirRepr::I64 => {
+            ctx.emit_get(src);
+            ctx.instructions.push(Instruction::I64Const(0));
+            ctx.instructions.push(Instruction::I64Ne);
+        }
+        LirRepr::F64 => {
+            ctx.emit_get(src);
+            ctx.instructions
+                .push(Instruction::F64Const(wasm_encoder::Ieee64::from(0.0)));
+            ctx.instructions.push(Instruction::F64Ne);
+        }
+        LirRepr::DynBox | LirRepr::Ref64 => {
+            ctx.emit_get(src);
+            ctx.instructions
+                .push(Instruction::I64Const(QNAN_TAG_MASK_I64));
+            ctx.instructions.push(Instruction::I64And);
+            ctx.instructions
+                .push(Instruction::I64Const((QNAN | TAG_BOOL) as i64));
+            ctx.instructions.push(Instruction::I64Eq);
+            ctx.instructions
+                .push(Instruction::If(BlockType::Result(ValType::I32)));
+            ctx.emit_get(src);
+            ctx.instructions.push(Instruction::I32WrapI64);
+            ctx.instructions.push(Instruction::I32Const(1));
+            ctx.instructions.push(Instruction::I32And);
+            ctx.instructions.push(Instruction::Else);
+            ctx.emit_get(src);
+            ctx.emit_runtime_call(LirRuntimeCall::IsTruthy);
+            ctx.instructions.push(Instruction::I64Const(0));
+            ctx.instructions.push(Instruction::I64Ne);
+            ctx.instructions.push(Instruction::End);
+        }
+    }
 }
 
 pub(super) fn emit_lir_bool_select(ctx: &mut LirLowerCtx, op: &LirOp, is_and: bool) {
@@ -249,7 +289,7 @@ pub(super) fn emit_lir_bool_select(ctx: &mut LirLowerCtx, op: &LirOp, is_and: bo
     );
 
     emit_get_boxed_for_repr(ctx, lhs);
-    ctx.emit_runtime_call("is_truthy");
+    ctx.emit_runtime_call(LirRuntimeCall::IsTruthy);
     ctx.instructions.push(Instruction::I64Const(0));
     ctx.instructions.push(Instruction::I64Ne);
     ctx.instructions
@@ -268,7 +308,7 @@ pub(super) fn emit_lir_bool_select(ctx: &mut LirLowerCtx, op: &LirOp, is_and: bo
     ctx.instructions.push(Instruction::End);
     ctx.instructions
         .push(Instruction::LocalTee(ctx.get_local(dst)));
-    ctx.emit_runtime_call("inc_ref_obj");
+    ctx.emit_runtime_call(LirRuntimeCall::IncRefObj);
 }
 
 pub(super) fn emit_lir_comparison(ctx: &mut LirLowerCtx, op: &LirOp, cmp: CmpOp) {
@@ -316,12 +356,12 @@ pub(super) fn emit_lir_comparison(ctx: &mut LirLowerCtx, op: &LirOp, cmp: CmpOp)
             emit_get_boxed_for_repr(ctx, lhs);
             emit_get_boxed_for_repr(ctx, rhs);
             ctx.emit_runtime_call(match cmp {
-                CmpOp::Eq => "eq",
-                CmpOp::Ne => "ne",
-                CmpOp::Lt => "lt",
-                CmpOp::Le => "le",
-                CmpOp::Gt => "gt",
-                CmpOp::Ge => "ge",
+                CmpOp::Eq => LirRuntimeCall::Eq,
+                CmpOp::Ne => LirRuntimeCall::Ne,
+                CmpOp::Lt => LirRuntimeCall::Lt,
+                CmpOp::Le => LirRuntimeCall::Le,
+                CmpOp::Gt => LirRuntimeCall::Gt,
+                CmpOp::Ge => LirRuntimeCall::Ge,
             });
             if op.result_values[0].repr == LirRepr::Bool1 {
                 ctx.instructions.push(Instruction::I64Const(1));
@@ -335,6 +375,40 @@ pub(super) fn emit_lir_comparison(ctx: &mut LirLowerCtx, op: &LirOp, cmp: CmpOp)
     ctx.emit_set(dst);
 }
 
+pub(super) fn emit_lir_identity_comparison(ctx: &mut LirLowerCtx, op: &LirOp, invert: bool) {
+    let tir_op = &op.tir_op;
+    if tir_op.operands.len() < 2 || op.result_values.is_empty() {
+        return;
+    }
+    let lhs = tir_op.operands[0];
+    let rhs = tir_op.operands[1];
+    let result = &op.result_values[0];
+
+    emit_get_boxed_for_repr(ctx, lhs);
+    emit_get_boxed_for_repr(ctx, rhs);
+    ctx.emit_runtime_call(LirRuntimeCall::Is);
+
+    match result.repr {
+        LirRepr::Bool1 => {
+            ctx.instructions.push(Instruction::I64Const(1));
+            ctx.instructions.push(Instruction::I64And);
+            ctx.instructions.push(Instruction::I32WrapI64);
+            if invert {
+                ctx.instructions.push(Instruction::I32Eqz);
+            }
+        }
+        LirRepr::DynBox | LirRepr::Ref64 | LirRepr::I64 => {
+            if invert {
+                ctx.emit_runtime_call(LirRuntimeCall::Not);
+            }
+        }
+        LirRepr::F64 => {
+            panic!("identity comparison cannot materialize an f64 result");
+        }
+    }
+    ctx.emit_set(result.id);
+}
+
 pub(super) fn emit_lir_bitwise(ctx: &mut LirLowerCtx, op: &LirOp, bw: BitwiseOp) {
     let tir_op = &op.tir_op;
     if tir_op.operands.len() < 2 || op.result_values.is_empty() {
@@ -344,6 +418,11 @@ pub(super) fn emit_lir_bitwise(ctx: &mut LirLowerCtx, op: &LirOp, bw: BitwiseOp)
         BitwiseOp::And => Instruction::I64And,
         BitwiseOp::Or => Instruction::I64Or,
         BitwiseOp::Xor => Instruction::I64Xor,
+    };
+    let runtime_call = match bw {
+        BitwiseOp::And => LirRuntimeCall::BitAnd,
+        BitwiseOp::Or => LirRuntimeCall::BitOr,
+        BitwiseOp::Xor => LirRuntimeCall::BitXor,
     };
     // `&`/`|`/`^` never overflow and the raw machine op is always defined for
     // any i64 operands, so the operand proof alone authorizes the raw lane
@@ -357,6 +436,7 @@ pub(super) fn emit_lir_bitwise(ctx: &mut LirLowerCtx, op: &LirOp, bw: BitwiseOp)
         op.result_values[0].repr,
         instr,
         false,
+        runtime_call,
     );
 }
 
@@ -386,6 +466,7 @@ pub(super) fn emit_lir_i64_binary_or_boxed(
     dst_repr: LirRepr,
     bare_i64_instr: Instruction<'static>,
     require_raw_result: bool,
+    boxed_runtime_call: LirRuntimeCall,
 ) {
     let raw_lane_ok = ctx.repr_of(lhs) == LirRepr::I64
         && ctx.repr_of(rhs) == LirRepr::I64
@@ -397,7 +478,7 @@ pub(super) fn emit_lir_i64_binary_or_boxed(
     } else {
         emit_get_boxed_for_repr(ctx, lhs);
         emit_get_boxed_for_repr(ctx, rhs);
-        ctx.emit_bail_to_generic_path(WasmLirFallbackReason::BoxedBitwiseOrShift);
+        ctx.emit_runtime_call(boxed_runtime_call);
     }
     ctx.emit_set(dst);
 }
@@ -443,7 +524,7 @@ pub(super) fn emit_box_i64_overflow_safe(ctx: &mut LirLowerCtx, src: ValueId) {
     ctx.instructions.push(Instruction::I64Or);
     ctx.instructions.push(Instruction::Else);
     ctx.emit_get(src);
-    ctx.emit_runtime_call("int_from_i64");
+    ctx.emit_runtime_call(LirRuntimeCall::IntFromI64);
     ctx.instructions.push(Instruction::End);
 }
 
