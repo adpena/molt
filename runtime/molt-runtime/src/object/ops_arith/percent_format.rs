@@ -626,6 +626,7 @@ fn percent_format_float(
             ' '
         },
         align,
+        zero_flag: flags.zero_pad && !flags.left_adjust,
         sign,
         alternate: flags.alternate,
         width,
