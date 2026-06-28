@@ -5,24 +5,18 @@ use super::constant_ops::{ConstantOpContext, emit_constant_op};
 use super::context::CompileFuncContext;
 use super::control_flow::ControlKind;
 use super::function_frame::WasmFunctionFrame;
-use super::multi_return_layout::WasmMultiReturnLayout;
 use super::{WasmBackend, WasmFrameLocals, WasmFrameSyntheticLocal};
 use crate::representation_plan::ScalarRepresentationPlan;
-use crate::wasm_abi::TAG_EXCEPTION_INDEX;
 use crate::wasm_binary::emit_call;
 use crate::wasm_import_tracking::{TrackedImportIds, selected_import_id};
 use crate::wasm_plan::{
-    is_shared_drop_fact_marker, wasm_scalar_truthiness_fast_path_for_name,
-    wasm_specialized_container_import,
+    wasm_scalar_truthiness_fast_path_for_name, wasm_specialized_container_import,
 };
-use crate::wasm_values::{
-    ConstantCache, box_int, emit_box_bool_from_i32, emit_branch_truthiness_i32,
-};
+use crate::wasm_values::{ConstantCache, box_int, emit_box_bool_from_i32};
 use crate::{FunctionIR, OpIR};
-use std::borrow::Cow;
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
-use wasm_encoder::{BlockType, Catch, Function, Instruction, ValType};
+use wasm_encoder::{BlockType, Function, Instruction, ValType};
 
 mod builder_ops;
 mod call_ops;

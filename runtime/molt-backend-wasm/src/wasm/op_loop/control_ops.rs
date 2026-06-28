@@ -1,7 +1,20 @@
 use super::super::control_flow::{
     ControlKind, dispatch_control_panic, loop_break_depth, loop_continue_depth,
 };
-use super::*;
+use super::super::multi_return_layout::WasmMultiReturnLayout;
+use crate::representation_plan::ScalarRepresentationPlan;
+use crate::wasm::WasmFrameLocals;
+use crate::wasm_abi::TAG_EXCEPTION_INDEX;
+use crate::wasm_binary::emit_call;
+use crate::wasm_import_tracking::TrackedImportIds;
+use crate::wasm_plan::{
+    is_shared_drop_fact_marker, wasm_scalar_truthiness_fast_path_for_name,
+};
+use crate::wasm_values::{ConstantCache, emit_branch_truthiness_i32};
+use crate::{FunctionIR, OpIR};
+use std::borrow::Cow;
+use std::collections::{BTreeMap, BTreeSet};
+use wasm_encoder::{BlockType, Catch, Function, Instruction, ValType};
 
 pub(super) struct ControlOpContext<'a> {
     pub(super) func_ir: &'a FunctionIR,
