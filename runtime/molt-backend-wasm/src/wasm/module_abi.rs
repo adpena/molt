@@ -8,6 +8,7 @@ use crate::SimpleIR;
 use crate::wasm_abi::emit_static_type_section;
 use crate::wasm_plan::DEFAULT_GPU_INTRINSIC_MANIFEST_NAMES;
 
+mod callable_layout;
 mod callable_table;
 mod finalize;
 mod imports;
@@ -123,6 +124,10 @@ impl WasmBackend {
             &builtin_trampoline_specs,
             &direct_import_call_specs,
             &default_trampoline_spec,
+            &task_kinds,
+            &task_closure_sizes,
+            &function_has_ret,
+            &multi_return_candidates,
             type_layout.user_type_map(),
             reloc_enabled,
             sentinel_func_idx,
@@ -152,16 +157,7 @@ impl WasmBackend {
             self.compile_func(func_ir, type_idx, &compile_ctx);
         }
 
-        self.emit_table_abi_trampolines(
-            &callable_table,
-            &ir,
-            reloc_enabled,
-            &default_trampoline_spec,
-            &task_kinds,
-            &task_closure_sizes,
-            &function_has_ret,
-            &multi_return_candidates,
-        );
+        self.emit_table_abi_trampolines(&callable_table, reloc_enabled);
 
         let callable_table_elements = self.emit_table_elements(
             &callable_table,
