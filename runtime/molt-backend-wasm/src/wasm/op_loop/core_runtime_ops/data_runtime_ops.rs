@@ -1,5 +1,10 @@
 use super::super::result_sink::store_non_none_result_or_drop;
-use super::super::*;
+use crate::representation_plan::ScalarRepresentationPlan;
+use crate::wasm::{WasmFrameLocals, WasmFrameSyntheticLocal};
+use crate::wasm_binary::emit_call;
+use crate::wasm_import_tracking::TrackedImportIds;
+use crate::{FunctionIR, OpIR};
+use wasm_encoder::{BlockType, Function, Instruction};
 
 #[allow(unused_variables)]
 pub(super) fn emit_data_runtime_op(

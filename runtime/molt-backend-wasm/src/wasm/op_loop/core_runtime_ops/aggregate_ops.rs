@@ -1,5 +1,9 @@
 use super::super::super::multi_return_layout::WasmMultiReturnLayout;
-use super::super::*;
+use crate::representation_plan::ScalarRepresentationPlan;
+use crate::wasm::WasmFrameLocals;
+use crate::wasm_import_tracking::TrackedImportIds;
+use crate::{FunctionIR, OpIR};
+use wasm_encoder::Function;
 
 #[path = "aggregate_ops/callargs_ops.rs"]
 mod callargs_ops;

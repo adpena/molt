@@ -1,5 +1,12 @@
 use super::super::multi_return_layout::WasmMultiReturnLayout;
-use super::*;
+use crate::representation_plan::ScalarRepresentationPlan;
+use crate::wasm::WasmFrameLocals;
+use crate::wasm_binary::emit_call;
+use crate::wasm_import_tracking::TrackedImportIds;
+use crate::wasm_plan::wasm_scalar_truthiness_fast_path_for_name;
+use crate::wasm_values::emit_box_bool_from_i32;
+use crate::{FunctionIR, OpIR};
+use wasm_encoder::{BlockType, Function, Instruction, ValType};
 
 #[path = "core_runtime_ops/aggregate_ops.rs"]
 mod aggregate_ops;
