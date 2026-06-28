@@ -240,6 +240,25 @@ def _build_checks() -> list[Check]:
     )
     checks.append(
         Check(
+            # Int-lane carrier-store unification firewall: prove the native
+            # name-keyed carrier authority agrees with value-range proof, and
+            # reject boxed-result-as-raw fragmentation.
+            name="repr-carrier-unification",
+            tier=1,
+            cmd=[
+                "cargo",
+                "test",
+                "-p",
+                "molt-tir",
+                "--test",
+                "representation_unification",
+            ],
+            timeout=180,
+            needs_rust=True,
+        )
+    )
+    checks.append(
+        Check(
             name="correspondence-check",
             tier=1,
             cmd=_uv_run(str(TOOLS / "check_correspondence.py"), "--json"),
