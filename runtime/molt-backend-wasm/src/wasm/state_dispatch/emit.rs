@@ -10,7 +10,14 @@ use super::common::{
 use super::stateful_ops::{
     emit_chan_recv_yield, emit_chan_send_yield, emit_state_transition, emit_state_yield,
 };
-use super::*;
+use super::super::control_flow::ControlKind;
+use super::super::op_loop::WasmFunctionEmitContext;
+use super::DispatchMode;
+use super::plan::{NonLinearDispatchLocals, NonLinearDispatchPlan};
+use crate::wasm_binary::emit_call;
+use crate::wasm_values::emit_branch_truthiness_i32;
+use std::collections::BTreeMap;
+use wasm_encoder::{BlockType, Function, Instruction};
 
 pub(in crate::wasm) fn emit_stateful_dispatch(
     func: &mut Function,
