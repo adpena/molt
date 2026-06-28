@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 from molt.frontend import compile_to_tir
+from molt.dx import development_artifact_env
 
 from tests.native_process_guard import run_native_test_process
 
@@ -15,16 +16,15 @@ SESSION_ID = "pytest-gpu-kernel-compiled"
 
 
 def _native_env() -> dict[str, str]:
-    env = os.environ.copy()
+    env = development_artifact_env(
+        ROOT,
+        os.environ,
+        session_prefix="gpu-kernel-compiled",
+        session_id=SESSION_ID,
+        create_dirs=True,
+    )
     env["PYTHONPATH"] = str(SRC_DIR)
     env["MOLT_SESSION_ID"] = SESSION_ID
-    env["CARGO_TARGET_DIR"] = str(ROOT / "target")
-    env["MOLT_DIFF_CARGO_TARGET_DIR"] = str(ROOT / "target")
-    env["MOLT_CACHE"] = str(ROOT / ".molt_cache")
-    env["MOLT_DIFF_ROOT"] = str(ROOT / "tmp" / "diff")
-    env["MOLT_DIFF_TMPDIR"] = str(ROOT / "tmp")
-    env["UV_CACHE_DIR"] = str(ROOT / ".uv-cache")
-    env["TMPDIR"] = str(ROOT / "tmp")
     env["MOLT_BACKEND_DAEMON"] = "0"
     return env
 

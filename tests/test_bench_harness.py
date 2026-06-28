@@ -68,7 +68,10 @@ def test_bench_harness_run_cmd_uses_memory_guard(
     assert call["timeout"] == 9.0
     assert call["env"]["MOLT_EXT_ROOT"] == str(bench_harness.REPO_ROOT)
     assert call["env"]["CARGO_TARGET_DIR"] == str(
-        bench_harness.REPO_ROOT / "target" / "sessions" / call["env"]["MOLT_SESSION_ID"]
+        molt_dx.cargo_target_dir_for_artifact_root(
+            bench_harness.REPO_ROOT,
+            call["env"]["MOLT_SESSION_ID"],
+        )
     )
     assert call["env"]["TMPDIR"] == str(bench_harness.REPO_ROOT / "tmp")
 

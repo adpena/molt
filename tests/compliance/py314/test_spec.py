@@ -12,10 +12,28 @@ from pathlib import Path
 
 import pytest
 
+from molt.dx import development_artifact_env
 from tests.compliance.process_guard import run_compliance_process
 
 MOLT_DIR = Path(__file__).resolve().parents[3]
 ARTIFACT_ROOT = Path(os.environ.get("MOLT_EXT_ROOT", str(MOLT_DIR))).expanduser()
+
+
+def _molt_build_env() -> dict[str, str]:
+    env = development_artifact_env(
+        MOLT_DIR,
+        {**os.environ, "MOLT_EXT_ROOT": str(ARTIFACT_ROOT)},
+        session_prefix="compliance-py314",
+        session_id=os.environ.get("MOLT_SESSION_ID") or "compliance-py314",
+        create_dirs=True,
+    )
+    env.update(
+        {
+            "RUSTC_WRAPPER": "",
+            "PYTHONPATH": str(MOLT_DIR / "src"),
+        }
+    )
+    return env
 
 
 def _python_for(min_version: tuple[int, int]) -> str:
@@ -63,15 +81,7 @@ def _compile_and_run(
         src_path.write_text(python_source)
         binary_path = Path(tmp) / "test_input_molt"
 
-        env = {
-            **os.environ,
-            "MOLT_EXT_ROOT": str(ARTIFACT_ROOT),
-            "CARGO_TARGET_DIR": os.environ.get(
-                "CARGO_TARGET_DIR", str(ARTIFACT_ROOT / "target")
-            ),
-            "RUSTC_WRAPPER": "",
-            "PYTHONPATH": str(MOLT_DIR / "src"),
-        }
+        env = _molt_build_env()
 
         build = run_compliance_process(
             [
@@ -129,15 +139,7 @@ def _compile_source(
         ]
         if target is not None:
             args.extend(["--python-version", target])
-        env = {
-            **os.environ,
-            "MOLT_EXT_ROOT": str(ARTIFACT_ROOT),
-            "CARGO_TARGET_DIR": os.environ.get(
-                "CARGO_TARGET_DIR", str(ARTIFACT_ROOT / "target")
-            ),
-            "RUSTC_WRAPPER": "",
-            "PYTHONPATH": str(MOLT_DIR / "src"),
-        }
+        env = _molt_build_env()
         return run_compliance_process(
             args,
             capture_output=True,

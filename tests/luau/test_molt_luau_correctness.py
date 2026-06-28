@@ -12,15 +12,41 @@ and asserts identical stdout to CPython. This catches:
 """
 
 import os
+from pathlib import Path
 import sys
 import tempfile
 import time
 import pytest
 
+from molt.dx import development_artifact_env
 from tests.native_process_guard import run_native_test_process
 
 MOLT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 ARTIFACT_ROOT = os.environ.get("MOLT_EXT_ROOT", MOLT_DIR)
+
+
+def _luau_build_env() -> dict[str, str]:
+    root = Path(MOLT_DIR)
+    env = development_artifact_env(
+        root,
+        {**os.environ, "MOLT_EXT_ROOT": ARTIFACT_ROOT},
+        session_prefix="luau-correctness",
+        session_id=os.environ.get("MOLT_SESSION_ID") or "luau-correctness",
+        create_dirs=True,
+    )
+    env.update(
+        {
+            "MOLT_USE_SCCACHE": "0",
+            "RUSTC_WRAPPER": "",
+            "PYTHONPATH": os.path.join(MOLT_DIR, "src"),
+            "MOLT_DEV_CARGO_PROFILE": os.environ.get(
+                "MOLT_DEV_CARGO_PROFILE", "release-fast"
+            ),
+            "UV_LINK_MODE": os.environ.get("UV_LINK_MODE", "copy"),
+            "UV_NO_SYNC": os.environ.get("UV_NO_SYNC", "1"),
+        }
+    )
+    return env
 
 
 def _compile_and_run(python_source: str, *, expect_fail: bool = False) -> str:
@@ -31,22 +57,7 @@ def _compile_and_run(python_source: str, *, expect_fail: bool = False) -> str:
 
     luau_path = py_path.replace(".py", ".luau")
     try:
-        env = {
-            **os.environ,
-            "MOLT_EXT_ROOT": ARTIFACT_ROOT,
-            "CARGO_TARGET_DIR": os.environ.get(
-                "CARGO_TARGET_DIR",
-                os.path.join(ARTIFACT_ROOT, "target"),
-            ),
-            "MOLT_USE_SCCACHE": "0",
-            "RUSTC_WRAPPER": "",
-            "PYTHONPATH": os.path.join(MOLT_DIR, "src"),
-            "MOLT_DEV_CARGO_PROFILE": os.environ.get(
-                "MOLT_DEV_CARGO_PROFILE", "release-fast"
-            ),
-            "UV_LINK_MODE": os.environ.get("UV_LINK_MODE", "copy"),
-            "UV_NO_SYNC": os.environ.get("UV_NO_SYNC", "1"),
-        }
+        env = _luau_build_env()
         build_timeout = int(os.environ.get("MOLT_LUAU_BUILD_TIMEOUT", "900"))
         py_exec = sys.executable or "python3"
         result = run_native_test_process(
@@ -615,16 +626,7 @@ class TestPerformance:
 
         luau_path = py_path.replace(".py", ".luau")
         try:
-            env = {
-                **os.environ,
-                "MOLT_EXT_ROOT": ARTIFACT_ROOT,
-                "CARGO_TARGET_DIR": os.environ.get(
-                    "CARGO_TARGET_DIR",
-                    os.path.join(ARTIFACT_ROOT, "target"),
-                ),
-                "RUSTC_WRAPPER": "",
-                "PYTHONPATH": os.path.join(MOLT_DIR, "src"),
-            }
+            env = _luau_build_env()
             t0 = time.perf_counter()
             result = run_native_test_process(
                 [

@@ -64,6 +64,7 @@ if str(_SRC_DIR) not in sys.path:
 
 import molt.cli as molt_cli  # noqa: E402
 from molt.cli import build_inputs as cli_build_inputs  # noqa: E402
+from molt.dx import cargo_target_dir_for_artifact_root  # noqa: E402
 
 _DEFAULT_TIMEOUT = int(os.environ.get("MOLT_TV_TIMEOUT", "60"))
 _DEFAULT_BUILD_PROFILE = os.environ.get("MOLT_TV_BUILD_PROFILE", "dev")
@@ -97,7 +98,10 @@ def _cargo_target_root(env: Mapping[str, str] | None = None) -> Path:
     explicit = env_view.get("CARGO_TARGET_DIR")
     if explicit:
         return Path(explicit).expanduser()
-    return _artifact_root(env_view) / "target"
+    return cargo_target_dir_for_artifact_root(
+        _artifact_root(env_view),
+        env_view.get("MOLT_SESSION_ID") or f"translation-validate-{os.getpid()}",
+    )
 
 
 def _resolve_target_python(

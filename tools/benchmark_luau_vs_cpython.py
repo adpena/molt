@@ -19,7 +19,7 @@ Usage:
 
 Environment:
     MOLT_EXT_ROOT=<artifact-root>   # optional; defaults repo-local
-    CARGO_TARGET_DIR=<artifact-root>/target
+    CARGO_TARGET_DIR=<artifact-root>/target/sessions/$MOLT_SESSION_ID
     RUSTC_WRAPPER=""
     PYTHONPATH=src
 """
@@ -35,11 +35,15 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 TOOLS_ROOT = REPO_ROOT / "tools"
+SRC_ROOT = REPO_ROOT / "src"
 if str(TOOLS_ROOT) not in sys.path:
     sys.path.insert(0, str(TOOLS_ROOT))
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
 
 import harness_memory_guard  # noqa: E402
 import perf_authority  # noqa: E402
+from molt.dx import development_artifact_env  # noqa: E402
 
 
 def _artifact_root() -> Path:
@@ -154,16 +158,20 @@ def compile_to_luau(
     limits: harness_memory_guard.HarnessMemoryLimits | None = None,
 ) -> tuple[bool, float]:
     """Compile Python source to Luau via Molt. Returns (success, compile_time_s)."""
-    artifact_root = _artifact_root()
-    env = {
-        **os.environ,
-        "MOLT_EXT_ROOT": str(artifact_root),
-        "CARGO_TARGET_DIR": os.environ.get(
-            "CARGO_TARGET_DIR", str(artifact_root / "target")
-        ),
-        "RUSTC_WRAPPER": "",
-        "PYTHONPATH": "src",
-    }
+    env = development_artifact_env(
+        REPO_ROOT,
+        os.environ,
+        session_prefix="bench-luau-vs-cpython",
+        session_id=os.environ.get("MOLT_SESSION_ID")
+        or f"bench-luau-vs-cpython-{os.getpid()}",
+        create_dirs=True,
+    )
+    env.update(
+        {
+            "RUSTC_WRAPPER": "",
+            "PYTHONPATH": str(REPO_ROOT / "src"),
+        }
+    )
     t0 = time.perf_counter()
     try:
         proc = harness_memory_guard.guarded_completed_process(

@@ -9,6 +9,7 @@ import sys
 import tempfile
 from pathlib import Path
 
+from molt.dx import development_artifact_env
 from tests.rust.process_guard import run_rust_test_process
 
 MOLT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -16,25 +17,26 @@ MOLT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__fil
 
 def pytest_configure(config):
     """Pre-warm the molt backend daemon before any tests run."""
-    ext_root = os.environ.get("MOLT_EXT_ROOT", MOLT_DIR)
-    cargo_target = os.environ.get(
-        "CARGO_TARGET_DIR",
-        os.path.join(ext_root, "target"),
+    root = Path(MOLT_DIR)
+    env = development_artifact_env(
+        root,
+        os.environ,
+        session_prefix="rust-tests",
+        session_id=os.environ.get("MOLT_SESSION_ID") or "rust-tests",
+        create_dirs=True,
     )
-    Path(cargo_target).mkdir(parents=True, exist_ok=True)
-    env = {
-        **os.environ,
-        "MOLT_EXT_ROOT": ext_root,
-        "CARGO_TARGET_DIR": cargo_target,
-        "MOLT_USE_SCCACHE": "0",
-        "RUSTC_WRAPPER": "",
-        "PYTHONPATH": os.path.join(MOLT_DIR, "src"),
-        "MOLT_DEV_CARGO_PROFILE": os.environ.get(
-            "MOLT_DEV_CARGO_PROFILE", "release-fast"
-        ),
-        "UV_LINK_MODE": os.environ.get("UV_LINK_MODE", "copy"),
-        "UV_NO_SYNC": os.environ.get("UV_NO_SYNC", "1"),
-    }
+    env.update(
+        {
+            "MOLT_USE_SCCACHE": "0",
+            "RUSTC_WRAPPER": "",
+            "PYTHONPATH": os.path.join(MOLT_DIR, "src"),
+            "MOLT_DEV_CARGO_PROFILE": os.environ.get(
+                "MOLT_DEV_CARGO_PROFILE", "release-fast"
+            ),
+            "UV_LINK_MODE": os.environ.get("UV_LINK_MODE", "copy"),
+            "UV_NO_SYNC": os.environ.get("UV_NO_SYNC", "1"),
+        }
+    )
     try:
         with tempfile.NamedTemporaryFile(suffix=".py", mode="w", delete=False) as f:
             f.write("print(1)\n")

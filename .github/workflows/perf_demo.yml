@@ -16,8 +16,8 @@ jobs:
     runs-on: ubuntu-latest
     env:
       MOLT_SESSION_ID: perf-demo-${{ github.run_id }}-${{ github.run_attempt }}
-      CARGO_TARGET_DIR: ${{ github.workspace }}/target
-      MOLT_DIFF_CARGO_TARGET_DIR: ${{ github.workspace }}/target
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target/sessions/perf-demo-${{ github.run_id }}-${{ github.run_attempt }}
+      MOLT_DIFF_CARGO_TARGET_DIR: ${{ github.workspace }}/target/sessions/perf-demo-${{ github.run_id }}-${{ github.run_attempt }}
       MOLT_CACHE: ${{ github.workspace }}/.molt_cache
       TMPDIR: ${{ github.workspace }}/tmp
       UV_CACHE_DIR: ${{ github.workspace }}/.uv-cache
