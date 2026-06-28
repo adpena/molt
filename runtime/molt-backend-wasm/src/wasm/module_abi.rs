@@ -8,16 +8,13 @@ use runtime_surface::WasmRuntimeSurfacePlan;
 use crate::SimpleIR;
 use crate::wasm_abi::emit_static_type_section;
 
-mod callable_layout;
 mod callable_table;
 mod finalize;
 mod host_surface;
 mod imports;
 mod poll_table;
-mod runtime_callables;
 mod runtime_import_demand;
 mod runtime_surface;
-mod trampoline_emit;
 mod type_layout;
 
 use finalize::WasmModuleFinalizationInput;

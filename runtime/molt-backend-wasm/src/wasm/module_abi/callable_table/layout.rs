@@ -2,15 +2,15 @@ use std::collections::BTreeMap;
 
 use wasm_encoder::{EntityType, ExportKind, RefType, TableType};
 
-use super::callable_table::{WasmCallableTablePlan, WasmCallableTrampolineEntry};
-use super::poll_table::WasmPollTableLayout;
+use super::super::poll_table::WasmPollTableLayout;
 use super::runtime_callables::WasmRuntimeCallableTablePlan;
+use super::{WasmCallableTablePlan, WasmCallableTrampolineEntry};
 use crate::wasm::WasmBackend;
 use crate::wasm_abi::{RESERVED_RUNTIME_CALLABLE_COUNT, RESERVED_RUNTIME_CALLABLE_SPECS};
 use crate::{SimpleIR, TrampolineKind, TrampolineSpec};
 
 impl WasmBackend {
-    pub(super) fn build_table_abi(
+    pub(in crate::wasm::module_abi) fn build_table_abi(
         &mut self,
         ir: &SimpleIR,
         builtin_trampoline_specs: &BTreeMap<String, usize>,
