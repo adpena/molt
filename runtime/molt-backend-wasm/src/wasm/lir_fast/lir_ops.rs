@@ -1,8 +1,8 @@
 use super::lir_context::LirLowerCtx;
 use super::lir_scalar::{
     emit_get_boxed_for_repr, emit_lir_binary_arith, emit_lir_bitwise, emit_lir_bool_select,
-    emit_lir_comparison, emit_lir_i64_binary_or_boxed, emit_lir_truthiness_i32,
-    emit_lir_unary_arith,
+    emit_lir_comparison, emit_lir_i64_binary_or_boxed, emit_lir_identity_comparison,
+    emit_lir_truthiness_i32, emit_lir_unary_arith,
 };
 use crate::wasm::body::WasmLirFallbackReason;
 use crate::wasm::const_materialization::{WasmConstMaterializationScratch, WasmConstOpPolicy};
@@ -276,6 +276,8 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
         OpCode::Le => emit_lir_comparison(ctx, op, CmpOp::Le),
         OpCode::Gt => emit_lir_comparison(ctx, op, CmpOp::Gt),
         OpCode::Ge => emit_lir_comparison(ctx, op, CmpOp::Ge),
+        OpCode::Is => emit_lir_identity_comparison(ctx, op, false),
+        OpCode::IsNot => emit_lir_identity_comparison(ctx, op, true),
         OpCode::BitAnd => emit_lir_bitwise(ctx, op, BitwiseOp::And),
         OpCode::BitOr => emit_lir_bitwise(ctx, op, BitwiseOp::Or),
         OpCode::BitXor => emit_lir_bitwise(ctx, op, BitwiseOp::Xor),
@@ -421,8 +423,6 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
         | OpCode::ModuleDelGlobal
         | OpCode::ModuleDelGlobalIfPresent
         | OpCode::Pow
-        | OpCode::Is
-        | OpCode::IsNot
         | OpCode::In
         | OpCode::NotIn
         | OpCode::Raise
