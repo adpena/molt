@@ -40,10 +40,10 @@ pub use super::ops_sys::molt_set_argv_utf16;
 pub(crate) use super::ops_sys::parse_codec_arg;
 pub use super::ops_sys::{
     molt_chr, molt_ellipsis, molt_gc_collect, molt_gc_disable, molt_gc_enable, molt_gc_get_count,
-    molt_gc_get_debug, molt_gc_get_threshold, molt_gc_isenabled, molt_gc_set_debug,
-    molt_gc_set_threshold, molt_getargv, molt_getpid, molt_getrecursionlimit, molt_hash_builtin,
-    molt_id, molt_int_from_bytes, molt_int_to_bytes, molt_len, molt_len_dict, molt_len_list,
-    molt_len_set, molt_len_str, molt_len_tuple, molt_missing, molt_not_implemented,
+    molt_gc_get_debug, molt_gc_get_threshold, molt_gc_is_tracked, molt_gc_isenabled,
+    molt_gc_set_debug, molt_gc_set_threshold, molt_getargv, molt_getpid, molt_getrecursionlimit,
+    molt_hash_builtin, molt_id, molt_int_from_bytes, molt_int_to_bytes, molt_len, molt_len_dict,
+    molt_len_list, molt_len_set, molt_len_str, molt_len_tuple, molt_missing, molt_not_implemented,
     molt_object_hash, molt_pending, molt_raise_recursion_error, molt_recursion_enter_fast,
     molt_recursion_exit_fast, molt_recursion_guard_enter, molt_recursion_guard_exit, molt_set_argv,
     molt_setrecursionlimit, molt_signal_raise, molt_sys_abiflags, molt_sys_api_version,

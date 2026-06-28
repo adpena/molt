@@ -1,13 +1,15 @@
 use crate::wasm_abi::RELOC_TABLE_BASE_DEFAULT;
 
-/// WASM profile for import stripping (see docs/architecture/wasm-import-stripping.md section 3A).
-/// `Full` registers all host imports; `Pure` omits IO, ASYNC, and TIME categories
-/// so the resulting module only depends on core runtime + arithmetic + collections.
+/// WASM profile for import planning.
+/// `Full` registers the whole generated host-import registry for process-host
+/// compatibility. `Pure` and `Auto` use the runtime-surface planner so modules
+/// import only the runtime functions observed from IR, with `Pure` additionally
+/// failing closed for the generated process/IO/time capability families.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WasmProfile {
     Full,
     Pure,
-    /// Scan IR to include only imports that are actually used (plus a generous core set).
+    /// Scan IR to include only imports that are actually used.
     Auto,
 }
 
@@ -21,7 +23,7 @@ pub struct WasmCompileOptions {
     /// Enabled by default for non-relocatable wasm output; set
     /// `MOLT_WASM_NATIVE_EH=0` to disable explicitly.
     pub native_eh_enabled: bool,
-    /// WASM profile for compile-time import stripping.
+    /// WASM profile for compile-time import planning.
     /// Gated by `MOLT_WASM_PROFILE` environment variable ("full" or "pure").
     pub wasm_profile: WasmProfile,
 }

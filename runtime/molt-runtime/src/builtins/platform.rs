@@ -104,6 +104,8 @@ static LOCALE_STATE: OnceLock<Mutex<String>> = OnceLock::new();
 static UUID_NODE_STATE: OnceLock<Mutex<Option<u64>>> = OnceLock::new();
 static UUID_V1_STATE: OnceLock<Mutex<(Option<u16>, u64)>> = OnceLock::new();
 static EXTENSION_METADATA_OK_CACHE: OnceLock<Mutex<BTreeMap<String, String>>> = OnceLock::new();
+#[cfg(all(feature = "source_extension_loader", not(target_arch = "wasm32")))]
+static SOURCE_EXTENSION_LIBRARIES: OnceLock<Mutex<Vec<libloading::Library>>> = OnceLock::new();
 static EXTENSION_METADATA_CACHE_HITS: AtomicU64 = AtomicU64::new(0);
 static EXTENSION_METADATA_CACHE_MISSES: AtomicU64 = AtomicU64::new(0);
 const UUID_EPOCH_100NS: u64 = 0x01B21DD213814000;
@@ -1131,6 +1133,124 @@ fn importlib_extension_exec_unavailable(
         message.push(')');
     }
     raise_exception::<u64>(_py, "ImportError", message.as_str())
+}
+
+#[cfg(all(feature = "source_extension_loader", not(target_arch = "wasm32")))]
+fn source_extension_libraries() -> &'static Mutex<Vec<libloading::Library>> {
+    SOURCE_EXTENSION_LIBRARIES.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+#[cfg(all(feature = "source_extension_loader", not(target_arch = "wasm32")))]
+fn source_extension_merge_module_dict(
+    _py: &PyToken<'_>,
+    namespace_ptr: *mut u8,
+    module_bits: u64,
+) -> Result<(), String> {
+    let Some(module_ptr) = obj_from_bits(module_bits).as_ptr() else {
+        return Err("PyInit returned an invalid module handle".to_string());
+    };
+    if unsafe { object_type_id(module_ptr) } != TYPE_ID_MODULE {
+        return Err("PyInit returned a non-module object".to_string());
+    }
+    let module_dict_bits = unsafe { crate::object::layout::module_dict_bits(module_ptr) };
+    let Some(dict_ptr) = obj_from_bits(module_dict_bits).as_ptr() else {
+        return Err("PyInit module has no dictionary".to_string());
+    };
+    if unsafe { object_type_id(dict_ptr) } != TYPE_ID_DICT {
+        return Err("PyInit module dictionary is not a dict".to_string());
+    }
+    unsafe {
+        crate::object::ops_dict::dict_update_apply(
+            _py,
+            MoltObject::from_ptr(namespace_ptr).bits(),
+            crate::object::ops_dict::dict_update_set_in_place,
+            module_dict_bits,
+        );
+    }
+    if exception_pending(_py) {
+        clear_exception(_py);
+        return Err("module dictionary merge raised".to_string());
+    }
+    Ok(())
+}
+
+#[cfg(all(feature = "source_extension_loader", not(target_arch = "wasm32")))]
+fn source_extension_install_sys_module(
+    _py: &PyToken<'_>,
+    module_name: &str,
+    module_bits: u64,
+) -> Result<(), String> {
+    let modules_bits = match importlib_runtime_modules_bits(_py) {
+        Ok(bits) => bits,
+        Err(_) => {
+            if exception_pending(_py) {
+                clear_exception(_py);
+            }
+            return Err("failed to access sys.modules".to_string());
+        }
+    };
+    let Some(modules_ptr) = obj_from_bits(modules_bits).as_ptr() else {
+        return Err("sys.modules is not a dict".to_string());
+    };
+    if unsafe { object_type_id(modules_ptr) } != TYPE_ID_DICT {
+        return Err("sys.modules is not a dict".to_string());
+    }
+    let name_bits = match alloc_str_bits(_py, module_name) {
+        Ok(bits) => bits,
+        Err(_) => {
+            if exception_pending(_py) {
+                clear_exception(_py);
+            }
+            return Err("failed to allocate sys.modules key".to_string());
+        }
+    };
+    let set_result = importlib_dict_set_string_key(_py, modules_ptr, name_bits, module_bits);
+    if !obj_from_bits(name_bits).is_none() {
+        dec_ref_bits(_py, name_bits);
+    }
+    if set_result.is_err() {
+        if exception_pending(_py) {
+            clear_exception(_py);
+        }
+        return Err("failed to install source extension in sys.modules".to_string());
+    }
+    Ok(())
+}
+
+#[cfg(all(feature = "source_extension_loader", not(target_arch = "wasm32")))]
+fn source_extension_loader_dlopen(
+    _py: &PyToken<'_>,
+    namespace_ptr: *mut u8,
+    module_name: &str,
+    path: &str,
+    init_symbol: &str,
+) -> Result<(), String> {
+    type InitFn = unsafe extern "C" fn() -> *mut u8;
+    let library = unsafe { libloading::Library::new(Path::new(path)) }
+        .map_err(|err| format!("dlopen failed: {err}"))?;
+    let module_ptr = {
+        let init_fn: libloading::Symbol<'_, InitFn> = unsafe {
+            library
+                .get(init_symbol.as_bytes())
+                .map_err(|err| format!("missing init symbol {init_symbol}: {err}"))?
+        };
+        unsafe { init_fn() }
+    };
+    if exception_pending(_py) {
+        clear_exception(_py);
+        return Err(format!("{init_symbol} raised during initialization"));
+    }
+    if module_ptr.is_null() {
+        return Err(format!("{init_symbol} returned NULL"));
+    }
+    let module_bits = module_ptr as usize as u64;
+    source_extension_merge_module_dict(_py, namespace_ptr, module_bits)?;
+    source_extension_install_sys_module(_py, module_name, module_bits)?;
+    let mut guard = source_extension_libraries()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    guard.push(library);
+    Ok(())
 }
 
 /// Load a native C extension (.so/.dylib/.pyd) via dlopen and inject its

@@ -116,38 +116,6 @@ pub(super) fn emit_call_op(
                 }
             }
         }
-        "store_var" => {
-            let args_names = op.args.as_ref().expect("store_var args missing");
-            let src_name = args_names
-                .first()
-                .expect("store_var requires one source arg");
-            let src = locals[src_name];
-            let dst_name = op
-                .var
-                .as_ref()
-                .or(op.out.as_ref())
-                .expect("store_var requires destination");
-            let dst = locals[dst_name];
-            func.instruction(&Instruction::LocalGet(src));
-            func.instruction(&Instruction::LocalSet(dst));
-        }
-        "load_var" | "copy_var" | "copy" | "identity_alias" | "binding_alias" => {
-            let src_name = op
-                .var
-                .as_ref()
-                .or_else(|| op.args.as_ref().and_then(|args| args.first()))
-                .expect("load_var/copy_var requires source");
-            let src = locals[src_name];
-            if let Some(out_name) = op.out.as_ref()
-                && out_name != "none"
-            {
-                func.instruction(&Instruction::LocalGet(src));
-                emit_call(func, reloc_enabled, import_ids["inc_ref_obj"]);
-                let out = locals[out_name];
-                func.instruction(&Instruction::LocalGet(src));
-                func.instruction(&Instruction::LocalSet(out));
-            }
-        }
         "box" | "unbox" | "cast" | "widen" => {
             let args_names = op.args.as_ref().expect("conversion args missing");
             let src_name = args_names

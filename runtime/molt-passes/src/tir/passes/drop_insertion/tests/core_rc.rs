@@ -978,6 +978,234 @@ fn loop_carried_phi_dropped_on_backedge() {
 /// uninitialized. The local lifetime rail must therefore not schedule an
 /// unconditional return-boundary `DecRef(value)` in the exit block.
 #[test]
+fn loop_reassign_phi_dropped_on_backedge() {
+    let mut func = TirFunction::new("reassign".into(), vec![], TirType::I64);
+    let item0 = func.fresh_value();
+    let d0 = func.fresh_value();
+    let d_phi = func.fresh_value();
+    let cond = func.fresh_value();
+    let item = func.fresh_value();
+    let d_new = func.fresh_value();
+    let used = func.fresh_value();
+    let r = func.fresh_value();
+    for value in [item0, d0, d_phi, item, d_new, used] {
+        func.value_types.insert(value, TirType::DynBox);
+    }
+    func.value_types.insert(cond, TirType::Bool);
+    func.value_types.insert(r, TirType::I64);
+
+    let header = func.fresh_block();
+    let cond_block = func.fresh_block();
+    let body = func.fresh_block();
+    let exit = func.fresh_block();
+    let entry = func.entry_block;
+    {
+        let block = func.blocks.get_mut(&entry).unwrap();
+        block.ops.push(const_str(item0));
+        block.ops.push(op(OpCode::BuildList, vec![item0], vec![d0]));
+        block.terminator = Terminator::Branch {
+            target: header,
+            args: vec![d0],
+        };
+    }
+    func.blocks.insert(
+        header,
+        TirBlock {
+            id: header,
+            args: vec![TirValue {
+                id: d_phi,
+                ty: TirType::DynBox,
+            }],
+            ops: vec![],
+            terminator: Terminator::Branch {
+                target: cond_block,
+                args: vec![],
+            },
+        },
+    );
+    func.blocks.insert(
+        cond_block,
+        TirBlock {
+            id: cond_block,
+            args: vec![],
+            ops: vec![op(OpCode::ConstBool, vec![], vec![cond])],
+            terminator: Terminator::CondBranch {
+                cond,
+                then_block: body,
+                then_args: vec![],
+                else_block: exit,
+                else_args: vec![],
+            },
+        },
+    );
+    func.blocks.insert(
+        body,
+        TirBlock {
+            id: body,
+            args: vec![],
+            ops: vec![
+                const_str(item),
+                op(OpCode::BuildList, vec![item], vec![d_new]),
+                op(OpCode::Call, vec![d_new], vec![used]),
+            ],
+            terminator: Terminator::Branch {
+                target: header,
+                args: vec![d_new],
+            },
+        },
+    );
+    func.blocks.insert(
+        exit,
+        TirBlock {
+            id: exit,
+            args: vec![],
+            ops: vec![op(OpCode::ConstInt, vec![], vec![r])],
+            terminator: Terminator::Return { values: vec![r] },
+        },
+    );
+    func.loop_roles.insert(header, LoopRole::LoopHeader);
+
+    let mut am = AnalysisManager::new();
+    run(&mut func, &mut am);
+
+    let body_drops: Vec<ValueId> = func.blocks[&body]
+        .ops
+        .iter()
+        .filter(|op| op.opcode == OpCode::DecRef)
+        .map(|op| op.operands[0])
+        .collect();
+    assert!(
+        body_drops.contains(&d_phi),
+        "pure-reassignment loop-carried phi must be dropped on the back-edge; body drops={body_drops:?}",
+    );
+
+    let aliases = crate::tir::passes::alias_analysis::build_alias_union_find(&func);
+    for block in func.blocks.values() {
+        let mut roots: HashSet<ValueId> = HashSet::new();
+        for op in &block.ops {
+            if op.opcode == OpCode::DecRef {
+                assert!(
+                    roots.insert(aliases.root(op.operands[0])),
+                    "double-drop in one block: {:?}",
+                    block.ops,
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn loop_reassign_backedge_decref_survives_refcount_elim_post() {
+    let mut func = TirFunction::new("reassign_elim".into(), vec![], TirType::I64);
+    let item0 = func.fresh_value();
+    let d0 = func.fresh_value();
+    let d_phi = func.fresh_value();
+    let cond = func.fresh_value();
+    let item = func.fresh_value();
+    let d_new = func.fresh_value();
+    let used = func.fresh_value();
+    let r = func.fresh_value();
+    for value in [item0, d0, d_phi, item, d_new, used] {
+        func.value_types.insert(value, TirType::DynBox);
+    }
+    func.value_types.insert(cond, TirType::Bool);
+    func.value_types.insert(r, TirType::I64);
+
+    let header = func.fresh_block();
+    let cond_block = func.fresh_block();
+    let body = func.fresh_block();
+    let exit = func.fresh_block();
+    let entry = func.entry_block;
+    {
+        let block = func.blocks.get_mut(&entry).unwrap();
+        block.ops.push(const_str(item0));
+        block.ops.push(op(OpCode::BuildList, vec![item0], vec![d0]));
+        block.terminator = Terminator::Branch {
+            target: header,
+            args: vec![d0],
+        };
+    }
+    func.blocks.insert(
+        header,
+        TirBlock {
+            id: header,
+            args: vec![TirValue {
+                id: d_phi,
+                ty: TirType::DynBox,
+            }],
+            ops: vec![],
+            terminator: Terminator::Branch {
+                target: cond_block,
+                args: vec![],
+            },
+        },
+    );
+    func.blocks.insert(
+        cond_block,
+        TirBlock {
+            id: cond_block,
+            args: vec![],
+            ops: vec![op(OpCode::ConstBool, vec![], vec![cond])],
+            terminator: Terminator::CondBranch {
+                cond,
+                then_block: body,
+                then_args: vec![],
+                else_block: exit,
+                else_args: vec![],
+            },
+        },
+    );
+    func.blocks.insert(
+        body,
+        TirBlock {
+            id: body,
+            args: vec![],
+            ops: vec![
+                const_str(item),
+                op(OpCode::BuildList, vec![item], vec![d_new]),
+                op(OpCode::Call, vec![d_new], vec![used]),
+            ],
+            terminator: Terminator::Branch {
+                target: header,
+                args: vec![d_new],
+            },
+        },
+    );
+    func.blocks.insert(
+        exit,
+        TirBlock {
+            id: exit,
+            args: vec![],
+            ops: vec![op(OpCode::ConstInt, vec![], vec![r])],
+            terminator: Terminator::Return { values: vec![r] },
+        },
+    );
+    func.loop_roles.insert(header, LoopRole::LoopHeader);
+
+    let mut am = AnalysisManager::new();
+    run(&mut func, &mut am);
+
+    assert!(
+        func.blocks[&body]
+            .ops
+            .iter()
+            .any(|op| op.opcode == OpCode::DecRef && op.operands[0] == d_phi),
+        "precondition: drop_insertion must emit the back-edge DecRef(d_phi)",
+    );
+
+    let mut am2 = AnalysisManager::new();
+    crate::tir::passes::refcount_elim::run_post_drop(&mut func, &mut am2);
+
+    assert!(
+        func.blocks
+            .values()
+            .flat_map(|block| block.ops.iter())
+            .any(|op| op.opcode == OpCode::DecRef && op.operands[0] == d_phi),
+        "the back-edge DecRef(d_phi) must survive refcount_elim::run_post_drop",
+    );
+}
+
+#[test]
 fn iter_next_unboxed_del_boundary_not_dropped_on_done_return_boundary() {
     let mut func = TirFunction::new(
         "iter_next_conditional_local_boundary".into(),

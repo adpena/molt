@@ -40,7 +40,7 @@ pub(super) fn retain_live_object_locals(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::wasm::function_frame::WasmLiteralPayload;
+    use crate::wasm::frame_locals::WasmLiteralPayload;
 
     #[test]
     fn call_retention_uses_typed_local_kind_not_name_shape() {

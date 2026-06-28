@@ -1,6 +1,6 @@
 # Friend Benchmarks
 
-Last updated: 2026-06-20
+Last updated: 2026-06-27
 
 Friend-owned suites are configured by `bench/friends/manifest.toml` and executed with `tools/bench_friends.py`.
 Manifest commands use `{python}` for the harness/base interpreter, especially
@@ -102,9 +102,12 @@ UV_NO_SYNC=1 uv run --python 3.12 python3 tools/bench_friends.py \
   Do not commit one-off result bundles; publish durable summaries through
   `docs/benchmarks/friend_summary.md` only when the run is meant to become
   project evidence.
-- `numpy_off_the_shelf` is the canonical upstream NumPy compile/probe lane. It
+- `numpy_off_the_shelf` is the canonical upstream NumPy C-API probe lane. It
   is enabled and pinned to upstream NumPy commit
   `c81c49f77451340651a751e76bca607d85e4fd55` (the peeled `v2.4.2` commit).
+  Its suite-level `semantic_mode` is `c_api_probe`: the green scan evidence is
+  missing-symbol/source-boundary evidence, not unchanged NumPy runtime
+  execution through Molt.
   The `source_audit` runner verifies the pinned source tree as custody-only
   evidence, the `cpython` runner executes an isolated `numpy==2.4.2` public-API
   baseline through `tools/numpy_off_shelf_adapter.py`, and the `c_api_scan`
@@ -115,6 +118,19 @@ UV_NO_SYNC=1 uv run --python 3.12 python3 tools/bench_friends.py \
   `molt` runner attempts the same adapter through
   `MOLT_EXTERNAL_STATIC_PACKAGES=numpy`, explicit
   `module.extension.exec` capability, and all-loaded-`numpy.*` module-origin
-  custody. The Molt runner must fail loudly until source-recompiled `libmolt`
-  extension package build/import custody and NumPy C-API symbol closure are
-  complete.
+  custody. The Molt runner must fail loudly until no-host source-recompiled
+  `libmolt` extension package build/import/runtime custody is complete. The
+  strict NumPy C-API probe is green under `c_api_scan` at 447 scanned source
+  files, 1,258 required symbols, 1,258 supported, zero missing, and zero
+  fail-fast; the no-host package runtime lane remains the separate workload
+  proof.
+- `scipy_off_the_shelf` is the canonical upstream SciPy C-API source probe. It
+  is enabled and pinned to upstream SciPy commit
+  `54ef5423f2e4376230ec3bfda6912a07a50958e3` (the peeled `v1.18.0` commit).
+  Its suite-level `semantic_mode` is also `c_api_probe`.
+  The `c_api_scan` runner scans `{suite_root}/scipy` with non-build
+  test/doc/benchmark/build directories excluded and `--fail-on-missing`; this
+  lane is the SciPy missing-symbol closure proof, not a claim that all SciPy
+  runtime workloads execute through Molt yet. The strict SciPy probe is green at
+  592 scanned source files, 321 required symbols, 321 supported, zero missing,
+  and zero fail-fast.

@@ -64,8 +64,6 @@ impl WasmBackend {
             }
         }
 
-        let lir_fast_outputs = compute_lir_wasm_fast_outputs_from_final_ir(&ir);
-
         // Multi-value return candidate detection (section 3.1).
         // This analysis identifies internal functions whose call sites always
         // destructure the result via 2-3 consecutive tuple_index ops AND whose
@@ -88,6 +86,10 @@ impl WasmBackend {
 
         let trampoline_analysis =
             super::trampoline_analysis::analyze_wasm_trampolines(&ir, multi_return_candidates);
-        self.emit_wasm_module(ir, lir_fast_outputs, trampoline_analysis)
+        let lir_lowering_plans = compute_lir_wasm_lowering_plans_from_final_ir_with_escaped(
+            &ir,
+            &trampoline_analysis.escaped_callable_targets,
+        );
+        self.emit_wasm_module(ir, lir_lowering_plans, trampoline_analysis)
     }
 }

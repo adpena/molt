@@ -1739,11 +1739,27 @@ def _frontend_wire_spelling_to_op_kind(spelling: str) -> str:
 
 
 def _frontend_effect_from_opcode(row: dict) -> str:
-    """Return the frontend optimizer's conservative class for an OpCode row."""
+    """Return the frontend optimizer's memory-effect class for an OpCode row.
 
-    if row["may_throw"] or row["side_effecting"] or row["purity"] != "pure":
+    This is the alias/CSE axis only. Raising capability is a separate DCE
+    barrier rendered from [[frontend_raising_kind]] as RAISING_KIND_NAMES.
+    """
+
+    if row["side_effecting"]:
         return "writes_heap"
+    if row["purity"] == "impure":
+        return "reads_heap"
     return "pure"
+
+
+def _frontend_raising_nothrow_on_primitives(data: dict) -> set[str]:
+    """Return raising kinds whose raise is disproved by primitive constants."""
+
+    out: set[str] = set()
+    for row in data.get("frontend_raising_kind", []):
+        if row.get("nothrow_on_primitives", False):
+            out.add(row["kind"])
+    return out
 
 
 def _frontend_effect_class_map(data: dict) -> dict[str, str]:
@@ -1761,8 +1777,9 @@ def _frontend_effect_class_map(data: dict) -> dict[str, str]:
         for spelling in [row["canonical"], *row.get("aliases", [])]:
             effects[_frontend_wire_spelling_to_op_kind(spelling)] = effect
 
-    for row in data.get("frontend_raising_kind", []):
-        effects[row["kind"]] = "writes_heap"
+    # [[frontend_raising_kind]] is the may-raise axis, not the memory axis.
+    # Memory classes come from opcode facts above or explicit
+    # [[frontend_effect_kind]] overrides below.
 
     for row in data.get("simpleir_control_kind", []):
         if any(
@@ -1849,6 +1866,12 @@ def _validate_frontend_tables(data: dict, opcodes: list[dict]) -> None:
                 raise OpKindTableError(
                     f"frontend_raising_kind {kind}: 'reason' must be a non-empty string"
                 )
+        if "nothrow_on_primitives" in row and not isinstance(
+            row["nothrow_on_primitives"], bool
+        ):
+            raise OpKindTableError(
+                f"frontend_raising_kind {kind}: 'nothrow_on_primitives' must be a bool"
+            )
 
     # -- [[frontend_check_exception_skip]] ----------------------------------
     skip = data.get("frontend_check_exception_skip", [])
@@ -1965,23 +1988,31 @@ def _validate_frontend_tables(data: dict, opcodes: list[dict]) -> None:
             )
 
     effect_map = _frontend_effect_class_map(data)
-    downgraded_raising = {
-        row["kind"] for row in raising if effect_map.get(row["kind"]) != "writes_heap"
-    }
-    if downgraded_raising:
-        raise OpKindTableError(
-            "[[frontend_effect_kind]] must not downgrade raising frontend kinds "
-            f"away from writes_heap barriers: {sorted(downgraded_raising)}"
-        )
+    raising_kinds = {row["kind"] for row in raising}
 
     required_effects = {
-        "ADD": "writes_heap",
-        "EQ": "writes_heap",
-        "INDEX": "writes_heap",
-        "GET_ATTR": "writes_heap",
-        "CONST_STR": "writes_heap",
+        "ADD": "pure",
+        "SUB": "pure",
+        "MUL": "pure",
+        "EQ": "pure",
+        "NE": "pure",
+        "LT": "pure",
+        "LE": "pure",
+        "GT": "pure",
+        "GE": "pure",
+        "NEG": "pure",
+        "POS": "pure",
+        "INVERT": "pure",
+        "ABS": "pure",
+        "CONST_STR": "pure",
+        "INDEX": "reads_heap",
+        "GET_ATTR": "reads_heap",
+        "MODULE_GET_ATTR": "reads_heap",
+        "GETATTR_GENERIC_OBJ": "reads_heap",
+        "GUARDED_GETATTR": "reads_heap",
         "LOAD_VAR": "reads_heap",
         "STORE_VAR": "writes_heap",
+        "SETATTR_GENERIC_OBJ": "writes_heap",
         "CHECK_EXCEPTION": "control",
         "STATE_TRANSITION": "control",
         "EXCEPTION_MATCH_BUILTIN": "reads_heap",
@@ -1990,7 +2021,43 @@ def _validate_frontend_tables(data: dict, opcodes: list[dict]) -> None:
         actual = effect_map.get(kind)
         if actual != expected:
             raise OpKindTableError(
-                f"frontend effect invariant {kind}: expected {expected}, got {actual}"
+                f"frontend memory-effect invariant {kind}: expected {expected}, "
+                f"got {actual}"
+            )
+
+    required_raising = {
+        "ADD": True,
+        "EQ": True,
+        "NEG": True,
+        "ABS": True,
+        "INVERT": True,
+        "GET_ATTR": True,
+        "INDEX": True,
+        "MODULE_GET_ATTR": True,
+        "SETATTR_GENERIC_OBJ": True,
+        "PHI": False,
+        "CONST_STR": False,
+        "LOAD_VAR": False,
+        "STORE_VAR": False,
+    }
+    for kind, should_raise in required_raising.items():
+        actual = kind in raising_kinds
+        if actual != should_raise:
+            raise OpKindTableError(
+                f"frontend raising-axis invariant {kind}: expected {should_raise}, "
+                f"got {actual}"
+            )
+
+    nothrow_on_primitives = _frontend_raising_nothrow_on_primitives(data)
+    for kind in ("ADD", "SUB", "MUL", "EQ", "NEG", "ABS", "INVERT"):
+        if kind not in nothrow_on_primitives:
+            raise OpKindTableError(
+                f"frontend primitive-nothrow invariant {kind}: missing opt-in"
+            )
+    for kind in ("DIV", "FLOORDIV", "MOD", "POW", "LSHIFT", "RSHIFT", "IN", "NOT_IN"):
+        if kind in nothrow_on_primitives:
+            raise OpKindTableError(
+                f"frontend primitive-nothrow invariant {kind}: unsafe opt-in"
             )
 
 __all__ = [

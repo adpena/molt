@@ -7,7 +7,7 @@ use molt_backend::tir::lower_to_lir::lower_function_to_lir_for_repr_fact_extract
 use molt_backend::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
 use molt_backend::tir::types::TirType;
 use molt_backend::tir::values::{TirValue, ValueId};
-use molt_backend_wasm::test_util::lower_lir_to_wasm;
+use molt_backend_wasm::test_util::{WasmLirFallbackReason, lower_lir_to_wasm};
 use wasm_encoder::{Instruction, ValType};
 
 fn make_op(
@@ -155,6 +155,10 @@ fn wasm_lir_ref64_condition_uses_runtime_truthiness() {
         output.bails_to_generic_path,
         "Ref64 object truthiness must bail to generic WASM emission"
     );
+    assert_eq!(
+        output.bail_to_generic_reason,
+        Some(WasmLirFallbackReason::UnsupportedOperation)
+    );
     assert!(
         !output.instructions.windows(3).any(|w| matches!(
             w,
@@ -243,6 +247,10 @@ fn wasm_lir_truthiness_materialization_uses_bool_local_and_br_if() {
     assert!(
         output.bails_to_generic_path,
         "DynBox truthiness must bail to generic WASM emission"
+    );
+    assert_eq!(
+        output.bail_to_generic_reason,
+        Some(WasmLirFallbackReason::BoxedTruthiness)
     );
     assert!(
         output
@@ -378,6 +386,10 @@ fn wasm_lir_checked_i64_add_does_not_emit_plain_i64_add() {
     assert!(
         output.bails_to_generic_path,
         "checked arithmetic should materialize an overflow slow path bail"
+    );
+    assert_eq!(
+        output.bail_to_generic_reason,
+        Some(WasmLirFallbackReason::BoxedCheckedArithmetic)
     );
     assert!(
         output

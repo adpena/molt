@@ -82,6 +82,8 @@ feature = "stdlib_math"
 [stdlib.statistics]
 prefixes = ["statistics_"]
 feature = "stdlib_math"
+[stdlib.scipy]
+prefixes = ["scipy_ndimage_"]
 [stdlib.json]
 prefixes = ["json_"]
 [stdlib.time]

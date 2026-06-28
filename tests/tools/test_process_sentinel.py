@@ -9,6 +9,18 @@ from tools import guarded_entrypoints
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT_PATH = REPO_ROOT / "tools" / "process_sentinel.py"
+WINDOWS_ROOT = Path("C:/repo/molt")
+
+
+def _codex_launched_molt_build_command() -> str:
+    return (
+        r'powershell.exe -NoProfile -Command "& '
+        r"'C:\repo\molt\target\dev-fast\molt-backend.exe' --owned"
+    )
+
+
+def _windows_backend_command() -> str:
+    return r"C:\repo\molt\target\dev-fast\molt-backend.exe --owned"
 
 
 @cache
@@ -569,6 +581,108 @@ def test_process_groups_explicit_custody_requires_molt_cleanup_identity() -> Non
 
     assert [group.pgid for group in groups] == [300]
     assert groups[0].pids == [300]
+
+
+def test_process_groups_protect_codex_spawned_molt_launcher_parent_present(
+    monkeypatch,
+) -> None:
+    module = _load_process_sentinel()
+    monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
+    monkeypatch.setattr(module.memory_guard, "_is_windows_process_model", lambda: True)
+    samples = {
+        500: module.memory_guard.ProcessSample(
+            pid=500,
+            ppid=1,
+            pgid=None,
+            rss_kb=500_000,
+            command=(
+                r"C:\Program Files\WindowsApps\OpenAI.Codex_26.609.4994.0_x64__2p2nqsd0c76g0"
+                r"\app\resources\codex.exe app-server"
+            ),
+        ),
+        501: module.memory_guard.ProcessSample(
+            pid=501,
+            ppid=500,
+            pgid=None,
+            rss_kb=80_000,
+            command=_codex_launched_molt_build_command(),
+        ),
+    }
+
+    groups = module.process_groups(samples, root=WINDOWS_ROOT, self_pid=9999)
+    skipped = module.skipped_protected_process_groups(
+        samples,
+        root=WINDOWS_ROOT,
+        self_pid=9999,
+        observed_pgids={501},
+    )
+
+    assert groups == []
+    assert 501 in {group.pgid for group in skipped}
+
+
+def test_process_groups_protect_molt_launcher_with_absent_parent(
+    monkeypatch,
+) -> None:
+    module = _load_process_sentinel()
+    monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
+    monkeypatch.setattr(module.memory_guard, "_is_windows_process_model", lambda: True)
+    samples = {
+        501: module.memory_guard.ProcessSample(
+            pid=501,
+            ppid=500,
+            pgid=None,
+            rss_kb=80_000,
+            command=_codex_launched_molt_build_command(),
+        ),
+    }
+
+    assert module.is_molt_process(samples[501], root=WINDOWS_ROOT, self_pid=9999)
+    assert module.process_groups(samples, root=WINDOWS_ROOT, self_pid=9999) == []
+
+
+def test_process_groups_keep_confirmed_orphan_build_killable(monkeypatch) -> None:
+    module = _load_process_sentinel()
+    monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
+    samples = {
+        501: module.memory_guard.ProcessSample(
+            pid=501,
+            ppid=1,
+            pgid=None,
+            rss_kb=80_000,
+            command=_windows_backend_command(),
+        ),
+    }
+
+    groups = module.process_groups(samples, root=WINDOWS_ROOT, self_pid=9999)
+
+    assert [group.pgid for group in groups] == [501]
+
+
+def test_process_groups_explicit_ownership_overrides_incomplete_ancestry(
+    monkeypatch,
+) -> None:
+    module = _load_process_sentinel()
+    monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
+    samples = {
+        20: module.memory_guard.ProcessSample(
+            pid=20,
+            ppid=15,
+            pgid=None,
+            rss_kb=900_000,
+            command=_windows_backend_command(),
+        ),
+    }
+
+    assert module.process_groups(samples, root=WINDOWS_ROOT, self_pid=9999) == []
+    owned_groups = module.process_groups(
+        samples,
+        root=WINDOWS_ROOT,
+        self_pid=9999,
+        owned_pids={20},
+    )
+
+    assert [group.pgid for group in owned_groups] == [20]
 
 
 def test_process_groups_exclude_windows_snapshot_helper_descendants(
@@ -1234,6 +1348,43 @@ def test_terminate_group_uses_pid_kill_without_getpgrp_on_windows(monkeypatch) -
     assert killpg_calls == []
 
 
+def test_terminate_group_report_only_env_skips_windows_termination(
+    monkeypatch,
+    capsys,
+) -> None:
+    module = _load_process_sentinel()
+    sample = module.memory_guard.ProcessSample(
+        pid=100,
+        ppid=1,
+        pgid=None,
+        rss_kb=500_000,
+        command=_windows_backend_command(),
+    )
+    samples = {100: sample}
+    killed: list[tuple[int, int]] = []
+
+    monkeypatch.setenv(module.REPORT_ONLY_ENV, "1")
+    monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
+    monkeypatch.setattr(module, "_safe_getpgrp", lambda: None)
+    monkeypatch.setattr(module.os, "getpid", lambda: 9999)
+    monkeypatch.setattr(module.os, "kill", lambda pid, sig: killed.append((pid, sig)))
+    monkeypatch.setattr(module.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(module, "sample_processes_for_sentinel", lambda: samples)
+
+    module.terminate_group(
+        100,
+        grace=0.001,
+        root=WINDOWS_ROOT,
+        expected_identity=module.memory_guard.process_identity(sample),
+    )
+
+    assert killed == []
+    err = capsys.readouterr().err
+    assert "report-only" in err
+    assert "would terminate pgid=100" in err
+    assert module.REPORT_ONLY_ENV in err
+
+
 def test_terminate_group_refuses_windows_group_without_expected_identity(
     monkeypatch,
 ) -> None:
@@ -1444,6 +1595,44 @@ def test_terminate_group_windows_keeps_current_sentinel_child_killable(
     )
 
     assert [pid for pid, _sig in killed] == [200, 200]
+
+
+def test_terminate_group_report_only_env_skips_posix_termination(
+    monkeypatch,
+    capsys,
+) -> None:
+    module = _load_process_sentinel()
+    sample = module.memory_guard.ProcessSample(
+        pid=100,
+        ppid=1,
+        pgid=100,
+        rss_kb=500_000,
+        command="/repo/molt/target/release-fast/molt-backend",
+    )
+    samples = {100: sample}
+    sent_groups: list[tuple[int, int]] = []
+
+    monkeypatch.setenv(module.REPORT_ONLY_ENV, "1")
+    monkeypatch.setattr(module, "_is_windows_process_model", lambda: False)
+    monkeypatch.setattr(module, "sample_processes_for_sentinel", lambda: samples)
+    monkeypatch.setattr(module.os, "getpid", lambda: 9999)
+    monkeypatch.setattr(module, "_safe_getpgrp", lambda: 999)
+    monkeypatch.setattr(
+        module.os,
+        "killpg",
+        lambda pgid, sig: sent_groups.append((pgid, sig)),
+        raising=False,
+    )
+
+    module.terminate_group(
+        100,
+        grace=0.001,
+        root=Path("/repo/molt"),
+        expected_identities={100: module.memory_guard.process_identity(sample)},
+    )
+
+    assert sent_groups == []
+    assert "report-only" in capsys.readouterr().err
 
 
 def test_terminate_group_rechecks_protection_before_sigterm(monkeypatch) -> None:

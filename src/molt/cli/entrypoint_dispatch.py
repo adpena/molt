@@ -451,6 +451,7 @@ def _dispatch_entrypoint_command(
             return extension_scan(
                 project=args.project or extension_cfg.get("project"),
                 sources=args.source,
+                exclude_dirs=args.exclude_dir,
                 fail_on_missing=fail_on_missing,
                 json_output=args.json,
                 verbose=args.verbose,

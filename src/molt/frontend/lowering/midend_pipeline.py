@@ -102,6 +102,8 @@ class MidendPipelineMixin(_MixinBase):
             key=lambda item: (item[1] - item[0], item[0]),
         )
 
+        const_by_name = self._primitive_const_value_map(ops)
+
         for loop_start, loop_end in loop_ranges:
             if loop_end is None or loop_end <= loop_start:
                 continue
@@ -122,6 +124,8 @@ class MidendPipelineMixin(_MixinBase):
                 if op.kind == "PHI":
                     continue
                 if self._op_effect_class(op.kind) != "pure":
+                    continue
+                if not self._op_instance_cannot_raise(op, const_by_name):
                     continue
                 uses: set[str] = set()
                 for arg in op.args:

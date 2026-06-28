@@ -495,14 +495,23 @@ def test_runtime_import_signatures_are_manifest_backed() -> None:
         _runtime_import_signatures_from_manifest,
     )
 
-    import_names = {"function_set_builtin", "string_from_bytes"}
+    import_names = {
+        "function_set_builtin",
+        "molt_abc_bootstrap",
+        "molt_socket_drop",
+        "string_from_bytes",
+    }
 
     assert _runtime_import_result_kinds_from_manifest(import_names) == {
         "function_set_builtin": "i64",
+        "molt_abc_bootstrap": "i64",
+        "molt_socket_drop": "nil",
         "string_from_bytes": "i32",
     }
     assert _runtime_import_signatures_from_manifest(import_names) == {
         "function_set_builtin": {"params": ["i64"], "result": "i64"},
+        "molt_abc_bootstrap": {"params": [], "result": "i64"},
+        "molt_socket_drop": {"params": ["i64"], "result": "nil"},
         "string_from_bytes": {"params": ["i32", "i64", "i32"], "result": "i32"},
     }
 

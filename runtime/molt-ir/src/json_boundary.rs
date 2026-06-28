@@ -143,3 +143,48 @@ fn parse_string_list(value: &JsonValue, ctx: &str) -> Result<Vec<String>, String
     }
     Ok(out)
 }
+
+#[cfg(test)]
+mod float_roundtrip_regression {
+    use crate::json_boundary::optional_f64;
+    use serde_json::Value as JsonValue;
+
+    const HARD_FLOAT_CASES: &[(&str, u64)] = &[
+        ("0.9999999999999999", 0x3fef_ffff_ffff_ffff),
+        ("123456789012345.67", 0x42dc_1221_8377_de6b),
+        ("2.2250738585072011e-308", 0x000f_ffff_ffff_ffff),
+        ("0.1", 0x3fb9_9999_9999_999a),
+    ];
+
+    #[test]
+    fn serde_json_from_str_parses_hard_float_literals_exactly() {
+        for &(text, want_bits) in HARD_FLOAT_CASES {
+            let parsed: f64 = serde_json::from_str(text).expect("parse f64 literal");
+            assert_eq!(
+                parsed.to_bits(),
+                want_bits,
+                "serde_json::from_str({text}) = {parsed:?} bits=0x{:016x}, want 0x{want_bits:016x}",
+                parsed.to_bits()
+            );
+        }
+    }
+
+    #[test]
+    fn optional_f64_reads_const_float_f_value_exactly() {
+        for &(text, want_bits) in HARD_FLOAT_CASES {
+            let obj_text = format!("{{\"kind\":\"const_float\",\"f_value\":{text}}}");
+            let value: JsonValue =
+                serde_json::from_str(&obj_text).expect("parse const_float object");
+            let obj = value.as_object().expect("object");
+            let f_value = optional_f64(obj, "f_value", "test")
+                .expect("optional_f64 ok")
+                .expect("f_value present");
+            assert_eq!(
+                f_value.to_bits(),
+                want_bits,
+                "optional_f64(f_value:{text}) = {f_value:?} bits=0x{:016x}, want 0x{want_bits:016x}",
+                f_value.to_bits()
+            );
+        }
+    }
+}

@@ -58,6 +58,29 @@ static_type = [
   { params = ["i64", "i64", "i64", "i32", "i64", "i64", "i64", "i64", "i64"], results = ["i64"] },
 ]
 
+non_runtime_callable_intrinsic = [
+  "molt_gpu_prim_create_tensor",
+  "molt_gpu_prim_create_tensor_raw",
+  "molt_gpu_prim_zeros",
+  "molt_gpu_prim_zeros_dtype",
+  "molt_gpu_prim_read_data_raw",
+  "molt_gpu_prim_unary",
+  "molt_gpu_prim_cast",
+  "molt_gpu_prim_binary",
+  "molt_gpu_prim_ternary",
+  "molt_gpu_prim_reduce",
+  "molt_gpu_prim_reduce_all",
+  "molt_gpu_prim_reshape",
+  "molt_gpu_prim_expand",
+  "molt_gpu_prim_permute",
+  "molt_gpu_prim_pad",
+  "molt_gpu_prim_shrink",
+  "molt_gpu_prim_flip",
+  "molt_gpu_prim_shape",
+  "molt_gpu_prim_device",
+  "molt_json_parse_scalar",
+]
+
 [table_layout]
 legacy_table_base = 256
 
@@ -4987,6 +5010,7 @@ essential_exports = [
 [runtime_export_policy]
 host_exports = [
   "molt_alloc",
+  "molt_bytes_as_ptr",
   "molt_bytes_from_bytes",
   "molt_dec_ref_obj",
   "molt_exception_kind",
@@ -6896,18 +6920,21 @@ deps = [
 [[const_op_policy]]
 kind = "const"
 inline_seed = "int"
+scalar_payload = "int"
 raw_int_effect = "set_int"
 lir_fast = "lower"
 
 [[const_op_policy]]
 kind = "const_bool"
 inline_seed = "bool"
+scalar_payload = "bool"
 raw_int_effect = "clear"
 lir_fast = "lower"
 
 [[const_op_policy]]
 kind = "const_float"
 inline_seed = "float"
+scalar_payload = "float"
 raw_int_effect = "clear"
 lir_fast = "lower"
 
@@ -6938,7 +6965,7 @@ literal_payload = "string"
 dispatch_runtime_seed = true
 parse_scalar_literal = true
 raw_int_effect = "clear"
-lir_fast = "placeholder_zero"
+lir_fast = "bail_generic"
 
 [[const_op_policy]]
 kind = "const_bigint"
@@ -6956,7 +6983,7 @@ literal_payload = "bytes"
 dispatch_runtime_seed = true
 parse_scalar_literal = true
 raw_int_effect = "clear"
-lir_fast = "placeholder_zero"
+lir_fast = "bail_generic"
 
 [[op_import_dep]]
 kind = "coroutine"

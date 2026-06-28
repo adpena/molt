@@ -50,6 +50,7 @@ compatibility. If 3.12/3.13/3.14 differ, document the chosen target in specs/tes
 - **Batch compile server cooldown**: diff workers now require repeated consecutive batch-server failures before entering cooldown. Tune with `MOLT_DIFF_BATCH_COMPILE_SERVER_DISABLE_AFTER_FAILURES=<n>` and `MOLT_DIFF_BATCH_COMPILE_SERVER_DISABLE_COOLDOWN_SEC=<seconds>`.
 - **Shared target pinning (macOS)**: explicitly set both `CARGO_TARGET_DIR` and `MOLT_DIFF_CARGO_TARGET_DIR` to the same shared path for diff runs so workers do not drift onto ad-hoc/default targets and duplicate rebuilds.
 - **Interrupted-run cleanup**: before a new long sweep, clear stale Molt-owned harness workers through the custody-aware sentinel (`tools/process_sentinel.py --once --stale-orphan-sec 3600 --stale-pytest-sec 900`). Do not use raw PID, name, process-group, parent-chain, `pkill`, `killall`, `taskkill`, or `Stop-Process` cleanup for diff recovery; ambiguous ownership must skip and leave evidence. Keep one supervising diff run per shared target.
+- **Sentinel report-only kill switch**: set `MOLT_PROCESS_SENTINEL_REPORT_ONLY=1` to make `tools/process_sentinel.py` report every verified would-be termination without sending signals. This does not relax host-control-plane or identity checks; it is an operator safety valve for recovery sessions where evidence should be recorded before any Molt-owned process is drained.
 
 ## Debug Commands
 

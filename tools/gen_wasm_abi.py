@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+import ast
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -31,6 +33,8 @@ OUT_RUNTIME_CALLABLES_RS = (
     ROOT / "runtime/molt-runtime/src/builtins/functions/wasm_callables_generated.rs"
 )
 OUT_PY = ROOT / "src/molt/_wasm_abi_generated.py"
+INTRINSICS_MANIFEST = ROOT / "runtime/molt-runtime/src/intrinsics/manifest.pyi"
+RUNTIME_ROOT = ROOT / "runtime"
 OUT_TABLE_LAYOUT_INC = ROOT / "runtime/wasm_table_layout.inc"
 OUT_ALLOWED_IMPORTS = ROOT / "tools/wasm_allowed_imports.txt"
 REMOVED_GENERATED_FILES = (
@@ -68,13 +72,18 @@ CONST_POLICY_LITERAL_PAYLOADS = {
     "bigint_decimal",
     "bytes",
 }
+CONST_POLICY_SCALAR_PAYLOADS = {
+    "none",
+    "int",
+    "bool",
+    "float",
+}
 CONST_POLICY_RAW_INT_EFFECTS = {
     "set_int",
     "clear",
 }
 CONST_POLICY_LIR_FAST = {
     "lower",
-    "placeholder_zero",
     "bail_generic",
 }
 CALL_INDIRECT_IMPORT_PREFIX = "molt_call_indirect"
@@ -102,6 +111,269 @@ def _call_indirect_imports(data: dict) -> list[tuple[int, str]]:
         if arity is not None:
             imports.append((arity, name))
     return sorted(imports)
+
+
+def _intrinsic_signature_rows() -> list[tuple[str, int, str]]:
+    tree = ast.parse(INTRINSICS_MANIFEST.read_text(encoding="utf-8"))
+    rows: list[tuple[str, int, str]] = []
+    for node in tree.body:
+        if not isinstance(node, ast.FunctionDef) or not node.name.startswith("molt_"):
+            continue
+        args = node.args
+        arity = (
+            len(args.posonlyargs)
+            + len(args.args)
+            + len(args.kwonlyargs)
+            + (1 if args.vararg is not None else 0)
+            + (1 if args.kwarg is not None else 0)
+        )
+        rows.append((node.name, arity, "i64"))
+    return rows
+
+
+def _static_type_index_by_signature(
+    static_types: list[dict],
+) -> dict[tuple[tuple[str, ...], tuple[str, ...]], int]:
+    return {
+        (tuple(entry["params"]), tuple(entry["results"])): idx
+        for idx, entry in enumerate(static_types)
+    }
+
+
+def _intrinsic_manifest_names() -> set[str]:
+    return {name for name, _, _ in _intrinsic_signature_rows()}
+
+
+def _runtime_rust_files() -> list[Path]:
+    roots = [
+        child
+        for child in RUNTIME_ROOT.iterdir()
+        if child.is_dir() and child.name.startswith("molt-runtime")
+    ]
+    return sorted(path for root in roots for path in root.rglob("*.rs"))
+
+
+def _read_runtime_rust_source(path: Path) -> str | None:
+    try:
+        return path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        # Atomic generator writes can briefly expose temp paths in rglob()
+        # results. The ABI authority is the stable Rust source set; ignore
+        # vanished temp files rather than failing nondeterministically.
+        return None
+
+
+def _rust_type_aliases() -> dict[str, str]:
+    aliases: dict[str, str] = {}
+    alias_re = re.compile(r"(?:pub\s+)?type\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([^;]+);")
+    for path in _runtime_rust_files():
+        text = _read_runtime_rust_source(path)
+        if text is None:
+            continue
+        for match in alias_re.finditer(text):
+            aliases[match.group(1)] = match.group(2).strip()
+    return aliases
+
+
+def _normalize_rust_wasm_scalar(typ: str, aliases: dict[str, str]) -> str:
+    typ = typ.strip().removeprefix("mut ").strip()
+    seen: set[str] = set()
+    while typ in aliases and typ not in seen:
+        seen.add(typ)
+        typ = aliases[typ].strip()
+    if typ in {"u64", "i64"}:
+        return "i64"
+    if typ in {"()", ""}:
+        return "void"
+    return typ
+
+
+def _rust_export_signatures() -> dict[str, set[tuple[tuple[str, ...], str]]]:
+    aliases = _rust_type_aliases()
+    fn_re = re.compile(
+        r'pub\s+(?:unsafe\s+)?extern\s+"C"\s+fn\s+'
+        r"(molt_[A-Za-z0-9_]+)\s*\((.*?)\)\s*(?:->\s*([^{\n]+?))?\s*\{",
+        re.S,
+    )
+    exports: dict[str, set[tuple[tuple[str, ...], str]]] = {}
+    for path in _runtime_rust_files():
+        text = _read_runtime_rust_source(path)
+        if text is None:
+            continue
+        for match in fn_re.finditer(text):
+            params_text = match.group(2).strip()
+            params: list[str] = []
+            if params_text:
+                for raw_param in params_text.split(","):
+                    param = raw_param.strip()
+                    if not param:
+                        continue
+                    if ":" not in param:
+                        params.append(param)
+                        continue
+                    params.append(
+                        _normalize_rust_wasm_scalar(
+                            param.rsplit(":", 1)[1].strip(),
+                            aliases,
+                        )
+                    )
+            result = _normalize_rust_wasm_scalar(match.group(3) or "void", aliases)
+            exports.setdefault(match.group(1), set()).add((tuple(params), result))
+    return exports
+
+
+def _rust_intrinsic_callable_result(
+    rust_exports: dict[str, set[tuple[tuple[str, ...], str]]],
+    runtime_name: str,
+    arity: int,
+) -> str:
+    signatures = rust_exports.get(runtime_name, set())
+    expected_params = ("i64",) * arity
+    compatible = {
+        result
+        for params, result in signatures
+        if params == expected_params and result in {"i64", "void"}
+    }
+    return next(iter(compatible)) if len(compatible) == 1 else "i64"
+
+
+def _intrinsic_runtime_callable_imports(
+    static_types: list[dict],
+    imports: list[dict],
+    non_runtime_callable_intrinsics: set[str],
+) -> list[dict]:
+    rust_exports = _rust_export_signatures()
+    type_indices = _static_type_index_by_signature(static_types)
+    explicit_imports_by_name = {
+        entry["name"]: entry for entry in imports if isinstance(entry.get("name"), str)
+    }
+    explicit_runtime_names = {
+        entry["runtime_name"]
+        for entry in imports
+        if isinstance(entry.get("runtime_name"), str)
+    }
+    synthesized: list[dict] = []
+    missing_static_types: list[str] = []
+    for runtime_name, arity, result in _intrinsic_signature_rows():
+        if runtime_name in explicit_runtime_names:
+            if runtime_name in non_runtime_callable_intrinsics:
+                raise WasmAbiManifestError(
+                    f"intrinsic {runtime_name!r} is both callable and "
+                    "non-runtime-callable"
+                )
+            continue
+        import_name = runtime_name.removeprefix("molt_")
+        if runtime_name in non_runtime_callable_intrinsics:
+            existing_entry = explicit_imports_by_name.get(import_name)
+            if existing_entry is not None and existing_entry.get("runtime_name") is not None:
+                raise WasmAbiManifestError(
+                    f"intrinsic {runtime_name!r} is listed as "
+                    "non-runtime-callable but its explicit import has "
+                    "runtime_name"
+                )
+            continue
+        result = _rust_intrinsic_callable_result(rust_exports, runtime_name, arity)
+        params = ("i64",) * arity
+        results = () if result == "void" else ("i64",)
+        type_idx = type_indices.get((params, results))
+        if type_idx is None:
+            missing_static_types.append(
+                f"{runtime_name}({', '.join(params)}) -> {result}"
+            )
+            continue
+        existing_entry = explicit_imports_by_name.get(import_name)
+        if existing_entry is not None:
+            existing_runtime = existing_entry.get("runtime_name")
+            if existing_runtime not in (None, runtime_name):
+                raise WasmAbiManifestError(
+                    f"intrinsic runtime callable import name {import_name!r} "
+                    f"maps to {runtime_name!r}, but explicit row maps to "
+                    f"{existing_runtime!r}"
+                )
+            existing_type = existing_entry.get("type")
+            if not isinstance(existing_type, int) or not (
+                0 <= existing_type < len(static_types)
+            ):
+                raise WasmAbiManifestError(
+                    f"explicit import {import_name!r} has invalid static type "
+                    f"{existing_type!r}"
+                )
+            existing_signature = static_types[existing_type]
+            if tuple(existing_signature["params"]) != params:
+                raise WasmAbiManifestError(
+                    f"intrinsic {runtime_name!r} collides with explicit import "
+                    f"{import_name!r} using params "
+                    f"{existing_signature['params']!r}; list it in "
+                    "non_runtime_callable_intrinsic if that import is a raw "
+                    "non-callable ABI"
+                )
+            existing_results = tuple(existing_signature["results"])
+            if existing_results not in ((), ("i64",)):
+                raise WasmAbiManifestError(
+                    f"intrinsic {runtime_name!r} collides with explicit import "
+                    f"{import_name!r} using results "
+                    f"{existing_signature['results']!r}; list it in "
+                    "non_runtime_callable_intrinsic if that import is a raw "
+                    "non-callable ABI"
+                )
+            existing_entry["runtime_name"] = runtime_name
+            existing_entry["callable_arity"] = arity
+            if not existing_results:
+                existing_entry["callable_result"] = "void"
+            explicit_runtime_names.add(runtime_name)
+            continue
+        entry = {
+            "name": import_name,
+            "type": type_idx,
+            "runtime_name": runtime_name,
+            "callable_arity": arity,
+        }
+        if result == "void":
+            entry["callable_result"] = "void"
+        synthesized.append(entry)
+        explicit_runtime_names.add(runtime_name)
+    if missing_static_types:
+        raise WasmAbiManifestError(
+            "intrinsic runtime callables need WASM static_type rows: "
+            + "; ".join(missing_static_types)
+        )
+    return synthesized
+
+
+def _validate_intrinsic_runtime_callable_export_abi(imports: list[dict]) -> None:
+    intrinsic_names = _intrinsic_manifest_names()
+    rust_exports = _rust_export_signatures()
+    mismatches: list[str] = []
+    missing: list[str] = []
+    for entry in imports:
+        runtime_name = entry.get("runtime_name")
+        if runtime_name not in intrinsic_names or "callable_arity" not in entry:
+            continue
+        signatures = rust_exports.get(runtime_name)
+        if not signatures:
+            missing.append(runtime_name)
+            continue
+        expected_params = ("i64",) * entry["callable_arity"]
+        expected_result = entry.get("callable_result", "i64")
+        expected = (expected_params, expected_result)
+        if signatures != {expected}:
+            rendered = ", ".join(
+                f"({', '.join(params)}) -> {result}"
+                for params, result in sorted(signatures)
+            )
+            mismatches.append(
+                f"{runtime_name}: manifest ({', '.join(expected_params)}) -> "
+                f"{expected_result}; Rust {rendered}"
+            )
+    if missing:
+        raise WasmAbiManifestError(
+            "intrinsic runtime callables missing Rust exports: "
+            + ", ".join(sorted(missing))
+        )
+    if mismatches:
+        raise WasmAbiManifestError(
+            "intrinsic runtime callable ABI mismatches: " + "; ".join(mismatches)
+        )
 
 
 def _validate_val_type_list(
@@ -171,6 +443,26 @@ def validate_loaded_manifest(data: dict) -> dict:
     imports = data.get("import")
     if not isinstance(imports, list) or not imports:
         raise WasmAbiManifestError("manifest must define at least one [[import]]")
+    non_runtime_callable_intrinsics = set(
+        _validate_string_list(
+            "non_runtime_callable_intrinsic",
+            "entries",
+            data.get("non_runtime_callable_intrinsic", []),
+        )
+    )
+    unknown_non_callable = non_runtime_callable_intrinsics - _intrinsic_manifest_names()
+    if unknown_non_callable:
+        raise WasmAbiManifestError(
+            "non_runtime_callable_intrinsic contains unknown intrinsics: "
+            + ", ".join(sorted(unknown_non_callable))
+        )
+    imports.extend(
+        _intrinsic_runtime_callable_imports(
+            static_types,
+            imports,
+            non_runtime_callable_intrinsics,
+        )
+    )
     seen_imports: set[str] = set()
     seen_runtime_callables: set[str] = set()
     seen_poll_slots: set[int] = set()
@@ -230,6 +522,7 @@ def validate_loaded_manifest(data: dict) -> dict:
                 "poll_table_slot values must be contiguous from 1; "
                 f"missing {missing}"
             )
+    _validate_intrinsic_runtime_callable_export_abi(imports)
 
     op_import_deps = data.get("op_import_dep", [])
     if not isinstance(op_import_deps, list):
@@ -290,6 +583,11 @@ def validate_loaded_manifest(data: dict) -> dict:
             raise WasmAbiManifestError(
                 f"const_op_policy {kind!r} has invalid literal_payload {literal_payload!r}"
             )
+        scalar_payload = entry.get("scalar_payload", "none")
+        if scalar_payload not in CONST_POLICY_SCALAR_PAYLOADS:
+            raise WasmAbiManifestError(
+                f"const_op_policy {kind!r} has invalid scalar_payload {scalar_payload!r}"
+            )
         raw_int_effect = entry.get("raw_int_effect", "clear")
         if raw_int_effect not in CONST_POLICY_RAW_INT_EFFECTS:
             raise WasmAbiManifestError(
@@ -339,8 +637,25 @@ def validate_loaded_manifest(data: dict) -> dict:
             raise WasmAbiManifestError(
                 f"const_op_policy {kind!r} dispatch runtime seed requires materializer_import"
             )
+        expected_scalar_payload = {
+            "int": "int",
+            "bool": "bool",
+            "float": "float",
+            "none": "none",
+            "none_value": "none",
+        }[inline_seed]
+        if scalar_payload != expected_scalar_payload:
+            raise WasmAbiManifestError(
+                f"const_op_policy {kind!r} scalar_payload {scalar_payload!r} "
+                f"must match inline_seed {inline_seed!r}"
+            )
+        if lir_fast == "lower" and inline_seed == "none":
+            raise WasmAbiManifestError(
+                f"const_op_policy {kind!r} cannot lower in LIR-fast without inline_seed"
+            )
         entry["inline_seed"] = inline_seed
         entry["literal_payload"] = literal_payload
+        entry["scalar_payload"] = scalar_payload
         entry["raw_int_effect"] = raw_int_effect
         entry["lir_fast"] = lir_fast
         entry["parse_scalar_literal"] = parse_scalar_literal
@@ -673,6 +988,7 @@ def _header(comment: str) -> str:
     return (
         f"{comment} @generated by tools/gen_wasm_abi.py from\n"
         f"{comment} runtime/molt-backend-wasm/src/wasm_abi_manifest.toml\n"
+        f"{comment} runtime/molt-runtime/src/intrinsics/manifest.pyi\n"
         f"{comment} DO NOT EDIT BY HAND.\n\n"
     )
 
@@ -742,6 +1058,7 @@ def _render_rs_mod() -> str:
             "pub(crate) use const_policy::{\n",
             "    wasm_const_op_policy, WasmConstInlineSeed, WasmConstLirFastPolicy,\n",
             "    WasmConstLiteralPayload, WasmConstOpPolicySpec, WasmConstRawIntEffect,\n",
+            "    WasmConstScalarValue,\n",
             "};\n",
             "pub(crate) use imports::{IMPORT_REGISTRY, OP_IMPORT_DEPS};\n",
             "pub(crate) use pure_profile::pure_profile_skips_import;\n",
@@ -794,6 +1111,8 @@ def _render_rs_const_policy(data: dict) -> str:
     lines: list[str] = [_header("//")]
     lines.extend(
         [
+            "use molt_codegen_abi::{box_bool_bits, box_float_bits, box_int_bits, box_none_bits};\n",
+            "use molt_tir::tir::ops::{AttrValue, TirOp};\n\n",
             "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
             "pub(crate) enum WasmConstInlineSeed {\n",
             "    None,\n",
@@ -810,6 +1129,20 @@ def _render_rs_const_policy(data: dict) -> str:
             "    Bytes,\n",
             "}\n\n",
             "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
+            "pub(crate) enum WasmConstScalarPayload {\n",
+            "    None,\n",
+            "    Int,\n",
+            "    Bool,\n",
+            "    Float,\n",
+            "}\n\n",
+            "#[derive(Clone, Copy, Debug, PartialEq)]\n",
+            "pub(crate) enum WasmConstScalarValue {\n",
+            "    Int(i64),\n",
+            "    Bool(bool),\n",
+            "    Float(f64),\n",
+            "    NoneValue,\n",
+            "}\n\n",
+            "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
             "pub(crate) enum WasmConstRawIntEffect {\n",
             "    SetInt,\n",
             "    Clear,\n",
@@ -817,7 +1150,6 @@ def _render_rs_const_policy(data: dict) -> str:
             "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
             "pub(crate) enum WasmConstLirFastPolicy {\n",
             "    Lower,\n",
-            "    PlaceholderZero,\n",
             "    BailGeneric,\n",
             "}\n\n",
             "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
@@ -826,6 +1158,7 @@ def _render_rs_const_policy(data: dict) -> str:
             "    pub(crate) inline_seed: WasmConstInlineSeed,\n",
             "    pub(crate) materializer_import: Option<&'static str>,\n",
             "    pub(crate) literal_payload: WasmConstLiteralPayload,\n",
+            "    pub(crate) scalar_payload: WasmConstScalarPayload,\n",
             "    pub(crate) dispatch_runtime_seed: bool,\n",
             "    pub(crate) parse_scalar_literal: bool,\n",
             "    pub(crate) raw_int_effect: WasmConstRawIntEffect,\n",
@@ -837,6 +1170,7 @@ def _render_rs_const_policy(data: dict) -> str:
     for entry in data.get("const_op_policy", []):
         inline_seed = _rust_pascal_variant(entry["inline_seed"])
         literal_payload = _rust_pascal_variant(entry["literal_payload"])
+        scalar_payload = _rust_pascal_variant(entry["scalar_payload"])
         raw_int_effect = _rust_pascal_variant(entry["raw_int_effect"])
         lir_fast = _rust_pascal_variant(entry["lir_fast"])
         dispatch_seed = "true" if entry["dispatch_runtime_seed"] else "false"
@@ -849,6 +1183,7 @@ def _render_rs_const_policy(data: dict) -> str:
                 "        materializer_import: "
                 f"{_rust_option_str(entry.get('materializer_import'))},\n",
                 f"        literal_payload: WasmConstLiteralPayload::{literal_payload},\n",
+                f"        scalar_payload: WasmConstScalarPayload::{scalar_payload},\n",
                 f"        dispatch_runtime_seed: {dispatch_seed},\n",
                 f"        parse_scalar_literal: {parse_scalar},\n",
                 f"        raw_int_effect: WasmConstRawIntEffect::{raw_int_effect},\n",
@@ -866,6 +1201,61 @@ def _render_rs_const_policy(data: dict) -> str:
             "    WASM_CONST_OP_POLICIES\n",
             "        .iter()\n",
             "        .find(|policy| policy.kind == kind)\n",
+            "}\n\n",
+            "impl WasmConstOpPolicySpec {\n",
+            "    pub(crate) fn required_simple_ir_inline_seed_bits(\n",
+            "        &self,\n",
+            "        op: &crate::OpIR,\n",
+            "    ) -> i64 {\n",
+            "        match self.scalar_payload {\n",
+            "            WasmConstScalarPayload::Int => box_int_bits(op.value.unwrap_or_else(|| {\n",
+            "                panic!(\"WASM const policy {} requires int scalar payload\", self.kind)\n",
+            "            })),\n",
+            "            WasmConstScalarPayload::Bool => box_bool_bits(op.value.unwrap_or_else(|| {\n",
+            "                panic!(\"WASM const policy {} requires bool scalar payload\", self.kind)\n",
+            "            })),\n",
+            "            WasmConstScalarPayload::Float => box_float_bits(op.f_value.unwrap_or_else(|| {\n",
+            "                panic!(\"WASM const policy {} requires float scalar payload\", self.kind)\n",
+            "            })),\n",
+            "            WasmConstScalarPayload::None => match self.inline_seed {\n",
+            "                WasmConstInlineSeed::NoneValue => box_none_bits(),\n",
+            "                _ => panic!(\n",
+            "                    \"WASM const policy {} has no scalar payload for inline seed {:?}\",\n",
+            "                    self.kind, self.inline_seed\n",
+            "                ),\n",
+            "            },\n",
+            "        }\n",
+            "    }\n\n",
+            "    pub(crate) fn required_tir_scalar_value(\n",
+            "        &self,\n",
+            "        op: &TirOp,\n",
+            "    ) -> WasmConstScalarValue {\n",
+            "        match self.scalar_payload {\n",
+            "            WasmConstScalarPayload::Int => match op.attrs.get(\"value\") {\n",
+            "                Some(AttrValue::Int(value)) => WasmConstScalarValue::Int(*value),\n",
+            "                _ => panic!(\"WASM const policy {} requires int scalar payload\", self.kind),\n",
+            "            },\n",
+            "            WasmConstScalarPayload::Bool => match op.attrs.get(\"value\") {\n",
+            "                Some(AttrValue::Bool(value)) => WasmConstScalarValue::Bool(*value),\n",
+            "                _ => panic!(\"WASM const policy {} requires bool scalar payload\", self.kind),\n",
+            "            },\n",
+            "            WasmConstScalarPayload::Float => match op\n",
+            "                .attrs\n",
+            "                .get(\"f_value\")\n",
+            "                .or_else(|| op.attrs.get(\"value\"))\n",
+            "            {\n",
+            "                Some(AttrValue::Float(value)) => WasmConstScalarValue::Float(*value),\n",
+            "                _ => panic!(\"WASM const policy {} requires float scalar payload\", self.kind),\n",
+            "            },\n",
+            "            WasmConstScalarPayload::None => match self.inline_seed {\n",
+            "                WasmConstInlineSeed::NoneValue => WasmConstScalarValue::NoneValue,\n",
+            "                _ => panic!(\n",
+            "                    \"WASM const policy {} has no scalar payload for inline seed {:?}\",\n",
+            "                    self.kind, self.inline_seed\n",
+            "                ),\n",
+            "            },\n",
+            "        }\n",
+            "    }\n",
             "}\n\n",
         ]
     )
@@ -1373,14 +1763,15 @@ def render_py(data: dict) -> str:
         lines.append(f'    "{import_name}",\n')
     lines.append(")\n\n")
     lines.append(
-        "WASM_CONST_OP_POLICIES: tuple[tuple[str, str, str | None, str, bool, bool, str, str], ...] = (\n"
+        "WASM_CONST_OP_POLICIES: tuple[tuple[str, str, str | None, str, str, bool, bool, str, str], ...] = (\n"
     )
     for entry in data.get("const_op_policy", []):
         materializer = entry.get("materializer_import")
         materializer_repr = "None" if materializer is None else f'"{materializer}"'
         lines.append(
             f'    ("{entry["kind"]}", "{entry["inline_seed"]}", {materializer_repr}, '
-            f'"{entry["literal_payload"]}", {entry["dispatch_runtime_seed"]}, '
+            f'"{entry["literal_payload"]}", "{entry["scalar_payload"]}", '
+            f'{entry["dispatch_runtime_seed"]}, '
             f'{entry["parse_scalar_literal"]}, "{entry["raw_int_effect"]}", '
             f'"{entry["lir_fast"]}"),\n'
         )

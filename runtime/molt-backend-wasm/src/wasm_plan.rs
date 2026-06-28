@@ -335,9 +335,36 @@ pub(crate) const DEFAULT_GPU_INTRINSIC_MANIFEST_NAMES: &[&str] = &[
     "molt_gpu_tensor__zeros",
 ];
 
-pub(crate) fn prepare_lir_wasm_fast_output(
+#[derive(Debug, Clone)]
+pub(crate) enum WasmFunctionLoweringPlan {
+    LirFast(crate::wasm::body::WasmBody),
+    Generic {
+        reason: crate::wasm::body::WasmLirFallbackReason,
+    },
+}
+
+impl WasmFunctionLoweringPlan {
+    pub(crate) fn lir_fast_body(&self) -> Option<&crate::wasm::body::WasmBody> {
+        match self {
+            Self::LirFast(body) => Some(body),
+            Self::Generic { .. } => None,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn generic_reason(&self) -> Option<crate::wasm::body::WasmLirFallbackReason> {
+        match self {
+            Self::LirFast(_) => None,
+            Self::Generic { reason } => Some(*reason),
+        }
+    }
+}
+
+pub(crate) type WasmFunctionLoweringPlans = BTreeMap<String, WasmFunctionLoweringPlan>;
+
+pub(crate) fn prepare_lir_wasm_fast_plan(
     tir_func: &crate::tir::function::TirFunction,
-) -> Option<crate::wasm::body::WasmBody> {
+) -> WasmFunctionLoweringPlan {
     // Drive the LIR carrier derivation from the PROVEN `repr_by_value` (the
     // single source of truth shared with LLVM), so `LirRepr::I64` is assigned
     // only to proven raw-i64 carriers (`RawI64Safe` or `RawI64FullDeopt`).
@@ -351,32 +378,187 @@ pub(crate) fn prepare_lir_wasm_fast_output(
     // path (correctness preserved; the unsound bare op is un-emittable here).
     let vr = crate::representation_plan::value_range_for(tir_func);
     let repr = crate::representation_plan::repr_by_value_for(tir_func, Some(&vr));
-    let output =
-        crate::wasm::lir_fast::lower_tir_to_wasm_boxed_i64_abi_with_proof(tir_func, &repr, &vr)?;
-    if output.has_bail_to_generic_path() {
-        None
+    let Some(output) =
+        crate::wasm::lir_fast::lower_tir_to_wasm_boxed_i64_abi_with_proof(tir_func, &repr, &vr)
+    else {
+        return WasmFunctionLoweringPlan::Generic {
+            reason: crate::wasm::body::WasmLirFallbackReason::BoxedI64AbiUnsupported,
+        };
+    };
+    if let Some(reason) = output.bail_to_generic_reason() {
+        WasmFunctionLoweringPlan::Generic { reason }
     } else {
-        Some(output)
+        WasmFunctionLoweringPlan::LirFast(output)
     }
 }
 
-pub(crate) fn compute_lir_wasm_fast_outputs_from_final_ir(
+pub(crate) fn compute_lir_wasm_lowering_plans_from_final_ir_with_escaped(
     ir: &SimpleIR,
-) -> BTreeMap<String, crate::wasm::body::WasmBody> {
-    let mut outputs = BTreeMap::new();
+    escaped_callable_targets: &BTreeSet<String>,
+) -> WasmFunctionLoweringPlans {
+    let mut plans = BTreeMap::new();
     for func_ir in &ir.functions {
         if func_ir.is_extern || !is_production_lir_wasm_fast_path_name(&func_ir.name) {
             continue;
         }
+        if escaped_callable_targets.contains(&func_ir.name) {
+            plans.insert(
+                func_ir.name.clone(),
+                WasmFunctionLoweringPlan::Generic {
+                    reason: crate::wasm::body::WasmLirFallbackReason::EscapedCallableTarget,
+                },
+            );
+            continue;
+        }
         let mut tir_func = crate::tir::lower_from_simple::lower_to_tir(func_ir);
         crate::tir::type_refine::refine_types(&mut tir_func);
-        if let Some(output) = prepare_lir_wasm_fast_output(&tir_func) {
-            outputs.insert(func_ir.name.clone(), output);
-        }
+        plans.insert(func_ir.name.clone(), prepare_lir_wasm_fast_plan(&tir_func));
     }
-    outputs
+    plans
 }
 
 pub(crate) fn is_production_lir_wasm_fast_path_name(func_name: &str) -> bool {
     func_name.contains("____molt_globals_builtin__")
+}
+
+#[cfg(all(test, feature = "wasm-backend"))]
+mod wasm_lir_fast_plan_tests {
+    use super::*;
+    use crate::tir::blocks::Terminator;
+    use crate::tir::function::TirFunction;
+    use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
+    use crate::tir::types::TirType;
+    use crate::tir::values::ValueId;
+    use crate::wasm::body::WasmLirFallbackReason;
+
+    fn const_i64_return_func(value: i64) -> TirFunction {
+        let mut func = TirFunction::new("const_i64_return".into(), vec![], TirType::I64);
+        let result = func.fresh_value();
+        let mut attrs = AttrDict::new();
+        attrs.insert("value".into(), AttrValue::Int(value));
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::ConstInt,
+            operands: vec![],
+            results: vec![result],
+            attrs,
+            source_span: None,
+        });
+        entry.terminator = Terminator::Return {
+            values: vec![result],
+        };
+        func
+    }
+
+    fn add_two_i64_params_func() -> TirFunction {
+        let mut func = TirFunction::new(
+            "add_two_i64_params".into(),
+            vec![TirType::I64, TirType::I64],
+            TirType::I64,
+        );
+        let result = func.fresh_value();
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::Add,
+            operands: vec![ValueId(0), ValueId(1)],
+            results: vec![result],
+            attrs: AttrDict::new(),
+            source_span: None,
+        });
+        entry.terminator = Terminator::Return {
+            values: vec![result],
+        };
+        func
+    }
+
+    fn checked_mul_i64_consts_func() -> TirFunction {
+        let mut func = TirFunction::new("checked_mul_i64_consts".into(), vec![], TirType::I64);
+        let lhs = func.fresh_value();
+        let rhs = func.fresh_value();
+        let product = func.fresh_value();
+        let overflow = func.fresh_value();
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        for (id, value) in [(lhs, 6), (rhs, 7)] {
+            let mut attrs = AttrDict::new();
+            attrs.insert("value".into(), AttrValue::Int(value));
+            entry.ops.push(TirOp {
+                dialect: Dialect::Molt,
+                opcode: OpCode::ConstInt,
+                operands: vec![],
+                results: vec![id],
+                attrs,
+                source_span: None,
+            });
+        }
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::CheckedMul,
+            operands: vec![lhs, rhs],
+            results: vec![product, overflow],
+            attrs: AttrDict::new(),
+            source_span: None,
+        });
+        entry.terminator = Terminator::Return {
+            values: vec![product],
+        };
+        func
+    }
+
+    #[test]
+    fn wasm_lir_fast_plan_accepts_proven_i64_body() {
+        let plan = prepare_lir_wasm_fast_plan(&const_i64_return_func(42));
+        let body = plan
+            .lir_fast_body()
+            .expect("proven i64 const return must keep the LIR fast plan");
+
+        assert_eq!(plan.generic_reason(), None);
+        assert_eq!(body.bail_to_generic_reason(), None);
+    }
+
+    #[test]
+    fn wasm_lir_fast_plan_records_boxed_i64_abi_rejection() {
+        let plan = prepare_lir_wasm_fast_plan(&add_two_i64_params_func());
+
+        assert_eq!(
+            plan.generic_reason(),
+            Some(WasmLirFallbackReason::BoxedI64AbiUnsupported)
+        );
+    }
+
+    #[test]
+    fn wasm_lir_fast_plan_records_body_bail_reason() {
+        let plan = prepare_lir_wasm_fast_plan(&checked_mul_i64_consts_func());
+
+        assert_eq!(
+            plan.generic_reason(),
+            Some(WasmLirFallbackReason::BoxedCheckedArithmetic)
+        );
+    }
+
+    #[test]
+    fn wasm_lir_fast_plan_records_escaped_callable_reason() {
+        let name = "pkg____molt_globals_builtin__escaped".to_string();
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: name.clone(),
+                params: vec![],
+                ops: vec![],
+                param_types: Some(vec![]),
+                source_file: None,
+                is_extern: false,
+            }],
+            profile: None,
+        };
+        let escaped = BTreeSet::from([name.clone()]);
+        let plans = compute_lir_wasm_lowering_plans_from_final_ir_with_escaped(&ir, &escaped);
+
+        assert_eq!(
+            plans
+                .get(&name)
+                .and_then(WasmFunctionLoweringPlan::generic_reason),
+            Some(WasmLirFallbackReason::EscapedCallableTarget)
+        );
+    }
 }

@@ -229,6 +229,12 @@ OrderedDict = _collections.OrderedDict
 
 
 def __getattr__(name: str):
+    # `Match`/`Pattern` are the only `re`-derived names this module re-exports.
+    # Resolving them lazily via PEP 562 (with `re` imported locally) keeps `re`'s
+    # intrinsics out of the static reach of the many type-hint-heavy modules that
+    # import `typing_extensions` purely for its typing constructs and never touch
+    # `Match`/`Pattern`. The resolved value is cached into the module globals so
+    # subsequent accesses (and `from typing_extensions import Match`) are direct.
     if name in ("Match", "Pattern"):
         import re
 

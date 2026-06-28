@@ -233,7 +233,8 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
         default="full",
         help=(
             "WASM import profile: full (default) registers all host imports; "
-            "pure omits IO/ASYNC/TIME imports for minimal pure-computation modules."
+            "pure plans imports from observed IR and fails closed for process/IO/time "
+            "families in minimal pure-computation modules."
         ),
     )
     build_parser.add_argument(
@@ -515,6 +516,15 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
         help=(
             "Source path to scan (repeatable). If omitted, uses "
             "tool.molt.extension.sources from pyproject.toml."
+        ),
+    )
+    extension_scan_parser.add_argument(
+        "--exclude-dir",
+        action="append",
+        default=[],
+        help=(
+            "Directory basename to skip while expanding source directories "
+            "(repeatable)."
         ),
     )
     extension_scan_parser.add_argument(

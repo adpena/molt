@@ -993,6 +993,104 @@ def test_prepare_backend_setup_warms_native_runtime_with_requested_stdlib_profil
     assert warmed_profiles == ["full"]
 
 
+def test_prepare_backend_setup_enables_source_loader_for_native_artifacts(
+    tmp_path: Path, monkeypatch
+) -> None:
+    runtime_state = cli._RuntimeArtifactState(
+        runtime_lib=tmp_path / "libmolt_runtime.a"
+    )
+    cache_setup = cli._BackendCacheSetup(
+        cache_enabled=True,
+        cache_key=None,
+        function_cache_key=None,
+        cache_path=None,
+        function_cache_path=None,
+        stdlib_object_path=None,
+        stdlib_object_cache_key=None,
+        stdlib_object_manifest=None,
+        cache_candidates=(),
+        cache_hit=False,
+        cache_hit_tier=None,
+    )
+    captured_extra_features: list[tuple[str, ...]] = []
+    artifact = cli._ExternalPackageNativeArtifact(
+        package="nativepkg",
+        module="nativepkg._native",
+        package_dir=tmp_path / "nativepkg",
+        path=tmp_path / "nativepkg" / "_native.so",
+        manifest_path=tmp_path / "nativepkg" / "extension_manifest.json",
+        extension_sha256="0" * 64,
+        manifest_sha256="1" * 64,
+        capabilities=("module.extension.exec",),
+        abi_tag="molt_abi1",
+        target_triple="x86_64-unknown-linux-gnu",
+        platform_tag="x86_64_unknown_linux_gnu",
+    )
+    native_plan = cli._ExternalPackageNativeArtifactPlan(artifacts=(artifact,))
+
+    def fake_initialize_runtime_artifact_state(*args, **kwargs):
+        del args
+        captured_extra_features.append(tuple(kwargs.get("extra_runtime_features", ())))
+        return runtime_state
+
+    monkeypatch.setattr(
+        cli_backend_compile,
+        "_initialize_runtime_artifact_state",
+        fake_initialize_runtime_artifact_state,
+        raising=True,
+    )
+    monkeypatch.setattr(
+        cli_backend_cache_setup,
+        "_prepare_backend_cache_setup",
+        lambda *args, **kwargs: cache_setup,
+        raising=True,
+    )
+    monkeypatch.setattr(
+        cli_backend_compile,
+        "_stage_runtime_intrinsic_symbols_for_native_codegen",
+        lambda *args, **kwargs: ("", None),
+        raising=True,
+    )
+    monkeypatch.setattr(
+        cli_backend_compile,
+        "_maybe_start_native_runtime_lib_ready_async",
+        lambda *args, **kwargs: None,
+        raising=True,
+    )
+
+    prepared, err = cli_backend_compile._prepare_backend_setup(
+        is_rust_transpile=False,
+        is_luau_transpile=False,
+        is_wasm=False,
+        emit_mode="bin",
+        molt_root=tmp_path,
+        runtime_cargo_profile="dev-fast",
+        target_triple=None,
+        json_output=True,
+        cargo_timeout=1.0,
+        target="native",
+        profile="release",
+        backend_cargo_profile="dev-fast",
+        linked=False,
+        project_root=tmp_path,
+        cache_dir=None,
+        output_artifact=tmp_path / "out",
+        warnings=[],
+        cache=True,
+        ir={"functions": []},
+        entry_module="__main__",
+        module_graph_metadata=object(),  # type: ignore[arg-type]
+        target_python="py312",
+        stdlib_profile="full",
+        native_artifact_plan=native_plan,
+        resolved_modules={"nativepkg"},
+    )
+
+    assert err is None
+    assert prepared is not None
+    assert captured_extra_features == [("source_extension_loader",)]
+
+
 def test_ensure_runtime_lib_rebuilds_unfingerprinted_prebuilt_archive(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -1290,12 +1388,14 @@ def test_ensure_runtime_lib_passes_tk_feature_to_native_build(
         cargo_profile="dev-fast",
         project_root=project_root,
         cargo_timeout=5.0,
+        extra_runtime_features=("source_extension_loader",),
     )
     assert seen_cmds
     assert "--features" in seen_cmds[0]
     feature_index = seen_cmds[0].index("--features")
     features_str = seen_cmds[0][feature_index + 1]
     assert "molt_tk_native" in features_str.split(",")
+    assert "source_extension_loader" in features_str.split(",")
 
 
 def test_ensure_runtime_lib_does_not_probe_fingerprint_exists(

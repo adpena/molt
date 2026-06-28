@@ -433,15 +433,12 @@ the implementation. For forward-looking priorities, use
   tensors.
 - WASM remains a supported target area, but same-contract parity with native is
   still incomplete.
-- WASM split-runtime builds now stage a browser numeric-kernel embed surface
-  (`browser_embed.js`) alongside `app.wasm`, `molt_runtime.wasm`, `worker.js`,
-  and `manifest.json`. The embed loader reads generated ABI facts from
-  `manifest.json` (`abi.browser_embed`) for call-indirect imports,
-  runtime-import fallbacks, and table-layout remapping instead of carrying
-  parallel hand-coded constants. The supported browser entry point is the narrow
-  typed-array `loadMoltBrowserKernel(...).forward(...)` contract in
-  `docs/spec/areas/wasm/0969_BROWSER_NUMERIC_KERNEL_EMBED.md`; it is not the
-  broad browser process/VFS host.
+- WASM browser numeric-kernel calls route through the browser host authority
+  (`wasm/browser_host.js`) and its typed-array `loadMoltKernel(...)` facade.
+  The active contract is
+  `docs/spec/areas/wasm/0970_BROWSER_NUMERIC_KERNEL_EMBED.md`; generated
+  split-runtime embed artifacts must not carry a second browser-kernel ABI or
+  duplicate the generated WASM ABI facts.
 - Luau is a checked source-emission target for the current/future Luau surface;
   current OpIR support is generated in
   `docs/spec/areas/compiler/luau_support_matrix.generated.md`.
@@ -1329,12 +1326,16 @@ the implementation. For forward-looking priorities, use
   validated artifacts plus sidecars and runtime shim candidates under a
   deterministic `external_static_packages/<plan-digest>/` root and inject that
   staged root into generated native binaries before runtime startup. That is not
-  yet a green no-host NumPy import proof. Friend-suite metrics now exclude
-  custody/scan runners from speedup math, and git-suite custody rejects ignored
-  checkout artifacts in addition to dirty or wrong-ref trees. The Molt lane is
-  expected to fail until no-host source-recompiled extension package build,
-  NumPy C-API symbol closure, and NumPy import/runtime-load proof are complete;
-  host-Python fallback is not an allowed completion path.
+  yet a green no-host NumPy import proof. The strict NumPy `c_api_probe` lane is
+  green at 447 scanned source files, 1,258 required symbols, 1,258 supported,
+  zero missing, and zero fail-fast. The strict SciPy `c_api_probe` lane is green
+  at 592 scanned source files, 321 required symbols, 321 supported, zero
+  missing, and zero fail-fast. Friend-suite metrics now exclude custody/scan
+  runners from speedup math, and git-suite custody rejects ignored checkout
+  artifacts in addition to dirty or wrong-ref trees. The Molt workload lane is
+  expected to fail until no-host source-recompiled extension package build and
+  NumPy/SciPy import/runtime-load proof are complete; host-Python fallback is
+  not an allowed completion path.
 
 ## Performance Summary
 
