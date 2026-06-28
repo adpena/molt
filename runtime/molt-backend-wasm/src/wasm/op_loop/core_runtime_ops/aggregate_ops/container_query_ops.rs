@@ -1,6 +1,10 @@
 use super::super::super::result_sink::store_result_or_drop;
-use super::super::super::*;
 use super::AggregateRuntimeContext;
+use crate::OpIR;
+use crate::wasm_binary::emit_call;
+use crate::wasm_import_tracking::selected_import_id;
+use crate::wasm_plan::wasm_specialized_container_import;
+use wasm_encoder::{Function, Instruction};
 
 pub(super) fn emit_container_query_op(
     func: &mut Function,
