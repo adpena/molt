@@ -28,7 +28,6 @@ pub(crate) enum WasmConstRawIntEffect {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum WasmConstLirFastPolicy {
     Lower,
-    PlaceholderZero,
     BailGeneric,
 }
 
@@ -113,7 +112,7 @@ pub(crate) const WASM_CONST_OP_POLICIES: &[WasmConstOpPolicySpec] = &[
         dispatch_runtime_seed: true,
         parse_scalar_literal: true,
         raw_int_effect: WasmConstRawIntEffect::Clear,
-        lir_fast: WasmConstLirFastPolicy::PlaceholderZero,
+        lir_fast: WasmConstLirFastPolicy::BailGeneric,
     },
     WasmConstOpPolicySpec {
         kind: "const_bigint",
@@ -133,7 +132,7 @@ pub(crate) const WASM_CONST_OP_POLICIES: &[WasmConstOpPolicySpec] = &[
         dispatch_runtime_seed: true,
         parse_scalar_literal: true,
         raw_int_effect: WasmConstRawIntEffect::Clear,
-        lir_fast: WasmConstLirFastPolicy::PlaceholderZero,
+        lir_fast: WasmConstLirFastPolicy::BailGeneric,
     },
 ];
 
