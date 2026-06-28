@@ -3,17 +3,9 @@ use super::context::CompileFuncContext;
 use super::{WasmBackend, WasmFrameLocals};
 use crate::OpIR;
 use crate::wasm_abi_generated::WasmConstInlineSeed;
-#[cfg(test)]
-use crate::wasm_abi_generated::WasmConstLirFastPolicy;
-#[cfg(test)]
-use crate::wasm_abi_generated::{WasmConstLiteralPayload, WasmConstRawIntEffect};
 use crate::wasm_data::DataSegmentRef;
 use crate::wasm_import_tracking::TrackedImportIds;
 use crate::wasm_values::ConstantCache;
-#[cfg(test)]
-use crate::wasm_values::{box_bool, box_int, box_none};
-#[cfg(test)]
-use molt_codegen_abi::box_float_bits as box_float;
 use std::collections::BTreeMap;
 use wasm_encoder::Function;
 
@@ -153,7 +145,13 @@ pub(super) fn emit_seeded_runtime_const_op(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::OpIR;
+    use crate::wasm::const_materialization::WasmConstOpPolicy;
+    use crate::wasm_abi_generated::{
+        WasmConstInlineSeed, WasmConstLirFastPolicy, WasmConstLiteralPayload, WasmConstRawIntEffect,
+    };
+    use crate::wasm_values::{box_bool, box_int, box_none};
+    use molt_codegen_abi::box_float_bits as box_float;
 
     fn op(kind: &str) -> OpIR {
         OpIR {
