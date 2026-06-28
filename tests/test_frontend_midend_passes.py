@@ -635,6 +635,57 @@ def test_dce_eliminates_cross_block_dead_pure_dependency_chain_in_one_pass() -> 
     assert gen.midend_stats["dce_removed_total"] == 3
 
 
+def test_dce_preserves_dead_may_raise_arithmetic_without_primitive_proof() -> None:
+    gen = SimpleTIRGenerator()
+    ops = [
+        MoltOp(kind="MISSING", args=[], result=MoltValue("obj")),
+        MoltOp(kind="CONST", args=[1], result=MoltValue("one")),
+        MoltOp(
+            kind="ADD",
+            args=[MoltValue("obj"), MoltValue("one")],
+            result=MoltValue("dead_sum"),
+        ),
+    ]
+
+    rewritten = gen._eliminate_dead_trivial_consts(ops)
+
+    assert [op.kind for op in rewritten] == ["MISSING", "CONST", "ADD"]
+    assert gen.midend_stats["dce_removed_total"] == 0
+
+
+def test_sccp_try_edges_follow_generated_raising_authority_for_arithmetic() -> None:
+    gen = SimpleTIRGenerator()
+    unknown_ops = [
+        MoltOp(kind="TRY_START", args=[], result=MoltValue("none")),
+        MoltOp(kind="MISSING", args=[], result=MoltValue("obj")),
+        MoltOp(kind="CONST", args=[1], result=MoltValue("one")),
+        MoltOp(
+            kind="ADD",
+            args=[MoltValue("obj"), MoltValue("one")],
+            result=MoltValue("sum"),
+        ),
+        MoltOp(kind="TRY_END", args=[], result=MoltValue("none")),
+    ]
+    unknown_cfg = build_cfg(unknown_ops)
+    unknown_sccp = gen._compute_sccp(unknown_ops, unknown_cfg)
+    assert unknown_sccp.try_exception_possible_by_start[0] is True
+
+    constant_ops = [
+        MoltOp(kind="TRY_START", args=[], result=MoltValue("none")),
+        MoltOp(kind="CONST", args=[7], result=MoltValue("lhs")),
+        MoltOp(kind="CONST", args=[3], result=MoltValue("rhs")),
+        MoltOp(
+            kind="ADD",
+            args=[MoltValue("lhs"), MoltValue("rhs")],
+            result=MoltValue("sum"),
+        ),
+        MoltOp(kind="TRY_END", args=[], result=MoltValue("none")),
+    ]
+    constant_cfg = build_cfg(constant_ops)
+    constant_sccp = gen._compute_sccp(constant_ops, constant_cfg)
+    assert constant_sccp.try_exception_possible_by_start[0] is False
+
+
 def test_cfg_const_dedupe_keeps_check_exception_users_defined() -> None:
     lowered = _lower_ops(
         [
@@ -2148,6 +2199,40 @@ def test_licm_hoists_invariant_pure_ops_beyond_loop_prefix() -> None:
     )
     add_idx = next(i for i, op in enumerate(rewritten) if op.kind == "ADD")
     assert add_idx < loop_start_idx
+
+
+def test_licm_preserves_may_raise_ops_without_instance_disproof() -> None:
+    gen = SimpleTIRGenerator()
+    ops = [
+        MoltOp(kind="MISSING", args=[], result=MoltValue("obj")),
+        MoltOp(kind="CONST", args=[1], result=MoltValue("one")),
+        MoltOp(kind="LOOP_START", args=[], result=MoltValue("none")),
+        MoltOp(kind="MISSING", args=[], result=MoltValue("cond")),
+        MoltOp(
+            kind="LOOP_BREAK_IF_TRUE",
+            args=[MoltValue("cond")],
+            result=MoltValue("none"),
+        ),
+        MoltOp(
+            kind="ADD",
+            args=[MoltValue("obj"), MoltValue("one")],
+            result=MoltValue("maybe_raises"),
+        ),
+        MoltOp(
+            kind="FLOORDIV",
+            args=[MoltValue("one"), MoltValue("one")],
+            result=MoltValue("div_maybe_raises"),
+        ),
+        MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")),
+    ]
+
+    rewritten, _hoists = gen._hoist_loop_invariant_pure_ops(ops)
+    loop_start_idx = next(
+        i for i, op in enumerate(rewritten) if op.kind == "LOOP_START"
+    )
+    add_idx = next(i for i, op in enumerate(rewritten) if op.kind == "ADD")
+    div_idx = next(i for i, op in enumerate(rewritten) if op.kind == "FLOORDIV")
+    assert loop_start_idx < add_idx < div_idx
 
 
 def test_definite_assignment_verifier_flags_join_missing_defs() -> None:

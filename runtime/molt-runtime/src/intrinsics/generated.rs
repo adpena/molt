@@ -4615,7 +4615,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
     IntrinsicSpec {
         name: "molt_file_exit_method",
         symbol: "molt_file_exit_method",
-        arity: 2,
+        arity: 4,
         defaults: &[],
     },
     IntrinsicSpec {
@@ -7409,6 +7409,12 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         defaults: &[],
     },
     IntrinsicSpec {
+        name: "molt_gc_is_tracked",
+        symbol: "molt_gc_is_tracked",
+        arity: 1,
+        defaults: &[],
+    },
+    IntrinsicSpec {
         name: "molt_traceback_source_line",
         symbol: "molt_traceback_source_line",
         arity: 2,
@@ -8822,6 +8828,36 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         name: "molt_stdlib_probe",
         symbol: "molt_stdlib_probe",
         arity: 0,
+        defaults: &[],
+    },
+    IntrinsicSpec {
+        name: "molt_scipy_ndimage_distance_transform_edt",
+        symbol: "molt_scipy_ndimage_distance_transform_edt",
+        arity: 1,
+        defaults: &[],
+    },
+    IntrinsicSpec {
+        name: "molt_scipy_ndimage_gaussian_filter",
+        symbol: "molt_scipy_ndimage_gaussian_filter",
+        arity: 2,
+        defaults: &[],
+    },
+    IntrinsicSpec {
+        name: "molt_scipy_ndimage_maximum_filter",
+        symbol: "molt_scipy_ndimage_maximum_filter",
+        arity: 2,
+        defaults: &[],
+    },
+    IntrinsicSpec {
+        name: "molt_scipy_ndimage_minimum_filter",
+        symbol: "molt_scipy_ndimage_minimum_filter",
+        arity: 2,
+        defaults: &[],
+    },
+    IntrinsicSpec {
+        name: "molt_scipy_ndimage_label",
+        symbol: "molt_scipy_ndimage_label",
+        arity: 1,
         defaults: &[],
     },
     IntrinsicSpec {
@@ -13519,7 +13555,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
     IntrinsicSpec {
         name: "molt_logging_formatter_format_time",
         symbol: "molt_logging_formatter_format_time",
-        arity: 2,
+        arity: 3,
         defaults: &[],
     },
     IntrinsicSpec {
@@ -13573,7 +13609,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
     IntrinsicSpec {
         name: "molt_logging_stream_handler_new",
         symbol: "molt_logging_stream_handler_new",
-        arity: 3,
+        arity: 2,
         defaults: &[],
     },
     IntrinsicSpec {
@@ -13645,7 +13681,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
     IntrinsicSpec {
         name: "molt_logging_basic_config",
         symbol: "molt_logging_basic_config",
-        arity: 6,
+        arity: 4,
         defaults: &[],
     },
     IntrinsicSpec {

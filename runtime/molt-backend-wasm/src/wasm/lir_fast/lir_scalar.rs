@@ -1,5 +1,7 @@
 use super::lir_context::LirLowerCtx;
 use super::lir_ops::{ArithOp, BitwiseOp, CmpOp, UnaryOp};
+use crate::wasm::body::WasmLirFallbackReason;
+use crate::wasm_values::push_f64_to_i64_canonical;
 use molt_codegen_abi::{
     INLINE_INT_BIAS, INLINE_INT_LIMIT, INT_MASK, INT_MAX_INLINE as INLINE_INT_MAX,
     INT_MIN_INLINE as INLINE_INT_MIN, QNAN_TAG_BOOL_I64, QNAN_TAG_INT_I64, box_none_bits,
@@ -48,7 +50,7 @@ pub(super) fn emit_lir_binary_arith(ctx: &mut LirLowerCtx, op: &LirOp, arith: Ar
         // are value-range-proven inside the 47-bit inline window.
         emit_box_inline_i64(ctx, lhs);
         emit_box_inline_i64(ctx, rhs);
-        ctx.emit_bail_to_generic_path();
+        ctx.emit_bail_to_generic_path(WasmLirFallbackReason::BoxedCheckedArithmetic);
         ctx.emit_set(overflow_box);
         ctx.instructions.push(Instruction::I32Const(1));
         ctx.emit_set(overflow_flag);
@@ -109,12 +111,8 @@ pub(super) fn emit_lir_binary_arith(ctx: &mut LirLowerCtx, op: &LirOp, arith: Ar
                     // Python fmod: a - floor(a / b) * b
                     // Stack: [lhs, rhs]. We need both values twice.
                     // Allocate scratch locals for the operands.
-                    let scratch_a = ctx.next_local;
-                    ctx.next_local += 1;
-                    ctx.local_types.insert(scratch_a, ValType::F64);
-                    let scratch_b = ctx.next_local;
-                    ctx.next_local += 1;
-                    ctx.local_types.insert(scratch_b, ValType::F64);
+                    let scratch_a = ctx.alloc_scratch_local(ValType::F64);
+                    let scratch_b = ctx.alloc_scratch_local(ValType::F64);
                     // Pop rhs, pop lhs into scratches.
                     ctx.instructions.push(Instruction::LocalSet(scratch_b));
                     ctx.instructions.push(Instruction::LocalSet(scratch_a));
@@ -179,11 +177,9 @@ pub(super) fn emit_get_boxed_for_repr(ctx: &mut LirLowerCtx, v: ValueId) {
             ctx.instructions.push(Instruction::I64Or);
         }
         LirRepr::F64 => {
-            // Box the unboxed f64 via the runtime float-box helper. The body
-            // stores the runtime import name until module emission resolves the
-            // call index.
             ctx.emit_get(v);
-            ctx.emit_bail_to_generic_path();
+            let scratch = ctx.alloc_scratch_local(ValType::I64);
+            push_f64_to_i64_canonical(|instruction| ctx.instructions.push(instruction), scratch);
         }
         LirRepr::DynBox | LirRepr::Ref64 => ctx.emit_get(v),
     }
@@ -208,7 +204,7 @@ pub(super) fn emit_lir_unary_arith(ctx: &mut LirLowerCtx, op: &LirOp, _unary: Un
         }
         _ => {
             ctx.emit_get(src);
-            ctx.emit_bail_to_generic_path();
+            ctx.emit_bail_to_generic_path(WasmLirFallbackReason::BoxedUnaryArithmetic);
             ctx.emit_set(dst);
             return;
         }
@@ -401,7 +397,7 @@ pub(super) fn emit_lir_i64_binary_or_boxed(
     } else {
         emit_get_boxed_for_repr(ctx, lhs);
         emit_get_boxed_for_repr(ctx, rhs);
-        ctx.emit_bail_to_generic_path();
+        ctx.emit_bail_to_generic_path(WasmLirFallbackReason::BoxedBitwiseOrShift);
     }
     ctx.emit_set(dst);
 }
@@ -471,7 +467,8 @@ pub(super) fn emit_return_boxed_i64(ctx: &mut LirLowerCtx, value: ValueId) {
         }
         LirRepr::F64 => {
             ctx.emit_get(value);
-            ctx.emit_bail_to_generic_path();
+            let scratch = ctx.alloc_scratch_local(ValType::I64);
+            push_f64_to_i64_canonical(|instruction| ctx.instructions.push(instruction), scratch);
         }
     }
 }

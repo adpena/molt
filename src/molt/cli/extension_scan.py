@@ -6,6 +6,8 @@ from pathlib import Path
 from molt.cli.config_resolution import _config_value
 from molt.cli.deps import _load_toml
 from molt.cli.extension_manifest import _coerce_str_list
+from molt.cli.extension_scan_surface import _extract_file_local_py_c_symbols
+from molt.cli.extension_scan_surface import _extract_project_defined_py_c_symbols
 from molt.cli.extension_scan_surface import _extract_py_c_api_tokens
 from molt.cli.extension_scan_surface import _load_py_c_api_scan_surface
 from molt.cli.output import emit_json as _emit_json
@@ -44,13 +46,16 @@ _EXTENSION_SCAN_EXCLUDED_DIRS = {
 }
 
 
-def _iter_extension_scan_dir_sources(root: Path) -> list[Path]:
+def _iter_extension_scan_dir_sources(
+    root: Path, *, exclude_dirs: set[str] | None = None
+) -> list[Path]:
+    excluded_dirs = _EXTENSION_SCAN_EXCLUDED_DIRS | (exclude_dirs or set())
     source_paths: list[Path] = []
     for current_root, dirnames, filenames in os.walk(root):
         dirnames[:] = sorted(
             dirname
             for dirname in dirnames
-            if dirname not in _EXTENSION_SCAN_EXCLUDED_DIRS
+            if dirname not in excluded_dirs
             and not (Path(current_root) / dirname).is_symlink()
         )
         current = Path(current_root)
@@ -66,7 +71,10 @@ def _iter_extension_scan_dir_sources(root: Path) -> list[Path]:
 
 
 def _resolve_extension_scan_sources(
-    project_root: Path, explicit_sources: list[str] | None
+    project_root: Path,
+    explicit_sources: list[str] | None,
+    *,
+    exclude_dirs: set[str] | None = None,
 ) -> tuple[list[Path], list[str]]:
     errors: list[str] = []
     source_entries: list[str] = []
@@ -101,7 +109,10 @@ def _resolve_extension_scan_sources(
             errors.append(f"source path not found: {source_path}")
             continue
         if source_path.is_dir():
-            expanded = _iter_extension_scan_dir_sources(source_path)
+            expanded = _iter_extension_scan_dir_sources(
+                source_path,
+                exclude_dirs=exclude_dirs,
+            )
             if not expanded:
                 suffixes = ", ".join(sorted(_EXTENSION_SCAN_SOURCE_SUFFIXES))
                 errors.append(
@@ -128,6 +139,7 @@ def _resolve_extension_scan_sources(
 def extension_scan(
     project: str | None = None,
     sources: list[str] | None = None,
+    exclude_dirs: list[str] | None = None,
     fail_on_missing: bool = False,
     json_output: bool = False,
     verbose: bool = False,
@@ -142,7 +154,16 @@ def extension_scan(
             command="extension-scan",
         )
 
-    source_paths, errors = _resolve_extension_scan_sources(project_root, sources)
+    excluded_dir_names = {
+        entry.strip()
+        for entry in (exclude_dirs or [])
+        if entry is not None and entry.strip()
+    }
+    source_paths, errors = _resolve_extension_scan_sources(
+        project_root,
+        sources,
+        exclude_dirs=excluded_dir_names,
+    )
     if errors:
         return _fail(
             "Extension scan configuration errors: " + "; ".join(errors),
@@ -170,63 +191,85 @@ def extension_scan(
     fail_fast_by_file: dict[str, list[str]] = {}
     symbol_status_by_file: dict[str, dict[str, str]] = {}
     required_symbols: set[str] = set()
+    project_defined_symbols: set[str] = set()
+    source_text_by_path: dict[Path, str] = {}
+    file_local_symbols_by_path: dict[Path, set[str]] = {}
     for source_path in source_paths:
         try:
-            source_text = source_path.read_text()
-        except OSError as exc:
+            source_text = source_path.read_text(encoding="utf-8", errors="replace")
+        except (OSError, UnicodeError) as exc:
             return _fail(
                 f"Failed to read source file {source_path}: {exc}",
                 json_output,
                 command="extension-scan",
             )
-        file_required = sorted(_extract_py_c_api_tokens(source_text))
+        source_text_by_path[source_path] = source_text
+        project_defined_symbols.update(_extract_project_defined_py_c_symbols(source_text))
+        file_local_symbols_by_path[source_path] = _extract_file_local_py_c_symbols(
+            source_text
+        )
+
+    def symbol_status(symbol: str) -> str:
+        surface_status = scan_surface.status_for(symbol)
+        if surface_status == "missing" and symbol in project_defined_symbols:
+            return "project_defined"
+        return surface_status
+
+    for source_path, source_text in source_text_by_path.items():
+        file_required = sorted(
+            _extract_py_c_api_tokens(source_text)
+            - file_local_symbols_by_path[source_path]
+        )
         required_by_file[str(source_path)] = file_required
         required_symbols.update(file_required)
         file_missing = sorted(
             symbol
             for symbol in file_required
-            if scan_surface.status_for(symbol) == "missing"
+            if symbol_status(symbol) == "missing"
         )
         if file_missing:
             missing_by_file[str(source_path)] = file_missing
         file_fail_fast = sorted(
             symbol
             for symbol in file_required
-            if scan_surface.status_for(symbol) == "fail_fast"
+            if symbol_status(symbol) == "fail_fast"
         )
         if file_fail_fast:
             fail_fast_by_file[str(source_path)] = file_fail_fast
         symbol_status_by_file[str(source_path)] = {
-            symbol: scan_surface.status_for(symbol) for symbol in file_required
+            symbol: symbol_status(symbol) for symbol in file_required
         }
 
     required_sorted = sorted(required_symbols)
     missing_sorted = sorted(
         symbol
         for symbol in required_sorted
-        if scan_surface.status_for(symbol) == "missing"
+        if symbol_status(symbol) == "missing"
     )
     fail_fast_sorted = sorted(
         symbol
         for symbol in required_sorted
-        if scan_surface.status_for(symbol) == "fail_fast"
+        if symbol_status(symbol) == "fail_fast"
     )
     runtime_backed_used_sorted = sorted(
         symbol
         for symbol in required_sorted
-        if scan_surface.status_for(symbol) == "runtime_backed"
+        if symbol_status(symbol) == "runtime_backed"
     )
     source_compile_only_used_sorted = sorted(
         symbol
         for symbol in required_sorted
-        if scan_surface.status_for(symbol) == "source_compile_only"
+        if symbol_status(symbol) == "source_compile_only"
+    )
+    project_defined_used_sorted = sorted(
+        symbol for symbol in required_sorted if symbol_status(symbol) == "project_defined"
     )
     supported_used_sorted = sorted(
-        runtime_backed_used_sorted + source_compile_only_used_sorted
+        runtime_backed_used_sorted
+        + source_compile_only_used_sorted
+        + project_defined_used_sorted
     )
-    symbol_status = {
-        symbol: scan_surface.status_for(symbol) for symbol in required_sorted
-    }
+    symbol_status = {symbol: symbol_status(symbol) for symbol in required_sorted}
     warnings: list[str] = []
     if missing_sorted and not fail_on_missing:
         warnings.append(
@@ -256,10 +299,13 @@ def extension_scan(
                 "source_compile_only_symbol_count": len(
                     source_compile_only_used_sorted
                 ),
+                "project_defined_symbol_count": len(project_defined_used_sorted),
+                "exclude_dirs": sorted(excluded_dir_names),
                 "required_symbols": required_sorted,
                 "supported_symbols": supported_used_sorted,
                 "runtime_backed_symbols": runtime_backed_used_sorted,
                 "source_compile_only_symbols": source_compile_only_used_sorted,
+                "project_defined_symbols": project_defined_used_sorted,
                 "fail_fast_symbols": fail_fast_sorted,
                 "missing_symbols": missing_sorted,
                 "symbol_status": symbol_status,
@@ -283,6 +329,7 @@ def extension_scan(
             "Source-compile-only Py* symbols used: "
             f"{len(source_compile_only_used_sorted)}"
         )
+        print(f"Project-defined Py* symbols used: {len(project_defined_used_sorted)}")
         print(f"Fail-fast Py* symbols: {len(fail_fast_sorted)}")
         print(f"Missing Py* symbols: {len(missing_sorted)}")
         if fail_fast_sorted:

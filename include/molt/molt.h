@@ -172,4 +172,118 @@ uint8_t *molt_bytearray_as_ptr(MoltHandle bytearray_bits, uint64_t *out_len);
 } /* extern "C" */
 #endif
 
+#ifdef MOLT_EXTENSION_HOST_ABI
+#include <stdlib.h>
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#else
+#include <dlfcn.h>
+#endif
+
+static inline void *_molt_host_abi_symbol(const char *name) {
+#if defined(_WIN32)
+  HMODULE handle = GetModuleHandleA(NULL);
+  void *symbol = handle ? (void *)GetProcAddress(handle, name) : NULL;
+#else
+  void *symbol = dlsym(RTLD_DEFAULT, name);
+#endif
+  if (symbol == NULL) {
+    abort();
+  }
+  return symbol;
+}
+
+#define molt_c_api_version ((uint32_t (*)(void))_molt_host_abi_symbol("molt_c_api_version"))
+#define molt_init ((int32_t (*)(void))_molt_host_abi_symbol("molt_init"))
+#define molt_shutdown ((int32_t (*)(void))_molt_host_abi_symbol("molt_shutdown"))
+#define molt_gil_acquire ((int32_t (*)(void))_molt_host_abi_symbol("molt_gil_acquire"))
+#define molt_gil_release ((int32_t (*)(void))_molt_host_abi_symbol("molt_gil_release"))
+#define molt_gil_is_held ((int32_t (*)(void))_molt_host_abi_symbol("molt_gil_is_held"))
+#define molt_handle_incref ((void (*)(MoltHandle))_molt_host_abi_symbol("molt_handle_incref"))
+#define molt_handle_decref ((void (*)(MoltHandle))_molt_host_abi_symbol("molt_handle_decref"))
+#define molt_none ((MoltHandle (*)(void))_molt_host_abi_symbol("molt_none"))
+#define molt_bool_from_i32 ((MoltHandle (*)(int32_t))_molt_host_abi_symbol("molt_bool_from_i32"))
+#define molt_int_from_i64 ((MoltHandle (*)(int64_t))_molt_host_abi_symbol("molt_int_from_i64"))
+#define molt_int_as_i64 ((int64_t (*)(MoltHandle))_molt_host_abi_symbol("molt_int_as_i64"))
+#define molt_float_from_f64 ((MoltHandle (*)(double))_molt_host_abi_symbol("molt_float_from_f64"))
+#define molt_float_as_f64 ((double (*)(MoltHandle))_molt_host_abi_symbol("molt_float_as_f64"))
+#define molt_err_set ((int32_t (*)(MoltHandle, const uint8_t *, uint64_t))_molt_host_abi_symbol("molt_err_set"))
+#define molt_err_format ((int32_t (*)(MoltHandle, const uint8_t *, uint64_t))_molt_host_abi_symbol("molt_err_format"))
+#define molt_err_clear ((int32_t (*)(void))_molt_host_abi_symbol("molt_err_clear"))
+#define molt_err_pending ((int32_t (*)(void))_molt_host_abi_symbol("molt_err_pending"))
+#define molt_err_peek ((MoltHandle (*)(void))_molt_host_abi_symbol("molt_err_peek"))
+#define molt_err_fetch ((MoltHandle (*)(void))_molt_host_abi_symbol("molt_err_fetch"))
+#define molt_err_restore ((int32_t (*)(MoltHandle))_molt_host_abi_symbol("molt_err_restore"))
+#define molt_err_matches ((int32_t (*)(MoltHandle))_molt_host_abi_symbol("molt_err_matches"))
+#define molt_builtin_class_lookup ((MoltHandle (*)(MoltHandle))_molt_host_abi_symbol("molt_builtin_class_lookup"))
+#define molt_object_getattr ((MoltHandle (*)(MoltHandle, MoltHandle))_molt_host_abi_symbol("molt_object_getattr"))
+#define molt_object_getattr_bytes ((MoltHandle (*)(MoltHandle, const uint8_t *, uint64_t))_molt_host_abi_symbol("molt_object_getattr_bytes"))
+#define molt_object_delattr ((MoltHandle (*)(MoltHandle, MoltHandle))_molt_host_abi_symbol("molt_object_delattr"))
+#define molt_object_setattr ((MoltHandle (*)(MoltHandle, MoltHandle, MoltHandle))_molt_host_abi_symbol("molt_object_setattr"))
+#define molt_object_setattr_bytes ((int32_t (*)(MoltHandle, const uint8_t *, uint64_t, MoltHandle))_molt_host_abi_symbol("molt_object_setattr_bytes"))
+#define molt_object_hasattr ((int32_t (*)(MoltHandle, MoltHandle))_molt_host_abi_symbol("molt_object_hasattr"))
+#define molt_object_call ((MoltHandle (*)(MoltHandle, MoltHandle, MoltHandle))_molt_host_abi_symbol("molt_object_call"))
+#define molt_object_repr ((MoltHandle (*)(MoltHandle))_molt_host_abi_symbol("molt_object_repr"))
+#define molt_object_str ((MoltHandle (*)(MoltHandle))_molt_host_abi_symbol("molt_object_str"))
+#define molt_object_truthy ((int32_t (*)(MoltHandle))_molt_host_abi_symbol("molt_object_truthy"))
+#define molt_object_equal ((int32_t (*)(MoltHandle, MoltHandle))_molt_host_abi_symbol("molt_object_equal"))
+#define molt_object_not_equal ((int32_t (*)(MoltHandle, MoltHandle))_molt_host_abi_symbol("molt_object_not_equal"))
+#define molt_object_contains ((int32_t (*)(MoltHandle, MoltHandle))_molt_host_abi_symbol("molt_object_contains"))
+#define molt_type_ready ((int32_t (*)(MoltHandle))_molt_host_abi_symbol("molt_type_ready"))
+#define molt_module_create ((MoltHandle (*)(MoltHandle))_molt_host_abi_symbol("molt_module_create"))
+#define molt_module_import ((MoltHandle (*)(MoltHandle))_molt_host_abi_symbol("molt_module_import"))
+#define molt_module_get_dict ((MoltHandle (*)(MoltHandle))_molt_host_abi_symbol("molt_module_get_dict"))
+#define molt_module_capi_register ((int32_t (*)(MoltHandle, uintptr_t, uint64_t))_molt_host_abi_symbol("molt_module_capi_register"))
+#define molt_module_capi_get_def ((uintptr_t (*)(MoltHandle))_molt_host_abi_symbol("molt_module_capi_get_def"))
+#define molt_module_capi_get_state ((uint8_t *(*)(MoltHandle))_molt_host_abi_symbol("molt_module_capi_get_state"))
+#define molt_module_state_add ((int32_t (*)(MoltHandle, uintptr_t))_molt_host_abi_symbol("molt_module_state_add"))
+#define molt_module_state_find ((MoltHandle (*)(uintptr_t))_molt_host_abi_symbol("molt_module_state_find"))
+#define molt_module_state_remove ((int32_t (*)(uintptr_t))_molt_host_abi_symbol("molt_module_state_remove"))
+#define molt_module_add_object ((int32_t (*)(MoltHandle, MoltHandle, MoltHandle))_molt_host_abi_symbol("molt_module_add_object"))
+#define molt_module_add_object_bytes ((int32_t (*)(MoltHandle, const uint8_t *, uint64_t, MoltHandle))_molt_host_abi_symbol("molt_module_add_object_bytes"))
+#define molt_module_get_object ((MoltHandle (*)(MoltHandle, MoltHandle))_molt_host_abi_symbol("molt_module_get_object"))
+#define molt_module_get_object_bytes ((MoltHandle (*)(MoltHandle, const uint8_t *, uint64_t))_molt_host_abi_symbol("molt_module_get_object_bytes"))
+#define molt_module_add_type ((int32_t (*)(MoltHandle, MoltHandle))_molt_host_abi_symbol("molt_module_add_type"))
+#define molt_module_add_int_constant ((int32_t (*)(MoltHandle, MoltHandle, int64_t))_molt_host_abi_symbol("molt_module_add_int_constant"))
+#define molt_module_add_string_constant ((int32_t (*)(MoltHandle, MoltHandle, const uint8_t *, uint64_t))_molt_host_abi_symbol("molt_module_add_string_constant"))
+#define molt_cfunction_create_bytes ((MoltHandle (*)(MoltHandle, const uint8_t *, uint64_t, MoltCFunction, uint32_t, const uint8_t *, uint64_t))_molt_host_abi_symbol("molt_cfunction_create_bytes"))
+#define molt_cfunction_create_keywords_bytes ((MoltHandle (*)(MoltHandle, const uint8_t *, uint64_t, MoltCFunctionWithKeywords, uint32_t, const uint8_t *, uint64_t))_molt_host_abi_symbol("molt_cfunction_create_keywords_bytes"))
+#define molt_module_add_cfunction_bytes ((int32_t (*)(MoltHandle, const uint8_t *, uint64_t, MoltCFunction, uint32_t, const uint8_t *, uint64_t))_molt_host_abi_symbol("molt_module_add_cfunction_bytes"))
+#define molt_module_add_cfunction_keywords_bytes ((int32_t (*)(MoltHandle, const uint8_t *, uint64_t, MoltCFunctionWithKeywords, uint32_t, const uint8_t *, uint64_t))_molt_host_abi_symbol("molt_module_add_cfunction_keywords_bytes"))
+#define molt_number_add ((MoltHandle (*)(MoltHandle, MoltHandle))_molt_host_abi_symbol("molt_number_add"))
+#define molt_number_sub ((MoltHandle (*)(MoltHandle, MoltHandle))_molt_host_abi_symbol("molt_number_sub"))
+#define molt_number_mul ((MoltHandle (*)(MoltHandle, MoltHandle))_molt_host_abi_symbol("molt_number_mul"))
+#define molt_number_truediv ((MoltHandle (*)(MoltHandle, MoltHandle))_molt_host_abi_symbol("molt_number_truediv"))
+#define molt_number_floordiv ((MoltHandle (*)(MoltHandle, MoltHandle))_molt_host_abi_symbol("molt_number_floordiv"))
+#define molt_number_long ((MoltHandle (*)(MoltHandle))_molt_host_abi_symbol("molt_number_long"))
+#define molt_number_float ((MoltHandle (*)(MoltHandle))_molt_host_abi_symbol("molt_number_float"))
+#define molt_sequence_length ((int64_t (*)(MoltHandle))_molt_host_abi_symbol("molt_sequence_length"))
+#define molt_sequence_getitem ((MoltHandle (*)(MoltHandle, MoltHandle))_molt_host_abi_symbol("molt_sequence_getitem"))
+#define molt_sequence_setitem ((int32_t (*)(MoltHandle, MoltHandle, MoltHandle))_molt_host_abi_symbol("molt_sequence_setitem"))
+#define molt_iter_next ((MoltHandle (*)(MoltHandle))_molt_host_abi_symbol("molt_iter_next"))
+#define molt_list_append ((MoltHandle (*)(MoltHandle, MoltHandle))_molt_host_abi_symbol("molt_list_append"))
+#define molt_mapping_getitem ((MoltHandle (*)(MoltHandle, MoltHandle))_molt_host_abi_symbol("molt_mapping_getitem"))
+#define molt_mapping_setitem ((int32_t (*)(MoltHandle, MoltHandle, MoltHandle))_molt_host_abi_symbol("molt_mapping_setitem"))
+#define molt_mapping_length ((int64_t (*)(MoltHandle))_molt_host_abi_symbol("molt_mapping_length"))
+#define molt_mapping_keys ((MoltHandle (*)(MoltHandle))_molt_host_abi_symbol("molt_mapping_keys"))
+#define molt_dict_keys ((MoltHandle (*)(MoltHandle))_molt_host_abi_symbol("molt_dict_keys"))
+#define molt_dict_values ((MoltHandle (*)(MoltHandle))_molt_host_abi_symbol("molt_dict_values"))
+#define molt_dict_items ((MoltHandle (*)(MoltHandle))_molt_host_abi_symbol("molt_dict_items"))
+#define molt_dict_getitem_borrowed ((MoltHandle (*)(MoltHandle, MoltHandle))_molt_host_abi_symbol("molt_dict_getitem_borrowed"))
+#define molt_tuple_from_array ((MoltHandle (*)(const MoltHandle *, uint64_t))_molt_host_abi_symbol("molt_tuple_from_array"))
+#define molt_list_from_array ((MoltHandle (*)(const MoltHandle *, uint64_t))_molt_host_abi_symbol("molt_list_from_array"))
+#define molt_dict_from_pairs ((MoltHandle (*)(const MoltHandle *, const MoltHandle *, uint64_t))_molt_host_abi_symbol("molt_dict_from_pairs"))
+#define molt_buffer_acquire ((int32_t (*)(MoltHandle, MoltBufferView *))_molt_host_abi_symbol("molt_buffer_acquire"))
+#define molt_buffer_release ((int32_t (*)(MoltBufferView *))_molt_host_abi_symbol("molt_buffer_release"))
+#define molt_bytes_from ((MoltHandle (*)(const uint8_t *, uint64_t))_molt_host_abi_symbol("molt_bytes_from"))
+#define molt_bytes_as_ptr ((const uint8_t *(*)(MoltHandle, uint64_t *))_molt_host_abi_symbol("molt_bytes_as_ptr"))
+#define molt_string_from ((MoltHandle (*)(const uint8_t *, uint64_t))_molt_host_abi_symbol("molt_string_from"))
+#define molt_string_as_ptr ((const uint8_t *(*)(MoltHandle, uint64_t *))_molt_host_abi_symbol("molt_string_as_ptr"))
+#define molt_bytearray_from ((MoltHandle (*)(const uint8_t *, uint64_t))_molt_host_abi_symbol("molt_bytearray_from"))
+#define molt_bytearray_as_ptr ((uint8_t *(*)(MoltHandle, uint64_t *))_molt_host_abi_symbol("molt_bytearray_as_ptr"))
+#endif
+
 #endif /* MOLT_C_API_MOLT_H */

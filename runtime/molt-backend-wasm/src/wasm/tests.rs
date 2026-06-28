@@ -1,4 +1,6 @@
 use super::*;
+use crate::wasm_abi::{CALL_INDIRECT_IMPORTS, CALL_INDIRECT_MAX_ARITY, POLL_TABLE_IMPORTS};
+use crate::wasm_options::WasmProfile;
 use crate::wasm_plan::is_production_lir_wasm_fast_path_name;
 
 #[test]
@@ -222,6 +224,16 @@ fn wasm_element_function_indices(wasm: &[u8]) -> Vec<u32> {
     panic!("expected active function element section");
 }
 
+fn wasm_function_section_type_indices(wasm: &[u8]) -> Vec<u32> {
+    let mut type_indices = Vec::new();
+    for payload in Parser::new(0).parse_all(wasm) {
+        if let Ok(Payload::FunctionSection(reader)) = payload {
+            type_indices.extend(reader.into_iter().flatten());
+        }
+    }
+    type_indices
+}
+
 fn wasm_function_exports(wasm: &[u8]) -> BTreeSet<String> {
     let mut exports = BTreeSet::new();
     for payload in Parser::new(0).parse_all(wasm) {
@@ -229,6 +241,20 @@ fn wasm_function_exports(wasm: &[u8]) -> BTreeSet<String> {
             for export in reader.into_iter().flatten() {
                 if export.kind == ExternalKind::Func {
                     exports.insert(export.name.to_string());
+                }
+            }
+        }
+    }
+    exports
+}
+
+fn wasm_function_export_indices(wasm: &[u8]) -> BTreeMap<String, u32> {
+    let mut exports = BTreeMap::new();
+    for payload in Parser::new(0).parse_all(wasm) {
+        if let Ok(Payload::ExportSection(reader)) = payload {
+            for export in reader.into_iter().flatten() {
+                if export.kind == ExternalKind::Func {
+                    exports.insert(export.name.to_string(), export.index);
                 }
             }
         }
@@ -252,6 +278,54 @@ fn wasm_type_section_signatures(wasm: &[u8]) -> Vec<(usize, usize)> {
         }
     }
     sigs
+}
+
+#[test]
+fn pure_profile_uses_observed_runtime_surface_not_broad_registry() {
+    let func = wasm_test_function(
+        "pure_surface",
+        vec![],
+        None,
+        vec![wasm_test_op("ret_void", None, vec![])],
+    );
+    let ir = SimpleIR {
+        functions: vec![func],
+        profile: None,
+    };
+    let wasm = WasmBackend::with_options(WasmCompileOptions {
+        native_eh_enabled: false,
+        reloc_enabled: false,
+        wasm_profile: WasmProfile::Pure,
+        ..WasmCompileOptions::default()
+    })
+    .compile(ir);
+
+    wasmparser::Validator::new()
+        .validate_all(&wasm)
+        .expect("pure profile planned-import module must be structurally valid WASM");
+
+    let imports: BTreeSet<String> = wasm_function_import_names(&wasm).into_iter().collect();
+    assert!(
+        imports.contains("runtime_init"),
+        "pure profile must retain module runtime initialization; imports={imports:?}"
+    );
+    for name in [
+        "ctypes_coerce_value",
+        "http_client_execute",
+        "sqlite3_connect",
+        "tk_app_new",
+        "re_compile",
+        "socket_connect",
+    ] {
+        assert!(
+            !imports.contains(name),
+            "pure profile must not register broad runtime import {name}; imports={imports:?}"
+        );
+    }
+    assert!(
+        imports.len() < 200,
+        "pure profile should be planned from observed imports, not broad registry; imports={imports:?}"
+    );
 }
 
 #[test]
@@ -294,6 +368,82 @@ fn call_indirect_exports_follow_manifest_imports() {
             .expect("generated call_indirect import family must be non-empty")
             .arity
     );
+}
+
+#[test]
+fn call_indirect_type_layout_and_sentinel_table_slot_are_pinned() {
+    let func = wasm_test_function(
+        "call_indirect_type_layout",
+        vec![],
+        None,
+        vec![wasm_test_op("ret_void", None, vec![])],
+    );
+    let ir = SimpleIR {
+        functions: vec![func],
+        profile: None,
+    };
+    let wasm = WasmBackend::with_options(WasmCompileOptions {
+        native_eh_enabled: false,
+        reloc_enabled: false,
+        ..WasmCompileOptions::default()
+    })
+    .compile(ir);
+
+    wasmparser::Validator::new()
+        .validate_all(&wasm)
+        .expect("call_indirect type-layout module must be structurally valid WASM");
+
+    let import_count = wasm_function_import_indices(&wasm).len() as u32;
+    let function_type_indices = wasm_function_section_type_indices(&wasm);
+    let export_indices = wasm_function_export_indices(&wasm);
+    let signatures = wasm_type_section_signatures(&wasm);
+
+    let first_call_indirect_import = CALL_INDIRECT_IMPORTS
+        .first()
+        .expect("generated call_indirect import family must be non-empty");
+    let first_call_indirect_idx = *export_indices
+        .get(first_call_indirect_import.import_name)
+        .expect("first call_indirect export must exist");
+    for (offset, spec) in CALL_INDIRECT_IMPORTS.iter().enumerate() {
+        let func_idx = *export_indices
+            .get(spec.import_name)
+            .unwrap_or_else(|| panic!("{} export must exist", spec.import_name));
+        assert_eq!(
+            func_idx,
+            first_call_indirect_idx + offset as u32,
+            "{} export must stay in generated call_indirect order",
+            spec.import_name
+        );
+        let type_idx = function_type_indices[(func_idx - import_count) as usize];
+        assert_eq!(
+            signatures[type_idx as usize],
+            (spec.arity + 1, 1),
+            "{} wrapper must accept table index plus {} args and return one value",
+            spec.import_name,
+            spec.arity
+        );
+    }
+
+    let sentinel_func_idx = first_call_indirect_idx + CALL_INDIRECT_IMPORTS.len() as u32;
+    let element_indices = wasm_element_function_indices(&wasm);
+    let poll_table_prefix = POLL_TABLE_IMPORTS
+        .iter()
+        .map(|spec| spec.table_slot)
+        .max()
+        .unwrap_or(0) as usize
+        + 1;
+    let occupied_poll_slots: BTreeSet<usize> = POLL_TABLE_IMPORTS
+        .iter()
+        .map(|spec| spec.table_slot as usize)
+        .collect();
+    for slot in 0..poll_table_prefix {
+        if !occupied_poll_slots.contains(&slot) {
+            assert_eq!(
+                element_indices[slot], sentinel_func_idx,
+                "unassigned poll-table slot {slot} must point at the generated sentinel"
+            );
+        }
+    }
 }
 
 #[test]
@@ -544,6 +694,85 @@ fn generic_wasm_exception_pop_then_drop_keeps_dec_ref_import_across_eh_modes() {
             "generic WASM shared drops must keep dec_ref_obj import for native_eh_enabled={native_eh_enabled}; imports={imports:?}"
         );
     }
+}
+
+#[test]
+fn generic_wasm_local_slot_delete_var_lowers_before_control_fallback() {
+    let mut delete = wasm_test_op("delete_var", None, vec!["missing_val", "old"]);
+    delete.var = Some("slot".to_string());
+    let func = wasm_test_function(
+        "delete_var_slot",
+        vec!["value", "old"],
+        None,
+        vec![
+            wasm_test_op("missing", Some("missing_val"), vec![]),
+            {
+                let mut store = wasm_test_op("store_var", None, vec!["value"]);
+                store.var = Some("slot".to_string());
+                store
+            },
+            delete,
+            wasm_test_op("dec_ref", None, vec!["old"]),
+            wasm_test_op("ret_void", None, vec![]),
+        ],
+    );
+    let ir = SimpleIR {
+        functions: vec![func],
+        profile: None,
+    };
+    let wasm = WasmBackend::with_options(WasmCompileOptions {
+        reloc_enabled: false,
+        ..WasmCompileOptions::default()
+    })
+    .compile(ir);
+
+    wasmparser::Validator::new()
+        .validate_all(&wasm)
+        .expect("delete_var must lower as a local-slot transition");
+    let imports = wasm_function_import_names(&wasm);
+    assert!(
+        imports.iter().any(|name| name == "dec_ref_obj"),
+        "delete_var must leave old-value release to the explicit drop fact; imports={imports:?}"
+    );
+}
+
+#[test]
+fn jumpful_wasm_delete_var_lowers_as_local_slot_not_control() {
+    let mut jump = wasm_test_op("jump", None, vec![]);
+    jump.value = Some(7);
+    let mut label = wasm_test_op("label", None, vec![]);
+    label.value = Some(7);
+    let mut store = wasm_test_op("store_var", None, vec!["value"]);
+    store.var = Some("slot".to_string());
+    let mut delete = wasm_test_op("delete_var", None, vec!["missing_val", "old"]);
+    delete.var = Some("slot".to_string());
+    let func = wasm_test_function(
+        "jumpful_delete_var_slot",
+        vec!["value", "old"],
+        None,
+        vec![
+            wasm_test_op("missing", Some("missing_val"), vec![]),
+            jump,
+            label,
+            store,
+            delete,
+            wasm_test_op("dec_ref", None, vec!["old"]),
+            wasm_test_op("ret_void", None, vec![]),
+        ],
+    );
+    let ir = SimpleIR {
+        functions: vec![func],
+        profile: None,
+    };
+    let wasm = WasmBackend::with_options(WasmCompileOptions {
+        reloc_enabled: false,
+        ..WasmCompileOptions::default()
+    })
+    .compile(ir);
+
+    wasmparser::Validator::new()
+        .validate_all(&wasm)
+        .expect("dispatch-mode delete_var must lower outside control_ops");
 }
 
 #[test]

@@ -214,11 +214,13 @@ def protected_process_group_ids(
     *,
     self_pid: int | None = None,
     self_pgid: int | None = None,
+    owned_pids: set[int] | None = None,
 ) -> set[int]:
     return _process_model.protected_process_group_ids(
         samples,
         self_pid=self_pid,
         self_pgid=self_pgid,
+        owned_pids=() if owned_pids is None else owned_pids,
     )
 
 
@@ -240,11 +242,14 @@ def _root_pid_is_kill_eligible(
 
 def _current_protected_process_group_ids(
     samples: Mapping[int, ProcessSample],
+    *,
+    owned_pids: set[int] | None = None,
 ) -> set[int]:
     return protected_process_group_ids(
         samples,
         self_pid=os.getpid(),
         self_pgid=_safe_getpgrp(),
+        owned_pids=owned_pids,
     )
 
 
@@ -255,7 +260,10 @@ def _filter_protected_watched_pids(
     return _process_model.filter_protected_watched_pids(
         samples,
         watched,
-        protected_pgids=_current_protected_process_group_ids(samples),
+        protected_pgids=_current_protected_process_group_ids(
+            samples,
+            owned_pids=set(watched),
+        ),
         current_pid=os.getpid(),
     )
 
@@ -274,7 +282,10 @@ def watched_pids(
         samples,
         root_pid,
         tracker=tracker,
-        protected_pgids=_current_protected_process_group_ids(samples),
+        protected_pgids=_current_protected_process_group_ids(
+            samples,
+            owned_pids={root_pid},
+        ),
     )
 
 
@@ -290,7 +301,10 @@ def peak_rss(
         root_pid=root_pid,
         watched=watched,
         tracker=tracker,
-        protected_pgids=_current_protected_process_group_ids(samples),
+        protected_pgids=_current_protected_process_group_ids(
+            samples,
+            owned_pids={root_pid} | set(watched or ()),
+        ),
     )
 
 
@@ -306,7 +320,10 @@ def total_rss(
         root_pid=root_pid,
         watched=watched,
         tracker=tracker,
-        protected_pgids=_current_protected_process_group_ids(samples),
+        protected_pgids=_current_protected_process_group_ids(
+            samples,
+            owned_pids={root_pid} | set(watched or ()),
+        ),
     )
 
 
@@ -326,7 +343,10 @@ def find_rss_violation(
         max_total_rss_kb=max_total_rss_kb,
         watched=watched,
         tracker=tracker,
-        protected_pgids=_current_protected_process_group_ids(samples),
+        protected_pgids=_current_protected_process_group_ids(
+            samples,
+            owned_pids={root_pid} | set(watched or ()),
+        ),
     )
 
 
@@ -424,7 +444,10 @@ def _terminate_single_pid(pid: int, *, grace: float) -> bool:
         return True
     if is_host_control_plane_process(sample):
         return True
-    if _sample_pgid(sample) in _current_protected_process_group_ids(samples):
+    if _sample_pgid(sample) in _current_protected_process_group_ids(
+        samples,
+        owned_pids={pid},
+    ):
         return True
     action = _terminate_pid_if_identity_action(
         pid,
@@ -598,7 +621,10 @@ def _send_pid_signal_if_identity_action(
             signum=signum,
             result="skipped_host_control_plane",
         )
-    if _sample_pgid(sample) in _current_protected_process_group_ids(samples):
+    if _sample_pgid(sample) in _current_protected_process_group_ids(
+        samples,
+        owned_pids={pid} if identity is not None else set(),
+    ):
         return _termination_action(
             target_kind="process",
             target_id=pid,
@@ -616,7 +642,10 @@ def _send_process_group_signal_if_identities_match_action(
     sampler: Callable[[], Mapping[int, ProcessSample]],
 ) -> GuardTerminationAction:
     samples = sampler()
-    protected_pgids = _current_protected_process_group_ids(samples)
+    protected_pgids = _current_protected_process_group_ids(
+        samples,
+        owned_pids=set(identities),
+    )
     if pgid in protected_pgids:
         return _termination_action(
             target_kind="process_group",
@@ -770,7 +799,10 @@ def terminate_watched_processes(
             if watched is not None
             else watched_pids(observed_samples, root_pid, tracker=tracker)
         )
-        protected_pgids = _current_protected_process_group_ids(observed_samples)
+        protected_pgids = _current_protected_process_group_ids(
+            observed_samples,
+            owned_pids=set(observed) | {root_pid},
+        )
         owned_pids = _filter_protected_watched_pids(observed_samples, set(observed))
         root_sample = observed_samples.get(root_pid)
         root_group_pgid = None if root_sample is None else _sample_pgid(root_sample)
@@ -905,7 +937,10 @@ def terminate_watched_processes(
         if watched is not None
         else watched_pids(observed_samples, root_pid, tracker=tracker)
     )
-    protected_pgids = _current_protected_process_group_ids(observed_samples)
+    protected_pgids = _current_protected_process_group_ids(
+        observed_samples,
+        owned_pids=set(observed) | {root_pid},
+    )
     root_sample = observed_samples.get(root_pid)
     root_group_pgid = (
         _sample_pgid(root_sample)
@@ -1173,7 +1208,10 @@ def _terminate_pid_if_identity_action(
             signum=None,
             result="skipped_host_control_plane",
         )
-    if _sample_pgid(sample) in _current_protected_process_group_ids(samples):
+    if _sample_pgid(sample) in _current_protected_process_group_ids(
+        samples,
+        owned_pids={pid},
+    ):
         return _termination_action(
             target_kind="process",
             target_id=pid,

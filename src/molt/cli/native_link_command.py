@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import functools
 import os
 from pathlib import Path
 import platform
+import re
 import shlex
 import shutil
 import sys
@@ -52,6 +54,21 @@ def _resolve_native_linker_hint(
     if is_host_linux:
         return _resolve_available_fast_linker()
     return None
+
+
+@functools.lru_cache(maxsize=1)
+def _molt_c_api_export_names() -> tuple[str, ...]:
+    include_root = Path(__file__).resolve().parents[3] / "include" / "molt"
+    header_text: list[str] = []
+    for header_name in ("molt.h", "Python.h"):
+        try:
+            header_text.append((include_root / header_name).read_text(encoding="utf-8"))
+        except OSError:
+            continue
+    names = sorted(
+        set(re.findall(r"\bmolt_[A-Za-z0-9_]+(?=\s*\()", "\n".join(header_text)))
+    )
+    return tuple(names or ("molt_c_api_version",))
 
 
 def _build_native_link_driver_command(
@@ -152,6 +169,7 @@ def _build_native_link_command(
     sysroot_path: Path | None,
     profile: str,
     stdlib_obj_path: Path | None = None,
+    export_molt_runtime_symbols: bool = False,
 ) -> tuple[list[str], str | None, str | None]:
     link_cmd, linker_hint, normalized_target = _build_native_link_driver_command(
         output_obj=output_obj,
@@ -190,7 +208,10 @@ def _build_native_link_command(
     if is_darwin:
         link_cmd.append("-Wl,-dead_strip")
         exported_symbols_path = output_binary.parent / ".molt_exports.exp"
-        _atomic_write_text(exported_symbols_path, "_main\n")
+        exported_symbols = ["_main"]
+        if export_molt_runtime_symbols:
+            exported_symbols.extend(f"_{name}" for name in _molt_c_api_export_names())
+        _atomic_write_text(exported_symbols_path, "\n".join(exported_symbols) + "\n")
         link_cmd.append(f"-Wl,-exported_symbols_list,{exported_symbols_path}")
         if os.environ.get("MOLT_KEEP_SYMBOLS") != "1":
             link_cmd.extend(["-Wl,-x", "-Wl,-S"])
@@ -204,12 +225,20 @@ def _build_native_link_command(
         link_cmd.append("-Wl,--as-needed")
         link_cmd.append("-Wl,-O2")
         version_script_path = output_binary.parent / ".molt_version.ver"
-        _atomic_write_text(version_script_path, "{ global: main; local: *; };\n")
+        globals = "main; molt_*;" if export_molt_runtime_symbols else "main;"
+        _atomic_write_text(version_script_path, f"{{ global: {globals} local: *; }};\n")
         link_cmd.append(f"-Wl,--version-script={version_script_path}")
+        if export_molt_runtime_symbols:
+            link_cmd.append("-Wl,--export-dynamic")
         link_cmd.append("-lstdc++")
         link_cmd.append("-lm")
     elif is_windows:
         link_cmd.extend(["-Wl,/OPT:REF"])
+        if export_molt_runtime_symbols:
+            def_path = output_binary.parent / ".molt_exports.def"
+            exports = "\n".join(_molt_c_api_export_names())
+            _atomic_write_text(def_path, f"EXPORTS\n{exports}\n")
+            link_cmd.append(f"-Wl,/DEF:{def_path}")
     _append_darwin_runtime_frameworks(link_cmd, target_triple=target_triple)
     cargo_search, cargo_libs = _collect_cargo_native_link_deps(runtime_lib)
     link_cmd.extend(cargo_search)

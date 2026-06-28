@@ -18,18 +18,18 @@ impl WasmBackend {
     pub(super) fn emit_runtime_import_surface(
         &mut self,
         ir: &SimpleIR,
-        lir_fast_outputs: &BTreeMap<String, crate::wasm::body::WasmBody>,
+        lir_lowering_plans: &crate::wasm_plan::WasmFunctionLoweringPlans,
         task_kinds: &BTreeMap<String, TrampolineKind>,
     ) -> WasmRuntimeImportEmission {
         let runtime_surface =
-            WasmRuntimeSurfacePlan::build(ir, lir_fast_outputs, task_kinds, &self.options);
-        let auto_required = runtime_surface.auto_required_imports.clone();
+            WasmRuntimeSurfacePlan::build(ir, lir_lowering_plans, task_kinds, &self.options);
+        let planned_required = runtime_surface.planned_required_imports.clone();
         let mut registrar = RuntimeImportRegistrar {
             imports: &mut self.imports,
             import_ids: &mut self.import_ids,
             import_idx: 0,
             is_pure: self.options.wasm_profile == WasmProfile::Pure,
-            auto_required,
+            planned_required,
         };
 
         for &(name, type_idx) in crate::wasm_imports::IMPORT_REGISTRY {
@@ -85,7 +85,7 @@ struct RuntimeImportRegistrar<'a> {
     import_ids: &'a mut TrackedImportIds,
     import_idx: u32,
     is_pure: bool,
-    auto_required: Option<BTreeSet<String>>,
+    planned_required: Option<BTreeSet<String>>,
 }
 
 impl RuntimeImportRegistrar<'_> {
@@ -96,9 +96,9 @@ impl RuntimeImportRegistrar<'_> {
         ) && name == "task_new"
         {
             eprintln!(
-                "WASM_IMPORTS add_import name=task_new skipped_prefix={} auto_required_contains={}",
+                "WASM_IMPORTS add_import name=task_new skipped_prefix={} planned_required_contains={}",
                 self.is_skipped_import(name),
-                self.auto_required
+                self.planned_required
                     .as_ref()
                     .is_none_or(|required| required.contains(name))
             );
@@ -107,7 +107,7 @@ impl RuntimeImportRegistrar<'_> {
             self.import_ids.insert(name.to_string(), u32::MAX);
             return;
         }
-        if let Some(ref required) = self.auto_required
+        if let Some(ref required) = self.planned_required
             && !required.contains(name)
         {
             self.import_ids.insert(name.to_string(), u32::MAX);

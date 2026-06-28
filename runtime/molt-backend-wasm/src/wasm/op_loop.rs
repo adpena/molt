@@ -9,6 +9,7 @@ mod builder_ops;
 mod call_ops;
 mod control_ops;
 mod core_runtime_ops;
+mod local_slot_ops;
 mod local_state_ops;
 mod numeric_ops;
 mod object_attr_ops;
@@ -18,6 +19,7 @@ mod runtime_service_ops;
 use call_ops::{CallOpContext, CallOpEmission, emit_call_op};
 use control_ops::{ControlOpContext, emit_control_op};
 use core_runtime_ops::emit_core_runtime_op;
+use local_slot_ops::emit_local_slot_op;
 use local_state_ops::emit_local_state_op;
 use numeric_ops::emit_numeric_op;
 use object_attr_ops::emit_object_attr_op;
@@ -180,6 +182,9 @@ impl<'a, 'ctx> WasmFunctionEmitContext<'a, 'ctx> {
                 func_index,
                 reloc_enabled,
             ) {
+                continue;
+            }
+            if emit_local_slot_op(func, op, import_ids, locals, reloc_enabled) {
                 continue;
             }
 

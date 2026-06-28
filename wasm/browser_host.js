@@ -565,6 +565,25 @@ const writeU64ToMemory = (memory, ptr, value) => {
   return true;
 };
 
+const bytesLikeToUint8Array = (value, label = 'bytes value') => {
+  if (value instanceof Uint8Array) {
+    return value;
+  }
+  if (value instanceof ArrayBuffer) {
+    return new Uint8Array(value);
+  }
+  if (typeof SharedArrayBuffer !== 'undefined' && value instanceof SharedArrayBuffer) {
+    return new Uint8Array(value);
+  }
+  if (ArrayBuffer.isView(value)) {
+    return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+  }
+  if (Array.isArray(value)) {
+    return Uint8Array.from(value.map((item) => Number(item) & 0xff));
+  }
+  throw new Error(`${label} must be an ArrayBuffer, typed array, DataView, or byte array`);
+};
+
 const allocRuntimeTempBytes = (runtime, memory, bytes) => {
   if (!runtime || !memory) {
     throw new Error('runtime not initialized');
@@ -763,7 +782,7 @@ const makeBytesObjectWithRuntime = (runtime, memory, bytes) => {
   if (!runtime || !memory) {
     throw new Error('runtime not initialized');
   }
-  const payload = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+  const payload = bytesLikeToUint8Array(bytes, 'browser host bytes argument');
   const tempBytes = allocRuntimeTempBytes(runtime, memory, payload);
   const tempOut = allocRuntimeTempBytes(runtime, memory, new Uint8Array(8));
   try {
@@ -779,6 +798,37 @@ const makeBytesObjectWithRuntime = (runtime, memory, bytes) => {
   } finally {
     freeRuntimeTempBytes(runtime, tempBytes);
     freeRuntimeTempBytes(runtime, tempOut);
+  }
+};
+
+const readRuntimeBytesBits = (runtime, memory, bits) => {
+  if (
+    !runtime ||
+    !memory ||
+    !bits ||
+    bits === 0n ||
+    typeof runtime.exports?.molt_bytes_as_ptr !== 'function'
+  ) {
+    return null;
+  }
+  const temp = allocRuntimeTempBytes(runtime, memory, new Uint8Array(8));
+  try {
+    let ptr;
+    try {
+      ptr = runtime.exports.molt_bytes_as_ptr(bits, Number(temp.payloadPtr));
+    } catch {
+      return null;
+    }
+    if (!ptr || ptr === 0n) {
+      return null;
+    }
+    const len = new DataView(memory.buffer).getBigUint64(Number(temp.payloadPtr), true);
+    const bytes = readBytesFromMemory(memory, ptr, len);
+    const copy = new Uint8Array(bytes.length);
+    copy.set(bytes);
+    return copy;
+  } finally {
+    freeRuntimeTempBytes(runtime, temp);
   }
 };
 
@@ -938,7 +988,7 @@ const makeBrowserHostArgObject = (runtime, memory, spec) => {
       case 'string':
         return makeStringObjectWithRuntime(runtime, memory, String(spec.value));
       case 'bytes':
-        return makeBytesObjectWithRuntime(runtime, memory, spec.value);
+        return makeBytesObjectWithRuntime(runtime, memory, bytesLikeToUint8Array(spec.value, 'bytes host arg'));
       case 'bytes_utf8':
         return makeBytesObjectWithRuntime(runtime, memory, UTF8_ENCODER.encode(String(spec.value)));
       case 'list_int':
@@ -964,6 +1014,12 @@ const makeBrowserHostArgObject = (runtime, memory, spec) => {
   }
   if (spec instanceof ArrayBuffer) {
     return makeBytesObjectWithRuntime(runtime, memory, new Uint8Array(spec));
+  }
+  if (typeof SharedArrayBuffer !== 'undefined' && spec instanceof SharedArrayBuffer) {
+    return makeBytesObjectWithRuntime(runtime, memory, new Uint8Array(spec));
+  }
+  if (ArrayBuffer.isView(spec)) {
+    return makeBytesObjectWithRuntime(runtime, memory, bytesLikeToUint8Array(spec, 'typed-array host arg'));
   }
   if (Array.isArray(spec) && spec.every((value) => Number.isInteger(value))) {
     return makeListIntObjectWithRuntime(runtime, spec.map((value) => Number(value)));
@@ -3892,6 +3948,10 @@ export const loadMoltWasm = async (options = {}) => {
         `[molt export return] ${exportName} bits=${String(resultBits)}`
       );
     }
+    const resultTypeTag = runtimeTypeTagOfBits(runtime, resultBits);
+    const resultBytes = resultTypeTag === TYPE_TAG_BYTES
+      ? readRuntimeBytesBits(runtime, memory, resultBits)
+      : null;
     const resultJson = tryDecodeResultJson(runtime, memory, resultBits);
     const resultRepr = reprObjectBitsWithRuntime(runtime, memory, resultBits);
     const fallbackJson = resultJson === null ? parseMoltJsonishRepr(resultRepr) : null;
@@ -3901,6 +3961,7 @@ export const loadMoltWasm = async (options = {}) => {
         typeof resultBits === 'bigint' ? resultBits.toString() : String(resultBits),
       resultRepr,
       resultJson: resultJson ?? fallbackJson,
+      resultBytes,
     };
   };
   const overrides = {
@@ -4131,5 +4192,90 @@ export const loadMoltWasm = async (options = {}) => {
         throw new Error(pendingException);
       }
     },
+  };
+};
+
+const kernelResultBytes = (result) => {
+  if (result && result.resultBytes instanceof Uint8Array) {
+    return result.resultBytes;
+  }
+  if (result && Array.isArray(result.resultJson)) {
+    return Uint8Array.from(result.resultJson.map((item) => Number(item) & 0xff));
+  }
+  throw new Error('Molt kernel result is not bytes; return bytes or choose resultType: "json"');
+};
+
+const typedArrayFromKernelBytes = (bytes, Constructor, label) => {
+  if (bytes.byteLength % Constructor.BYTES_PER_ELEMENT !== 0) {
+    throw new Error(
+      `${label} result byte length ${bytes.byteLength} is not divisible by ${Constructor.BYTES_PER_ELEMENT}`
+    );
+  }
+  const copy = new Uint8Array(bytes.byteLength);
+  copy.set(bytes);
+  return new Constructor(copy.buffer);
+};
+
+export const decodeMoltKernelResult = (result, resultType = 'bytes') => {
+  const normalized = String(resultType || 'bytes').toLowerCase().replace(/[-_]/g, '');
+  if (normalized === 'raw') {
+    return result;
+  }
+  if (normalized === 'json') {
+    return result ? result.resultJson : null;
+  }
+  if (normalized === 'repr') {
+    return result ? result.resultRepr : null;
+  }
+  const bytes = kernelResultBytes(result);
+  switch (normalized) {
+    case 'bytes':
+    case 'uint8':
+    case 'uint8array':
+      return bytes;
+    case 'int8':
+    case 'int8array':
+      return typedArrayFromKernelBytes(bytes, Int8Array, 'int8');
+    case 'uint16':
+    case 'uint16array':
+      return typedArrayFromKernelBytes(bytes, Uint16Array, 'uint16');
+    case 'int16':
+    case 'int16array':
+      return typedArrayFromKernelBytes(bytes, Int16Array, 'int16');
+    case 'uint32':
+    case 'uint32array':
+      return typedArrayFromKernelBytes(bytes, Uint32Array, 'uint32');
+    case 'int32':
+    case 'int32array':
+      return typedArrayFromKernelBytes(bytes, Int32Array, 'int32');
+    case 'float32':
+    case 'float32array':
+    case 'f32':
+      return typedArrayFromKernelBytes(bytes, Float32Array, 'float32');
+    case 'float64':
+    case 'float64array':
+    case 'f64':
+      return typedArrayFromKernelBytes(bytes, Float64Array, 'float64');
+    default:
+      throw new Error(`unsupported Molt kernel resultType: ${resultType}`);
+  }
+};
+
+export const loadMoltKernel = async (options = {}) => {
+  const exportName = options.exportName || options.functionName || 'forward';
+  const resultType = options.resultType || options.outputType || 'bytes';
+  const decode =
+    typeof options.decode === 'function'
+      ? options.decode
+      : (result) => decodeMoltKernelResult(result, resultType);
+  const host = await loadMoltWasm(options);
+  const callRaw = async (...args) => host.invokeExport(exportName, args);
+  const call = async (...args) => decode(await callRaw(...args));
+  return {
+    ...host,
+    exportName,
+    call,
+    callRaw,
+    forward: call,
   };
 };

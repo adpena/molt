@@ -14,6 +14,8 @@ from molt._wasm_abi_generated import (
     WASM_RESERVED_RUNTIME_CALLABLE_COUNT,
     wasm_import_result_kind,
     wasm_import_signature,
+    wasm_runtime_callable_result,
+    wasm_runtime_callable_spec,
 )
 
 __all__ = (
@@ -116,7 +118,7 @@ def _runtime_import_signatures_from_manifest(
 ) -> dict[str, dict[str, object]]:
     signatures: dict[str, dict[str, object]] = {}
     for import_name in sorted(set(import_names)):
-        signature = wasm_import_signature(import_name)
+        signature = _runtime_import_signature_from_manifest(import_name)
         if signature is None:
             raise ValueError(
                 f"runtime import {import_name!r} missing from WASM ABI manifest"
@@ -134,13 +136,49 @@ def _runtime_import_result_kinds_from_manifest(
 ) -> dict[str, str]:
     result_kinds: dict[str, str] = {}
     for import_name in sorted(set(import_names)):
-        result_kind = wasm_import_result_kind(import_name)
+        result_kind = _runtime_import_result_kind_from_manifest(import_name)
         if result_kind is None:
             raise ValueError(
                 f"runtime import {import_name!r} missing from WASM ABI manifest"
             )
         result_kinds[import_name] = result_kind
     return result_kinds
+
+
+def _runtime_manifest_lookup_names(import_name: str) -> tuple[str, ...]:
+    if import_name.startswith("molt_"):
+        return (import_name, import_name.removeprefix("molt_"))
+    return (import_name, f"molt_{import_name}")
+
+
+def _runtime_import_signature_from_manifest(
+    import_name: str,
+) -> tuple[tuple[str, ...], tuple[str, ...]] | None:
+    for lookup_name in _runtime_manifest_lookup_names(import_name):
+        signature = wasm_import_signature(lookup_name)
+        if signature is not None:
+            return signature
+    for lookup_name in _runtime_manifest_lookup_names(import_name):
+        spec = wasm_runtime_callable_spec(lookup_name)
+        if spec is None:
+            continue
+        _import_name, arity, result = spec
+        params = tuple("i64" for _ in range(arity))
+        results: tuple[str, ...] = () if result == "void" else ("i64",)
+        return (params, results)
+    return None
+
+
+def _runtime_import_result_kind_from_manifest(import_name: str) -> str | None:
+    for lookup_name in _runtime_manifest_lookup_names(import_name):
+        result_kind = wasm_import_result_kind(lookup_name)
+        if result_kind is not None:
+            return result_kind
+    for lookup_name in _runtime_manifest_lookup_names(import_name):
+        result = wasm_runtime_callable_result(lookup_name)
+        if result is not None:
+            return "nil" if result == "void" else result
+    return None
 
 
 def _runtime_import_fallbacks_from_manifest() -> dict[str, dict[str, object]]:

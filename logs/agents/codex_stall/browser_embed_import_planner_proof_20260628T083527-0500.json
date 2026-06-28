@@ -1,0 +1,13 @@
+{
+  "timestamp": "2026-06-28T08:35:27-05:00",
+  "cwd": "C:\\Users\\adpen\\OneDrive\\Documents\\molt",
+  "status": "starting",
+  "command_family": [
+    "cargo test -p molt-backend-wasm pure_profile_uses_observed_runtime_surface_not_broad_registry",
+    "uv run pytest tests\\test_wasm_browser_embed.py::test_browser_embed_forward_roundtrips_float32_typed_arrays -q"
+  ],
+  "guard_pid": null,
+  "child_pid": null,
+  "evidence_path": "logs/agents/codex_stall/browser_embed_import_planner_proof_20260628T083527-0500.json",
+  "scope": "Molt-owned backend/browser embed proof; no host control-plane cleanup authorized"
+}

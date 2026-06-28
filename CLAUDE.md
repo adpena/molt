@@ -100,6 +100,37 @@ contradictory.
   new WASM encoder modules, ABI manifests, or import tables under
   `runtime/molt-backend/src/`.
 
+### Ecosystem Compatibility Doctrine: Primitives, Wiring, Integration
+
+This is a turn-blocking policy for NumPy, SciPy, pandas, tinygrad, and every
+other third-party ecosystem lane.
+
+- Ecosystem compatibility is not achieved by reimplementing upstream packages
+  package-by-package inside Molt Python. Build shared primitives and make the
+  existing upstream source compile, link, import, and execute against Molt.
+- The first-class route is source-recompiled extension compatibility: upstream
+  C/C++/Cython/Rust extension sources compile against `include/` and `libmolt`,
+  link only against Molt runtime symbols, stage package-native artifacts through
+  Molt import custody, and run with no host-CPython fallback.
+- C-API scan green is only missing-symbol closure. A real support claim needs
+  package build, link, import, runtime execution, deterministic tests, binary
+  closure, and performance/size evidence for the reachable user path.
+- Build primitives that make many packages green at once: C/API symbol and
+  type-object authority, ndarray/tensor dtype/stride/storage custody, buffer
+  protocol, capsule/module-state lifecycle, extension object closure,
+  package-native artifact staging, import sidecars, whole-program reachability,
+  and target-specific packaging.
+- Extreme tree shaking applies to third-party libraries. Compile and link only
+  the extension objects, functions, symbols, data tables, and runtime features
+  proven reachable from the user's program. Do not widen profiles or ship whole
+  package images to cover for missing closure analysis.
+- Python facades are allowed only as thin routing over shared primitives or as
+  explicit fail-closed diagnostics. Do not create bespoke NumPy/SciPy/tinygrad
+  clones as the ecosystem strategy.
+- Missing ABI behavior becomes a reusable primitive or a precise fail-closed
+  diagnostic. No patched upstream fork, monkeypatch shim, host-interpreter
+  bridge, or package-local compatibility crutch may masquerade as support.
+
 ### Anomaly Crux Protocol: Question The Question
 
 When weird behavior appears, do not answer only the first-order question. Zoom

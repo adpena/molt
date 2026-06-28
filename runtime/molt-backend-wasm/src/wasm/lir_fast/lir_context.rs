@@ -1,4 +1,4 @@
-use crate::wasm::body::WasmBodyOps;
+use crate::wasm::body::{WasmBodyOps, WasmLirFallbackReason};
 use molt_tir::tir::blocks::BlockId;
 use molt_tir::tir::lir::{LirFunction, LirRepr, LirTerminator, LirValue};
 use molt_tir::tir::values::ValueId;
@@ -50,8 +50,8 @@ impl<'a> LirLowerCtx<'a> {
         self.instructions.push_runtime_import_call(name);
     }
 
-    pub(super) fn emit_bail_to_generic_path(&mut self) {
-        self.instructions.push_bail_to_generic_path();
+    pub(super) fn emit_bail_to_generic_path(&mut self, reason: WasmLirFallbackReason) {
+        self.instructions.push_bail_to_generic_path(reason);
     }
 
     pub(super) fn local_for(&mut self, value: &LirValue) -> u32 {
@@ -106,6 +106,13 @@ impl<'a> LirLowerCtx<'a> {
     pub(super) fn emit_set(&mut self, vid: ValueId) {
         self.instructions
             .push(Instruction::LocalSet(self.get_local(vid)));
+    }
+
+    pub(super) fn alloc_scratch_local(&mut self, val_type: ValType) -> u32 {
+        let idx = self.next_local;
+        self.next_local += 1;
+        self.local_types.insert(idx, val_type);
+        idx
     }
 
     pub(super) fn repr_of(&self, vid: ValueId) -> LirRepr {

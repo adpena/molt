@@ -33,8 +33,8 @@ pub(super) struct CompileFuncContext<'a> {
     pub(super) class_def_spill_offset: u32,
     /// Data segment ref for the 8-byte scratch slot used by `const_str` ops.
     pub(super) const_str_scratch_segment: DataSegmentRef,
-    /// Precomputed production-safe LIR-based wasm outputs keyed by function name.
-    pub(super) lir_fast_outputs: &'a BTreeMap<String, crate::wasm::body::WasmBody>,
+    /// Precomputed production LIR-fast decisions keyed by function name.
+    pub(super) lir_lowering_plans: &'a crate::wasm_plan::WasmFunctionLoweringPlans,
     /// Functions proven to return one of their parameters by alias.
     pub(super) return_alias_summaries: &'a BTreeMap<String, crate::passes::ReturnAliasSummary>,
 }

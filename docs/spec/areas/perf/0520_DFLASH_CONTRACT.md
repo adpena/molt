@@ -55,6 +55,12 @@ Molt's DFlash support is derived from these public sources:
 DFlash in Molt must mean target-conditioned block-diffusion drafting, not a
 generic speculative-decoding loop.
 
+This is also a primitives-and-wiring contract. DFlash support must be expressed
+through shared tensor/GPU scheduler, KV/context custody, adapter metadata,
+target/verifier, and drafter primitives. Do not create model-local shortcuts or
+generic speculative wrappers that happen to pass a small demo while bypassing
+the DFlash source-of-truth invariants below.
+
 A DFlash adapter must provide:
 
 - explicit target model id, draft model id, and adapter provenance/source;

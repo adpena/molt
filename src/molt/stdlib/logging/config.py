@@ -36,6 +36,15 @@ ThreadingTCPServer = getattr(
 )
 
 
+# `IDENTIFIER` and `re` are CPython-API-compat surface only: molt validates
+# identifiers through the `molt_logging_config_valid_ident` intrinsic
+# (`valid_ident` below), never through this pattern. Compiling the pattern at
+# module-body time would run a top-level `re.compile`, pulling `re`'s intrinsics
+# into the static reach of every program that merely imports `logging.config`.
+# Resolving both lazily via PEP 562 keeps the public attributes identical (same
+# compiled pattern, same `re` module) while removing them from the always-run
+# module body. `import re` is local to the resolver so the module-init scan does
+# not see it.
 def __getattr__(name: str):
     if name == "IDENTIFIER":
         import re
@@ -49,7 +58,6 @@ def __getattr__(name: str):
         globals()["re"] = re
         return re
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-
 
 __all__ = [
     "BaseConfigurator",

@@ -7,8 +7,9 @@
 > matchers for IR op kinds that map directly to import names, plus the
 > split/link output export policy consumed by `tools/wasm_link_format.py`.
 > `wasm/module_abi/runtime_surface.rs` is the single IR-scanning planner for
-> Auto/reloc import requirements, direct runtime-call arity, builtin trampolines,
-> and per-module intrinsic manifests.
+> non-Full import requirements, direct runtime-call arity, builtin trampolines,
+> and per-module intrinsic manifests. Full profile is the only profile that
+> preserves the whole generated import registry.
 
 **Date:** 2026-03-07
 **Context:** Molt WASM codegen (`runtime/molt-backend-wasm/src/wasm.rs`) now routes import
@@ -22,11 +23,12 @@ The compiled `generator.wasm` (13.1 MB) declares **90 imports** across three nam
 
 ### `molt_runtime` (internal runtime)
 Runtime host functions are declared from the generated ABI registry
-(`runtime/molt-backend-wasm/src/wasm_abi_generated/`). In Auto/reloc mode,
+(`runtime/molt-backend-wasm/src/wasm_abi_generated/`). In non-Full profiles,
 `runtime/molt-backend-wasm/src/wasm/module_abi/runtime_surface.rs` computes the
 pre-emission requirement set from IR, `OP_IMPORT_DEPS`, generated
 runtime-required import matchers, direct runtime calls, task/generator facts,
-and backend-lowered runtime calls. These cover:
+and backend-lowered runtime calls. Full profile alone registers the whole
+registry for process-host compatibility. The generated registry covers:
 - **Core:** `runtime_init`, `runtime_shutdown`, `alloc`, `print_obj`, `print_newline`
 - **Arithmetic/comparison:** `add`, `sub`, `mul`, `div`, `lt`, `gt`, `eq`, etc.
 - **Collections:** `list_*`, `dict_*`, `set_*`, `tuple_*`, `string_*`
@@ -66,10 +68,15 @@ The remaining 30 imports (core runtime, arithmetic, IO/stdout, indirect calls, e
 
 ### Option A: Compiler-side profile/import planning (recommended)
 
-> **UPDATE 2026-03-20:** This option is now implemented (ddc8ea4c). `--wasm-profile pure` performs compile-time stripping of IO/ASYNC/TIME category imports, emitting `unreachable` for stripped call sites. Combined with `wasm-opt --remove-unused-module-elements` post-link, this achieves 30-50% size reduction for pure-compute modules.
+> **UPDATE 2026-06-28:** Pure profile now uses the same runtime-surface planner
+> as Auto instead of registering a broad "core" registry. It emits only observed
+> runtime imports, then applies the generated process/IO/time skip prefixes
+> fail-closed. Split-runtime browser kernels therefore ask the shared runtime to
+> export the actual app import surface, not a duplicate broad pure lane.
 
 Use the `--wasm-profile` flag with values like `full` (default) and `pure`:
-- In `pure` mode, skip process/db/ws/socket/time categories in the module ABI import planner.
+- In `pure` mode, plan imports from observed IR and skip process/db/ws/socket/time
+  categories in the module ABI import planner.
 - Guard the corresponding `emit_call` sites to emit `unreachable` instead of `call $import_idx` for omitted imports.
 - Run `wasm-opt --remove-unused-module-elements` as a post-emit step to DCE any code that transitively referenced stripped imports.
 

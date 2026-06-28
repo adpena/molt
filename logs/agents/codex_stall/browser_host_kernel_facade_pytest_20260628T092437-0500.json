@@ -1,0 +1,10 @@
+{
+  "command": "uv run pytest tests\\test_wasm_browser_db_host.py::test_browser_kernel_facade_roundtrips_float32_typed_arrays -q",
+  "cwd": "C:\\Users\\adpen\\OneDrive\\Documents\\molt",
+  "guard_pid": null,
+  "child_pid": null,
+  "status": "about_to_run_active_0970_browser_kernel_proof",
+  "timestamp": "2026-06-28T09:24:37-05:00",
+  "evidence_path": "logs\\agents\\codex_stall\\browser_host_kernel_facade_pytest_20260628T092437-0500.json",
+  "scope": "Molt-owned browser-host proof; no host control-plane cleanup authorized"
+}

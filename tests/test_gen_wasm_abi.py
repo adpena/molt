@@ -151,6 +151,18 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
         "molt_function_init_metadata_packed"
     )
     assert imports["function_init_metadata_packed"]["callable_arity"] == 4
+    assert imports["file_open_ex"]["runtime_name"] == "molt_file_open_ex"
+    assert imports["file_open_ex"]["callable_arity"] == 8
+    assert imports["file_exit_method"]["runtime_name"] == "molt_file_exit_method"
+    assert imports["file_exit_method"]["callable_arity"] == 4
+    assert imports["env_clear"]["runtime_name"] == "molt_env_clear"
+    assert imports["env_clear"]["callable_arity"] == 0
+    assert imports["env_clear"].get("callable_result", "i64") == "i64"
+    assert imports["typing_type_param"]["runtime_name"] == "molt_typing_type_param"
+    assert imports["typing_type_param"]["callable_arity"] == 2
+    assert imports["logging_formatter_format_time"]["callable_arity"] == 3
+    assert imports["logging_stream_handler_new"]["callable_arity"] == 2
+    assert imports["logging_basic_config"]["callable_arity"] == 4
     for name, arity in {
         "abc_bootstrap": 0,
         "collections_abc_runtime_types": 0,
@@ -243,6 +255,47 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
     assert "molt_async_sleep_poll as *const" not in function_abi
 
 
+def test_wasm_abi_manifest_classifies_raw_intrinsics_fail_closed() -> None:
+    gen = _load_gen_wasm_abi()
+    data = gen.load_manifest()
+    imports = {entry["name"]: entry for entry in data["import"]}
+    runtime_callables = {
+        entry["runtime_name"]
+        for entry in data["import"]
+        if "runtime_name" in entry
+    }
+
+    assert "molt_json_parse_scalar" in data["non_runtime_callable_intrinsic"]
+    assert "molt_gpu_prim_create_tensor" in data["non_runtime_callable_intrinsic"]
+    assert "runtime_name" not in imports["json_parse_scalar"]
+    assert "molt_json_parse_scalar" not in runtime_callables
+    assert "molt_gpu_prim_create_tensor" not in runtime_callables
+    assert imports["json_parse_scalar_obj"]["runtime_name"] == (
+        "molt_json_parse_scalar_obj"
+    )
+
+    broken = gen.tomllib.loads(gen.MANIFEST.read_text(encoding="utf-8"))
+    broken["non_runtime_callable_intrinsic"] = []
+    with pytest.raises(
+        gen.WasmAbiManifestError,
+        match="molt_json_parse_scalar.*non_runtime_callable_intrinsic",
+    ):
+        gen.validate_loaded_manifest(broken)
+
+
+def test_wasm_abi_runtime_callable_intrinsics_match_rust_exports() -> None:
+    gen = _load_gen_wasm_abi()
+    data = gen.load_manifest()
+
+    # load_manifest performs the full Rust-export ABI validation; keep a
+    # readable sentinel here for the historically stale arity class.
+    imports = {entry["runtime_name"]: entry for entry in data["import"] if "runtime_name" in entry}
+    assert imports["molt_file_exit_method"]["callable_arity"] == 4
+    assert imports["molt_logging_formatter_format_time"]["callable_arity"] == 3
+    assert imports["molt_logging_stream_handler_new"]["callable_arity"] == 2
+    assert imports["molt_logging_basic_config"]["callable_arity"] == 4
+
+
 def test_wasm_abi_manifest_owns_python_runtime_import_signatures() -> None:
     gen = _load_gen_wasm_abi()
     data = gen.load_manifest()
@@ -288,17 +341,24 @@ def test_wasm_abi_manifest_owns_const_op_policy() -> None:
         "kind": "const",
         "inline_seed": "int",
         "literal_payload": "none",
+        "scalar_payload": "int",
         "raw_int_effect": "set_int",
         "lir_fast": "lower",
         "parse_scalar_literal": False,
         "dispatch_runtime_seed": False,
     }
+    assert policies["const_bool"]["scalar_payload"] == "bool"
+    assert policies["const_float"]["scalar_payload"] == "float"
+    assert policies["const_none"]["scalar_payload"] == "none"
     assert policies["const_str"]["materializer_import"] == "string_from_bytes"
     assert policies["const_str"]["literal_payload"] == "string"
+    assert policies["const_str"]["scalar_payload"] == "none"
     assert policies["const_str"]["parse_scalar_literal"] is True
+    assert policies["const_str"]["lir_fast"] == "bail_generic"
     assert policies["const_bytes"]["materializer_import"] == "bytes_from_bytes"
     assert policies["const_bytes"]["literal_payload"] == "bytes"
     assert policies["const_bytes"]["parse_scalar_literal"] is True
+    assert policies["const_bytes"]["lir_fast"] == "bail_generic"
     assert policies["const_bigint"]["materializer_import"] == "bigint_from_str"
     assert policies["const_bigint"]["literal_payload"] == "bigint_decimal"
     assert policies["const_bigint"]["parse_scalar_literal"] is False
@@ -311,8 +371,11 @@ def test_wasm_abi_manifest_owns_const_op_policy() -> None:
     rendered_rs = _rendered_rs(gen, data)
     rendered_py = gen.render_py(data)
     assert "WASM_CONST_OP_POLICIES" in rendered_rs
+    assert "WasmConstScalarPayload::Int" in rendered_rs
+    assert "required_tir_scalar_value" in rendered_rs
     assert "WasmConstLiteralPayload::BigintDecimal" in rendered_rs
     assert "wasm_const_op_policy" in rendered_rs
+    assert "PlaceholderZero" not in rendered_rs
     assert "WASM_CONST_OP_POLICIES" in rendered_py
 
 
@@ -396,11 +459,13 @@ def test_wasm_abi_manifest_owns_split_runtime_table_prefix() -> None:
     assert "WASM_LEGACY_TABLE_BASE" in rendered_py
     assert "WASM_RESERVED_RUNTIME_CALLABLE_BASE" in rendered_py
 
-    callable_table = (
-        ROOT / "runtime/molt-backend-wasm/src/wasm/module_abi/callable_table.rs"
+    callable_layout = (
+        ROOT / "runtime/molt-backend-wasm/src/wasm/module_abi/callable_layout.rs"
     ).read_text(encoding="utf-8")
-    assert "POLL_TABLE_FUNCS" not in callable_table
-    assert "spec.table_slot" in callable_table
+    assert "POLL_TABLE_FUNCS" not in callable_layout
+    assert "POLL_TABLE_IMPORTS" in callable_layout
+    assert "poll_table_import_slot(spec.import_name)" in callable_layout
+    assert "spec.table_slot as usize" in callable_layout
 
 
 def test_wasm_abi_manifest_owns_host_import_policy() -> None:

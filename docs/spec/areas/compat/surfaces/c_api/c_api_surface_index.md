@@ -16,3 +16,11 @@ Track C-API surface against CPython C-API docs:
 
 ## Non-Negotiable Rule
 If a symbol is listed as implemented, there must be a reproducible test and a concrete runtime implementation entry in the same change.
+
+## Ecosystem ABI Rule
+C-API symbol coverage is necessary but not sufficient for ecosystem support.
+NumPy/SciPy/pandas-style claims must advance through the source-recompiled
+extension pipeline: compile upstream sources against Molt headers, link Molt
+runtime symbols, stage package-native artifacts through import custody, execute
+deterministic workloads, and report the reachable object/symbol closure. Do not
+replace that pipeline with Molt-side reimplementations of whole upstream APIs.

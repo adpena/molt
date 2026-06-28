@@ -1,0 +1,10 @@
+﻿{
+    "command":  "uv run ty check E:\\\\Molt\\\\tmp\\\\pytest-temproot-35360-6e5ef36f1daa4fec83cd244fcc1806b6\\\\pytest-of-adpena\\\\pytest-0\\\\test_browser_embed_forward_rou0\\\\browser_embed_forward.py --output-format concise",
+    "cwd":  "C:\\Users\\adpen\\OneDrive\\Documents\\molt",
+    "guard_pid":  40580,
+    "child_pid":  37252,
+    "status":  "about_to_stop_exact_stuck_ty_child",
+    "timestamp":  "2026-06-28T08:10:52.4190222-05:00",
+    "evidence_path":  "logs\\agents\\codex_stall\\browser_embed_ty_child_cleanup_20260628T0810-0500.json",
+    "parent_proof":  "uv run pytest tests\\\\test_wasm_browser_embed.py::test_browser_embed_forward_roundtrips_float32_typed_arrays -q"
+}

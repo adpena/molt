@@ -1,19 +1,31 @@
+use super::WasmBackend;
 use super::context::CompileFuncContext;
 use super::trampoline_analysis::WasmTrampolineAnalysis;
-use super::*;
 use imports::WasmRuntimeImportEmission;
 use runtime_surface::WasmRuntimeSurfacePlan;
 
+use crate::SimpleIR;
+use crate::wasm_abi::emit_static_type_section;
+use crate::wasm_plan::DEFAULT_GPU_INTRINSIC_MANIFEST_NAMES;
+
+mod callable_layout;
 mod callable_table;
+mod finalize;
 mod imports;
+mod runtime_callables;
 mod runtime_surface;
+mod table_init;
 mod trampoline_emit;
+mod type_layout;
+
+use finalize::WasmModuleFinalizationInput;
+use type_layout::WasmModuleTypeLayout;
 
 impl WasmBackend {
     pub(super) fn emit_wasm_module(
         mut self,
         ir: SimpleIR,
-        lir_fast_outputs: BTreeMap<String, crate::wasm::body::WasmBody>,
+        lir_lowering_plans: crate::wasm_plan::WasmFunctionLoweringPlans,
         analysis: WasmTrampolineAnalysis,
     ) -> Vec<u8> {
         let WasmTrampolineAnalysis {
@@ -30,8 +42,8 @@ impl WasmBackend {
         let reloc_enabled = self.options.reloc_enabled;
         let WasmRuntimeImportEmission {
             runtime_surface,
-            mut next_type_idx,
-        } = self.emit_runtime_import_surface(&ir, &lir_fast_outputs, &task_kinds);
+            next_type_idx,
+        } = self.emit_runtime_import_surface(&ir, &lir_lowering_plans, &task_kinds);
         let WasmRuntimeSurfacePlan {
             max_func_arity,
             max_call_arity,
@@ -94,106 +106,16 @@ impl WasmBackend {
         let const_str_scratch_segment =
             self.add_data_segment_mutable(reloc_enabled, &const_str_scratch_bytes);
 
-        let mut user_type_map: BTreeMap<usize, u32> = BTreeMap::new();
-        // Types 0-40 are static above; additional simple-i64 import signatures
-        // may have extended the type section before user arity signatures.
-        for func_ir in &ir.functions {
-            if func_ir.name.ends_with("_poll") {
-                continue;
-            }
-            let arity = func_ir.params.len();
-            if let std::collections::btree_map::Entry::Vacant(entry) = user_type_map.entry(arity) {
-                self.types.function(
-                    std::iter::repeat_n(ValType::I64, arity),
-                    std::iter::once(ValType::I64),
-                );
-                entry.insert(next_type_idx);
-                next_type_idx += 1;
-            }
-        }
-
-        // Multi-value return type signatures for candidate functions.
-        // Maps (param_count, return_count) -> type index.
-        let mut multi_return_type_map: BTreeMap<(usize, usize), u32> = BTreeMap::new();
-        {
-            // Collect unique (param_count, return_count) pairs from candidates.
-            let func_param_counts: BTreeMap<&str, usize> = ir
-                .functions
-                .iter()
-                .map(|f| (f.name.as_str(), f.params.len()))
-                .collect();
-            let mut needed: Vec<(usize, usize)> = Vec::new();
-            for (name, ret_count) in &multi_return_candidates {
-                if let Some(&param_count) = func_param_counts.get(name.as_str()) {
-                    let key = (param_count, *ret_count);
-                    if let std::collections::btree_map::Entry::Vacant(e) =
-                        multi_return_type_map.entry(key)
-                    {
-                        e.insert(next_type_idx);
-                        needed.push(key);
-                        next_type_idx += 1;
-                    }
-                }
-            }
-            // Sort for deterministic type section ordering.
-            needed.sort();
-            // Re-assign indices in sorted order.
-            let base = next_type_idx - needed.len() as u32;
-            for (i, key) in needed.iter().enumerate() {
-                multi_return_type_map.insert(*key, base + i as u32);
-            }
-            for (param_count, ret_count) in &needed {
-                self.types.function(
-                    std::iter::repeat_n(ValType::I64, *param_count),
-                    std::iter::repeat_n(ValType::I64, *ret_count),
-                );
-            }
-        }
-
-        let max_needed_arity = max_func_arity
-            .max(max_call_arity.saturating_add(3))
-            .max(CALL_INDIRECT_MAX_ARITY + 1);
-        for arity in 0..=max_needed_arity {
-            if let std::collections::btree_map::Entry::Vacant(entry) = user_type_map.entry(arity) {
-                self.types.function(
-                    std::iter::repeat_n(ValType::I64, arity),
-                    std::iter::once(ValType::I64),
-                );
-                entry.insert(next_type_idx);
-                next_type_idx += 1;
-            }
-        }
-
-        for spec in CALL_INDIRECT_IMPORTS {
-            let arity = spec.arity;
-            let sig_idx = *user_type_map.get(&(arity + 1)).unwrap_or_else(|| {
-                panic!("missing call_indirect signature for arity {}", arity + 1)
-            });
-            let callee_idx = *user_type_map
-                .get(&arity)
-                .unwrap_or_else(|| panic!("missing call_indirect callee type for arity {}", arity));
-            self.funcs.function(sig_idx);
-            self.exports
-                .export(spec.import_name, ExportKind::Func, self.func_count);
-            let mut call_indirect = Function::new_with_locals_types(Vec::new());
-            for idx in 0..arity {
-                call_indirect.instruction(&Instruction::LocalGet((idx + 1) as u32));
-            }
-            call_indirect.instruction(&Instruction::LocalGet(0));
-            call_indirect.instruction(&Instruction::I32WrapI64);
-            emit_call_indirect(&mut call_indirect, reloc_enabled, callee_idx, 0);
-            call_indirect.instruction(&Instruction::End);
-            self.codes.function(&call_indirect);
-            self.func_count += 1;
-        }
-
-        let sentinel_func_idx = self.func_count;
-        self.funcs.function(2);
-        let mut sentinel = Function::new_with_locals_types(Vec::new());
-        sentinel.instruction(&Instruction::Unreachable);
-        sentinel.instruction(&Instruction::End);
-        self.codes.function(&sentinel);
-        self.func_count += 1;
+        let type_layout = WasmModuleTypeLayout::build(
+            &mut self,
+            &ir,
+            next_type_idx,
+            max_func_arity,
+            max_call_arity,
+            &multi_return_candidates,
+        );
+        let sentinel_func_idx =
+            type_layout.emit_call_indirect_exports_and_sentinel(&mut self, reloc_enabled);
 
         // Callable table ABI: function indices, table slots, trampolines,
         // and relocatable element payloads share one layout authority.
@@ -202,7 +124,11 @@ impl WasmBackend {
             &builtin_trampoline_specs,
             &direct_import_call_specs,
             &default_trampoline_spec,
-            &user_type_map,
+            &task_kinds,
+            &task_closure_sizes,
+            &function_has_ret,
+            &multi_return_candidates,
+            type_layout.user_type_map(),
             reloc_enabled,
             sentinel_func_idx,
         );
@@ -223,33 +149,15 @@ impl WasmBackend {
             call_func_spill_offset,
             class_def_spill_offset,
             const_str_scratch_segment,
-            lir_fast_outputs: &lir_fast_outputs,
+            lir_lowering_plans: &lir_lowering_plans,
             return_alias_summaries: &return_alias_summaries,
         };
         for func_ir in &ir.functions {
-            let type_idx = if func_ir.name.ends_with("_poll") {
-                2
-            } else if let Some(&ret_count) = multi_return_candidates.get(&func_ir.name) {
-                let key = (func_ir.params.len(), ret_count);
-                *multi_return_type_map
-                    .get(&key)
-                    .unwrap_or(user_type_map.get(&func_ir.params.len()).unwrap_or(&0))
-            } else {
-                *user_type_map.get(&func_ir.params.len()).unwrap_or(&0)
-            };
+            let type_idx = type_layout.type_idx_for_function(func_ir);
             self.compile_func(func_ir, type_idx, &compile_ctx);
         }
 
-        self.emit_table_abi_trampolines(
-            &callable_table,
-            &ir,
-            reloc_enabled,
-            &default_trampoline_spec,
-            &task_kinds,
-            &task_closure_sizes,
-            &function_has_ret,
-            &multi_return_candidates,
-        );
+        self.emit_table_abi_trampolines(&callable_table, reloc_enabled);
 
         let callable_table_elements = self.emit_table_elements(
             &callable_table,
@@ -258,218 +166,10 @@ impl WasmBackend {
             manifest_len,
         );
 
-        let page_size: u64 = 64 * 1024;
-        let required_pages = (self.data_segments.offset() as u64).div_ceil(page_size);
-        let floor_pages = std::env::var("MOLT_WASM_MIN_PAGES")
-            .ok()
-            .and_then(|val| val.parse::<u64>().ok())
-            .unwrap_or(64);
-        let minimum_pages = required_pages.max(floor_pages);
-        let memory_ty = MemoryType {
-            minimum: minimum_pages,
-            maximum: None,
-            memory64: false,
-            shared: false,
-            page_size_log2: None,
-        };
-        self.imports
-            .import("env", "memory", EntityType::Memory(memory_ty));
-        self.exports.export("molt_memory", ExportKind::Memory, 0);
-
-        // --- Import audit diagnostic (gated by MOLT_WASM_IMPORT_AUDIT=1) ---
-        if std::env::var("MOLT_WASM_IMPORT_AUDIT").as_deref() == Ok("1") {
-            let unused = self.import_ids.unused_names();
-            let total = self.import_ids.len();
-            let used = total - unused.len();
-            let pct = if total > 0 {
-                (unused.len() as f64 / total as f64) * 100.0
-            } else {
-                0.0
-            };
-            eprintln!(
-                "[molt-wasm-import-audit] {used}/{total} imports used, {} unused ({pct:.1}% bloat)",
-                unused.len()
-            );
-            if !unused.is_empty() {
-                eprintln!("[molt-wasm-import-audit] unused imports:");
-                for name in &unused {
-                    eprintln!("  - {name}");
-                }
-            }
-
-            // --- Exception-related host call audit (Section 3.6) ---
-            let eh_imports = [
-                "exception_push",
-                "exception_pop",
-                "exception_pending",
-                "exception_clear",
-                "exception_new",
-                "exception_new_builtin",
-                "exception_new_builtin_empty",
-                "exception_new_builtin_one",
-                "exception_new_from_class",
-                "exception_match_builtin",
-                "exception_kind",
-                "exception_class",
-                "exception_message",
-                "exception_active",
-                "exception_last",
-                "exception_last_pending",
-                "exception_stack_clear",
-                "exception_set_cause",
-                "exception_set_value",
-                "exception_context_set",
-                "exception_set_last",
-                "raise",
-            ];
-            let eh_used: Vec<&str> = eh_imports
-                .iter()
-                .copied()
-                .filter(|name| self.import_ids.is_used(name))
-                .collect();
-            let eh_eliminable: Vec<&str> = ["exception_push", "exception_pop", "exception_pending"]
-                .iter()
-                .copied()
-                .filter(|name| self.import_ids.is_used(name))
-                .collect();
-            eprintln!(
-                "[molt-wasm-import-audit] exception host calls: {}/{} used ({} eliminable by native EH: {})",
-                eh_used.len(),
-                eh_imports.len(),
-                eh_eliminable.len(),
-                eh_eliminable.join(", "),
-            );
-            if self.options.native_eh_enabled && !self.options.reloc_enabled {
-                eprintln!("[molt-wasm-import-audit] native EH ENABLED: tag section emitted");
-            } else if self.options.native_eh_enabled && self.options.reloc_enabled {
-                eprintln!(
-                    "[molt-wasm-import-audit] native EH requested but suppressed (reloc mode; wasm-ld doesn't support EH relocations)"
-                );
-            } else {
-                eprintln!("[molt-wasm-import-audit] native EH disabled (MOLT_WASM_NATIVE_EH=0)");
-            }
-
-            // --- Tail call optimization audit (section 3.5) ---
-            eprintln!(
-                "[molt-wasm-import-audit] tail calls emitted: {} (return_call instructions)",
-                self.tail_calls_emitted
-            );
-
-            // --- Data segment size audit ---
-            let total_data_bytes = self.data_segments.total_data_bytes();
-            let dedup_hits = self.data_segments.dedup_entry_count();
-            eprintln!(
-                "[molt-wasm-import-audit] data segments: {} segments, {} total bytes, {} dedup cache entries",
-                self.data_segments.segment_count(),
-                total_data_bytes,
-                dedup_hits,
-            );
-        }
-
-        self.module.section(&self.types);
-        self.module.section(&self.imports);
-        self.module.section(&self.funcs);
-        self.module.section(&self.tables);
-        self.module.section(&self.memories);
-
-        // --- WASM EH Tag Section (Section 3.6) ---
-        // Tag 0 = molt_exception with payload (i64) -> (), using type index 1.
-        // Emitted between memory and export sections per WASM spec ordering.
-        // Native EH requires non-relocatable output (wasm-ld doesn't support EH relocations)
-        if self.options.native_eh_enabled && !self.options.reloc_enabled {
-            let mut tags = TagSection::new();
-            tags.tag(TagType {
-                kind: TagKind::Exception,
-                func_type_idx: TAG_EXCEPTION_FUNC_TYPE,
-            });
-            self.module.section(&tags);
-        }
-
-        self.module.section(&self.exports);
-        if let Some(element_section) = callable_table_elements.element_section.as_ref() {
-            self.module.section(element_section);
-        }
-        if let Some(payload) = callable_table_elements.element_payload.as_ref() {
-            let raw_section = RawSection {
-                id: 9,
-                data: payload,
-            };
-            self.module.section(&raw_section);
-        }
-        self.module.section(&self.codes);
-        self.module.section(self.data_segments.section());
-        let module_finish_start = std::time::Instant::now();
-        let mut bytes = self.module.finish();
-        emit_wasm_stage_audit(
-            "after-module-finish",
-            simple_ir_stage_shape(&ir.functions),
-            Some(bytes.len()),
-            None,
-            None,
-            Some(module_finish_start.elapsed().as_millis()),
-        );
-
-        // --- Dead import elimination ---
-        // After compilation, TrackedImportIds knows exactly which imports were
-        // referenced during code emission.  Strip the unused ones from the
-        // serialized module and remap all function indices.  Stripping is
-        // attempted unconditionally; only the *result* is validated before
-        // replacing the original binary.
-        // Only applies to Auto profile in non-relocatable mode.
-        // Full profile preserves all imports for maximum host compatibility;
-        // Pure profile's import set is already curated and expected stable.
-        // Relocatable modules are linked by wasm-ld --gc-sections instead.
-        let strip_enabled = !reloc_enabled && self.options.wasm_profile == WasmProfile::Auto;
-        if strip_enabled {
-            let unused: BTreeSet<String> = self.import_ids.unused_names().into_iter().collect();
-            if !unused.is_empty() {
-                let before_len = bytes.len();
-                emit_wasm_stage_audit(
-                    "before-strip-unused-imports",
-                    simple_ir_stage_shape(&ir.functions),
-                    Some(before_len),
-                    Some(unused.len()),
-                    None,
-                    None,
-                );
-                let strip_start = std::time::Instant::now();
-                let stripped = strip_unused_imports(bytes.clone(), &unused);
-                emit_wasm_stage_audit(
-                    "after-strip-unused-imports",
-                    simple_ir_stage_shape(&ir.functions),
-                    Some(stripped.len()),
-                    Some(unused.len()),
-                    None,
-                    Some(strip_start.elapsed().as_millis()),
-                );
-                if validate_wasm_sections(&stripped) {
-                    eprintln!(
-                        "[molt-wasm-strip] eliminated {} unused imports, \
-                         {} -> {} bytes (saved {})",
-                        unused.len(),
-                        before_len,
-                        stripped.len(),
-                        before_len.saturating_sub(stripped.len()),
-                    );
-                    bytes = stripped;
-                } else {
-                    eprintln!(
-                        "[molt-wasm-strip] stripping {} unused imports produced \
-                         invalid WASM; keeping original ({} bytes)",
-                        unused.len(),
-                        before_len,
-                    );
-                }
-            }
-        }
-
-        if reloc_enabled {
-            bytes = add_reloc_sections(
-                bytes,
-                self.data_segments.segments(),
-                self.data_segments.relocs(),
-            );
-        }
-        bytes
+        self.finalize_wasm_module(WasmModuleFinalizationInput {
+            functions: &ir.functions,
+            callable_table_elements,
+            reloc_enabled,
+        })
     }
 }

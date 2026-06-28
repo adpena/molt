@@ -71,7 +71,7 @@ def _extend_module_graph_with_closure(
     reason: str,
     skip_modules: set[str] | None = None,
     stub_parents: set[str] | None = None,
-    nested_stdlib_scan_modules: set[str] | None = None,
+    stdlib_static_import_helper_modules: set[str] | None = None,
     import_admission_policy: _ImportAdmissionPolicy | None = None,
     allow_entry_external_imports: bool = True,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
@@ -88,7 +88,7 @@ def _extend_module_graph_with_closure(
         stdlib_allowlist,
         skip_modules=skip_modules,
         stub_parents=stub_parents,
-        nested_stdlib_scan_modules=nested_stdlib_scan_modules,
+        stdlib_static_import_helper_modules=stdlib_static_import_helper_modules,
         resolver_cache=resolver_cache,
         import_admission_policy=import_admission_policy,
         allow_entry_external_imports=allow_entry_external_imports,
@@ -207,12 +207,14 @@ def _module_graph_import_scan_mode(
     path: Path,
     module_name: str,
     entry_paths: frozenset[Path],
-    nested_scan_modules: Collection[str],
+    static_import_helper_modules: Collection[str],
     resolution_cache: _module_resolution._ModuleResolutionCache,
 ) -> ImportScanMode:
     resolved_path = resolution_cache.resolved_path(path)
-    if resolved_path in entry_paths or module_name in nested_scan_modules:
+    if resolved_path in entry_paths:
         return "full"
+    if module_name in static_import_helper_modules:
+        return "module_init_static_helpers"
     return "module_init"
 
 
@@ -225,7 +227,7 @@ def _discover_module_graph_from_paths(
     stdlib_allowlist: set[str],
     skip_modules: set[str] | None = None,
     stub_parents: set[str] | None = None,
-    nested_stdlib_scan_modules: set[str] | None = None,
+    stdlib_static_import_helper_modules: set[str] | None = None,
     resolver_cache: _module_resolution._ModuleResolutionCache | None = None,
     precomputed_imports_by_path: Mapping[Path, Collection[str]] | None = None,
     import_admission_policy: _ImportAdmissionPolicy | None = None,
@@ -239,10 +241,10 @@ def _discover_module_graph_from_paths(
     graph: dict[str, Path] = {}
     skip_modules = skip_modules or set()
     stub_parents = stub_parents or set()
-    nested_stdlib_scan_modules = (
-        _module_import_scanner.STDLIB_NESTED_IMPORT_SCAN_MODULES
-        if nested_stdlib_scan_modules is None
-        else nested_stdlib_scan_modules
+    stdlib_static_import_helper_modules = (
+        set(_module_import_scanner.STDLIB_STATIC_IMPORT_HELPER_MODULES)
+        if stdlib_static_import_helper_modules is None
+        else stdlib_static_import_helper_modules
     )
     explicit_imports: set[str] = set()
     seen_import_names: set[str] = set()
@@ -269,7 +271,7 @@ def _discover_module_graph_from_paths(
             stdlib_root=stdlib_root,
             skip_modules=skip_modules,
             stub_parents=stub_parents,
-            nested_stdlib_scan_modules=nested_stdlib_scan_modules,
+            stdlib_static_import_helper_modules=stdlib_static_import_helper_modules,
             stdlib_allowlist=stdlib_allowlist,
             import_admission_policy=import_admission_policy,
             allow_entry_external_imports=allow_entry_external_imports,
@@ -305,7 +307,7 @@ def _discover_module_graph_from_paths(
             path=path,
             module_name=module_name,
             entry_paths=resolved_entry_paths,
-            nested_scan_modules=nested_stdlib_scan_modules,
+            static_import_helper_modules=stdlib_static_import_helper_modules,
             resolution_cache=resolution_cache,
         )
         precomputed_imports = (
@@ -412,7 +414,7 @@ def _discover_module_graph_from_paths(
                 stdlib_root=stdlib_root,
                 skip_modules=skip_modules,
                 stub_parents=stub_parents,
-                nested_stdlib_scan_modules=nested_stdlib_scan_modules,
+                stdlib_static_import_helper_modules=stdlib_static_import_helper_modules,
                 stdlib_allowlist=stdlib_allowlist,
                 import_admission_policy=import_admission_policy,
                 allow_entry_external_imports=allow_entry_external_imports,
@@ -433,7 +435,7 @@ def _discover_module_graph(
     stdlib_allowlist: set[str],
     skip_modules: set[str] | None = None,
     stub_parents: set[str] | None = None,
-    nested_stdlib_scan_modules: set[str] | None = None,
+    stdlib_static_import_helper_modules: set[str] | None = None,
     resolver_cache: _module_resolution._ModuleResolutionCache | None = None,
     precomputed_imports: Collection[str] | None = None,
     import_admission_policy: _ImportAdmissionPolicy | None = None,
@@ -452,7 +454,7 @@ def _discover_module_graph(
         stdlib_allowlist,
         skip_modules=skip_modules,
         stub_parents=stub_parents,
-        nested_stdlib_scan_modules=nested_stdlib_scan_modules,
+        stdlib_static_import_helper_modules=stdlib_static_import_helper_modules,
         resolver_cache=resolver_cache,
         precomputed_imports_by_path=precomputed_imports_by_path,
         import_admission_policy=import_admission_policy,

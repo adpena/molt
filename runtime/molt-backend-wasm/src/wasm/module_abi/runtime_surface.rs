@@ -14,19 +14,20 @@ use crate::wasm_plan::{gpu_runtime_call_symbol, wasm_specialized_container_impor
 use crate::{FunctionIR, OpIR, SimpleIR, TrampolineKind};
 
 pub(super) struct WasmRuntimeSurfacePlan {
-    pub(super) auto_required_imports: Option<BTreeSet<String>>,
+    pub(super) planned_required_imports: Option<BTreeSet<String>>,
     pub(super) max_func_arity: usize,
     pub(super) max_call_arity: usize,
     pub(super) max_class_def_words: usize,
     pub(super) builtin_trampoline_specs: BTreeMap<String, usize>,
     pub(super) direct_import_call_specs: BTreeMap<String, usize>,
     pub(super) manifest_intrinsic_names: BTreeSet<String>,
+    missing_builtin_runtime_callables: BTreeSet<String>,
 }
 
 impl WasmRuntimeSurfacePlan {
     pub(super) fn build(
         ir: &SimpleIR,
-        lir_fast_outputs: &BTreeMap<String, crate::wasm::body::WasmBody>,
+        lir_lowering_plans: &crate::wasm_plan::WasmFunctionLoweringPlans,
         task_kinds: &BTreeMap<String, TrampolineKind>,
         options: &WasmCompileOptions,
     ) -> Self {
@@ -38,19 +39,21 @@ impl WasmRuntimeSurfacePlan {
             .map(|&(kind, deps)| (kind, deps))
             .collect();
         let mut plan = Self {
-            auto_required_imports: initial_auto_required_imports(options, &deps_map),
+            planned_required_imports: initial_planned_required_imports(options, &deps_map),
             max_func_arity: 0,
             max_call_arity: 0,
             max_class_def_words: 0,
             builtin_trampoline_specs: BTreeMap::new(),
             direct_import_call_specs: BTreeMap::new(),
             manifest_intrinsic_names: BTreeSet::new(),
+            missing_builtin_runtime_callables: BTreeSet::new(),
         };
 
         for func_ir in &ir.functions {
             plan.observe_function(func_ir, &defined_function_names, &known_imports, &deps_map);
         }
-        plan.finish_auto_required_imports(lir_fast_outputs, task_kinds);
+        plan.assert_runtime_callable_manifest_complete();
+        plan.finish_auto_required_imports(lir_lowering_plans, task_kinds);
         plan
     }
 
@@ -179,17 +182,18 @@ impl WasmRuntimeSurfacePlan {
         if kind == "builtin_func"
             && let Some(name) = op.s_value.as_ref()
         {
-            let manifest_arity = runtime_callable_arity(name).unwrap_or_else(|| {
-                panic!("builtin runtime callable missing from WASM ABI manifest: {name}")
-            });
-            if let Some(observed_arity) = op.value.map(|value| value as usize)
-                && observed_arity != manifest_arity
-            {
-                panic!(
-                    "builtin runtime callable arity mismatch for {name}: manifest {manifest_arity} vs observed {observed_arity}"
-                );
+            if let Some(manifest_arity) = runtime_callable_arity(name) {
+                if let Some(observed_arity) = op.value.map(|value| value as usize)
+                    && observed_arity != manifest_arity
+                {
+                    panic!(
+                        "builtin runtime callable arity mismatch for {name}: manifest {manifest_arity} vs observed {observed_arity}"
+                    );
+                }
+                self.record_arity(name, manifest_arity, RuntimeArityPlan::BuiltinTrampoline);
+            } else {
+                self.record_missing_builtin_runtime_callable(name);
             }
-            self.record_arity(name, manifest_arity, RuntimeArityPlan::BuiltinTrampoline);
         }
         if kind == "call"
             && let Some(target_name) = op.s_value.as_ref()
@@ -276,10 +280,11 @@ impl WasmRuntimeSurfacePlan {
         if kind == "builtin_func"
             && let Some(name) = op.s_value.as_ref()
         {
-            let import_name = runtime_callable_import_name(name).unwrap_or_else(|| {
-                panic!("builtin runtime callable missing from WASM ABI manifest: {name}")
-            });
-            self.require_import(import_name);
+            if let Some(import_name) = runtime_callable_import_name(name) {
+                self.require_import(import_name);
+            } else {
+                self.record_missing_builtin_runtime_callable(name);
+            }
         }
         if kind == "call"
             && let Some(name) = op.s_value.as_ref()
@@ -348,7 +353,7 @@ impl WasmRuntimeSurfacePlan {
     }
 
     fn require_import(&mut self, name: &str) {
-        if let Some(required) = self.auto_required_imports.as_mut() {
+        if let Some(required) = self.planned_required_imports.as_mut() {
             required.insert(name.to_string());
         }
     }
@@ -361,10 +366,10 @@ impl WasmRuntimeSurfacePlan {
 
     fn finish_auto_required_imports(
         &mut self,
-        lir_fast_outputs: &BTreeMap<String, crate::wasm::body::WasmBody>,
+        lir_lowering_plans: &crate::wasm_plan::WasmFunctionLoweringPlans,
         task_kinds: &BTreeMap<String, TrampolineKind>,
     ) {
-        let Some(required) = self.auto_required_imports.as_mut() else {
+        let Some(required) = self.planned_required_imports.as_mut() else {
             return;
         };
         if !task_kinds.is_empty() {
@@ -397,8 +402,10 @@ impl WasmRuntimeSurfacePlan {
                 .iter()
                 .map(|spec| spec.import_name.to_string()),
         );
-        for output in lir_fast_outputs.values() {
-            required.extend(output.runtime_imports().map(str::to_string));
+        for plan in lir_lowering_plans.values() {
+            if let Some(output) = plan.lir_fast_body() {
+                required.extend(output.runtime_imports().map(str::to_string));
+            }
         }
     }
 
@@ -427,13 +434,31 @@ impl WasmRuntimeSurfacePlan {
             specs.insert(name.to_string(), arity);
         }
     }
+
+    fn record_missing_builtin_runtime_callable(&mut self, name: &str) {
+        self.missing_builtin_runtime_callables
+            .insert(name.to_string());
+    }
+
+    fn assert_runtime_callable_manifest_complete(&self) {
+        if self.missing_builtin_runtime_callables.is_empty() {
+            return;
+        }
+        let missing = self
+            .missing_builtin_runtime_callables
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+            .join(", ");
+        panic!("builtin runtime callables missing from WASM ABI manifest: {missing}");
+    }
 }
 
-fn initial_auto_required_imports(
+fn initial_planned_required_imports(
     options: &WasmCompileOptions,
     deps_map: &BTreeMap<&str, &[&str]>,
 ) -> Option<BTreeSet<String>> {
-    if options.wasm_profile != WasmProfile::Auto || !options.reloc_enabled {
+    if options.wasm_profile == WasmProfile::Full {
         return None;
     }
 

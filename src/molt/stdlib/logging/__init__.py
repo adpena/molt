@@ -508,7 +508,7 @@ class Formatter:
 
     def formatTime(self, record: LogRecord, datefmt: str | None = None) -> str:
         try:
-            return str(_FORMATTER_FORMAT_TIME(self._handle, record._handle))
+            return str(_FORMATTER_FORMAT_TIME(self._handle, record._handle, datefmt))
         except Exception:
             pass
         # Fallback for edge cases.
@@ -673,7 +673,7 @@ class StreamHandler(Handler):
             stream_name = "stderr"
         elif stream is getattr(_sys, "stdout", None):
             stream_name = "stdout"
-        self._stream_handle = _STREAM_HANDLER_NEW(stream_name, None, self.level)
+        self._stream_handle = _STREAM_HANDLER_NEW(stream_name, self.level)
 
     def emit(self, record: LogRecord) -> None:
         try:
@@ -1260,7 +1260,7 @@ def basicConfig(**kwargs: Any) -> None:
     # Try the Rust intrinsic for simple cases (no handlers arg, no filename).
     if handlers_arg is None and filename is None:
         try:
-            _BASIC_CONFIG(level, fmt, datefmt, filename, filemode, style)
+            _BASIC_CONFIG(level, fmt, datefmt, stream)
         except Exception:
             pass
     if handlers_arg is None:

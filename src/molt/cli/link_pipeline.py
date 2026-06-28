@@ -407,6 +407,7 @@ def _prepare_native_link(
             sysroot_path=sysroot_path,
             profile=profile,
             stdlib_obj_path=link_stdlib_obj,
+            export_molt_runtime_symbols=bool(staged_external_native_artifacts),
         )
     except RuntimeError as exc:
         return None, _fail(str(exc), json_output, command="build")
