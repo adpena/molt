@@ -6,8 +6,7 @@ pub(super) fn emit_async_task_runtime_op(
     func: &mut Function,
     op: &OpIR,
 ) -> bool {
-    let func_map = context.func_map;
-    let table_base = context.table_base;
+    let call_site_abi = context.call_site_abi;
     let import_ids = context.import_ids;
     let locals = context.locals;
     let reloc_enabled = context.reloc_enabled;
@@ -23,10 +22,7 @@ pub(super) fn emit_async_task_runtime_op(
                 _ => panic!("unknown task kind: {task_kind}"),
             };
             let target_name = op.s_value.as_ref().expect("alloc_task target missing");
-            let table_slot = *func_map
-                .get(target_name)
-                .unwrap_or_else(|| panic!("alloc_task table target not found: {target_name}"));
-            let table_idx = table_base + table_slot;
+            let table_idx = call_site_abi.table_index(target_name, "alloc_task");
             emit_table_index_i64(func, reloc_enabled, table_idx);
             func.instruction(&Instruction::I64Const(total));
             func.instruction(&Instruction::I64Const(kind_bits));

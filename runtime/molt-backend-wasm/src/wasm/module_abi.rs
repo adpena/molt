@@ -1,4 +1,5 @@
 use super::WasmBackend;
+use super::call_site_abi::WasmCallSiteAbi;
 use super::context::CompileFuncContext;
 use super::trampoline_analysis::WasmTrampolineAnalysis;
 use imports::WasmRuntimeImportEmission;
@@ -137,20 +138,22 @@ impl WasmBackend {
         let return_alias_summaries = crate::passes::compute_return_alias_summaries(&ir.functions);
 
         let compile_ctx = CompileFuncContext {
-            func_map: &callable_table.func_to_table_idx,
-            func_indices: &callable_table.func_to_index,
-            trampoline_map: &callable_table.func_to_trampoline_idx,
+            call_site_abi: WasmCallSiteAbi::new(
+                &callable_table.func_to_table_idx,
+                &callable_table.func_to_index,
+                &callable_table.func_to_trampoline_idx,
+                callable_table.table_base,
+                &callable_table.closure_functions,
+                &escaped_callable_targets,
+                call_func_spill_offset,
+                &return_alias_summaries,
+            ),
             import_ids: &import_ids,
             reloc_enabled,
-            table_base: callable_table.table_base,
             multi_return_candidates: &multi_return_candidates,
-            closure_functions: &callable_table.closure_functions,
-            escaped_callable_targets: &escaped_callable_targets,
-            call_func_spill_offset,
             class_def_spill_offset,
             const_str_scratch_segment,
             lir_lowering_plans: &lir_lowering_plans,
-            return_alias_summaries: &return_alias_summaries,
         };
         for func_ir in &ir.functions {
             let type_idx = type_layout.type_idx_for_function(func_ir);
