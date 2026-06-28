@@ -100,7 +100,7 @@ def _render_summary_markdown(
     lines.append("## Notes")
     lines.append(
         "- Semantic mode values: `runs_unmodified`, `requires_adapter`, "
-        "`unsupported_by_molt`."
+        "`c_api_probe`, `unsupported_by_molt`."
     )
     lines.append(
         "- Ratio direction is serialized in `metrics.ratio_directions`: "

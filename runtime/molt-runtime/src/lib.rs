@@ -12,6 +12,9 @@
 #[cfg(all(target_arch = "wasm32", feature = "cext_loader"))]
 compile_error!("feature `cext_loader` is unsupported on wasm32 targets");
 
+#[cfg(all(target_arch = "wasm32", feature = "source_extension_loader"))]
+compile_error!("feature `source_extension_loader` is unsupported on wasm32 targets");
+
 macro_rules! fn_addr {
     ($func:path) => {
         $crate::builtins::functions::runtime_fn_addr(stringify!($func), $func as *const ())
@@ -525,6 +528,7 @@ pub use crate::builtins::platform::*;
 pub use crate::builtins::platform_mod::*;
 pub use crate::builtins::pprint_ext::*;
 pub use crate::builtins::punycode::*;
+pub use crate::builtins::scipy_ndimage::*;
 pub use crate::builtins::select::*;
 pub use crate::builtins::shutil::*;
 pub use crate::builtins::signal_ext::*;

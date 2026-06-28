@@ -15,6 +15,60 @@ from molt.frontend._types import (
     _SCCP_UNKNOWN,
     build_cfg,
 )
+from molt.frontend.lowering.op_kinds_generated import (
+    FRONTEND_RAISING_NOTHROW_ON_PRIMITIVES_KINDS,
+    RAISING_KIND_NAMES,
+)
+
+_PRIMITIVE_CONST_KINDS: frozenset[str] = frozenset(
+    {"CONST", "CONST_BOOL", "CONST_BIGINT", "CONST_FLOAT", "CONST_INT"}
+)
+
+_SCCP_PROVEN_NOTHROW_CURATED: frozenset[str] = frozenset(
+    {
+        "LINE",
+        "IF",
+        "ELSE",
+        "END_IF",
+        "LOOP_START",
+        "LOOP_END",
+        "LOOP_BREAK",
+        "LOOP_BREAK_IF_TRUE",
+        "LOOP_BREAK_IF_FALSE",
+        "LOOP_BREAK_IF_EXCEPTION",
+        "LOOP_CONTINUE",
+        "TRY_START",
+        "TRY_END",
+        "JUMP",
+        "LABEL",
+        "STATE_LABEL",
+        "PHI",
+        "CONST",
+        "CONST_BIGINT",
+        "CONST_BOOL",
+        "CONST_FLOAT",
+        "CONST_STR",
+        "CONST_BYTES",
+        "CONST_NONE",
+        "CONST_NOT_IMPLEMENTED",
+        "CONST_ELLIPSIS",
+        "MISSING",
+        "NOT",
+        "IS",
+        "TYPE_OF",
+        "LEN",
+        "EXCEPTION_NEW_BUILTIN",
+        "EXCEPTION_NEW_BUILTIN_EMPTY",
+        "EXCEPTION_NEW_BUILTIN_ONE",
+        "EXCEPTION_MATCH_BUILTIN",
+        "STORE_VAR",
+        "DELETE_VAR",
+        "LOAD_VAR",
+    }
+)
+_SCCP_PROVEN_NOTHROW_KINDS: frozenset[str] = (
+    _SCCP_PROVEN_NOTHROW_CURATED - RAISING_KIND_NAMES
+)
 
 if TYPE_CHECKING:
     from molt.frontend._protocol import _GeneratorProtocol
@@ -238,6 +292,42 @@ class MidendDataflowMixin(_MixinBase):
             return effect
         return "unknown"
 
+    @staticmethod
+    def _primitive_const_value_map(ops: list[MoltOp]) -> dict[str, Any]:
+        const_by_name: dict[str, Any] = {}
+        for op in ops:
+            out_name = op.result.name
+            if out_name == "none" or op.kind not in _PRIMITIVE_CONST_KINDS:
+                continue
+            if not op.args:
+                continue
+            value = op.args[0]
+            if op.kind == "CONST_BIGINT":
+                try:
+                    const_by_name[out_name] = int(value)
+                except (TypeError, ValueError):
+                    continue
+            elif isinstance(value, bool) or isinstance(value, (int, float)):
+                const_by_name[out_name] = value
+        return const_by_name
+
+    def _op_instance_cannot_raise(
+        self, op: MoltOp, const_by_name: dict[str, Any]
+    ) -> bool:
+        if op.kind not in RAISING_KIND_NAMES:
+            return True
+        if op.kind not in FRONTEND_RAISING_NOTHROW_ON_PRIMITIVES_KINDS:
+            return False
+        for arg in op.args:
+            if isinstance(arg, MoltValue):
+                if arg.name not in const_by_name:
+                    return False
+            elif isinstance(arg, (list, tuple, dict)):
+                return False
+            elif isinstance(arg, str):
+                return False
+        return True
+
     def _eliminate_dead_trivial_consts(self, ops: list[MoltOp]) -> list[MoltOp]:
         if not ops:
             return []
@@ -301,6 +391,7 @@ class MidendDataflowMixin(_MixinBase):
         removable_indices: set[int] = set()
         required_values: set[str] = set()
         worklist: list[str] = []
+        const_by_name = self._primitive_const_value_map(ops)
 
         def require_value(name: str) -> None:
             if name == "none" or name in required_values:
@@ -323,7 +414,11 @@ class MidendDataflowMixin(_MixinBase):
                     # MISSING ops are runtime sentinels (uninitialized locals,
                     # optional defaults) that downstream GETATTR/CALL sites
                     # depend on — never eliminate them.
-                    if out_name not in preserve_anchor_results and op.kind != "MISSING":
+                    if (
+                        out_name not in preserve_anchor_results
+                        and op.kind != "MISSING"
+                        and self._op_instance_cannot_raise(op, const_by_name)
+                    ):
                         removable_indices.add(idx)
 
         for idx, op in enumerate(ops):
@@ -355,50 +450,9 @@ class MidendDataflowMixin(_MixinBase):
         return out
 
     def _op_may_raise_for_sccp(self, op_kind: str) -> bool:
-        non_raising = {
-            "LINE",
-            "IF",
-            "ELSE",
-            "END_IF",
-            "LOOP_START",
-            "LOOP_END",
-            "LOOP_BREAK",
-            "LOOP_BREAK_IF_TRUE",
-            "LOOP_BREAK_IF_FALSE",
-            "LOOP_BREAK_IF_EXCEPTION",
-            "LOOP_CONTINUE",
-            "TRY_START",
-            "TRY_END",
-            "JUMP",
-            "LABEL",
-            "STATE_LABEL",
-            "PHI",
-            "CONST",
-            "CONST_BIGINT",
-            "CONST_BOOL",
-            "CONST_FLOAT",
-            "CONST_STR",
-            "CONST_BYTES",
-            "CONST_NONE",
-            "CONST_NOT_IMPLEMENTED",
-            "CONST_ELLIPSIS",
-            "MISSING",
-            "ADD",
-            "SUB",
-            "MUL",
-            "NOT",
-            "IS",
-            "TYPE_OF",
-            "LEN",
-            "EXCEPTION_NEW_BUILTIN",
-            "EXCEPTION_NEW_BUILTIN_EMPTY",
-            "EXCEPTION_NEW_BUILTIN_ONE",
-            "EXCEPTION_MATCH_BUILTIN",
-            "STORE_VAR",
-            "DELETE_VAR",
-            "LOAD_VAR",
-        }
-        if op_kind in non_raising:
+        if op_kind in RAISING_KIND_NAMES:
+            return True
+        if op_kind in _SCCP_PROVEN_NOTHROW_KINDS:
             return False
         if op_kind.startswith("STATE_"):
             return False

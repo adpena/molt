@@ -333,6 +333,30 @@ def _validate_extension_manifest(
             f"ABI mismatch: required {required_abi}, manifest has {manifest_abi}"
         )
 
+    module_value = manifest.get("module")
+    manifest_module = module_value.strip() if isinstance(module_value, str) else ""
+    loader_kind = manifest.get("loader_kind")
+    if loader_kind is not None:
+        if not isinstance(loader_kind, str) or not loader_kind.strip():
+            errors.append("loader_kind must be a non-empty string when present")
+        elif loader_kind.strip() != "libmolt_source":
+            errors.append(f"unsupported loader_kind: {loader_kind!r}")
+        else:
+            init_symbol = manifest.get("init_symbol")
+            module_leaf = manifest_module.rsplit(".", 1)[-1] if manifest_module else ""
+            expected_init = f"PyInit_{module_leaf}" if module_leaf else ""
+            if init_symbol != expected_init:
+                errors.append(
+                    f"init_symbol mismatch: expected {expected_init!r}, "
+                    f"found {init_symbol!r}"
+                )
+            runtime_linkage = manifest.get("runtime_linkage")
+            if runtime_linkage != "host_resolved":
+                errors.append(
+                    "runtime_linkage must be 'host_resolved' for "
+                    "libmolt_source extensions"
+                )
+
     manifest_abi_tag: str | None = None
     abi_tag_value = manifest.get("abi_tag")
     if isinstance(abi_tag_value, str):

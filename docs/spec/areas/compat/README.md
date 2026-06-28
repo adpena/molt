@@ -11,6 +11,18 @@
 - No dual truth: if a file is generated, humans do not hand-edit semantic status in that file.
 - Native and wasm compatibility must be tracked as first-class dimensions, not hidden in prose notes.
 - Version-gated behavior for 3.12/3.13/3.14 must be explicit and test-backed.
+- Third-party ecosystem compatibility is a primitives/wiring/integration
+  program, not a package-by-package reimplementation program. Source-recompiled
+  extensions must compile against Molt's ABI, link Molt runtime symbols, stage
+  through Molt import/package custody, and execute only the reachable object and
+  symbol closure for the user's program.
+- NumPy/SciPy-style support claims require more than C-API scan green: package
+  build, link, import, runtime execution, deterministic parity, binary closure,
+  and performance/size evidence must move together for the claimed surface.
+- Tinygrad compatibility means exact upstream API and semantic fidelity over
+  Molt's shared tensor/GPU primitives. Molt-owned GPU code may be the
+  implementation substrate, but it must not drift from tinygrad's public
+  behavior.
 
 ## CPython Reference Inputs
 Canonical local CPython documentation mirror:
@@ -28,6 +40,8 @@ When updating compatibility status, use the 3.12/3.13/3.14 docs together and rec
 - `surfaces/language/`: language-level compatibility (syntax, semantics, PEP coverage).
 - `surfaces/stdlib/`: stdlib API/behavior/intrinsics coverage and platform availability.
 - `surfaces/c_api/`: `libmolt` C-API contract and symbol coverage.
+- `surfaces/ecosystem/`: third-party package claims, including whether evidence
+  is only scan/source-shape green or reaches build/link/import/runtime parity.
 - `plans/`: execution programs and lowering plans.
 
 ## Canonical Status Model

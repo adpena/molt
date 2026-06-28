@@ -2959,6 +2959,7 @@ dependencies = [
  "glob",
  "lazy_static",
  "libc",
+ "libloading 0.8.9",
  "libm",
  "md-5",
  "memchr",

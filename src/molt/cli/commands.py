@@ -8,6 +8,7 @@ import json
 import os
 import shlex
 import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -26,26 +27,23 @@ from molt.cli.arg_helpers import (
     _resolve_binary_output,
 )
 from molt.cli.atomic_io import _atomic_copy_file, _atomic_write_json, _atomic_zip_file
+from molt.cli.backend_cache import _native_object_global_symbol_sets
 from molt.cli.capability_spec import (
     CapabilityInput,
     _materialize_capabilities_arg,
     _parse_capabilities,
     _parse_capabilities_spec,
 )
-from molt.cli.cargo_profiles import _resolve_cargo_profile_name
 from molt.cli.command_runtime import (
     _CLI_MEMORY_GUARD_PREFIX,
     _CROSS_MEMORY_GUARD_PREFIX,
     _DIFF_MEMORY_GUARD_PREFIX,
-    _resolve_timeout_env,
     _run_completed_command,
 )
 from molt.cli.config_resolution import (
     DEFAULT_STDLIB_PROFILE,
     STDLIB_PROFILE_CHOICES,
     _config_value,
-    _resolve_build_config,
-    resolve_stdlib_profile,
 )
 from molt.cli.deps import _load_toml, _normalize_name
 from molt.cli.env_overrides import temporary_env_overrides as _temporary_env_overrides
@@ -74,11 +72,7 @@ from molt.cli.models import (
     TypeHintPolicy,
     _TimedResult,
 )
-from molt.cli.native_link_deps import _collect_cargo_native_link_deps
-from molt.cli.native_toolchain import (
-    _append_darwin_runtime_frameworks,
-    _zig_target_query,
-)
+from molt.cli.native_toolchain import _zig_target_query
 from molt.cli.output import emit_json as _emit_json
 from molt.cli.output import fail as _fail
 from molt.cli.output import json_payload as _json_payload
@@ -87,8 +81,6 @@ from molt.cli.project_roots import (
     _find_project_root,
     _require_molt_root,
 )
-from molt.cli.runtime_build import _ensure_runtime_lib
-from molt.cli.runtime_paths import _runtime_lib_path
 from molt.cli.target_python import _parse_target_python_version
 from molt.cli.setup_readiness import _ensure_rustup_target
 from molt.cli.wrapper_build import (
@@ -110,6 +102,53 @@ def _resolve_python_exe(python_exe: str | None) -> str:
         if base_exe and Path(base_exe).exists():
             return base_exe
     return python_exe
+
+
+def _shared_library_defines_symbol(path: Path, symbol: str) -> tuple[bool, str | None]:
+    symbol_sets = _native_object_global_symbol_sets(path)
+    if symbol_sets is not None:
+        defined, _undefined = symbol_sets
+        if symbol in defined or f"_{symbol}" in defined:
+            return True, None
+        if defined:
+            preview = ", ".join(sorted(defined)[:8])
+            suffix = "" if len(defined) <= 8 else ", ..."
+            return (
+                False,
+                f"symbol {symbol!r} missing from shared object (defined: {preview}{suffix})",
+            )
+
+    failures: list[str] = []
+    export_commands = (
+        ("llvm-readobj", "--coff-exports", str(path)),
+        ("llvm-objdump", "-p", str(path)),
+        ("dumpbin", "/EXPORTS", str(path)),
+        ("objdump", "-p", str(path)),
+    )
+    for candidate in export_commands:
+        tool = candidate[0]
+        if shutil.which(tool) is None:
+            continue
+        try:
+            result = _run_completed_command(
+                list(candidate),
+                cwd=path.parent,
+                env=None,
+                capture_output=True,
+                timeout=10,
+                memory_guard_prefix="MOLT_BUILD",
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            failures.append(f"{tool}: {exc}")
+            continue
+        text = "\n".join(part for part in (result.stdout, result.stderr) if part)
+        if result.returncode == 0 and (symbol in text or f"_{symbol}" in text):
+            return True, None
+        detail = text.strip().splitlines()[:1]
+        failures.append(f"{tool}: exit {result.returncode} {' '.join(detail)}")
+    if failures:
+        return False, "unable to confirm exported init symbol: " + "; ".join(failures)
+    return False, "unable to inspect exported symbols with nm/llvm-nm or export-table tools"
 
 
 def _run_command(
@@ -1526,16 +1565,6 @@ def extension_build(
     pyproject = _load_toml(project_root / "pyproject.toml")
     project_meta = pyproject.get("project")
     extension_meta = _config_value(pyproject, ["tool", "molt", "extension"])
-    # Resolve the runtime stdlib profile through the ONE config authority so the
-    # extension's runtime staticlib honors `MOLT_STDLIB_PROFILE` and
-    # `[tool.molt.build].stdlib-profile` exactly like `molt build` does. The
-    # archive-path selection and the staticlib build below must receive the same
-    # value or they desync (one builds/links `micro` while the other expects
-    # `full`).
-    extension_stdlib_profile, _ = resolve_stdlib_profile(
-        flag=None,
-        build_cfg=_resolve_build_config(pyproject),
-    )
     errors: list[str] = []
     warnings: list[str] = []
 
@@ -1709,30 +1738,8 @@ def extension_build(
         output_root = (project_root / output_root).absolute()
     output_root.mkdir(parents=True, exist_ok=True)
 
-    cargo_timeout, timeout_err = _resolve_timeout_env("MOLT_CARGO_TIMEOUT")
-    if timeout_err:
-        return _fail(timeout_err, json_output, command="extension-build")
-    runtime_cargo_profile, runtime_profile_err = _resolve_cargo_profile_name("release")
-    if runtime_profile_err:
-        return _fail(runtime_profile_err, json_output, command="extension-build")
     if runtime_target_triple:
         _ensure_rustup_target(runtime_target_triple, warnings)
-    runtime_lib = _runtime_lib_path(
-        molt_root,
-        runtime_cargo_profile,
-        runtime_target_triple,
-        extension_stdlib_profile,
-    )
-    if not _ensure_runtime_lib(
-        runtime_lib,
-        runtime_target_triple,
-        json_output,
-        runtime_cargo_profile,
-        molt_root,
-        cargo_timeout,
-        extension_stdlib_profile,
-    ):
-        return _fail("Runtime build failed", json_output, command="extension-build")
 
     include_root = molt_root / "include"
     if not include_root.exists():
@@ -1797,6 +1804,7 @@ def extension_build(
         *module_parts[:-1],
         module_parts[-1] + _extension_binary_suffix(runtime_target_triple),
     )
+    init_symbol = f"PyInit_{module_parts[-1]}"
     compile_commands: list[list[str]] = []
     link_command: list[str] = []
 
@@ -1806,6 +1814,7 @@ def extension_build(
         for idx, source_path in enumerate(source_paths):
             object_path = build_tmp / f"{idx}_{source_path.stem}.o"
             cmd = [*cc_cmd, "-c", str(source_path), "-o", str(object_path)]
+            cmd.append("-DMOLT_EXTENSION_HOST_ABI=1")
             cmd.extend(["-I", str(include_root), "-I", str(project_root)])
             for include_path in include_paths:
                 cmd.extend(["-I", str(include_path)])
@@ -1839,28 +1848,13 @@ def extension_build(
         built_extension.parent.mkdir(parents=True, exist_ok=True)
         link_command = [*cc_cmd, "-shared"]
         link_command.extend(str(path) for path in object_paths)
-        link_command.append(str(runtime_lib))
         link_command.extend(["-o", str(built_extension)])
-        _append_darwin_runtime_frameworks(
-            link_command,
-            target_triple=runtime_target_triple,
-        )
         if sys.platform == "darwin" and runtime_target_triple is None:
             link_command.extend(["-undefined", "dynamic_lookup"])
-            for framework in ["Metal", "Foundation", "QuartzCore", "AppKit"]:
-                has_framework = any(
-                    link_command[idx] == "-framework"
-                    and idx + 1 < len(link_command)
-                    and link_command[idx + 1] == framework
-                    for idx in range(len(link_command))
-                )
-                if not has_framework:
-                    link_command.extend(["-framework", framework])
-            if "-lobjc" not in link_command:
-                link_command.append("-lobjc")
-        cargo_search, cargo_libs = _collect_cargo_native_link_deps(runtime_lib)
-        link_command.extend(cargo_search)
-        link_command.extend(cargo_libs)
+        elif (runtime_target_triple and "linux" in runtime_target_triple) or (
+            runtime_target_triple is None and sys.platform.startswith("linux")
+        ):
+            link_command.append("-ldl")
         link_command.extend(link_args)
         link_result = _run_completed_command(
             link_command,
@@ -1885,6 +1879,16 @@ def extension_build(
                 json_output,
                 command="extension-build",
             )
+        symbol_ok, symbol_error = _shared_library_defines_symbol(
+            built_extension,
+            init_symbol,
+        )
+        if not symbol_ok:
+            return _fail(
+                f"Linked extension is not importable: {symbol_error}",
+                json_output,
+                command="extension-build",
+            )
 
         extension_bytes = built_extension.read_bytes()
         extension_archive_path = module_rel.as_posix()
@@ -1899,6 +1903,9 @@ def extension_build(
             "python_tag": python_tag,
             "target_triple": target_triple,
             "platform_tag": platform_tag,
+            "loader_kind": "libmolt_source",
+            "init_symbol": init_symbol,
+            "runtime_linkage": "host_resolved",
             "capabilities": capabilities_list,
             "capability_profiles": capability_profiles,
             "deterministic": deterministic,
@@ -1909,7 +1916,7 @@ def extension_build(
             "build": {
                 "compiler": cc_cmd,
                 "compiler_target": runtime_target_triple or "native",
-                "runtime_lib": str(runtime_lib),
+                "runtime_linkage": "host_resolved",
                 "include_dirs": [str(include_root), str(project_root)]
                 + [str(path) for path in include_paths],
                 "extra_compile_args": compile_args,

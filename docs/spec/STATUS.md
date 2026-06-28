@@ -1320,12 +1320,16 @@ the implementation. For forward-looking priorities, use
   validated artifacts plus sidecars and runtime shim candidates under a
   deterministic `external_static_packages/<plan-digest>/` root and inject that
   staged root into generated native binaries before runtime startup. That is not
-  yet a green no-host NumPy import proof. Friend-suite metrics now exclude
-  custody/scan runners from speedup math, and git-suite custody rejects ignored
-  checkout artifacts in addition to dirty or wrong-ref trees. The Molt lane is
-  expected to fail until no-host source-recompiled extension package build,
-  NumPy C-API symbol closure, and NumPy import/runtime-load proof are complete;
-  host-Python fallback is not an allowed completion path.
+  yet a green no-host NumPy import proof. The strict NumPy `c_api_probe` lane is
+  green at 447 scanned source files, 1,258 required symbols, 1,258 supported,
+  zero missing, and zero fail-fast. The strict SciPy `c_api_probe` lane is green
+  at 592 scanned source files, 321 required symbols, 321 supported, zero
+  missing, and zero fail-fast. Friend-suite metrics now exclude custody/scan
+  runners from speedup math, and git-suite custody rejects ignored checkout
+  artifacts in addition to dirty or wrong-ref trees. The Molt workload lane is
+  expected to fail until no-host source-recompiled extension package build and
+  NumPy/SciPy import/runtime-load proof are complete; host-Python fallback is
+  not an allowed completion path.
 
 ## Performance Summary
 

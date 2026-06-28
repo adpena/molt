@@ -20,7 +20,6 @@ from molt.compiler_analysis.static_truth import static_if_live_branch
 # unless they are entry modules or explicitly admitted here.
 STDLIB_NESTED_IMPORT_SCAN_MODULES = {
     "collections",
-    "typing",
     # EmailMessage lazily imports email.policy inside __init__.
     "email.message",
 }
