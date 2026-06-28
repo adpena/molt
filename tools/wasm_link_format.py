@@ -54,6 +54,28 @@ CALL_INDIRECT_RE = re.compile(r"molt_call_indirect(\d+)")
 
 CALL_INDIRECT_MANGLED_RE = re.compile(r"molt_call_indirect(\d+)(?=\d{2}h[0-9a-fA-F]+E)")
 
+WASM_CALL_INDIRECT_IMPORTS = tuple(_WASM_ABI.WASM_CALL_INDIRECT_IMPORTS)
+
+_CALL_INDIRECT_IMPORT_BY_ARITY = {
+    int(name.removeprefix("molt_call_indirect")): name
+    for name in WASM_CALL_INDIRECT_IMPORTS
+}
+
+_CALL_INDIRECT_IMPORT_SET = frozenset(WASM_CALL_INDIRECT_IMPORTS)
+
+
+def call_indirect_import_name_for_arity(arity_text: str) -> str | None:
+    if not arity_text.isdecimal():
+        return None
+    arity = int(arity_text)
+    if str(arity) != arity_text:
+        return None
+    return _CALL_INDIRECT_IMPORT_BY_ARITY.get(arity)
+
+
+def is_call_indirect_import_name(name: str) -> bool:
+    return name in _CALL_INDIRECT_IMPORT_SET
+
 _OUTPUT_RUNTIME_EXPORT_ALIASES = _WASM_ABI.WASM_OUTPUT_RUNTIME_EXPORT_ALIASES
 
 _OUTPUT_EXPORT_ALIAS_PREFIX = _WASM_ABI.WASM_OUTPUT_EXPORT_ALIAS_PREFIX
