@@ -1,4 +1,10 @@
-use super::super::*;
+use crate::representation_plan::ScalarRepresentationPlan;
+use crate::wasm::WasmFrameLocals;
+use crate::wasm_binary::emit_call;
+use crate::wasm_import_tracking::{TrackedImportIds, selected_import_id};
+use crate::wasm_plan::wasm_specialized_container_import;
+use crate::{FunctionIR, OpIR};
+use wasm_encoder::{Function, Instruction};
 
 #[allow(unused_variables)]
 pub(super) fn emit_sequence_runtime_op(

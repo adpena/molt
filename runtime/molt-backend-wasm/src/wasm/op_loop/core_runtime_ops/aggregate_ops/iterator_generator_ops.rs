@@ -1,5 +1,6 @@
-use super::super::super::*;
 use super::AggregateRuntimeContext;
+use crate::OpIR;
+use wasm_encoder::Function;
 
 #[path = "iterator_generator_ops/generator_protocol_ops.rs"]
 mod generator_protocol_ops;

@@ -1,22 +1,16 @@
-#[cfg(test)]
-use super::WasmFrameLocalKind;
 use super::call_site_abi::WasmCallSiteAbi;
 use super::constant_ops::{ConstantOpContext, emit_constant_op};
 use super::context::CompileFuncContext;
 use super::control_flow::ControlKind;
 use super::function_frame::WasmFunctionFrame;
-use super::{WasmBackend, WasmFrameLocals, WasmFrameSyntheticLocal};
+use super::{WasmBackend, WasmFrameLocals};
 use crate::representation_plan::ScalarRepresentationPlan;
-use crate::wasm_binary::emit_call;
-use crate::wasm_import_tracking::{TrackedImportIds, selected_import_id};
-use crate::wasm_plan::{
-    wasm_scalar_truthiness_fast_path_for_name, wasm_specialized_container_import,
-};
-use crate::wasm_values::{ConstantCache, box_int, emit_box_bool_from_i32};
+use crate::wasm_import_tracking::TrackedImportIds;
+use crate::wasm_values::ConstantCache;
 use crate::{FunctionIR, OpIR};
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
-use wasm_encoder::{BlockType, Function, Instruction, ValType};
+use wasm_encoder::Function;
 
 mod builder_ops;
 mod call_ops;
