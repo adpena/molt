@@ -11,7 +11,9 @@ use crate::wasm_plan::DEFAULT_GPU_INTRINSIC_MANIFEST_NAMES;
 mod callable_table;
 mod finalize;
 mod imports;
+mod runtime_callables;
 mod runtime_surface;
+mod table_init;
 mod trampoline_emit;
 mod type_layout;
 

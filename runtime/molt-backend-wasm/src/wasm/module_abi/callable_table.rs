@@ -1,19 +1,14 @@
-use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 
-use wasm_encoder::{
-    ConstExpr, ElementMode, ElementSection, ElementSegment, Elements, Encode, EntityType,
-    ExportKind, Function, Instruction, RefType, TableType,
-};
+use wasm_encoder::{EntityType, ExportKind, Function, Instruction, RefType, TableType};
 
+use super::runtime_callables::WasmRuntimeCallableTablePlan;
 use crate::wasm::WasmBackend;
 use crate::wasm_abi::{
     POLL_TABLE_IMPORTS, RESERVED_RUNTIME_CALLABLE_COUNT, RESERVED_RUNTIME_CALLABLE_SPECS,
-    RUNTIME_CALLABLE_IMPORTS, RuntimeCallableResult, poll_table_import_slot,
+    poll_table_import_slot,
 };
-use crate::wasm_binary::{emit_call, encode_u32_leb128_padded};
-use crate::wasm_data::DataSegmentRef;
-use crate::wasm_values::box_none;
+use crate::wasm_binary::emit_call;
 use crate::{SimpleIR, TrampolineKind, TrampolineSpec};
 
 pub(super) struct WasmCallableTablePlan {
@@ -31,11 +26,6 @@ pub(super) struct WasmCallableTablePlan {
     compact_builtin_trampoline_funcs: Vec<(String, usize)>,
 }
 
-pub(super) struct WasmCallableTableElements {
-    pub(super) element_section: Option<ElementSection>,
-    pub(super) element_payload: Option<Vec<u8>>,
-}
-
 impl WasmBackend {
     pub(super) fn build_table_abi(
         &mut self,
@@ -47,77 +37,8 @@ impl WasmBackend {
         reloc_enabled: bool,
         sentinel_func_idx: u32,
     ) -> WasmCallableTablePlan {
-        let builtin_table_funcs = RUNTIME_CALLABLE_IMPORTS;
-        let reserved_runtime_callable_names: BTreeSet<&str> = RESERVED_RUNTIME_CALLABLE_SPECS
-            .iter()
-            .map(|spec| spec.runtime_name)
-            .collect();
-        let generated_builtin_runtime_names: BTreeSet<&str> = builtin_table_funcs
-            .iter()
-            .map(|spec| spec.runtime_name)
-            .chain(
-                RESERVED_RUNTIME_CALLABLE_SPECS
-                    .iter()
-                    .map(|spec| spec.runtime_name),
-            )
-            .collect();
-        let mut compact_builtin_trampoline_funcs: Vec<(String, usize)> = Vec::new();
-        for runtime_name in builtin_table_funcs
-            .iter()
-            .map(|spec| spec.runtime_name)
-            .chain(
-                RESERVED_RUNTIME_CALLABLE_SPECS
-                    .iter()
-                    .map(|spec| spec.runtime_name),
-            )
-        {
-            if reserved_runtime_callable_names.contains(runtime_name) {
-                continue;
-            }
-            if let Some(spec) = builtin_table_funcs
-                .iter()
-                .find(|spec| spec.runtime_name == runtime_name)
-                && builtin_trampoline_specs.contains_key(runtime_name)
-            {
-                compact_builtin_trampoline_funcs.push((runtime_name.to_string(), spec.arity));
-            }
-        }
-        let mut builtin_wrapper_funcs: Vec<(String, String, usize, RuntimeCallableResult)> =
-            RESERVED_RUNTIME_CALLABLE_SPECS
-                .iter()
-                .map(|spec| {
-                    (
-                        spec.runtime_name.to_string(),
-                        spec.import_name.to_string(),
-                        spec.arity,
-                        RuntimeCallableResult::I64,
-                    )
-                })
-                .collect();
-        for (runtime_name, import_name, arity, result) in builtin_table_funcs.iter().map(|spec| {
-            (
-                spec.runtime_name.to_string(),
-                spec.import_name.to_string(),
-                spec.arity,
-                spec.result,
-            )
-        }) {
-            if builtin_trampoline_specs.contains_key(runtime_name.as_str()) {
-                builtin_wrapper_funcs.push((runtime_name, import_name, arity, result));
-            }
-        }
-        if builtin_trampoline_specs.len() != compact_builtin_trampoline_funcs.len() {
-            for name in builtin_trampoline_specs.keys() {
-                if !generated_builtin_runtime_names.contains(name.as_str()) {
-                    panic!("builtin {name} missing from generated WASM callable table");
-                }
-            }
-        }
-        let compact_builtin_table_len: usize = builtin_table_funcs
-            .iter()
-            .map(|spec| spec.runtime_name.to_string())
-            .filter(|rn| builtin_trampoline_specs.contains_key(rn.as_str()))
-            .count();
+        let runtime_callable_plan = WasmRuntimeCallableTablePlan::build(builtin_trampoline_specs);
+        let compact_builtin_table_len = runtime_callable_plan.compact_builtin_table_len();
         let split_runtime_runtime_table_min = self.options.split_runtime_runtime_table_min;
         let table_base: u32 = split_runtime_runtime_table_min
             .map(|min| min.max(self.options.table_base))
@@ -135,7 +56,7 @@ impl WasmBackend {
         let table_len = (poll_table_prefix as usize
             + reserved_runtime_callable_table_len * 2
             + compact_builtin_table_len
-            + compact_builtin_trampoline_funcs.len()
+            + runtime_callable_plan.compact_builtin_trampoline_count() as usize
             + ir.functions.len() * 2) as u32;
         let table_min = table_base + table_len;
         let table_ty = TableType {
@@ -152,30 +73,11 @@ impl WasmBackend {
         );
         self.exports.export("molt_table", ExportKind::Table, 0);
 
-        let mut builtin_wrapper_indices = BTreeMap::new();
-        for (runtime_name, import_name, arity, result) in &builtin_wrapper_funcs {
-            let type_idx = *user_type_map
-                .get(arity)
-                .unwrap_or_else(|| panic!("missing builtin wrapper signature for arity {arity}"));
-            let import_idx = *self
-                .import_ids
-                .get(import_name.as_str())
-                .unwrap_or_else(|| panic!("missing builtin import for {import_name}"));
-            self.funcs.function(type_idx);
-            let func_index = self.func_count;
-            self.func_count += 1;
-            let mut func = Function::new_with_locals_types(Vec::new());
-            for idx in 0..*arity {
-                func.instruction(&Instruction::LocalGet(idx as u32));
-            }
-            emit_call(&mut func, reloc_enabled, import_idx);
-            if *result == RuntimeCallableResult::Void {
-                func.instruction(&Instruction::I64Const(box_none()));
-            }
-            func.instruction(&Instruction::End);
-            self.codes.function(&func);
-            builtin_wrapper_indices.insert(runtime_name.clone(), func_index);
-        }
+        let builtin_wrapper_indices = self.emit_runtime_callable_wrappers(
+            &runtime_callable_plan,
+            user_type_map,
+            reloc_enabled,
+        );
 
         let mut table_import_wrappers = BTreeMap::new();
         if reloc_enabled {
@@ -252,8 +154,8 @@ impl WasmBackend {
         let split_runtime_shared_abi_slot_end = compact_builtin_table_start as usize;
         let compact_builtin_trampoline_table_start =
             compact_builtin_table_start + compact_builtin_table_len as u32;
-        let user_func_table_start =
-            compact_builtin_trampoline_table_start + compact_builtin_trampoline_funcs.len() as u32;
+        let user_func_table_start = compact_builtin_trampoline_table_start
+            + runtime_callable_plan.compact_builtin_trampoline_count();
         let user_trampoline_table_start = user_func_table_start + ir.functions.len() as u32;
 
         for spec in RESERVED_RUNTIME_CALLABLE_SPECS {
@@ -271,15 +173,8 @@ impl WasmBackend {
 
         let mut compact_builtin_entries: Vec<(String, u32)> = Vec::new();
         let mut compact_slot = 0u32;
-        for (runtime_name, import_name) in builtin_table_funcs
-            .iter()
-            .map(|spec| (spec.runtime_name.to_string(), spec.import_name.to_string()))
-        {
-            let runtime_key = runtime_name;
-            let is_referenced = builtin_trampoline_specs.contains_key(runtime_key.as_str());
-            if !is_referenced {
-                continue;
-            }
+        for callable in runtime_callable_plan.compact_builtin_runtime_callables() {
+            let runtime_key = callable.runtime_name.clone();
             let idx = compact_slot + compact_builtin_table_start;
             func_to_table_idx.insert(runtime_key.clone(), idx);
             let target_index = if let Some(wrapper_idx) = builtin_wrapper_indices.get(&runtime_key)
@@ -289,7 +184,7 @@ impl WasmBackend {
             } else {
                 let import_idx = self
                     .import_ids
-                    .get(&import_name)
+                    .get(callable.import_name.as_str())
                     .copied()
                     .unwrap_or(sentinel_func_idx);
                 let safe = if import_idx == u32::MAX {
@@ -300,7 +195,7 @@ impl WasmBackend {
                 func_to_index.insert(runtime_key, safe);
                 safe
             };
-            compact_builtin_entries.push((import_name, target_index));
+            compact_builtin_entries.push((callable.import_name.clone(), target_index));
             compact_slot += 1;
         }
         debug_assert_eq!(
@@ -310,8 +205,8 @@ impl WasmBackend {
 
         let user_func_start = self.func_count;
         let user_func_count = ir.functions.len() as u32;
-        let builtin_trampoline_count =
-            RESERVED_RUNTIME_CALLABLE_COUNT + compact_builtin_trampoline_funcs.len() as u32;
+        let builtin_trampoline_count = RESERVED_RUNTIME_CALLABLE_COUNT
+            + runtime_callable_plan.compact_builtin_trampoline_count();
         let builtin_trampoline_start = user_func_start + user_func_count;
         let user_trampoline_start = builtin_trampoline_start + builtin_trampoline_count;
         let reserved_runtime_trampoline_func_start = builtin_trampoline_start;
@@ -343,6 +238,11 @@ impl WasmBackend {
             }
             func_to_index.insert(runtime_name.clone(), import_idx);
         }
+        let compact_builtin_trampoline_funcs: Vec<(String, usize)> = runtime_callable_plan
+            .compact_builtin_runtime_callables()
+            .iter()
+            .map(|callable| (callable.runtime_name.clone(), callable.arity))
+            .collect();
         for (i, (name, _)) in compact_builtin_trampoline_funcs.iter().enumerate() {
             let idx = compact_builtin_trampoline_table_start + i as u32;
             func_to_trampoline_idx.insert(name.clone(), idx);
@@ -570,79 +470,6 @@ impl WasmBackend {
                 },
                 mr_count,
             );
-        }
-    }
-
-    pub(super) fn emit_table_elements(
-        &mut self,
-        plan: &WasmCallableTablePlan,
-        reloc_enabled: bool,
-        manifest_segment: DataSegmentRef,
-        manifest_len: usize,
-    ) -> WasmCallableTableElements {
-        let mut element_section = None;
-        let mut element_payload = None;
-        if reloc_enabled {
-            let table_init_index = self.compile_table_init(
-                reloc_enabled,
-                plan.table_base,
-                &plan.table_indices,
-                plan.split_runtime_owned_slot_start,
-                plan.split_runtime_shared_abi_slot_end,
-            );
-            self.exports
-                .export("molt_table_init", ExportKind::Func, table_init_index);
-            let main_index = self
-                .molt_main_index
-                .unwrap_or_else(|| panic!("molt_main missing for table init wrapper"));
-            let wrapper_index = self.compile_molt_main_wrapper(
-                reloc_enabled,
-                main_index,
-                table_init_index,
-                manifest_segment,
-                manifest_len as u32,
-            );
-            self.exports
-                .export("molt_main", ExportKind::Func, wrapper_index);
-
-            let mut ref_exported = BTreeSet::new();
-            for (slot, func_index) in plan.table_indices.iter().enumerate() {
-                if slot < plan.split_runtime_owned_slot_start
-                    && slot >= plan.split_runtime_shared_abi_slot_end
-                {
-                    continue;
-                }
-                let table_index = plan.table_base + slot as u32;
-                if ref_exported.insert(table_index) {
-                    let name = format!("__molt_table_ref_{table_index}");
-                    self.exports.export(&name, ExportKind::Func, *func_index);
-                }
-            }
-
-            let mut payload = Vec::new();
-            1u32.encode(&mut payload);
-            payload.push(0x01);
-            payload.push(0x00);
-            (plan.table_indices.len() as u32).encode(&mut payload);
-            for func_index in &plan.table_indices {
-                encode_u32_leb128_padded(*func_index, &mut payload);
-            }
-            element_payload = Some(payload);
-        } else {
-            let mut section = ElementSection::new();
-            let offset = ConstExpr::i32_const(plan.table_base as i32);
-            section.segment(ElementSegment {
-                mode: ElementMode::Active {
-                    table: None,
-                    offset: &offset,
-                },
-                elements: Elements::Functions(Cow::Borrowed(&plan.table_indices)),
-            });
-            element_section = Some(section);
-        }
-        WasmCallableTableElements {
-            element_section,
-            element_payload,
         }
     }
 }
