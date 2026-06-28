@@ -1,9 +1,9 @@
 use std::collections::BTreeSet;
 use std::time::Instant;
 
-use wasm_encoder::{EntityType, ExportKind, MemoryType, RawSection, TagKind, TagSection, TagType};
+use wasm_encoder::{RawSection, TagKind, TagSection, TagType};
 
-use super::table_init::WasmCallableTableElements;
+use super::host_surface::WasmCallableTableElements;
 use crate::FunctionIR;
 use crate::wasm::WasmBackend;
 use crate::wasm_abi::TAG_EXCEPTION_FUNC_TYPE;
@@ -57,26 +57,6 @@ impl WasmBackend {
             );
         }
         bytes
-    }
-
-    fn emit_linear_memory_surface(&mut self) {
-        let page_size: u64 = 64 * 1024;
-        let required_pages = (self.data_segments.offset() as u64).div_ceil(page_size);
-        let floor_pages = std::env::var("MOLT_WASM_MIN_PAGES")
-            .ok()
-            .and_then(|val| val.parse::<u64>().ok())
-            .unwrap_or(64);
-        let minimum_pages = required_pages.max(floor_pages);
-        let memory_ty = MemoryType {
-            minimum: minimum_pages,
-            maximum: None,
-            memory64: false,
-            shared: false,
-            page_size_log2: None,
-        };
-        self.imports
-            .import("env", "memory", EntityType::Memory(memory_ty));
-        self.exports.export("molt_memory", ExportKind::Memory, 0);
     }
 
     fn emit_import_audit(&self) {
