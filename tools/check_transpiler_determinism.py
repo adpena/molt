@@ -63,16 +63,11 @@ def _tmp_root() -> Path:
 
 
 def _build_env() -> dict[str, str]:
-    env = os.environ.copy()
+    env = harness_memory_guard.canonical_harness_env(
+        os.environ,
+        repo_root=_repo_root(),
+    )
     env["PYTHONHASHSEED"] = "0"
-    env.setdefault("MOLT_EXT_ROOT", str(_artifact_root()))
-    env.setdefault("CARGO_TARGET_DIR", str(_artifact_root() / "target"))
-    env.setdefault("MOLT_DIFF_CARGO_TARGET_DIR", env["CARGO_TARGET_DIR"])
-    env.setdefault("MOLT_CACHE", str(_artifact_root() / ".molt_cache"))
-    env.setdefault("MOLT_DIFF_ROOT", str(_artifact_root() / "tmp" / "diff"))
-    env.setdefault("MOLT_DIFF_TMPDIR", str(_tmp_root()))
-    env.setdefault("TMPDIR", str(_tmp_root()))
-    env.setdefault("UV_CACHE_DIR", str(_artifact_root() / ".uv-cache"))
     env.setdefault("MOLT_DEV_CARGO_PROFILE", "release-fast")
     env.setdefault("UV_NO_SYNC", "1")
     env.setdefault("UV_LINK_MODE", "copy")

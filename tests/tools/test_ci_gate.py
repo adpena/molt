@@ -170,7 +170,10 @@ def test_check_env_seeds_canonical_artifact_roots(monkeypatch) -> None:
 
     assert env["MOLT_EXT_ROOT"] == str(module.ROOT)
     assert env["CARGO_TARGET_DIR"] == str(
-        module.ROOT / "target" / "sessions" / env["MOLT_SESSION_ID"]
+        molt_dx.cargo_target_dir_for_artifact_root(
+            module.ROOT,
+            env["MOLT_SESSION_ID"],
+        )
     )
     assert env["MOLT_DIFF_CARGO_TARGET_DIR"] == env["CARGO_TARGET_DIR"]
     assert env["MOLT_CACHE"] == str(module.ROOT / ".molt_cache")

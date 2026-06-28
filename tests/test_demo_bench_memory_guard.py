@@ -4,6 +4,7 @@ import importlib.util
 import sys
 from pathlib import Path
 
+import molt.dx as molt_dx
 import pytest
 
 
@@ -47,7 +48,10 @@ def test_demo_bench_run_cmd_uses_memory_guard(monkeypatch: pytest.MonkeyPatch) -
     assert call["text"] is True
     assert call["env"]["MOLT_EXT_ROOT"] == str(demo_bench.ROOT)
     assert call["env"]["CARGO_TARGET_DIR"] == str(
-        demo_bench.ROOT / "target" / "sessions" / call["env"]["MOLT_SESSION_ID"]
+        molt_dx.cargo_target_dir_for_artifact_root(
+            demo_bench.ROOT,
+            call["env"]["MOLT_SESSION_ID"],
+        )
     )
     assert call["env"]["TMPDIR"] == str(demo_bench.ROOT / "tmp")
 
@@ -65,14 +69,20 @@ def test_demo_bench_base_env_forces_repo_roots_unless_explicit(
 
     assert env["MOLT_EXT_ROOT"] == str(demo_bench.ROOT)
     assert env["CARGO_TARGET_DIR"] == str(
-        demo_bench.ROOT / "target" / "sessions" / env["MOLT_SESSION_ID"]
+        molt_dx.cargo_target_dir_for_artifact_root(
+            demo_bench.ROOT,
+            env["MOLT_SESSION_ID"],
+        )
     )
 
     explicit = demo_bench.base_env({"MOLT_EXT_ROOT": str(explicit_root)})
 
     assert explicit["MOLT_EXT_ROOT"] == str(explicit_root.resolve())
     assert explicit["CARGO_TARGET_DIR"] == str(
-        explicit_root.resolve() / "target" / "sessions" / explicit["MOLT_SESSION_ID"]
+        molt_dx.cargo_target_dir_for_artifact_root(
+            explicit_root.resolve(),
+            explicit["MOLT_SESSION_ID"],
+        )
     )
 
 

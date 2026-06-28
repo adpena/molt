@@ -4,6 +4,8 @@ import importlib
 import json
 from pathlib import Path
 
+import molt.dx as molt_dx
+
 
 def _load_module():
     return importlib.import_module("molt.harness_conformance")
@@ -14,13 +16,15 @@ def test_build_env_sets_canonical_roots_and_session_id(tmp_path: Path) -> None:
 
     env = module.build_molt_conformance_env(tmp_path, "smoke-suite")
 
-    assert env["MOLT_EXT_ROOT"] == str(tmp_path)
-    assert env["CARGO_TARGET_DIR"] == str(tmp_path / "target")
-    assert env["MOLT_DIFF_CARGO_TARGET_DIR"] == str(tmp_path / "target")
-    assert env["MOLT_CACHE"] == str(tmp_path / ".molt_cache")
-    assert env["MOLT_DIFF_ROOT"] == str(tmp_path / "tmp" / "diff")
-    assert env["MOLT_DIFF_TMPDIR"] == str(tmp_path / "tmp")
-    assert env["TMPDIR"] == str(tmp_path / "tmp")
+    artifact_root = Path(env["MOLT_EXT_ROOT"])
+    assert env["CARGO_TARGET_DIR"] == str(
+        molt_dx.cargo_target_dir_for_artifact_root(artifact_root, "smoke-suite")
+    )
+    assert env["MOLT_DIFF_CARGO_TARGET_DIR"] == env["CARGO_TARGET_DIR"]
+    assert env["MOLT_CACHE"] == str(artifact_root / ".molt_cache")
+    assert env["MOLT_DIFF_ROOT"] == str(artifact_root / "tmp" / "diff")
+    assert env["MOLT_DIFF_TMPDIR"] == str(artifact_root / "tmp")
+    assert env["TMPDIR"] == str(artifact_root / "tmp")
     assert env["PYTHONPATH"] == str(tmp_path / "src")
     assert env["MOLT_SESSION_ID"] == "smoke-suite"
 

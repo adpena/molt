@@ -492,9 +492,13 @@ def test_perf_demo_workflow_uses_canonical_env_and_single_uv_sync() -> None:
     run_stack_text = _read("bench/scripts/run_stack.sh")
 
     assert "MOLT_SESSION_ID: perf-demo-${{ github.run_id }}" in perf_demo_text
-    assert "CARGO_TARGET_DIR: ${{ github.workspace }}/target" in perf_demo_text
-    assert "MOLT_DIFF_CARGO_TARGET_DIR: ${{ github.workspace }}/target" in (
-        perf_demo_text
+    assert (
+        "CARGO_TARGET_DIR: ${{ github.workspace }}/target/sessions/perf-demo-${{ github.run_id }}-${{ github.run_attempt }}"
+        in perf_demo_text
+    )
+    assert (
+        "MOLT_DIFF_CARGO_TARGET_DIR: ${{ github.workspace }}/target/sessions/perf-demo-${{ github.run_id }}-${{ github.run_attempt }}"
+        in perf_demo_text
     )
     assert "MOLT_CACHE: ${{ github.workspace }}/.molt_cache" in perf_demo_text
     assert "TMPDIR: ${{ github.workspace }}/tmp" in perf_demo_text
@@ -502,7 +506,10 @@ def test_perf_demo_workflow_uses_canonical_env_and_single_uv_sync() -> None:
     assert 'MOLT_UV_SYNC: "0"' in perf_demo_text
     assert 'if [[ "${MOLT_UV_SYNC:-1}" != "0" ]]' in run_stack_text
     assert 'cargo build --profile "$CARGO_PROFILE" -p molt-worker' in run_stack_text
-    assert 'CARGO_ROOT="${CARGO_TARGET_DIR:-$ROOT/target}"' in run_stack_text
+    assert (
+        'CARGO_ROOT="${CARGO_TARGET_DIR:-$ROOT/target/sessions/${MOLT_SESSION_ID:-demo-stack}}"'
+        in run_stack_text
+    )
     assert 'WORKER_BIN="$CARGO_ROOT/$CARGO_PROFILE/molt-worker"' in run_stack_text
 
 
@@ -528,8 +535,14 @@ def test_wasm_ci_uses_canonical_artifact_roots_and_dev_profile() -> None:
     assert "MOLT_EXT_ROOT: /tmp/molt-ext" in wasm_text
     assert "- '.python-version'" in wasm_text
     assert "- 'tools/venv_exec.py'" in wasm_text
-    assert "CARGO_TARGET_DIR: ${{ github.workspace }}/target" in wasm_text
-    assert "MOLT_DIFF_CARGO_TARGET_DIR: ${{ github.workspace }}/target" in wasm_text
+    assert (
+        "CARGO_TARGET_DIR: ${{ github.workspace }}/target/sessions/wasm-ci-${{ github.run_id }}-${{ github.run_attempt }}"
+        in wasm_text
+    )
+    assert (
+        "MOLT_DIFF_CARGO_TARGET_DIR: ${{ github.workspace }}/target/sessions/wasm-ci-${{ github.run_id }}-${{ github.run_attempt }}"
+        in wasm_text
+    )
     assert "MOLT_CACHE: /tmp/molt-ext/molt_cache" in wasm_text
     assert "MOLT_DIFF_ROOT: /tmp/molt-ext/diff" in wasm_text
     assert "MOLT_DIFF_TMPDIR: /tmp/molt-ext/tmp" in wasm_text
@@ -538,7 +551,8 @@ def test_wasm_ci_uses_canonical_artifact_roots_and_dev_profile() -> None:
     assert "cancel-in-progress: true" in wasm_text
     assert "MOLT_CI_PYTHON" not in wasm_text
     assert (
-        "MOLT_WASM_TEST_CARGO_TARGET_DIR: ${{ github.workspace }}/target" in wasm_text
+        "MOLT_WASM_TEST_CARGO_TARGET_DIR: ${{ github.workspace }}/target/sessions/wasm-ci-${{ github.run_id }}-${{ github.run_attempt }}"
+        in wasm_text
     )
     assert "enable-cache: true" in wasm_text
     assert "cache-dependency-glob: uv.lock" in wasm_text

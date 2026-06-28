@@ -493,7 +493,10 @@ def test_bench_individual_process_helpers_use_molt_bench_guard(
     assert calls[0]["cwd"] == bench.REPO_ROOT
     assert calls[0]["env"]["MOLT_EXT_ROOT"] == str(bench.REPO_ROOT)
     assert calls[0]["env"]["CARGO_TARGET_DIR"] == str(
-        bench.REPO_ROOT / "target" / "sessions" / calls[0]["env"]["MOLT_SESSION_ID"]
+        molt_dx.cargo_target_dir_for_artifact_root(
+            bench.REPO_ROOT,
+            calls[0]["env"]["MOLT_SESSION_ID"],
+        )
     )
     assert calls[0]["env"]["MOLT_SESSION_ID"] == "caller-session"
     assert calls[0]["env"]["PYTHONPATH"] == str(bench.REPO_ROOT / "src")

@@ -1426,21 +1426,17 @@ def canonical_regrtest_env(
     overrides = dict(env or {})
     run_env.update(overrides)
     root = repo_root.resolve()
-    defaults = {
-        "MOLT_EXT_ROOT": str(root),
-        "CARGO_TARGET_DIR": str(root / "target"),
-        "MOLT_CACHE": str(root / ".molt_cache"),
-        "MOLT_DIFF_ROOT": str(root / "tmp" / "diff"),
-        "MOLT_DIFF_TMPDIR": str(root / "tmp"),
-        "UV_CACHE_DIR": str(root / ".uv-cache"),
-        "TMPDIR": str(root / "tmp"),
-        "PYTHONHASHSEED": "0",
-    }
-    for key, value in defaults.items():
-        if key not in overrides:
-            run_env[key] = value
-    if "MOLT_DIFF_CARGO_TARGET_DIR" not in overrides:
-        run_env["MOLT_DIFF_CARGO_TARGET_DIR"] = run_env["CARGO_TARGET_DIR"]
+    force_default_keys = tuple(
+        key
+        for key in harness_memory_guard.CANONICAL_RUN_ENV_KEYS
+        if key not in overrides and key != "MOLT_SESSION_ID"
+    )
+    run_env = harness_memory_guard.canonical_harness_env(
+        run_env,
+        repo_root=root,
+        force_default_keys=force_default_keys,
+    )
+    run_env.setdefault("PYTHONHASHSEED", "0")
     return run_env
 
 
