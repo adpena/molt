@@ -177,6 +177,13 @@ callable exports, and `object_closure` symbol custody. The Pact blocker is that
 the admitted NumPy/SciPy roots have not yet published reachable artifacts in
 that shape.
 
+Once those artifacts exist, replay Kernel A, `field_solve(lstar)`, first; it is
+the SciPy ndimage stress test and interactive payload. The Molt-produced
+candidate must pass `python check_parity.py candidate_outputs.npz`, then Kernel B
+`witness_forward.levelset_argmax` must match
+`witness_forward_reference.npz["lstar"]`. WASM-CPU remains the determinism
+authority; WebGPU/WGSL/SIMD are speed lanes after the oracle path is green.
+
 ## Proof
 
 Pinned tests:
