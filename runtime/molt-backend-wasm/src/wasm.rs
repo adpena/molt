@@ -21,6 +21,7 @@ mod constant_ops;
 mod context;
 mod control_flow;
 mod data_segments;
+mod frame_locals;
 mod function_emitter;
 mod function_frame;
 pub(crate) mod lir_fast;
@@ -47,8 +48,8 @@ use crate::wasm_values::{
 };
 use crate::{FunctionIR, OpIR, SimpleIR, TrampolineKind, TrampolineSpec};
 #[cfg(test)]
-pub(in crate::wasm) use function_frame::WasmFrameLocalKind;
-pub(in crate::wasm) use function_frame::{
+pub(in crate::wasm) use frame_locals::WasmFrameLocalKind;
+pub(in crate::wasm) use frame_locals::{
     WasmFrameLocals, WasmFrameSyntheticLocal, WasmLiteralScratchLocals,
 };
 use std::borrow::Cow;
