@@ -7,6 +7,7 @@ use wasm_encoder::Function;
 
 mod async_task_ops;
 mod bridge_ops;
+mod call_emit;
 mod channel_ops;
 mod exception_ops;
 mod file_ops;

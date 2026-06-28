@@ -1,121 +1,52 @@
-use super::super::result_sink::{store_non_none_result_or_drop, store_result_or_drop};
 use super::RuntimeServiceOpContext;
+use super::call_emit::{RuntimeServiceArg::Local, RuntimeServiceCall, emit_runtime_service_call};
 use crate::OpIR;
-use crate::wasm_binary::emit_call;
-use wasm_encoder::{Function, Instruction};
+use wasm_encoder::Function;
 
 pub(super) fn emit_module_runtime_op(
     context: &RuntimeServiceOpContext<'_>,
     func: &mut Function,
     op: &OpIR,
 ) -> bool {
-    let import_ids = context.import_ids;
-    let locals = context.locals;
-    let reloc_enabled = context.reloc_enabled;
+    if let Some(call) = module_runtime_call(op.kind.as_str()) {
+        emit_runtime_service_call(context, func, op, call);
+        return true;
+    }
+    false
+}
 
-    match op.kind.as_str() {
-        "module_new" => {
-            let args = op.args.as_ref().unwrap();
-            let name = locals[&args[0]];
-            func.instruction(&Instruction::LocalGet(name));
-            emit_call(func, reloc_enabled, import_ids["module_new"]);
-            store_result_or_drop(func, op, locals);
-        }
-        "module_cache_get" => {
-            let args = op.args.as_ref().unwrap();
-            let name = locals[&args[0]];
-            func.instruction(&Instruction::LocalGet(name));
-            emit_call(func, reloc_enabled, import_ids["module_cache_get"]);
-            store_result_or_drop(func, op, locals);
-        }
-        "module_import" => {
-            let args = op.args.as_ref().unwrap();
-            let name = locals[&args[0]];
-            func.instruction(&Instruction::LocalGet(name));
-            emit_call(func, reloc_enabled, import_ids["module_import"]);
-            store_result_or_drop(func, op, locals);
-        }
+fn module_runtime_call(kind: &str) -> Option<RuntimeServiceCall<'static>> {
+    Some(match kind {
+        "module_new" => RuntimeServiceCall::result("module_new", &[Local(0)]),
+        "module_cache_get" => RuntimeServiceCall::result("module_cache_get", &[Local(0)]),
+        "module_import" => RuntimeServiceCall::result("module_import", &[Local(0)]),
         "module_cache_set" => {
-            let args = op.args.as_ref().unwrap();
-            let name = locals[&args[0]];
-            let module = locals[&args[1]];
-            func.instruction(&Instruction::LocalGet(name));
-            func.instruction(&Instruction::LocalGet(module));
-            emit_call(func, reloc_enabled, import_ids["module_cache_set"]);
-            store_non_none_result_or_drop(func, op, locals);
+            RuntimeServiceCall::non_none("module_cache_set", &[Local(0), Local(1)])
         }
-        "module_cache_del" => {
-            let args = op.args.as_ref().unwrap();
-            let name = locals[&args[0]];
-            func.instruction(&Instruction::LocalGet(name));
-            emit_call(func, reloc_enabled, import_ids["module_cache_del"]);
-            store_non_none_result_or_drop(func, op, locals);
-        }
-        "module_get_attr" | "module_import_from" => {
-            let args = op.args.as_ref().unwrap();
-            let module = locals[&args[0]];
-            let name = locals[&args[1]];
-            func.instruction(&Instruction::LocalGet(module));
-            func.instruction(&Instruction::LocalGet(name));
-            // `from M import name` uses CPython IMPORT_FROM semantics
-            // (ImportError on miss + sys.modules submodule fallback);
-            // plain `M.name` raises AttributeError.
-            let import_symbol = if op.kind == "module_import_from" {
-                "module_import_from"
-            } else {
-                "module_get_attr"
-            };
-            emit_call(func, reloc_enabled, import_ids[import_symbol]);
-            store_result_or_drop(func, op, locals);
+        "module_cache_del" => RuntimeServiceCall::non_none("module_cache_del", &[Local(0)]),
+        "module_get_attr" => RuntimeServiceCall::result("module_get_attr", &[Local(0), Local(1)]),
+        // `from M import name` uses CPython IMPORT_FROM semantics
+        // (ImportError on miss + sys.modules submodule fallback);
+        // plain `M.name` raises AttributeError.
+        "module_import_from" => {
+            RuntimeServiceCall::result("module_import_from", &[Local(0), Local(1)])
         }
         "module_get_global" => {
-            let args = op.args.as_ref().unwrap();
-            let module = locals[&args[0]];
-            let name = locals[&args[1]];
-            func.instruction(&Instruction::LocalGet(module));
-            func.instruction(&Instruction::LocalGet(name));
-            emit_call(func, reloc_enabled, import_ids["module_get_global"]);
-            store_result_or_drop(func, op, locals);
+            RuntimeServiceCall::result("module_get_global", &[Local(0), Local(1)])
         }
-        "module_del_global" | "module_del_global_if_present" => {
-            let args = op.args.as_ref().unwrap();
-            let module = locals[&args[0]];
-            let name = locals[&args[1]];
-            func.instruction(&Instruction::LocalGet(module));
-            func.instruction(&Instruction::LocalGet(name));
-            emit_call(func, reloc_enabled, import_ids[op.kind.as_str()]);
-            store_non_none_result_or_drop(func, op, locals);
+        "module_del_global" => {
+            RuntimeServiceCall::non_none("module_del_global", &[Local(0), Local(1)])
         }
-        "module_get_name" => {
-            let args = op.args.as_ref().unwrap();
-            let module = locals[&args[0]];
-            let name = locals[&args[1]];
-            func.instruction(&Instruction::LocalGet(module));
-            func.instruction(&Instruction::LocalGet(name));
-            emit_call(func, reloc_enabled, import_ids["module_get_name"]);
-            store_result_or_drop(func, op, locals);
+        "module_del_global_if_present" => {
+            RuntimeServiceCall::non_none("module_del_global_if_present", &[Local(0), Local(1)])
         }
+        "module_get_name" => RuntimeServiceCall::result("module_get_name", &[Local(0), Local(1)]),
         "module_set_attr" => {
-            let args = op.args.as_ref().unwrap();
-            let module = locals[&args[0]];
-            let name = locals[&args[1]];
-            let val = locals[&args[2]];
-            func.instruction(&Instruction::LocalGet(module));
-            func.instruction(&Instruction::LocalGet(name));
-            func.instruction(&Instruction::LocalGet(val));
-            emit_call(func, reloc_enabled, import_ids["module_set_attr"]);
-            store_non_none_result_or_drop(func, op, locals);
+            RuntimeServiceCall::non_none("module_set_attr", &[Local(0), Local(1), Local(2)])
         }
         "module_import_star" => {
-            let args = op.args.as_ref().unwrap();
-            let src = locals[&args[0]];
-            let dst = locals[&args[1]];
-            func.instruction(&Instruction::LocalGet(src));
-            func.instruction(&Instruction::LocalGet(dst));
-            emit_call(func, reloc_enabled, import_ids["module_import_star"]);
-            store_result_or_drop(func, op, locals);
+            RuntimeServiceCall::result("module_import_star", &[Local(0), Local(1)])
         }
-        _ => return false,
-    }
-    true
+        _ => return None,
+    })
 }

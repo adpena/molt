@@ -1,61 +1,27 @@
-use super::super::result_sink::store_result_or_drop;
 use super::RuntimeServiceOpContext;
+use super::call_emit::{RuntimeServiceArg::Local, RuntimeServiceCall, emit_runtime_service_call};
 use crate::OpIR;
-use crate::wasm_binary::emit_call;
-use wasm_encoder::{Function, Instruction};
+use wasm_encoder::Function;
 
 pub(super) fn emit_file_runtime_op(
     context: &RuntimeServiceOpContext<'_>,
     func: &mut Function,
     op: &OpIR,
 ) -> bool {
-    let import_ids = context.import_ids;
-    let locals = context.locals;
-    let reloc_enabled = context.reloc_enabled;
-
-    match op.kind.as_str() {
-        "file_open" => {
-            let args = op.args.as_ref().unwrap();
-            let path = locals[&args[0]];
-            let mode = locals[&args[1]];
-            func.instruction(&Instruction::LocalGet(path));
-            func.instruction(&Instruction::LocalGet(mode));
-            emit_call(func, reloc_enabled, import_ids["file_open"]);
-            store_result_or_drop(func, op, locals);
-        }
-        "file_read" => {
-            let args = op.args.as_ref().unwrap();
-            let handle = locals[&args[0]];
-            let size = locals[&args[1]];
-            func.instruction(&Instruction::LocalGet(handle));
-            func.instruction(&Instruction::LocalGet(size));
-            emit_call(func, reloc_enabled, import_ids["file_read"]);
-            store_result_or_drop(func, op, locals);
-        }
-        "file_write" => {
-            let args = op.args.as_ref().unwrap();
-            let handle = locals[&args[0]];
-            let data = locals[&args[1]];
-            func.instruction(&Instruction::LocalGet(handle));
-            func.instruction(&Instruction::LocalGet(data));
-            emit_call(func, reloc_enabled, import_ids["file_write"]);
-            store_result_or_drop(func, op, locals);
-        }
-        "file_close" => {
-            let args = op.args.as_ref().unwrap();
-            let handle = locals[&args[0]];
-            func.instruction(&Instruction::LocalGet(handle));
-            emit_call(func, reloc_enabled, import_ids["file_close"]);
-            store_result_or_drop(func, op, locals);
-        }
-        "file_flush" => {
-            let args = op.args.as_ref().unwrap();
-            let handle = locals[&args[0]];
-            func.instruction(&Instruction::LocalGet(handle));
-            emit_call(func, reloc_enabled, import_ids["file_flush"]);
-            store_result_or_drop(func, op, locals);
-        }
-        _ => return false,
+    if let Some(call) = file_runtime_call(op.kind.as_str()) {
+        emit_runtime_service_call(context, func, op, call);
+        return true;
     }
-    true
+    false
+}
+
+fn file_runtime_call(kind: &str) -> Option<RuntimeServiceCall<'static>> {
+    Some(match kind {
+        "file_open" => RuntimeServiceCall::result("file_open", &[Local(0), Local(1)]),
+        "file_read" => RuntimeServiceCall::result("file_read", &[Local(0), Local(1)]),
+        "file_write" => RuntimeServiceCall::result("file_write", &[Local(0), Local(1)]),
+        "file_close" => RuntimeServiceCall::result("file_close", &[Local(0)]),
+        "file_flush" => RuntimeServiceCall::result("file_flush", &[Local(0)]),
+        _ => return None,
+    })
 }
