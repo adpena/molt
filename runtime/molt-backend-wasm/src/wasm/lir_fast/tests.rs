@@ -9,7 +9,7 @@ use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
 use crate::tir::types::TirType;
 use crate::tir::values::ValueId;
 use crate::wasm::body::{WasmBodyOps, WasmLirFallbackReason};
-use molt_codegen_abi::{CANONICAL_NAN_BITS, INT_MASK, QNAN_TAG_INT_I64};
+use molt_codegen_abi::{CANONICAL_NAN_BITS, INT_MASK, QNAN_TAG_INT_I64, QNAN_TAG_MASK_I64};
 use std::collections::HashMap;
 use wasm_encoder::{Instruction, ValType};
 
@@ -420,6 +420,87 @@ fn dynbox_or_retains_selected_operand_result() {
 }
 
 #[test]
+fn dynbox_unary_scalar_helpers_stay_lir_fast_runtime_calls() {
+    let cases = [
+        ("neg_dynbox", OpCode::Neg, "neg"),
+        ("invert_dynbox", OpCode::BitNot, "invert"),
+    ];
+
+    for (name, opcode, runtime_call) in cases {
+        let mut func = TirFunction::new(name.into(), vec![TirType::DynBox], TirType::DynBox);
+        let result_id = func.fresh_value();
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode,
+            operands: vec![ValueId(0)],
+            results: vec![result_id],
+            attrs: AttrDict::new(),
+            source_span: None,
+        });
+        entry.terminator = Terminator::Return {
+            values: vec![result_id],
+        };
+
+        let output = lower_tir_to_wasm(&func).test_view();
+
+        assert!(
+            !output.bails_to_generic_path,
+            "{name} must stay in the LIR fast lane"
+        );
+        assert!(
+            output.runtime_calls.contains(&runtime_call),
+            "{name} must call {runtime_call}; got {:?}",
+            output.runtime_calls
+        );
+    }
+}
+
+#[test]
+fn dynbox_binary_bitwise_and_shift_helpers_stay_lir_fast_runtime_calls() {
+    let cases = [
+        ("bit_and_dynbox", OpCode::BitAnd, "bit_and"),
+        ("bit_or_dynbox", OpCode::BitOr, "bit_or"),
+        ("bit_xor_dynbox", OpCode::BitXor, "bit_xor"),
+        ("lshift_dynbox", OpCode::Shl, "lshift"),
+        ("rshift_dynbox", OpCode::Shr, "rshift"),
+    ];
+
+    for (name, opcode, runtime_call) in cases {
+        let mut func = TirFunction::new(
+            name.into(),
+            vec![TirType::DynBox, TirType::DynBox],
+            TirType::DynBox,
+        );
+        let result_id = func.fresh_value();
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode,
+            operands: vec![ValueId(0), ValueId(1)],
+            results: vec![result_id],
+            attrs: AttrDict::new(),
+            source_span: None,
+        });
+        entry.terminator = Terminator::Return {
+            values: vec![result_id],
+        };
+
+        let output = lower_tir_to_wasm(&func).test_view();
+
+        assert!(
+            !output.bails_to_generic_path,
+            "{name} must stay in the LIR fast lane"
+        );
+        assert!(
+            output.runtime_calls.contains(&runtime_call),
+            "{name} must call {runtime_call}; got {:?}",
+            output.runtime_calls
+        );
+    }
+}
+
+#[test]
 fn add_two_f64s() {
     let mut func = TirFunction::new(
         "add_f64".into(),
@@ -554,6 +635,128 @@ fn conditional_branch() {
     assert!(
         has_br_if,
         "expected br_if instruction for conditional branch"
+    );
+}
+
+#[test]
+fn dynbox_bool_uses_lir_truthiness_without_generic_bail() {
+    let mut func = TirFunction::new("bool_dynbox".into(), vec![TirType::DynBox], TirType::Bool);
+    let result_id = func.fresh_value();
+    let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+    entry.ops.push(TirOp {
+        dialect: Dialect::Molt,
+        opcode: OpCode::Bool,
+        operands: vec![ValueId(0)],
+        results: vec![result_id],
+        attrs: AttrDict::new(),
+        source_span: None,
+    });
+    entry.terminator = Terminator::Return {
+        values: vec![result_id],
+    };
+
+    let output = lower_tir_to_wasm(&func).test_view();
+
+    assert!(
+        !output.bails_to_generic_path,
+        "boxed bool() must stay in the LIR fast lane"
+    );
+    assert!(
+        output.runtime_calls.contains(&"is_truthy"),
+        "boxed bool() must dispatch non-bool objects through is_truthy; got {:?}",
+        output.runtime_calls
+    );
+    assert!(
+        output.instructions.iter().any(
+            |instruction| matches!(instruction, Instruction::I64Const(mask) if *mask == QNAN_TAG_MASK_I64)
+        ),
+        "boxed truthiness must retain the inline boxed-bool path"
+    );
+}
+
+#[test]
+fn dynbox_conditional_branch_uses_lir_truthiness_without_generic_bail() {
+    let mut func = TirFunction::new(
+        "cond_branch_dynbox".into(),
+        vec![TirType::DynBox],
+        TirType::I64,
+    );
+
+    let then_id = func.fresh_block();
+    let else_id = func.fresh_block();
+    let ret_then = func.fresh_value();
+    let ret_else = func.fresh_value();
+
+    func.blocks.get_mut(&func.entry_block).unwrap().terminator = Terminator::CondBranch {
+        cond: ValueId(0),
+        then_block: then_id,
+        then_args: vec![],
+        else_block: else_id,
+        else_args: vec![],
+    };
+
+    func.blocks.insert(
+        then_id,
+        TirBlock {
+            id: then_id,
+            args: vec![],
+            ops: vec![TirOp {
+                dialect: Dialect::Molt,
+                opcode: OpCode::ConstInt,
+                operands: vec![],
+                results: vec![ret_then],
+                attrs: {
+                    let mut m = AttrDict::new();
+                    m.insert("value".into(), AttrValue::Int(1));
+                    m
+                },
+                source_span: None,
+            }],
+            terminator: Terminator::Return {
+                values: vec![ret_then],
+            },
+        },
+    );
+    func.blocks.insert(
+        else_id,
+        TirBlock {
+            id: else_id,
+            args: vec![],
+            ops: vec![TirOp {
+                dialect: Dialect::Molt,
+                opcode: OpCode::ConstInt,
+                operands: vec![],
+                results: vec![ret_else],
+                attrs: {
+                    let mut m = AttrDict::new();
+                    m.insert("value".into(), AttrValue::Int(0));
+                    m
+                },
+                source_span: None,
+            }],
+            terminator: Terminator::Return {
+                values: vec![ret_else],
+            },
+        },
+    );
+
+    let output = lower_tir_to_wasm(&func).test_view();
+
+    assert!(
+        !output.bails_to_generic_path,
+        "boxed conditional branch must stay in the LIR fast lane"
+    );
+    assert!(
+        output.runtime_calls.contains(&"is_truthy"),
+        "boxed conditional branch must dispatch non-bool objects through is_truthy; got {:?}",
+        output.runtime_calls
+    );
+    assert!(
+        output
+            .instructions
+            .iter()
+            .any(|instruction| matches!(instruction, Instruction::BrIf(_))),
+        "conditional branch must still emit br_if"
     );
 }
 
