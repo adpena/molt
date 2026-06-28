@@ -222,6 +222,20 @@ fn wasm_element_function_indices(wasm: &[u8]) -> Vec<u32> {
     panic!("expected active function element section");
 }
 
+fn wasm_function_exports(wasm: &[u8]) -> BTreeSet<String> {
+    let mut exports = BTreeSet::new();
+    for payload in Parser::new(0).parse_all(wasm) {
+        if let Ok(Payload::ExportSection(reader)) = payload {
+            for export in reader.into_iter().flatten() {
+                if export.kind == ExternalKind::Func {
+                    exports.insert(export.name.to_string());
+                }
+            }
+        }
+    }
+    exports
+}
+
 fn wasm_type_section_signatures(wasm: &[u8]) -> Vec<(usize, usize)> {
     use wasmparser::CompositeInnerType;
     let mut sigs = Vec::new();
@@ -238,6 +252,48 @@ fn wasm_type_section_signatures(wasm: &[u8]) -> Vec<(usize, usize)> {
         }
     }
     sigs
+}
+
+#[test]
+fn call_indirect_exports_follow_manifest_imports() {
+    let func = wasm_test_function(
+        "call_indirect_exports",
+        vec![],
+        None,
+        vec![wasm_test_op("ret_void", None, vec![])],
+    );
+    let ir = SimpleIR {
+        functions: vec![func],
+        profile: None,
+    };
+    let wasm = WasmBackend::with_options(WasmCompileOptions {
+        native_eh_enabled: false,
+        reloc_enabled: false,
+        ..WasmCompileOptions::default()
+    })
+    .compile(ir);
+
+    wasmparser::Validator::new()
+        .validate_all(&wasm)
+        .expect("call_indirect manifest export module must be structurally valid WASM");
+
+    let exported_call_indirects: BTreeSet<String> = wasm_function_exports(&wasm)
+        .into_iter()
+        .filter(|name| name.starts_with("molt_call_indirect"))
+        .collect();
+    let manifest_call_indirects: BTreeSet<String> = CALL_INDIRECT_IMPORTS
+        .iter()
+        .map(|spec| spec.import_name.to_string())
+        .collect();
+
+    assert_eq!(exported_call_indirects, manifest_call_indirects);
+    assert_eq!(
+        CALL_INDIRECT_MAX_ARITY,
+        CALL_INDIRECT_IMPORTS
+            .last()
+            .expect("generated call_indirect import family must be non-empty")
+            .arity
+    );
 }
 
 #[test]
