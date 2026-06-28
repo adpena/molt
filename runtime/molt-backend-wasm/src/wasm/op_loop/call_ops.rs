@@ -3,7 +3,7 @@ use super::*;
 
 mod direct;
 mod dynamic;
-mod frame;
+mod site;
 use std::collections::HashSet;
 
 pub(super) enum CallOpEmission {
@@ -14,13 +14,8 @@ pub(super) enum CallOpEmission {
 
 pub(super) struct CallOpContext<'a, 'ctx, 'm> {
     pub(super) func_ir: &'a FunctionIR,
-    pub(super) ctx: &'a CompileFuncContext<'ctx>,
-    pub(super) func_map: &'a BTreeMap<String, u32>,
-    pub(super) func_indices: &'a BTreeMap<String, u32>,
-    pub(super) trampoline_map: &'a BTreeMap<String, u32>,
-    pub(super) table_base: u32,
+    pub(super) call_site_abi: &'a WasmCallSiteAbi<'ctx>,
     pub(super) import_ids: &'a TrackedImportIds,
-    pub(super) closure_functions: &'a BTreeSet<String>,
     pub(super) runtime_lookup_only_vars: &'a BTreeSet<String>,
     pub(super) locals: &'a WasmFrameLocals,
     pub(super) const_cache: &'a ConstantCache,
@@ -44,9 +39,7 @@ pub(super) fn emit_call_op(
     func: &mut Function,
     op: &OpIR,
 ) -> CallOpEmission {
-    let func_map = call_ctx.func_map;
-    let trampoline_map = call_ctx.trampoline_map;
-    let table_base = call_ctx.table_base;
+    let call_site_abi = call_ctx.call_site_abi;
     let import_ids = call_ctx.import_ids;
     let runtime_lookup_only_vars = call_ctx.runtime_lookup_only_vars;
     let locals = call_ctx.locals;
@@ -143,12 +136,9 @@ pub(super) fn emit_call_op(
         "func_new" => {
             let func_name = op.s_value.as_ref().unwrap();
             let arity = op.value.unwrap_or(0);
-            let table_slot = func_map[func_name];
-            let table_idx = table_base + table_slot;
-            let tramp_slot = trampoline_map[func_name];
-            let tramp_idx = table_base + tramp_slot;
-            emit_table_index_i64(func, reloc_enabled, table_idx);
-            emit_table_index_i64(func, reloc_enabled, tramp_idx);
+            let table_pair = call_site_abi.callable_table_pair(func_name, "func_new");
+            emit_table_index_i64(func, reloc_enabled, table_pair.function_table_index);
+            emit_table_index_i64(func, reloc_enabled, table_pair.trampoline_table_index);
             func.instruction(&Instruction::I64Const(arity));
             emit_call(func, reloc_enabled, import_ids["func_new"]);
             if let Some(out) = op.out.as_ref() {
@@ -167,12 +157,9 @@ pub(super) fn emit_call_op(
                 .and_then(|args| args.first())
                 .expect("func_new_closure expects closure arg");
             let closure_bits = locals[closure_name];
-            let table_slot = func_map[func_name];
-            let table_idx = table_base + table_slot;
-            let tramp_slot = trampoline_map[func_name];
-            let tramp_idx = table_base + tramp_slot;
-            emit_table_index_i64(func, reloc_enabled, table_idx);
-            emit_table_index_i64(func, reloc_enabled, tramp_idx);
+            let table_pair = call_site_abi.callable_table_pair(func_name, "func_new_closure");
+            emit_table_index_i64(func, reloc_enabled, table_pair.function_table_index);
+            emit_table_index_i64(func, reloc_enabled, table_pair.trampoline_table_index);
             func.instruction(&Instruction::I64Const(arity));
             func.instruction(&Instruction::LocalGet(closure_bits));
             emit_call(func, reloc_enabled, import_ids["func_new_closure"]);
@@ -224,8 +211,7 @@ pub(super) fn emit_call_op(
             let args = op.args.as_ref().unwrap();
             let code_bits = locals[&args[0]];
             let func_name = op.s_value.as_ref().unwrap();
-            let table_slot = func_map[func_name];
-            let table_idx = table_base + table_slot;
+            let table_idx = call_site_abi.table_index(func_name, "fn_ptr_code_set");
             emit_table_index_i64(func, reloc_enabled, table_idx);
             func.instruction(&Instruction::LocalGet(code_bits));
             emit_call(func, reloc_enabled, import_ids["fn_ptr_code_set"]);
@@ -236,8 +222,7 @@ pub(super) fn emit_call_op(
             let names_bits = locals[&args[0]];
             let offsets_bits = locals[&args[1]];
             let func_name = op.s_value.as_ref().unwrap();
-            let table_slot = func_map[func_name];
-            let table_idx = table_base + table_slot;
+            let table_idx = call_site_abi.table_index(func_name, "asyncgen_locals_register");
             emit_table_index_i64(func, reloc_enabled, table_idx);
             func.instruction(&Instruction::LocalGet(names_bits));
             func.instruction(&Instruction::LocalGet(offsets_bits));
@@ -249,8 +234,7 @@ pub(super) fn emit_call_op(
             let names_bits = locals[&args[0]];
             let offsets_bits = locals[&args[1]];
             let func_name = op.s_value.as_ref().unwrap();
-            let table_slot = func_map[func_name];
-            let table_idx = table_base + table_slot;
+            let table_idx = call_site_abi.table_index(func_name, "gen_locals_register");
             emit_table_index_i64(func, reloc_enabled, table_idx);
             func.instruction(&Instruction::LocalGet(names_bits));
             func.instruction(&Instruction::LocalGet(offsets_bits));
@@ -297,12 +281,9 @@ pub(super) fn emit_call_op(
             }
             let func_name = op.s_value.as_ref().unwrap();
             let arity = op.value.unwrap_or(0);
-            let table_slot = func_map[func_name];
-            let table_idx = table_base + table_slot;
-            let tramp_slot = trampoline_map[func_name];
-            let tramp_idx = table_base + tramp_slot;
-            emit_table_index_i64(func, reloc_enabled, table_idx);
-            emit_table_index_i64(func, reloc_enabled, tramp_idx);
+            let table_pair = call_site_abi.callable_table_pair(func_name, "builtin_func");
+            emit_table_index_i64(func, reloc_enabled, table_pair.function_table_index);
+            emit_table_index_i64(func, reloc_enabled, table_pair.trampoline_table_index);
             func.instruction(&Instruction::I64Const(arity));
             emit_call(func, reloc_enabled, import_ids["func_new_builtin"]);
             if let Some(out) = op.out.as_ref() {
