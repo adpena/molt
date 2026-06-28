@@ -3,8 +3,10 @@ use crate::wasm::const_materialization::WasmConstMaterialization;
 use crate::wasm::lir_fast::LirRuntimeCall;
 use molt_tir::tir::blocks::BlockId;
 use molt_tir::tir::lir::{LirFunction, LirRepr, LirTerminator, LirValue};
+use molt_tir::tir::ops::{AttrValue, TirOp};
+use molt_tir::tir::types::TirType;
 use molt_tir::tir::values::ValueId;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use wasm_encoder::{Instruction, ValType};
 
 pub(super) fn lir_repr_to_val(repr: LirRepr) -> ValType {
@@ -20,6 +22,8 @@ pub(super) struct LirLowerCtx<'a> {
     pub(super) func: &'a LirFunction,
     pub(super) value_locals: HashMap<ValueId, u32>,
     pub(super) value_reprs: HashMap<ValueId, LirRepr>,
+    pub(super) value_types: HashMap<ValueId, TirType>,
+    flat_list_int_values: HashSet<ValueId>,
     /// Reverse map: local index -> ValType. Built during allocation so the
     /// locals vector can be constructed in O(N) instead of O(N^2).
     pub(super) local_types: HashMap<u32, ValType>,
@@ -33,10 +37,13 @@ impl<'a> LirLowerCtx<'a> {
     pub(super) fn new_with_local_base(func: &'a LirFunction, local_base: u32) -> Self {
         let rpo = compute_lir_rpo(func);
         let block_index = rpo.iter().enumerate().map(|(i, &bid)| (bid, i)).collect();
+        let flat_list_int_values = compute_lir_flat_list_int_values(func);
         Self {
             func,
             value_locals: HashMap::new(),
             value_reprs: HashMap::new(),
+            value_types: HashMap::new(),
+            flat_list_int_values,
             local_types: HashMap::new(),
             next_local: local_base,
             instructions: WasmBodyOps::default(),
@@ -69,6 +76,7 @@ impl<'a> LirLowerCtx<'a> {
         self.next_local += 1;
         self.value_locals.insert(value.id, idx);
         self.value_reprs.insert(value.id, value.repr);
+        self.value_types.insert(value.id, value.ty.clone());
         self.local_types.insert(idx, lir_repr_to_val(value.repr));
         idx
     }
@@ -127,6 +135,53 @@ impl<'a> LirLowerCtx<'a> {
             .get(&vid)
             .copied()
             .unwrap_or(LirRepr::DynBox)
+    }
+
+    pub(super) fn type_of(&self, vid: ValueId) -> Option<&TirType> {
+        self.value_types.get(&vid)
+    }
+
+    pub(super) fn has_flat_list_int_storage(&self, vid: ValueId) -> bool {
+        self.flat_list_int_values.contains(&vid)
+    }
+}
+
+fn compute_lir_flat_list_int_values(func: &LirFunction) -> HashSet<ValueId> {
+    let mut facts = HashSet::new();
+    let mut changed = true;
+    while changed {
+        changed = false;
+        let mut block_ids: Vec<_> = func.blocks.keys().copied().collect();
+        block_ids.sort_by_key(|block_id| block_id.0);
+        for block_id in block_ids {
+            let Some(block) = func.blocks.get(&block_id) else {
+                continue;
+            };
+            for op in &block.ops {
+                let tir_op = &op.tir_op;
+                if tir_op_original_kind(tir_op) == Some("list_int_new") {
+                    for &result in &tir_op.results {
+                        changed |= facts.insert(result);
+                    }
+                    continue;
+                }
+                if tir_op.is_plain_value_copy()
+                    && let (Some(&source), Some(&result)) =
+                        (tir_op.operands.first(), tir_op.results.first())
+                    && facts.contains(&source)
+                {
+                    changed |= facts.insert(result);
+                }
+            }
+        }
+    }
+    facts
+}
+
+fn tir_op_original_kind(op: &TirOp) -> Option<&str> {
+    match op.attrs.get("_original_kind") {
+        Some(AttrValue::Str(kind)) => Some(kind.as_str()),
+        _ => None,
     }
 }
 
