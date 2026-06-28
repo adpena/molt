@@ -24,6 +24,7 @@ _MOLT_GC_GET_THRESHOLD = _require_callable_intrinsic("molt_gc_get_threshold")
 _MOLT_GC_SET_DEBUG = _require_callable_intrinsic("molt_gc_set_debug")
 _MOLT_GC_GET_DEBUG = _require_callable_intrinsic("molt_gc_get_debug")
 _MOLT_GC_GET_COUNT = _require_callable_intrinsic("molt_gc_get_count")
+_MOLT_GC_IS_TRACKED = _require_callable_intrinsic("molt_gc_is_tracked")
 
 garbage: list[object] = []
 
@@ -86,6 +87,10 @@ def get_count() -> tuple[int, int, int]:
     raise RuntimeError("gc get_count intrinsic returned invalid value")
 
 
+def is_tracked(obj: object) -> bool:
+    return bool(_MOLT_GC_IS_TRACKED(obj))
+
+
 __all__ = [
     "collect",
     "disable",
@@ -94,6 +99,7 @@ __all__ = [
     "get_count",
     "get_debug",
     "get_threshold",
+    "is_tracked",
     "isenabled",
     "set_debug",
     "set_threshold",

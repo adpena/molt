@@ -7409,6 +7409,12 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         defaults: &[],
     },
     IntrinsicSpec {
+        name: "molt_gc_is_tracked",
+        symbol: "molt_gc_is_tracked",
+        arity: 1,
+        defaults: &[],
+    },
+    IntrinsicSpec {
         name: "molt_traceback_source_line",
         symbol: "molt_traceback_source_line",
         arity: 2,

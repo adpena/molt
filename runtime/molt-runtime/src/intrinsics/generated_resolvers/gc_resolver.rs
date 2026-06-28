@@ -39,6 +39,10 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             "crate::molt_gc_get_count",
             crate::molt_gc_get_count as *const (),
         )),
+        "molt_gc_is_tracked" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_gc_is_tracked",
+            crate::molt_gc_is_tracked as *const (),
+        )),
         _ => None,
     }
 }
