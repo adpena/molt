@@ -61,6 +61,17 @@ pub(crate) enum LirRuntimeCall {
     ExceptionPending,
     FunctionDefaultsVersion,
     HandleResolve,
+    ModuleImport,
+    ModuleImportStar,
+    ModuleNew,
+    BridgeUnavailable,
+    ContextNull,
+    ContextEnter,
+    ContextExit,
+    ContextUnwind,
+    ContextDepth,
+    ContextUnwindTo,
+    ContextClosing,
     ObjectNewBound,
     ObjectNewBoundSized,
     ClosureLoad,
@@ -144,6 +155,17 @@ impl LirRuntimeCall {
         Self::ExceptionPending,
         Self::FunctionDefaultsVersion,
         Self::HandleResolve,
+        Self::ModuleImport,
+        Self::ModuleImportStar,
+        Self::ModuleNew,
+        Self::BridgeUnavailable,
+        Self::ContextNull,
+        Self::ContextEnter,
+        Self::ContextExit,
+        Self::ContextUnwind,
+        Self::ContextDepth,
+        Self::ContextUnwindTo,
+        Self::ContextClosing,
         Self::ObjectNewBound,
         Self::ObjectNewBoundSized,
         Self::ClosureLoad,
@@ -226,6 +248,17 @@ impl LirRuntimeCall {
             Self::ExceptionPending => "exception_pending",
             Self::FunctionDefaultsVersion => "function_defaults_version",
             Self::HandleResolve => "handle_resolve",
+            Self::ModuleImport => "module_import",
+            Self::ModuleImportStar => "module_import_star",
+            Self::ModuleNew => "module_new",
+            Self::BridgeUnavailable => "bridge_unavailable",
+            Self::ContextNull => "context_null",
+            Self::ContextEnter => "context_enter",
+            Self::ContextExit => "context_exit",
+            Self::ContextUnwind => "context_unwind",
+            Self::ContextDepth => "context_depth",
+            Self::ContextUnwindTo => "context_unwind_to",
+            Self::ContextClosing => "context_closing",
             Self::ObjectNewBound => "object_new_bound",
             Self::ObjectNewBoundSized => "object_new_bound_sized",
             Self::ClosureLoad => "closure_load",
@@ -245,4 +278,30 @@ impl LirRuntimeCall {
             Self::IntFromI64 => "int_from_i64",
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct LirPreservedCopyRuntimeCall {
+    pub(super) call: LirRuntimeCall,
+    pub(super) operand_count: usize,
+}
+
+pub(super) fn preserved_copy_runtime_call(kind: &str) -> Option<LirPreservedCopyRuntimeCall> {
+    let (call, operand_count) = match kind {
+        "module_new" => (LirRuntimeCall::ModuleNew, 1),
+        "module_import_star" => (LirRuntimeCall::ModuleImportStar, 2),
+        "bridge_unavailable" => (LirRuntimeCall::BridgeUnavailable, 1),
+        "context_null" => (LirRuntimeCall::ContextNull, 1),
+        "context_enter" => (LirRuntimeCall::ContextEnter, 1),
+        "context_exit" => (LirRuntimeCall::ContextExit, 2),
+        "context_unwind" => (LirRuntimeCall::ContextUnwind, 1),
+        "context_depth" => (LirRuntimeCall::ContextDepth, 0),
+        "context_unwind_to" => (LirRuntimeCall::ContextUnwindTo, 2),
+        "context_closing" => (LirRuntimeCall::ContextClosing, 1),
+        _ => return None,
+    };
+    Some(LirPreservedCopyRuntimeCall {
+        call,
+        operand_count,
+    })
 }
