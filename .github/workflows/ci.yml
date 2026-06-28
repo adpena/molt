@@ -212,6 +212,12 @@ jobs:
       - name: Run molt-backend unit tests (native backend)
         run: python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo test -p molt-backend --features native-backend --lib
 
+      - name: Run molt-tir tests (midend authority + invariants)
+        # TIR owns residual lowering and representation-planning invariants.
+        # Its integration gates, including representation_unification.rs, must
+        # run in CI rather than merely compile under clippy.
+        run: python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo test -p molt-tir
+
       - name: Clippy (molt-backend)
         run: python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo clippy -p molt-backend --features native-backend -- -D warnings
 
