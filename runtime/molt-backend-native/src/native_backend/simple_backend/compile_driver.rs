@@ -138,9 +138,8 @@ impl SimpleBackend {
                 crate::tir::target_info::SimdCaps::detect_host(),
             )
         });
-        let mut optimized_tir_by_name = BTreeMap::new();
-        if let Some(native_tti) = native_tti.as_ref() {
-            optimized_tir_by_name = crate::tir::pipeline_cache::run_cached_tir_pipeline(
+        let mut native_cached_tir = native_tti.as_ref().map(|native_tti| {
+            crate::tir::pipeline_cache::run_cached_tir_pipeline(
                 &mut ir.functions,
                 crate::tir::pipeline_cache::TirPipelineRunOptions {
                     target_info: native_tti.clone(),
@@ -155,8 +154,8 @@ impl SimpleBackend {
                 },
                 preprocess_backend_tir_input,
             )
-            .optimized_tir_by_name;
-        }
+            .cached_tir
+        });
         if !self.skip_ir_passes {
             eliminate_dead_ops(&mut ir);
         }
@@ -226,7 +225,9 @@ impl SimpleBackend {
                 let _module_run =
                     crate::tir::pipeline_cache::run_simple_ir_module_pipeline_from_cached_tir(
                         &mut ir.functions,
-                        &mut optimized_tir_by_name,
+                        native_cached_tir
+                            .as_mut()
+                            .expect("native TIR custody missing for Cranelift module pipeline"),
                         crate::tir::pipeline_cache::TirSimpleIrModulePipelineOptions {
                             target_info: native_tti,
                             module_name: "native_module",
@@ -259,7 +260,9 @@ impl SimpleBackend {
             crate::tir::pipeline_cache::finalize_simple_ir_drops_from_cached_tir(
                 &mut ir.functions,
                 native_tti,
-                &mut optimized_tir_by_name,
+                native_cached_tir
+                    .as_mut()
+                    .expect("native TIR custody missing for Cranelift drop finalization"),
             );
         }
         // Dead function elimination: remove functions that are unreachable from
@@ -397,23 +400,22 @@ impl SimpleBackend {
                     fuse_method_dispatch(func);
                 }
             }
-            let mut llvm_optimized_tir_by_name =
-                crate::tir::pipeline_cache::run_cached_tir_pipeline(
-                    &mut ir.functions,
-                    crate::tir::pipeline_cache::TirPipelineRunOptions {
-                        target_info: llvm_tti.clone(),
-                        cache_flavor: crate::tir::pipeline_cache::TirPipelineCacheFlavor::Llvm,
-                        cache_dir: None,
-                        process_externs: false,
-                        verify_lir: false,
-                        tir_dump: env_setting("TIR_DUMP").as_deref() == Some("1"),
-                        tir_stats: env_setting("TIR_OPT_STATS").as_deref() == Some("1"),
-                        progress_prefix: Some("MOLT_BACKEND(llvm)"),
-                        resource_plan: crate::tir::pipeline_cache::tir_optimization_resource_plan(),
-                    },
-                    preprocess_backend_tir_input,
-                )
-                .optimized_tir_by_name;
+            let mut llvm_cached_tir = crate::tir::pipeline_cache::run_cached_tir_pipeline(
+                &mut ir.functions,
+                crate::tir::pipeline_cache::TirPipelineRunOptions {
+                    target_info: llvm_tti.clone(),
+                    cache_flavor: crate::tir::pipeline_cache::TirPipelineCacheFlavor::Llvm,
+                    cache_dir: None,
+                    process_externs: false,
+                    verify_lir: false,
+                    tir_dump: env_setting("TIR_DUMP").as_deref() == Some("1"),
+                    tir_stats: env_setting("TIR_OPT_STATS").as_deref() == Some("1"),
+                    progress_prefix: Some("MOLT_BACKEND(llvm)"),
+                    resource_plan: crate::tir::pipeline_cache::tir_optimization_resource_plan(),
+                },
+                preprocess_backend_tir_input,
+            )
+            .cached_tir;
 
             //  Whole-program module phase (Tier-2 E1 inliner activation, LLVM)
             // This is the LLVM lane's parity point with native/wasm: it runs the
@@ -441,7 +443,7 @@ impl SimpleBackend {
             let owned_tir_run =
                 crate::tir::pipeline_cache::run_owned_module_pipeline_from_cached_tir(
                     &ir.functions,
-                    &mut llvm_optimized_tir_by_name,
+                    &mut llvm_cached_tir,
                     crate::tir::pipeline_cache::TirOwnedModulePipelineOptions {
                         target_info: &llvm_tti,
                         module_name: "llvm_module",
