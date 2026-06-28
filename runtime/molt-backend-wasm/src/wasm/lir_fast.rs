@@ -26,6 +26,7 @@
 //! stack traffic.
 
 mod driver;
+mod function_emit;
 mod lir_context;
 mod lir_control;
 mod lir_ops;
@@ -39,6 +40,7 @@ mod runtime_calls;
 pub(crate) use driver::lower_lir_to_wasm;
 #[cfg(test)]
 pub(crate) use driver::{lower_tir_to_wasm, lower_tir_to_wasm_boxed_i64_abi};
+pub(in crate::wasm) use function_emit::try_emit_planned_lir_fast_body;
 pub(crate) use plan::{
     WasmFunctionLoweringPlan, WasmFunctionLoweringPlans,
     compute_lir_wasm_lowering_plans_from_final_ir_with_escaped,
