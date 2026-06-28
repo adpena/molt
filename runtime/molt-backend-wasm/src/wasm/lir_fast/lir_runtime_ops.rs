@@ -2,7 +2,7 @@ use super::lir_context::LirLowerCtx;
 use super::lir_scalar::emit_get_boxed_for_repr;
 use super::runtime_calls::LirRuntimeCall;
 use crate::wasm::body::WasmLirFallbackReason;
-use molt_codegen_abi::{QNAN_TAG_BOOL_I64, box_int_bits, box_none_bits};
+use molt_codegen_abi::{QNAN_TAG_BOOL_I64, box_int_bits, box_none_bits, stable_ic_site_id};
 use molt_tir::tir::lir::{LirOp, LirRepr};
 use molt_tir::tir::ops::{AttrValue, OpCode};
 use molt_tir::tir::types::TirType;
@@ -280,6 +280,28 @@ pub(super) fn emit_lir_attr(ctx: &mut LirLowerCtx, op: &LirOp) {
                 ],
             );
         }
+        (OpCode::LoadAttr, Some("get_attr_generic_obj")) => {
+            let obj = required_operand(op, 0, "get_attr_generic_obj");
+            let name = required_name_bytes(op, "get_attr_generic_obj");
+            let name_len = name.len() as i64;
+            let source_op_idx = required_source_op_index(op, "get_attr_generic_obj");
+            let site_bits = box_int_bits(stable_ic_site_id(
+                ctx.func.name.as_str(),
+                source_op_idx,
+                "get_attr_generic_obj",
+            ));
+            emit_lir_runtime_call_with_args_and_result(
+                ctx,
+                op,
+                LirRuntimeCall::GetAttrObjectIc,
+                &[
+                    LirRuntimeArg::BoxedOperand(obj),
+                    LirRuntimeArg::DataPtrI32(name),
+                    LirRuntimeArg::I64Const(name_len),
+                    LirRuntimeArg::I64Const(site_bits),
+                ],
+            );
+        }
         (OpCode::LoadAttr, Some("get_attr_special_obj")) => {
             let obj = required_operand(op, 0, "get_attr_special_obj");
             let name = required_name_bytes(op, "get_attr_special_obj");
@@ -447,6 +469,12 @@ fn required_operand(op: &LirOp, index: usize, op_name: &str) -> ValueId {
         .get(index)
         .copied()
         .unwrap_or_else(|| panic!("{op_name} requires operand {index}"))
+}
+
+fn required_source_op_index(op: &LirOp, op_name: &str) -> usize {
+    op.tir_op
+        .source_op_index()
+        .unwrap_or_else(|| panic!("{op_name} requires source op index"))
 }
 
 fn original_kind(op: &LirOp) -> Option<&str> {
