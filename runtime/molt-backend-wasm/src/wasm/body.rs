@@ -3,6 +3,7 @@ use super::const_materialization::WasmConstMaterialization;
 use super::lir_fast::LirRuntimeCall;
 use crate::wasm_binary::emit_call;
 use crate::wasm_data::DataSegmentRef;
+use std::sync::Arc;
 use wasm_encoder::{Function, Instruction, ValType};
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -35,6 +36,7 @@ pub(crate) enum WasmBodyOp {
     Instruction(Instruction<'static>),
     Call(WasmCallTarget),
     ConstMaterialization(WasmConstMaterialization),
+    DataPtrI32(Arc<[u8]>),
 }
 
 #[derive(Debug, Clone, Default)]
@@ -62,6 +64,10 @@ impl WasmBodyOps {
             .push(WasmBodyOp::ConstMaterialization(materialization));
     }
 
+    pub(crate) fn push_data_ptr_i32(&mut self, bytes: Arc<[u8]>) {
+        self.ops.push(WasmBodyOp::DataPtrI32(bytes));
+    }
+
     pub(crate) fn into_vec(self) -> Vec<WasmBodyOp> {
         self.ops
     }
@@ -82,8 +88,10 @@ impl WasmBodyOps {
             .into_iter()
             .map(|op| match op {
                 WasmBodyOp::Instruction(instruction) => instruction,
-                WasmBodyOp::Call(_) | WasmBodyOp::ConstMaterialization(_) => {
-                    panic!("peephole instruction test unexpectedly produced a typed call")
+                WasmBodyOp::Call(_)
+                | WasmBodyOp::ConstMaterialization(_)
+                | WasmBodyOp::DataPtrI32(_) => {
+                    panic!("peephole instruction test unexpectedly produced a typed body op")
                 }
             })
             .collect()
@@ -104,7 +112,8 @@ impl WasmBody {
             WasmBodyOp::Call(WasmCallTarget::BailToGenericPath(reason)) => Some(*reason),
             WasmBodyOp::Instruction(_)
             | WasmBodyOp::Call(WasmCallTarget::RuntimeImport(_))
-            | WasmBodyOp::ConstMaterialization(_) => None,
+            | WasmBodyOp::ConstMaterialization(_)
+            | WasmBodyOp::DataPtrI32(_) => None,
         })
     }
 
@@ -117,6 +126,7 @@ impl WasmBody {
             WasmBodyOp::Instruction(_) | WasmBodyOp::Call(WasmCallTarget::BailToGenericPath(_)) => {
                 None
             }
+            WasmBodyOp::DataPtrI32(_) => None,
         })
     }
 
@@ -161,6 +171,10 @@ impl WasmBody {
                         const_str_scratch_segment,
                     );
                 }
+                WasmBodyOp::DataPtrI32(bytes) => {
+                    let data = backend.add_data_segment(reloc_enabled, bytes.as_ref());
+                    backend.emit_data_ptr_i32(reloc_enabled, func_index, func, data);
+                }
                 WasmBodyOp::Call(WasmCallTarget::BailToGenericPath(reason)) => {
                     panic!(
                         "LIR fast body for '{func_name}' reached a generic-path bail marker during emission: {}",
@@ -182,7 +196,19 @@ impl WasmBody {
                 .iter()
                 .filter_map(|op| match op {
                     WasmBodyOp::Instruction(instruction) => Some(instruction.clone()),
-                    WasmBodyOp::Call(_) | WasmBodyOp::ConstMaterialization(_) => None,
+                    WasmBodyOp::Call(_)
+                    | WasmBodyOp::ConstMaterialization(_)
+                    | WasmBodyOp::DataPtrI32(_) => None,
+                })
+                .collect(),
+            data_ptr_i32_literals: self
+                .ops
+                .iter()
+                .filter_map(|op| match op {
+                    WasmBodyOp::DataPtrI32(bytes) => Some(bytes.to_vec()),
+                    WasmBodyOp::Instruction(_)
+                    | WasmBodyOp::Call(_)
+                    | WasmBodyOp::ConstMaterialization(_) => None,
                 })
                 .collect(),
             runtime_calls: self.runtime_imports().collect(),
@@ -199,6 +225,7 @@ pub struct WasmBodyTestView {
     pub result_types: Vec<ValType>,
     pub locals: Vec<ValType>,
     pub instructions: Vec<Instruction<'static>>,
+    pub data_ptr_i32_literals: Vec<Vec<u8>>,
     pub runtime_calls: Vec<&'static str>,
     pub bails_to_generic_path: bool,
     pub bail_to_generic_reason: Option<WasmLirFallbackReason>,
