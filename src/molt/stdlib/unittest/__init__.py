@@ -6,7 +6,6 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 
 
 from typing import Any, Callable, Iterable
-import re
 import sys
 import traceback
 import types
@@ -249,6 +248,8 @@ class TestCase:
         try:
             func(*args, **kwargs)
         except exc_type as exc:
+            import re
+
             if re.search(pattern, str(exc)) is None:
                 self.fail(f"Exception message does not match {pattern!r}")
             return None
@@ -269,12 +270,16 @@ class TestCase:
     def assertRegex(
         self, text: str, expected_regex: str, msg: str | None = None
     ) -> None:
+        import re
+
         if re.search(expected_regex, text) is None:
             self.fail(msg or f"{expected_regex!r} not found in {text!r}")
 
     def assertNotRegex(
         self, text: str, expected_regex: str, msg: str | None = None
     ) -> None:
+        import re
+
         if re.search(expected_regex, text) is not None:
             self.fail(msg or f"{expected_regex!r} found in {text!r}")
 
@@ -311,6 +316,8 @@ class _AssertRaisesRegexContext:
             self._case.fail(f"{self._exc_type.__name__} not raised")
         if not issubclass(exc_type, self._exc_type):
             return False
+        import re
+
         if re.search(self._pattern, str(exc)) is None:
             self._case.fail(f"Exception message does not match {self._pattern!r}")
         return True

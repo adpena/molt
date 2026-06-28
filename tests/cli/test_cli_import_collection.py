@@ -9062,6 +9062,38 @@ def test_typing_static_graph_keeps_collections_abc_without_lazy_deprecated(
     assert "re" not in graph
 
 
+def test_stdlib_module_init_scan_excludes_lazy_regex_and_struct_edges() -> None:
+    cases = {
+        "glob": {"re"},
+        "importlib.metadata": {"csv", "email", "re", "zipfile"},
+        "importlib.metadata._text": {"re"},
+        "logging.config": {"re", "struct"},
+        "typing_extensions": {"re"},
+        "unittest": {"re"},
+        "warnings": {"re"},
+        # gettext still imports re at module scope for plural-expression tokenizing;
+        # only binary .mo parsing needs struct, and that path is lazy.
+        "gettext": {"struct"},
+    }
+    stdlib_root = ROOT / "src" / "molt" / "stdlib"
+
+    for module_name, excluded in cases.items():
+        path = stdlib_root.joinpath(*module_name.split(".")).with_suffix(".py")
+        if not path.exists():
+            path = stdlib_root.joinpath(*module_name.split("."), "__init__.py")
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        imports = set(
+            cli_module_import_scanner._collect_imports(
+                tree,
+                module_name=module_name,
+                import_scan_mode="module_init",
+            )
+        )
+        assert imports.isdisjoint(excluded), (
+            f"{module_name} module-init imports leaked {sorted(imports & excluded)}"
+        )
+
+
 def test_codecs_os_type_checking_imports_are_pruned() -> None:
     stdlib_root = cli_module_resolution._stdlib_root_path()
     module_roots = [ROOT.resolve(), (ROOT / "src").resolve()]

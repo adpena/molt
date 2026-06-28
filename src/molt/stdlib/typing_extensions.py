@@ -12,7 +12,6 @@ import builtins as _builtins
 import collections as _collections
 import collections.abc as _abc
 import enum as _enum
-import re as _re
 import sys as _sys
 import types as _types
 import typing as _typing
@@ -228,8 +227,21 @@ DefaultDict = _collections.defaultdict
 Deque = _collections.deque
 OrderedDict = _collections.OrderedDict
 
-Match = _re.Match
-Pattern = _re.Pattern
+
+def __getattr__(name: str):
+    # `Match`/`Pattern` are the only `re`-derived names this module re-exports.
+    # Resolving them lazily via PEP 562 (with `re` imported locally) keeps `re`'s
+    # intrinsics out of the static reach of the many type-hint-heavy modules that
+    # import `typing_extensions` purely for its typing constructs and never touch
+    # `Match`/`Pattern`. The resolved value is cached into the module globals so
+    # subsequent accesses (and `from typing_extensions import Match`) are direct.
+    if name in ("Match", "Pattern"):
+        import re
+
+        value = getattr(re, name)
+        globals()[name] = value
+        return value
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 @runtime_checkable

@@ -10,8 +10,6 @@ import io
 import logging
 import os
 import queue
-import re
-import struct
 import threading
 import traceback
 import socketserver as _socketserver
@@ -30,13 +28,36 @@ _MOLT_LOGGING_CONFIG_STOP_LISTENING = _require_intrinsic(
 
 DEFAULT_LOGGING_CONFIG_PORT = 9030
 RESET_ERROR = errno.ECONNRESET
-IDENTIFIER = re.compile(r"^[a-z_][a-z0-9_]*$", re.I)
 StreamRequestHandler = getattr(
     _socketserver, "StreamRequestHandler", type("StreamRequestHandler", (), {})
 )
 ThreadingTCPServer = getattr(
     _socketserver, "ThreadingTCPServer", type("ThreadingTCPServer", (), {})
 )
+
+
+# `IDENTIFIER` and `re` are CPython-API-compat surface only: molt validates
+# identifiers through the `molt_logging_config_valid_ident` intrinsic
+# (`valid_ident` below), never through this pattern. Compiling the pattern at
+# module-body time would run a top-level `re.compile`, pulling `re`'s intrinsics
+# into the static reach of every program that merely imports `logging.config`.
+# Resolving both lazily via PEP 562 keeps the public attributes identical (same
+# compiled pattern, same `re` module) while removing them from the always-run
+# module body. `import re` is local to the resolver so the module-init scan does
+# not see it.
+def __getattr__(name: str):
+    if name == "IDENTIFIER":
+        import re
+
+        value = re.compile(r"^[a-z_][a-z0-9_]*$", re.I)
+        globals()["IDENTIFIER"] = value
+        return value
+    if name == "re":
+        import re
+
+        globals()["re"] = re
+        return re
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 __all__ = [
     "BaseConfigurator",
@@ -62,7 +83,6 @@ __all__ = [
     "queue",
     "re",
     "stopListening",
-    "struct",
     "threading",
     "traceback",
     "valid_ident",
