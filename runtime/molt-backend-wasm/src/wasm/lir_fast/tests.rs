@@ -423,6 +423,7 @@ fn dynbox_or_retains_selected_operand_result() {
 fn dynbox_unary_scalar_helpers_stay_lir_fast_runtime_calls() {
     let cases = [
         ("neg_dynbox", OpCode::Neg, "neg"),
+        ("pos_dynbox", OpCode::Pos, "pos"),
         ("invert_dynbox", OpCode::BitNot, "invert"),
     ];
 
@@ -454,6 +455,78 @@ fn dynbox_unary_scalar_helpers_stay_lir_fast_runtime_calls() {
             output.runtime_calls
         );
     }
+}
+
+#[test]
+fn raw_unary_pos_stays_noop_without_runtime_call() {
+    let mut func = TirFunction::new("pos_raw_i64".into(), vec![TirType::I64], TirType::I64);
+    let result_id = func.fresh_value();
+    let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+    entry.ops.push(TirOp {
+        dialect: Dialect::Molt,
+        opcode: OpCode::Pos,
+        operands: vec![ValueId(0)],
+        results: vec![result_id],
+        attrs: AttrDict::new(),
+        source_span: None,
+    });
+    entry.terminator = Terminator::Return {
+        values: vec![result_id],
+    };
+
+    let repr = HashMap::from([
+        (ValueId(0), Repr::RawI64Safe),
+        (result_id, Repr::RawI64Safe),
+    ]);
+    let vr = crate::representation_plan::value_range_for(&func);
+    let lir = lower_function_to_lir_with_inline_proof(&func, &repr, &vr);
+    let output = lower_lir_to_wasm(&lir).test_view();
+
+    assert!(
+        !output.bails_to_generic_path,
+        "proven raw unary plus must stay in the LIR fast lane"
+    );
+    assert_eq!(output.param_types, vec![ValType::I64]);
+    assert_eq!(output.result_types, vec![ValType::I64]);
+    assert!(
+        !output.runtime_calls.contains(&"pos"),
+        "proven raw unary plus must remain a no-op, not call pos: {:?}",
+        output.runtime_calls
+    );
+}
+
+#[test]
+fn dynbox_pow_stays_lir_fast_runtime_call() {
+    let mut func = TirFunction::new(
+        "pow_dynbox".into(),
+        vec![TirType::DynBox, TirType::DynBox],
+        TirType::DynBox,
+    );
+    let result_id = func.fresh_value();
+    let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+    entry.ops.push(TirOp {
+        dialect: Dialect::Molt,
+        opcode: OpCode::Pow,
+        operands: vec![ValueId(0), ValueId(1)],
+        results: vec![result_id],
+        attrs: AttrDict::new(),
+        source_span: None,
+    });
+    entry.terminator = Terminator::Return {
+        values: vec![result_id],
+    };
+
+    let output = lower_tir_to_wasm(&func).test_view();
+
+    assert!(
+        !output.bails_to_generic_path,
+        "DynBox pow must stay in the LIR fast lane"
+    );
+    assert!(
+        output.runtime_calls.contains(&"pow"),
+        "DynBox pow must dispatch through the typed runtime helper; got {:?}",
+        output.runtime_calls
+    );
 }
 
 #[test]
