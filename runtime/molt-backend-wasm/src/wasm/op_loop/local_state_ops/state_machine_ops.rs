@@ -1,4 +1,9 @@
-use super::*;
+use super::LocalStateOpContext;
+use crate::OpIR;
+use crate::wasm::WasmFrameSyntheticLocal;
+use crate::wasm_binary::emit_call;
+use crate::wasm_values::{INT_MASK, box_pending};
+use wasm_encoder::{BlockType, Function, Instruction};
 
 pub(super) fn emit_state_machine_local_state_op(
     context: &mut LocalStateOpContext<'_>,

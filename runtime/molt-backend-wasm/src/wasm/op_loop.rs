@@ -16,8 +16,8 @@ use crate::wasm_plan::{
     wasm_specialized_container_import,
 };
 use crate::wasm_values::{
-    ConstantCache, INT_MASK, POINTER_MASK, box_bool, box_int, box_pending, emit_box_bool_from_i32,
-    emit_branch_truthiness_i32, stable_ic_site_id,
+    ConstantCache, box_bool, box_int, emit_box_bool_from_i32, emit_branch_truthiness_i32,
+    stable_ic_site_id,
 };
 use crate::{FunctionIR, OpIR};
 use std::borrow::Cow;
