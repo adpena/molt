@@ -23,7 +23,10 @@ impl WasmBackend {
     ) -> WasmRuntimeImportEmission {
         let runtime_surface =
             WasmRuntimeSurfacePlan::build(ir, lir_lowering_plans, task_kinds, &self.options);
-        let auto_required = runtime_surface.auto_required_imports.clone();
+        let auto_required = runtime_surface
+            .import_demand
+            .auto_required_imports()
+            .cloned();
         let mut registrar = RuntimeImportRegistrar {
             imports: &mut self.imports,
             import_ids: &mut self.import_ids,
