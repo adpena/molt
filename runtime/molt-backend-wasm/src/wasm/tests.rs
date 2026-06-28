@@ -1,4 +1,5 @@
 use super::*;
+use crate::wasm_abi::{CALL_INDIRECT_IMPORTS, CALL_INDIRECT_MAX_ARITY, POLL_TABLE_IMPORTS};
 use crate::wasm_plan::is_production_lir_wasm_fast_path_name;
 
 #[test]
@@ -222,6 +223,16 @@ fn wasm_element_function_indices(wasm: &[u8]) -> Vec<u32> {
     panic!("expected active function element section");
 }
 
+fn wasm_function_section_type_indices(wasm: &[u8]) -> Vec<u32> {
+    let mut type_indices = Vec::new();
+    for payload in Parser::new(0).parse_all(wasm) {
+        if let Ok(Payload::FunctionSection(reader)) = payload {
+            type_indices.extend(reader.into_iter().flatten());
+        }
+    }
+    type_indices
+}
+
 fn wasm_function_exports(wasm: &[u8]) -> BTreeSet<String> {
     let mut exports = BTreeSet::new();
     for payload in Parser::new(0).parse_all(wasm) {
@@ -229,6 +240,20 @@ fn wasm_function_exports(wasm: &[u8]) -> BTreeSet<String> {
             for export in reader.into_iter().flatten() {
                 if export.kind == ExternalKind::Func {
                     exports.insert(export.name.to_string());
+                }
+            }
+        }
+    }
+    exports
+}
+
+fn wasm_function_export_indices(wasm: &[u8]) -> BTreeMap<String, u32> {
+    let mut exports = BTreeMap::new();
+    for payload in Parser::new(0).parse_all(wasm) {
+        if let Ok(Payload::ExportSection(reader)) = payload {
+            for export in reader.into_iter().flatten() {
+                if export.kind == ExternalKind::Func {
+                    exports.insert(export.name.to_string(), export.index);
                 }
             }
         }
@@ -294,6 +319,82 @@ fn call_indirect_exports_follow_manifest_imports() {
             .expect("generated call_indirect import family must be non-empty")
             .arity
     );
+}
+
+#[test]
+fn call_indirect_type_layout_and_sentinel_table_slot_are_pinned() {
+    let func = wasm_test_function(
+        "call_indirect_type_layout",
+        vec![],
+        None,
+        vec![wasm_test_op("ret_void", None, vec![])],
+    );
+    let ir = SimpleIR {
+        functions: vec![func],
+        profile: None,
+    };
+    let wasm = WasmBackend::with_options(WasmCompileOptions {
+        native_eh_enabled: false,
+        reloc_enabled: false,
+        ..WasmCompileOptions::default()
+    })
+    .compile(ir);
+
+    wasmparser::Validator::new()
+        .validate_all(&wasm)
+        .expect("call_indirect type-layout module must be structurally valid WASM");
+
+    let import_count = wasm_function_import_indices(&wasm).len() as u32;
+    let function_type_indices = wasm_function_section_type_indices(&wasm);
+    let export_indices = wasm_function_export_indices(&wasm);
+    let signatures = wasm_type_section_signatures(&wasm);
+
+    let first_call_indirect_import = CALL_INDIRECT_IMPORTS
+        .first()
+        .expect("generated call_indirect import family must be non-empty");
+    let first_call_indirect_idx = *export_indices
+        .get(first_call_indirect_import.import_name)
+        .expect("first call_indirect export must exist");
+    for (offset, spec) in CALL_INDIRECT_IMPORTS.iter().enumerate() {
+        let func_idx = *export_indices
+            .get(spec.import_name)
+            .unwrap_or_else(|| panic!("{} export must exist", spec.import_name));
+        assert_eq!(
+            func_idx,
+            first_call_indirect_idx + offset as u32,
+            "{} export must stay in generated call_indirect order",
+            spec.import_name
+        );
+        let type_idx = function_type_indices[(func_idx - import_count) as usize];
+        assert_eq!(
+            signatures[type_idx as usize],
+            (spec.arity + 1, 1),
+            "{} wrapper must accept table index plus {} args and return one value",
+            spec.import_name,
+            spec.arity
+        );
+    }
+
+    let sentinel_func_idx = first_call_indirect_idx + CALL_INDIRECT_IMPORTS.len() as u32;
+    let element_indices = wasm_element_function_indices(&wasm);
+    let poll_table_prefix = POLL_TABLE_IMPORTS
+        .iter()
+        .map(|spec| spec.table_slot)
+        .max()
+        .unwrap_or(0) as usize
+        + 1;
+    let occupied_poll_slots: BTreeSet<usize> = POLL_TABLE_IMPORTS
+        .iter()
+        .map(|spec| spec.table_slot as usize)
+        .collect();
+    for slot in 0..poll_table_prefix {
+        if !occupied_poll_slots.contains(&slot) {
+            assert_eq!(
+                element_indices[slot], sentinel_func_idx,
+                "unassigned poll-table slot {slot} must point at the generated sentinel"
+            );
+        }
+    }
 }
 
 #[test]
