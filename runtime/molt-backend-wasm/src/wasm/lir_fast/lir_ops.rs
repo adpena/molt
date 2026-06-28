@@ -311,6 +311,7 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
         OpCode::FloorDiv => emit_lir_binary_arith(ctx, op, ArithOp::FloorDiv),
         OpCode::Mod => emit_lir_binary_arith(ctx, op, ArithOp::Mod),
         OpCode::Pow => emit_lir_boxed_binary_runtime_call(ctx, op, LirRuntimeCall::Pow),
+        OpCode::OrdAt => emit_lir_boxed_operands_runtime_call(ctx, op, LirRuntimeCall::OrdAt, 2),
         OpCode::Neg => emit_lir_unary_arith(ctx, op, UnaryOp::Neg),
         OpCode::Pos => emit_lir_unary_pos(ctx, op),
         OpCode::Index => emit_lir_index(ctx, op),
@@ -491,7 +492,6 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
         | OpCode::CallMethodIc
         | OpCode::CallSuperMethodIc
         | OpCode::CallBuiltin
-        | OpCode::OrdAt
         | OpCode::BuildList
         | OpCode::BuildDict
         | OpCode::BuildTuple
