@@ -50,6 +50,49 @@ pub(super) fn emit_lir_del_index(ctx: &mut LirLowerCtx, op: &LirOp) {
     emit_lir_boxed_operands_runtime_call(ctx, op, LirRuntimeCall::DelIndex, 2);
 }
 
+pub(super) fn emit_lir_get_iter(ctx: &mut LirLowerCtx, op: &LirOp) {
+    emit_lir_boxed_operands_runtime_call(ctx, op, LirRuntimeCall::Iter, 1);
+}
+
+pub(super) fn emit_lir_iter_next(ctx: &mut LirLowerCtx, op: &LirOp) {
+    emit_lir_boxed_operands_runtime_call(ctx, op, LirRuntimeCall::IterNext, 1);
+}
+
+pub(super) fn emit_lir_membership(ctx: &mut LirLowerCtx, op: &LirOp, invert: bool) {
+    if op.tir_op.operands.len() < 2 {
+        return;
+    }
+    let container = op.tir_op.operands[0];
+    emit_get_boxed_for_repr(ctx, container);
+    emit_get_boxed_for_repr(ctx, op.tir_op.operands[1]);
+    ctx.emit_runtime_call(lir_contains_call_for_container(ctx.type_of(container)));
+    if !invert {
+        emit_lir_runtime_result(ctx, op);
+        return;
+    }
+    let Some(result) = op.result_values.first() else {
+        ctx.instructions.push(Instruction::Drop);
+        return;
+    };
+    match result.repr {
+        LirRepr::Bool1 => {
+            ctx.instructions.push(Instruction::I64Const(1));
+            ctx.instructions.push(Instruction::I64And);
+            ctx.instructions.push(Instruction::I32WrapI64);
+            ctx.instructions.push(Instruction::I32Eqz);
+            ctx.emit_set(result.id);
+        }
+        LirRepr::DynBox | LirRepr::Ref64 => {
+            ctx.emit_runtime_call(LirRuntimeCall::Not);
+            emit_lir_runtime_result(ctx, op);
+        }
+        LirRepr::I64 | LirRepr::F64 => {
+            ctx.emit_bail_to_generic_path(WasmLirFallbackReason::UnsupportedOperation);
+            ctx.emit_set(result.id);
+        }
+    }
+}
+
 pub(super) fn emit_lir_boxed_operands_runtime_call(
     ctx: &mut LirLowerCtx,
     op: &LirOp,
@@ -64,6 +107,16 @@ pub(super) fn emit_lir_boxed_operands_runtime_call(
     }
     ctx.emit_runtime_call(runtime_call);
     emit_lir_runtime_result(ctx, op);
+}
+
+fn lir_contains_call_for_container(container_ty: Option<&TirType>) -> LirRuntimeCall {
+    match container_ty {
+        Some(TirType::Dict(_, _)) => LirRuntimeCall::DictContains,
+        Some(TirType::List(_)) => LirRuntimeCall::ListContains,
+        Some(TirType::Set(_)) => LirRuntimeCall::SetContains,
+        Some(TirType::Str) => LirRuntimeCall::StrContains,
+        _ => LirRuntimeCall::Contains,
+    }
 }
 
 pub(super) fn emit_lir_exception_pending(ctx: &mut LirLowerCtx, op: &LirOp) {
