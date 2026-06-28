@@ -1,3 +1,4 @@
+use super::WasmBackend;
 use super::context::CompileFuncContext;
 use super::control_flow::ControlKind;
 use super::function_frame::{WasmFrameControlMode, WasmFunctionFramePlan};
@@ -6,8 +7,11 @@ use super::state_dispatch::{
     NonLinearDispatchPlan, emit_jumpful_dispatch, emit_stateful_dispatch,
     exception_handler_region_indices,
 };
-use super::*;
+use crate::FunctionIR;
 use crate::wasm::lir_fast::try_emit_planned_lir_fast_body;
+use std::cell::Cell;
+use std::collections::{BTreeMap, BTreeSet};
+use wasm_encoder::{BlockType, ExportKind, Instruction};
 
 impl WasmBackend {
     pub(super) fn compile_func(

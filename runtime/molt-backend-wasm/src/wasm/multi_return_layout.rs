@@ -1,4 +1,11 @@
-use super::*;
+#[cfg(test)]
+use super::WasmFrameLocalKind;
+use super::WasmFrameLocals;
+use crate::FunctionIR;
+#[cfg(test)]
+use crate::OpIR;
+use std::collections::{BTreeMap, BTreeSet};
+use wasm_encoder::ValType;
 
 #[derive(Default)]
 pub(super) struct WasmMultiReturnLayout {

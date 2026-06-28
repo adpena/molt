@@ -1,4 +1,6 @@
-use super::*;
+use super::WasmBackend;
+use crate::wasm_data::DataSegmentRef;
+use wasm_encoder::Function;
 
 impl WasmBackend {
     pub(super) fn add_data_segment(&mut self, reloc_enabled: bool, bytes: &[u8]) -> DataSegmentRef {
