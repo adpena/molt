@@ -1,10 +1,18 @@
+use super::super::call_site_abi::WasmCallSiteAbi;
 use super::super::multi_return_layout::WasmMultiReturnLayout;
-use super::*;
+use crate::wasm::WasmFrameLocals;
+use crate::wasm_binary::{emit_call, emit_table_index_i64};
+use crate::wasm_import_tracking::TrackedImportIds;
+use crate::wasm_plan::gpu_runtime_call_symbol;
+use crate::wasm_values::ConstantCache;
+use crate::{FunctionIR, OpIR};
+use std::cell::Cell;
+use std::collections::{BTreeMap, BTreeSet, HashSet};
+use wasm_encoder::{Function, Instruction};
 
 mod direct;
 mod dynamic;
 mod site;
-use std::collections::HashSet;
 
 pub(super) enum CallOpEmission {
     NotHandled,
