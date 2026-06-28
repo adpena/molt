@@ -9,8 +9,7 @@ mod linear_memory_ops;
 mod module_ops;
 
 pub(super) struct RuntimeServiceOpContext<'a> {
-    pub(super) func_map: &'a BTreeMap<String, u32>,
-    pub(super) table_base: u32,
+    pub(super) call_site_abi: &'a WasmCallSiteAbi<'a>,
     pub(super) import_ids: &'a TrackedImportIds,
     pub(super) locals: &'a WasmFrameLocals,
     pub(super) const_cache: &'a ConstantCache,

@@ -1,5 +1,6 @@
-use super::frame::{
-    collect_live_object_locals_for_call, release_live_object_locals, retain_live_object_locals,
+use super::site::{
+    collect_live_object_locals_for_call, push_call_args, release_live_object_locals,
+    retain_live_object_locals, store_call_result,
 };
 use super::*;
 
@@ -21,18 +22,14 @@ fn emit_call_async(
     func: &mut Function,
     op: &OpIR,
 ) -> CallOpEmission {
-    let func_map = call_ctx.func_map;
-    let table_base = call_ctx.table_base;
+    let call_site_abi = call_ctx.call_site_abi;
     let import_ids = call_ctx.import_ids;
     let locals = call_ctx.locals;
     let reloc_enabled = call_ctx.reloc_enabled;
 
     let payload_len = op.args.as_ref().map(|args| args.len()).unwrap_or(0);
     let target_name = op.s_value.as_ref().expect("call_async target missing");
-    let table_slot = *func_map
-        .get(target_name)
-        .unwrap_or_else(|| panic!("call_async table target not found: {target_name}"));
-    let table_idx = table_base + table_slot;
+    let table_idx = call_site_abi.table_index(target_name, "call_async");
     emit_table_index_i64(func, reloc_enabled, table_idx);
     func.instruction(&Instruction::I64Const((payload_len * 8) as i64));
     func.instruction(&Instruction::I64Const(TASK_KIND_FUTURE));
@@ -71,8 +68,7 @@ fn emit_plain_call(
     op: &OpIR,
 ) -> CallOpEmission {
     let func_ir = call_ctx.func_ir;
-    let ctx = call_ctx.ctx;
-    let func_indices = call_ctx.func_indices;
+    let call_site_abi = call_ctx.call_site_abi;
     let import_ids = call_ctx.import_ids;
     let locals = call_ctx.locals;
     let reloc_enabled = call_ctx.reloc_enabled;
@@ -85,19 +81,14 @@ fn emit_plain_call(
     let live_object_locals =
         collect_live_object_locals_for_call(locals, last_use_local, rel_idx, op.out.as_ref());
     retain_live_object_locals(func, import_ids, reloc_enabled, &live_object_locals);
-    let returns_alias_param = returns_alias_param(ctx, target_name, args_names);
+    let returns_alias_param = call_site_abi.returns_alias_param(target_name, args_names);
     if returns_alias_param && std::env::var("MOLT_DEBUG_WASM_RETURN_ALIAS").as_deref() == Ok("1") {
         eprintln!(
             "[molt wasm return-alias] kind=call caller={} callee={}",
             func_ir.name, target_name
         );
     }
-    let func_idx = *func_indices.get(target_name).unwrap_or_else(|| {
-        panic!(
-            "call target not found: '{}' in func '{}'",
-            target_name, func_ir.name
-        )
-    });
+    let func_idx = call_site_abi.function_index(target_name, "call");
     let bootstrap_call = func_idx == import_ids["runtime_init"];
     if bootstrap_call {
         push_call_args(func, locals, args_names);
@@ -119,8 +110,7 @@ fn emit_internal_call(
     op: &OpIR,
 ) -> CallOpEmission {
     let func_ir = call_ctx.func_ir;
-    let ctx = call_ctx.ctx;
-    let func_indices = call_ctx.func_indices;
+    let call_site_abi = call_ctx.call_site_abi;
     let import_ids = call_ctx.import_ids;
     let locals = call_ctx.locals;
     let multi_return_candidates = call_ctx.multi_return_candidates;
@@ -138,16 +128,14 @@ fn emit_internal_call(
     let live_object_locals =
         collect_live_object_locals_for_call(locals, last_use_local, rel_idx, op.out.as_ref());
     retain_live_object_locals(func, import_ids, reloc_enabled, &live_object_locals);
-    let returns_alias_param = returns_alias_param(ctx, target_name, args_names);
+    let returns_alias_param = call_site_abi.returns_alias_param(target_name, args_names);
     if returns_alias_param && std::env::var("MOLT_DEBUG_WASM_RETURN_ALIAS").as_deref() == Ok("1") {
         eprintln!(
             "[molt wasm return-alias] kind=call_internal caller={} callee={}",
             func_ir.name, target_name
         );
     }
-    let func_idx = *func_indices
-        .get(target_name)
-        .expect("call_internal target not found");
+    let func_idx = call_site_abi.function_index(target_name, "call_internal");
     let is_tail_call = is_tail_call_candidate(
         call_ctx,
         target_name,
@@ -187,24 +175,6 @@ fn emit_internal_call(
     CallOpEmission::Handled
 }
 
-fn returns_alias_param(
-    ctx: &CompileFuncContext<'_>,
-    target_name: &str,
-    args_names: &[String],
-) -> bool {
-    ctx.return_alias_summaries
-        .get(target_name)
-        .and_then(|summary| match summary {
-            crate::passes::ReturnAliasSummary::Param(param_idx)
-                if *param_idx < args_names.len() =>
-            {
-                Some(*param_idx)
-            }
-            _ => None,
-        })
-        .is_some()
-}
-
 fn is_tail_call_candidate(
     call_ctx: &CallOpContext<'_, '_, '_>,
     target_name: &str,
@@ -220,26 +190,4 @@ fn is_tail_call_candidate(
         && !multi_return_candidates.contains_key(target_name)
         && !target_name.contains("__molt_chunk_")
         && args_names.len() == call_ctx.func_ir.params.len()
-}
-
-fn push_call_args(func: &mut Function, locals: &WasmFrameLocals, args_names: &[String]) {
-    for arg_name in args_names {
-        let arg = locals[arg_name];
-        func.instruction(&Instruction::LocalGet(arg));
-    }
-}
-
-fn store_call_result(
-    func: &mut Function,
-    import_ids: &TrackedImportIds,
-    reloc_enabled: bool,
-    out: u32,
-    returns_alias_param: bool,
-) {
-    if returns_alias_param {
-        func.instruction(&Instruction::LocalTee(out));
-        emit_call(func, reloc_enabled, import_ids["inc_ref_obj"]);
-    } else {
-        func.instruction(&Instruction::LocalSet(out));
-    }
 }

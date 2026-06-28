@@ -69,12 +69,8 @@ impl WasmBackend {
                 }
             }
         }
-        let func_map = ctx.func_map;
-        let func_indices = ctx.func_indices;
-        let trampoline_map = ctx.trampoline_map;
-        let table_base = ctx.table_base;
+        let call_site_abi = &ctx.call_site_abi;
         let import_ids = ctx.import_ids;
-        let closure_functions = ctx.closure_functions;
         let frame_plan = WasmFunctionFramePlan::for_function(func_ir, ctx);
         let (mut func, frame) = frame_plan.into_function_and_frame();
         let multi_return_candidates = ctx.multi_return_candidates;
@@ -115,12 +111,8 @@ impl WasmBackend {
             backend: self,
             func_ir,
             ctx,
-            func_map,
-            func_indices,
-            trampoline_map,
-            table_base,
+            call_site_abi,
             import_ids,
-            closure_functions,
             exception_handler_region_indices: &exception_handler_region_indices,
             frame: &frame,
             multi_return_candidates,
