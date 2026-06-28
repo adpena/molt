@@ -111,6 +111,9 @@ def _prepare_backend_setup(
     manifest_env_vars: Mapping[str, str] | None = None,
     capability_config_digest: str | None = None,
 ) -> tuple[_PreparedBackendSetup | None, _CliFailure | None]:
+    extra_runtime_features: tuple[str, ...] = ()
+    if native_artifact_plan.artifacts and not is_wasm:
+        extra_runtime_features = ("source_extension_loader",)
     runtime_state = _initialize_runtime_artifact_state(
         is_rust_transpile=is_rust_transpile or is_luau_transpile,
         is_wasm=is_wasm,
@@ -119,6 +122,7 @@ def _prepare_backend_setup(
         runtime_cargo_profile=runtime_cargo_profile,
         target_triple=target_triple,
         stdlib_profile=stdlib_profile,
+        extra_runtime_features=extra_runtime_features,
     )
     runtime_intrinsic_symbols_digest = ""
     runtime_intrinsic_symbols_digest, intrinsic_symbols_error = (

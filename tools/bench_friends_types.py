@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 SUPPORTED_SEMANTIC_MODES = {
+    "c_api_probe",
     "runs_unmodified",
     "requires_adapter",
     "unsupported_by_molt",

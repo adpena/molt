@@ -32,6 +32,14 @@ touching code, docs, tests, benchmarks, or roadmap state.
   unrestricted dynamic execution, runtime monkeypatching, reflection-heavy host
   fallback, or behavior outside the verified subset contract. Unsupported
   dynamism must fail closed with explicit diagnostics.
+- Ecosystem compatibility is about primitives, wiring, and integration, not
+  reimplementing the Python ecosystem package-by-package. NumPy, SciPy, pandas,
+  tinygrad, and similar packages must move through shared package/import
+  closure, source-recompiled extension ABI, ndarray/tensor/storage, C/API symbol,
+  tree-shaking, packaging, and runtime primitives. Do not clone large upstream
+  APIs in Molt Python as the strategy; make the existing upstream source compile,
+  link, import, and execute against the Molt contract, emitting only the object
+  and symbol closure reachable from the user's program.
 - All OS, architecture, backend, and Python-version behavior must be explicit.
   Gate semantics by Python 3.12/3.13/3.14, target, host OS, architecture, and
   capability surface. Accidental ambient behavior is a bug.
@@ -166,6 +174,41 @@ binary artifact, or ownership boundary made the weird behavior possible.
   is needed by CLI setup, diagnostics, validation, binary closure, and docs,
   route them all through the same implementation and generated facts so future
   dependency churn cannot split authority again.
+
+## Ecosystem Compatibility Doctrine: Primitives, Wiring, Integration
+
+This is a turn blocker for NumPy, SciPy, pandas, tinygrad, and every other
+third-party package lane.
+
+- Do not reinvent upstream packages inside `src/molt/stdlib` as the primary
+  compatibility strategy. Python facades are acceptable only as thin import/API
+  routing over real shared primitives, or as explicit fail-closed diagnostics
+  while the primitive is missing.
+- The first-class path is source-recompiled package compatibility against
+  Molt's ABI and verified subset contract: compile upstream C/C++/Cython/Rust
+  extension sources against `include/` and `libmolt`, link against Molt runtime
+  symbols, import through Molt's package/import custody, and execute without
+  host-CPython fallback.
+- Build the reusable primitives that make many packages green at once:
+  C/API symbol and type-object authority, NumPy ndarray storage/stride/dtype
+  custody, buffer protocol, capsule and module-state lifecycle, extension object
+  closure, package native-artifact staging, import sidecar custody,
+  whole-program reachability/tree shaking, and per-target packaging.
+- Extreme tree shaking and deforestation apply to third-party libraries too.
+  Compile and link only the extension objects, functions, symbols, data tables,
+  and runtime features proven reachable from the user's program. Do not widen a
+  profile or ship a whole package image to hide missing closure analysis.
+- C-API scan green is necessary but not sufficient. It proves missing-symbol
+  closure only. A support claim requires build, link, import, runtime execution,
+  deterministic tests, and benchmark/binary-size evidence for the owned path.
+- Missing ABI behavior must be added as a shared primitive or fail closed with a
+  precise diagnostic. No host interpreter fallback, vendored patched fork,
+  monkeypatch shim, or package-specific compatibility crutch may masquerade as
+  ecosystem support.
+- For NumPy/SciPy specifically, prefer strengthening the libmolt CPython/NumPy
+  source-compat ABI, ndarray/tensor primitives, and package native-artifact
+  pipeline over adding bespoke Python implementations of `numpy` or
+  `scipy.ndimage` operations.
 
 ### Structural aperture, full rip
 

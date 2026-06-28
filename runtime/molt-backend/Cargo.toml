@@ -15,7 +15,7 @@ molt-backend-wasm = { path = "../molt-backend-wasm", optional = true, default-fe
 libc = "0.2"
 tikv-jemallocator = { version = "0.7", optional = true }
 serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
+serde_json = { workspace = true }
 sha2 = "0.11"
 object = { version = "0.39", default-features = false, features = ["read", "std"] }
 rmp-serde = "1"

@@ -94,8 +94,17 @@ def _initialize_runtime_artifact_state(
     runtime_cargo_profile: str,
     target_triple: str | None,
     stdlib_profile: str | None = DEFAULT_STDLIB_PROFILE,
+    extra_runtime_features: Sequence[str] | None = None,
 ) -> _RuntimeArtifactState:
-    state = _RuntimeArtifactState()
+    state = _RuntimeArtifactState(
+        extra_runtime_features=tuple(
+            _dedupe_preserve_order(
+                feature.strip()
+                for feature in (extra_runtime_features or ())
+                if feature and feature.strip()
+            )
+        )
+    )
     if is_rust_transpile:
         return state
     if is_wasm:
@@ -182,6 +191,7 @@ def _ensure_runtime_lib_ready(
         cargo_timeout,
         stdlib_profile=stdlib_profile,
         resolved_modules=resolved_modules,
+        extra_runtime_features=runtime_state.extra_runtime_features,
     )
 
 
@@ -273,9 +283,15 @@ def _ensure_runtime_lib(
     cargo_timeout: float | None,
     stdlib_profile: str | None = DEFAULT_STDLIB_PROFILE,
     resolved_modules: Collection[str] | None = None,
+    extra_runtime_features: Sequence[str] | None = None,
 ) -> bool:
     rustflags = os.environ.get("RUSTFLAGS", "")
-    runtime_features = _runtime_cargo_features(target_triple)
+    runtime_features = tuple(
+        _dedupe_preserve_order(
+            list(_runtime_cargo_features(target_triple))
+            + list(extra_runtime_features or ())
+        )
+    )
     builtin_features = _runtime_builtin_features_for_profile(
         stdlib_profile,
         target_triple=target_triple,

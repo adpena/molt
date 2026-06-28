@@ -2396,6 +2396,7 @@ WASM_ESSENTIAL_EXPORTS: frozenset[str] = frozenset(
 WASM_RUNTIME_HOST_EXPORTS: frozenset[str] = frozenset(
     {
         "molt_alloc",
+        "molt_bytes_as_ptr",
         "molt_bytes_from_bytes",
         "molt_dec_ref_obj",
         "molt_exception_kind",

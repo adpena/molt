@@ -66,6 +66,7 @@ pub(crate) const REQUIRED_RUNTIME_IMPORT_SINGLETONS: &[&str] = &[
 #[allow(dead_code)]
 pub(crate) const RUNTIME_HOST_EXPORTS: &[&str] = &[
     "molt_alloc",
+    "molt_bytes_as_ptr",
     "molt_bytes_from_bytes",
     "molt_dec_ref_obj",
     "molt_exception_kind",

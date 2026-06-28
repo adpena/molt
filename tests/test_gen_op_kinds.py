@@ -4493,7 +4493,7 @@ def test_frontend_effect_classes_match_generated_authority() -> None:
 def test_frontend_effect_classes_pin_pre_specialization_barriers() -> None:
     py = _load_generated_py()
 
-    for kind in {
+    pure_and_raising = {
         "ADD",
         "SUB",
         "MUL",
@@ -4503,21 +4503,40 @@ def test_frontend_effect_classes_pin_pre_specialization_barriers() -> None:
         "LE",
         "GT",
         "GE",
-        "INDEX",
-        "GET_ATTR",
-        "MODULE_GET_ATTR",
-        "CONST_STR",
-    }:
-        assert py.FRONTEND_EFFECT_CLASS[kind] == "writes_heap"
+        "NEG",
+        "POS",
+        "INVERT",
+        "ABS",
+    }
+    for kind in pure_and_raising:
+        assert py.FRONTEND_EFFECT_CLASS[kind] == "pure"
+        assert kind in py.FRONTEND_EFFECT_PURE_KINDS
+        assert kind in py.RAISING_KIND_NAMES
+
+    for kind in {"INDEX", "GET_ATTR", "MODULE_GET_ATTR", "GUARDED_GETATTR"}:
+        assert py.FRONTEND_EFFECT_CLASS[kind] == "reads_heap"
+        assert kind in py.FRONTEND_EFFECT_READS_HEAP_KINDS
         assert kind not in py.FRONTEND_EFFECT_PURE_KINDS
-        assert kind not in py.FRONTEND_EFFECT_READS_HEAP_KINDS
+        assert kind in py.RAISING_KIND_NAMES
+
+    for kind in {"STORE_VAR", "SETATTR_GENERIC_OBJ"}:
+        assert py.FRONTEND_EFFECT_CLASS[kind] == "writes_heap"
+        assert kind in py.FRONTEND_EFFECT_WRITES_HEAP_KINDS
 
     assert py.FRONTEND_EFFECT_CLASS["LOAD_VAR"] == "reads_heap"
-    assert py.FRONTEND_EFFECT_CLASS["STORE_VAR"] == "writes_heap"
     assert py.FRONTEND_EFFECT_CLASS["PHI"] == "pure"
     assert py.FRONTEND_EFFECT_CLASS["EXCEPTION_MATCH_BUILTIN"] == "reads_heap"
     assert py.FRONTEND_EFFECT_CLASS["STATE_TRANSITION"] == "control"
     assert py.FRONTEND_EFFECT_CLASS["GUARD_TAG"] == "control"
+    assert py.FRONTEND_EFFECT_CLASS["CONST_STR"] == "pure"
+    assert "CONST_STR" not in py.RAISING_KIND_NAMES
+
+    for kind in ("ADD", "SUB", "MUL", "EQ", "NEG", "ABS", "INVERT"):
+        assert kind in py.FRONTEND_RAISING_NOTHROW_ON_PRIMITIVES_KINDS
+    for kind in ("DIV", "FLOORDIV", "MOD", "POW", "LSHIFT", "RSHIFT", "IN", "NOT_IN"):
+        assert kind in py.RAISING_KIND_NAMES
+        assert kind not in py.FRONTEND_RAISING_NOTHROW_ON_PRIMITIVES_KINDS
+    assert py.FRONTEND_RAISING_NOTHROW_ON_PRIMITIVES_KINDS <= py.RAISING_KIND_NAMES
 
 
 def test_midend_effect_oracle_consumes_generated_authority_only() -> None:
@@ -4599,6 +4618,10 @@ def test_frontend_raising_kinds_match_frontend_consumer() -> None:
         "molt_test_op_kinds_consumer",
     )
     assert consumer.RAISING_KIND_NAMES == py.RAISING_KIND_NAMES
+    assert (
+        consumer.FRONTEND_RAISING_NOTHROW_ON_PRIMITIVES_KINDS
+        == py.FRONTEND_RAISING_NOTHROW_ON_PRIMITIVES_KINDS
+    )
     assert consumer.CHECK_EXCEPTION_SKIP_KINDS == py.CHECK_EXCEPTION_SKIP_KINDS
     assert consumer.BINOP_OP_KIND == py.BINOP_OP_KIND
     assert consumer.AUGASSIGN_OP_KIND == py.AUGASSIGN_OP_KIND
@@ -4615,6 +4638,15 @@ def test_render_detects_frontend_table_mutation() -> None:
     mutated["frontend_raising_kind"].append({"kind": "ZZZ_SYNTH", "reason": "test"})
     assert gen.render_py(mutated) != rendered, (
         "appending a frontend_raising_kind row did not change the Python render"
+    )
+
+    mutated_nothrow = json.loads(json.dumps(data))
+    for row in mutated_nothrow["frontend_raising_kind"]:
+        if row["kind"] == "IN":
+            row["nothrow_on_primitives"] = True
+            break
+    assert gen.render_py(mutated_nothrow) != rendered, (
+        "mutating nothrow_on_primitives did not change the Python render"
     )
 
     mutated_effect = json.loads(json.dumps(data))

@@ -1499,6 +1499,10 @@ pub(super) struct LoadedExtensionManifest {
     pub(super) wheel_path: Option<String>,
 }
 
+pub(super) struct SourceExtensionLoaderContract {
+    pub(super) init_symbol: String,
+}
+
 pub(super) fn importlib_hex_lower(bytes: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut out = String::with_capacity(bytes.len() * 2);
@@ -1992,6 +1996,70 @@ pub(super) fn importlib_require_extension_metadata(
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     guard.insert(cache_key, cache_value);
     Ok(())
+}
+
+fn importlib_manifest_c_identifier(value: &str) -> bool {
+    let mut chars = value.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !(first == '_' || first.is_ascii_alphabetic()) {
+        return false;
+    }
+    chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
+}
+
+pub(super) fn importlib_source_extension_loader_contract(
+    _py: &PyToken<'_>,
+    module_name: &str,
+    path: &str,
+) -> Result<Option<SourceExtensionLoaderContract>, u64> {
+    let loaded = importlib_load_extension_manifest_for_path(_py, path)?;
+    let Some(manifest) = loaded.manifest.as_object() else {
+        return Err(raise_exception::<_>(
+            _py,
+            "ImportError",
+            &format!(
+                "invalid extension metadata {}: payload must be a JSON object",
+                loaded.source
+            ),
+        ));
+    };
+    let Some(loader_kind) = manifest
+        .get("loader_kind")
+        .and_then(JsonValue::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(None);
+    };
+    if loader_kind != "libmolt_source" {
+        return Err(raise_exception::<_>(
+            _py,
+            "ImportError",
+            &format!(
+                "unsupported extension loader_kind in {}: {:?}",
+                loaded.source, loader_kind
+            ),
+        ));
+    }
+    let init_symbol =
+        importlib_manifest_required_string(_py, manifest, "init_symbol", loaded.source.as_str())?;
+    let module_leaf = module_name.rsplit('.').next().unwrap_or(module_name);
+    let expected_init_symbol = format!("PyInit_{module_leaf}");
+    if init_symbol != expected_init_symbol || !importlib_manifest_c_identifier(init_symbol) {
+        return Err(raise_exception::<_>(
+            _py,
+            "ImportError",
+            &format!(
+                "invalid source extension init_symbol in {}: expected {:?}, found {:?}",
+                loaded.source, expected_init_symbol, init_symbol
+            ),
+        ));
+    }
+    Ok(Some(SourceExtensionLoaderContract {
+        init_symbol: init_symbol.to_string(),
+    }))
 }
 
 pub(super) fn importlib_path_has_extension_suffix(path: &str) -> bool {

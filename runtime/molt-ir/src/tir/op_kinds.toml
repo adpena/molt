@@ -3996,62 +3996,85 @@ opcode = "ImportFrom"
 [[frontend_raising_kind]]
 kind = "ADD"
 reason = "pre-specialization: OpCode::Add is the nothrow typed lane, but a pre-spec `a + b` may lower to boxed molt_add / __add__ which raises"
+nothrow_on_primitives = true
 
 [[frontend_raising_kind]]
 kind = "SUB"
 reason = "pre-specialization: OpCode::Sub is the nothrow typed lane, but a pre-spec `a - b` may lower to boxed molt_sub / __sub__ which raises"
+nothrow_on_primitives = true
 
 [[frontend_raising_kind]]
 kind = "MUL"
 reason = "pre-specialization: OpCode::Mul is the nothrow typed lane, but a pre-spec `a * b` may lower to boxed molt_mul / __mul__ which raises"
+nothrow_on_primitives = true
 
 [[frontend_raising_kind]]
 kind = "BIT_AND"
 reason = "pre-specialization: OpCode::BitAnd is the nothrow typed lane, but a pre-spec `a & b` may lower to boxed molt_bit_and / __and__ which raises"
+nothrow_on_primitives = true
 
 [[frontend_raising_kind]]
 kind = "BIT_OR"
 reason = "pre-specialization: OpCode::BitOr is the nothrow typed lane, but a pre-spec `a | b` may lower to boxed molt_bit_or / __or__ which raises"
+nothrow_on_primitives = true
 
 [[frontend_raising_kind]]
 kind = "BIT_XOR"
 reason = "pre-specialization: OpCode::BitXor is the nothrow typed lane, but a pre-spec `a ^ b` may lower to boxed molt_bit_xor / __xor__ which raises"
+nothrow_on_primitives = true
 
 [[frontend_raising_kind]]
 kind = "INPLACE_ADD"
 reason = "pre-specialization: OpCode::InplaceAdd is the nothrow typed lane, but a pre-spec `a += b` may lower to boxed molt_inplace_add / __iadd__ which raises"
+nothrow_on_primitives = true
 
 [[frontend_raising_kind]]
 kind = "INPLACE_SUB"
 reason = "pre-specialization: OpCode::InplaceSub is the nothrow typed lane, but a pre-spec `a -= b` may lower to boxed molt_inplace_sub / __isub__ which raises"
+nothrow_on_primitives = true
 
 [[frontend_raising_kind]]
 kind = "INPLACE_MUL"
 reason = "pre-specialization: OpCode::InplaceMul is the nothrow typed lane, but a pre-spec `a *= b` may lower to boxed molt_inplace_mul / __imul__ which raises"
+nothrow_on_primitives = true
 
 [[frontend_raising_kind]]
 kind = "EQ"
 reason = "pre-specialization: OpCode::Eq is the nothrow typed lane, but a pre-spec `a == b` may lower to a boxed __eq__ which raises"
+nothrow_on_primitives = true
 
 [[frontend_raising_kind]]
 kind = "NE"
 reason = "pre-specialization: OpCode::Ne is the nothrow typed lane, but a pre-spec `a != b` may lower to a boxed __ne__ which raises"
+nothrow_on_primitives = true
 
 [[frontend_raising_kind]]
 kind = "LT"
 reason = "pre-specialization: OpCode::Lt is the nothrow typed lane, but a pre-spec `a < b` may lower to a boxed __lt__ which raises"
+nothrow_on_primitives = true
 
 [[frontend_raising_kind]]
 kind = "LE"
 reason = "pre-specialization: OpCode::Le is the nothrow typed lane, but a pre-spec `a <= b` may lower to a boxed __le__ which raises"
+nothrow_on_primitives = true
 
 [[frontend_raising_kind]]
 kind = "GT"
 reason = "pre-specialization: OpCode::Gt is the nothrow typed lane, but a pre-spec `a > b` may lower to a boxed __gt__ which raises"
+nothrow_on_primitives = true
 
 [[frontend_raising_kind]]
 kind = "GE"
 reason = "pre-specialization: OpCode::Ge is the nothrow typed lane, but a pre-spec `a >= b` may lower to a boxed __ge__ which raises"
+nothrow_on_primitives = true
+
+[[frontend_raising_kind]]
+kind = "IN"
+reason = "pre-specialization: OpCode::In is the nothrow typed container lane, but a pre-spec `a in b` dispatches __contains__ or iteration and raises on non-containers"
+
+[[frontend_raising_kind]]
+kind = "NOT_IN"
+reason = "pre-specialization: OpCode::NotIn is the nothrow typed container lane, but a pre-spec `a not in b` dispatches __contains__ or iteration and raises on non-containers"
 
 # FRONTEND-SPECIFIC (a') unary-operator pre-specialization: the unary analogues
 # of the binary arithmetic/bitwise family above. The typed OpCode (Neg/Pos/
@@ -4068,18 +4091,22 @@ reason = "pre-specialization: OpCode::Ge is the nothrow typed lane, but a pre-sp
 [[frontend_raising_kind]]
 kind = "NEG"
 reason = "pre-specialization: OpCode::Neg is the nothrow typed lane, but a pre-spec `-a` may lower to boxed molt_neg / __neg__ which raises TypeError on an unsupported operand type"
+nothrow_on_primitives = true
 
 [[frontend_raising_kind]]
 kind = "POS"
 reason = "pre-specialization: OpCode::Pos is the nothrow typed lane, but a pre-spec `+a` may lower to boxed molt_pos / __pos__ which raises TypeError on an unsupported operand type"
+nothrow_on_primitives = true
 
 [[frontend_raising_kind]]
 kind = "INVERT"
 reason = "pre-specialization: the typed bit_not lane (OpCode::BitNot) is nothrow, but a pre-spec `~a` may lower to boxed molt_invert / __invert__ which raises TypeError on an unsupported operand type"
+nothrow_on_primitives = true
 
 [[frontend_raising_kind]]
 kind = "ABS"
 reason = "frontend intrinsic: a pre-spec `abs(a)` lowers to molt_abs_builtin / __abs__ which raises TypeError on an operand type without __abs__ (no first-class mapper opcode; lowers to Copy with _original_kind = ABS)"
+nothrow_on_primitives = true
 
 # FRONTEND-SPECIFIC (b) preserved-Copy / no-[[kind]]-row: frontend-internal
 # op.kinds that serialization rewrites to a may-throw wire kind with no
@@ -4151,10 +4178,10 @@ reason = "frontend-internal: serializes to wire `set_attr_generic_ptr` (StoreAtt
 # ---------------------------------------------------------------------------
 # FRONTEND_EFFECT_KINDS - frontend pre-serialization optimizer effect classes.
 #
-# The generator derives mapper defaults from [[kind]] + [[opcode]], raising
-# barriers from [[frontend_raising_kind]], and CFG/state control from
-# [[simpleir_control_kind]]. Rows here are frontend-only facts or explicit
-# pre-serialization overrides such as CONST_STR and LOAD_VAR.
+# The generator derives mapper defaults from [[kind]] + [[opcode]], CFG/state
+# control from [[simpleir_control_kind]], and may-raise facts separately from
+# [[frontend_raising_kind]]. Rows here are frontend-only facts or explicit
+# pre-serialization memory-effect overrides such as CONST_STR and LOAD_VAR.
 # ---------------------------------------------------------------------------
 
 [[frontend_effect_kind]]
@@ -4218,14 +4245,109 @@ effect = "reads_heap"
 reason = "frontend local/module slot read; aliases Copy in the wire mapper but is read-only before serialization"
 
 [[frontend_effect_kind]]
+kind = "STORE_VAR"
+effect = "writes_heap"
+reason = "frontend local/module slot write; aliases Copy in the wire mapper but mutates a slot before serialization"
+
+[[frontend_effect_kind]]
+kind = "ABS"
+effect = "pure"
+reason = "unary arithmetic: abs(a) is memory-pure; raising on unsupported operands is the separate raising axis"
+
+[[frontend_effect_kind]]
+kind = "INVERT"
+effect = "pure"
+reason = "unary arithmetic: ~a is memory-pure; raising on unsupported operands is the separate raising axis"
+
+[[frontend_effect_kind]]
+kind = "INPLACE_DIV"
+effect = "pure"
+reason = "inplace arithmetic: scalar a /= b is memory-pure; ZeroDivisionError is the separate raising axis"
+
+[[frontend_effect_kind]]
+kind = "INPLACE_FLOORDIV"
+effect = "pure"
+reason = "inplace arithmetic: scalar a //= b is memory-pure; ZeroDivisionError is the separate raising axis"
+
+[[frontend_effect_kind]]
+kind = "INPLACE_MOD"
+effect = "pure"
+reason = "inplace arithmetic: scalar a %= b is memory-pure; ZeroDivisionError is the separate raising axis"
+
+[[frontend_effect_kind]]
+kind = "INPLACE_POW"
+effect = "pure"
+reason = "inplace arithmetic: scalar a **= b is memory-pure; ZeroDivisionError is the separate raising axis"
+
+[[frontend_effect_kind]]
+kind = "INPLACE_LSHIFT"
+effect = "pure"
+reason = "inplace arithmetic: scalar a <<= b is memory-pure; negative-count ValueError is the separate raising axis"
+
+[[frontend_effect_kind]]
+kind = "INPLACE_RSHIFT"
+effect = "pure"
+reason = "inplace arithmetic: scalar a >>= b is memory-pure; negative-count ValueError is the separate raising axis"
+
+[[frontend_effect_kind]]
+kind = "INPLACE_MATMUL"
+effect = "pure"
+reason = "inplace arithmetic: scalar a @= b is memory-pure; dunder TypeError is the separate raising axis"
+
+[[frontend_effect_kind]]
+kind = "MODULE_GET_ATTR"
+effect = "reads_heap"
+reason = "module attribute read; AttributeError is the separate raising axis"
+
+[[frontend_effect_kind]]
+kind = "GETATTR_GENERIC_OBJ"
+effect = "reads_heap"
+reason = "attribute read; AttributeError is the separate raising axis"
+
+[[frontend_effect_kind]]
+kind = "GETATTR_GENERIC_PTR"
+effect = "reads_heap"
+reason = "attribute read; AttributeError is the separate raising axis"
+
+[[frontend_effect_kind]]
+kind = "GETATTR_NAME"
+effect = "reads_heap"
+reason = "attribute read; AttributeError is the separate raising axis"
+
+[[frontend_effect_kind]]
+kind = "GETATTR_NAME_DEFAULT"
+effect = "reads_heap"
+reason = "attribute read with default; AttributeError is the separate raising axis"
+
+[[frontend_effect_kind]]
+kind = "GETATTR_SPECIAL_OBJ"
+effect = "reads_heap"
+reason = "special attribute read; AttributeError is the separate raising axis"
+
+[[frontend_effect_kind]]
+kind = "GUARDED_GETATTR"
+effect = "reads_heap"
+reason = "guarded attribute read; AttributeError is the separate raising axis"
+
+[[frontend_effect_kind]]
+kind = "SETATTR_GENERIC_OBJ"
+effect = "writes_heap"
+reason = "attribute write; AttributeError/TypeError is the separate raising axis"
+
+[[frontend_effect_kind]]
+kind = "SETATTR_GENERIC_PTR"
+effect = "writes_heap"
+reason = "attribute write; AttributeError/TypeError is the separate raising axis"
+
+[[frontend_effect_kind]]
 kind = "BYTEARRAY_FILL_RANGE"
 effect = "writes_heap"
 reason = "mutation: bytearray range write helper"
 
 [[frontend_effect_kind]]
 kind = "CONST_STR"
-effect = "writes_heap"
-reason = "frontend string constant materializes a runtime string allocation before typed TIR lowering"
+effect = "pure"
+reason = "const: frontend string literal materialization has no user-observable memory effect"
 
 [[frontend_effect_kind]]
 kind = "DELATTR"
