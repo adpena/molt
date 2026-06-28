@@ -11,6 +11,7 @@ pub(crate) mod body;
 mod call_site_abi;
 mod class_def_layout;
 mod compile_pipeline;
+mod const_materialization;
 mod constant_ops;
 mod context;
 mod control_flow;
@@ -41,9 +42,7 @@ use crate::wasm_values::{
 use crate::{FunctionIR, OpIR, SimpleIR};
 #[cfg(test)]
 pub(in crate::wasm) use frame_locals::WasmFrameLocalKind;
-pub(in crate::wasm) use frame_locals::{
-    WasmFrameLocals, WasmFrameSyntheticLocal, WasmLiteralScratchLocals,
-};
+pub(in crate::wasm) use frame_locals::{WasmFrameLocals, WasmFrameSyntheticLocal};
 use std::borrow::Cow;
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};

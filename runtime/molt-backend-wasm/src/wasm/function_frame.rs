@@ -1,4 +1,5 @@
-use super::constant_ops::{WasmConstOpPolicy, emit_seeded_runtime_const_op};
+use super::const_materialization::WasmConstOpPolicy;
+use super::constant_ops::emit_seeded_runtime_const_op;
 use super::context::CompileFuncContext;
 use super::frame_locals::{WasmDispatchFrameLocals, WasmFrameLocals, WasmFrameSyntheticLocal};
 use super::local_analysis::{LocalVariableAnalysis, analyze_local_variables};

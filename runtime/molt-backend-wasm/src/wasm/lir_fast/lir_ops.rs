@@ -4,13 +4,12 @@ use super::lir_scalar::{
     emit_lir_comparison, emit_lir_i64_binary_or_boxed, emit_lir_unary_arith,
 };
 use crate::wasm::body::WasmLirFallbackReason;
-use crate::wasm_abi_generated::{
-    WasmConstLirFastPolicy, WasmConstOpPolicySpec, WasmConstScalarValue, wasm_const_op_policy,
-};
+use crate::wasm::const_materialization::{WasmConstMaterializationScratch, WasmConstOpPolicy};
+use crate::wasm_abi_generated::{WasmConstLirFastPolicy, WasmConstScalarValue};
 use molt_codegen_abi::box_none_bits;
 use molt_tir::tir::lir::{LirBlock, LirOp, LirRepr};
 use molt_tir::tir::ops::{AttrValue, OpCode};
-use wasm_encoder::{Ieee64, Instruction};
+use wasm_encoder::{Ieee64, Instruction, ValType};
 
 #[derive(Clone, Copy)]
 pub(super) enum ArithOp {
@@ -49,46 +48,41 @@ pub(super) fn emit_lir_block_ops(ctx: &mut LirLowerCtx, block: &LirBlock) {
     }
 }
 
-fn const_policy_kind_for_opcode(opcode: OpCode) -> Option<&'static str> {
-    match opcode {
-        OpCode::ConstInt => Some("const"),
-        OpCode::ConstBool => Some("const_bool"),
-        OpCode::ConstFloat => Some("const_float"),
-        OpCode::ConstNone => Some("const_none"),
-        OpCode::ConstStr => Some("const_str"),
-        OpCode::ConstBytes => Some("const_bytes"),
-        OpCode::ConstBigInt => Some("const_bigint"),
-        _ => None,
-    }
-}
-
-fn const_policy_for_opcode(opcode: OpCode) -> &'static WasmConstOpPolicySpec {
-    let kind = const_policy_kind_for_opcode(opcode)
-        .unwrap_or_else(|| panic!("opcode {opcode:?} is not a WASM const policy opcode"));
-    wasm_const_op_policy(kind)
-        .unwrap_or_else(|| panic!("missing generated WASM const policy for {kind}"))
+fn const_policy_for_opcode(opcode: OpCode) -> WasmConstOpPolicy {
+    WasmConstOpPolicy::for_tir_opcode(opcode)
+        .unwrap_or_else(|| panic!("opcode {opcode:?} is not a WASM const policy opcode"))
 }
 
 fn assert_const_lir_fast_policy(
     opcode: OpCode,
     expected: WasmConstLirFastPolicy,
-) -> &'static WasmConstOpPolicySpec {
+) -> WasmConstOpPolicy {
     let policy = const_policy_for_opcode(opcode);
     assert_eq!(
-        policy.lir_fast, expected,
+        policy.lir_fast_policy(),
+        expected,
         "generated WASM const LIR-fast policy drifted for {opcode:?}"
     );
     policy
 }
 
-fn emit_const_bail_to_generic(ctx: &mut LirLowerCtx, op: &LirOp) {
-    for &operand in &op.tir_op.operands {
-        ctx.emit_get(operand);
-    }
-    ctx.emit_bail_to_generic_path(WasmLirFallbackReason::RuntimeConstMaterialization);
-    if let Some(result) = op.result_values.first() {
-        ctx.emit_set(result.id);
-    }
+fn emit_const_materialization(ctx: &mut LirLowerCtx, op: &LirOp) {
+    let policy =
+        assert_const_lir_fast_policy(op.tir_op.opcode, WasmConstLirFastPolicy::Materialize);
+    let result = op.result_values.first().unwrap_or_else(|| {
+        panic!(
+            "generated WASM const policy requires a result for {:?}",
+            op.tir_op.opcode
+        )
+    });
+    let scratch = policy.needs_literal_scratch().then(|| {
+        WasmConstMaterializationScratch::new(
+            ctx.alloc_scratch_local(ValType::I64),
+            ctx.alloc_scratch_local(ValType::I64),
+        )
+    });
+    let out_local = ctx.get_local(result.id);
+    ctx.emit_const_materialization(policy.tir_materialization(&op.tir_op, out_local, scratch));
 }
 
 fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
@@ -156,8 +150,8 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
             }
         }
         OpCode::ConstStr | OpCode::ConstBytes => {
-            match const_policy_for_opcode(tir_op.opcode).lir_fast {
-                WasmConstLirFastPolicy::BailGeneric => emit_const_bail_to_generic(ctx, op),
+            match const_policy_for_opcode(tir_op.opcode).lir_fast_policy() {
+                WasmConstLirFastPolicy::Materialize => emit_const_materialization(ctx, op),
                 WasmConstLirFastPolicy::Lower => {
                     panic!(
                         "generated WASM const policy requires direct LIR lowering for {:?}",
@@ -166,8 +160,8 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
                 }
             }
         }
-        OpCode::ConstBigInt => match const_policy_for_opcode(tir_op.opcode).lir_fast {
-            WasmConstLirFastPolicy::BailGeneric => emit_const_bail_to_generic(ctx, op),
+        OpCode::ConstBigInt => match const_policy_for_opcode(tir_op.opcode).lir_fast_policy() {
+            WasmConstLirFastPolicy::Materialize => emit_const_materialization(ctx, op),
             WasmConstLirFastPolicy::Lower => {
                 panic!(
                     "generated WASM const policy requires direct LIR lowering for {:?}",

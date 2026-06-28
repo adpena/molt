@@ -47,7 +47,7 @@ pub(crate) enum WasmConstRawIntEffect {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum WasmConstLirFastPolicy {
     Lower,
-    BailGeneric,
+    Materialize,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -117,7 +117,7 @@ pub(crate) const WASM_CONST_OP_POLICIES: &[WasmConstOpPolicySpec] = &[
         dispatch_runtime_seed: true,
         parse_scalar_literal: false,
         raw_int_effect: WasmConstRawIntEffect::Clear,
-        lir_fast: WasmConstLirFastPolicy::BailGeneric,
+        lir_fast: WasmConstLirFastPolicy::Materialize,
     },
     WasmConstOpPolicySpec {
         kind: "const_ellipsis",
@@ -128,7 +128,7 @@ pub(crate) const WASM_CONST_OP_POLICIES: &[WasmConstOpPolicySpec] = &[
         dispatch_runtime_seed: true,
         parse_scalar_literal: false,
         raw_int_effect: WasmConstRawIntEffect::Clear,
-        lir_fast: WasmConstLirFastPolicy::BailGeneric,
+        lir_fast: WasmConstLirFastPolicy::Materialize,
     },
     WasmConstOpPolicySpec {
         kind: "const_str",
@@ -139,7 +139,7 @@ pub(crate) const WASM_CONST_OP_POLICIES: &[WasmConstOpPolicySpec] = &[
         dispatch_runtime_seed: true,
         parse_scalar_literal: true,
         raw_int_effect: WasmConstRawIntEffect::Clear,
-        lir_fast: WasmConstLirFastPolicy::BailGeneric,
+        lir_fast: WasmConstLirFastPolicy::Materialize,
     },
     WasmConstOpPolicySpec {
         kind: "const_bigint",
@@ -150,7 +150,7 @@ pub(crate) const WASM_CONST_OP_POLICIES: &[WasmConstOpPolicySpec] = &[
         dispatch_runtime_seed: true,
         parse_scalar_literal: false,
         raw_int_effect: WasmConstRawIntEffect::Clear,
-        lir_fast: WasmConstLirFastPolicy::BailGeneric,
+        lir_fast: WasmConstLirFastPolicy::Materialize,
     },
     WasmConstOpPolicySpec {
         kind: "const_bytes",
@@ -161,7 +161,7 @@ pub(crate) const WASM_CONST_OP_POLICIES: &[WasmConstOpPolicySpec] = &[
         dispatch_runtime_seed: true,
         parse_scalar_literal: true,
         raw_int_effect: WasmConstRawIntEffect::Clear,
-        lir_fast: WasmConstLirFastPolicy::BailGeneric,
+        lir_fast: WasmConstLirFastPolicy::Materialize,
     },
 ];
 
