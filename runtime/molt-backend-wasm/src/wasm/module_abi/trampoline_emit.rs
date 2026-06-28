@@ -1,8 +1,11 @@
 use wasm_encoder::{Function, Instruction, ValType};
 
+mod task;
+
+use task::{emit_task_trampoline, task_trampoline_local_types};
+
 use crate::wasm::WasmBackend;
-use crate::wasm_abi::{GEN_CONTROL_SIZE, TASK_KIND_COROUTINE, TASK_KIND_GENERATOR};
-use crate::wasm_binary::{emit_call, emit_table_index_i64};
+use crate::wasm_binary::emit_call;
 use crate::wasm_values::box_int;
 use crate::{TrampolineKind, TrampolineSpec};
 
@@ -25,14 +28,8 @@ impl WasmBackend {
         self.funcs.function(5);
         self.func_count += 1;
         let mut local_types = Vec::new();
-        if matches!(
-            kind,
-            TrampolineKind::Generator | TrampolineKind::Coroutine | TrampolineKind::AsyncGen
-        ) {
-            local_types.push(ValType::I64);
-            local_types.push(ValType::I32);
-            local_types.push(ValType::I64);
-            local_types.push(ValType::I32);
+        if let Some(task_local_types) = task_trampoline_local_types(kind) {
+            local_types.extend(task_local_types);
         }
         // For multi-value return trampolines (Plain kind only): allocate
         // N temp locals for the return values + 1 local for the tuple builder.
@@ -48,225 +45,18 @@ impl WasmBackend {
             let _ = ret_count; // suppress unused warning
         }
         let mut func = Function::new_with_locals_types(local_types);
-        if matches!(
+        if emit_task_trampoline(
+            self,
+            &mut func,
+            reloc_enabled,
+            table_idx,
             kind,
-            TrampolineKind::Generator | TrampolineKind::Coroutine | TrampolineKind::AsyncGen
+            arity,
+            has_closure,
+            closure_size,
         ) {
-            let task_local = 3;
-            let base_local = 4;
-            let val_local = 5;
-            let args_base_local = 6;
-            match kind {
-                TrampolineKind::Generator => {
-                    if closure_size < 0 {
-                        panic!("generator closure size must be non-negative");
-                    }
-                    let payload_slots = arity + usize::from(has_closure);
-                    let needed = GEN_CONTROL_SIZE as i64 + (payload_slots as i64) * 8;
-                    if closure_size < needed {
-                        panic!("generator closure size too small for trampoline");
-                    }
-                    emit_table_index_i64(&mut func, reloc_enabled, table_idx);
-                    func.instruction(&Instruction::I64Const(closure_size));
-                    func.instruction(&Instruction::I64Const(TASK_KIND_GENERATOR));
-                    emit_call(&mut func, reloc_enabled, self.import_ids["task_new"]);
-                    func.instruction(&Instruction::LocalSet(task_local));
-                    if payload_slots > 0 {
-                        func.instruction(&Instruction::LocalGet(task_local));
-                        emit_call(&mut func, reloc_enabled, self.import_ids["handle_resolve"]);
-                        func.instruction(&Instruction::LocalSet(base_local));
-                        if arity > 0 {
-                            func.instruction(&Instruction::LocalGet(1));
-                            func.instruction(&Instruction::I32WrapI64);
-                            func.instruction(&Instruction::LocalSet(args_base_local));
-                        }
-                        let mut offset = GEN_CONTROL_SIZE;
-                        if has_closure {
-                            func.instruction(&Instruction::LocalGet(base_local));
-                            func.instruction(&Instruction::I32Const(offset));
-                            func.instruction(&Instruction::I32Add);
-                            func.instruction(&Instruction::LocalGet(0));
-                            func.instruction(&Instruction::I64Store(wasm_encoder::MemArg {
-                                align: 3,
-                                offset: 0,
-                                memory_index: 0,
-                            }));
-                            func.instruction(&Instruction::LocalGet(0));
-                            emit_call(&mut func, reloc_enabled, self.import_ids["inc_ref_obj"]);
-                            offset += 8;
-                        }
-                        for idx in 0..arity {
-                            let arg_offset = offset + (idx as i32) * 8;
-                            func.instruction(&Instruction::LocalGet(args_base_local));
-                            func.instruction(&Instruction::I64Load(wasm_encoder::MemArg {
-                                align: 3,
-                                offset: (idx * std::mem::size_of::<u64>()) as u64,
-                                memory_index: 0,
-                            }));
-                            func.instruction(&Instruction::LocalSet(val_local));
-                            func.instruction(&Instruction::LocalGet(base_local));
-                            func.instruction(&Instruction::I32Const(arg_offset));
-                            func.instruction(&Instruction::I32Add);
-                            func.instruction(&Instruction::LocalGet(val_local));
-                            func.instruction(&Instruction::I64Store(wasm_encoder::MemArg {
-                                align: 3,
-                                offset: 0,
-                                memory_index: 0,
-                            }));
-                            func.instruction(&Instruction::LocalGet(val_local));
-                            emit_call(&mut func, reloc_enabled, self.import_ids["inc_ref_obj"]);
-                        }
-                    }
-                    func.instruction(&Instruction::LocalGet(task_local));
-                    func.instruction(&Instruction::End);
-                    self.codes.function(&func);
-                    return;
-                }
-                TrampolineKind::Coroutine => {
-                    if closure_size < 0 {
-                        panic!("coroutine closure size must be non-negative");
-                    }
-                    let payload_slots = arity + usize::from(has_closure);
-                    let needed = (payload_slots as i64) * 8;
-                    if closure_size < needed {
-                        panic!("coroutine closure size too small for trampoline");
-                    }
-                    emit_table_index_i64(&mut func, reloc_enabled, table_idx);
-                    func.instruction(&Instruction::I64Const(closure_size));
-                    func.instruction(&Instruction::I64Const(TASK_KIND_COROUTINE));
-                    emit_call(&mut func, reloc_enabled, self.import_ids["task_new"]);
-                    func.instruction(&Instruction::LocalSet(task_local));
-                    if payload_slots > 0 {
-                        func.instruction(&Instruction::LocalGet(task_local));
-                        emit_call(&mut func, reloc_enabled, self.import_ids["handle_resolve"]);
-                        func.instruction(&Instruction::LocalSet(base_local));
-                        if arity > 0 {
-                            func.instruction(&Instruction::LocalGet(1));
-                            func.instruction(&Instruction::I32WrapI64);
-                            func.instruction(&Instruction::LocalSet(args_base_local));
-                        }
-                        let mut offset = 0;
-                        if has_closure {
-                            func.instruction(&Instruction::LocalGet(base_local));
-                            func.instruction(&Instruction::I32Const(offset));
-                            func.instruction(&Instruction::I32Add);
-                            func.instruction(&Instruction::LocalGet(0));
-                            func.instruction(&Instruction::I64Store(wasm_encoder::MemArg {
-                                align: 3,
-                                offset: 0,
-                                memory_index: 0,
-                            }));
-                            func.instruction(&Instruction::LocalGet(0));
-                            emit_call(&mut func, reloc_enabled, self.import_ids["inc_ref_obj"]);
-                            offset += 8;
-                        }
-                        for idx in 0..arity {
-                            let arg_offset = offset + (idx as i32) * 8;
-                            func.instruction(&Instruction::LocalGet(args_base_local));
-                            func.instruction(&Instruction::I64Load(wasm_encoder::MemArg {
-                                align: 3,
-                                offset: (idx * std::mem::size_of::<u64>()) as u64,
-                                memory_index: 0,
-                            }));
-                            func.instruction(&Instruction::LocalSet(val_local));
-                            func.instruction(&Instruction::LocalGet(base_local));
-                            func.instruction(&Instruction::I32Const(arg_offset));
-                            func.instruction(&Instruction::I32Add);
-                            func.instruction(&Instruction::LocalGet(val_local));
-                            func.instruction(&Instruction::I64Store(wasm_encoder::MemArg {
-                                align: 3,
-                                offset: 0,
-                                memory_index: 0,
-                            }));
-                            func.instruction(&Instruction::LocalGet(val_local));
-                            emit_call(&mut func, reloc_enabled, self.import_ids["inc_ref_obj"]);
-                        }
-                    }
-                    func.instruction(&Instruction::LocalGet(task_local));
-                    emit_call(
-                        &mut func,
-                        reloc_enabled,
-                        self.import_ids["cancel_token_get_current"],
-                    );
-                    emit_call(
-                        &mut func,
-                        reloc_enabled,
-                        self.import_ids["task_register_token_owned"],
-                    );
-                    func.instruction(&Instruction::Drop);
-                    func.instruction(&Instruction::LocalGet(task_local));
-                    func.instruction(&Instruction::End);
-                    self.codes.function(&func);
-                    return;
-                }
-                TrampolineKind::AsyncGen => {
-                    if closure_size < 0 {
-                        panic!("async generator closure size must be non-negative");
-                    }
-                    let payload_slots = arity + usize::from(has_closure);
-                    let needed = GEN_CONTROL_SIZE as i64 + (payload_slots as i64) * 8;
-                    if closure_size < needed {
-                        panic!("async generator closure size too small for trampoline");
-                    }
-                    emit_table_index_i64(&mut func, reloc_enabled, table_idx);
-                    func.instruction(&Instruction::I64Const(closure_size));
-                    func.instruction(&Instruction::I64Const(TASK_KIND_GENERATOR));
-                    emit_call(&mut func, reloc_enabled, self.import_ids["task_new"]);
-                    func.instruction(&Instruction::LocalSet(task_local));
-                    if payload_slots > 0 {
-                        func.instruction(&Instruction::LocalGet(task_local));
-                        emit_call(&mut func, reloc_enabled, self.import_ids["handle_resolve"]);
-                        func.instruction(&Instruction::LocalSet(base_local));
-                        if arity > 0 {
-                            func.instruction(&Instruction::LocalGet(1));
-                            func.instruction(&Instruction::I32WrapI64);
-                            func.instruction(&Instruction::LocalSet(args_base_local));
-                        }
-                        let mut offset = GEN_CONTROL_SIZE;
-                        if has_closure {
-                            func.instruction(&Instruction::LocalGet(base_local));
-                            func.instruction(&Instruction::I32Const(offset));
-                            func.instruction(&Instruction::I32Add);
-                            func.instruction(&Instruction::LocalGet(0));
-                            func.instruction(&Instruction::I64Store(wasm_encoder::MemArg {
-                                align: 3,
-                                offset: 0,
-                                memory_index: 0,
-                            }));
-                            func.instruction(&Instruction::LocalGet(0));
-                            emit_call(&mut func, reloc_enabled, self.import_ids["inc_ref_obj"]);
-                            offset += 8;
-                        }
-                        for idx in 0..arity {
-                            let arg_offset = offset + (idx as i32) * 8;
-                            func.instruction(&Instruction::LocalGet(args_base_local));
-                            func.instruction(&Instruction::I64Load(wasm_encoder::MemArg {
-                                align: 3,
-                                offset: (idx * std::mem::size_of::<u64>()) as u64,
-                                memory_index: 0,
-                            }));
-                            func.instruction(&Instruction::LocalSet(val_local));
-                            func.instruction(&Instruction::LocalGet(base_local));
-                            func.instruction(&Instruction::I32Const(arg_offset));
-                            func.instruction(&Instruction::I32Add);
-                            func.instruction(&Instruction::LocalGet(val_local));
-                            func.instruction(&Instruction::I64Store(wasm_encoder::MemArg {
-                                align: 3,
-                                offset: 0,
-                                memory_index: 0,
-                            }));
-                            func.instruction(&Instruction::LocalGet(val_local));
-                            emit_call(&mut func, reloc_enabled, self.import_ids["inc_ref_obj"]);
-                        }
-                    }
-                    func.instruction(&Instruction::LocalGet(task_local));
-                    emit_call(&mut func, reloc_enabled, self.import_ids["asyncgen_new"]);
-                    func.instruction(&Instruction::End);
-                    self.codes.function(&func);
-                    return;
-                }
-                TrampolineKind::Plain => {}
-            }
+            self.codes.function(&func);
+            return;
         }
         if has_closure {
             func.instruction(&Instruction::LocalGet(0));
