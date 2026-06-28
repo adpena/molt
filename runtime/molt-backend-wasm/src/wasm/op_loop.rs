@@ -1,10 +1,35 @@
+#[cfg(test)]
+use super::WasmFrameLocalKind;
 use super::call_site_abi::WasmCallSiteAbi;
 use super::constant_ops::{ConstantOpContext, emit_constant_op};
 use super::context::CompileFuncContext;
 use super::control_flow::ControlKind;
 use super::function_frame::WasmFunctionFrame;
 use super::multi_return_layout::WasmMultiReturnLayout;
-use super::*;
+use super::{WasmBackend, WasmFrameLocals, WasmFrameSyntheticLocal};
+use crate::representation_plan::ScalarRepresentationPlan;
+use crate::wasm_abi::{
+    GEN_CONTROL_SIZE, TAG_EXCEPTION_INDEX, TASK_KIND_COROUTINE, TASK_KIND_FUTURE,
+    TASK_KIND_GENERATOR,
+};
+use crate::wasm_binary::{emit_call, emit_return_call, emit_simple_call, emit_table_index_i64};
+use crate::wasm_import_tracking::{TrackedImportIds, selected_import_id};
+use crate::wasm_plan::{
+    gpu_runtime_call_symbol, is_shared_drop_fact_marker, wasm_scalar_integer_fast_path_for_op,
+    wasm_scalar_truthiness_fast_path_for_name, wasm_specialized_container_import,
+};
+use crate::wasm_values::{
+    ConstantCache, INT_MASK, IntFastLane, POINTER_MASK, box_bool, box_int, box_pending,
+    emit_box_bool_from_i32, emit_box_int_from_local_opt, emit_branch_truthiness_i32,
+    emit_f64_to_i64_canonical, emit_inline_int_range_check, emit_trusted_int_fast_path_guard_close,
+    emit_trusted_int_fast_path_guard_open, emit_unbox_int_local_trusted_opt,
+    emit_unbox_int_local_trusted_tee_opt, stable_ic_site_id,
+};
+use crate::{FunctionIR, OpIR};
+use std::borrow::Cow;
+use std::cell::Cell;
+use std::collections::{BTreeMap, BTreeSet};
+use wasm_encoder::{BlockType, Catch, Function, Instruction, ValType};
 
 mod builder_ops;
 mod call_ops;

@@ -1,3 +1,4 @@
+use super::WasmBackend;
 use super::const_materialization::WasmConstOpPolicy;
 use super::constant_ops::emit_seeded_runtime_const_op;
 use super::context::CompileFuncContext;
@@ -5,7 +6,15 @@ use super::frame_locals::{WasmDispatchFrameLocals, WasmFrameLocals, WasmFrameSyn
 use super::local_analysis::{LocalVariableAnalysis, analyze_local_variables};
 use super::multi_return_layout::WasmMultiReturnLayout;
 use super::state_dispatch::NonLinearDispatchLocals;
-use super::*;
+use crate::representation_plan::ScalarRepresentationPlan;
+use crate::wasm_binary::emit_call;
+use crate::wasm_data::DataSegmentRef;
+use crate::wasm_import_tracking::TrackedImportIds;
+use crate::wasm_plan::wasm_scalar_integer_fast_path_for_op;
+use crate::wasm_values::{ConstantCache, box_none};
+use crate::{FunctionIR, OpIR};
+use std::collections::{BTreeMap, BTreeSet};
+use wasm_encoder::{Function, Instruction, ValType};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(in crate::wasm) enum WasmFrameControlMode {

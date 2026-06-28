@@ -1,13 +1,21 @@
 use super::const_materialization::WasmConstOpPolicy;
 use super::context::CompileFuncContext;
-use super::*;
+use super::{WasmBackend, WasmFrameLocals};
+use crate::OpIR;
 use crate::wasm_abi_generated::WasmConstInlineSeed;
 #[cfg(test)]
 use crate::wasm_abi_generated::WasmConstLirFastPolicy;
 #[cfg(test)]
 use crate::wasm_abi_generated::{WasmConstLiteralPayload, WasmConstRawIntEffect};
+use crate::wasm_data::DataSegmentRef;
+use crate::wasm_import_tracking::TrackedImportIds;
+use crate::wasm_values::ConstantCache;
+#[cfg(test)]
+use crate::wasm_values::{box_bool, box_int, box_none};
 #[cfg(test)]
 use molt_codegen_abi::box_float_bits as box_float;
+use std::collections::BTreeMap;
+use wasm_encoder::Function;
 
 pub(super) struct ConstantOpContext<'a, 'ctx> {
     pub(super) backend: &'a mut WasmBackend,
