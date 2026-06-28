@@ -346,6 +346,7 @@ pub const SOURCE_LINE_ATTR: &str = "_source_line";
 pub const SOURCE_COL_ATTR: &str = "_col_offset";
 pub const SOURCE_END_COL_ATTR: &str = "_end_col_offset";
 pub const SOURCE_FILE_ATTR: &str = "_source_file";
+pub const SOURCE_OP_INDEX_ATTR: &str = "_source_op_idx";
 
 /// Stable source-site coordinates carried through TIR attrs.
 ///
@@ -425,10 +426,26 @@ impl TirOp {
         site.write_attrs(&mut self.attrs);
     }
 
+    pub fn source_op_index(&self) -> Option<usize> {
+        let Some(AttrValue::Int(value)) = self.attrs.get(SOURCE_OP_INDEX_ATTR) else {
+            return None;
+        };
+        usize::try_from(*value).ok()
+    }
+
+    pub fn set_source_op_index(&mut self, op_idx: usize) {
+        let value = i64::try_from(op_idx).expect("source op index exceeds i64");
+        self.attrs
+            .insert(SOURCE_OP_INDEX_ATTR.into(), AttrValue::Int(value));
+    }
+
     pub fn inherit_source_from(&mut self, other: &TirOp) {
         self.source_span = other.source_span;
         if let Some(site) = other.source_site() {
             self.set_source_site(site);
+        }
+        if let Some(op_idx) = other.source_op_index() {
+            self.set_source_op_index(op_idx);
         }
     }
 
@@ -508,5 +525,16 @@ mod tests {
         let dynbox_op = dead_placeholder_const_for_type(&TirType::DynBox, ValueId(10));
         assert_eq!(dynbox_op.opcode, OpCode::ConstNone);
         assert!(dynbox_op.attrs.is_empty());
+    }
+
+    #[test]
+    fn inherit_source_from_copies_source_op_index() {
+        let mut source = dead_placeholder_const_for_type(&TirType::DynBox, ValueId(1));
+        source.set_source_op_index(37);
+        let mut replacement = dead_placeholder_const_for_type(&TirType::DynBox, ValueId(2));
+
+        replacement.inherit_source_from(&source);
+
+        assert_eq!(replacement.source_op_index(), Some(37));
     }
 }
