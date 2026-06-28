@@ -8,6 +8,7 @@ use crate::wasm_data::{DataSegmentRef, WasmDataSegments};
 use crate::wasm_import_tracking::{TrackedImportIds, selected_import_id};
 pub use crate::wasm_options::{WasmCompileOptions, WasmProfile};
 pub(crate) mod body;
+mod call_site_abi;
 mod class_def_layout;
 mod compile_pipeline;
 mod constant_ops;
