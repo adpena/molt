@@ -1,4 +1,10 @@
-use super::*;
+use crate::representation_plan::ScalarRepresentationPlan;
+use crate::wasm::WasmFrameLocals;
+use crate::wasm_import_tracking::TrackedImportIds;
+use crate::wasm_values::ConstantCache;
+use crate::OpIR;
+use std::collections::BTreeMap;
+use wasm_encoder::Function;
 
 #[path = "numeric_ops/additive_ops.rs"]
 mod additive_ops;
