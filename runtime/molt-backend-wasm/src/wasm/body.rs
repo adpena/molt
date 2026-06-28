@@ -10,10 +10,6 @@ pub enum WasmLirFallbackReason {
     BoxedI64AbiUnsupported,
     EscapedCallableTarget,
     BoxedCheckedArithmetic,
-    BoxedUnaryArithmetic,
-    BoxedBitwiseOrShift,
-    BoxedTruthiness,
-    BoxedControlCondition,
     UnsupportedOperation,
 }
 
@@ -23,10 +19,6 @@ impl WasmLirFallbackReason {
             Self::BoxedI64AbiUnsupported => "boxed-i64-abi-unsupported",
             Self::EscapedCallableTarget => "escaped-callable-target",
             Self::BoxedCheckedArithmetic => "boxed-checked-arithmetic",
-            Self::BoxedUnaryArithmetic => "boxed-unary-arithmetic",
-            Self::BoxedBitwiseOrShift => "boxed-bitwise-or-shift",
-            Self::BoxedTruthiness => "boxed-truthiness",
-            Self::BoxedControlCondition => "boxed-control-condition",
             Self::UnsupportedOperation => "unsupported-operation",
         }
     }
