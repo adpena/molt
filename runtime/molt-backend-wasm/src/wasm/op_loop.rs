@@ -1,3 +1,4 @@
+use super::call_site_abi::WasmCallSiteAbi;
 use super::constant_ops::{ConstantOpContext, emit_constant_op};
 use super::context::CompileFuncContext;
 use super::control_flow::ControlKind;
@@ -29,12 +30,8 @@ pub(super) struct WasmFunctionEmitContext<'a, 'ctx> {
     pub(super) backend: &'a mut WasmBackend,
     pub(super) func_ir: &'a FunctionIR,
     pub(super) ctx: &'a CompileFuncContext<'ctx>,
-    pub(super) func_map: &'a BTreeMap<String, u32>,
-    pub(super) func_indices: &'a BTreeMap<String, u32>,
-    pub(super) trampoline_map: &'a BTreeMap<String, u32>,
-    pub(super) table_base: u32,
+    pub(super) call_site_abi: &'a WasmCallSiteAbi<'ctx>,
     pub(super) import_ids: &'a TrackedImportIds,
-    pub(super) closure_functions: &'a BTreeSet<String>,
     pub(super) exception_handler_region_indices: &'a BTreeSet<usize>,
     pub(super) frame: &'a WasmFunctionFrame,
     pub(super) multi_return_candidates: &'a BTreeMap<String, usize>,
@@ -74,12 +71,8 @@ impl<'a, 'ctx> WasmFunctionEmitContext<'a, 'ctx> {
         let backend = &mut self.backend;
         let func_ir = self.func_ir;
         let ctx = self.ctx;
-        let func_map = self.func_map;
-        let func_indices = self.func_indices;
-        let trampoline_map = self.trampoline_map;
-        let table_base = self.table_base;
+        let call_site_abi = self.call_site_abi;
         let import_ids = self.import_ids;
-        let closure_functions = self.closure_functions;
         let exception_handler_region_indices = self.exception_handler_region_indices;
         let frame = self.frame;
         let runtime_lookup_only_vars = frame.runtime_lookup_only_vars();
@@ -190,13 +183,8 @@ impl<'a, 'ctx> WasmFunctionEmitContext<'a, 'ctx> {
 
             let mut call_op_context = CallOpContext {
                 func_ir,
-                ctx,
-                func_map,
-                func_indices,
-                trampoline_map,
-                table_base,
+                call_site_abi,
                 import_ids,
-                closure_functions,
                 runtime_lookup_only_vars,
                 locals,
                 const_cache,
@@ -225,8 +213,7 @@ impl<'a, 'ctx> WasmFunctionEmitContext<'a, 'ctx> {
 
             if emit_runtime_service_op(
                 RuntimeServiceOpContext {
-                    func_map,
-                    table_base,
+                    call_site_abi,
                     import_ids,
                     locals,
                     const_cache,

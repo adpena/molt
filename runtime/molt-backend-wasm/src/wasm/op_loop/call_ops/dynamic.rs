@@ -1,5 +1,7 @@
-use super::frame::{
-    collect_live_object_locals_for_call, release_live_object_locals, retain_live_object_locals,
+use super::site::{
+    build_positional_callargs, collect_live_object_locals_for_call, emit_call_site_id,
+    emit_pending_exception_return, release_live_object_locals, retain_live_object_locals,
+    spill_call_args,
 };
 use super::*;
 
@@ -9,12 +11,8 @@ pub(super) fn emit_dynamic_call_op(
     op: &OpIR,
 ) -> CallOpEmission {
     let func_ir = call_ctx.func_ir;
-    let ctx = call_ctx.ctx;
-    let func_map = call_ctx.func_map;
-    let func_indices = call_ctx.func_indices;
-    let table_base = call_ctx.table_base;
+    let call_site_abi = call_ctx.call_site_abi;
     let import_ids = call_ctx.import_ids;
-    let closure_functions = call_ctx.closure_functions;
     let runtime_lookup_only_vars = call_ctx.runtime_lookup_only_vars;
     let locals = call_ctx.locals;
     let const_cache = call_ctx.const_cache;
@@ -31,12 +29,9 @@ pub(super) fn emit_dynamic_call_op(
             let callargs_tmp = locals.synthetic(WasmFrameSyntheticLocal::MoltTmp0);
             let tmp_ptr = locals.synthetic(WasmFrameSyntheticLocal::MoltTmp1);
             let arity = args_names.len().saturating_sub(1);
-            let escaped_target = ctx.escaped_callable_targets.contains(target_name);
-            let func_idx = *func_indices
-                .get(target_name)
-                .expect("call_guarded target not found");
-            let table_slot = func_map[target_name];
-            let table_idx = table_base + table_slot;
+            let escaped_target = call_site_abi.is_escaped_callable(target_name);
+            let func_idx = call_site_abi.function_index(target_name, "call_guarded");
+            let table_idx = call_site_abi.table_index(target_name, "call_guarded");
             if escaped_target {
                 func.instruction(&Instruction::LocalGet(callee_bits));
                 emit_call(func, reloc_enabled, import_ids["is_function_obj"]);
@@ -52,17 +47,8 @@ pub(super) fn emit_dynamic_call_op(
                 func.instruction(&Instruction::I64Const(code_id));
                 emit_call(func, reloc_enabled, import_ids["trace_enter_slot"]);
                 func.instruction(&Instruction::Drop);
-                let spill_base = ctx.call_func_spill_offset;
-                for (i, arg_name) in args_names[1..].iter().enumerate() {
-                    let arg = locals[arg_name];
-                    func.instruction(&Instruction::I32Const((spill_base + (i as u32) * 8) as i32));
-                    func.instruction(&Instruction::LocalGet(arg));
-                    func.instruction(&Instruction::I64Store(wasm_encoder::MemArg {
-                        align: 3,
-                        offset: 0,
-                        memory_index: 0,
-                    }));
-                }
+                let spill_base = call_site_abi.call_func_spill_offset();
+                spill_call_args(func, locals, spill_base, &args_names[1..]);
                 func.instruction(&Instruction::LocalGet(callee_bits));
                 func.instruction(&Instruction::I64Const(spill_base as i64));
                 func.instruction(&Instruction::I64Const(arity as i64));
@@ -77,27 +63,18 @@ pub(super) fn emit_dynamic_call_op(
                 // Return immediately so the pending RecursionError
                 // propagates to the caller instead of being silently
                 // swallowed as None (which caused TypeError downstream).
-                const_cache.emit_none(func);
-                func.instruction(&Instruction::Return);
+                emit_pending_exception_return(func, const_cache);
                 func.instruction(&Instruction::End);
                 func.instruction(&Instruction::Else);
-                func.instruction(&Instruction::I64Const(arity as i64));
-                func.instruction(&Instruction::I64Const(0));
-                emit_call(func, reloc_enabled, import_ids["callargs_new"]);
-                func.instruction(&Instruction::LocalSet(callargs_tmp));
-                for arg_name in &args_names[1..] {
-                    let arg = locals[arg_name];
-                    func.instruction(&Instruction::LocalGet(callargs_tmp));
-                    func.instruction(&Instruction::LocalGet(arg));
-                    emit_call(func, reloc_enabled, import_ids["callargs_push_pos"]);
-                    func.instruction(&Instruction::Drop);
-                }
-                let site_bits = box_int(stable_ic_site_id(
-                    func_ir.name.as_str(),
-                    op_idx,
-                    "call_guarded_nonfunc",
-                ));
-                func.instruction(&Instruction::I64Const(site_bits));
+                build_positional_callargs(
+                    func,
+                    import_ids,
+                    reloc_enabled,
+                    locals,
+                    callargs_tmp,
+                    &args_names[1..],
+                );
+                emit_call_site_id(func, func_ir.name.as_str(), op_idx, "call_guarded_nonfunc");
                 func.instruction(&Instruction::LocalGet(callee_bits));
                 func.instruction(&Instruction::LocalGet(callargs_tmp));
                 emit_call(func, reloc_enabled, import_ids["call_bind_ic"]);
@@ -144,7 +121,7 @@ pub(super) fn emit_dynamic_call_op(
             // The WASM signature of closure functions is
             //   (closure_env, arg1, arg2, …) → i64
             // so we must prepend the env before the user arguments.
-            if closure_functions.contains(target_name) {
+            if call_site_abi.is_closure_function(target_name) {
                 func.instruction(&Instruction::LocalGet(callee_bits));
                 emit_call(func, reloc_enabled, import_ids["function_closure_bits"]);
             }
@@ -162,29 +139,25 @@ pub(super) fn emit_dynamic_call_op(
             // Return immediately so the pending RecursionError
             // propagates to the caller instead of being silently
             // swallowed as None (which caused TypeError downstream).
-            const_cache.emit_none(func);
-            func.instruction(&Instruction::Return);
+            emit_pending_exception_return(func, const_cache);
             func.instruction(&Instruction::End);
 
             // slow path: function object does not match expected target
             func.instruction(&Instruction::Else);
-            func.instruction(&Instruction::I64Const(arity as i64));
-            func.instruction(&Instruction::I64Const(0));
-            emit_call(func, reloc_enabled, import_ids["callargs_new"]);
-            func.instruction(&Instruction::LocalSet(callargs_tmp));
-            for arg_name in &args_names[1..] {
-                let arg = locals[arg_name];
-                func.instruction(&Instruction::LocalGet(callargs_tmp));
-                func.instruction(&Instruction::LocalGet(arg));
-                emit_call(func, reloc_enabled, import_ids["callargs_push_pos"]);
-                func.instruction(&Instruction::Drop);
-            }
-            let site_bits = box_int(stable_ic_site_id(
+            build_positional_callargs(
+                func,
+                import_ids,
+                reloc_enabled,
+                locals,
+                callargs_tmp,
+                &args_names[1..],
+            );
+            emit_call_site_id(
+                func,
                 func_ir.name.as_str(),
                 op_idx,
                 "call_guarded_slow_match_miss",
-            ));
-            func.instruction(&Instruction::I64Const(site_bits));
+            );
             func.instruction(&Instruction::LocalGet(callee_bits));
             func.instruction(&Instruction::LocalGet(callargs_tmp));
             emit_call(func, reloc_enabled, import_ids["call_bind_ic"]);
@@ -193,23 +166,15 @@ pub(super) fn emit_dynamic_call_op(
 
             // not a function object: fallback to call_bind
             func.instruction(&Instruction::Else);
-            func.instruction(&Instruction::I64Const(arity as i64));
-            func.instruction(&Instruction::I64Const(0));
-            emit_call(func, reloc_enabled, import_ids["callargs_new"]);
-            func.instruction(&Instruction::LocalSet(callargs_tmp));
-            for arg_name in &args_names[1..] {
-                let arg = locals[arg_name];
-                func.instruction(&Instruction::LocalGet(callargs_tmp));
-                func.instruction(&Instruction::LocalGet(arg));
-                emit_call(func, reloc_enabled, import_ids["callargs_push_pos"]);
-                func.instruction(&Instruction::Drop);
-            }
-            let site_bits = box_int(stable_ic_site_id(
-                func_ir.name.as_str(),
-                op_idx,
-                "call_guarded_nonfunc",
-            ));
-            func.instruction(&Instruction::I64Const(site_bits));
+            build_positional_callargs(
+                func,
+                import_ids,
+                reloc_enabled,
+                locals,
+                callargs_tmp,
+                &args_names[1..],
+            );
+            emit_call_site_id(func, func_ir.name.as_str(), op_idx, "call_guarded_nonfunc");
             func.instruction(&Instruction::LocalGet(callee_bits));
             func.instruction(&Instruction::LocalGet(callargs_tmp));
             emit_call(func, reloc_enabled, import_ids["call_bind_ic"]);
@@ -241,20 +206,9 @@ pub(super) fn emit_dynamic_call_op(
             let func_bits = locals[&args_names[0]];
             let out = locals[op.out.as_ref().unwrap()];
             let nargs = args_names.len().saturating_sub(1);
-            let spill_base = ctx.call_func_spill_offset;
+            let spill_base = call_site_abi.call_func_spill_offset();
 
-            // Spill each arg to consecutive i64 slots in linear memory.
-            for (i, arg_name) in args_names[1..].iter().enumerate() {
-                let arg = locals[arg_name];
-                // addr (i32) = spill_base + i * 8
-                func.instruction(&Instruction::I32Const((spill_base + (i as u32) * 8) as i32));
-                func.instruction(&Instruction::LocalGet(arg));
-                func.instruction(&Instruction::I64Store(wasm_encoder::MemArg {
-                    align: 3,
-                    offset: 0,
-                    memory_index: 0,
-                }));
-            }
+            spill_call_args(func, locals, spill_base, &args_names[1..]);
 
             // Push args: func_bits, args_ptr, nargs, code_id
             func.instruction(&Instruction::LocalGet(func_bits));
@@ -278,30 +232,21 @@ pub(super) fn emit_dynamic_call_op(
             let func_bits = locals[&args_names[0]];
             let out = locals[op.out.as_ref().unwrap()];
             let callargs_tmp = locals.synthetic(WasmFrameSyntheticLocal::MoltTmp0);
-            let arity = args_names.len().saturating_sub(1);
-            func.instruction(&Instruction::I64Const(arity as i64));
-            func.instruction(&Instruction::I64Const(0));
-            emit_call(func, reloc_enabled, import_ids["callargs_new"]);
-            func.instruction(&Instruction::LocalSet(callargs_tmp));
-            for arg_name in &args_names[1..] {
-                let arg = locals[arg_name];
-                func.instruction(&Instruction::LocalGet(callargs_tmp));
-                func.instruction(&Instruction::LocalGet(arg));
-                emit_call(func, reloc_enabled, import_ids["callargs_push_pos"]);
-                func.instruction(&Instruction::Drop);
-            }
+            build_positional_callargs(
+                func,
+                import_ids,
+                reloc_enabled,
+                locals,
+                callargs_tmp,
+                &args_names[1..],
+            );
             let invoke_bridge_lane = op.s_value.as_deref() == Some("bridge");
             let call_site_label = if invoke_bridge_lane {
                 "invoke_ffi_bridge"
             } else {
                 "invoke_ffi_deopt"
             };
-            let site_bits = box_int(stable_ic_site_id(
-                func_ir.name.as_str(),
-                op_idx,
-                call_site_label,
-            ));
-            func.instruction(&Instruction::I64Const(site_bits));
+            emit_call_site_id(func, func_ir.name.as_str(), op_idx, call_site_label);
             func.instruction(&Instruction::LocalGet(func_bits));
             func.instruction(&Instruction::LocalGet(callargs_tmp));
             let require_bridge_cap = if invoke_bridge_lane { 1 } else { 0 };
@@ -327,12 +272,7 @@ pub(super) fn emit_dynamic_call_op(
             } else {
                 "call_bind"
             };
-            let site_bits = box_int(stable_ic_site_id(
-                func_ir.name.as_str(),
-                op_idx,
-                call_site_label,
-            ));
-            func.instruction(&Instruction::I64Const(site_bits));
+            emit_call_site_id(func, func_ir.name.as_str(), op_idx, call_site_label);
             func.instruction(&Instruction::LocalGet(func_bits));
             func.instruction(&Instruction::LocalGet(builder_ptr));
             if op.kind == "call_indirect" {
@@ -418,24 +358,15 @@ pub(super) fn emit_dynamic_call_op(
             if !fast_dispatched {
                 // Generic path: allocate callargs and dispatch via IC.
                 let callargs_tmp = locals.synthetic(WasmFrameSyntheticLocal::MoltTmp0);
-                let arity = args_names.len().saturating_sub(1);
-                func.instruction(&Instruction::I64Const(arity as i64));
-                func.instruction(&Instruction::I64Const(0));
-                emit_call(func, reloc_enabled, import_ids["callargs_new"]);
-                func.instruction(&Instruction::LocalSet(callargs_tmp));
-                for arg_name in &args_names[1..] {
-                    let arg = locals[arg_name];
-                    func.instruction(&Instruction::LocalGet(callargs_tmp));
-                    func.instruction(&Instruction::LocalGet(arg));
-                    emit_call(func, reloc_enabled, import_ids["callargs_push_pos"]);
-                    func.instruction(&Instruction::Drop);
-                }
-                let site_bits = box_int(stable_ic_site_id(
-                    func_ir.name.as_str(),
-                    op_idx,
-                    "call_method",
-                ));
-                func.instruction(&Instruction::I64Const(site_bits));
+                build_positional_callargs(
+                    func,
+                    import_ids,
+                    reloc_enabled,
+                    locals,
+                    callargs_tmp,
+                    &args_names[1..],
+                );
+                emit_call_site_id(func, func_ir.name.as_str(), op_idx, "call_method");
                 func.instruction(&Instruction::LocalGet(method_bits));
                 func.instruction(&Instruction::LocalGet(callargs_tmp));
                 emit_call(func, reloc_enabled, import_ids["call_bind_ic"]);
