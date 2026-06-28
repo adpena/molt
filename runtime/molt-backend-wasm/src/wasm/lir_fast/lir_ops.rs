@@ -1,8 +1,9 @@
 use super::lir_context::LirLowerCtx;
 use super::lir_runtime_ops::{
-    emit_lir_boxed_binary_runtime_call, emit_lir_boxed_operands_runtime_call, emit_lir_build_slice,
-    emit_lir_del_index, emit_lir_exception_pending, emit_lir_get_iter, emit_lir_index,
-    emit_lir_iter_next, emit_lir_membership, emit_lir_store_index,
+    emit_lir_alloc, emit_lir_boxed_binary_runtime_call, emit_lir_boxed_operands_runtime_call,
+    emit_lir_build_slice, emit_lir_closure_load, emit_lir_closure_store, emit_lir_del_index,
+    emit_lir_exception_pending, emit_lir_get_iter, emit_lir_index, emit_lir_iter_next,
+    emit_lir_membership, emit_lir_object_new_bound, emit_lir_store_index,
 };
 use super::lir_scalar::{
     emit_get_boxed_for_repr, emit_lir_binary_arith, emit_lir_bitwise, emit_lir_bool_select,
@@ -362,6 +363,10 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
             LirRuntimeCall::ModuleDelGlobalIfPresent,
             2,
         ),
+        OpCode::Alloc => emit_lir_alloc(ctx, op),
+        OpCode::ObjectNewBound => emit_lir_object_new_bound(ctx, op),
+        OpCode::ClosureLoad => emit_lir_closure_load(ctx, op),
+        OpCode::ClosureStore => emit_lir_closure_store(ctx, op),
         OpCode::Copy
         | OpCode::DeleteVar
         | OpCode::BoxVal
@@ -499,9 +504,7 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
         | OpCode::LoadAttr
         | OpCode::StoreAttr
         | OpCode::DelAttr
-        | OpCode::Alloc
         | OpCode::StackAlloc
-        | OpCode::ObjectNewBound
         | OpCode::ObjectNewBoundStack
         | OpCode::Free
         | OpCode::IterNextUnboxed
@@ -511,8 +514,6 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
         | OpCode::StateYield
         | OpCode::ChanSendYield
         | OpCode::ChanRecvYield
-        | OpCode::ClosureLoad
-        | OpCode::ClosureStore
         | OpCode::Import
         | OpCode::ImportFrom
         | OpCode::Raise
