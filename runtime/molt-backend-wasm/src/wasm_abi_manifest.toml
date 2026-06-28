@@ -195,6 +195,210 @@ callable_arity = 2
 
 
 [[import]]
+name = "abc_bootstrap"
+type = 0
+runtime_name = "molt_abc_bootstrap"
+callable_arity = 0
+
+[[import]]
+name = "collections_abc_runtime_types"
+type = 0
+runtime_name = "molt_collections_abc_runtime_types"
+callable_arity = 0
+
+[[import]]
+name = "abc_get_cache_token"
+type = 0
+runtime_name = "molt_abc_get_cache_token"
+callable_arity = 0
+
+[[import]]
+name = "abc_init"
+type = 2
+runtime_name = "molt_abc_init"
+callable_arity = 1
+
+[[import]]
+name = "abc_register"
+type = 3
+runtime_name = "molt_abc_register"
+callable_arity = 2
+
+[[import]]
+name = "abc_instancecheck"
+type = 3
+runtime_name = "molt_abc_instancecheck"
+callable_arity = 2
+
+[[import]]
+name = "abc_subclasscheck"
+type = 3
+runtime_name = "molt_abc_subclasscheck"
+callable_arity = 2
+
+[[import]]
+name = "abc_get_dump"
+type = 2
+runtime_name = "molt_abc_get_dump"
+callable_arity = 1
+
+[[import]]
+name = "abc_reset_registry"
+type = 2
+runtime_name = "molt_abc_reset_registry"
+callable_arity = 1
+
+[[import]]
+name = "abc_reset_caches"
+type = 2
+runtime_name = "molt_abc_reset_caches"
+callable_arity = 1
+
+[[import]]
+name = "abc_update_abstractmethods"
+type = 2
+runtime_name = "molt_abc_update_abstractmethods"
+callable_arity = 1
+
+[[import]]
+name = "abc_abstractmethod_check"
+type = 2
+runtime_name = "molt_abc_abstractmethod_check"
+callable_arity = 1
+
+[[import]]
+name = "array_new"
+type = 2
+runtime_name = "molt_array_new"
+callable_arity = 1
+
+[[import]]
+name = "array_from_list"
+type = 3
+runtime_name = "molt_array_from_list"
+callable_arity = 2
+
+[[import]]
+name = "array_append"
+type = 3
+runtime_name = "molt_array_append"
+callable_arity = 2
+
+[[import]]
+name = "array_buffer_info"
+type = 2
+runtime_name = "molt_array_buffer_info"
+callable_arity = 1
+
+[[import]]
+name = "array_count"
+type = 3
+runtime_name = "molt_array_count"
+callable_arity = 2
+
+[[import]]
+name = "array_delitem"
+type = 3
+runtime_name = "molt_array_delitem"
+callable_arity = 2
+
+[[import]]
+name = "array_extend"
+type = 3
+runtime_name = "molt_array_extend"
+callable_arity = 2
+
+[[import]]
+name = "array_frombytes"
+type = 3
+runtime_name = "molt_array_frombytes"
+callable_arity = 2
+
+[[import]]
+name = "array_getitem"
+type = 3
+runtime_name = "molt_array_getitem"
+callable_arity = 2
+
+[[import]]
+name = "array_index"
+type = 3
+runtime_name = "molt_array_index"
+callable_arity = 2
+
+[[import]]
+name = "array_insert"
+type = 5
+runtime_name = "molt_array_insert"
+callable_arity = 3
+
+[[import]]
+name = "array_itemsize"
+type = 2
+runtime_name = "molt_array_itemsize"
+callable_arity = 1
+
+[[import]]
+name = "array_len"
+type = 2
+runtime_name = "molt_array_len"
+callable_arity = 1
+
+[[import]]
+name = "array_pop"
+type = 3
+runtime_name = "molt_array_pop"
+callable_arity = 2
+
+[[import]]
+name = "array_repeat"
+type = 3
+runtime_name = "molt_array_repeat"
+callable_arity = 2
+
+[[import]]
+name = "array_repeat_in_place"
+type = 3
+runtime_name = "molt_array_repeat_in_place"
+callable_arity = 2
+
+[[import]]
+name = "array_remove"
+type = 3
+runtime_name = "molt_array_remove"
+callable_arity = 2
+
+[[import]]
+name = "array_reverse"
+type = 2
+runtime_name = "molt_array_reverse"
+callable_arity = 1
+
+[[import]]
+name = "array_setitem"
+type = 5
+runtime_name = "molt_array_setitem"
+callable_arity = 3
+
+[[import]]
+name = "array_tobytes"
+type = 2
+runtime_name = "molt_array_tobytes"
+callable_arity = 1
+
+[[import]]
+name = "array_tolist"
+type = 2
+runtime_name = "molt_array_tolist"
+callable_arity = 1
+
+[[import]]
+name = "array_typecode"
+type = 2
+runtime_name = "molt_array_typecode"
+callable_arity = 1
+
+[[import]]
 name = "alloc"
 type = 2
 
@@ -607,6 +811,8 @@ type = 2
 [[import]]
 name = "function_init_metadata_packed"
 type = 7
+runtime_name = "molt_function_init_metadata_packed"
+callable_arity = 4
 
 [[import]]
 name = "function_set_builtin"
@@ -2091,6 +2297,8 @@ type = 19
 [[import]]
 name = "cbor_parse_scalar_obj"
 type = 2
+runtime_name = "molt_cbor_parse_scalar_obj"
+callable_arity = 1
 
 [[import]]
 name = "codecs_decode"
@@ -2111,6 +2319,8 @@ type = 19
 [[import]]
 name = "msgpack_parse_scalar_obj"
 type = 2
+runtime_name = "molt_msgpack_parse_scalar_obj"
+callable_arity = 1
 
 [[import]]
 name = "vec_max_int"

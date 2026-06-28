@@ -36,6 +36,7 @@ from molt.cli.wasm import (
     _generate_split_wrangler_jsonc,
     _runtime_import_result_kinds_from_manifest,
     _runtime_import_signatures_from_manifest,
+    _split_runtime_browser_abi_from_manifest,
 )
 from molt.wasm_artifact import (
     _collect_wasm_module_import_names,
@@ -461,6 +462,15 @@ def _prepare_non_native_build_result(
             app_wasm = split_dir / "app.wasm"
             rt_wasm = split_dir / "molt_runtime.wasm"
             manifest = split_dir / "manifest.json"
+            browser_embed_src = molt_root / "wasm" / "browser_embed.js"
+            try:
+                browser_embed_size = browser_embed_src.stat().st_size
+            except OSError as exc:
+                return None, _fail(
+                    f"Missing split-runtime browser embed support: {exc}",
+                    json_output,
+                    command="build",
+                )
 
             if not app_wasm.exists() or not rt_wasm.exists():
                 return None, _fail(
@@ -525,6 +535,7 @@ def _prepare_non_native_build_result(
                         "signatures": app_runtime_import_signatures,
                         "result_kinds": app_runtime_import_result_kinds,
                     },
+                    "browser_embed": _split_runtime_browser_abi_from_manifest(),
                     "table_refs": {
                         "app": app_table_ref_signatures,
                         "runtime": runtime_table_ref_signatures,
@@ -538,6 +549,12 @@ def _prepare_non_native_build_result(
                     "app": {
                         "path": "app.wasm",
                         "size": app_size,
+                    },
+                },
+                "assets": {
+                    "browser_embed": {
+                        "path": "browser_embed.js",
+                        "size": browser_embed_size,
                     },
                 },
                 "total_size": app_size + rt_size,
@@ -567,6 +584,15 @@ def _prepare_non_native_build_result(
             except OSError as exc:
                 return None, _fail(
                     f"Failed to stage split-runtime VFS support: {exc}",
+                    json_output,
+                    command="build",
+                )
+            browser_embed_dst = split_dir / "browser_embed.js"
+            try:
+                _atomic_copy_file(browser_embed_src, browser_embed_dst)
+            except OSError as exc:
+                return None, _fail(
+                    f"Failed to stage split-runtime browser embed support: {exc}",
                     json_output,
                     command="build",
                 )

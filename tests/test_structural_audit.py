@@ -473,6 +473,23 @@ def test_generated_large_file_is_not_kitchen_sink_file(tmp_path: Path):
     assert findings == []
 
 
+def test_generated_marker_inside_string_literal_is_not_generated(tmp_path: Path):
+    src = tmp_path / "runtime" / "molt-backend-rust" / "src" / "rust"
+    src.mkdir(parents=True)
+    path = src / "prelude.rs"
+    path.write_text(
+        "fn emit_header(output: &mut String) {\n"
+        "    output.push_str(concat!(\n"
+        '        "// Auto-generated - do not edit\\n",\n'
+        '        "#![allow(dead_code)]\\n",\n'
+        "    ));\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    assert not SA._is_generated(path)
+
+
 def test_kitchen_sink_metrics_are_ratchet_metrics():
     findings = [
         SA.Finding(

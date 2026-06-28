@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import builtins as _builtins
-from typing import Any
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
@@ -1222,7 +1221,7 @@ def _signal_code(key: type[BaseException]) -> int:
     return code
 
 
-def _with_current_context(func: Any) -> Any:
+def _with_current_context(func: object) -> object:
     ctx_handle = _MOLT_DECIMAL_CONTEXT_GET_CURRENT()
     try:
         return func(ctx_handle)

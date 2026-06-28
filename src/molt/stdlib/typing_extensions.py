@@ -12,7 +12,6 @@ import builtins as _builtins
 import collections as _collections
 import collections.abc as _abc
 import enum as _enum
-import re as _re
 import sys as _sys
 import types as _types
 import typing as _typing
@@ -228,8 +227,15 @@ DefaultDict = _collections.defaultdict
 Deque = _collections.deque
 OrderedDict = _collections.OrderedDict
 
-Match = _re.Match
-Pattern = _re.Pattern
+
+def __getattr__(name: str):
+    if name in ("Match", "Pattern"):
+        import re
+
+        value = getattr(re, name)
+        globals()[name] = value
+        return value
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 @runtime_checkable

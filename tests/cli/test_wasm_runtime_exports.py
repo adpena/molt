@@ -216,6 +216,21 @@ def test_wasm_runtime_required_import_names_reads_stdlib_intrinsics() -> None:
     assert "ssl_cert_none" not in names
 
 
+def test_wasm_runtime_required_import_names_keep_codec_numeric_slices_narrow() -> (
+    None
+):
+    codec_names = set(wasm_runtime_required_import_names({"codecs"}))
+    assert codec_names == {"codecs_decode", "codecs_encode"}
+
+    numeric_names = set(wasm_runtime_required_import_names({"decimal"}))
+    leaked = sorted(
+        name
+        for name in numeric_names
+        if name.startswith(("re_", "struct_", "warnings_"))
+    )
+    assert leaked == []
+
+
 def test_wasm_runtime_required_import_names_include_time_capabilities() -> None:
     names = set(wasm_runtime_required_import_names({"time"}))
     assert "time_time" in names

@@ -30,6 +30,7 @@ from molt._wasm_abi_generated import (
     WASM_RESERVED_RUNTIME_CALLABLE_BASE,
     WASM_RESERVED_RUNTIME_CALLABLES,
 )
+from molt.dx import cargo_target_dir_for_artifact_root, development_artifact_env
 import molt.wasm_artifact as wasm_artifact
 from tools import harness_memory_guard
 import tools.bench_wasm as bench_wasm
@@ -60,15 +61,50 @@ for i in range(10):
 """
 
 
-def _split_runtime_target_dirs(env: dict[str, str]) -> tuple[Path, Path]:
-    default_target_dir = ROOT / "target" / "pytest" / "test_wasm_split_runtime"
+def _split_runtime_target_dirs(
+    env: dict[str, str],
+    *,
+    session_id: str = "test-wasm-split-runtime",
+) -> tuple[Path, Path]:
     raw_target = env.get("CARGO_TARGET_DIR", "").strip()
-    target_dir = Path(raw_target).expanduser() if raw_target else default_target_dir
+    if raw_target:
+        target_dir = Path(raw_target).expanduser()
+    else:
+        raw_root = env.get("MOLT_EXT_ROOT", "").strip()
+        artifact_root = Path(raw_root).expanduser() if raw_root else ROOT
+        if not artifact_root.is_absolute():
+            artifact_root = ROOT / artifact_root
+        target_dir = cargo_target_dir_for_artifact_root(
+            artifact_root.resolve(),
+            env.get("MOLT_SESSION_ID") or session_id,
+        )
     raw_diff_target = env.get("MOLT_DIFF_CARGO_TARGET_DIR", "").strip()
     diff_target_dir = (
         Path(raw_diff_target).expanduser() if raw_diff_target else target_dir
     )
     return target_dir, diff_target_dir
+
+
+def _split_runtime_build_env(
+    *,
+    session_id: str = "test-wasm-split-runtime",
+    hermetic_module_roots: bool = False,
+) -> dict[str, str]:
+    env = development_artifact_env(
+        ROOT,
+        os.environ,
+        session_prefix=session_id,
+        session_id=os.environ.get("MOLT_SESSION_ID") or session_id,
+        create_dirs=True,
+    )
+    env["MOLT_BACKEND_DAEMON"] = "0"
+    if hermetic_module_roots:
+        env["MOLT_HERMETIC_MODULE_ROOTS"] = "1"
+    env.setdefault("CARGO_BUILD_JOBS", "1")
+    env.setdefault("MOLT_BUILD_LOCK_TIMEOUT", "45")
+    env.setdefault("MOLT_CARGO_TIMEOUT", "900")
+    env.setdefault("MOLT_WASM_DISABLE_SCCACHE", "1")
+    return env
 
 
 def test_split_runtime_target_dir_respects_explicit_env_override() -> None:
@@ -83,10 +119,13 @@ def test_split_runtime_target_dir_respects_explicit_env_override() -> None:
     assert diff_target_dir == Path("/tmp/molt-explicit-diff-target")
 
 
-def test_split_runtime_target_dir_defaults_to_repo_pytest_target() -> None:
+def test_split_runtime_target_dir_defaults_to_dx_session_target() -> None:
     target_dir, diff_target_dir = _split_runtime_target_dirs({})
 
-    assert target_dir == ROOT / "target" / "pytest" / "test_wasm_split_runtime"
+    assert target_dir == cargo_target_dir_for_artifact_root(
+        ROOT,
+        "test-wasm-split-runtime",
+    )
     assert diff_target_dir == target_dir
 
 
@@ -232,23 +271,7 @@ def test_isolate_import_module_order_is_explicit_import_bounded() -> None:
 
 def _build_split(source_file: Path, output_dir: Path) -> subprocess.CompletedProcess:
     """Run ``molt build --target wasm --split-runtime`` and return the result."""
-    env = os.environ.copy()
-    repo_src = str(ROOT / "src")
-    current_pythonpath = env.get("PYTHONPATH", "")
-    env["PYTHONPATH"] = (
-        repo_src + os.pathsep + current_pythonpath if current_pythonpath else repo_src
-    )
-    env["MOLT_BACKEND_DAEMON"] = "0"
-    target_dir, diff_target_dir = _split_runtime_target_dirs(env)
-    target_dir.mkdir(parents=True, exist_ok=True)
-    diff_target_dir.mkdir(parents=True, exist_ok=True)
-    env["CARGO_TARGET_DIR"] = str(target_dir)
-    env["MOLT_DIFF_CARGO_TARGET_DIR"] = str(diff_target_dir)
-    env.setdefault("MOLT_SESSION_ID", "test-wasm-split-runtime")
-    env.setdefault("CARGO_BUILD_JOBS", "1")
-    env.setdefault("MOLT_BUILD_LOCK_TIMEOUT", "45")
-    env.setdefault("MOLT_CARGO_TIMEOUT", "900")
-    env.setdefault("MOLT_WASM_DISABLE_SCCACHE", "1")
+    env = _split_runtime_build_env()
 
     cmd = [
         sys.executable,
@@ -623,6 +646,7 @@ class TestSplitRuntimeArtifacts:
             pytest.skip("build failed")
         expected = [
             "app.wasm",
+            "browser_embed.js",
             "molt_runtime.wasm",
             "molt_vfs_browser.js",
             "worker.js",
@@ -837,17 +861,7 @@ def test_linked_host_export_attribute_error_does_not_return_none(
     )
     out_dir = tmp_path / "out"
     out_dir.mkdir()
-    env = os.environ.copy()
-    repo_src = str(ROOT / "src")
-    env["PYTHONPATH"] = repo_src
-    env["MOLT_BACKEND_DAEMON"] = "0"
-    target_dir, diff_target_dir = _split_runtime_target_dirs(env)
-    target_dir.mkdir(parents=True, exist_ok=True)
-    diff_target_dir.mkdir(parents=True, exist_ok=True)
-    env["CARGO_TARGET_DIR"] = str(target_dir)
-    env["MOLT_DIFF_CARGO_TARGET_DIR"] = str(diff_target_dir)
-    env.setdefault("MOLT_SESSION_ID", "test-linked-host-attr-error")
-    env.setdefault("CARGO_BUILD_JOBS", "1")
+    env = _split_runtime_build_env(session_id="test-linked-host-attr-error")
     build = _run_wasm_test_process(
         [
             sys.executable,
@@ -905,17 +919,7 @@ def test_linked_host_export_imports_tinygrad_dtype_class(
     )
     out_dir = tmp_path / "out"
     out_dir.mkdir()
-    env = os.environ.copy()
-    repo_src = str(ROOT / "src")
-    env["PYTHONPATH"] = repo_src
-    env["MOLT_BACKEND_DAEMON"] = "0"
-    target_dir, diff_target_dir = _split_runtime_target_dirs(env)
-    target_dir.mkdir(parents=True, exist_ok=True)
-    diff_target_dir.mkdir(parents=True, exist_ok=True)
-    env["CARGO_TARGET_DIR"] = str(target_dir)
-    env["MOLT_DIFF_CARGO_TARGET_DIR"] = str(diff_target_dir)
-    env.setdefault("MOLT_SESSION_ID", "test-linked-host-tinygrad-dtype")
-    env.setdefault("CARGO_BUILD_JOBS", "1")
+    env = _split_runtime_build_env(session_id="test-linked-host-tinygrad-dtype")
     build = _run_wasm_test_process(
         [
             sys.executable,
@@ -976,17 +980,7 @@ def test_linked_host_export_imports_tinygrad_tensor_module(
     )
     out_dir = tmp_path / "out"
     out_dir.mkdir()
-    env = os.environ.copy()
-    repo_src = str(ROOT / "src")
-    env["PYTHONPATH"] = repo_src
-    env["MOLT_BACKEND_DAEMON"] = "0"
-    target_dir, diff_target_dir = _split_runtime_target_dirs(env)
-    target_dir.mkdir(parents=True, exist_ok=True)
-    diff_target_dir.mkdir(parents=True, exist_ok=True)
-    env["CARGO_TARGET_DIR"] = str(target_dir)
-    env["MOLT_DIFF_CARGO_TARGET_DIR"] = str(diff_target_dir)
-    env.setdefault("MOLT_SESSION_ID", "test-linked-host-tinygrad-tensor")
-    env.setdefault("CARGO_BUILD_JOBS", "1")
+    env = _split_runtime_build_env(session_id="test-linked-host-tinygrad-tensor")
     build = _run_wasm_test_process(
         [
             sys.executable,
@@ -1080,17 +1074,9 @@ def test_linked_host_export_tensor_row_ops_accept_equivalent_float_dtype(
     )
     out_dir = tmp_path / "out"
     out_dir.mkdir()
-    env = os.environ.copy()
-    repo_src = str(ROOT / "src")
-    env["PYTHONPATH"] = repo_src
-    env["MOLT_BACKEND_DAEMON"] = "0"
-    target_dir, diff_target_dir = _split_runtime_target_dirs(env)
-    target_dir.mkdir(parents=True, exist_ok=True)
-    diff_target_dir.mkdir(parents=True, exist_ok=True)
-    env["CARGO_TARGET_DIR"] = str(target_dir)
-    env["MOLT_DIFF_CARGO_TARGET_DIR"] = str(diff_target_dir)
-    env.setdefault("MOLT_SESSION_ID", "test-linked-host-tensor-scatter-dtype")
-    env.setdefault("CARGO_BUILD_JOBS", "1")
+    env = _split_runtime_build_env(
+        session_id="test-linked-host-tensor-scatter-dtype"
+    )
     build = _run_wasm_test_process(
         [
             sys.executable,
@@ -1287,17 +1273,10 @@ def test_linked_falcon_ocr_wasm_driver_runs_stub_generation(
 
     out_dir = tmp_path / "out"
     out_dir.mkdir()
-    env = os.environ.copy()
-    env["PYTHONPATH"] = str(ROOT / "src")
-    env["MOLT_BACKEND_DAEMON"] = "0"
-    env["MOLT_HERMETIC_MODULE_ROOTS"] = "1"
-    target_dir, diff_target_dir = _split_runtime_target_dirs(env)
-    target_dir.mkdir(parents=True, exist_ok=True)
-    diff_target_dir.mkdir(parents=True, exist_ok=True)
-    env["CARGO_TARGET_DIR"] = str(target_dir)
-    env["MOLT_DIFF_CARGO_TARGET_DIR"] = str(diff_target_dir)
-    env.setdefault("MOLT_SESSION_ID", "test-linked-falcon-ocr-driver")
-    env.setdefault("CARGO_BUILD_JOBS", "1")
+    env = _split_runtime_build_env(
+        session_id="test-linked-falcon-ocr-driver",
+        hermetic_module_roots=True,
+    )
     build = _run_wasm_test_process(
         [
             sys.executable,
