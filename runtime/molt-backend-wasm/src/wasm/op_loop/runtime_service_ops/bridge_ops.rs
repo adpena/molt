@@ -1,27 +1,23 @@
-use super::super::result_sink::store_result_or_drop;
 use super::RuntimeServiceOpContext;
+use super::call_emit::{RuntimeServiceArg::Local, RuntimeServiceCall, emit_runtime_service_call};
 use crate::OpIR;
-use crate::wasm_binary::emit_call;
-use wasm_encoder::{Function, Instruction};
+use wasm_encoder::Function;
 
 pub(super) fn emit_bridge_runtime_op(
     context: &RuntimeServiceOpContext<'_>,
     func: &mut Function,
     op: &OpIR,
 ) -> bool {
-    let import_ids = context.import_ids;
-    let locals = context.locals;
-    let reloc_enabled = context.reloc_enabled;
-
-    match op.kind.as_str() {
-        "bridge_unavailable" => {
-            let args = op.args.as_ref().unwrap();
-            let msg = locals[&args[0]];
-            func.instruction(&Instruction::LocalGet(msg));
-            emit_call(func, reloc_enabled, import_ids["bridge_unavailable"]);
-            store_result_or_drop(func, op, locals);
-        }
-        _ => return false,
+    if let Some(call) = bridge_runtime_call(op.kind.as_str()) {
+        emit_runtime_service_call(context, func, op, call);
+        return true;
     }
-    true
+    false
+}
+
+fn bridge_runtime_call(kind: &str) -> Option<RuntimeServiceCall<'static>> {
+    Some(match kind {
+        "bridge_unavailable" => RuntimeServiceCall::result("bridge_unavailable", &[Local(0)]),
+        _ => return None,
+    })
 }
