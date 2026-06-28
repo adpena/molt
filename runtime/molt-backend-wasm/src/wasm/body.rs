@@ -1,9 +1,38 @@
 use wasm_encoder::{Function, Instruction, ValType};
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum WasmLirFallbackReason {
+    BoxedI64AbiUnsupported,
+    EscapedCallableTarget,
+    BoxedCheckedArithmetic,
+    BoxedUnaryArithmetic,
+    BoxedBitwiseOrShift,
+    BoxedTruthiness,
+    BoxedControlCondition,
+    RuntimeConstMaterialization,
+    UnsupportedOperation,
+}
+
+impl WasmLirFallbackReason {
+    pub(crate) fn diagnostic_name(self) -> &'static str {
+        match self {
+            Self::BoxedI64AbiUnsupported => "boxed-i64-abi-unsupported",
+            Self::EscapedCallableTarget => "escaped-callable-target",
+            Self::BoxedCheckedArithmetic => "boxed-checked-arithmetic",
+            Self::BoxedUnaryArithmetic => "boxed-unary-arithmetic",
+            Self::BoxedBitwiseOrShift => "boxed-bitwise-or-shift",
+            Self::BoxedTruthiness => "boxed-truthiness",
+            Self::BoxedControlCondition => "boxed-control-condition",
+            Self::RuntimeConstMaterialization => "runtime-const-materialization",
+            Self::UnsupportedOperation => "unsupported-operation",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub(crate) enum WasmCallTarget {
     RuntimeImport(&'static str),
-    BailToGenericPath,
+    BailToGenericPath(WasmLirFallbackReason),
 }
 
 #[derive(Debug, Clone)]
@@ -27,9 +56,9 @@ impl WasmBodyOps {
             .push(WasmBodyOp::Call(WasmCallTarget::RuntimeImport(name)));
     }
 
-    pub(crate) fn push_bail_to_generic_path(&mut self) {
+    pub(crate) fn push_bail_to_generic_path(&mut self, reason: WasmLirFallbackReason) {
         self.ops
-            .push(WasmBodyOp::Call(WasmCallTarget::BailToGenericPath));
+            .push(WasmBodyOp::Call(WasmCallTarget::BailToGenericPath(reason)));
     }
 
     pub(crate) fn into_vec(self) -> Vec<WasmBodyOp> {
@@ -69,16 +98,17 @@ pub(crate) struct WasmBody {
 }
 
 impl WasmBody {
-    pub(crate) fn has_bail_to_generic_path(&self) -> bool {
-        self.ops
-            .iter()
-            .any(|op| matches!(op, WasmBodyOp::Call(WasmCallTarget::BailToGenericPath)))
+    pub(crate) fn bail_to_generic_reason(&self) -> Option<WasmLirFallbackReason> {
+        self.ops.iter().find_map(|op| match op {
+            WasmBodyOp::Call(WasmCallTarget::BailToGenericPath(reason)) => Some(*reason),
+            WasmBodyOp::Instruction(_) | WasmBodyOp::Call(WasmCallTarget::RuntimeImport(_)) => None,
+        })
     }
 
     pub(crate) fn runtime_imports(&self) -> impl Iterator<Item = &'static str> + '_ {
         self.ops.iter().filter_map(|op| match op {
             WasmBodyOp::Call(WasmCallTarget::RuntimeImport(name)) => Some(*name),
-            WasmBodyOp::Instruction(_) | WasmBodyOp::Call(WasmCallTarget::BailToGenericPath) => {
+            WasmBodyOp::Instruction(_) | WasmBodyOp::Call(WasmCallTarget::BailToGenericPath(_)) => {
                 None
             }
         })
@@ -103,9 +133,10 @@ impl WasmBody {
                     );
                     func.instruction(&Instruction::Call(import_index));
                 }
-                WasmBodyOp::Call(WasmCallTarget::BailToGenericPath) => {
+                WasmBodyOp::Call(WasmCallTarget::BailToGenericPath(reason)) => {
                     panic!(
-                        "LIR fast body for '{func_name}' reached a generic-path bail marker during emission"
+                        "LIR fast body for '{func_name}' reached a generic-path bail marker during emission: {}",
+                        reason.diagnostic_name()
                     );
                 }
             }
@@ -127,7 +158,8 @@ impl WasmBody {
                 })
                 .collect(),
             runtime_calls: self.runtime_imports().collect(),
-            bails_to_generic_path: self.has_bail_to_generic_path(),
+            bails_to_generic_path: self.bail_to_generic_reason().is_some(),
+            bail_to_generic_reason: self.bail_to_generic_reason(),
         }
     }
 }
@@ -141,4 +173,5 @@ pub struct WasmBodyTestView {
     pub instructions: Vec<Instruction<'static>>,
     pub runtime_calls: Vec<&'static str>,
     pub bails_to_generic_path: bool,
+    pub bail_to_generic_reason: Option<WasmLirFallbackReason>,
 }

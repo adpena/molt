@@ -1,5 +1,6 @@
 use super::lir_context::LirLowerCtx;
 use super::lir_ops::{ArithOp, BitwiseOp, CmpOp, UnaryOp};
+use crate::wasm::body::WasmLirFallbackReason;
 use crate::wasm_values::push_f64_to_i64_canonical;
 use molt_codegen_abi::{
     INLINE_INT_BIAS, INLINE_INT_LIMIT, INT_MASK, INT_MAX_INLINE as INLINE_INT_MAX,
@@ -49,7 +50,7 @@ pub(super) fn emit_lir_binary_arith(ctx: &mut LirLowerCtx, op: &LirOp, arith: Ar
         // are value-range-proven inside the 47-bit inline window.
         emit_box_inline_i64(ctx, lhs);
         emit_box_inline_i64(ctx, rhs);
-        ctx.emit_bail_to_generic_path();
+        ctx.emit_bail_to_generic_path(WasmLirFallbackReason::BoxedCheckedArithmetic);
         ctx.emit_set(overflow_box);
         ctx.instructions.push(Instruction::I32Const(1));
         ctx.emit_set(overflow_flag);
@@ -203,7 +204,7 @@ pub(super) fn emit_lir_unary_arith(ctx: &mut LirLowerCtx, op: &LirOp, _unary: Un
         }
         _ => {
             ctx.emit_get(src);
-            ctx.emit_bail_to_generic_path();
+            ctx.emit_bail_to_generic_path(WasmLirFallbackReason::BoxedUnaryArithmetic);
             ctx.emit_set(dst);
             return;
         }
@@ -396,7 +397,7 @@ pub(super) fn emit_lir_i64_binary_or_boxed(
     } else {
         emit_get_boxed_for_repr(ctx, lhs);
         emit_get_boxed_for_repr(ctx, rhs);
-        ctx.emit_bail_to_generic_path();
+        ctx.emit_bail_to_generic_path(WasmLirFallbackReason::BoxedBitwiseOrShift);
     }
     ctx.emit_set(dst);
 }

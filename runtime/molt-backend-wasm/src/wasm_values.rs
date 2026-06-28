@@ -14,8 +14,7 @@ pub(crate) use int_box::{
     emit_unbox_int_local_trusted_opt, emit_unbox_int_local_trusted_tee_opt,
 };
 pub(crate) use molt_codegen_abi::{
-    INT_MASK, POINTER_MASK, box_bool_bits as box_bool, box_float_bits as box_float,
-    box_int_bits as box_int, box_none_bits as box_none, box_pending_bits as box_pending,
-    stable_ic_site_id,
+    INT_MASK, POINTER_MASK, box_bool_bits as box_bool, box_int_bits as box_int,
+    box_none_bits as box_none, box_pending_bits as box_pending, stable_ic_site_id,
 };
 pub(crate) use truthiness::emit_branch_truthiness_i32;
