@@ -8,9 +8,10 @@ use super::lir_runtime_ops::{
     emit_lir_store_index, emit_lir_unsupported_marker,
 };
 use super::lir_scalar::{
-    emit_get_boxed_for_repr, emit_lir_binary_arith, emit_lir_bitwise, emit_lir_bool_select,
-    emit_lir_comparison, emit_lir_i64_binary_or_boxed, emit_lir_identity_comparison,
-    emit_lir_truthiness_i32, emit_lir_unary_arith, emit_lir_unary_pos,
+    ArithOp, BitwiseOp, CmpOp, ShiftOp, UnaryOp, emit_get_boxed_for_repr, emit_lir_binary_arith,
+    emit_lir_bit_not, emit_lir_bitwise, emit_lir_bool, emit_lir_bool_select, emit_lir_checked_add,
+    emit_lir_checked_mul, emit_lir_comparison, emit_lir_identity_comparison, emit_lir_not,
+    emit_lir_shift, emit_lir_truthy_cond_builtin, emit_lir_unary_arith, emit_lir_unary_pos,
 };
 use super::runtime_calls::preserved_copy_runtime_call;
 use crate::wasm::body::WasmLirFallbackReason;
@@ -20,75 +21,7 @@ use crate::wasm_abi_generated::{WasmConstLirFastPolicy, WasmConstScalarValue};
 use molt_codegen_abi::box_none_bits;
 use molt_tir::tir::lir::{LirBlock, LirOp, LirRepr};
 use molt_tir::tir::ops::{AttrValue, OpCode};
-use molt_tir::tir::values::ValueId;
-use wasm_encoder::{BlockType, Ieee64, Instruction, ValType};
-
-#[derive(Clone, Copy)]
-pub(super) enum ArithOp {
-    Add,
-    Sub,
-    Mul,
-    Div,
-    FloorDiv,
-    Mod,
-}
-
-#[derive(Clone, Copy)]
-pub(super) enum UnaryOp {
-    Neg,
-}
-
-#[derive(Clone, Copy)]
-pub(super) enum CmpOp {
-    Eq,
-    Ne,
-    Lt,
-    Le,
-    Gt,
-    Ge,
-}
-
-#[derive(Clone, Copy)]
-pub(super) enum BitwiseOp {
-    And,
-    Or,
-    Xor,
-}
-
-fn emit_checked_mul_overflow_flag(
-    ctx: &mut LirLowerCtx,
-    lhs: ValueId,
-    rhs: ValueId,
-    product: ValueId,
-) {
-    ctx.emit_get(lhs);
-    ctx.instructions.push(Instruction::I64Const(0));
-    ctx.instructions.push(Instruction::I64Eq);
-    ctx.instructions
-        .push(Instruction::If(BlockType::Result(ValType::I32)));
-    ctx.instructions.push(Instruction::I32Const(0));
-    ctx.instructions.push(Instruction::Else);
-
-    ctx.emit_get(lhs);
-    ctx.instructions.push(Instruction::I64Const(-1));
-    ctx.instructions.push(Instruction::I64Eq);
-    ctx.emit_get(rhs);
-    ctx.instructions.push(Instruction::I64Const(i64::MIN));
-    ctx.instructions.push(Instruction::I64Eq);
-    ctx.instructions.push(Instruction::I32And);
-    ctx.instructions
-        .push(Instruction::If(BlockType::Result(ValType::I32)));
-    ctx.instructions.push(Instruction::I32Const(1));
-    ctx.instructions.push(Instruction::Else);
-    ctx.emit_get(product);
-    ctx.emit_get(lhs);
-    ctx.instructions.push(Instruction::I64DivS);
-    ctx.emit_get(rhs);
-    ctx.instructions.push(Instruction::I64Ne);
-    ctx.instructions.push(Instruction::End);
-
-    ctx.instructions.push(Instruction::End);
-}
+use wasm_encoder::{Ieee64, Instruction, ValType};
 
 pub(super) fn emit_lir_block_ops(ctx: &mut LirLowerCtx, block: &LirBlock) {
     for op in &block.ops {
@@ -219,96 +152,8 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
             }
         },
         OpCode::Add | OpCode::InplaceAdd => emit_lir_binary_arith(ctx, op, ArithOp::Add),
-        OpCode::CheckedAdd => {
-            // (sum, flag) = signed-i64 add. A TOTAL function with two lanes:
-            //
-            // RAW lane (both operands LirRepr::I64): EXACT overflow detection
-            // at 2^63 (NOT the 47-bit inline-range triple above — that fires
-            // 2^16x too early for the overflow_peel fast loop). WASM has no
-            // add-with-overflow instruction; the sign-bit identity
-            // ((lhs ^ sum) & (rhs ^ sum)) < 0 is exact: overflow occurred
-            // iff both operands share a sign and the sum's sign differs.
-            //
-            // BOXED lane (any operand unproven — the v1 state on WASM, whose
-            // value-keyed RawI64Safe is a 47-bit-window contract that cannot
-            // carry an unbounded accumulator): dispatch through the runtime
-            // add with both operands NaN-boxed — BigInt-exact, so the sum
-            // can never silently wrap and the flag is CONSTANT FALSE (the
-            // peel's slow path is correctly dead; same semantics, no speedup
-            // until the RawI64Full lattice extension lands).
-            assert!(
-                tir_op.operands.len() >= 2 && op.result_values.len() >= 2,
-                "checked_add requires 2 operands and 2 results"
-            );
-            let lhs = tir_op.operands[0];
-            let rhs = tir_op.operands[1];
-            let sum = op.result_values[0].id;
-            let flag = op.result_values[1].id;
-            if matches!(ctx.repr_of(lhs), LirRepr::I64) && matches!(ctx.repr_of(rhs), LirRepr::I64)
-            {
-                ctx.emit_get(lhs);
-                ctx.emit_get(rhs);
-                ctx.instructions.push(Instruction::I64Add);
-                ctx.emit_set(sum);
-                ctx.emit_get(lhs);
-                ctx.emit_get(sum);
-                ctx.instructions.push(Instruction::I64Xor);
-                ctx.emit_get(rhs);
-                ctx.emit_get(sum);
-                ctx.instructions.push(Instruction::I64Xor);
-                ctx.instructions.push(Instruction::I64And);
-                ctx.instructions.push(Instruction::I64Const(0));
-                ctx.instructions.push(Instruction::I64LtS);
-                ctx.emit_set(flag);
-            } else {
-                emit_get_boxed_for_repr(ctx, lhs);
-                emit_get_boxed_for_repr(ctx, rhs);
-                ctx.emit_bail_to_generic_path(WasmLirFallbackReason::BoxedCheckedArithmetic);
-                ctx.emit_set(sum);
-                ctx.instructions.push(Instruction::I32Const(0));
-                ctx.emit_set(flag);
-            }
-        }
-        OpCode::CheckedMul => {
-            // (product, flag) = signed-i64 multiply.
-            //
-            // RAW lane (both operands and the product carrier are raw i64):
-            // emit the wrapping product and an exact overflow predicate using
-            // the identity `product / lhs == rhs` when `lhs != 0`, with the
-            // `-1 * i64::MIN` trap case classified before the division. The
-            // wrapped product is observable only when the flag is false.
-            //
-            // BOXED/unproven lane: do not pretend a boxed runtime `mul` can
-            // populate the raw full-i64 product carrier. That carrier mismatch
-            // still belongs to the explicit guarded generic fallback until the
-            // upstream representation plan admits a boxed checked-result lane.
-            assert!(
-                tir_op.operands.len() >= 2 && op.result_values.len() >= 2,
-                "checked_mul requires 2 operands and 2 results"
-            );
-            let lhs = tir_op.operands[0];
-            let rhs = tir_op.operands[1];
-            let product = op.result_values[0].id;
-            let flag = op.result_values[1].id;
-            if matches!(ctx.repr_of(lhs), LirRepr::I64)
-                && matches!(ctx.repr_of(rhs), LirRepr::I64)
-                && op.result_values[0].repr == LirRepr::I64
-            {
-                ctx.emit_get(lhs);
-                ctx.emit_get(rhs);
-                ctx.instructions.push(Instruction::I64Mul);
-                ctx.emit_set(product);
-                emit_checked_mul_overflow_flag(ctx, lhs, rhs, product);
-                ctx.emit_set(flag);
-            } else {
-                emit_get_boxed_for_repr(ctx, lhs);
-                emit_get_boxed_for_repr(ctx, rhs);
-                ctx.emit_bail_to_generic_path(WasmLirFallbackReason::BoxedCheckedArithmetic);
-                ctx.emit_set(product);
-                ctx.instructions.push(Instruction::I32Const(0));
-                ctx.emit_set(flag);
-            }
-        }
+        OpCode::CheckedAdd => emit_lir_checked_add(ctx, op),
+        OpCode::CheckedMul => emit_lir_checked_mul(ctx, op),
         OpCode::Sub | OpCode::InplaceSub => emit_lir_binary_arith(ctx, op, ArithOp::Sub),
         OpCode::Mul | OpCode::InplaceMul => emit_lir_binary_arith(ctx, op, ArithOp::Mul),
         OpCode::Div => emit_lir_binary_arith(ctx, op, ArithOp::Div),
@@ -393,101 +238,23 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
         OpCode::BitAnd => emit_lir_bitwise(ctx, op, BitwiseOp::And),
         OpCode::BitOr => emit_lir_bitwise(ctx, op, BitwiseOp::Or),
         OpCode::BitXor => emit_lir_bitwise(ctx, op, BitwiseOp::Xor),
-        OpCode::BitNot => {
-            if let (Some(&src), Some(result)) = (tir_op.operands.first(), op.result_values.first())
-            {
-                // `~x` is a bare `x ^ -1` only when `x` is a proven raw i64; an
-                // unproven (`DynBox`/`MaybeBigInt`) operand must dispatch through
-                // the runtime helper (a raw `I64Xor` on a NaN-boxed word would be
-                // a miscompile). On the production fast path the typed bail
-                // call dispatches through the BigInt-correct runtime helper.
-                if ctx.repr_of(src) == LirRepr::I64 {
-                    ctx.emit_get(src);
-                    ctx.instructions.push(Instruction::I64Const(-1));
-                    ctx.instructions.push(Instruction::I64Xor);
-                } else {
-                    emit_get_boxed_for_repr(ctx, src);
-                    ctx.emit_runtime_call(LirRuntimeCall::Invert);
-                }
-                ctx.emit_set(result.id);
-            }
-        }
-        OpCode::Shl => {
-            if tir_op.operands.len() >= 2
-                && let Some(result) = op.result_values.first()
-            {
-                let result_id = result.id;
-                let result_repr = result.repr;
-                // Shifts REQUIRE the raw-result proof: a raw `i64.shl` whose
-                // count is >= 64 masks mod 64 (wrong value) and a `<<` result can
-                // exceed i64. The value-range seed grants `LirRepr::I64` only when
-                // the count is range-proven `[0, 63]` and the result fits inline.
-                emit_lir_i64_binary_or_boxed(
-                    ctx,
-                    tir_op.operands[0],
-                    tir_op.operands[1],
-                    result_id,
-                    result_repr,
-                    Instruction::I64Shl,
-                    true,
-                    LirRuntimeCall::LShift,
-                );
-            }
-        }
-        OpCode::Shr => {
-            if tir_op.operands.len() >= 2
-                && let Some(result) = op.result_values.first()
-            {
-                let result_id = result.id;
-                let result_repr = result.repr;
-                emit_lir_i64_binary_or_boxed(
-                    ctx,
-                    tir_op.operands[0],
-                    tir_op.operands[1],
-                    result_id,
-                    result_repr,
-                    Instruction::I64ShrS,
-                    true,
-                    LirRuntimeCall::RShift,
-                );
-            }
-        }
-        OpCode::Not => {
-            if let (Some(&src), Some(result)) = (tir_op.operands.first(), op.result_values.first())
-            {
-                if result.repr == LirRepr::Bool1 {
-                    emit_lir_truthiness_i32(ctx, src);
-                    ctx.instructions.push(Instruction::I32Eqz);
-                } else {
-                    emit_get_boxed_for_repr(ctx, src);
-                    ctx.emit_runtime_call(LirRuntimeCall::Not);
-                }
-                ctx.emit_set(result.id);
-            }
-        }
+        OpCode::BitNot => emit_lir_bit_not(ctx, op),
+        OpCode::Shl => emit_lir_shift(ctx, op, ShiftOp::Left),
+        OpCode::Shr => emit_lir_shift(ctx, op, ShiftOp::Right),
+        OpCode::Not => emit_lir_not(ctx, op),
         OpCode::And | OpCode::Or => {
             if tir_op.operands.len() >= 2 && !op.result_values.is_empty() {
                 emit_lir_bool_select(ctx, op, tir_op.opcode == OpCode::And);
             }
         }
-        OpCode::Bool => {
-            if let (Some(&src), Some(result)) = (tir_op.operands.first(), op.result_values.first())
-            {
-                emit_lir_truthiness_i32(ctx, src);
-                ctx.emit_set(result.id);
-            }
-        }
+        OpCode::Bool => emit_lir_bool(ctx, op),
         OpCode::CallBuiltin
             if matches!(
                 tir_op.attrs.get("lir.truthy_cond"),
                 Some(AttrValue::Bool(true))
             ) =>
         {
-            if let (Some(&src), Some(result)) = (tir_op.operands.first(), op.result_values.first())
-            {
-                emit_lir_truthiness_i32(ctx, src);
-                ctx.emit_set(result.id);
-            }
+            emit_lir_truthy_cond_builtin(ctx, op);
         }
         OpCode::Call
         | OpCode::CallMethod
