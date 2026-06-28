@@ -242,9 +242,11 @@ def test_wasm_abi_manifest_owns_const_op_policy() -> None:
     assert policies["const_str"]["materializer_import"] == "string_from_bytes"
     assert policies["const_str"]["literal_payload"] == "string"
     assert policies["const_str"]["parse_scalar_literal"] is True
+    assert policies["const_str"]["lir_fast"] == "bail_generic"
     assert policies["const_bytes"]["materializer_import"] == "bytes_from_bytes"
     assert policies["const_bytes"]["literal_payload"] == "bytes"
     assert policies["const_bytes"]["parse_scalar_literal"] is True
+    assert policies["const_bytes"]["lir_fast"] == "bail_generic"
     assert policies["const_bigint"]["materializer_import"] == "bigint_from_str"
     assert policies["const_bigint"]["literal_payload"] == "bigint_decimal"
     assert policies["const_bigint"]["parse_scalar_literal"] is False
@@ -259,6 +261,7 @@ def test_wasm_abi_manifest_owns_const_op_policy() -> None:
     assert "WASM_CONST_OP_POLICIES" in rendered_rs
     assert "WasmConstLiteralPayload::BigintDecimal" in rendered_rs
     assert "wasm_const_op_policy" in rendered_rs
+    assert "PlaceholderZero" not in rendered_rs
     assert "WASM_CONST_OP_POLICIES" in rendered_py
 
 

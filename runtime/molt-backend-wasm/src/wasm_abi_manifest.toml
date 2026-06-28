@@ -6729,7 +6729,7 @@ literal_payload = "string"
 dispatch_runtime_seed = true
 parse_scalar_literal = true
 raw_int_effect = "clear"
-lir_fast = "placeholder_zero"
+lir_fast = "bail_generic"
 
 [[const_op_policy]]
 kind = "const_bigint"
@@ -6747,7 +6747,7 @@ literal_payload = "bytes"
 dispatch_runtime_seed = true
 parse_scalar_literal = true
 raw_int_effect = "clear"
-lir_fast = "placeholder_zero"
+lir_fast = "bail_generic"
 
 [[op_import_dep]]
 kind = "coroutine"

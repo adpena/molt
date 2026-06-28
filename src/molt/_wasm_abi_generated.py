@@ -2244,9 +2244,9 @@ WASM_CONST_OP_POLICIES: tuple[tuple[str, str, str | None, str, bool, bool, str, 
     ("const_none", "none_value", None, "none", False, False, "clear", "lower"),
     ("const_not_implemented", "none", "not_implemented", "none", True, False, "clear", "bail_generic"),
     ("const_ellipsis", "none", "ellipsis", "none", True, False, "clear", "bail_generic"),
-    ("const_str", "none", "string_from_bytes", "string", True, True, "clear", "placeholder_zero"),
+    ("const_str", "none", "string_from_bytes", "string", True, True, "clear", "bail_generic"),
     ("const_bigint", "none", "bigint_from_str", "bigint_decimal", True, False, "clear", "bail_generic"),
-    ("const_bytes", "none", "bytes_from_bytes", "bytes", True, True, "clear", "placeholder_zero"),
+    ("const_bytes", "none", "bytes_from_bytes", "bytes", True, True, "clear", "bail_generic"),
 )
 
 WASM_REQUIRED_RUNTIME_IMPORT_PREFIXES: tuple[str, ...] = (
