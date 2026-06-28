@@ -5,7 +5,7 @@ use super::lir_runtime_ops::{
     emit_lir_build_slice, emit_lir_closure_load, emit_lir_closure_store, emit_lir_del_index,
     emit_lir_exception_pending, emit_lir_get_iter, emit_lir_index, emit_lir_iter_next,
     emit_lir_membership, emit_lir_object_new_bound, emit_lir_sequence_builder,
-    emit_lir_store_index, emit_lir_unsupported_marker,
+    emit_lir_store_index, emit_lir_unsupported_marker, original_kind,
 };
 use super::lir_scalar::{
     ArithOp, BitwiseOp, CmpOp, ShiftOp, UnaryOp, emit_get_boxed_for_repr, emit_lir_binary_arith,
@@ -347,12 +347,5 @@ fn emit_lir_copy_or_original_kind(ctx: &mut LirLowerCtx, op: &LirOp) {
         }
         Some(_) => emit_lir_unsupported_marker(ctx, op),
         None => emit_lir_identity_copy(ctx, op),
-    }
-}
-
-fn original_kind(op: &LirOp) -> Option<&str> {
-    match op.tir_op.attrs.get("_original_kind") {
-        Some(AttrValue::Str(kind)) => Some(kind.as_str()),
-        _ => None,
     }
 }
