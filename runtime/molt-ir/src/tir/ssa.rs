@@ -188,8 +188,20 @@ impl<'a> SsaContext<'a> {
         self.source_sites.get(op_idx).copied().flatten()
     }
 
+    fn source_op_index_for_op(&self, op_idx: usize) -> usize {
+        let Some(op) = self.ops.get(op_idx) else {
+            return op_idx;
+        };
+        match op.source_op_idx {
+            Some(value) => usize::try_from(value).unwrap_or_else(|_| {
+                panic!("invalid negative source_op_idx {value} at op {op_idx}")
+            }),
+            None => op_idx,
+        }
+    }
+
     fn stamp_source_identity(&self, tir_op: &mut TirOp, op_idx: usize) {
-        tir_op.set_source_op_index(op_idx);
+        tir_op.set_source_op_index(self.source_op_index_for_op(op_idx));
         if let Some(site) = self.source_site_for_op(op_idx) {
             tir_op.set_source_site(site);
         }
@@ -786,6 +798,42 @@ mod tests {
             .find(|op| op.opcode == OpCode::Add)
             .expect("add op should be emitted");
         assert_eq!(add.source_op_index(), Some(1));
+    }
+
+    #[test]
+    fn ssa_lift_preserves_transport_source_op_index() {
+        let ops = vec![
+            op_val_out("const", 5, "x"),
+            OpIR {
+                kind: "add".into(),
+                args: Some(vec!["x".into(), "3".into()]),
+                out: Some("y".into()),
+                source_op_idx: Some(41),
+                ..OpIR::default()
+            },
+            op_args("ret", &["y"]),
+        ];
+        let cfg = CFG::build(&ops);
+        let output = convert_to_ssa(&cfg, &ops);
+
+        let inline_three = output
+            .blocks
+            .iter()
+            .flat_map(|block| block.ops.iter())
+            .find(|op| {
+                op.opcode == OpCode::ConstInt
+                    && matches!(op.attrs.get("value"), Some(AttrValue::Int(3)))
+            })
+            .expect("inline const arg should be emitted");
+        assert_eq!(inline_three.source_op_index(), Some(41));
+
+        let add = output
+            .blocks
+            .iter()
+            .flat_map(|block| block.ops.iter())
+            .find(|op| op.opcode == OpCode::Add)
+            .expect("add op should be emitted");
+        assert_eq!(add.source_op_index(), Some(41));
     }
 
     #[test]

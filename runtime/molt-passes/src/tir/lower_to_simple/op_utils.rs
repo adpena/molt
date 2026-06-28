@@ -31,6 +31,10 @@ pub(super) fn annotate_type_flags(opir: &mut OpIR, tir_op: &TirOp) {
             opir.end_col_offset.get_or_insert(end_col as i64);
         }
     }
+    if let Some(op_idx) = tir_op.source_op_index() {
+        let value = i64::try_from(op_idx).expect("source op index exceeds i64");
+        opir.source_op_idx.get_or_insert(value);
+    }
 }
 
 pub(super) fn annotate_lowered_op(

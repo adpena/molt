@@ -284,6 +284,25 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         self.materialize_dynbox_bits(raw, &TirType::I64)
     }
 
+    pub(super) fn source_call_site_bits(
+        &self,
+        op: &TirOp,
+        lane: &str,
+    ) -> inkwell::values::IntValue<'ctx> {
+        let source_op_idx = op
+            .source_op_index()
+            .unwrap_or_else(|| panic!("{lane} requires source op index"));
+        let site_id =
+            molt_codegen_abi::stable_ic_site_id(self.func.name.as_str(), source_op_idx, lane);
+        let raw: BasicValueEnum<'ctx> = self
+            .backend
+            .context
+            .i64_type()
+            .const_int(site_id as u64, true)
+            .into();
+        self.materialize_dynbox_bits(raw, &TirType::I64)
+    }
+
     pub(super) fn generator_self_bits(&self) -> inkwell::values::IntValue<'ctx> {
         let idx = self
             .func
