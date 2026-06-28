@@ -716,6 +716,186 @@ fn raw_index_result_refuses_boxed_runtime_bits() {
     );
 }
 
+fn make_fixed_runtime_service_func(
+    name: &str,
+    opcode: OpCode,
+    operand_count: usize,
+    has_result: bool,
+) -> TirFunction {
+    let mut func = TirFunction::new(
+        name.into(),
+        vec![TirType::DynBox; operand_count],
+        if has_result {
+            TirType::DynBox
+        } else {
+            TirType::None
+        },
+    );
+    let result_id = has_result.then(|| {
+        let id = func.fresh_value();
+        func.value_types.insert(id, TirType::DynBox);
+        id
+    });
+    let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+    entry.ops.push(TirOp {
+        dialect: Dialect::Molt,
+        opcode,
+        operands: (0..operand_count).map(|idx| ValueId(idx as u32)).collect(),
+        results: result_id.into_iter().collect(),
+        attrs: AttrDict::new(),
+        source_span: None,
+    });
+    entry.terminator = Terminator::Return {
+        values: result_id.into_iter().collect(),
+    };
+    func
+}
+
+#[test]
+fn exception_pending_stays_lir_fast_with_bool_result_adapter() {
+    let mut func = TirFunction::new("exception_pending".into(), vec![], TirType::Bool);
+    let result_id = func.fresh_value();
+    func.value_types.insert(result_id, TirType::Bool);
+    let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+    entry.ops.push(TirOp {
+        dialect: Dialect::Molt,
+        opcode: OpCode::ExceptionPending,
+        operands: vec![],
+        results: vec![result_id],
+        attrs: AttrDict::new(),
+        source_span: None,
+    });
+    entry.terminator = Terminator::Return {
+        values: vec![result_id],
+    };
+
+    let output = lower_tir_to_wasm(&func).test_view();
+
+    assert!(
+        !output.bails_to_generic_path,
+        "exception_pending must stay in the LIR fast lane"
+    );
+    assert_eq!(output.result_types, vec![ValType::I32]);
+    assert!(
+        output.runtime_calls.contains(&"exception_pending"),
+        "exception_pending must call the typed runtime import; got {:?}",
+        output.runtime_calls
+    );
+    assert!(
+        output
+            .instructions
+            .iter()
+            .any(|instruction| matches!(instruction, Instruction::I64Ne)),
+        "exception_pending raw i64 flag must be adapted to a Bool1 result"
+    );
+}
+
+#[test]
+fn fixed_runtime_service_and_module_ops_stay_lir_fast_runtime_calls() {
+    let cases = [
+        (
+            "function_defaults_version",
+            OpCode::FunctionDefaultsVersion,
+            1,
+            true,
+            "function_defaults_version",
+        ),
+        (
+            "module_cache_get",
+            OpCode::ModuleCacheGet,
+            1,
+            true,
+            "module_cache_get",
+        ),
+        (
+            "module_cache_set",
+            OpCode::ModuleCacheSet,
+            2,
+            false,
+            "module_cache_set",
+        ),
+        (
+            "module_cache_del",
+            OpCode::ModuleCacheDel,
+            1,
+            false,
+            "module_cache_del",
+        ),
+        (
+            "module_get_attr",
+            OpCode::ModuleGetAttr,
+            2,
+            true,
+            "module_get_attr",
+        ),
+        (
+            "module_import_from",
+            OpCode::ModuleImportFrom,
+            2,
+            true,
+            "module_import_from",
+        ),
+        (
+            "module_get_global",
+            OpCode::ModuleGetGlobal,
+            2,
+            true,
+            "module_get_global",
+        ),
+        (
+            "module_get_name",
+            OpCode::ModuleGetName,
+            2,
+            true,
+            "module_get_name",
+        ),
+        (
+            "module_set_attr",
+            OpCode::ModuleSetAttr,
+            3,
+            false,
+            "module_set_attr",
+        ),
+        (
+            "module_del_global",
+            OpCode::ModuleDelGlobal,
+            2,
+            false,
+            "module_del_global",
+        ),
+        (
+            "module_del_global_if_present",
+            OpCode::ModuleDelGlobalIfPresent,
+            2,
+            false,
+            "module_del_global_if_present",
+        ),
+    ];
+
+    for (name, opcode, operand_count, has_result, runtime_call) in cases {
+        let func = make_fixed_runtime_service_func(name, opcode, operand_count, has_result);
+        let output = lower_tir_to_wasm(&func).test_view();
+
+        assert!(
+            !output.bails_to_generic_path,
+            "{name} must stay in the LIR fast lane"
+        );
+        assert!(
+            output.runtime_calls.contains(&runtime_call),
+            "{name} must call {runtime_call}; got {:?}",
+            output.runtime_calls
+        );
+        assert_eq!(
+            output
+                .instructions
+                .iter()
+                .any(|i| matches!(i, Instruction::Drop)),
+            !has_result,
+            "{name} must drop the runtime sentinel exactly when TIR has no result"
+        );
+    }
+}
+
 #[test]
 fn dynbox_binary_bitwise_and_shift_helpers_stay_lir_fast_runtime_calls() {
     let cases = [

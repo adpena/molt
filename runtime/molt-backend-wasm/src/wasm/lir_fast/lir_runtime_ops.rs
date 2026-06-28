@@ -2,6 +2,7 @@ use super::lir_context::LirLowerCtx;
 use super::lir_scalar::emit_get_boxed_for_repr;
 use super::runtime_calls::LirRuntimeCall;
 use crate::wasm::body::WasmLirFallbackReason;
+use molt_codegen_abi::QNAN_TAG_BOOL_I64;
 use molt_tir::tir::lir::{LirOp, LirRepr};
 use molt_tir::tir::types::TirType;
 use wasm_encoder::Instruction;
@@ -49,7 +50,7 @@ pub(super) fn emit_lir_del_index(ctx: &mut LirLowerCtx, op: &LirOp) {
     emit_lir_boxed_operands_runtime_call(ctx, op, LirRuntimeCall::DelIndex, 2);
 }
 
-fn emit_lir_boxed_operands_runtime_call(
+pub(super) fn emit_lir_boxed_operands_runtime_call(
     ctx: &mut LirLowerCtx,
     op: &LirOp,
     runtime_call: LirRuntimeCall,
@@ -63,6 +64,34 @@ fn emit_lir_boxed_operands_runtime_call(
     }
     ctx.emit_runtime_call(runtime_call);
     emit_lir_runtime_result(ctx, op);
+}
+
+pub(super) fn emit_lir_exception_pending(ctx: &mut LirLowerCtx, op: &LirOp) {
+    ctx.emit_runtime_call(LirRuntimeCall::ExceptionPending);
+    ctx.instructions.push(Instruction::I64Const(0));
+    ctx.instructions.push(Instruction::I64Ne);
+    let Some(result) = op.result_values.first() else {
+        ctx.instructions.push(Instruction::Drop);
+        return;
+    };
+    match result.repr {
+        LirRepr::Bool1 => ctx.emit_set(result.id),
+        LirRepr::DynBox | LirRepr::Ref64 => {
+            ctx.instructions.push(Instruction::I64ExtendI32U);
+            ctx.instructions
+                .push(Instruction::I64Const(QNAN_TAG_BOOL_I64));
+            ctx.instructions.push(Instruction::I64Or);
+            ctx.emit_set(result.id);
+        }
+        LirRepr::I64 => {
+            ctx.instructions.push(Instruction::I64ExtendI32U);
+            ctx.emit_set(result.id);
+        }
+        LirRepr::F64 => {
+            ctx.emit_bail_to_generic_path(WasmLirFallbackReason::UnsupportedOperation);
+            ctx.emit_set(result.id);
+        }
+    }
 }
 
 fn emit_lir_runtime_result(ctx: &mut LirLowerCtx, op: &LirOp) {
