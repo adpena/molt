@@ -1,5 +1,12 @@
 use super::super::result_sink::store_result_or_drop;
-use super::*;
+use super::RuntimeServiceOpContext;
+use crate::OpIR;
+use crate::wasm::WasmFrameSyntheticLocal;
+use crate::wasm_abi::{
+    GEN_CONTROL_SIZE, TASK_KIND_COROUTINE, TASK_KIND_FUTURE, TASK_KIND_GENERATOR,
+};
+use crate::wasm_binary::{emit_call, emit_table_index_i64};
+use wasm_encoder::{Function, Instruction};
 
 pub(super) fn emit_async_task_runtime_op(
     context: &RuntimeServiceOpContext<'_>,
