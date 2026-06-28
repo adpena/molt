@@ -2,14 +2,12 @@ use crate::representation_plan::ScalarRepresentationPlan;
 use crate::wasm_abi::{
     CALL_INDIRECT_IMPORTS, CALL_INDIRECT_MAX_ARITY, GEN_CONTROL_SIZE, POLL_TABLE_IMPORTS,
     RESERVED_RUNTIME_CALLABLE_COUNT, RESERVED_RUNTIME_CALLABLE_SPECS, RUNTIME_CALLABLE_IMPORTS,
-    RuntimeCallableResult, TAG_EXCEPTION_FUNC_TYPE, TAG_EXCEPTION_INDEX, TASK_KIND_COROUTINE,
-    TASK_KIND_FUTURE, TASK_KIND_GENERATOR, TypeSectionExt, emit_static_type_section,
-    poll_table_import_slot,
+    RuntimeCallableResult, TAG_EXCEPTION_INDEX, TASK_KIND_COROUTINE, TASK_KIND_FUTURE,
+    TASK_KIND_GENERATOR, TypeSectionExt, emit_static_type_section, poll_table_import_slot,
 };
 use crate::wasm_binary::{
-    add_reloc_sections, emit_call, emit_call_indirect, emit_i32_const, emit_ref_func,
-    emit_return_call, emit_simple_call, emit_table_index_i64, encode_u32_leb128_padded,
-    strip_unused_imports, validate_wasm_sections,
+    emit_call, emit_call_indirect, emit_i32_const, emit_ref_func, emit_return_call,
+    emit_simple_call, emit_table_index_i64, encode_u32_leb128_padded,
 };
 use crate::wasm_data::{DataSegmentRef, WasmDataSegments};
 use crate::wasm_import_tracking::{TrackedImportIds, selected_import_id};
@@ -35,8 +33,7 @@ mod trampoline_analysis;
 use crate::wasm_plan::{
     DEFAULT_GPU_INTRINSIC_MANIFEST_NAMES,
     compute_lir_wasm_lowering_plans_from_final_ir_with_escaped, detect_multi_return_candidates,
-    emit_wasm_stage_audit, gpu_runtime_call_symbol, is_shared_drop_fact_marker,
-    simple_ir_stage_shape, wasm_scalar_integer_fast_path_for_op,
+    gpu_runtime_call_symbol, is_shared_drop_fact_marker, wasm_scalar_integer_fast_path_for_op,
     wasm_scalar_truthiness_fast_path_for_name, wasm_specialized_container_import,
 };
 use crate::wasm_values::{
@@ -58,8 +55,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use wasm_encoder::{
     BlockType, Catch, CodeSection, ConstExpr, ElementMode, ElementSection, ElementSegment,
     Elements, Encode, EntityType, ExportKind, ExportSection, Function, FunctionSection,
-    ImportSection, Instruction, MemorySection, MemoryType, Module, RawSection, RefType,
-    TableSection, TableType, TagKind, TagSection, TagType, TypeSection, ValType,
+    ImportSection, Instruction, MemorySection, Module, RefType, TableSection, TableType,
+    TypeSection, ValType,
 };
 #[cfg(test)]
 use wasmparser::{ExternalKind, Parser, Payload, TypeRef};
