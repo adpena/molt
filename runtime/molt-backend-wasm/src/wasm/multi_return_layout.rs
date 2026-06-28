@@ -1,9 +1,5 @@
-#[cfg(test)]
-use super::WasmFrameLocalKind;
 use super::WasmFrameLocals;
 use crate::FunctionIR;
-#[cfg(test)]
-use crate::OpIR;
 use std::collections::{BTreeMap, BTreeSet};
 use wasm_encoder::ValType;
 
@@ -125,7 +121,11 @@ fn tuple_indexes_immediately_follow(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{WasmFrameLocals, WasmMultiReturnLayout};
+    use crate::wasm::WasmFrameLocalKind;
+    use crate::{FunctionIR, OpIR};
+    use std::collections::BTreeMap;
+    use wasm_encoder::ValType;
 
     fn candidates(entries: &[(&str, usize)]) -> BTreeMap<String, usize> {
         entries

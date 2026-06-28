@@ -82,7 +82,7 @@ impl ClassDefLayout {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::ClassDefLayout;
 
     #[test]
     fn class_def_layout_parses_full_metadata_once() {
