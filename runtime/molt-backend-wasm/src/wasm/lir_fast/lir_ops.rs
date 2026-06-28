@@ -1,7 +1,8 @@
 use super::lir_context::LirLowerCtx;
 use super::lir_scalar::{
     emit_get_boxed_for_repr, emit_lir_binary_arith, emit_lir_bitwise, emit_lir_bool_select,
-    emit_lir_comparison, emit_lir_i64_binary_or_boxed, emit_lir_unary_arith,
+    emit_lir_comparison, emit_lir_i64_binary_or_boxed, emit_lir_truthiness_i32,
+    emit_lir_unary_arith,
 };
 use crate::wasm::body::WasmLirFallbackReason;
 use crate::wasm::const_materialization::{WasmConstMaterializationScratch, WasmConstOpPolicy};
@@ -285,15 +286,14 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
                 // unproven (`DynBox`/`MaybeBigInt`) operand must dispatch through
                 // the runtime helper (a raw `I64Xor` on a NaN-boxed word would be
                 // a miscompile). On the production fast path the typed bail
-                // marker rejects this body and keeps execution on the guarded
-                // slow path.
+                // call dispatches through the BigInt-correct runtime helper.
                 if ctx.repr_of(src) == LirRepr::I64 {
                     ctx.emit_get(src);
                     ctx.instructions.push(Instruction::I64Const(-1));
                     ctx.instructions.push(Instruction::I64Xor);
                 } else {
                     emit_get_boxed_for_repr(ctx, src);
-                    ctx.emit_bail_to_generic_path(WasmLirFallbackReason::BoxedBitwiseOrShift);
+                    ctx.emit_runtime_call(LirRuntimeCall::Invert);
                 }
                 ctx.emit_set(result.id);
             }
@@ -316,6 +316,7 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
                     result_repr,
                     Instruction::I64Shl,
                     true,
+                    LirRuntimeCall::LShift,
                 );
             }
         }
@@ -333,14 +334,20 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
                     result_repr,
                     Instruction::I64ShrS,
                     true,
+                    LirRuntimeCall::RShift,
                 );
             }
         }
         OpCode::Not => {
             if let (Some(&src), Some(result)) = (tir_op.operands.first(), op.result_values.first())
             {
-                ctx.emit_get(src);
-                ctx.instructions.push(Instruction::I32Eqz);
+                if result.repr == LirRepr::Bool1 {
+                    emit_lir_truthiness_i32(ctx, src);
+                    ctx.instructions.push(Instruction::I32Eqz);
+                } else {
+                    emit_get_boxed_for_repr(ctx, src);
+                    ctx.emit_runtime_call(LirRuntimeCall::Not);
+                }
                 ctx.emit_set(result.id);
             }
         }
@@ -352,19 +359,7 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
         OpCode::Bool => {
             if let (Some(&src), Some(result)) = (tir_op.operands.first(), op.result_values.first())
             {
-                match ctx.repr_of(src) {
-                    LirRepr::Bool1 => ctx.emit_get(src),
-                    LirRepr::F64 => {
-                        ctx.emit_get(src);
-                        ctx.instructions
-                            .push(Instruction::F64Const(Ieee64::from(0.0)));
-                        ctx.instructions.push(Instruction::F64Ne);
-                    }
-                    _ => {
-                        ctx.emit_get(src);
-                        ctx.emit_bail_to_generic_path(WasmLirFallbackReason::BoxedTruthiness);
-                    }
-                }
+                emit_lir_truthiness_i32(ctx, src);
                 ctx.emit_set(result.id);
             }
         }
@@ -376,19 +371,7 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
         {
             if let (Some(&src), Some(result)) = (tir_op.operands.first(), op.result_values.first())
             {
-                match ctx.repr_of(src) {
-                    LirRepr::Bool1 => ctx.emit_get(src),
-                    LirRepr::F64 => {
-                        ctx.emit_get(src);
-                        ctx.instructions
-                            .push(Instruction::F64Const(Ieee64::from(0.0)));
-                        ctx.instructions.push(Instruction::F64Ne);
-                    }
-                    _ => {
-                        ctx.emit_get(src);
-                        ctx.emit_bail_to_generic_path(WasmLirFallbackReason::BoxedTruthiness);
-                    }
-                }
+                emit_lir_truthiness_i32(ctx, src);
                 ctx.emit_set(result.id);
             }
         }
