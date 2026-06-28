@@ -1,4 +1,4 @@
-use super::super::call_site_abi::WasmCallSiteAbi;
+use super::super::module_abi::WasmCallableCallSiteAbi;
 use super::super::multi_return_layout::WasmMultiReturnLayout;
 use crate::wasm::WasmFrameLocals;
 use crate::wasm_binary::{emit_call, emit_table_index_i64};
@@ -22,7 +22,7 @@ pub(super) enum CallOpEmission {
 
 pub(super) struct CallOpContext<'a, 'ctx, 'm> {
     pub(super) func_ir: &'a FunctionIR,
-    pub(super) call_site_abi: &'a WasmCallSiteAbi<'ctx>,
+    pub(super) call_site_abi: &'a WasmCallableCallSiteAbi<'ctx>,
     pub(super) import_ids: &'a TrackedImportIds,
     pub(super) runtime_lookup_only_vars: &'a BTreeSet<String>,
     pub(super) locals: &'a WasmFrameLocals,

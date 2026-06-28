@@ -1,4 +1,4 @@
-use super::super::call_site_abi::WasmCallSiteAbi;
+use super::super::module_abi::WasmCallableCallSiteAbi;
 use crate::OpIR;
 use crate::wasm::WasmFrameLocals;
 use crate::wasm_import_tracking::TrackedImportIds;
@@ -14,7 +14,7 @@ mod linear_memory_ops;
 mod module_ops;
 
 pub(super) struct RuntimeServiceOpContext<'a> {
-    pub(super) call_site_abi: &'a WasmCallSiteAbi<'a>,
+    pub(super) call_site_abi: &'a WasmCallableCallSiteAbi<'a>,
     pub(super) import_ids: &'a TrackedImportIds,
     pub(super) locals: &'a WasmFrameLocals,
     pub(super) const_cache: &'a ConstantCache,

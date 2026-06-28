@@ -6,34 +6,37 @@ use wasm_encoder::{
     Instruction,
 };
 
+mod call_site;
 mod layout;
 mod runtime_callables;
 mod trampoline_emit;
 
 use crate::TrampolineSpec;
+use crate::passes::ReturnAliasSummary;
 use crate::wasm::WasmBackend;
 use crate::wasm_binary::{emit_call, emit_i32_const, emit_ref_func, encode_u32_leb128_padded};
 use crate::wasm_data::DataSegmentRef;
+pub(in crate::wasm) use call_site::WasmCallableCallSiteAbi;
 
 pub(super) struct WasmCallableTablePlan {
-    pub(super) table_base: u32,
-    pub(super) table_indices: Vec<u32>,
-    pub(super) split_runtime_owned_slot_start: usize,
-    pub(super) split_runtime_shared_abi_slot_end: usize,
-    pub(super) func_to_table_idx: BTreeMap<String, u32>,
-    pub(super) func_to_index: BTreeMap<String, u32>,
-    pub(super) func_to_trampoline_idx: BTreeMap<String, u32>,
-    pub(super) closure_functions: BTreeSet<String>,
-    pub(super) trampoline_entries: Vec<WasmCallableTrampolineEntry>,
+    table_base: u32,
+    table_indices: Vec<u32>,
+    split_runtime_owned_slot_start: usize,
+    split_runtime_shared_abi_slot_end: usize,
+    func_to_table_idx: BTreeMap<String, u32>,
+    func_to_index: BTreeMap<String, u32>,
+    func_to_trampoline_idx: BTreeMap<String, u32>,
+    closure_functions: BTreeSet<String>,
+    trampoline_entries: Vec<WasmCallableTrampolineEntry>,
 }
 
 pub(super) struct WasmCallableTrampolineEntry {
-    pub(super) name: String,
-    pub(super) expected_func_index: u32,
-    pub(super) target_func_index: u32,
-    pub(super) table_index: u32,
-    pub(super) spec: TrampolineSpec,
-    pub(super) multi_return_count: Option<usize>,
+    name: String,
+    expected_func_index: u32,
+    target_func_index: u32,
+    table_index: u32,
+    spec: TrampolineSpec,
+    multi_return_count: Option<usize>,
 }
 
 pub(super) struct WasmCallableTableElements {
@@ -42,6 +45,20 @@ pub(super) struct WasmCallableTableElements {
 }
 
 impl WasmCallableTablePlan {
+    pub(super) fn call_site_abi<'a>(
+        &'a self,
+        escaped_callable_targets: &'a BTreeSet<String>,
+        call_func_spill_offset: u32,
+        return_alias_summaries: &'a BTreeMap<String, ReturnAliasSummary>,
+    ) -> WasmCallableCallSiteAbi<'a> {
+        WasmCallableCallSiteAbi::from_table_plan(
+            self,
+            escaped_callable_targets,
+            call_func_spill_offset,
+            return_alias_summaries,
+        )
+    }
+
     fn runtime_initialized_entries(&self) -> impl Iterator<Item = (usize, u32)> + '_ {
         self.table_indices
             .iter()
