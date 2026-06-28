@@ -59,6 +59,50 @@ fn lir_fast_literal_const_materialization_emits_valid_wasm() {
     );
 }
 
+#[test]
+fn generic_attr_ic_uses_transported_source_op_idx() {
+    let source_op_idx = 17;
+    let mut load_attr = wasm_test_op("get_attr_generic_obj", Some("value"), vec!["obj"]);
+    load_attr.s_value = Some("field".to_string());
+    load_attr.source_op_idx = Some(source_op_idx);
+    let mut ret = wasm_test_op("ret", None, vec!["value"]);
+    ret.var = Some("value".to_string());
+    let func = wasm_test_function("generic_attr_ic", vec!["obj"], None, vec![load_attr, ret]);
+    let ir = SimpleIR {
+        functions: vec![func],
+        profile: None,
+    };
+    let wasm = WasmBackend::with_options(WasmCompileOptions {
+        native_eh_enabled: false,
+        reloc_enabled: false,
+        ..WasmCompileOptions::default()
+    })
+    .compile(ir);
+
+    wasmparser::Validator::new()
+        .validate_all(&wasm)
+        .expect("generic attr IC lowering must emit valid WASM");
+
+    let expected_site_bits = molt_codegen_abi::box_int_bits(molt_codegen_abi::stable_ic_site_id(
+        "generic_attr_ic",
+        source_op_idx as usize,
+        "get_attr_generic_obj",
+    ));
+    assert!(
+        wasm_i64_consts(&wasm).contains(&expected_site_bits),
+        "generic WASM attr IC must use transported source_op_idx for site id"
+    );
+
+    let imports = wasm_function_import_indices(&wasm);
+    let get_attr_object_ic = *imports
+        .get("get_attr_object_ic")
+        .unwrap_or_else(|| panic!("get_attr_object_ic import missing; imports={imports:?}"));
+    assert!(
+        wasm_direct_call_indices(&wasm).contains(&get_attr_object_ic),
+        "generic WASM attr IC must call get_attr_object_ic"
+    );
+}
+
 fn wasm_test_function(
     name: &str,
     params: Vec<&str>,
@@ -262,6 +306,22 @@ fn wasm_direct_call_indices(wasm: &[u8]) -> Vec<u32> {
         }
     }
     calls
+}
+
+fn wasm_i64_consts(wasm: &[u8]) -> Vec<i64> {
+    let mut values = Vec::new();
+    for payload in Parser::new(0).parse_all(wasm) {
+        if let Ok(Payload::CodeSectionEntry(body)) = payload
+            && let Ok(mut ops) = body.get_operators_reader()
+        {
+            while let Ok(op) = ops.read() {
+                if let wasmparser::Operator::I64Const { value } = op {
+                    values.push(value);
+                }
+            }
+        }
+    }
+    values
 }
 
 fn wasm_data_segment_payloads(wasm: &[u8]) -> Vec<Vec<u8>> {

@@ -150,30 +150,27 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         };
         let name = self.intern_string_const(attr_name);
         let name_bits = self.ensure_i64(name);
-        let site_bits = self.next_call_site_bits("get_attr_generic_obj");
         let (attr_ptr_bits, attr_len_bits) = self.raw_string_const_ptr_len(attr_name);
-        let call_args_generic = [
-            obj_bits.into(),
-            attr_ptr_bits.into(),
-            attr_len_bits.into(),
-            site_bits.into(),
-        ];
         let call_args_name = [obj_bits.into(), name_bits.into()];
-        let val = self
-            .backend
-            .builder
-            .build_call(
-                get_fn,
-                if runtime_name == "molt_get_attr_object_ic" {
-                    &call_args_generic
-                } else {
-                    &call_args_name
-                },
-                runtime_name,
-            )
-            .unwrap()
-            .try_as_basic_value()
-            .unwrap_basic();
+        let val = if runtime_name == "molt_get_attr_object_ic" {
+            let site_bits = self.source_call_site_bits(op, "get_attr_generic_obj");
+            let call_args_generic = [
+                obj_bits.into(),
+                attr_ptr_bits.into(),
+                attr_len_bits.into(),
+                site_bits.into(),
+            ];
+            self.backend
+                .builder
+                .build_call(get_fn, &call_args_generic, runtime_name)
+        } else {
+            self.backend
+                .builder
+                .build_call(get_fn, &call_args_name, runtime_name)
+        }
+        .unwrap()
+        .try_as_basic_value()
+        .unwrap_basic();
         if runtime_name == "molt_get_attr_object_ic" {
             let inc_fn = self.ensure_runtime_void_fn("molt_inc_ref_obj", 1);
             let _ = self

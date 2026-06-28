@@ -33,9 +33,10 @@ pub(super) fn emit_attribute_op(
             let attr = op.s_value.as_ref().unwrap();
             let bytes = attr.as_bytes();
             let data = backend.add_data_segment(reloc_enabled, bytes);
+            let source_op_idx = required_source_op_idx(op, op_idx, "get_attr_generic_obj");
             let site_bits = box_int(stable_ic_site_id(
                 func_ir.name.as_str(),
-                op_idx,
+                source_op_idx,
                 "get_attr_generic_obj",
             ));
             func.instruction(&Instruction::LocalGet(obj));
@@ -192,4 +193,12 @@ pub(super) fn emit_attribute_op(
         _ => return false,
     }
     true
+}
+
+fn required_source_op_idx(op: &OpIR, op_idx: usize, kind: &str) -> usize {
+    match op.source_op_idx {
+        Some(value) => usize::try_from(value)
+            .unwrap_or_else(|_| panic!("{kind} has invalid negative source_op_idx {value}")),
+        None => panic!("{kind} at stream op {op_idx} requires transported source_op_idx"),
+    }
 }
