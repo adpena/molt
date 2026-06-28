@@ -80,7 +80,7 @@ CONST_POLICY_RAW_INT_EFFECTS = {
 }
 CONST_POLICY_LIR_FAST = {
     "lower",
-    "bail_generic",
+    "materialize",
 }
 CALL_INDIRECT_IMPORT_PREFIX = "molt_call_indirect"
 
@@ -305,7 +305,11 @@ def validate_loaded_manifest(data: dict) -> dict:
             raise WasmAbiManifestError(
                 f"const_op_policy {kind!r} has invalid raw_int_effect {raw_int_effect!r}"
             )
-        lir_fast = entry.get("lir_fast", "bail_generic")
+        lir_fast = entry.get("lir_fast")
+        if not isinstance(lir_fast, str) or not lir_fast:
+            raise WasmAbiManifestError(
+                f"const_op_policy {kind!r} must define lir_fast"
+            )
         if lir_fast not in CONST_POLICY_LIR_FAST:
             raise WasmAbiManifestError(
                 f"const_op_policy {kind!r} has invalid lir_fast {lir_fast!r}"
@@ -364,6 +368,10 @@ def validate_loaded_manifest(data: dict) -> dict:
         if lir_fast == "lower" and inline_seed == "none":
             raise WasmAbiManifestError(
                 f"const_op_policy {kind!r} cannot lower in LIR-fast without inline_seed"
+            )
+        if lir_fast == "materialize" and materializer_import is None:
+            raise WasmAbiManifestError(
+                f"const_op_policy {kind!r} cannot materialize in LIR-fast without materializer_import"
             )
         entry["inline_seed"] = inline_seed
         entry["literal_payload"] = literal_payload
@@ -861,7 +869,7 @@ def _render_rs_const_policy(data: dict) -> str:
             "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
             "pub(crate) enum WasmConstLirFastPolicy {\n",
             "    Lower,\n",
-            "    BailGeneric,\n",
+            "    Materialize,\n",
             "}\n\n",
             "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
             "pub(crate) struct WasmConstOpPolicySpec {\n",

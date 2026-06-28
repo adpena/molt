@@ -1,5 +1,5 @@
 use super::{WasmFrameLocalKind, WasmFrameLocals};
-use crate::wasm::constant_ops::WasmConstOpPolicy;
+use crate::wasm::const_materialization::WasmConstOpPolicy;
 use crate::wasm_abi_generated::WasmConstLiteralPayload;
 use wasm_encoder::ValType;
 
