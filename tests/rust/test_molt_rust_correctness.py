@@ -15,9 +15,11 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from pathlib import Path
 
 import pytest
 
+from molt.dx import development_artifact_env
 from tests.rust.process_guard import run_rust_test_process
 
 MOLT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -87,29 +89,35 @@ def _compile_and_run_rust(
         with open(py_path, "w") as f:
             f.write(python_source)
 
-        ext_root = os.environ.get("MOLT_EXT_ROOT", MOLT_DIR)
-        cargo_target = os.environ.get(
-            "CARGO_TARGET_DIR",
-            os.path.join(ext_root, "target"),
+        root = Path(MOLT_DIR)
+        env = development_artifact_env(
+            root,
+            os.environ,
+            session_prefix="rust-correctness",
+            session_id=os.environ.get("MOLT_SESSION_ID") or "rust-correctness",
+            create_dirs=True,
         )
-        env = {
-            **os.environ,
-            "MOLT_EXT_ROOT": ext_root,
-            "CARGO_TARGET_DIR": cargo_target,
-            "MOLT_USE_SCCACHE": "0",
-            "MOLT_BACKEND_DAEMON": "0",
-            "MOLT_DEV_CARGO_PROFILE": os.environ.get(
-                "MOLT_DEV_CARGO_PROFILE", "release-fast"
-            ),
-            "MOLT_BUILD_STATE_DIR": os.environ.get(
-                "MOLT_BUILD_STATE_DIR",
-                os.path.join(ext_root, "tmp", f"rust-tests-build-state-{os.getpid()}"),
-            ),
-            "RUSTC_WRAPPER": "",
-            "PYTHONPATH": os.path.join(MOLT_DIR, "src"),
-            "UV_LINK_MODE": os.environ.get("UV_LINK_MODE", "copy"),
-            "UV_NO_SYNC": os.environ.get("UV_NO_SYNC", "1"),
-        }
+        env.update(
+            {
+                "MOLT_USE_SCCACHE": "0",
+                "MOLT_BACKEND_DAEMON": "0",
+                "MOLT_DEV_CARGO_PROFILE": os.environ.get(
+                    "MOLT_DEV_CARGO_PROFILE", "release-fast"
+                ),
+                "MOLT_BUILD_STATE_DIR": os.environ.get(
+                    "MOLT_BUILD_STATE_DIR",
+                    os.path.join(
+                        env["MOLT_EXT_ROOT"],
+                        "tmp",
+                        f"rust-tests-build-state-{os.getpid()}",
+                    ),
+                ),
+                "RUSTC_WRAPPER": "",
+                "PYTHONPATH": os.path.join(MOLT_DIR, "src"),
+                "UV_LINK_MODE": os.environ.get("UV_LINK_MODE", "copy"),
+                "UV_NO_SYNC": os.environ.get("UV_NO_SYNC", "1"),
+            }
+        )
         build_timeout = int(os.environ.get("MOLT_RUST_BUILD_TIMEOUT", "1200"))
         py_exec = sys.executable or _find_cpython()
         build_cmd = [

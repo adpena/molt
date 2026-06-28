@@ -7,6 +7,7 @@ import sys
 import textwrap
 from pathlib import Path
 
+import molt.dx as molt_dx
 import pytest
 
 from tests.native_process_guard import run_native_test_process
@@ -229,7 +230,10 @@ def test_canonical_bench_env_preserves_explicit_roots_and_session(
     resolved_root = artifact_root.resolve()
     assert env["MOLT_EXT_ROOT"] == str(resolved_root)
     assert env["CARGO_TARGET_DIR"] == str(
-        resolved_root / "target" / "sessions" / env["MOLT_SESSION_ID"]
+        molt_dx.cargo_target_dir_for_artifact_root(
+            resolved_root,
+            env["MOLT_SESSION_ID"],
+        )
     )
     assert env["MOLT_CACHE"] == str(resolved_root / ".molt_cache")
     assert env["MOLT_DIFF_ROOT"] == str(resolved_root / "tmp" / "diff")
@@ -283,7 +287,10 @@ def test_canonical_bench_env_empty_base_ignores_ambient_artifact_env(
     assert env["MOLT_EXT_ROOT"] != str(ambient_root.resolve())
     assert env["CARGO_TARGET_DIR"] != str((ambient_root / "target").resolve())
     assert env["CARGO_TARGET_DIR"] == str(
-        Path(env["MOLT_EXT_ROOT"]) / "target" / "sessions" / env["MOLT_SESSION_ID"]
+        molt_dx.cargo_target_dir_for_artifact_root(
+            Path(env["MOLT_EXT_ROOT"]),
+            env["MOLT_SESSION_ID"],
+        )
     )
 
 

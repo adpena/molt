@@ -88,7 +88,7 @@ export MOLT_SERVER="$SERVER"
 if ! command -v molt-worker >/dev/null 2>&1; then
   CARGO_PROFILE="${MOLT_WORKER_CARGO_PROFILE:-dev-fast}"
   cargo build --profile "$CARGO_PROFILE" -p molt-worker
-  CARGO_ROOT="${CARGO_TARGET_DIR:-$ROOT/target}"
+  CARGO_ROOT="${CARGO_TARGET_DIR:-$ROOT/target/sessions/${MOLT_SESSION_ID:-demo-stack}}"
   WORKER_BIN="$CARGO_ROOT/$CARGO_PROFILE/molt-worker"
 else
   WORKER_BIN="$(command -v molt-worker)"

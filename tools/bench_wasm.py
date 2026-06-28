@@ -31,6 +31,7 @@ from molt.harness_conformance import (  # noqa: E402
     build_molt_conformance_env,
     ensure_molt_conformance_dirs,
 )
+from molt.dx import cargo_target_dir_for_artifact_root  # noqa: E402
 from molt.wasm_artifact import (  # noqa: E402
     _read_wasm_import_metrics,
     _read_wasm_table_min,
@@ -148,8 +149,8 @@ def _cargo_target_root() -> Path:
         return Path(env_root).expanduser()
     external_root = _external_root()
     if external_root is not None:
-        return external_root / "target"
-    return Path("target")
+        return cargo_target_dir_for_artifact_root(external_root, _wasm_session_id())
+    return cargo_target_dir_for_artifact_root(_repo_root(), _wasm_session_id())
 
 
 def _runtime_source_mtime() -> float:
@@ -453,7 +454,6 @@ def _base_env() -> dict[str, str]:
     env.setdefault("MOLT_FRONTEND_PHASE_TIMEOUT", "60")
     external_root = _external_root()
     if external_root is not None:
-        env.setdefault("CARGO_TARGET_DIR", str(external_root / "target"))
         env.setdefault("MOLT_WASM_RUNTIME_DIR", str(external_root / "wasm"))
     env.setdefault("MOLT_RUNTIME_WASM", str(RUNTIME_WASM))
     return env
@@ -557,7 +557,9 @@ def build_runtime_wasm(
     env = os.environ.copy()
     target_root = _cargo_target_root()
     if os.environ.get("MOLT_WASM_RUNTIME_FORCE_LOCAL_TARGET") == "1":
-        target_root = _repo_root() / "target"
+        target_root = cargo_target_dir_for_artifact_root(
+            _repo_root(), _wasm_session_id(env)
+        )
     env["CARGO_TARGET_DIR"] = str(target_root)
     if reloc:
         base_flags = (

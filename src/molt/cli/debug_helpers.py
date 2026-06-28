@@ -15,6 +15,7 @@ from typing import Any, Mapping, cast
 
 from molt.cli.capability_spec import _split_tokens
 from molt.cli.models import BuildProfile
+from molt.dx import development_artifact_env
 
 from molt.debug import (
     DebugFailureClass,
@@ -158,38 +159,14 @@ def _debug_eval_base_env(cwd: Path) -> dict[str, str]:
         if value:
             base_env[name] = value
 
-    ext_root = os.environ.get("MOLT_EXT_ROOT", str(cwd))
-    cargo_target_dir = os.environ.get(
-        "CARGO_TARGET_DIR", str(Path(ext_root) / "target")
+    base_env = development_artifact_env(
+        cwd,
+        base_env,
+        session_prefix="debug-eval",
+        session_id=os.environ.get("MOLT_SESSION_ID") or "debug-eval",
+        create_dirs=False,
     )
-    base_env.update(
-        {
-            "MOLT_EXT_ROOT": ext_root,
-            "CARGO_TARGET_DIR": cargo_target_dir,
-            "MOLT_DIFF_CARGO_TARGET_DIR": os.environ.get(
-                "MOLT_DIFF_CARGO_TARGET_DIR",
-                cargo_target_dir,
-            ),
-            "MOLT_CACHE": os.environ.get(
-                "MOLT_CACHE", str(Path(ext_root) / ".molt_cache")
-            ),
-            "MOLT_DIFF_ROOT": os.environ.get(
-                "MOLT_DIFF_ROOT",
-                str(Path(ext_root) / "tmp" / "diff"),
-            ),
-            "MOLT_DIFF_TMPDIR": os.environ.get(
-                "MOLT_DIFF_TMPDIR",
-                str(Path(ext_root) / "tmp"),
-            ),
-            "UV_CACHE_DIR": os.environ.get(
-                "UV_CACHE_DIR",
-                str(Path(ext_root) / ".uv-cache"),
-            ),
-            "TMPDIR": os.environ.get("TMPDIR", str(Path(ext_root) / "tmp")),
-            "MOLT_SESSION_ID": os.environ.get("MOLT_SESSION_ID", "debug-eval"),
-            "PYTHONHASHSEED": os.environ.get("PYTHONHASHSEED", "0"),
-        }
-    )
+    base_env["PYTHONHASHSEED"] = os.environ.get("PYTHONHASHSEED", "0")
     return base_env
 
 

@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+import molt.dx as molt_dx
 from tools import harness_memory_guard
 
 
@@ -444,7 +445,10 @@ def test_canonical_harness_env_installs_repo_local_defaults(tmp_path: Path) -> N
 
     assert env["MOLT_EXT_ROOT"] == str(tmp_path.resolve())
     assert env["CARGO_TARGET_DIR"] == str(
-        tmp_path / "target" / "sessions" / env["MOLT_SESSION_ID"]
+        molt_dx.cargo_target_dir_for_artifact_root(
+            tmp_path,
+            env["MOLT_SESSION_ID"],
+        )
     )
     assert env["MOLT_DIFF_CARGO_TARGET_DIR"] == env["CARGO_TARGET_DIR"]
     assert env["MOLT_CACHE"] == str(tmp_path / ".molt_cache")
@@ -476,7 +480,10 @@ def test_canonical_harness_env_honors_dx_external_artifact_policy(
 
     assert env["MOLT_EXT_ROOT"] == str(external_root.resolve())
     assert env["CARGO_TARGET_DIR"] == str(
-        external_root.resolve() / "target" / "sessions" / env["MOLT_SESSION_ID"]
+        molt_dx.cargo_target_dir_for_artifact_root(
+            external_root.resolve(),
+            env["MOLT_SESSION_ID"],
+        )
     )
 
 

@@ -53,14 +53,14 @@ jobs:
     env:
       PYTHONPATH: ${{ github.workspace }}/src
       MOLT_EXT_ROOT: /tmp/molt-ext
-      CARGO_TARGET_DIR: ${{ github.workspace }}/target
-      MOLT_DIFF_CARGO_TARGET_DIR: ${{ github.workspace }}/target
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target/sessions/wasm-ci-${{ github.run_id }}-${{ github.run_attempt }}
+      MOLT_DIFF_CARGO_TARGET_DIR: ${{ github.workspace }}/target/sessions/wasm-ci-${{ github.run_id }}-${{ github.run_attempt }}
       MOLT_CACHE: /tmp/molt-ext/molt_cache
       MOLT_DIFF_ROOT: /tmp/molt-ext/diff
       MOLT_DIFF_TMPDIR: /tmp/molt-ext/tmp
       MOLT_HOME: /tmp/molt-ext
       MOLT_WASM_RUNTIME_DIR: /tmp/molt-ext/wasm
-      MOLT_WASM_TEST_CARGO_TARGET_DIR: ${{ github.workspace }}/target
+      MOLT_WASM_TEST_CARGO_TARGET_DIR: ${{ github.workspace }}/target/sessions/wasm-ci-${{ github.run_id }}-${{ github.run_attempt }}
       MOLT_WASM_TEST_USE_EXTERNAL: "1"
       MOLT_WASM_TEST_CHILD_RLIMIT_GB: "0"
       MOLT_WASM_TEST_TIMEOUT_SEC: "600"
