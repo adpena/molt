@@ -1,15 +1,12 @@
 use std::collections::BTreeMap;
 
-use wasm_encoder::{EntityType, ExportKind, Function, Instruction, RefType, TableType};
+use wasm_encoder::{EntityType, ExportKind, RefType, TableType};
 
 use super::callable_table::{WasmCallableTablePlan, WasmCallableTrampolineEntry};
+use super::poll_table::WasmPollTableLayout;
 use super::runtime_callables::WasmRuntimeCallableTablePlan;
 use crate::wasm::WasmBackend;
-use crate::wasm_abi::{
-    POLL_TABLE_IMPORTS, RESERVED_RUNTIME_CALLABLE_COUNT, RESERVED_RUNTIME_CALLABLE_SPECS,
-    poll_table_import_slot,
-};
-use crate::wasm_binary::emit_call;
+use crate::wasm_abi::{RESERVED_RUNTIME_CALLABLE_COUNT, RESERVED_RUNTIME_CALLABLE_SPECS};
 use crate::{SimpleIR, TrampolineKind, TrampolineSpec};
 
 impl WasmBackend {
@@ -36,12 +33,8 @@ impl WasmBackend {
         let split_runtime_owned_slot_start = split_runtime_runtime_table_min
             .map(|min| min.saturating_sub(table_base) as usize)
             .unwrap_or(0);
-        let poll_table_prefix = POLL_TABLE_IMPORTS
-            .iter()
-            .map(|spec| spec.table_slot)
-            .max()
-            .unwrap_or(0)
-            + 1;
+        let poll_table = WasmPollTableLayout::build();
+        let poll_table_prefix = poll_table.prefix_len();
         let reserved_runtime_callable_table_len = RESERVED_RUNTIME_CALLABLE_COUNT as usize;
         let table_len = (poll_table_prefix as usize
             + reserved_runtime_callable_table_len * 2
@@ -69,52 +62,13 @@ impl WasmBackend {
             reloc_enabled,
         );
 
-        let mut table_import_wrappers = BTreeMap::new();
-        if reloc_enabled {
-            for spec in POLL_TABLE_IMPORTS {
-                let import_name = spec.import_name;
-                let arity = 1usize;
-                let type_idx = *user_type_map
-                    .get(&arity)
-                    .unwrap_or_else(|| panic!("missing wrapper signature for arity {arity}"));
-                let import_idx = *self
-                    .import_ids
-                    .get(import_name)
-                    .unwrap_or_else(|| panic!("missing import for {import_name}"));
-                self.funcs.function(type_idx);
-                let func_index = self.func_count;
-                self.func_count += 1;
-                let mut func = Function::new_with_locals_types(Vec::new());
-                for idx in 0..arity {
-                    func.instruction(&Instruction::LocalGet(idx as u32));
-                }
-                emit_call(&mut func, reloc_enabled, import_idx);
-                func.instruction(&Instruction::End);
-                self.codes.function(&func);
-                table_import_wrappers.insert(import_name.to_string(), func_index);
-            }
-        }
-
-        let safe_idx = |idx: u32| -> u32 {
-            if idx == u32::MAX {
-                sentinel_func_idx
-            } else {
-                idx
-            }
-        };
-        let mut table_indices = vec![sentinel_func_idx; poll_table_prefix as usize];
-        for spec in POLL_TABLE_IMPORTS {
-            let name = spec.import_name;
-            let idx = *table_import_wrappers
-                .get(name)
-                .unwrap_or(&self.import_ids[name]);
-            let slot = spec.table_slot as usize;
-            *table_indices
-                .get_mut(slot)
-                .unwrap_or_else(|| panic!("poll table slot {slot} outside poll table prefix")) =
-                safe_idx(idx);
-        }
-        debug_assert_eq!(table_indices.len(), poll_table_prefix as usize);
+        let table_import_wrappers =
+            poll_table.emit_import_wrappers(self, reloc_enabled, user_type_map);
+        let mut table_indices = poll_table.initial_table_indices(
+            &table_import_wrappers,
+            &self.import_ids,
+            sentinel_func_idx,
+        );
         let mut func_to_table_idx = BTreeMap::new();
         let mut func_to_index = BTreeMap::new();
         func_to_index.insert(
@@ -129,12 +83,7 @@ impl WasmBackend {
             "molt_sys_set_version_info".to_string(),
             self.import_ids["sys_set_version_info"],
         );
-        for spec in POLL_TABLE_IMPORTS {
-            let table_slot = poll_table_import_slot(spec.import_name).unwrap_or_else(|| {
-                panic!("missing generated poll table slot for {}", spec.import_name)
-            });
-            func_to_table_idx.insert(format!("molt_{}", spec.import_name), table_slot);
-        }
+        poll_table.seed_function_table_slots(&mut func_to_table_idx);
 
         let reserved_runtime_callable_table_start = poll_table_prefix;
         let reserved_runtime_trampoline_table_start =
