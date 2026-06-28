@@ -182,8 +182,7 @@ globs = [
   "runtime/molt-backend-wasm/src/wasm/module_abi/**/*.rs",
   "src/molt/_wasm_abi_generated.py",
   "runtime/wasm_table_layout.inc",
-  "runtime/wasm_poll_callables.inc",
-  "runtime/wasm_runtime_callables.inc",
+  "runtime/molt-runtime/src/intrinsics/manifest.pyi",
   "tests/test_gen_wasm_abi.py",
 ]
 gates = [

@@ -51,7 +51,15 @@ impl WasmBackend {
                         );
                     }
                     let mut func = Function::new_with_locals_types(lir_output.locals.clone());
-                    lir_output.emit_into(&func_ir.name, |name| ctx.import_ids[name], &mut func);
+                    lir_output.emit_into(
+                        &func_ir.name,
+                        self,
+                        func_index,
+                        reloc_enabled,
+                        ctx.const_str_scratch_segment,
+                        |name| ctx.import_ids[name],
+                        &mut func,
+                    );
                     self.codes.function(&func);
                     return;
                 }

@@ -89,11 +89,9 @@ outputs = [
   "runtime/molt-runtime/src/builtins/functions/wasm_callables_generated.rs",
   "src/molt/_wasm_abi_generated.py",
   "runtime/wasm_table_layout.inc",
-  "runtime/wasm_poll_callables.inc",
-  "runtime/wasm_runtime_callables.inc",
   "tools/wasm_allowed_imports.txt",
 ]
-source = "runtime/molt-backend-wasm/src/wasm_abi_manifest.toml"
+source = "runtime/molt-backend-wasm/src/wasm_abi_manifest.toml + runtime/molt-runtime/src/intrinsics/manifest.pyi"
 check_mode = true
 check_command = "tools/gen_wasm_abi.py --check"
 idempotent = true

@@ -115,6 +115,37 @@ def test_verify_runtime_integrity_accepts_matching_sidecar_hash(
     wasm_link._verify_runtime_integrity(runtime)
 
 
+def test_verify_runtime_integrity_retries_stale_sidecar_publish_window(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = tmp_path / "molt_runtime.wasm"
+    runtime.write_bytes(_build_exported_runtime_module("molt_main"))
+    digest = hashlib.sha256(runtime.read_bytes()).hexdigest()
+    reads: list[Path] = []
+
+    def read_sidecar(path: Path) -> str:
+        reads.append(path)
+        return "0" * 64 if len(reads) == 1 else digest
+
+    monkeypatch.setattr(
+        wasm_link,
+        "_RUNTIME_INTEGRITY_PAIR_ATTEMPTS",
+        2,
+        raising=True,
+    )
+    monkeypatch.setattr(
+        wasm_link,
+        "_read_runtime_integrity_sidecar",
+        read_sidecar,
+        raising=True,
+    )
+    monkeypatch.setattr(wasm_link.time, "sleep", lambda _delay: None, raising=True)
+
+    wasm_link._verify_runtime_integrity(runtime)
+
+    assert reads == [runtime, runtime]
+
+
 def test_verify_runtime_integrity_rejects_mismatched_sidecar_hash(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

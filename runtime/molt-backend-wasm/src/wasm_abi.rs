@@ -10,7 +10,6 @@ pub(crate) use molt_codegen_abi::{
     GENERATOR_CONTROL_BYTES as GEN_CONTROL_SIZE, TASK_KIND_COROUTINE, TASK_KIND_FUTURE,
     TASK_KIND_GENERATOR,
 };
-pub(crate) const RELOC_TABLE_BASE_DEFAULT: u32 = 4096;
 
 // ---------------------------------------------------------------------------
 // WASM Exception Handling (WASM_OPTIMIZATION_PLAN.md Section 3.6)
