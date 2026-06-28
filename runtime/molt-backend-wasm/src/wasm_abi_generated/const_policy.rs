@@ -2,6 +2,9 @@
 // runtime/molt-backend-wasm/src/wasm_abi_manifest.toml
 // DO NOT EDIT BY HAND.
 
+use molt_codegen_abi::{box_bool_bits, box_float_bits, box_int_bits, box_none_bits};
+use molt_tir::tir::ops::{AttrValue, TirOp};
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum WasmConstInlineSeed {
     None,
@@ -17,6 +20,22 @@ pub(crate) enum WasmConstLiteralPayload {
     String,
     BigintDecimal,
     Bytes,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum WasmConstScalarPayload {
+    None,
+    Int,
+    Bool,
+    Float,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum WasmConstScalarValue {
+    Int(i64),
+    Bool(bool),
+    Float(f64),
+    NoneValue,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -37,6 +56,7 @@ pub(crate) struct WasmConstOpPolicySpec {
     pub(crate) inline_seed: WasmConstInlineSeed,
     pub(crate) materializer_import: Option<&'static str>,
     pub(crate) literal_payload: WasmConstLiteralPayload,
+    pub(crate) scalar_payload: WasmConstScalarPayload,
     pub(crate) dispatch_runtime_seed: bool,
     pub(crate) parse_scalar_literal: bool,
     pub(crate) raw_int_effect: WasmConstRawIntEffect,
@@ -49,6 +69,7 @@ pub(crate) const WASM_CONST_OP_POLICIES: &[WasmConstOpPolicySpec] = &[
         inline_seed: WasmConstInlineSeed::Int,
         materializer_import: None,
         literal_payload: WasmConstLiteralPayload::None,
+        scalar_payload: WasmConstScalarPayload::Int,
         dispatch_runtime_seed: false,
         parse_scalar_literal: false,
         raw_int_effect: WasmConstRawIntEffect::SetInt,
@@ -59,6 +80,7 @@ pub(crate) const WASM_CONST_OP_POLICIES: &[WasmConstOpPolicySpec] = &[
         inline_seed: WasmConstInlineSeed::Bool,
         materializer_import: None,
         literal_payload: WasmConstLiteralPayload::None,
+        scalar_payload: WasmConstScalarPayload::Bool,
         dispatch_runtime_seed: false,
         parse_scalar_literal: false,
         raw_int_effect: WasmConstRawIntEffect::Clear,
@@ -69,6 +91,7 @@ pub(crate) const WASM_CONST_OP_POLICIES: &[WasmConstOpPolicySpec] = &[
         inline_seed: WasmConstInlineSeed::Float,
         materializer_import: None,
         literal_payload: WasmConstLiteralPayload::None,
+        scalar_payload: WasmConstScalarPayload::Float,
         dispatch_runtime_seed: false,
         parse_scalar_literal: false,
         raw_int_effect: WasmConstRawIntEffect::Clear,
@@ -79,6 +102,7 @@ pub(crate) const WASM_CONST_OP_POLICIES: &[WasmConstOpPolicySpec] = &[
         inline_seed: WasmConstInlineSeed::NoneValue,
         materializer_import: None,
         literal_payload: WasmConstLiteralPayload::None,
+        scalar_payload: WasmConstScalarPayload::None,
         dispatch_runtime_seed: false,
         parse_scalar_literal: false,
         raw_int_effect: WasmConstRawIntEffect::Clear,
@@ -89,6 +113,7 @@ pub(crate) const WASM_CONST_OP_POLICIES: &[WasmConstOpPolicySpec] = &[
         inline_seed: WasmConstInlineSeed::None,
         materializer_import: Some("not_implemented"),
         literal_payload: WasmConstLiteralPayload::None,
+        scalar_payload: WasmConstScalarPayload::None,
         dispatch_runtime_seed: true,
         parse_scalar_literal: false,
         raw_int_effect: WasmConstRawIntEffect::Clear,
@@ -99,6 +124,7 @@ pub(crate) const WASM_CONST_OP_POLICIES: &[WasmConstOpPolicySpec] = &[
         inline_seed: WasmConstInlineSeed::None,
         materializer_import: Some("ellipsis"),
         literal_payload: WasmConstLiteralPayload::None,
+        scalar_payload: WasmConstScalarPayload::None,
         dispatch_runtime_seed: true,
         parse_scalar_literal: false,
         raw_int_effect: WasmConstRawIntEffect::Clear,
@@ -109,6 +135,7 @@ pub(crate) const WASM_CONST_OP_POLICIES: &[WasmConstOpPolicySpec] = &[
         inline_seed: WasmConstInlineSeed::None,
         materializer_import: Some("string_from_bytes"),
         literal_payload: WasmConstLiteralPayload::String,
+        scalar_payload: WasmConstScalarPayload::None,
         dispatch_runtime_seed: true,
         parse_scalar_literal: true,
         raw_int_effect: WasmConstRawIntEffect::Clear,
@@ -119,6 +146,7 @@ pub(crate) const WASM_CONST_OP_POLICIES: &[WasmConstOpPolicySpec] = &[
         inline_seed: WasmConstInlineSeed::None,
         materializer_import: Some("bigint_from_str"),
         literal_payload: WasmConstLiteralPayload::BigintDecimal,
+        scalar_payload: WasmConstScalarPayload::None,
         dispatch_runtime_seed: true,
         parse_scalar_literal: false,
         raw_int_effect: WasmConstRawIntEffect::Clear,
@@ -129,6 +157,7 @@ pub(crate) const WASM_CONST_OP_POLICIES: &[WasmConstOpPolicySpec] = &[
         inline_seed: WasmConstInlineSeed::None,
         materializer_import: Some("bytes_from_bytes"),
         literal_payload: WasmConstLiteralPayload::Bytes,
+        scalar_payload: WasmConstScalarPayload::None,
         dispatch_runtime_seed: true,
         parse_scalar_literal: true,
         raw_int_effect: WasmConstRawIntEffect::Clear,
@@ -141,4 +170,71 @@ pub(crate) fn wasm_const_op_policy(kind: &str) -> Option<&'static WasmConstOpPol
     WASM_CONST_OP_POLICIES
         .iter()
         .find(|policy| policy.kind == kind)
+}
+
+impl WasmConstOpPolicySpec {
+    pub(crate) fn required_simple_ir_inline_seed_bits(&self, op: &crate::OpIR) -> i64 {
+        match self.scalar_payload {
+            WasmConstScalarPayload::Int => box_int_bits(op.value.unwrap_or_else(|| {
+                panic!(
+                    "WASM const policy {} requires int scalar payload",
+                    self.kind
+                )
+            })),
+            WasmConstScalarPayload::Bool => box_bool_bits(op.value.unwrap_or_else(|| {
+                panic!(
+                    "WASM const policy {} requires bool scalar payload",
+                    self.kind
+                )
+            })),
+            WasmConstScalarPayload::Float => box_float_bits(op.f_value.unwrap_or_else(|| {
+                panic!(
+                    "WASM const policy {} requires float scalar payload",
+                    self.kind
+                )
+            })),
+            WasmConstScalarPayload::None => match self.inline_seed {
+                WasmConstInlineSeed::NoneValue => box_none_bits(),
+                _ => panic!(
+                    "WASM const policy {} has no scalar payload for inline seed {:?}",
+                    self.kind, self.inline_seed
+                ),
+            },
+        }
+    }
+
+    pub(crate) fn required_tir_scalar_value(&self, op: &TirOp) -> WasmConstScalarValue {
+        match self.scalar_payload {
+            WasmConstScalarPayload::Int => match op.attrs.get("value") {
+                Some(AttrValue::Int(value)) => WasmConstScalarValue::Int(*value),
+                _ => panic!(
+                    "WASM const policy {} requires int scalar payload",
+                    self.kind
+                ),
+            },
+            WasmConstScalarPayload::Bool => match op.attrs.get("value") {
+                Some(AttrValue::Bool(value)) => WasmConstScalarValue::Bool(*value),
+                _ => panic!(
+                    "WASM const policy {} requires bool scalar payload",
+                    self.kind
+                ),
+            },
+            WasmConstScalarPayload::Float => {
+                match op.attrs.get("f_value").or_else(|| op.attrs.get("value")) {
+                    Some(AttrValue::Float(value)) => WasmConstScalarValue::Float(*value),
+                    _ => panic!(
+                        "WASM const policy {} requires float scalar payload",
+                        self.kind
+                    ),
+                }
+            }
+            WasmConstScalarPayload::None => match self.inline_seed {
+                WasmConstInlineSeed::NoneValue => WasmConstScalarValue::NoneValue,
+                _ => panic!(
+                    "WASM const policy {} has no scalar payload for inline seed {:?}",
+                    self.kind, self.inline_seed
+                ),
+            },
+        }
+    }
 }

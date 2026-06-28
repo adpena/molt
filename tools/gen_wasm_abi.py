@@ -68,6 +68,12 @@ CONST_POLICY_LITERAL_PAYLOADS = {
     "bigint_decimal",
     "bytes",
 }
+CONST_POLICY_SCALAR_PAYLOADS = {
+    "none",
+    "int",
+    "bool",
+    "float",
+}
 CONST_POLICY_RAW_INT_EFFECTS = {
     "set_int",
     "clear",
@@ -289,6 +295,11 @@ def validate_loaded_manifest(data: dict) -> dict:
             raise WasmAbiManifestError(
                 f"const_op_policy {kind!r} has invalid literal_payload {literal_payload!r}"
             )
+        scalar_payload = entry.get("scalar_payload", "none")
+        if scalar_payload not in CONST_POLICY_SCALAR_PAYLOADS:
+            raise WasmAbiManifestError(
+                f"const_op_policy {kind!r} has invalid scalar_payload {scalar_payload!r}"
+            )
         raw_int_effect = entry.get("raw_int_effect", "clear")
         if raw_int_effect not in CONST_POLICY_RAW_INT_EFFECTS:
             raise WasmAbiManifestError(
@@ -338,8 +349,25 @@ def validate_loaded_manifest(data: dict) -> dict:
             raise WasmAbiManifestError(
                 f"const_op_policy {kind!r} dispatch runtime seed requires materializer_import"
             )
+        expected_scalar_payload = {
+            "int": "int",
+            "bool": "bool",
+            "float": "float",
+            "none": "none",
+            "none_value": "none",
+        }[inline_seed]
+        if scalar_payload != expected_scalar_payload:
+            raise WasmAbiManifestError(
+                f"const_op_policy {kind!r} scalar_payload {scalar_payload!r} "
+                f"must match inline_seed {inline_seed!r}"
+            )
+        if lir_fast == "lower" and inline_seed == "none":
+            raise WasmAbiManifestError(
+                f"const_op_policy {kind!r} cannot lower in LIR-fast without inline_seed"
+            )
         entry["inline_seed"] = inline_seed
         entry["literal_payload"] = literal_payload
+        entry["scalar_payload"] = scalar_payload
         entry["raw_int_effect"] = raw_int_effect
         entry["lir_fast"] = lir_fast
         entry["parse_scalar_literal"] = parse_scalar_literal
@@ -741,6 +769,7 @@ def _render_rs_mod() -> str:
             "pub(crate) use const_policy::{\n",
             "    wasm_const_op_policy, WasmConstInlineSeed, WasmConstLirFastPolicy,\n",
             "    WasmConstLiteralPayload, WasmConstOpPolicySpec, WasmConstRawIntEffect,\n",
+            "    WasmConstScalarValue,\n",
             "};\n",
             "pub(crate) use imports::{IMPORT_REGISTRY, OP_IMPORT_DEPS};\n",
             "pub(crate) use pure_profile::pure_profile_skips_import;\n",
@@ -793,6 +822,8 @@ def _render_rs_const_policy(data: dict) -> str:
     lines: list[str] = [_header("//")]
     lines.extend(
         [
+            "use molt_codegen_abi::{box_bool_bits, box_float_bits, box_int_bits, box_none_bits};\n",
+            "use molt_tir::tir::ops::{AttrValue, TirOp};\n\n",
             "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
             "pub(crate) enum WasmConstInlineSeed {\n",
             "    None,\n",
@@ -807,6 +838,20 @@ def _render_rs_const_policy(data: dict) -> str:
             "    String,\n",
             "    BigintDecimal,\n",
             "    Bytes,\n",
+            "}\n\n",
+            "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
+            "pub(crate) enum WasmConstScalarPayload {\n",
+            "    None,\n",
+            "    Int,\n",
+            "    Bool,\n",
+            "    Float,\n",
+            "}\n\n",
+            "#[derive(Clone, Copy, Debug, PartialEq)]\n",
+            "pub(crate) enum WasmConstScalarValue {\n",
+            "    Int(i64),\n",
+            "    Bool(bool),\n",
+            "    Float(f64),\n",
+            "    NoneValue,\n",
             "}\n\n",
             "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
             "pub(crate) enum WasmConstRawIntEffect {\n",
@@ -824,6 +869,7 @@ def _render_rs_const_policy(data: dict) -> str:
             "    pub(crate) inline_seed: WasmConstInlineSeed,\n",
             "    pub(crate) materializer_import: Option<&'static str>,\n",
             "    pub(crate) literal_payload: WasmConstLiteralPayload,\n",
+            "    pub(crate) scalar_payload: WasmConstScalarPayload,\n",
             "    pub(crate) dispatch_runtime_seed: bool,\n",
             "    pub(crate) parse_scalar_literal: bool,\n",
             "    pub(crate) raw_int_effect: WasmConstRawIntEffect,\n",
@@ -835,6 +881,7 @@ def _render_rs_const_policy(data: dict) -> str:
     for entry in data.get("const_op_policy", []):
         inline_seed = _rust_pascal_variant(entry["inline_seed"])
         literal_payload = _rust_pascal_variant(entry["literal_payload"])
+        scalar_payload = _rust_pascal_variant(entry["scalar_payload"])
         raw_int_effect = _rust_pascal_variant(entry["raw_int_effect"])
         lir_fast = _rust_pascal_variant(entry["lir_fast"])
         dispatch_seed = "true" if entry["dispatch_runtime_seed"] else "false"
@@ -847,6 +894,7 @@ def _render_rs_const_policy(data: dict) -> str:
                 "        materializer_import: "
                 f"{_rust_option_str(entry.get('materializer_import'))},\n",
                 f"        literal_payload: WasmConstLiteralPayload::{literal_payload},\n",
+                f"        scalar_payload: WasmConstScalarPayload::{scalar_payload},\n",
                 f"        dispatch_runtime_seed: {dispatch_seed},\n",
                 f"        parse_scalar_literal: {parse_scalar},\n",
                 f"        raw_int_effect: WasmConstRawIntEffect::{raw_int_effect},\n",
@@ -864,6 +912,61 @@ def _render_rs_const_policy(data: dict) -> str:
             "    WASM_CONST_OP_POLICIES\n",
             "        .iter()\n",
             "        .find(|policy| policy.kind == kind)\n",
+            "}\n\n",
+            "impl WasmConstOpPolicySpec {\n",
+            "    pub(crate) fn required_simple_ir_inline_seed_bits(\n",
+            "        &self,\n",
+            "        op: &crate::OpIR,\n",
+            "    ) -> i64 {\n",
+            "        match self.scalar_payload {\n",
+            "            WasmConstScalarPayload::Int => box_int_bits(op.value.unwrap_or_else(|| {\n",
+            "                panic!(\"WASM const policy {} requires int scalar payload\", self.kind)\n",
+            "            })),\n",
+            "            WasmConstScalarPayload::Bool => box_bool_bits(op.value.unwrap_or_else(|| {\n",
+            "                panic!(\"WASM const policy {} requires bool scalar payload\", self.kind)\n",
+            "            })),\n",
+            "            WasmConstScalarPayload::Float => box_float_bits(op.f_value.unwrap_or_else(|| {\n",
+            "                panic!(\"WASM const policy {} requires float scalar payload\", self.kind)\n",
+            "            })),\n",
+            "            WasmConstScalarPayload::None => match self.inline_seed {\n",
+            "                WasmConstInlineSeed::NoneValue => box_none_bits(),\n",
+            "                _ => panic!(\n",
+            "                    \"WASM const policy {} has no scalar payload for inline seed {:?}\",\n",
+            "                    self.kind, self.inline_seed\n",
+            "                ),\n",
+            "            },\n",
+            "        }\n",
+            "    }\n\n",
+            "    pub(crate) fn required_tir_scalar_value(\n",
+            "        &self,\n",
+            "        op: &TirOp,\n",
+            "    ) -> WasmConstScalarValue {\n",
+            "        match self.scalar_payload {\n",
+            "            WasmConstScalarPayload::Int => match op.attrs.get(\"value\") {\n",
+            "                Some(AttrValue::Int(value)) => WasmConstScalarValue::Int(*value),\n",
+            "                _ => panic!(\"WASM const policy {} requires int scalar payload\", self.kind),\n",
+            "            },\n",
+            "            WasmConstScalarPayload::Bool => match op.attrs.get(\"value\") {\n",
+            "                Some(AttrValue::Bool(value)) => WasmConstScalarValue::Bool(*value),\n",
+            "                _ => panic!(\"WASM const policy {} requires bool scalar payload\", self.kind),\n",
+            "            },\n",
+            "            WasmConstScalarPayload::Float => match op\n",
+            "                .attrs\n",
+            "                .get(\"f_value\")\n",
+            "                .or_else(|| op.attrs.get(\"value\"))\n",
+            "            {\n",
+            "                Some(AttrValue::Float(value)) => WasmConstScalarValue::Float(*value),\n",
+            "                _ => panic!(\"WASM const policy {} requires float scalar payload\", self.kind),\n",
+            "            },\n",
+            "            WasmConstScalarPayload::None => match self.inline_seed {\n",
+            "                WasmConstInlineSeed::NoneValue => WasmConstScalarValue::NoneValue,\n",
+            "                _ => panic!(\n",
+            "                    \"WASM const policy {} has no scalar payload for inline seed {:?}\",\n",
+            "                    self.kind, self.inline_seed\n",
+            "                ),\n",
+            "            },\n",
+            "        }\n",
+            "    }\n",
             "}\n\n",
         ]
     )
@@ -1371,14 +1474,15 @@ def render_py(data: dict) -> str:
         lines.append(f'    "{import_name}",\n')
     lines.append(")\n\n")
     lines.append(
-        "WASM_CONST_OP_POLICIES: tuple[tuple[str, str, str | None, str, bool, bool, str, str], ...] = (\n"
+        "WASM_CONST_OP_POLICIES: tuple[tuple[str, str, str | None, str, str, bool, bool, str, str], ...] = (\n"
     )
     for entry in data.get("const_op_policy", []):
         materializer = entry.get("materializer_import")
         materializer_repr = "None" if materializer is None else f'"{materializer}"'
         lines.append(
             f'    ("{entry["kind"]}", "{entry["inline_seed"]}", {materializer_repr}, '
-            f'"{entry["literal_payload"]}", {entry["dispatch_runtime_seed"]}, '
+            f'"{entry["literal_payload"]}", "{entry["scalar_payload"]}", '
+            f'{entry["dispatch_runtime_seed"]}, '
             f'{entry["parse_scalar_literal"]}, "{entry["raw_int_effect"]}", '
             f'"{entry["lir_fast"]}"),\n'
         )

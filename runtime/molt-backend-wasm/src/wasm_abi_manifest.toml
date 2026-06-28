@@ -6687,18 +6687,21 @@ deps = [
 [[const_op_policy]]
 kind = "const"
 inline_seed = "int"
+scalar_payload = "int"
 raw_int_effect = "set_int"
 lir_fast = "lower"
 
 [[const_op_policy]]
 kind = "const_bool"
 inline_seed = "bool"
+scalar_payload = "bool"
 raw_int_effect = "clear"
 lir_fast = "lower"
 
 [[const_op_policy]]
 kind = "const_float"
 inline_seed = "float"
+scalar_payload = "float"
 raw_int_effect = "clear"
 lir_fast = "lower"
 

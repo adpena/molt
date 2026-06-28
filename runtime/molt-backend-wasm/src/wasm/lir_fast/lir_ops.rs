@@ -3,7 +3,9 @@ use super::lir_scalar::{
     emit_get_boxed_for_repr, emit_lir_binary_arith, emit_lir_bitwise, emit_lir_bool_select,
     emit_lir_comparison, emit_lir_i64_binary_or_boxed, emit_lir_unary_arith,
 };
-use crate::wasm_abi_generated::{WasmConstLirFastPolicy, wasm_const_op_policy};
+use crate::wasm_abi_generated::{
+    WasmConstLirFastPolicy, WasmConstOpPolicySpec, WasmConstScalarValue, wasm_const_op_policy,
+};
 use molt_codegen_abi::box_none_bits;
 use molt_tir::tir::lir::{LirBlock, LirOp, LirRepr};
 use molt_tir::tir::ops::{AttrValue, OpCode};
@@ -59,20 +61,23 @@ fn const_policy_kind_for_opcode(opcode: OpCode) -> Option<&'static str> {
     }
 }
 
-fn const_lir_fast_policy(opcode: OpCode) -> WasmConstLirFastPolicy {
+fn const_policy_for_opcode(opcode: OpCode) -> &'static WasmConstOpPolicySpec {
     let kind = const_policy_kind_for_opcode(opcode)
         .unwrap_or_else(|| panic!("opcode {opcode:?} is not a WASM const policy opcode"));
     wasm_const_op_policy(kind)
         .unwrap_or_else(|| panic!("missing generated WASM const policy for {kind}"))
-        .lir_fast
 }
 
-fn assert_const_lir_fast_policy(opcode: OpCode, expected: WasmConstLirFastPolicy) {
+fn assert_const_lir_fast_policy(
+    opcode: OpCode,
+    expected: WasmConstLirFastPolicy,
+) -> &'static WasmConstOpPolicySpec {
+    let policy = const_policy_for_opcode(opcode);
     assert_eq!(
-        const_lir_fast_policy(opcode),
-        expected,
+        policy.lir_fast, expected,
         "generated WASM const LIR-fast policy drifted for {opcode:?}"
     );
+    policy
 }
 
 fn emit_const_bail_to_generic(ctx: &mut LirLowerCtx, op: &LirOp) {
@@ -89,10 +94,13 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
     let tir_op = &op.tir_op;
     match tir_op.opcode {
         OpCode::ConstInt => {
-            assert_const_lir_fast_policy(tir_op.opcode, WasmConstLirFastPolicy::Lower);
-            let val = match tir_op.attrs.get("value") {
-                Some(AttrValue::Int(v)) => *v,
-                _ => 0,
+            let policy = assert_const_lir_fast_policy(tir_op.opcode, WasmConstLirFastPolicy::Lower);
+            let val = match policy.required_tir_scalar_value(tir_op) {
+                WasmConstScalarValue::Int(value) => value,
+                other => panic!(
+                    "generated WASM const policy produced {other:?} for {:?}",
+                    tir_op.opcode
+                ),
             };
             if let Some(result) = op.result_values.first() {
                 match result.repr {
@@ -105,14 +113,13 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
             }
         }
         OpCode::ConstFloat => {
-            assert_const_lir_fast_policy(tir_op.opcode, WasmConstLirFastPolicy::Lower);
-            let val = match tir_op
-                .attrs
-                .get("f_value")
-                .or_else(|| tir_op.attrs.get("value"))
-            {
-                Some(AttrValue::Float(v)) => *v,
-                _ => 0.0,
+            let policy = assert_const_lir_fast_policy(tir_op.opcode, WasmConstLirFastPolicy::Lower);
+            let val = match policy.required_tir_scalar_value(tir_op) {
+                WasmConstScalarValue::Float(value) => value,
+                other => panic!(
+                    "generated WASM const policy produced {other:?} for {:?}",
+                    tir_op.opcode
+                ),
             };
             if let Some(result) = op.result_values.first() {
                 ctx.instructions
@@ -121,10 +128,13 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
             }
         }
         OpCode::ConstBool => {
-            assert_const_lir_fast_policy(tir_op.opcode, WasmConstLirFastPolicy::Lower);
-            let val = match tir_op.attrs.get("value") {
-                Some(AttrValue::Bool(v)) => *v,
-                _ => false,
+            let policy = assert_const_lir_fast_policy(tir_op.opcode, WasmConstLirFastPolicy::Lower);
+            let val = match policy.required_tir_scalar_value(tir_op) {
+                WasmConstScalarValue::Bool(value) => value,
+                other => panic!(
+                    "generated WASM const policy produced {other:?} for {:?}",
+                    tir_op.opcode
+                ),
             };
             if let Some(result) = op.result_values.first() {
                 ctx.instructions
@@ -133,13 +143,18 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
             }
         }
         OpCode::ConstNone => {
-            assert_const_lir_fast_policy(tir_op.opcode, WasmConstLirFastPolicy::Lower);
+            let policy = assert_const_lir_fast_policy(tir_op.opcode, WasmConstLirFastPolicy::Lower);
+            assert_eq!(
+                policy.required_tir_scalar_value(tir_op),
+                WasmConstScalarValue::NoneValue,
+                "generated WASM const policy must classify ConstNone as NoneValue"
+            );
             if let Some(result) = op.result_values.first() {
                 ctx.instructions.push(Instruction::I64Const(box_none_bits()));
                 ctx.emit_set(result.id);
             }
         }
-        OpCode::ConstStr | OpCode::ConstBytes => match const_lir_fast_policy(tir_op.opcode) {
+        OpCode::ConstStr | OpCode::ConstBytes => match const_policy_for_opcode(tir_op.opcode).lir_fast {
             WasmConstLirFastPolicy::BailGeneric => emit_const_bail_to_generic(ctx, op),
             WasmConstLirFastPolicy::Lower => {
                 panic!(
@@ -148,7 +163,7 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
                 );
             }
         },
-        OpCode::ConstBigInt => match const_lir_fast_policy(tir_op.opcode) {
+        OpCode::ConstBigInt => match const_policy_for_opcode(tir_op.opcode).lir_fast {
             WasmConstLirFastPolicy::BailGeneric => emit_const_bail_to_generic(ctx, op),
             WasmConstLirFastPolicy::Lower => {
                 panic!(
