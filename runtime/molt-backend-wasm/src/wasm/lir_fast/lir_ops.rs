@@ -1,7 +1,8 @@
 use super::lir_context::LirLowerCtx;
 use super::lir_runtime_ops::{
     emit_lir_boxed_binary_runtime_call, emit_lir_boxed_operands_runtime_call, emit_lir_del_index,
-    emit_lir_exception_pending, emit_lir_index, emit_lir_store_index,
+    emit_lir_exception_pending, emit_lir_get_iter, emit_lir_index, emit_lir_iter_next,
+    emit_lir_membership, emit_lir_store_index,
 };
 use super::lir_scalar::{
     emit_get_boxed_for_repr, emit_lir_binary_arith, emit_lir_bitwise, emit_lir_bool_select,
@@ -315,6 +316,10 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
         OpCode::Index => emit_lir_index(ctx, op),
         OpCode::StoreIndex => emit_lir_store_index(ctx, op),
         OpCode::DelIndex => emit_lir_del_index(ctx, op),
+        OpCode::GetIter => emit_lir_get_iter(ctx, op),
+        OpCode::IterNext => emit_lir_iter_next(ctx, op),
+        OpCode::In => emit_lir_membership(ctx, op, false),
+        OpCode::NotIn => emit_lir_membership(ctx, op, true),
         OpCode::ExceptionPending => emit_lir_exception_pending(ctx, op),
         OpCode::FunctionDefaultsVersion => emit_lir_boxed_operands_runtime_call(
             ctx,
@@ -499,8 +504,6 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
         | OpCode::ObjectNewBound
         | OpCode::ObjectNewBoundStack
         | OpCode::Free
-        | OpCode::GetIter
-        | OpCode::IterNext
         | OpCode::IterNextUnboxed
         | OpCode::ForIter
         | OpCode::StateSwitch
@@ -512,8 +515,6 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
         | OpCode::ClosureStore
         | OpCode::Import
         | OpCode::ImportFrom
-        | OpCode::In
-        | OpCode::NotIn
         | OpCode::Raise
         | OpCode::CheckException
         | OpCode::AllocTask
