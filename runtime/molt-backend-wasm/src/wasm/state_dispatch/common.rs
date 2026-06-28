@@ -1,5 +1,15 @@
 use super::super::control_flow::dispatch_control_panic;
-use super::*;
+use super::super::op_loop::WasmFunctionEmitContext;
+use super::DispatchMode;
+use super::plan::{NonLinearDispatchLocals, NonLinearDispatchPlan};
+use super::state_remap::{build_sparse_state_remap_entries, emit_sparse_state_remap_lookup};
+use crate::wasm::WasmFrameLocals;
+use crate::wasm_binary::emit_call;
+use crate::wasm_plan::wasm_scalar_truthiness_fast_path_for_name;
+use crate::wasm_values::{INT_MASK, POINTER_MASK, emit_branch_truthiness_i32};
+use crate::{FunctionIR, OpIR};
+use std::collections::{BTreeMap, BTreeSet};
+use wasm_encoder::{BlockType, Function, Instruction};
 
 pub(in crate::wasm) fn exception_handler_region_indices(ops: &[OpIR]) -> BTreeSet<usize> {
     let mut label_to_op_index: BTreeMap<i64, usize> = BTreeMap::new();
