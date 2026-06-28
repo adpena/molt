@@ -354,12 +354,24 @@ def test_wasm_abi_manifest_owns_host_import_policy() -> None:
     data = gen.load_manifest()
 
     allowed = [entry["name"] for entry in data["link_allowed_import"]]
+    call_indirect = [
+        name
+        for name in allowed
+        if name.startswith("molt_call_indirect")
+    ]
     assert "fd_write" in allowed
     assert "__indirect_function_table" in allowed
-    assert "molt_call_indirect0" in allowed
-    assert "molt_call_indirect13" in allowed
+    assert call_indirect == [f"molt_call_indirect{arity}" for arity in range(14)]
     assert "molt_cbor_parse_scalar" in allowed
     assert len(allowed) == len(set(allowed))
+    broken = copy.deepcopy(data)
+    broken["link_allowed_import"] = [
+        entry
+        for entry in broken["link_allowed_import"]
+        if entry.get("name") != "molt_call_indirect7"
+    ]
+    with pytest.raises(gen.WasmAbiManifestError, match="call_indirect import"):
+        gen.validate_loaded_manifest(broken)
 
     strip_rules = {
         (entry["module"], entry["name"]): entry
@@ -380,6 +392,10 @@ def test_wasm_abi_manifest_owns_host_import_policy() -> None:
     )
 
     rendered_py = gen.render_py(data)
+    rendered_rs = _rendered_rs(gen, data)
+    assert "CallIndirectImportSpec" in rendered_rs
+    assert "CALL_INDIRECT_IMPORTS" in rendered_rs
+    assert "CALL_INDIRECT_MAX_ARITY" in rendered_rs
     assert "WASM_LINK_ALLOWED_IMPORTS" in rendered_py
     assert "WASM_CALL_INDIRECT_IMPORTS" in rendered_py
     assert "WASM_STRIP_IMPORT_RULES" in rendered_py
