@@ -357,6 +357,27 @@ def test_injected_orphan_generated_file_fails_the_gate(tmp_path: Path):
     assert any("ghost_generated.rs" in v.location for v in orphans)
 
 
+def test_generated_marker_inside_string_literal_is_not_an_orphan(tmp_path: Path):
+    """Generated banners emitted as data are not generated-file headers."""
+    root = _mirror_min_tree(tmp_path)
+    _write_baseline(root, {"OpCode": 0, "Terminator": 0})
+    handwritten = root / "runtime" / "molt-backend-rust" / "src" / "rust"
+    handwritten.mkdir(parents=True, exist_ok=True)
+    (handwritten / "prelude.rs").write_text(
+        "fn emit_header(output: &mut String) {\n"
+        "    output.push_str(concat!(\n"
+        '        "// Auto-generated - do not edit\\n",\n'
+        '        "#![allow(dead_code)]\\n",\n'
+        "    ));\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    _violations, _summary, gating = CGM.run_all(root)
+    orphans = [v for v in gating if v.kind == "orphan"]
+    assert orphans == []
+
+
 # --- 2c. proven-to-find-debt: gating & manifest validation ----------------
 
 

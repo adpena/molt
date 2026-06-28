@@ -433,6 +433,15 @@ the implementation. For forward-looking priorities, use
   tensors.
 - WASM remains a supported target area, but same-contract parity with native is
   still incomplete.
+- WASM split-runtime builds now stage a browser numeric-kernel embed surface
+  (`browser_embed.js`) alongside `app.wasm`, `molt_runtime.wasm`, `worker.js`,
+  and `manifest.json`. The embed loader reads generated ABI facts from
+  `manifest.json` (`abi.browser_embed`) for call-indirect imports,
+  runtime-import fallbacks, and table-layout remapping instead of carrying
+  parallel hand-coded constants. The supported browser entry point is the narrow
+  typed-array `loadMoltBrowserKernel(...).forward(...)` contract in
+  `docs/spec/areas/wasm/0969_BROWSER_NUMERIC_KERNEL_EMBED.md`; it is not the
+  broad browser process/VFS host.
 - Luau is a checked source-emission target for the current/future Luau surface;
   current OpIR support is generated in
   `docs/spec/areas/compiler/luau_support_matrix.generated.md`.

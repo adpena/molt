@@ -147,11 +147,65 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
         "molt_load_intrinsic_runtime"
     )
     assert imports["load_intrinsic_runtime"]["callable_arity"] == 2
+    assert imports["function_init_metadata_packed"]["runtime_name"] == (
+        "molt_function_init_metadata_packed"
+    )
+    assert imports["function_init_metadata_packed"]["callable_arity"] == 4
+    for name, arity in {
+        "abc_bootstrap": 0,
+        "collections_abc_runtime_types": 0,
+        "abc_get_cache_token": 0,
+        "abc_init": 1,
+        "abc_register": 2,
+        "abc_instancecheck": 2,
+        "abc_subclasscheck": 2,
+        "abc_get_dump": 1,
+        "abc_reset_registry": 1,
+        "abc_reset_caches": 1,
+        "abc_update_abstractmethods": 1,
+        "abc_abstractmethod_check": 1,
+    }.items():
+        assert imports[name]["runtime_name"] == f"molt_{name}"
+        assert imports[name]["callable_arity"] == arity
+    for name, arity in {
+        "array_new": 1,
+        "array_from_list": 2,
+        "array_append": 2,
+        "array_buffer_info": 1,
+        "array_count": 2,
+        "array_delitem": 2,
+        "array_extend": 2,
+        "array_frombytes": 2,
+        "array_getitem": 2,
+        "array_index": 2,
+        "array_insert": 3,
+        "array_itemsize": 1,
+        "array_len": 1,
+        "array_pop": 2,
+        "array_repeat": 2,
+        "array_repeat_in_place": 2,
+        "array_remove": 2,
+        "array_reverse": 1,
+        "array_setitem": 3,
+        "array_tobytes": 1,
+        "array_tolist": 1,
+        "array_typecode": 1,
+    }.items():
+        assert imports[name]["runtime_name"] == f"molt_{name}"
+        assert imports[name]["callable_arity"] == arity
     assert imports["runtime_active_runtime"]["callable_arity"] == 0
     assert imports["codecs_decode"]["runtime_name"] == "molt_codecs_decode"
     assert imports["codecs_decode"]["callable_arity"] == 3
     assert imports["codecs_encode"]["runtime_name"] == "molt_codecs_encode"
     assert imports["codecs_encode"]["callable_arity"] == 3
+    assert imports["cbor_parse_scalar_obj"]["runtime_name"] == (
+        "molt_cbor_parse_scalar_obj"
+    )
+    assert imports["cbor_parse_scalar_obj"]["callable_arity"] == 1
+    assert imports["msgpack_parse_scalar_obj"]["runtime_name"] == (
+        "molt_msgpack_parse_scalar_obj"
+    )
+    assert imports["msgpack_parse_scalar_obj"]["callable_arity"] == 1
     assert imports["thread_current_native_id"]["runtime_name"] == (
         "molt_thread_current_native_id"
     )
@@ -354,12 +408,24 @@ def test_wasm_abi_manifest_owns_host_import_policy() -> None:
     data = gen.load_manifest()
 
     allowed = [entry["name"] for entry in data["link_allowed_import"]]
+    call_indirect = [
+        name
+        for name in allowed
+        if name.startswith("molt_call_indirect")
+    ]
     assert "fd_write" in allowed
     assert "__indirect_function_table" in allowed
-    assert "molt_call_indirect0" in allowed
-    assert "molt_call_indirect13" in allowed
+    assert call_indirect == [f"molt_call_indirect{arity}" for arity in range(14)]
     assert "molt_cbor_parse_scalar" in allowed
     assert len(allowed) == len(set(allowed))
+    broken = copy.deepcopy(data)
+    broken["link_allowed_import"] = [
+        entry
+        for entry in broken["link_allowed_import"]
+        if entry.get("name") != "molt_call_indirect7"
+    ]
+    with pytest.raises(gen.WasmAbiManifestError, match="call_indirect import"):
+        gen.validate_loaded_manifest(broken)
 
     strip_rules = {
         (entry["module"], entry["name"]): entry
@@ -380,6 +446,10 @@ def test_wasm_abi_manifest_owns_host_import_policy() -> None:
     )
 
     rendered_py = gen.render_py(data)
+    rendered_rs = _rendered_rs(gen, data)
+    assert "CallIndirectImportSpec" in rendered_rs
+    assert "CALL_INDIRECT_IMPORTS" in rendered_rs
+    assert "CALL_INDIRECT_MAX_ARITY" in rendered_rs
     assert "WASM_LINK_ALLOWED_IMPORTS" in rendered_py
     assert "WASM_CALL_INDIRECT_IMPORTS" in rendered_py
     assert "WASM_STRIP_IMPORT_RULES" in rendered_py

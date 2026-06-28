@@ -6,7 +6,6 @@ from typing import Any
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-import re as _re
 import sys as _sys
 
 _MOLT_STDLIB_PROBE = _require_intrinsic("molt_stdlib_probe")
@@ -459,6 +458,8 @@ def filterwarnings(
     msg_pat = None
     mod_pat = None
     if message or module:
+        import re as _re
+
         msg_flags = getattr(_re, "IGNORECASE", getattr(_re, "I", 0))
         if message:
             msg_pat = _re.compile(message, msg_flags)

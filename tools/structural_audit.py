@@ -90,6 +90,9 @@ def _is_excluded(path: Path, root: Path) -> bool:
 
 
 _MANIFEST_OUTPUTS_CACHE: set[str] | None = None
+_GENERATED_FILE_MARKER_RE = re.compile(
+    r"(?im)^\s*(?://|#|/\*|\*)\s*(?:@generated\b|.*\bDO NOT EDIT\b)"
+)
 
 
 def _manifest_declared_outputs(root: Path | None = None) -> set[str]:
@@ -140,7 +143,7 @@ def _is_generated(path: Path) -> bool:
         head = path.read_text(errors="replace")[:400]
     except OSError:
         return False
-    return "@generated" in head or "DO NOT EDIT" in head.upper()
+    return bool(_GENERATED_FILE_MARKER_RE.search(head))
 
 
 def _iter_source_files(root: Path, suffixes: tuple[str, ...]) -> list[Path]:

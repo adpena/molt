@@ -78,7 +78,15 @@ discovery_only = false
 [[generator]]
 tool = "tools/gen_wasm_abi.py"
 outputs = [
-  "runtime/molt-backend-wasm/src/wasm_abi_generated.rs",
+  "runtime/molt-backend-wasm/src/wasm_abi_generated/call_indirect.rs",
+  "runtime/molt-backend-wasm/src/wasm_abi_generated/const_policy.rs",
+  "runtime/molt-backend-wasm/src/wasm_abi_generated/imports.rs",
+  "runtime/molt-backend-wasm/src/wasm_abi_generated/mod.rs",
+  "runtime/molt-backend-wasm/src/wasm_abi_generated/pure_profile.rs",
+  "runtime/molt-backend-wasm/src/wasm_abi_generated/runtime_callables.rs",
+  "runtime/molt-backend-wasm/src/wasm_abi_generated/runtime_surface.rs",
+  "runtime/molt-backend-wasm/src/wasm_abi_generated/static_types.rs",
+  "runtime/molt-runtime/src/builtins/functions/wasm_callables_generated.rs",
   "src/molt/_wasm_abi_generated.py",
   "runtime/wasm_table_layout.inc",
   "runtime/wasm_poll_callables.inc",

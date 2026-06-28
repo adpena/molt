@@ -2,6 +2,7 @@
 // runtime/molt-backend-wasm/src/wasm_abi_manifest.toml
 // DO NOT EDIT BY HAND.
 
+mod call_indirect;
 mod const_policy;
 mod imports;
 mod pure_profile;
@@ -9,6 +10,7 @@ mod runtime_callables;
 mod runtime_surface;
 mod static_types;
 
+pub(crate) use call_indirect::{CALL_INDIRECT_IMPORTS, CALL_INDIRECT_MAX_ARITY};
 pub(crate) use const_policy::{
     WasmConstInlineSeed, WasmConstLirFastPolicy, WasmConstLiteralPayload, WasmConstOpPolicySpec,
     WasmConstRawIntEffect, wasm_const_op_policy,
