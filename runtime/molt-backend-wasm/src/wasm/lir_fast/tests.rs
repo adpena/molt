@@ -1,4 +1,5 @@
 use super::peephole::peephole_set_get_to_tee;
+use super::runtime_calls::LirRuntimeCall;
 use super::{lower_lir_to_wasm, lower_tir_to_wasm, lower_tir_to_wasm_boxed_i64_abi};
 use crate::repr::Repr;
 use crate::tir::blocks::{Terminator, TirBlock};
@@ -17,6 +18,23 @@ const F64_FRACTION_MASK: i64 = 0x000f_ffff_ffff_ffffu64 as i64;
 
 fn peephole_instrs(input: Vec<Instruction<'static>>) -> Vec<Instruction<'static>> {
     peephole_set_get_to_tee(WasmBodyOps::from_instructions(input)).into_instructions_for_tests()
+}
+
+#[test]
+fn lir_runtime_calls_are_manifest_registered_imports() {
+    let manifest_imports: std::collections::BTreeSet<&'static str> =
+        crate::wasm_imports::IMPORT_REGISTRY
+            .iter()
+            .map(|&(name, _)| name)
+            .collect();
+
+    for call in LirRuntimeCall::ALL {
+        let import_name = call.import_name();
+        assert!(
+            manifest_imports.contains(import_name),
+            "LIR fast runtime call {call:?} must be registered in wasm_abi_manifest.toml"
+        );
+    }
 }
 
 /// Build a trivial function: returns a constant i64.

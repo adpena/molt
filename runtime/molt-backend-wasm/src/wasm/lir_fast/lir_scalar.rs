@@ -1,5 +1,6 @@
 use super::lir_context::LirLowerCtx;
 use super::lir_ops::{ArithOp, BitwiseOp, CmpOp, UnaryOp};
+use super::runtime_calls::LirRuntimeCall;
 use crate::wasm::body::WasmLirFallbackReason;
 use crate::wasm_values::push_f64_to_i64_canonical;
 use molt_codegen_abi::{
@@ -137,12 +138,12 @@ pub(super) fn emit_lir_binary_arith(ctx: &mut LirLowerCtx, op: &LirOp, arith: Ar
             emit_get_boxed_for_repr(ctx, lhs);
             emit_get_boxed_for_repr(ctx, rhs);
             ctx.emit_runtime_call(match arith {
-                ArithOp::Add => "add",
-                ArithOp::Sub => "sub",
-                ArithOp::Mul => "mul",
-                ArithOp::Div => "div",
-                ArithOp::FloorDiv => "floordiv",
-                ArithOp::Mod => "mod",
+                ArithOp::Add => LirRuntimeCall::Add,
+                ArithOp::Sub => LirRuntimeCall::Sub,
+                ArithOp::Mul => LirRuntimeCall::Mul,
+                ArithOp::Div => LirRuntimeCall::Div,
+                ArithOp::FloorDiv => LirRuntimeCall::FloorDiv,
+                ArithOp::Mod => LirRuntimeCall::Mod,
             });
             ctx.emit_set(dst);
             return;
@@ -249,7 +250,7 @@ pub(super) fn emit_lir_bool_select(ctx: &mut LirLowerCtx, op: &LirOp, is_and: bo
     );
 
     emit_get_boxed_for_repr(ctx, lhs);
-    ctx.emit_runtime_call("is_truthy");
+    ctx.emit_runtime_call(LirRuntimeCall::IsTruthy);
     ctx.instructions.push(Instruction::I64Const(0));
     ctx.instructions.push(Instruction::I64Ne);
     ctx.instructions
@@ -268,7 +269,7 @@ pub(super) fn emit_lir_bool_select(ctx: &mut LirLowerCtx, op: &LirOp, is_and: bo
     ctx.instructions.push(Instruction::End);
     ctx.instructions
         .push(Instruction::LocalTee(ctx.get_local(dst)));
-    ctx.emit_runtime_call("inc_ref_obj");
+    ctx.emit_runtime_call(LirRuntimeCall::IncRefObj);
 }
 
 pub(super) fn emit_lir_comparison(ctx: &mut LirLowerCtx, op: &LirOp, cmp: CmpOp) {
@@ -316,12 +317,12 @@ pub(super) fn emit_lir_comparison(ctx: &mut LirLowerCtx, op: &LirOp, cmp: CmpOp)
             emit_get_boxed_for_repr(ctx, lhs);
             emit_get_boxed_for_repr(ctx, rhs);
             ctx.emit_runtime_call(match cmp {
-                CmpOp::Eq => "eq",
-                CmpOp::Ne => "ne",
-                CmpOp::Lt => "lt",
-                CmpOp::Le => "le",
-                CmpOp::Gt => "gt",
-                CmpOp::Ge => "ge",
+                CmpOp::Eq => LirRuntimeCall::Eq,
+                CmpOp::Ne => LirRuntimeCall::Ne,
+                CmpOp::Lt => LirRuntimeCall::Lt,
+                CmpOp::Le => LirRuntimeCall::Le,
+                CmpOp::Gt => LirRuntimeCall::Gt,
+                CmpOp::Ge => LirRuntimeCall::Ge,
             });
             if op.result_values[0].repr == LirRepr::Bool1 {
                 ctx.instructions.push(Instruction::I64Const(1));
@@ -443,7 +444,7 @@ pub(super) fn emit_box_i64_overflow_safe(ctx: &mut LirLowerCtx, src: ValueId) {
     ctx.instructions.push(Instruction::I64Or);
     ctx.instructions.push(Instruction::Else);
     ctx.emit_get(src);
-    ctx.emit_runtime_call("int_from_i64");
+    ctx.emit_runtime_call(LirRuntimeCall::IntFromI64);
     ctx.instructions.push(Instruction::End);
 }
 
