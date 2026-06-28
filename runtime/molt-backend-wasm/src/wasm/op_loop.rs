@@ -8,16 +8,15 @@ use super::function_frame::WasmFunctionFrame;
 use super::multi_return_layout::WasmMultiReturnLayout;
 use super::{WasmBackend, WasmFrameLocals, WasmFrameSyntheticLocal};
 use crate::representation_plan::ScalarRepresentationPlan;
-use crate::wasm_abi::{TAG_EXCEPTION_INDEX, TASK_KIND_FUTURE};
-use crate::wasm_binary::{emit_call, emit_return_call, emit_table_index_i64};
+use crate::wasm_abi::TAG_EXCEPTION_INDEX;
+use crate::wasm_binary::emit_call;
 use crate::wasm_import_tracking::{TrackedImportIds, selected_import_id};
 use crate::wasm_plan::{
-    gpu_runtime_call_symbol, is_shared_drop_fact_marker, wasm_scalar_truthiness_fast_path_for_name,
+    is_shared_drop_fact_marker, wasm_scalar_truthiness_fast_path_for_name,
     wasm_specialized_container_import,
 };
 use crate::wasm_values::{
-    ConstantCache, box_bool, box_int, emit_box_bool_from_i32, emit_branch_truthiness_i32,
-    stable_ic_site_id,
+    ConstantCache, box_int, emit_box_bool_from_i32, emit_branch_truthiness_i32, stable_ic_site_id,
 };
 use crate::{FunctionIR, OpIR};
 use std::borrow::Cow;

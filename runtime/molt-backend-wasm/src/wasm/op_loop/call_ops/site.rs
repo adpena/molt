@@ -1,4 +1,9 @@
-use super::*;
+use crate::wasm::WasmFrameLocals;
+use crate::wasm_binary::emit_call;
+use crate::wasm_import_tracking::TrackedImportIds;
+use crate::wasm_values::{ConstantCache, box_int, stable_ic_site_id};
+use std::collections::{BTreeMap, BTreeSet};
+use wasm_encoder::{Function, Instruction};
 
 pub(super) fn collect_live_object_locals_for_call(
     locals: &WasmFrameLocals,
@@ -122,8 +127,10 @@ pub(super) fn emit_pending_exception_return(func: &mut Function, const_cache: &C
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::collect_live_object_locals_for_call;
     use crate::wasm::frame_locals::WasmLiteralPayload;
+    use crate::wasm::{WasmFrameLocalKind, WasmFrameLocals, WasmFrameSyntheticLocal};
+    use std::collections::BTreeMap;
 
     #[test]
     fn call_retention_uses_typed_local_kind_not_name_shape() {
