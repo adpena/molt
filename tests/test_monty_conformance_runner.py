@@ -4,6 +4,8 @@ import json
 import sys
 from pathlib import Path
 
+import molt.dx as molt_dx
+
 sys.path.insert(0, "tests/harness")
 
 import run_molt_conformance
@@ -89,15 +91,17 @@ def test_molt_build_env_sets_canonical_defaults(monkeypatch):
 
     env = run_molt_conformance._molt_build_env(repo_root)
 
-    assert env["MOLT_EXT_ROOT"] == str(repo_root)
-    assert env["CARGO_TARGET_DIR"] == str(repo_root / "target")
-    assert env["MOLT_DIFF_CARGO_TARGET_DIR"] == str(repo_root / "target")
-    assert env["MOLT_CACHE"] == str(repo_root / ".molt_cache")
-    assert env["MOLT_DIFF_ROOT"] == str(repo_root / "tmp" / "diff")
-    assert env["MOLT_DIFF_TMPDIR"] == str(repo_root / "tmp")
-    assert env["UV_CACHE_DIR"] == str(repo_root / ".uv-cache")
-    assert env["TMPDIR"] == str(repo_root / "tmp")
-    assert env["PYTHONPATH"] == str(repo_root / "src")
+    artifact_root = Path(env["MOLT_EXT_ROOT"])
+    assert env["CARGO_TARGET_DIR"] == str(
+        molt_dx.cargo_target_dir_for_artifact_root(artifact_root, "monty-conformance")
+    )
+    assert env["MOLT_DIFF_CARGO_TARGET_DIR"] == env["CARGO_TARGET_DIR"]
+    assert env["MOLT_CACHE"] == str(artifact_root / ".molt_cache")
+    assert env["MOLT_DIFF_ROOT"] == str(artifact_root / "tmp" / "diff")
+    assert env["MOLT_DIFF_TMPDIR"] == str(artifact_root / "tmp")
+    assert env["UV_CACHE_DIR"] == str(artifact_root / ".uv-cache")
+    assert env["TMPDIR"] == str(artifact_root / "tmp")
+    assert env["PYTHONPATH"] == str(repo_root.resolve() / "src")
     assert env["MOLT_SESSION_ID"] == "monty-conformance"
 
 
@@ -111,9 +115,12 @@ def test_molt_build_env_overrides_ambient_roots(monkeypatch):
 
     env = run_molt_conformance._molt_build_env(repo_root)
 
-    assert env["CARGO_TARGET_DIR"] == str(repo_root / "target")
-    assert env["TMPDIR"] == str(repo_root / "tmp")
-    assert env["PYTHONPATH"] == str(repo_root / "src")
+    artifact_root = Path(env["MOLT_EXT_ROOT"])
+    assert env["CARGO_TARGET_DIR"] == str(
+        molt_dx.cargo_target_dir_for_artifact_root(artifact_root, "ambient-session")
+    )
+    assert env["TMPDIR"] == str(artifact_root / "tmp")
+    assert env["PYTHONPATH"] == str(repo_root.resolve() / "src")
     assert env["MOLT_SESSION_ID"] == "ambient-session"
     assert env["KEEP_ME"] == "1"
 

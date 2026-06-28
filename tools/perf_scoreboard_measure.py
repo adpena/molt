@@ -3,14 +3,20 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import time
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
+_SRC_ROOT = Path(__file__).resolve().parents[1] / "src"
+if str(_SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(_SRC_ROOT))
+
 import bench
 import bench_suites
 import harness_memory_guard
+from molt.dx import cargo_target_dir_for_artifact_root
 from perf_schema import RED_THRESHOLD
 from perf_scoreboard_model import (
     PERFSCORE_SESSION_ID,
@@ -39,7 +45,7 @@ def _perfscore_build_env(spec: BackendSpec) -> dict[str, str]:
     base = os.environ.copy()
     base["MOLT_SESSION_ID"] = PERFSCORE_SESSION_ID
     base["CARGO_TARGET_DIR"] = str(
-        REPO_ROOT / "target" / "sessions" / PERFSCORE_SESSION_ID
+        cargo_target_dir_for_artifact_root(REPO_ROOT, PERFSCORE_SESSION_ID)
     )
     if spec.molt_backend is not None:
         base["MOLT_BACKEND"] = spec.molt_backend

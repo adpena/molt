@@ -17,17 +17,23 @@ from pathlib import Path
 import pytest
 from hypothesis import settings as hypothesis_settings
 
+from molt.dx import development_artifact_env
 from tools import harness_memory_guard
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _SRC_DIR = _REPO_ROOT / "src"
 
 
-def _artifact_root() -> Path:
-    configured = os.environ.get("MOLT_EXT_ROOT", "").strip()
-    if configured:
-        return Path(configured).expanduser()
-    return _REPO_ROOT
+def _property_env(session_id: str) -> dict[str, str]:
+    env = development_artifact_env(
+        _REPO_ROOT,
+        os.environ,
+        session_prefix="property",
+        session_id=os.environ.get("MOLT_SESSION_ID") or session_id,
+        create_dirs=True,
+    )
+    env["PYTHONPATH"] = str(_SRC_DIR)
+    return env
 
 
 def _run_property_process(
@@ -71,13 +77,7 @@ def _molt_cli_available() -> bool:
             f.flush()
             tmp_path = f.name
 
-        env = os.environ.copy()
-        env["PYTHONPATH"] = str(_SRC_DIR)
-        cargo_target = os.environ.get(
-            "CARGO_TARGET_DIR",
-            str(_artifact_root() / "target"),
-        )
-        env.setdefault("CARGO_TARGET_DIR", cargo_target)
+        env = _property_env("property-availability")
 
         result = _run_property_process(
             [
@@ -170,13 +170,7 @@ def run_via_molt(code: str, *, timeout: float = 60.0) -> str:
         with open(src_file, "w") as f:
             f.write(code)
 
-        env = os.environ.copy()
-        env["PYTHONPATH"] = str(_SRC_DIR)
-        cargo_target = os.environ.get(
-            "CARGO_TARGET_DIR",
-            str(_artifact_root() / "target"),
-        )
-        env.setdefault("CARGO_TARGET_DIR", cargo_target)
+        env = _property_env(f"property-run-{os.getpid()}")
 
         # Build
         build_result = _run_property_process(

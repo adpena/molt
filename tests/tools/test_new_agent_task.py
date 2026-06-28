@@ -80,13 +80,14 @@ def test_new_agent_task_scaffolds_canonical_agent_env() -> None:
 
         env_text = env_sh.read_text()
         ps_text = env_ps1.read_text()
-        assert _export_value(env_text, "MOLT_SESSION_ID").startswith(f"agent-{task}-")
+        session_id = _export_value(env_text, "MOLT_SESSION_ID")
+        assert session_id.startswith(f"agent-{task}-")
         assert Path(_export_value(env_text, "MOLT_EXT_ROOT")) == artifact_root
         assert _export_value(env_text, "CARGO_TARGET_DIR") == str(
-            artifact_root / "target"
+            artifact_root / "target" / "sessions" / session_id
         )
         assert _export_value(env_text, "MOLT_DIFF_CARGO_TARGET_DIR") == str(
-            artifact_root / "target"
+            artifact_root / "target" / "sessions" / session_id
         )
         assert _export_value(env_text, "SCCACHE_DIR") == str(artifact_root / ".sccache")
         assert _export_value(env_text, "MOLT_BACKEND_DAEMON_SOCKET_DIR").startswith(
@@ -99,7 +100,10 @@ def test_new_agent_task_scaffolds_canonical_agent_env() -> None:
         assert f"- Env: {env_sh}" in report_text
         assert f"- Env PowerShell: {env_ps1}" in report_text
         assert f"- MOLT_SESSION_ID: agent-{task}-" in report_text
-        assert f"- CARGO_TARGET_DIR: {artifact_root / 'target'}" in report_text
+        assert (
+            f"- CARGO_TARGET_DIR: {artifact_root / 'target' / 'sessions' / session_id}"
+            in report_text
+        )
         assert "molt dx run -- <command>" in report_text
         assert f'source "{env_sh}"' in report_text
         assert "initialized task=" in progress_log.read_text()
