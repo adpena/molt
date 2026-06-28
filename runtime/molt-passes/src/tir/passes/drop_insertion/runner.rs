@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::tir::analysis::AnalysisManager;
-use crate::tir::blocks::{BlockId, Terminator};
+use crate::tir::blocks::{BlockId, LoopRole, Terminator};
 use crate::tir::function::TirFunction;
 use crate::tir::ops::{AttrValue, OpCode, TirOp};
 use crate::tir::passes::liveness::{TirLiveness, TirLivenessResult};
@@ -1889,17 +1889,188 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
         audit_start.elapsed().as_millis(),
     );
 
-    // ── 4. Loop-carried phi drops before the back-edge (design §2.7) ─────────
-    // A header block arg (phi) `p` whose back-edge passes a NEW value leaves the
-    // previous iteration's `p` dead once the new value is computed. If `p` is
-    // live-out of the loop body's latch block ONLY because of the phi-slot (i.e.
-    // `p` is not used after the point the new value is produced) we would
-    // double-count; the conservative correct rule the straight-line + edge-dying
-    // rules already implement is: `p` is dropped at its last use. The loop EXIT
-    // case (the final phi value, dead after the loop) is handled by edge-dying at
-    // the exit block. No separate action needed here beyond what §1–§3 produce;
-    // this block is retained as the documented anchor for the loop-carried case
-    // and validated by the loop unit test.
+    // ── 4. Loop-carried phi drop-old before the back-edge (design §2.7) ──────
+    // Pure reassignment loops can overwrite an owned header phi without reading
+    // that phi in the loop body. Straight-line last-use placement cannot see a
+    // use, and edge-dying handles only the exit value, so the previous iteration's
+    // value must be released on the back-edge that overwrites the slot.
+    {
+        let mut loop_headers: Vec<BlockId> = func
+            .loop_roles
+            .iter()
+            .filter_map(|(&bid, role)| (*role == LoopRole::LoopHeader).then_some(bid))
+            .collect();
+        loop_headers.sort_unstable_by_key(|block| block.0);
+
+        for header_bid in loop_headers {
+            if !reachable.contains(&header_bid) {
+                continue;
+            }
+            let Some(header) = func.blocks.get(&header_bid) else {
+                continue;
+            };
+            if header.args.is_empty() {
+                continue;
+            }
+
+            let loop_blocks = crate::tir::dominators::collect_loop_blocks(
+                func,
+                &pred_map_term,
+                &idoms,
+                header_bid,
+            );
+            let mut body_used_roots: HashSet<ValueId> = HashSet::new();
+            for &loop_block in &loop_blocks {
+                let Some(block) = func.blocks.get(&loop_block) else {
+                    continue;
+                };
+                for op in &block.ops {
+                    for &operand in &op.operands {
+                        body_used_roots.insert(canon(operand));
+                    }
+                }
+            }
+
+            let mut body_forwarded_into_phi_roots: HashSet<ValueId> = HashSet::new();
+            for &loop_block in &loop_blocks {
+                let Some(block) = func.blocks.get(&loop_block) else {
+                    continue;
+                };
+                for arc in terminator_arcs(&block.terminator) {
+                    if arc.target == header_bid {
+                        continue;
+                    }
+                    let target_has_phis = func
+                        .blocks
+                        .get(&arc.target)
+                        .is_some_and(|target| !target.args.is_empty());
+                    if !target_has_phis {
+                        continue;
+                    }
+                    for &value in &arc.args {
+                        body_forwarded_into_phi_roots.insert(canon(value));
+                    }
+                }
+            }
+
+            let mut latches: Vec<BlockId> = pred_map_term
+                .get(&header_bid)
+                .map(|preds| {
+                    preds
+                        .iter()
+                        .copied()
+                        .filter(|&pred| crate::tir::dominators::dominates(header_bid, pred, &idoms))
+                        .collect()
+                })
+                .unwrap_or_default();
+            latches.sort_unstable_by_key(|block| block.0);
+
+            for latch_bid in latches {
+                if !reachable.contains(&latch_bid) {
+                    continue;
+                }
+                let term = func.blocks[&latch_bid].terminator.clone();
+                let arcs = terminator_arcs(&term);
+                let latch_already_released: HashSet<ValueId> = {
+                    let mut released: HashSet<ValueId> = HashSet::new();
+                    if let Some(existing) = plans.get(&latch_bid) {
+                        for &value in &existing.at_entry {
+                            released.insert(canon(value));
+                        }
+                        for &value in &existing.before_term {
+                            released.insert(canon(value));
+                        }
+                        for values in existing.after_op.values() {
+                            for &value in values {
+                                released.insert(canon(value));
+                            }
+                        }
+                        for values in existing.before_op.values() {
+                            for &value in values {
+                                released.insert(canon(value));
+                            }
+                        }
+                    }
+                    if let Some(block) = func.blocks.get(&latch_bid) {
+                        for op in &block.ops {
+                            if op.opcode == OpCode::DecRef
+                                && let Some(&value) = op.operands.first()
+                            {
+                                released.insert(canon(value));
+                            }
+                        }
+                    }
+                    released
+                };
+                let arcs_to_header = arcs.iter().filter(|arc| arc.target == header_bid).count();
+                for arc in &arcs {
+                    if arc.target != header_bid {
+                        continue;
+                    }
+                    let header = &func.blocks[&header_bid];
+                    let mut arc_releases: Vec<ValueId> = Vec::new();
+                    for (pos, phi) in header.args.iter().enumerate() {
+                        let phi_id = phi.id;
+                        if !drop_eligibility.is_droppable(phi_id) {
+                            continue;
+                        }
+                        if body_used_roots.contains(&canon(phi_id)) {
+                            continue;
+                        }
+                        if latch_already_released.contains(&canon(phi_id)) {
+                            continue;
+                        }
+                        if body_forwarded_into_phi_roots.contains(&canon(phi_id)) {
+                            continue;
+                        }
+                        let Some(&edge_value) = arc.args.get(pos) else {
+                            continue;
+                        };
+                        if canon(edge_value) == canon(phi_id) {
+                            continue;
+                        }
+                        arc_releases.push(phi_id);
+                    }
+                    if arc_releases.is_empty() {
+                        continue;
+                    }
+                    if arcs_to_header == 1 && !arc.is_self_loop_into_own_phi(latch_bid) {
+                        let plan = plans.entry(latch_bid).or_insert_with(|| BlockPlan {
+                            after_op: HashMap::new(),
+                            at_entry: Vec::new(),
+                            before_term: Vec::new(),
+                            before_op: HashMap::new(),
+                            before_exception_op: HashMap::new(),
+                            after_exception_op: HashMap::new(),
+                            before_term_incref: Vec::new(),
+                        });
+                        for value in arc_releases {
+                            plan.before_term.push(value);
+                        }
+                    } else {
+                        push_edge_split(
+                            &mut edge_splits,
+                            latch_bid,
+                            arc.descriptor,
+                            arc.target,
+                            arc.args.clone(),
+                            vec![],
+                            arc_releases,
+                        );
+                    }
+                }
+            }
+        }
+    }
+    emit_drop_inner_stage_audit(
+        func,
+        "after-loop-carried-phi-drop",
+        Some(plans.len()),
+        Some(edge_splits.len()),
+        Some(planned_insertion_count(&plans)),
+        Some(reachable.len()),
+        audit_start.elapsed().as_millis(),
+    );
 
     // ── 5. Mixed-ownership phi retain (design §ownership) ─────────────────────
     // A TIR block argument is the SSA phi: each predecessor edge passes a value
