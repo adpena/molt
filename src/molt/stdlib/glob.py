@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re as _re
 import sys
 import warnings
 
@@ -27,22 +26,35 @@ if sys.version_info >= (3, 13):
 # detection. molt's glob does NOT use them internally (magic detection is the
 # `molt_glob_has_magic` intrinsic), so they are pure API-compat surface.
 #
-# `magic_check` (str) compiles eagerly, exactly like CPython. `magic_check_bytes`
-# (a *bytes* pattern) is compiled lazily via PEP 562 `__getattr__`: molt's `re`
-# engine does not yet support bytes patterns, and eagerly compiling it here
-# would crash glob at import (the str-only `re.compile` raises TypeError on a
-# bytes pattern). Deferring it keeps the whole module importable and every glob
-# operation working — including byte-path globbing, which flows through the
-# Rust `molt_glob`/`molt_glob_iter` intrinsics (full bytes support), NOT through
-# this regex. Accessing `glob.magic_check_bytes` surfaces molt's real
-# re-bytes-pattern limitation at the point of use rather than masking it.
-# BATON: when `re` gains bytes-pattern support, make this eager again.
-magic_check = _re.compile(r"([*?[])")
-
-
+# Both `magic_check` (str) and `magic_check_bytes` (bytes) are compiled lazily
+# via PEP 562 `__getattr__`, with `re` imported *inside* the resolver. Two
+# reasons:
+#   1. `magic_check_bytes` MUST be lazy: molt's `re` engine does not yet support
+#      bytes patterns, so eagerly compiling `rb"([*?[])"` would crash glob at
+#      import (the str-only `re.compile` raises TypeError on a bytes pattern).
+#      Byte-path globbing itself flows through the Rust `molt_glob`/
+#      `molt_glob_iter` intrinsics (full bytes support), NOT through this regex,
+#      so deferring keeps every glob operation working. Accessing
+#      `glob.magic_check_bytes` surfaces the real re-bytes limitation at the
+#      point of use rather than masking it.
+#   2. `magic_check` (str) is deferred too so that merely importing `glob`
+#      (which a great deal of code does, never touching these compiled patterns)
+#      does not run a top-level `re.compile` and thereby pull `re`'s intrinsics
+#      into the program's static reach. The resolved pattern is identical to
+#      CPython's and is cached on first access.
+# BATON: when `re` gains bytes-pattern support, `magic_check_bytes` may compile
+# eagerly again; `magic_check` should stay lazy to keep `re` out of glob's reach.
 def __getattr__(name: str):
+    if name == "magic_check":
+        import re
+
+        value = re.compile(r"([*?[])")
+        globals()["magic_check"] = value
+        return value
     if name == "magic_check_bytes":
-        value = _re.compile(rb"([*?[])")
+        import re
+
+        value = re.compile(rb"([*?[])")
         globals()["magic_check_bytes"] = value
         return value
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

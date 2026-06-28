@@ -14,7 +14,6 @@ from __future__ import annotations
 import operator
 import os
 import re
-import struct
 import sys
 from _intrinsics import require_intrinsic as _require_intrinsic
 
@@ -395,6 +394,12 @@ class GNUTranslations(NullTranslations):
 
     def _parse(self, fp) -> None:
         """Parse a GNU .mo binary catalog from the file-like object *fp*."""
+        # Lazy import: `struct` is only used to decode the binary .mo header
+        # here. Keeping it out of module scope means importing `gettext` (e.g.
+        # for the pure `gettext()`/`install()` API) does not pull `struct`'s
+        # intrinsics into the program's static reach.
+        import struct
+
         self._catalog: dict = {}
         self.plural = lambda n: int(n != 1)  # germanic plural by default
 
