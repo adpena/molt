@@ -35,7 +35,7 @@ FallbackPolicy = Literal["error", "bridge"]
 BuildProfile = Literal["dev", "release"]
 EmitMode = Literal["bin", "obj", "wasm"]
 Target = str
-ImportScanMode = Literal["full", "module_init"]
+ImportScanMode = Literal["full", "module_init", "module_init_static_helpers"]
 BinaryImageKind = Literal[
     "entry_script",
     "entry_module",
