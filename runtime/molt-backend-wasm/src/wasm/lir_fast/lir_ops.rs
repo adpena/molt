@@ -1,8 +1,9 @@
 use super::lir_context::LirLowerCtx;
 use super::lir_scalar::{
     emit_get_boxed_for_repr, emit_lir_binary_arith, emit_lir_bitwise, emit_lir_bool_select,
-    emit_lir_comparison, emit_lir_i64_binary_or_boxed, emit_lir_identity_comparison,
-    emit_lir_truthiness_i32, emit_lir_unary_arith,
+    emit_lir_boxed_binary_runtime_call, emit_lir_comparison, emit_lir_i64_binary_or_boxed,
+    emit_lir_identity_comparison, emit_lir_truthiness_i32, emit_lir_unary_arith,
+    emit_lir_unary_pos,
 };
 use crate::wasm::body::WasmLirFallbackReason;
 use crate::wasm::const_materialization::{WasmConstMaterializationScratch, WasmConstOpPolicy};
@@ -254,9 +255,10 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
         OpCode::Div => emit_lir_binary_arith(ctx, op, ArithOp::Div),
         OpCode::FloorDiv => emit_lir_binary_arith(ctx, op, ArithOp::FloorDiv),
         OpCode::Mod => emit_lir_binary_arith(ctx, op, ArithOp::Mod),
+        OpCode::Pow => emit_lir_boxed_binary_runtime_call(ctx, op, LirRuntimeCall::Pow),
         OpCode::Neg => emit_lir_unary_arith(ctx, op, UnaryOp::Neg),
-        OpCode::Pos | OpCode::Copy | OpCode::DeleteVar | OpCode::BoxVal | OpCode::UnboxVal
-        | OpCode::TypeGuard => {
+        OpCode::Pos => emit_lir_unary_pos(ctx, op),
+        OpCode::Copy | OpCode::DeleteVar | OpCode::BoxVal | OpCode::UnboxVal | OpCode::TypeGuard => {
             if let (Some(&src), Some(result)) = (tir_op.operands.first(), op.result_values.first())
             {
                 if matches!(
@@ -422,7 +424,6 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
         | OpCode::ModuleSetAttr
         | OpCode::ModuleDelGlobal
         | OpCode::ModuleDelGlobalIfPresent
-        | OpCode::Pow
         | OpCode::In
         | OpCode::NotIn
         | OpCode::Raise
