@@ -49,6 +49,11 @@ candidate yet:
 That makes the next structural unit package-native closure for Kernel A, not a
 Molt-owned Python shim and not a checked-in browser artifact bundle.
 
+Once package-native closure exists, replay Kernel A `field_solve(lstar)` first
+because it is the SciPy ndimage stress test and interactive payload, then run
+Kernel B `witness_forward.levelset_argmax` against
+`witness_forward_reference.npz`.
+
 ## Correspondence
 
 | file | what |
