@@ -365,6 +365,8 @@ pub(crate) type WasmFunctionLoweringPlans = BTreeMap<String, WasmFunctionLowerin
 pub(crate) fn prepare_lir_wasm_fast_plan(
     tir_func: &crate::tir::function::TirFunction,
 ) -> WasmFunctionLoweringPlan {
+    let mut refined = tir_func.clone();
+    crate::tir::type_refine::refine_types(&mut refined);
     // Drive the LIR carrier derivation from the PROVEN `repr_by_value` (the
     // single source of truth shared with LLVM), so `LirRepr::I64` is assigned
     // only to proven raw-i64 carriers (`RawI64Safe` or `RawI64FullDeopt`).
@@ -376,10 +378,14 @@ pub(crate) fn prepare_lir_wasm_fast_plan(
     // to `DynBox`; its arithmetic emits a typed generic-path bail, which is
     // rejected below so the function falls back to the IntFastLane-guarded slow
     // path (correctness preserved; the unsound bare op is un-emittable here).
-    let vr = crate::representation_plan::value_range_for(tir_func);
-    let repr = crate::representation_plan::repr_by_value_for(tir_func, Some(&vr));
+    //
+    // Refinement is owned here, immediately before proof derivation, so the
+    // value-range/repr facts and LIR lowering cannot observe different result
+    // types for checked multi-result ops.
+    let vr = crate::representation_plan::value_range_for(&refined);
+    let repr = crate::representation_plan::repr_by_value_for(&refined, Some(&vr));
     let Some(output) =
-        crate::wasm::lir_fast::lower_tir_to_wasm_boxed_i64_abi_with_proof(tir_func, &repr, &vr)
+        crate::wasm::lir_fast::lower_tir_to_wasm_boxed_i64_abi_with_proof(&refined, &repr, &vr)
     else {
         return WasmFunctionLoweringPlan::Generic {
             reason: crate::wasm::body::WasmLirFallbackReason::BoxedI64AbiUnsupported,
@@ -410,8 +416,7 @@ pub(crate) fn compute_lir_wasm_lowering_plans_from_final_ir_with_escaped(
             );
             continue;
         }
-        let mut tir_func = crate::tir::lower_from_simple::lower_to_tir(func_ir);
-        crate::tir::type_refine::refine_types(&mut tir_func);
+        let tir_func = crate::tir::lower_from_simple::lower_to_tir(func_ir);
         plans.insert(func_ir.name.clone(), prepare_lir_wasm_fast_plan(&tir_func));
     }
     plans
@@ -430,6 +435,7 @@ mod wasm_lir_fast_plan_tests {
     use crate::tir::types::TirType;
     use crate::tir::values::ValueId;
     use crate::wasm::body::WasmLirFallbackReason;
+    use wasm_encoder::Instruction;
 
     fn const_i64_return_func(value: i64) -> TirFunction {
         let mut func = TirFunction::new("const_i64_return".into(), vec![], TirType::I64);
@@ -651,12 +657,29 @@ mod wasm_lir_fast_plan_tests {
     }
 
     #[test]
-    fn wasm_lir_fast_plan_records_body_bail_reason() {
+    fn wasm_lir_fast_plan_accepts_raw_checked_mul_body() {
         let plan = prepare_lir_wasm_fast_plan(&checked_mul_i64_consts_func());
+        let body = plan.lir_fast_body().unwrap_or_else(|| {
+            panic!(
+                "raw checked_mul const body must keep the LIR fast plan; reason={:?}",
+                plan.generic_reason()
+            )
+        });
+        let view = body.test_view();
 
-        assert_eq!(
-            plan.generic_reason(),
-            Some(WasmLirFallbackReason::BoxedCheckedArithmetic)
+        assert_eq!(plan.generic_reason(), None);
+        assert_eq!(body.bail_to_generic_reason(), None);
+        assert!(
+            view.instructions
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::I64Mul)),
+            "checked_mul plan body must emit wrapping i64.mul"
+        );
+        assert!(
+            view.instructions
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::I64DivS)),
+            "checked_mul plan body must emit exact overflow division check"
         );
     }
 

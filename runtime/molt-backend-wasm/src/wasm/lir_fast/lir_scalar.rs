@@ -1,7 +1,6 @@
 use super::lir_context::LirLowerCtx;
 use super::lir_ops::{ArithOp, BitwiseOp, CmpOp, UnaryOp};
 use super::runtime_calls::LirRuntimeCall;
-use crate::wasm::body::WasmLirFallbackReason;
 use crate::wasm_values::push_f64_to_i64_canonical;
 use molt_codegen_abi::{
     INLINE_INT_BIAS, INLINE_INT_LIMIT, INT_MASK, INT_MAX_INLINE as INLINE_INT_MAX,
@@ -12,6 +11,27 @@ use molt_tir::tir::lir::{LirOp, LirRepr};
 use molt_tir::tir::ops::AttrValue;
 use molt_tir::tir::values::ValueId;
 use wasm_encoder::{BlockType, Instruction, ValType};
+
+fn raw_i64_arith_instruction(arith: ArithOp) -> Instruction<'static> {
+    match arith {
+        ArithOp::Add => Instruction::I64Add,
+        ArithOp::Sub => Instruction::I64Sub,
+        ArithOp::Mul => Instruction::I64Mul,
+        ArithOp::Div | ArithOp::FloorDiv => Instruction::I64DivS,
+        ArithOp::Mod => Instruction::I64RemS,
+    }
+}
+
+fn boxed_arith_runtime_call(arith: ArithOp) -> LirRuntimeCall {
+    match arith {
+        ArithOp::Add => LirRuntimeCall::Add,
+        ArithOp::Sub => LirRuntimeCall::Sub,
+        ArithOp::Mul => LirRuntimeCall::Mul,
+        ArithOp::Div => LirRuntimeCall::Div,
+        ArithOp::FloorDiv => LirRuntimeCall::FloorDiv,
+        ArithOp::Mod => LirRuntimeCall::Mod,
+    }
+}
 
 pub(super) fn emit_lir_binary_arith(ctx: &mut LirLowerCtx, op: &LirOp, arith: ArithOp) {
     let tir_op = &op.tir_op;
@@ -31,7 +51,7 @@ pub(super) fn emit_lir_binary_arith(ctx: &mut LirLowerCtx, op: &LirOp, arith: Ar
 
         ctx.emit_get(lhs);
         ctx.emit_get(rhs);
-        ctx.instructions.push(Instruction::I64Add);
+        ctx.instructions.push(raw_i64_arith_instruction(arith));
         ctx.emit_set(main);
 
         ctx.emit_get(main);
@@ -49,10 +69,12 @@ pub(super) fn emit_lir_binary_arith(ctx: &mut LirLowerCtx, op: &LirOp, arith: Ar
         ctx.instructions.push(Instruction::Else);
         // Inline boxing is sound here: the checked-triple gate
         // (`lowers_to_checked_i64_arithmetic`) only fires when BOTH operands
-        // are value-range-proven inside the 47-bit inline window.
+        // are value-range-proven inside the 47-bit inline window. The boxed
+        // side channel uses the same arithmetic opcode as the raw main result,
+        // so Add/Sub/Mul cannot drift from the generated checked-triple fact.
         emit_box_inline_i64(ctx, lhs);
         emit_box_inline_i64(ctx, rhs);
-        ctx.emit_bail_to_generic_path(WasmLirFallbackReason::BoxedCheckedArithmetic);
+        ctx.emit_runtime_call(boxed_arith_runtime_call(arith));
         ctx.emit_set(overflow_box);
         ctx.instructions.push(Instruction::I32Const(1));
         ctx.emit_set(overflow_flag);
@@ -87,13 +109,7 @@ pub(super) fn emit_lir_binary_arith(ctx: &mut LirLowerCtx, op: &LirOp, arith: Ar
         (LirRepr::I64, LirRepr::I64) if result_repr == LirRepr::I64 && !boxed_dispatch => {
             ctx.emit_get(lhs);
             ctx.emit_get(rhs);
-            ctx.instructions.push(match arith {
-                ArithOp::Add => Instruction::I64Add,
-                ArithOp::Sub => Instruction::I64Sub,
-                ArithOp::Mul => Instruction::I64Mul,
-                ArithOp::Div | ArithOp::FloorDiv => Instruction::I64DivS,
-                ArithOp::Mod => Instruction::I64RemS,
-            });
+            ctx.instructions.push(raw_i64_arith_instruction(arith));
         }
         (LirRepr::F64, LirRepr::F64) => {
             ctx.emit_get(lhs);
@@ -138,14 +154,7 @@ pub(super) fn emit_lir_binary_arith(ctx: &mut LirLowerCtx, op: &LirOp, arith: Ar
             // for operations that must fall back to the generic emitter.
             emit_get_boxed_for_repr(ctx, lhs);
             emit_get_boxed_for_repr(ctx, rhs);
-            ctx.emit_runtime_call(match arith {
-                ArithOp::Add => LirRuntimeCall::Add,
-                ArithOp::Sub => LirRuntimeCall::Sub,
-                ArithOp::Mul => LirRuntimeCall::Mul,
-                ArithOp::Div => LirRuntimeCall::Div,
-                ArithOp::FloorDiv => LirRuntimeCall::FloorDiv,
-                ArithOp::Mod => LirRuntimeCall::Mod,
-            });
+            ctx.emit_runtime_call(boxed_arith_runtime_call(arith));
             ctx.emit_set(dst);
             return;
         }
