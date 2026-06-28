@@ -38,7 +38,12 @@ from tools import (  # noqa: E402  (must follow the sys.path self-bootstrap abov
     process_sentinel,
     resource_pressure,
 )
-from molt.dx import CANONICAL_RUN_ENV_KEYS, DX_ENV_KEYS, development_artifact_env  # noqa: E402
+from molt.dx import (  # noqa: E402
+    CANONICAL_RUN_ENV_KEYS,
+    DX_ENV_KEYS,
+    cargo_target_dir_for_artifact_root,
+    development_artifact_env,
+)
 from molt import backend_daemon_custody as daemon_custody  # noqa: E402
 from tools.compat import backends as compat_backends  # noqa: E402
 from tools.compat import comparison as compat_comparison  # noqa: E402
@@ -609,9 +614,15 @@ def _diff_cargo_target_root() -> Path:
         else:
             artifact_root = os.environ.get("MOLT_EXT_ROOT", "").strip()
             if artifact_root:
-                root = Path(artifact_root).expanduser() / "target"
+                root = cargo_target_dir_for_artifact_root(
+                    Path(artifact_root).expanduser(),
+                    os.environ.get("MOLT_SESSION_ID"),
+                )
             else:
-                root = _repo_root() / "target"
+                root = cargo_target_dir_for_artifact_root(
+                    _repo_root(),
+                    os.environ.get("MOLT_SESSION_ID"),
+                )
     root.mkdir(parents=True, exist_ok=True)
     return root
 

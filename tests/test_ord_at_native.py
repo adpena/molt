@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from molt.dx import development_artifact_env
 from tests.native_process_guard import run_native_test_process
 from tests.wasm_linked_runner import (
     build_wasm_linked,
@@ -75,18 +76,14 @@ LUAU_EXPECTED = "\n".join(
 
 
 def _env(root: Path) -> dict[str, str]:
-    env = os.environ.copy()
-    env["PYTHONPATH"] = str(root / "src")
-    env.setdefault("MOLT_EXT_ROOT", str(root))
-    env.setdefault("CARGO_TARGET_DIR", str(root / "target"))
-    env.setdefault(
-        "MOLT_DIFF_CARGO_TARGET_DIR", env.get("CARGO_TARGET_DIR", str(root / "target"))
+    env = development_artifact_env(
+        root,
+        os.environ,
+        session_prefix="ord-at-native",
+        session_id=os.environ.get("MOLT_SESSION_ID") or "ord-at-native",
+        create_dirs=True,
     )
-    env.setdefault("MOLT_CACHE", str(root / ".molt_cache"))
-    env.setdefault("MOLT_DIFF_ROOT", str(root / "tmp" / "diff"))
-    env.setdefault("MOLT_DIFF_TMPDIR", str(root / "tmp"))
-    env.setdefault("UV_CACHE_DIR", str(root / ".uv-cache"))
-    env.setdefault("TMPDIR", str(root / "tmp"))
+    env["PYTHONPATH"] = str(root / "src")
     env.setdefault("CARGO_BUILD_JOBS", "1")
     env.setdefault("MOLT_BACKEND_DAEMON", "0")
     env.setdefault("MOLT_BUILD_LOCK_TIMEOUT", "45")

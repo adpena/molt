@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from molt.dx import development_artifact_env
 from tests.wasm_linked_runner import _run_wasm_test_process
 
 
@@ -40,19 +41,16 @@ def test_browser_host_direct_mode_compiled_gpu_kernel_uses_webgpu_dispatch(
         encoding="utf-8",
     )
 
-    build_env = os.environ.copy()
+    build_env = development_artifact_env(
+        root,
+        os.environ,
+        session_prefix="browser-gpu-host",
+        session_id="test-browser-turboquant-webgpu",
+        create_dirs=True,
+    )
     build_env["PYTHONPATH"] = str(root / "src")
     build_env["MOLT_WASM_LINKED"] = "0"
     build_env["MOLT_SESSION_ID"] = "test-browser-turboquant-webgpu"
-    build_env["CARGO_TARGET_DIR"] = str(
-        root / "target" / "test-browser-turboquant-webgpu"
-    )
-    build_env["MOLT_DIFF_CARGO_TARGET_DIR"] = build_env["CARGO_TARGET_DIR"]
-    build_env["MOLT_CACHE"] = str(root / ".molt_cache")
-    build_env["MOLT_DIFF_ROOT"] = str(root / "tmp" / "diff")
-    build_env["MOLT_DIFF_TMPDIR"] = str(root / "tmp")
-    build_env["UV_CACHE_DIR"] = str(root / ".uv-cache")
-    build_env["TMPDIR"] = str(root / "tmp")
     build_env["MOLT_BACKEND_DAEMON"] = "0"
     build = _run_wasm_test_process(
         [

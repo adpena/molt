@@ -24,14 +24,17 @@ from pathlib import Path
 BENCH_DIR = Path(__file__).parent
 REPO_ROOT = BENCH_DIR.parent.parent
 TOOLS_ROOT = REPO_ROOT / "tools"
+SRC_ROOT = REPO_ROOT / "src"
 RESULTS_DIR = REPO_ROOT / "bench" / "results" / "luau"
 TMP_ROOT = REPO_ROOT / "tmp" / "bench" / "luau"
 DEFAULT_RESULTS_PATH = RESULTS_DIR / "results.json"
 
 sys.path.insert(0, str(TOOLS_ROOT))
+sys.path.insert(0, str(SRC_ROOT))
 
 import harness_memory_guard  # noqa: E402
 import perf_authority  # noqa: E402
+from molt.dx import development_artifact_env  # noqa: E402
 
 BENCHMARKS = [
     "bench_fibonacci.py",
@@ -57,33 +60,20 @@ BENCHMARKS = [
 
 
 def _base_env() -> dict[str, str]:
-    artifact_root = os.environ.get("MOLT_EXT_ROOT", str(REPO_ROOT))
-    cargo_target = os.environ.get("CARGO_TARGET_DIR", str(REPO_ROOT / "target"))
-    env = {
-        **os.environ,
-        "MOLT_EXT_ROOT": artifact_root,
-        "CARGO_TARGET_DIR": cargo_target,
-        "MOLT_DIFF_CARGO_TARGET_DIR": os.environ.get(
-            "MOLT_DIFF_CARGO_TARGET_DIR",
-            cargo_target,
-        ),
-        "MOLT_CACHE": os.environ.get("MOLT_CACHE", str(REPO_ROOT / ".molt_cache")),
-        "MOLT_DIFF_ROOT": os.environ.get(
-            "MOLT_DIFF_ROOT",
-            str(REPO_ROOT / "tmp" / "diff"),
-        ),
-        "MOLT_DIFF_TMPDIR": os.environ.get(
-            "MOLT_DIFF_TMPDIR",
-            str(REPO_ROOT / "tmp"),
-        ),
-        "UV_CACHE_DIR": os.environ.get(
-            "UV_CACHE_DIR",
-            str(REPO_ROOT / ".uv-cache"),
-        ),
-        "TMPDIR": os.environ.get("TMPDIR", str(REPO_ROOT / "tmp")),
-        "RUSTC_WRAPPER": "",
-        "PYTHONPATH": str(REPO_ROOT / "src"),
-    }
+    env = development_artifact_env(
+        REPO_ROOT,
+        os.environ,
+        session_prefix="bench-luau",
+        session_id=os.environ.get("MOLT_SESSION_ID")
+        or f"bench-luau-{os.getpid()}",
+        create_dirs=True,
+    )
+    env.update(
+        {
+            "RUSTC_WRAPPER": "",
+            "PYTHONPATH": str(REPO_ROOT / "src"),
+        }
+    )
     return env
 
 

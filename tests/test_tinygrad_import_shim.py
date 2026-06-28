@@ -9,6 +9,7 @@ import pytest
 
 from tests.native_process_guard import run_native_test_process
 
+from molt.dx import development_artifact_env
 from tests.helpers.falcon_ocr_paths import FALCON_OCR_ARTIFACT_ROOT
 from tests.helpers.tinygrad_stdlib_loader import tinygrad_stdlib_context
 
@@ -16,16 +17,14 @@ from tests.helpers.tinygrad_stdlib_loader import tinygrad_stdlib_context
 def _native_molt_env(
     root: Path, *, hermetic: bool = False, module_roots: tuple[Path, ...] = ()
 ) -> dict[str, str]:
-    env = os.environ.copy()
+    env = development_artifact_env(
+        root,
+        os.environ,
+        session_prefix="tinygrad-import-shim",
+        session_id=os.environ.get("MOLT_SESSION_ID") or "tinygrad-import-shim",
+        create_dirs=True,
+    )
     env["PYTHONPATH"] = str(root / "src")
-    env["MOLT_EXT_ROOT"] = str(root)
-    env["CARGO_TARGET_DIR"] = str(root / "target")
-    env["MOLT_DIFF_CARGO_TARGET_DIR"] = env["CARGO_TARGET_DIR"]
-    env["MOLT_CACHE"] = str(root / ".molt_cache")
-    env["MOLT_DIFF_ROOT"] = str(root / "tmp" / "diff")
-    env["MOLT_DIFF_TMPDIR"] = str(root / "tmp")
-    env["UV_CACHE_DIR"] = str(root / ".uv-cache")
-    env["TMPDIR"] = str(root / "tmp")
     env["MOLT_STDLIB_PROFILE"] = "full"
     if module_roots:
         env["MOLT_MODULE_ROOTS"] = os.pathsep.join(str(path) for path in module_roots)

@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from molt.dx import development_artifact_env
 from tests.native_process_guard import run_native_test_process
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -22,26 +23,14 @@ def _compile_and_run(source: str, profile: str, *, backend: str | None = None) -
         src_path.write_text(source)
         binary_path = tmp_path / f"{module_stem}_molt"
 
-        env = {
-            **os.environ,
-            "PYTHONPATH": str(SRC_DIR),
-            "MOLT_EXT_ROOT": str(ROOT),
-            "CARGO_TARGET_DIR": os.environ.get(
-                "CARGO_TARGET_DIR", str(ROOT / "target")
-            ),
-            "MOLT_DIFF_CARGO_TARGET_DIR": os.environ.get(
-                "MOLT_DIFF_CARGO_TARGET_DIR",
-                os.environ.get("CARGO_TARGET_DIR", str(ROOT / "target")),
-            ),
-            "MOLT_CACHE": os.environ.get("MOLT_CACHE", str(ROOT / ".molt_cache")),
-            "MOLT_DIFF_ROOT": os.environ.get(
-                "MOLT_DIFF_ROOT", str(ROOT / "tmp" / "diff")
-            ),
-            "MOLT_DIFF_TMPDIR": os.environ.get("MOLT_DIFF_TMPDIR", str(ROOT / "tmp")),
-            "UV_CACHE_DIR": os.environ.get("UV_CACHE_DIR", str(ROOT / ".uv-cache")),
-            "TMPDIR": os.environ.get("TMPDIR", str(ROOT / "tmp")),
-            "MOLT_SESSION_ID": f"test-loop-join-{profile}-{tmp_path.name}",
-        }
+        env = development_artifact_env(
+            ROOT,
+            os.environ,
+            session_prefix=f"test-loop-join-{profile}",
+            session_id=f"test-loop-join-{profile}-{tmp_path.name}",
+            create_dirs=True,
+        )
+        env["PYTHONPATH"] = str(SRC_DIR)
 
         build = run_native_test_process(
             [
