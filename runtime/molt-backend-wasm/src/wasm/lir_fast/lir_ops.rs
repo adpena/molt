@@ -5,6 +5,7 @@ use super::lir_scalar::{
 };
 use crate::wasm::body::WasmLirFallbackReason;
 use crate::wasm::const_materialization::{WasmConstMaterializationScratch, WasmConstOpPolicy};
+use crate::wasm::lir_fast::LirRuntimeCall;
 use crate::wasm_abi_generated::{WasmConstLirFastPolicy, WasmConstScalarValue};
 use molt_codegen_abi::box_none_bits;
 use molt_tir::tir::lir::{LirBlock, LirOp, LirRepr};
@@ -262,7 +263,7 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
                     Some(AttrValue::Str(kind)) if kind == "binding_alias"
                 ) {
                     emit_get_boxed_for_repr(ctx, src);
-                    ctx.emit_runtime_call("inc_ref_obj");
+                    ctx.emit_runtime_call(LirRuntimeCall::IncRefObj);
                 }
                 ctx.emit_get(src);
                 ctx.emit_set(result.id);
@@ -480,13 +481,13 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
         OpCode::DecRef | OpCode::DelBoundary => {
             if let Some(&operand) = tir_op.operands.first() {
                 emit_get_boxed_for_repr(ctx, operand);
-                ctx.emit_runtime_call("dec_ref_obj");
+                ctx.emit_runtime_call(LirRuntimeCall::DecRefObj);
             }
         }
         OpCode::IncRef => {
             if let Some(&operand) = tir_op.operands.first() {
                 emit_get_boxed_for_repr(ctx, operand);
-                ctx.emit_runtime_call("inc_ref_obj");
+                ctx.emit_runtime_call(LirRuntimeCall::IncRefObj);
             }
         }
     }
