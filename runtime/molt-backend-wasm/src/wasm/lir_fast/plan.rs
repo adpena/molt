@@ -1,5 +1,3 @@
-#[cfg(test)]
-use crate::FunctionIR;
 use crate::SimpleIR;
 use crate::wasm::body::{WasmBody, WasmLirFallbackReason};
 use std::collections::{BTreeMap, BTreeSet};
@@ -95,12 +93,18 @@ pub(crate) fn is_production_lir_wasm_fast_path_name(func_name: &str) -> bool {
 
 #[cfg(all(test, feature = "wasm-backend"))]
 mod tests {
-    use super::*;
+    use super::{
+        WasmFunctionLoweringPlan, compute_lir_wasm_lowering_plans_from_final_ir_with_escaped,
+        prepare_lir_wasm_fast_plan,
+    };
     use crate::tir::blocks::Terminator;
     use crate::tir::function::TirFunction;
     use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
     use crate::tir::types::TirType;
     use crate::tir::values::ValueId;
+    use crate::wasm::body::WasmLirFallbackReason;
+    use crate::{FunctionIR, SimpleIR};
+    use std::collections::BTreeSet;
     use wasm_encoder::Instruction;
 
     fn const_i64_return_func(value: i64) -> TirFunction {

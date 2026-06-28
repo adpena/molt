@@ -48,7 +48,9 @@ pub(crate) fn emit_f64_to_i64_canonical(func: &mut Function, scratch_local: u32)
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{F64_EXPONENT_MASK, F64_FRACTION_MASK, push_f64_to_i64_canonical};
+    use molt_codegen_abi::CANONICAL_NAN_BITS;
+    use wasm_encoder::Instruction;
 
     #[test]
     fn f64_canonicalizer_detects_all_nan_payloads_not_only_qnan_tags() {

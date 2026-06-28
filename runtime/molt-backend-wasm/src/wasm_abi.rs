@@ -128,8 +128,8 @@ pub(crate) fn poll_table_import_slot(import_name: &str) -> Option<u32> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use wasm_encoder::Module;
+    use super::{STATIC_TYPE_COUNT, emit_static_type_section};
+    use wasm_encoder::{Module, TypeSection};
     use wasmparser::{CompositeInnerType, Parser, Payload};
 
     fn static_type_section_signatures() -> Vec<(usize, usize)> {

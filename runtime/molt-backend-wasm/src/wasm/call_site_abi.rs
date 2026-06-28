@@ -102,7 +102,9 @@ pub(super) struct WasmCallableTablePair {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::WasmCallSiteAbi;
+    use crate::passes::ReturnAliasSummary;
+    use std::collections::{BTreeMap, BTreeSet};
 
     #[test]
     fn call_site_abi_canonicalizes_callable_indices_and_lifecycle_facts() {

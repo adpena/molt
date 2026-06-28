@@ -200,7 +200,8 @@ impl Index<&String> for WasmFrameLocals {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{WasmFrameLocalKind, WasmFrameLocals};
+    use std::collections::BTreeMap;
 
     #[test]
     fn frame_locals_from_map_preserves_value_name_kinds() {
