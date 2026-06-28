@@ -1,16 +1,22 @@
+use super::WasmBackend;
 use super::context::CompileFuncContext;
 use super::trampoline_analysis::WasmTrampolineAnalysis;
-use super::*;
 use imports::WasmRuntimeImportEmission;
 use runtime_surface::WasmRuntimeSurfacePlan;
+
+use crate::SimpleIR;
+use crate::wasm_abi::emit_static_type_section;
+use crate::wasm_plan::DEFAULT_GPU_INTRINSIC_MANIFEST_NAMES;
 
 mod callable_table;
 mod finalize;
 mod imports;
 mod runtime_surface;
 mod trampoline_emit;
+mod type_layout;
 
 use finalize::WasmModuleFinalizationInput;
+use type_layout::WasmModuleTypeLayout;
 
 impl WasmBackend {
     pub(super) fn emit_wasm_module(
@@ -33,7 +39,7 @@ impl WasmBackend {
         let reloc_enabled = self.options.reloc_enabled;
         let WasmRuntimeImportEmission {
             runtime_surface,
-            mut next_type_idx,
+            next_type_idx,
         } = self.emit_runtime_import_surface(&ir, &lir_lowering_plans, &task_kinds);
         let WasmRuntimeSurfacePlan {
             max_func_arity,
@@ -97,106 +103,16 @@ impl WasmBackend {
         let const_str_scratch_segment =
             self.add_data_segment_mutable(reloc_enabled, &const_str_scratch_bytes);
 
-        let mut user_type_map: BTreeMap<usize, u32> = BTreeMap::new();
-        // Types 0-40 are static above; additional simple-i64 import signatures
-        // may have extended the type section before user arity signatures.
-        for func_ir in &ir.functions {
-            if func_ir.name.ends_with("_poll") {
-                continue;
-            }
-            let arity = func_ir.params.len();
-            if let std::collections::btree_map::Entry::Vacant(entry) = user_type_map.entry(arity) {
-                self.types.function(
-                    std::iter::repeat_n(ValType::I64, arity),
-                    std::iter::once(ValType::I64),
-                );
-                entry.insert(next_type_idx);
-                next_type_idx += 1;
-            }
-        }
-
-        // Multi-value return type signatures for candidate functions.
-        // Maps (param_count, return_count) -> type index.
-        let mut multi_return_type_map: BTreeMap<(usize, usize), u32> = BTreeMap::new();
-        {
-            // Collect unique (param_count, return_count) pairs from candidates.
-            let func_param_counts: BTreeMap<&str, usize> = ir
-                .functions
-                .iter()
-                .map(|f| (f.name.as_str(), f.params.len()))
-                .collect();
-            let mut needed: Vec<(usize, usize)> = Vec::new();
-            for (name, ret_count) in &multi_return_candidates {
-                if let Some(&param_count) = func_param_counts.get(name.as_str()) {
-                    let key = (param_count, *ret_count);
-                    if let std::collections::btree_map::Entry::Vacant(e) =
-                        multi_return_type_map.entry(key)
-                    {
-                        e.insert(next_type_idx);
-                        needed.push(key);
-                        next_type_idx += 1;
-                    }
-                }
-            }
-            // Sort for deterministic type section ordering.
-            needed.sort();
-            // Re-assign indices in sorted order.
-            let base = next_type_idx - needed.len() as u32;
-            for (i, key) in needed.iter().enumerate() {
-                multi_return_type_map.insert(*key, base + i as u32);
-            }
-            for (param_count, ret_count) in &needed {
-                self.types.function(
-                    std::iter::repeat_n(ValType::I64, *param_count),
-                    std::iter::repeat_n(ValType::I64, *ret_count),
-                );
-            }
-        }
-
-        let max_needed_arity = max_func_arity
-            .max(max_call_arity.saturating_add(3))
-            .max(CALL_INDIRECT_MAX_ARITY + 1);
-        for arity in 0..=max_needed_arity {
-            if let std::collections::btree_map::Entry::Vacant(entry) = user_type_map.entry(arity) {
-                self.types.function(
-                    std::iter::repeat_n(ValType::I64, arity),
-                    std::iter::once(ValType::I64),
-                );
-                entry.insert(next_type_idx);
-                next_type_idx += 1;
-            }
-        }
-
-        for spec in CALL_INDIRECT_IMPORTS {
-            let arity = spec.arity;
-            let sig_idx = *user_type_map.get(&(arity + 1)).unwrap_or_else(|| {
-                panic!("missing call_indirect signature for arity {}", arity + 1)
-            });
-            let callee_idx = *user_type_map
-                .get(&arity)
-                .unwrap_or_else(|| panic!("missing call_indirect callee type for arity {}", arity));
-            self.funcs.function(sig_idx);
-            self.exports
-                .export(spec.import_name, ExportKind::Func, self.func_count);
-            let mut call_indirect = Function::new_with_locals_types(Vec::new());
-            for idx in 0..arity {
-                call_indirect.instruction(&Instruction::LocalGet((idx + 1) as u32));
-            }
-            call_indirect.instruction(&Instruction::LocalGet(0));
-            call_indirect.instruction(&Instruction::I32WrapI64);
-            emit_call_indirect(&mut call_indirect, reloc_enabled, callee_idx, 0);
-            call_indirect.instruction(&Instruction::End);
-            self.codes.function(&call_indirect);
-            self.func_count += 1;
-        }
-
-        let sentinel_func_idx = self.func_count;
-        self.funcs.function(2);
-        let mut sentinel = Function::new_with_locals_types(Vec::new());
-        sentinel.instruction(&Instruction::Unreachable);
-        sentinel.instruction(&Instruction::End);
-        self.codes.function(&sentinel);
-        self.func_count += 1;
+        let type_layout = WasmModuleTypeLayout::build(
+            &mut self,
+            &ir,
+            next_type_idx,
+            max_func_arity,
+            max_call_arity,
+            &multi_return_candidates,
+        );
+        let sentinel_func_idx =
+            type_layout.emit_call_indirect_exports_and_sentinel(&mut self, reloc_enabled);
 
         // Callable table ABI: function indices, table slots, trampolines,
         // and relocatable element payloads share one layout authority.
@@ -205,7 +121,7 @@ impl WasmBackend {
             &builtin_trampoline_specs,
             &direct_import_call_specs,
             &default_trampoline_spec,
-            &user_type_map,
+            type_layout.user_type_map(),
             reloc_enabled,
             sentinel_func_idx,
         );
@@ -230,16 +146,7 @@ impl WasmBackend {
             return_alias_summaries: &return_alias_summaries,
         };
         for func_ir in &ir.functions {
-            let type_idx = if func_ir.name.ends_with("_poll") {
-                2
-            } else if let Some(&ret_count) = multi_return_candidates.get(&func_ir.name) {
-                let key = (func_ir.params.len(), ret_count);
-                *multi_return_type_map
-                    .get(&key)
-                    .unwrap_or(user_type_map.get(&func_ir.params.len()).unwrap_or(&0))
-            } else {
-                *user_type_map.get(&func_ir.params.len()).unwrap_or(&0)
-            };
+            let type_idx = type_layout.type_idx_for_function(func_ir);
             self.compile_func(func_ir, type_idx, &compile_ctx);
         }
 
