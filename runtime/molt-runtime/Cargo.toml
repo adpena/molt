@@ -135,6 +135,8 @@ molt_debug_gil = []
 molt_tk_native = ["stdlib_tk", "molt-runtime-tk/native-tcl"]
 # Enable dlopen-based C extension loading via the CPython ABI shim
 cext_loader = ["dep:molt-cpython-abi"]
+# Enable dlopen-based loading for source-recompiled libmolt extensions.
+source_extension_loader = ["dep:libloading"]
 # Reserved for the freestanding wasm target. Keep this feature independent
 # from getrandom Cargo features: getrandom 0.4 selects custom backends via
 # cfg(getrandom_backend = "..."), not via a Cargo feature named "custom".
@@ -177,7 +179,7 @@ molt-runtime-xml = { path = "../molt-runtime-xml", optional = true }
 molt-runtime-ipaddress = { path = "../molt-runtime-ipaddress", optional = true }
 molt-runtime-zoneinfo = { path = "../molt-runtime-zoneinfo", optional = true }
 molt-gpu = { path = "../molt-gpu", optional = true, default-features = false, features = ["cpu-backend"] }
-serde_json = "1.0"
+serde_json = { workspace = true }
 crossbeam-deque = "0.8"
 crossbeam-channel = "0.5"
 num_cpus = "1.17"
@@ -242,6 +244,7 @@ webpki-roots = { version = "1.0", optional = true }
 tungstenite = { version = "0.29", default-features = false, features = ["handshake", "rustls-tls-webpki-roots"], optional = true }
 os_pipe = "1.2"
 molt-cpython-abi = { package = "molt-lang-cpython-abi", path = "../molt-cpython-abi", optional = true, features = ["extension-loader"] }
+libloading = { version = "0.8", optional = true }
 wgpu = { version = "29", optional = true }
 pollster = { version = "0.4", optional = true }
 

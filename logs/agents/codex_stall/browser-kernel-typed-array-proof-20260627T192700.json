@@ -1,0 +1,17 @@
+{
+  "timestamp": "2026-06-27T19:27:00.6756988-05:00",
+  "cwd": "C:\\Users\\adpen\\OneDrive\\Documents\\molt\\tmp\\worktrees\\codex-recovery-consolidation-20260627",
+  "command": "uv run pytest tests/test_wasm_browser_db_host.py::test_browser_kernel_facade_roundtrips_float32_typed_arrays -q",
+  "status": "molt_build_children_stopped_after_long_silent_run",
+  "codex_exec_session_id": 82707,
+  "guard_pid": 25884,
+  "guard_child_pid": 22220,
+  "observed_child_pids": [43892, 22568, 39660, 41464, 34024, 25884, 42836, 22220, 6636, 6388, 32880, 17548, 25520],
+  "evidence_path": "tmp/pytest-memory-guard/pytest-34024_outer-guard.json",
+  "notes": [
+    "First run failed fast on missing top-level workspace.dependencies.serde_json; Cargo.toml was fixed.",
+    "Second run remained silent while read-only process inspection showed an active Molt CLI browser build path.",
+    "The exec backend could not deliver Ctrl-C to the pytest session.",
+    "Only live-proved Molt CLI browser build child PIDs 25520, 17548, 32880, and 6388 were stopped; no Codex, shell, pytest guard, unrelated cargo/rustc, or host-control-plane process was targeted."
+  ]
+}

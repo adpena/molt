@@ -583,6 +583,40 @@ pub(super) fn importlib_exec_extension_impl(
         ));
     }
     importlib_require_extension_metadata(_py, module_name, path)?;
+    if let Some(contract) = importlib_source_extension_loader_contract(_py, module_name, path)? {
+        #[cfg(all(feature = "source_extension_loader", not(target_arch = "wasm32")))]
+        {
+            match source_extension_loader_dlopen(
+                _py,
+                namespace_ptr,
+                module_name,
+                path,
+                &contract.init_symbol,
+            ) {
+                Ok(()) => return Ok(()),
+                Err(msg) => {
+                    return Err(raise_exception::<_>(
+                        _py,
+                        "ImportError",
+                        &format!(
+                            "failed to load libmolt source extension {module_name:?} from {path:?}: {msg}"
+                        ),
+                    ));
+                }
+            }
+        }
+        #[cfg(not(all(feature = "source_extension_loader", not(target_arch = "wasm32"))))]
+        {
+            return Err(raise_exception::<_>(
+                _py,
+                "ImportError",
+                &format!(
+                    "extension {module_name:?} at {path:?} requires source_extension_loader runtime support for init symbol {:?}",
+                    contract.init_symbol
+                ),
+            ));
+        }
+    }
     let shim_candidates = importlib_extension_shim_candidates(module_name, path);
     let mut restricted_error: Option<String> = None;
     for candidate in &shim_candidates {

@@ -518,6 +518,15 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
         ),
     )
     extension_scan_parser.add_argument(
+        "--exclude-dir",
+        action="append",
+        default=[],
+        help=(
+            "Directory basename to skip while expanding source directories "
+            "(repeatable)."
+        ),
+    )
+    extension_scan_parser.add_argument(
         "--fail-on-missing",
         action="store_true",
         help="Return non-zero if unsupported Py* C-API symbols are detected.",

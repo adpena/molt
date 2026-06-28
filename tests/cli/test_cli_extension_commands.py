@@ -21,8 +21,19 @@ def _write_extension_project(project_root: Path) -> None:
     src_dir = project_root / "src"
     src_dir.mkdir(parents=True, exist_ok=True)
     (src_dir / "demoext.c").write_text(
+        "#include <Python.h>\n"
         "#include <molt/molt.h>\n"
         "int demoext_version(void) { return (int)molt_c_api_version(); }\n"
+        "static PyModuleDef demoext_module = {\n"
+        "    PyModuleDef_HEAD_INIT,\n"
+        "    \"demoext\",\n"
+        "    NULL,\n"
+        "    -1,\n"
+        "    NULL,\n"
+        "};\n"
+        "PyMODINIT_FUNC PyInit_demoext(void) {\n"
+        "    return PyModule_Create(&demoext_module);\n"
+        "}\n"
     )
     (project_root / "pyproject.toml").write_text(
         "\n".join(
@@ -139,6 +150,18 @@ def _write_extension_numpy_project(project_root: Path) -> None:
                 "    return numpy_probe(obj);",
                 "}",
                 "",
+                "static PyModuleDef demoext_numpy_module = {",
+                "    PyModuleDef_HEAD_INIT,",
+                '    "demoext_numpy",',
+                "    NULL,",
+                "    -1,",
+                "    NULL,",
+                "};",
+                "",
+                "PyMODINIT_FUNC PyInit_demoext_numpy(void) {",
+                "    return PyModule_Create(&demoext_numpy_module);",
+                "}",
+                "",
             ]
         )
         + "\n"
@@ -195,6 +218,18 @@ def _write_extension_iterator_mapping_project(project_root: Path) -> None:
                 "    Py_XDECREF(second);",
                 "    Py_DECREF(iter);",
                 "    return ok;",
+                "}",
+                "",
+                "static PyModuleDef demoext_iter_module = {",
+                "    PyModuleDef_HEAD_INIT,",
+                '    "demoext_iter",',
+                "    NULL,",
+                "    -1,",
+                "    NULL,",
+                "};",
+                "",
+                "PyMODINIT_FUNC PyInit_demoext_iter(void) {",
+                "    return PyModule_Create(&demoext_iter_module);",
                 "}",
                 "",
             ]
@@ -376,6 +411,242 @@ def test_extension_scan_accepts_source_directories_deterministically(
     assert data["symbol_status"]["PyCode_NewWithPosOnlyArgs"] == "missing"
 
 
+def test_extension_scan_excludes_non_build_source_directories(
+    tmp_path: Path, capsys
+) -> None:
+    project_root = tmp_path / "scan_exclude_project"
+    src = project_root / "src"
+    tests_dir = src / "tests"
+    tests_dir.mkdir(parents=True)
+    (project_root / "pyproject.toml").write_text("[project]\nname = 'scan-exclude'\n")
+    (src / "module.c").write_text(
+        "#include <Python.h>\nPyObject *ok(void) { return PyLong_FromLong(1); }\n"
+    )
+    (tests_dir / "fixture.c").write_text(
+        "#include <Python.h>\n"
+        "void *fixture(void) { return (void *)PyCode_NewWithPosOnlyArgs; }\n"
+    )
+
+    rc = cli.extension_scan(
+        project=str(project_root),
+        sources=[str(src)],
+        exclude_dirs=["tests"],
+        fail_on_missing=True,
+        json_output=True,
+        verbose=False,
+    )
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    data = payload["data"]
+    assert data["source_count"] == 1
+    assert data["exclude_dirs"] == ["tests"]
+    assert "PyCode_NewWithPosOnlyArgs" not in data["required_symbols"]
+
+
+def test_extension_scan_reads_non_utf8_source_deterministically(
+    tmp_path: Path, capsys
+) -> None:
+    project_root = tmp_path / "scan_non_utf8_project"
+    src = project_root / "src"
+    src.mkdir(parents=True)
+    (project_root / "pyproject.toml").write_text("[project]\nname = 'scan-non-utf8'\n")
+    (src / "module.c").write_bytes(
+        b"#include <Python.h>\n"
+        b"// non-utf8 byte: \x90\n"
+        b"PyObject *ok(void) { return PyLong_FromLong(1); }\n"
+    )
+
+    rc = cli.extension_scan(
+        project=str(project_root),
+        sources=[str(src)],
+        fail_on_missing=True,
+        json_output=True,
+        verbose=False,
+    )
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["data"]["source_count"] == 1
+    assert payload["data"]["symbol_status"]["PyLong_FromLong"] == "runtime_backed"
+
+
+def test_extension_scan_resolves_package_defined_py_symbols(
+    tmp_path: Path, capsys
+) -> None:
+    project_root = tmp_path / "scan_project_defined"
+    src = project_root / "src"
+    src.mkdir(parents=True)
+    (project_root / "pyproject.toml").write_text("[project]\nname = 'scan-local'\n")
+    (src / "defs.h").write_text(
+        "\n".join(
+            [
+                "#include <Python.h>",
+                "#define PyLocalMacro(value) (value)",
+                "typedef struct PyLocalStruct { int value; } PyLocalStruct;",
+                "",
+            ]
+        )
+    )
+    (src / "defs.c").write_text(
+        "\n".join(
+            [
+                '#include "defs.h"',
+                "",
+                "PyObject *PyLocal_FromThing(PyObject *value) {",
+                "    Py_INCREF(value);",
+                "    return value;",
+                "}",
+                "",
+                "static PyTypeObject PyLocal_Type = {0};",
+                "PyObject *PyTentative_Global;",
+                "",
+                "PyObject *",
+                "PyPlainSplit_FromThing(PyObject *PyParam)",
+                "{",
+                "    Py_INCREF(PyParam);",
+                "    return PyParam;",
+                "}",
+                "",
+            ]
+        )
+    )
+    (src / "use.c").write_text(
+        "\n".join(
+            [
+                '#include "defs.h"',
+                "",
+                "PyObject *use(PyObject *value) {",
+                "    PyObject *PyLocalTemp = value;",
+                "    PyLocalStruct local = {0};",
+                "    (void)PyLocalTemp;",
+                "    (void)local;",
+                "    (void)PyLocalMacro(value);",
+                "    (void)PyTentative_Global;",
+                "    (void)PyPlainSplit_FromThing(value);",
+                "    (void)value;  # PyTrailingCommentOnly should not be scanned",
+                "#ifdef Py_LIMITED_API",
+                "    (void)PyLong_FromLong(1);",
+                "#endif",
+                "# PyCythonCommentOnly should not be scanned",
+                '"""PyTripleDocOnly should not be scanned"""',
+                "    return PyLocal_FromThing(value);",
+                "}",
+                "",
+            ]
+        )
+    )
+
+    rc = cli.extension_scan(
+        project=str(project_root),
+        sources=[str(src)],
+        fail_on_missing=True,
+        json_output=True,
+        verbose=False,
+    )
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    data = payload["data"]
+    for symbol in [
+        "PyLocalMacro",
+        "PyLocalStruct",
+        "PyLocal_FromThing",
+        "PyTentative_Global",
+        "PyPlainSplit_FromThing",
+    ]:
+        assert symbol in data["project_defined_symbols"]
+        assert data["symbol_status"][symbol] == "project_defined"
+    assert "PyParam" not in data["required_symbols"]
+    assert "PyLocalTemp" not in data["required_symbols"]
+    assert "PyLocal_Type" not in data["project_defined_symbols"]
+    assert "PyLong_FromLong" in data["required_symbols"]
+    assert data["symbol_status"]["PyLong_FromLong"] == "runtime_backed"
+    assert "PyCythonCommentOnly" not in data["required_symbols"]
+    assert "PyTrailingCommentOnly" not in data["required_symbols"]
+    assert "PyTripleDocOnly" not in data["required_symbols"]
+
+
+def test_extension_scan_preserves_guarded_body_symbols(
+    tmp_path: Path, capsys
+) -> None:
+    project_root = tmp_path / "scan_guarded_body"
+    src = project_root / "src"
+    src.mkdir(parents=True)
+    (project_root / "pyproject.toml").write_text("[project]\nname = 'scan-guard'\n")
+    (src / "guarded.c").write_text(
+        "\n".join(
+            [
+                "#include <Python.h>",
+                "PyObject *use(PyObject *value) {",
+                "#ifdef Py_LIMITED_API",
+                "    return PyCode_NewWithPosOnlyArgs(value);",
+                "#endif",
+                "    Py_RETURN_NONE;",
+                "}",
+                "",
+            ]
+        )
+    )
+
+    rc = cli.extension_scan(
+        project=str(project_root),
+        sources=[str(src)],
+        fail_on_missing=False,
+        json_output=True,
+        verbose=False,
+    )
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    data = payload["data"]
+    assert "PyCode_NewWithPosOnlyArgs" in data["required_symbols"]
+    assert data["symbol_status"]["PyCode_NewWithPosOnlyArgs"] == "missing"
+
+
+def test_extension_scan_macro_bodies_do_not_define_called_apis(
+    tmp_path: Path, capsys
+) -> None:
+    project_root = tmp_path / "scan_macro_body"
+    src = project_root / "src"
+    src.mkdir(parents=True)
+    (project_root / "pyproject.toml").write_text("[project]\nname = 'scan-macro'\n")
+    (src / "macro.h").write_text(
+        "\n".join(
+            [
+                "#define PyLocalMacro(value) \\",
+                "    (PyMacroMissingAPI((value)))",
+                "",
+            ]
+        )
+    )
+    (src / "use.c").write_text(
+        "\n".join(
+            [
+                '#include "macro.h"',
+                "PyObject *use(PyObject *value) {",
+                "    return PyLocalMacro(value);",
+                "}",
+                "",
+            ]
+        )
+    )
+
+    rc = cli.extension_scan(
+        project=str(project_root),
+        sources=[str(src)],
+        fail_on_missing=False,
+        json_output=True,
+        verbose=False,
+    )
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    data = payload["data"]
+    assert data["symbol_status"]["PyLocalMacro"] == "project_defined"
+    assert data["symbol_status"]["PyMacroMissingAPI"] == "missing"
+
+
 def test_extension_scan_numpy_surface_reports_fail_fast_symbols(
     tmp_path: Path, capsys
 ) -> None:
@@ -389,14 +660,14 @@ def test_extension_scan_numpy_surface_reports_fail_fast_symbols(
         json_output=True,
         verbose=False,
     )
-    assert rc == 1
+    assert rc == 0
     payload = json.loads(capsys.readouterr().out)
-    assert payload["status"] == "error"
+    assert payload["status"] == "ok"
     data = payload["data"]
     assert data["missing_symbols"] == []
-    assert "PyArray_CastScalarToCtype" in data["fail_fast_symbols"]
-    assert "PyArray_CastScalarToCtype" not in data["supported_symbols"]
-    assert data["symbol_status"]["PyArray_CastScalarToCtype"] == "fail_fast"
+    assert data["fail_fast_symbols"] == []
+    assert data["symbol_status"]["PyArray_CastScalarToCtype"] == "source_compile_only"
+    assert "PyArray_CastScalarToCtype" in data["source_compile_only_symbols"]
     assert "PyArray_NDIM" in data["source_compile_only_symbols"]
     assert data["symbol_status"]["PyArray_NDIM"] == "source_compile_only"
     assert "PyArray_SIZE" in data["source_compile_only_symbols"]
@@ -413,27 +684,6 @@ def test_extension_build_emits_wheel_and_manifest(tmp_path: Path, monkeypatch) -
     project_root.mkdir()
     _write_extension_project(project_root)
 
-    def fake_ensure_runtime_lib(
-        runtime_lib: Path,
-        target_triple: str | None,
-        json_output: bool,
-        cargo_profile: str,
-        project_root: Path,
-        cargo_timeout: float | None,
-        stdlib_profile: str | None = None,
-    ) -> bool:
-        del (
-            target_triple,
-            json_output,
-            cargo_profile,
-            project_root,
-            cargo_timeout,
-            stdlib_profile,
-        )
-        runtime_lib.parent.mkdir(parents=True, exist_ok=True)
-        runtime_lib.write_bytes(b"runtime")
-        return True
-
     def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         del kwargs
         out_index = cmd.index("-o")
@@ -445,8 +695,12 @@ def test_extension_build_emits_wheel_and_manifest(tmp_path: Path, monkeypatch) -
             out_path.write_bytes(b"shared")
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
-    monkeypatch.setattr(cli_commands, "_ensure_runtime_lib", fake_ensure_runtime_lib)
     monkeypatch.setattr(cli_commands, "_run_completed_command", fake_run)
+    monkeypatch.setattr(
+        cli_commands,
+        "_shared_library_defines_symbol",
+        lambda _path, symbol: (symbol == "PyInit_demoext", None),
+    )
 
     out_dir = project_root / "dist"
     rc = cli_commands.extension_build(
@@ -469,6 +723,9 @@ def test_extension_build_emits_wheel_and_manifest(tmp_path: Path, monkeypatch) -
     assert manifest["molt_c_api_version"] == "1"
     assert manifest["capabilities"] == ["fs.read"]
     assert manifest["abi_tag"] == "molt_abi1"
+    assert manifest["loader_kind"] == "libmolt_source"
+    assert manifest["init_symbol"] == "PyInit_demoext"
+    assert manifest["runtime_linkage"] == "host_resolved"
 
     with zipfile.ZipFile(wheel_path) as zf:
         names = set(zf.namelist())
@@ -508,31 +765,13 @@ def test_extension_build_compiles_iterator_mapping_surface_without_subprocess_mo
         assert zf.read(manifest["extension"])
 
 
-def test_extension_build_cross_target_uses_target_runtime(
+def test_extension_build_cross_target_uses_target_compiler_and_manifest(
     tmp_path: Path, monkeypatch
 ) -> None:
     project_root = tmp_path / "extproj"
     project_root.mkdir()
     _write_extension_project(project_root)
-    seen: dict[str, object] = {}
     commands: list[list[str]] = []
-
-    def fake_ensure_runtime_lib(
-        runtime_lib: Path,
-        target_triple: str | None,
-        json_output: bool,
-        cargo_profile: str,
-        project_root: Path,
-        cargo_timeout: float | None,
-        stdlib_profile: str | None = None,
-    ) -> bool:
-        del json_output, cargo_profile, project_root, cargo_timeout
-        seen["runtime_target"] = target_triple
-        seen["runtime_lib"] = runtime_lib
-        seen["stdlib_profile"] = stdlib_profile
-        runtime_lib.parent.mkdir(parents=True, exist_ok=True)
-        runtime_lib.write_bytes(b"runtime")
-        return True
 
     def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         del kwargs
@@ -546,7 +785,6 @@ def test_extension_build_cross_target_uses_target_runtime(
             out_path.write_bytes(b"shared")
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
-    monkeypatch.setattr(cli_commands, "_ensure_runtime_lib", fake_ensure_runtime_lib)
     monkeypatch.setattr(cli_commands, "_ensure_rustup_target", lambda _target, _warnings: True)
     monkeypatch.setattr(
         cli_commands.shutil,
@@ -554,6 +792,11 @@ def test_extension_build_cross_target_uses_target_runtime(
         lambda tool: "/usr/bin/zig" if tool == "zig" else None,
     )
     monkeypatch.setattr(cli_commands, "_run_completed_command", fake_run)
+    monkeypatch.setattr(
+        cli_commands,
+        "_shared_library_defines_symbol",
+        lambda _path, symbol: (symbol == "PyInit_demoext", None),
+    )
 
     out_dir = project_root / "dist"
     target = "aarch64-unknown-linux-gnu"
@@ -566,21 +809,13 @@ def test_extension_build_cross_target_uses_target_runtime(
         verbose=False,
     )
     assert rc == 0
-    assert seen["runtime_target"] == target
-    # The resolved stdlib profile (default "micro" here) must be threaded into
-    # the runtime-staticlib build AND the archive path, so the extension lane
-    # cannot link a profile that disagrees with what was built.
-    assert seen["stdlib_profile"] == "micro"
-    runtime_lib = seen["runtime_lib"]
-    assert isinstance(runtime_lib, Path)
-    assert f"/{target}/" in runtime_lib.as_posix()
-    assert "stdlib_micro" in runtime_lib.name
     assert any(
         cmd[:2] == ["zig", "cc"] and "-target" in cmd and "-c" in cmd
         for cmd in commands
     )
     manifest = json.loads((out_dir / "extension_manifest.json").read_text())
     assert manifest["target_triple"] == target
+    assert manifest["runtime_linkage"] == "host_resolved"
 
 
 def test_extension_build_rejects_wasm_target(tmp_path: Path) -> None:
@@ -610,22 +845,6 @@ def test_extension_numpy_build_audit_publish_dry_run_matrix(
     project_root = tmp_path / "numpy_extproj"
     project_root.mkdir()
     _write_extension_numpy_project(project_root)
-    seen: dict[str, object] = {}
-
-    def fake_ensure_runtime_lib(
-        runtime_lib: Path,
-        target_triple: str | None,
-        json_output: bool,
-        cargo_profile: str,
-        project_root: Path,
-        cargo_timeout: float | None,
-        stdlib_profile: str | None = None,
-    ) -> bool:
-        del json_output, cargo_profile, project_root, cargo_timeout, stdlib_profile
-        seen["runtime_target"] = target_triple
-        runtime_lib.parent.mkdir(parents=True, exist_ok=True)
-        runtime_lib.write_bytes(b"runtime")
-        return True
 
     def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         del kwargs
@@ -638,8 +857,12 @@ def test_extension_numpy_build_audit_publish_dry_run_matrix(
             out_path.write_bytes(b"shared")
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
-    monkeypatch.setattr(cli_commands, "_ensure_runtime_lib", fake_ensure_runtime_lib)
     monkeypatch.setattr(cli_commands, "_run_completed_command", fake_run)
+    monkeypatch.setattr(
+        cli_commands,
+        "_shared_library_defines_symbol",
+        lambda _path, symbol: (symbol == "PyInit_demoext_numpy", None),
+    )
 
     if target is not None:
         monkeypatch.setattr(
@@ -661,7 +884,6 @@ def test_extension_numpy_build_audit_publish_dry_run_matrix(
         verbose=False,
     )
     assert rc == 0
-    assert seen["runtime_target"] == target
 
     wheel_path = next(out_dir.glob("*.whl"))
     audit_rc = cli.extension_audit(

@@ -8825,6 +8825,12 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         defaults: &[],
     },
     IntrinsicSpec {
+        name: "molt_scipy_ndimage_distance_transform_edt",
+        symbol: "molt_scipy_ndimage_distance_transform_edt",
+        arity: 1,
+        defaults: &[],
+    },
+    IntrinsicSpec {
         name: "molt_argparse_add_argument",
         symbol: "molt_argparse_add_argument",
         arity: 10,

@@ -38,6 +38,11 @@ exclude = [
 ]
 resolver = "2"
 
+[workspace.dependencies]
+# Correctly rounded decimal float parsing for JSON IR/runtime values. Keep this
+# aligned with runtime/Cargo.toml for builds rooted at either workspace.
+serde_json = { version = "1.0", features = ["float_roundtrip"] }
+
 [profile.dev]
 opt-level = 0
 debug = true

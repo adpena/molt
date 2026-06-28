@@ -66,5 +66,8 @@ Optional fields:
   and load time.
 
 ## 9. Non-Goals
-- Loading CPython C-extensions (handled only by bridge tiers).
+- Loading binary CPython C-extension wheels as `libpython` ABI artifacts.
+  Source-recompiled extension packages targeting `libmolt` are governed by
+  `libmolt_extension_abi_contract.md` and are the preferred ecosystem
+  compatibility path.
 - Implicit network or filesystem access without explicit capabilities.

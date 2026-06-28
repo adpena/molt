@@ -43,9 +43,6 @@ from molt.cli import module_resolution as cli_module_resolution
 from molt.cli import module_source as cli_module_source
 from molt.cli import module_stdlib_policy as cli_module_stdlib_policy
 from molt.cli import typecheck as cli_typecheck
-
-cli_deps = importlib.import_module("molt.cli.deps")
-cli_frontend_worker = importlib.import_module("molt.cli.frontend_worker")
 from molt.frontend import MoltValue, SimpleTIRGenerator
 from molt.type_facts import Fact, FunctionFacts, ModuleFacts, TypeFacts
 from tests.cli.process_guard import (
@@ -53,6 +50,9 @@ from tests.cli.process_guard import (
     close_cli_test_process_group,
     run_cli_test_process,
 )
+
+cli_deps = importlib.import_module("molt.cli.deps")
+cli_frontend_worker = importlib.import_module("molt.cli.frontend_worker")
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -3447,6 +3447,38 @@ def test_linux_release_link_omits_safe_icf_without_capable_linker(
     assert "-Wl,--icf=safe" not in link_cmd
 
 
+def test_linux_link_exports_molt_runtime_symbols_for_source_extensions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    output_obj = tmp_path / "output.o"
+    stub_path = tmp_path / "main_stub.c"
+    runtime_lib = tmp_path / "libmolt_runtime.a"
+    output_binary = tmp_path / "app"
+    output_obj.write_bytes(b"\x7fELFobject")
+    stub_path.write_text("int main(void) { return 0; }\n")
+    runtime_lib.write_bytes(b"archive")
+
+    monkeypatch.setattr(NATIVE_LINK_COMMAND.sys, "platform", "linux")
+    monkeypatch.setenv("CC", "clang")
+    monkeypatch.setattr(NATIVE_LINK_COMMAND.shutil, "which", lambda _name: None)
+
+    link_cmd, _linker_hint, _normalized_target = cli._build_native_link_command(
+        output_obj=output_obj,
+        stub_path=stub_path,
+        runtime_lib=runtime_lib,
+        output_binary=output_binary,
+        target_triple=None,
+        sysroot_path=None,
+        profile="release",
+        stdlib_obj_path=None,
+        export_molt_runtime_symbols=True,
+    )
+
+    assert "-Wl,--export-dynamic" in link_cmd
+    version_script = tmp_path / ".molt_version.ver"
+    assert "molt_*" in version_script.read_text(encoding="utf-8")
+
+
 def test_linux_release_link_selects_lld_without_icf_for_fn_identity(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -3515,6 +3547,45 @@ def test_windows_link_omits_icf_for_fn_identity(
     assert "-lntdll" in link_cmd
     assert "-luserenv" in link_cmd
     assert "-ladvapi32" in link_cmd
+
+
+def test_windows_link_exports_molt_runtime_symbols_for_source_extensions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    output_obj = tmp_path / "output.obj"
+    stub_path = tmp_path / "main_stub.c"
+    runtime_lib = tmp_path / "molt_runtime.lib"
+    output_binary = tmp_path / "app.exe"
+    output_obj.write_bytes(b"COFFobject")
+    stub_path.write_text("int main(void) { return 0; }\n")
+    runtime_lib.write_bytes(b"archive")
+
+    monkeypatch.setattr(NATIVE_LINK_COMMAND.sys, "platform", "win32")
+    monkeypatch.setenv("CC", "clang")
+    monkeypatch.setattr(NATIVE_LINK_COMMAND.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(
+        NATIVE_LINK_COMMAND,
+        "_molt_c_api_export_names",
+        lambda: ("molt_c_api_version", "molt_module_create"),
+    )
+
+    link_cmd, _linker_hint, _normalized_target = cli._build_native_link_command(
+        output_obj=output_obj,
+        stub_path=stub_path,
+        runtime_lib=runtime_lib,
+        output_binary=output_binary,
+        target_triple=None,
+        sysroot_path=None,
+        profile="release",
+        stdlib_obj_path=None,
+        export_molt_runtime_symbols=True,
+    )
+
+    def_path = tmp_path / ".molt_exports.def"
+    assert f"-Wl,/DEF:{def_path}" in link_cmd
+    assert def_path.read_text(encoding="utf-8") == (
+        "EXPORTS\nmolt_c_api_version\nmolt_module_create\n"
+    )
 
 
 def test_windows_gnu_link_uses_gnu_system_lib_flags(
@@ -8965,12 +9036,58 @@ def test_stdlib_graph_ignores_nested_imports_for_core_scan(tmp_path: Path) -> No
     assert "dataclasses" not in graph
 
 
-def test_typing_enables_nested_import_scan_for_collections_abc(tmp_path: Path) -> None:
+def test_typing_module_init_imports_collections_abc_without_warnings_regex() -> None:
+    tree = ast.parse((ROOT / "src/molt/stdlib/typing.py").read_text(encoding="utf-8"))
+
+    imports = cli_module_import_scanner._collect_imports(
+        tree,
+        module_name="typing",
+        import_scan_mode="module_init",
+    )
+
+    assert "_collections_abc" in imports
+    assert "warnings" not in imports
+    assert "re" not in imports
+
+
+def test_typing_static_graph_keeps_collections_abc_without_lazy_deprecated(
+    tmp_path: Path,
+) -> None:
     entry = tmp_path / "main.py"
     entry.write_text("import typing\n")
     graph = _discover_with_core_modules(entry)
     assert "typing" in graph
     assert "_collections_abc" in graph
+    assert "warnings" not in graph
+    assert "re" not in graph
+
+
+def test_codecs_os_type_checking_imports_are_pruned() -> None:
+    stdlib_root = cli_module_resolution._stdlib_root_path()
+    module_roots = [ROOT.resolve(), (ROOT / "src").resolve()]
+    roots = module_roots + [stdlib_root]
+    stdlib_allowlist = cli_module_stdlib_policy._stdlib_allowlist()
+    cache = cli_module_resolution._ModuleResolutionCache()
+    codecs_path = cache.resolve_module("codecs", roots, stdlib_root, stdlib_allowlist)
+    assert codecs_path is not None
+
+    graph, _explicit_imports = cli_module_graph_discovery._discover_module_graph(
+        codecs_path,
+        roots,
+        module_roots,
+        stdlib_root,
+        ROOT,
+        stdlib_allowlist,
+        skip_modules=cli.STUB_MODULES,
+        stub_parents=cli.STUB_PARENT_MODULES,
+        resolver_cache=cache,
+    )
+
+    assert "codecs" in graph
+    assert "os" in graph
+    assert "typing" not in graph
+    assert "warnings" not in graph
+    assert "re" not in graph
 
 
 def test_spawn_entry_override_not_required_for_plain_script(tmp_path: Path) -> None:

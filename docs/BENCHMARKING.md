@@ -463,6 +463,9 @@ uv run --python 3.12 python3 tools/bench_friends.py \
 
 `numpy_off_the_shelf` is enabled and pinned to upstream NumPy commit
 `c81c49f77451340651a751e76bca607d85e4fd55` (the peeled `v2.4.2` commit). The
+suite is classified as `c_api_probe`, because the green lane is source C-API
+missing-symbol evidence rather than unchanged NumPy runtime execution through
+Molt.
 `source_audit` runner verifies pinned source-tree custody, the `cpython` runner
 executes an isolated `numpy==2.4.2` baseline through
 `tools/numpy_off_shelf_adapter.py`, the `c_api_scan` runner executes
@@ -470,17 +473,19 @@ executes an isolated `numpy==2.4.2` baseline through
 `molt` runner attempts the same public workloads through
 `MOLT_EXTERNAL_STATIC_PACKAGES=numpy`, explicit `module.extension.exec`
 capability, and all-loaded-`numpy.*` module-origin custody. Its purpose is to
-prove off-the-shelf NumPy source compile/import through Molt-owned headers,
-source-recompiled native extension package build/staging/runtime custody, and
-NumPy C-API symbol closure. Build admission already fails closed for admitted
+prove NumPy C-API scan closure first, then separately drive off-the-shelf NumPy
+source build/import/runtime through Molt-owned headers and source-recompiled
+native extension package custody. Build admission already fails closed for admitted
 package-local `.so`/`.pyd` artifacts without valid sidecar manifests and
 fingerprints artifact/manifest hashes in graph, wrapper, and backend
 object-cache inputs; native builds also publish validated artifacts, sidecars,
 package `__init__.py` files, and runtime shim candidates under a deterministic
 `external_static_packages/<plan-digest>/` runtime root and inject that staged
-root into generated native binaries before runtime startup. The lane remains red
-until the source-recompiled package build, NumPy C-API closure, and no-host NumPy
-runtime load proof pass.
+root into generated native binaries before runtime startup. The NumPy C-API
+scan layer is green under `c_api_scan` at 447 scanned source files, 1,258
+required symbols, 1,258 supported, zero missing, and zero fail-fast; the
+workload lane remains red until the source-recompiled package build and no-host
+NumPy runtime load proof pass.
 Do not satisfy it through CPython wheel fallback, ambient host Python imports,
 or patched NumPy sources.
 `molt extension scan` reports each required C-API token as `runtime_backed`,
@@ -498,6 +503,25 @@ payloads and folds per-workload `elapsed_s` values into runner
 `structured_median_s` fields plus flattened suite metrics only for runners with
 `role = "workload"`. Custody and scan roles remain suite-failing when non-green,
 but never feed speedup math.
+
+SciPy off-the-shelf C-API lane:
+
+```bash
+uv run --python 3.12 python3 tools/bench_friends.py \
+  --manifest bench/friends/manifest.toml \
+  --suite scipy_off_the_shelf \
+  --runner c_api_scan
+```
+
+`scipy_off_the_shelf` is enabled and pinned to upstream SciPy commit
+`54ef5423f2e4376230ec3bfda6912a07a50958e3` (the peeled `v1.18.0` commit). Its
+`c_api_scan` runner executes `molt extension scan --source {suite_root}/scipy
+--fail-on-missing` with non-build tests, docs, benchmarks, and build directories
+excluded. The suite is classified as `c_api_probe`. This is the SciPy
+missing-symbol/source-scan closure lane, green at 592 scanned source files, 321
+required symbols, 321 supported, zero missing, and zero fail-fast; it is not a
+runtime workload lane and does not overclaim unchanged SciPy package execution
+through Molt.
 
 Artifacts:
 - machine-readable: `results.json`
@@ -518,7 +542,8 @@ Rules:
   `tools/dev.py clean-artifacts --apply`; `bench/friends/repos/` is canonical
   ignored artifact state, not durable evidence.
 - Record compile and run phases separately when friends compile ahead of run.
-- Classify cases as `runs_unmodified`, `requires_adapter`, or `unsupported_by_molt`.
+- Classify cases as `runs_unmodified`, `requires_adapter`, `c_api_probe`, or
+  `unsupported_by_molt`.
 - Use explicit runner lanes (`pypy`, `codon`, `nuitka`, `pyodide`, `tinygrad`,
   `numpy`, or another manifest-declared runner name); invalid runner names are
   rejected rather than silently ignored. `friend` is kept only as a legacy

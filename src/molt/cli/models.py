@@ -494,6 +494,7 @@ class _RuntimeArtifactState:
     runtime_lib: Path | None = None
     runtime_wasm: Path | None = None
     runtime_reloc_wasm: Path | None = None
+    extra_runtime_features: tuple[str, ...] = ()
     runtime_wasm_ready: bool = False
     runtime_reloc_wasm_ready: bool = False
     runtime_lib_ready_future: Future[bool] | None = None
