@@ -2,7 +2,7 @@ use super::lir_context::LirLowerCtx;
 use super::lir_scalar::emit_get_boxed_for_repr;
 use super::runtime_calls::LirRuntimeCall;
 use crate::wasm::body::WasmLirFallbackReason;
-use molt_codegen_abi::QNAN_TAG_BOOL_I64;
+use molt_codegen_abi::{QNAN_TAG_BOOL_I64, box_none_bits};
 use molt_tir::tir::lir::{LirOp, LirRepr};
 use molt_tir::tir::types::TirType;
 use wasm_encoder::Instruction;
@@ -56,6 +56,19 @@ pub(super) fn emit_lir_get_iter(ctx: &mut LirLowerCtx, op: &LirOp) {
 
 pub(super) fn emit_lir_iter_next(ctx: &mut LirLowerCtx, op: &LirOp) {
     emit_lir_boxed_operands_runtime_call(ctx, op, LirRuntimeCall::IterNext, 1);
+}
+
+pub(super) fn emit_lir_build_slice(ctx: &mut LirLowerCtx, op: &LirOp) {
+    for idx in 0..3 {
+        if let Some(&operand) = op.tir_op.operands.get(idx) {
+            emit_get_boxed_for_repr(ctx, operand);
+        } else {
+            ctx.instructions
+                .push(Instruction::I64Const(box_none_bits()));
+        }
+    }
+    ctx.emit_runtime_call(LirRuntimeCall::SliceNew);
+    emit_lir_runtime_result(ctx, op);
 }
 
 pub(super) fn emit_lir_membership(ctx: &mut LirLowerCtx, op: &LirOp, invert: bool) {
