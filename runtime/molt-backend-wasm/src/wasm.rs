@@ -27,10 +27,11 @@ mod op_loop;
 mod state_dispatch;
 mod tir_pipeline;
 mod trampoline_analysis;
+use crate::wasm::lir_fast::compute_lir_wasm_lowering_plans_from_final_ir_with_escaped;
 use crate::wasm_plan::{
-    compute_lir_wasm_lowering_plans_from_final_ir_with_escaped, detect_multi_return_candidates,
-    gpu_runtime_call_symbol, is_shared_drop_fact_marker, wasm_scalar_integer_fast_path_for_op,
-    wasm_scalar_truthiness_fast_path_for_name, wasm_specialized_container_import,
+    detect_multi_return_candidates, gpu_runtime_call_symbol, is_shared_drop_fact_marker,
+    wasm_scalar_integer_fast_path_for_op, wasm_scalar_truthiness_fast_path_for_name,
+    wasm_specialized_container_import,
 };
 use crate::wasm_values::{
     ConstantCache, INT_MASK, IntFastLane, POINTER_MASK, box_bool, box_int, box_none, box_pending,

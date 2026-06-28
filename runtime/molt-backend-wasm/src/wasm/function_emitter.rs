@@ -7,7 +7,7 @@ use super::state_dispatch::{
     exception_handler_region_indices,
 };
 use super::*;
-use crate::wasm_plan::is_production_lir_wasm_fast_path_name;
+use crate::wasm::lir_fast::{WasmFunctionLoweringPlan, is_production_lir_wasm_fast_path_name};
 
 impl WasmBackend {
     pub(super) fn compile_func(
@@ -41,7 +41,7 @@ impl WasmBackend {
                 );
             };
             match plan {
-                crate::wasm_plan::WasmFunctionLoweringPlan::LirFast(lir_output) => {
+                WasmFunctionLoweringPlan::LirFast(lir_output) => {
                     if std::env::var("MOLT_DEBUG_WASM_SIG_FUNC").ok().as_deref()
                         == Some(func_ir.name.as_str())
                     {
@@ -63,7 +63,7 @@ impl WasmBackend {
                     self.codes.function(&func);
                     return;
                 }
-                crate::wasm_plan::WasmFunctionLoweringPlan::Generic { reason } => {
+                WasmFunctionLoweringPlan::Generic { reason } => {
                     if std::env::var("MOLT_WASM_IMPORT_AUDIT").as_deref() == Ok("1")
                         || std::env::var("MOLT_DEBUG_WASM_SIG_FUNC").ok().as_deref()
                             == Some(func_ir.name.as_str())

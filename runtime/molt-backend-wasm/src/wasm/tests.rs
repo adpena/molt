@@ -1,6 +1,6 @@
 use super::*;
+use crate::wasm::lir_fast::is_production_lir_wasm_fast_path_name;
 use crate::wasm_abi::{CALL_INDIRECT_IMPORTS, CALL_INDIRECT_MAX_ARITY, POLL_TABLE_IMPORTS};
-use crate::wasm_plan::is_production_lir_wasm_fast_path_name;
 
 #[test]
 fn production_lir_wasm_fast_path_is_reserved_for_global_builtin_lane() {

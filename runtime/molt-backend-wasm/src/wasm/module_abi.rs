@@ -26,7 +26,7 @@ impl WasmBackend {
     pub(super) fn emit_wasm_module(
         mut self,
         ir: SimpleIR,
-        lir_lowering_plans: crate::wasm_plan::WasmFunctionLoweringPlans,
+        lir_lowering_plans: crate::wasm::lir_fast::WasmFunctionLoweringPlans,
         analysis: WasmTrampolineAnalysis,
     ) -> Vec<u8> {
         let WasmTrampolineAnalysis {
