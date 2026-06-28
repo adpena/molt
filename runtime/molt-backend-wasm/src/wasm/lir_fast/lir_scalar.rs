@@ -231,23 +231,6 @@ pub(super) fn emit_lir_unary_pos(ctx: &mut LirLowerCtx, op: &LirOp) {
     ctx.emit_set(dst);
 }
 
-pub(super) fn emit_lir_boxed_binary_runtime_call(
-    ctx: &mut LirLowerCtx,
-    op: &LirOp,
-    runtime_call: LirRuntimeCall,
-) {
-    let tir_op = &op.tir_op;
-    if tir_op.operands.len() < 2 || op.result_values.is_empty() {
-        return;
-    }
-    let lhs = tir_op.operands[0];
-    let rhs = tir_op.operands[1];
-    emit_get_boxed_for_repr(ctx, lhs);
-    emit_get_boxed_for_repr(ctx, rhs);
-    ctx.emit_runtime_call(runtime_call);
-    ctx.emit_set(op.result_values[0].id);
-}
-
 pub(super) fn emit_lir_truthiness_i32(ctx: &mut LirLowerCtx, src: ValueId) {
     match ctx.repr_of(src) {
         LirRepr::Bool1 => ctx.emit_get(src),

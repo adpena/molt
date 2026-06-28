@@ -1,9 +1,11 @@
 use super::lir_context::LirLowerCtx;
+use super::lir_runtime_ops::{
+    emit_lir_boxed_binary_runtime_call, emit_lir_del_index, emit_lir_index, emit_lir_store_index,
+};
 use super::lir_scalar::{
     emit_get_boxed_for_repr, emit_lir_binary_arith, emit_lir_bitwise, emit_lir_bool_select,
-    emit_lir_boxed_binary_runtime_call, emit_lir_comparison, emit_lir_i64_binary_or_boxed,
-    emit_lir_identity_comparison, emit_lir_truthiness_i32, emit_lir_unary_arith,
-    emit_lir_unary_pos,
+    emit_lir_comparison, emit_lir_i64_binary_or_boxed, emit_lir_identity_comparison,
+    emit_lir_truthiness_i32, emit_lir_unary_arith, emit_lir_unary_pos,
 };
 use crate::wasm::body::WasmLirFallbackReason;
 use crate::wasm::const_materialization::{WasmConstMaterializationScratch, WasmConstOpPolicy};
@@ -258,6 +260,9 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
         OpCode::Pow => emit_lir_boxed_binary_runtime_call(ctx, op, LirRuntimeCall::Pow),
         OpCode::Neg => emit_lir_unary_arith(ctx, op, UnaryOp::Neg),
         OpCode::Pos => emit_lir_unary_pos(ctx, op),
+        OpCode::Index => emit_lir_index(ctx, op),
+        OpCode::StoreIndex => emit_lir_store_index(ctx, op),
+        OpCode::DelIndex => emit_lir_del_index(ctx, op),
         OpCode::Copy | OpCode::DeleteVar | OpCode::BoxVal | OpCode::UnboxVal | OpCode::TypeGuard => {
             if let (Some(&src), Some(result)) = (tir_op.operands.first(), op.result_values.first())
             {
@@ -393,9 +398,6 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
         | OpCode::LoadAttr
         | OpCode::StoreAttr
         | OpCode::DelAttr
-        | OpCode::Index
-        | OpCode::StoreIndex
-        | OpCode::DelIndex
         | OpCode::Alloc
         | OpCode::StackAlloc
         | OpCode::ObjectNewBound
