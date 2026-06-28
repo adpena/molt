@@ -1,6 +1,7 @@
 use super::lir_context::LirLowerCtx;
 use super::lir_runtime_ops::{
-    emit_lir_boxed_binary_runtime_call, emit_lir_del_index, emit_lir_index, emit_lir_store_index,
+    emit_lir_boxed_binary_runtime_call, emit_lir_boxed_operands_runtime_call, emit_lir_del_index,
+    emit_lir_exception_pending, emit_lir_index, emit_lir_store_index,
 };
 use super::lir_scalar::{
     emit_get_boxed_for_repr, emit_lir_binary_arith, emit_lir_bitwise, emit_lir_bool_select,
@@ -187,7 +188,8 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
                 "generated WASM const policy must classify ConstNone as NoneValue"
             );
             if let Some(result) = op.result_values.first() {
-                ctx.instructions.push(Instruction::I64Const(box_none_bits()));
+                ctx.instructions
+                    .push(Instruction::I64Const(box_none_bits()));
                 ctx.emit_set(result.id);
             }
         }
@@ -237,8 +239,7 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
             let rhs = tir_op.operands[1];
             let sum = op.result_values[0].id;
             let flag = op.result_values[1].id;
-            if matches!(ctx.repr_of(lhs), LirRepr::I64)
-                && matches!(ctx.repr_of(rhs), LirRepr::I64)
+            if matches!(ctx.repr_of(lhs), LirRepr::I64) && matches!(ctx.repr_of(rhs), LirRepr::I64)
             {
                 ctx.emit_get(lhs);
                 ctx.emit_get(rhs);
@@ -314,7 +315,51 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
         OpCode::Index => emit_lir_index(ctx, op),
         OpCode::StoreIndex => emit_lir_store_index(ctx, op),
         OpCode::DelIndex => emit_lir_del_index(ctx, op),
-        OpCode::Copy | OpCode::DeleteVar | OpCode::BoxVal | OpCode::UnboxVal | OpCode::TypeGuard => {
+        OpCode::ExceptionPending => emit_lir_exception_pending(ctx, op),
+        OpCode::FunctionDefaultsVersion => emit_lir_boxed_operands_runtime_call(
+            ctx,
+            op,
+            LirRuntimeCall::FunctionDefaultsVersion,
+            1,
+        ),
+        OpCode::ModuleCacheGet => {
+            emit_lir_boxed_operands_runtime_call(ctx, op, LirRuntimeCall::ModuleCacheGet, 1)
+        }
+        OpCode::ModuleCacheSet => {
+            emit_lir_boxed_operands_runtime_call(ctx, op, LirRuntimeCall::ModuleCacheSet, 2)
+        }
+        OpCode::ModuleCacheDel => {
+            emit_lir_boxed_operands_runtime_call(ctx, op, LirRuntimeCall::ModuleCacheDel, 1)
+        }
+        OpCode::ModuleGetAttr => {
+            emit_lir_boxed_operands_runtime_call(ctx, op, LirRuntimeCall::ModuleGetAttr, 2)
+        }
+        OpCode::ModuleImportFrom => {
+            emit_lir_boxed_operands_runtime_call(ctx, op, LirRuntimeCall::ModuleImportFrom, 2)
+        }
+        OpCode::ModuleGetGlobal => {
+            emit_lir_boxed_operands_runtime_call(ctx, op, LirRuntimeCall::ModuleGetGlobal, 2)
+        }
+        OpCode::ModuleGetName => {
+            emit_lir_boxed_operands_runtime_call(ctx, op, LirRuntimeCall::ModuleGetName, 2)
+        }
+        OpCode::ModuleSetAttr => {
+            emit_lir_boxed_operands_runtime_call(ctx, op, LirRuntimeCall::ModuleSetAttr, 3)
+        }
+        OpCode::ModuleDelGlobal => {
+            emit_lir_boxed_operands_runtime_call(ctx, op, LirRuntimeCall::ModuleDelGlobal, 2)
+        }
+        OpCode::ModuleDelGlobalIfPresent => emit_lir_boxed_operands_runtime_call(
+            ctx,
+            op,
+            LirRuntimeCall::ModuleDelGlobalIfPresent,
+            2,
+        ),
+        OpCode::Copy
+        | OpCode::DeleteVar
+        | OpCode::BoxVal
+        | OpCode::UnboxVal
+        | OpCode::TypeGuard => {
             if let (Some(&src), Some(result)) = (tir_op.operands.first(), op.result_values.first())
             {
                 if matches!(
@@ -467,25 +512,10 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
         | OpCode::ClosureStore
         | OpCode::Import
         | OpCode::ImportFrom
-        | OpCode::ModuleCacheGet
-        | OpCode::ModuleCacheSet
-        | OpCode::ModuleCacheDel
-        | OpCode::ModuleGetAttr
-        | OpCode::ModuleImportFrom
-        | OpCode::ModuleGetGlobal
-        | OpCode::ModuleGetName
-        | OpCode::ModuleSetAttr
-        | OpCode::ModuleDelGlobal
-        | OpCode::ModuleDelGlobalIfPresent
         | OpCode::In
         | OpCode::NotIn
         | OpCode::Raise
         | OpCode::CheckException
-        | OpCode::ExceptionPending
-        // Reads a function object's defaults version stamp via a runtime call;
-        // the LIR fast lane does not model it, so bail this function to the
-        // generic WASM emitter (which has a `function_defaults_version` arm).
-        | OpCode::FunctionDefaultsVersion
         | OpCode::AllocTask
         | OpCode::Yield
         | OpCode::YieldFrom
@@ -497,8 +527,7 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
         | OpCode::TryEnd
         | OpCode::StateBlockStart
         | OpCode::StateBlockEnd
-        | OpCode::WarnStderr
-        => {
+        | OpCode::WarnStderr => {
             for &operand in &tir_op.operands {
                 ctx.emit_get(operand);
             }
