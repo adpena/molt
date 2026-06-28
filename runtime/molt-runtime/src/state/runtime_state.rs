@@ -688,15 +688,18 @@ pub extern "C" fn molt_runtime_exit(code_bits: u64) -> u64 {
                 //    EXPECTED_LIVE_OBJECTS (a reachable high-water-mark, not a leak;
                 //    teardown below reclaims every reachable acyclic graph).
                 crate::object::ops::assert_no_leak_at_exit(&py);
+                // Run the cyclic collector before module teardown so unreachable
+                // cycles are finalized and reclaimed in CPython's shutdown position.
+                unsafe {
+                    let _ = crate::object::gc::collect_cycles(&py);
+                }
                 runtime_teardown_for_process_exit(&py, state);
                 // 2. Post-teardown TRUE-LEAK gauge (ownership_lattice_phase0.md
                 //    §2.4). Teardown above has reclaimed every reachable acyclic
-                //    graph (incl. user __main__ globals via modules_clear_runtime_state),
-                //    so the only survivors now are the immortal floor + genuine
-                //    leaks — unreachable reference cycles, molt's actual leak class
-                //    (RC-only, no cycle collector). In exact mode this catches a
-                //    cycle leak the pre-teardown ceiling launders. GIL still held;
-                //    reads crate-static counters only, never touches `state`.
+                //    graph and the collector has reclaimed unreachable cycles, so the
+                //    only survivors now are the immortal floor + genuine leaks. GIL
+                //    still held; reads crate-static counters only, never touches
+                //    `state`.
                 crate::object::ops::assert_no_true_leak_post_teardown(&py);
             }
         }

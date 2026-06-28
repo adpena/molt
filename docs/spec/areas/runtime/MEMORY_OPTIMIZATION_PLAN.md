@@ -313,23 +313,24 @@ The GC design doc (`0009_GC_DESIGN.md`) describes an aspirational hybrid RC + ge
 - Immortal flag for singleton objects.
 - Weakref support via a global registry (`runtime/molt-runtime/src/object/weakref.rs`).
 
-Reference cycles (e.g., `a.x = b; b.x = a`) currently leak memory.
+Reference cycles (e.g., `a.x = b; b.x = a`) are now reclaimed by the explicit
+runtime cycle collector for tracked containers and user objects. Full
+generational policy and the broader public `gc` API remain pending.
 
 ### 5.2 Optimization Plan
 
-- **O5.1 — Trial deletion cycle collector.** Implement a cycle collector based on CPython's approach (trial deletion / "GC protocol"):
+- **O5.1 — Trial deletion cycle collector.** First non-generational runtime slice is implemented. Continue converging it toward CPython's full generational `gc` protocol:
   1. Track all objects that *could* participate in cycles (containers: list, dict, set, tuple, class instances, generators).
   2. Periodically, run trial deletion: tentatively decrement refcounts for all internal references. Objects whose trial refcount reaches 0 are unreachable (part of a cycle). Collect them.
   3. Three generations: gen0 (newly allocated containers), gen1 (survived one collection), gen2 (survived two).
 
   **Why trial deletion over tracing:** Trial deletion integrates cleanly with the existing RC system. It only needs to track container objects (not all objects). It does not require a full root scan. It is the approach CPython uses and is well-understood.
 
-  **Implementation:**
-  - Add a `gc_tracked` linked list (intrusive, using 2 pointer fields in the cold header).
-  - On container allocation, link the object into gen0.
-  - Trigger gen0 collection every N container allocations (N = 700, matching CPython's default).
-  - Trigger gen1 collection every 10 gen0 collections.
-  - Trigger gen2 collection every 10 gen1 collections.
+  **Current implementation:**
+  - Side registry of tracked cycle-capable objects; no intrusive header growth.
+  - Allocation/free hooks register/unregister list, tuple, dict, set, frozen set, and user-object instances.
+  - `gc.collect()` runs update_refs/subtract_refs/move_unreachable over the registry, then finalizes, rechecks resurrection, clears, and lets RC deallocate.
+  - Remaining: CPython generation thresholds, stats/callbacks/freeze, and public referent/referrer/object introspection.
 
 - **O5.2 — Generational hypothesis exploitation.** Most Python objects die young. The nursery bump allocator (O2.1) naturally implements the generational hypothesis: objects that survive nursery reset are promoted to the main heap. The cycle collector only needs to track promoted objects.
 
@@ -338,7 +339,7 @@ Reference cycles (e.g., `a.x = b; b.x = a`) currently leak memory.
   - Use a write barrier to catch mutations during incremental marking.
   - The existing `HEADER_FLAG_HAS_PTRS` (bit 0) can be repurposed as a GC mark bit during collection.
 
-- **O5.4 — Weak reference integration.** The weakref registry (`runtime/molt-runtime/src/object/weakref.rs`) already clears weak references when objects are freed (`weakref_clear_for_ptr`). The cycle collector must also clear weak references to cycle members before reclaiming them. The existing `weakref_clear_for_ptr` function should be called during cycle collection.
+- **O5.4 — Weak reference integration.** Cyclic collection uses a dedicated batched weakref driver (`weakref_handle_cycle_unreachable`) so every weakref into the unreachable set is cleared before any surviving callback fires. The acyclic `weakref_clear_for_ptr` path remains the deallocation driver for non-cyclic death.
 
 ---
 
