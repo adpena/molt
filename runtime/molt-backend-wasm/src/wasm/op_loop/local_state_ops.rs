@@ -1,4 +1,8 @@
-use super::*;
+use crate::OpIR;
+use crate::wasm::{WasmBackend, WasmFrameLocals};
+use crate::wasm_import_tracking::TrackedImportIds;
+use crate::wasm_values::ConstantCache;
+use wasm_encoder::Function;
 
 mod closure_ops;
 mod field_ops;
