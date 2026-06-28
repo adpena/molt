@@ -1,4 +1,8 @@
-use super::*;
+use crate::wasm::WasmFrameLocals;
+use crate::wasm_binary::emit_call;
+use crate::wasm_import_tracking::TrackedImportIds;
+use crate::wasm_values::box_int;
+use wasm_encoder::{Function, Instruction};
 
 #[derive(Clone, Copy)]
 pub(super) enum BuilderFinish {
