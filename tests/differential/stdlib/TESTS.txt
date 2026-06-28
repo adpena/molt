@@ -4,6 +4,7 @@
 
 tests/differential/basic/builtins_api_surface_312_plus.py
 tests/differential/basic/builtins_basic.py
+tests/differential/basic/builtins_format_grouping_zero_fill.py
 tests/differential/basic/builtins_symbol_abs_82451b41.py
 tests/differential/basic/builtins_symbol_aiter_9064845b.py
 tests/differential/basic/builtins_symbol_all_d87c4480.py

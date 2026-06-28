@@ -1297,7 +1297,9 @@ pub(crate) fn format_obj(_py: &PyToken<'_>, obj: MoltObject) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{format_obj_str, format_string_repr_bytes};
+    use super::{
+        FormatSpec, assemble_number, format_obj_str, format_string_repr_bytes, zero_pad_grouped,
+    };
     use crate::builtins::attr::attr_name_bits_from_bytes;
     use crate::{
         alloc_module_obj, alloc_string, dict_set_in_place, module_dict_bits, obj_from_bits,
@@ -1342,6 +1344,109 @@ mod tests {
             "'\u{00e9}'"
         );
     }
+
+    fn num_spec(fill: char, align: Option<char>, width: Option<usize>) -> FormatSpec {
+        // Only `fill`, `align`, and `width` influence assemble_number's padding
+        // path; the rest are placeholders the helper does not read.
+        FormatSpec {
+            fill,
+            align,
+            zero_flag: false,
+            sign: None,
+            alternate: false,
+            width,
+            grouping: None,
+            precision: None,
+            ty: None,
+        }
+    }
+
+    #[test]
+    fn zero_pad_grouped_interleaves_separators_through_fill() {
+        // Decimal (group 3): the zero-fill region is itself grouped, so the
+        // field can exceed `min_field` exactly as CPython's min_width grouping.
+        assert_eq!(zero_pad_grouped("42", 3, ',', 8), "0,000,042");
+        assert_eq!(zero_pad_grouped("42", 3, ',', 7), "000,042");
+        assert_eq!(zero_pad_grouped("7", 3, ',', 6), "00,007");
+        assert_eq!(zero_pad_grouped("7", 3, ',', 7), "000,007");
+        assert_eq!(zero_pad_grouped("7", 3, ',', 8), "0,000,007");
+        assert_eq!(zero_pad_grouped("1", 3, ',', 9), "0,000,001");
+        assert_eq!(zero_pad_grouped("1234567", 3, ',', 15), "000,001,234,567");
+        assert_eq!(zero_pad_grouped("0", 3, ',', 5), "0,000");
+        // The b/o/x bases group by 4 (PEP 515).
+        assert_eq!(zero_pad_grouped("ff", 4, '_', 12), "00_0000_00ff");
+        assert_eq!(zero_pad_grouped("777777", 4, '_', 12), "00_0077_7777");
+        // A min_field below the natural width adds no zeros — natural grouping.
+        assert_eq!(zero_pad_grouped("1234567", 3, ',', 0), "1,234,567");
+        assert_eq!(zero_pad_grouped("1234567", 3, ',', 4), "1,234,567");
+    }
+
+    #[test]
+    fn assemble_number_groups_only_the_zero_fill_flag() {
+        let g3 = Some((3usize, ','));
+        let g4 = Some((4usize, '_'));
+        // The '0' flag (sign-aware '=') groups its zero fill, accounting for the
+        // sign/base prefix and the float/percent suffix.
+        assert_eq!(
+            assemble_number("", "42", "", g3, &num_spec('0', Some('='), Some(8)), '>'),
+            "0,000,042"
+        );
+        assert_eq!(
+            assemble_number("-", "42", "", g3, &num_spec('0', Some('='), Some(8)), '>'),
+            "-000,042"
+        );
+        assert_eq!(
+            assemble_number(
+                "",
+                "1234",
+                ".50",
+                g3,
+                &num_spec('0', Some('='), Some(12)),
+                '>'
+            ),
+            "0,001,234.50"
+        );
+        assert_eq!(
+            assemble_number("", "50", "%", g3, &num_spec('0', Some('='), Some(10)), '>'),
+            "0,000,050%"
+        );
+        assert_eq!(
+            assemble_number("0x", "ff", "", g4, &num_spec('0', Some('='), Some(12)), '>'),
+            "0x0_0000_00ff"
+        );
+        // Exponential: only the leading integer digit's fill is grouped.
+        assert_eq!(
+            assemble_number(
+                "",
+                "1",
+                ".500000e+00",
+                g3,
+                &num_spec('0', Some('='), Some(20)),
+                '>'
+            ),
+            "0,000,001.500000e+00"
+        );
+        // A non-'=' alignment with a '0' fill char must NOT group the padding.
+        assert_eq!(
+            assemble_number("", "42", "", g3, &num_spec('0', Some('>'), Some(8)), '>'),
+            "00000042"
+        );
+        // '=' with a non-'0' fill char pads (ungrouped) between prefix and body.
+        assert_eq!(
+            assemble_number("", "42", "", g3, &num_spec('*', Some('='), Some(8)), '>'),
+            "******42"
+        );
+        // No width: natural grouping only, no padding.
+        assert_eq!(
+            assemble_number("", "1234567", "", g3, &num_spec('0', Some('='), None), '>'),
+            "1,234,567"
+        );
+        // No grouping requested: ordinary sign-aware zero fill is unchanged.
+        assert_eq!(
+            assemble_number("-", "42", "", None, &num_spec('0', Some('='), Some(8)), '>'),
+            "-0000042"
+        );
+    }
 }
 
 pub(crate) fn format_bytes(bytes: &[u8]) -> String {
@@ -1381,6 +1486,7 @@ fn type_name_for_format_error(obj: MoltObject) -> &'static str {
     } else if let Some(ptr) = obj.as_ptr() {
         unsafe {
             match object_type_id(ptr) {
+                TYPE_ID_BIGINT => "int",
                 TYPE_ID_STRING => "str",
                 TYPE_ID_BYTES => "bytes",
                 TYPE_ID_LIST | TYPE_ID_LIST_INT | TYPE_ID_LIST_BOOL => "list",
@@ -1468,9 +1574,11 @@ fn format_string_repr(s: &str) -> String {
     out
 }
 
+#[derive(Clone, Copy)]
 pub(crate) struct FormatSpec {
     pub(crate) fill: char,
     pub(crate) align: Option<char>,
+    pub(crate) zero_flag: bool,
     pub(crate) sign: Option<char>,
     pub(crate) alternate: bool,
     pub(crate) width: Option<usize>,
@@ -1481,11 +1589,36 @@ pub(crate) struct FormatSpec {
 
 pub(crate) type FormatError = (&'static str, Cow<'static, str>);
 
+fn unknown_format_code_error(code: char, obj: MoltObject) -> FormatError {
+    (
+        "ValueError",
+        Cow::Owned(format!(
+            "Unknown format code '{code}' for object of type '{}'",
+            type_name_for_format_error(obj)
+        )),
+    )
+}
+
+fn unsupported_format_string_error(obj: MoltObject) -> FormatError {
+    (
+        "TypeError",
+        Cow::Owned(format!(
+            "unsupported format string passed to {}.__format__",
+            type_name_for_format_error(obj)
+        )),
+    )
+}
+
+fn is_integral_format_obj(obj: MoltObject) -> bool {
+    obj.as_bool().is_some() || obj.as_int().is_some() || bigint_ptr_from_bits(obj.bits()).is_some()
+}
+
 pub(crate) fn parse_format_spec(spec: &str) -> Result<FormatSpec, &'static str> {
     if spec.is_empty() {
         return Ok(FormatSpec {
             fill: ' ',
             align: None,
+            zero_flag: false,
             sign: None,
             alternate: false,
             width: None,
@@ -1497,6 +1630,7 @@ pub(crate) fn parse_format_spec(spec: &str) -> Result<FormatSpec, &'static str> 
     let mut chars = spec.chars().peekable();
     let mut fill = ' ';
     let mut align = None;
+    let mut zero_flag = false;
     let mut sign = None;
     let mut alternate = false;
     let mut grouping = None;
@@ -1535,6 +1669,7 @@ pub(crate) fn parse_format_spec(spec: &str) -> Result<FormatSpec, &'static str> 
     if align.is_none() && matches!(chars.peek(), Some('0')) {
         fill = '0';
         align = Some('=');
+        zero_flag = true;
         chars.next();
     }
 
@@ -1599,6 +1734,7 @@ pub(crate) fn parse_format_spec(spec: &str) -> Result<FormatSpec, &'static str> 
     Ok(FormatSpec {
         fill,
         align,
+        zero_flag,
         sign,
         alternate,
         width,
@@ -1654,6 +1790,87 @@ fn apply_alignment(prefix: &str, body: &str, spec: &FormatSpec, default_align: c
     }
 }
 
+/// Left-pad `digits` with `'0'` and insert `sep` every `group` digits so the
+/// resulting field (digits *and* separators) spans at least `min_field`
+/// characters, using the fewest digits that satisfy the bound. This mirrors
+/// CPython's `_PyUnicode_InsertThousandsGrouping` driven by the `min_width`
+/// that `calc_number_widths` derives for sign-aware `'0'` fill: the zero-fill
+/// region is itself grouped, so the field can legitimately exceed `min_field`
+/// (a `min_field` of 8 over `42` yields the 9-char `0,000,042`).
+fn zero_pad_grouped(digits: &str, group: usize, sep: char, min_field: usize) -> String {
+    let cur = digits.chars().count();
+    // Total field width for `d` grouped digits: the digits plus one separator
+    // for every full group boundary to their left.
+    let field_width = |d: usize| d + d.saturating_sub(1) / group;
+    let natural = cur.max(1);
+    let needed = if field_width(natural) >= min_field {
+        natural
+    } else {
+        // `field_width` is monotonic in `d`; binary-search the minimal digit
+        // count whose grouped field reaches `min_field`. `min_field` itself is
+        // always a valid upper bound because `field_width(d) >= d`.
+        let mut lo = natural;
+        let mut hi = min_field.max(natural);
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2;
+            if field_width(mid) >= min_field {
+                hi = mid;
+            } else {
+                lo = mid + 1;
+            }
+        }
+        lo
+    };
+    let mut padded = String::with_capacity(needed);
+    for _ in 0..needed.saturating_sub(cur) {
+        padded.push('0');
+    }
+    padded.push_str(digits);
+    apply_grouping(&padded, group, sep)
+}
+
+/// Assemble a formatted number (integer or float) from its parts, applying
+/// digit grouping and field alignment together. Keeping the two coupled is what
+/// lets sign-aware `'0'` fill group its zero-fill region the way CPython does;
+/// grouping the digits first and padding afterwards (the historical split) drops
+/// the separators from the padded zeros.
+///
+/// * `prefix` — sign and/or base prefix (e.g. `"-"`, `"+0x"`).
+/// * `int_digits` — the bare, ungrouped integer digits.
+/// * `suffix` — everything trailing the integer digits (fraction including the
+///   decimal point, exponent, and/or a `'%'`), or `""`.
+/// * `grouping` — `(group_size, separator)` when grouping is requested.
+fn assemble_number(
+    prefix: &str,
+    int_digits: &str,
+    suffix: &str,
+    grouping: Option<(usize, char)>,
+    spec: &FormatSpec,
+    default_align: char,
+) -> String {
+    let align = spec.align.unwrap_or(default_align);
+    // The one case where padding interleaves with grouping: the `'0'` fill flag
+    // (sign-aware `'='` alignment) combined with an actual grouping separator.
+    // Any other alignment, or a non-`'0'` fill char with `'='`, pads with raw
+    // fill chars that are *not* grouped — matching CPython.
+    if let Some((group, sep)) = grouping
+        && let Some(width) = spec.width
+        && align == '='
+        && spec.fill == '0'
+    {
+        let non_digit = prefix.chars().count() + suffix.chars().count();
+        let field = zero_pad_grouped(int_digits, group, sep, width.saturating_sub(non_digit));
+        return format!("{prefix}{field}{suffix}");
+    }
+    // Otherwise: group at the digits' natural width, then pad as a unit.
+    let grouped = match grouping {
+        Some((group, sep)) => apply_grouping(int_digits, group, sep),
+        None => int_digits.to_string(),
+    };
+    let body = format!("{grouped}{suffix}");
+    apply_alignment(prefix, &body, spec, default_align)
+}
+
 fn trim_float_trailing(text: &str, alternate: bool) -> String {
     if alternate {
         return text.to_string();
@@ -1700,22 +1917,105 @@ fn normalize_exponent(text: &str, upper: bool) -> String {
     format!("{mantissa}{exp_out}{sign}{padded}")
 }
 
-fn format_string_with_spec(text: String, spec: &FormatSpec) -> String {
+fn string_format_spec(spec: &FormatSpec) -> Result<FormatSpec, FormatError> {
+    if let Some(sep) = spec.grouping {
+        return Err((
+            "ValueError",
+            Cow::Owned(format!("Cannot specify '{sep}' with 's'.")),
+        ));
+    }
+    if let Some(sign) = spec.sign {
+        let msg = if sign == ' ' {
+            "Space not allowed in string format specifier"
+        } else {
+            "Sign not allowed in string format specifier"
+        };
+        return Err(("ValueError", Cow::Borrowed(msg)));
+    }
+    if spec.alternate {
+        return Err((
+            "ValueError",
+            Cow::Borrowed("Alternate form (#) not allowed in string format specifier"),
+        ));
+    }
+    if spec.align == Some('=') && !spec.zero_flag {
+        return Err((
+            "ValueError",
+            Cow::Borrowed("'=' alignment not allowed in string format specifier"),
+        ));
+    }
+    let mut normalized = *spec;
+    if normalized.zero_flag && normalized.align == Some('=') {
+        normalized.align = None;
+    }
+    Ok(normalized)
+}
+
+fn format_string_with_spec(text: String, spec: &FormatSpec) -> Result<String, FormatError> {
+    let spec = string_format_spec(spec)?;
     let mut out = text;
     if let Some(prec) = spec.precision {
         out = out.chars().take(prec).collect();
     }
-    apply_alignment("", &out, spec, '<')
+    Ok(apply_alignment("", &out, &spec, '<'))
 }
 
-fn format_int_with_spec(obj: MoltObject, spec: &FormatSpec) -> Result<String, FormatError> {
+fn apply_char_alignment(text: String, spec: &FormatSpec) -> String {
+    apply_alignment("", &text, spec, '>')
+}
+
+fn validate_integer_format_spec(ty: char, spec: &FormatSpec) -> Result<(), FormatError> {
+    if let Some(sep) = spec.grouping {
+        let allowed = match ty {
+            'd' | 'n' => true,
+            'b' | 'o' | 'x' | 'X' => sep == '_',
+            _ => false,
+        };
+        if !allowed {
+            return Err((
+                "ValueError",
+                Cow::Owned(format!("Cannot specify '{sep}' with '{ty}'.")),
+            ));
+        }
+    }
     if spec.precision.is_some() {
         return Err((
             "ValueError",
-            Cow::Borrowed("precision not allowed in integer format"),
+            Cow::Borrowed("Precision not allowed in integer format specifier"),
         ));
     }
+    if ty == 'c' {
+        if spec.sign.is_some() {
+            return Err((
+                "ValueError",
+                Cow::Borrowed("Sign not allowed with integer format specifier 'c'"),
+            ));
+        }
+        if spec.alternate {
+            return Err((
+                "ValueError",
+                Cow::Borrowed("Alternate form (#) not allowed with integer format specifier 'c'"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn is_empty_format_spec(spec: &FormatSpec) -> bool {
+    spec.fill == ' '
+        && spec.align.is_none()
+        && !spec.zero_flag
+        && spec.sign.is_none()
+        && !spec.alternate
+        && spec.width.is_none()
+        && spec.grouping.is_none()
+        && spec.precision.is_none()
+        && spec.ty.is_none()
+}
+
+fn format_int_with_spec(obj: MoltObject, spec: &FormatSpec) -> Result<String, FormatError> {
     let ty = spec.ty.unwrap_or('d');
+    validate_integer_format_spec(ty, spec)?;
     let mut value = if let Some(i) = obj.as_int() {
         BigInt::from(i)
     } else if let Some(b) = obj.as_bool() {
@@ -1723,14 +2023,7 @@ fn format_int_with_spec(obj: MoltObject, spec: &FormatSpec) -> Result<String, Fo
     } else if let Some(ptr) = bigint_ptr_from_bits(obj.bits()) {
         unsafe { bigint_ref(ptr).clone() }
     } else {
-        return Err((
-            "ValueError",
-            Cow::Owned(format!(
-                "Unknown format code '{}' for object of type '{}'",
-                spec.ty.unwrap_or('d'),
-                type_name_for_format_error(obj),
-            )),
-        ));
+        return Err(unknown_format_code_error(spec.ty.unwrap_or('d'), obj));
     };
     if ty == 'c' {
         if value.is_negative() {
@@ -1744,7 +2037,7 @@ fn format_int_with_spec(obj: MoltObject, spec: &FormatSpec) -> Result<String, Fo
             .ok_or(("ValueError", Cow::Borrowed("format c out of range")))?;
         let ch = std::char::from_u32(code)
             .ok_or(("ValueError", Cow::Borrowed("format c out of range")))?;
-        return Ok(format_string_with_spec(ch.to_string(), spec));
+        return Ok(apply_char_alignment(ch.to_string(), spec));
     }
     let base = match ty {
         'b' => 2,
@@ -1761,14 +2054,12 @@ fn format_int_with_spec(obj: MoltObject, spec: &FormatSpec) -> Result<String, Fo
     if ty == 'X' {
         digits = digits.to_uppercase();
     }
-    if let Some(sep) = spec.grouping {
-        let group = match base {
-            2 | 16 => 4,
-            8 => 3,
-            _ => 3,
-        };
-        digits = apply_grouping(&digits, group, sep);
-    }
+    // Decimal groups by 3; the b/o/x/X bases group by 4 (PEP 515). Grouping is
+    // applied by `assemble_number` so it stays coupled to zero-fill padding.
+    let grouping = spec.grouping.map(|sep| {
+        let group = if base == 10 { 3 } else { 4 };
+        (group, sep)
+    });
     let mut prefix = String::new();
     if negative {
         prefix.push('-');
@@ -1786,7 +2077,7 @@ fn format_int_with_spec(obj: MoltObject, spec: &FormatSpec) -> Result<String, Fo
             _ => {}
         }
     }
-    Ok(apply_alignment(&prefix, &digits, spec, '>'))
+    Ok(assemble_number(&prefix, &digits, "", grouping, spec, '>'))
 }
 
 pub(crate) fn format_float_with_spec(
@@ -1800,14 +2091,7 @@ pub(crate) fn format_float_with_spec(
     } else if let Some(b) = obj.as_bool() {
         if b { 1.0 } else { 0.0 }
     } else {
-        return Err((
-            "ValueError",
-            Cow::Owned(format!(
-                "Unknown format code '{}' for object of type '{}'",
-                spec.ty.unwrap_or('f'),
-                type_name_for_format_error(obj),
-            )),
-        ));
+        return Err(unknown_format_code_error(spec.ty.unwrap_or('f'), obj));
     };
     let use_default = spec.ty.is_none() && spec.precision.is_none();
     let ty = spec.ty.unwrap_or('g');
@@ -1868,24 +2152,23 @@ pub(crate) fn format_float_with_spec(
     if spec.alternate && !body.contains('.') && !body.contains('E') && !body.contains('e') {
         body.push('.');
     }
-    if let Some(sep) = spec.grouping
-        && !body.contains('e')
-        && !body.contains('E')
-    {
-        let mut parts = body.splitn(2, '.');
-        let int_part = parts.next().unwrap_or("");
-        let frac_part = parts.next();
-        let grouped = apply_grouping(int_part, 3, sep);
-        body = if let Some(frac) = frac_part {
-            format!("{grouped}.{frac}")
-        } else {
-            grouped
-        };
-    }
     if ty == '%' {
         body.push('%');
     }
-    Ok(apply_alignment(&prefix, &body, spec, '>'))
+    // Split the magnitude into its leading integer digits and the trailing
+    // remainder (fraction including the decimal point, exponent, and/or '%').
+    // Grouping — and any sign-aware zero fill — applies only to the integer
+    // digits, exactly as CPython's parse_number drives calc_number_widths, so
+    // exponential notation groups its zero fill while leaving the mantissa
+    // alone. Floats always group by 3.
+    let int_len = body
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(body.len());
+    let (int_digits, suffix) = body.split_at(int_len);
+    let grouping = spec.grouping.map(|sep| (3, sep));
+    Ok(assemble_number(
+        &prefix, int_digits, suffix, grouping, spec, '>',
+    ))
 }
 
 fn apply_grouping_to_float_text(text: &str, sep: char) -> String {
@@ -1958,6 +2241,7 @@ fn format_complex_with_spec(
         let real_spec = FormatSpec {
             fill: spec.fill,
             align: None,
+            zero_flag: spec.zero_flag,
             sign: spec.sign,
             alternate: spec.alternate,
             width: None,
@@ -1968,6 +2252,7 @@ fn format_complex_with_spec(
         let imag_spec = FormatSpec {
             fill: spec.fill,
             align: None,
+            zero_flag: spec.zero_flag,
             sign: None,
             alternate: spec.alternate,
             width: None,
@@ -2030,6 +2315,13 @@ pub(crate) fn format_with_spec(
             }
         }
     }
+    let string_text = string_obj_to_owned(obj);
+    let is_integral = is_integral_format_obj(obj);
+    let is_float = obj.as_float().is_some();
+    let is_number = is_integral || is_float;
+    if string_text.is_none() && !is_number && !is_empty_format_spec(spec) {
+        return Err(unsupported_format_string_error(obj));
+    }
     if spec.ty == Some('n') {
         if let Some(sep) = spec.grouping {
             let msg = if sep == ',' {
@@ -2039,9 +2331,16 @@ pub(crate) fn format_with_spec(
             };
             return Err(("ValueError", Cow::Borrowed(msg)));
         }
+        if !is_number {
+            if string_text.is_some() {
+                return Err(unknown_format_code_error('n', obj));
+            }
+            return Err(unsupported_format_string_error(obj));
+        }
         let mut normalized = FormatSpec {
             fill: spec.fill,
             align: spec.align,
+            zero_flag: spec.zero_flag,
             sign: spec.sign,
             alternate: spec.alternate,
             width: spec.width,
@@ -2057,27 +2356,59 @@ pub(crate) fn format_with_spec(
         return format_int_with_spec(obj, &normalized);
     }
     match spec.ty {
-        Some('s') => Ok(format_string_with_spec(format_obj_str(_py, obj), spec)),
+        Some('s') => {
+            if let Some(text) = string_text {
+                format_string_with_spec(text, spec)
+            } else if is_number {
+                Err(unknown_format_code_error('s', obj))
+            } else {
+                Err(unsupported_format_string_error(obj))
+            }
+        }
         Some('d') | Some('b') | Some('o') | Some('x') | Some('X') | Some('c') => {
-            format_int_with_spec(obj, spec)
+            if is_number {
+                format_int_with_spec(obj, spec)
+            } else if string_text.is_some() {
+                Err(unknown_format_code_error(spec.ty.unwrap(), obj))
+            } else {
+                Err(unsupported_format_string_error(obj))
+            }
         }
         Some('f') | Some('F') | Some('e') | Some('E') | Some('g') | Some('G') | Some('%') => {
-            format_float_with_spec(obj, spec)
+            if is_number {
+                format_float_with_spec(obj, spec)
+            } else if string_text.is_some() {
+                Err(unknown_format_code_error(spec.ty.unwrap(), obj))
+            } else {
+                Err(unsupported_format_string_error(obj))
+            }
         }
-        Some(_) => Err(("ValueError", Cow::Borrowed("unsupported format type"))),
+        Some(code) => {
+            if string_text.is_some() || is_number {
+                Err(unknown_format_code_error(code, obj))
+            } else {
+                Err(unsupported_format_string_error(obj))
+            }
+        }
         None => {
             // Check int/bool before float to match CPython's __format__
             // dispatch order.  Also guards against codegen producing raw
             // 0x0 bits (Cranelift zero-init) which NaN-boxing interprets
             // as float +0.0 but semantically represents int 0.
             if obj.as_bool().is_some() {
-                Ok(format_string_with_spec(format_obj_str(_py, obj), spec))
+                if is_empty_format_spec(spec) {
+                    Ok(format_obj_str(_py, obj))
+                } else {
+                    format_int_with_spec(obj, spec)
+                }
             } else if obj.as_int().is_some() || bigint_ptr_from_bits(obj.bits()).is_some() {
                 format_int_with_spec(obj, spec)
             } else if obj.as_float().is_some() {
                 format_float_with_spec(obj, spec)
+            } else if let Some(text) = string_text {
+                format_string_with_spec(text, spec)
             } else {
-                Ok(format_string_with_spec(format_obj_str(_py, obj), spec))
+                Ok(format_obj_str(_py, obj))
             }
         }
     }
