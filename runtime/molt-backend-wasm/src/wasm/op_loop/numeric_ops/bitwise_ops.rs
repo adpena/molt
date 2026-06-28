@@ -1,4 +1,16 @@
-use super::super::*;
+use crate::representation_plan::ScalarRepresentationPlan;
+use crate::wasm::{WasmFrameLocals, WasmFrameSyntheticLocal};
+use crate::wasm_binary::emit_call;
+use crate::wasm_import_tracking::TrackedImportIds;
+use crate::wasm_plan::wasm_scalar_integer_fast_path_for_op;
+use crate::wasm_values::{
+    ConstantCache, IntFastLane, emit_box_int_from_local_opt, emit_inline_int_range_check,
+    emit_trusted_int_fast_path_guard_close, emit_trusted_int_fast_path_guard_open,
+    emit_unbox_int_local_trusted_opt, emit_unbox_int_local_trusted_tee_opt,
+};
+use crate::OpIR;
+use std::collections::BTreeMap;
+use wasm_encoder::{BlockType, Function, Instruction, ValType};
 
 #[allow(unused_variables)]
 pub(super) fn emit_bitwise_numeric_op(
