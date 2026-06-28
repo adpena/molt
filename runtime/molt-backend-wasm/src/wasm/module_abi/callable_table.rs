@@ -1,4 +1,20 @@
-use super::*;
+use std::borrow::Cow;
+use std::collections::{BTreeMap, BTreeSet};
+
+use wasm_encoder::{
+    ConstExpr, ElementMode, ElementSection, ElementSegment, Elements, Encode, EntityType,
+    ExportKind, Function, Instruction, RefType, TableType,
+};
+
+use crate::wasm::WasmBackend;
+use crate::wasm_abi::{
+    POLL_TABLE_IMPORTS, RESERVED_RUNTIME_CALLABLE_COUNT, RESERVED_RUNTIME_CALLABLE_SPECS,
+    RUNTIME_CALLABLE_IMPORTS, RuntimeCallableResult, poll_table_import_slot,
+};
+use crate::wasm_binary::{emit_call, encode_u32_leb128_padded};
+use crate::wasm_data::DataSegmentRef;
+use crate::wasm_values::box_none;
+use crate::{SimpleIR, TrampolineKind, TrampolineSpec};
 
 pub(super) struct WasmCallableTablePlan {
     pub(super) table_base: u32,

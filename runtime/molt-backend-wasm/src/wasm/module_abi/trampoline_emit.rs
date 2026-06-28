@@ -1,4 +1,11 @@
-use super::*;
+use wasm_encoder::{Function, Instruction, ValType};
+
+use crate::wasm::WasmBackend;
+use crate::wasm_abi::{GEN_CONTROL_SIZE, TASK_KIND_COROUTINE, TASK_KIND_GENERATOR};
+use crate::wasm_binary::{emit_call, emit_i32_const, emit_ref_func, emit_table_index_i64};
+use crate::wasm_data::DataSegmentRef;
+use crate::wasm_values::box_int;
+use crate::{TrampolineKind, TrampolineSpec};
 
 impl WasmBackend {
     pub(super) fn compile_trampoline(
