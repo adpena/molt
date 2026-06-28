@@ -1,16 +1,80 @@
-use crate::representation_plan::ScalarRepresentationPlan;
-use crate::wasm::{WasmFrameLocals, WasmFrameSyntheticLocal};
-use crate::wasm_binary::emit_call;
-use crate::wasm_import_tracking::TrackedImportIds;
-use crate::wasm_plan::wasm_scalar_integer_fast_path_for_op;
-use crate::wasm_values::{
-    ConstantCache, IntFastLane, emit_box_bool_from_i32,
-    emit_trusted_int_fast_path_guard_close, emit_trusted_int_fast_path_guard_open,
-    emit_unbox_int_local_trusted_tee_opt,
+use super::common::{
+    binary_operands, emit_boxed_binary_result, emit_guarded_int_binary_result_or_boxed,
+    emit_plain_f64_binary_result_or_boxed, emit_trusted_int_binary_operand_tees, int_binary_temps,
+    store_numeric_result,
 };
 use crate::OpIR;
+use crate::representation_plan::ScalarRepresentationPlan;
+use crate::wasm::WasmFrameLocals;
+use crate::wasm_import_tracking::TrackedImportIds;
+use crate::wasm_plan::wasm_scalar_integer_fast_path_for_op;
+use crate::wasm_values::{ConstantCache, IntFastLane, emit_box_bool_from_i32};
 use std::collections::BTreeMap;
-use wasm_encoder::{BlockType, Function, Instruction, ValType};
+use wasm_encoder::{Function, Instruction};
+
+#[derive(Clone, Copy)]
+enum OrderedCompareOp {
+    Lt,
+    Le,
+    Gt,
+    Ge,
+}
+
+impl OrderedCompareOp {
+    fn from_kind(kind: &str) -> Option<(Self, &'static str)> {
+        match kind {
+            "lt" => Some((Self::Lt, "lt")),
+            "le" => Some((Self::Le, "le")),
+            "gt" => Some((Self::Gt, "gt")),
+            "ge" => Some((Self::Ge, "ge")),
+            _ => None,
+        }
+    }
+
+    fn emit_i64(self, func: &mut Function) {
+        match self {
+            Self::Lt => func.instruction(&Instruction::I64LtS),
+            Self::Le => func.instruction(&Instruction::I64LeS),
+            Self::Gt => func.instruction(&Instruction::I64GtS),
+            Self::Ge => func.instruction(&Instruction::I64GeS),
+        };
+    }
+
+    fn emit_f64(self, func: &mut Function) {
+        match self {
+            Self::Lt => func.instruction(&Instruction::F64Lt),
+            Self::Le => func.instruction(&Instruction::F64Le),
+            Self::Gt => func.instruction(&Instruction::F64Gt),
+            Self::Ge => func.instruction(&Instruction::F64Ge),
+        };
+    }
+}
+
+#[derive(Clone, Copy)]
+enum EqualityCompareOp {
+    Eq,
+    Ne,
+}
+
+impl EqualityCompareOp {
+    fn from_kind(kind: &str) -> Option<(Self, &'static str)> {
+        match kind {
+            "eq" => Some((Self::Eq, "eq")),
+            "ne" => Some((Self::Ne, "ne")),
+            _ => None,
+        }
+    }
+
+    fn emit_boxed_identity_compare(self, func: &mut Function, lhs: u32, rhs: u32) {
+        func.instruction(&Instruction::LocalGet(lhs));
+        func.instruction(&Instruction::LocalGet(rhs));
+        match self {
+            Self::Eq => func.instruction(&Instruction::I64Eq),
+            Self::Ne => func.instruction(&Instruction::I64Ne),
+        };
+        emit_box_bool_from_i32(func);
+    }
+}
 
 #[allow(unused_variables)]
 pub(super) fn emit_comparison_numeric_op(
@@ -23,403 +87,124 @@ pub(super) fn emit_comparison_numeric_op(
     reloc_enabled: bool,
     known_raw_ints: &BTreeMap<u32, i64>,
 ) -> bool {
-    match op.kind.as_str() {
-        "lt" => {
-            let args = op.args.as_ref().unwrap();
-            let lhs = locals[&args[0]];
-            let rhs = locals[&args[1]];
-            if wasm_scalar_integer_fast_path_for_op(&scalar_plan, op) {
-                let guarded = emit_trusted_int_fast_path_guard_open(
-                    func,
-                    &[lhs, rhs],
-                    &known_raw_ints,
-                    IntFastLane::IntOrBool,
-                );
-                let tmp_lhs = locals.synthetic(WasmFrameSyntheticLocal::MoltTmp0);
-                let tmp_rhs = locals.synthetic(WasmFrameSyntheticLocal::MoltTmp1);
-                emit_unbox_int_local_trusted_tee_opt(
-                    func,
-                    lhs,
-                    tmp_lhs,
-                    &const_cache,
-                    &known_raw_ints,
-                );
-                emit_unbox_int_local_trusted_tee_opt(
-                    func,
-                    rhs,
-                    tmp_rhs,
-                    &const_cache,
-                    &known_raw_ints,
-                );
-                func.instruction(&Instruction::I64LtS);
-                emit_box_bool_from_i32(func);
-                if guarded {
-                    emit_trusted_int_fast_path_guard_close(
-                        func,
-                        reloc_enabled,
-                        &[lhs, rhs],
-                        import_ids["lt"],
-                    );
-                }
-            } else {
-                // fast_float: check if both operands are plain f64
-                func.instruction(&Instruction::LocalGet(lhs));
-                func.instruction(&Instruction::I64Const(48));
-                func.instruction(&Instruction::I64ShrU);
-                func.instruction(&Instruction::I64Const(0x7FF9));
-                func.instruction(&Instruction::I64Sub);
-                func.instruction(&Instruction::I64Const(5));
-                func.instruction(&Instruction::I64LtU);
-                func.instruction(&Instruction::I32Eqz);
-                func.instruction(&Instruction::LocalGet(rhs));
-                func.instruction(&Instruction::I64Const(48));
-                func.instruction(&Instruction::I64ShrU);
-                func.instruction(&Instruction::I64Const(0x7FF9));
-                func.instruction(&Instruction::I64Sub);
-                func.instruction(&Instruction::I64Const(5));
-                func.instruction(&Instruction::I64LtU);
-                func.instruction(&Instruction::I32Eqz);
-                func.instruction(&Instruction::I32And);
-                func.instruction(&Instruction::If(BlockType::Result(ValType::I64)));
-                func.instruction(&Instruction::LocalGet(lhs));
-                func.instruction(&Instruction::F64ReinterpretI64);
-                func.instruction(&Instruction::LocalGet(rhs));
-                func.instruction(&Instruction::F64ReinterpretI64);
-                func.instruction(&Instruction::F64Lt);
-                emit_box_bool_from_i32(func);
-                func.instruction(&Instruction::Else);
-                func.instruction(&Instruction::LocalGet(lhs));
-                func.instruction(&Instruction::LocalGet(rhs));
-                emit_call(func, reloc_enabled, import_ids["lt"]);
-                func.instruction(&Instruction::End);
-            }
-            if let Some(out) = op.out.as_ref() {
-                let res = locals[out];
-                func.instruction(&Instruction::LocalSet(res));
-            } else {
-                func.instruction(&Instruction::Drop);
-            }
-        }
-        "le" => {
-            let args = op.args.as_ref().unwrap();
-            let lhs = locals[&args[0]];
-            let rhs = locals[&args[1]];
-            if wasm_scalar_integer_fast_path_for_op(&scalar_plan, op) {
-                let guarded = emit_trusted_int_fast_path_guard_open(
-                    func,
-                    &[lhs, rhs],
-                    &known_raw_ints,
-                    IntFastLane::IntOrBool,
-                );
-                let tmp_lhs = locals.synthetic(WasmFrameSyntheticLocal::MoltTmp0);
-                let tmp_rhs = locals.synthetic(WasmFrameSyntheticLocal::MoltTmp1);
-                emit_unbox_int_local_trusted_tee_opt(
-                    func,
-                    lhs,
-                    tmp_lhs,
-                    &const_cache,
-                    &known_raw_ints,
-                );
-                emit_unbox_int_local_trusted_tee_opt(
-                    func,
-                    rhs,
-                    tmp_rhs,
-                    &const_cache,
-                    &known_raw_ints,
-                );
-                func.instruction(&Instruction::I64LeS);
-                emit_box_bool_from_i32(func);
-                if guarded {
-                    emit_trusted_int_fast_path_guard_close(
-                        func,
-                        reloc_enabled,
-                        &[lhs, rhs],
-                        import_ids["le"],
-                    );
-                }
-            } else {
-                // fast_float: check if both operands are plain f64
-                func.instruction(&Instruction::LocalGet(lhs));
-                func.instruction(&Instruction::I64Const(48));
-                func.instruction(&Instruction::I64ShrU);
-                func.instruction(&Instruction::I64Const(0x7FF9));
-                func.instruction(&Instruction::I64Sub);
-                func.instruction(&Instruction::I64Const(5));
-                func.instruction(&Instruction::I64LtU);
-                func.instruction(&Instruction::I32Eqz);
-                func.instruction(&Instruction::LocalGet(rhs));
-                func.instruction(&Instruction::I64Const(48));
-                func.instruction(&Instruction::I64ShrU);
-                func.instruction(&Instruction::I64Const(0x7FF9));
-                func.instruction(&Instruction::I64Sub);
-                func.instruction(&Instruction::I64Const(5));
-                func.instruction(&Instruction::I64LtU);
-                func.instruction(&Instruction::I32Eqz);
-                func.instruction(&Instruction::I32And);
-                func.instruction(&Instruction::If(BlockType::Result(ValType::I64)));
-                func.instruction(&Instruction::LocalGet(lhs));
-                func.instruction(&Instruction::F64ReinterpretI64);
-                func.instruction(&Instruction::LocalGet(rhs));
-                func.instruction(&Instruction::F64ReinterpretI64);
-                func.instruction(&Instruction::F64Le);
-                emit_box_bool_from_i32(func);
-                func.instruction(&Instruction::Else);
-                func.instruction(&Instruction::LocalGet(lhs));
-                func.instruction(&Instruction::LocalGet(rhs));
-                emit_call(func, reloc_enabled, import_ids["le"]);
-                func.instruction(&Instruction::End);
-            }
-            if let Some(out) = op.out.as_ref() {
-                let res = locals[out];
-                func.instruction(&Instruction::LocalSet(res));
-            } else {
-                func.instruction(&Instruction::Drop);
-            }
-        }
-        "gt" => {
-            let args = op.args.as_ref().unwrap();
-            let lhs = locals[&args[0]];
-            let rhs = locals[&args[1]];
-            if wasm_scalar_integer_fast_path_for_op(&scalar_plan, op) {
-                let guarded = emit_trusted_int_fast_path_guard_open(
-                    func,
-                    &[lhs, rhs],
-                    &known_raw_ints,
-                    IntFastLane::IntOrBool,
-                );
-                let tmp_lhs = locals.synthetic(WasmFrameSyntheticLocal::MoltTmp0);
-                let tmp_rhs = locals.synthetic(WasmFrameSyntheticLocal::MoltTmp1);
-                emit_unbox_int_local_trusted_tee_opt(
-                    func,
-                    lhs,
-                    tmp_lhs,
-                    &const_cache,
-                    &known_raw_ints,
-                );
-                emit_unbox_int_local_trusted_tee_opt(
-                    func,
-                    rhs,
-                    tmp_rhs,
-                    &const_cache,
-                    &known_raw_ints,
-                );
-                func.instruction(&Instruction::I64GtS);
-                emit_box_bool_from_i32(func);
-                if guarded {
-                    emit_trusted_int_fast_path_guard_close(
-                        func,
-                        reloc_enabled,
-                        &[lhs, rhs],
-                        import_ids["gt"],
-                    );
-                }
-            } else {
-                // fast_float: check if both operands are plain f64
-                func.instruction(&Instruction::LocalGet(lhs));
-                func.instruction(&Instruction::I64Const(48));
-                func.instruction(&Instruction::I64ShrU);
-                func.instruction(&Instruction::I64Const(0x7FF9));
-                func.instruction(&Instruction::I64Sub);
-                func.instruction(&Instruction::I64Const(5));
-                func.instruction(&Instruction::I64LtU);
-                func.instruction(&Instruction::I32Eqz);
-                func.instruction(&Instruction::LocalGet(rhs));
-                func.instruction(&Instruction::I64Const(48));
-                func.instruction(&Instruction::I64ShrU);
-                func.instruction(&Instruction::I64Const(0x7FF9));
-                func.instruction(&Instruction::I64Sub);
-                func.instruction(&Instruction::I64Const(5));
-                func.instruction(&Instruction::I64LtU);
-                func.instruction(&Instruction::I32Eqz);
-                func.instruction(&Instruction::I32And);
-                func.instruction(&Instruction::If(BlockType::Result(ValType::I64)));
-                func.instruction(&Instruction::LocalGet(lhs));
-                func.instruction(&Instruction::F64ReinterpretI64);
-                func.instruction(&Instruction::LocalGet(rhs));
-                func.instruction(&Instruction::F64ReinterpretI64);
-                func.instruction(&Instruction::F64Gt);
-                emit_box_bool_from_i32(func);
-                func.instruction(&Instruction::Else);
-                func.instruction(&Instruction::LocalGet(lhs));
-                func.instruction(&Instruction::LocalGet(rhs));
-                emit_call(func, reloc_enabled, import_ids["gt"]);
-                func.instruction(&Instruction::End);
-            }
-            if let Some(out) = op.out.as_ref() {
-                let res = locals[out];
-                func.instruction(&Instruction::LocalSet(res));
-            } else {
-                func.instruction(&Instruction::Drop);
-            }
-        }
-        "ge" => {
-            let args = op.args.as_ref().unwrap();
-            let lhs = locals[&args[0]];
-            let rhs = locals[&args[1]];
-            if wasm_scalar_integer_fast_path_for_op(&scalar_plan, op) {
-                let guarded = emit_trusted_int_fast_path_guard_open(
-                    func,
-                    &[lhs, rhs],
-                    &known_raw_ints,
-                    IntFastLane::IntOrBool,
-                );
-                let tmp_lhs = locals.synthetic(WasmFrameSyntheticLocal::MoltTmp0);
-                let tmp_rhs = locals.synthetic(WasmFrameSyntheticLocal::MoltTmp1);
-                emit_unbox_int_local_trusted_tee_opt(
-                    func,
-                    lhs,
-                    tmp_lhs,
-                    &const_cache,
-                    &known_raw_ints,
-                );
-                emit_unbox_int_local_trusted_tee_opt(
-                    func,
-                    rhs,
-                    tmp_rhs,
-                    &const_cache,
-                    &known_raw_ints,
-                );
-                func.instruction(&Instruction::I64GeS);
-                emit_box_bool_from_i32(func);
-                if guarded {
-                    emit_trusted_int_fast_path_guard_close(
-                        func,
-                        reloc_enabled,
-                        &[lhs, rhs],
-                        import_ids["ge"],
-                    );
-                }
-            } else {
-                // fast_float: check if both operands are plain f64
-                func.instruction(&Instruction::LocalGet(lhs));
-                func.instruction(&Instruction::I64Const(48));
-                func.instruction(&Instruction::I64ShrU);
-                func.instruction(&Instruction::I64Const(0x7FF9));
-                func.instruction(&Instruction::I64Sub);
-                func.instruction(&Instruction::I64Const(5));
-                func.instruction(&Instruction::I64LtU);
-                func.instruction(&Instruction::I32Eqz);
-                func.instruction(&Instruction::LocalGet(rhs));
-                func.instruction(&Instruction::I64Const(48));
-                func.instruction(&Instruction::I64ShrU);
-                func.instruction(&Instruction::I64Const(0x7FF9));
-                func.instruction(&Instruction::I64Sub);
-                func.instruction(&Instruction::I64Const(5));
-                func.instruction(&Instruction::I64LtU);
-                func.instruction(&Instruction::I32Eqz);
-                func.instruction(&Instruction::I32And);
-                func.instruction(&Instruction::If(BlockType::Result(ValType::I64)));
-                func.instruction(&Instruction::LocalGet(lhs));
-                func.instruction(&Instruction::F64ReinterpretI64);
-                func.instruction(&Instruction::LocalGet(rhs));
-                func.instruction(&Instruction::F64ReinterpretI64);
-                func.instruction(&Instruction::F64Ge);
-                emit_box_bool_from_i32(func);
-                func.instruction(&Instruction::Else);
-                func.instruction(&Instruction::LocalGet(lhs));
-                func.instruction(&Instruction::LocalGet(rhs));
-                emit_call(func, reloc_enabled, import_ids["ge"]);
-                func.instruction(&Instruction::End);
-            }
-            if let Some(out) = op.out.as_ref() {
-                let res = locals[out];
-                func.instruction(&Instruction::LocalSet(res));
-            } else {
-                func.instruction(&Instruction::Drop);
-            }
-        }
-        "eq" => {
-            let args = op.args.as_ref().unwrap();
-            let lhs = locals[&args[0]];
-            let rhs = locals[&args[1]];
-            if wasm_scalar_integer_fast_path_for_op(&scalar_plan, op) {
-                let guarded = emit_trusted_int_fast_path_guard_open(
-                    func,
-                    &[lhs, rhs],
-                    &known_raw_ints,
-                    IntFastLane::IntOnly,
-                );
-                // Box/unbox elimination: when both operands are
-                // known NaN-boxed integers, equality of the boxed
-                // representations implies equality of the raw
-                // values (same tag prefix).  Skip unbox entirely.
-                func.instruction(&Instruction::LocalGet(lhs));
-                func.instruction(&Instruction::LocalGet(rhs));
-                func.instruction(&Instruction::I64Eq);
-                emit_box_bool_from_i32(func);
-                if guarded {
-                    emit_trusted_int_fast_path_guard_close(
-                        func,
-                        reloc_enabled,
-                        &[lhs, rhs],
-                        import_ids["eq"],
-                    );
-                }
-            } else {
-                func.instruction(&Instruction::LocalGet(lhs));
-                func.instruction(&Instruction::LocalGet(rhs));
-                emit_call(func, reloc_enabled, import_ids["eq"]);
-            }
-            if let Some(out) = op.out.as_ref() {
-                let res = locals[out];
-                func.instruction(&Instruction::LocalSet(res));
-            } else {
-                func.instruction(&Instruction::Drop);
-            }
-        }
-        "ne" => {
-            let args = op.args.as_ref().unwrap();
-            let lhs = locals[&args[0]];
-            let rhs = locals[&args[1]];
-            if wasm_scalar_integer_fast_path_for_op(&scalar_plan, op) {
-                let guarded = emit_trusted_int_fast_path_guard_open(
-                    func,
-                    &[lhs, rhs],
-                    &known_raw_ints,
-                    IntFastLane::IntOnly,
-                );
-                // Box/unbox elimination: compare NaN-boxed values
-                // directly — same tag means ne(boxed) iff ne(raw).
-                func.instruction(&Instruction::LocalGet(lhs));
-                func.instruction(&Instruction::LocalGet(rhs));
-                func.instruction(&Instruction::I64Ne);
-                emit_box_bool_from_i32(func);
-                if guarded {
-                    emit_trusted_int_fast_path_guard_close(
-                        func,
-                        reloc_enabled,
-                        &[lhs, rhs],
-                        import_ids["ne"],
-                    );
-                }
-            } else {
-                func.instruction(&Instruction::LocalGet(lhs));
-                func.instruction(&Instruction::LocalGet(rhs));
-                emit_call(func, reloc_enabled, import_ids["ne"]);
-            }
-            if let Some(out) = op.out.as_ref() {
-                let res = locals[out];
-                func.instruction(&Instruction::LocalSet(res));
-            } else {
-                func.instruction(&Instruction::Drop);
-            }
-        }
-        "string_eq" => {
-            let args = op.args.as_ref().unwrap();
-            let lhs = locals[&args[0]];
-            let rhs = locals[&args[1]];
-            func.instruction(&Instruction::LocalGet(lhs));
-            func.instruction(&Instruction::LocalGet(rhs));
-            emit_call(func, reloc_enabled, import_ids["string_eq"]);
-            if let Some(out) = op.out.as_ref() {
-                let res = locals[out];
-                func.instruction(&Instruction::LocalSet(res));
-            } else {
-                func.instruction(&Instruction::Drop);
-            }
-        }
+    if let Some((compare_op, import_name)) = OrderedCompareOp::from_kind(op.kind.as_str()) {
+        emit_ordered_compare_op(
+            func,
+            op,
+            import_ids,
+            locals,
+            const_cache,
+            scalar_plan,
+            reloc_enabled,
+            known_raw_ints,
+            compare_op,
+            import_name,
+        );
+        return true;
+    }
 
+    if let Some((compare_op, import_name)) = EqualityCompareOp::from_kind(op.kind.as_str()) {
+        emit_equality_compare_op(
+            func,
+            op,
+            import_ids,
+            locals,
+            scalar_plan,
+            reloc_enabled,
+            known_raw_ints,
+            compare_op,
+            import_name,
+        );
+        return true;
+    }
+
+    match op.kind.as_str() {
+        "string_eq" => {
+            emit_boxed_binary_result(func, op, import_ids, locals, "string_eq", reloc_enabled)
+        }
         _ => return false,
     }
     true
+}
+
+fn emit_ordered_compare_op(
+    func: &mut Function,
+    op: &OpIR,
+    import_ids: &TrackedImportIds,
+    locals: &WasmFrameLocals,
+    const_cache: &ConstantCache,
+    scalar_plan: &ScalarRepresentationPlan,
+    reloc_enabled: bool,
+    known_raw_ints: &BTreeMap<u32, i64>,
+    compare_op: OrderedCompareOp,
+    import_name: &str,
+) {
+    let operands = binary_operands(op, locals);
+    if wasm_scalar_integer_fast_path_for_op(&scalar_plan, op) {
+        emit_guarded_int_binary_result_or_boxed(
+            func,
+            operands,
+            import_ids,
+            import_name,
+            reloc_enabled,
+            known_raw_ints,
+            IntFastLane::IntOrBool,
+            |func| {
+                let temps = int_binary_temps(locals);
+                emit_trusted_int_binary_operand_tees(
+                    func,
+                    operands,
+                    temps,
+                    const_cache,
+                    known_raw_ints,
+                );
+                compare_op.emit_i64(func);
+                emit_box_bool_from_i32(func);
+            },
+        );
+    } else {
+        emit_plain_f64_binary_result_or_boxed(
+            func,
+            operands,
+            import_ids,
+            import_name,
+            locals,
+            reloc_enabled,
+            |func, _scratch_local| {
+                compare_op.emit_f64(func);
+                emit_box_bool_from_i32(func);
+            },
+        );
+    }
+    store_numeric_result(func, op, locals);
+}
+
+fn emit_equality_compare_op(
+    func: &mut Function,
+    op: &OpIR,
+    import_ids: &TrackedImportIds,
+    locals: &WasmFrameLocals,
+    scalar_plan: &ScalarRepresentationPlan,
+    reloc_enabled: bool,
+    known_raw_ints: &BTreeMap<u32, i64>,
+    compare_op: EqualityCompareOp,
+    import_name: &str,
+) {
+    let operands = binary_operands(op, locals);
+    if wasm_scalar_integer_fast_path_for_op(&scalar_plan, op) {
+        emit_guarded_int_binary_result_or_boxed(
+            func,
+            operands,
+            import_ids,
+            import_name,
+            reloc_enabled,
+            known_raw_ints,
+            IntFastLane::IntOnly,
+            |func| compare_op.emit_boxed_identity_compare(func, operands.lhs, operands.rhs),
+        );
+    } else {
+        emit_boxed_binary_result(func, op, import_ids, locals, import_name, reloc_enabled);
+        return;
+    }
+    store_numeric_result(func, op, locals);
 }
