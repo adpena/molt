@@ -6,6 +6,8 @@ use crate::wasm_abi_generated::{
     WasmConstInlineSeed, WasmConstLiteralPayload, WasmConstOpPolicySpec, WasmConstRawIntEffect,
     wasm_const_op_policy,
 };
+#[cfg(test)]
+use molt_codegen_abi::box_float_bits as box_float;
 
 pub(super) struct ConstantOpContext<'a, 'ctx> {
     pub(super) backend: &'a mut WasmBackend,

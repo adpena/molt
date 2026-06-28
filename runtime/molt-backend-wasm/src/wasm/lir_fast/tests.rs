@@ -7,7 +7,7 @@ use crate::tir::lower_to_lir::lower_function_to_lir_with_inline_proof;
 use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
 use crate::tir::types::TirType;
 use crate::tir::values::ValueId;
-use crate::wasm::body::WasmBodyOps;
+use crate::wasm::body::{WasmBodyOps, WasmLirFallbackReason};
 use molt_codegen_abi::{CANONICAL_NAN_BITS, INT_MASK, QNAN_TAG_INT_I64};
 use std::collections::HashMap;
 use wasm_encoder::{Instruction, ValType};
@@ -586,6 +586,10 @@ fn alloc_task_falls_back_to_runtime_call() {
         output.bails_to_generic_path,
         "alloc_task must bail to generic WASM emission"
     );
+    assert_eq!(
+        output.bail_to_generic_reason,
+        Some(WasmLirFallbackReason::UnsupportedOperation)
+    );
 }
 
 #[test]
@@ -614,6 +618,10 @@ fn state_switch_falls_back_to_runtime_call() {
     assert!(
         output.bails_to_generic_path,
         "state_switch must bail to generic WASM emission"
+    );
+    assert_eq!(
+        output.bail_to_generic_reason,
+        Some(WasmLirFallbackReason::UnsupportedOperation)
     );
 }
 

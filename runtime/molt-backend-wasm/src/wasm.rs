@@ -32,14 +32,15 @@ mod state_dispatch;
 mod tir_pipeline;
 mod trampoline_analysis;
 use crate::wasm_plan::{
-    DEFAULT_GPU_INTRINSIC_MANIFEST_NAMES, compute_lir_wasm_fast_outputs_from_final_ir,
-    detect_multi_return_candidates, emit_wasm_stage_audit, gpu_runtime_call_symbol,
-    is_shared_drop_fact_marker, simple_ir_stage_shape, wasm_scalar_integer_fast_path_for_op,
+    DEFAULT_GPU_INTRINSIC_MANIFEST_NAMES,
+    compute_lir_wasm_lowering_plans_from_final_ir_with_escaped, detect_multi_return_candidates,
+    emit_wasm_stage_audit, gpu_runtime_call_symbol, is_shared_drop_fact_marker,
+    simple_ir_stage_shape, wasm_scalar_integer_fast_path_for_op,
     wasm_scalar_truthiness_fast_path_for_name, wasm_specialized_container_import,
 };
 use crate::wasm_values::{
-    ConstantCache, INT_MASK, IntFastLane, POINTER_MASK, box_bool, box_float, box_int, box_none,
-    box_pending, emit_box_bool_from_i32, emit_box_int_from_local_opt, emit_branch_truthiness_i32,
+    ConstantCache, INT_MASK, IntFastLane, POINTER_MASK, box_bool, box_int, box_none, box_pending,
+    emit_box_bool_from_i32, emit_box_int_from_local_opt, emit_branch_truthiness_i32,
     emit_f64_to_i64_canonical, emit_inline_int_range_check, emit_trusted_int_fast_path_guard_close,
     emit_trusted_int_fast_path_guard_open, emit_unbox_int_local_trusted_opt,
     emit_unbox_int_local_trusted_tee_opt, stable_ic_site_id,

@@ -1,4 +1,4 @@
-use crate::wasm::body::WasmBodyOps;
+use crate::wasm::body::{WasmBodyOps, WasmLirFallbackReason};
 use molt_tir::tir::blocks::BlockId;
 use molt_tir::tir::lir::{LirFunction, LirRepr, LirTerminator, LirValue};
 use molt_tir::tir::values::ValueId;
@@ -50,8 +50,8 @@ impl<'a> LirLowerCtx<'a> {
         self.instructions.push_runtime_import_call(name);
     }
 
-    pub(super) fn emit_bail_to_generic_path(&mut self) {
-        self.instructions.push_bail_to_generic_path();
+    pub(super) fn emit_bail_to_generic_path(&mut self, reason: WasmLirFallbackReason) {
+        self.instructions.push_bail_to_generic_path(reason);
     }
 
     pub(super) fn local_for(&mut self, value: &LirValue) -> u32 {
