@@ -2,12 +2,20 @@ from __future__ import annotations
 
 import copy
 import importlib.util
+import sys
+import tomllib
 from pathlib import Path
 
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 GEN_WASM_ABI = ROOT / "tools" / "gen_wasm_abi.py"
+WASM_ABI_GEN_ROOT = ROOT / "tools"
+
+if str(WASM_ABI_GEN_ROOT) not in sys.path:
+    sys.path.insert(0, str(WASM_ABI_GEN_ROOT))
+
+from wasm_abi_gen import manifest
 
 
 def _load_gen_wasm_abi():
@@ -293,8 +301,8 @@ def test_wasm_abi_reserved_runtime_callable_import_names_are_fail_closed() -> No
 
     broken = copy.deepcopy(data)
     broken["import"].append({"name": "type_call", "type": 2})
-    with pytest.raises(gen.WasmAbiManifestError, match="duplicated in \\[\\[import\\]\\]"):
-        gen.validate_loaded_manifest(broken)
+    with pytest.raises(manifest.WasmAbiManifestError, match="duplicated in \\[\\[import\\]\\]"):
+        manifest.validate_loaded_manifest(broken)
 
     broken = copy.deepcopy(data)
     for entry in broken["import"]:
@@ -303,10 +311,10 @@ def test_wasm_abi_reserved_runtime_callable_import_names_are_fail_closed() -> No
             entry["callable_arity"] = 1
             break
     with pytest.raises(
-        gen.WasmAbiManifestError,
+        manifest.WasmAbiManifestError,
         match="dual-use import must not duplicate callable metadata",
     ):
-        gen.validate_loaded_manifest(broken)
+        manifest.validate_loaded_manifest(broken)
 
     broken = copy.deepcopy(data)
     for entry in broken["import"]:
@@ -314,10 +322,10 @@ def test_wasm_abi_reserved_runtime_callable_import_names_are_fail_closed() -> No
             entry["type"] = 3
             break
     with pytest.raises(
-        gen.WasmAbiManifestError,
+        manifest.WasmAbiManifestError,
         match="reserved runtime callable 'molt_object_new_bound'",
     ):
-        gen.validate_loaded_manifest(broken)
+        manifest.validate_loaded_manifest(broken)
 
     broken = copy.deepcopy(data)
     broken["import"].append(
@@ -329,10 +337,10 @@ def test_wasm_abi_reserved_runtime_callable_import_names_are_fail_closed() -> No
         }
     )
     with pytest.raises(
-        gen.WasmAbiManifestError,
+        manifest.WasmAbiManifestError,
         match="reserved runtime callable 'molt_type_call'",
     ):
-        gen.validate_loaded_manifest(broken)
+        manifest.validate_loaded_manifest(broken)
 
 
 def test_wasm_abi_manifest_classifies_raw_intrinsics_fail_closed() -> None:
@@ -354,13 +362,13 @@ def test_wasm_abi_manifest_classifies_raw_intrinsics_fail_closed() -> None:
         "molt_json_parse_scalar_obj"
     )
 
-    broken = gen.tomllib.loads(gen.MANIFEST.read_text(encoding="utf-8"))
+    broken = tomllib.loads(gen.MANIFEST.read_text(encoding="utf-8"))
     broken["non_runtime_callable_intrinsic"] = []
     with pytest.raises(
-        gen.WasmAbiManifestError,
+        manifest.WasmAbiManifestError,
         match="molt_json_parse_scalar.*non_runtime_callable_intrinsic",
     ):
-        gen.validate_loaded_manifest(broken)
+        manifest.validate_loaded_manifest(broken)
 
 
 def test_wasm_abi_runtime_callable_intrinsics_match_rust_exports() -> None:
@@ -441,12 +449,12 @@ def test_wasm_abi_manifest_owns_lir_runtime_calls() -> None:
 
     broken = copy.deepcopy(data)
     broken["lir_runtime_call"][0]["import_name"] = "not_a_real_import"
-    with pytest.raises(gen.WasmAbiManifestError, match="references unknown import"):
-        gen.validate_loaded_manifest(broken)
+    with pytest.raises(manifest.WasmAbiManifestError, match="references unknown import"):
+        manifest.validate_loaded_manifest(broken)
     broken_count = copy.deepcopy(data)
     broken_count["lir_runtime_call"][0]["boxed_operand_count"] = -1
-    with pytest.raises(gen.WasmAbiManifestError, match="boxed_operand_count"):
-        gen.validate_loaded_manifest(broken_count)
+    with pytest.raises(manifest.WasmAbiManifestError, match="boxed_operand_count"):
+        manifest.validate_loaded_manifest(broken_count)
 
     local_facade = (
         ROOT / "runtime/molt-backend-wasm/src/wasm/lir_fast/runtime_calls.rs"
@@ -516,18 +524,18 @@ def test_wasm_abi_manifest_owns_container_runtime_selector() -> None:
     broken_duplicate["container_runtime_selector"].append(
         copy.deepcopy(broken_duplicate["container_runtime_selector"][0])
     )
-    with pytest.raises(gen.WasmAbiManifestError, match="duplicate container_runtime_selector"):
-        gen.validate_loaded_manifest(broken_duplicate)
+    with pytest.raises(manifest.WasmAbiManifestError, match="duplicate container_runtime_selector"):
+        manifest.validate_loaded_manifest(broken_duplicate)
 
     broken_import = copy.deepcopy(data)
     broken_import["container_runtime_selector"][0]["import_name"] = "not_a_real_import"
-    with pytest.raises(gen.WasmAbiManifestError, match="references unknown import"):
-        gen.validate_loaded_manifest(broken_import)
+    with pytest.raises(manifest.WasmAbiManifestError, match="references unknown import"):
+        manifest.validate_loaded_manifest(broken_import)
 
     broken_lir = copy.deepcopy(data)
     broken_lir["container_runtime_selector"][0]["lir_variant"] = "DictGetitem"
-    with pytest.raises(gen.WasmAbiManifestError, match="does not match lir_variant"):
-        gen.validate_loaded_manifest(broken_lir)
+    with pytest.raises(manifest.WasmAbiManifestError, match="does not match lir_variant"):
+        manifest.validate_loaded_manifest(broken_lir)
 
 
 def test_wasm_abi_manifest_owns_object_new_bound_selector() -> None:
@@ -565,27 +573,27 @@ def test_wasm_abi_manifest_owns_object_new_bound_selector() -> None:
     broken_missing["object_new_bound_selector"] = broken_missing[
         "object_new_bound_selector"
     ][:1]
-    with pytest.raises(gen.WasmAbiManifestError, match="must declare exactly"):
-        gen.validate_loaded_manifest(broken_missing)
+    with pytest.raises(manifest.WasmAbiManifestError, match="must declare exactly"):
+        manifest.validate_loaded_manifest(broken_missing)
 
     broken_duplicate = copy.deepcopy(data)
     broken_duplicate["object_new_bound_selector"].append(
         copy.deepcopy(broken_duplicate["object_new_bound_selector"][0])
     )
     with pytest.raises(
-        gen.WasmAbiManifestError, match="duplicate object_new_bound_selector"
+        manifest.WasmAbiManifestError, match="duplicate object_new_bound_selector"
     ):
-        gen.validate_loaded_manifest(broken_duplicate)
+        manifest.validate_loaded_manifest(broken_duplicate)
 
     broken_import = copy.deepcopy(data)
     broken_import["object_new_bound_selector"][0]["import_name"] = "not_a_real_import"
-    with pytest.raises(gen.WasmAbiManifestError, match="references unknown import"):
-        gen.validate_loaded_manifest(broken_import)
+    with pytest.raises(manifest.WasmAbiManifestError, match="references unknown import"):
+        manifest.validate_loaded_manifest(broken_import)
 
     broken_lir = copy.deepcopy(data)
     broken_lir["object_new_bound_selector"][0]["lir_variant"] = "ObjectNewBoundSized"
-    with pytest.raises(gen.WasmAbiManifestError, match="does not match lir_variant"):
-        gen.validate_loaded_manifest(broken_lir)
+    with pytest.raises(manifest.WasmAbiManifestError, match="does not match lir_variant"):
+        manifest.validate_loaded_manifest(broken_lir)
 
 
 def test_wasm_abi_manifest_owns_method_ic_selector() -> None:
@@ -626,25 +634,25 @@ def test_wasm_abi_manifest_owns_method_ic_selector() -> None:
 
     broken_missing = copy.deepcopy(data)
     broken_missing["method_ic_selector"] = broken_missing["method_ic_selector"][:-1]
-    with pytest.raises(gen.WasmAbiManifestError, match="must declare exactly"):
-        gen.validate_loaded_manifest(broken_missing)
+    with pytest.raises(manifest.WasmAbiManifestError, match="must declare exactly"):
+        manifest.validate_loaded_manifest(broken_missing)
 
     broken_duplicate = copy.deepcopy(data)
     broken_duplicate["method_ic_selector"].append(
         copy.deepcopy(broken_duplicate["method_ic_selector"][0])
     )
-    with pytest.raises(gen.WasmAbiManifestError, match="duplicate method_ic_selector"):
-        gen.validate_loaded_manifest(broken_duplicate)
+    with pytest.raises(manifest.WasmAbiManifestError, match="duplicate method_ic_selector"):
+        manifest.validate_loaded_manifest(broken_duplicate)
 
     broken_import = copy.deepcopy(data)
     broken_import["method_ic_selector"][0]["import_name"] = "not_a_real_import"
-    with pytest.raises(gen.WasmAbiManifestError, match="references unknown import"):
-        gen.validate_loaded_manifest(broken_import)
+    with pytest.raises(manifest.WasmAbiManifestError, match="references unknown import"):
+        manifest.validate_loaded_manifest(broken_import)
 
     broken_count = copy.deepcopy(data)
     broken_count["method_ic_selector"][0]["extra_arg_count"] = 5
-    with pytest.raises(gen.WasmAbiManifestError, match="invalid extra_arg_count"):
-        gen.validate_loaded_manifest(broken_count)
+    with pytest.raises(manifest.WasmAbiManifestError, match="invalid extra_arg_count"):
+        manifest.validate_loaded_manifest(broken_count)
 
 
 def test_wasm_abi_manifest_owns_numeric_runtime_selector() -> None:
@@ -707,33 +715,33 @@ def test_wasm_abi_manifest_owns_numeric_runtime_selector() -> None:
     broken_duplicate["numeric_runtime_selector"].append(
         copy.deepcopy(broken_duplicate["numeric_runtime_selector"][0])
     )
-    with pytest.raises(gen.WasmAbiManifestError, match="duplicate numeric_runtime_selector"):
-        gen.validate_loaded_manifest(broken_duplicate)
+    with pytest.raises(manifest.WasmAbiManifestError, match="duplicate numeric_runtime_selector"):
+        manifest.validate_loaded_manifest(broken_duplicate)
 
     broken_import = copy.deepcopy(data)
     broken_import["numeric_runtime_selector"][0]["import_name"] = "not_a_real_import"
-    with pytest.raises(gen.WasmAbiManifestError, match="references unknown import"):
-        gen.validate_loaded_manifest(broken_import)
+    with pytest.raises(manifest.WasmAbiManifestError, match="references unknown import"):
+        manifest.validate_loaded_manifest(broken_import)
 
     broken_lir = copy.deepcopy(data)
     broken_lir["numeric_runtime_selector"][0]["lir_variant"] = "Sub"
-    with pytest.raises(gen.WasmAbiManifestError, match="does not match lir_variant"):
-        gen.validate_loaded_manifest(broken_lir)
+    with pytest.raises(manifest.WasmAbiManifestError, match="does not match lir_variant"):
+        manifest.validate_loaded_manifest(broken_lir)
 
     broken_deps = copy.deepcopy(data)
     broken_deps["numeric_runtime_selector"][0]["deps"] = ["str_concat"]
-    with pytest.raises(gen.WasmAbiManifestError, match="deps must include"):
-        gen.validate_loaded_manifest(broken_deps)
+    with pytest.raises(manifest.WasmAbiManifestError, match="deps must include"):
+        manifest.validate_loaded_manifest(broken_deps)
 
     broken_count = copy.deepcopy(data)
     broken_count["numeric_runtime_selector"][0]["lir_operand_count"] = -1
-    with pytest.raises(gen.WasmAbiManifestError, match="invalid lir_operand_count"):
-        gen.validate_loaded_manifest(broken_count)
+    with pytest.raises(manifest.WasmAbiManifestError, match="invalid lir_operand_count"):
+        manifest.validate_loaded_manifest(broken_count)
 
     broken_parallel_dep = copy.deepcopy(data)
     broken_parallel_dep["op_import_dep"].append({"kind": "add", "deps": ["add"]})
-    with pytest.raises(gen.WasmAbiManifestError, match="owned by numeric_runtime_selector"):
-        gen.validate_loaded_manifest(broken_parallel_dep)
+    with pytest.raises(manifest.WasmAbiManifestError, match="owned by numeric_runtime_selector"):
+        manifest.validate_loaded_manifest(broken_parallel_dep)
 
 
 def test_wasm_abi_manifest_owns_python_runtime_import_signatures() -> None:
@@ -819,18 +827,18 @@ def test_wasm_abi_manifest_owns_op_import_deps() -> None:
         {"kind": "module_cache_del", "deps": ["module_cache_del"]}
     )
     with pytest.raises(
-        gen.WasmAbiManifestError,
+        manifest.WasmAbiManifestError,
         match="duplicates generated op_loop_runtime_call demand",
     ):
-        gen.validate_loaded_manifest(broken)
+        manifest.validate_loaded_manifest(broken)
 
     broken_bulk = copy.deepcopy(data)
     broken_bulk["op_import_dep"].append({"kind": "memory_copy", "deps": []})
     with pytest.raises(
-        gen.WasmAbiManifestError,
+        manifest.WasmAbiManifestError,
         match="duplicates generated wasm_bulk_memory_op demand",
     ):
-        gen.validate_loaded_manifest(broken_bulk)
+        manifest.validate_loaded_manifest(broken_bulk)
 
 
 def test_wasm_abi_manifest_owns_bulk_memory_ops() -> None:
@@ -877,18 +885,18 @@ def test_wasm_abi_manifest_owns_bulk_memory_ops() -> None:
     broken_duplicate["wasm_bulk_memory_op"].append(
         copy.deepcopy(broken_duplicate["wasm_bulk_memory_op"][0])
     )
-    with pytest.raises(gen.WasmAbiManifestError, match="duplicate wasm_bulk_memory_op"):
-        gen.validate_loaded_manifest(broken_duplicate)
+    with pytest.raises(manifest.WasmAbiManifestError, match="duplicate wasm_bulk_memory_op"):
+        manifest.validate_loaded_manifest(broken_duplicate)
 
     broken_instruction = copy.deepcopy(data)
     broken_instruction["wasm_bulk_memory_op"][0]["instruction"] = "memory_grow"
-    with pytest.raises(gen.WasmAbiManifestError, match="invalid instruction"):
-        gen.validate_loaded_manifest(broken_instruction)
+    with pytest.raises(manifest.WasmAbiManifestError, match="invalid instruction"):
+        manifest.validate_loaded_manifest(broken_instruction)
 
     broken_arg_count = copy.deepcopy(data)
     broken_arg_count["wasm_bulk_memory_op"][0]["arg_count"] = 2
-    with pytest.raises(gen.WasmAbiManifestError, match="arg_count = 3"):
-        gen.validate_loaded_manifest(broken_arg_count)
+    with pytest.raises(manifest.WasmAbiManifestError, match="arg_count = 3"):
+        manifest.validate_loaded_manifest(broken_arg_count)
 
 
 def test_wasm_abi_manifest_owns_const_op_policy() -> None:
@@ -1004,8 +1012,8 @@ def test_wasm_abi_manifest_owns_split_runtime_table_prefix() -> None:
         if entry.get("name") == "contextlib_async_exitstack_enter_context_poll":
             entry["poll_table_slot"] = 34
             break
-    with pytest.raises(gen.WasmAbiManifestError, match="poll_table_slot values"):
-        gen.validate_loaded_manifest(broken)
+    with pytest.raises(manifest.WasmAbiManifestError, match="poll_table_slot values"):
+        manifest.validate_loaded_manifest(broken)
 
     reserved = data["reserved_runtime_callable"]
     assert reserved[0] == {
@@ -1059,8 +1067,8 @@ def test_wasm_abi_manifest_owns_host_import_policy() -> None:
         for entry in broken["link_allowed_import"]
         if entry.get("name") != "molt_call_indirect7"
     ]
-    with pytest.raises(gen.WasmAbiManifestError, match="call_indirect import"):
-        gen.validate_loaded_manifest(broken)
+    with pytest.raises(manifest.WasmAbiManifestError, match="call_indirect import"):
+        manifest.validate_loaded_manifest(broken)
 
     strip_rules = {
         (entry["module"], entry["name"]): entry
