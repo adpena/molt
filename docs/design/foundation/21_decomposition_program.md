@@ -112,6 +112,11 @@ cache). The runtime wants the *completion* of crate splits it half-did.
   into `runtime_imports/{abi_facts,attributes,declarations,tests}.rs`. Keep new
   LLVM ABI facts in those modules rather than rebuilding a flat
   `runtime_imports.rs` lane.
+- **LLVM preserved-op routing**: `llvm_backend/lowering/preserved_ops.rs` is now
+  only the dispatcher. Handler-owned authority lives in
+  `preserved_ops/{direct_ops,callable_ops,container_ops,vector_reductions,op_family}.rs`;
+  add new preserved SimpleIR coverage beside the handler slice/table that lowers
+  it, not as a root-dispatch string arm.
 - **Baseline build numbers**: 08 will produce measured cold/incremental timings. This doc leaves
   **keyed placeholders `{DX-BASELINE:<key>}`** for per-phase build-win estimates; fill them once
   08's measurements exist. Do not invent numbers.

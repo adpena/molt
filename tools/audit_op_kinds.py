@@ -12,8 +12,8 @@ copy of the table:
   2. the TIR SSA mapper ``kind_to_opcode`` (string -> ``OpCode``; ``ssa.rs``) —
      any kind it does not recognize is silently lifted to ``OpCode::Copy`` with
      the spelling stashed in ``_original_kind`` (the ``_ => OpCode::Copy`` arm),
-  3. the LLVM ``lower_preserved_simpleir_op`` dedicated arms + its ABI-exact
-     ``molt_<kind>`` runtime fallback (``llvm_backend/lowering.rs``),
+  3. the LLVM ``preserved_ops`` handler-owned ``HANDLED_KINDS`` slices,
+     vector-reduction table, and ABI-exact ``molt_<kind>`` runtime fallback,
   4. the RC/alias ``CopyLowering`` classifier ``classify_copy_kind`` /
      ``copy_kind_mints_fresh_owned_ref`` / ``copy_kind_mints_owned_alias_ref`` /
      ``copy_kind_is_explicit_no_heap_move``
@@ -388,26 +388,47 @@ def extract_matches_macro(path: Path, fn: str) -> list[str]:
 
 
 def extract_llvm_preserved_op_kinds() -> set[str]:
-    """LLVM SimpleIR-preserved-op coverage after preserved_ops.rs decomposition.
+    """LLVM dedicated preserved-op coverage from handler-owned slices.
 
-    The root dispatcher owns direct guards and delegates to role-specific child
-    modules. Treat those child match arms as the same LLVM lowering authority;
-    otherwise the audit regresses to the old monolithic-file shape and reports
-    false coverage gaps after structural extraction.
+    `preserved_ops.rs` is only a dispatcher. The source of truth for dedicated
+    LLVM coverage is each handler's local `HANDLED_KINDS` const, while
+    vectorized reductions remain in their arity-bearing table and are reported
+    separately by `extract_vec_reduction_ops`.
     """
-    kinds = set(
-        extract_match_arms(
-            LLVM_PRESERVED_OPS_RS, "lower_preserved_simpleir_op", "match kind {"
-        )
-    )
-    kinds.update(re.findall(r'kind\s*==\s*"([^"]+)"', LLVM_PRESERVED_OPS_RS.read_text(encoding="utf-8")))
-    delegated = [
-        (LLVM_PRESERVED_OPS_DIR / "callable_ops.rs", "lower_preserved_callable_op"),
-        (LLVM_PRESERVED_OPS_DIR / "container_ops.rs", "lower_preserved_container_op"),
-    ]
-    for path, fn in delegated:
-        kinds.update(extract_match_arms(path, fn, "match kind {"))
+    kinds: set[str] = set()
+    for path, _, const_name in _llvm_preserved_handler_slices():
+        kinds.update(_extract_required_rust_str_slice(path, const_name))
     return kinds
+
+
+def _llvm_preserved_handler_slices() -> list[tuple[Path, str, str]]:
+    return [
+        (
+            LLVM_PRESERVED_OPS_DIR / "direct_ops.rs",
+            "lower_preserved_direct_op",
+            "HANDLED_KINDS",
+        ),
+        (
+            LLVM_PRESERVED_OPS_DIR / "callable_ops.rs",
+            "lower_preserved_callable_op",
+            "HANDLED_KINDS",
+        ),
+        (
+            LLVM_PRESERVED_OPS_DIR / "container_ops.rs",
+            "lower_preserved_container_op",
+            "HANDLED_KINDS",
+        ),
+    ]
+
+
+def _extract_required_rust_str_slice(path: Path, const_name: str) -> set[str]:
+    consts = extract_rust_str_slice_consts(path, names={const_name})
+    try:
+        return consts[const_name]
+    except KeyError as exc:
+        raise RustMatchParseError(
+            f"{path.relative_to(ROOT).as_posix()} missing {const_name}"
+        ) from exc
 
 
 def extract_prefix_rules(path: Path, fn: str) -> list[str]:
@@ -1045,6 +1066,26 @@ def extract_native_handler_routing_drifts() -> list[str]:
     return drifts
 
 
+def extract_llvm_preserved_handler_routing_drifts() -> list[str]:
+    """Compare each LLVM preserved-op handler's match arms to its routed slice.
+
+    `preserved_ops::op_family` routes from `HANDLED_KINDS`; the adjacent handler
+    `match kind` arms must be exact peers. This is the LLVM analogue of the
+    native D9 check and prevents a future arm-only or slice-only edit from
+    silently splitting routing from lowering.
+    """
+    drifts: list[str] = []
+    for path, fn_name, const_name in _llvm_preserved_handler_slices():
+        slice_kinds = _extract_required_rust_str_slice(path, const_name)
+        arm_kinds = set(extract_match_arms(path, fn_name, "match kind {"))
+        label = f"{path.relative_to(ROOT).as_posix()}:{fn_name}"
+        for kind in sorted(arm_kinds - slice_kinds):
+            drifts.append(f"{label}:{kind}:arm-not-in-{const_name}")
+        for kind in sorted(slice_kinds - arm_kinds):
+            drifts.append(f"{label}:{kind}:{const_name}-not-in-arm")
+    return drifts
+
+
 def extract_native_simpleir_arm_kinds() -> set[str]:
     """Native SimpleIR coverage from extracted op-family authorities (ADVISORY).
 
@@ -1245,6 +1286,7 @@ class AuditResult:
     runtime_symbols: set[str]
     structural_kinds: set[str]
     llvm_void_runtime_abi_mismatch: list[str]
+    llvm_preserved_handler_routing_drift: list[str]
     native_handler_routing_drift: list[str]
 
     def dangerous(self) -> dict[str, list[str]]:
@@ -1298,6 +1340,9 @@ class AuditResult:
             # arity, or non-boxed parameter must fail the audit before emission
             # reaches the stale ABI row.
             "llvm_void_runtime_abi_mismatch": list(self.llvm_void_runtime_abi_mismatch),
+            "llvm_preserved_handler_routing_drift": list(
+                self.llvm_preserved_handler_routing_drift
+            ),
             # D8 — native codegen gap (the `copy`-instance precondition, fixed
             # 2026-06-24). A kind the frontend EMITS that REACHES native codegen
             # as SimpleIR, but that NO native routing slice claims
@@ -1430,6 +1475,9 @@ def run_audit() -> AuditResult:
     llvm_runtime_fallback |= classified_runtime_fallback
     native_arms = extract_native_simpleir_arm_kinds()
     native_routing = extract_native_routing_slice_kinds()
+    llvm_preserved_handler_routing_drift = (
+        extract_llvm_preserved_handler_routing_drifts()
+    )
     native_handler_routing_drift = extract_native_handler_routing_drifts()
     wasm_arms = extract_simpleir_arm_kinds(WASM_RS)
     structural = structural_kinds_from_registry(registry)
@@ -1491,6 +1539,7 @@ def run_audit() -> AuditResult:
         runtime_symbols=runtime_syms,
         structural_kinds=structural,
         llvm_void_runtime_abi_mismatch=void_runtime_mismatches,
+        llvm_preserved_handler_routing_drift=llvm_preserved_handler_routing_drift,
         native_handler_routing_drift=native_handler_routing_drift,
     )
 
@@ -1605,6 +1654,10 @@ def self_validate(res: AuditResult) -> list[str]:
     check(
         res.dangerous()["native_codegen_gap"] == [],
         "native_codegen_gap must be empty on a healthy tree",
+    )
+    check(
+        res.dangerous()["llvm_preserved_handler_routing_drift"] == [],
+        "LLVM preserved-op handler match arms and HANDLED_KINDS slices must agree",
     )
     check(
         res.dangerous()["native_handler_routing_drift"] == [],

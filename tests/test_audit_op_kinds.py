@@ -203,3 +203,32 @@ def test_d9_routes_bitwise_and_matrix_to_dedicated_families() -> None:
     )
     assert handlers["MatrixOps"] == ("matrix_ops", "handle_matrix_op")
     assert AUDIT.extract_native_handler_routing_drifts() == []
+
+
+def test_llvm_preserved_coverage_comes_from_handler_slices() -> None:
+    """LLVM preserved-op coverage must follow handler-owned slices, not the root
+    dispatcher text. Direct, callable, and container handlers each own their
+    route set beside their lowering match."""
+    res = AUDIT.run_audit()
+
+    assert "call_async" in res.llvm_arms
+    assert "floordiv" in res.llvm_arms
+    assert "func_new" in res.llvm_arms
+    assert "dict_new" in res.llvm_arms
+    assert AUDIT.extract_llvm_preserved_handler_routing_drifts() == []
+    assert res.dangerous()["llvm_preserved_handler_routing_drift"] == []
+
+
+def test_llvm_preserved_handler_drift_is_dangerous() -> None:
+    res = AUDIT.run_audit()
+    broken = replace(
+        res,
+        llvm_preserved_handler_routing_drift=[
+            "runtime/molt-backend-native/src/llvm_backend/lowering/preserved_ops/direct_ops.rs:"
+            "lower_preserved_direct_op:floordiv:arm-not-in-HANDLED_KINDS"
+        ],
+    )
+    assert broken.dangerous()["llvm_preserved_handler_routing_drift"] == [
+        "runtime/molt-backend-native/src/llvm_backend/lowering/preserved_ops/direct_ops.rs:"
+        "lower_preserved_direct_op:floordiv:arm-not-in-HANDLED_KINDS"
+    ]
