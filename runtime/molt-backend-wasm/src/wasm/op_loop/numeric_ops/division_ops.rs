@@ -7,6 +7,7 @@ use super::common::{
 use crate::OpIR;
 use crate::representation_plan::ScalarRepresentationPlan;
 use crate::wasm::{WasmFrameLocals, WasmFrameSyntheticLocal};
+use crate::wasm_abi_generated::{WasmNumericOpLoopKind, WasmNumericRuntimeSelection};
 use crate::wasm_import_tracking::TrackedImportIds;
 use crate::wasm_plan::wasm_scalar_integer_fast_path_for_op;
 use crate::wasm_values::{
@@ -16,40 +17,22 @@ use crate::wasm_values::{
 use std::collections::BTreeMap;
 use wasm_encoder::{BlockType, Function, Instruction, ValType};
 
-#[derive(Clone, Copy)]
-enum DivisionNumericOp {
-    TrueDiv,
-    FloorDiv,
-    Mod,
-}
-
-impl DivisionNumericOp {
-    fn from_kind(kind: &str) -> Option<(Self, &'static str)> {
-        match kind {
-            "div" => Some((Self::TrueDiv, "div")),
-            "inplace_div" => Some((Self::TrueDiv, "inplace_div")),
-            "floordiv" => Some((Self::FloorDiv, "floordiv")),
-            "inplace_floordiv" => Some((Self::FloorDiv, "inplace_floordiv")),
-            "mod" => Some((Self::Mod, "mod")),
-            "inplace_mod" => Some((Self::Mod, "inplace_mod")),
-            _ => None,
-        }
-    }
-}
-
 #[allow(unused_variables)]
 pub(super) fn emit_division_numeric_op(
     func: &mut Function,
     op: &OpIR,
+    selection: WasmNumericRuntimeSelection,
     import_ids: &TrackedImportIds,
     locals: &WasmFrameLocals,
     const_cache: &ConstantCache,
     scalar_plan: &ScalarRepresentationPlan,
     reloc_enabled: bool,
     known_raw_ints: &BTreeMap<u32, i64>,
-) -> bool {
-    if let Some((division_op, import_name)) = DivisionNumericOp::from_kind(op.kind.as_str()) {
-        emit_division_binary_op(
+) {
+    match selection.op_loop_kind {
+        WasmNumericOpLoopKind::TrueDiv
+        | WasmNumericOpLoopKind::FloorDiv
+        | WasmNumericOpLoopKind::Mod => emit_division_binary_op(
             func,
             op,
             import_ids,
@@ -58,41 +41,37 @@ pub(super) fn emit_division_numeric_op(
             scalar_plan,
             reloc_enabled,
             known_raw_ints,
-            division_op,
-            import_name,
-        );
-        return true;
+            selection.op_loop_kind,
+            selection.import_name,
+        ),
+        WasmNumericOpLoopKind::Matmul | WasmNumericOpLoopKind::Pow => emit_boxed_binary_result(
+            func,
+            op,
+            import_ids,
+            locals,
+            selection.import_name,
+            reloc_enabled,
+        ),
+        WasmNumericOpLoopKind::PowMod | WasmNumericOpLoopKind::Round => {
+            emit_boxed_ternary_result(
+                func,
+                op,
+                import_ids,
+                locals,
+                selection.import_name,
+                reloc_enabled,
+            );
+        }
+        WasmNumericOpLoopKind::Trunc => emit_boxed_unary_result(
+            func,
+            op,
+            import_ids,
+            locals,
+            selection.import_name,
+            reloc_enabled,
+        ),
+        _ => unreachable!("non-division numeric selector routed to division emitter"),
     }
-
-    match op.kind.as_str() {
-        "matmul" | "inplace_matmul" => {
-            let import_name = if op.kind == "inplace_matmul" {
-                "inplace_matmul"
-            } else {
-                "matmul"
-            };
-            emit_boxed_binary_result(func, op, import_ids, locals, import_name, reloc_enabled);
-        }
-        "pow" | "inplace_pow" => {
-            let import_name = if op.kind == "inplace_pow" {
-                "inplace_pow"
-            } else {
-                "pow"
-            };
-            emit_boxed_binary_result(func, op, import_ids, locals, import_name, reloc_enabled);
-        }
-        "pow_mod" => {
-            emit_boxed_ternary_result(func, op, import_ids, locals, "pow_mod", reloc_enabled);
-        }
-        "round" => {
-            emit_boxed_ternary_result(func, op, import_ids, locals, "round", reloc_enabled);
-        }
-        "trunc" => {
-            emit_boxed_unary_result(func, op, import_ids, locals, "trunc", reloc_enabled);
-        }
-        _ => return false,
-    }
-    true
 }
 
 fn emit_division_binary_op(
@@ -104,7 +83,7 @@ fn emit_division_binary_op(
     scalar_plan: &ScalarRepresentationPlan,
     reloc_enabled: bool,
     known_raw_ints: &BTreeMap<u32, i64>,
-    division_op: DivisionNumericOp,
+    division_op: WasmNumericOpLoopKind,
     import_name: &str,
 ) {
     let operands = binary_operands(op, locals);
@@ -147,7 +126,7 @@ fn emit_division_binary_op(
                 );
             },
         );
-    } else if matches!(division_op, DivisionNumericOp::TrueDiv) {
+    } else if matches!(division_op, WasmNumericOpLoopKind::TrueDiv) {
         emit_plain_f64_binary_result_or_boxed(
             func,
             operands,
@@ -175,15 +154,15 @@ fn emit_nonzero_rhs_raw_division_or_boxed(
     reloc_enabled: bool,
     known_raw_ints: &BTreeMap<u32, i64>,
     import_name: &str,
-    division_op: DivisionNumericOp,
+    division_op: WasmNumericOpLoopKind,
     temps: super::common::IntBinaryTemps,
 ) {
     func.instruction(&Instruction::I64Const(0));
     func.instruction(&Instruction::I64Ne);
     func.instruction(&Instruction::If(BlockType::Result(ValType::I64)));
     match division_op {
-        DivisionNumericOp::TrueDiv => emit_raw_true_div(func, temps, f64_scratch_local),
-        DivisionNumericOp::FloorDiv => emit_raw_floor_div(
+        WasmNumericOpLoopKind::TrueDiv => emit_raw_true_div(func, temps, f64_scratch_local),
+        WasmNumericOpLoopKind::FloorDiv => emit_raw_floor_div(
             func,
             operands,
             import_ids,
@@ -193,7 +172,7 @@ fn emit_nonzero_rhs_raw_division_or_boxed(
             import_name,
             temps,
         ),
-        DivisionNumericOp::Mod => emit_raw_mod(
+        WasmNumericOpLoopKind::Mod => emit_raw_mod(
             func,
             operands,
             import_ids,
@@ -203,6 +182,7 @@ fn emit_nonzero_rhs_raw_division_or_boxed(
             import_name,
             temps,
         ),
+        _ => unreachable!("non-division numeric selector routed to raw division"),
     }
     func.instruction(&Instruction::Else);
     emit_boxed_binary_call(func, operands, import_ids, import_name, reloc_enabled);

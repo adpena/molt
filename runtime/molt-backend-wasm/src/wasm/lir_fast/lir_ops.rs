@@ -8,16 +8,19 @@ use super::lir_runtime_ops::{
     emit_lir_store_index, emit_lir_unsupported_marker, original_kind,
 };
 use super::lir_scalar::{
-    ArithOp, BitwiseOp, CmpOp, ShiftOp, UnaryOp, emit_get_boxed_for_repr, emit_lir_binary_arith,
-    emit_lir_bit_not, emit_lir_bitwise, emit_lir_bool, emit_lir_bool_select, emit_lir_checked_add,
-    emit_lir_checked_mul, emit_lir_comparison, emit_lir_identity_comparison, emit_lir_not,
-    emit_lir_shift, emit_lir_truthy_cond_builtin, emit_lir_unary_arith, emit_lir_unary_pos,
+    emit_get_boxed_for_repr, emit_lir_binary_arith, emit_lir_bit_not, emit_lir_bitwise,
+    emit_lir_bool, emit_lir_bool_select, emit_lir_checked_add, emit_lir_checked_mul,
+    emit_lir_comparison, emit_lir_identity_comparison, emit_lir_not, emit_lir_shift,
+    emit_lir_truthy_cond_builtin, emit_lir_unary_arith, emit_lir_unary_pos,
 };
-use super::runtime_calls::lir_fixed_runtime_call;
+use super::runtime_calls::{lir_fixed_runtime_call, numeric_lir_runtime_call};
 use crate::wasm::body::WasmLirFallbackReason;
 use crate::wasm::const_materialization::{WasmConstMaterializationScratch, WasmConstOpPolicy};
 use crate::wasm::lir_fast::LirRuntimeCall;
-use crate::wasm_abi_generated::{WasmConstLirFastPolicy, WasmConstScalarValue};
+use crate::wasm_abi_generated::{
+    WasmConstLirFastPolicy, WasmConstScalarValue, WasmNumericRuntimeSelection,
+    wasm_numeric_runtime_selection,
+};
 use molt_codegen_abi::box_none_bits;
 use molt_tir::tir::lir::{LirBlock, LirOp, LirRepr};
 use molt_tir::tir::ops::{AttrValue, OpCode};
@@ -151,22 +154,31 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
                 );
             }
         },
-        OpCode::Add | OpCode::InplaceAdd => emit_lir_binary_arith(ctx, op, ArithOp::Add),
+        OpCode::Add | OpCode::InplaceAdd => {
+            emit_lir_binary_arith(ctx, op, numeric_selection_for_opcode(tir_op.opcode))
+        }
         OpCode::CheckedAdd => emit_lir_checked_add(ctx, op),
         OpCode::CheckedMul => emit_lir_checked_mul(ctx, op),
-        OpCode::Sub | OpCode::InplaceSub => emit_lir_binary_arith(ctx, op, ArithOp::Sub),
-        OpCode::Mul | OpCode::InplaceMul => emit_lir_binary_arith(ctx, op, ArithOp::Mul),
-        OpCode::Div => emit_lir_binary_arith(ctx, op, ArithOp::Div),
-        OpCode::FloorDiv => emit_lir_binary_arith(ctx, op, ArithOp::FloorDiv),
-        OpCode::Mod => emit_lir_binary_arith(ctx, op, ArithOp::Mod),
-        OpCode::Pow => emit_lir_boxed_operands_runtime_call(ctx, op, LirRuntimeCall::Pow),
+        OpCode::Sub | OpCode::InplaceSub => {
+            emit_lir_binary_arith(ctx, op, numeric_selection_for_opcode(tir_op.opcode))
+        }
+        OpCode::Mul | OpCode::InplaceMul => {
+            emit_lir_binary_arith(ctx, op, numeric_selection_for_opcode(tir_op.opcode))
+        }
+        OpCode::Div | OpCode::FloorDiv | OpCode::Mod => {
+            emit_lir_binary_arith(ctx, op, numeric_selection_for_opcode(tir_op.opcode))
+        }
+        OpCode::Pow => {
+            let selection = numeric_selection_for_opcode(tir_op.opcode);
+            emit_lir_boxed_operands_runtime_call(ctx, op, numeric_lir_runtime_call(selection));
+        }
         OpCode::OrdAt => emit_lir_boxed_operands_runtime_call(ctx, op, LirRuntimeCall::OrdAt),
         OpCode::BuildList => emit_lir_sequence_builder(ctx, op, LirSequenceBuilderFinish::List),
         OpCode::BuildTuple => emit_lir_sequence_builder(ctx, op, LirSequenceBuilderFinish::Tuple),
         OpCode::BuildDict => emit_lir_build_dict(ctx, op),
         OpCode::BuildSet => emit_lir_build_set(ctx, op),
-        OpCode::Neg => emit_lir_unary_arith(ctx, op, UnaryOp::Neg),
-        OpCode::Pos => emit_lir_unary_pos(ctx, op),
+        OpCode::Neg => emit_lir_unary_arith(ctx, op, numeric_selection_for_opcode(tir_op.opcode)),
+        OpCode::Pos => emit_lir_unary_pos(ctx, op, numeric_selection_for_opcode(tir_op.opcode)),
         OpCode::Index => emit_lir_index(ctx, op),
         OpCode::StoreIndex => emit_lir_store_index(ctx, op),
         OpCode::DelIndex => emit_lir_del_index(ctx, op),
@@ -199,20 +211,18 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
         OpCode::DeleteVar | OpCode::BoxVal | OpCode::UnboxVal | OpCode::TypeGuard => {
             emit_lir_identity_copy(ctx, op)
         }
-        OpCode::Eq => emit_lir_comparison(ctx, op, CmpOp::Eq),
-        OpCode::Ne => emit_lir_comparison(ctx, op, CmpOp::Ne),
-        OpCode::Lt => emit_lir_comparison(ctx, op, CmpOp::Lt),
-        OpCode::Le => emit_lir_comparison(ctx, op, CmpOp::Le),
-        OpCode::Gt => emit_lir_comparison(ctx, op, CmpOp::Gt),
-        OpCode::Ge => emit_lir_comparison(ctx, op, CmpOp::Ge),
+        OpCode::Eq | OpCode::Ne | OpCode::Lt | OpCode::Le | OpCode::Gt | OpCode::Ge => {
+            emit_lir_comparison(ctx, op, numeric_selection_for_opcode(tir_op.opcode))
+        }
         OpCode::Is => emit_lir_identity_comparison(ctx, op, false),
         OpCode::IsNot => emit_lir_identity_comparison(ctx, op, true),
-        OpCode::BitAnd => emit_lir_bitwise(ctx, op, BitwiseOp::And),
-        OpCode::BitOr => emit_lir_bitwise(ctx, op, BitwiseOp::Or),
-        OpCode::BitXor => emit_lir_bitwise(ctx, op, BitwiseOp::Xor),
-        OpCode::BitNot => emit_lir_bit_not(ctx, op),
-        OpCode::Shl => emit_lir_shift(ctx, op, ShiftOp::Left),
-        OpCode::Shr => emit_lir_shift(ctx, op, ShiftOp::Right),
+        OpCode::BitAnd | OpCode::BitOr | OpCode::BitXor => {
+            emit_lir_bitwise(ctx, op, numeric_selection_for_opcode(tir_op.opcode))
+        }
+        OpCode::BitNot => emit_lir_bit_not(ctx, op, numeric_selection_for_opcode(tir_op.opcode)),
+        OpCode::Shl | OpCode::Shr => {
+            emit_lir_shift(ctx, op, numeric_selection_for_opcode(tir_op.opcode))
+        }
         OpCode::Not => emit_lir_not(ctx, op),
         OpCode::And | OpCode::Or => {
             if tir_op.operands.len() >= 2 && !op.result_values.is_empty() {
@@ -301,6 +311,12 @@ fn emit_lir_generated_fixed_runtime_call(ctx: &mut LirLowerCtx, op: &LirOp) {
         op.tir_op.operands.len()
     );
     emit_lir_fixed_runtime_call(ctx, op, runtime);
+}
+
+fn numeric_selection_for_opcode(opcode: OpCode) -> WasmNumericRuntimeSelection {
+    let kind = crate::tir::op_kinds_generated::opcode_canonical_kind_table(opcode);
+    wasm_numeric_runtime_selection(kind)
+        .unwrap_or_else(|| panic!("missing generated WASM numeric selector for {kind}"))
 }
 
 fn emit_lir_identity_copy(ctx: &mut LirLowerCtx, op: &LirOp) {

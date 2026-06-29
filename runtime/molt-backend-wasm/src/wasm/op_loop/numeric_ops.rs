@@ -1,6 +1,7 @@
 use crate::OpIR;
 use crate::representation_plan::ScalarRepresentationPlan;
 use crate::wasm::WasmFrameLocals;
+use crate::wasm_abi_generated::{WasmNumericOpLoopKind, wasm_numeric_runtime_selection};
 use crate::wasm_import_tracking::TrackedImportIds;
 use crate::wasm_values::ConstantCache;
 use std::collections::BTreeMap;
@@ -30,65 +31,95 @@ pub(super) fn emit_numeric_op(
     reloc_enabled: bool,
     known_raw_ints: &BTreeMap<u32, i64>,
 ) -> bool {
-    if additive_ops::emit_additive_numeric_op(
-        func,
-        op,
-        import_ids,
-        locals,
-        const_cache,
-        scalar_plan,
-        reloc_enabled,
-        known_raw_ints,
-    ) {
-        return true;
+    let Some(selection) = wasm_numeric_runtime_selection(op.kind.as_str()) else {
+        return false;
+    };
+    match selection.op_loop_kind {
+        WasmNumericOpLoopKind::Add | WasmNumericOpLoopKind::Sub | WasmNumericOpLoopKind::Mul => {
+            additive_ops::emit_additive_numeric_op(
+                func,
+                op,
+                selection,
+                import_ids,
+                locals,
+                const_cache,
+                scalar_plan,
+                reloc_enabled,
+                known_raw_ints,
+            );
+        }
+        WasmNumericOpLoopKind::TrueDiv
+        | WasmNumericOpLoopKind::FloorDiv
+        | WasmNumericOpLoopKind::Mod
+        | WasmNumericOpLoopKind::Matmul
+        | WasmNumericOpLoopKind::Pow
+        | WasmNumericOpLoopKind::PowMod
+        | WasmNumericOpLoopKind::Round
+        | WasmNumericOpLoopKind::Trunc => {
+            division_ops::emit_division_numeric_op(
+                func,
+                op,
+                selection,
+                import_ids,
+                locals,
+                const_cache,
+                scalar_plan,
+                reloc_enabled,
+                known_raw_ints,
+            );
+        }
+        WasmNumericOpLoopKind::BitAnd
+        | WasmNumericOpLoopKind::BitOr
+        | WasmNumericOpLoopKind::BitXor
+        | WasmNumericOpLoopKind::Invert
+        | WasmNumericOpLoopKind::Neg
+        | WasmNumericOpLoopKind::Pos
+        | WasmNumericOpLoopKind::LShift
+        | WasmNumericOpLoopKind::RShift => {
+            bitwise_ops::emit_bitwise_numeric_op(
+                func,
+                op,
+                selection,
+                import_ids,
+                locals,
+                const_cache,
+                scalar_plan,
+                reloc_enabled,
+                known_raw_ints,
+            );
+        }
+        WasmNumericOpLoopKind::Lt
+        | WasmNumericOpLoopKind::Le
+        | WasmNumericOpLoopKind::Gt
+        | WasmNumericOpLoopKind::Ge
+        | WasmNumericOpLoopKind::Eq
+        | WasmNumericOpLoopKind::Ne
+        | WasmNumericOpLoopKind::StringEq => {
+            comparison_ops::emit_comparison_numeric_op(
+                func,
+                op,
+                selection,
+                import_ids,
+                locals,
+                const_cache,
+                scalar_plan,
+                reloc_enabled,
+                known_raw_ints,
+            );
+        }
+        WasmNumericOpLoopKind::VectorReduction => {
+            vector_reduction_ops::emit_vector_reduction_numeric_op(
+                func,
+                op,
+                selection,
+                import_ids,
+                locals,
+                const_cache,
+                scalar_plan,
+                reloc_enabled,
+                known_raw_ints,
+            );
+        }
     }
-    if vector_reduction_ops::emit_vector_reduction_numeric_op(
-        func,
-        op,
-        import_ids,
-        locals,
-        const_cache,
-        scalar_plan,
-        reloc_enabled,
-        known_raw_ints,
-    ) {
-        return true;
-    }
-    if bitwise_ops::emit_bitwise_numeric_op(
-        func,
-        op,
-        import_ids,
-        locals,
-        const_cache,
-        scalar_plan,
-        reloc_enabled,
-        known_raw_ints,
-    ) {
-        return true;
-    }
-    if division_ops::emit_division_numeric_op(
-        func,
-        op,
-        import_ids,
-        locals,
-        const_cache,
-        scalar_plan,
-        reloc_enabled,
-        known_raw_ints,
-    ) {
-        return true;
-    }
-    if comparison_ops::emit_comparison_numeric_op(
-        func,
-        op,
-        import_ids,
-        locals,
-        const_cache,
-        scalar_plan,
-        reloc_enabled,
-        known_raw_ints,
-    ) {
-        return true;
-    }
-    false
+    true
 }

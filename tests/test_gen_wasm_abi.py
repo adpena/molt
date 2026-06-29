@@ -569,6 +569,93 @@ def test_wasm_abi_manifest_owns_method_ic_selector() -> None:
         gen.validate_loaded_manifest(broken_count)
 
 
+def test_wasm_abi_manifest_owns_numeric_runtime_selector() -> None:
+    gen = _load_gen_wasm_abi()
+    data = gen.load_manifest()
+    selectors = {
+        entry["kind"]: (
+            entry["import_name"],
+            entry["op_loop_variant"],
+            entry.get("lir_variant"),
+            entry.get("lir_operand_count"),
+            tuple(entry["deps"]),
+        )
+        for entry in data["numeric_runtime_selector"]
+    }
+    op_deps = {entry["kind"]: entry["deps"] for entry in data["op_import_dep"]}
+
+    assert selectors["add"] == ("add", "Add", "Add", 2, ("add", "str_concat"))
+    assert selectors["inplace_add"] == (
+        "inplace_add",
+        "Add",
+        "InplaceAdd",
+        2,
+        ("inplace_add", "str_concat"),
+    )
+    assert selectors["shl"] == ("lshift", "LShift", "LShift", 2, ("lshift",))
+    assert selectors["bit_not"] == ("invert", "Invert", "Invert", 1, ("invert",))
+    assert selectors["pow_mod"] == ("pow_mod", "PowMod", "PowMod", 3, ("pow_mod",))
+    assert selectors["vec_sum_int"] == (
+        "vec_sum_int",
+        "VectorReduction",
+        None,
+        None,
+        ("vec_sum_int",),
+    )
+    assert op_deps["add"] == ["add", "str_concat"]
+    assert op_deps["inplace_add"] == ["inplace_add", "str_concat"]
+    assert op_deps["shl"] == ["lshift"]
+    assert op_deps["bit_not"] == ["invert"]
+    assert op_deps["vec_sum_int"] == ["vec_sum_int"]
+
+    rendered_rs_modules = gen.render_rs_modules(data)
+    rendered_selector_rs = rendered_rs_modules["numeric_runtime_selector.rs"]
+    rendered_lir_rs = rendered_rs_modules["lir_runtime_calls.rs"]
+    rendered_mod_rs = rendered_rs_modules["mod.rs"]
+    rendered_py = gen.render_py(data)
+    assert "WASM_NUMERIC_RUNTIME_SELECTORS" in rendered_selector_rs
+    assert "WasmNumericOpLoopKind::VectorReduction" in rendered_selector_rs
+    assert "LirRuntimeCall::InplaceAdd" in rendered_selector_rs
+    assert '"shl" => Some(WasmNumericRuntimeSelection' in rendered_selector_rs
+    assert 'call: LirRuntimeCall::PowMod' in rendered_lir_rs
+    assert "mod numeric_runtime_selector;" in rendered_mod_rs
+    assert "WasmNumericOpLoopKind" in rendered_mod_rs
+    assert "WASM_NUMERIC_RUNTIME_SELECTORS" in rendered_py
+    assert '("bit_not", "invert", "Invert", "Invert", 1, ("invert",))' in rendered_py
+
+    broken_duplicate = copy.deepcopy(data)
+    broken_duplicate["numeric_runtime_selector"].append(
+        copy.deepcopy(broken_duplicate["numeric_runtime_selector"][0])
+    )
+    with pytest.raises(gen.WasmAbiManifestError, match="duplicate numeric_runtime_selector"):
+        gen.validate_loaded_manifest(broken_duplicate)
+
+    broken_import = copy.deepcopy(data)
+    broken_import["numeric_runtime_selector"][0]["import_name"] = "not_a_real_import"
+    with pytest.raises(gen.WasmAbiManifestError, match="references unknown import"):
+        gen.validate_loaded_manifest(broken_import)
+
+    broken_lir = copy.deepcopy(data)
+    broken_lir["numeric_runtime_selector"][0]["lir_variant"] = "Sub"
+    with pytest.raises(gen.WasmAbiManifestError, match="does not match lir_variant"):
+        gen.validate_loaded_manifest(broken_lir)
+
+    broken_deps = copy.deepcopy(data)
+    broken_deps["numeric_runtime_selector"][0]["deps"] = ["str_concat"]
+    with pytest.raises(gen.WasmAbiManifestError, match="deps must include"):
+        gen.validate_loaded_manifest(broken_deps)
+
+    broken_count = copy.deepcopy(data)
+    broken_count["numeric_runtime_selector"][0]["lir_operand_count"] = -1
+    with pytest.raises(gen.WasmAbiManifestError, match="invalid lir_operand_count"):
+        gen.validate_loaded_manifest(broken_count)
+
+    broken_parallel_dep = copy.deepcopy(data)
+    broken_parallel_dep["op_import_dep"].append({"kind": "add", "deps": ["add"]})
+    with pytest.raises(gen.WasmAbiManifestError, match="owned by numeric_runtime_selector"):
+        gen.validate_loaded_manifest(broken_parallel_dep)
+
+
 def test_wasm_abi_manifest_owns_python_runtime_import_signatures() -> None:
     gen = _load_gen_wasm_abi()
     data = gen.load_manifest()
