@@ -3,7 +3,7 @@
 // runtime/molt-runtime/src/intrinsics/manifest.pyi
 // DO NOT EDIT BY HAND.
 
-use super::imports::WasmRuntimeImport;
+use super::import_tokens::WasmRuntimeImport;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct RuntimeImportSpec {
