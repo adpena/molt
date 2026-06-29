@@ -164,21 +164,21 @@ The first test proves the pact-facing ABI: a JavaScript `Float32Array` reaches a
 Molt split-runtime export as `bytes`, the export returns `bytes`, and
 `browser_embed.js` decodes the result back into `Float32Array`.
 
-Native callable exports use the same browser delivery path. A WASM app that
-imports a sidecar-declared `direct_symbol` through the `molt.forward_f32_v1` ABI
-gets a `molt_native.<symbol>` import. Split-runtime `manifest.json` records the
-same authority under `abi.browser_embed.native_callables.symbols[<symbol>]`,
-including the ABI token, canonical browser signature, and sidecar export
-provenance. Packaging filters that table to actual `app.wasm` `molt_native`
-imports and fails closed when an imported symbol is absent from the staged native
-artifact plan. Linked WASM packaging stages the reachable external
-`wasm_relocatable_object`/`static_archive` bytes into
+Native callable exports use the same browser delivery path. A WASM app may
+temporarily import a sidecar-declared `direct_symbol` through the
+`molt.forward_f32_v1` ABI as `molt_native.<symbol>`. Linked WASM packaging stages
+the reachable external `wasm_relocatable_object`/`static_archive` bytes into
 `external_static_packages/<plan-digest>/`, passes those staged objects or
 archives into `wasm-ld`, and fingerprints the staged artifact, sidecar manifest,
-and support-file bytes for link reuse. `browser_embed.js` requires packaged
-`molt_native` imports to be present in that manifest table and rejects
-signature/token drift, then satisfies them from `nativeCallables` through the
-typed `(input_ptr, byte_len, output_ptr) -> status` ABI. The JS implementation
+and support-file bytes for link reuse. Static-link artifacts resolved by
+`wasm-ld` become app code and do not appear in
+`abi.browser_embed.native_callables.symbols`; that manifest table is reserved
+for remaining `app.wasm` `molt_native` imports that the browser host must
+satisfy. Packaging filters the table to actual imports and fails closed when an
+imported symbol is absent from the staged native artifact plan. `browser_embed.js`
+requires packaged `molt_native` imports to be present in that manifest table and
+rejects signature/token drift, then satisfies them from `nativeCallables` through
+the typed `(input_ptr, byte_len, output_ptr) -> status` ABI. The JS implementation
 receives `Float32Array` input and output views over WASM linear memory and
 either fills the output view or returns a same-length `Float32Array` for the
 adapter to copy. There is no duplicate boxed `forward_f32_v1` lane. Full

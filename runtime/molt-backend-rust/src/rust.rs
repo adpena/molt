@@ -128,7 +128,7 @@ impl RustBackend {
             Ok(source)
         } else {
             Err(format!(
-                "output contains unimplemented op stubs: {} — use --target luau or native",
+                "output contains unimplemented op stubs: {} -- use --target luau or native",
                 stubs.join(", ")
             ))
         }
@@ -1474,7 +1474,7 @@ mod tests {
     }
 
     #[test]
-    fn compile_const_bigint_parses_from_string_literal() {
+    fn compile_const_bigint_lowers_exact_i64_literal() {
         let mut backend = RustBackend::new();
         let ir = SimpleIR {
             functions: vec![FunctionIR {
@@ -1499,13 +1499,59 @@ mod tests {
             profile: None,
         };
 
-        let source = backend.compile(&ir);
+        let source = backend
+            .compile_checked(&ir)
+            .expect("i64-sized bigint literal should lower exactly");
         assert!(
-            source.contains("MoltValue::Int(\"2305843009213693951\".parse::<i64>().unwrap_or(0))")
+            source.contains("let mut big: MoltValue = MoltValue::Int(2305843009213693951i64);")
         );
+        assert!(!source.contains("MOLT_STUB: const_bigint"));
         assert!(
-            !source.contains("MoltValue::Int(2305843009213693951.parse::<i64>().unwrap_or(0))")
+            !source.contains("MoltValue::Int(\"2305843009213693951\".parse::<i64>().unwrap_or(0))")
         );
+    }
+
+    #[test]
+    fn compile_checked_rejects_unrepresented_literal_values() {
+        let mut backend = RustBackend::new();
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "molt_main".to_string(),
+                params: vec![],
+                ops: vec![
+                    OpIR {
+                        kind: "const_bigint".to_string(),
+                        s_value: Some("9223372036854775808".to_string()),
+                        out: Some("too_big".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "const_bytes".to_string(),
+                        s_value: Some("payload".to_string()),
+                        out: Some("bytes".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "const_ellipsis".to_string(),
+                        out: Some("ellipsis".to_string()),
+                        ..OpIR::default()
+                    },
+                ],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+            }],
+            profile: None,
+        };
+
+        let err = backend
+            .compile_checked(&ir)
+            .expect_err("unsupported literal value representations must fail closed");
+        assert!(err.contains("MOLT_STUB: const_bigint"));
+        assert!(err.contains("bigint literal exceeds Rust backend i64 value representation"));
+        assert!(err.contains("MOLT_STUB: const_bytes"));
+        assert!(err.contains("bytes literals require a Rust backend bytes value representation"));
+        assert!(err.contains("MOLT_STUB: const_ellipsis"));
     }
 
     #[test]

@@ -129,16 +129,18 @@ Optional:
   attribute. `module_attr` callable
   exports are descriptive import metadata until a target owns native loader
   custody; calls to them fail closed instead of falling back to `CALL_BIND` or a
-  fabricated Python function symbol. Split-runtime browser
-  packages project reachable direct-symbol callable exports into
-  `manifest.json` at `abi.browser_embed.native_callables.symbols` with the
-  canonical ABI signature (`molt.value... -> molt.value` for object-call and
-  `bytes.float32 -> bytes.float32` for `forward_f32`), and the browser embed
-  rejects packaged `molt_native` imports absent from that manifest table or
-  whose signature does not match the ABI token. The split-runtime package
-  manifest is tree-shaken from actual `app.wasm` `molt_native` imports; any
-  imported native symbol missing staged artifact-plan custody fails packaging
-  before delivery. Admission also proves direct-symbol custody for static-link
+  fabricated Python function symbol. Split-runtime browser packages project only
+  remaining `app.wasm` `molt_native` imports into `manifest.json` at
+  `abi.browser_embed.native_callables.symbols` with the canonical ABI signature
+  (`molt.value... -> molt.value` for object-call and `bytes.float32 ->
+  bytes.float32` for `forward_f32`). Source-recompiled static-link artifacts
+  passed to `wasm-ld` are link custody, not browser host-callable imports; once
+  their symbols are resolved into `app.wasm`, the browser manifest table is
+  empty for those symbols. The browser embed rejects packaged `molt_native`
+  imports absent from that manifest table or whose signature does not match the
+  ABI token. Any imported native symbol missing staged artifact-plan custody
+  fails packaging before delivery. Admission also proves direct-symbol custody
+  for static-link
   artifacts:
   `wasm_relocatable_object` artifacts must export the declared function symbol,
   and `static_archive` artifacts must list it in
