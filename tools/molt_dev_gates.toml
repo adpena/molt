@@ -51,11 +51,11 @@ name = "backend-llvm"
 description = "LLVM backend Rust: clippy + LLVM-feature lib tests."
 require_fresh_toolchain = true
 globs = [
-  "runtime/molt-backend/src/llvm*/**/*.rs",
-  "runtime/molt-backend/src/**/llvm*.rs",
+  "runtime/molt-backend-native/Cargo.toml",
+  "runtime/molt-backend-native/src/llvm_backend/**/*.rs",
 ]
 gates = [
-  "cargo test --profile release-fast -p molt-backend --features \"native-backend llvm\" --lib",
+  "cargo test --profile release-fast -p molt-backend-native --features llvm --lib",
 ]
 
 # --- TIR midend Rust ------------------------------------------------------
@@ -159,8 +159,11 @@ globs = [
   "tools/op_kinds/**/*.py",
   "runtime/molt-ir/src/tir/op_kinds.toml",
   "runtime/molt-ir/src/tir/op_kinds_generated.rs",
-  "runtime/molt-backend/src/**/op_kind*.rs",
-  "runtime/molt-backend/src/**/ops*.rs",
+  "runtime/molt-backend-native/src/native_backend/function_compiler.rs",
+  "runtime/molt-backend-native/src/native_backend/function_compiler/**/*.rs",
+  "runtime/molt-backend-native/src/llvm_backend/lowering.rs",
+  "runtime/molt-backend-native/src/llvm_backend/lowering/**/*.rs",
+  "runtime/molt-backend-wasm/src/**/*.rs",
 ]
 gates = [
   "python3 tools/gen_op_kinds.py --check",

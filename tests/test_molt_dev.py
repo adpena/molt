@@ -158,6 +158,7 @@ def test_committed_gate_manifest_is_valid(drv):
     # The dev-tooling self-gate must exist (the tool gates its own changes).
     assert "dev-tooling" in names
     assert "backend-native" in names
+    assert "backend-llvm" in names
     assert "tir-midend" in names
     assert "wasm-host" in names
 
@@ -205,6 +206,22 @@ def test_committed_gate_manifest_selects_molt_ir_op_kind_registry(drv):
     gates, matched = cfg.select(["runtime/molt-ir/src/tir/op_kinds.toml"])
     assert [r.name for r in matched] == ["tir-midend", "op-kind-registry"]
     assert "python3 tools/gen_op_kinds.py --check" in gates
+    assert "python3 tools/audit_op_kinds.py --check" in gates
+
+
+def test_committed_gate_manifest_selects_backend_native_llvm(drv):
+    cfg = drv.GateConfig.load(COMMITTED_GATES)
+    gates, matched = cfg.select(
+        [
+            "runtime/molt-backend-native/src/llvm_backend/lowering/preserved_ops/direct_ops.rs"
+        ]
+    )
+
+    assert [r.name for r in matched] == ["backend-llvm", "op-kind-registry"]
+    assert (
+        "cargo test --profile release-fast -p molt-backend-native --features llvm --lib"
+        in gates
+    )
     assert "python3 tools/audit_op_kinds.py --check" in gates
 
 
