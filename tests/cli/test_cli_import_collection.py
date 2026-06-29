@@ -2873,6 +2873,44 @@ def test_external_native_artifact_plan_filters_to_required_modules(
     assert str(artifact_path) in required_errors[0]
 
 
+def test_external_native_artifact_plan_does_not_expand_package_root_to_children(
+    tmp_path: Path,
+) -> None:
+    external_root = tmp_path / "site"
+    _write_external_native_artifact(
+        external_root,
+        package="scipy",
+        relative_module="ndimage._nd_image",
+        artifact_name="_nd_image.molt.wasm",
+        manifest_overrides={
+            "target_triple": "wasm32-wasip1",
+            "platform_tag": "wasm32_wasip1",
+            "runtime_linkage": "static_link",
+            "artifact_kind": "wasm_relocatable_object",
+        },
+    )
+
+    root_plan, root_errors = cli._resolve_external_package_native_artifact_plan(
+        external_module_roots=(external_root,),
+        admitted_packages={"scipy"},
+        required_modules={"scipy"},
+    )
+    child_plan, child_errors = cli._resolve_external_package_native_artifact_plan(
+        external_module_roots=(external_root,),
+        admitted_packages={"scipy"},
+        required_modules={"scipy.ndimage"},
+    )
+
+    assert root_errors == []
+    assert root_plan is not None
+    assert root_plan.artifacts == ()
+    assert child_errors == []
+    assert child_plan is not None
+    assert [artifact.module for artifact in child_plan.artifacts] == [
+        "scipy.ndimage._nd_image"
+    ]
+
+
 def test_external_static_package_admission_can_defer_native_artifact_validation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
