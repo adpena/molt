@@ -2259,6 +2259,23 @@ WASM_CONST_OP_POLICIES: tuple[tuple[str, str, str | None, str, str, bool, bool, 
     ("const_bytes", "none", "bytes_from_bytes", "bytes", "none", True, True, "clear", "materialize"),
 )
 
+WASM_CONTAINER_RUNTIME_SELECTORS: tuple[tuple[str, str, str, str | None], ...] = (
+    ("index", "flat_list_int", "list_int_getitem", "ListIntGetitem"),
+    ("store_index", "flat_list_int", "list_int_setitem", "ListIntSetitem"),
+    ("index", "dict", "dict_getitem", "DictGetitem"),
+    ("index", "tuple", "tuple_getitem", "TupleGetitem"),
+    ("store_index", "dict", "dict_setitem", "DictSetitem"),
+    ("contains", "set", "set_contains", "SetContains"),
+    ("contains", "dict", "dict_contains", "DictContains"),
+    ("contains", "list", "list_contains", "ListContains"),
+    ("contains", "str", "str_contains", "StrContains"),
+    ("len", "list", "len_list", None),
+    ("len", "str", "len_str", None),
+    ("len", "dict", "len_dict", None),
+    ("len", "tuple", "len_tuple", None),
+    ("len", "set", "len_set", None),
+)
+
 WASM_REQUIRED_RUNTIME_IMPORT_PREFIXES: tuple[str, ...] = (
     "os_",
     "path_",
