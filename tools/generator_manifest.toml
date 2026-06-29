@@ -78,6 +78,7 @@ discovery_only = false
 [[generator]]
 tool = "tools/gen_wasm_abi.py"
 outputs = [
+  "runtime/molt-backend-wasm/src/wasm_abi_generated/bulk_memory_ops.rs",
   "runtime/molt-backend-wasm/src/wasm_abi_generated/call_indirect.rs",
   "runtime/molt-backend-wasm/src/wasm_abi_generated/const_policy.rs",
   "runtime/molt-backend-wasm/src/wasm_abi_generated/container_runtime_selector.rs",

@@ -334,12 +334,14 @@ def test_wasm_abi_manifest_owns_lir_runtime_calls() -> None:
         "kind": "gpu_thread_id",
         "import_name": "gpu_thread_id",
         "args": [],
+        "required_imports": ["gpu_thread_id"],
         "sink": "result_or_drop",
     }
     assert op_loop_calls["gpu_barrier"] == {
         "kind": "gpu_barrier",
         "import_name": "gpu_barrier",
         "args": [],
+        "required_imports": ["gpu_barrier"],
         "sink": "result_or_drop",
     }
 
@@ -472,15 +474,119 @@ def test_wasm_abi_manifest_owns_op_import_deps() -> None:
     gen = _load_gen_wasm_abi()
     data = gen.load_manifest()
     op_deps = {entry["kind"]: entry["deps"] for entry in data["op_import_dep"]}
+    op_loop_calls = {entry["kind"]: entry for entry in data["op_loop_runtime_call"]}
 
     assert "OP_IMPORT_DEPS" in _rendered_rs(gen, data)
     assert "module_cache_del" not in op_deps["__structural__"]
-    assert op_deps["module_cache_del"] == ["module_cache_del"]
+    assert "module_cache_del" not in op_deps
+    assert op_loop_calls["module_cache_del"]["required_imports"] == ["module_cache_del"]
+    assert op_loop_calls["context_enter"]["required_imports"] == [
+        "context_enter",
+        "context_exit",
+        "context_depth",
+        "context_closing",
+        "context_null",
+        "context_unwind",
+        "context_unwind_to",
+    ]
+    assert op_loop_calls["thread_submit"]["required_imports"] == [
+        "thread_poll",
+        "thread_submit",
+    ]
+    assert not set(op_deps).intersection(op_loop_calls)
     assert op_deps["print"] == ["print_obj"]
-    assert op_deps["gpu_thread_id"] == ["gpu_thread_id"]
-    assert op_deps["gpu_barrier"] == ["gpu_barrier"]
+    assert "gpu_thread_id" not in op_deps
+    assert "gpu_barrier" not in op_deps
+    assert op_loop_calls["gpu_thread_id"]["required_imports"] == ["gpu_thread_id"]
+    assert op_loop_calls["gpu_barrier"]["required_imports"] == ["gpu_barrier"]
+    assert "memory_copy" not in op_deps
+    assert "memory_fill" not in op_deps
     assert op_deps["object_new_bound"] == []
     assert op_deps["object_new_bound_stack"] == ["object_new_bound_sized"]
+
+    runtime_import_demand = (
+        ROOT
+        / "runtime/molt-backend-wasm/src/wasm/module_abi/runtime_import_demand.rs"
+    ).read_text(encoding="utf-8")
+    assert "op_loop_runtime_call(kind)" in runtime_import_demand
+    assert "self.require_imports(call.required_imports)" in runtime_import_demand
+    assert "wasm_bulk_memory_op(kind).is_some()" in runtime_import_demand
+
+    broken = copy.deepcopy(data)
+    broken["op_import_dep"].append(
+        {"kind": "module_cache_del", "deps": ["module_cache_del"]}
+    )
+    with pytest.raises(
+        gen.WasmAbiManifestError,
+        match="duplicates generated op_loop_runtime_call demand",
+    ):
+        gen.validate_loaded_manifest(broken)
+
+    broken_bulk = copy.deepcopy(data)
+    broken_bulk["op_import_dep"].append({"kind": "memory_copy", "deps": []})
+    with pytest.raises(
+        gen.WasmAbiManifestError,
+        match="duplicates generated wasm_bulk_memory_op demand",
+    ):
+        gen.validate_loaded_manifest(broken_bulk)
+
+
+def test_wasm_abi_manifest_owns_bulk_memory_ops() -> None:
+    gen = _load_gen_wasm_abi()
+    data = gen.load_manifest()
+    ops = {entry["kind"]: entry for entry in data["wasm_bulk_memory_op"]}
+
+    assert ops == {
+        "memory_copy": {
+            "kind": "memory_copy",
+            "instruction": "memory_copy",
+            "arg_count": 3,
+        },
+        "memory_fill": {
+            "kind": "memory_fill",
+            "instruction": "memory_fill",
+            "arg_count": 3,
+        },
+    }
+
+    rendered_rs_modules = gen.render_rs_modules(data)
+    rendered_bulk_rs = rendered_rs_modules["bulk_memory_ops.rs"]
+    rendered_mod_rs = rendered_rs_modules["mod.rs"]
+    rendered_py = gen.render_py(data)
+    assert "WasmBulkMemoryInstruction" in rendered_bulk_rs
+    assert "WasmBulkMemoryOpSpec" in rendered_bulk_rs
+    assert '\"memory_copy\" => Some(WasmBulkMemoryOpSpec' in rendered_bulk_rs
+    assert "WasmBulkMemoryInstruction::Copy" in rendered_bulk_rs
+    assert '\"memory_fill\" => Some(WasmBulkMemoryOpSpec' in rendered_bulk_rs
+    assert "WasmBulkMemoryInstruction::Fill" in rendered_bulk_rs
+    assert "mod bulk_memory_ops;" in rendered_mod_rs
+    assert "wasm_bulk_memory_op" in rendered_mod_rs
+    assert "WASM_BULK_MEMORY_OPS" in rendered_py
+
+    local_emitter = (
+        ROOT
+        / "runtime/molt-backend-wasm/src/wasm/op_loop/runtime_service_ops/linear_memory_ops.rs"
+    ).read_text(encoding="utf-8")
+    assert '\"memory_copy\" =>' not in local_emitter
+    assert '\"memory_fill\" =>' not in local_emitter
+    assert "wasm_bulk_memory_op(op.kind.as_str())" in local_emitter
+
+    broken_duplicate = copy.deepcopy(data)
+    broken_duplicate["wasm_bulk_memory_op"].append(
+        copy.deepcopy(broken_duplicate["wasm_bulk_memory_op"][0])
+    )
+    with pytest.raises(gen.WasmAbiManifestError, match="duplicate wasm_bulk_memory_op"):
+        gen.validate_loaded_manifest(broken_duplicate)
+
+    broken_instruction = copy.deepcopy(data)
+    broken_instruction["wasm_bulk_memory_op"][0]["instruction"] = "memory_grow"
+    with pytest.raises(gen.WasmAbiManifestError, match="invalid instruction"):
+        gen.validate_loaded_manifest(broken_instruction)
+
+    broken_arg_count = copy.deepcopy(data)
+    broken_arg_count["wasm_bulk_memory_op"][0]["arg_count"] = 2
+    with pytest.raises(gen.WasmAbiManifestError, match="arg_count = 3"):
+        gen.validate_loaded_manifest(broken_arg_count)
 
 
 def test_wasm_abi_manifest_owns_const_op_policy() -> None:
