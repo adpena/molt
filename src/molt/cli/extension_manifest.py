@@ -22,6 +22,10 @@ _PY_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _SUPPORTED_PKG_ABI_MAJOR = 0
 _SUPPORTED_PKG_ABI_MINOR = 1
 _SUPPORTED_PKG_ABI = f"{_SUPPORTED_PKG_ABI_MAJOR}.{_SUPPORTED_PKG_ABI_MINOR}"
+_LIBMOLT_SOURCE_RUNTIME_LINKAGES = frozenset({"host_resolved", "static_link"})
+_LIBMOLT_SOURCE_ARTIFACT_KINDS = frozenset(
+    {"shared_library", "wasm_relocatable_object", "static_archive"}
+)
 
 
 @dataclass(frozen=True)
@@ -215,6 +219,12 @@ def _extension_binary_suffix(target_triple: str | None = None) -> str:
     return ".so"
 
 
+def _manifest_target_is_wasm(target_triple: Any) -> bool:
+    return isinstance(target_triple, str) and target_triple.strip().lower().startswith(
+        "wasm32"
+    )
+
+
 def _host_target_triple() -> str:
     system = platform.system().lower()
     arch = platform.machine().lower() or "unknown"
@@ -351,11 +361,48 @@ def _validate_extension_manifest(
                     f"found {init_symbol!r}"
                 )
             runtime_linkage = manifest.get("runtime_linkage")
-            if runtime_linkage != "host_resolved":
+            if runtime_linkage not in _LIBMOLT_SOURCE_RUNTIME_LINKAGES:
                 errors.append(
-                    "runtime_linkage must be 'host_resolved' for "
+                    "runtime_linkage must be one of "
+                    f"{sorted(_LIBMOLT_SOURCE_RUNTIME_LINKAGES)} for "
                     "libmolt_source extensions"
                 )
+            artifact_kind = manifest.get("artifact_kind")
+            if (
+                artifact_kind is not None
+                and artifact_kind not in _LIBMOLT_SOURCE_ARTIFACT_KINDS
+            ):
+                errors.append(
+                    "artifact_kind must be one of "
+                    f"{sorted(_LIBMOLT_SOURCE_ARTIFACT_KINDS)} for "
+                    "libmolt_source extensions"
+                )
+            target_is_wasm = _manifest_target_is_wasm(manifest.get("target_triple"))
+            if runtime_linkage == "host_resolved":
+                if target_is_wasm:
+                    errors.append(
+                        "runtime_linkage 'host_resolved' is invalid for wasm "
+                        "libmolt_source extensions"
+                    )
+                if artifact_kind not in (None, "shared_library"):
+                    errors.append(
+                        "runtime_linkage 'host_resolved' requires artifact_kind "
+                        "'shared_library'"
+                    )
+            elif runtime_linkage == "static_link":
+                if not target_is_wasm:
+                    errors.append(
+                        "runtime_linkage 'static_link' requires a wasm32 target_triple"
+                    )
+                if artifact_kind not in (
+                    None,
+                    "wasm_relocatable_object",
+                    "static_archive",
+                ):
+                    errors.append(
+                        "runtime_linkage 'static_link' requires artifact_kind "
+                        "'wasm_relocatable_object' or 'static_archive'"
+                    )
 
     manifest_abi_tag: str | None = None
     abi_tag_value = manifest.get("abi_tag")

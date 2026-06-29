@@ -8,6 +8,7 @@ import shlex
 import sys
 import time
 from contextlib import contextmanager
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Iterator, Mapping, Sequence
 
@@ -43,6 +44,7 @@ from molt.cli.module_graph import _materialize_import_plan, _prepare_entry_modul
 from molt.cli.module_resolution import _stdlib_root_path
 from molt.cli.module_source import _source_content_sha256
 from molt.cli.models import (
+    _EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN,
     _ImportAdmissionPolicy,
     _ResolvedBuildEntry,
     _WrapperBuildContract,
@@ -169,18 +171,10 @@ def _wrapper_build_dependency_fingerprints(
         )
         if admission_error is not None:
             return None
-        native_plan, native_plan_errors = (
-            _resolve_external_package_native_artifact_plan(
-                external_module_roots=resolved_build_entry.external_module_roots,
-                admitted_packages=admitted_packages,
-            )
-        )
-        if native_plan_errors or native_plan is None:
-            return None
         import_admission_policy = _ImportAdmissionPolicy(
             external_roots=resolved_build_entry.external_module_roots,
             admitted_external_packages=admitted_packages,
-            native_artifact_plan=native_plan,
+            native_artifact_plan=_EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN,
         )
         try:
             prepared_module_graph, prepared_module_graph_error = (
@@ -205,6 +199,23 @@ def _wrapper_build_dependency_fingerprints(
             return None
     if prepared_module_graph_error is not None or prepared_module_graph is None:
         return None
+    native_artifact_plan, native_artifact_errors = (
+        _resolve_external_package_native_artifact_plan(
+            external_module_roots=import_admission_policy.external_roots,
+            admitted_packages=import_admission_policy.admitted_external_packages,
+            required_modules=(
+                set(prepared_module_graph.module_graph)
+                | set(prepared_module_graph.explicit_imports)
+                | set(prepared_module_graph.runtime_import_dispatch_roots)
+            ),
+        )
+    )
+    if native_artifact_errors or native_artifact_plan is None:
+        return None
+    prepared_module_graph = replace(
+        prepared_module_graph,
+        native_artifact_plan=native_artifact_plan,
+    )
     import_plan = _materialize_import_plan(
         prepared_module_graph=prepared_module_graph,
         module_reasons=module_reasons,
