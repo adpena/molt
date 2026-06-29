@@ -26,7 +26,9 @@ Product board for the molt structural sweep — the first instrument of the Molt
 
 | sev | risk class | where | what |
 | --- | --- | --- | --- |
-| low | large_source_file | `src/molt/gpu/tensor.py` | 2648 lines (ceiling 2500) |
+| low | large_source_file | `runtime/molt-runtime/src/c_api/tests.rs` | 4145 lines (ceiling 4000) |
+| low | large_source_file | `tools/gen_wasm_abi.py` | 3504 lines (ceiling 2500) |
+| low | large_source_file | `src/molt/gpu/tensor.py` | 2674 lines (ceiling 2500) |
 | low | debt_marker | `src/molt/stdlib/email/message.py:34` | 5 debt/workaround markers |
 | low | debt_marker | `src/molt/stdlib/xml/etree/ElementPath.py:251` | 4 debt/workaround markers |
 | low | debt_marker | `src/molt/stdlib/xml/etree/ElementTree.py:241` | 4 debt/workaround markers |
@@ -39,8 +41,6 @@ Product board for the molt structural sweep — the first instrument of the Molt
 | low | debt_marker | `runtime/molt-backend-native/src/llvm_backend/lowering/val…` | 1 debt/workaround markers |
 | low | debt_marker | `runtime/molt-backend-native/src/native_backend/function_c…` | 1 debt/workaround markers |
 | low | debt_marker | `runtime/molt-cpython-abi/src/api/abstract_number.rs:267` | 1 debt/workaround markers |
-| low | debt_marker | `runtime/molt-cpython-abi/src/api/object.rs:602` | 1 debt/workaround markers |
-| low | debt_marker | `runtime/molt-cpython-abi/src/api/strings.rs:411` | 1 debt/workaround markers |
 
 ## TOP DELETION CANDIDATES (0) — replace, don't just delete
 
@@ -57,11 +57,13 @@ Product board for the molt structural sweep — the first instrument of the Molt
 
 ## Full findings by probe
 
-### large_source_file (1)
+### large_source_file (3)
 
 | sev | what | where | action |
 | --- | --- | --- | --- |
-| low | 2648 lines (ceiling 2500) | `src/molt/gpu/tensor.py` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
+| low | 4145 lines (ceiling 4000) | `runtime/molt-runtime/src/c_api/tests.rs` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
+| low | 3504 lines (ceiling 2500) | `tools/gen_wasm_abi.py` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
+| low | 2674 lines (ceiling 2500) | `src/molt/gpu/tensor.py` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
 
 ### debt_marker (328)
 
@@ -94,7 +96,7 @@ Product board for the molt structural sweep — the first instrument of the Molt
 | low | 1 debt/workaround markers | `runtime/molt-runtime/src/async_rt/channels.rs:1202` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 1 debt/workaround markers | `runtime/molt-runtime/src/builtins/io_path_utils.rs:1360` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 1 debt/workaround markers | `runtime/molt-runtime/tests/test_builtins.rs:76` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
-| low | 1 debt/workaround markers | `src/molt/cli/runtime_build.py:1517` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
+| low | 1 debt/workaround markers | `src/molt/cli/runtime_build.py:1534` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 1 debt/workaround markers | `src/molt/harness_layers.py:642` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 1 debt/workaround markers | `src/molt/stdlib/_aix_support.py:13` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 1 debt/workaround markers | `src/molt/stdlib/_android_support.py:13` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
