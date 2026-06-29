@@ -8735,6 +8735,19 @@ WASM_OBJECT_NEW_BOUND_SELECTORS: tuple[tuple[str, str, str], ...] = (
     ("sized", "object_new_bound_sized", "ObjectNewBoundSized"),
 )
 
+WASM_METHOD_IC_SELECTORS: tuple[tuple[str, int, str], ...] = (
+    ("method", 0, "call_method_ic0"),
+    ("method", 1, "call_method_ic1"),
+    ("method", 2, "call_method_ic2"),
+    ("method", 3, "call_method_ic3"),
+    ("method", 4, "call_method_ic4"),
+    ("super_method", 0, "call_super_method_ic0"),
+    ("super_method", 1, "call_super_method_ic1"),
+    ("super_method", 2, "call_super_method_ic2"),
+    ("super_method", 3, "call_super_method_ic3"),
+    ("super_method", 4, "call_super_method_ic4"),
+)
+
 WASM_REQUIRED_RUNTIME_IMPORT_PREFIXES: tuple[str, ...] = (
     "os_",
     "path_",

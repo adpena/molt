@@ -1,4 +1,5 @@
 use super::super::result_sink::store_result_or_drop;
+use crate::wasm::method_ic_select::selected_method_ic_runtime;
 use crate::wasm::{WasmBackend, WasmFrameLocals};
 use crate::wasm_binary::emit_call;
 use crate::wasm_import_tracking::TrackedImportIds;
@@ -81,7 +82,9 @@ pub(super) fn emit_method_op(
                 op_idx,
                 "call_method_ic",
             ));
-            let extra = &args_names[1..];
+            let selected =
+                selected_method_ic_runtime(op).expect("call_method_ic selector must exist");
+            let extra = &args_names[selected.extra_arg_start..];
             // Stack: site, recv, name_ptr(i32), name_len, a0..
             func.instruction(&Instruction::I64Const(site_bits));
             func.instruction(&Instruction::LocalGet(recv));
@@ -91,14 +94,7 @@ pub(super) fn emit_method_op(
             for name in extra {
                 func.instruction(&Instruction::LocalGet(locals[name]));
             }
-            let import = match extra.len() {
-                0 => "call_method_ic0",
-                1 => "call_method_ic1",
-                2 => "call_method_ic2",
-                3 => "call_method_ic3",
-                _ => "call_method_ic4",
-            };
-            emit_call(func, reloc_enabled, import_ids[import]);
+            emit_call(func, reloc_enabled, import_ids[selected.import_name]);
             store_result_or_drop(func, op, locals);
         }
         "call_super_method_ic" => {
@@ -121,7 +117,9 @@ pub(super) fn emit_method_op(
                 op_idx,
                 "call_super_method_ic",
             ));
-            let extra = &args_names[2..];
+            let selected =
+                selected_method_ic_runtime(op).expect("call_super_method_ic selector must exist");
+            let extra = &args_names[selected.extra_arg_start..];
             // Stack: site, class, self, name_ptr(i32), name_len, a0..
             func.instruction(&Instruction::I64Const(site_bits));
             func.instruction(&Instruction::LocalGet(class));
@@ -132,14 +130,7 @@ pub(super) fn emit_method_op(
             for name in extra {
                 func.instruction(&Instruction::LocalGet(locals[name]));
             }
-            let import = match extra.len() {
-                0 => "call_super_method_ic0",
-                1 => "call_super_method_ic1",
-                2 => "call_super_method_ic2",
-                3 => "call_super_method_ic3",
-                _ => "call_super_method_ic4",
-            };
-            emit_call(func, reloc_enabled, import_ids[import]);
+            emit_call(func, reloc_enabled, import_ids[selected.import_name]);
             store_result_or_drop(func, op, locals);
         }
         _ => return false,

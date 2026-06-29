@@ -969,6 +969,60 @@ type = 49
 name = "call_super_method_ic4"
 type = 50
 
+# Method inline-cache arity selector. Extra arguments are capped at the highest
+# generated helper arity; `call_method_ic4` and `call_super_method_ic4` own the
+# overflow path.
+
+[[method_ic_selector]]
+family = "method"
+extra_arg_count = 0
+import_name = "call_method_ic0"
+
+[[method_ic_selector]]
+family = "method"
+extra_arg_count = 1
+import_name = "call_method_ic1"
+
+[[method_ic_selector]]
+family = "method"
+extra_arg_count = 2
+import_name = "call_method_ic2"
+
+[[method_ic_selector]]
+family = "method"
+extra_arg_count = 3
+import_name = "call_method_ic3"
+
+[[method_ic_selector]]
+family = "method"
+extra_arg_count = 4
+import_name = "call_method_ic4"
+
+[[method_ic_selector]]
+family = "super_method"
+extra_arg_count = 0
+import_name = "call_super_method_ic0"
+
+[[method_ic_selector]]
+family = "super_method"
+extra_arg_count = 1
+import_name = "call_super_method_ic1"
+
+[[method_ic_selector]]
+family = "super_method"
+extra_arg_count = 2
+import_name = "call_super_method_ic2"
+
+[[method_ic_selector]]
+family = "super_method"
+extra_arg_count = 3
+import_name = "call_super_method_ic3"
+
+[[method_ic_selector]]
+family = "super_method"
+extra_arg_count = 4
+import_name = "call_super_method_ic4"
+
 [[import]]
 name = "call_func_dispatch"
 type = 7
@@ -7212,26 +7266,6 @@ deps = [
 kind = "call_bind_ic"
 deps = [
   "call_bind_ic",
-]
-
-[[op_import_dep]]
-kind = "call_method_ic"
-deps = [
-  "call_method_ic0",
-  "call_method_ic1",
-  "call_method_ic2",
-  "call_method_ic3",
-  "call_method_ic4",
-]
-
-[[op_import_dep]]
-kind = "call_super_method_ic"
-deps = [
-  "call_super_method_ic0",
-  "call_super_method_ic1",
-  "call_super_method_ic2",
-  "call_super_method_ic3",
-  "call_super_method_ic4",
 ]
 
 [[op_import_dep]]

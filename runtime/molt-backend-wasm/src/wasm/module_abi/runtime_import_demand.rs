@@ -3,6 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::representation_plan::ScalarRepresentationPlan;
 use crate::wasm::container_runtime_select::selected_container_runtime_import;
 use crate::wasm::lir_fast::WasmFunctionLoweringPlans;
+use crate::wasm::method_ic_select::selected_method_ic_runtime;
 use crate::wasm::object_new_bound_select::selected_object_new_bound_runtime;
 use crate::wasm_abi::RESERVED_RUNTIME_CALLABLE_SPECS;
 use crate::wasm_imports::{OP_IMPORT_DEPS, runtime_surface_requires_direct_import};
@@ -53,6 +54,10 @@ impl WasmRuntimeImportDemand {
 
         if kind == "object_new_bound" {
             self.require_import(selected_object_new_bound_runtime(op).import_name);
+            return;
+        }
+        if let Some(selected) = selected_method_ic_runtime(op) {
+            self.require_import(selected.import_name);
             return;
         }
 
