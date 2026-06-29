@@ -491,6 +491,11 @@ def _render_rs_imports(data: dict) -> str:
         lines.append(
             f"        \"{entry['name']}\" => Some({_rust_runtime_import(data, entry['name'])}),\n"
         )
+        runtime_name = entry.get("runtime_name")
+        if runtime_name is not None:
+            lines.append(
+                f"        \"{runtime_name}\" => Some({_rust_runtime_import(data, entry['name'])}),\n"
+            )
     lines.extend(["        _ => None,\n", "    }\n", "}\n\n"])
     lines.append("pub(crate) const OP_IMPORT_DEPS: &[(&str, &[WasmRuntimeImport])] = &[\n")
     for entry in data.get("op_import_dep", []):
@@ -1644,12 +1649,17 @@ def render_py(data: dict) -> str:
             "    },\n",
             "    **WASM_RESERVED_RUNTIME_CALLABLE_ARITY_BY_RUNTIME,\n",
             "}\n\n",
-            "def wasm_runtime_callable_spec(runtime_name: str) -> tuple[str, int, str] | None:\n",
-            "    return WASM_RUNTIME_CALLABLE_IMPORT_BY_RUNTIME.get(runtime_name)\n\n",
-            "def wasm_runtime_callable_arity(runtime_name: str) -> int | None:\n",
-            "    return WASM_RUNTIME_CALLABLE_ARITY_BY_RUNTIME.get(runtime_name)\n\n",
-            "def wasm_runtime_callable_result(runtime_name: str) -> str | None:\n",
-            "    spec = wasm_runtime_callable_spec(runtime_name)\n",
+            "def wasm_runtime_callable_spec(name: str) -> tuple[str, int, str] | None:\n",
+            "    return WASM_RUNTIME_CALLABLE_IMPORT_BY_RUNTIME.get(\n",
+            "        name\n",
+            "    ) or WASM_RUNTIME_CALLABLE_IMPORT_BY_IMPORT.get(name)\n\n",
+            "def wasm_runtime_callable_arity(name: str) -> int | None:\n",
+            "    spec = wasm_runtime_callable_spec(name)\n",
+            "    if spec is not None:\n",
+            "        return spec[1]\n",
+            "    return WASM_RESERVED_RUNTIME_CALLABLE_ARITY_BY_RUNTIME.get(name)\n\n",
+            "def wasm_runtime_callable_result(name: str) -> str | None:\n",
+            "    spec = wasm_runtime_callable_spec(name)\n",
             "    return None if spec is None else spec[2]\n\n",
         ]
     )
@@ -1670,10 +1680,29 @@ def render_py(data: dict) -> str:
             "    name: (params, results)\n",
             "    for name, params, results in WASM_IMPORT_SIGNATURES\n",
             "}\n\n",
-            "def wasm_import_signature(import_name: str) -> tuple[tuple[str, ...], tuple[str, ...]] | None:\n",
+            "WASM_IMPORT_NAME_BY_LOOKUP: dict[str, str] = {\n",
+            "    **{name: name for name, _params, _results in WASM_IMPORT_SIGNATURES},\n",
+            "    **{\n",
+        ]
+    )
+    for entry in data["import"]:
+        runtime_name = entry.get("runtime_name")
+        if runtime_name is None:
+            continue
+        lines.append(f'        "{runtime_name}": "{entry["name"]}",\n')
+    lines.extend(
+        [
+            "    },\n",
+            "}\n\n",
+            "def wasm_import_name(name: str) -> str | None:\n",
+            "    return WASM_IMPORT_NAME_BY_LOOKUP.get(name)\n\n",
+            "def wasm_import_signature(name: str) -> tuple[tuple[str, ...], tuple[str, ...]] | None:\n",
+            "    import_name = wasm_import_name(name)\n",
+            "    if import_name is None:\n",
+            "        return None\n",
             "    return WASM_IMPORT_SIGNATURE_BY_NAME.get(import_name)\n\n",
-            "def wasm_import_result_kind(import_name: str) -> str | None:\n",
-            "    signature = wasm_import_signature(import_name)\n",
+            "def wasm_import_result_kind(name: str) -> str | None:\n",
+            "    signature = wasm_import_signature(name)\n",
             "    if signature is None:\n",
             "        return None\n",
             "    results = signature[1]\n",
