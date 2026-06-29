@@ -60,6 +60,7 @@ WASM_STATIC_TYPES: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
 WASM_STATIC_TYPE_COUNT: int = 51
 
 WASM_IMPORT_REGISTRY: tuple[str, ...] = (
+    "types_bootstrap",
     "abc_bootstrap",
     "collections_abc_runtime_types",
     "abc_get_cache_token",
@@ -2041,7 +2042,6 @@ WASM_IMPORT_REGISTRY: tuple[str, ...] = (
     "keyword_lists",
     "keyword_iskeyword",
     "keyword_issoftkeyword",
-    "types_bootstrap",
     "this_payload",
     "quopri_encode",
     "quopri_decode",
@@ -3080,6 +3080,7 @@ WASM_RESERVED_RUNTIME_CALLABLE_BASE: int = 1 + max((slot for slot, _name in WASM
 WASM_LEGACY_TABLE_BASE: int = 256
 
 WASM_RUNTIME_CALLABLE_IMPORTS: tuple[tuple[str, str, int, str], ...] = (
+    ("molt_types_bootstrap", "types_bootstrap", 0, "i64"),
     ("molt_abc_bootstrap", "abc_bootstrap", 0, "i64"),
     ("molt_collections_abc_runtime_types", "collections_abc_runtime_types", 0, "i64"),
     ("molt_abc_get_cache_token", "abc_get_cache_token", 0, "i64"),
@@ -4643,7 +4644,6 @@ WASM_RUNTIME_CALLABLE_IMPORTS: tuple[tuple[str, str, int, str], ...] = (
     ("molt_keyword_lists", "keyword_lists", 0, "i64"),
     ("molt_keyword_iskeyword", "keyword_iskeyword", 1, "i64"),
     ("molt_keyword_issoftkeyword", "keyword_issoftkeyword", 1, "i64"),
-    ("molt_types_bootstrap", "types_bootstrap", 0, "i64"),
     ("molt_this_payload", "this_payload", 0, "i64"),
     ("molt_quopri_encode", "quopri_encode", 3, "i64"),
     ("molt_quopri_decode", "quopri_decode", 2, "i64"),
@@ -5699,6 +5699,7 @@ def wasm_runtime_callable_result(runtime_name: str) -> str | None:
     return None if spec is None else spec[2]
 
 WASM_IMPORT_SIGNATURES: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (
+    ("types_bootstrap", (), ("i64",)),
     ("abc_bootstrap", (), ("i64",)),
     ("collections_abc_runtime_types", (), ("i64",)),
     ("abc_get_cache_token", (), ("i64",)),
@@ -7680,7 +7681,6 @@ WASM_IMPORT_SIGNATURES: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...]
     ("keyword_lists", (), ("i64",)),
     ("keyword_iskeyword", ("i64",), ("i64",)),
     ("keyword_issoftkeyword", ("i64",), ("i64",)),
-    ("types_bootstrap", (), ("i64",)),
     ("this_payload", (), ("i64",)),
     ("quopri_encode", ("i64", "i64", "i64"), ("i64",)),
     ("quopri_decode", ("i64", "i64"), ("i64",)),
@@ -8733,6 +8733,24 @@ WASM_CONTAINER_RUNTIME_SELECTORS: tuple[tuple[str, str, str, str | None], ...] =
     ("len", "dict", "len_dict", None),
     ("len", "tuple", "len_tuple", None),
     ("len", "set", "len_set", None),
+)
+
+WASM_OBJECT_NEW_BOUND_SELECTORS: tuple[tuple[str, str, str], ...] = (
+    ("unsized", "object_new_bound", "ObjectNewBound"),
+    ("sized", "object_new_bound_sized", "ObjectNewBoundSized"),
+)
+
+WASM_METHOD_IC_SELECTORS: tuple[tuple[str, int, str], ...] = (
+    ("method", 0, "call_method_ic0"),
+    ("method", 1, "call_method_ic1"),
+    ("method", 2, "call_method_ic2"),
+    ("method", 3, "call_method_ic3"),
+    ("method", 4, "call_method_ic4"),
+    ("super_method", 0, "call_super_method_ic0"),
+    ("super_method", 1, "call_super_method_ic1"),
+    ("super_method", 2, "call_super_method_ic2"),
+    ("super_method", 3, "call_super_method_ic3"),
+    ("super_method", 4, "call_super_method_ic4"),
 )
 
 WASM_REQUIRED_RUNTIME_IMPORT_PREFIXES: tuple[str, ...] = (

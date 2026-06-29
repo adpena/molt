@@ -27,6 +27,8 @@ OUT_RS_FILES = {
     "imports.rs": OUT_RS_DIR / "imports.rs",
     "lir_runtime_calls.rs": OUT_RS_DIR / "lir_runtime_calls.rs",
     "container_runtime_selector.rs": OUT_RS_DIR / "container_runtime_selector.rs",
+    "object_new_bound_selector.rs": OUT_RS_DIR / "object_new_bound_selector.rs",
+    "method_ic_selector.rs": OUT_RS_DIR / "method_ic_selector.rs",
     "const_policy.rs": OUT_RS_DIR / "const_policy.rs",
     "runtime_surface.rs": OUT_RS_DIR / "runtime_surface.rs",
     "runtime_callables.rs": OUT_RS_DIR / "runtime_callables.rs",
@@ -113,6 +115,9 @@ WASM_BULK_MEMORY_INSTRUCTIONS = {
     "memory_copy": "Copy",
     "memory_fill": "Fill",
 }
+OBJECT_NEW_BOUND_SELECTOR_PAYLOADS = ("unsized", "sized")
+METHOD_IC_SELECTOR_FAMILIES = ("method", "super_method")
+METHOD_IC_MAX_EXTRA_ARGS = 4
 CALL_INDIRECT_IMPORT_PREFIX = "molt_call_indirect"
 
 
@@ -875,6 +880,115 @@ def validate_loaded_manifest(data: dict) -> dict:
                 f"import {lir_import_by_variant[lir_variant]!r}"
             )
 
+    object_new_bound_selectors = data.get("object_new_bound_selector", [])
+    if not isinstance(object_new_bound_selectors, list):
+        raise WasmAbiManifestError(
+            "object_new_bound_selector must be a list of tables"
+        )
+    expected_object_new_bound_payloads = set(OBJECT_NEW_BOUND_SELECTOR_PAYLOADS)
+    seen_object_new_bound_payloads: set[str] = set()
+    for idx, entry in enumerate(object_new_bound_selectors):
+        if not isinstance(entry, dict):
+            raise WasmAbiManifestError(
+                f"object_new_bound_selector entry {idx} must be a table"
+            )
+        payload = entry.get("payload")
+        if (
+            not isinstance(payload, str)
+            or payload not in expected_object_new_bound_payloads
+        ):
+            raise WasmAbiManifestError(
+                f"object_new_bound_selector entry {idx} has invalid payload {payload!r}"
+            )
+        if payload in seen_object_new_bound_payloads:
+            raise WasmAbiManifestError(
+                f"duplicate object_new_bound_selector payload {payload!r}"
+            )
+        seen_object_new_bound_payloads.add(payload)
+        import_name = entry.get("import_name")
+        if not isinstance(import_name, str) or not import_name:
+            raise WasmAbiManifestError(
+                f"object_new_bound_selector {payload!r} has invalid import_name"
+            )
+        if import_name not in seen_imports:
+            raise WasmAbiManifestError(
+                f"object_new_bound_selector {payload!r} references unknown import "
+                f"{import_name!r}"
+            )
+        lir_variant = entry.get("lir_variant")
+        if not isinstance(lir_variant, str) or lir_variant not in lir_import_by_variant:
+            raise WasmAbiManifestError(
+                f"object_new_bound_selector {payload!r} has invalid lir_variant "
+                f"{lir_variant!r}"
+            )
+        if lir_import_by_variant[lir_variant] != import_name:
+            raise WasmAbiManifestError(
+                f"object_new_bound_selector {payload!r} import {import_name!r} "
+                f"does not match lir_variant {lir_variant!r} import "
+                f"{lir_import_by_variant[lir_variant]!r}"
+            )
+    if seen_object_new_bound_payloads != expected_object_new_bound_payloads:
+        missing = sorted(expected_object_new_bound_payloads - seen_object_new_bound_payloads)
+        extra = sorted(seen_object_new_bound_payloads - expected_object_new_bound_payloads)
+        raise WasmAbiManifestError(
+            "object_new_bound_selector must declare exactly payloads "
+            f"{sorted(expected_object_new_bound_payloads)}; missing={missing}, "
+            f"extra={extra}"
+        )
+
+    method_ic_selectors = data.get("method_ic_selector", [])
+    if not isinstance(method_ic_selectors, list):
+        raise WasmAbiManifestError("method_ic_selector must be a list of tables")
+    expected_method_ic_selectors = {
+        (family, extra_arg_count)
+        for family in METHOD_IC_SELECTOR_FAMILIES
+        for extra_arg_count in range(METHOD_IC_MAX_EXTRA_ARGS + 1)
+    }
+    seen_method_ic_selectors: set[tuple[str, int]] = set()
+    for idx, entry in enumerate(method_ic_selectors):
+        if not isinstance(entry, dict):
+            raise WasmAbiManifestError(
+                f"method_ic_selector entry {idx} must be a table"
+            )
+        family = entry.get("family")
+        if not isinstance(family, str) or family not in METHOD_IC_SELECTOR_FAMILIES:
+            raise WasmAbiManifestError(
+                f"method_ic_selector entry {idx} has invalid family {family!r}"
+            )
+        extra_arg_count = entry.get("extra_arg_count")
+        if (
+            not isinstance(extra_arg_count, int)
+            or extra_arg_count < 0
+            or extra_arg_count > METHOD_IC_MAX_EXTRA_ARGS
+        ):
+            raise WasmAbiManifestError(
+                f"method_ic_selector {family!r} has invalid extra_arg_count "
+                f"{extra_arg_count!r}"
+            )
+        selector_key = (family, extra_arg_count)
+        if selector_key in seen_method_ic_selectors:
+            raise WasmAbiManifestError(
+                f"duplicate method_ic_selector {selector_key!r}"
+            )
+        seen_method_ic_selectors.add(selector_key)
+        import_name = entry.get("import_name")
+        if not isinstance(import_name, str) or not import_name:
+            raise WasmAbiManifestError(
+                f"method_ic_selector {selector_key!r} has invalid import_name"
+            )
+        if import_name not in seen_imports:
+            raise WasmAbiManifestError(
+                f"method_ic_selector {selector_key!r} references unknown import "
+                f"{import_name!r}"
+            )
+    if seen_method_ic_selectors != expected_method_ic_selectors:
+        missing = sorted(expected_method_ic_selectors - seen_method_ic_selectors)
+        extra = sorted(seen_method_ic_selectors - expected_method_ic_selectors)
+        raise WasmAbiManifestError(
+            "method_ic_selector must declare exactly the method/super arity grid; "
+            f"missing={missing}, extra={extra}"
+        )
+
     op_import_deps = data.get("op_import_dep", [])
     if not isinstance(op_import_deps, list):
         raise WasmAbiManifestError("op_import_dep must be a list of tables")
@@ -1445,6 +1559,8 @@ def _render_rs_mod() -> str:
             "mod const_policy;\n",
             "mod imports;\n",
             "mod lir_runtime_calls;\n",
+            "mod method_ic_selector;\n",
+            "mod object_new_bound_selector;\n",
             "mod pure_profile;\n",
             "mod runtime_callables;\n",
             "mod runtime_surface;\n",
@@ -1469,6 +1585,13 @@ def _render_rs_mod() -> str:
             "    lir_fixed_runtime_call, op_loop_runtime_call, LirFixedRuntimeCall,\n",
             "    LirRuntimeCall, OpLoopRuntimeArgSpec, OpLoopRuntimeCallSpec,\n",
             "    OpLoopRuntimeSinkSpec,\n",
+            "};\n",
+            "pub(crate) use method_ic_selector::{\n",
+            "    wasm_method_ic_selection, WasmMethodIcFamily, WasmMethodIcSelection,\n",
+            "};\n",
+            "pub(crate) use object_new_bound_selector::{\n",
+            "    wasm_object_new_bound_selection, WasmObjectNewBoundPayload,\n",
+            "    WasmObjectNewBoundSelection,\n",
             "};\n",
             "pub(crate) use pure_profile::pure_profile_skips_import;\n",
             "pub(crate) use runtime_callables::{\n",
@@ -2060,6 +2183,172 @@ def _render_rs_container_runtime_selector(data: dict) -> str:
     return "".join(lines)
 
 
+def _render_rs_object_new_bound_selector(data: dict) -> str:
+    selector_by_payload = {
+        entry["payload"]: entry for entry in data.get("object_new_bound_selector", [])
+    }
+    payload_variants = {
+        payload: _rust_pascal_variant(payload)
+        for payload in OBJECT_NEW_BOUND_SELECTOR_PAYLOADS
+    }
+    lines: list[str] = [_header("//")]
+    lines.extend(
+        [
+            "use super::lir_runtime_calls::LirRuntimeCall;\n\n",
+            "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
+            "pub(crate) enum WasmObjectNewBoundPayload {\n",
+        ]
+    )
+    for payload in OBJECT_NEW_BOUND_SELECTOR_PAYLOADS:
+        lines.append(f"    {payload_variants[payload]},\n")
+    lines.extend(
+        [
+            "}\n\n",
+            "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
+            "pub(crate) struct WasmObjectNewBoundSelection {\n",
+            "    pub(crate) import_name: &'static str,\n",
+            "    pub(crate) lir_runtime_call: LirRuntimeCall,\n",
+            "}\n\n",
+            "#[allow(dead_code)]\n",
+            "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
+            "pub(crate) struct WasmObjectNewBoundSelectorSpec {\n",
+            "    pub(crate) payload: WasmObjectNewBoundPayload,\n",
+            "    pub(crate) selection: WasmObjectNewBoundSelection,\n",
+            "}\n\n",
+            "#[allow(dead_code)]\n",
+            "pub(crate) const WASM_OBJECT_NEW_BOUND_SELECTORS: &[WasmObjectNewBoundSelectorSpec] = &[\n",
+        ]
+    )
+    for payload in OBJECT_NEW_BOUND_SELECTOR_PAYLOADS:
+        entry = selector_by_payload[payload]
+        lines.extend(
+            [
+                "    WasmObjectNewBoundSelectorSpec {\n",
+                f"        payload: WasmObjectNewBoundPayload::{payload_variants[payload]},\n",
+                "        selection: WasmObjectNewBoundSelection {\n",
+                f"            import_name: \"{entry['import_name']}\",\n",
+                f"            lir_runtime_call: LirRuntimeCall::{entry['lir_variant']},\n",
+                "        },\n",
+                "    },\n",
+            ]
+        )
+    lines.extend(
+        [
+            "];\n\n",
+            "#[inline]\n",
+            "pub(crate) const fn wasm_object_new_bound_selection(\n",
+            "    payload: WasmObjectNewBoundPayload,\n",
+            ") -> WasmObjectNewBoundSelection {\n",
+            "    match payload {\n",
+        ]
+    )
+    for payload in OBJECT_NEW_BOUND_SELECTOR_PAYLOADS:
+        entry = selector_by_payload[payload]
+        lines.extend(
+            [
+                f"        WasmObjectNewBoundPayload::{payload_variants[payload]} => {{\n",
+                "            WasmObjectNewBoundSelection {\n",
+                f"                import_name: \"{entry['import_name']}\",\n",
+                f"                lir_runtime_call: LirRuntimeCall::{entry['lir_variant']},\n",
+                "            }\n",
+                "        }\n",
+            ]
+        )
+    lines.extend(
+        [
+            "    }\n",
+            "}\n",
+        ]
+    )
+    return "".join(lines)
+
+
+def _render_rs_method_ic_selector(data: dict) -> str:
+    selectors = data.get("method_ic_selector", [])
+    selector_by_key = {
+        (entry["family"], entry["extra_arg_count"]): entry
+        for entry in selectors
+    }
+    family_variants = {
+        family: _rust_pascal_variant(family)
+        for family in METHOD_IC_SELECTOR_FAMILIES
+    }
+    lines: list[str] = [_header("//")]
+    lines.extend(
+        [
+            "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
+            "pub(crate) enum WasmMethodIcFamily {\n",
+        ]
+    )
+    for family in METHOD_IC_SELECTOR_FAMILIES:
+        lines.append(f"    {family_variants[family]},\n")
+    lines.extend(
+        [
+            "}\n\n",
+            "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
+            "pub(crate) struct WasmMethodIcSelection {\n",
+            "    pub(crate) import_name: &'static str,\n",
+            "}\n\n",
+            "#[allow(dead_code)]\n",
+            "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
+            "pub(crate) struct WasmMethodIcSelectorSpec {\n",
+            "    pub(crate) family: WasmMethodIcFamily,\n",
+            "    pub(crate) extra_arg_count: usize,\n",
+            "    pub(crate) selection: WasmMethodIcSelection,\n",
+            "}\n\n",
+            f"pub(crate) const WASM_METHOD_IC_MAX_EXTRA_ARGS: usize = {METHOD_IC_MAX_EXTRA_ARGS};\n\n",
+            "#[allow(dead_code)]\n",
+            "pub(crate) const WASM_METHOD_IC_SELECTORS: &[WasmMethodIcSelectorSpec] = &[\n",
+        ]
+    )
+    for family in METHOD_IC_SELECTOR_FAMILIES:
+        for extra_arg_count in range(METHOD_IC_MAX_EXTRA_ARGS + 1):
+            entry = selector_by_key[(family, extra_arg_count)]
+            lines.extend(
+                [
+                    "    WasmMethodIcSelectorSpec {\n",
+                    f"        family: WasmMethodIcFamily::{family_variants[family]},\n",
+                    f"        extra_arg_count: {extra_arg_count},\n",
+                    "        selection: WasmMethodIcSelection {\n",
+                    f"            import_name: \"{entry['import_name']}\",\n",
+                    "        },\n",
+                    "    },\n",
+                ]
+            )
+    lines.extend(
+        [
+            "];\n\n",
+            "#[inline]\n",
+            "pub(crate) fn wasm_method_ic_selection(\n",
+            "    family: WasmMethodIcFamily,\n",
+            "    extra_arg_count: usize,\n",
+            ") -> WasmMethodIcSelection {\n",
+            "    let capped_extra_arg_count = extra_arg_count.min(WASM_METHOD_IC_MAX_EXTRA_ARGS);\n",
+            "    match (family, capped_extra_arg_count) {\n",
+        ]
+    )
+    for family in METHOD_IC_SELECTOR_FAMILIES:
+        for extra_arg_count in range(METHOD_IC_MAX_EXTRA_ARGS + 1):
+            entry = selector_by_key[(family, extra_arg_count)]
+            lines.extend(
+                [
+                    f"        (WasmMethodIcFamily::{family_variants[family]}, {extra_arg_count}) => {{\n",
+                    "            WasmMethodIcSelection {\n",
+                    f"                import_name: \"{entry['import_name']}\",\n",
+                    "            }\n",
+                    "        }\n",
+                ]
+            )
+    lines.extend(
+        [
+            "        _ => unreachable!(\"method IC selector grid is generated exhaustively\"),\n",
+            "    }\n",
+            "}\n",
+        ]
+    )
+    return "".join(lines)
+
+
 def _render_rs_runtime_surface(data: dict) -> str:
     lines: list[str] = [_header("//")]
     lines.append("pub(crate) const REQUIRED_RUNTIME_IMPORT_PREFIXES: &[&str] = &[\n")
@@ -2413,6 +2702,8 @@ def render_rs_modules(data: dict) -> dict[str, str]:
         "static_types.rs": _render_rs_static_types(data),
         "imports.rs": _render_rs_imports(data),
         "lir_runtime_calls.rs": _render_rs_lir_runtime_calls(data),
+        "method_ic_selector.rs": _render_rs_method_ic_selector(data),
+        "object_new_bound_selector.rs": _render_rs_object_new_bound_selector(data),
         "runtime_surface.rs": _render_rs_runtime_surface(data),
         "runtime_callables.rs": _render_rs_runtime_callables(data),
         "pure_profile.rs": _render_rs_pure_profile(data),
@@ -2567,6 +2858,24 @@ def render_py(data: dict) -> str:
         lines.append(
             f'    ("{entry["op"]}", "{entry["fact"]}", '
             f'"{entry["import_name"]}", {lir_variant_repr}),\n'
+        )
+    lines.append(")\n\n")
+    lines.append(
+        "WASM_OBJECT_NEW_BOUND_SELECTORS: tuple[tuple[str, str, str], ...] = (\n"
+    )
+    for entry in data.get("object_new_bound_selector", []):
+        lines.append(
+            f'    ("{entry["payload"]}", "{entry["import_name"]}", '
+            f'"{entry["lir_variant"]}"),\n'
+        )
+    lines.append(")\n\n")
+    lines.append(
+        "WASM_METHOD_IC_SELECTORS: tuple[tuple[str, int, str], ...] = (\n"
+    )
+    for entry in data.get("method_ic_selector", []):
+        lines.append(
+            f'    ("{entry["family"]}", {entry["extra_arg_count"]}, '
+            f'"{entry["import_name"]}"),\n'
         )
     lines.append(")\n\n")
     lines.append("WASM_REQUIRED_RUNTIME_IMPORT_PREFIXES: tuple[str, ...] = (\n")
