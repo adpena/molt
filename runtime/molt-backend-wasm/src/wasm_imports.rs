@@ -13,14 +13,15 @@ pub(crate) use crate::wasm_abi_generated::{
 mod tests {
     use super::{IMPORT_REGISTRY, OP_IMPORT_DEPS, runtime_surface_requires_direct_import};
     use crate::wasm_abi_generated::{
-        LirRuntimeCall, WasmObjectNewBoundPayload, wasm_object_new_bound_selection,
+        LirRuntimeCall, WasmObjectNewBoundPayload, WasmRuntimeImport, op_loop_runtime_call,
+        wasm_object_new_bound_selection,
     };
 
     #[test]
     fn module_cache_del_is_registered_as_on_demand_wasm_import() {
-        let import_type = IMPORT_REGISTRY
-            .iter()
-            .find_map(|&(name, type_idx)| (name == "module_cache_del").then_some(type_idx));
+        let import_type = IMPORT_REGISTRY.iter().find_map(|spec| {
+            (spec.import == WasmRuntimeImport::ModuleCacheDel).then_some(spec.type_idx)
+        });
         assert_eq!(
             import_type,
             Some(2),
@@ -32,35 +33,40 @@ mod tests {
             .find_map(|&(kind, deps)| (kind == "__structural__").then_some(deps))
             .expect("structural WASM import deps must exist");
         assert!(
-            !structural.contains(&"module_cache_del"),
+            !structural.contains(&WasmRuntimeImport::ModuleCacheDel),
             "module_cache_del is cleanup-only and must not inflate every Auto-profile WASM binary"
         );
 
-        let op_deps = OP_IMPORT_DEPS
-            .iter()
-            .find_map(|&(kind, deps)| (kind == "module_cache_del").then_some(deps))
-            .expect("module_cache_del op must declare its WASM import dependency");
+        assert!(
+            OP_IMPORT_DEPS
+                .iter()
+                .all(|&(kind, _deps)| kind != "module_cache_del"),
+            "module_cache_del import demand is owned by generated op_loop_runtime_call, not OP_IMPORT_DEPS"
+        );
+        let op_call =
+            op_loop_runtime_call("module_cache_del").expect("module_cache_del op-loop call");
+        assert_eq!(op_call.import, WasmRuntimeImport::ModuleCacheDel);
         assert_eq!(
-            op_deps,
-            ["module_cache_del"],
+            op_call.required_imports,
+            [WasmRuntimeImport::ModuleCacheDel],
             "module_cache_del codegen must request its runtime import explicitly"
         );
     }
 
     #[test]
     fn object_new_bound_declares_wasm_imports() {
-        let bound_type = IMPORT_REGISTRY
-            .iter()
-            .find_map(|&(name, type_idx)| (name == "object_new_bound").then_some(type_idx));
+        let bound_type = IMPORT_REGISTRY.iter().find_map(|spec| {
+            (spec.import == WasmRuntimeImport::ObjectNewBound).then_some(spec.type_idx)
+        });
         assert_eq!(
             bound_type,
             Some(2),
             "object_new_bound must use the unary i64 -> i64 host import ABI"
         );
 
-        let sized_type = IMPORT_REGISTRY
-            .iter()
-            .find_map(|&(name, type_idx)| (name == "object_new_bound_sized").then_some(type_idx));
+        let sized_type = IMPORT_REGISTRY.iter().find_map(|spec| {
+            (spec.import == WasmRuntimeImport::ObjectNewBoundSized).then_some(spec.type_idx)
+        });
         assert_eq!(
             sized_type,
             Some(3),
@@ -74,13 +80,13 @@ mod tests {
             "object_new_bound import demand is selected from payload-size metadata, not OP_IMPORT_DEPS"
         );
         let unsized_selection = wasm_object_new_bound_selection(WasmObjectNewBoundPayload::Unsized);
-        assert_eq!(unsized_selection.import_name, "object_new_bound");
+        assert_eq!(unsized_selection.import, WasmRuntimeImport::ObjectNewBound);
         assert_eq!(
             unsized_selection.lir_runtime_call,
             LirRuntimeCall::ObjectNewBound
         );
         let sized = wasm_object_new_bound_selection(WasmObjectNewBoundPayload::Sized);
-        assert_eq!(sized.import_name, "object_new_bound_sized");
+        assert_eq!(sized.import, WasmRuntimeImport::ObjectNewBoundSized);
         assert_eq!(sized.lir_runtime_call, LirRuntimeCall::ObjectNewBoundSized);
 
         let stack_deps = OP_IMPORT_DEPS
@@ -89,7 +95,7 @@ mod tests {
             .expect("object_new_bound_stack op must declare its WASM import dependencies");
         assert_eq!(
             stack_deps,
-            ["object_new_bound_sized"],
+            [WasmRuntimeImport::ObjectNewBoundSized],
             "WASM has no native stack object representation; stack-eligible class allocation lowers to the sized heap constructor"
         );
     }

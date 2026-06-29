@@ -32,7 +32,11 @@ pub(super) fn emit_async_task_runtime_op(
             emit_table_index_i64(func, reloc_enabled, table_idx);
             func.instruction(&Instruction::I64Const(total));
             func.instruction(&Instruction::I64Const(kind_bits));
-            emit_call(func, reloc_enabled, import_ids["task_new"]);
+            emit_call(
+                func,
+                reloc_enabled,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::TaskNew],
+            );
             let res = if let Some(out) = op.out.as_ref() {
                 let r = locals[out];
                 func.instruction(&Instruction::LocalSet(r));
@@ -48,7 +52,11 @@ pub(super) fn emit_async_task_runtime_op(
             if has_args {
                 let resolve_local = locals.synthetic(WasmFrameSyntheticLocal::WasmAllocResolve);
                 func.instruction(&Instruction::LocalGet(res));
-                emit_call(func, reloc_enabled, import_ids["handle_resolve"]);
+                emit_call(
+                    func,
+                    reloc_enabled,
+                    import_ids[crate::wasm_abi_generated::WasmRuntimeImport::HandleResolve],
+                );
                 func.instruction(&Instruction::LocalSet(resolve_local));
             }
             if let Some(args) = op.args.as_ref()
@@ -67,13 +75,26 @@ pub(super) fn emit_async_task_runtime_op(
                         memory_index: 0,
                     }));
                     func.instruction(&Instruction::LocalGet(arg_local));
-                    emit_call(func, reloc_enabled, import_ids["inc_ref_obj"]);
+                    emit_call(
+                        func,
+                        reloc_enabled,
+                        import_ids[crate::wasm_abi_generated::WasmRuntimeImport::IncRefObj],
+                    );
                 }
             }
             if matches!(task_kind, "future" | "coroutine") {
                 func.instruction(&Instruction::LocalGet(res));
-                emit_call(func, reloc_enabled, import_ids["cancel_token_get_current"]);
-                emit_call(func, reloc_enabled, import_ids["task_register_token_owned"]);
+                emit_call(
+                    func,
+                    reloc_enabled,
+                    import_ids[crate::wasm_abi_generated::WasmRuntimeImport::CancelTokenGetCurrent],
+                );
+                emit_call(
+                    func,
+                    reloc_enabled,
+                    import_ids
+                        [crate::wasm_abi_generated::WasmRuntimeImport::TaskRegisterTokenOwned],
+                );
                 func.instruction(&Instruction::Drop);
             }
         }
@@ -82,10 +103,18 @@ pub(super) fn emit_async_task_runtime_op(
             func.instruction(&Instruction::LocalGet(0));
             func.instruction(&Instruction::I32WrapI64);
             func.instruction(&Instruction::I64Const(op.value.unwrap()));
-            emit_call(func, reloc_enabled, import_ids["obj_set_state"]);
+            emit_call(
+                func,
+                reloc_enabled,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::ObjSetState],
+            );
             let pair = locals[&args[0]];
             func.instruction(&Instruction::LocalGet(pair));
-            emit_call(func, reloc_enabled, import_ids["inc_ref_obj"]);
+            emit_call(
+                func,
+                reloc_enabled,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::IncRefObj],
+            );
             if let Some(out) = op.out.as_ref() {
                 func.instruction(&Instruction::LocalGet(pair));
                 func.instruction(&Instruction::LocalSet(locals[out]));

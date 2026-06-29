@@ -98,7 +98,11 @@ pub(super) fn emit_core_runtime_op(
             // downstream `br_if`/`if` truthiness path calls
             // `is_truthy`, which interprets its operand as a NaN-boxed
             // value.  Non-foldable: it observes mutable runtime state.
-            emit_call(func, reloc_enabled, import_ids["exception_pending"]);
+            emit_call(
+                func,
+                reloc_enabled,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::ExceptionPending],
+            );
             func.instruction(&Instruction::I64Const(0));
             func.instruction(&Instruction::I64Ne);
             emit_box_bool_from_i32(func);
@@ -114,9 +118,9 @@ pub(super) fn emit_core_runtime_op(
             let val = locals[&args[0]];
             let truthy_import = if wasm_scalar_truthiness_fast_path_for_name(&scalar_plan, &args[0])
             {
-                "is_truthy_int"
+                crate::wasm_abi_generated::WasmRuntimeImport::IsTruthyInt
             } else {
-                "is_truthy"
+                crate::wasm_abi_generated::WasmRuntimeImport::IsTruthy
             };
             func.instruction(&Instruction::LocalGet(val));
             emit_call(func, reloc_enabled, import_ids[truthy_import]);
@@ -135,7 +139,11 @@ pub(super) fn emit_core_runtime_op(
             let lhs = locals[&args[0]];
             let rhs = locals[&args[1]];
             func.instruction(&Instruction::LocalGet(lhs));
-            emit_call(func, reloc_enabled, import_ids["is_truthy"]);
+            emit_call(
+                func,
+                reloc_enabled,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::IsTruthy],
+            );
             func.instruction(&Instruction::I64Const(0));
             func.instruction(&Instruction::I64Ne);
             func.instruction(&Instruction::If(BlockType::Result(ValType::I64)));
@@ -151,7 +159,11 @@ pub(super) fn emit_core_runtime_op(
                     )
                 );
                 func.instruction(&Instruction::LocalTee(res));
-                emit_call(func, reloc_enabled, import_ids["inc_ref_obj"]);
+                emit_call(
+                    func,
+                    reloc_enabled,
+                    import_ids[crate::wasm_abi_generated::WasmRuntimeImport::IncRefObj],
+                );
             } else {
                 func.instruction(&Instruction::Drop);
             }
@@ -161,7 +173,11 @@ pub(super) fn emit_core_runtime_op(
             let lhs = locals[&args[0]];
             let rhs = locals[&args[1]];
             func.instruction(&Instruction::LocalGet(lhs));
-            emit_call(func, reloc_enabled, import_ids["is_truthy"]);
+            emit_call(
+                func,
+                reloc_enabled,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::IsTruthy],
+            );
             func.instruction(&Instruction::I64Const(0));
             func.instruction(&Instruction::I64Ne);
             func.instruction(&Instruction::If(BlockType::Result(ValType::I64)));
@@ -177,7 +193,11 @@ pub(super) fn emit_core_runtime_op(
                     )
                 );
                 func.instruction(&Instruction::LocalTee(res));
-                emit_call(func, reloc_enabled, import_ids["inc_ref_obj"]);
+                emit_call(
+                    func,
+                    reloc_enabled,
+                    import_ids[crate::wasm_abi_generated::WasmRuntimeImport::IncRefObj],
+                );
             } else {
                 func.instruction(&Instruction::Drop);
             }
@@ -188,10 +208,18 @@ pub(super) fn emit_core_runtime_op(
             let class_bits = locals[&args[1]];
             let expected = locals[&args[2]];
             func.instruction(&Instruction::LocalGet(obj));
-            emit_call(func, reloc_enabled, import_ids["handle_resolve"]);
+            emit_call(
+                func,
+                reloc_enabled,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::HandleResolve],
+            );
             func.instruction(&Instruction::LocalGet(class_bits));
             func.instruction(&Instruction::LocalGet(expected));
-            emit_call(func, reloc_enabled, import_ids["guard_layout_ptr"]);
+            emit_call(
+                func,
+                reloc_enabled,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::GuardLayoutPtr],
+            );
             if let Some(out) = op.out.as_ref() {
                 let res = locals[out];
                 func.instruction(&Instruction::LocalSet(res));
@@ -203,7 +231,11 @@ pub(super) fn emit_core_runtime_op(
             let args = op.args.as_ref().unwrap();
             if let Some(&idx) = locals.get(&args[0]) {
                 func.instruction(&Instruction::LocalGet(idx));
-                emit_call(func, reloc_enabled, import_ids["print_obj"]);
+                emit_call(
+                    func,
+                    reloc_enabled,
+                    import_ids[crate::wasm_abi_generated::WasmRuntimeImport::PrintObj],
+                );
             }
         }
         "alloc" | "stack_alloc" => {
@@ -217,10 +249,18 @@ pub(super) fn emit_core_runtime_op(
             {
                 func.instruction(&Instruction::LocalGet(arena_idx));
                 func.instruction(&Instruction::I64Const(op.value.unwrap()));
-                emit_call(func, reloc_enabled, import_ids["arena_alloc_object"]);
+                emit_call(
+                    func,
+                    reloc_enabled,
+                    import_ids[crate::wasm_abi_generated::WasmRuntimeImport::ArenaAllocObject],
+                );
             } else {
                 func.instruction(&Instruction::I64Const(op.value.unwrap()));
-                emit_call(func, reloc_enabled, import_ids["alloc"]);
+                emit_call(
+                    func,
+                    reloc_enabled,
+                    import_ids[crate::wasm_abi_generated::WasmRuntimeImport::Alloc],
+                );
             }
             if let Some(out) = op.out.as_ref() {
                 func.instruction(&Instruction::LocalSet(locals[out]));

@@ -7,9 +7,7 @@ use crate::wasm::WasmFrameLocals;
 use crate::wasm_abi::TAG_EXCEPTION_INDEX;
 use crate::wasm_binary::emit_call;
 use crate::wasm_import_tracking::TrackedImportIds;
-use crate::wasm_plan::{
-    is_shared_drop_fact_marker, wasm_scalar_truthiness_fast_path_for_name,
-};
+use crate::wasm_plan::{is_shared_drop_fact_marker, wasm_scalar_truthiness_fast_path_for_name};
 use crate::wasm_values::{ConstantCache, emit_branch_truthiness_i32};
 use crate::{FunctionIR, OpIR};
 use std::borrow::Cow;
@@ -86,7 +84,12 @@ pub(super) fn emit_control_op(control_ctx: ControlOpContext<'_>, func: &mut Func
                 .get(&target)
                 .map(|idx| control_stack.len().saturating_sub(1 + idx))
                 .unwrap_or_else(|| panic!("br_if target {} missing label block", target));
-            emit_branch_truthiness_i32(func, cond, import_ids["is_truthy"], reloc_enabled);
+            emit_branch_truthiness_i32(
+                func,
+                cond,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::IsTruthy],
+                reloc_enabled,
+            );
             func.instruction(&Instruction::BrIf(depth as u32));
         }
         "if" => {
@@ -94,9 +97,9 @@ pub(super) fn emit_control_op(control_ctx: ControlOpContext<'_>, func: &mut Func
             let cond = locals[&args[0]];
             let truthy_import = if wasm_scalar_truthiness_fast_path_for_name(&scalar_plan, &args[0])
             {
-                "is_truthy_int"
+                crate::wasm_abi_generated::WasmRuntimeImport::IsTruthyInt
             } else {
-                "is_truthy"
+                crate::wasm_abi_generated::WasmRuntimeImport::IsTruthy
             };
             emit_branch_truthiness_i32(func, cond, import_ids[truthy_import], reloc_enabled);
             func.instruction(&Instruction::If(BlockType::Empty));
@@ -143,18 +146,32 @@ pub(super) fn emit_control_op(control_ctx: ControlOpContext<'_>, func: &mut Func
         "loop_break_if_true" => {
             let args = op.args.as_ref().unwrap();
             let cond = locals[&args[0]];
-            emit_branch_truthiness_i32(func, cond, import_ids["is_truthy"], reloc_enabled);
+            emit_branch_truthiness_i32(
+                func,
+                cond,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::IsTruthy],
+                reloc_enabled,
+            );
             emit_loop_break(func, control_stack, func_ir, op_idx, "loop_break_if_true");
         }
         "loop_break_if_false" => {
             let args = op.args.as_ref().unwrap();
             let cond = locals[&args[0]];
-            emit_branch_truthiness_i32(func, cond, import_ids["is_truthy"], reloc_enabled);
+            emit_branch_truthiness_i32(
+                func,
+                cond,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::IsTruthy],
+                reloc_enabled,
+            );
             func.instruction(&Instruction::I32Eqz);
             emit_loop_break(func, control_stack, func_ir, op_idx, "loop_break_if_false");
         }
         "loop_break_if_exception" => {
-            emit_call(func, reloc_enabled, import_ids["exception_pending"]);
+            emit_call(
+                func,
+                reloc_enabled,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::ExceptionPending],
+            );
             func.instruction(&Instruction::I64Const(0));
             func.instruction(&Instruction::I64Ne);
             emit_loop_break(
@@ -221,7 +238,11 @@ pub(super) fn emit_control_op(control_ctx: ControlOpContext<'_>, func: &mut Func
             if native_eh_enabled {
             } else if exception_handler_region_indices.contains(&op_idx) {
             } else if let Some(&try_index) = try_stack.last() {
-                emit_call(func, reloc_enabled, import_ids["exception_pending"]);
+                emit_call(
+                    func,
+                    reloc_enabled,
+                    import_ids[crate::wasm_abi_generated::WasmRuntimeImport::ExceptionPending],
+                );
                 func.instruction(&Instruction::I64Const(0));
                 func.instruction(&Instruction::I64Ne);
                 let depth = control_stack.len().saturating_sub(1 + try_index);
@@ -282,7 +303,11 @@ fn emit_arena_free(
 ) {
     if let Some(arena_idx) = arena_local {
         func.instruction(&Instruction::LocalGet(arena_idx));
-        emit_call(func, reloc_enabled, import_ids["arena_free"]);
+        emit_call(
+            func,
+            reloc_enabled,
+            import_ids[crate::wasm_abi_generated::WasmRuntimeImport::ArenaFree],
+        );
     }
 }
 

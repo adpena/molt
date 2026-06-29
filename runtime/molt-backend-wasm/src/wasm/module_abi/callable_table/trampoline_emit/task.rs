@@ -33,7 +33,11 @@ pub(super) fn emit_task_trampoline(
     emit_table_index_i64(func, reloc_enabled, table_idx);
     func.instruction(&Instruction::I64Const(closure_size));
     func.instruction(&Instruction::I64Const(layout.runtime_task_kind));
-    emit_call(func, reloc_enabled, backend.import_ids["task_new"]);
+    emit_call(
+        func,
+        reloc_enabled,
+        backend.import_ids[crate::wasm_abi_generated::WasmRuntimeImport::TaskNew],
+    );
     func.instruction(&Instruction::LocalSet(TASK_LOCAL));
 
     emit_payload_slots(
@@ -104,19 +108,25 @@ impl TaskTrampolineLayout {
                 emit_call(
                     func,
                     reloc_enabled,
-                    backend.import_ids["cancel_token_get_current"],
+                    backend.import_ids
+                        [crate::wasm_abi_generated::WasmRuntimeImport::CancelTokenGetCurrent],
                 );
                 emit_call(
                     func,
                     reloc_enabled,
-                    backend.import_ids["task_register_token_owned"],
+                    backend.import_ids
+                        [crate::wasm_abi_generated::WasmRuntimeImport::TaskRegisterTokenOwned],
                 );
                 func.instruction(&Instruction::Drop);
                 func.instruction(&Instruction::LocalGet(TASK_LOCAL));
             }
             TaskTrampolineCompletion::WrapAsyncGen => {
                 func.instruction(&Instruction::LocalGet(TASK_LOCAL));
-                emit_call(func, reloc_enabled, backend.import_ids["asyncgen_new"]);
+                emit_call(
+                    func,
+                    reloc_enabled,
+                    backend.import_ids[crate::wasm_abi_generated::WasmRuntimeImport::AsyncgenNew],
+                );
             }
         }
         func.instruction(&Instruction::End);
@@ -144,7 +154,11 @@ fn emit_payload_slots(
     }
 
     func.instruction(&Instruction::LocalGet(TASK_LOCAL));
-    emit_call(func, reloc_enabled, backend.import_ids["handle_resolve"]);
+    emit_call(
+        func,
+        reloc_enabled,
+        backend.import_ids[crate::wasm_abi_generated::WasmRuntimeImport::HandleResolve],
+    );
     func.instruction(&Instruction::LocalSet(BASE_LOCAL));
     if arity > 0 {
         func.instruction(&Instruction::LocalGet(1));
@@ -187,5 +201,9 @@ fn store_payload_value(
         memory_index: 0,
     }));
     func.instruction(&Instruction::LocalGet(value_local));
-    emit_call(func, reloc_enabled, backend.import_ids["inc_ref_obj"]);
+    emit_call(
+        func,
+        reloc_enabled,
+        backend.import_ids[crate::wasm_abi_generated::WasmRuntimeImport::IncRefObj],
+    );
 }

@@ -43,7 +43,7 @@ pub(super) fn emit_additive_numeric_op(
     reloc_enabled: bool,
     known_raw_ints: &BTreeMap<u32, i64>,
 ) {
-    let import_name = selection.import_name;
+    let import_name = selection.import;
     let operands = binary_operands(op, locals);
     if wasm_scalar_integer_fast_path_for_op(&scalar_plan, op) {
         emit_guarded_int_binary_result_or_boxed(

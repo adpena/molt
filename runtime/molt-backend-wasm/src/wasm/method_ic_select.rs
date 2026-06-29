@@ -1,11 +1,11 @@
 use crate::OpIR;
 use crate::wasm_abi_generated::{
-    WasmMethodIcFamily, WasmMethodIcSelection, wasm_method_ic_selection,
+    WasmMethodIcFamily, WasmMethodIcSelection, WasmRuntimeImport, wasm_method_ic_selection,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(in crate::wasm) struct WasmMethodIcRuntime {
-    pub(in crate::wasm) import_name: &'static str,
+    pub(in crate::wasm) import: WasmRuntimeImport,
     pub(in crate::wasm) extra_arg_start: usize,
 }
 
@@ -29,7 +29,7 @@ pub(in crate::wasm) fn selected_method_ic_runtime(op: &OpIR) -> Option<WasmMetho
     let selection: WasmMethodIcSelection =
         wasm_method_ic_selection(family, arg_count - extra_arg_start);
     Some(WasmMethodIcRuntime {
-        import_name: selection.import_name,
+        import: selection.import,
         extra_arg_start,
     })
 }

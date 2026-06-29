@@ -18,13 +18,21 @@ pub(super) fn emit_set_op(
             let args = op.args.as_ref().unwrap_or(&empty_args_sn);
             let out = locals[op.out.as_ref().unwrap()];
             func.instruction(&Instruction::I64Const(args.len() as i64));
-            emit_call(func, reloc_enabled, import_ids["set_new"]);
+            emit_call(
+                func,
+                reloc_enabled,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::SetNew],
+            );
             func.instruction(&Instruction::LocalSet(out));
             for name in args {
                 let val = locals[name];
                 func.instruction(&Instruction::LocalGet(out));
                 func.instruction(&Instruction::LocalGet(val));
-                emit_call(func, reloc_enabled, import_ids["set_add"]);
+                emit_call(
+                    func,
+                    reloc_enabled,
+                    import_ids[crate::wasm_abi_generated::WasmRuntimeImport::SetAdd],
+                );
                 func.instruction(&Instruction::Drop);
             }
         }
@@ -33,13 +41,21 @@ pub(super) fn emit_set_op(
             let args = op.args.as_ref().unwrap_or(&empty_args_fn);
             let out = locals[op.out.as_ref().unwrap()];
             func.instruction(&Instruction::I64Const(args.len() as i64));
-            emit_call(func, reloc_enabled, import_ids["frozenset_new"]);
+            emit_call(
+                func,
+                reloc_enabled,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::FrozensetNew],
+            );
             func.instruction(&Instruction::LocalSet(out));
             for name in args {
                 let val = locals[name];
                 func.instruction(&Instruction::LocalGet(out));
                 func.instruction(&Instruction::LocalGet(val));
-                emit_call(func, reloc_enabled, import_ids["frozenset_add"]);
+                emit_call(
+                    func,
+                    reloc_enabled,
+                    import_ids[crate::wasm_abi_generated::WasmRuntimeImport::FrozensetAdd],
+                );
                 func.instruction(&Instruction::Drop);
             }
         }

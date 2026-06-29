@@ -110,12 +110,12 @@ impl WasmBackend {
         let eh_used: Vec<&str> = eh_imports
             .iter()
             .copied()
-            .filter(|name| self.import_ids.is_used(name))
+            .filter(|name| self.import_ids.is_used_name(name))
             .collect();
         let eh_eliminable: Vec<&str> = ["exception_push", "exception_pop", "exception_pending"]
             .iter()
             .copied()
-            .filter(|name| self.import_ids.is_used(name))
+            .filter(|name| self.import_ids.is_used_name(name))
             .collect();
         eprintln!(
             "[molt-wasm-import-audit] exception host calls: {}/{} used ({} eliminable by native EH: {})",

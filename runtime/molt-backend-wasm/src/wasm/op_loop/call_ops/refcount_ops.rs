@@ -32,7 +32,7 @@ fn emit_inc_ref_like(call_ctx: &CallOpContext<'_, '_, '_>, func: &mut Function, 
         emit_call(
             func,
             call_ctx.reloc_enabled,
-            call_ctx.import_ids["inc_ref_obj"],
+            call_ctx.import_ids[crate::wasm_abi_generated::WasmRuntimeImport::IncRefObj],
         );
     }
     if let Some(out_name) = op.out.as_ref()
@@ -59,7 +59,7 @@ fn emit_dec_ref_like(call_ctx: &CallOpContext<'_, '_, '_>, func: &mut Function, 
     emit_call(
         func,
         call_ctx.reloc_enabled,
-        call_ctx.import_ids["dec_ref_obj"],
+        call_ctx.import_ids[crate::wasm_abi_generated::WasmRuntimeImport::DecRefObj],
     );
     if let Some(out_name) = op.out.as_ref()
         && out_name != "none"

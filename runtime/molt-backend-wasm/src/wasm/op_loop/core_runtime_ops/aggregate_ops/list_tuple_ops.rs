@@ -79,7 +79,11 @@ pub(super) fn emit_list_tuple_op(
                     let val = locals[&args[1]];
                     func.instruction(&Instruction::LocalGet(tuple));
                     func.instruction(&Instruction::LocalGet(val));
-                    emit_call(func, reloc_enabled, import_ids["tuple_index"]);
+                    emit_call(
+                        func,
+                        reloc_enabled,
+                        import_ids[crate::wasm_abi_generated::WasmRuntimeImport::TupleIndex],
+                    );
                     func.instruction(&Instruction::LocalSet(res));
                 }
             } else {
@@ -87,7 +91,11 @@ pub(super) fn emit_list_tuple_op(
                 let val = locals[&args[1]];
                 func.instruction(&Instruction::LocalGet(tuple));
                 func.instruction(&Instruction::LocalGet(val));
-                emit_call(func, reloc_enabled, import_ids["tuple_index"]);
+                emit_call(
+                    func,
+                    reloc_enabled,
+                    import_ids[crate::wasm_abi_generated::WasmRuntimeImport::TupleIndex],
+                );
                 func.instruction(&Instruction::LocalSet(res));
             }
         }
@@ -104,7 +112,11 @@ pub(super) fn emit_list_tuple_op(
                 let out = locals[&args[1 + i]];
                 func.instruction(&Instruction::LocalGet(seq));
                 func.instruction(&Instruction::I64Const(box_int(i as i64)));
-                emit_call(func, reloc_enabled, import_ids["index"]);
+                emit_call(
+                    func,
+                    reloc_enabled,
+                    import_ids[crate::wasm_abi_generated::WasmRuntimeImport::Index],
+                );
                 func.instruction(&Instruction::LocalSet(out));
             }
         }

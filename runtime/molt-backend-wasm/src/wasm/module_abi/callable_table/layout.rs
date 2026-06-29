@@ -73,15 +73,15 @@ impl WasmBackend {
         let mut func_to_index = BTreeMap::new();
         func_to_index.insert(
             "molt_runtime_init".to_string(),
-            self.import_ids["runtime_init"],
+            self.import_ids[crate::wasm_abi_generated::WasmRuntimeImport::RuntimeInit],
         );
         func_to_index.insert(
             "molt_runtime_shutdown".to_string(),
-            self.import_ids["runtime_shutdown"],
+            self.import_ids[crate::wasm_abi_generated::WasmRuntimeImport::RuntimeShutdown],
         );
         func_to_index.insert(
             "molt_sys_set_version_info".to_string(),
-            self.import_ids["sys_set_version_info"],
+            self.import_ids[crate::wasm_abi_generated::WasmRuntimeImport::SysSetVersionInfo],
         );
         poll_table.seed_function_table_slots(&mut func_to_table_idx);
 
@@ -123,7 +123,7 @@ impl WasmBackend {
             } else {
                 let import_idx = self
                     .import_ids
-                    .get(callable.import_name.as_str())
+                    .get_name(callable.import_name.as_str())
                     .copied()
                     .unwrap_or(sentinel_func_idx);
                 let safe = if import_idx == u32::MAX {
@@ -196,7 +196,7 @@ impl WasmBackend {
                 .unwrap_or(runtime_name.as_str());
             let import_idx = *self
                 .import_ids
-                .get(import_name)
+                .get_name(import_name)
                 .unwrap_or_else(|| panic!("missing direct runtime import for {runtime_name}"));
             if import_idx == u32::MAX {
                 panic!("direct runtime import unexpectedly stripped for {runtime_name}");

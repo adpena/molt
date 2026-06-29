@@ -45,7 +45,7 @@ impl WasmPollTableLayout {
                 .unwrap_or_else(|| panic!("missing wrapper signature for arity {arity}"));
             let import_idx = *backend
                 .import_ids
-                .get(import_name)
+                .get_name(import_name)
                 .unwrap_or_else(|| panic!("missing import for {import_name}"));
             backend.funcs.function(type_idx);
             let func_index = backend.func_count;
@@ -72,7 +72,11 @@ impl WasmPollTableLayout {
         let mut table_indices = vec![sentinel_func_idx; self.prefix_len as usize];
         for spec in POLL_TABLE_IMPORTS {
             let name = spec.import_name;
-            let idx = *table_import_wrappers.get(name).unwrap_or(&import_ids[name]);
+            let idx = table_import_wrappers.get(name).copied().unwrap_or_else(|| {
+                *import_ids
+                    .get_name(name)
+                    .unwrap_or_else(|| panic!("missing poll import for {name}"))
+            });
             let slot = spec.table_slot as usize;
             *table_indices
                 .get_mut(slot)

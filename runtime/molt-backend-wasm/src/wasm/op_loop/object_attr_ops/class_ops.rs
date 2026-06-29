@@ -23,7 +23,11 @@ pub(super) fn emit_class_object_op(
             let args = op.args.as_ref().unwrap();
             let name = locals[&args[0]];
             func.instruction(&Instruction::LocalGet(name));
-            emit_call(func, reloc_enabled, import_ids["class_new"]);
+            emit_call(
+                func,
+                reloc_enabled,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::ClassNew],
+            );
             store_result_or_drop(func, op, locals);
         }
         "class_def" => {
@@ -42,7 +46,11 @@ pub(super) fn emit_class_object_op(
             for arg_name in args {
                 let arg = locals[arg_name];
                 func.instruction(&Instruction::LocalGet(arg));
-                emit_call(func, reloc_enabled, import_ids["inc_ref_obj"]);
+                emit_call(
+                    func,
+                    reloc_enabled,
+                    import_ids[crate::wasm_abi_generated::WasmRuntimeImport::IncRefObj],
+                );
             }
 
             for (i, base_name) in args[1..1 + layout.nbases()].iter().enumerate() {
@@ -88,12 +96,20 @@ pub(super) fn emit_class_object_op(
             func.instruction(&Instruction::I64Const(layout.layout_size()));
             func.instruction(&Instruction::I64Const(layout.layout_version()));
             func.instruction(&Instruction::I64Const(layout.flags()));
-            emit_call(func, reloc_enabled, import_ids["guarded_class_def"]);
+            emit_call(
+                func,
+                reloc_enabled,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::GuardedClassDef],
+            );
             store_result_or_drop(func, op, locals);
             for arg_name in args.iter().rev() {
                 let arg = locals[arg_name];
                 func.instruction(&Instruction::LocalGet(arg));
-                emit_call(func, reloc_enabled, import_ids["dec_ref_obj"]);
+                emit_call(
+                    func,
+                    reloc_enabled,
+                    import_ids[crate::wasm_abi_generated::WasmRuntimeImport::DecRefObj],
+                );
             }
         }
         "class_set_base" => {
@@ -102,14 +118,22 @@ pub(super) fn emit_class_object_op(
             let base_bits = locals[&args[1]];
             func.instruction(&Instruction::LocalGet(class_bits));
             func.instruction(&Instruction::LocalGet(base_bits));
-            emit_call(func, reloc_enabled, import_ids["class_set_base"]);
+            emit_call(
+                func,
+                reloc_enabled,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::ClassSetBase],
+            );
             store_result_or_drop(func, op, locals);
         }
         "class_apply_set_name" => {
             let args = op.args.as_ref().unwrap();
             let class_bits = locals[&args[0]];
             func.instruction(&Instruction::LocalGet(class_bits));
-            emit_call(func, reloc_enabled, import_ids["class_apply_set_name"]);
+            emit_call(
+                func,
+                reloc_enabled,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::ClassApplySetName],
+            );
             store_result_or_drop(func, op, locals);
         }
         "super_new" => {
@@ -118,28 +142,44 @@ pub(super) fn emit_class_object_op(
             let obj_bits = locals[&args[1]];
             func.instruction(&Instruction::LocalGet(type_bits));
             func.instruction(&Instruction::LocalGet(obj_bits));
-            emit_call(func, reloc_enabled, import_ids["super_new"]);
+            emit_call(
+                func,
+                reloc_enabled,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::SuperNew],
+            );
             store_result_or_drop(func, op, locals);
         }
         "builtin_type" => {
             let args = op.args.as_ref().unwrap();
             let tag = locals[&args[0]];
             func.instruction(&Instruction::LocalGet(tag));
-            emit_call(func, reloc_enabled, import_ids["builtin_type"]);
+            emit_call(
+                func,
+                reloc_enabled,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::BuiltinType],
+            );
             store_result_or_drop(func, op, locals);
         }
         "type_of" => {
             let args = op.args.as_ref().unwrap();
             let obj = locals[&args[0]];
             func.instruction(&Instruction::LocalGet(obj));
-            emit_call(func, reloc_enabled, import_ids["type_of"]);
+            emit_call(
+                func,
+                reloc_enabled,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::TypeOf],
+            );
             store_result_or_drop(func, op, locals);
         }
         "class_layout_version" => {
             let args = op.args.as_ref().unwrap();
             let class_bits = locals[&args[0]];
             func.instruction(&Instruction::LocalGet(class_bits));
-            emit_call(func, reloc_enabled, import_ids["class_layout_version"]);
+            emit_call(
+                func,
+                reloc_enabled,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::ClassLayoutVersion],
+            );
             store_result_or_drop(func, op, locals);
         }
         "class_set_layout_version" => {
@@ -148,7 +188,11 @@ pub(super) fn emit_class_object_op(
             let version_bits = locals[&args[1]];
             func.instruction(&Instruction::LocalGet(class_bits));
             func.instruction(&Instruction::LocalGet(version_bits));
-            emit_call(func, reloc_enabled, import_ids["class_set_layout_version"]);
+            emit_call(
+                func,
+                reloc_enabled,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::ClassSetLayoutVersion],
+            );
             store_non_none_result_or_drop(func, op, locals);
         }
         "class_merge_layout" => {
@@ -159,7 +203,11 @@ pub(super) fn emit_class_object_op(
             func.instruction(&Instruction::LocalGet(class_bits));
             func.instruction(&Instruction::LocalGet(offsets_bits));
             func.instruction(&Instruction::LocalGet(size_bits));
-            emit_call(func, reloc_enabled, import_ids["class_merge_layout"]);
+            emit_call(
+                func,
+                reloc_enabled,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::ClassMergeLayout],
+            );
             store_non_none_result_or_drop(func, op, locals);
         }
         "isinstance" => {
@@ -168,7 +216,11 @@ pub(super) fn emit_class_object_op(
             let cls = locals[&args[1]];
             func.instruction(&Instruction::LocalGet(obj));
             func.instruction(&Instruction::LocalGet(cls));
-            emit_call(func, reloc_enabled, import_ids["isinstance"]);
+            emit_call(
+                func,
+                reloc_enabled,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::Isinstance],
+            );
             store_result_or_drop(func, op, locals);
         }
         "exception_match_builtin" => {
@@ -177,7 +229,11 @@ pub(super) fn emit_class_object_op(
             let tag = op.value.expect("exception_match_builtin missing tag value");
             func.instruction(&Instruction::LocalGet(exc));
             func.instruction(&Instruction::I64Const(tag));
-            emit_call(func, reloc_enabled, import_ids["exception_match_builtin"]);
+            emit_call(
+                func,
+                reloc_enabled,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::ExceptionMatchBuiltin],
+            );
             store_result_or_drop(func, op, locals);
         }
         "issubclass" => {
@@ -186,11 +242,19 @@ pub(super) fn emit_class_object_op(
             let cls = locals[&args[1]];
             func.instruction(&Instruction::LocalGet(sub));
             func.instruction(&Instruction::LocalGet(cls));
-            emit_call(func, reloc_enabled, import_ids["issubclass"]);
+            emit_call(
+                func,
+                reloc_enabled,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::Issubclass],
+            );
             store_result_or_drop(func, op, locals);
         }
         "object_new" => {
-            emit_call(func, reloc_enabled, import_ids["object_new"]);
+            emit_call(
+                func,
+                reloc_enabled,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::ObjectNew],
+            );
             store_result_or_drop(func, op, locals);
         }
         "object_new_bound" => {
@@ -204,7 +268,7 @@ pub(super) fn emit_class_object_op(
             if let Some(payload_size) = selected.payload_size() {
                 func.instruction(&Instruction::I64Const(payload_size));
             }
-            emit_call(func, reloc_enabled, import_ids[selected.import_name]);
+            emit_call(func, reloc_enabled, import_ids[selected.import]);
             store_result_or_drop(func, op, locals);
         }
         "object_new_bound_stack" => {
@@ -218,7 +282,7 @@ pub(super) fn emit_class_object_op(
             func.instruction(&Instruction::I64Const(
                 selected.required_payload_size("object_new_bound_stack"),
             ));
-            emit_call(func, reloc_enabled, import_ids[selected.import_name]);
+            emit_call(func, reloc_enabled, import_ids[selected.import]);
             store_result_or_drop(func, op, locals);
         }
         "object_set_class" => {
@@ -226,9 +290,17 @@ pub(super) fn emit_class_object_op(
             let obj = locals[&args[0]];
             let class_obj = locals[&args[1]];
             func.instruction(&Instruction::LocalGet(obj));
-            emit_call(func, reloc_enabled, import_ids["handle_resolve"]);
+            emit_call(
+                func,
+                reloc_enabled,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::HandleResolve],
+            );
             func.instruction(&Instruction::LocalGet(class_obj));
-            emit_call(func, reloc_enabled, import_ids["object_set_class"]);
+            emit_call(
+                func,
+                reloc_enabled,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::ObjectSetClass],
+            );
             store_result_or_drop(func, op, locals);
         }
         _ => return false,

@@ -1,7 +1,7 @@
 use crate::OpIR;
 use crate::wasm_abi_generated::{
     WasmConstInlineSeed, WasmConstLirFastPolicy, WasmConstLiteralPayload, WasmConstOpPolicySpec,
-    WasmConstRawIntEffect, WasmConstScalarValue, wasm_const_op_policy,
+    WasmConstRawIntEffect, WasmConstScalarValue, WasmRuntimeImport, wasm_const_op_policy,
     wasm_const_op_policy_for_opcode,
 };
 use crate::wasm_binary::emit_call;
@@ -44,7 +44,7 @@ impl WasmConstOpPolicy {
         self.0.parse_scalar_literal
     }
 
-    pub(in crate::wasm) fn materializer_import(self) -> Option<&'static str> {
+    pub(in crate::wasm) fn materializer_import(self) -> Option<WasmRuntimeImport> {
         self.0.materializer_import
     }
 
@@ -136,7 +136,7 @@ impl WasmConstOpPolicy {
             },
         };
         WasmConstMaterialization {
-            import_name: self.required_materializer_import(),
+            import: self.required_materializer_import(),
             out_local,
             payload,
         }
@@ -159,13 +159,13 @@ impl WasmConstOpPolicy {
             },
         };
         WasmConstMaterialization {
-            import_name: self.required_materializer_import(),
+            import: self.required_materializer_import(),
             out_local,
             payload,
         }
     }
 
-    fn required_materializer_import(self) -> &'static str {
+    fn required_materializer_import(self) -> WasmRuntimeImport {
         self.materializer_import()
             .unwrap_or_else(|| panic!("const op {} has no materializer import", self.0.kind))
     }
@@ -222,14 +222,14 @@ impl WasmConstOpPolicy {
 
 #[derive(Debug, Clone)]
 pub(crate) struct WasmConstMaterialization {
-    import_name: &'static str,
+    import: WasmRuntimeImport,
     out_local: u32,
     payload: WasmConstMaterializationPayload,
 }
 
 impl WasmConstMaterialization {
-    pub(crate) fn runtime_import(&self) -> &'static str {
-        self.import_name
+    pub(crate) fn runtime_import(&self) -> WasmRuntimeImport {
+        self.import
     }
 
     pub(crate) fn emit(

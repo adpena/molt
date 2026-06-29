@@ -148,7 +148,8 @@ mod tests {
     use crate::OpIR;
     use crate::wasm::const_materialization::WasmConstOpPolicy;
     use crate::wasm_abi_generated::{
-        WasmConstInlineSeed, WasmConstLirFastPolicy, WasmConstLiteralPayload, WasmConstRawIntEffect,
+        WasmConstInlineSeed, WasmConstLirFastPolicy, WasmConstLiteralPayload,
+        WasmConstRawIntEffect, WasmRuntimeImport,
     };
     use crate::wasm_values::{box_bool, box_int, box_none};
     use molt_codegen_abi::box_float_bits as box_float;
@@ -213,25 +214,25 @@ mod tests {
 
     #[test]
     fn const_policy_classifies_runtime_seed_and_literal_scratch() {
-        for (kind, payload, import_name, parse_scalar, lir_policy) in [
+        for (kind, payload, import, parse_scalar, lir_policy) in [
             (
                 "const_str",
                 WasmConstLiteralPayload::String,
-                "string_from_bytes",
+                WasmRuntimeImport::StringFromBytes,
                 true,
                 WasmConstLirFastPolicy::Materialize,
             ),
             (
                 "const_bigint",
                 WasmConstLiteralPayload::BigintDecimal,
-                "bigint_from_str",
+                WasmRuntimeImport::BigintFromStr,
                 false,
                 WasmConstLirFastPolicy::Materialize,
             ),
             (
                 "const_bytes",
                 WasmConstLiteralPayload::Bytes,
-                "bytes_from_bytes",
+                WasmRuntimeImport::BytesFromBytes,
                 true,
                 WasmConstLirFastPolicy::Materialize,
             ),
@@ -242,7 +243,7 @@ mod tests {
                 "{kind} must allocate literal scratch"
             );
             assert_eq!(policy.literal_payload(), payload);
-            assert_eq!(policy.materializer_import(), Some(import_name));
+            assert_eq!(policy.materializer_import(), Some(import));
             assert_eq!(policy.parse_scalar_literal(), parse_scalar);
             assert_eq!(policy.lir_fast_policy(), lir_policy);
             assert!(

@@ -77,7 +77,11 @@ impl WasmFunctionFrame {
     ) {
         self.const_cache.emit_init(func);
         if let Some(idx) = self.arena_local {
-            emit_call(func, reloc_enabled, import_ids["arena_new"]);
+            emit_call(
+                func,
+                reloc_enabled,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::ArenaNew],
+            );
             func.instruction(&Instruction::LocalSet(idx));
         }
     }
@@ -90,7 +94,11 @@ impl WasmFunctionFrame {
     ) {
         if let Some(arena_idx) = self.arena_local {
             func.instruction(&Instruction::LocalGet(arena_idx));
-            emit_call(func, reloc_enabled, import_ids["arena_free"]);
+            emit_call(
+                func,
+                reloc_enabled,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::ArenaFree],
+            );
         }
         self.const_cache.emit_none(func);
         func.instruction(&Instruction::End);

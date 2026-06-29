@@ -1,4 +1,7 @@
+use super::super::control_flow::ControlKind;
 use super::super::control_flow::dispatch_control_panic;
+use super::super::op_loop::WasmFunctionEmitContext;
+use super::DispatchMode;
 use super::block_layout::emit_dispatch_block_lookup;
 use super::common::{
     emit_arena_free, emit_conditional_state_branch, emit_dispatch_check_exception,
@@ -7,13 +10,10 @@ use super::common::{
     exception_handler_region_indices_from_label_map, label_target, loop_break_target,
     require_stateful,
 };
+use super::plan::{NonLinearDispatchLocals, NonLinearDispatchPlan};
 use super::stateful_ops::{
     emit_chan_recv_yield, emit_chan_send_yield, emit_state_transition, emit_state_yield,
 };
-use super::super::control_flow::ControlKind;
-use super::super::op_loop::WasmFunctionEmitContext;
-use super::DispatchMode;
-use super::plan::{NonLinearDispatchLocals, NonLinearDispatchPlan};
 use crate::wasm_binary::emit_call;
 use crate::wasm_values::emit_branch_truthiness_i32;
 use std::collections::BTreeMap;
@@ -102,7 +102,7 @@ fn emit_non_linear_dispatch(
                     emit_call(
                         func,
                         op_emitter.reloc_enabled,
-                        op_emitter.import_ids["aiter"],
+                        op_emitter.import_ids[crate::wasm_abi_generated::WasmRuntimeImport::Aiter],
                     );
                     func.instruction(&Instruction::LocalSet(
                         op_emitter.locals()[op.out.as_ref().unwrap()],
@@ -177,7 +177,8 @@ fn emit_non_linear_dispatch(
                     emit_call(
                         func,
                         op_emitter.reloc_enabled,
-                        op_emitter.import_ids["exception_pending"],
+                        op_emitter.import_ids
+                            [crate::wasm_abi_generated::WasmRuntimeImport::ExceptionPending],
                     );
                     func.instruction(&Instruction::I64Const(0));
                     func.instruction(&Instruction::I64Ne);
@@ -225,7 +226,8 @@ fn emit_non_linear_dispatch(
                     emit_branch_truthiness_i32(
                         func,
                         cond,
-                        op_emitter.import_ids["is_truthy"],
+                        op_emitter.import_ids
+                            [crate::wasm_abi_generated::WasmRuntimeImport::IsTruthy],
                         op_emitter.reloc_enabled,
                     );
                     func.instruction(&Instruction::If(BlockType::Empty));

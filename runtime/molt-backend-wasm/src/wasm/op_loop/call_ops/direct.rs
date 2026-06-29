@@ -38,7 +38,11 @@ fn emit_call_async(
     emit_table_index_i64(func, reloc_enabled, table_idx);
     func.instruction(&Instruction::I64Const((payload_len * 8) as i64));
     func.instruction(&Instruction::I64Const(TASK_KIND_FUTURE));
-    emit_call(func, reloc_enabled, import_ids["task_new"]);
+    emit_call(
+        func,
+        reloc_enabled,
+        import_ids[crate::wasm_abi_generated::WasmRuntimeImport::TaskNew],
+    );
     let res = if let Some(out) = op.out.as_ref() {
         let r = locals[out];
         func.instruction(&Instruction::LocalSet(r));
@@ -51,7 +55,11 @@ fn emit_call_async(
         for (idx, arg) in args.iter().enumerate() {
             let arg_val = locals[arg];
             func.instruction(&Instruction::LocalGet(res));
-            emit_call(func, reloc_enabled, import_ids["handle_resolve"]);
+            emit_call(
+                func,
+                reloc_enabled,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::HandleResolve],
+            );
             func.instruction(&Instruction::I32Const((idx * 8) as i32));
             func.instruction(&Instruction::I32Add);
             func.instruction(&Instruction::LocalGet(arg_val));
@@ -61,7 +69,11 @@ fn emit_call_async(
                 memory_index: 0,
             }));
             func.instruction(&Instruction::LocalGet(arg_val));
-            emit_call(func, reloc_enabled, import_ids["inc_ref_obj"]);
+            emit_call(
+                func,
+                reloc_enabled,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::IncRefObj],
+            );
         }
     }
     CallOpEmission::Handled
@@ -94,7 +106,8 @@ fn emit_plain_call(
         );
     }
     let func_idx = call_site_abi.function_index(target_name, "call");
-    let bootstrap_call = func_idx == import_ids["runtime_init"];
+    let bootstrap_call =
+        func_idx == import_ids[crate::wasm_abi_generated::WasmRuntimeImport::RuntimeInit];
     if bootstrap_call {
         push_call_args(func, locals, args_names);
         emit_call(func, reloc_enabled, func_idx);
@@ -151,7 +164,11 @@ fn emit_internal_call(
 
     if is_tail_call && let Some(arena_idx) = arena_local {
         func.instruction(&Instruction::LocalGet(arena_idx));
-        emit_call(func, reloc_enabled, import_ids["arena_free"]);
+        emit_call(
+            func,
+            reloc_enabled,
+            import_ids[crate::wasm_abi_generated::WasmRuntimeImport::ArenaFree],
+        );
     }
 
     push_call_args(func, locals, args_names);

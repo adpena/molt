@@ -25,11 +25,19 @@ pub(super) fn emit_attribute_op(
             let bytes = attr.as_bytes();
             let data = backend.add_data_segment(reloc_enabled, bytes);
             func.instruction(&Instruction::LocalGet(obj));
-            emit_call(func, reloc_enabled, import_ids["handle_resolve"]);
+            emit_call(
+                func,
+                reloc_enabled,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::HandleResolve],
+            );
             backend.emit_data_ptr(reloc_enabled, func_index, func, data);
             func.instruction(&Instruction::I32WrapI64);
             func.instruction(&Instruction::I64Const(bytes.len() as i64));
-            emit_call(func, reloc_enabled, import_ids["get_attr_ptr"]);
+            emit_call(
+                func,
+                reloc_enabled,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::GetAttrPtr],
+            );
             store_result_or_drop(func, op, locals);
         }
         "get_attr_generic_obj" => {
@@ -49,7 +57,11 @@ pub(super) fn emit_attribute_op(
             func.instruction(&Instruction::I32WrapI64);
             func.instruction(&Instruction::I64Const(bytes.len() as i64));
             func.instruction(&Instruction::I64Const(site_bits));
-            emit_call(func, reloc_enabled, import_ids["get_attr_object_ic"]);
+            emit_call(
+                func,
+                reloc_enabled,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::GetAttrObjectIc],
+            );
             store_result_or_drop(func, op, locals);
         }
         "get_attr_special_obj" => {
@@ -62,7 +74,11 @@ pub(super) fn emit_attribute_op(
             backend.emit_data_ptr(reloc_enabled, func_index, func, data);
             func.instruction(&Instruction::I32WrapI64);
             func.instruction(&Instruction::I64Const(bytes.len() as i64));
-            emit_call(func, reloc_enabled, import_ids["get_attr_special"]);
+            emit_call(
+                func,
+                reloc_enabled,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::GetAttrSpecial],
+            );
             store_result_or_drop(func, op, locals);
         }
         "set_attr_generic_ptr" => {
@@ -87,7 +103,11 @@ pub(super) fn emit_attribute_op(
             func.instruction(&Instruction::I32WrapI64);
             func.instruction(&Instruction::I64Const(bytes.len() as i64));
             func.instruction(&Instruction::LocalGet(val));
-            emit_call(func, reloc_enabled, import_ids["set_attr_object"]);
+            emit_call(
+                func,
+                reloc_enabled,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::SetAttrObject],
+            );
             store_result_or_drop(func, op, locals);
         }
         "set_attr_generic_obj" => {
@@ -112,7 +132,11 @@ pub(super) fn emit_attribute_op(
             func.instruction(&Instruction::I32WrapI64);
             func.instruction(&Instruction::I64Const(bytes.len() as i64));
             func.instruction(&Instruction::LocalGet(val));
-            emit_call(func, reloc_enabled, import_ids["set_attr_object"]);
+            emit_call(
+                func,
+                reloc_enabled,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::SetAttrObject],
+            );
             store_result_or_drop(func, op, locals);
         }
         "del_attr_generic_ptr" => {
@@ -130,7 +154,11 @@ pub(super) fn emit_attribute_op(
             backend.emit_data_ptr(reloc_enabled, func_index, func, data);
             func.instruction(&Instruction::I32WrapI64);
             func.instruction(&Instruction::I64Const(bytes.len() as i64));
-            emit_call(func, reloc_enabled, import_ids["del_attr_object"]);
+            emit_call(
+                func,
+                reloc_enabled,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::DelAttrObject],
+            );
             store_result_or_drop(func, op, locals);
         }
         "del_attr_generic_obj" => {
@@ -143,7 +171,11 @@ pub(super) fn emit_attribute_op(
             backend.emit_data_ptr(reloc_enabled, func_index, func, data);
             func.instruction(&Instruction::I32WrapI64);
             func.instruction(&Instruction::I64Const(bytes.len() as i64));
-            emit_call(func, reloc_enabled, import_ids["del_attr_object"]);
+            emit_call(
+                func,
+                reloc_enabled,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::DelAttrObject],
+            );
             store_result_or_drop(func, op, locals);
         }
         "get_attr_name" => {
@@ -152,7 +184,11 @@ pub(super) fn emit_attribute_op(
             let name = locals[&args[1]];
             func.instruction(&Instruction::LocalGet(obj));
             func.instruction(&Instruction::LocalGet(name));
-            emit_call(func, reloc_enabled, import_ids["get_attr_name"]);
+            emit_call(
+                func,
+                reloc_enabled,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::GetAttrName],
+            );
             store_result_or_drop(func, op, locals);
         }
         "get_attr_name_default" => {
@@ -163,7 +199,11 @@ pub(super) fn emit_attribute_op(
             func.instruction(&Instruction::LocalGet(obj));
             func.instruction(&Instruction::LocalGet(name));
             func.instruction(&Instruction::LocalGet(default_val));
-            emit_call(func, reloc_enabled, import_ids["get_attr_name_default"]);
+            emit_call(
+                func,
+                reloc_enabled,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::GetAttrNameDefault],
+            );
             store_result_or_drop(func, op, locals);
         }
         "has_attr_name" => {
@@ -172,7 +212,11 @@ pub(super) fn emit_attribute_op(
             let name = locals[&args[1]];
             func.instruction(&Instruction::LocalGet(obj));
             func.instruction(&Instruction::LocalGet(name));
-            emit_call(func, reloc_enabled, import_ids["has_attr_name"]);
+            emit_call(
+                func,
+                reloc_enabled,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::HasAttrName],
+            );
             store_result_or_drop(func, op, locals);
         }
         "set_attr_name" => {
@@ -183,7 +227,11 @@ pub(super) fn emit_attribute_op(
             func.instruction(&Instruction::LocalGet(obj));
             func.instruction(&Instruction::LocalGet(name));
             func.instruction(&Instruction::LocalGet(val));
-            emit_call(func, reloc_enabled, import_ids["set_attr_name"]);
+            emit_call(
+                func,
+                reloc_enabled,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::SetAttrName],
+            );
             store_result_or_drop(func, op, locals);
         }
         "del_attr_name" => {
@@ -192,7 +240,11 @@ pub(super) fn emit_attribute_op(
             let name = locals[&args[1]];
             func.instruction(&Instruction::LocalGet(obj));
             func.instruction(&Instruction::LocalGet(name));
-            emit_call(func, reloc_enabled, import_ids["del_attr_name"]);
+            emit_call(
+                func,
+                reloc_enabled,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::DelAttrName],
+            );
             store_result_or_drop(func, op, locals);
         }
         _ => return false,

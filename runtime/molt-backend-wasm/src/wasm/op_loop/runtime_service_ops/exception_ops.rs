@@ -22,7 +22,11 @@ pub(super) fn emit_exception_runtime_op(
                 // Native EH: no-op; WASM runtime manages handler stack.
                 const_cache.emit_none(func);
             } else {
-                emit_call(func, reloc_enabled, import_ids["exception_push"]);
+                emit_call(
+                    func,
+                    reloc_enabled,
+                    import_ids[crate::wasm_abi_generated::WasmRuntimeImport::ExceptionPush],
+                );
             }
             store_result_or_drop(func, op, locals);
         }
@@ -30,7 +34,11 @@ pub(super) fn emit_exception_runtime_op(
             if native_eh_enabled {
                 const_cache.emit_none(func);
             } else {
-                emit_call(func, reloc_enabled, import_ids["exception_pop"]);
+                emit_call(
+                    func,
+                    reloc_enabled,
+                    import_ids[crate::wasm_abi_generated::WasmRuntimeImport::ExceptionPop],
+                );
             }
             store_result_or_drop(func, op, locals);
         }
@@ -41,12 +49,20 @@ pub(super) fn emit_exception_runtime_op(
             if native_eh_enabled {
                 // Native EH: call host raise to register the exception
                 // (traceback, __context__), then throw via WASM EH.
-                emit_call(func, reloc_enabled, import_ids["raise"]);
+                emit_call(
+                    func,
+                    reloc_enabled,
+                    import_ids[crate::wasm_abi_generated::WasmRuntimeImport::Raise],
+                );
                 func.instruction(&Instruction::Drop);
                 func.instruction(&Instruction::LocalGet(exc));
                 func.instruction(&Instruction::Throw(TAG_EXCEPTION_INDEX));
             } else {
-                emit_call(func, reloc_enabled, import_ids["raise"]);
+                emit_call(
+                    func,
+                    reloc_enabled,
+                    import_ids[crate::wasm_abi_generated::WasmRuntimeImport::Raise],
+                );
                 store_result_or_drop(func, op, locals);
             }
         }

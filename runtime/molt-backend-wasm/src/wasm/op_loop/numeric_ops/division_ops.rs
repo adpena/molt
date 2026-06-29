@@ -42,14 +42,14 @@ pub(super) fn emit_division_numeric_op(
             reloc_enabled,
             known_raw_ints,
             selection.op_loop_kind,
-            selection.import_name,
+            selection.import,
         ),
         WasmNumericOpLoopKind::Matmul | WasmNumericOpLoopKind::Pow => emit_boxed_binary_result(
             func,
             op,
             import_ids,
             locals,
-            selection.import_name,
+            selection.import,
             reloc_enabled,
         ),
         WasmNumericOpLoopKind::PowMod | WasmNumericOpLoopKind::Round => {
@@ -58,7 +58,7 @@ pub(super) fn emit_division_numeric_op(
                 op,
                 import_ids,
                 locals,
-                selection.import_name,
+                selection.import,
                 reloc_enabled,
             );
         }
@@ -67,7 +67,7 @@ pub(super) fn emit_division_numeric_op(
             op,
             import_ids,
             locals,
-            selection.import_name,
+            selection.import,
             reloc_enabled,
         ),
         _ => unreachable!("non-division numeric selector routed to division emitter"),
@@ -84,7 +84,7 @@ fn emit_division_binary_op(
     reloc_enabled: bool,
     known_raw_ints: &BTreeMap<u32, i64>,
     division_op: WasmNumericOpLoopKind,
-    import_name: &str,
+    import_name: crate::wasm_abi_generated::WasmRuntimeImport,
 ) {
     let operands = binary_operands(op, locals);
     if wasm_scalar_integer_fast_path_for_op(&scalar_plan, op) {
@@ -153,7 +153,7 @@ fn emit_nonzero_rhs_raw_division_or_boxed(
     f64_scratch_local: u32,
     reloc_enabled: bool,
     known_raw_ints: &BTreeMap<u32, i64>,
-    import_name: &str,
+    import_name: crate::wasm_abi_generated::WasmRuntimeImport,
     division_op: WasmNumericOpLoopKind,
     temps: super::common::IntBinaryTemps,
 ) {
@@ -205,7 +205,7 @@ fn emit_raw_floor_div(
     const_cache: &ConstantCache,
     reloc_enabled: bool,
     known_raw_ints: &BTreeMap<u32, i64>,
-    import_name: &str,
+    import_name: crate::wasm_abi_generated::WasmRuntimeImport,
     temps: super::common::IntBinaryTemps,
 ) {
     func.instruction(&Instruction::LocalGet(temps.lhs));
@@ -246,7 +246,7 @@ fn emit_raw_mod(
     const_cache: &ConstantCache,
     reloc_enabled: bool,
     known_raw_ints: &BTreeMap<u32, i64>,
-    import_name: &str,
+    import_name: crate::wasm_abi_generated::WasmRuntimeImport,
     temps: super::common::IntBinaryTemps,
 ) {
     func.instruction(&Instruction::LocalGet(temps.lhs));

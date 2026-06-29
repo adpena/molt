@@ -1,5 +1,6 @@
 use crate::representation_plan::ScalarRepresentationPlan;
 use crate::wasm::{WasmFrameLocals, WasmFrameSyntheticLocal};
+use crate::wasm_abi_generated::WasmRuntimeImport;
 use crate::wasm_binary::emit_call;
 use crate::wasm_import_tracking::TrackedImportIds;
 use crate::{FunctionIR, OpIR};
@@ -26,8 +27,8 @@ pub(super) fn emit_data_runtime_op(
                 import_ids,
                 locals,
                 reloc_enabled,
-                "json_parse_scalar",
-                "json_parse_scalar_obj",
+                WasmRuntimeImport::JsonParseScalar,
+                WasmRuntimeImport::JsonParseScalarObj,
             );
         }
         "msgpack_parse" => {
@@ -37,8 +38,8 @@ pub(super) fn emit_data_runtime_op(
                 import_ids,
                 locals,
                 reloc_enabled,
-                "msgpack_parse_scalar",
-                "msgpack_parse_scalar_obj",
+                WasmRuntimeImport::MsgpackParseScalar,
+                WasmRuntimeImport::MsgpackParseScalarObj,
             );
         }
         "cbor_parse" => {
@@ -48,8 +49,8 @@ pub(super) fn emit_data_runtime_op(
                 import_ids,
                 locals,
                 reloc_enabled,
-                "cbor_parse_scalar",
-                "cbor_parse_scalar_obj",
+                WasmRuntimeImport::CborParseScalar,
+                WasmRuntimeImport::CborParseScalarObj,
             );
         }
         _ => return false,
@@ -63,8 +64,8 @@ fn emit_scalar_parse_op(
     import_ids: &TrackedImportIds,
     locals: &WasmFrameLocals,
     reloc_enabled: bool,
-    scalar_import: &str,
-    object_import: &str,
+    scalar_import: WasmRuntimeImport,
+    object_import: WasmRuntimeImport,
 ) {
     let args = op.args.as_ref().unwrap();
     let arg_name = &args[0];
@@ -73,14 +74,22 @@ fn emit_scalar_parse_op(
         let tmp_rc = locals.synthetic(WasmFrameSyntheticLocal::MoltTmp0);
 
         func.instruction(&Instruction::I64Const(8));
-        emit_call(func, reloc_enabled, import_ids["alloc"]);
+        emit_call(
+            func,
+            reloc_enabled,
+            import_ids[crate::wasm_abi_generated::WasmRuntimeImport::Alloc],
+        );
         func.instruction(&Instruction::LocalSet(out_ptr));
 
         func.instruction(&Instruction::LocalGet(scratch.ptr_local()));
         func.instruction(&Instruction::I32WrapI64);
         func.instruction(&Instruction::LocalGet(scratch.len_local()));
         func.instruction(&Instruction::LocalGet(out_ptr));
-        emit_call(func, reloc_enabled, import_ids["handle_resolve"]);
+        emit_call(
+            func,
+            reloc_enabled,
+            import_ids[crate::wasm_abi_generated::WasmRuntimeImport::HandleResolve],
+        );
         emit_call(func, reloc_enabled, import_ids[scalar_import]);
         func.instruction(&Instruction::I64ExtendI32U);
         func.instruction(&Instruction::LocalSet(tmp_rc));
@@ -89,7 +98,11 @@ fn emit_scalar_parse_op(
         func.instruction(&Instruction::I64Eqz);
         func.instruction(&Instruction::If(BlockType::Empty));
         func.instruction(&Instruction::LocalGet(out_ptr));
-        emit_call(func, reloc_enabled, import_ids["handle_resolve"]);
+        emit_call(
+            func,
+            reloc_enabled,
+            import_ids[crate::wasm_abi_generated::WasmRuntimeImport::HandleResolve],
+        );
         func.instruction(&Instruction::I64Load(wasm_encoder::MemArg {
             align: 3,
             offset: 0,
