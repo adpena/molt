@@ -500,6 +500,65 @@ def test_wasm_abi_manifest_owns_object_new_bound_selector() -> None:
         gen.validate_loaded_manifest(broken_lir)
 
 
+def test_wasm_abi_manifest_owns_method_ic_selector() -> None:
+    gen = _load_gen_wasm_abi()
+    data = gen.load_manifest()
+    selectors = {
+        (entry["family"], entry["extra_arg_count"]): entry["import_name"]
+        for entry in data["method_ic_selector"]
+    }
+
+    assert selectors == {
+        ("method", 0): "call_method_ic0",
+        ("method", 1): "call_method_ic1",
+        ("method", 2): "call_method_ic2",
+        ("method", 3): "call_method_ic3",
+        ("method", 4): "call_method_ic4",
+        ("super_method", 0): "call_super_method_ic0",
+        ("super_method", 1): "call_super_method_ic1",
+        ("super_method", 2): "call_super_method_ic2",
+        ("super_method", 3): "call_super_method_ic3",
+        ("super_method", 4): "call_super_method_ic4",
+    }
+
+    rendered_rs_modules = gen.render_rs_modules(data)
+    rendered_selector_rs = rendered_rs_modules["method_ic_selector.rs"]
+    rendered_mod_rs = rendered_rs_modules["mod.rs"]
+    rendered_py = gen.render_py(data)
+    assert "WASM_METHOD_IC_SELECTORS" in rendered_selector_rs
+    assert "WASM_METHOD_IC_MAX_EXTRA_ARGS: usize = 4" in rendered_selector_rs
+    assert "WasmMethodIcFamily::Method" in rendered_selector_rs
+    assert "WasmMethodIcFamily::SuperMethod" in rendered_selector_rs
+    assert 'import_name: "call_super_method_ic4"' in rendered_selector_rs
+    assert "wasm_method_ic_selection" in rendered_selector_rs
+    assert "mod method_ic_selector;" in rendered_mod_rs
+    assert "WasmMethodIcFamily" in rendered_mod_rs
+    assert "WASM_METHOD_IC_SELECTORS" in rendered_py
+    assert '("super_method", 4, "call_super_method_ic4")' in rendered_py
+
+    broken_missing = copy.deepcopy(data)
+    broken_missing["method_ic_selector"] = broken_missing["method_ic_selector"][:-1]
+    with pytest.raises(gen.WasmAbiManifestError, match="must declare exactly"):
+        gen.validate_loaded_manifest(broken_missing)
+
+    broken_duplicate = copy.deepcopy(data)
+    broken_duplicate["method_ic_selector"].append(
+        copy.deepcopy(broken_duplicate["method_ic_selector"][0])
+    )
+    with pytest.raises(gen.WasmAbiManifestError, match="duplicate method_ic_selector"):
+        gen.validate_loaded_manifest(broken_duplicate)
+
+    broken_import = copy.deepcopy(data)
+    broken_import["method_ic_selector"][0]["import_name"] = "not_a_real_import"
+    with pytest.raises(gen.WasmAbiManifestError, match="references unknown import"):
+        gen.validate_loaded_manifest(broken_import)
+
+    broken_count = copy.deepcopy(data)
+    broken_count["method_ic_selector"][0]["extra_arg_count"] = 5
+    with pytest.raises(gen.WasmAbiManifestError, match="invalid extra_arg_count"):
+        gen.validate_loaded_manifest(broken_count)
+
+
 def test_wasm_abi_manifest_owns_python_runtime_import_signatures() -> None:
     gen = _load_gen_wasm_abi()
     data = gen.load_manifest()
@@ -538,6 +597,8 @@ def test_wasm_abi_manifest_owns_op_import_deps() -> None:
     assert op_deps["gpu_barrier"] == ["gpu_barrier"]
     assert "object_new_bound" not in op_deps
     assert op_deps["object_new_bound_stack"] == ["object_new_bound_sized"]
+    assert "call_method_ic" not in op_deps
+    assert "call_super_method_ic" not in op_deps
 
 
 def test_wasm_abi_manifest_owns_const_op_policy() -> None:
