@@ -4,7 +4,7 @@ use wasm_encoder::{Function, Instruction};
 
 use crate::wasm::WasmBackend;
 use crate::wasm_abi::{
-    RESERVED_RUNTIME_CALLABLE_SPECS, RUNTIME_CALLABLE_IMPORTS, RuntimeCallableResult,
+    RESERVED_RUNTIME_CALLABLE_SPECS, RuntimeCallableResult, runtime_callable_imports,
 };
 use crate::wasm_abi_generated::WasmRuntimeImport;
 use crate::wasm_binary::emit_call;
@@ -35,9 +35,8 @@ impl WasmRuntimeCallableTablePlan {
             .iter()
             .map(|spec| spec.runtime_name)
             .collect();
-        let generated_runtime_names: BTreeSet<&str> = RUNTIME_CALLABLE_IMPORTS
-            .iter()
-            .map(|spec| spec.runtime_name)
+        let generated_runtime_names: BTreeSet<&str> = runtime_callable_imports()
+            .filter_map(|spec| spec.runtime_name)
             .chain(
                 RESERVED_RUNTIME_CALLABLE_SPECS
                     .iter()
@@ -46,14 +45,24 @@ impl WasmRuntimeCallableTablePlan {
             .collect();
 
         let compact_builtin_runtime_callables: Vec<WasmCompactBuiltinRuntimeCallable> =
-            RUNTIME_CALLABLE_IMPORTS
-                .iter()
-                .filter(|spec| !reserved_runtime_callable_names.contains(spec.runtime_name))
-                .filter(|spec| builtin_trampoline_specs.contains_key(spec.runtime_name))
+            runtime_callable_imports()
+                .filter(|spec| {
+                    spec.runtime_name
+                        .is_some_and(|name| !reserved_runtime_callable_names.contains(name))
+                })
+                .filter(|spec| {
+                    spec.runtime_name
+                        .is_some_and(|name| builtin_trampoline_specs.contains_key(name))
+                })
                 .map(|spec| WasmCompactBuiltinRuntimeCallable {
-                    runtime_name: spec.runtime_name.to_string(),
+                    runtime_name: spec
+                        .runtime_name
+                        .expect("callable imports must declare runtime_name")
+                        .to_string(),
                     import: spec.import,
-                    arity: spec.arity,
+                    arity: spec
+                        .callable_arity
+                        .expect("callable imports must declare arity"),
                 })
                 .collect();
 
@@ -65,14 +74,23 @@ impl WasmRuntimeCallableTablePlan {
             }
         }
 
-        let wrapper_specs: Vec<WasmRuntimeCallableWrapperSpec> = RUNTIME_CALLABLE_IMPORTS
-            .iter()
-            .filter(|spec| builtin_trampoline_specs.contains_key(spec.runtime_name))
+        let wrapper_specs: Vec<WasmRuntimeCallableWrapperSpec> = runtime_callable_imports()
+            .filter(|spec| {
+                spec.runtime_name
+                    .is_some_and(|name| builtin_trampoline_specs.contains_key(name))
+            })
             .map(|spec| WasmRuntimeCallableWrapperSpec {
-                runtime_name: spec.runtime_name.to_string(),
+                runtime_name: spec
+                    .runtime_name
+                    .expect("callable imports must declare runtime_name")
+                    .to_string(),
                 import: spec.import,
-                arity: spec.arity,
-                result: spec.result,
+                arity: spec
+                    .callable_arity
+                    .expect("callable imports must declare arity"),
+                result: spec
+                    .callable_result
+                    .expect("callable imports must declare result kind"),
             })
             .collect();
 

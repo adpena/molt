@@ -3,25 +3,23 @@
 // runtime/molt-runtime/src/intrinsics/manifest.pyi
 // DO NOT EDIT BY HAND.
 
+use super::import_specs::runtime_callable_imports;
 use super::import_tokens::WasmRuntimeImport;
 use super::reserved_runtime_callables::RESERVED_RUNTIME_CALLABLE_SPECS;
-use super::runtime_callable_imports::RUNTIME_CALLABLE_IMPORTS;
 
 #[inline]
 pub(crate) fn runtime_callable_import(runtime_name: &str) -> Option<WasmRuntimeImport> {
-    RUNTIME_CALLABLE_IMPORTS
-        .iter()
-        .find(|spec| spec.runtime_name == runtime_name)
+    runtime_callable_imports()
+        .find(|spec| spec.runtime_name == Some(runtime_name))
         .map(|spec| spec.import)
 }
 
 #[inline]
 pub(crate) fn runtime_callable_arity(runtime_name: &str) -> Option<usize> {
-    if let Some(spec) = RUNTIME_CALLABLE_IMPORTS
-        .iter()
-        .find(|spec| spec.runtime_name == runtime_name)
+    if let Some(spec) =
+        runtime_callable_imports().find(|spec| spec.runtime_name == Some(runtime_name))
     {
-        return Some(spec.arity);
+        return spec.callable_arity;
     }
     RESERVED_RUNTIME_CALLABLE_SPECS
         .iter()
