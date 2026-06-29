@@ -232,6 +232,15 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
         "molt_thread_current_native_id"
     )
     assert imports["thread_current_native_id"]["callable_arity"] == 0
+    reserved_type_by_arity = {1: 2, 2: 3, 3: 5, 5: 12}
+    for reserved in data["reserved_runtime_callable"]:
+        reserved_import = imports[reserved["import_name"]]
+        assert reserved_import["type"] == reserved_type_by_arity[
+            reserved["callable_arity"]
+        ]
+        assert "runtime_name" not in reserved_import
+        assert "callable_arity" not in reserved_import
+        assert "callable_result" not in reserved_import
 
     rendered_rs = _rendered_rs(gen, data)
     rendered_runtime_rs = gen.render_runtime_callables_rs(data)
@@ -248,6 +257,7 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
     assert "runtime_callable_target_ptr" in rendered_runtime_rs
     assert "RUNTIME_POLL_CALLABLE_KEY_BASE" in rendered_runtime_rs
     assert '"molt_type_call" => Some(RUNTIME_CALLABLE_KEY_BASE + 0)' in rendered_runtime_rs
+    assert '"type_call" => Some(WasmRuntimeImport::TypeCall)' in rendered_rs
     assert "1 => Some(crate::molt_async_sleep_poll as *const ())" in rendered_runtime_rs
 
     wasm_abi = (
@@ -263,6 +273,30 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
     assert "wasm_poll_callables.inc" not in function_abi
     assert '"molt_type_call" => Some' not in function_abi
     assert "molt_async_sleep_poll as *const" not in function_abi
+
+
+def test_wasm_abi_reserved_runtime_callable_import_tokens_are_fail_closed() -> None:
+    gen = _load_gen_wasm_abi()
+    data = gen.load_manifest()
+
+    broken = copy.deepcopy(data)
+    for entry in broken["import"]:
+        if entry["name"] == "type_call":
+            entry["runtime_name"] = "molt_type_call"
+            break
+    with pytest.raises(gen.WasmAbiManifestError, match="duplicated in \\[\\[import\\]\\]"):
+        gen.validate_loaded_manifest(broken)
+
+    broken = copy.deepcopy(data)
+    for entry in broken["import"]:
+        if entry["name"] == "object_new_bound":
+            entry["type"] = 3
+            break
+    with pytest.raises(
+        gen.WasmAbiManifestError,
+        match="reserved runtime callable 'molt_object_new_bound'",
+    ):
+        gen.validate_loaded_manifest(broken)
 
 
 def test_wasm_abi_manifest_classifies_raw_intrinsics_fail_closed() -> None:

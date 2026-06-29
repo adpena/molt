@@ -1,3 +1,4 @@
+use crate::wasm_abi_generated::CALL_INDIRECT_IMPORTS;
 use crate::wasm_data::{DataRelocSite, DataSegmentInfo};
 use std::borrow::Cow;
 use std::collections::BTreeMap;
@@ -18,6 +19,12 @@ struct RelocEntry {
     offset: u32,
     index: u32,
     addend: i32,
+}
+
+fn is_manifest_call_indirect_import_name(name: &str) -> bool {
+    CALL_INDIRECT_IMPORTS
+        .iter()
+        .any(|spec| spec.import_name == name)
 }
 
 fn encode_reloc_section(
@@ -252,7 +259,9 @@ pub(crate) fn add_reloc_sections(
         // resolves/aliases those by name for runtime ABI wiring.
         let name = match export_name.as_deref() {
             Some("molt_main") | Some("molt_table_init") => export_name.clone().unwrap_or_default(),
-            Some(exported) if exported.starts_with("molt_call_indirect") => exported.to_string(),
+            Some(exported) if is_manifest_call_indirect_import_name(exported) => {
+                exported.to_string()
+            }
             Some(_) => format!("__molt_output_export_{func_index}"),
             None => format!("__molt_output_fn_{func_index}"),
         };
@@ -394,4 +403,21 @@ pub(crate) fn add_reloc_sections(
     }
 
     bytes
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_manifest_call_indirect_import_name;
+
+    #[test]
+    fn call_indirect_symbol_preservation_uses_manifest_membership() {
+        assert!(is_manifest_call_indirect_import_name("molt_call_indirect0"));
+        assert!(is_manifest_call_indirect_import_name(
+            "molt_call_indirect13"
+        ));
+        assert!(!is_manifest_call_indirect_import_name(
+            "molt_call_indirect99"
+        ));
+        assert!(!is_manifest_call_indirect_import_name("molt_call_indirect"));
+    }
 }
