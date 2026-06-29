@@ -2491,6 +2491,45 @@ def test_external_package_artifact_specific_manifests_allow_same_directory_modul
     }
 
 
+def test_external_native_artifact_plan_selects_python_exported_imports(
+    tmp_path: Path,
+) -> None:
+    external_root = tmp_path / "site"
+    package_dir = external_root / "nativepkg"
+    ndimage_dir = package_dir / "ndimage"
+    ndimage_dir.mkdir(parents=True)
+    (package_dir / "__init__.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (ndimage_dir / "__init__.py").write_text("", encoding="utf-8")
+    _write_external_native_artifact(
+        external_root,
+        package="nativepkg",
+        relative_module="ndimage._nd_image",
+        artifact_name="_nd_image.molt.wasm",
+        manifest_overrides={
+            "target_triple": "wasm32-wasip1",
+            "platform_tag": "wasm32_wasip1",
+            "runtime_linkage": "static_link",
+            "artifact_kind": "wasm_relocatable_object",
+            "python_exports": ["nativepkg.ndimage.distance_transform_edt"],
+        },
+    )
+
+    plan, errors = cli._resolve_external_package_native_artifact_plan(
+        external_module_roots=(external_root,),
+        admitted_packages={"nativepkg"},
+        required_modules={"nativepkg.ndimage.distance_transform_edt"},
+    )
+
+    assert errors == []
+    assert plan is not None
+    assert [artifact.module for artifact in plan.artifacts] == [
+        "nativepkg.ndimage._nd_image",
+    ]
+    assert plan.artifacts[0].python_exports == (
+        "nativepkg.ndimage.distance_transform_edt",
+    )
+
+
 def test_external_static_package_native_artifact_requires_sidecar_manifest(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2667,6 +2706,92 @@ def test_external_static_package_admission_can_defer_native_artifact_validation(
     assert deferred_error is None
     assert deferred_policy is not None
     assert deferred_policy.native_artifact_plan.artifacts == ()
+
+
+def test_wasm_external_static_package_with_native_source_requires_static_artifact(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    external_root = tmp_path / "site"
+    package_dir = external_root / "nativepkg"
+    package_dir.mkdir(parents=True)
+    (package_dir / "__init__.py").write_text("VALUE = 1\n", encoding="utf-8")
+    native_source = package_dir / "_native.c"
+    native_source.write_text("int nativepkg(void) { return 1; }\n", encoding="utf-8")
+    monkeypatch.setenv("MOLT_EXTERNAL_STATIC_PACKAGES", "nativepkg")
+
+    policy, error = cli._resolve_import_admission_policy(
+        external_module_roots=(external_root,),
+        json_output=False,
+        defer_native_artifacts=True,
+        target="wasm",
+    )
+
+    assert policy is None
+    assert error == 2
+    stderr = capsys.readouterr().err
+    assert "native source/artifact marker" in stderr
+    assert str(native_source) in stderr
+    assert "wasm32 static_link libmolt_source artifact manifest" in stderr
+    assert "python_exports" in stderr
+
+
+def test_wasm_external_static_package_allows_pure_python_source_closure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    external_root = tmp_path / "site"
+    package_dir = external_root / "purepkg"
+    package_dir.mkdir(parents=True)
+    (package_dir / "__init__.py").write_text("VALUE = 1\n", encoding="utf-8")
+    monkeypatch.setenv("MOLT_EXTERNAL_STATIC_PACKAGES", "purepkg")
+
+    policy, error = cli._resolve_import_admission_policy(
+        external_module_roots=(external_root,),
+        json_output=False,
+        defer_native_artifacts=True,
+        target="wasm",
+    )
+
+    assert error is None
+    assert policy is not None
+    assert policy.admitted_external_packages == frozenset({"purepkg"})
+    assert policy.native_artifact_plan.artifacts == ()
+
+
+def test_wasm_external_static_package_allows_deferred_static_link_artifact(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    external_root, _artifact_path, _manifest_path = _write_external_native_package(
+        tmp_path,
+        artifact_name="_native.molt.wasm",
+        artifact_bytes=b"wasm-relocatable-object",
+        manifest_overrides={
+            "target_triple": "wasm32-wasip1",
+            "platform_tag": "wasm32_wasip1",
+            "runtime_linkage": "static_link",
+            "artifact_kind": "wasm_relocatable_object",
+            "python_exports": ["nativepkg.distance_transform_edt"],
+        },
+    )
+    (external_root / "nativepkg" / "_native.c").write_text(
+        "int nativepkg(void) { return 1; }\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("MOLT_EXTERNAL_STATIC_PACKAGES", "nativepkg")
+
+    policy, error = cli._resolve_import_admission_policy(
+        external_module_roots=(external_root,),
+        json_output=False,
+        defer_native_artifacts=True,
+        target="wasm",
+    )
+
+    assert error is None
+    assert policy is not None
+    assert policy.native_artifact_plan.artifacts == ()
 
 
 def test_external_native_artifact_plan_closes_over_capsule_providers(

@@ -710,6 +710,7 @@ def _prepare_frontend_stage_state(
             external_module_roots=resolved_build_entry.external_module_roots,
             json_output=json_output,
             defer_native_artifacts=True,
+            target=target,
         )
     )
     if import_admission_policy_error is not None:

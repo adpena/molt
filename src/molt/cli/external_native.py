@@ -50,8 +50,23 @@ _EXTERNAL_PACKAGE_ARTIFACT_SUFFIXES = (
     *_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_SUFFIXES,
     *_EXTERNAL_PACKAGE_STATIC_LINK_ARTIFACT_SUFFIXES,
 )
+_EXTERNAL_PACKAGE_NATIVE_SOURCE_SUFFIXES = (
+    ".c",
+    ".cc",
+    ".cpp",
+    ".cxx",
+    ".f",
+    ".f90",
+    ".f95",
+    ".pxd",
+    ".pyx",
+    ".rs",
+)
 _EXTERNAL_PACKAGE_EXTENSION_MANIFEST = "extension_manifest.json"
 _EXTERNAL_PACKAGE_ARTIFACT_MANIFEST_SUFFIX = ".extension_manifest.json"
+_PYTHON_DOTTED_NAME_RE = re.compile(
+    r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*"
+)
 
 
 _EXTERNAL_PACKAGE_NATIVE_ARTIFACT_EXCLUDED_DIRS = {
@@ -256,6 +271,43 @@ def _manifest_str_tuple(
     )
 
 
+def _manifest_dotted_name_tuple(
+    manifest: Mapping[str, Any],
+    field_name: str,
+    *,
+    package: str,
+    errors: list[str],
+) -> tuple[str, ...]:
+    value = manifest.get(field_name)
+    if value is None:
+        return ()
+    if not isinstance(value, list) or not all(
+        isinstance(item, str) for item in value
+    ):
+        errors.append(
+            f"extension_manifest.json {field_name!r} must be a list of dotted "
+            "Python import names"
+        )
+        return ()
+    out: set[str] = set()
+    for item in value:
+        stripped = item.strip()
+        if not stripped or _PYTHON_DOTTED_NAME_RE.fullmatch(stripped) is None:
+            errors.append(
+                f"extension_manifest.json {field_name!r} contains invalid "
+                f"Python import name {item!r}"
+            )
+            continue
+        if stripped != package and not stripped.startswith(package + "."):
+            errors.append(
+                f"extension_manifest.json {field_name!r} entry {stripped!r} "
+                f"escapes admitted package {package!r}"
+            )
+            continue
+        out.add(stripped)
+    return tuple(sorted(out))
+
+
 def _validate_external_package_native_artifact(
     *,
     package: str,
@@ -340,6 +392,12 @@ def _validate_external_package_native_artifact(
     required_capsules: tuple[str, ...] = ()
     if isinstance(object_closure, Mapping):
         required_capsules = _manifest_str_tuple(object_closure, "required_capsules")
+    python_exports = _manifest_dotted_name_tuple(
+        manifest,
+        "python_exports",
+        package=package,
+        errors=errors,
+    )
     if errors:
         return None, errors
     support_file_sha256 = _external_native_support_file_sha256(
@@ -366,6 +424,7 @@ def _validate_external_package_native_artifact(
             support_file_sha256=support_file_sha256,
             provided_capsules=provided_capsules,
             required_capsules=required_capsules,
+            python_exports=python_exports,
         ),
         [],
     )
@@ -389,6 +448,33 @@ def _peek_external_artifact_provided_capsules(
     if not isinstance(manifest, dict):
         return ()
     return _manifest_str_tuple(manifest, "provided_capsules")
+
+
+def _peek_external_artifact_python_exports(
+    *,
+    package: str,
+    artifact_path: Path,
+    package_dir: Path,
+) -> tuple[str, ...]:
+    manifest_path = _find_external_extension_manifest(
+        artifact_path=artifact_path,
+        package_dir=package_dir,
+    )
+    if manifest_path is None:
+        return ()
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return ()
+    if not isinstance(manifest, dict):
+        return ()
+    errors: list[str] = []
+    return _manifest_dotted_name_tuple(
+        manifest,
+        "python_exports",
+        package=package,
+        errors=errors,
+    )
 
 
 def _capsule_provider_errors(
@@ -563,7 +649,16 @@ def _resolve_external_package_native_artifact_plan(
                 provider_candidates.append(
                     (package, package_dir, artifact_path, module_name)
                 )
-                if required is not None and module_name not in required:
+                python_exports = _peek_external_artifact_python_exports(
+                    package=package,
+                    package_dir=package_dir,
+                    artifact_path=artifact_path,
+                )
+                if (
+                    required is not None
+                    and module_name not in required
+                    and not required.intersection(python_exports)
+                ):
                     continue
                 artifact, artifact_errors = _validate_external_package_native_artifact(
                     package=package,
@@ -606,17 +701,114 @@ def _external_native_artifact_error_summary(
     )
 
 
+def _first_external_package_native_source_marker(package_dir: Path) -> Path | None:
+    for current_root, dirnames, filenames in os.walk(package_dir):
+        dirnames[:] = sorted(
+            dirname
+            for dirname in dirnames
+            if dirname not in _EXTERNAL_PACKAGE_NATIVE_ARTIFACT_EXCLUDED_DIRS
+            and not (Path(current_root) / dirname).is_symlink()
+        )
+        current = Path(current_root)
+        for filename in sorted(filenames):
+            path = current / filename
+            if path.is_symlink():
+                continue
+            lowered = filename.lower()
+            if _is_external_package_native_artifact(path) or any(
+                lowered.endswith(suffix)
+                for suffix in _EXTERNAL_PACKAGE_NATIVE_SOURCE_SUFFIXES
+            ):
+                return path.resolve()
+    return None
+
+
+def _manifest_is_wasm_static_link_artifact(manifest: Mapping[str, Any]) -> bool:
+    if manifest.get("loader_kind") != "libmolt_source":
+        return False
+    if manifest.get("runtime_linkage") != "static_link":
+        return False
+    artifact_kind = manifest.get("artifact_kind")
+    if artifact_kind not in {"wasm_relocatable_object", "static_archive"}:
+        return False
+    target_triple = manifest.get("target_triple")
+    return isinstance(target_triple, str) and target_triple.lower().startswith(
+        "wasm32"
+    )
+
+
+def _external_package_has_wasm_static_link_artifact(package_dir: Path) -> bool:
+    for artifact_path in _iter_external_package_native_artifacts(package_dir):
+        manifest_path = _find_external_extension_manifest(
+            artifact_path=artifact_path,
+            package_dir=package_dir,
+        )
+        if manifest_path is None:
+            continue
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if isinstance(manifest, Mapping) and _manifest_is_wasm_static_link_artifact(
+            manifest
+        ):
+            return True
+    return False
+
+
+def _wasm_external_package_native_source_errors(
+    *,
+    external_module_roots: Sequence[Path],
+    admitted_packages: Collection[str],
+) -> list[str]:
+    errors: list[str] = []
+    for package in sorted(admitted_packages):
+        for root in external_module_roots:
+            package_dir = _external_package_dir(root.resolve(), package)
+            if package_dir is None:
+                continue
+            marker = _first_external_package_native_source_marker(package_dir)
+            if marker is None:
+                continue
+            if _external_package_has_wasm_static_link_artifact(package_dir):
+                continue
+            errors.append(
+                f"{package}: admitted WASM external static package contains "
+                f"native source/artifact marker {marker} but has no wasm32 "
+                "static_link libmolt_source artifact manifest. Source roots "
+                "alone are not linkable for WASM; publish source-recompiled "
+                "native artifacts with extension_manifest.json and "
+                "python_exports for package symbols before admission."
+            )
+    return errors
+
+
 def _resolve_import_admission_policy(
     *,
     external_module_roots: Sequence[Path],
     json_output: bool,
     defer_native_artifacts: bool = False,
+    target: str | None = None,
 ) -> tuple[_ImportAdmissionPolicy | None, _CliFailure | None]:
     packages, error = _parse_external_static_packages(
         os.environ.get("MOLT_EXTERNAL_STATIC_PACKAGES", "")
     )
     if error is not None:
         return None, _fail(error, json_output, command="build")
+    if target == "wasm":
+        wasm_native_source_errors = _wasm_external_package_native_source_errors(
+            external_module_roots=external_module_roots,
+            admitted_packages=packages,
+        )
+        if wasm_native_source_errors:
+            return None, _fail(
+                "External static package native-artifact custody errors: "
+                + _external_native_artifact_error_summary(
+                    wasm_native_source_errors
+                ),
+                json_output,
+                command="build",
+            )
     if defer_native_artifacts:
         native_plan = _EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN
     else:
@@ -926,6 +1118,7 @@ def _stage_external_package_native_artifacts_for_build(
                 support_file_sha256=artifact.support_file_sha256,
                 provided_capsules=artifact.provided_capsules,
                 required_capsules=artifact.required_capsules,
+                python_exports=artifact.python_exports,
             )
         )
     return tuple(staged_artifacts)

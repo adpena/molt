@@ -103,11 +103,16 @@ Optional:
   extension path, checksum, ABI, target, platform, and capabilities before the
   frontend lowers that package graph. Graph, wrapper-build, and backend
   object-cache identities include the validated artifact/manifest custody
-  facts. Native builds publish the validated artifact, sidecar, package
-  `__init__.py` chain, and runtime extension shim candidates into a
-  deterministic `external_static_packages/<plan-digest>/` runtime root, then
-  inject that staged root into generated native binaries before runtime startup
-  and include those staged bytes in final link reuse fingerprints without adding
+  facts, including optional `python_exports` entries that map package-level
+  imports to the owning native artifact. WASM package admission fails closed
+  before graph expansion when an admitted package contains native-source or
+  host-extension markers but has no wasm32 `static_link` `libmolt_source`
+  artifact manifest; source roots alone are not linkable package evidence.
+  Native builds publish the validated artifact, sidecar, package `__init__.py`
+  chain, and runtime extension shim candidates into a deterministic
+  `external_static_packages/<plan-digest>/` runtime root, then inject that
+  staged root into generated native binaries before runtime startup and include
+  those staged bytes in final link reuse fingerprints without adding
   runtime-loaded extensions to the linker command. Target modes without a
   runtime-custody consumer fail closed when external native artifacts are
   admitted.
@@ -117,7 +122,8 @@ Optional:
 ## 7. Integration Points
 - `molt deps` should classify extensions as Tier B when `libmolt`-compiled.
 - `molt build` rejects explicitly admitted external package extensions with
-  missing or mismatched sidecar metadata before module graph lowering, and
+  missing or mismatched sidecar metadata before module graph lowering, rejects
+  WASM native-source packages without staged wasm static-link artifacts, and
   publishes validated native artifacts plus sidecars and runtime shims into
   deterministic build artifacts for native runtime import custody.
 - `molt verify` enforces capability allowlists for extension loads.
