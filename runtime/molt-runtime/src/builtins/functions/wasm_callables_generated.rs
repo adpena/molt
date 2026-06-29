@@ -141,6 +141,42 @@ pub(crate) fn runtime_callable_target_ptr(fn_ptr: u64) -> Option<*const ()> {
         .or_else(|| runtime_poll_callable_target_ptr(fn_ptr))
 }
 
+#[cfg(target_arch = "wasm32")]
+#[inline]
+pub(crate) fn runtime_callable_returns_void_from_target_ptr(fn_ptr: u64) -> bool {
+    static VOID_CALLABLE_TARGETS: std::sync::OnceLock<Vec<u64>> = std::sync::OnceLock::new();
+    let targets = VOID_CALLABLE_TARGETS.get_or_init(|| {
+        let mut targets = Vec::with_capacity(RUNTIME_VOID_CALLABLE_NAMES.len());
+        for name in RUNTIME_VOID_CALLABLE_NAMES {
+            if let Some(target) = crate::intrinsics::resolve_symbol(name) {
+                targets.push(target);
+            }
+        }
+        targets
+    });
+    targets.iter().any(|target| *target == fn_ptr)
+}
+
+const RUNTIME_VOID_CALLABLE_NAMES: &[&str] = &[
+    "molt_spawn",
+    "molt_stream_close",
+    "molt_stream_drop",
+    "molt_socket_drop",
+    "molt_process_drop",
+    "molt_ws_close",
+    "molt_ws_drop",
+    "molt_email_message_drop",
+    "molt_stream_reader_drop",
+    "molt_socket_reader_drop",
+    "molt_pipe_transport_drop",
+    "molt_asyncio_future_drop",
+    "molt_asyncio_event_drop",
+    "molt_asyncio_lock_drop",
+    "molt_asyncio_semaphore_drop",
+    "molt_asyncio_queue_drop",
+    "molt_xml_element_drop",
+];
+
 #[inline]
 fn runtime_reserved_callable_target_ptr(fn_ptr: u64) -> Option<*const ()> {
     match fn_ptr.checked_sub(RUNTIME_CALLABLE_KEY_BASE)? {

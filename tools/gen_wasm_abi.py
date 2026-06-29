@@ -1343,6 +1343,11 @@ def render_runtime_callables_rs(data: dict) -> str:
         data.get("reserved_runtime_callable", []),
         key=lambda entry: entry["index"],
     )
+    void_runtime_callables = [
+        entry["runtime_name"]
+        for entry in data["import"]
+        if entry.get("callable_result") == "void"
+    ]
     lines.extend(
         [
             "#![allow(dead_code)]\n\n",
@@ -1413,6 +1418,32 @@ def render_runtime_callables_rs(data: dict) -> str:
             "    runtime_reserved_callable_target_ptr(fn_ptr)\n",
             "        .or_else(|| runtime_poll_callable_target_ptr(fn_ptr))\n",
             "}\n\n",
+            "#[cfg(target_arch = \"wasm32\")]\n",
+            "#[inline]\n",
+            "pub(crate) fn runtime_callable_returns_void_from_target_ptr(\n",
+            "    fn_ptr: u64,\n",
+            ") -> bool {\n",
+            "    static VOID_CALLABLE_TARGETS: std::sync::OnceLock<Vec<u64>> =\n",
+            "        std::sync::OnceLock::new();\n",
+            "    let targets = VOID_CALLABLE_TARGETS.get_or_init(|| {\n",
+            "        let mut targets = Vec::with_capacity(RUNTIME_VOID_CALLABLE_NAMES.len());\n",
+            "        for name in RUNTIME_VOID_CALLABLE_NAMES {\n",
+            "            if let Some(target) = crate::intrinsics::resolve_symbol(name) {\n",
+            "                targets.push(target);\n",
+            "            }\n",
+            "        }\n",
+            "        targets\n",
+            "    });\n",
+            "    targets.iter().any(|target| *target == fn_ptr)\n",
+            "}\n\n",
+            "const RUNTIME_VOID_CALLABLE_NAMES: &[&str] = &[\n",
+        ]
+    )
+    for runtime_name in void_runtime_callables:
+        lines.append(f'    "{runtime_name}",\n')
+    lines.extend(
+        [
+            "];\n\n",
             "#[inline]\n",
             "fn runtime_reserved_callable_target_ptr(fn_ptr: u64) -> Option<*const ()> {\n",
             "    match fn_ptr.checked_sub(RUNTIME_CALLABLE_KEY_BASE)? {\n",
