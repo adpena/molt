@@ -268,6 +268,24 @@ def _importlib_literal_function_ops(
     return next(func["ops"] for func in ir["functions"] if func["name"] == func_name)
 
 
+def test_unknown_tobytes_with_order_stays_dynamic_method_call() -> None:
+    gen = SimpleTIRGenerator(module_name="numpy_format_probe")
+    gen.visit(ast.parse("def write(chunk):\n    return chunk.tobytes('C')\n"))
+    ops = next(
+        func["ops"]
+        for func in gen.to_json()["functions"]
+        if func["name"] == "numpy_format_probe__write"
+    )
+
+    assert any(
+        op.get("kind") == "get_attr_generic_obj" and op.get("s_value") == "tobytes"
+        for op in ops
+    )
+    assert any(op.get("kind") == "callargs_push_pos" for op in ops)
+    assert any(op.get("kind") == "call_indirect" for op in ops)
+    assert all(op.get("kind") != "memoryview_tobytes" for op in ops)
+
+
 def _has_static_call(main_ops: list[dict[str, object]], symbol: str) -> bool:
     return any(
         op.get("kind") == "call" and op.get("s_value") == symbol for op in main_ops

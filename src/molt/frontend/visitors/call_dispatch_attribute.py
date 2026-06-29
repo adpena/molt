@@ -1039,15 +1039,14 @@ class CallAttributeDispatchMixin(_MixinBase):
                         MoltOp(kind="TUPLE_INDEX", args=[receiver, val], result=res)
                     )
                     return res
-            if method == "tobytes":
+            if method == "tobytes" and receiver.type_hint == "memoryview":
                 if node.args:
                     raise NotImplementedError("tobytes expects 0 arguments")
-                if receiver.type_hint == "memoryview":
-                    res = MoltValue(self.next_var(), type_hint="bytes")
-                    self.emit(
-                        MoltOp(kind="MEMORYVIEW_TOBYTES", args=[receiver], result=res)
-                    )
-                    return res
+                res = MoltValue(self.next_var(), type_hint="bytes")
+                self.emit(
+                    MoltOp(kind="MEMORYVIEW_TOBYTES", args=[receiver], result=res)
+                )
+                return res
             if method == "count":
                 if receiver.type_hint in {"str", "bytes", "bytearray"}:
                     if len(node.args) not in (1, 2, 3):
