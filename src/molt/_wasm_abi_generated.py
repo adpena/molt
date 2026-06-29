@@ -8730,6 +8730,11 @@ WASM_CONTAINER_RUNTIME_SELECTORS: tuple[tuple[str, str, str, str | None], ...] =
     ("len", "set", "len_set", None),
 )
 
+WASM_OBJECT_NEW_BOUND_SELECTORS: tuple[tuple[str, str, str], ...] = (
+    ("unsized", "object_new_bound", "ObjectNewBound"),
+    ("sized", "object_new_bound_sized", "ObjectNewBoundSized"),
+)
+
 WASM_REQUIRED_RUNTIME_IMPORT_PREFIXES: tuple[str, ...] = (
     "os_",
     "path_",

@@ -8,6 +8,7 @@ mod const_policy;
 mod container_runtime_selector;
 mod imports;
 mod lir_runtime_calls;
+mod object_new_bound_selector;
 mod pure_profile;
 mod runtime_callables;
 mod runtime_surface;
@@ -27,6 +28,9 @@ pub(crate) use imports::{IMPORT_REGISTRY, OP_IMPORT_DEPS};
 pub(crate) use lir_runtime_calls::{
     LirFixedRuntimeCall, LirRuntimeCall, OpLoopRuntimeArgSpec, OpLoopRuntimeCallSpec,
     OpLoopRuntimeSinkSpec, lir_fixed_runtime_call, op_loop_runtime_call,
+};
+pub(crate) use object_new_bound_selector::{
+    WasmObjectNewBoundPayload, WasmObjectNewBoundSelection, wasm_object_new_bound_selection,
 };
 pub(crate) use pure_profile::pure_profile_skips_import;
 pub(crate) use runtime_callables::{
