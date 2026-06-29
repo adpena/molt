@@ -101,6 +101,7 @@ class _GeneratorProtocolAttrs(Protocol):
     del_targets: set[str]
     dict_key_hints: dict[str, str]
     dict_value_hints: dict[str, str]
+    direct_call_modules: Any
     eager_annotations: Any
     enable_phi: Any
     entry_module: Any

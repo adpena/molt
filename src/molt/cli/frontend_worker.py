@@ -154,12 +154,16 @@ def _frontend_lower_module_worker(payload: dict[str, Any]) -> dict[str, Any]:
     entry_module = cast(str | None, payload["entry_module"])
     enable_phi = bool(payload["enable_phi"])
     known_modules = set(cast(list[str], payload["known_modules"]))
+    direct_call_modules = set(cast(list[str], payload["direct_call_modules"]))
     known_classes = cast(dict[str, Any], payload["known_classes"])
     stdlib_allowlist = set(cast(list[str], payload["stdlib_allowlist"]))
     known_func_defaults = cast(
         dict[str, dict[str, dict[str, Any]]], payload["known_func_defaults"]
     )
     known_func_kinds = cast(dict[str, dict[str, str]], payload["known_func_kinds"])
+    native_callable_exports = cast(
+        dict[str, dict[str, Any]], payload.get("native_callable_exports", {})
+    )
     module_chunking = bool(payload["module_chunking"])
     module_chunk_max_ops = int(payload["module_chunk_max_ops"])
     optimization_profile = cast(BuildProfile, payload["optimization_profile"])
@@ -206,10 +210,12 @@ def _frontend_lower_module_worker(payload: dict[str, Any]) -> dict[str, Any]:
         entry_module=entry_module,
         enable_phi=enable_phi,
         known_modules=known_modules,
+        direct_call_modules=direct_call_modules,
         known_classes=known_classes,
         stdlib_allowlist=stdlib_allowlist,
         known_func_defaults=known_func_defaults,
         known_func_kinds=known_func_kinds,
+        native_callable_exports=native_callable_exports,
         module_chunking=module_chunking,
         module_chunk_max_ops=module_chunk_max_ops,
         optimization_profile=optimization_profile,
@@ -319,10 +325,12 @@ def _module_frontend_generator(
         entry_module=entry_override,
         enable_phi=enable_phi,
         known_modules=set(scoped_inputs.known_modules_set),
+        direct_call_modules=set(scoped_inputs.direct_call_modules_set),
         known_classes=scoped_known_classes,
         stdlib_allowlist=set(stdlib_allowlist),
         known_func_defaults=scoped_inputs.known_func_defaults,
         known_func_kinds=scoped_inputs.known_func_kinds,
+        native_callable_exports=scoped_inputs.native_callable_exports,
         module_chunking=module_chunking,
         module_chunk_max_ops=module_chunk_max_ops,
         optimization_profile=cast(BuildProfile, optimization_profile),
@@ -380,8 +388,10 @@ def _lower_module_serial_with_context(
         module_graph_metadata=lowering_context.module_graph_metadata,
         module_deps=lowering_context.module_deps,
         known_modules=lowering_context.known_modules,
+        direct_call_modules=lowering_context.direct_call_modules,
         known_func_defaults=lowering_context.known_func_defaults,
         known_func_kinds=lowering_context.known_func_kinds,
+        native_callable_exports=lowering_context.native_callable_exports,
         pgo_hot_function_names=lowering_context.pgo_hot_function_names,
         type_facts=lowering_context.type_facts,
         known_classes_snapshot=lowering_context.known_classes,
@@ -417,9 +427,11 @@ def _lower_module_serial_with_context(
             type_facts=lowering_context.type_facts,
             enable_phi=lowering_context.enable_phi,
             known_modules=lowering_context.known_modules,
+            direct_call_modules=lowering_context.direct_call_modules,
             stdlib_allowlist=lowering_context.stdlib_allowlist,
             known_func_defaults=lowering_context.known_func_defaults,
             known_func_kinds=lowering_context.known_func_kinds,
+            native_callable_exports=lowering_context.native_callable_exports,
             module_deps=lowering_context.module_deps,
             module_is_namespace=module_is_namespace,
             module_chunking=lowering_context.module_chunking,
@@ -607,9 +619,11 @@ def _prepare_frontend_parallel_batch(
     type_facts: TypeFacts | None,
     enable_phi: bool,
     known_modules: Collection[str],
+    direct_call_modules: Collection[str],
     stdlib_allowlist: Collection[str],
     known_func_defaults: dict[str, dict[str, dict[str, Any]]],
     known_func_kinds: dict[str, dict[str, str]],
+    native_callable_exports: Mapping[str, Mapping[str, Any]],
     module_deps: dict[str, set[str]],
     module_chunk_max_ops: int,
     optimization_profile: str,
@@ -657,8 +671,10 @@ def _prepare_frontend_parallel_batch(
             module_graph_metadata=module_graph_metadata,
             module_deps=module_deps,
             known_modules=known_modules,
+            direct_call_modules=direct_call_modules,
             known_func_defaults=known_func_defaults,
             known_func_kinds=known_func_kinds,
+            native_callable_exports=native_callable_exports,
             pgo_hot_function_names=pgo_hot_function_names,
             type_facts=type_facts,
             known_classes_snapshot=known_classes_snapshot,
@@ -691,9 +707,11 @@ def _prepare_frontend_parallel_batch(
                 type_facts=type_facts,
                 enable_phi=enable_phi,
                 known_modules=known_modules,
+                direct_call_modules=direct_call_modules,
                 stdlib_allowlist=stdlib_allowlist,
                 known_func_defaults=known_func_defaults,
                 known_func_kinds=known_func_kinds,
+                native_callable_exports=native_callable_exports,
                 module_deps=module_deps,
                 module_is_namespace=module_is_namespace,
                 module_chunking=module_chunking,
@@ -730,9 +748,11 @@ def _prepare_frontend_parallel_batch(
                 type_facts=type_facts,
                 enable_phi=enable_phi,
                 known_modules=known_modules,
+                direct_call_modules=direct_call_modules,
                 stdlib_allowlist=stdlib_allowlist,
                 known_func_defaults=known_func_defaults,
                 known_func_kinds=known_func_kinds,
+                native_callable_exports=native_callable_exports,
                 module_deps=module_deps,
                 module_is_namespace=module_is_namespace,
                 module_chunking=module_chunking,
@@ -773,11 +793,13 @@ def _prepare_frontend_parallel_batch(
                     type_facts=type_facts,
                     enable_phi=enable_phi,
                     known_modules=known_modules_sorted,
+                    direct_call_modules=direct_call_modules,
                     known_classes_snapshot=known_classes_snapshot,
                     stdlib_allowlist_sorted=stdlib_allowlist_sorted,
                     stdlib_allowlist_payload=stdlib_allowlist_payload,
                     known_func_defaults=known_func_defaults,
                     known_func_kinds=known_func_kinds,
+                    native_callable_exports=native_callable_exports,
                     module_deps=module_deps,
                     module_chunking=module_chunking,
                     module_chunk_max_ops=module_chunk_max_ops,

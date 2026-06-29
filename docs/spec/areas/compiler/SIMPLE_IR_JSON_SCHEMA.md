@@ -94,6 +94,10 @@ so absent fields deserialize to `None`/default.
 | `container_type`  | `string?`  | `null`  | For `contains`: known container type (`set`, `frozenset`, `dict`, `list`, `str`) |
 | `type_hint`       | `string?`  | `null`  | Type annotation from source                                    |
 | `ic_index`        | `i64?`     | `null`  | Inline cache site index for `get_attr_generic_ptr`. Transmitted inside a nested `metadata` object in JSON: `{"metadata": {"ic_index": N}}` |
+| `native_callable_export` | `string?` | `null` | Qualified native callable export name on `invoke_ffi`, e.g. `scipy.ndimage.distance_transform_edt` |
+| `native_callable_binding` | `string?` | `null` | Callable export binding mode on `invoke_ffi`: `module_attr` or `direct_symbol` |
+| `native_callable_symbol` | `string?` | `null` | Required direct native symbol when `native_callable_binding` is `direct_symbol` |
+| `native_callable_abi` | `string?` | `null` | ABI contract token for the native callable export |
 
 `fast_int`, `fast_float`, and `type_hint` exist to describe
 compatibility metadata on the current backend transport. New lowering work
@@ -119,6 +123,12 @@ the legacy transport surface has already been normalized into SSA values.
   with an indexable `container_type`: `list`, `list_bool`, `list_float`,
   `list_int`, or `tuple`.
 - `arena_eligible=true` is valid only on allocation operations.
+- Native callable export fields are valid only on `invoke_ffi`. A native
+  callable export must carry `native_callable_export`,
+  `native_callable_binding`, and `native_callable_abi`; binding must be either
+  `module_attr` or `direct_symbol`; `direct_symbol` also requires
+  `native_callable_symbol`. Backends must fail closed if executable ABI dispatch
+  for the declared export is absent.
 - `type_hint`, `container_type`, and `param_types` entries must be nonempty and
   must not contain control characters.
 - Every value name in `args` / `var` must be defined by a prior op's `out` or
@@ -261,7 +271,7 @@ Comparisons accept optional `fast_int` / `fast_float`.
 | `call_guarded`    | `s_value` (target), `args`, `out`        | Guarded call (deopt on type change) |
 | `call_bind`       | `args`, `out`                            | Partial application / bind          |
 | `call_method`     | `args`, `out`                            | Method call                         |
-| `invoke_ffi`      | `args`, `out`, optional `s_value` (lane) | Foreign function invocation         |
+| `invoke_ffi`      | `args`, `out`, optional `s_value` (lane), optional native callable export fields | Foreign function or native package ABI invocation |
 | `print`           | `args`                                   | Built-in print                      |
 | `print_newline`   | --                                       | Print bare newline                  |
 
@@ -269,6 +279,7 @@ Comparisons accept optional `fast_int` / `fast_float`.
 ```json
 {"kind": "call", "s_value": "molt_init___main__", "args": ["v0"], "value": 1, "out": "v3"}
 {"kind": "call_indirect", "args": ["v5", "v6", "v7"], "out": "v8"}
+{"kind": "invoke_ffi", "args": ["v9", "v10"], "out": "v11", "native_callable_export": "scipy.ndimage.distance_transform_edt", "native_callable_binding": "direct_symbol", "native_callable_symbol": "molt_scipy_ndimage_distance_transform_edt", "native_callable_abi": "molt.forward_f32_v1"}
 ```
 
 ### Exception Handling

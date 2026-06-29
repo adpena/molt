@@ -462,10 +462,12 @@ def _materialize_import_plan(
     namespace_module_names = support_modules.namespace_module_names
     generated_module_source_paths = dict(support_modules.generated_module_source_paths)
     source_modules = frozenset(module_graph)
-    native_artifact_modules = frozenset(
-        artifact.module
-        for artifact in prepared_module_graph.native_artifact_plan.artifacts
+    native_artifact_plan = (
+        prepared_module_graph.native_artifact_plan.with_reachable_imports(
+            prepared_module_graph.explicit_imports
+        )
     )
+    native_artifact_modules = native_artifact_plan.native_module_names()
     known_modules = source_modules | native_artifact_modules
     stdlib_allowlist.update(STUB_MODULES)
     stdlib_allowlist.update(stub_parents)
@@ -509,6 +511,7 @@ def _materialize_import_plan(
         namespace_module_names=namespace_module_names,
         generated_module_source_paths=MappingProxyType(generated_module_source_paths),
         known_modules=known_modules,
+        direct_call_modules=source_modules,
         declared_root_modules=frozenset(
             name for name in declared_root_modules if name in source_modules
         ),
@@ -528,7 +531,7 @@ def _materialize_import_plan(
         known_modules_sorted=tuple(sorted(known_modules)),
         stdlib_allowlist_sorted=tuple(sorted(stdlib_allowlist)),
         module_graph_metadata=module_graph_metadata,
-        native_artifact_plan=prepared_module_graph.native_artifact_plan,
+        native_artifact_plan=native_artifact_plan,
     )
 
 

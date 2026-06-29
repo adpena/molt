@@ -42,6 +42,7 @@ class ModuleLifecycleMixin(_MixinBase):
         module_chunking: bool,
         module_chunk_max_ops: int,
         known_modules: set[str] | None,
+        direct_call_modules: set[str] | None,
         stdlib_allowlist: set[str] | None,
     ) -> None:
         self.module_name = module_name or "__main__"
@@ -49,6 +50,8 @@ class ModuleLifecycleMixin(_MixinBase):
         self.entry_module = entry_module
         self.module_prefix = f"{self._sanitize_module_name(self.module_name)}__"
         self.known_modules = set(known_modules or [])
+        self.direct_call_modules = set(direct_call_modules or {self.module_name})
+        self.direct_call_modules.add(self.module_name)
         self.stdlib_allowlist = set(stdlib_allowlist or [])
         self.module_frame_emitted = False
         self.module_chunking = module_chunking

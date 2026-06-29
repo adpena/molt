@@ -127,9 +127,10 @@ the implementation. For forward-looking priorities, use
   `extension_manifest.json` metadata with matching module, extension path,
   extension SHA-256, ABI, target triple, platform tag, and capabilities, and
   fingerprints the artifact/manifest custody facts, including
-  `python_exports` import names owned by a native artifact, in graph, wrapper
-  build, and backend object-cache inputs. Native-backed package `__init__.py`
-  files are native runtime support custody, not source-closure authority, so
+  `python_exports` import names and `callable_exports` direct native-call
+  bindings owned by a native artifact, in graph, wrapper build, scoped lowering,
+  and backend object-cache inputs. Native-backed package `__init__.py` files
+  are native runtime support custody, not source-closure authority, so
   their broad upstream imports do not compile unowned NumPy/SciPy trees. WASM
   admission now fails before graph expansion when an admitted external package
   contains native-source or host-extension markers but lacks wasm32

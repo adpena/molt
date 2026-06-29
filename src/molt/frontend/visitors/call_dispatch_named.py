@@ -100,6 +100,88 @@ _BUILTINS_IMPORT_ALIAS_CALL_NAMES = frozenset(BUILTIN_FUNC_SPECS) | frozenset(
 
 
 class CallNamedDispatchMixin(_MixinBase):
+    def _try_emit_imported_named_call(
+        self,
+        node: ast.Call,
+        *,
+        func_id: str,
+        imported_from: str | None,
+        needs_bind: bool,
+    ) -> Any:
+        if imported_from is None:
+            return CALL_NOT_HANDLED
+        if imported_from == "builtins" or self._is_intrinsics_module_name(
+            imported_from
+        ):
+            return CALL_NOT_HANDLED
+
+        normalized = self._normalize_allowlist_module(imported_from)
+        visible_module = normalized or imported_from
+        original_attr = self._imported_attr_name(func_id)
+        target_module: str | None = None
+        direct_registry_authorized = False
+
+        if imported_from == "molt":
+            if original_attr in MOLT_DIRECT_CALLS.get("molt", set()):
+                target_module = MOLT_REEXPORT_FUNCTIONS.get(original_attr)
+                direct_registry_authorized = target_module is not None
+        elif (
+            normalized in MOLT_DIRECT_CALLS
+            and original_attr in MOLT_DIRECT_CALLS[normalized]
+        ):
+            target_module = normalized
+            direct_registry_authorized = True
+        elif (
+            imported_from in MOLT_DIRECT_CALLS
+            and original_attr in MOLT_DIRECT_CALLS[imported_from]
+        ):
+            target_module = imported_from
+            direct_registry_authorized = True
+
+        visible_import_authorized = (
+            imported_from in self.stdlib_allowlist
+            or (normalized is not None and normalized in self.stdlib_allowlist)
+            or self._is_internal_module(imported_from)
+            or self._is_known_project_module(imported_from)
+        )
+        if target_module is None and visible_import_authorized:
+            target_module = visible_module
+        if target_module is None:
+            return CALL_NOT_HANDLED
+
+        force_bind = original_attr[
+            :1
+        ].isupper() or original_attr in MOLT_DIRECT_CALL_BIND_ALWAYS.get(
+            target_module, set()
+        )
+        lowered_imported_call = self._try_emit_imported_module_direct_or_task_call(
+            target_module,
+            original_attr,
+            node,
+            imported_from=imported_from,
+            normalized=normalized,
+            needs_bind=needs_bind,
+            force_bind=force_bind,
+            direct_registry_authorized=direct_registry_authorized,
+        )
+        if lowered_imported_call is not None:
+            return lowered_imported_call
+        if visible_import_authorized:
+            callee = self.visit(node.func)
+            if callee is None:
+                raise NotImplementedError("Unsupported call target")
+            res = MoltValue(self.next_var(), type_hint="Any")
+            callargs = self._emit_call_args_builder(node)
+            self.emit(
+                MoltOp(
+                    kind="CALL_BIND",
+                    args=[callee, callargs],
+                    result=res,
+                )
+            )
+            return res
+        return CALL_NOT_HANDLED
+
     def _try_emit_named_call(self, node: ast.Call, needs_bind: bool) -> Any:
         if isinstance(node.func, ast.Name):
             func_id = node.func.id
@@ -193,6 +275,14 @@ class CallNamedDispatchMixin(_MixinBase):
                 )
                 if lowered_handle_ctor is not None:
                     return lowered_handle_ctor
+                lowered_imported_call = self._try_emit_imported_named_call(
+                    node,
+                    func_id=func_id,
+                    imported_from=imported_from,
+                    needs_bind=needs_bind,
+                )
+                if lowered_imported_call is not CALL_NOT_HANDLED:
+                    return lowered_imported_call
             if func_id in {"BaseExceptionGroup", "ExceptionGroup"}:
                 if node.keywords:
                     self._bridge_fallback(
@@ -2042,45 +2132,6 @@ class CallNamedDispatchMixin(_MixinBase):
             )
             if builtin_result is not CALL_NOT_HANDLED:
                 return builtin_result
-
-            if target_info is not None or imported_from is not None:
-                target_module = None
-                normalized = None
-                if imported_from == "molt":
-                    if func_id in MOLT_DIRECT_CALLS.get("molt", set()):
-                        target_module = MOLT_REEXPORT_FUNCTIONS.get(func_id)
-                elif imported_from:
-                    normalized = self._normalize_allowlist_module(imported_from)
-                    if (
-                        normalized in MOLT_DIRECT_CALLS
-                        and func_id in MOLT_DIRECT_CALLS[normalized]
-                    ):
-                        target_module = normalized
-                    elif (
-                        imported_from in MOLT_DIRECT_CALLS
-                        and func_id in MOLT_DIRECT_CALLS[imported_from]
-                    ):
-                        target_module = imported_from
-                original_attr = self._imported_attr_name(func_id)
-                force_bind = original_attr[
-                    :1
-                ].isupper() or original_attr in MOLT_DIRECT_CALL_BIND_ALWAYS.get(
-                    target_module or "", set()
-                )
-                lowered_imported_call = (
-                    self._try_emit_imported_module_direct_or_task_call(
-                        target_module,
-                        original_attr,
-                        node,
-                        imported_from=imported_from,
-                        normalized=normalized,
-                        needs_bind=needs_bind,
-                        force_bind=force_bind,
-                        direct_registry_authorized=target_module in MOLT_DIRECT_CALLS,
-                    )
-                )
-                if lowered_imported_call is not None:
-                    return lowered_imported_call
             if imported_from is not None:
                 normalized = self._normalize_allowlist_module(imported_from)
             else:
@@ -2111,48 +2162,6 @@ class CallNamedDispatchMixin(_MixinBase):
                     )
                 )
                 return res
-            if imported_from is not None and (
-                imported_from in self.stdlib_allowlist
-                or (normalized is not None and normalized in self.stdlib_allowlist)
-                or self._is_internal_module(imported_from)
-                or self._is_known_project_module(imported_from)
-            ):
-                target_module = normalized or imported_from
-                # Resolve alias -> original attr name for cross-module calls
-                original_attr = self._imported_attr_name(func_id)
-                force_bind = original_attr[
-                    :1
-                ].isupper() or original_attr in MOLT_DIRECT_CALL_BIND_ALWAYS.get(
-                    target_module, set()
-                )
-                lowered_imported_call = (
-                    self._try_emit_imported_module_direct_or_task_call(
-                        target_module,
-                        original_attr,
-                        node,
-                        imported_from=imported_from,
-                        normalized=normalized,
-                        needs_bind=needs_bind,
-                        force_bind=force_bind,
-                        direct_registry_authorized=False,
-                    )
-                )
-                if lowered_imported_call is not None:
-                    return lowered_imported_call
-                callee = self.visit(node.func)
-                if callee is None:
-                    raise NotImplementedError("Unsupported call target")
-                res = MoltValue(self.next_var(), type_hint="Any")
-                callargs = self._emit_call_args_builder(node)
-                self.emit(
-                    MoltOp(
-                        kind="CALL_BIND",
-                        args=[callee, callargs],
-                        result=res,
-                    )
-                )
-                return res
-
             if imported_from is None:
                 callee = self.visit(node.func)
                 if callee is not None:

@@ -28,17 +28,29 @@ def _module_dependencies_from_imports(
     module_name: str,
     module_graph: Mapping[str, Path],
     imports: Iterable[str],
+    *,
+    known_modules: Collection[str] = (),
 ) -> set[str]:
     deps: set[str] = set()
+    known_module_set = set(known_modules)
     for name in imports:
         for candidate in _expand_module_chain_cached(name):
             if candidate == "molt" and module_name.startswith("molt."):
                 continue
-            if candidate in module_graph and candidate != module_name:
+            if (
+                (candidate in module_graph or candidate in known_module_set)
+                and candidate != module_name
+            ):
                 deps.add(candidate)
             if candidate.startswith("molt.stdlib."):
                 stdlib_candidate = candidate[len("molt.stdlib.") :]
-                if stdlib_candidate in module_graph and stdlib_candidate != module_name:
+                if (
+                    (
+                        stdlib_candidate in module_graph
+                        or stdlib_candidate in known_module_set
+                    )
+                    and stdlib_candidate != module_name
+                ):
                     deps.add(stdlib_candidate)
     return deps
 
@@ -49,6 +61,7 @@ def _module_dependencies(
     module_graph: dict[str, Path],
     *,
     imports: list[str] | None = None,
+    known_modules: Collection[str] = (),
 ) -> set[str]:
     path = module_graph.get(module_name)
     is_package = path is not None and path.name == "__init__.py"
@@ -61,6 +74,7 @@ def _module_dependencies(
         module_name,
         module_graph,
         collected_imports,
+        known_modules=known_modules,
     )
 
 

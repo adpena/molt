@@ -252,6 +252,54 @@ fn validate_representation_fields(op: &OpIR) -> Result<(), String> {
             ));
         }
     }
+    validate_native_callable_fields(op)?;
+    Ok(())
+}
+
+fn validate_native_callable_fields(op: &OpIR) -> Result<(), String> {
+    let has_native_callable = op.native_callable_export.is_some()
+        || op.native_callable_binding.is_some()
+        || op.native_callable_symbol.is_some()
+        || op.native_callable_abi.is_some();
+    if !has_native_callable {
+        return Ok(());
+    }
+    if op.kind != "invoke_ffi" {
+        return Err(format!(
+            "op `{}` cannot carry native callable export metadata",
+            op.kind
+        ));
+    }
+    let Some(export_name) = op.native_callable_export.as_deref() else {
+        return Err(
+            "invoke_ffi native callable export requires native_callable_export".to_string(),
+        );
+    };
+    validate_clean_symbol(export_name, "invoke_ffi native_callable_export")?;
+    let Some(binding) = op.native_callable_binding.as_deref() else {
+        return Err(format!(
+            "invoke_ffi native callable export `{export_name}` requires native_callable_binding"
+        ));
+    };
+    if !matches!(binding, "module_attr" | "direct_symbol") {
+        return Err(format!(
+            "invoke_ffi native callable export `{export_name}` has unsupported binding `{binding}`"
+        ));
+    }
+    let Some(abi) = op.native_callable_abi.as_deref() else {
+        return Err(format!(
+            "invoke_ffi native callable export `{export_name}` requires native_callable_abi"
+        ));
+    };
+    validate_clean_symbol(abi, "invoke_ffi native_callable_abi")?;
+    if binding == "direct_symbol" {
+        let Some(symbol) = op.native_callable_symbol.as_deref() else {
+            return Err(format!(
+                "invoke_ffi native callable export `{export_name}` direct_symbol requires native_callable_symbol"
+            ));
+        };
+        validate_clean_symbol(symbol, "invoke_ffi native_callable_symbol")?;
+    }
     Ok(())
 }
 
