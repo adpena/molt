@@ -77,7 +77,6 @@ mod random_resolver;
 mod re_resolver;
 mod reprlib_resolver;
 mod runpy_resolver;
-mod scipy_resolver;
 mod select_resolver;
 mod serialization_resolver;
 mod shlex_resolver;
@@ -351,9 +350,6 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         return Some(v);
     }
     if let Some(v) = runpy_resolver::resolve_symbol(symbol) {
-        return Some(v);
-    }
-    if let Some(v) = scipy_resolver::resolve_symbol(symbol) {
         return Some(v);
     }
     if let Some(v) = select_resolver::resolve_symbol(symbol) {

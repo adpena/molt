@@ -270,6 +270,14 @@ const writeU32ToMemory = (memory, ptr, value) => {
   return true;
 };
 
+const memoryOffset32 = (ptr, label) => {
+  const addr = typeof ptr === 'bigint' ? Number(ptr) : Number(ptr);
+  if (!Number.isInteger(addr) || addr < 0 || addr > 0xffffffff) {
+    throw new TypeError(`Expected wasm32 memory offset for ${label}, got ${ptr}`);
+  }
+  return addr >>> 0;
+};
+
 const allocRuntimeTempBytes = (runtime, memory, bytes) => {
   if (!runtime || !memory) {
     throw new Error('runtime not initialized');
@@ -429,7 +437,10 @@ const readBytesObject = (runtime, memory, bits) => {
   }
   const tempLen = allocRuntimeTempBytes(runtime, memory, new Uint8Array(8));
   try {
-    const ptr = runtime.exports.molt_bytes_as_ptr(bits, tempLen.payloadPtr);
+    const ptr = runtime.exports.molt_bytes_as_ptr(
+      bits,
+      memoryOffset32(tempLen.payloadPtr, 'molt_bytes_as_ptr out_len'),
+    );
     const pending = pendingRuntimeExceptionMessage(runtime, memory);
     if (pending) {
       throw new Error(pending);
@@ -437,8 +448,11 @@ const readBytesObject = (runtime, memory, bits) => {
     if (!ptr || ptr === 0n) {
       throw new Error('molt_bytes_as_ptr returned null');
     }
-    const len = new DataView(memory.buffer).getBigUint64(Number(tempLen.payloadPtr), true);
-    const addr = typeof ptr === 'bigint' ? Number(ptr) : Number(ptr >>> 0);
+    const len = new DataView(memory.buffer).getBigUint64(
+      memoryOffset32(tempLen.payloadPtr, 'molt_bytes_as_ptr out_len'),
+      true,
+    );
+    const addr = memoryOffset32(ptr, 'molt_bytes_as_ptr result');
     return copyBytes(new Uint8Array(memory.buffer, addr, Number(len)));
   } finally {
     freeRuntimeTempBytes(runtime, tempLen);
@@ -510,6 +524,24 @@ const normalizeI64Result = (value) => {
   return typeof value === 'bigint' ? value : BigInt(value);
 };
 
+const normalizeI64BridgeValue = (value, label) => {
+  if (typeof value === 'bigint') {
+    return value;
+  }
+  if (typeof value !== 'number' || !Number.isFinite(value) || !Number.isInteger(value)) {
+    throw new TypeError(`Expected integer for ${label}, got ${value}`);
+  }
+  return BigInt.asUintN(64, BigInt(value));
+};
+
+const callIsolateImportExport = (fn, args) => {
+  if (args.length !== 1) {
+    throw new TypeError(`molt_isolate_import expects one i64 handle, got ${args.length}`);
+  }
+  const handle = normalizeI64BridgeValue(args[0], 'molt_isolate_import handle');
+  return normalizeI64BridgeValue(fn(handle), 'molt_isolate_import result');
+};
+
 const normalizeValueForKind = (value, kind) => {
   if (kind === 'i64') {
     return normalizeI64Result(value);
@@ -535,6 +567,7 @@ const buildRuntimeImports = (appModule, runtimeInstance, manifest, browserAbi) =
   const runtimeImports = manifest?.abi?.runtime_imports || {};
   const manifestNames = new Set(runtimeImports.names || []);
   const signatures = runtimeImports.signatures || {};
+  const runtimeExportSignatures = runtimeImports.runtime_export_signatures || {};
   const resultKinds = runtimeImports.result_kinds || {};
   const runtimeExport = (name) => {
     const fn = runtimeInstance.exports[name];
@@ -593,14 +626,16 @@ const buildRuntimeImports = (appModule, runtimeInstance, manifest, browserAbi) =
     const exportName = entry.name.startsWith('molt_') ? entry.name : `molt_${entry.name}`;
     imports[entry.name] = (...args) => {
       let fn = runtimeExport(exportName);
+      let callSignature = runtimeExportSignatures[entry.name] || signature;
       if (!fn) {
         fn = resolveFallback(entry.name);
+        callSignature = signature;
       }
       if (typeof fn !== 'function') {
         throw new Error(`molt_runtime missing export ${exportName}`);
       }
       const callArgs = args.map((value, index) =>
-        normalizeValueForKind(value, signature.params[index] || null));
+        normalizeValueForKind(value, callSignature.params[index] || null));
       return normalizeImportResult(fn(...callArgs), resultKind);
     };
   }
@@ -782,7 +817,7 @@ const buildMinimalEnv = (state, manifest, browserAbi, logFn) => {
       if (typeof fn !== 'function') {
         throw new Error('molt_isolate_import called before app instantiation');
       }
-      return normalizeI64Result(fn(...args));
+      return callIsolateImportExport(fn, args);
     },
   };
   return new Proxy(env, {

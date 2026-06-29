@@ -2063,11 +2063,6 @@ WASM_IMPORT_REGISTRY: tuple[str, ...] = (
     "imghdr_test",
     "imghdr_what",
     "stdlib_probe",
-    "scipy_ndimage_distance_transform_edt",
-    "scipy_ndimage_gaussian_filter",
-    "scipy_ndimage_maximum_filter",
-    "scipy_ndimage_minimum_filter",
-    "scipy_ndimage_label",
     "argparse_add_argument",
     "argparse_add_mutually_exclusive",
     "argparse_add_parser",
@@ -4665,11 +4660,6 @@ WASM_RUNTIME_CALLABLE_IMPORTS: tuple[tuple[str, str, int, str], ...] = (
     ("molt_imghdr_test", "imghdr_test", 2, "i64"),
     ("molt_imghdr_what", "imghdr_what", 1, "i64"),
     ("molt_stdlib_probe", "stdlib_probe", 0, "i64"),
-    ("molt_scipy_ndimage_distance_transform_edt", "scipy_ndimage_distance_transform_edt", 1, "i64"),
-    ("molt_scipy_ndimage_gaussian_filter", "scipy_ndimage_gaussian_filter", 2, "i64"),
-    ("molt_scipy_ndimage_maximum_filter", "scipy_ndimage_maximum_filter", 2, "i64"),
-    ("molt_scipy_ndimage_minimum_filter", "scipy_ndimage_minimum_filter", 2, "i64"),
-    ("molt_scipy_ndimage_label", "scipy_ndimage_label", 1, "i64"),
     ("molt_argparse_add_argument", "argparse_add_argument", 10, "i64"),
     ("molt_argparse_add_mutually_exclusive", "argparse_add_mutually_exclusive", 2, "i64"),
     ("molt_argparse_add_parser", "argparse_add_parser", 3, "i64"),
@@ -5637,14 +5627,50 @@ WASM_RUNTIME_CALLABLE_IMPORTS: tuple[tuple[str, str, int, str], ...] = (
     ("molt_xml_register_namespace", "xml_register_namespace", 2, "i64"),
 )
 
+WASM_RESERVED_RUNTIME_CALLABLES: tuple[tuple[int, str, str, int], ...] = (
+    (0, "molt_type_call", "type_call", 1),
+    (1, "molt_type_new", "type_new", 5),
+    (2, "molt_type_init", "type_init", 5),
+    (3, "molt_object_new_bound", "object_new_bound", 1),
+    (4, "molt_object_init", "object_init", 1),
+    (5, "molt_object_init_subclass", "object_init_subclass", 1),
+    (6, "molt_exception_new_bound", "exception_new_bound", 2),
+    (7, "molt_exception_init", "exception_init", 2),
+    (8, "molt_exceptiongroup_init", "exceptiongroup_init", 2),
+    (9, "molt_types_mappingproxy_new", "types_mappingproxy_new", 2),
+    (10, "molt_types_mappingproxy_init", "types_mappingproxy_init", 2),
+    (11, "molt_types_method_new", "types_method_new", 3),
+    (12, "molt_types_method_init", "types_method_init", 3),
+    (13, "molt_types_simplenamespace_init", "types_simplenamespace_init", 3),
+    (14, "molt_types_capsule_new", "types_capsule_new", 1),
+    (15, "molt_types_cell_new", "types_cell_new", 1),
+    (16, "molt_types_dynamic_class_attr_init", "types_dynamic_class_attr_init", 3),
+    (17, "molt_types_coroutine", "types_coroutine", 1),
+    (18, "molt_types_get_original_bases", "types_get_original_bases", 1),
+    (19, "molt_types_prepare_class", "types_prepare_class", 2),
+    (20, "molt_types_resolve_bases", "types_resolve_bases", 2),
+    (21, "molt_types_new_class", "types_new_class", 2),
+)
+
+WASM_RESERVED_RUNTIME_CALLABLE_COUNT: int = len(WASM_RESERVED_RUNTIME_CALLABLES)
+
+WASM_RESERVED_RUNTIME_CALLABLE_IMPORTS: tuple[tuple[str, str, int, str], ...] = tuple(
+    (runtime_name, import_name, arity, "i64")
+    for _index, runtime_name, import_name, arity in WASM_RESERVED_RUNTIME_CALLABLES
+)
+
+WASM_RUNTIME_CALLABLE_LOOKUP_ROWS: tuple[tuple[str, str, int, str], ...] = (
+    WASM_RUNTIME_CALLABLE_IMPORTS + WASM_RESERVED_RUNTIME_CALLABLE_IMPORTS
+)
+
 WASM_RUNTIME_CALLABLE_IMPORT_BY_RUNTIME: dict[str, tuple[str, int, str]] = {
     runtime_name: (import_name, arity, result)
-    for runtime_name, import_name, arity, result in WASM_RUNTIME_CALLABLE_IMPORTS
+    for runtime_name, import_name, arity, result in WASM_RUNTIME_CALLABLE_LOOKUP_ROWS
 }
 
 WASM_RUNTIME_CALLABLE_IMPORT_BY_IMPORT: dict[str, tuple[str, int, str]] = {
     import_name: (runtime_name, arity, result)
-    for runtime_name, import_name, arity, result in WASM_RUNTIME_CALLABLE_IMPORTS
+    for runtime_name, import_name, arity, result in WASM_RUNTIME_CALLABLE_LOOKUP_ROWS
 }
 
 def wasm_runtime_callable_spec(runtime_name: str) -> tuple[str, int, str] | None:
@@ -7666,11 +7692,6 @@ WASM_IMPORT_SIGNATURES: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...]
     ("imghdr_test", ("i64", "i64"), ("i64",)),
     ("imghdr_what", ("i64",), ("i64",)),
     ("stdlib_probe", (), ("i64",)),
-    ("scipy_ndimage_distance_transform_edt", ("i64",), ("i64",)),
-    ("scipy_ndimage_gaussian_filter", ("i64", "i64"), ("i64",)),
-    ("scipy_ndimage_maximum_filter", ("i64", "i64"), ("i64",)),
-    ("scipy_ndimage_minimum_filter", ("i64", "i64"), ("i64",)),
-    ("scipy_ndimage_label", ("i64",), ("i64",)),
     ("argparse_add_argument", ("i64", "i64", "i64", "i64", "i64", "i64", "i64", "i64", "i64", "i64"), ("i64",)),
     ("argparse_add_mutually_exclusive", ("i64", "i64"), ("i64",)),
     ("argparse_add_parser", ("i64", "i64", "i64"), ("i64",)),
@@ -8748,33 +8769,6 @@ def runtime_surface_requires_direct_import(kind: str) -> bool:
         kind.startswith(prefix)
         for prefix in WASM_REQUIRED_RUNTIME_IMPORT_PREFIXES
     ) or kind in WASM_REQUIRED_RUNTIME_IMPORT_SINGLETONS
-
-WASM_RESERVED_RUNTIME_CALLABLES: tuple[tuple[int, str, str, int], ...] = (
-    (0, "molt_type_call", "type_call", 1),
-    (1, "molt_type_new", "type_new", 5),
-    (2, "molt_type_init", "type_init", 5),
-    (3, "molt_object_new_bound", "object_new_bound", 1),
-    (4, "molt_object_init", "object_init", 1),
-    (5, "molt_object_init_subclass", "object_init_subclass", 1),
-    (6, "molt_exception_new_bound", "exception_new_bound", 2),
-    (7, "molt_exception_init", "exception_init", 2),
-    (8, "molt_exceptiongroup_init", "exceptiongroup_init", 2),
-    (9, "molt_types_mappingproxy_new", "types_mappingproxy_new", 2),
-    (10, "molt_types_mappingproxy_init", "types_mappingproxy_init", 2),
-    (11, "molt_types_method_new", "types_method_new", 3),
-    (12, "molt_types_method_init", "types_method_init", 3),
-    (13, "molt_types_simplenamespace_init", "types_simplenamespace_init", 3),
-    (14, "molt_types_capsule_new", "types_capsule_new", 1),
-    (15, "molt_types_cell_new", "types_cell_new", 1),
-    (16, "molt_types_dynamic_class_attr_init", "types_dynamic_class_attr_init", 3),
-    (17, "molt_types_coroutine", "types_coroutine", 1),
-    (18, "molt_types_get_original_bases", "types_get_original_bases", 1),
-    (19, "molt_types_prepare_class", "types_prepare_class", 2),
-    (20, "molt_types_resolve_bases", "types_resolve_bases", 2),
-    (21, "molt_types_new_class", "types_new_class", 2),
-)
-
-WASM_RESERVED_RUNTIME_CALLABLE_COUNT: int = len(WASM_RESERVED_RUNTIME_CALLABLES)
 
 WASM_OUTPUT_EXPORT_ALIAS_PREFIX: str = "__molt_export_alias__"
 

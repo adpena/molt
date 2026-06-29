@@ -8831,36 +8831,6 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         defaults: &[],
     },
     IntrinsicSpec {
-        name: "molt_scipy_ndimage_distance_transform_edt",
-        symbol: "molt_scipy_ndimage_distance_transform_edt",
-        arity: 1,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_scipy_ndimage_gaussian_filter",
-        symbol: "molt_scipy_ndimage_gaussian_filter",
-        arity: 2,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_scipy_ndimage_maximum_filter",
-        symbol: "molt_scipy_ndimage_maximum_filter",
-        arity: 2,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_scipy_ndimage_minimum_filter",
-        symbol: "molt_scipy_ndimage_minimum_filter",
-        arity: 2,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_scipy_ndimage_label",
-        symbol: "molt_scipy_ndimage_label",
-        arity: 1,
-        defaults: &[],
-    },
-    IntrinsicSpec {
         name: "molt_argparse_add_argument",
         symbol: "molt_argparse_add_argument",
         arity: 10,

@@ -9696,36 +9696,6 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
         result: RuntimeCallableResult::I64,
     },
     RuntimeCallableImportSpec {
-        runtime_name: "molt_scipy_ndimage_distance_transform_edt",
-        import_name: "scipy_ndimage_distance_transform_edt",
-        arity: 1,
-        result: RuntimeCallableResult::I64,
-    },
-    RuntimeCallableImportSpec {
-        runtime_name: "molt_scipy_ndimage_gaussian_filter",
-        import_name: "scipy_ndimage_gaussian_filter",
-        arity: 2,
-        result: RuntimeCallableResult::I64,
-    },
-    RuntimeCallableImportSpec {
-        runtime_name: "molt_scipy_ndimage_maximum_filter",
-        import_name: "scipy_ndimage_maximum_filter",
-        arity: 2,
-        result: RuntimeCallableResult::I64,
-    },
-    RuntimeCallableImportSpec {
-        runtime_name: "molt_scipy_ndimage_minimum_filter",
-        import_name: "scipy_ndimage_minimum_filter",
-        arity: 2,
-        result: RuntimeCallableResult::I64,
-    },
-    RuntimeCallableImportSpec {
-        runtime_name: "molt_scipy_ndimage_label",
-        import_name: "scipy_ndimage_label",
-        arity: 1,
-        result: RuntimeCallableResult::I64,
-    },
-    RuntimeCallableImportSpec {
         runtime_name: "molt_argparse_add_argument",
         import_name: "argparse_add_argument",
         arity: 10,

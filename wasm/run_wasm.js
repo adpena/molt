@@ -5099,6 +5099,14 @@ const normalizeRuntimeImportReturn = (value, ty) => {
   return value;
 };
 
+const callIsolateImportExport = (fn, args) => {
+  if (args.length !== 1) {
+    throw new TypeError(`molt_isolate_import expects one i64 handle, got ${args.length}`);
+  }
+  const handle = runtimeImportToBigInt(args[0], 'molt_isolate_import handle');
+  return runtimeImportToBigInt(fn(handle), 'molt_isolate_import result');
+};
+
 let cachedRuntimeImportFuncSigs = null;
 
 const runtimeImportFuncSigs = () => {
@@ -5449,7 +5457,7 @@ const runDirectLink = async () => {
       if (!outputInstance || typeof outputInstance.exports.molt_isolate_import !== 'function') {
         throw new Error('molt_isolate_import used before output instantiation');
       }
-      return outputInstance.exports.molt_isolate_import(...args);
+      return callIsolateImportExport(outputInstance.exports.molt_isolate_import, args);
     },
     molt_db_query_host: dbQueryHost,
     molt_db_exec_host: dbExecHost,
@@ -5782,7 +5790,10 @@ const runLinked = async () => {
     ) {
       throw new Error('molt_isolate_import used before linked instantiation');
     }
-    return linkedModule.instance.exports.molt_isolate_import(...args);
+    return callIsolateImportExport(
+      linkedModule.instance.exports.molt_isolate_import,
+      args,
+    );
   };
 
   const linkedModule = await WebAssembly.instantiate(linkedBuffer, importObject);

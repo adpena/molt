@@ -45,6 +45,26 @@ from molt.wasm_artifact import (
 )
 
 
+def _runtime_export_signatures_for_imports(
+    runtime_wasm: Path, import_names: set[str]
+) -> dict[str, dict[str, object]]:
+    import_to_export = {
+        import_name: import_name
+        if import_name.startswith("molt_")
+        else f"molt_{import_name}"
+        for import_name in import_names
+    }
+    export_signatures = _wasm_export_function_signatures(
+        runtime_wasm,
+        export_names=import_to_export.values(),
+    )
+    return {
+        import_name: export_signatures[export_name]
+        for import_name, export_name in sorted(import_to_export.items())
+        if export_name in export_signatures
+    }
+
+
 def _replace_directory_tree_from_source(
     src: Path,
     dst: Path,
@@ -493,6 +513,9 @@ def _prepare_non_native_build_result(
             app_runtime_import_signatures = _runtime_import_signatures_from_manifest(
                 app_runtime_import_names
             )
+            app_runtime_export_signatures = _runtime_export_signatures_for_imports(
+                rt_wasm, app_runtime_import_names
+            )
             shared_memory_initial_pages = max(
                 app_memory_min or 0,
                 rt_memory_min or 0,
@@ -533,6 +556,7 @@ def _prepare_non_native_build_result(
                         "module": "molt_runtime",
                         "names": sorted(app_runtime_import_names),
                         "signatures": app_runtime_import_signatures,
+                        "runtime_export_signatures": app_runtime_export_signatures,
                         "result_kinds": app_runtime_import_result_kinds,
                     },
                     "browser_embed": _split_runtime_browser_abi_from_manifest(),
@@ -573,6 +597,7 @@ def _prepare_non_native_build_result(
                     shared_table_initial=shared_table_initial,
                     shared_table_base=effective_wasm_table_base,
                     runtime_import_names=app_runtime_import_names,
+                    runtime_export_signatures=app_runtime_export_signatures,
                     app_table_ref_signatures=app_table_ref_signatures,
                     runtime_table_ref_signatures=runtime_table_ref_signatures,
                 ),

@@ -4126,11 +4126,27 @@ export const loadMoltWasm = async (options = {}) => {
     };
   }
   const env = buildEnv(memory, table, callIndirect, logFn, overrides);
+  const normalizeIsolateImportI64 = (value, label) => {
+    if (typeof value === 'bigint') {
+      return value;
+    }
+    if (typeof value !== 'number' || !Number.isFinite(value) || !Number.isInteger(value)) {
+      throw new TypeError(`Expected integer for ${label}, got ${value}`);
+    }
+    return BigInt.asUintN(64, BigInt(value));
+  };
+  const callIsolateImportExport = (fn, args) => {
+    if (args.length !== 1) {
+      throw new TypeError(`molt_isolate_import expects one i64 handle, got ${args.length}`);
+    }
+    const handle = normalizeIsolateImportI64(args[0], 'molt_isolate_import handle');
+    return normalizeIsolateImportI64(fn(handle), 'molt_isolate_import result');
+  };
   env.molt_isolate_import = (...args) => {
     if (!outputInstance || typeof outputInstance.exports.molt_isolate_import !== 'function') {
       throw new Error('molt_isolate_import used before output instantiation');
     }
-    return outputInstance.exports.molt_isolate_import(...args);
+    return callIsolateImportExport(outputInstance.exports.molt_isolate_import, args);
   };
   const outputModule = await WebAssembly.instantiate(wasmBytes, {
     molt_runtime: buildRuntimeImports(outputImports, {
