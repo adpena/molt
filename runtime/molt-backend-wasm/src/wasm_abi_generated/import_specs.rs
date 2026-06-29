@@ -2537,7 +2537,7 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::RuntimeInit,
         name: "runtime_init",
-        runtime_name: None,
+        runtime_name: Some("molt_runtime_init"),
         runtime_export_name: "molt_runtime_init",
         type_idx: 0,
         poll_table_slot: None,
@@ -2547,7 +2547,7 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::RuntimeShutdown,
         name: "runtime_shutdown",
-        runtime_name: None,
+        runtime_name: Some("molt_runtime_shutdown"),
         runtime_export_name: "molt_runtime_shutdown",
         type_idx: 0,
         poll_table_slot: None,
