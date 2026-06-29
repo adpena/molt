@@ -27,32 +27,50 @@ pub(crate) fn emit_fact_graph_for_ir(
     ir: &SimpleIR,
     request: FactGraphEmitRequest<'_>,
 ) -> io::Result<()> {
-    let (mut tir_module, _) =
-        molt_backend::tir::lower_from_simple::lower_functions_to_tir_module(&ir.functions);
-    tir_module.name = "fact_graph_module".to_string();
-
-    for tir_func in &mut tir_module.functions {
-        molt_backend::tir::type_refine::refine_types(tir_func);
-        let _stats = molt_backend::tir::passes::run_pipeline(tir_func, request.target_info);
-        molt_backend::tir::type_refine::refine_types(tir_func);
-    }
-
-    let non_inlinable = HashSet::new();
-    let module_analysis = molt_backend::tir::run_module_pipeline(
-        &mut tir_module,
-        request.target_info,
-        &non_inlinable,
+    let mut functions = ir.functions.clone();
+    let mut tir_run = molt_backend::tir::pipeline_cache::run_cached_tir_pipeline(
+        &mut functions,
+        molt_backend::tir::pipeline_cache::TirPipelineRunOptions {
+            target_info: request.target_info.clone(),
+            cache_flavor: molt_backend::tir::pipeline_cache::TirPipelineCacheFlavor::FactGraph,
+            cache_dir: None,
+            process_externs: false,
+            verify_lir: false,
+            tir_dump: false,
+            tir_stats: false,
+            progress_prefix: None,
+            resource_plan: molt_backend::tir::pipeline_cache::tir_optimization_resource_plan(),
+        },
+        |_| {},
     );
+    let non_inlinable = HashSet::new();
+    let module_run = molt_backend::tir::pipeline_cache::run_owned_module_pipeline_from_cached_tir(
+        &functions,
+        &mut tir_run.cached_tir,
+        molt_backend::tir::pipeline_cache::TirOwnedModulePipelineOptions {
+            target_info: request.target_info,
+            module_name: "fact_graph_module",
+            non_inlinable: &non_inlinable,
+            missing_tir_context: "fact graph TIR cache runner",
+            mode: molt_backend::tir::pipeline_cache::TirOwnedModulePipelineMode::ModulePhase,
+        },
+    );
+    let module_analysis = module_run
+        .module_analysis
+        .expect("fact graph owned TIR run must execute module phase");
 
-    let selected = tir_module
-        .functions
+    let selected = module_run
+        .tir_functions
         .iter()
+        .filter(|(is_extern, _)| !*is_extern)
+        .map(|(_, func)| func)
         .find(|func| func.name == request.function_name)
         .ok_or_else(|| {
-            let mut names: Vec<_> = tir_module
-                .functions
+            let mut names: Vec<_> = module_run
+                .tir_functions
                 .iter()
-                .map(|func| func.name.as_str())
+                .filter(|(is_extern, _)| !*is_extern)
+                .map(|(_, func)| func.name.as_str())
                 .collect();
             names.sort_unstable();
             io::Error::new(

@@ -145,38 +145,40 @@ struct LuauTirModulePipelineStats {
 
 fn run_luau_tir_module_pipeline(ir: &mut SimpleIR) -> io::Result<LuauTirModulePipelineStats> {
     let target_info = molt_backend::tir::target_info::TargetInfo::luau_release_fast();
-    let (mut tir_module, idx_map) =
-        molt_backend::tir::lower_from_simple::lower_functions_to_tir_module(&ir.functions);
-    tir_module.name = "luau_module".to_string();
-
-    for tir_func in &mut tir_module.functions {
-        molt_backend::tir::type_refine::refine_types(tir_func);
-        let _stats = molt_backend::tir::passes::run_pipeline(tir_func, &target_info);
-        molt_backend::tir::type_refine::refine_types(tir_func);
-    }
-
+    let local_function_count = ir.functions.iter().filter(|func| !func.is_extern).count();
+    let mut tir_run = molt_backend::tir::pipeline_cache::run_cached_tir_pipeline(
+        &mut ir.functions,
+        molt_backend::tir::pipeline_cache::TirPipelineRunOptions {
+            target_info: target_info.clone(),
+            cache_flavor: molt_backend::tir::pipeline_cache::TirPipelineCacheFlavor::Luau,
+            cache_dir: None,
+            process_externs: false,
+            verify_lir: false,
+            tir_dump: std::env::var("TIR_DUMP").ok().as_deref() == Some("1"),
+            tir_stats: std::env::var("TIR_OPT_STATS").ok().as_deref() == Some("1"),
+            progress_prefix: None,
+            resource_plan: molt_backend::tir::pipeline_cache::tir_optimization_resource_plan(),
+        },
+        |_| {},
+    );
     let non_inlinable = std::collections::HashSet::new();
-    let module_analysis =
-        molt_backend::tir::run_module_pipeline(&mut tir_module, &target_info, &non_inlinable);
-
-    for (pos, &orig_idx) in idx_map.iter().enumerate() {
-        let tir_func = &tir_module.functions[pos];
-        let ops = molt_backend::tir::lower_to_simple::lower_to_simple_ir(tir_func);
-        if !molt_backend::tir::lower_to_simple::validate_labels(&ops) {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!(
-                    "Luau TIR module back-conversion emitted invalid labels for '{}'",
-                    tir_func.name
-                ),
-            ));
-        }
-        ir.functions[orig_idx].ops = ops;
-    }
+    let module_run =
+        molt_backend::tir::pipeline_cache::run_simple_ir_module_pipeline_from_cached_tir(
+            &mut ir.functions,
+            &mut tir_run.cached_tir,
+            molt_backend::tir::pipeline_cache::TirSimpleIrModulePipelineOptions {
+                target_info: &target_info,
+                module_name: "luau_module",
+                non_inlinable: &non_inlinable,
+                missing_tir_context: "Luau TIR cache runner",
+                backconvert_context: "Luau TIR module pipeline",
+                stage_observer: None,
+            },
+        );
 
     Ok(LuauTirModulePipelineStats {
-        functions: tir_module.functions.len(),
-        module_changed: module_analysis.changed_functions.len(),
+        functions: local_function_count,
+        module_changed: module_run.module_analysis.changed_functions.len(),
     })
 }
 
