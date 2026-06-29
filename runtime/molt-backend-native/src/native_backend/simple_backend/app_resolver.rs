@@ -1,4 +1,8 @@
 use super::*;
+use crate::app_resolver_abi::{
+    APP_RESOLVER_NAMES_SYMBOL, APP_RESOLVER_RECORD_BYTES, APP_RESOLVER_SYMBOL,
+    APP_RESOLVER_TABLE_SYMBOL, dump_intrinsic_manifest,
+};
 
 #[cfg(feature = "native-backend")]
 impl SimpleBackend {
@@ -36,19 +40,7 @@ impl SimpleBackend {
         &mut self,
         manifest_names: &BTreeSet<String>,
     ) {
-        const RESOLVER_NAME: &str = "molt_app_resolve_intrinsic";
-        const RECORD_BYTES: usize = 16; // u32 name_off + u32 name_len + u64 func_ptr
-
-        // Diagnostic-only (default off): emit the exact per-app intrinsic manifest
-        // so size-reduction work can verify, deterministically and at the manifest
-        // level (not just the final binary size), exactly which intrinsics the
-        // reachability gate keeps. Mirrors the `MOLT_DUMP_*` diagnostic family.
-        if std::env::var("MOLT_DUMP_INTRINSIC_MANIFEST").as_deref() == Ok("1") {
-            eprintln!("MOLT_INTRINSIC_MANIFEST: count={}", manifest_names.len());
-            for name in manifest_names {
-                eprintln!("MOLT_INTRINSIC_MANIFEST: {name}");
-            }
-        }
+        dump_intrinsic_manifest(manifest_names);
 
         // Declare the exported resolver: (i64 name_ptr, i64 name_len) -> i64.
         let mut sig = self.module.make_signature();
@@ -57,8 +49,8 @@ impl SimpleBackend {
         sig.returns.push(AbiParam::new(types::I64));
         let resolver_id = self
             .module
-            .declare_function(RESOLVER_NAME, Linkage::Export, &sig)
-            .unwrap_or_else(|e| panic!("failed to declare {RESOLVER_NAME}: {e:?}"));
+            .declare_function(APP_RESOLVER_SYMBOL, Linkage::Export, &sig)
+            .unwrap_or_else(|e| panic!("failed to declare {APP_RESOLVER_SYMBOL}: {e:?}"));
 
         // Pre-resolve a FuncId for every manifest intrinsic, reusing any
         // declaration created by a direct call (so we never re-declare with a
@@ -93,7 +85,7 @@ impl SimpleBackend {
         // pre-size the blob with zeros and attach a `write_function_addr` reloc at
         // each slot offset.
         let mut names_blob: Vec<u8> = Vec::new();
-        let mut table_blob: Vec<u8> = vec![0u8; count * RECORD_BYTES];
+        let mut table_blob: Vec<u8> = vec![0u8; count * APP_RESOLVER_RECORD_BYTES];
         let mut name_spans: Vec<(u32, u32)> = Vec::with_capacity(count);
         for (idx, (name, _)) in entries.iter().enumerate() {
             let off = names_blob.len();
@@ -104,7 +96,7 @@ impl SimpleBackend {
             );
             names_blob.extend_from_slice(bytes);
             name_spans.push((off as u32, bytes.len() as u32));
-            let rec = idx * RECORD_BYTES;
+            let rec = idx * APP_RESOLVER_RECORD_BYTES;
             table_blob[rec..rec + 4].copy_from_slice(&(off as u32).to_le_bytes());
             table_blob[rec + 4..rec + 8].copy_from_slice(&(bytes.len() as u32).to_le_bytes());
             // bytes [rec+8 .. rec+16] (the func_ptr) stay zero; the relocation
@@ -114,7 +106,7 @@ impl SimpleBackend {
         // Declare and define the names blob (immutable, no relocations).
         let names_data_id = self
             .module
-            .declare_data("molt_app_intrinsic_names", Linkage::Local, false, false)
+            .declare_data(APP_RESOLVER_NAMES_SYMBOL, Linkage::Local, false, false)
             .unwrap_or_else(|e| panic!("app resolver: failed to declare names blob: {e:?}"));
         let mut names_desc = DataDescription::new();
         names_desc.define(names_blob.into_boxed_slice());
@@ -128,14 +120,14 @@ impl SimpleBackend {
         // COFF  that the linker resolves to the intrinsic in the staticlib.
         let table_data_id = self
             .module
-            .declare_data("molt_app_intrinsic_table", Linkage::Local, false, false)
+            .declare_data(APP_RESOLVER_TABLE_SYMBOL, Linkage::Local, false, false)
             .unwrap_or_else(|e| panic!("app resolver: failed to declare table: {e:?}"));
         let mut table_desc = DataDescription::new();
         table_desc.set_align(8);
         table_desc.define(table_blob.into_boxed_slice());
         for (idx, (_, func_id)) in entries.iter().enumerate() {
             let func_ref = self.module.declare_func_in_data(*func_id, &mut table_desc);
-            let slot = (idx * RECORD_BYTES + 8) as u32;
+            let slot = (idx * APP_RESOLVER_RECORD_BYTES + 8) as u32;
             table_desc.write_function_addr(slot, func_ref);
         }
         self.module
@@ -197,7 +189,9 @@ impl SimpleBackend {
             let span = builder.ins().isub(hi, lo);
             let half = builder.ins().ushr_imm(span, 1);
             let mid = builder.ins().iadd(lo, half);
-            let rec_stride = builder.ins().iconst(types::I64, RECORD_BYTES as i64);
+            let rec_stride = builder
+                .ins()
+                .iconst(types::I64, APP_RESOLVER_RECORD_BYTES as i64);
             let rec_off = builder.ins().imul(mid, rec_stride);
             let rec_ptr = builder.ins().iadd(table_base, rec_off);
             let flags = MemFlagsData::new();
@@ -262,8 +256,9 @@ impl SimpleBackend {
 
         self.module
             .define_function(resolver_id, &mut ctx)
-            .unwrap_or_else(|e| panic!("failed to define {RESOLVER_NAME}: {e:?}"));
-        self.defined_func_names.insert(RESOLVER_NAME.to_string());
+            .unwrap_or_else(|e| panic!("failed to define {APP_RESOLVER_SYMBOL}: {e:?}"));
+        self.defined_func_names
+            .insert(APP_RESOLVER_SYMBOL.to_string());
     }
 
     /// Emit an unsigned byte-wise lexicographic comparison of two runtime byte

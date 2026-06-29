@@ -219,8 +219,9 @@ imports fail loudly at instantiate. No guard needed.
 
 ### 2e. LLVM `runtime_imports` — already guarded
 
-`runtime/molt-backend/src/llvm_backend/runtime_imports.rs` already carries
-consistency tests: `runtime_functions_are_declared`,
+`runtime/molt-backend-native/src/llvm_backend/runtime_imports/` carries the
+split LLVM runtime-import authority plus consistency tests:
+`runtime_functions_are_declared`,
 `fused_method_dispatch_ic_runtime_functions_are_declared`,
 `module_namespace_runtime_functions_are_declared`, `all_functions_have_nounwind`
 (lines 912–1088). This surface is reasonably protected; no new guard warranted.

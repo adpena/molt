@@ -289,6 +289,7 @@ globs = [
   "runtime/molt-ir/src/tir/op_kinds_generated.rs",
   "runtime/molt-backend-native/src/llvm_backend/lowering.rs",
   "runtime/molt-backend-native/src/llvm_backend/runtime_imports.rs",
+  "runtime/molt-backend-native/src/llvm_backend/runtime_imports/*.rs",
   "runtime/molt-runtime/src/**/*.rs",
 ]
 gates = [

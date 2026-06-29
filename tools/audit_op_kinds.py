@@ -90,8 +90,9 @@ SERIALIZATION_MODULES = (
 )
 SSA_RS = OP_KIND_TIR_SRC / "ssa.rs"
 LLVM_RS = ROOT / "runtime/molt-backend-native/src/llvm_backend/lowering.rs"
-LLVM_RUNTIME_IMPORTS_RS = (
-    ROOT / "runtime/molt-backend-native/src/llvm_backend/runtime_imports.rs"
+LLVM_RUNTIME_IMPORT_ABI_FACTS_RS = (
+    ROOT
+    / "runtime/molt-backend-native/src/llvm_backend/runtime_imports/abi_facts.rs"
 )
 LLVM_RUNTIME_IMPORT_ABI_RS = ROOT / "runtime/molt-backend-native/src/runtime_import_abi.rs"
 LLVM_PRESERVED_OPS_RS = (
@@ -674,7 +675,7 @@ def extract_runtime_molt_symbols() -> set[str]:
 
 
 def _classified_runtime_import_array_body() -> str:
-    text = LLVM_RUNTIME_IMPORTS_RS.read_text(encoding="utf-8")
+    text = LLVM_RUNTIME_IMPORT_ABI_FACTS_RS.read_text(encoding="utf-8")
     m = re.search(
         r"CLASSIFIED_RUNTIME_IMPORTS\s*:\s*&\[RuntimeImportSignature\]\s*=\s*&\[",
         text,
@@ -982,6 +983,24 @@ def extract_native_family_handlers() -> dict[str, tuple[str, str]]:
     return handlers
 
 
+def extract_native_handler_arm_kinds(
+    path: Path, fn_name: str, routed_kinds: set[str]
+) -> set[str]:
+    try:
+        return set(extract_match_arms(path, fn_name, "match op.kind.as_str()"))
+    except RustMatchParseError as exc:
+        missing_direct_match = "`match op.kind.as_str()` not found" in str(exc)
+        if missing_direct_match and len(routed_kinds) == 1:
+            return set(routed_kinds)
+        if missing_direct_match:
+            raise RustMatchParseError(
+                f"{path.relative_to(ROOT).as_posix()}:{fn_name} handles "
+                f"{len(routed_kinds)} routed native kinds without an explicit "
+                "`match op.kind.as_str()`"
+            ) from exc
+        raise
+
+
 def extract_native_handler_routing_drifts() -> list[str]:
     """Compare each extracted native handler's real match arms to routed slices.
 
@@ -1011,7 +1030,7 @@ def extract_native_handler_routing_drifts() -> list[str]:
             kinds = consts.get(const_name, set())
             slice_kinds.update(kinds)
             slice_labels.append(f"{slice_module}::{const_name}")
-        arm_kinds = set(extract_match_arms(path, fn_name, "match op.kind.as_str()"))
+        arm_kinds = extract_native_handler_arm_kinds(path, fn_name, slice_kinds)
         const_label = "+".join(slice_labels)
         for kind in sorted(arm_kinds - slice_kinds):
             drifts.append(

@@ -105,7 +105,14 @@ cache). The runtime wants the *completion* of crate splits it half-did.
 - **Partner LLVM lane**: `llvm_backend/` now lives under
   `runtime/molt-backend-native/src/llvm_backend/`. Coordinate freezes around
   LLVM lowering edits there; do not reintroduce an LLVM implementation lane under
-  `runtime/molt-backend/src/`.- **Baseline build numbers**: 08 will produce measured cold/incremental timings. This doc leaves
+  `runtime/molt-backend/src/`.
+- **Current backend-native decomposition**: the per-app resolver ABI is shared in
+  `runtime/molt-backend-native/src/app_resolver_abi.rs`, LLVM resolver emission
+  lives in `llvm_backend/app_resolver.rs`, and LLVM runtime imports are split
+  into `runtime_imports/{abi_facts,attributes,declarations,tests}.rs`. Keep new
+  LLVM ABI facts in those modules rather than rebuilding a flat
+  `runtime_imports.rs` lane.
+- **Baseline build numbers**: 08 will produce measured cold/incremental timings. This doc leaves
   **keyed placeholders `{DX-BASELINE:<key>}`** for per-phase build-win estimates; fill them once
   08's measurements exist. Do not invent numbers.
 
