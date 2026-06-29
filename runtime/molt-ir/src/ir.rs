@@ -81,6 +81,10 @@ pub struct OpIR {
     pub bound_local: Option<bool>,
     pub task_kind: Option<String>,
     pub container_type: Option<String>,
+    pub native_callable_export: Option<String>,
+    pub native_callable_binding: Option<String>,
+    pub native_callable_symbol: Option<String>,
+    pub native_callable_abi: Option<String>,
     /// Transitional semantic hint preserved on the transport surface for
     /// compatibility consumers. The canonical representation contract lives in
     /// TIR/LIR, not this field.
@@ -395,6 +399,10 @@ impl OpIR {
             stack_eligible: optional_bool(obj, "stack_eligible", ctx)?,
             task_kind: optional_string(obj, "task_kind", ctx)?,
             container_type: optional_string(obj, "container_type", ctx)?,
+            native_callable_export: optional_string(obj, "native_callable_export", ctx)?,
+            native_callable_binding: optional_string(obj, "native_callable_binding", ctx)?,
+            native_callable_symbol: optional_string(obj, "native_callable_symbol", ctx)?,
+            native_callable_abi: optional_string(obj, "native_callable_abi", ctx)?,
             type_hint: optional_string(obj, "type_hint", ctx)?,
             ic_index,
             source_op_idx: optional_i64(obj, "source_op_idx", ctx)?,
@@ -610,6 +618,102 @@ mod json_parse_tests {
         .expect_err("effect proof should be rejected on non-module reads");
 
         assert!(err.contains("cannot carry effect_proof `static_module_class_binding`"));
+    }
+
+    #[test]
+    fn simple_ir_from_json_str_accepts_native_callable_invoke_ffi_metadata() {
+        let ir = SimpleIR::from_json_str(
+            r#"{
+                "functions": [
+                    {
+                        "name": "__main__",
+                        "params": ["callee", "arg0"],
+                        "ops": [
+                            {
+                                "kind": "invoke_ffi",
+                                "args": ["callee", "arg0"],
+                                "out": "result",
+                                "native_callable_export": "scipy.ndimage.distance_transform_edt",
+                                "native_callable_binding": "direct_symbol",
+                                "native_callable_symbol": "molt_scipy_ndimage_distance_transform_edt",
+                                "native_callable_abi": "molt.forward_f32_v1"
+                            }
+                        ]
+                    }
+                ]
+            }"#,
+        )
+        .expect("native callable invoke_ffi metadata should validate");
+
+        let op = &ir.functions[0].ops[0];
+        assert_eq!(
+            op.native_callable_export.as_deref(),
+            Some("scipy.ndimage.distance_transform_edt")
+        );
+        assert_eq!(op.native_callable_binding.as_deref(), Some("direct_symbol"));
+        assert_eq!(
+            op.native_callable_symbol.as_deref(),
+            Some("molt_scipy_ndimage_distance_transform_edt")
+        );
+        assert_eq!(
+            op.native_callable_abi.as_deref(),
+            Some("molt.forward_f32_v1")
+        );
+    }
+
+    #[test]
+    fn simple_ir_from_json_str_rejects_native_callable_metadata_on_non_invoke_ffi() {
+        let err = SimpleIR::from_json_str(
+            r#"{
+                "functions": [
+                    {
+                        "name": "__main__",
+                        "params": ["x"],
+                        "ops": [
+                            {
+                                "kind": "call",
+                                "s_value": "scipy__ndimage__distance_transform_edt",
+                                "args": ["x"],
+                                "out": "result",
+                                "native_callable_export": "scipy.ndimage.distance_transform_edt",
+                                "native_callable_binding": "module_attr",
+                                "native_callable_abi": "molt.forward_f32_v1"
+                            }
+                        ]
+                    }
+                ]
+            }"#,
+        )
+        .expect_err("native callable metadata belongs only on invoke_ffi");
+
+        assert!(err.contains("op `call` cannot carry native callable export metadata"));
+    }
+
+    #[test]
+    fn simple_ir_from_json_str_rejects_direct_symbol_without_native_symbol() {
+        let err = SimpleIR::from_json_str(
+            r#"{
+                "functions": [
+                    {
+                        "name": "__main__",
+                        "params": ["callee", "arg0"],
+                        "ops": [
+                            {
+                                "kind": "invoke_ffi",
+                                "args": ["callee", "arg0"],
+                                "out": "result",
+                                "native_callable_export": "scipy.ndimage.distance_transform_edt",
+                                "native_callable_binding": "direct_symbol",
+                                "native_callable_abi": "molt.forward_f32_v1"
+                            }
+                        ]
+                    }
+                ]
+            }"#,
+        )
+        .expect_err("direct_symbol callable exports require a native symbol");
+
+        assert!(err.contains("direct_symbol requires native_callable_symbol"));
     }
 
     #[test]

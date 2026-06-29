@@ -217,6 +217,7 @@ def _prepare_frontend_analysis(
     json_output: bool,
     target_python: TargetPythonVersion,
     capability_config_digest: str = "",
+    dependency_known_modules: Collection[str] = (),
 ) -> tuple[_PreparedFrontendAnalysis | None, _CliFailure | None]:
     module_deps: dict[str, set[str]] = {}
     module_sources: dict[str, str] = {}
@@ -298,6 +299,7 @@ def _prepare_frontend_analysis(
             module_name,
             module_graph,
             module_imports,
+            known_modules=dependency_known_modules,
         )
         known_func_defaults[module_name] = func_defaults
         known_func_kinds[module_name] = func_kinds
@@ -349,8 +351,10 @@ def _prepare_frontend_lowering_config(
     module_dep_closures: dict[str, frozenset[str]],
     has_back_edges: bool,
     known_modules: Collection[str],
+    direct_call_modules: Collection[str],
     known_func_defaults: dict[str, dict[str, dict[str, Any]]],
     known_func_kinds: dict[str, dict[str, str]],
+    native_callable_exports: Mapping[str, Mapping[str, Any]] | None,
     pgo_hot_function_names: set[str],
     generated_module_source_paths: Mapping[str, str],
     entry_module: str,
@@ -406,8 +410,10 @@ def _prepare_frontend_lowering_config(
         module_deps=module_deps,
         module_dep_closures=module_dep_closures,
         known_modules=known_modules,
+        direct_call_modules=direct_call_modules,
         known_func_defaults=known_func_defaults,
         known_func_kinds=known_func_kinds,
+        native_callable_exports=native_callable_exports,
         pgo_hot_function_names=pgo_hot_function_names,
         type_facts=cast(TypeFacts | None, type_facts),
     )
@@ -836,6 +842,7 @@ def _prepare_frontend_stage_state(
             json_output=json_output,
             target_python=prepared_build_config.target_python,
             capability_config_digest=prepared_build_config.capability_config_cache_digest,
+            dependency_known_modules=set(import_plan.known_modules),
         )
     )
     if prepared_frontend_analysis_error is not None:
@@ -855,8 +862,12 @@ def _prepare_frontend_stage_state(
             module_dep_closures=prepared_frontend_analysis.module_dep_closures,
             has_back_edges=prepared_frontend_analysis.has_back_edges,
             known_modules=set(import_plan.known_modules),
+            direct_call_modules=set(import_plan.direct_call_modules),
             known_func_defaults=prepared_frontend_analysis.known_func_defaults,
             known_func_kinds=prepared_frontend_analysis.known_func_kinds,
+            native_callable_exports=(
+                import_plan.native_artifact_plan.native_callable_exports_by_qualified_name()
+            ),
             pgo_hot_function_names=pgo_hot_function_names,
             generated_module_source_paths=dict(
                 import_plan.generated_module_source_paths
@@ -1080,9 +1091,13 @@ def _prepare_frontend_pipeline(
         type_facts=prepared_frontend_lowering_config.type_facts,
         enable_phi=prepared_frontend_lowering_config.enable_phi,
         known_modules=set(import_plan.known_modules),
+        direct_call_modules=set(import_plan.direct_call_modules),
         stdlib_allowlist=set(import_plan.stdlib_allowlist),
         known_func_defaults=prepared_frontend_analysis.known_func_defaults,
         known_func_kinds=prepared_frontend_analysis.known_func_kinds,
+        native_callable_exports=(
+            import_plan.native_artifact_plan.native_callable_exports_by_qualified_name()
+        ),
         module_deps=prepared_frontend_analysis.module_deps,
         module_chunk_max_ops=prepared_frontend_lowering_config.module_chunk_max_ops,
         optimization_profile=profile,

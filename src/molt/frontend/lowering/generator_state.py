@@ -285,10 +285,12 @@ class GeneratorStateMixin(_MixinBase):
         entry_module: str | None = None,
         enable_phi: bool = True,
         known_modules: set[str] | None = None,
+        direct_call_modules: set[str] | None = None,
         known_classes: dict[str, ClassInfo] | None = None,
         stdlib_allowlist: set[str] | None = None,
         known_func_defaults: dict[str, dict[str, dict[str, Any]]] | None = None,
         known_func_kinds: dict[str, dict[str, str]] | None = None,
+        native_callable_exports: dict[str, dict[str, Any]] | None = None,
         module_chunking: bool = False,
         module_chunk_max_ops: int = 0,
         optimization_profile: MidendProfile = "release",
@@ -432,6 +434,7 @@ class GeneratorStateMixin(_MixinBase):
             module_chunking=module_chunking,
             module_chunk_max_ops=module_chunk_max_ops,
             known_modules=known_modules,
+            direct_call_modules=direct_call_modules,
             stdlib_allowlist=stdlib_allowlist,
         )
         self.type_facts_module = type_facts_module or self.module_name
@@ -440,6 +443,11 @@ class GeneratorStateMixin(_MixinBase):
             known_func_defaults or {}
         )
         self.known_func_kinds: dict[str, dict[str, str]] = known_func_kinds or {}
+        self.native_callable_exports: dict[str, dict[str, Any]] = {
+            qualified_name: dict(spec)
+            for qualified_name, spec in (native_callable_exports or {}).items()
+            if isinstance(qualified_name, str) and isinstance(spec, dict)
+        }
         self.module_func_defaults: dict[str, dict[str, Any]] = {}
         self.module_annotations: MoltValue | None = None
         self.module_annotation_items: list[tuple[str, ast.expr, int]] = []

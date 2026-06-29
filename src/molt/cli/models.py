@@ -132,8 +132,10 @@ class _ToolchainReport:
 @dataclass(frozen=True)
 class _ScopedLoweringInputs:
     known_modules_by_module: dict[str, tuple[str, ...]]
+    direct_call_modules_by_module: dict[str, tuple[str, ...]]
     known_func_defaults_by_module: dict[str, dict[str, dict[str, Any]]]
     known_func_kinds_by_module: dict[str, dict[str, dict[str, str]]]
+    native_callable_exports_by_module: dict[str, dict[str, dict[str, Any]]]
     pgo_hot_function_names_by_module: dict[str, tuple[str, ...]]
     type_facts_by_module: dict[str, TypeFacts | None]
 
@@ -145,8 +147,17 @@ class _ScopedLoweringInputView:
     known_func_kinds: dict[str, dict[str, str]]
     pgo_hot_function_names: tuple[str, ...]
     type_facts: TypeFacts | None
+    direct_call_modules: tuple[str, ...] = ()
+    native_callable_exports: dict[str, dict[str, Any]] = field(
+        default_factory=dict
+    )
     known_modules_payload: list[str] = field(default_factory=list)
     known_modules_set: frozenset[str] = field(default_factory=frozenset)
+    direct_call_modules_payload: list[str] = field(default_factory=list)
+    direct_call_modules_set: frozenset[str] = field(default_factory=frozenset)
+    native_callable_exports_payload: dict[str, dict[str, Any]] = field(
+        default_factory=dict
+    )
     pgo_hot_function_names_payload: list[str] = field(default_factory=list)
     pgo_hot_function_names_set: frozenset[str] = field(default_factory=frozenset)
 
@@ -155,6 +166,30 @@ class _ScopedLoweringInputView:
             object.__setattr__(self, "known_modules_payload", list(self.known_modules))
         if not self.known_modules_set and self.known_modules:
             object.__setattr__(self, "known_modules_set", frozenset(self.known_modules))
+        if not self.direct_call_modules_payload and self.direct_call_modules:
+            object.__setattr__(
+                self,
+                "direct_call_modules_payload",
+                list(self.direct_call_modules),
+            )
+        if not self.direct_call_modules_set and self.direct_call_modules:
+            object.__setattr__(
+                self,
+                "direct_call_modules_set",
+                frozenset(self.direct_call_modules),
+            )
+        if (
+            not self.native_callable_exports_payload
+            and self.native_callable_exports
+        ):
+            object.__setattr__(
+                self,
+                "native_callable_exports_payload",
+                {
+                    name: dict(self.native_callable_exports[name])
+                    for name in sorted(self.native_callable_exports)
+                },
+            )
         if not self.pgo_hot_function_names_payload and self.pgo_hot_function_names:
             object.__setattr__(
                 self,
@@ -369,9 +404,11 @@ class _FrontendLayerExecutionContext:
     type_facts: TypeFacts | None
     enable_phi: bool
     known_modules: Collection[str]
+    direct_call_modules: Collection[str]
     stdlib_allowlist: Collection[str]
     known_func_defaults: dict[str, dict[str, dict[str, Any]]]
     known_func_kinds: dict[str, dict[str, str]]
+    native_callable_exports: Mapping[str, Mapping[str, Any]]
     module_deps: dict[str, set[str]]
     source_modules: Collection[str]
     module_chunk_max_ops: int
@@ -427,9 +464,11 @@ class _SerialFrontendLoweringContext:
     type_facts: TypeFacts | None
     enable_phi: bool
     known_modules: Collection[str]
+    direct_call_modules: Collection[str]
     stdlib_allowlist: Collection[str]
     known_func_defaults: dict[str, dict[str, dict[str, Any]]]
     known_func_kinds: dict[str, dict[str, str]]
+    native_callable_exports: Mapping[str, Mapping[str, Any]]
     module_deps: dict[str, set[str]]
     source_modules: Collection[str]
     module_chunking: bool
@@ -479,10 +518,12 @@ class _EntryFrontendLoweringContext:
     type_facts: TypeFacts | None
     enable_phi: bool
     known_modules: Collection[str]
+    direct_call_modules: Collection[str]
     known_classes: Mapping[str, Any]
     stdlib_allowlist: Collection[str]
     known_func_defaults: dict[str, dict[str, dict[str, Any]]]
     known_func_kinds: dict[str, dict[str, str]]
+    native_callable_exports: Mapping[str, Mapping[str, Any]]
     module_chunking: bool
     module_chunk_max_ops: int
     optimization_profile: str
@@ -613,6 +654,7 @@ class _ExternalPackageNativeArtifact:
     provided_capsules: tuple[str, ...] = ()
     required_capsules: tuple[str, ...] = ()
     python_exports: tuple[str, ...] = ()
+    callable_exports: tuple["_ExternalNativeCallableExport", ...] = ()
 
     def digest_payload(self) -> dict[str, Any]:
         return {
@@ -637,7 +679,38 @@ class _ExternalPackageNativeArtifact:
             "provided_capsules": list(self.provided_capsules),
             "required_capsules": list(self.required_capsules),
             "python_exports": list(self.python_exports),
+            "callable_exports": [
+                export.digest_payload() for export in self.callable_exports
+            ],
         }
+
+
+@dataclass(frozen=True)
+class _ExternalNativeCallableExport:
+    module: str
+    name: str
+    binding: str
+    abi: str
+    symbol: str | None = None
+    effects: tuple[str, ...] = ()
+    deterministic: bool = False
+
+    @property
+    def qualified_name(self) -> str:
+        return f"{self.module}.{self.name}"
+
+    def digest_payload(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "module": self.module,
+            "name": self.name,
+            "binding": self.binding,
+            "abi": self.abi,
+            "effects": list(self.effects),
+            "deterministic": self.deterministic,
+        }
+        if self.symbol is not None:
+            payload["symbol"] = self.symbol
+        return payload
 
 
 @dataclass(frozen=True)
@@ -646,6 +719,70 @@ class _ExternalPackageNativeArtifactPlan:
 
     def digest_payload(self) -> dict[str, Any]:
         return {"artifacts": [artifact.digest_payload() for artifact in self.artifacts]}
+
+    def native_module_names(self) -> frozenset[str]:
+        names: set[str] = set()
+        for artifact in self.artifacts:
+            names.add(artifact.module)
+            exported_names = (
+                *artifact.python_exports,
+                *(export.qualified_name for export in artifact.callable_exports),
+            )
+            for exported_name in exported_names:
+                parts = exported_name.split(".")
+                names.update(".".join(parts[:idx]) for idx in range(1, len(parts)))
+        return frozenset(names)
+
+    def native_callable_export_names(self) -> frozenset[str]:
+        return frozenset(
+            export.qualified_name
+            for artifact in self.artifacts
+            for export in artifact.callable_exports
+        )
+
+    def native_callable_exports_by_qualified_name(self) -> dict[str, dict[str, Any]]:
+        exports: dict[str, dict[str, Any]] = {}
+        for artifact in self.artifacts:
+            for export in artifact.callable_exports:
+                exports[export.qualified_name] = export.digest_payload()
+        return {name: exports[name] for name in sorted(exports)}
+
+    @staticmethod
+    def _name_reaches_provider(requested_name: str, provider_name: str) -> bool:
+        return requested_name == provider_name or requested_name.startswith(
+            provider_name + "."
+        )
+
+    def with_reachable_imports(
+        self,
+        explicit_imports: Collection[str],
+    ) -> "_ExternalPackageNativeArtifactPlan":
+        if not self.artifacts:
+            return self
+        requested = frozenset(
+            name.strip()
+            for name in explicit_imports
+            if isinstance(name, str) and name.strip()
+        )
+        if not requested:
+            return _EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN
+
+        reachable: list[_ExternalPackageNativeArtifact] = []
+        for artifact in self.artifacts:
+            providers = (
+                artifact.module,
+                *artifact.python_exports,
+                *(export.qualified_name for export in artifact.callable_exports),
+            )
+            if any(
+                self._name_reaches_provider(requested_name, provider_name)
+                for requested_name in requested
+                for provider_name in providers
+            ):
+                reachable.append(artifact)
+        if len(reachable) == len(self.artifacts):
+            return self
+        return _ExternalPackageNativeArtifactPlan(artifacts=tuple(reachable))
 
     def digest(self) -> str:
         payload = json.dumps(
@@ -682,6 +819,7 @@ class _StagedExternalPackageNativeArtifact:
     provided_capsules: tuple[str, ...] = ()
     required_capsules: tuple[str, ...] = ()
     python_exports: tuple[str, ...] = ()
+    callable_exports: tuple[_ExternalNativeCallableExport, ...] = ()
 
     def json_payload(self) -> dict[str, Any]:
         return {
@@ -709,6 +847,9 @@ class _StagedExternalPackageNativeArtifact:
             "provided_capsules": list(self.provided_capsules),
             "required_capsules": list(self.required_capsules),
             "python_exports": list(self.python_exports),
+            "callable_exports": [
+                export.digest_payload() for export in self.callable_exports
+            ],
         }
 
 
@@ -781,10 +922,10 @@ class _ImportAdmissionPolicy:
     ) -> bool:
         if self._external_root_for_path(path) is None:
             return True
-        if from_entry_path:
-            return True
         if self._native_artifact_source_package(module_name) is not None:
             return False
+        if from_entry_path:
+            return True
         return self._package_admitted(module_name)
 
     def admits_package_parent(
@@ -880,6 +1021,7 @@ class _ImportPlan:
     namespace_module_names: frozenset[str]
     generated_module_source_paths: Mapping[str, str]
     known_modules: frozenset[str]
+    direct_call_modules: frozenset[str]
     declared_root_modules: frozenset[str]
     entry_reachable_modules: frozenset[str]
     runtime_support_modules: frozenset[str]
@@ -914,6 +1056,9 @@ class _ImportPlan:
             namespace_module_names=self.namespace_module_names,
             generated_module_source_paths=self.generated_module_source_paths,
             known_modules=self.known_modules,
+            direct_call_modules=frozenset(
+                name for name in compile_set if name in self.direct_call_modules
+            ),
             declared_root_modules=self.declared_root_modules,
             entry_reachable_modules=self.entry_reachable_modules,
             runtime_support_modules=self.runtime_support_modules,
@@ -930,6 +1075,7 @@ class _ImportPlan:
         return {
             "image": self.image_scope.diagnostic_payload(),
             "known_modules": sorted(self.known_modules),
+            "direct_call_modules": sorted(self.direct_call_modules),
             "compile_modules": sorted(self.compile_modules),
             "declared_root_modules": sorted(self.declared_root_modules),
             "entry_reachable_modules": sorted(self.entry_reachable_modules),

@@ -102,6 +102,78 @@ class CallModuleDispatchMixin(_MixinBase):
         self.emit(MoltOp(kind="CALL_BIND", args=[callee, callargs], result=res))
         return res
 
+    def _native_callable_export(
+        self,
+        target_module: str,
+        attr_name: str,
+    ) -> dict[str, Any] | None:
+        qualified_name = f"{target_module}.{attr_name}"
+        spec = self.native_callable_exports.get(qualified_name)
+        if isinstance(spec, dict):
+            return spec
+        return None
+
+    def _try_emit_native_callable_export_call(
+        self,
+        target_module: str,
+        attr_name: str,
+        node: ast.Call,
+    ) -> MoltValue | None:
+        spec = self._native_callable_export(target_module, attr_name)
+        if spec is None:
+            return None
+
+        qualified_name = f"{target_module}.{attr_name}"
+        binding = spec.get("binding")
+        abi = spec.get("abi")
+        symbol = spec.get("symbol")
+        if binding not in {"module_attr", "direct_symbol"} or not isinstance(abi, str):
+            raise self.compat.unsupported(
+                node,
+                f"native callable export '{qualified_name}' has incomplete ABI metadata",
+                impact="high",
+                alternative="declare binding and abi in the native artifact manifest",
+                detail="native callable exports must fail closed before lowering",
+            )
+        if binding == "direct_symbol" and not isinstance(symbol, str):
+            raise self.compat.unsupported(
+                node,
+                f"native callable export '{qualified_name}' is missing a direct symbol",
+                impact="high",
+                alternative="declare symbol for direct_symbol native exports",
+                detail="direct native symbols cannot be invented as Python call targets",
+            )
+        if node.keywords or any(isinstance(arg, ast.Starred) for arg in node.args):
+            raise self.compat.unsupported(
+                node,
+                f"native callable export '{qualified_name}' with dynamic call arguments",
+                impact="high",
+                alternative="call the export with positional arguments supported by its ABI",
+                detail="native callable ABI dispatch does not lower keyword, *args, or **kwargs packing",
+            )
+
+        callee = self.visit(node.func)
+        if callee is None:
+            raise NotImplementedError("Unsupported native callable target")
+        args = self._emit_call_args(node.args)
+        res = MoltValue(self.next_var(), type_hint="Any")
+        metadata: dict[str, Any] = {
+            "native_callable_export": qualified_name,
+            "native_callable_binding": binding,
+            "native_callable_abi": abi,
+        }
+        if isinstance(symbol, str):
+            metadata["native_callable_symbol"] = symbol
+        self.emit(
+            MoltOp(
+                kind="INVOKE_FFI",
+                args=[callee] + args,
+                result=res,
+                metadata=metadata,
+            )
+        )
+        return res
+
     def _emit_stateful_function_value_call(
         self,
         target_info: MoltValue | None,
@@ -316,6 +388,13 @@ class CallModuleDispatchMixin(_MixinBase):
     ) -> MoltValue | None:
         if target_module is None:
             return None
+        native_callable_export_call = self._try_emit_native_callable_export_call(
+            target_module,
+            original_attr,
+            node,
+        )
+        if native_callable_export_call is not None:
+            return native_callable_export_call
         target_kind = self._lookup_func_kind(target_module, original_attr)
         known_direct_target = self._lookup_func_defaults(target_module, original_attr)
         has_known_direct_target = known_direct_target is not None

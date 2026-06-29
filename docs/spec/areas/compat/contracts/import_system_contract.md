@@ -87,13 +87,21 @@ Modules may be:
   and backend object-cache inputs include the artifact and manifest custody
   facts. Extension sidecars may declare `python_exports` as dotted package
   import names (for example a package-level function reexport) satisfied by the
-  native artifact; the native-artifact planner treats those names as the same
-  reachability authority as the extension module name, so source package
-  closure and native object closure cannot disagree. For WASM builds, an
-  admitted external package containing native source or host-extension markers
-  must publish wasm32 `static_link` `libmolt_source` artifacts before the graph
-  scanner expands that package; raw NumPy/SciPy-style source roots are not a
-  linkable substitute. Native builds must then publish the validated artifact,
+  native artifact, and may declare `callable_exports` for direct native
+  bindings with module/name, binding kind (`module_attr` or `direct_symbol`),
+  ABI, required symbol for `direct_symbol`, effects, and determinism metadata.
+  The native-artifact planner treats those names as the same reachability
+  authority as the extension module name, and scoped lowering cache inputs carry
+  the validated callable export map, so source package closure and native
+  object closure cannot disagree. A callable export is the only authority that
+  can lower a native package function such as
+  `scipy.ndimage.distance_transform_edt` to native `invoke_ffi` ABI metadata;
+  native package visibility alone must leave the call bound/dynamic. For WASM
+  builds, an admitted external package containing native source or
+  host-extension markers must publish wasm32 `static_link` `libmolt_source`
+  artifacts before the graph scanner expands that package; raw
+  NumPy/SciPy-style source roots are not a linkable substitute. Native builds
+  must then publish the validated artifact,
   sidecar, package `__init__.py` chain, and existing runtime extension shim
   candidates under a deterministic `external_static_packages/<plan-digest>/`
   runtime root; generated native binaries must prepend that staged root to
@@ -133,13 +141,19 @@ Modules may be:
   classifies declared roots, entry-reachable modules, runtime support, stdlib
   support, package parents, namespace/generated modules, and external native
   artifacts.
-  `known_modules` is the whole admitted runtime closure, and `compile_modules`
-  is the sole authority for modules lowered into the binary. Dead-module
-  elimination may narrow `compile_modules`, but it must not mutate the known
-  closure, runtime import dispatch roots, or wrapper-cache dependency graph.
-  Wrapper build manifests and diagnostics must carry and fingerprint the same
-  closure plan, including dead-module-elimination mode, rather than exposing a
-  selector-only payload or rediscovering a parallel graph.
+  `known_modules` is the whole admitted runtime import-visibility closure;
+  `direct_call_modules` is the Python `module__function` link authority; and
+  `compile_modules` is the sole authority for modules lowered into the binary.
+  Native artifacts and package parents may appear in `known_modules` so imports
+  can resolve, but they must not leak fake Python direct-call symbols unless
+  they are also present in `direct_call_modules`. Native executable entrypoints
+  are governed by validated `callable_exports`, not by `known_modules`.
+  Dead-module elimination may narrow `compile_modules`, but it must not mutate
+  the known closure, direct-call authority, runtime import dispatch roots, or
+  wrapper-cache dependency graph. Wrapper build manifests and diagnostics must
+  carry and fingerprint the same closure plan, including dead-module-elimination
+  mode, rather than exposing a selector-only payload or rediscovering a parallel
+  graph.
 - Build diagnostics carry a versioned `binary_image_analysis` envelope beside
   the closure plan. It bridges source/AST metrics, module schedule hashes,
   lowering policy, backend IR/TIR-input shape, and final artifact/link evidence

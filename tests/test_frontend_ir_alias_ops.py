@@ -71,6 +71,30 @@ def test_invoke_ffi_bridge_lane_marker_lowers_to_s_value() -> None:
     }
 
 
+def test_invoke_ffi_native_callable_metadata_lowers_to_schema_fields() -> None:
+    op = MoltOp(
+        kind="INVOKE_FFI",
+        args=[MoltValue("callee"), MoltValue("arg0")],
+        result=MoltValue("out"),
+        metadata={
+            "native_callable_export": "scipy.ndimage.distance_transform_edt",
+            "native_callable_binding": "direct_symbol",
+            "native_callable_symbol": "molt_scipy_ndimage_distance_transform_edt",
+            "native_callable_abi": "molt.forward_f32_v1",
+        },
+    )
+    lowered = _map_single(op)
+    assert lowered == {
+        "kind": "invoke_ffi",
+        "args": ["callee", "arg0"],
+        "out": "out",
+        "native_callable_export": "scipy.ndimage.distance_transform_edt",
+        "native_callable_binding": "direct_symbol",
+        "native_callable_symbol": "molt_scipy_ndimage_distance_transform_edt",
+        "native_callable_abi": "molt.forward_f32_v1",
+    }
+
+
 def test_guard_tag_lowers_to_guard_tag_lane() -> None:
     op = MoltOp(
         kind="GUARD_TAG",
@@ -277,3 +301,50 @@ def test_invoke_ffi_bridge_lane_marker_is_emitted_for_non_allowlisted_module_cal
     invoke_ops = [op for op in ops if op["kind"] == "invoke_ffi"]
     assert invoke_ops
     assert any(op.get("s_value") == "bridge" for op in invoke_ops)
+
+
+def test_native_callable_export_lowers_to_invoke_ffi_metadata() -> None:
+    sources = (
+        "import nativepkg.ndimage as ndi\n"
+        "value = ndi.distance_transform_edt(data)\n",
+        "from nativepkg.ndimage import distance_transform_edt\n"
+        "value = distance_transform_edt(data)\n",
+    )
+    exports = {
+        "nativepkg.ndimage.distance_transform_edt": {
+            "module": "nativepkg.ndimage",
+            "name": "distance_transform_edt",
+            "binding": "direct_symbol",
+            "abi": "molt.forward_f32_v1",
+            "symbol": "molt_nativepkg_ndimage_distance_transform_edt",
+        }
+    }
+    for source in sources:
+        gen = SimpleTIRGenerator(
+            known_modules={"nativepkg", "nativepkg.ndimage"},
+            direct_call_modules={"__main__"},
+            native_callable_exports=exports,
+            fallback_policy="bridge",
+        )
+        gen.visit(ast.parse(source))
+        ir = gen.to_json()
+        invoke_ops = [
+            op
+            for fn in ir["functions"]
+            for op in fn["ops"]
+            if op["kind"] == "invoke_ffi"
+        ]
+
+        assert len(invoke_ops) == 1
+        invoke_op = invoke_ops[0]
+        assert len(invoke_op["args"]) == 2
+        assert invoke_op["native_callable_export"] == (
+            "nativepkg.ndimage.distance_transform_edt"
+        )
+        assert invoke_op["native_callable_binding"] == "direct_symbol"
+        assert invoke_op["native_callable_abi"] == "molt.forward_f32_v1"
+        assert (
+            invoke_op["native_callable_symbol"]
+            == "molt_nativepkg_ndimage_distance_transform_edt"
+        )
+        assert invoke_op["source_line"] == 2

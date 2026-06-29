@@ -584,10 +584,26 @@ class SerializationBasicOpsMixin(_MixinBase):
             )
         elif op.kind == "INVOKE_FFI":
             lane = ""
+            native_callable_export = ""
+            native_callable_binding = ""
+            native_callable_symbol = ""
+            native_callable_abi = ""
             if op.metadata is not None:
                 raw_lane = op.metadata.get("ffi_lane")
                 if isinstance(raw_lane, str):
                     lane = raw_lane
+                raw_export = op.metadata.get("native_callable_export")
+                if isinstance(raw_export, str):
+                    native_callable_export = raw_export
+                raw_binding = op.metadata.get("native_callable_binding")
+                if isinstance(raw_binding, str):
+                    native_callable_binding = raw_binding
+                raw_symbol = op.metadata.get("native_callable_symbol")
+                if isinstance(raw_symbol, str):
+                    native_callable_symbol = raw_symbol
+                raw_abi = op.metadata.get("native_callable_abi")
+                if isinstance(raw_abi, str):
+                    native_callable_abi = raw_abi
             invoke_op = {
                 "kind": "invoke_ffi",
                 "args": [arg.name for arg in op.args],
@@ -595,6 +611,12 @@ class SerializationBasicOpsMixin(_MixinBase):
             }
             if lane:
                 invoke_op["s_value"] = lane
+            if native_callable_export:
+                invoke_op["native_callable_export"] = native_callable_export
+                invoke_op["native_callable_binding"] = native_callable_binding
+                invoke_op["native_callable_abi"] = native_callable_abi
+                if native_callable_symbol:
+                    invoke_op["native_callable_symbol"] = native_callable_symbol
             ctx.json_ops.append(invoke_op)
         elif op.kind == "CALL_BIND":
             entry: dict[str, Any] = {

@@ -105,10 +105,16 @@ Optional:
   authority. Reachable package/subpackage artifacts
   (`.so`/`.pyd`/`.molt.wasm`/`.o`/`.a`) must have nearby
   `extension_manifest.json` metadata with matching module, extension path,
-  checksum, ABI, target, platform, capabilities, and optional `python_exports`
-  entries that map package-level imports to the owning native artifact before
-  backend dispatch. Graph, wrapper-build, and backend object-cache identities
-  include the validated artifact/manifest custody facts. WASM package
+  checksum, ABI, target, platform, capabilities, optional `python_exports`
+  entries that map package-level imports to the owning native artifact, and
+  optional `callable_exports` entries that name direct native call bindings
+  before backend dispatch. Each callable export declares `module`, `name`,
+  `binding` (`module_attr` or `direct_symbol`), `abi`, optional `effects`,
+  optional `deterministic`, and a required native `symbol` for `direct_symbol`.
+  The validated callable export map is the native ABI dispatch authority; import
+  visibility through `known_modules` cannot create Python `module__function`
+  symbols for native packages. Graph, wrapper-build, and backend object-cache
+  identities include the validated artifact/manifest custody facts. WASM package
   admission fails closed before graph expansion when an admitted package
   contains native-source or host-extension markers but has no wasm32
   `static_link` `libmolt_source` artifact manifest; source roots alone are not
@@ -130,9 +136,11 @@ Optional:
   WASM native-source packages without staged wasm static-link artifacts, rejects
   reachable external package extensions with missing or mismatched sidecar
   metadata before backend dispatch, uses sidecar `python_exports` to bind
-  package-level imports to native artifacts, and publishes validated native
-  artifacts plus sidecars and runtime shims into deterministic build artifacts
-  for native runtime import custody.
+  package-level imports to native artifacts, threads sidecar
+  `callable_exports` into scoped lowering/cache facts and `invoke_ffi` native
+  callable metadata, fails closed when backend ABI dispatch for that metadata is
+  absent, and publishes validated native artifacts plus sidecars and runtime
+  shims into deterministic build artifacts for native runtime import custody.
 - `molt verify` enforces capability allowlists for extension loads.
 - CI runs an extension publish dry-run matrix (native + cross-target) covering
   `molt extension build`, `molt extension audit --require-abi`,
