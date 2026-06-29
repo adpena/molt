@@ -19,7 +19,7 @@ pub(in crate::wasm::lir_fast) fn emit_lir_index(ctx: &mut LirLowerCtx, op: &LirO
         ctx.type_of(container),
     )
     .unwrap_or(LirRuntimeCall::Index);
-    emit_lir_boxed_operands_runtime_call(ctx, op, runtime_call, 2);
+    emit_lir_boxed_operands_runtime_call(ctx, op, runtime_call);
 }
 
 pub(in crate::wasm::lir_fast) fn emit_lir_store_index(ctx: &mut LirLowerCtx, op: &LirOp) {
@@ -32,19 +32,19 @@ pub(in crate::wasm::lir_fast) fn emit_lir_store_index(ctx: &mut LirLowerCtx, op:
         ctx.type_of(container),
     )
     .unwrap_or(LirRuntimeCall::StoreIndex);
-    emit_lir_boxed_operands_runtime_call(ctx, op, runtime_call, 3);
+    emit_lir_boxed_operands_runtime_call(ctx, op, runtime_call);
 }
 
 pub(in crate::wasm::lir_fast) fn emit_lir_del_index(ctx: &mut LirLowerCtx, op: &LirOp) {
-    emit_lir_boxed_operands_runtime_call(ctx, op, LirRuntimeCall::DelIndex, 2);
+    emit_lir_boxed_operands_runtime_call(ctx, op, LirRuntimeCall::DelIndex);
 }
 
 pub(in crate::wasm::lir_fast) fn emit_lir_get_iter(ctx: &mut LirLowerCtx, op: &LirOp) {
-    emit_lir_boxed_operands_runtime_call(ctx, op, LirRuntimeCall::Iter, 1);
+    emit_lir_boxed_operands_runtime_call(ctx, op, LirRuntimeCall::Iter);
 }
 
 pub(in crate::wasm::lir_fast) fn emit_lir_iter_next(ctx: &mut LirLowerCtx, op: &LirOp) {
-    emit_lir_boxed_operands_runtime_call(ctx, op, LirRuntimeCall::IterNext, 1);
+    emit_lir_boxed_operands_runtime_call(ctx, op, LirRuntimeCall::IterNext);
 }
 
 pub(in crate::wasm::lir_fast) fn emit_lir_build_slice(ctx: &mut LirLowerCtx, op: &LirOp) {

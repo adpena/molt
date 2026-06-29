@@ -382,6 +382,13 @@ def validate_loaded_manifest(data: dict) -> dict:
                 f"{import_name!r}"
             )
         lir_import_by_variant[variant] = import_name
+        boxed_operand_count = entry.get("boxed_operand_count")
+        if boxed_operand_count is not None and (
+            not isinstance(boxed_operand_count, int) or boxed_operand_count < 0
+        ):
+            raise WasmAbiManifestError(
+                f"lir_runtime_call {variant!r} has invalid boxed_operand_count"
+            )
         preserved_copy_operand_count = entry.get("preserved_copy_operand_count")
         if preserved_copy_operand_count is None:
             continue
@@ -1092,8 +1099,9 @@ def _render_rs_mod() -> str:
             "};\n",
             "pub(crate) use imports::{IMPORT_REGISTRY, OP_IMPORT_DEPS};\n",
             "pub(crate) use lir_runtime_calls::{\n",
-            "    lir_fixed_runtime_call, op_loop_runtime_call, LirRuntimeCall,\n",
-            "    OpLoopRuntimeArgSpec, OpLoopRuntimeCallSpec, OpLoopRuntimeSinkSpec,\n",
+            "    lir_fixed_runtime_call, op_loop_runtime_call, LirFixedRuntimeCall,\n",
+            "    LirRuntimeCall, OpLoopRuntimeArgSpec, OpLoopRuntimeCallSpec,\n",
+            "    OpLoopRuntimeSinkSpec,\n",
             "};\n",
             "pub(crate) use pure_profile::pure_profile_skips_import;\n",
             "pub(crate) use runtime_callables::{\n",
@@ -1402,6 +1410,21 @@ def _render_rs_lir_runtime_calls(data: dict) -> str:
         )
     lines.extend(
         [
+            "        }\n",
+            "    }\n",
+            "\n",
+            "    pub(crate) const fn boxed_operand_count(self) -> Option<usize> {\n",
+            "        match self {\n",
+        ]
+    )
+    for entry in entries:
+        if "boxed_operand_count" in entry:
+            lines.append(
+                f"            Self::{entry['variant']} => Some({entry['boxed_operand_count']}),\n"
+            )
+    lines.extend(
+        [
+            "            _ => None,\n",
             "        }\n",
             "    }\n",
             "}\n\n",
