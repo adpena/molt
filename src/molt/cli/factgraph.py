@@ -258,6 +258,7 @@ def emit_pipeline_fact_graph(
     build_config: Any,
     build_roots: Any,
     build_preamble: Any,
+    ir: Mapping[str, Any],
     resolved_modules: set[str] | frozenset[str],
     json_output: bool,
     verbose: bool,
@@ -298,6 +299,7 @@ def emit_pipeline_fact_graph(
             ensure_runtime_wasm_shared=runtime_context.ensure_runtime_wasm_shared,
             ensure_runtime_wasm_reloc=runtime_context.ensure_runtime_wasm_reloc,
             resolved_modules=resolved_modules,
+            ir=ir,
             warnings=build_preamble.warnings,
             start_daemon=False,
         )

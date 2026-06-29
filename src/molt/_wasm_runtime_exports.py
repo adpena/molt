@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-import re
+import ast
 from functools import lru_cache
 from pathlib import Path
 from typing import Iterable
 
+from ._intrinsic_symbols import intrinsic_runtime_symbol_name
 from ._wasm_abi_generated import (
     WASM_IMPORT_REGISTRY,
     WASM_RUNTIME_HOST_EXPORTS,
@@ -13,14 +14,20 @@ from ._wasm_abi_generated import (
     wasm_runtime_import_name,
 )
 
-_INTRINSIC_CALL_RE = re.compile(
-    r'(?:_(?:require|lazy|optional)_intrinsic|_intrinsic_require)\(\s*"(?P<name>molt_[A-Za-z0-9_]+)"'
-    r'|_resolve_optional_intrinsic\(\s*"[^"]+"\s*,\s*"(?P<resolved_name>molt_[A-Za-z0-9_]+)"'
+_INTRINSIC_LOADER_CALL_NAMES = frozenset(
+    {
+        "_intrinsic_require",
+        "_lazy_intrinsic",
+        "_load_optional_intrinsic",
+        "_optional_intrinsic",
+        "_require_intrinsic",
+        "_resolve_optional_intrinsic",
+        "require_intrinsic",
+        "require_optional_intrinsic",
+    }
 )
-_INTRINSIC_SYMBOL_RE = re.compile(
-    r'IntrinsicSpec\s*\{\s*name:\s*"(?P<name>[^"]+)"\s*,\s*symbol:\s*"(?P<symbol>[^"]+)"',
-    re.DOTALL,
-)
+
+
 def _runtime_export_name_or_fail(name: str) -> str:
     export_name = wasm_runtime_export_name(name)
     if export_name is None:
@@ -72,20 +79,27 @@ def _runtime_owned_module_path(repo_root: Path, module_name: str) -> Path | None
     return None
 
 
-def _resolved_runtime_owned_intrinsic_exports(
-    resolved_modules: Iterable[str] | None,
-) -> tuple[str, ...]:
-    if not resolved_modules:
-        return ()
-    repo_root = Path(__file__).resolve().parents[2]
+def _intrinsic_loader_name(call: ast.Call) -> str | None:
+    if isinstance(call.func, ast.Name):
+        return call.func.id
+    if isinstance(call.func, ast.Attribute):
+        return call.func.attr
+    return None
+
+
+def _runtime_intrinsic_names_from_source(module_path: Path) -> tuple[str, ...]:
+    tree = ast.parse(module_path.read_text(encoding="utf-8"), filename=str(module_path))
     names: set[str] = set()
-    for module_name in resolved_modules:
-        module_path = _runtime_owned_module_path(repo_root, module_name)
-        if module_path is None:
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
             continue
-        text = module_path.read_text(encoding="utf-8")
-        for match in _INTRINSIC_CALL_RE.finditer(text):
-            names.add(match.group("name") or match.group("resolved_name"))
+        loader_name = _intrinsic_loader_name(node)
+        if loader_name not in _INTRINSIC_LOADER_CALL_NAMES:
+            continue
+        for arg in node.args:
+            if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                if arg.value.startswith("molt_"):
+                    names.add(arg.value)
     return tuple(sorted(names))
 
 
@@ -94,13 +108,20 @@ def _resolved_dynamic_runtime_owned_intrinsic_exports(
 ) -> tuple[str, ...]:
     if not resolved_modules:
         return ()
+    repo_root = Path(__file__).resolve().parents[2]
     dynamic_modules = tuple(
         module_name
         for module_name in resolved_modules
         if module_name.startswith("molt.")
         and not module_name.startswith("molt.stdlib.")
     )
-    return _resolved_runtime_owned_intrinsic_exports(dynamic_modules)
+    names: set[str] = set()
+    for module_name in dynamic_modules:
+        module_path = _runtime_owned_module_path(repo_root, module_name)
+        if module_path is None:
+            continue
+        names.update(_runtime_intrinsic_names_from_source(module_path))
+    return tuple(sorted(names))
 
 
 @lru_cache(maxsize=1)
@@ -114,9 +135,7 @@ def _all_dynamic_runtime_owned_intrinsic_exports() -> tuple[str, ...]:
         if not root.exists():
             continue
         for module_path in sorted(root.rglob("*.py")):
-            text = module_path.read_text(encoding="utf-8")
-            for match in _INTRINSIC_CALL_RE.finditer(text):
-                names.add(match.group("name") or match.group("resolved_name"))
+            names.update(_runtime_intrinsic_names_from_source(module_path))
     return tuple(sorted(names))
 
 
@@ -133,33 +152,15 @@ def wasm_runtime_dynamic_export_names(
     )
 
 
-@lru_cache(maxsize=1)
-def intrinsic_runtime_symbol_names() -> dict[str, str]:
-    repo_root = Path(__file__).resolve().parents[2]
-    generated_path = (
-        repo_root / "runtime" / "molt-runtime" / "src" / "intrinsics" / "generated.rs"
-    )
-    text = generated_path.read_text(encoding="utf-8")
-    mapping = {
-        match.group("name"): match.group("symbol")
-        for match in _INTRINSIC_SYMBOL_RE.finditer(text)
-    }
-    if not mapping:
-        raise RuntimeError(
-            f"failed to read intrinsic symbol mapping from {generated_path}"
-        )
-    return mapping
-
-
 def canonical_intrinsic_runtime_name(name: str) -> str:
-    return intrinsic_runtime_symbol_names().get(name, name)
+    return intrinsic_runtime_symbol_name(name)
 
 
 def wasm_runtime_required_import_names(
-    resolved_modules: Iterable[str] | None,
+    reached_intrinsic_symbols: Iterable[str] | None,
 ) -> tuple[str, ...]:
     raw_names: set[str] = set()
-    for name in _resolved_runtime_owned_intrinsic_exports(resolved_modules):
+    for name in reached_intrinsic_symbols or ():
         import_name = wasm_runtime_import_name(canonical_intrinsic_runtime_name(name))
         if import_name is not None:
             raw_names.add(import_name)

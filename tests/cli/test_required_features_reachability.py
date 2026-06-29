@@ -175,6 +175,29 @@ def test_core_and_resolver_only_symbols_are_not_requirements() -> None:
     assert RF.required_link_features(functions) == frozenset()
 
 
+def test_reached_intrinsic_symbols_include_core_and_gated_manifest_symbols() -> None:
+    functions = [
+        {
+            "name": "molt_main",
+            "params": [],
+            "ops": [
+                _builtin_func("v1", "molt_os_name"),
+                _const_str("v2", "molt_re_compile"),
+                _builtin_func("v3", "molt_list_append"),
+            ],
+        },
+        {
+            "name": "dead_codec_user",
+            "params": [],
+            "ops": [_builtin_func("v4", "molt_codecs_decode")],
+        },
+    ]
+
+    assert RF.reached_intrinsic_symbols(functions) == frozenset(
+        {"molt_os_name", "molt_re_compile"}
+    )
+
+
 def test_multiple_features_grouped_by_reached_symbols() -> None:
     functions = [
         {
@@ -183,14 +206,14 @@ def test_multiple_features_grouped_by_reached_symbols() -> None:
             "ops": [
                 _builtin_func("v1", "molt_re_compile"),
                 _builtin_func("v2", "molt_re_escape"),
-                _builtin_func("v3", "molt_hash_builtin"),
+                _builtin_func("v3", "molt_hash_new"),
             ],
         }
     ]
     by_feature = RF.reached_intrinsic_symbols_by_feature(functions)
     assert by_feature == {
         "stdlib_regex": {"molt_re_compile", "molt_re_escape"},
-        "stdlib_crypto": {"molt_hash_builtin"},
+        "stdlib_crypto": {"molt_hash_new"},
     }
 
 
