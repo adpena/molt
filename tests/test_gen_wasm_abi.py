@@ -1043,6 +1043,7 @@ def test_wasm_abi_manifest_owns_split_runtime_table_prefix() -> None:
 
     rendered_rs = _rendered_rs(gen, data)
     rendered_py = gen.render_py(data)
+    rendered_table_layout = gen.render_table_layout_inc(data)
     assert "PollTableImportSpec" in rendered_rs
     assert "POLL_TABLE_IMPORTS" in rendered_rs
     assert "import: WasmRuntimeImport::AsyncSleepPoll" in rendered_rs
@@ -1052,6 +1053,16 @@ def test_wasm_abi_manifest_owns_split_runtime_table_prefix() -> None:
     assert "WASM_POLL_TABLE_IMPORTS: tuple[tuple[int, str], ...]" in rendered_py
     assert '(32, "contextlib_async_exitstack_enter_context_poll")' in rendered_py
     assert "WASM_LEGACY_TABLE_BASE" in rendered_py
+    table_ref_export_prefix = data["table_layout"]["table_ref_export_prefix"]
+    assert table_ref_export_prefix
+    assert (
+        f"WASM_TABLE_REF_EXPORT_PREFIX: str = {table_ref_export_prefix!r}"
+        in rendered_py
+    )
+    assert (
+        f'WASM_TABLE_REF_EXPORT_PREFIX: &str = "{table_ref_export_prefix}"'
+        in rendered_table_layout
+    )
     assert "WASM_RESERVED_RUNTIME_CALLABLE_BASE" in rendered_py
 
     callable_layout = (

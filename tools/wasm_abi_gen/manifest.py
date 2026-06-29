@@ -833,6 +833,15 @@ def validate_loaded_manifest(data: dict) -> dict:
     legacy_table_base = table_layout.get("legacy_table_base")
     if not isinstance(legacy_table_base, int) or legacy_table_base <= 0:
         raise WasmAbiManifestError("[table_layout].legacy_table_base must be positive")
+    table_ref_export_prefix = table_layout.get("table_ref_export_prefix")
+    if not isinstance(table_ref_export_prefix, str) or not table_ref_export_prefix:
+        raise WasmAbiManifestError(
+            "[table_layout].table_ref_export_prefix must be a non-empty string"
+        )
+    if not table_ref_export_prefix.isascii():
+        raise WasmAbiManifestError(
+            "[table_layout].table_ref_export_prefix must be ASCII"
+        )
     static_types = data.get("static_type")
     if not isinstance(static_types, list) or not static_types:
         raise WasmAbiManifestError("manifest must define static_type entries")

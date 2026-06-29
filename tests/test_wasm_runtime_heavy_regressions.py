@@ -3,6 +3,7 @@ from __future__ import annotations
 import textwrap
 from pathlib import Path
 
+from molt._wasm_abi_generated import WASM_TABLE_REF_EXPORT_PREFIX
 from tests.wasm_linked_runner import (
     build_wasm_linked,
     require_wasm_toolchain,
@@ -65,7 +66,7 @@ def test_wasm_asyncio_task_basic_has_no_table_ref_trap(
         "main main2",
     ]
     assert "null function or function signature mismatch" not in run.stderr
-    assert "__molt_table_ref_" not in run.stderr
+    assert WASM_TABLE_REF_EXPORT_PREFIX not in run.stderr
     _assert_no_recursive_mutex_panic(run.stderr)
 
 

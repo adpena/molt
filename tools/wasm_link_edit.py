@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
-import re
 import sys
 import tempfile
 from collections import Counter
@@ -30,6 +29,8 @@ from wasm_link_format import (
     _collect_linking_function_symbols,
     _count_func_imports,
     _find_func_import_index,
+    is_table_ref_export_name,
+    parse_table_ref_export_name,
     _parse_custom_section,
     _parse_func_type_indices,
     _parse_import_desc,
@@ -68,17 +69,15 @@ def _append_table_ref_elements(
 ) -> bytes | None:
     table_refs: dict[int, int] = {}
     for func_idx, name in _collect_func_names(data).items():
-        match = re.fullmatch(r"__molt_table_ref_(\d+)", name)
-        if match is not None:
-            table_idx = int(match.group(1))
+        table_idx = parse_table_ref_export_name(name)
+        if table_idx is not None:
             if table_idx >= min_table_index and (
                 allowed_table_indices is None or table_idx in allowed_table_indices
             ):
                 table_refs[table_idx] = func_idx
     for name, func_idx in _collect_function_exports(data).items():
-        match = re.fullmatch(r"__molt_table_ref_(\d+)", name)
-        if match is not None:
-            table_idx = int(match.group(1))
+        table_idx = parse_table_ref_export_name(name)
+        if table_idx is not None:
             if table_idx >= min_table_index and (
                 allowed_table_indices is None or table_idx in allowed_table_indices
             ):
@@ -368,7 +367,7 @@ def _collect_output_wrapper_specs(data: bytes) -> list[tuple[str, str, int, int]
 
     wrapper_specs: list[tuple[str, str, int, int]] = []
     for name, func_index in export_indices.items():
-        if name.startswith("__molt_table_ref_"):
+        if is_table_ref_export_name(name):
             continue
         if name == "molt_main":
             continue
@@ -613,7 +612,7 @@ def _entry_module_prefix_from_main_init(
         preferred = sorted(
             candidates,
             key=lambda name: (
-                name.startswith("__molt_table_ref_"),
+                is_table_ref_export_name(name),
                 not name.startswith("molt_init_"),
                 name,
             ),
@@ -711,9 +710,9 @@ def _memory_import_min(data: bytes) -> int | None:
 
 def _highest_exported_table_ref_index(data: bytes) -> int | None:
     refs = [
-        int(name.removeprefix("__molt_table_ref_"))
+        ref_index
         for name in _collect_function_exports(data)
-        if name.startswith("__molt_table_ref_")
+        if (ref_index := parse_table_ref_export_name(name)) is not None
     ]
     if not refs:
         return None
@@ -1179,7 +1178,7 @@ def _strip_internal_exports(
             _, offset = _read_varuint(payload, offset)
             entry_bytes = payload[entry_start:offset]
             if name not in keep_exports and (
-                not preserve_table_refs or not name.startswith("__molt_table_ref_")
+                not preserve_table_refs or not is_table_ref_export_name(name)
             ):
                 modified = True
                 continue
