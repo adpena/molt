@@ -443,6 +443,63 @@ def test_wasm_abi_manifest_owns_container_runtime_selector() -> None:
         gen.validate_loaded_manifest(broken_lir)
 
 
+def test_wasm_abi_manifest_owns_object_new_bound_selector() -> None:
+    gen = _load_gen_wasm_abi()
+    data = gen.load_manifest()
+    selectors = {
+        entry["payload"]: (entry["import_name"], entry["lir_variant"])
+        for entry in data["object_new_bound_selector"]
+    }
+
+    assert selectors == {
+        "unsized": ("object_new_bound", "ObjectNewBound"),
+        "sized": ("object_new_bound_sized", "ObjectNewBoundSized"),
+    }
+
+    rendered_rs_modules = gen.render_rs_modules(data)
+    rendered_selector_rs = rendered_rs_modules["object_new_bound_selector.rs"]
+    rendered_mod_rs = rendered_rs_modules["mod.rs"]
+    rendered_py = gen.render_py(data)
+    assert "WASM_OBJECT_NEW_BOUND_SELECTORS" in rendered_selector_rs
+    assert "WasmObjectNewBoundPayload::Unsized" in rendered_selector_rs
+    assert "WasmObjectNewBoundPayload::Sized" in rendered_selector_rs
+    assert "LirRuntimeCall::ObjectNewBoundSized" in rendered_selector_rs
+    assert "wasm_object_new_bound_selection" in rendered_selector_rs
+    assert "mod object_new_bound_selector;" in rendered_mod_rs
+    assert "WasmObjectNewBoundPayload" in rendered_mod_rs
+    assert "WASM_OBJECT_NEW_BOUND_SELECTORS" in rendered_py
+    assert (
+        '("sized", "object_new_bound_sized", "ObjectNewBoundSized")'
+        in rendered_py
+    )
+
+    broken_missing = copy.deepcopy(data)
+    broken_missing["object_new_bound_selector"] = broken_missing[
+        "object_new_bound_selector"
+    ][:1]
+    with pytest.raises(gen.WasmAbiManifestError, match="must declare exactly"):
+        gen.validate_loaded_manifest(broken_missing)
+
+    broken_duplicate = copy.deepcopy(data)
+    broken_duplicate["object_new_bound_selector"].append(
+        copy.deepcopy(broken_duplicate["object_new_bound_selector"][0])
+    )
+    with pytest.raises(
+        gen.WasmAbiManifestError, match="duplicate object_new_bound_selector"
+    ):
+        gen.validate_loaded_manifest(broken_duplicate)
+
+    broken_import = copy.deepcopy(data)
+    broken_import["object_new_bound_selector"][0]["import_name"] = "not_a_real_import"
+    with pytest.raises(gen.WasmAbiManifestError, match="references unknown import"):
+        gen.validate_loaded_manifest(broken_import)
+
+    broken_lir = copy.deepcopy(data)
+    broken_lir["object_new_bound_selector"][0]["lir_variant"] = "ObjectNewBoundSized"
+    with pytest.raises(gen.WasmAbiManifestError, match="does not match lir_variant"):
+        gen.validate_loaded_manifest(broken_lir)
+
+
 def test_wasm_abi_manifest_owns_python_runtime_import_signatures() -> None:
     gen = _load_gen_wasm_abi()
     data = gen.load_manifest()
@@ -479,7 +536,7 @@ def test_wasm_abi_manifest_owns_op_import_deps() -> None:
     assert op_deps["print"] == ["print_obj"]
     assert op_deps["gpu_thread_id"] == ["gpu_thread_id"]
     assert op_deps["gpu_barrier"] == ["gpu_barrier"]
-    assert op_deps["object_new_bound"] == []
+    assert "object_new_bound" not in op_deps
     assert op_deps["object_new_bound_stack"] == ["object_new_bound_sized"]
 
 

@@ -3128,7 +3128,6 @@ pub(crate) const OP_IMPORT_DEPS: &[(&str, &[&str])] = &[
         ],
     ),
     ("object_new", &["object_new", "object_set_class"]),
-    ("object_new_bound", &[]),
     ("object_new_bound_stack", &["object_new_bound_sized"]),
     ("object_field_get", &["object_field_get"]),
     ("object_field_get_ptr", &["object_field_get_ptr"]),
