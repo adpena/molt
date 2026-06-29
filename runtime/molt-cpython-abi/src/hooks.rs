@@ -14,6 +14,45 @@
 
 use std::sync::OnceLock;
 
+pub const MOLT_BUFFER_MAX_NDIM: usize = 64;
+pub const MOLT_BUFFER_FORMAT_CAP: usize = 16;
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct MoltBufferView {
+    pub data: *mut u8,
+    pub len: u64,
+    pub readonly: u32,
+    pub ndim: u32,
+    pub itemsize: u64,
+    pub offset: isize,
+    pub owner: u64,
+    pub base: u64,
+    pub shape: [isize; MOLT_BUFFER_MAX_NDIM],
+    pub strides: [isize; MOLT_BUFFER_MAX_NDIM],
+    pub format: [u8; MOLT_BUFFER_FORMAT_CAP],
+}
+
+impl Default for MoltBufferView {
+    fn default() -> Self {
+        let mut format = [0; MOLT_BUFFER_FORMAT_CAP];
+        format[0] = b'B';
+        Self {
+            data: std::ptr::null_mut(),
+            len: 0,
+            readonly: 1,
+            ndim: 1,
+            itemsize: 1,
+            offset: 0,
+            owner: 0,
+            base: 0,
+            shape: [0; MOLT_BUFFER_MAX_NDIM],
+            strides: [0; MOLT_BUFFER_MAX_NDIM],
+            format,
+        }
+    }
+}
+
 /// Vtable of runtime-provided object-allocation and inspection hooks.
 /// All function pointers are `extern "C"` for ABI stability across crate boundaries.
 #[derive(Clone, Copy)]
@@ -62,6 +101,11 @@ pub struct RuntimeHooks {
     pub str_data: unsafe extern "C" fn(bits: u64, out_len: *mut usize) -> *const u8,
     /// Return a pointer to the raw bytes of a bytes handle.
     pub bytes_data: unsafe extern "C" fn(bits: u64, out_len: *mut usize) -> *const u8,
+    /// Acquire a typed strided buffer export owned by the runtime.
+    pub buffer_acquire:
+        unsafe extern "C" fn(bits: u64, out_view: *mut MoltBufferView) -> std::os::raw::c_int,
+    /// Release a typed strided buffer export previously acquired from the runtime.
+    pub buffer_release: unsafe extern "C" fn(view: *mut MoltBufferView) -> std::os::raw::c_int,
     // ── Type classification ───────────────────────────────────────────────────
     /// Classify a heap-pointer handle into a `MoltTypeTag` discriminant (u8).
     /// Used by `classify_handle` to fill in the SIMD type-tag table for heap types.
@@ -212,6 +256,25 @@ unsafe extern "C" fn stub_bytes_data(_bits: u64, out_len: *mut usize) -> *const 
     }
     std::ptr::null()
 }
+unsafe extern "C" fn stub_buffer_acquire(
+    _bits: u64,
+    out_view: *mut MoltBufferView,
+) -> std::os::raw::c_int {
+    if !out_view.is_null() {
+        unsafe {
+            *out_view = MoltBufferView::default();
+        }
+    }
+    -1
+}
+unsafe extern "C" fn stub_buffer_release(view: *mut MoltBufferView) -> std::os::raw::c_int {
+    if !view.is_null() {
+        unsafe {
+            *view = MoltBufferView::default();
+        }
+    }
+    0
+}
 unsafe extern "C" fn stub_classify_heap(_bits: u64) -> u8 {
     crate::abi_types::MoltTypeTag::Other as u8
 }
@@ -258,6 +321,8 @@ pub const STUB_HOOKS: RuntimeHooks = RuntimeHooks {
     dict_len: stub_dict_len,
     str_data: stub_str_data,
     bytes_data: stub_bytes_data,
+    buffer_acquire: stub_buffer_acquire,
+    buffer_release: stub_buffer_release,
     classify_heap: stub_classify_heap,
     inc_ref: stub_inc_ref,
     dec_ref: stub_dec_ref,

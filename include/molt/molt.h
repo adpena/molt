@@ -9,6 +9,8 @@ extern "C" {
 #endif
 
 #define MOLT_C_API_VERSION 1u
+#define MOLT_BUFFER_MAX_NDIM 64u
+#define MOLT_BUFFER_FORMAT_CAP 16u
 
 typedef uint64_t MoltHandle;
 
@@ -16,10 +18,14 @@ typedef struct MoltBufferView {
   uint8_t *data;
   uint64_t len;
   uint32_t readonly;
-  uint32_t reserved;
-  int64_t stride;
+  uint32_t ndim;
   uint64_t itemsize;
+  intptr_t offset;
   MoltHandle owner;
+  MoltHandle base;
+  intptr_t shape[MOLT_BUFFER_MAX_NDIM];
+  intptr_t strides[MOLT_BUFFER_MAX_NDIM];
+  char format[MOLT_BUFFER_FORMAT_CAP];
 } MoltBufferView;
 
 uint32_t molt_c_api_version(void);
