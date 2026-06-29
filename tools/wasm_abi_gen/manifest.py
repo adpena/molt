@@ -12,7 +12,12 @@ try:
 except ModuleNotFoundError:  # pragma: no cover - Python < 3.11 fallback
     import tomli as tomllib  # type: ignore[no-redef]
 
-from wasm_abi_gen.paths import INTRINSICS_MANIFEST, MANIFEST, RUNTIME_ROOT
+from wasm_abi_gen.paths import (
+    INTRINSIC_CATEGORIES,
+    INTRINSICS_MANIFEST,
+    MANIFEST,
+    RUNTIME_ROOT,
+)
 
 WASM_VAL_TYPES = {
     "i32": "I32",
@@ -183,6 +188,57 @@ def _format_runtime_callable_signature(
 
 def _intrinsic_manifest_names() -> set[str]:
     return {name for name, _, _ in _intrinsic_signature_rows()}
+
+
+def _load_runtime_feature_gates_from_categories() -> list[tuple[str, str]]:
+    raw = INTRINSIC_CATEGORIES.read_bytes()
+    data = tomllib.loads(raw.decode())
+    gates: list[tuple[str, str]] = []
+    for _mod_name, mod_data in data.get("stdlib", {}).items():
+        feature = mod_data.get("feature")
+        if not isinstance(feature, str) or not feature:
+            continue
+        raw_prefixes = mod_data.get("feature_prefixes", mod_data.get("prefixes", []))
+        if not isinstance(raw_prefixes, list):
+            raise WasmAbiManifestError(
+                "intrinsic categories feature_prefixes/prefixes must be lists"
+            )
+        for prefix in raw_prefixes:
+            if not isinstance(prefix, str) or not prefix:
+                raise WasmAbiManifestError(
+                    "intrinsic categories feature prefixes must be non-empty strings"
+                )
+            gates.append((f"molt_{prefix}", feature))
+    return gates
+
+
+def _runtime_feature_gate_for_symbol(
+    symbol: str,
+    gates: list[tuple[str, str]],
+) -> str | None:
+    best: tuple[int, str] | None = None
+    for prefix, feature in gates:
+        if symbol.startswith(prefix):
+            prefix_len = len(prefix)
+            if best is None or prefix_len > best[0]:
+                best = (prefix_len, feature)
+    return best[1] if best is not None else None
+
+
+def _annotate_runtime_callable_features(imports: list[dict]) -> None:
+    gates = _load_runtime_feature_gates_from_categories()
+    for idx, entry in enumerate(imports):
+        if "runtime_feature" in entry:
+            raise WasmAbiManifestError(
+                "runtime_feature is generated from intrinsics/categories.toml; "
+                f"remove manual runtime_feature from import entry {idx}"
+            )
+        runtime_name = entry.get("runtime_name")
+        if not isinstance(runtime_name, str):
+            continue
+        feature = _runtime_feature_gate_for_symbol(runtime_name, gates)
+        if feature is not None:
+            entry["runtime_feature"] = feature
 
 
 def _runtime_rust_files() -> list[Path]:
@@ -861,12 +917,13 @@ def validate_loaded_manifest(data: dict) -> dict:
             non_runtime_callable_intrinsics,
         )
     )
+    _annotate_runtime_callable_features(imports)
     _validate_reserved_runtime_callable_import_absence(
-            static_types,
-            imports,
-            reserved_callables,
-            non_reserved_import_refs,
-        )
+        static_types,
+        imports,
+        reserved_callables,
+        non_reserved_import_refs,
+    )
     seen_imports: set[str] = set()
     seen_runtime_callables: set[str] = set()
     seen_poll_slots: set[int] = set()
