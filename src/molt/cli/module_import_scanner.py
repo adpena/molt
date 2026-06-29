@@ -241,6 +241,75 @@ def _qualified_child(prefix: tuple[str, ...], name: str) -> tuple[str, ...]:
     return (*prefix, name)
 
 
+_TYPE_CHECKING_MODULES = frozenset({"typing", "typing_extensions"})
+
+
+def _function_parameter_names_from_args(args: ast.arguments) -> list[str]:
+    names = [arg.arg for arg in args.posonlyargs]
+    names.extend(arg.arg for arg in args.args)
+    names.extend(arg.arg for arg in args.kwonlyargs)
+    if args.vararg is not None:
+        names.append(args.vararg.arg)
+    if args.kwarg is not None:
+        names.append(args.kwarg.arg)
+    return names
+
+
+class _StaticTruthBindings:
+    def __init__(self) -> None:
+        self.type_checking_names: set[str] = {"TYPE_CHECKING"}
+        self.type_checking_module_aliases: set[str] = set(_TYPE_CHECKING_MODULES)
+
+    def fork(self) -> "_StaticTruthBindings":
+        forked = _StaticTruthBindings()
+        forked.type_checking_names = set(self.type_checking_names)
+        forked.type_checking_module_aliases = set(self.type_checking_module_aliases)
+        return forked
+
+    def record_import_aliases(self, node: ast.Import | ast.ImportFrom) -> None:
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name in _TYPE_CHECKING_MODULES:
+                    self.type_checking_module_aliases.add(alias.asname or alias.name)
+            return
+        if node.level or node.module not in _TYPE_CHECKING_MODULES:
+            return
+        for alias in node.names:
+            if alias.name == "TYPE_CHECKING":
+                self.type_checking_names.add(alias.asname or alias.name)
+
+    def is_type_checking_only_import(self, node: ast.Import | ast.ImportFrom) -> bool:
+        return (
+            isinstance(node, ast.ImportFrom)
+            and not node.level
+            and node.module in _TYPE_CHECKING_MODULES
+            and all(alias.name == "TYPE_CHECKING" for alias in node.names)
+        )
+
+    def record_rebinding_target(self, target: ast.expr) -> None:
+        if isinstance(target, ast.Name):
+            self.type_checking_names.discard(target.id)
+            self.type_checking_module_aliases.discard(target.id)
+
+    def record_assignment_target(self, target: ast.expr, value: ast.AST) -> None:
+        if (
+            isinstance(target, ast.Name)
+            and isinstance(value, ast.Constant)
+            and value.value is False
+        ):
+            self.type_checking_names.add(target.id)
+            self.type_checking_module_aliases.discard(target.id)
+            return
+        self.record_rebinding_target(target)
+
+    def static_if_live_branch(self, node: ast.If) -> list[ast.stmt] | None:
+        return static_if_live_branch(
+            node,
+            type_checking_names=self.type_checking_names,
+            type_checking_module_aliases=self.type_checking_module_aliases,
+        )
+
+
 def _static_scan_nodes(
     tree: ast.AST,
     *,
@@ -252,75 +321,124 @@ def _static_scan_nodes(
     nodes: list[ast.AST] = []
     included_qualnames = frozenset(included_function_qualnames)
 
-    def visit(node: ast.AST, qualname_prefix: tuple[str, ...] = ()) -> None:
+    def visit(
+        node: ast.AST,
+        qualname_prefix: tuple[str, ...] = (),
+        truth_bindings: _StaticTruthBindings | None = None,
+    ) -> None:
+        truth_bindings = truth_bindings or _StaticTruthBindings()
         nodes.append(node)
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            truth_bindings.record_import_aliases(node)
+            return
+        if isinstance(node, ast.Assign):
+            visit(node.value, qualname_prefix, truth_bindings)
+            for target in node.targets:
+                visit(target, qualname_prefix, truth_bindings)
+                truth_bindings.record_assignment_target(target, node.value)
+            return
+        if isinstance(node, ast.AnnAssign):
+            visit(node.annotation, qualname_prefix, truth_bindings)
+            if node.value is not None:
+                visit(node.value, qualname_prefix, truth_bindings)
+            visit(node.target, qualname_prefix, truth_bindings)
+            if node.value is not None:
+                truth_bindings.record_assignment_target(node.target, node.value)
+            else:
+                truth_bindings.record_rebinding_target(node.target)
+            return
+        if isinstance(node, ast.AugAssign):
+            visit(node.target, qualname_prefix, truth_bindings)
+            visit(node.value, qualname_prefix, truth_bindings)
+            truth_bindings.record_rebinding_target(node.target)
+            return
+        if isinstance(node, ast.Delete):
+            for target in node.targets:
+                visit(target, qualname_prefix, truth_bindings)
+                truth_bindings.record_rebinding_target(target)
+            return
+        if isinstance(node, ast.NamedExpr):
+            visit(node.value, qualname_prefix, truth_bindings)
+            visit(node.target, qualname_prefix, truth_bindings)
+            truth_bindings.record_rebinding_target(node.target)
+            return
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             function_qualname = ".".join(_qualified_child(qualname_prefix, node.name))
             for decorator in node.decorator_list:
-                visit(decorator, qualname_prefix)
+                visit(decorator, qualname_prefix, truth_bindings)
             for default in list(node.args.defaults) + [
                 default for default in node.args.kw_defaults if default is not None
             ]:
-                visit(default, qualname_prefix)
+                visit(default, qualname_prefix, truth_bindings)
             for arg in (
                 list(node.args.posonlyargs)
                 + list(node.args.args)
                 + list(node.args.kwonlyargs)
             ):
                 if arg.annotation is not None:
-                    visit(arg.annotation, qualname_prefix)
+                    visit(arg.annotation, qualname_prefix, truth_bindings)
             if node.args.vararg is not None and node.args.vararg.annotation is not None:
-                visit(node.args.vararg.annotation, qualname_prefix)
+                visit(node.args.vararg.annotation, qualname_prefix, truth_bindings)
             if node.args.kwarg is not None and node.args.kwarg.annotation is not None:
-                visit(node.args.kwarg.annotation, qualname_prefix)
+                visit(node.args.kwarg.annotation, qualname_prefix, truth_bindings)
             if node.returns is not None:
-                visit(node.returns, qualname_prefix)
+                visit(node.returns, qualname_prefix, truth_bindings)
             for type_param in getattr(node, "type_params", ()):
-                visit(type_param, qualname_prefix)
+                visit(type_param, qualname_prefix, truth_bindings)
             if include_function_bodies or function_qualname in included_qualnames:
+                function_truth = truth_bindings.fork()
+                for name in _function_parameter_names_from_args(node.args):
+                    function_truth.type_checking_names.discard(name)
+                    function_truth.type_checking_module_aliases.discard(name)
                 function_prefix = _qualified_child(qualname_prefix, node.name)
                 for stmt in node.body:
-                    visit(stmt, function_prefix)
+                    visit(stmt, function_prefix, function_truth)
             return
         if isinstance(node, ast.Lambda):
             for default in list(node.args.defaults) + [
                 default for default in node.args.kw_defaults if default is not None
             ]:
-                visit(default, qualname_prefix)
+                visit(default, qualname_prefix, truth_bindings)
             if include_function_bodies:
-                visit(node.body, qualname_prefix)
+                lambda_truth = truth_bindings.fork()
+                for name in _function_parameter_names_from_args(node.args):
+                    lambda_truth.type_checking_names.discard(name)
+                    lambda_truth.type_checking_module_aliases.discard(name)
+                visit(node.body, qualname_prefix, lambda_truth)
             return
         if isinstance(node, ast.ClassDef):
             for decorator in node.decorator_list:
-                visit(decorator, qualname_prefix)
+                visit(decorator, qualname_prefix, truth_bindings)
             for base in node.bases:
-                visit(base, qualname_prefix)
+                visit(base, qualname_prefix, truth_bindings)
             for keyword in node.keywords:
                 if keyword.value is not None:
-                    visit(keyword.value, qualname_prefix)
+                    visit(keyword.value, qualname_prefix, truth_bindings)
             for type_param in getattr(node, "type_params", ()):
-                visit(type_param, qualname_prefix)
+                visit(type_param, qualname_prefix, truth_bindings)
             class_prefix = _qualified_child(qualname_prefix, node.name)
+            class_truth = truth_bindings.fork()
             for stmt in node.body:
-                visit(stmt, class_prefix)
+                visit(stmt, class_prefix, class_truth)
             return
         if isinstance(node, ast.If):
-            visit(node.test, qualname_prefix)
-            static_branch = static_if_live_branch(node)
+            visit(node.test, qualname_prefix, truth_bindings)
+            static_branch = truth_bindings.static_if_live_branch(node)
             if static_branch is not None:
                 for stmt in static_branch:
-                    visit(stmt, qualname_prefix)
+                    visit(stmt, qualname_prefix, truth_bindings)
             else:
                 for stmt in node.body:
-                    visit(stmt, qualname_prefix)
+                    visit(stmt, qualname_prefix, truth_bindings)
                 for stmt in node.orelse:
-                    visit(stmt, qualname_prefix)
+                    visit(stmt, qualname_prefix, truth_bindings)
             return
         for child in ast.iter_child_nodes(node):
-            visit(child, qualname_prefix)
+            visit(child, qualname_prefix, truth_bindings)
 
+    truth_bindings = _StaticTruthBindings()
     for stmt in tree.body:
-        visit(stmt)
+        visit(stmt, truth_bindings=truth_bindings)
     return tuple(nodes)
 
 
@@ -800,8 +918,13 @@ def _collect_imports(
                             imports.append(resolved)
 
     def _record_import_statement(
-        node: ast.Import | ast.ImportFrom, bindings: _ImportlibStaticBindings
+        node: ast.Import | ast.ImportFrom,
+        bindings: _ImportlibStaticBindings,
+        truth_bindings: _StaticTruthBindings,
     ) -> None:
+        truth_bindings.record_import_aliases(node)
+        if truth_bindings.is_type_checking_only_import(node):
+            return
         bindings.record_aliases(node)
         if isinstance(node, ast.Import):
             for alias in node.names:
@@ -844,100 +967,114 @@ def _collect_imports(
     def _function_parameter_names(
         node: ast.Lambda | ast.FunctionDef | ast.AsyncFunctionDef,
     ) -> list[str]:
-        args = node.args
-        names = [arg.arg for arg in args.posonlyargs]
-        names.extend(arg.arg for arg in args.args)
-        names.extend(arg.arg for arg in args.kwonlyargs)
-        if args.vararg is not None:
-            names.append(args.vararg.arg)
-        if args.kwarg is not None:
-            names.append(args.kwarg.arg)
-        return names
+        return _function_parameter_names_from_args(node.args)
 
     def _visit_many(
         nodes: Iterable[ast.AST],
         bindings: _ImportlibStaticBindings,
+        truth_bindings: _StaticTruthBindings,
         qualname_prefix: tuple[str, ...] = (),
     ) -> None:
         for child in nodes:
-            _visit(child, bindings, qualname_prefix)
+            _visit(child, bindings, truth_bindings, qualname_prefix)
 
     def _visit(
         node: ast.AST,
         bindings: _ImportlibStaticBindings,
+        truth_bindings: _StaticTruthBindings,
         qualname_prefix: tuple[str, ...] = (),
     ) -> None:
         nonlocal needs_string_templatelib, needs_typing
         if isinstance(node, ast.Module):
-            _visit_many(node.body, bindings)
+            _visit_many(node.body, bindings, truth_bindings)
             return
         if isinstance(node, (ast.Import, ast.ImportFrom)):
-            _record_import_statement(node, bindings)
+            _record_import_statement(node, bindings, truth_bindings)
             return
         if isinstance(node, ast.Assign):
-            _visit(node.value, bindings, qualname_prefix)
-            _visit_many(node.targets, bindings, qualname_prefix)
+            _visit(node.value, bindings, truth_bindings, qualname_prefix)
+            _visit_many(node.targets, bindings, truth_bindings, qualname_prefix)
             for target in node.targets:
                 bindings.record_rebinding_target(target)
+                truth_bindings.record_assignment_target(target, node.value)
             return
         if isinstance(node, ast.AnnAssign):
-            _visit(node.annotation, bindings, qualname_prefix)
+            _visit(node.annotation, bindings, truth_bindings, qualname_prefix)
             if node.value is not None:
-                _visit(node.value, bindings, qualname_prefix)
-            _visit(node.target, bindings, qualname_prefix)
+                _visit(node.value, bindings, truth_bindings, qualname_prefix)
+            _visit(node.target, bindings, truth_bindings, qualname_prefix)
             bindings.record_rebinding_target(node.target)
+            if node.value is not None:
+                truth_bindings.record_assignment_target(node.target, node.value)
+            else:
+                truth_bindings.record_rebinding_target(node.target)
             return
         if isinstance(node, ast.AugAssign):
-            _visit(node.target, bindings, qualname_prefix)
-            _visit(node.value, bindings, qualname_prefix)
+            _visit(node.target, bindings, truth_bindings, qualname_prefix)
+            _visit(node.value, bindings, truth_bindings, qualname_prefix)
             bindings.record_rebinding_target(node.target)
+            truth_bindings.record_rebinding_target(node.target)
             return
         if isinstance(node, ast.Delete):
-            _visit_many(node.targets, bindings, qualname_prefix)
+            _visit_many(node.targets, bindings, truth_bindings, qualname_prefix)
             for target in node.targets:
                 bindings.record_rebinding_target(target)
+                truth_bindings.record_rebinding_target(target)
             return
         if isinstance(node, ast.If):
-            _visit(node.test, bindings, qualname_prefix)
-            static_branch = static_if_live_branch(node)
+            _visit(node.test, bindings, truth_bindings, qualname_prefix)
+            static_branch = truth_bindings.static_if_live_branch(node)
             if static_branch is not None:
-                _visit_many(static_branch, bindings, qualname_prefix)
+                _visit_many(static_branch, bindings, truth_bindings, qualname_prefix)
             else:
-                _visit_many(node.body, bindings, qualname_prefix)
-                _visit_many(node.orelse, bindings, qualname_prefix)
+                _visit_many(node.body, bindings, truth_bindings, qualname_prefix)
+                _visit_many(node.orelse, bindings, truth_bindings, qualname_prefix)
             return
         if isinstance(node, ast.NamedExpr):
-            _visit(node.value, bindings, qualname_prefix)
-            _visit(node.target, bindings, qualname_prefix)
+            _visit(node.value, bindings, truth_bindings, qualname_prefix)
+            _visit(node.target, bindings, truth_bindings, qualname_prefix)
             bindings.record_rebinding_target(node.target)
+            truth_bindings.record_rebinding_target(node.target)
             return
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             if getattr(node, "type_params", None):
                 needs_typing = True
             if isinstance(node, ast.ClassDef):
-                _visit_many(node.decorator_list, bindings, qualname_prefix)
-                _visit_many(node.bases, bindings, qualname_prefix)
+                _visit_many(
+                    node.decorator_list, bindings, truth_bindings, qualname_prefix
+                )
+                _visit_many(node.bases, bindings, truth_bindings, qualname_prefix)
                 _visit_many(
                     [keyword.value for keyword in node.keywords if keyword.value],
                     bindings,
+                    truth_bindings,
                     qualname_prefix,
                 )
                 _visit_many(
-                    getattr(node, "type_params", ()), bindings, qualname_prefix
+                    getattr(node, "type_params", ()),
+                    bindings,
+                    truth_bindings,
+                    qualname_prefix,
                 )
                 class_bindings = bindings.fork()
+                class_truth_bindings = truth_bindings.fork()
                 class_prefix = _qualified_child(qualname_prefix, node.name)
-                _visit_many(node.body, class_bindings, class_prefix)
+                _visit_many(
+                    node.body, class_bindings, class_truth_bindings, class_prefix
+                )
                 bindings.module_import_module_mutated |= (
                     class_bindings.module_import_module_mutated
                 )
                 bindings.module_util_mutated |= class_bindings.module_util_mutated
                 return
-            _visit_many(node.decorator_list, bindings, qualname_prefix)
-            _visit_many(list(node.args.defaults), bindings, qualname_prefix)
+            _visit_many(node.decorator_list, bindings, truth_bindings, qualname_prefix)
+            _visit_many(
+                list(node.args.defaults), bindings, truth_bindings, qualname_prefix
+            )
             _visit_many(
                 [default for default in node.args.kw_defaults if default is not None],
                 bindings,
+                truth_bindings,
                 qualname_prefix,
             )
             for arg in (
@@ -946,37 +1083,61 @@ def _collect_imports(
                 + list(node.args.kwonlyargs)
             ):
                 if arg.annotation is not None:
-                    _visit(arg.annotation, bindings, qualname_prefix)
+                    _visit(arg.annotation, bindings, truth_bindings, qualname_prefix)
             if node.args.vararg is not None and node.args.vararg.annotation is not None:
-                _visit(node.args.vararg.annotation, bindings, qualname_prefix)
+                _visit(
+                    node.args.vararg.annotation,
+                    bindings,
+                    truth_bindings,
+                    qualname_prefix,
+                )
             if node.args.kwarg is not None and node.args.kwarg.annotation is not None:
-                _visit(node.args.kwarg.annotation, bindings, qualname_prefix)
+                _visit(
+                    node.args.kwarg.annotation,
+                    bindings,
+                    truth_bindings,
+                    qualname_prefix,
+                )
             if node.returns is not None:
-                _visit(node.returns, bindings, qualname_prefix)
-            _visit_many(getattr(node, "type_params", ()), bindings, qualname_prefix)
+                _visit(node.returns, bindings, truth_bindings, qualname_prefix)
+            _visit_many(
+                getattr(node, "type_params", ()),
+                bindings,
+                truth_bindings,
+                qualname_prefix,
+            )
             function_qualname = ".".join(_qualified_child(qualname_prefix, node.name))
             if (
                 import_scan_mode == "full"
                 or function_qualname in selected_static_helper_qualnames
             ):
                 function_bindings = bindings.fork()
+                function_truth_bindings = truth_bindings.fork()
                 for name in _function_parameter_names(node):
                     function_bindings.invalidate_name(name)
+                    function_truth_bindings.record_rebinding_target(ast.Name(id=name))
                 function_prefix = _qualified_child(qualname_prefix, node.name)
-                _visit_many(node.body, function_bindings, function_prefix)
+                _visit_many(
+                    node.body, function_bindings, function_truth_bindings, function_prefix
+                )
             return
         if isinstance(node, ast.Lambda):
-            _visit_many(list(node.args.defaults), bindings, qualname_prefix)
+            _visit_many(
+                list(node.args.defaults), bindings, truth_bindings, qualname_prefix
+            )
             _visit_many(
                 [default for default in node.args.kw_defaults if default is not None],
                 bindings,
+                truth_bindings,
                 qualname_prefix,
             )
             if import_scan_mode == "full":
                 lambda_bindings = bindings.fork()
+                lambda_truth_bindings = truth_bindings.fork()
                 for name in _function_parameter_names(node):
                     lambda_bindings.invalidate_name(name)
-                _visit(node.body, lambda_bindings)
+                    lambda_truth_bindings.record_rebinding_target(ast.Name(id=name))
+                _visit(node.body, lambda_bindings, lambda_truth_bindings)
             return
         if type_alias_cls is not None and isinstance(node, type_alias_cls):
             needs_typing = True
@@ -990,9 +1151,9 @@ def _collect_imports(
         if isinstance(node, ast.Call) and node.args:
             _collect_import_call(node, bindings)
         for child in ast.iter_child_nodes(node):
-            _visit(child, bindings, qualname_prefix)
+            _visit(child, bindings, truth_bindings, qualname_prefix)
 
-    _visit(tree, _ImportlibStaticBindings())
+    _visit(tree, _ImportlibStaticBindings(), _StaticTruthBindings())
     if needs_typing:
         imports.append("typing")
     if needs_string_templatelib:

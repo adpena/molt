@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 import shutil
 import sys
 import threading
@@ -17,9 +16,8 @@ from tests.wasm_linked_runner import _run_wasm_test_process
 def _browser_wasm_build_env(root: Path) -> dict[str, str]:
     env = development_artifact_env(
         root,
-        os.environ,
         session_prefix="test-wasm-browser-embed",
-        session_id=os.environ.get("MOLT_SESSION_ID") or "test-wasm-browser-embed",
+        session_id="test-wasm-browser-embed",
         create_dirs=True,
     )
     env.setdefault("CARGO_BUILD_JOBS", "1")
@@ -59,6 +57,205 @@ class _StaticDirHandler(BaseHTTPRequestHandler):
         self.wfile.write(payload)
 
 
+def test_browser_embed_forward_f32_native_callable_import_adapter(
+    tmp_path: Path,
+) -> None:
+    if shutil.which("node") is None:
+        pytest.skip("node is required for browser embed native callable adapter test")
+
+    root = Path(__file__).resolve().parents[1]
+    embed_uri = (root / "wasm" / "browser_embed.js").as_uri()
+    script = tmp_path / "run_forward_f32_native_callable.mjs"
+    script.write_text(
+        f"""
+import {{ createMoltNativeCallableImports }} from {embed_uri!r};
+
+const symbol = 'molt_nativepkg_ndimage_distance_transform_edt';
+const memory = new WebAssembly.Memory({{ initial: 1 }});
+const inputPtr = 1024;
+const outputPtr = 2048;
+
+const input = new Float32Array([1.0, -2.0, 0.5]);
+new Float32Array(memory.buffer, inputPtr, input.length).set(input);
+
+const runtimeInstance = {{
+  exports: {{}},
+}};
+
+const imports = createMoltNativeCallableImports(
+  {{ memory, runtimeInstance }},
+  {{ funcImports: [{{ module: 'molt_native', name: symbol }}] }},
+  {{
+    manifest: {{
+      abi: {{
+        browser_embed: {{
+          native_callables: {{
+            module: 'molt_native',
+            symbols: {{
+              [symbol]: {{
+                abi: 'molt.forward_f32_v1',
+                binding: 'direct_symbol',
+                signature: {{
+                  params: ['bytes.float32'],
+                  result: 'bytes.float32',
+                }},
+                exports: ['nativepkg.ndimage.distance_transform_edt'],
+              }},
+            }},
+          }},
+        }},
+      }},
+    }},
+    nativeCallables: {{
+      [symbol]: (values, output, ctx) => {{
+        if (ctx.abi !== 'molt.forward_f32_v1') throw new Error('wrong abi');
+        for (let i = 0; i < values.length; i += 1) {{
+          output[i] = values[i] * 2 + 0.25;
+        }}
+      }},
+    }},
+  }},
+);
+
+const status = imports[symbol](inputPtr, BigInt(input.byteLength), outputPtr);
+if (status !== 0) throw new Error(`unexpected native status ${{status}}`);
+const output = new Float32Array(memory.buffer, outputPtr, input.length);
+console.log(JSON.stringify(Array.from(output)));
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    run = _run_wasm_test_process(
+        ["node", str(script)],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+
+    assert run.returncode == 0, run.stderr
+    assert json.loads(run.stdout) == [2.25, -3.75, 1.25]
+
+
+def test_browser_embed_native_callable_import_must_be_manifest_declared(
+    tmp_path: Path,
+) -> None:
+    if shutil.which("node") is None:
+        pytest.skip("node is required for browser embed native callable adapter test")
+
+    root = Path(__file__).resolve().parents[1]
+    embed_uri = (root / "wasm" / "browser_embed.js").as_uri()
+    script = tmp_path / "run_missing_native_callable_manifest.mjs"
+    script.write_text(
+        f"""
+import {{ createMoltNativeCallableImports }} from {embed_uri!r};
+
+try {{
+  createMoltNativeCallableImports(
+    {{ memory: new WebAssembly.Memory({{ initial: 1 }}), runtimeInstance: null }},
+    {{ funcImports: [{{ module: 'molt_native', name: 'molt_nativepkg_missing' }}] }},
+    {{
+      requireNativeCallableManifest: true,
+      manifest: {{
+        abi: {{
+          browser_embed: {{
+            native_callables: {{
+              module: 'molt_native',
+              symbols: {{}},
+            }},
+          }},
+        }},
+      }},
+      nativeCallables: {{
+        molt_nativepkg_missing: () => 0n,
+      }},
+    }},
+  );
+  console.log('unexpected-ok');
+}} catch (err) {{
+  console.log(String(err.message || err));
+}}
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    run = _run_wasm_test_process(
+        ["node", str(script)],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+
+    assert run.returncode == 0, run.stderr
+    assert "missing from manifest.abi.browser_embed.native_callables.symbols" in (
+        run.stdout
+    )
+
+
+def test_browser_embed_native_callable_signature_must_match_abi(
+    tmp_path: Path,
+) -> None:
+    if shutil.which("node") is None:
+        pytest.skip("node is required for browser embed native callable adapter test")
+
+    root = Path(__file__).resolve().parents[1]
+    embed_uri = (root / "wasm" / "browser_embed.js").as_uri()
+    script = tmp_path / "run_bad_native_callable_signature.mjs"
+    script.write_text(
+        f"""
+import {{ createMoltNativeCallableImports }} from {embed_uri!r};
+
+const symbol = 'molt_nativepkg_bad_signature';
+try {{
+  createMoltNativeCallableImports(
+    {{ memory: new WebAssembly.Memory({{ initial: 1 }}), runtimeInstance: null }},
+    {{ funcImports: [{{ module: 'molt_native', name: symbol }}] }},
+    {{
+      manifest: {{
+        abi: {{
+          browser_embed: {{
+            native_callables: {{
+              module: 'molt_native',
+              symbols: {{
+                [symbol]: {{
+                  abi: 'molt.forward_f32_v1',
+                  binding: 'direct_symbol',
+                  signature: {{
+                    params: ['molt.value...'],
+                    result: 'molt.value',
+                  }},
+                }},
+              }},
+            }},
+          }},
+        }},
+      }},
+      nativeCallables: {{
+        [symbol]: () => 0n,
+      }},
+    }},
+  );
+  console.log('unexpected-ok');
+}} catch (err) {{
+  console.log(String(err.message || err));
+}}
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    run = _run_wasm_test_process(
+        ["node", str(script)],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+
+    assert run.returncode == 0, run.stderr
+    assert "signature must match molt.forward_f32_v1" in run.stdout
+
+
 @pytest.mark.slow
 def test_browser_embed_forward_roundtrips_float32_typed_arrays(
     tmp_path: Path,
@@ -69,19 +266,8 @@ def test_browser_embed_forward_roundtrips_float32_typed_arrays(
         pytest.skip("cargo is required for browser embed typed-array test")
 
     root = Path(__file__).resolve().parents[1]
-    src = tmp_path / "browser_embed_forward.py"
-    src.write_text(
-        "from array import array\n"
-        "\n"
-        "def forward(raw: bytes):\n"
-        "    values = array('f')\n"
-        "    values.frombytes(raw)\n"
-        "    out = array('f')\n"
-        "    for value in values:\n"
-        "        out.append(value * 1.5 + 0.25)\n"
-        "    return out.tobytes()\n",
-        encoding="utf-8",
-    )
+    src = root / "examples" / "browser_embed_forward" / "forward.py"
+    assert src.exists()
     out_dir = tmp_path / "out"
     out_dir.mkdir()
 
@@ -167,7 +353,7 @@ console.log(JSON.stringify({{
         payload = json.loads(run.stdout)
         assert payload == {
             "ctor": "Float32Array",
-            "exportName": "browser_embed_forward__forward",
+            "exportName": "forward__forward",
             "values": [2.125, -3.5, 0.25, 7.375],
         }
     finally:

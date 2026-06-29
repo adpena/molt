@@ -4,7 +4,6 @@
 // DO NOT EDIT BY HAND.
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-#[repr(usize)]
 pub(crate) enum WasmRuntimeImport {
     TypesBootstrap,
     AbcBootstrap,
@@ -386,6 +385,8 @@ pub(crate) enum WasmRuntimeImport {
     Slice,
     SliceNew,
     SortedBuiltin,
+    ScratchAlloc,
+    ScratchFree,
     StoreIndex,
     TupleBuilderFinish,
     TupleCount,
@@ -555,6 +556,7 @@ pub(crate) enum WasmRuntimeImport {
     BytesFind,
     BytesFindSlice,
     BytesFromBytes,
+    BytesAsPtr,
     BytesFromObj,
     BytesFromStr,
     BytesReplace,

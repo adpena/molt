@@ -915,6 +915,166 @@ def test_run_wasm_ld_monolithic_prefers_relocatable_runtime_for_table_relocation
     assert str(runtime) not in wasm_ld_inputs
 
 
+def test_run_wasm_ld_links_staged_native_objects(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    output_bytes = _build_minimal_module(b"")
+    runtime_bytes = _build_exported_runtime_module("molt_exception_pending")
+    runtime = tmp_path / "molt_runtime.wasm"
+    output = tmp_path / "output.wasm"
+    linked = tmp_path / "output_linked.wasm"
+    native_object = tmp_path / "external_static_packages" / "ndimage_edt.o"
+    wasm_ld_inputs: list[str] = []
+
+    runtime.write_bytes(runtime_bytes)
+    output.write_bytes(output_bytes)
+    native_object.parent.mkdir()
+    native_object.write_bytes(b"\x00asm\x01\x00\x00\x00native-object")
+
+    def fake_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
+        del kwargs
+        if cmd and cmd[0] == "wasm-ld":
+            wasm_ld_inputs.extend(cmd)
+        _write_wasm_ld_output(cmd, output_bytes)
+
+        class Result:
+            returncode = 0
+            stderr = ""
+            stdout = ""
+
+        return Result()
+
+    monkeypatch.setattr(wasm_link, "_run_external_tool", fake_run)
+    monkeypatch.setattr(wasm_link, "_validate_linked", lambda _p: True)
+    monkeypatch.setattr(wasm_link, "_validate_elements", lambda _data: (True, None))
+    monkeypatch.setattr(wasm_link, "_collect_module_imports", lambda *_args: set())
+    monkeypatch.setattr(wasm_link, "_post_link_optimize", lambda data, **_kwargs: data)
+    monkeypatch.setattr(wasm_link, "_restore_output_export_aliases", lambda data: None)
+
+    rc = wasm_link._run_wasm_ld(
+        "wasm-ld",
+        runtime,
+        output,
+        linked,
+        native_objects=(native_object,),
+    )
+
+    assert rc == 0
+    output_index = wasm_ld_inputs.index("-o") + 2
+    assert wasm_ld_inputs[output_index + 2] == str(native_object)
+
+
+def test_run_wasm_ld_rejects_missing_native_object(
+    tmp_path: Path,
+    monkeypatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    runtime = tmp_path / "molt_runtime.wasm"
+    output = tmp_path / "output.wasm"
+    linked = tmp_path / "output_linked.wasm"
+    missing_native_object = tmp_path / "external_static_packages" / "missing.o"
+
+    runtime.write_bytes(_build_exported_runtime_module("molt_exception_pending"))
+    output.write_bytes(_build_minimal_module(b""))
+    monkeypatch.setattr(
+        wasm_link,
+        "_run_external_tool",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("wasm-ld must not run without staged native input")
+        ),
+    )
+
+    rc = wasm_link._run_wasm_ld(
+        "wasm-ld",
+        runtime,
+        output,
+        linked,
+        native_objects=(missing_native_object,),
+    )
+
+    assert rc == 1
+    captured = capsys.readouterr()
+    assert "Native WASM link input not found" in captured.err
+    assert str(missing_native_object) in captured.err
+
+
+def test_run_wasm_ld_split_runtime_links_native_objects_into_app(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runtime_bytes = _module_with_linking_symbols([])
+    output_bytes = _module_with_linking_symbols([])
+    runtime = tmp_path / "molt_runtime_reloc.wasm"
+    output = tmp_path / "output.wasm"
+    linked = tmp_path / "output_linked.wasm"
+    split_dir = tmp_path / "split"
+    native_object = tmp_path / "external_static_packages" / "ndimage_edt.o"
+    link_calls: list[list[str]] = []
+
+    runtime.write_bytes(runtime_bytes)
+    output.write_bytes(output_bytes)
+    native_object.parent.mkdir()
+    native_object.write_bytes(b"\x00asm\x01\x00\x00\x00native-object")
+
+    def fake_run(cmd, **kwargs):
+        del kwargs
+        if cmd and cmd[0] == "wasm-ld":
+            link_calls.append(list(cmd))
+        _write_wasm_ld_output(cmd, output_bytes)
+
+        class Result:
+            returncode = 0
+            stderr = ""
+            stdout = ""
+
+        return Result()
+
+    monkeypatch.setattr(wasm_link, "_run_external_tool", fake_run)
+    monkeypatch.setattr(wasm_link, "_validate_linked", lambda _p: True)
+    monkeypatch.setattr(wasm_link, "_validate_split_runtime_outputs", lambda *_a: True)
+    monkeypatch.setattr(
+        wasm_link, "_append_table_ref_elements", lambda data, **_kwargs: None
+    )
+    monkeypatch.setattr(wasm_link, "_declare_ref_func_elements", lambda data: None)
+    monkeypatch.setattr(wasm_link, "_ensure_table_export", lambda data: None)
+    monkeypatch.setattr(wasm_link, "_build_runtime_stub", lambda data: runtime_bytes)
+    monkeypatch.setattr(wasm_link, "_restore_output_export_aliases", lambda data: None)
+    monkeypatch.setattr(wasm_link, "_optimize_split_app_module", lambda data, **_: data)
+    monkeypatch.setattr(
+        wasm_link, "_collect_module_imports", lambda *_args, **_kwargs: set()
+    )
+    monkeypatch.setattr(
+        wasm_link, "_tree_shake_runtime", lambda *_args, **_kwargs: runtime_bytes
+    )
+    monkeypatch.setattr(wasm_link, "_collect_custom_names", lambda _data: [])
+    monkeypatch.setattr(wasm_link, "_collect_imports", lambda _data: [])
+    monkeypatch.setattr(
+        wasm_link, "_collect_exports", lambda _data: {"molt_memory", "molt_table"}
+    )
+    monkeypatch.setattr(wasm_link, "_validate_elements", lambda _data: (True, None))
+
+    rc = wasm_link._run_wasm_ld(
+        "wasm-ld",
+        runtime,
+        output,
+        linked,
+        split_runtime=True,
+        split_output_dir=split_dir,
+        native_objects=(native_object,),
+    )
+
+    assert rc == 0
+    assert len(link_calls) == 2
+    monolithic_cmd, split_app_cmd = link_calls
+    assert str(native_object) in monolithic_cmd
+    assert str(native_object) in split_app_cmd
+    assert str(runtime) not in split_app_cmd
+    assert any("molt_runtime_stub" in part for part in monolithic_cmd)
+    assert not any("molt_runtime_stub" in part for part in split_app_cmd)
+    assert (split_dir / "app.wasm").read_bytes() == output_bytes
+
+
 def test_canonical_split_runtime_required_exports_uses_runtime_export_surface() -> None:
     module = _build_exported_runtime_module_many(
         [

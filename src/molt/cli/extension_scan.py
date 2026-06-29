@@ -6,10 +6,10 @@ from pathlib import Path
 from molt.cli.config_resolution import _config_value
 from molt.cli.deps import _load_toml
 from molt.cli.extension_manifest import _coerce_str_list
-from molt.cli.extension_scan_surface import _extract_file_local_py_c_symbols
-from molt.cli.extension_scan_surface import _extract_project_defined_py_c_symbols
-from molt.cli.extension_scan_surface import _extract_py_c_api_tokens
-from molt.cli.extension_scan_surface import _load_py_c_api_scan_surface
+from molt.cli.extension_scan_surface import _extract_c_api_tokens
+from molt.cli.extension_scan_surface import _extract_file_local_c_api_symbols
+from molt.cli.extension_scan_surface import _extract_project_defined_c_api_symbols
+from molt.cli.extension_scan_surface import _load_c_api_scan_surface
 from molt.cli.output import emit_json as _emit_json
 from molt.cli.output import fail as _fail
 from molt.cli.output import json_payload as _json_payload
@@ -177,7 +177,7 @@ def extension_scan(
     if root_error is not None:
         return root_error
 
-    scan_surface, header_path, header_error = _load_py_c_api_scan_surface(molt_root)
+    scan_surface, header_path, header_error = _load_c_api_scan_surface(molt_root)
     if header_error is not None:
         return _fail(
             f"Failed to read libmolt Python.h surface ({header_path}): {header_error}",
@@ -204,8 +204,8 @@ def extension_scan(
                 command="extension-scan",
             )
         source_text_by_path[source_path] = source_text
-        project_defined_symbols.update(_extract_project_defined_py_c_symbols(source_text))
-        file_local_symbols_by_path[source_path] = _extract_file_local_py_c_symbols(
+        project_defined_symbols.update(_extract_project_defined_c_api_symbols(source_text))
+        file_local_symbols_by_path[source_path] = _extract_file_local_c_api_symbols(
             source_text
         )
 
@@ -217,7 +217,7 @@ def extension_scan(
 
     for source_path, source_text in source_text_by_path.items():
         file_required = sorted(
-            _extract_py_c_api_tokens(source_text)
+            _extract_c_api_tokens(source_text)
             - file_local_symbols_by_path[source_path]
         )
         required_by_file[str(source_path)] = file_required
@@ -273,11 +273,11 @@ def extension_scan(
     warnings: list[str] = []
     if missing_sorted and not fail_on_missing:
         warnings.append(
-            "Unsupported Py* C-API symbols detected (run with --fail-on-missing to gate)."
+            "Unsupported C/API symbols detected (run with --fail-on-missing to gate)."
         )
     if fail_fast_sorted and not fail_on_missing:
         warnings.append(
-            "Fail-fast Py* C-API symbols detected (run with --fail-on-missing to gate)."
+            "Fail-fast C/API symbols detected (run with --fail-on-missing to gate)."
         )
     status = "ok"
     if fail_on_missing and (missing_sorted or fail_fast_sorted):
@@ -322,16 +322,16 @@ def extension_scan(
     else:
         print(f"Extension C-API scan header: {header_path}")
         print(f"Scanned source files: {len(source_paths)}")
-        print(f"Required Py* symbols: {len(required_sorted)}")
-        print(f"Supported Py* symbols used: {len(supported_used_sorted)}")
-        print(f"Runtime-backed Py* symbols used: {len(runtime_backed_used_sorted)}")
+        print(f"Required C/API symbols: {len(required_sorted)}")
+        print(f"Supported C/API symbols used: {len(supported_used_sorted)}")
+        print(f"Runtime-backed C/API symbols used: {len(runtime_backed_used_sorted)}")
         print(
-            "Source-compile-only Py* symbols used: "
+            "Source-compile-only C/API symbols used: "
             f"{len(source_compile_only_used_sorted)}"
         )
-        print(f"Project-defined Py* symbols used: {len(project_defined_used_sorted)}")
-        print(f"Fail-fast Py* symbols: {len(fail_fast_sorted)}")
-        print(f"Missing Py* symbols: {len(missing_sorted)}")
+        print(f"Project-defined C/API symbols used: {len(project_defined_used_sorted)}")
+        print(f"Fail-fast C/API symbols: {len(fail_fast_sorted)}")
+        print(f"Missing C/API symbols: {len(missing_sorted)}")
         if fail_fast_sorted:
             limit = len(fail_fast_sorted) if verbose else min(30, len(fail_fast_sorted))
             for symbol in fail_fast_sorted[:limit]:

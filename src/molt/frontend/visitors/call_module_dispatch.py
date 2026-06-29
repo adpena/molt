@@ -9,6 +9,11 @@ from typing import (
     Any,
 )
 
+from molt.native_callable_abi import (
+    native_callable_abi_choices,
+    native_callable_fixed_arity,
+    normalize_native_callable_abi,
+)
 from molt.frontend._types import (
     GEN_CONTROL_SIZE,
     INTRINSIC_HANDLE_CLASS_CONSTRUCTORS,
@@ -127,13 +132,29 @@ class CallModuleDispatchMixin(_MixinBase):
         binding = spec.get("binding")
         abi = spec.get("abi")
         symbol = spec.get("symbol")
-        if binding not in {"module_attr", "direct_symbol"} or not isinstance(abi, str):
+        normalized_abi = normalize_native_callable_abi(abi)
+        if binding not in {"module_attr", "direct_symbol"} or normalized_abi is None:
             raise self.compat.unsupported(
                 node,
                 f"native callable export '{qualified_name}' has incomplete ABI metadata",
                 impact="high",
-                alternative="declare binding and abi in the native artifact manifest",
-                detail="native callable exports must fail closed before lowering",
+                alternative="declare binding and a supported abi in the native artifact manifest",
+                detail=(
+                    "native callable exports must fail closed before lowering; "
+                    f"known ABI tokens: {native_callable_abi_choices()}"
+                ),
+            )
+        if binding == "module_attr":
+            raise self.compat.unsupported(
+                node,
+                f"native callable export '{qualified_name}' uses module_attr binding",
+                impact="high",
+                alternative="publish a direct_symbol callable export backed by a staged native artifact",
+                detail=(
+                    "module_attr callable exports are import visibility metadata; "
+                    "Molt cannot invent an executable ABI call without a target "
+                    "native symbol or loader custody"
+                ),
             )
         if binding == "direct_symbol" and not isinstance(symbol, str):
             raise self.compat.unsupported(
@@ -151,23 +172,32 @@ class CallModuleDispatchMixin(_MixinBase):
                 alternative="call the export with positional arguments supported by its ABI",
                 detail="native callable ABI dispatch does not lower keyword, *args, or **kwargs packing",
             )
+        fixed_arity = native_callable_fixed_arity(normalized_abi)
+        if fixed_arity is not None and len(node.args) != fixed_arity:
+            raise self.compat.unsupported(
+                node,
+                f"native callable export '{qualified_name}' has invalid ABI payload arity",
+                impact="high",
+                alternative=f"call the export with {fixed_arity} positional ABI payload argument(s)",
+                detail=(
+                    f"{normalized_abi} expects {fixed_arity} ABI payload "
+                    f"argument(s), got {len(node.args)}"
+                ),
+            )
 
-        callee = self.visit(node.func)
-        if callee is None:
-            raise NotImplementedError("Unsupported native callable target")
         args = self._emit_call_args(node.args)
         res = MoltValue(self.next_var(), type_hint="Any")
         metadata: dict[str, Any] = {
             "native_callable_export": qualified_name,
             "native_callable_binding": binding,
-            "native_callable_abi": abi,
+            "native_callable_abi": normalized_abi,
         }
         if isinstance(symbol, str):
             metadata["native_callable_symbol"] = symbol
         self.emit(
             MoltOp(
                 kind="INVOKE_FFI",
-                args=[callee] + args,
+                args=args,
                 result=res,
                 metadata=metadata,
             )

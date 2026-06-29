@@ -1138,6 +1138,46 @@ mod tests {
     }
 
     #[test]
+    fn roundtrip_invoke_ffi_preserves_native_callable_metadata() {
+        let ops = vec![
+            OpIR {
+                kind: "invoke_ffi".to_string(),
+                args: Some(vec!["arg".into()]),
+                out: Some("out".into()),
+                native_callable_export: Some("nativepkg.ndimage.distance_transform_edt".into()),
+                native_callable_binding: Some("direct_symbol".into()),
+                native_callable_symbol: Some(
+                    "molt_nativepkg_ndimage_distance_transform_edt".into(),
+                ),
+                native_callable_abi: Some("molt.object_call_v1".into()),
+                ..OpIR::default()
+            },
+            op_args("ret", &["out"]),
+        ];
+        let result = roundtrip_no_opt(ops);
+        let invoke = result
+            .iter()
+            .find(|op| op.kind == "invoke_ffi")
+            .expect("invoke_ffi must survive SimpleIR/TIR round-trip");
+        assert_eq!(
+            invoke.native_callable_export.as_deref(),
+            Some("nativepkg.ndimage.distance_transform_edt")
+        );
+        assert_eq!(
+            invoke.native_callable_binding.as_deref(),
+            Some("direct_symbol")
+        );
+        assert_eq!(
+            invoke.native_callable_symbol.as_deref(),
+            Some("molt_nativepkg_ndimage_distance_transform_edt")
+        );
+        assert_eq!(
+            invoke.native_callable_abi.as_deref(),
+            Some("molt.object_call_v1")
+        );
+    }
+
+    #[test]
     fn roundtrip_alloc_task_preserves_task_metadata() {
         let ops = vec![
             OpIR {

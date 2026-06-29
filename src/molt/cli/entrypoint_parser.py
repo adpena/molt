@@ -502,8 +502,8 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
     extension_scan_parser = extension_subparsers.add_parser(
         "scan",
         help=(
-            "Scan extension sources for unsupported Py* C-API usage "
-            "against include/molt/Python.h."
+            "Scan extension sources for unsupported C/API usage against "
+            "include/molt/Python.h and include/numpy/."
         ),
     )
     extension_scan_parser.add_argument(
@@ -530,7 +530,7 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
     extension_scan_parser.add_argument(
         "--fail-on-missing",
         action="store_true",
-        help="Return non-zero if unsupported Py* C-API symbols are detected.",
+        help="Return non-zero if unsupported C/API symbols are detected.",
     )
     extension_scan_parser.add_argument(
         "--json", action="store_true", help="Emit JSON output for tooling."

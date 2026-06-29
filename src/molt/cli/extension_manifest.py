@@ -13,12 +13,22 @@ from typing import Any, Mapping
 
 from molt.cli.capability_spec import _split_tokens
 from molt.cli.file_hashing import _sha256_file
+from molt.cli.models import _ExternalNativeCallableExport
+from molt.native_callable_abi import (
+    native_callable_abi_choices,
+    normalize_native_callable_abi,
+)
 
 _ABI_VERSION_RE = re.compile(r"^(\d+)\.(\d+)(?:\.(\d+))?$")
 _MOLT_C_API_VERSION_RE = re.compile(r"^\d+(?:\.\d+){0,2}$")
 _WHEEL_TOKEN_RE = re.compile(r"[^A-Za-z0-9_.]+")
 _WHEEL_VERSION_RE = re.compile(r"[^A-Za-z0-9._]+")
 _PY_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_PYTHON_DOTTED_NAME_RE = re.compile(
+    r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*"
+)
+_PYTHON_IDENTIFIER_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_NATIVE_SYMBOL_RE = re.compile(r"[A-Za-z_.$][A-Za-z0-9_.$@]*")
 _SUPPORTED_PKG_ABI_MAJOR = 0
 _SUPPORTED_PKG_ABI_MINOR = 1
 _SUPPORTED_PKG_ABI = f"{_SUPPORTED_PKG_ABI_MAJOR}.{_SUPPORTED_PKG_ABI_MINOR}"
@@ -116,6 +126,164 @@ def _normalize_effects(value: Any) -> list[str]:
     if isinstance(value, str):
         return _split_tokens(value)
     return []
+
+
+def _manifest_dotted_name_tuple(
+    manifest: Mapping[str, Any],
+    field_name: str,
+    *,
+    package: str,
+    errors: list[str],
+) -> tuple[str, ...]:
+    value = manifest.get(field_name)
+    if value is None:
+        return ()
+    if not isinstance(value, list) or not all(
+        isinstance(item, str) for item in value
+    ):
+        errors.append(
+            f"extension_manifest.json {field_name!r} must be a list of dotted "
+            "Python import names"
+        )
+        return ()
+    out: set[str] = set()
+    for item in value:
+        stripped = item.strip()
+        if not stripped or _PYTHON_DOTTED_NAME_RE.fullmatch(stripped) is None:
+            errors.append(
+                f"extension_manifest.json {field_name!r} contains invalid "
+                f"Python import name {item!r}"
+            )
+            continue
+        if stripped != package and not stripped.startswith(package + "."):
+            errors.append(
+                f"extension_manifest.json {field_name!r} entry {stripped!r} "
+                f"escapes admitted package {package!r}"
+            )
+            continue
+        out.add(stripped)
+    return tuple(sorted(out))
+
+
+def _manifest_callable_exports(
+    manifest: Mapping[str, Any],
+    *,
+    package: str,
+    errors: list[str],
+) -> tuple[_ExternalNativeCallableExport, ...]:
+    value = manifest.get("callable_exports")
+    if value is None:
+        return ()
+    if not isinstance(value, list):
+        errors.append("extension_manifest.json 'callable_exports' must be a list")
+        return ()
+
+    exports: list[_ExternalNativeCallableExport] = []
+    seen: set[str] = set()
+    for index, raw_export in enumerate(value):
+        label = f"callable_exports[{index}]"
+        if not isinstance(raw_export, Mapping):
+            errors.append(f"extension_manifest.json {label} must be an object")
+            continue
+
+        module = raw_export.get("module")
+        name = raw_export.get("name")
+        binding = raw_export.get("binding")
+        abi = raw_export.get("abi")
+        symbol = raw_export.get("symbol")
+        deterministic = raw_export.get("deterministic", False)
+        effects_raw = raw_export.get("effects", [])
+
+        if not isinstance(module, str) or not module.strip():
+            errors.append(f"extension_manifest.json {label}.module must be non-empty")
+            continue
+        module = module.strip()
+        if _PYTHON_DOTTED_NAME_RE.fullmatch(module) is None:
+            errors.append(
+                f"extension_manifest.json {label}.module has invalid dotted name "
+                f"{module!r}"
+            )
+            continue
+        if module != package and not module.startswith(package + "."):
+            errors.append(
+                f"extension_manifest.json {label}.module {module!r} escapes "
+                f"admitted package {package!r}"
+            )
+            continue
+
+        if not isinstance(name, str) or _PYTHON_IDENTIFIER_RE.fullmatch(name) is None:
+            errors.append(
+                f"extension_manifest.json {label}.name must be a Python identifier"
+            )
+            continue
+        if binding not in {"module_attr", "direct_symbol"}:
+            errors.append(
+                f"extension_manifest.json {label}.binding must be "
+                "'module_attr' or 'direct_symbol'"
+            )
+            continue
+        normalized_abi = normalize_native_callable_abi(abi)
+        if normalized_abi is None:
+            errors.append(
+                f"extension_manifest.json {label}.abi must be one of: "
+                f"{native_callable_abi_choices()}"
+            )
+            continue
+
+        normalized_symbol: str | None = None
+        if symbol is not None:
+            if not isinstance(symbol, str) or not symbol.strip():
+                errors.append(
+                    f"extension_manifest.json {label}.symbol must be non-empty "
+                    "when present"
+                )
+                continue
+            normalized_symbol = symbol.strip()
+            if _NATIVE_SYMBOL_RE.fullmatch(normalized_symbol) is None:
+                errors.append(
+                    f"extension_manifest.json {label}.symbol has invalid native "
+                    f"symbol {normalized_symbol!r}"
+                )
+                continue
+        if binding == "direct_symbol" and normalized_symbol is None:
+            errors.append(
+                f"extension_manifest.json {label} direct_symbol binding requires "
+                "symbol"
+            )
+            continue
+
+        if not isinstance(effects_raw, list) or not all(
+            isinstance(effect, str) and effect.strip() for effect in effects_raw
+        ):
+            errors.append(
+                f"extension_manifest.json {label}.effects must be a list of "
+                "non-empty strings"
+            )
+            continue
+        if not isinstance(deterministic, bool):
+            errors.append(
+                f"extension_manifest.json {label}.deterministic must be boolean"
+            )
+            continue
+
+        export = _ExternalNativeCallableExport(
+            module=module,
+            name=name,
+            binding=binding,
+            symbol=normalized_symbol,
+            abi=normalized_abi,
+            effects=tuple(sorted({effect.strip() for effect in effects_raw})),
+            deterministic=deterministic,
+        )
+        if export.qualified_name in seen:
+            errors.append(
+                f"extension_manifest.json {label} duplicates callable export "
+                f"{export.qualified_name!r}"
+            )
+            continue
+        seen.add(export.qualified_name)
+        exports.append(export)
+    return tuple(sorted(exports, key=lambda export: export.qualified_name))
 
 
 def _load_manifest(path: Path) -> dict[str, Any] | None:

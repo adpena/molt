@@ -627,11 +627,11 @@ mod json_parse_tests {
                 "functions": [
                     {
                         "name": "__main__",
-                        "params": ["callee", "arg0"],
+                        "params": ["arg0"],
                         "ops": [
                             {
                                 "kind": "invoke_ffi",
-                                "args": ["callee", "arg0"],
+                                "args": ["arg0"],
                                 "out": "result",
                                 "native_callable_export": "scipy.ndimage.distance_transform_edt",
                                 "native_callable_binding": "direct_symbol",
@@ -690,17 +690,46 @@ mod json_parse_tests {
     }
 
     #[test]
+    fn simple_ir_from_json_str_rejects_unknown_native_callable_abi() {
+        let err = SimpleIR::from_json_str(
+            r#"{
+                "functions": [
+                    {
+                        "name": "__main__",
+                        "params": ["arg0"],
+                        "ops": [
+                            {
+                                "kind": "invoke_ffi",
+                                "args": ["arg0"],
+                                "out": "result",
+                                "native_callable_export": "scipy.ndimage.distance_transform_edt",
+                                "native_callable_binding": "direct_symbol",
+                                "native_callable_symbol": "molt_scipy_ndimage_distance_transform_edt",
+                                "native_callable_abi": "molt.forward_f33_v1"
+                            }
+                        ]
+                    }
+                ]
+            }"#,
+        )
+        .expect_err("native callable ABI tokens must be canonical");
+
+        assert!(err.contains("unknown native_callable_abi `molt.forward_f33_v1`"));
+        assert!(err.contains("molt.object_call_v1, molt.forward_f32_v1"));
+    }
+
+    #[test]
     fn simple_ir_from_json_str_rejects_direct_symbol_without_native_symbol() {
         let err = SimpleIR::from_json_str(
             r#"{
                 "functions": [
                     {
                         "name": "__main__",
-                        "params": ["callee", "arg0"],
+                        "params": ["arg0"],
                         "ops": [
                             {
                                 "kind": "invoke_ffi",
-                                "args": ["callee", "arg0"],
+                                "args": ["arg0"],
                                 "out": "result",
                                 "native_callable_export": "scipy.ndimage.distance_transform_edt",
                                 "native_callable_binding": "direct_symbol",

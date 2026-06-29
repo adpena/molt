@@ -127,8 +127,16 @@ the legacy transport surface has already been normalized into SSA values.
   callable export must carry `native_callable_export`,
   `native_callable_binding`, and `native_callable_abi`; binding must be either
   `module_attr` or `direct_symbol`; `direct_symbol` also requires
-  `native_callable_symbol`. Backends must fail closed if executable ABI dispatch
-  for the declared export is absent.
+  `native_callable_symbol`. `native_callable_abi` must be one of the canonical
+  native callable ABI tokens: `molt.object_call_v1` or `molt.forward_f32_v1`.
+  Native callable identity lives only in those metadata fields; `invoke_ffi.args`
+  contains ABI payload values and must not include a synthesized Python callee.
+  Backends must fail closed if executable ABI dispatch for the declared export
+  is absent. WASM currently executes `direct_symbol`
+  `molt.object_call_v1` through a native import table, and executes
+  `molt.forward_f32_v1` as a unary bytes-backed Float32Array payload import
+  through the same native namespace. Multi-buffer ndarray storage remains a
+  separate ABI contract.
 - `type_hint`, `container_type`, and `param_types` entries must be nonempty and
   must not contain control characters.
 - Every value name in `args` / `var` must be defined by a prior op's `out` or
@@ -279,7 +287,7 @@ Comparisons accept optional `fast_int` / `fast_float`.
 ```json
 {"kind": "call", "s_value": "molt_init___main__", "args": ["v0"], "value": 1, "out": "v3"}
 {"kind": "call_indirect", "args": ["v5", "v6", "v7"], "out": "v8"}
-{"kind": "invoke_ffi", "args": ["v9", "v10"], "out": "v11", "native_callable_export": "scipy.ndimage.distance_transform_edt", "native_callable_binding": "direct_symbol", "native_callable_symbol": "molt_scipy_ndimage_distance_transform_edt", "native_callable_abi": "molt.forward_f32_v1"}
+{"kind": "invoke_ffi", "args": ["v9", "v10"], "out": "v11", "native_callable_export": "scipy.ndimage.distance_transform_edt", "native_callable_binding": "direct_symbol", "native_callable_symbol": "molt_scipy_ndimage_distance_transform_edt", "native_callable_abi": "molt.object_call_v1"}
 ```
 
 ### Exception Handling

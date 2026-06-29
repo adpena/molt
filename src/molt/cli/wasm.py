@@ -16,6 +16,7 @@ from molt._wasm_abi_generated import (
     wasm_import_signature,
     wasm_runtime_callable_result,
     wasm_runtime_callable_spec,
+    wasm_runtime_import_name,
 )
 
 __all__ = (
@@ -147,7 +148,8 @@ def _runtime_import_result_kinds_from_manifest(
 def _runtime_import_signature_from_manifest(
     import_name: str,
 ) -> tuple[tuple[str, ...], tuple[str, ...]] | None:
-    signature = wasm_import_signature(import_name)
+    manifest_import_name = wasm_runtime_import_name(import_name) or import_name
+    signature = wasm_import_signature(manifest_import_name)
     if signature is not None:
         return signature
     spec = wasm_runtime_callable_spec(import_name)
@@ -160,7 +162,8 @@ def _runtime_import_signature_from_manifest(
 
 
 def _runtime_import_result_kind_from_manifest(import_name: str) -> str | None:
-    result_kind = wasm_import_result_kind(import_name)
+    manifest_import_name = wasm_runtime_import_name(import_name) or import_name
+    result_kind = wasm_import_result_kind(manifest_import_name)
     if result_kind is not None:
         return result_kind
     result = wasm_runtime_callable_result(import_name)

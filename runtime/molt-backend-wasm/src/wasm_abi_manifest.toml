@@ -56,6 +56,7 @@ static_type = [
   { params = ["i64", "i64", "i64", "i32", "i64", "i64", "i64"], results = ["i64"] },
   { params = ["i64", "i64", "i64", "i32", "i64", "i64", "i64", "i64"], results = ["i64"] },
   { params = ["i64", "i64", "i64", "i32", "i64", "i64", "i64", "i64", "i64"], results = ["i64"] },
+  { params = ["i64", "i32"], results = ["i32"] },
 ]
 
 non_runtime_callable_intrinsic = [
@@ -1988,6 +1989,14 @@ runtime_name = "molt_sorted_builtin"
 callable_arity = 3
 
 [[import]]
+name = "scratch_alloc"
+type = 2
+
+[[import]]
+name = "scratch_free"
+type = 6
+
+[[import]]
 name = "store_index"
 type = 5
 
@@ -2817,6 +2826,10 @@ type = 9
 [[import]]
 name = "bytes_from_bytes"
 type = 19
+
+[[import]]
+name = "bytes_as_ptr"
+type = 51
 
 [[import]]
 name = "bytes_from_obj"

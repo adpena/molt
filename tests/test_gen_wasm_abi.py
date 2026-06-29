@@ -29,10 +29,6 @@ def _load_gen_wasm_abi():
     return module
 
 
-def _raw_manifest(gen) -> dict:
-    return tomllib.loads(gen.MANIFEST.read_text(encoding="utf-8"))
-
-
 def _rendered_rs(gen, data) -> str:
     return "".join(gen.render_rs_modules(data).values())
 
@@ -135,63 +131,33 @@ def test_wasm_abi_manifest_owns_runtime_export_policy() -> None:
     }
 
     rendered_py = gen.render_py(data)
-    rendered_modules = gen.render_rs_modules(data)
-    rendered_rs = "".join(rendered_modules.values())
-    import_metadata = rendered_modules["import_metadata.rs"]
-    import_queries = rendered_modules["import_queries.rs"]
-    import_specs = rendered_modules["import_specs.rs"]
-    import_tokens = rendered_modules["import_tokens.rs"]
+    rendered_rs = _rendered_rs(gen, data)
     assert "GPU_INTRINSIC_MANIFEST_NAMES" in rendered_rs
     assert "WASM_GPU_INTRINSIC_MANIFEST_NAMES" in rendered_py
     assert "WASM_RUNTIME_HOST_EXPORTS" in rendered_py
     assert "WASM_RUNTIME_IMPORT_FALLBACK_EXPORTS" in rendered_py
     assert "WASM_RUNTIME_IMPORT_FALLBACK_SPECS" in rendered_py
-    assert "WASM_IMPORT_SPECS" in rendered_py
-    assert "WASM_RUNTIME_IMPORT_EXPORT_NAMES" not in rendered_py
+    assert "WASM_RUNTIME_IMPORT_EXPORT_NAMES" in rendered_py
     assert "WASM_RUNTIME_EXPORT_BY_IMPORT" in rendered_py
     assert "WASM_RUNTIME_IMPORT_BY_EXPORT" in rendered_py
     assert "def wasm_runtime_import_name" in rendered_py
     assert "def wasm_runtime_export_name" in rendered_py
-    assert "('alloc', None, 'molt_alloc'" in rendered_py
-    assert "('runtime_init', 'molt_runtime_init', 'molt_runtime_init'" in rendered_py
+    assert '("alloc", "molt_alloc")' in rendered_py
+    assert '("runtime_init", "molt_runtime_init")' in rendered_py
+    assert '("runtime_shutdown", "molt_runtime_shutdown")' in rendered_py
+    assert '("socket_drop", "molt_socket_drop")' in rendered_py
+    assert "runtime_export_name" in rendered_rs
+    assert 'Self::Alloc => "molt_alloc"' in rendered_rs
+    assert 'Self::RuntimeInit => "molt_runtime_init"' in rendered_rs
     assert (
-        "('runtime_shutdown', 'molt_runtime_shutdown', 'molt_runtime_shutdown'"
-        in rendered_py
+        '"molt_runtime_init" => Some(WasmRuntimeImport::RuntimeInit)'
+        in rendered_rs
     )
-    assert "('socket_drop', 'molt_socket_drop', 'molt_socket_drop'" in rendered_py
-    assert "import_registry.rs" not in rendered_modules
-    assert "#[repr(usize)]" in import_tokens
-    assert "runtime_name: Option<&'static str>" in import_specs
-    assert "runtime_export_name: &'static str" in import_specs
-    assert "pub(crate) fn runtime_import_spec" in import_specs
-    assert "let spec = &IMPORT_REGISTRY[import as usize]" in import_specs
-    assert "debug_assert_eq!(spec.import, import)" in import_specs
-    assert 'name: "alloc"' in import_specs
-    assert "runtime_name: None" in import_specs
-    assert 'runtime_export_name: "molt_alloc"' in import_specs
-    assert 'name: "runtime_init"' in import_specs
-    assert 'runtime_name: Some("molt_runtime_init")' in import_specs
-    assert 'runtime_export_name: "molt_runtime_init"' in import_specs
-    assert 'name: "runtime_shutdown"' in import_specs
-    assert 'runtime_name: Some("molt_runtime_shutdown")' in import_specs
-    assert 'runtime_export_name: "molt_runtime_shutdown"' in import_specs
-    assert 'name: "socket_drop"' in import_specs
-    assert 'runtime_name: Some("molt_socket_drop")' in import_specs
-    assert 'runtime_export_name: "molt_socket_drop"' in import_specs
-    assert "pub(crate) fn wasm_runtime_import" in import_queries
-    assert "spec.name == name || spec.runtime_name == Some(name)" in import_queries
-    assert '"molt_alloc" => Some(WasmRuntimeImport::Alloc)' not in import_queries
-    assert '"molt_runtime_init" => Some(WasmRuntimeImport::RuntimeInit)' not in import_queries
     assert (
         '"molt_runtime_shutdown" => Some(WasmRuntimeImport::RuntimeShutdown)'
-        not in import_queries
+        in rendered_rs
     )
-    assert "runtime_import_spec(self).name" in import_metadata
-    assert "runtime_import_spec(self).runtime_export_name" in import_metadata
-    assert "runtime_import_spec(self).type_idx" in import_metadata
-    assert 'Self::Alloc => "molt_alloc"' not in import_metadata
-    assert 'Self::RuntimeInit => "molt_runtime_init"' not in import_metadata
-    assert 'Self::SocketDrop => "molt_socket_drop"' not in import_metadata
+    assert 'Self::SocketDrop => "molt_socket_drop"' in rendered_rs
 
 
 def test_wasm_abi_manifest_owns_pure_profile_prefixes() -> None:
@@ -207,7 +173,6 @@ def test_wasm_abi_manifest_owns_pure_profile_prefixes() -> None:
 def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
     gen = _load_gen_wasm_abi()
     data = gen.load_manifest()
-    assert "runtime_feature" not in gen.MANIFEST.read_text(encoding="utf-8")
     imports = {entry["name"]: entry for entry in data["import"]}
 
     assert imports["importlib_import_transaction"]["type"] == 12
@@ -302,11 +267,6 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
         "molt_thread_current_native_id"
     )
     assert imports["thread_current_native_id"]["callable_arity"] == 0
-    assert imports["stream_drop"].get("runtime_feature") is None
-    assert imports["asyncio_future_drop"]["runtime_feature"] == "stdlib_asyncio"
-    assert imports["pipe_transport_drop"]["runtime_feature"] == "stdlib_asyncio"
-    assert imports["email_message_drop"]["runtime_feature"] == "stdlib_email"
-    assert imports["xml_element_drop"]["runtime_feature"] == "stdlib_xml"
     dual_use_reserved_imports = {"object_new_bound"}
     for reserved in data["reserved_runtime_callable"]:
         if reserved["import_name"] in dual_use_reserved_imports:
@@ -317,45 +277,22 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
         else:
             assert reserved["import_name"] not in imports
 
-    rendered_modules = gen.render_rs_modules(data)
-    rendered_rs = "".join(rendered_modules.values())
-    import_specs = rendered_modules["import_specs.rs"]
-    runtime_callable_queries = rendered_modules["runtime_callable_queries.rs"]
+    rendered_rs = _rendered_rs(gen, data)
     rendered_runtime_rs = gen.render_runtime_callables_rs(data)
     rendered_py = gen.render_py(data)
-    assert "runtime_callable_imports.rs" not in rendered_modules
-    assert "RUNTIME_CALLABLE_IMPORTS" not in rendered_rs
-    assert "runtime_callables.rs" not in rendered_modules
-    assert "callable_arity: Option<usize>" in import_specs
-    assert "callable_result: Option<RuntimeCallableResult>" in import_specs
-    assert "pub(crate) fn runtime_callable_imports" in import_specs
-    assert "RuntimeCallableResult::Void" in import_specs
+    assert "RUNTIME_CALLABLE_IMPORTS" in rendered_rs
+    assert "use super::imports::WasmRuntimeImport;" in rendered_rs
+    assert "import: WasmRuntimeImport::ImportlibImportTransaction" in rendered_rs
+    assert "pub(crate) fn runtime_callable_import" in rendered_rs
+    assert '"molt_importlib_import_transaction" => Some(WasmRuntimeImport::ImportlibImportTransaction)' in rendered_rs
     assert (
-        "import: WasmRuntimeImport::ImportlibImportTransaction"
-        in import_specs
-    )
-    assert "pub(crate) fn runtime_callable_import" in runtime_callable_queries
-    assert (
-        ".find(|spec| spec.runtime_name == Some(runtime_name))"
-        in runtime_callable_queries
-    )
-    assert "=> Some(WasmRuntimeImport::ImportlibImportTransaction)" not in (
-        runtime_callable_queries
-    )
-    assert 'runtime_name: Some("molt_importlib_import_transaction")' in (
-        import_specs
-    )
-    assert (
-        "import: WasmRuntimeImport::ImportlibImportTransaction"
-        in import_specs
-    )
-    assert 'runtime_name: Some("molt_socket_drop")' in import_specs
-    assert "import: WasmRuntimeImport::SocketDrop" in import_specs
+        '"socket_drop" => Some(WasmRuntimeImport::SocketDrop),\n'
+        '        "molt_socket_drop" => Some(WasmRuntimeImport::SocketDrop),'
+    ) in rendered_rs
     assert "runtime_callable_import_name" not in rendered_rs
     assert "WASM_RUNTIME_CALLABLE_IMPORT_BY_RUNTIME" in rendered_py
     assert "WASM_RUNTIME_CALLABLE_IMPORT_BY_IMPORT" in rendered_py
     assert "WASM_RUNTIME_CALLABLE_ARITY_BY_RUNTIME" in rendered_py
-    assert "WASM_RUNTIME_CALLABLE_IMPORTS" not in rendered_py
     assert "WASM_RESERVED_RUNTIME_CALLABLE_ARITY_BY_RUNTIME" in rendered_py
     assert "WASM_RESERVED_RUNTIME_CALLABLE_IMPORTS" not in rendered_py
     assert "WASM_RUNTIME_CALLABLE_LOOKUP_ROWS" not in rendered_py
@@ -370,9 +307,6 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
     assert "runtime_callable_key_from_symbol_name" in rendered_runtime_rs
     assert "runtime_callable_target_ptr" in rendered_runtime_rs
     assert "runtime_callable_returns_void_from_target_ptr" in rendered_runtime_rs
-    assert "RUNTIME_VOID_CALLABLE_NAMES" not in rendered_runtime_rs
-    assert "VOID_CALLABLE_TARGETS" not in rendered_runtime_rs
-    assert "crate::intrinsics::resolve_symbol" not in rendered_runtime_rs
     void_runtime_names = {
         entry["runtime_name"]
         for entry in data["import"]
@@ -380,16 +314,12 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
     }
     assert "molt_asyncio_future_drop" in void_runtime_names
     for runtime_name in sorted(void_runtime_names):
-        assert f"fn_addr!(crate::{runtime_name})" in rendered_runtime_rs
-    assert '#[cfg(feature = "stdlib_asyncio")]' in rendered_runtime_rs
-    assert '#[cfg(feature = "stdlib_email")]' in rendered_runtime_rs
-    assert '#[cfg(feature = "stdlib_xml")]' in rendered_runtime_rs
+        assert f'"{runtime_name}",' in rendered_runtime_rs
     assert "fn_addr!(molt_xml_element_drop)" not in rendered_runtime_rs
     assert "RUNTIME_POLL_CALLABLE_KEY_BASE" in rendered_runtime_rs
     assert '"molt_type_call" => Some(RUNTIME_CALLABLE_KEY_BASE + 0)' in rendered_runtime_rs
     assert '"type_call" => Some(WasmRuntimeImport::TypeCall)' not in rendered_rs
-    assert "import: WasmRuntimeImport::ObjectNewBound" in import_specs
-    assert 'name: "object_new_bound"' in import_specs
+    assert '"object_new_bound" => Some(WasmRuntimeImport::ObjectNewBound)' in rendered_rs
     assert "1 => Some(crate::molt_async_sleep_poll as *const ())" in rendered_runtime_rs
 
     wasm_abi = (
@@ -416,7 +346,7 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
 
 def test_wasm_abi_reserved_runtime_callable_import_names_are_fail_closed() -> None:
     gen = _load_gen_wasm_abi()
-    data = _raw_manifest(gen)
+    data = gen.load_manifest()
 
     broken = copy.deepcopy(data)
     broken["import"].append({"name": "type_call", "type": 2})
@@ -464,7 +394,7 @@ def test_wasm_abi_reserved_runtime_callable_import_names_are_fail_closed() -> No
 
 def test_wasm_abi_runtime_import_aliases_are_unambiguous() -> None:
     gen = _load_gen_wasm_abi()
-    data = _raw_manifest(gen)
+    data = gen.load_manifest()
 
     broken = copy.deepcopy(data)
     broken["import"].append({"name": "molt_socket_drop", "type": 2})
@@ -1062,7 +992,7 @@ def test_wasm_abi_manifest_owns_split_runtime_table_prefix() -> None:
     assert poll_slots["async_sleep_poll"] == 1
     assert poll_slots["contextlib_async_exitstack_enter_context_poll"] == 32
     assert sorted(poll_slots.values()) == list(range(1, len(poll_slots) + 1))
-    broken = tomllib.loads(gen.MANIFEST.read_text(encoding="utf-8"))
+    broken = copy.deepcopy(data)
     for entry in broken["import"]:
         if entry.get("name") == "contextlib_async_exitstack_enter_context_poll":
             entry["poll_table_slot"] = 34
@@ -1080,31 +1010,17 @@ def test_wasm_abi_manifest_owns_split_runtime_table_prefix() -> None:
     assert reserved[-1]["runtime_name"] == "molt_types_new_class"
     assert [entry["index"] for entry in reserved] == list(range(len(reserved)))
 
-    rendered_modules = gen.render_rs_modules(data)
-    rendered_rs = "".join(rendered_modules.values())
-    import_specs = rendered_modules["import_specs.rs"]
+    rendered_rs = _rendered_rs(gen, data)
     rendered_py = gen.render_py(data)
     rendered_table_layout = gen.render_table_layout_inc(data)
-    assert "poll_table_imports.rs" not in rendered_modules
-    assert "runtime_callables.rs" not in rendered_modules
-    assert "PollTableImportSpec" not in rendered_rs
-    assert "POLL_TABLE_IMPORTS" not in rendered_rs
-    assert "poll_table_slot: Option<u32>" in import_specs
-    assert "POLL_TABLE_IMPORT_SLOT_MAX: u32 = 32" in import_specs
-    assert "pub(crate) fn poll_table_imports" in import_specs
-    assert "pub(crate) fn poll_table_import_slot" not in import_specs
-    assert "fn poll_table_import_at_slot" in import_specs
-    assert "filter_map(poll_table_import_at_slot)" in import_specs
-    assert "import: WasmRuntimeImport::AsyncSleepPoll" in import_specs
-    assert "poll_table_slot: Some(32)" in import_specs
-    assert "import: WasmRuntimeImport::ContextlibAsyncExitstackEnterContextPoll" in import_specs
-    assert ".find(|spec| spec.import == import)" not in import_specs
-    assert "WasmRuntimeImport::ContextlibAsyncExitstackEnterContextPoll => Some(32)" not in rendered_rs
+    assert "PollTableImportSpec" in rendered_rs
+    assert "POLL_TABLE_IMPORTS" in rendered_rs
+    assert "import: WasmRuntimeImport::AsyncSleepPoll" in rendered_rs
+    assert "pub(crate) const fn poll_table_import_slot" in rendered_rs
+    assert "WasmRuntimeImport::ContextlibAsyncExitstackEnterContextPoll => Some(32)" in rendered_rs
     assert "POLL_TABLE_FUNCS" not in rendered_rs
-    assert "WASM_POLL_TABLE_IMPORTS" not in rendered_py
-    assert "for _name, _runtime_name, _runtime_export_name, _type_idx, poll_table_slot" in rendered_py
-    assert "if poll_table_slot is not None" in rendered_py
-    assert "('contextlib_async_exitstack_enter_context_poll', None," in rendered_py
+    assert "WASM_POLL_TABLE_IMPORTS: tuple[tuple[int, str], ...]" in rendered_py
+    assert '(32, "contextlib_async_exitstack_enter_context_poll")' in rendered_py
     assert "WASM_LEGACY_TABLE_BASE" in rendered_py
     table_ref_export_prefix = data["table_layout"]["table_ref_export_prefix"]
     assert table_ref_export_prefix

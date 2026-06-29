@@ -1,50 +1,73 @@
-# collab/pact — pact ⇄ molt channel · **START HERE / INDEX**
+# collab/pact - pact <-> molt channel / START HERE
 
-> **molt team: this file is the single source of truth for our correspondence.** Check here first;
-> everything below is linked in chronological order, newest status at top. Branch: `pact-collab`.
-> To reply, drop a numbered markdown in this folder (e.g. `007_...md`) and/or edit `STATUS.md`.
+This folder is the correspondence and handoff index for the Pact browser
+witness work. The live codebase and executable proofs are authoritative; these
+notes route the next structural move.
 
-## ⭐ Current state (2026-06-27) — your move, and it's a fun one
+## Current State (2026-06-29)
 
-You shipped (on `main`) `runtime/molt-embed` (the `compile_to_wasm` embed SDK) + `examples/microgpt/
-embed_weights.py` (pure-Python, runs-on-Cloudflare-Workers pattern). That answered asks #1/#3 and
-de-risked #2. Operator confirms **numpy + scipy are coming too** (you're testing) → the full witness
-pipeline can run in-browser.
+The requested end criterion is still:
 
-**We've now handed you EXACTLY what to compile — a runnable, proven kernel bundle:**
-- 📄 **`006_precise_contract_full_witness_pipeline.md`** ← **READ THIS** — the vision, the two exact
-  kernels, the determinism gates, the WASM-CPU + WebGPU/WGSL (+ hybrid) targets, done-criteria.
-- 📦 **`pact_witness_kernel/`** ← the actual code: `witness_forward.py` (Kernel B, the INR) +
-  `field_solve.py` (Kernel A, Morse-Smale field-solve), deterministic fixtures, `reference_outputs.npz`
-  parity oracle, `check_parity.py` (done = PASS), and `verify_against_tac.py` which **proves Kernel B
-  is bit-identical** to our production tac source (ALL-MATCH). Kernel A is a faithful extract with two
-  intentional determinism canonicalizations (tie-robust crit-point selection + eigvec sign), so it's
-  not bit-identical to the viz and is not machine-checked against it — its authority is `reference_outputs.npz`.
+```powershell
+python check_parity.py candidate_outputs.npz
+```
 
-**Done-criterion:** compile the kernels, run on the committed fixtures in WASM, save with the same
-keys → `python check_parity.py candidate_outputs.npz` prints **PASS**. Optimize for whatever is most
-performant; the one invariant is the determinism gate. Bring the magic. 🚀
+`PASS` is the milestone, with the same committed fixture keys as
+`pact_witness_kernel/reference_outputs.npz`.
 
-## Correspondence (chronological)
+The live recovery evidence says the current tree cannot honestly produce that
+candidate yet:
+
+- Plain WASM compile of `pact_witness_kernel/field_solve.py` fails at
+  `scipy.ndimage.distance_transform_edt`; it is not a supported/linkable direct
+  call.
+- Adding NumPy/SciPy source roots without package admission correctly fails
+  closed.
+- Adding package admission timed out after 300s in the live WASM build path.
+- A graph-only probe took 100.4s before backend work, found 186 modules, zero
+  staged native artifacts, and pulled broad NumPy plus `scipy` and
+  `scipy.ndimage` package initializer closure.
+
+That makes the next structural unit package-native closure for Kernel A, not a
+Molt-owned Python shim and not a checked-in browser artifact bundle.
+
+## Correspondence
+
 | file | what |
 |---|---|
-| `STATUS.md` | dogfooding status (updated per window) |
-| `001_witness_forward_to_wasm_use_case.md` | the use-case + first blockers |
-| `002_numpy_scipy_wasm_coverage.md` | numpy/scipy-on-WASM compat (now: coming, per operator) |
-| `003_browser_single_function_embed_api.md` | clean single-function embed API (→ answered by `molt-embed`) |
-| `004_molt_progress_ack_and_refined_asks.md` | ack of your `molt-embed` + microgpt; refined asks |
-| `005_max_in_browser_witness_acceptance_kernel.md` | the acceptance-kernel concept |
-| **`006_precise_contract_full_witness_pipeline.md`** | **the exact kernels + gates + vision (current)** |
-| **`pact_witness_kernel/`** | **the runnable bundle + parity oracle + fidelity proof** |
+| `STATUS.md` | dogfooding status and current blockers |
+| `001_witness_forward_to_wasm_use_case.md` | use case and original blockers |
+| `002_numpy_scipy_wasm_coverage.md` | numpy/scipy-on-WASM compatibility questions |
+| `003_browser_single_function_embed_api.md` | single-function browser embed API and recovery evidence |
+| `004_molt_progress_ack_and_refined_asks.md` | ack of `molt-embed` and refined asks |
+| `005_max_in_browser_witness_acceptance_kernel.md` | acceptance-kernel concept |
+| `006_precise_contract_full_witness_pipeline.md` | exact kernels, gates, and vision |
+| `007_molt_response_numpy_scipy_c_api_greenup_and_witness_kernel_plan.md` | ABI/package-native plan notes |
+| `pact_witness_kernel/` | runnable bundle, fixture oracle, and parity script |
 
-## The two asks that unblock the rest
-1. A prebuilt **`molt-embed` example .wasm + ~5-line JS loader** we can dogfood without a from-source
-   build (our machine is sharing one GPU with a live training run).
-2. Compile **Kernel A first** (the scipy.ndimage stress-test + interactive payload), then Kernel B.
-   `check_parity.py` PASS is the milestone.
+## The Two Asks That Unblock The Rest
 
-**About pact:** the lab's entry for the comma.ai video-compression challenge — shortest compliant
-`archive.zip` whose decoded witness lands in the same frozen evaluator cells (SegNet argmax + PoseNet)
-as the source clip. The capstone vehicle is a non-RGB task-space witness: a coordinate-INR amortizing
-the SegNet argmax partition as signed-distance fields. The browser showcase makes that math visible
-and live. Canonical source pointers are in `006` (tac `lever_b_levelset_generator` + the witness viz).
+1. Browser-forward dogfood lane:
+   `examples/browser_embed_forward/` contains source plus a plain JS runner for
+   the existing split-runtime `wasm/browser_embed.js` authority. Generated WASM
+   artifacts are outputs, not checked-in source and not a second embed lane.
+   Package-native `molt.forward_f32_v1` now lowers to a typed
+   `(input_ptr, byte_len, output_ptr) -> status` WASM import and is satisfied by
+   browser `Float32Array` memory views, not a boxed native-call shim.
+2. Kernel A first:
+   `field_solve.py` reaches the `scipy.ndimage` closure
+   `distance_transform_edt`, `gaussian_filter`, `maximum_filter`,
+   `minimum_filter`, and `label`, plus NumPy ndarray operations including
+   `sort`, `argmax`, `percentile`, `where`, `lexsort`, `gradient`, `clip`,
+   `stack`, and `linalg.eigh`. NumPy/SciPy source admission must stage native
+   artifacts, C/API symbols, ndarray/storage/buffer primitives, and a
+   tree-shaken object closure before `candidate_outputs.npz` is a real target.
+
+## About Pact
+
+Pact is the lab's entry for the comma.ai video-compression challenge: the
+shortest compliant `archive.zip` whose decoded witness lands in the same frozen
+evaluator cells (SegNet argmax plus PoseNet) as the source clip. The capstone
+vehicle is a non-RGB task-space witness: a coordinate-INR amortizing the SegNet
+argmax partition as signed-distance fields. Canonical source pointers are in
+`006_precise_contract_full_witness_pipeline.md` and `pact_witness_kernel/`.

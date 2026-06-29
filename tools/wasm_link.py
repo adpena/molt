@@ -1125,7 +1125,12 @@ def _run_wasm_ld(
     split_runtime: bool = False,
     split_output_dir: Path | None = None,
     deploy_runtime_override: Path | None = None,
+    native_objects: Sequence[Path] = (),
 ) -> int:
+    for native_object in native_objects:
+        if not native_object.exists():
+            print(f"Native WASM link input not found: {native_object}", file=sys.stderr)
+            return 1
     try:
         runtime_exports = _collect_exports(runtime.read_bytes())
     except ValueError as exc:
@@ -1311,6 +1316,20 @@ def _run_wasm_ld(
         str(rewritten_path),
         str(link_runtime_path),
     ]
+    cmd.extend(str(native_object) for native_object in native_objects)
+
+    split_native_app_path: Path | None = None
+    split_native_app_cmd: list[str] | None = None
+    if split_runtime and native_objects:
+        split_native_app_path = Path(temp_dir.name) / "app_native_linked.wasm"
+        split_native_app_cmd = [
+            *cmd[: cmd.index("-o")],
+            "-o",
+            str(split_native_app_path),
+            str(rewritten_path),
+            *(str(native_object) for native_object in native_objects),
+        ]
+
     res = _run_external_tool(cmd, capture_output=True, text=True)
     try:
         if res.returncode != 0:
@@ -1544,20 +1563,61 @@ def _run_wasm_ld(
             rt_stage = artifact_publish.staged_output_path(rt_wasm)
             staged_outputs.extend([app_stage, rt_stage])
 
-            # For split-runtime, the app artifact must remain unlinked while
-            # preserving the runtime ABI rewrite performed earlier in the link
-            # pipeline.  Copying the fully linked binary here collapses the
-            # split contract, while copying the raw frontend output would leave
-            # stale unprefixed runtime imports that do not match the deploy
-            # runtime's export ABI.  The correct artifact is the rewritten,
-            # still-unlinked module.
-            rewritten_data = rewritten_path.read_bytes()
+            if split_native_app_cmd is not None:
+                assert split_native_app_path is not None
+                split_native_res = _run_external_tool(
+                    split_native_app_cmd,
+                    capture_output=True,
+                    text=True,
+                )
+                if split_native_res.returncode != 0:
+                    err = (
+                        split_native_res.stderr.strip()
+                        or split_native_res.stdout.strip()
+                    )
+                    if err:
+                        print(err, file=sys.stderr)
+                    return split_native_res.returncode
+                if not split_native_app_path.exists():
+                    print(
+                        "wasm-ld exited successfully but produced no split app "
+                        f"native-linked output: {split_native_app_path}",
+                        file=sys.stderr,
+                    )
+                    return 1
+                rewritten_data = _read_wasm_bytes_with_retry(split_native_app_path)
+                if not _is_wasm_binary(rewritten_data):
+                    print(
+                        "wasm-ld produced non-wasm split app native-linked output "
+                        f"({split_native_app_path}, size={len(rewritten_data)} bytes)",
+                        file=sys.stderr,
+                    )
+                    return 1
+            else:
+                # For split-runtime without external native objects, the app
+                # artifact must remain unlinked while preserving the runtime ABI
+                # rewrite performed earlier in the link pipeline. Copying the
+                # fully linked binary here collapses the split contract, while
+                # copying the raw frontend output would leave stale unprefixed
+                # runtime imports that do not match the deploy runtime's export
+                # ABI. The correct artifact is the rewritten, still-unlinked
+                # module.
+                rewritten_data = rewritten_path.read_bytes()
             optimized_app = _optimize_split_app_module(
                 rewritten_data,
                 reference_data=output.read_bytes(),
                 optimize=optimize,
                 optimize_level=optimize_level,
             )
+            if native_objects:
+                native_imports = _collect_module_imports(optimized_app, "molt_native")
+                if native_imports:
+                    print(
+                        "Split-runtime native link left unresolved molt_native "
+                        "import(s): " + ", ".join(sorted(native_imports)),
+                        file=sys.stderr,
+                    )
+                    return 1
             app_stage.write_bytes(optimized_app)
 
             # Resolve the deploy-ready (non-relocatable) runtime.
@@ -1772,6 +1832,14 @@ def main() -> int:
         dest="deploy_runtime_override",
         help="Override the deploy runtime wasm path (non-relocatable variant)",
     )
+    parser.add_argument(
+        "--native-object",
+        type=Path,
+        action="append",
+        default=[],
+        dest="native_objects",
+        help="Validated external static package WASM object/archive input",
+    )
     args = parser.parse_args()
 
     runtime = args.runtime
@@ -1806,6 +1874,7 @@ def main() -> int:
         split_runtime=args.split_runtime,
         split_output_dir=args.split_output_dir,
         deploy_runtime_override=args.deploy_runtime_override,
+        native_objects=tuple(args.native_objects),
     )
 
 

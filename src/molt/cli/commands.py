@@ -54,6 +54,8 @@ from molt.cli.extension_manifest import (
     _default_molt_c_api_version,
     _extension_binary_suffix,
     _host_target_triple,
+    _manifest_callable_exports,
+    _manifest_dotted_name_tuple,
     _module_parts,
     _normalize_effects,
     _wheel_record_line,
@@ -1541,6 +1543,48 @@ def profile(
     )
 
 
+def _extension_export_package(module_parts: list[str]) -> str:
+    return module_parts[0]
+
+
+def _extension_export_config_errors(errors: list[str]) -> list[str]:
+    return [
+        error.replace("extension_manifest.json", "tool.molt.extension", 1)
+        for error in errors
+    ]
+
+
+def _extension_manifest_public_exports(
+    extension_meta: Mapping[str, Any],
+    *,
+    package: str,
+    errors: list[str],
+) -> tuple[list[str], list[dict[str, Any]]]:
+    export_manifest = {
+        "python_exports": extension_meta.get("python_exports")
+        or extension_meta.get("python-exports"),
+        "callable_exports": extension_meta.get("callable_exports")
+        or extension_meta.get("callable-exports"),
+    }
+    export_errors: list[str] = []
+    python_exports = _manifest_dotted_name_tuple(
+        export_manifest,
+        "python_exports",
+        package=package,
+        errors=export_errors,
+    )
+    callable_exports = _manifest_callable_exports(
+        export_manifest,
+        package=package,
+        errors=export_errors,
+    )
+    errors.extend(_extension_export_config_errors(export_errors))
+    return (
+        list(python_exports),
+        [export.digest_payload() for export in callable_exports],
+    )
+
+
 def extension_build(
     project: str | None = None,
     out_dir: str | None = None,
@@ -1694,6 +1738,11 @@ def extension_build(
         else:
             capabilities_list = spec.capabilities or []
             capability_profiles = spec.profiles
+    python_exports, callable_exports = _extension_manifest_public_exports(
+        extension_meta,
+        package=_extension_export_package(module_parts),
+        errors=errors,
+    )
 
     cwd_root = _find_project_root(Path.cwd())
     molt_root = _find_molt_root(project_root, cwd_root)
@@ -1923,6 +1972,10 @@ def extension_build(
                 "extra_link_args": link_args,
             },
         }
+        if python_exports:
+            manifest_payload["python_exports"] = python_exports
+        if callable_exports:
+            manifest_payload["callable_exports"] = callable_exports
         manifest_bytes = (
             json.dumps(manifest_payload, sort_keys=True, indent=2).encode("utf-8")
             + b"\n"

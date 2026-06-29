@@ -462,9 +462,14 @@ def _materialize_import_plan(
     namespace_module_names = support_modules.namespace_module_names
     generated_module_source_paths = dict(support_modules.generated_module_source_paths)
     source_modules = frozenset(module_graph)
+    native_artifact_reachable_imports = (
+        set(module_graph)
+        | set(prepared_module_graph.explicit_imports)
+        | set(prepared_module_graph.runtime_import_dispatch_roots)
+    )
     native_artifact_plan = (
         prepared_module_graph.native_artifact_plan.with_reachable_imports(
-            prepared_module_graph.explicit_imports
+            native_artifact_reachable_imports
         )
     )
     native_artifact_modules = native_artifact_plan.native_module_names()

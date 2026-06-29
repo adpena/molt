@@ -5,10 +5,18 @@ use super::site::{
 };
 use super::{CallOpContext, CallOpEmission};
 use crate::OpIR;
+use crate::native_callable_abi::NativeCallableAbi;
+use crate::wasm::WasmFrameLocals;
 use crate::wasm::WasmFrameSyntheticLocal;
+use crate::wasm::module_abi::WasmNativeCallableImport;
+use crate::wasm_abi_generated::WasmRuntimeImport;
 use crate::wasm_binary::{emit_call, emit_table_index_i64};
+use crate::wasm_import_tracking::TrackedImportIds;
 use crate::wasm_values::box_bool;
-use wasm_encoder::{BlockType, Function, Instruction};
+use wasm_encoder::{BlockType, Function, Instruction, MemArg};
+
+const WASM_I64_LOAD_ALIGN: u32 = 3;
+const NATIVE_FORWARD_F32_LEN_SLOT_BYTES: i64 = 8;
 
 pub(super) fn emit_dynamic_call_op(
     call_ctx: &mut CallOpContext<'_, '_, '_>,
@@ -308,15 +316,44 @@ pub(super) fn emit_dynamic_call_op(
         }
         "invoke_ffi" => {
             if let Some(export_name) = op.native_callable_export.as_deref() {
-                let binding = op.native_callable_binding.as_deref().unwrap_or("<missing>");
-                let abi = op.native_callable_abi.as_deref().unwrap_or("<missing>");
-                let symbol = op
-                    .native_callable_symbol
-                    .as_deref()
-                    .unwrap_or("<module-attr>");
-                panic!(
-                    "native callable export `{export_name}` reached wasm backend without executable native ABI dispatch table: binding={binding} abi={abi} symbol={symbol}"
+                let native_import = call_ctx.native_callable_imports.required(export_name);
+                native_import.assert_matches_op(op);
+                let args_names = op.args.as_ref().unwrap();
+                let arity = args_names.len();
+                if arity != native_import.arity {
+                    panic!(
+                        "native callable export `{export_name}` wasm call arity drifted: op arity={arity}, import arity={}",
+                        native_import.arity
+                    );
+                }
+                let live_object_locals = collect_live_object_locals_for_call(
+                    locals,
+                    last_use_local,
+                    rel_idx,
+                    op.out.as_ref(),
                 );
+                retain_live_object_locals(func, import_ids, reloc_enabled, &live_object_locals);
+                let out = locals[op.out.as_ref().unwrap()];
+                if native_import.abi_contract == NativeCallableAbi::ForwardF32V1 {
+                    emit_forward_f32_native_call(
+                        func,
+                        import_ids,
+                        reloc_enabled,
+                        locals,
+                        args_names,
+                        out,
+                        native_import,
+                    );
+                } else {
+                    for arg_name in args_names {
+                        let arg = locals[arg_name];
+                        func.instruction(&Instruction::LocalGet(arg));
+                    }
+                    emit_call(func, reloc_enabled, native_import.function_index);
+                    func.instruction(&Instruction::LocalSet(out));
+                }
+                release_live_object_locals(func, import_ids, reloc_enabled, &live_object_locals);
+                return CallOpEmission::Handled;
             }
             let args_names = op.args.as_ref().unwrap();
             let live_object_locals = collect_live_object_locals_for_call(
@@ -521,4 +558,134 @@ pub(super) fn emit_dynamic_call_op(
     }
 
     CallOpEmission::Handled
+}
+
+fn emit_forward_f32_native_call(
+    func: &mut Function,
+    import_ids: &TrackedImportIds,
+    reloc_enabled: bool,
+    locals: &WasmFrameLocals,
+    args_names: &[String],
+    out: u32,
+    native_import: &WasmNativeCallableImport,
+) {
+    let input_bits = locals[&args_names[0]];
+    let input_ptr = locals.synthetic(WasmFrameSyntheticLocal::WasmTmp0);
+    let input_len = locals.synthetic(WasmFrameSyntheticLocal::MoltTmp0);
+    let output_ptr = locals.synthetic(WasmFrameSyntheticLocal::MoltTmp1);
+    let scratch_slot = locals.synthetic(WasmFrameSyntheticLocal::MoltTmp2);
+
+    func.instruction(&Instruction::I64Const(NATIVE_FORWARD_F32_LEN_SLOT_BYTES));
+    emit_call(
+        func,
+        reloc_enabled,
+        import_ids[WasmRuntimeImport::ScratchAlloc],
+    );
+    func.instruction(&Instruction::LocalSet(scratch_slot));
+
+    func.instruction(&Instruction::LocalGet(scratch_slot));
+    func.instruction(&Instruction::I64Eqz);
+    func.instruction(&Instruction::If(BlockType::Empty));
+    emit_null_native_forward_result(func, out);
+    func.instruction(&Instruction::Else);
+
+    func.instruction(&Instruction::LocalGet(input_bits));
+    func.instruction(&Instruction::LocalGet(scratch_slot));
+    func.instruction(&Instruction::I32WrapI64);
+    emit_call(
+        func,
+        reloc_enabled,
+        import_ids[WasmRuntimeImport::BytesAsPtr],
+    );
+    func.instruction(&Instruction::LocalSet(input_ptr));
+
+    func.instruction(&Instruction::LocalGet(scratch_slot));
+    func.instruction(&Instruction::I32WrapI64);
+    func.instruction(&Instruction::I64Load(memarg64()));
+    func.instruction(&Instruction::LocalSet(input_len));
+
+    func.instruction(&Instruction::LocalGet(input_ptr));
+    func.instruction(&Instruction::I32Eqz);
+    func.instruction(&Instruction::If(BlockType::Empty));
+    emit_null_native_forward_result(func, out);
+    func.instruction(&Instruction::Else);
+
+    func.instruction(&Instruction::LocalGet(input_len));
+    emit_call(
+        func,
+        reloc_enabled,
+        import_ids[WasmRuntimeImport::ScratchAlloc],
+    );
+    func.instruction(&Instruction::LocalSet(output_ptr));
+
+    func.instruction(&Instruction::LocalGet(output_ptr));
+    func.instruction(&Instruction::I64Eqz);
+    func.instruction(&Instruction::If(BlockType::Empty));
+    emit_null_native_forward_result(func, out);
+    func.instruction(&Instruction::Else);
+
+    func.instruction(&Instruction::LocalGet(input_ptr));
+    func.instruction(&Instruction::LocalGet(input_len));
+    func.instruction(&Instruction::LocalGet(output_ptr));
+    func.instruction(&Instruction::I32WrapI64);
+    emit_call(func, reloc_enabled, native_import.function_index);
+    func.instruction(&Instruction::I32Eqz);
+    func.instruction(&Instruction::If(BlockType::Empty));
+
+    func.instruction(&Instruction::LocalGet(output_ptr));
+    func.instruction(&Instruction::I32WrapI64);
+    func.instruction(&Instruction::LocalGet(input_len));
+    func.instruction(&Instruction::LocalGet(scratch_slot));
+    func.instruction(&Instruction::I32WrapI64);
+    emit_call(
+        func,
+        reloc_enabled,
+        import_ids[WasmRuntimeImport::BytesFromBytes],
+    );
+    func.instruction(&Instruction::I32Eqz);
+    func.instruction(&Instruction::If(BlockType::Empty));
+    func.instruction(&Instruction::LocalGet(scratch_slot));
+    func.instruction(&Instruction::I32WrapI64);
+    func.instruction(&Instruction::I64Load(memarg64()));
+    func.instruction(&Instruction::LocalSet(out));
+    func.instruction(&Instruction::Else);
+    emit_null_native_forward_result(func, out);
+    func.instruction(&Instruction::End);
+
+    func.instruction(&Instruction::Else);
+    emit_null_native_forward_result(func, out);
+    func.instruction(&Instruction::End);
+
+    func.instruction(&Instruction::LocalGet(output_ptr));
+    func.instruction(&Instruction::LocalGet(input_len));
+    emit_call(
+        func,
+        reloc_enabled,
+        import_ids[WasmRuntimeImport::ScratchFree],
+    );
+    func.instruction(&Instruction::End);
+
+    func.instruction(&Instruction::End);
+
+    func.instruction(&Instruction::LocalGet(scratch_slot));
+    func.instruction(&Instruction::I64Const(NATIVE_FORWARD_F32_LEN_SLOT_BYTES));
+    emit_call(
+        func,
+        reloc_enabled,
+        import_ids[WasmRuntimeImport::ScratchFree],
+    );
+    func.instruction(&Instruction::End);
+}
+
+fn emit_null_native_forward_result(func: &mut Function, out: u32) {
+    func.instruction(&Instruction::I64Const(0));
+    func.instruction(&Instruction::LocalSet(out));
+}
+
+fn memarg64() -> MemArg {
+    MemArg {
+        align: WASM_I64_LOAD_ALIGN,
+        offset: 0,
+        memory_index: 0,
+    }
 }

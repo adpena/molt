@@ -1,13 +1,13 @@
-use std::borrow::Cow;
 use std::collections::BTreeSet;
 
 use wasm_encoder::{
-    ConstExpr, ElementMode, ElementSection, ElementSegment, Elements, Encode, EntityType,
-    ExportKind, ExportSection, ImportSection, MemoryType, TagKind, TagType,
+    ConstExpr, Encode, EntityType, ExportKind, ExportSection, ImportSection, MemoryType, TagKind,
+    TagType,
 };
 use wasmparser::{ElementItems, ExternalKind, Operator, Parser, Payload, TypeRef};
 
 use super::code_remap::remap_code_section;
+use super::emit::encode_u32_leb128_padded;
 use super::leb::{encode_u32_leb128, read_u32_leb128};
 use super::types::{encoder_ref_type, encoder_val_type};
 
@@ -198,37 +198,10 @@ fn strip_unused_imports_checked(
                 out.extend_from_slice(&body);
             }
             9 => {
-                let mut section = ElementSection::new();
-                for element in &plan.elements {
-                    let indices = element
-                        .indices
-                        .iter()
-                        .map(|index| plan.remap_func_index(*index))
-                        .collect::<Result<Vec<_>, _>>()?;
-                    match element.mode {
-                        ElementModeSpec::Active { table, offset } => {
-                            let c = ConstExpr::i32_const(offset);
-                            section.segment(ElementSegment {
-                                mode: ElementMode::Active { table, offset: &c },
-                                elements: Elements::Functions(Cow::Owned(indices)),
-                            });
-                        }
-                        ElementModeSpec::Passive => {
-                            section.segment(ElementSegment {
-                                mode: ElementMode::Passive,
-                                elements: Elements::Functions(Cow::Owned(indices)),
-                            });
-                        }
-                        ElementModeSpec::Declared => {
-                            section.segment(ElementSegment {
-                                mode: ElementMode::Declared,
-                                elements: Elements::Functions(Cow::Owned(indices)),
-                            });
-                        }
-                    }
-                }
+                let section = encode_element_section(&plan)?;
                 out.push(9);
-                section.encode(&mut out);
+                encode_u32_leb128(section.len() as u32, &mut out);
+                out.extend_from_slice(&section);
             }
             10 => {
                 let new_code =
@@ -260,6 +233,49 @@ fn strip_unused_imports_checked(
     }
 
     Ok(out)
+}
+
+fn encode_element_section(plan: &StripPlan) -> Result<Vec<u8>, String> {
+    let mut payload = Vec::new();
+    encode_u32_leb128(plan.elements.len() as u32, &mut payload);
+    for element in &plan.elements {
+        let indices = element
+            .indices
+            .iter()
+            .map(|index| plan.remap_func_index(*index))
+            .collect::<Result<Vec<_>, _>>()?;
+        match element.mode {
+            ElementModeSpec::Active {
+                table: None,
+                offset,
+            } => {
+                encode_u32_leb128(0, &mut payload);
+                ConstExpr::i32_const(offset).encode(&mut payload);
+            }
+            ElementModeSpec::Active {
+                table: Some(table),
+                offset,
+            } => {
+                encode_u32_leb128(2, &mut payload);
+                encode_u32_leb128(table, &mut payload);
+                ConstExpr::i32_const(offset).encode(&mut payload);
+                payload.push(0);
+            }
+            ElementModeSpec::Passive => {
+                encode_u32_leb128(1, &mut payload);
+                payload.push(0);
+            }
+            ElementModeSpec::Declared => {
+                encode_u32_leb128(3, &mut payload);
+                payload.push(0);
+            }
+        }
+        encode_u32_leb128(indices.len() as u32, &mut payload);
+        for index in indices {
+            encode_u32_leb128_padded(index, &mut payload);
+        }
+    }
+    Ok(payload)
 }
 
 fn entity_type_from_parser(ty: TypeRef) -> Result<EntityType, String> {
@@ -358,6 +374,7 @@ mod tests {
     };
     use wasmparser::{ExternalKind, Parser, Payload, TypeRef};
 
+    use super::super::leb::read_u32_leb128;
     use super::strip_unused_imports;
 
     fn fixture_module() -> Vec<u8> {
@@ -465,6 +482,22 @@ mod tests {
         indices
     }
 
+    fn element_section_payload(bytes: &[u8]) -> Vec<u8> {
+        let mut pos = 8usize;
+        while pos < bytes.len() {
+            let section_id = bytes[pos];
+            pos += 1;
+            let (section_len, content_start) =
+                read_u32_leb128(bytes, pos).expect("section size must parse");
+            let content_end = content_start + section_len as usize;
+            if section_id == 9 {
+                return bytes[content_start..content_end].to_vec();
+            }
+            pos = content_end;
+        }
+        panic!("element section missing");
+    }
+
     fn direct_call_indices(bytes: &[u8]) -> Vec<u32> {
         let mut calls = Vec::new();
         for payload in Parser::new(0).parse_all(bytes) {
@@ -502,6 +535,28 @@ mod tests {
         assert_eq!(start_function(&stripped), Some(2));
         assert_eq!(element_function_indices(&stripped), vec![1, 2]);
         assert_eq!(direct_call_indices(&stripped), vec![1]);
+    }
+
+    #[test]
+    fn strip_unused_imports_keeps_element_indices_relocation_padded() {
+        let mut unused = BTreeSet::new();
+        unused.insert("dead".to_string());
+
+        let stripped = strip_unused_imports(fixture_module(), &unused);
+        let payload = element_section_payload(&stripped);
+
+        assert_eq!(
+            payload,
+            vec![
+                0x01, // segment count
+                0x00, // active table 0 segment
+                0x41, 0x00, 0x0B, // i32.const 0; end
+                0x02, // two function indices
+                0x81, 0x80, 0x80, 0x80, 0x00, // remapped function index 1
+                0x82, 0x80, 0x80, 0x80, 0x00, // remapped function index 2
+            ]
+        );
+        assert_eq!(element_function_indices(&stripped), vec![1, 2]);
     }
 
     #[test]
