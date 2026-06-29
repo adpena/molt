@@ -47,6 +47,7 @@ from molt.cli.module_resolution import (
     _entry_module_root_for_path,
     _is_stdlib_resolved_path,
     _module_name_from_path,
+    _parse_module_root_alias_entry,
     _resolve_module_path,
     _stdlib_root_path,
 )
@@ -889,7 +890,10 @@ def _resolve_module_root_resolution(
         for entry in extra_roots.split(os.pathsep):
             if not entry:
                 continue
-            entry_path = Path(entry).expanduser()
+            alias_entry = _parse_module_root_alias_entry(entry)
+            entry_path = (
+                alias_entry[1] if alias_entry is not None else Path(entry).expanduser()
+            )
             if entry_path.exists():
                 add_root(entry_path, external=True)
     # Deferred import: env_paths and build_inputs are both reachable during

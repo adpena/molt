@@ -16,6 +16,117 @@ from molt.cli.target_python import (
 )
 from molt.cli.setup_readiness import _is_path_within
 
+_ModuleRootAliases = tuple[tuple[str, Path], ...]
+
+
+def _is_ascii_identifier_part(part: str) -> bool:
+    if not part:
+        return False
+    first = part[0]
+    if not (first == "_" or "A" <= first <= "Z" or "a" <= first <= "z"):
+        return False
+    return all(
+        ch == "_" or "A" <= ch <= "Z" or "a" <= ch <= "z" or "0" <= ch <= "9"
+        for ch in part[1:]
+    )
+
+
+def _is_dotted_module_root_alias(prefix: str) -> bool:
+    return all(_is_ascii_identifier_part(part) for part in prefix.split("."))
+
+
+def _parse_module_root_alias_entry(entry: str) -> tuple[str, Path] | None:
+    prefix, sep, raw_path = entry.partition("=")
+    if not sep:
+        return None
+    prefix = prefix.strip()
+    raw_path = raw_path.strip()
+    if not raw_path or not _is_dotted_module_root_alias(prefix):
+        return None
+    path = Path(raw_path).expanduser()
+    if not path.exists():
+        return None
+    return prefix, path.resolve()
+
+
+def _module_root_aliases_from_env() -> _ModuleRootAliases:
+    raw_roots = os.environ.get("MOLT_MODULE_ROOTS", "")
+    if not raw_roots:
+        return ()
+    aliases: list[tuple[str, Path]] = []
+    for entry in raw_roots.split(os.pathsep):
+        if not entry:
+            continue
+        parsed = _parse_module_root_alias_entry(entry)
+        if parsed is not None:
+            aliases.append(parsed)
+    return tuple(dict.fromkeys(aliases))
+
+
+def _module_root_alias_match(
+    module_name: str,
+    aliases: _ModuleRootAliases | None = None,
+) -> tuple[str, Path, str] | None:
+    best: tuple[str, Path, str] | None = None
+    best_len = -1
+    alias_entries = aliases if aliases is not None else _module_root_aliases_from_env()
+    for prefix, root in alias_entries:
+        if module_name == prefix:
+            suffix = ""
+        elif module_name.startswith(prefix + "."):
+            suffix = module_name[len(prefix) + 1 :]
+        else:
+            continue
+        if len(prefix) > best_len:
+            best = (prefix, root, suffix)
+            best_len = len(prefix)
+    return best
+
+
+def _resolve_module_alias_path(
+    module_name: str,
+    aliases: _ModuleRootAliases | None = None,
+) -> Path | None:
+    match = _module_root_alias_match(module_name, aliases)
+    if match is None:
+        return None
+    _prefix, root, suffix = match
+    if not suffix:
+        package_init = root / "__init__.py"
+        if package_init.is_file():
+            return package_init
+        module_file = root.with_suffix(".py")
+        if module_file.is_file():
+            return module_file
+        return None
+    parts = tuple(part for part in suffix.split(".") if part)
+    return _resolve_module_path_parts(parts, [root])
+
+
+def _module_name_from_alias_path(
+    resolved: Path,
+    aliases: _ModuleRootAliases | None = None,
+) -> str | None:
+    resolved_parts = resolved.parts
+    best_name: str | None = None
+    best_len = -1
+    alias_entries = aliases if aliases is not None else _module_root_aliases_from_env()
+    for prefix, root in alias_entries:
+        root_resolved = root.resolve()
+        rel_parts = _relative_parts_if_within(resolved_parts, root_resolved.parts)
+        if rel_parts is None or len(root_resolved.parts) <= best_len:
+            continue
+        if rel_parts == ("__init__.py",):
+            best_name = prefix
+            best_len = len(root_resolved.parts)
+            continue
+        suffix = _module_name_from_relative_parts(
+            rel_parts, fallback_parent=resolved.parent.name
+        )
+        best_name = prefix if suffix is None else f"{prefix}.{suffix}"
+        best_len = len(root_resolved.parts)
+    return best_name
+
 
 def _module_name_from_path(path: Path, roots: list[Path], stdlib_root: Path) -> str:
     resolved = path.resolve()
@@ -30,6 +141,7 @@ def _module_name_from_path(path: Path, roots: list[Path], stdlib_root: Path) -> 
         resolved_roots=resolved_roots,
         resolved_stdlib_root=resolved_stdlib_root,
         cpython_test_root=cpython_test_root,
+        module_root_aliases=_module_root_aliases_from_env(),
     )
 
 
@@ -51,6 +163,7 @@ def _module_name_from_resolved_path(
     resolved_roots: tuple[Path, ...],
     resolved_stdlib_root: Path,
     cpython_test_root: Path | None,
+    module_root_aliases: _ModuleRootAliases | None = None,
 ) -> str:
     resolved_parts = resolved.parts
     rel_parts = _relative_parts_if_within(resolved_parts, resolved_stdlib_root.parts)
@@ -60,6 +173,10 @@ def _module_name_from_resolved_path(
         )
         if module_name is not None:
             return module_name
+
+    alias_name = _module_name_from_alias_path(resolved, module_root_aliases)
+    if alias_name is not None:
+        return alias_name
 
     best_rel_parts: tuple[str, ...] | None = None
     best_len = -1
@@ -106,6 +223,9 @@ def _stdlib_root_path() -> Path:
 
 
 def _resolve_module_path(module_name: str, roots: list[Path]) -> Path | None:
+    alias_path = _resolve_module_alias_path(module_name)
+    if alias_path is not None:
+        return alias_path
     return _resolve_module_path_parts(tuple(module_name.split(".")), roots)
 
 
@@ -172,7 +292,9 @@ def _resolve_module_path_parts(
 @dataclass
 class _ModuleResolutionCache:
     roots_cache: dict[str, list[Path]] = field(default_factory=dict)
-    resolve_cache: dict[str, Path | None] = field(default_factory=dict)
+    resolve_cache: dict[tuple[str, _ModuleRootAliases], Path | None] = field(
+        default_factory=dict
+    )
     namespace_dir_cache: dict[str, bool] = field(default_factory=dict)
     resolved_path_cache: dict[Path, Path] = field(default_factory=dict)
     resolved_roots_cache: dict[tuple[Path, ...], tuple[Path, ...]] = field(
@@ -187,10 +309,12 @@ class _ModuleResolutionCache:
     runtime_import_protocol_cache: dict[
         tuple[Path, str | None, bool, ImportScanMode], bool
     ] = field(default_factory=dict)
-    module_name_cache: dict[tuple[Path, tuple[Path, ...], Path, Path | None], str] = (
-        field(default_factory=dict)
-    )
-    module_name_context_key: tuple[tuple[Path, ...], Path, Path | None] | None = None
+    module_name_cache: dict[
+        tuple[Path, tuple[Path, ...], Path, Path | None, _ModuleRootAliases], str
+    ] = field(default_factory=dict)
+    module_name_context_key: (
+        tuple[tuple[Path, ...], Path, Path | None, _ModuleRootAliases] | None
+    ) = None
     module_name_context_cache: dict[Path, str] = field(default_factory=dict)
     stdlib_path_cache: dict[tuple[Path, Path], bool] = field(default_factory=dict)
     import_scan_cache: dict[
@@ -231,11 +355,16 @@ class _ModuleResolutionCache:
         stdlib_root: Path,
         stdlib_allowlist: set[str],
     ) -> Path | None:
-        cache_key = module_name
+        cache_name = module_name
         if module_name.startswith("molt.stdlib."):
-            cache_key = f"stdlib:{module_name}"
+            cache_name = f"stdlib:{module_name}"
+        module_root_aliases = _module_root_aliases_from_env()
+        cache_key = (cache_name, module_root_aliases)
         if cache_key not in self.resolve_cache:
-            if cache_key.startswith("stdlib:"):
+            alias_path = _resolve_module_alias_path(module_name, module_root_aliases)
+            if alias_path is not None:
+                self.resolve_cache[cache_key] = alias_path
+            elif cache_name.startswith("stdlib:"):
                 stdlib_candidate = module_name[len("molt.stdlib.") :]
                 self.resolve_cache[cache_key] = _resolve_module_path_parts(
                     self.module_parts(stdlib_candidate), [stdlib_root]
@@ -290,7 +419,13 @@ class _ModuleResolutionCache:
         resolved_roots = self.resolved_roots(roots)
         resolved_stdlib_root = self.resolved_path(stdlib_root)
         cpython_test_root = self.cpython_test_root()
-        context_key = (resolved_roots, resolved_stdlib_root, cpython_test_root)
+        module_root_aliases = _module_root_aliases_from_env()
+        context_key = (
+            resolved_roots,
+            resolved_stdlib_root,
+            cpython_test_root,
+            module_root_aliases,
+        )
         if self.module_name_context_key == context_key:
             cached = self.module_name_context_cache.get(resolved)
             if cached is not None:
@@ -303,6 +438,7 @@ class _ModuleResolutionCache:
             resolved_roots,
             resolved_stdlib_root,
             cpython_test_root,
+            module_root_aliases,
         )
         cached = self.module_name_cache.get(cache_key)
         if cached is not None:
@@ -313,6 +449,7 @@ class _ModuleResolutionCache:
             resolved_roots=resolved_roots,
             resolved_stdlib_root=resolved_stdlib_root,
             cpython_test_root=cpython_test_root,
+            module_root_aliases=module_root_aliases,
         )
         self.module_name_cache[cache_key] = module_name
         self.module_name_context_cache[resolved] = module_name
