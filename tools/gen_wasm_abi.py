@@ -1723,15 +1723,33 @@ def render_py(data: dict) -> str:
             f'{entry["callable_arity"]}, "{result}"),\n'
         )
     lines.append(")\n\n")
+    lines.append("WASM_RESERVED_RUNTIME_CALLABLES: tuple[tuple[int, str, str, int], ...] = (\n")
+    for entry in data.get("reserved_runtime_callable", []):
+        lines.append(
+            f'    ({entry["index"]}, "{entry["runtime_name"]}", '
+            f'"{entry["import_name"]}", {entry["callable_arity"]}),\n'
+        )
+    lines.append(")\n\n")
+    lines.append(
+        "WASM_RESERVED_RUNTIME_CALLABLE_COUNT: int = "
+        "len(WASM_RESERVED_RUNTIME_CALLABLES)\n\n"
+    )
     lines.extend(
         [
+            "WASM_RESERVED_RUNTIME_CALLABLE_IMPORTS: tuple[tuple[str, str, int, str], ...] = tuple(\n",
+            "    (runtime_name, import_name, arity, \"i64\")\n",
+            "    for _index, runtime_name, import_name, arity in WASM_RESERVED_RUNTIME_CALLABLES\n",
+            ")\n\n",
+            "WASM_RUNTIME_CALLABLE_LOOKUP_ROWS: tuple[tuple[str, str, int, str], ...] = (\n",
+            "    WASM_RUNTIME_CALLABLE_IMPORTS + WASM_RESERVED_RUNTIME_CALLABLE_IMPORTS\n",
+            ")\n\n",
             "WASM_RUNTIME_CALLABLE_IMPORT_BY_RUNTIME: dict[str, tuple[str, int, str]] = {\n",
             "    runtime_name: (import_name, arity, result)\n",
-            "    for runtime_name, import_name, arity, result in WASM_RUNTIME_CALLABLE_IMPORTS\n",
+            "    for runtime_name, import_name, arity, result in WASM_RUNTIME_CALLABLE_LOOKUP_ROWS\n",
             "}\n\n",
             "WASM_RUNTIME_CALLABLE_IMPORT_BY_IMPORT: dict[str, tuple[str, int, str]] = {\n",
             "    import_name: (runtime_name, arity, result)\n",
-            "    for runtime_name, import_name, arity, result in WASM_RUNTIME_CALLABLE_IMPORTS\n",
+            "    for runtime_name, import_name, arity, result in WASM_RUNTIME_CALLABLE_LOOKUP_ROWS\n",
             "}\n\n",
             "def wasm_runtime_callable_spec(runtime_name: str) -> tuple[str, int, str] | None:\n",
             "    return WASM_RUNTIME_CALLABLE_IMPORT_BY_RUNTIME.get(runtime_name)\n\n",
@@ -1807,17 +1825,6 @@ def render_py(data: dict) -> str:
             "        for prefix in WASM_REQUIRED_RUNTIME_IMPORT_PREFIXES\n",
             "    ) or kind in WASM_REQUIRED_RUNTIME_IMPORT_SINGLETONS\n\n",
         ]
-    )
-    lines.append("WASM_RESERVED_RUNTIME_CALLABLES: tuple[tuple[int, str, str, int], ...] = (\n")
-    for entry in data.get("reserved_runtime_callable", []):
-        lines.append(
-            f'    ({entry["index"]}, "{entry["runtime_name"]}", '
-            f'"{entry["import_name"]}", {entry["callable_arity"]}),\n'
-        )
-    lines.append(")\n\n")
-    lines.append(
-        "WASM_RESERVED_RUNTIME_CALLABLE_COUNT: int = "
-        "len(WASM_RESERVED_RUNTIME_CALLABLES)\n\n"
     )
     output_export_policy = data["output_export_policy"]
     lines.append(

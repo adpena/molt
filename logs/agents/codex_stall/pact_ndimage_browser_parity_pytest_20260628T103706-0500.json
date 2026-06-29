@@ -3,8 +3,8 @@
   "cwd": "C:\\Users\\adpen\\OneDrive\\Documents\\molt",
   "guard_pid": null,
   "child_pid": null,
-  "status": "started",
+  "status": "unknown",
   "timestamp": "2026-06-28T10:37:06-05:00",
   "evidence_path": "logs/agents/codex_stall/pact_ndimage_browser_parity_pytest_20260628T103706-0500.json",
-  "notes": "Rerun after fixing runtime WASM sidecar/data publish-window verification in tools/wasm_link.py."
+  "notes": "Rerun after fixing runtime WASM sidecar/data publish-window verification in tools/wasm_link.py. The Codex session was paused and the exec session disappeared before output capture; no live process from this checkout remained during recovery."
 }

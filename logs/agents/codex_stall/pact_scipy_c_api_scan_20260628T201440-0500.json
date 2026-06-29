@@ -1,0 +1,10 @@
+{
+  "command": "uv run --project . --python 3.12 python tools/bench_friends.py --suite scipy_off_the_shelf --runner c_api_scan --output-root tmp\\pact_scipy_capi_scan_20260628T201440 --timeout-sec 600 --checkout --fail-fast",
+  "cwd": "C:\\Users\\adpen\\OneDrive\\Documents\\molt",
+  "guard_pid": null,
+  "child_pid": null,
+  "status": "passed",
+  "timestamp": "2026-06-28T20:14:40-05:00",
+  "evidence_path": "logs/agents/codex_stall/pact_scipy_c_api_scan_20260628T201440-0500.json",
+  "notes": "Strict SciPy off-the-shelf C/API scan for missing-symbol closure after witness-kernel primitive work. Passed: source_count=592 required_symbol_count=321 supported_symbol_count=321 missing_symbol_count=0 fail_fast_symbol_count=0 runtime_backed=196 source_compile_only=87 project_defined=38."
+}
