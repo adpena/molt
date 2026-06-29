@@ -143,20 +143,28 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         } else {
             "molt_get_attr_name"
         };
-        let get_fn = if runtime_name == "molt_get_attr_object_ic" {
-            self.ensure_runtime_i64_fn(runtime_name, 4)
-        } else {
-            self.ensure_runtime_i64_fn(runtime_name, 2)
-        };
-        let name = self.intern_string_const(attr_name);
-        let name_bits = self.ensure_i64(name);
-        let (attr_ptr_bits, attr_len_bits) = self.raw_string_const_ptr_len(attr_name);
-        let call_args_name = [obj_bits.into(), name_bits.into()];
         let val = if runtime_name == "molt_get_attr_object_ic" {
+            let i64_ty = self.backend.context.i64_type();
+            let ptr_ty = self
+                .backend
+                .context
+                .ptr_type(inkwell::AddressSpace::default());
+            let fn_ty = i64_ty.fn_type(
+                &[i64_ty.into(), ptr_ty.into(), i64_ty.into(), i64_ty.into()],
+                false,
+            );
+            let get_fn = declare_fixed_runtime_function(
+                self.backend.context,
+                &self.backend.module,
+                runtime_name,
+            )
+            .unwrap_or_else(|| panic!("{runtime_name} must be a fixed LLVM runtime import"));
+            let get_fn = require_llvm_function_type(runtime_name, get_fn, fn_ty);
+            let (attr_ptr, attr_len_bits) = self.raw_string_const_ptr_and_len(attr_name);
             let site_bits = self.source_call_site_bits(op, "get_attr_generic_obj");
             let call_args_generic = [
                 obj_bits.into(),
-                attr_ptr_bits.into(),
+                attr_ptr.into(),
                 attr_len_bits.into(),
                 site_bits.into(),
             ];
@@ -164,6 +172,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 .builder
                 .build_call(get_fn, &call_args_generic, runtime_name)
         } else {
+            let get_fn = self.ensure_runtime_i64_fn(runtime_name, 2);
+            let name = self.intern_string_const(attr_name);
+            let name_bits = self.ensure_i64(name);
+            let call_args_name = [obj_bits.into(), name_bits.into()];
             self.backend
                 .builder
                 .build_call(get_fn, &call_args_name, runtime_name)

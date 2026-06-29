@@ -241,11 +241,11 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     pub(super) fn emit_get_iter(&mut self, op: &TirOp) {
         let obj = self.resolve(op.operands[0]);
         let obj_i64 = self.ensure_i64(obj);
-        let get_iter_fn = self.backend.module.get_function("molt_get_iter").unwrap();
+        let get_iter_fn = self.ensure_runtime_i64_fn("molt_iter_checked", 1);
         let result = self
             .backend
             .builder
-            .build_call(get_iter_fn, &[obj_i64.into()], "get_iter")
+            .build_call(get_iter_fn, &[obj_i64.into()], "iter_checked")
             .unwrap()
             .try_as_basic_value()
             .unwrap_basic();
@@ -289,11 +289,11 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
 
         let iter = self.resolve(op.operands[0]);
         let iter_i64 = self.ensure_i64(iter);
-        let for_iter_fn = self.backend.module.get_function("molt_for_iter").unwrap();
+        let for_iter_fn = self.backend.module.get_function("molt_iter_next").unwrap();
         let result = self
             .backend
             .builder
-            .build_call(for_iter_fn, &[iter_i64.into()], "for_iter")
+            .build_call(for_iter_fn, &[iter_i64.into()], "for_iter_next")
             .unwrap()
             .try_as_basic_value()
             .unwrap_basic();

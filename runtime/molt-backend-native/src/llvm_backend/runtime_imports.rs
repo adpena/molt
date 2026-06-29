@@ -34,12 +34,17 @@ mod abi_facts;
 mod attributes;
 #[cfg(feature = "llvm")]
 mod declarations;
+#[cfg(feature = "llvm")]
+mod fixed;
 #[cfg(all(test, feature = "llvm"))]
 mod tests;
 
 #[cfg(feature = "llvm")]
 pub(crate) use abi_facts::{
-    CLASSIFIED_RUNTIME_IMPORTS, classified_runtime_import_return_abi, is_classified_runtime_import,
+    CONSERVATIVE_RUNTIME_IMPORTS, is_runtime_import_abi, runtime_import_return_abi,
 };
 #[cfg(feature = "llvm")]
-pub(crate) use declarations::{declare_conservative_runtime_function, declare_runtime_functions};
+pub(crate) use declarations::{
+    declare_conservative_runtime_function, declare_fixed_runtime_function,
+    declare_runtime_functions,
+};

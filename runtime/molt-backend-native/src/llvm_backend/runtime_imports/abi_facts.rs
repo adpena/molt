@@ -1,17 +1,16 @@
 #[cfg(feature = "llvm")]
+use super::fixed::fixed_runtime_import_return_abi;
 use crate::runtime_import_abi::{
     MOLT_ASYNCGEN_NEW, MOLT_CANCEL_TOKEN_GET_CURRENT, MOLT_TASK_NEW,
     MOLT_TASK_REGISTER_TOKEN_OWNED, RuntimeImportSignature, RuntimeReturnAbi, runtime_sig,
 };
-/// Runtime symbols that lowering may declare on demand, plus fixed-table symbols
-/// whose return ABI is needed by generic preserved-op lowering.
+/// Residual runtime symbols that lowering may declare on demand.
 ///
-/// This is not the preferred end state for high-traffic runtime imports: promote
-/// those to `declare_runtime_functions` when their exact attributes are known.
-/// The table exists to make the remaining conservative surface explicit and to
-/// prevent typo/new-symbol drift from silently creating extern declarations.
+/// Fixed imports live in `fixed::FIXED_RUNTIME_IMPORTS`; this table is only the
+/// conservative all-i64 fallback surface. Keeping it disjoint from the fixed
+/// table prevents exact declarations and fallback ABI facts from diverging.
 #[cfg(feature = "llvm")]
-pub(crate) const CLASSIFIED_RUNTIME_IMPORTS: &[RuntimeImportSignature] = &[
+pub(crate) const CONSERVATIVE_RUNTIME_IMPORTS: &[RuntimeImportSignature] = &[
     runtime_sig("molt_abs_builtin", 1, RuntimeReturnAbi::I64),
     runtime_sig("molt_aiter", 1, RuntimeReturnAbi::I64),
     runtime_sig("molt_ascii_from_obj", 1, RuntimeReturnAbi::I64),
@@ -64,7 +63,6 @@ pub(crate) const CLASSIFIED_RUNTIME_IMPORTS: &[RuntimeImportSignature] = &[
     runtime_sig("molt_format_builtin", 2, RuntimeReturnAbi::I64),
     runtime_sig("molt_frozenset_add", 2, RuntimeReturnAbi::I64),
     runtime_sig("molt_frozenset_new", 1, RuntimeReturnAbi::I64),
-    runtime_sig("molt_function_defaults_version", 1, RuntimeReturnAbi::I64),
     runtime_sig("molt_future_poll", 1, RuntimeReturnAbi::I64),
     runtime_sig("molt_gen_locals_register", 3, RuntimeReturnAbi::I64),
     runtime_sig("molt_generator_close", 1, RuntimeReturnAbi::I64),
@@ -109,8 +107,6 @@ pub(crate) const CLASSIFIED_RUNTIME_IMPORTS: &[RuntimeImportSignature] = &[
     runtime_sig("molt_object_new_bound_sized", 2, RuntimeReturnAbi::I64),
     runtime_sig("molt_ord", 1, RuntimeReturnAbi::I64),
     runtime_sig("molt_ord_at", 2, RuntimeReturnAbi::I64),
-    runtime_sig("molt_print_newline", 0, RuntimeReturnAbi::Void),
-    runtime_sig("molt_print_obj", 1, RuntimeReturnAbi::Void),
     runtime_sig("molt_range_new", 3, RuntimeReturnAbi::I64),
     runtime_sig("molt_repr_from_obj", 1, RuntimeReturnAbi::I64),
     runtime_sig("molt_set_add", 2, RuntimeReturnAbi::I64),
@@ -200,8 +196,6 @@ pub(crate) const CLASSIFIED_RUNTIME_IMPORTS: &[RuntimeImportSignature] = &[
     runtime_sig("molt_bytes_split_max", 3, RuntimeReturnAbi::I64),
     runtime_sig("molt_bytes_startswith", 2, RuntimeReturnAbi::I64),
     runtime_sig("molt_bytes_startswith_slice", 6, RuntimeReturnAbi::I64),
-    runtime_sig("molt_callargs_new", 2, RuntimeReturnAbi::I64),
-    runtime_sig("molt_callargs_push_pos", 2, RuntimeReturnAbi::I64),
     runtime_sig("molt_cancel_current", 0, RuntimeReturnAbi::I64),
     runtime_sig("molt_cancel_token_cancel", 1, RuntimeReturnAbi::I64),
     runtime_sig("molt_cancel_token_clone", 1, RuntimeReturnAbi::I64),
@@ -215,11 +209,6 @@ pub(crate) const CLASSIFIED_RUNTIME_IMPORTS: &[RuntimeImportSignature] = &[
     runtime_sig("molt_chr", 1, RuntimeReturnAbi::I64),
     runtime_sig("molt_class_new", 1, RuntimeReturnAbi::I64),
     runtime_sig("molt_class_set_base", 2, RuntimeReturnAbi::I64),
-    runtime_sig("molt_classmethod_new", 1, RuntimeReturnAbi::I64),
-    runtime_sig("molt_code_new", 9, RuntimeReturnAbi::I64),
-    runtime_sig("molt_code_slot_set", 2, RuntimeReturnAbi::I64),
-    runtime_sig("molt_code_slots_init", 1, RuntimeReturnAbi::I64),
-    runtime_sig("molt_contains", 2, RuntimeReturnAbi::I64),
     runtime_sig("molt_context_closing", 1, RuntimeReturnAbi::I64),
     runtime_sig("molt_context_enter", 1, RuntimeReturnAbi::I64),
     runtime_sig("molt_context_null", 1, RuntimeReturnAbi::I64),
@@ -228,23 +217,12 @@ pub(crate) const CLASSIFIED_RUNTIME_IMPORTS: &[RuntimeImportSignature] = &[
     runtime_sig("molt_dataclass_set", 3, RuntimeReturnAbi::I64),
     runtime_sig("molt_dataclass_set_class", 2, RuntimeReturnAbi::I64),
     runtime_sig("molt_dict_inc", 3, RuntimeReturnAbi::I64),
-    runtime_sig("molt_dict_new", 1, RuntimeReturnAbi::I64),
     runtime_sig("molt_dict_pop", 4, RuntimeReturnAbi::I64),
     runtime_sig("molt_dict_str_int_inc", 3, RuntimeReturnAbi::I64),
     runtime_sig("molt_env_get", 2, RuntimeReturnAbi::I64),
-    runtime_sig("molt_exception_clear", 0, RuntimeReturnAbi::I64),
     runtime_sig("molt_exception_kind", 1, RuntimeReturnAbi::I64),
-    runtime_sig("molt_exception_last", 0, RuntimeReturnAbi::I64),
-    runtime_sig("molt_exception_last_pending", 0, RuntimeReturnAbi::I64),
     runtime_sig("molt_exception_message", 1, RuntimeReturnAbi::I64),
     runtime_sig("molt_exception_new_from_class", 2, RuntimeReturnAbi::I64),
-    runtime_sig("molt_exception_pop", 0, RuntimeReturnAbi::I64),
-    runtime_sig("molt_exception_push", 0, RuntimeReturnAbi::I64),
-    runtime_sig("molt_exception_stack_clear", 0, RuntimeReturnAbi::I64),
-    runtime_sig("molt_exception_stack_depth", 0, RuntimeReturnAbi::I64),
-    runtime_sig("molt_exception_stack_enter", 0, RuntimeReturnAbi::I64),
-    runtime_sig("molt_exception_stack_exit", 1, RuntimeReturnAbi::I64),
-    runtime_sig("molt_exception_stack_set_depth", 1, RuntimeReturnAbi::I64),
     runtime_sig("molt_exceptiongroup_combine", 1, RuntimeReturnAbi::I64),
     runtime_sig("molt_exceptiongroup_match", 2, RuntimeReturnAbi::I64),
     runtime_sig("molt_file_close", 1, RuntimeReturnAbi::I64),
@@ -252,20 +230,12 @@ pub(crate) const CLASSIFIED_RUNTIME_IMPORTS: &[RuntimeImportSignature] = &[
     runtime_sig("molt_file_open", 2, RuntimeReturnAbi::I64),
     runtime_sig("molt_file_read", 2, RuntimeReturnAbi::I64),
     runtime_sig("molt_file_write", 2, RuntimeReturnAbi::I64),
-    runtime_sig("molt_fn_ptr_code_set", 2, RuntimeReturnAbi::I64),
-    runtime_sig("molt_frame_locals_set", 1, RuntimeReturnAbi::I64),
-    runtime_sig("molt_func_new", 3, RuntimeReturnAbi::I64),
-    runtime_sig("molt_func_new_closure", 4, RuntimeReturnAbi::I64),
     runtime_sig("molt_function_closure_bits", 1, RuntimeReturnAbi::I64),
     runtime_sig("molt_future_cancel", 1, RuntimeReturnAbi::I64),
     runtime_sig("molt_future_cancel_clear", 1, RuntimeReturnAbi::I64),
     runtime_sig("molt_future_cancel_msg", 2, RuntimeReturnAbi::I64),
     runtime_sig("molt_id", 1, RuntimeReturnAbi::I64),
-    runtime_sig("molt_inplace_bit_and", 2, RuntimeReturnAbi::I64),
-    runtime_sig("molt_inplace_bit_or", 2, RuntimeReturnAbi::I64),
-    runtime_sig("molt_inplace_bit_xor", 2, RuntimeReturnAbi::I64),
     runtime_sig("molt_intarray_from_seq", 1, RuntimeReturnAbi::I64),
-    runtime_sig("molt_invert", 1, RuntimeReturnAbi::I64),
     runtime_sig("molt_is_bound_method", 1, RuntimeReturnAbi::I64),
     runtime_sig("molt_is_generator", 1, RuntimeReturnAbi::I64),
     runtime_sig("molt_is_native_awaitable", 1, RuntimeReturnAbi::I64),
@@ -285,25 +255,20 @@ pub(crate) const CLASSIFIED_RUNTIME_IMPORTS: &[RuntimeImportSignature] = &[
     runtime_sig("molt_memoryview_new", 1, RuntimeReturnAbi::I64),
     runtime_sig("molt_memoryview_tobytes", 1, RuntimeReturnAbi::I64),
     runtime_sig("molt_module_import_star", 2, RuntimeReturnAbi::I64),
-    runtime_sig("molt_module_new", 1, RuntimeReturnAbi::I64),
     runtime_sig("molt_object_set_class", 2, RuntimeReturnAbi::I64),
     runtime_sig("molt_pow_mod", 3, RuntimeReturnAbi::I64),
     runtime_sig("molt_promise_new", 0, RuntimeReturnAbi::I64),
     runtime_sig("molt_promise_set_exception", 2, RuntimeReturnAbi::I64),
     runtime_sig("molt_promise_set_result", 2, RuntimeReturnAbi::I64),
-    runtime_sig("molt_property_new", 3, RuntimeReturnAbi::I64),
     runtime_sig("molt_round", 3, RuntimeReturnAbi::I64),
     runtime_sig("molt_set_difference_update", 2, RuntimeReturnAbi::I64),
     runtime_sig("molt_set_discard", 2, RuntimeReturnAbi::I64),
     runtime_sig("molt_set_intersection_update", 2, RuntimeReturnAbi::I64),
-    runtime_sig("molt_set_new", 1, RuntimeReturnAbi::I64),
     runtime_sig("molt_set_pop", 1, RuntimeReturnAbi::I64),
     runtime_sig("molt_set_remove", 2, RuntimeReturnAbi::I64),
     runtime_sig("molt_set_symdiff_update", 2, RuntimeReturnAbi::I64),
     runtime_sig("molt_set_update", 2, RuntimeReturnAbi::I64),
-    runtime_sig("molt_slice_new", 3, RuntimeReturnAbi::I64),
     runtime_sig("molt_spawn", 1, RuntimeReturnAbi::Void),
-    runtime_sig("molt_staticmethod_new", 1, RuntimeReturnAbi::I64),
     runtime_sig("molt_statistics_mean_slice", 5, RuntimeReturnAbi::I64),
     runtime_sig("molt_statistics_stdev_slice", 5, RuntimeReturnAbi::I64),
     runtime_sig("molt_string_capitalize", 1, RuntimeReturnAbi::I64),
@@ -334,29 +299,29 @@ pub(crate) const CLASSIFIED_RUNTIME_IMPORTS: &[RuntimeImportSignature] = &[
     runtime_sig("molt_taq_ingest_line", 3, RuntimeReturnAbi::I64),
     MOLT_TASK_REGISTER_TOKEN_OWNED,
     runtime_sig("molt_thread_submit", 3, RuntimeReturnAbi::I64),
-    runtime_sig("molt_trace_enter_slot", 1, RuntimeReturnAbi::I64),
-    runtime_sig("molt_trace_exit", 0, RuntimeReturnAbi::I64),
     runtime_sig("molt_trunc", 1, RuntimeReturnAbi::I64),
     runtime_sig("molt_tuple_count", 2, RuntimeReturnAbi::I64),
     runtime_sig("molt_tuple_index", 2, RuntimeReturnAbi::I64),
 ];
 
 #[cfg(feature = "llvm")]
-pub(crate) fn classified_runtime_import_return_abi(
+pub(crate) fn runtime_import_return_abi(
     name: &str,
     param_count: usize,
 ) -> Option<RuntimeReturnAbi> {
-    CLASSIFIED_RUNTIME_IMPORTS
-        .iter()
-        .find(|sig| sig.name == name && sig.param_count == param_count)
-        .map(|sig| sig.return_abi)
+    fixed_runtime_import_return_abi(name, param_count).or_else(|| {
+        CONSERVATIVE_RUNTIME_IMPORTS
+            .iter()
+            .find(|sig| sig.name == name && sig.param_count == param_count)
+            .map(|sig| sig.return_abi)
+    })
 }
 
 #[cfg(feature = "llvm")]
-pub(crate) fn is_classified_runtime_import(
+pub(crate) fn is_runtime_import_abi(
     name: &str,
     param_count: usize,
     return_abi: RuntimeReturnAbi,
 ) -> bool {
-    classified_runtime_import_return_abi(name, param_count) == Some(return_abi)
+    runtime_import_return_abi(name, param_count) == Some(return_abi)
 }

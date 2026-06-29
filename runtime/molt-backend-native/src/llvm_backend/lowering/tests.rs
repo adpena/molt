@@ -51,6 +51,42 @@ fn const_none_def(result: ValueId) -> TirOp {
     }
 }
 
+fn lowering_error_for_single_op(
+    name: &str,
+    dialect: Dialect,
+    opcode: OpCode,
+    operand_count: usize,
+) -> (LlvmLoweringError, LlvmBackend<'static>) {
+    let ctx = Box::leak(Box::new(Context::create()));
+    let backend = make_backend(ctx);
+    let mut func = TirFunction::new(name.into(), vec![], TirType::DynBox);
+    let operands: Vec<ValueId> = (0..operand_count).map(|_| func.fresh_value()).collect();
+    let result = func.fresh_value();
+    {
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        for &value in &operands {
+            entry.ops.push(const_none_def(value));
+        }
+        entry.ops.push(TirOp {
+            dialect,
+            opcode,
+            operands,
+            results: vec![result],
+            attrs: AttrDict::new(),
+            source_span: None,
+        });
+        entry.terminator = Terminator::Return {
+            values: vec![result],
+        };
+    }
+
+    (
+        try_lower_tir_to_llvm(&func, &backend)
+            .expect_err("removed runtime delegate must fail LLVM lowering"),
+        backend,
+    )
+}
+
 #[test]
 fn boxed_or_retains_selected_operand_result() {
     let ctx = Context::create();
@@ -81,6 +117,102 @@ fn boxed_or_retains_selected_operand_result() {
         ir.contains("call void @molt_inc_ref_obj(i64 %bool_or)"),
         "{ir}"
     );
+}
+
+#[test]
+fn removed_runtime_delegates_fail_before_phantom_imports() {
+    for &(opcode, dialect, operands, symbol, message) in &[
+        (
+            OpCode::Yield,
+            Dialect::Molt,
+            1usize,
+            "molt_yield",
+            "explicit state-machine poll/resume",
+        ),
+        (
+            OpCode::YieldFrom,
+            Dialect::Molt,
+            1,
+            "molt_yield_from",
+            "generator delegation",
+        ),
+        (OpCode::ScfIf, Dialect::Scf, 1, "molt_call_0", "LLVM CFG"),
+        (
+            OpCode::ScfFor,
+            Dialect::Scf,
+            4,
+            "molt_scf_for",
+            "loops into LLVM CFG",
+        ),
+        (
+            OpCode::ScfWhile,
+            Dialect::Scf,
+            2,
+            "molt_scf_while",
+            "while regions",
+        ),
+        (
+            OpCode::ScfYield,
+            Dialect::Scf,
+            1,
+            "molt_scf_yield",
+            "phi nodes",
+        ),
+    ] {
+        let (err, backend) =
+            lowering_error_for_single_op("removed_runtime_delegate", dialect, opcode, operands);
+        assert_lowering_error_contains(&err, symbol);
+        assert_lowering_error_contains(&err, message);
+        assert!(
+            backend.module.get_function(symbol).is_none(),
+            "{symbol} must not be declared as a phantom runtime import"
+        );
+    }
+}
+
+#[test]
+fn iterator_ops_lower_to_real_runtime_exports() {
+    for &(opcode, expected, forbidden, call_name) in &[
+        (
+            OpCode::GetIter,
+            "molt_iter_checked",
+            "molt_get_iter",
+            "iter_checked",
+        ),
+        (
+            OpCode::ForIter,
+            "molt_iter_next",
+            "molt_for_iter",
+            "for_iter_next",
+        ),
+    ] {
+        let ctx = Context::create();
+        let backend = make_backend(&ctx);
+        let mut func = TirFunction::new(format!("iterator_{call_name}"), vec![], TirType::DynBox);
+        let operand = func.fresh_value();
+        let result = func.fresh_value();
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(const_none_def(operand));
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode,
+            operands: vec![operand],
+            results: vec![result],
+            attrs: AttrDict::new(),
+            source_span: None,
+        });
+        entry.terminator = Terminator::Return {
+            values: vec![result],
+        };
+
+        let ir = try_lower_tir_to_llvm(&func, &backend)
+            .unwrap()
+            .print_to_string()
+            .to_string();
+        assert!(ir.contains(expected), "{ir}");
+        assert!(ir.contains(call_name), "{ir}");
+        assert!(!ir.contains(forbidden), "{ir}");
+    }
 }
 
 fn const_int_def(result: ValueId, value: i64) -> TirOp {

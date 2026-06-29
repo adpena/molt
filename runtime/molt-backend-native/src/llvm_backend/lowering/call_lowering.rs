@@ -235,8 +235,9 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .iter()
             .map(|&id| self.materialize_dynbox_operand(id))
             .collect();
+        let i64_ty = self.backend.context.i64_type();
         let site_bits = self.next_call_site_bits("call_method_ic");
-        let (name_ptr_bits, name_len_bits) = self.raw_string_const_ptr_len(&method_name);
+        let (name_ptr, name_len_bits) = self.raw_string_const_ptr_and_len(&method_name);
         let symbol = match extra.len() {
             0 => "molt_call_method_ic0",
             1 => "molt_call_method_ic1",
@@ -247,11 +248,22 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 "call_method_ic supports at most 4 positional args in LLVM lowering; got {n}"
             ),
         };
-        let call_fn = self.ensure_runtime_i64_fn(symbol, 4 + extra.len());
+        let ptr_ty = self
+            .backend
+            .context
+            .ptr_type(inkwell::AddressSpace::default());
+        let mut param_types: Vec<inkwell::types::BasicMetadataTypeEnum<'ctx>> =
+            vec![i64_ty.into(), i64_ty.into(), ptr_ty.into(), i64_ty.into()];
+        param_types.extend((0..extra.len()).map(|_| i64_ty.into()));
+        let fn_ty = i64_ty.fn_type(&param_types, false);
+        let call_fn =
+            declare_fixed_runtime_function(self.backend.context, &self.backend.module, symbol)
+                .unwrap_or_else(|| panic!("{symbol} must be a fixed LLVM runtime import"));
+        let call_fn = require_llvm_function_type(symbol, call_fn, fn_ty);
         let mut call_args: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> = vec![
             site_bits.into(),
             recv_bits.into(),
-            name_ptr_bits.into(),
+            name_ptr.into(),
             name_len_bits.into(),
         ];
         call_args.extend(
@@ -286,8 +298,9 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .iter()
             .map(|&id| self.materialize_dynbox_operand(id))
             .collect();
+        let i64_ty = self.backend.context.i64_type();
         let site_bits = self.next_call_site_bits("call_super_method_ic");
-        let (name_ptr_bits, name_len_bits) = self.raw_string_const_ptr_len(&method_name);
+        let (name_ptr, name_len_bits) = self.raw_string_const_ptr_and_len(&method_name);
         let symbol = match extra.len() {
             0 => "molt_call_super_method_ic0",
             1 => "molt_call_super_method_ic1",
@@ -298,12 +311,28 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 "call_super_method_ic supports at most 4 positional args in LLVM lowering; got {n}"
             ),
         };
-        let call_fn = self.ensure_runtime_i64_fn(symbol, 5 + extra.len());
+        let ptr_ty = self
+            .backend
+            .context
+            .ptr_type(inkwell::AddressSpace::default());
+        let mut param_types: Vec<inkwell::types::BasicMetadataTypeEnum<'ctx>> = vec![
+            i64_ty.into(),
+            i64_ty.into(),
+            i64_ty.into(),
+            ptr_ty.into(),
+            i64_ty.into(),
+        ];
+        param_types.extend((0..extra.len()).map(|_| i64_ty.into()));
+        let fn_ty = i64_ty.fn_type(&param_types, false);
+        let call_fn =
+            declare_fixed_runtime_function(self.backend.context, &self.backend.module, symbol)
+                .unwrap_or_else(|| panic!("{symbol} must be a fixed LLVM runtime import"));
+        let call_fn = require_llvm_function_type(symbol, call_fn, fn_ty);
         let mut call_args: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> = vec![
             site_bits.into(),
             class_bits.into(),
             self_bits.into(),
-            name_ptr_bits.into(),
+            name_ptr.into(),
             name_len_bits.into(),
         ];
         call_args.extend(

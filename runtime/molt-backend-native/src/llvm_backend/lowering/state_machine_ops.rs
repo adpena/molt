@@ -626,42 +626,18 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     }
 
     pub(super) fn emit_yield(&mut self, op: &TirOp) {
-        let val = if !op.operands.is_empty() {
-            let v = self.resolve(op.operands[0]);
-            self.ensure_i64(v)
-        } else {
-            // yield without value yields None
-            let none_bits = nanbox::QNAN | nanbox::TAG_NONE;
-            self.backend.context.i64_type().const_int(none_bits, false)
-        };
-        let yield_fn = self.backend.module.get_function("molt_yield").unwrap();
-        let result = self
-            .backend
-            .builder
-            .build_call(yield_fn, &[val.into()], "yield")
-            .unwrap()
-            .try_as_basic_value()
-            .unwrap_basic();
-        if let Some(&result_id) = op.results.first() {
-            self.values.insert(result_id, result);
-            self.value_types.insert(result_id, TirType::DynBox);
-        }
+        self.record_removed_runtime_delegate(
+            op,
+            "molt_yield",
+            "lower generators through explicit state-machine poll/resume blocks before LLVM codegen",
+        );
     }
 
     pub(super) fn emit_yield_from(&mut self, op: &TirOp) {
-        let subiter = self.resolve(op.operands[0]);
-        let subiter_i64 = self.ensure_i64(subiter);
-        let yield_from_fn = self.backend.module.get_function("molt_yield_from").unwrap();
-        let result = self
-            .backend
-            .builder
-            .build_call(yield_from_fn, &[subiter_i64.into()], "yield_from")
-            .unwrap()
-            .try_as_basic_value()
-            .unwrap_basic();
-        if let Some(&result_id) = op.results.first() {
-            self.values.insert(result_id, result);
-            self.value_types.insert(result_id, TirType::DynBox);
-        }
+        self.record_removed_runtime_delegate(
+            op,
+            "molt_yield_from",
+            "lower generator delegation through explicit state-machine poll/resume blocks before LLVM codegen",
+        );
     }
 }
