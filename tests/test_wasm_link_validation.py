@@ -98,19 +98,11 @@ def test_wasm_link_default_artifact_paths_follow_external_root(
     )
 
 
-def test_verify_runtime_integrity_accepts_matching_sidecar_hash(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_verify_runtime_integrity_accepts_matching_sidecar_hash(tmp_path: Path) -> None:
     runtime = tmp_path / "molt_runtime.wasm"
     runtime.write_bytes(_build_exported_runtime_module("molt_main"))
     sidecar = runtime.with_name(f"{runtime.name}.sha256")
     sidecar.write_text(hashlib.sha256(runtime.read_bytes()).hexdigest() + "\n")
-    monkeypatch.setattr(
-        wasm_link,
-        "RUNTIME_EXPECTED_HASHES",
-        {"molt_runtime.wasm": "0" * 64},
-        raising=True,
-    )
 
     wasm_link._verify_runtime_integrity(runtime)
 
@@ -146,19 +138,11 @@ def test_verify_runtime_integrity_retries_stale_sidecar_publish_window(
     assert reads == [runtime, runtime]
 
 
-def test_verify_runtime_integrity_rejects_mismatched_sidecar_hash(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_verify_runtime_integrity_rejects_mismatched_sidecar_hash(tmp_path: Path) -> None:
     runtime = tmp_path / "molt_runtime.wasm"
     runtime.write_bytes(_build_exported_runtime_module("molt_main"))
     sidecar = runtime.with_name(f"{runtime.name}.sha256")
     sidecar.write_text("0" * 64 + "\n")
-    monkeypatch.setattr(
-        wasm_link,
-        "RUNTIME_EXPECTED_HASHES",
-        {"molt_runtime.wasm": hashlib.sha256(runtime.read_bytes()).hexdigest()},
-        raising=True,
-    )
 
     with pytest.raises(SystemExit, match="sidecar"):
         wasm_link._verify_runtime_integrity(runtime)
@@ -177,31 +161,18 @@ def test_verify_runtime_integrity_env_cannot_bypass_mismatched_sidecar_hash(
         wasm_link._verify_runtime_integrity(runtime)
 
 
-def test_verify_runtime_integrity_rejects_missing_sidecar_and_missing_pin(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_verify_runtime_integrity_rejects_missing_sidecar(tmp_path: Path) -> None:
     runtime = tmp_path / "custom_runtime.wasm"
     runtime.write_bytes(_build_exported_runtime_module("molt_main"))
-    monkeypatch.setattr(wasm_link, "RUNTIME_EXPECTED_HASHES", {}, raising=True)
 
-    with pytest.raises(SystemExit, match="no sidecar"):
+    with pytest.raises(SystemExit, match="publish the matching .sha256 sidecar"):
         wasm_link._verify_runtime_integrity(runtime)
 
 
-def test_verify_runtime_integrity_rejects_unpinned_runtime_without_sidecar(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    runtime = tmp_path / "custom_runtime.wasm"
-    runtime.write_bytes(_build_exported_runtime_module("molt_main"))
-    monkeypatch.setattr(
-        wasm_link,
-        "RUNTIME_EXPECTED_HASHES",
-        {"molt_runtime.wasm": hashlib.sha256(runtime.read_bytes()).hexdigest()},
-        raising=True,
-    )
-
-    with pytest.raises(SystemExit, match="no pinned SHA-256"):
-        wasm_link._verify_runtime_integrity(runtime)
+def test_runtime_integrity_has_no_hardcoded_hash_authority() -> None:
+    root = Path(__file__).resolve().parents[1]
+    assert not hasattr(wasm_link, "RUNTIME_EXPECTED_HASHES")
+    assert not (root / "tools" / "update_runtime_hash.py").exists()
 
 
 def _build_minimal_module(element_payload: bytes) -> bytes:
