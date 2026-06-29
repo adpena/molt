@@ -14644,8 +14644,6 @@ def test_prepare_non_native_build_result_split_runtime_reuses_shared_runtime_sur
         del path
         if module_name == "molt_runtime":
             return {"alloc", "molt_fast_list_append"}
-        if module_name == "molt_native":
-            return {native_callable_symbol}
         return set()
 
     monkeypatch.setattr(
@@ -14711,9 +14709,61 @@ def test_prepare_non_native_build_result_split_runtime_reuses_shared_runtime_sur
     manifest = json.loads((output_wasm.parent / "manifest.json").read_text())
     native_callables = manifest["abi"]["browser_embed"]["native_callables"]
     assert native_callables["module"] == "molt_native"
-    symbol_payload = native_callables["symbols"][native_callable_symbol]
+    assert native_callables["symbols"] == {}
+
+
+def test_browser_native_callable_manifest_is_import_driven(tmp_path: Path) -> None:
+    native_callable_symbol = "molt_nativepkg_ndimage_distance_transform_edt"
+    package_dir = tmp_path / "site" / "nativepkg"
+    package_dir.mkdir(parents=True)
+    artifact_path = package_dir / "_ndimage.molt.wasm"
+    artifact_bytes = b"\0asm\x01\0\0\0native"
+    artifact_path.write_bytes(artifact_bytes)
+    manifest_path = package_dir / "extension_manifest.json"
+    manifest_bytes = b'{"runtime_linkage":"static_link"}\n'
+    manifest_path.write_bytes(manifest_bytes)
+    native_artifact_plan = _ExternalPackageNativeArtifactPlan(
+        artifacts=(
+            _ExternalPackageNativeArtifact(
+                package="nativepkg",
+                module="nativepkg._ndimage",
+                package_dir=package_dir,
+                path=artifact_path,
+                manifest_path=manifest_path,
+                extension_sha256=hashlib.sha256(artifact_bytes).hexdigest(),
+                manifest_sha256=hashlib.sha256(manifest_bytes).hexdigest(),
+                capabilities=(),
+                abi_tag="molt_abi1",
+                target_triple="wasm32-wasip1",
+                platform_tag="wasm32_wasip1",
+                runtime_linkage="static_link",
+                artifact_kind="wasm_relocatable_object",
+                callable_exports=(
+                    _ExternalNativeCallableExport(
+                        module="nativepkg.ndimage",
+                        name="distance_transform_edt",
+                        binding="direct_symbol",
+                        abi="molt.forward_f32_v1",
+                        symbol=native_callable_symbol,
+                        deterministic=True,
+                    ),
+                ),
+            ),
+        )
+    )
+
+    empty_manifest = cli_non_native_output._browser_native_callable_manifest(
+        native_artifact_plan,
+        required_symbols=(),
+    )
+    required_manifest = cli_non_native_output._browser_native_callable_manifest(
+        native_artifact_plan,
+        required_symbols={native_callable_symbol},
+    )
+
+    assert empty_manifest == {"module": "molt_native", "symbols": {}}
+    symbol_payload = required_manifest["symbols"][native_callable_symbol]
     assert symbol_payload["abi"] == "molt.forward_f32_v1"
-    assert symbol_payload["binding"] == "direct_symbol"
     assert symbol_payload["signature"] == {
         "params": ["bytes.float32"],
         "result": "bytes.float32",
@@ -14721,9 +14771,6 @@ def test_prepare_non_native_build_result_split_runtime_reuses_shared_runtime_sur
     assert symbol_payload["exports"][0]["qualified_name"] == (
         "nativepkg.ndimage.distance_transform_edt"
     )
-    assert symbol_payload["exports"][0]["artifact"]["manifest_sha256"] == hashlib.sha256(
-        manifest_bytes
-    ).hexdigest()
 
 
 def test_prepare_non_native_build_result_split_runtime_rejects_unbacked_native_import(

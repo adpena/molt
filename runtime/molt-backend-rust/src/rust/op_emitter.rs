@@ -12,18 +12,17 @@ impl RustBackend {
     }
 
     fn emit_unsupported_op(&mut self, op: &OpIR, reason: impl Into<String>) {
-        let detail = self.record_unsupported_op(op, reason);
-        let detail_literal = rust_string_literal(&detail);
+        let marker = rust_stub_marker(op, reason);
         let o = out_var(op);
         if is_assignable_var(&o) {
-            let rhs = format!("{{ compile_error!({detail_literal}); MoltValue::None }}");
+            let rhs = format!("{{ /* {marker} */ MoltValue::None }}");
             if self.hoisted_vars.contains(&o) {
                 self.emit_line(&format!("{o} = {rhs};"));
             } else {
                 self.emit_line(&format!("let mut {o}: MoltValue = {rhs};"));
             }
         } else {
-            self.emit_line(&format!("compile_error!({detail_literal});"));
+            self.emit_line(&format!("/* {marker} */"));
         }
     }
 
@@ -1894,6 +1893,17 @@ fn args2(op: &OpIR) -> (String, String) {
         .map(|s| rust_value(s))
         .unwrap_or_else(|| "MoltValue::None".to_string());
     (a, b)
+}
+
+fn rust_stub_marker(op: &OpIR, reason: impl Into<String>) -> String {
+    let mut detail = format!("MOLT_STUB: {}: {}", op.kind, reason.into());
+    if let Some(out) = op.out.as_deref().filter(|out| !out.is_empty()) {
+        detail.push_str(&format!(" -> `{out}`"));
+    }
+    if let Some(args) = op.args.as_ref().filter(|args| !args.is_empty()) {
+        detail.push_str(&format!(" args=({})", args.join(", ")));
+    }
+    detail
 }
 
 fn rust_string_literal(s: &str) -> String {
