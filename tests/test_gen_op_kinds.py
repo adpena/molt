@@ -1364,7 +1364,7 @@ def test_operand_independent_result_types_delegate_to_generated_table() -> None:
         "NotIn": "bool",
         "Not": "bool",
         "Bool": "bool",
-        "OrdAt": "i64",
+        "OrdAt": "dynbox",
         "BuildList": "list_dynbox",
         "BuildDict": "dict_dynbox_dynbox",
         "BuildSet": "set_dynbox",
@@ -2030,12 +2030,10 @@ def test_vectorize_opcode_facts_delegate_to_generated_table() -> None:
         "IterNextUnboxed": {"body": "iteration_control"},
         "ForIter": {
             "body": "iteration_control",
-            "loop_header": True,
             "annotation_target": True,
         },
         "ScfFor": {
             "body": "iteration_control",
-            "loop_header": True,
             "annotation_target": True,
         },
     }
@@ -2043,7 +2041,6 @@ def test_vectorize_opcode_facts_delegate_to_generated_table() -> None:
         row["opcode"]: {
             "body": row["body"],
             "reduction": row.get("reduction"),
-            "loop_header": row.get("loop_header", False),
             "annotation_target": row.get("annotation_target", False),
         }
         for row in data["vectorize_opcode_facts"]
@@ -2052,7 +2049,6 @@ def test_vectorize_opcode_facts_delegate_to_generated_table() -> None:
         opcode: {
             "body": facts["body"],
             "reduction": facts.get("reduction"),
-            "loop_header": facts.get("loop_header", False),
             "annotation_target": facts.get("annotation_target", False),
         }
         for opcode, facts in expected_rows.items()
@@ -2099,16 +2095,13 @@ def test_vectorize_opcode_facts_delegate_to_generated_table() -> None:
             if rule is not None
             else "VectorReductionRule::None"
         )
-        expected_loop_header = "true" if row["loop_header"] else "false"
         expected_annotation = "true" if row["annotation_target"] else "false"
         assert f"body_action: VectorizeBodyAction::{body}" in arm
         assert f"reduction_rule: {expected_rule}" in arm
-        assert f"loop_header_marker: {expected_loop_header}" in arm
         assert f"annotation_target: {expected_annotation}" in arm
     call_arm = vectorize_arm("Call")
     assert "body_action: VectorizeBodyAction::Reject" in call_arm
     assert "reduction_rule: VectorReductionRule::None" in call_arm
-    assert "loop_header_marker: false" in call_arm
     assert "annotation_target: false" in call_arm
 
     production = vectorize.split("#[cfg(test)]", maxsplit=1)[0]
@@ -2183,24 +2176,6 @@ def test_vectorize_opcode_facts_validation_rejects_drift() -> None:
         assert "body must be one of" in str(exc)
     else:
         raise AssertionError("bad vectorize body action was accepted")
-
-    bad_flag = json.loads(json.dumps(data))
-    bad_flag["vectorize_opcode_facts"][0]["loop_header"] = "yes"
-    try:
-        gen._validate_vectorize_opcode_facts(bad_flag, opcodes)
-    except gen.OpKindTableError as exc:
-        assert "loop_header must be bool" in str(exc)
-    else:
-        raise AssertionError("bad vectorize bool flag was accepted")
-
-    bad_loop_header_owner = json.loads(json.dumps(data))
-    bad_loop_header_owner["vectorize_opcode_facts"][0]["loop_header"] = True
-    try:
-        gen._validate_vectorize_opcode_facts(bad_loop_header_owner, opcodes)
-    except gen.OpKindTableError as exc:
-        assert "loop_header requires body='iteration_control'" in str(exc)
-    else:
-        raise AssertionError("non-iteration loop-header marker was accepted")
 
     bad_annotation_owner = json.loads(json.dumps(data))
     bad_annotation_owner["vectorize_opcode_facts"][0]["annotation_target"] = True
@@ -4820,6 +4795,21 @@ def test_dangerous_cell_baseline_matches_current_audit() -> None:
     )
 
     assert baseline.get("dangerous", {}) == res.dangerous()
+
+
+def test_audit_resolves_constant_backed_llvm_runtime_imports() -> None:
+    audit = _audit()
+    imports = audit.extract_llvm_classified_runtime_imports()
+
+    expected = {
+        "molt_asyncgen_new": 1,
+        "molt_cancel_token_get_current": 0,
+        "molt_task_register_token_owned": 2,
+    }
+    for symbol, param_count in expected.items():
+        assert imports[symbol] == audit.ClassifiedRuntimeImport(
+            symbol, param_count, "I64"
+        )
 
 
 # ---------------------------------------------------------------------------
